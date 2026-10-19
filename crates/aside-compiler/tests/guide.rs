@@ -42,8 +42,13 @@ const SCENES: &[(&str, E)] = &[
     ("moving group in story", E::Block),
     ("shake helper and scope in story", E::Block),
     ("mask in story", E::Block),
+    ("subtree inversion", E::Block),
+    ("subtree blending", E::Block),
+    ("authored line wrapping", E::Block),
     ("component result in story", E::Block),
     ("choice component and branch in story", E::Block),
+    ("clear dialogue presentation", E::Block),
+    ("retain recent history", E::Block),
     ("save button construction", E::Module),
     ("clear read progress", E::Block),
     ("shared model controls", E::Block),
@@ -62,9 +67,11 @@ const SCENES: &[(&str, E)] = &[
     ("shared property module", E::Module),
     ("author audio", E::Module),
     ("audio continuation", E::Block),
+    ("queued audio continuation", E::Block),
     ("window configuration", E::Block),
     ("continuous particles", E::Block),
     ("burst particles", E::Block),
+    ("accepted node geometry", E::Block),
 ];
 fn snippets(doc: &str) -> Vec<(usize, String)> {
     let mut result = Vec::new();

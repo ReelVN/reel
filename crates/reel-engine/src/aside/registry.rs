@@ -279,25 +279,25 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             rest: None,
             symbol: format!("reel::{name}"),
             abi_version: if name == "video" {
-                3
+                4
             } else if name == "image" {
-                14
+                15
             } else if name == "slider" {
-                13
-            } else if name == "particles" {
-                7
-            } else if name == "camera" {
-                6
-            } else if matches!(name, "checkbox" | "radio") {
-                8
-            } else if name == "input" {
                 14
-            } else if name == "scroll" {
-                10
-            } else if name == "text_input" {
+            } else if name == "particles" {
+                8
+            } else if name == "camera" {
+                7
+            } else if matches!(name, "checkbox" | "radio") {
                 9
+            } else if name == "input" {
+                15
+            } else if name == "scroll" {
+                11
+            } else if name == "text_input" {
+                10
             } else {
-                12
+                13
             },
             parameters,
             result: BuiltinType::Any,
@@ -412,7 +412,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     contracts.push(NativeContract {
         rest: None,
         symbol: "reel::view".into(),
-        abi_version: 6,
+        abi_version: 7,
         parameters: view_parameters.clone(),
         result: BuiltinType::Any,
         effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
@@ -422,7 +422,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     contracts.push(NativeContract {
         rest: None,
         symbol: "reel::layered_image".into(),
-        abi_version: 5,
+        abi_version: 6,
         parameters: view_parameters,
         result: BuiltinType::Any,
         effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),

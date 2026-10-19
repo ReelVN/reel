@@ -1,0 +1,18 @@
+fn main() {
+    game.configure(width: 800, height: 420, fonts: ["fonts/body.ttf"]);
+    let state = model({mode: "add"});
+    stage.replace(stack(width: 800, height: 420, background: "#172030") {
+        stack(x: 100, y: 50, width: 400, height: 230, background: "#2875ba");
+        stack(x: 300, y: 130, width: 400, height: 230,
+                blend: derive(|| state.mode), opacity: 0.75) {
+            image("assets/picture.png", width: 400, height: 230, fit: "cover");
+            text("Shared subtree", x: 20, y: 20, color: "#ffffff");
+        }
+        row(x: 20, y: 370, gap: 10) {
+            for mode in ["normal", "add", "multiply", "screen"] {
+                button(mode, on_click: || { state.mode = mode; });
+            }
+        }
+    });
+    await completion();
+}

@@ -461,7 +461,7 @@ fn restore_real_story_stage_callbacks_narrative_random_and_concurrent_activities
         let rng = random(seed: 42);
         let first = rng.int(0, 1000000);
         let done = completion();
-        let background = image("scene.png", stretch: "both");
+        let background = image("scene.png", stretch: "both", blend: "screen");
         let snow = particles("flake.png", rate: 5, lifetime: 2);
         let emission = emit(snow);
         let mover = run(tween(background, x: 100, invert: 1, duration: 4, easing: "linear"));
@@ -482,6 +482,7 @@ fn restore_real_story_stage_callbacks_narrative_random_and_concurrent_activities
         await task;
         finish(mover); stop(emission);
         if caption.max_width != 140 || caption.align_x != 0.5 { throw "lost layout constraints"; }
+        if background.blend != "screen" { throw "lost blend mode"; }
         if entries != 1 || data.score != 5 || background.x != 100 || background.invert != 1 { throw "replayed or lost state"; }
         narrator(f"done {rng.int(0, 1000000)}");
     }

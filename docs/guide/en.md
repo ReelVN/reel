@@ -751,6 +751,12 @@ await run(tween(scene, invert: 1, duration: 0.4), owner: scene);
 
 Runnable example: [author_invert.aside](../../examples/author_invert.aside). Inversion shares the group target with opacity/mask; set it to 0 when finished to remove the need for a separate inversion target.
 
+Images, text, UI and effects share `blend`, which composites the completed subtree: `normal` uses source-over, `add` adds light, `multiply` darkens, and `screen` lightens. Opacity, masks and inversion apply before blending with the backdrop. Layout and input stay the same; color calculations use linear space. The light layer below can also contain images, particles or components. See [author_blend.aside](../../examples/author_blend.aside).
+
+```aside
+stack(width: 320, height: 180, background: "#800000", blend: "add", opacity: 0.5);
+```
+
 Effect parameters follow the same animation rules as node properties. More complex scenes can nest group nodes: blur the background separately, keep characters sharp, and leave image buttons on top, then apply a mask or camera transform to the whole group. The tree structure determines the front-to-back order of all children.
 Custom effects use a versioned Effect description for input images, parameters, output bounds, and backend implementations. Advanced authors can develop host extensions, then compose and reuse common effects through ordinary Aside functions. Shader support is a backend capability; project checks list missing capabilities. Portable effects should also provide simplified implementations, letting the game select an appropriate platform version through capability queries.
 Pixels changed by an effect and logical input regions are declared separately. Ordinary affine transforms and geometric clipping automatically map hit tests. For bends, distortions, and arbitrary shaders, authors provide logical shapes or specialized mappings for interactive regions. Reading the rendered image back from the GPU for every click would add latency, so the base interface uses regions that can be computed directly.
