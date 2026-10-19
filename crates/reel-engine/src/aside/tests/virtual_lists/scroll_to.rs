@@ -526,25 +526,27 @@ fn pause_source_update(vm: &mut SessionVm, session: &mut Session, action: &str, 
 
 #[test]
 fn virtual_list_scroll_to_stale_acceptance_during_source_invalidation_and_indexing() {
-    for upstream in [false, true] {
-        for pause in [Pause::Dirty, Pause::Scheduled, Pause::Entry, Pause::Index] {
-            let (mut session, mut vm) = setup_source(1000, true, upstream);
-            click(&mut vm, &mut session, "jump");
-            layout(&mut vm, &mut session);
-            let old = vm.presentation_request();
-            pause_source_update(&mut vm, &mut session, "reverse", pause);
-            vm.accept_presentation(&session, old).unwrap();
-            drive(&mut vm, &mut session);
-            assert!(status(&vm, "waiting"), "upstream={upstream}, {pause:?}");
-            layout(&mut vm, &mut session);
-            assert!(vm.presentation_request() > old);
-            let (list, _) = ids(&vm);
-            let NodeKind::VirtualList(view) = &vm.stage().node(list).unwrap().kind else {
-                unreachable!()
-            };
-            assert!(view.rows.iter().any(|r| r.index == 19));
-            accept(&mut vm, &mut session);
-            assert!(status(&vm, "done"));
+    for encoded in [false, true] {
+        for upstream in [false, true] {
+            for pause in [Pause::Dirty, Pause::Scheduled, Pause::Entry, Pause::Index] {
+                let (mut session, mut vm) = setup_source(1000, encoded, upstream);
+                click(&mut vm, &mut session, "jump");
+                layout(&mut vm, &mut session);
+                let old = vm.presentation_request();
+                pause_source_update(&mut vm, &mut session, "reverse", pause);
+                vm.accept_presentation(&session, old).unwrap();
+                drive(&mut vm, &mut session);
+                assert!(status(&vm, "waiting"), "upstream={upstream}, {pause:?}");
+                layout(&mut vm, &mut session);
+                assert!(vm.presentation_request() > old);
+                let (list, _) = ids(&vm);
+                let NodeKind::VirtualList(view) = &vm.stage().node(list).unwrap().kind else {
+                    unreachable!()
+                };
+                assert!(view.rows.iter().any(|r| r.index == 19));
+                accept(&mut vm, &mut session);
+                assert!(status(&vm, "done"));
+            }
         }
     }
 }
@@ -685,27 +687,29 @@ fn virtual_list_scroll_to_does_not_disarm_plain_presentation_with_the_same_owner
 
 #[test]
 fn virtual_list_scroll_to_snapshot_during_dirty_source_and_reindexing_rejects_old_frames() {
-    for pause in [Pause::Dirty, Pause::Scheduled, Pause::Entry, Pause::Index] {
-        let (mut session, mut vm) = setup_source(1000, true, true);
-        click(&mut vm, &mut session, "jump");
-        layout(&mut vm, &mut session);
-        let old = vm.presentation_request();
-        pause_source_update(&mut vm, &mut session, "reverse", pause);
-        if matches!(pause, Pause::Entry) {
-            assert!(
-                vm.snapshot_begin(&session).is_err(),
-                "an issued host call must first be admitted"
-            );
-            vm.dispatch(&mut session, vm.issued.unwrap(), "en", 1)
-                .unwrap();
+    for encoded in [false, true] {
+        for pause in [Pause::Dirty, Pause::Scheduled, Pause::Entry, Pause::Index] {
+            let (mut session, mut vm) = setup_source(1000, encoded, true);
+            click(&mut vm, &mut session, "jump");
+            layout(&mut vm, &mut session);
+            let old = vm.presentation_request();
+            pause_source_update(&mut vm, &mut session, "reverse", pause);
+            if matches!(pause, Pause::Entry) {
+                assert!(
+                    vm.snapshot_begin(&session).is_err(),
+                    "an issued host call must first be admitted"
+                );
+                vm.dispatch(&mut session, vm.issued.unwrap(), "en", 1)
+                    .unwrap();
+            }
+            let (mut session, mut vm) = restore(&mut vm, &session);
+            vm.accept_presentation(&session, old).unwrap();
+            drive(&mut vm, &mut session);
+            assert!(status(&vm, "waiting"), "{pause:?}");
+            layout(&mut vm, &mut session);
+            accept(&mut vm, &mut session);
+            assert!(status(&vm, "done"), "{pause:?}");
         }
-        let (mut session, mut vm) = restore(&mut vm, &session);
-        vm.accept_presentation(&session, old).unwrap();
-        drive(&mut vm, &mut session);
-        assert!(status(&vm, "waiting"), "{pause:?}");
-        layout(&mut vm, &mut session);
-        accept(&mut vm, &mut session);
-        assert!(status(&vm, "done"), "{pause:?}");
     }
 }
 
@@ -756,9 +760,13 @@ fn virtual_list_scroll_to_model_key_dependency_cost() {
         let host = vm.stage.value(vm.vm.heap(), list).unwrap();
         let observer = vm.vm.heap().host_payload(host, 3).unwrap();
         let query_start = std::time::Instant::now();
-        for _ in 0..10 {
+        assert!(vm.vm.heap_mut().derived_is_current(observer, None).unwrap());
+        let first_query = query_start.elapsed();
+        let stable_start = std::time::Instant::now();
+        for _ in 0..9 {
             assert!(vm.vm.heap_mut().derived_is_current(observer, None).unwrap());
         }
+        let stable_query = stable_start.elapsed() / 9;
         let query = query_start.elapsed() / 10;
         let start = std::time::Instant::now();
         click(&mut vm, &mut session, "jump");
@@ -775,7 +783,7 @@ fn virtual_list_scroll_to_model_key_dependency_cost() {
         let gc = gc_start.elapsed();
         assert!(status(&vm, "done"));
         eprintln!(
-            "model-key rows={n} freshness={query:?} far-position={elapsed:?} nodes={} charge_before_gc={before_gc} charge_after_gc={} peak_charge={peak} gc={gc:?}",
+            "model-key rows={n} freshness={query:?} freshness_first={first_query:?} freshness_stable={stable_query:?} far-position={elapsed:?} nodes={} charge_before_gc={before_gc} charge_after_gc={} peak_charge={peak} gc={gc:?}",
             vm.stage().nodes().count(),
             vm.vm.heap().stats().charged_bytes
         );

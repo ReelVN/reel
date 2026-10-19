@@ -11,6 +11,7 @@ fn main() {
     let start = || {
         if job.value != null { job.value.cancel(); }
         job.value = spawn(|| scope(body: |s| {
+            s.add(root, text("Scoped effect is running"));
             await stage.presented();
             s.run(repeat(sequence(
                 tween(panel, opacity: 0.25, duration: 0.4),

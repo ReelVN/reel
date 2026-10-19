@@ -1040,31 +1040,44 @@ pub(super) fn add(
     child: Value,
     #[aside(default = null)] index: Option<i64>,
 ) -> Result<Value, AdapterError> {
-    let heap = context.vm.heap_mut();
-    let parent_id = context.host.id(heap, receiver)?;
-    let child_id = context.host.id(heap, child)?;
-    let node = context.host.scene.node(parent_id).unwrap();
-    let index = match index {
-        Some(i) => usize::try_from(i)
-            .map_err(|_| AdapterError::Input("child index must be nonnegative"))?,
-        None => node.children.len(),
-    };
-    // Prepare replacement traced edges before committing either tree.
-    let previous = heap.host_payload(receiver, 1)?;
-    let next = heap.alloc_array(&[])?;
-    for i in 0..heap.sequence_len(previous)? {
-        if i as usize == index {
+    context
+        .host
+        .add_node(context.vm.heap_mut(), receiver, child, index)
+}
+
+impl StageBinding {
+    pub(super) fn add_node(
+        &mut self,
+        heap: &mut Heap,
+        receiver: Value,
+        child: Value,
+        index: Option<i64>,
+    ) -> Result<Value, AdapterError> {
+        let parent_id = self.id(heap, receiver)?;
+        let child_id = self.id(heap, child)?;
+        let node = self.scene.node(parent_id).unwrap();
+        let index = match index {
+            Some(i) => usize::try_from(i)
+                .map_err(|_| AdapterError::Input("child index must be nonnegative"))?,
+            None => node.children.len(),
+        };
+        // Prepare replacement traced edges before committing either tree.
+        let previous = heap.host_payload(receiver, 1)?;
+        let next = heap.alloc_array(&[])?;
+        for i in 0..heap.sequence_len(previous)? {
+            if i as usize == index {
+                heap.array_push(next, child)?;
+            }
+            heap.array_push(next, heap.sequence_get(previous, i)?)?;
+        }
+        if index == node.children.len() {
             heap.array_push(next, child)?;
         }
-        heap.array_push(next, heap.sequence_get(previous, i)?)?;
+        self.scene.add(parent_id, child_id, index)?;
+        heap.set_host_payload(receiver, 1, next)?;
+        heap.set_host_payload(child, 2, receiver)?;
+        Ok(child)
     }
-    if index == node.children.len() {
-        heap.array_push(next, child)?;
-    }
-    context.host.scene.add(parent_id, child_id, index)?;
-    heap.set_host_payload(receiver, 1, next)?;
-    heap.set_host_payload(child, 2, receiver)?;
-    Ok(child)
 }
 
 /// Reorder one direct child using the existing reconciliation path. No node is
@@ -1114,34 +1127,41 @@ pub(super) fn remove(
     #[aside(context)] context: &mut CallContext<'_, StageBinding>,
     receiver: Value,
 ) -> Result<(), AdapterError> {
-    let heap = context.vm.heap_mut();
-    if matches!(heap.host_fields(receiver), Err(HeapError::RetiredHost)) {
-        return Ok(());
-    }
-    let id = context.host.id(heap, receiver)?;
-    let parent = heap.host_payload(receiver, 2)?;
-    let edges = if parent.tag() != ValueTag::Null {
-        let previous = heap.host_payload(parent, 1)?;
-        let next = heap.alloc_array(&[])?;
-        for i in 0..heap.sequence_len(previous)? {
-            let child = heap.sequence_get(previous, i)?;
-            if !child.same_bits(receiver) {
-                heap.array_push(next, child)?;
-            }
+    context.host.remove_node(context.vm.heap_mut(), receiver)
+}
+
+impl StageBinding {
+    pub(super) fn remove_node(
+        &mut self,
+        heap: &mut Heap,
+        receiver: Value,
+    ) -> Result<(), AdapterError> {
+        if matches!(heap.host_fields(receiver), Err(HeapError::RetiredHost)) {
+            return Ok(());
         }
-        Some(next)
-    } else {
-        None
-    };
-    let was_root = context.host.scene.root() == Some(id);
-    let retired = context.host.scene.remove(id)?;
-    if let Some(edges) = edges {
-        heap.set_host_payload(parent, 1, edges)?;
+        let id = self.id(heap, receiver)?;
+        let parent = heap.host_payload(receiver, 2)?;
+        if parent.tag() != ValueTag::Null {
+            let edges = heap.host_payload(parent, 1)?;
+            let len = heap.sequence_len(edges)?;
+            let index = (0..len)
+                .rev()
+                .find(|&i| heap.sequence_get(edges, i).unwrap().same_bits(receiver))
+                .expect("mounted child has a traced parent edge");
+            // The parent edge array is private stage storage. Compact it in
+            // place so retirement does not allocate a replacement child tree.
+            for i in index..len - 1 {
+                heap.set_field(edges, i, heap.sequence_get(edges, i + 1)?)?;
+            }
+            heap.array_pop(edges)?;
+        }
+        let was_root = self.scene.root() == Some(id);
+        let retired = self.scene.remove(id)?;
+        if was_root && let Some(root) = self.root.take() {
+            heap.release_root(root)?;
+        }
+        self.retire(heap, retired)
     }
-    if was_root && let Some(root) = context.host.root.take() {
-        heap.release_root(root)?;
-    }
-    context.host.retire(heap, retired)
 }
 
 #[aside_host::native(symbol = "reel::node::clear", effects = Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST), capabilities = ["reel.stage"])]

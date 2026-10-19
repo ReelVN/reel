@@ -4,6 +4,173 @@ use super::{
 };
 use reel_ui::stage::NodeKind;
 
+#[test]
+fn scope_nodes_share_mount_admission_and_retire_only_registered_subtrees() {
+    let code = r#"
+    fn retired(node) {
+        try { node.x=1; } catch error { return true; }
+        false
+    }
+    fn opening() {
+        let root=stack(); stage.replace(root);
+        let permanent=root.add(text("permanent"));
+        let holders={outer:null,inner:null,failed:null};
+        scope(body: |s| {
+            holders.outer=s.add(root,stack(),index:0);
+            let ordinary=root.add(text("ordinary add"));
+            scope(body: |inner| {
+                holders.inner=inner.add(holders.outer,text("nested"));
+            });
+            if !retired(holders.inner) || retired(holders.outer) { throw "nested ownership"; }
+            let mut rejected=0;
+            try { s.add(root,permanent); } catch error { rejected+=1; }
+            holders.failed=text("failed mount");
+            try { s.add(root,holders.failed,index:100); } catch error { rejected+=1; }
+            if rejected!=2 { throw "invalid mount succeeded"; }
+            root.add(holders.failed);
+            root.move(holders.outer,index:3);
+            s.add(holders.outer,text("full subtree"));
+        });
+        if !retired(holders.outer) || retired(permanent) || retired(holders.failed) {
+            throw "scope changed ordinary ownership";
+        }
+        let original={reason:"body error"}; let mut caught=false;
+        try { scope(body: |s| {
+            holders.outer=s.add(root,text("fault page")); throw original;
+        }); } catch error { caught=error==original; }
+        if !caught || !retired(holders.outer) { throw "fault cleanup"; }
+        scope(body: |s| {
+            let page=s.add(root,stack()); s.add(page,text("early removal")); page.remove();
+        });
+        scope(body: |s| {
+            s.add(root,text("old stage")); stage.replace(stack() { text("new stage"); });
+        });
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = prepared(code, encoded);
+        drive(&mut vm, &mut session, true);
+        assert!(vm.scopes.live.is_empty());
+        assert_eq!(vm.stage().nodes().count(), 2);
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|n| n.kind == NodeKind::Text("new stage".into()))
+        );
+    }
+}
+
+#[test]
+fn scope_nodes_restore_without_rebuilding_and_cancel_node_owned_work() {
+    let code = r#"fn opening() {
+        let root=stack(); stage.replace(root);
+        let entered=completion();
+        let state={created:0,page:null,child:null,motion:null,presented:null};
+        let job=spawn(|| scope(body: |s| {
+            state.created+=1;
+            state.page=s.add(root,stack() { text("temporary page"); });
+            state.child=spawn(|| await completion(),owner:state.page);
+            state.motion=run(tween(state.page,x:100,duration:10),owner:state.page);
+            state.presented=stage.presented(owner:state.page);
+            entered.resolve();
+            await completion();
+        }));
+        await entered; narrator("save page");
+        job.cancel();
+        let mut cancelled=0;
+        for work in [job,state.child,state.motion,state.presented] {
+            try { await work; } catch error { cancelled+=1; }
+        }
+        if cancelled!=4 || state.created!=1 { throw "restored cleanup replayed work"; }
+        root.add(text("page retired"));
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = prepared(code, encoded);
+        drive(&mut vm, &mut session, false);
+        let (mut session, mut vm) = restored(&mut vm, &session);
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|n| n.kind == NodeKind::Text("temporary page".into()))
+        );
+        let interaction = session.view().interaction.unwrap().id();
+        for _ in 0..2 {
+            session
+                .handle_local_input(session.root_owner(), InputAction::Advance(interaction))
+                .unwrap();
+        }
+        drive(&mut vm, &mut session, true);
+        assert!(vm.scopes.live.is_empty());
+        assert!(vm.tasks.is_empty());
+        assert!(!vm.activities.has_active());
+        assert_eq!(vm.stage().nodes().count(), 2);
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|n| n.kind == NodeKind::Text("page retired".into()))
+        );
+    }
+}
+
+#[test]
+fn scope_nodes_retirement_reuses_parent_edges_without_vm_chunk_allocation() {
+    let code = r#"fn opening() {
+        let root=stack(); stage.replace(root);
+        root.add(text("before"));
+        scope(body: |s| {
+            let mut i=0;
+            while i<256 { s.add(root,stack()); i+=1; }
+            root.add(text("after"));
+            narrator("retire");
+        });
+    }"#;
+    let (mut session, mut vm) = prepared(code, true);
+    drive(&mut vm, &mut session, false);
+    let interaction = session.view().interaction.unwrap().id();
+    for _ in 0..2 {
+        session
+            .handle_local_input(session.root_owner(), InputAction::Advance(interaction))
+            .unwrap();
+    }
+    let mut measured = false;
+    for _ in 0..1000 {
+        match vm.step(&mut session, SliceBudget::default(), || 0).unwrap() {
+            SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
+                let package = vm.vm.program().package();
+                let closing = package.symbols
+                    [package.natives[ticket.native.index()].symbol.index()]
+                    == "reel::scope"
+                    && ticket.input == NativeInput::CallbackReturned;
+                let before = vm.vm.heap().stats().chunk_allocations;
+                vm.dispatch(&mut session, ticket, "en", 32).unwrap();
+                if closing {
+                    assert_eq!(
+                        vm.vm.heap().stats().chunk_allocations,
+                        before,
+                        "retirement allocated replacement child arrays"
+                    );
+                    measured = true;
+                    break;
+                }
+            }
+            SessionStep::Vm(RunOutcome::BudgetYield(_)) | SessionStep::Progress => {}
+            other => panic!("scope did not return: {other:?}"),
+        }
+    }
+    assert!(measured);
+    drive(&mut vm, &mut session, true);
+    let stage = vm.stage();
+    let children = &stage.node(stage.root().unwrap()).unwrap().children;
+    assert_eq!(children.len(), 2);
+    assert_eq!(
+        stage.node(children[0]).unwrap().kind,
+        NodeKind::Text("before".into())
+    );
+    assert_eq!(
+        stage.node(children[1]).unwrap().kind,
+        NodeKind::Text("after".into())
+    );
+}
+
 fn restored(vm: &mut SessionVm, session: &Session) -> (Session, SessionVm) {
     use super::snapshot::{SessionSnapshot, SnapshotBudget};
     let bytecode = bc::encode(vm.vm.program().package(), bc::Limits::default()).unwrap();
