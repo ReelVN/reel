@@ -737,6 +737,18 @@ reveal.mask = null;
 ```
 mask_progress and mask_softness use ordinary derive/tween. See [author_image_mask.aside](../../examples/author_image_mask.aside). Progress 1 bypasses mask compositing; set mask to null when finished to release its resource reference. Masks do not change logical hit geometry; use enabled/visible to control interaction. Masks require whole PNG/JPEG images, not tiled .reel-image sources.
 
+The `invert` node property inverts the composited subtree. It ranges from 0 (the default) to 1 for full inversion, with intermediate values blending in sRGB. Alpha is preserved. Put dialogue and menus in sibling nodes to keep them independent of the inverted scene. Direct assignment, derive, tween, and save restoration use the ordinary property protocol.
+
+```aside
+let scene = stack(width: 800, height: 450, invert: 0) {
+    text("A different view", color: "#e08020", font_size: 48);
+};
+stage.replace(scene);
+await run(tween(scene, invert: 1, duration: 0.4), owner: scene);
+```
+
+Runnable example: [author_invert.aside](../../examples/author_invert.aside). Inversion shares the group target with opacity/mask; set it to 0 when finished to remove the need for a separate inversion target.
+
 Effect parameters follow the same animation rules as node properties. More complex scenes can nest group nodes: blur the background separately, keep characters sharp, and leave image buttons on top, then apply a mask or camera transform to the whole group. The tree structure determines the front-to-back order of all children.
 Custom effects use a versioned Effect description for input images, parameters, output bounds, and backend implementations. Advanced authors can develop host extensions, then compose and reuse common effects through ordinary Aside functions. Shader support is a backend capability; project checks list missing capabilities. Portable effects should also provide simplified implementations, letting the game select an appropriate platform version through capability queries.
 Pixels changed by an effect and logical input regions are declared separately. Ordinary affine transforms and geometric clipping automatically map hit tests. For bends, distortions, and arbitrary shaders, authors provide logical shapes or specialized mappings for interactive regions. Reading the rendered image back from the GPU for every click would add latency, so the base interface uses regions that can be computed directly.

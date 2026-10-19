@@ -118,6 +118,7 @@ pub(super) enum CompositeOperation {
 pub(super) struct CompositeParams {
     pub scissor: super::targets::Scissor,
     pub opacity: f32,
+    pub invert: f32,
     pub operation: CompositeOperation,
 }
 pub struct Pipelines {
@@ -311,6 +312,10 @@ impl Pipelines {
             mode,
             progress.to_bits(),
             softness.to_bits(),
+            params.invert.to_bits(),
+            0,
+            0,
+            0,
         ];
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("composite params"),

@@ -2040,3 +2040,57 @@ fn decoded_frames_preserve_geometry_skip_asset_io_and_release_pixels_with_last_v
     drop(registry);
     assert_eq!(pixels.usage().bytes, 0);
 }
+
+#[test]
+fn subtree_invert_updates_cached_composition_without_relayout() {
+    let mut f = Fixture::new(None);
+    let first = f.record();
+    f.accept(&first);
+    let layouts = f.layouts();
+    f.edit(f.root, |p| {
+        p.invert = 0.75;
+        p.opacity = 0.5;
+    });
+    let inverted = f.record();
+    let groups: Vec<_> = inverted
+        .plan()
+        .layers
+        .iter()
+        .flat_map(|l| &l.groups)
+        .filter(|g| g.invert != 0.)
+        .collect();
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].invert, 0.75);
+    assert_eq!(
+        f.layouts(),
+        layouts,
+        "pixel effects must keep layout and widget identity"
+    );
+    f.accept(&inverted);
+    let cached = f.record();
+    assert_eq!(
+        cached
+            .plan()
+            .layers
+            .iter()
+            .flat_map(|l| &l.groups)
+            .filter(|g| g.invert == 0.75)
+            .count(),
+        1
+    );
+    f.accept(&cached);
+    f.edit(f.root, |p| {
+        p.invert = 0.;
+        p.opacity = 1.;
+    });
+    let cleared = f.record();
+    assert!(
+        cleared
+            .plan()
+            .layers
+            .iter()
+            .flat_map(|l| &l.groups)
+            .all(|g| g.invert == 0.)
+    );
+    assert_eq!(f.layouts(), layouts);
+}

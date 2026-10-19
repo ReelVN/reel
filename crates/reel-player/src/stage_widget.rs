@@ -2,7 +2,7 @@
 use reel_ui::{
     accesskit::{Node, Role},
     core::*,
-    imaging::{Composite, GroupRef, Painter},
+    imaging::Painter,
     kurbo::{Axis, Insets, Point, Rect, Size, Vec2},
     layout::{LenDef, LenReq, Length, SizeDef},
     peniko::{Color, ImageData},
@@ -1960,33 +1960,22 @@ impl Widget for SceneWidget {
             ctx.set_child_scroll_translation(child, translation);
         }
     }
-    fn pre_paint(
-        &mut self,
-        ctx: &mut PaintCtx<'_>,
-        _: &PropertiesRef<'_>,
-        painter: &mut Painter<'_>,
-    ) {
+    fn pre_paint(&mut self, ctx: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, _: &mut Painter<'_>) {
         let mask = self
             .mask_image
             .as_ref()
             .filter(|_| self.node.props.mask_progress < 1.);
-        ctx.set_subtree_image_mask(mask.map(|image| PaintImageMask {
-            image: image.clone(),
-            bounds: self.size.to_rect(),
-            progress: self.node.props.mask_progress as f32,
-            softness: self.node.props.mask_softness.min(f32::MAX as f64) as f32,
-            invert: self.node.props.mask_invert,
-            opacity: self.node.props.opacity as f32,
-        }));
-        if mask.is_none() && self.node.props.opacity != 1. {
-            painter.push_group(GroupRef {
-                composite: Composite {
-                    alpha: self.node.props.opacity as f32,
-                    ..Default::default()
-                },
-                ..Default::default()
-            });
-        }
+        ctx.set_subtree_composite(
+            self.node.props.opacity as f32,
+            self.node.props.invert as f32,
+            mask.map(|image| PaintImageMask {
+                image: image.clone(),
+                bounds: self.size.to_rect(),
+                progress: self.node.props.mask_progress as f32,
+                softness: self.node.props.mask_softness.min(f32::MAX as f64) as f32,
+                invert: self.node.props.mask_invert,
+            }),
+        );
     }
     fn paint(&mut self, ctx: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, painter: &mut Painter<'_>) {
         if let Some(background) = self.node.props.background {
@@ -2028,18 +2017,6 @@ impl Widget for SceneWidget {
             }
         }
         self.paint_selection(ctx, painter);
-    }
-    fn post_paint(
-        &mut self,
-        _: &mut PaintCtx<'_>,
-        _: &PropertiesRef<'_>,
-        painter: &mut Painter<'_>,
-    ) {
-        if !(self.mask_image.is_some() && self.node.props.mask_progress < 1.)
-            && self.node.props.opacity != 1.
-        {
-            painter.pop_group();
-        }
     }
     fn accessibility_role(&self) -> Role {
         match self.node.kind {

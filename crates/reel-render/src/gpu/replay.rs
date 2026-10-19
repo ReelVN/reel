@@ -36,12 +36,14 @@ struct Scope<'a> {
     clip: Option<&'a Clip>,
     mask: Option<reel_ui::frame::MaskUse>,
     opacity: f32,
+    invert: f32,
     scissor: Scissor,
     isolated: bool,
 }
 struct MaskComposition {
     source: Target,
     opacity: f32,
+    invert: f32,
     operation: CompositeOperation,
 }
 struct Stream<'a> {
@@ -134,6 +136,7 @@ impl Context<'_> {
                     &mask.source.view,
                     &finished.view,
                     mask.opacity,
+                    mask.invert,
                     mask.operation,
                 )?;
                 self.recycle_target(mask.source)?;
@@ -160,6 +163,7 @@ impl Context<'_> {
                             clip: if scissor.is_some() { None } else { Some(clip) },
                             mask: None,
                             opacity: 1.,
+                            invert: 0.,
                             scissor: scissor.map_or(self.scissor, |s| self.scissor.intersect(s)),
                             isolated: scissor.is_none(),
                         },
@@ -182,6 +186,7 @@ impl Context<'_> {
                             clip: group.clip.as_ref(),
                             mask: group.mask,
                             opacity: group.composite.alpha,
+                            invert: group.invert,
                             scissor: self.scissor,
                             isolated: true,
                         },
@@ -212,6 +217,7 @@ impl Context<'_> {
                                 &source.view,
                                 &coverage.view,
                                 group.opacity,
+                                group.invert,
                                 CompositeOperation::AlphaMask,
                             )?;
                             self.recycle_target(source)?;
@@ -224,6 +230,7 @@ impl Context<'_> {
                             &source.view,
                             &coverage.view,
                             1.,
+                            0.,
                             CompositeOperation::AlphaMask,
                         )?;
                         self.recycle_target(source)?;
@@ -242,6 +249,7 @@ impl Context<'_> {
                         current.mask = Some(MaskComposition {
                             source,
                             opacity: group.opacity,
+                            invert: group.invert,
                             operation: match mask.progress {
                                 Some(progress) => CompositeOperation::ImageMask(progress),
                                 None => match definition.mode {
@@ -259,6 +267,7 @@ impl Context<'_> {
                             &source.view,
                             &source.view,
                             group.opacity,
+                            group.invert,
                             CompositeOperation::SourceOver,
                         )?;
                         self.recycle_target(source)?;
@@ -299,6 +308,7 @@ impl Context<'_> {
                 clip: None,
                 mask: None,
                 opacity: 1.,
+                invert: 0.,
                 scissor: Scissor::full(self.size),
                 isolated: true,
             }),
@@ -311,12 +321,13 @@ impl Context<'_> {
         source: &wgpu::TextureView,
         mask: &wgpu::TextureView,
         alpha: f32,
+        invert: f32,
         operation: CompositeOperation,
     ) -> Result<(), GpuError> {
         if self.scissor.empty() {
             return Ok(());
         }
-        self.transient(16)?;
+        self.transient(32)?;
         self.pipelines.composite(
             &self.gpu.device,
             &mut self.encoder,
@@ -326,6 +337,7 @@ impl Context<'_> {
             super::pipeline::CompositeParams {
                 scissor: self.scissor,
                 opacity: alpha,
+                invert,
                 operation,
             },
         );

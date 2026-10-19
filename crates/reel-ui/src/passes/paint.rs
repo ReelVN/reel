@@ -62,6 +62,7 @@ impl LayerCollector {
                     owner,
                     effect_transform: transform,
                     mask_progress: None,
+                    invert: 0.,
                 });
             }
         }
@@ -74,25 +75,26 @@ impl LayerCollector {
         );
     }
 
-    fn push_image_mask(
+    fn push_subtree_composite(
         &mut self,
-        mask: &PaintImageMask,
+        mask: Option<&PaintImageMask>,
+        opacity: f32,
+        invert: f32,
         transform: Affine,
         owner: WidgetId,
     ) -> bool {
-        if mask.progress == 1. && mask.opacity == 1. {
+        let mask = mask.filter(|mask| mask.progress < 1.);
+        if mask.is_none() && opacity == 1. && invert == 0. {
             return false;
         }
         let mut group = Group {
             composite: Composite {
-                alpha: mask.opacity,
+                alpha: opacity,
                 ..Default::default()
             },
             ..Default::default()
         };
-        let mask_progress = if mask.progress == 1. {
-            None
-        } else {
+        let mask_progress = mask.map(|mask| {
             let mut scene = Scene::new();
             let image_transform = Affine::translate(mask.bounds.origin().to_vec2())
                 * Affine::scale_non_uniform(
@@ -107,12 +109,12 @@ impl LayerCollector {
                 mask: id,
                 transform,
             });
-            Some(MaskProgress {
+            MaskProgress {
                 progress: mask.progress,
                 softness: mask.softness,
                 invert: mask.invert,
-            })
-        };
+            }
+        });
         let command = self.current_scene.commands().len();
         self.current_scene.push_group(group);
         self.groups.push(GroupMetadata {
@@ -120,6 +122,7 @@ impl LayerCollector {
             owner,
             effect_transform: transform,
             mask_progress,
+            invert,
         });
         self.record_owner(command, owner, [1.; 4], None, None);
         true
@@ -341,10 +344,14 @@ fn paint_widget(
         border_box_to_layer_transform.pre_translate(state.border_box_translation());
     let has_clip = state.clip_path.is_some();
     let paint_as_external = paint_layer_mode == PaintLayerMode::External;
-    let has_mask_group = !suppress_output
-        && state.subtree_image_mask.as_ref().is_some_and(|mask| {
-            layer_collector.push_image_mask(mask, content_box_to_layer_transform, id)
-        });
+    let has_composite_group = !suppress_output
+        && layer_collector.push_subtree_composite(
+            state.subtree_image_mask.as_deref(),
+            state.subtree_opacity,
+            state.subtree_invert,
+            content_box_to_layer_transform,
+            id,
+        );
 
     if !suppress_output {
         let Some((pre_scene, scene, _)) = &mut scene_cache.get(&id) else {
@@ -477,7 +484,7 @@ fn paint_widget(
         }
     }
 
-    if has_mask_group {
+    if has_composite_group {
         layer_collector.paint(id, |scene| scene.pop_group());
     }
 

@@ -344,6 +344,7 @@ impl Renderer {
                 &output.view,
                 &b.view,
                 1.,
+                0.,
                 CompositeOperation::Crossfade(progress),
             )?;
             output = mixed;

@@ -182,9 +182,9 @@ impl StageBinding {
             ("reel.layout", Shape::Stack),
         ] {
             let version = match shape {
-                Shape::Video => 1,
-                Shape::Image => 5,
-                _ => 3,
+                Shape::Video => 2,
+                Shape::Image => 6,
+                _ => 4,
             };
             registry.register_validator(name, version, shape.validator())?;
         }

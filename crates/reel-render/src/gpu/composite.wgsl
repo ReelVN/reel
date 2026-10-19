@@ -1,4 +1,4 @@
-struct Params { opacity: f32, mode: u32, progress: f32, softness: f32 };
+struct Params { opacity: f32, mode: u32, progress: f32, softness: f32, invert: f32 };
 @group(0) @binding(0) var source: texture_2d<f32>;
 @group(0) @binding(1) var mask: texture_2d<f32>;
 @group(0) @binding(2) var linear_sampler: sampler;
@@ -18,8 +18,19 @@ fn encoded_srgb(linear: vec3<f32>) -> vec3<f32> {
         linear <= vec3(0.0031308),
     );
 }
+fn linear_srgb(encoded: vec3<f32>) -> vec3<f32> {
+    return select(
+        pow((encoded + 0.055) / 1.055, vec3(2.4)),
+        encoded / 12.92,
+        encoded <= vec3(0.04045),
+    );
+}
 @fragment fn fragment(v: Varying) -> @location(0) vec4<f32> {
-    let s = textureSample(source, linear_sampler, v.uv);
+    var s = textureSample(source, linear_sampler, v.uv);
+    if params.invert != 0.0 && s.a > 0.0 {
+        let encoded = encoded_srgb(clamp(s.rgb / s.a, vec3(0.0), vec3(1.0)));
+        s = vec4(linear_srgb(mix(encoded, vec3(1.0) - encoded, params.invert)) * s.a, s.a);
+    }
     let m = textureSample(mask, linear_sampler, v.uv);
     if params.mode == 3u { return mix(s, m, params.progress); }
     var coverage = 1.0;

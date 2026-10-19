@@ -34,6 +34,8 @@ pub(super) enum NodeProperty {
     Height,
     #[aside(name = "opacity", ty = Any, default = 1, validate = validate_opacity, animatable)]
     Opacity,
+    #[aside(name = "invert", ty = Any, default = 0, validate = validate_invert, animatable)]
+    Invert,
     #[aside(name = "visible", ty = Bool, default = true)]
     Visible,
     #[aside(name = "enabled", ty = Bool, default = true)]
@@ -1363,6 +1365,16 @@ fn validate_number(_: &Heap, value: Value) -> Result<(), HeapError> {
 fn validate_dimension(_: &Heap, value: Value) -> Result<(), HeapError> {
     validation(dimension(value))
 }
+fn invert(value: Value) -> Result<f64, AdapterError> {
+    let value = number(value)?;
+    if !(0. ..=1.).contains(&value) {
+        return Err(AdapterError::Input("invert must be between zero and one"));
+    }
+    Ok(value)
+}
+fn validate_invert(_: &Heap, value: Value) -> Result<(), HeapError> {
+    validation(invert(value))
+}
 fn validate_opacity(_: &Heap, value: Value) -> Result<(), HeapError> {
     validation(opacity(value))
 }
@@ -1514,6 +1526,7 @@ fn read_props(
         align_x: opacity(get(NodeProperty::AlignX)?)?,
         align_y: opacity(get(NodeProperty::AlignY)?)?,
         opacity: opacity(get(NodeProperty::Opacity)?)?,
+        invert: invert(get(NodeProperty::Invert)?)?,
         visible: boolean(get(NodeProperty::Visible)?)?,
         enabled: boolean(get(NodeProperty::Enabled)?)?,
         modal: boolean(get(NodeProperty::Modal)?)?,
