@@ -71,7 +71,7 @@ VM 对象的代际身份与实体存储分离：slotmap 保存小型位置记录
 
 活动根、活批队列及完成扫描状态按实际容量计入 VM HeapReservation；不可变批次投影按实际容量及共享所有权开销计入独立的 CPU 输出驻留 BudgetPool，字节额度沿 VM 字节额度派生，不新增作者参数。这是两个独立额度，不把投影驻留计为 VM 总堆，也不把两者当作进程 RSS。投影更换时新旧并存均计费；旧帧及跨线程消费者持有 Arc 与 BudgetTicket，SessionVm 结束不提前退账，最后引用释放后才退款。时钟推进只更新节点时间，不复制批次配置；追加、控制或死亡时才更新批次集合，每次复制与该节点当前活批数成正比，恢复逐批重建同一集合。准入失败保留旧集合，有限活动终点维护沿既有分片预算。绘制仍按实际可见候选工作，不以粒子数固定截断，也不声称同步绘制录制为硬实时。
 
-使用现有会话活动时钟，资源等待/宿主暂停沿播放器现有冻结规则。快照逐批保存配置、发射矩形原点与尺寸、累计时间、暂停、归属及终点计算；捕获前先通过既有舞台维护屏障完成待办维护，节点下一发射序号也保存，恢复不重发已有批次。SessionSnapshot 版本 15，VM 快照和 ASB 不变。GPU 在既有绘制流中把相邻同图片矩形合并为有序 quad 批次，共用顶点/索引上传与纹理绑定；clip/group、非图片绘制和资源变化结束批次，逐图片变换、裁剪来源及 alpha 保留，不新增特效渲染器或帧 ABI。范围为 reel-ui 舞台、reel-engine、reel-player、示例及双语指南；particles native ABI 10、emit ABI 2、粒子节点宿主快照适配器 8，无新增依赖。
+使用现有会话活动时钟，资源等待/宿主暂停沿播放器现有冻结规则。快照逐批保存配置、发射矩形原点与尺寸、累计时间、暂停、归属及终点计算；捕获前先通过既有舞台维护屏障完成待办维护，节点下一发射序号也保存，恢复不重发已有批次。SessionSnapshot 版本 16，VM 快照和 ASB 不变。GPU 在既有绘制流中把相邻同图片矩形合并为有序 quad 批次，共用顶点/索引上传与纹理绑定；clip/group、非图片绘制和资源变化结束批次，逐图片变换、裁剪来源及 alpha 保留，不新增特效渲染器或帧 ABI。范围为 reel-ui 舞台、reel-engine、reel-player、示例及双语指南；particles native ABI 10、emit ABI 2、粒子节点宿主快照适配器 8，无新增依赖。
 
 ### 对白推进状态
 
@@ -273,7 +273,7 @@ GPU 回放在一次帧准备内复用已经完成合成的离屏目标；复用�
 
 节点公开位置 x/y、可选 width/height、opacity、visible、clip、gap、padding、font_size、color 和 background。未指定宽高采用内容布局；位置默认 0，opacity 默认 1，visible 默认 true，clip 默认 false，gap/padding 默认 0，font_size 默认 24，color 默认白色，background 默认透明。row/column 顺序排布，stack 按书写顺序叠放；x/y 是布局位置上的局部偏移。属性赋值修改原节点，既有引用继续指向同一对象。节点身份、属性和子对象引用由真正的宿主对象承载，不能靠复制普通 table 冒充节点。单父关系、节点退休和根对象保活在挂载/会话边界处理。
 
-共同节点的 `stretch: "none" | "x" | "y" | "both"` 默认 none；所选轴不贡献父节点的内容测量，父节点尺寸确定后沿该轴填满父 padding 内的可用尺寸，并覆盖该轴显式 width/height。x/y 和 anchor 仍是布局完成后的局部变换。row/column 流轴上拉伸的子节点作为覆盖层，不消耗流位置或 gap；仅跨轴拉伸仍参与正常流排。scroll 使用视口内框作为拉伸尺寸，该轴不计入滚动内容范围。父布局一次确定尺寸，不通过脚本回写测量值，不引入下一帧反馈。范围为 reel-ui 共同 NodeProps、reel-engine 绑定和快照、reel-player 布局、作者示例和双语指南；共同节点构造 native ABI 本批各加 1，节点宿主快照适配器为 2（image 为 4），SessionSnapshot 为 9，Aside 字节码/ASB 无变化、无新增依赖。验收覆盖内容撑高背景、顺序容器覆盖层、滚动范围、动态修改与存档恢复。
+共同节点的 `stretch: "none" | "x" | "y" | "both"` 默认 none；所选轴不贡献父节点的内容测量，父节点尺寸确定后沿该轴填满父 padding 内的可用尺寸，并覆盖该轴显式 width/height。x/y 和 anchor 仍是布局完成后的局部变换。row/column 流轴上拉伸的子节点作为覆盖层，不消耗流位置或 gap；仅跨轴拉伸仍参与正常流排。scroll 使用视口内框作为拉伸尺寸，该轴不计入滚动内容范围。父布局一次确定尺寸，不通过脚本回写测量值，不引入下一帧反馈。范围为 reel-ui 共同 NodeProps、reel-engine 绑定和快照、reel-player 布局、作者示例和双语指南；共同节点构造 native ABI 本批各加 1，节点宿主快照适配器为 2（image 为 4），SessionSnapshot 为 16，Aside 字节码/ASB 无变化、无新增依赖。验收覆盖内容撑高背景、顺序容器覆盖层、滚动范围、动态修改与存档恢复。
 
 节点变换合同：所有基础节点共同提供 rotation、scale_x/scale_y、anchor_x/anchor_y。rotation 使用顺时针角度，默认 0；缩放默认 1，负数翻转，0 可折叠；锚点按节点布局宽高的比例取值，默认左上角 (0,0)，(0.5,0.5) 表示中心。锚点不限制在节点内部。布局位置加 x/y 表示锚点所在的父坐标位置；变换为 T(layout + x/y) × R(rotation) × S(scale_x,scale_y) × T(-anchor × size)。角度、缩放、锚点均要求有限数值；角度不钳制在一圈内。width/height 与容器排布使用变换前尺寸，变换作用于整棵子树、裁剪和呈现几何。奇异变换沿现有几何规则不参与命中；零缩放不退休节点。
 
@@ -326,7 +326,7 @@ UI 代码最初借用自 Masonry 基线 271a27a6d4a930f7878d404f9014e3c50a3a9b88
 
 ### 视频舞台与媒体活动
 
-本轮范围为 reel-engine 的媒体宿主与 Aside 绑定、reel-player 的单一 MediaPlayer、reel-ui/reel-render 的 YUV 资源投影及双语指南；Aside/Aside 字节码 不变，新 video native ABI 1，媒体和视频节点使用各自快照适配器，SessionSnapshot 为 9。依赖沿视频解码基础所固定的 OpenH264、mp4、Symphonia 与 h264-reader。
+本轮范围为 reel-engine 的媒体宿主与 Aside 绑定、reel-player 的单一 MediaPlayer、reel-ui/reel-render 的 YUV 资源投影及双语指南；Aside/Aside 字节码 不变，新 video native ABI 1，媒体和视频节点使用各自快照适配器，SessionSnapshot 为 16。依赖沿视频解码基础所固定的 OpenH264、mp4、Symphonia 与 h264-reader。
 
 `video(source, ...image 节点属性)` 创建空的普通图片节点，`.play(looping:false, volume:1, start:0, end:null, owner:null)` 启动并返回可等待活动。一个节点同时一个播放，重播停止前一个；节点或显式 owner 退休取消播放，隐藏不暂停。pause/resume/stop 沿共同活动协议，video.seek/position 使用秒。有限视频支持 finish；循环视频须 stop。停止与自然结束保留最后显示帧，节点退休释放资源。存档只保存路径、播放区间、当前位置、暂停与归属，不序列化已解码帧或设备句柄；读档重开资源并重建首个适用帧。
 
@@ -527,7 +527,7 @@ ActivityHandle 本身实现 Awaitable，支持暂停、继续、停止和到终�
 
 复核命令：`cargo test -p reel-engine --lib history` 检查真实源码/ASB、节点退休、同组裁剪与GC强边释放；`cargo test -p reel-engine --release --lib history_retention_cost -- --ignored --nocapture` 分别报告1万/10万行保留37行的会话裁剪、投影同步和GC累计耗时。成本样本直接构造真实历史和VM投影，不包含全量列表索引、排版或渲染；内存数字为VM/Session计账，不是进程RSS。
 
-`game.set_skip(enabled, unread: false, after_choices: false)` 控制快进，`game.reading().skipping/skip_unread/skip_after_choices` 可观察当前状态/策略，`game.dialogue().read` 表示当前整组在本次提交前已读。默认在未读组和选项处停止；unread: true 允许略过未读对白。after_choices: true 在选择处保留模式，仍等待玩家选择，选择后继续按已读策略快进。快进沿原控制流执行，略过文字显现和停留，并让主剧情拥有的运行中有限演出按既有 finish 语义到终值；无限、暂停或节点拥有的活动与独立音频保留原控制。自动阅读与快进互斥。暂停阅读、失焦、挂起或出现模态界面清除快进；键盘/手柄保持通过 input 回调在 pressed 启用、released/cancelled 关闭，不添加固定快捷键。input 发起的快进登记节点身份，退休时清除保持状态；普通按钮与主剧情设置的模式属于会话。set_skip native ABI 为 2，SessionSnapshot 为 9；范围为 reel-engine 阅读状态、宿主接线、示例及双语指南，无新依赖或逐帧分配。复核边界为选择等待/提交、未读、暂停、输入退休和读档清除快进。
+`game.set_skip(enabled, unread: false, after_choices: false)` 控制快进，`game.reading().skipping/skip_unread/skip_after_choices` 可观察当前状态/策略，`game.dialogue().read` 表示当前整组在本次提交前已读。默认在未读组和选项处停止；unread: true 允许略过未读对白。after_choices: true 在选择处保留模式，仍等待玩家选择，选择后继续按已读策略快进。快进沿原控制流执行，略过文字显现和停留，并让主剧情拥有的运行中有限演出按既有 finish 语义到终值；无限、暂停或节点拥有的活动与独立音频保留原控制。自动阅读与快进互斥。暂停阅读、失焦、挂起或出现模态界面清除快进；键盘/手柄保持通过 input 回调在 pressed 启用、released/cancelled 关闭，不添加固定快捷键。input 发起的快进登记节点身份，退休时清除保持状态；普通按钮与主剧情设置的模式属于会话。set_skip native ABI 为 2，SessionSnapshot 为 16；范围为 reel-engine 阅读状态、宿主接线、示例及双语指南，无新依赖或逐帧分配。复核边界为选择等待/提交、未读、暂停、输入退休和读档清除快进。
 
 实际接受的手动对白推进（指针、键盘、手柄或无障碍确认）执行通常的显现/推进，并关闭自动阅读与快进；过期或未接受的输入不改变模式，内部计时推进不触发此规则。选择确认继续保留自动阅读策略。范围为 reel-player 输入交付与现有行为检查，无新依赖、分配或 ABI 变更。
 
@@ -654,7 +654,7 @@ E01 验证剧情等待、作者组件绑定、历史与快进的会话契约。P
 本节规定 reel-ui 的模块与行为边界。UI 结构整合不改变已验收的控件、CPU 帧记录、呈现几何和资源契约；后端与设备仍按各自用例验收。工作区采用 Rust 1.96.0 工具链。
 
 自定义光标（已实现）
-`cursor(children: [], ...)` 是普通舞台容器，挂载父节点拥有其寿命。整个子树不参与指针、焦点或父容器流布局；可用图片、文字、变换、透明度、遮罩和普通活动构成外观。容器局部原点跟随鼠标，x/y 是相对热点的偏移；子 image 的 anchor 或 x/y 定义图像热点。外观使用窗口逻辑坐标，在完整场景之后绘制，祖先相机、变换、裁剪和合成不影响此窗口层；cursor 本身及后代的合成仍沿唯一绘制流和资源预算。最近鼠标输入的接受 hover 路径决定 owner，按压捕获期间使用捕获路径；从深到浅选首个具有可用 cursor 的 owner，同父以树顺序最后者优先。祖先 visibility/enabled、退休和当前模态范围决定资格，旧接受帧不能复活已隐藏或退休的节点。可见空容器隐藏系统光标；visible=false 或移除让回祖先 cursor 或系统光标。离窗、失焦、切换触摸、清空接受视图和会话切换撤销自定义光标；再次真实鼠标输入按当前画面恢复。指针坐标和平台句柄不保存，普通节点、资源和动画沿现有快照恢复，恢复后等待真实指针输入。移动只更新 UI 呈现位置，不回写 VM 坐标、不增加脚本逐帧任务，也不重新排版未变外观。范围为 reel-engine 舞台注册/快照、reel-ui 接受几何/指针/绘制、reel-player 舞台与原生窗口适配、示例和双语指南；无新依赖，新增 cursor native ABI 1，SessionSnapshot 16，VM/ASB 不变。检查入口为 `cargo test --locked -p reel-cli --test author_cursor`、`cargo test --locked -p reel-cli --test author_images cursor_source` 和 `cargo test --locked -p reel-player --features window --lib cursor_`。GPU 像素检查加 `cursor_offscreen -- --ignored --nocapture`；隐藏原生窗口检查为 `actual_cursor_window -- --ignored --nocapture`，需设置真实字体路径 `REEL_SESSION_FONT`。原生检查使用宿主生成的 move/leave 事件与实际 GPU 表面，不代表物理鼠标、触屏或各平台图形体验已经验收。示例：[author_cursor.aside](../examples/author_cursor.aside)。
+`cursor(children: [], ...)` 是普通舞台容器，挂载父节点拥有其寿命。整个子树不参与指针、焦点或父容器流布局；可用图片、文字、变换、透明度、遮罩和普通活动构成外观。容器局部原点跟随鼠标，x/y 是相对热点的偏移；子 image 的 anchor 或 x/y 定义图像热点。外观使用窗口逻辑坐标，在完整场景之后绘制，祖先相机、变换、裁剪和合成不影响此窗口层；cursor 本身及后代的合成仍沿唯一绘制流和资源预算。最近鼠标输入的接受命中路径决定 owner；禁用控件不接收 hover，但仍可选择该路径上可用的祖先光标，按压捕获期间使用捕获路径；从深到浅选首个具有可用 cursor 的 owner，同父以树顺序最后者优先。祖先 visibility/enabled、退休和当前模态范围决定资格，旧接受帧不能复活已隐藏或退休的节点。可见空容器隐藏系统光标；visible=false 或移除让回祖先 cursor 或系统光标。离窗、失焦、切换触摸、清空接受视图和会话切换撤销自定义光标；再次真实鼠标输入按当前画面恢复。指针坐标和平台句柄不保存，普通节点、资源和动画沿现有快照恢复，恢复后等待真实指针输入。移动只更新 UI 呈现位置，不回写 VM 坐标、不增加脚本逐帧任务，也不重新排版未变外观。范围为 reel-engine 舞台注册/快照、reel-ui 接受几何/指针/绘制、reel-player 舞台与原生窗口适配、示例和双语指南；无新依赖，新增 cursor native ABI 1，SessionSnapshot 16，VM/ASB 不变。检查入口为 `cargo test --locked -p reel-cli --test author_cursor`、`cargo test --locked -p reel-cli --test author_images cursor_source` 和 `cargo test --locked -p reel-player --features window --lib cursor_`。GPU 像素检查加 `cursor_offscreen -- --ignored --nocapture`；隐藏原生窗口检查为 `actual_cursor_window -- --ignored --nocapture`，需设置真实字体路径 `REEL_SESSION_FONT`。原生检查使用宿主生成的 move/leave 事件与实际 GPU 表面，不代表物理鼠标、触屏或各平台图形体验已经验收。示例：[author_cursor.aside](../examples/author_cursor.aside)。
 
 呈现几何与上下文
 reel-ui::app/core 导出几何、选择输入源并分发事件；bridge 管理 FrameId、surface epoch、呈现接受门和 NodeId↔WidgetId 的代际映射，沿用 reel-core 的共享预算。输入源明确为 Live 或 Presented，Presented 内可尚无接受视图。Reel 使用 Presented；首帧前几何命中为空，宿主关闭/挂起等平台命令照常处理。

@@ -588,3 +588,48 @@ fn cursor_does_not_contribute_to_natural_flow_size() {
         Size::new(40., 20.)
     );
 }
+
+#[test]
+fn cursor_deepest_owner_wins_and_disabled_owner_yields_to_ancestor() {
+    let (mut f, owner, cursor, _, visibility) = fixture();
+    let ancestor = f
+        .stage
+        .create(NodeKind::Cursor, NodeProps::default(), vec![])
+        .unwrap();
+    f.stage.add(f.root, ancestor, 2).unwrap();
+    let first = f.record();
+    f.accept(&first);
+    drop(first);
+    f.ui.handle_pointer(
+        &mut f.bridge,
+        pointer(PointerType::Mouse, (110., 90.), None),
+    )
+    .unwrap();
+    let active = f.record();
+    f.accept(&active);
+    assert_eq!(
+        active.plan().layers.last().unwrap().widget_id,
+        f.layouts()[&cursor].0
+    );
+    drop(active);
+    f.edit(owner, |props| props.enabled = false);
+    let disabled = f.record();
+    f.accept(&disabled);
+    drop(disabled);
+    let fallback = f.record();
+    f.accept(&fallback);
+    assert_eq!(
+        fallback.plan().layers.last().unwrap().widget_id,
+        f.layouts()[&ancestor].0
+    );
+    drop(fallback);
+    assert_eq!(
+        visibility.borrow().last(),
+        Some(&false),
+        "empty ancestor intentionally keeps native cursor hidden"
+    );
+    f.stage.remove(ancestor).unwrap();
+    let removed = f.record();
+    f.accept(&removed);
+    assert_eq!(visibility.borrow().last(), Some(&true));
+}

@@ -1165,25 +1165,33 @@ mod tests {
                 let font = std::env::var("REEL_SESSION_FONT")
                     .expect("set REEL_SESSION_FONT to a real font")
                     .replace('\\', "/");
-                let source = r##"fn main() {stage.replace(stack(width:640,height:420) {
-                    cursor(width:20,height:20) {stack(width:20,height:20,background:"#ff0000");};
-                });}"##
-                    .replace(
-                        "fn main() {",
-                        &format!("fn main() {{game.configure(fonts:[{font:?}]);"),
-                    );
+                let assets = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../target/reel-artifacts/cursor-native");
+                std::fs::create_dir_all(&assets).unwrap();
+                std::fs::copy(&font, assets.join("body.ttf")).unwrap();
+                let options = StoryWindowOptions {
+                    assets: crate::assets::AssetOptions {
+                        root: assets,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+                let source = r##"fn main() {game.configure(fonts:["body.ttf"]);
+                    stage.replace(stack(width:640,height:420) {
+                        cursor(width:20,height:20) {stack(width:20,height:20,background:"#ff0000");};
+                    });}"##;
                 let driver = AsideSessionUi::from_source(
                     Session::new(SessionId(1), Epoch(1)).unwrap(),
-                    &source,
+                    source,
                     "main",
                     1,
                     "main",
                     "en",
                     VmLimits::default(),
                 )
-                .unwrap();
-                let mut state =
-                    State::new_story(event_loop, 1, driver, StoryWindowOptions::default()).unwrap();
+                .unwrap()
+                .with_asset_options(options.assets.clone());
+                let mut state = State::new_story(event_loop, 1, driver, options).unwrap();
                 state.first_frame_pending = false; // This host check never shows or moves a user window.
                 let deadline = Instant::now() + std::time::Duration::from_secs(15);
                 loop {

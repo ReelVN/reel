@@ -1011,6 +1011,14 @@ fn transition_contact_geometry(
             next_hover.clear();
         }
     }
+    if root.global_state.pointer.info.pointer_type == crate::core::PointerType::Mouse {
+        root.global_state.cursor.target =
+            if root.global_state.pointer.pointer_capture_target.is_some() {
+                next_active.first().copied()
+            } else {
+                next_hover.first().copied()
+            };
+    }
     if next_hover
         .first()
         .is_some_and(|id| root.widget_arena.get_state(*id).is_disabled)

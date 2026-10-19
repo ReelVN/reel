@@ -9,6 +9,8 @@ use kurbo::Point;
 #[derive(Default)]
 pub(crate) struct CursorState {
     pub(crate) mouse_active: bool,
+    // Accepted mouse hit/capture, before disabled controls discard hover notifications.
+    pub(crate) target: Option<WidgetId>,
     pub(crate) overlay: Option<(WidgetId, Point)>,
 }
 
@@ -61,14 +63,21 @@ impl RenderRoot {
                 .find(|pointer| pointer.info.pointer_type == PointerType::Mouse)?;
             let physical = mouse.last_pointer_physical?;
             let logical = physical.to_logical(view.scale(self.global_state.scale_factor));
-            let path = if mouse.pointer_capture_target.is_some() {
-                &mouse.active_path
-            } else {
-                &mouse.hovered_path
+            let mut owner = self.global_state.cursor.target;
+            let cursor = loop {
+                let id = owner?;
+                if let Some(cursor) = self.cursor_child(id, view) {
+                    break cursor;
+                }
+                // Follow only this accepted target's ancestry, with no hit-test or allocation.
+                owner = match view {
+                    GeometryView::Presented(Some(view)) => {
+                        view.get(id)?.parent.map(|index| view.records()[index].id)
+                    }
+                    GeometryView::Presented(None) => None,
+                    GeometryView::Live => self.widget_arena.parent_of(id),
+                };
             };
-            let cursor = path
-                .iter()
-                .find_map(|&owner| self.cursor_child(owner, view))?;
             Some((cursor, Point::new(logical.x, logical.y)))
         })();
         let previous = self.global_state.cursor.overlay;
