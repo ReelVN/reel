@@ -555,3 +555,59 @@ fn event_callbacks_adapt_zero_parameters_bound_receivers_defaults_and_rest() {
         assert_eq!(vm.activities_poll_after(), None);
     }
 }
+
+#[test]
+fn pending_pointer_moves_coalesce_across_gc_with_and_without_event_arguments() {
+    use reel_ui::stage::{NodePointer, PointerPhase};
+    for handler in [
+        "|| { output.x += 1; }",
+        "|event| { output.x += 1; output.y = event.x; let initial = event.x; await run(delay(1)); if event.x != initial { throw \"started argument changed\"; } output.width = event.x; }",
+    ] {
+        for encoded in [false, true] {
+            let code = format!(
+                r#"fn opening() {{
+                let output = text("pointer");
+                stage.replace(column() {{ output; input(on_pointer: {handler}); }});
+                narrator("pointer callbacks");
+            }}"#
+            );
+            let (mut session, mut vm) = models::prepared(&code, encoded);
+            pump(&mut vm, &mut session);
+            let input = vm
+                .stage()
+                .nodes()
+                .find(|n| matches!(n.kind, NodeKind::Input { .. }))
+                .unwrap()
+                .id;
+            let moved = |x| NodePointer {
+                node: input,
+                phase: PointerPhase::Moved,
+                position: reel_ui::kurbo::Point::new(x, 0.),
+            };
+            assert!(vm.input_pointer(&mut session, &moved(10.)).unwrap());
+            collect(&mut vm);
+            assert!(vm.input_pointer(&mut session, &moved(20.)).unwrap());
+            pump(&mut vm, &mut session);
+            assert_eq!(text_x(&vm, "pointer"), 1., "pending moves share one task");
+            assert!(vm.input_pointer(&mut session, &moved(30.)).unwrap());
+            collect(&mut vm);
+            pump(&mut vm, &mut session);
+            assert_eq!(
+                text_x(&vm, "pointer"),
+                2.,
+                "started arguments stay immutable"
+            );
+            super::activities::advance_clock(&mut vm, &session, 1., 1);
+            pump(&mut vm, &mut session);
+            if handler.starts_with("|event|") {
+                let output = vm
+                    .stage()
+                    .nodes()
+                    .find(|n| n.kind == NodeKind::Text("pointer".into()))
+                    .unwrap();
+                assert_eq!(output.props.y, 30.);
+                assert_eq!(output.props.width, Some(30.));
+            }
+        }
+    }
+}
