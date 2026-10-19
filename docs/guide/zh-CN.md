@@ -1290,6 +1290,13 @@ Windows 播放器向系统提交双声道音频，默认设备配置为多声道
 
 完整例子：[author_audio.aside](../../examples/author_audio.aside)，从 examples 资源根运行，与其他作者示例使用相同字体配置。示例 chime.wav 是仓库自制的短正弦提示音。
 
+项目可提供自行断言并结束的 Aside 检查入口，通过下面的命令分别运行源码和 ASB。宿主使用项目资源根、独立临时存档、真实 CPU 布局与接受帧，并默认启用真实音频解码和混音；48 kHz 双声道 PCM 按单调经过时间离线消费，不发声。每轮最多 90 秒，不自动点击、选择或快进。音频等待、位置、队列和恢复可在此检查，实机音画同步仍需在设备上验收。
+
+```powershell
+$env:REEL_SCENARIO = "path/to/project/check.aside"
+cargo test -p reel-cli --test project_scenarios external_project_scenario -- --ignored --nocapture
+```
+
 ```powershell
 ./target/debug/reel.exe check examples/author_audio.aside
 ./target/debug/reel.exe dev examples/author_audio.aside --assets target/reel-artifacts/author-assets
