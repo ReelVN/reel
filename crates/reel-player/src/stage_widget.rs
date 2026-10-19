@@ -10,7 +10,7 @@ use reel_ui::{
     resources::{ResourceData, ResourceLease},
     stage::{
         ControlValue, InteractionState, NodeChange, NodeClick, NodeEvent, NodeId, NodeInteraction,
-        NodeKind, NodeText, Stage, StageNode,
+        NodeKind, NodeProps, NodeRevision, NodeText, Stage, StageIdentity,
     },
     widgets::{
         ButtonBehavior, Image, Label, ScrollAxis, ScrollState, Slider, SliderMoved, TextInput,
@@ -18,7 +18,10 @@ use reel_ui::{
     },
 };
 use std::collections::BTreeMap;
+use std::sync::Arc;
 mod input;
+#[cfg(test)]
+mod projection_tests;
 mod selection;
 #[cfg(test)]
 mod tests;
@@ -30,38 +33,73 @@ pub(crate) struct StageView {
     pub button_revision: u64,
     pub presentation_request: u64,
     pub feedback: bool,
-    root: Option<SceneNode>,
+    identity: Option<StageIdentity>,
+    root: Option<Arc<SceneNode>>,
     pub resources: Vec<ResourceLease>,
+}
+#[derive(Clone, PartialEq)]
+struct SceneProperties {
+    id: NodeId,
+    kind: NodeKind,
+    props: NodeProps,
+}
+#[derive(Clone, Copy, Default)]
+struct SceneSummary {
+    image: bool,
+    button: bool,
+    input: bool,
+    modal: Option<NodeId>,
 }
 #[derive(Clone)]
 struct SceneNode {
-    node: StageNode,
-    children: Vec<SceneNode>,
+    node: Arc<SceneProperties>,
+    revision: NodeRevision,
+    children: Arc<[Arc<SceneNode>]>,
+    children_summary: SceneSummary,
+    image_branch: bool,
+    button_branch: bool,
+    input_branch: bool,
+    modal: Option<NodeId>,
+    images: SceneImages,
+}
+#[derive(Clone, Default)]
+struct SceneImages {
     image: Option<ImageData>,
     image_resource: Option<ResourceLease>,
     mask_image: Option<ImageData>,
     tiled_size: Option<Size>,
     tiles: Vec<reel_ui::widgets::ImageTile>,
 }
-impl SceneNode {
-    fn clear_images(&mut self) {
-        self.image = None;
-        self.image_resource = None;
-        self.mask_image = None;
-        self.tiled_size = None;
-        self.tiles.clear();
+impl PartialEq for SceneImages {
+    fn eq(&self, other: &Self) -> bool {
+        self.image.as_ref().map(|i| i.data.id()) == other.image.as_ref().map(|i| i.data.id())
+            && self.image_resource.as_ref().map(ResourceLease::handle)
+                == other.image_resource.as_ref().map(ResourceLease::handle)
+            && self.mask_image.as_ref().map(|i| i.data.id())
+                == other.mask_image.as_ref().map(|i| i.data.id())
+            && self.tiled_size == other.tiled_size
+            && self.tiles.len() == other.tiles.len()
+            && self
+                .tiles
+                .iter()
+                .zip(&other.tiles)
+                .all(|(a, b)| a.image == b.image && a.transform == b.transform && a.clip == b.clip)
     }
+}
+impl SceneNode {
     fn image_size(&self) -> Size {
-        self.image_resource
+        self.images
+            .image_resource
             .as_ref()
             .and_then(|r| r.data().image_size())
             .map(|[w, h]| Size::new(w.into(), h.into()))
             .or_else(|| {
-                self.image
+                self.images
+                    .image
                     .as_ref()
                     .map(|i| Size::new(i.width.into(), i.height.into()))
             })
-            .or(self.tiled_size)
+            .or(self.images.tiled_size)
             .unwrap_or(Size::ZERO)
     }
 }
@@ -71,50 +109,140 @@ pub(crate) struct ImageRequests {
     pub encoded: BTreeMap<String, std::sync::Arc<[u8]>>,
 }
 impl StageView {
+    #[cfg(test)]
     pub fn capture(stage: &Stage) -> Self {
-        fn capture_node(stage: &Stage, id: NodeId) -> SceneNode {
-            let node = stage.node(id).expect("mounted stage node").clone();
-            let children = node
-                .children
-                .iter()
-                .map(|id| capture_node(stage, *id))
-                .collect();
-            SceneNode {
-                node,
-                children,
-                image: None,
-                image_resource: None,
-                mask_image: None,
-                tiled_size: None,
-                tiles: Vec::new(),
+        Self::update(stage, None)
+    }
+    pub fn same_stage(&self, other: &Self) -> bool {
+        self.identity == other.identity
+    }
+    pub fn matches(&self, stage: &Stage) -> bool {
+        self.identity.as_ref() == Some(stage.identity()) && self.revision == stage.revision()
+    }
+    pub fn update(stage: &Stage, previous: Option<&Self>) -> Self {
+        fn capture_node(stage: &Stage, id: NodeId, old: Option<&Arc<SceneNode>>) -> Arc<SceneNode> {
+            let revision = stage.node_revision(id).expect("mounted stage node");
+            let old = old.filter(|old| old.node.id == id);
+            if let Some(old) = old
+                && old.revision == revision
+            {
+                return old.clone();
             }
+            let node = if let Some(old) = old
+                && old.revision.properties == revision.properties
+            {
+                old.node.clone()
+            } else {
+                let source = stage.node(id).expect("mounted stage node");
+                Arc::new(SceneProperties {
+                    id,
+                    kind: source.kind.clone(),
+                    props: source.props.clone(),
+                })
+            };
+            let children = if let Some(old) = old
+                && old.revision.children == revision.children
+            {
+                old.children.clone()
+            } else {
+                let source = stage.node(id).expect("mounted stage node");
+                let reordered = old
+                    .filter(|old| {
+                        !old.children
+                            .iter()
+                            .map(|n| n.node.id)
+                            .eq(source.children.iter().copied())
+                    })
+                    .map(|old| {
+                        old.children
+                            .iter()
+                            .map(|n| (n.node.id, n))
+                            .collect::<BTreeMap<_, _>>()
+                    });
+                source
+                    .children
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &id)| {
+                        let previous = match &reordered {
+                            Some(children) => children.get(&id).copied(),
+                            None => old.and_then(|old| old.children.get(index)),
+                        };
+                        capture_node(stage, id, previous)
+                    })
+                    .collect::<Arc<[_]>>()
+            };
+            let children_summary = if let Some(old) = old
+                && Arc::ptr_eq(&old.children, &children)
+            {
+                old.children_summary
+            } else {
+                children
+                    .iter()
+                    .fold(SceneSummary::default(), |mut summary, child| {
+                        summary.image |= child.image_branch;
+                        summary.button |= child.button_branch;
+                        summary.input |= child.input_branch;
+                        summary.modal = child.modal.or(summary.modal);
+                        summary
+                    })
+            };
+            let image_branch = matches!(node.kind, NodeKind::Image { .. } | NodeKind::Particles(_))
+                || node.props.mask.is_some()
+                || children_summary.image;
+            let button_branch =
+                matches!(node.kind, NodeKind::Button { .. }) || children_summary.button;
+            let input_branch =
+                matches!(node.kind, NodeKind::Input { .. }) || children_summary.input;
+            let modal = node
+                .props
+                .visible
+                .then(|| {
+                    children_summary
+                        .modal
+                        .or_else(|| node.props.modal.then_some(id))
+                })
+                .flatten();
+            let mut images = old.map(|old| old.images.clone()).unwrap_or_default();
+            if !matches!(node.kind, NodeKind::Image { .. } | NodeKind::Particles(_)) {
+                images.image = None;
+                images.image_resource = None;
+                images.tiled_size = None;
+                images.tiles.clear();
+            }
+            if node.props.mask.is_none() {
+                images.mask_image = None;
+            }
+            Arc::new(SceneNode {
+                node,
+                revision,
+                children,
+                children_summary,
+                image_branch,
+                button_branch,
+                input_branch,
+                modal,
+                images,
+            })
         }
+        let previous = previous.filter(|view| view.identity.as_ref() == Some(stage.identity()));
         Self {
             revision: stage.revision(),
+            identity: Some(stage.identity().clone()),
             button_revision: 0,
             presentation_request: 0,
             feedback: false,
-            root: stage.root().map(|id| capture_node(stage, id)),
+            root: stage
+                .root()
+                .map(|id| capture_node(stage, id, previous.and_then(|v| v.root.as_ref()))),
             resources: Vec::new(),
         }
     }
     pub fn input_scope(&self) -> (Option<NodeId>, Option<NodeId>) {
-        fn visit(node: &SceneNode, modal: &mut Option<NodeId>) {
-            if !node.node.props.visible {
-                return;
-            }
-            if node.node.props.modal {
-                *modal = Some(node.node.id);
-            }
-            for child in &node.children {
-                visit(child, modal);
-            }
-        }
-        let mut modal = None;
-        if let Some(root) = &self.root {
-            visit(root, &mut modal);
-        }
-        (self.root.as_ref().map(|root| root.node.id), modal)
+        (
+            self.root.as_ref().map(|root| root.node.id),
+            self.root.as_ref().and_then(|root| root.modal),
+        )
     }
     #[cfg(feature = "window")]
     pub fn has_root(&self) -> bool {
@@ -123,10 +251,13 @@ impl StageView {
     /// Compare button content only. Animated geometry uses accepted hit testing;
     /// changes outside a control cannot invalidate its activation.
     pub fn button_changes(&self, previous: Option<&Self>, feedback: bool) -> Vec<(NodeId, bool)> {
-        fn buttons(view: &StageView) -> BTreeMap<NodeId, &SceneNode> {
+        fn buttons(view: &StageView) -> BTreeMap<NodeId, &Arc<SceneNode>> {
             let mut found = BTreeMap::new();
             let mut pending: Vec<_> = view.root.iter().collect();
             while let Some(node) = pending.pop() {
+                if !node.button_branch {
+                    continue;
+                }
                 if matches!(node.node.kind, NodeKind::Button { .. }) {
                     found.insert(node.node.id, node);
                 }
@@ -134,9 +265,15 @@ impl StageView {
             }
             found
         }
-        fn same_content(a: &SceneNode, b: &SceneNode) -> bool {
+        fn same_content(a: &Arc<SceneNode>, b: &Arc<SceneNode>) -> bool {
+            if Arc::ptr_eq(a, b) {
+                return true;
+            }
             let mut pending = vec![(a, b)];
             while let Some((a, b)) = pending.pop() {
+                if Arc::ptr_eq(a, b) {
+                    continue;
+                }
                 if a.node.id != b.node.id
                     || a.node.kind != b.node.kind
                     || a.node.props.visible != b.node.props.visible
@@ -145,11 +282,14 @@ impl StageView {
                 {
                     return false;
                 }
-                pending.extend(a.children.iter().zip(&b.children));
+                pending.extend(a.children.iter().zip(b.children.iter()));
             }
             true
         }
-        let previous = previous.map(buttons).unwrap_or_default();
+        let previous = previous
+            .filter(|old| old.identity == self.identity)
+            .map(buttons)
+            .unwrap_or_default();
         buttons(self)
             .into_iter()
             .map(|(id, node)| {
@@ -166,6 +306,9 @@ impl StageView {
         let mut encoded = BTreeMap::new();
         let mut pending: Vec<_> = self.root.iter().map(|node| (node, true)).collect();
         while let Some((node, parent_visible)) = pending.pop() {
+            if !node.image_branch {
+                continue;
+            }
             let visible = parent_visible && node.node.props.visible;
             pending.extend(node.children.iter().map(|child| (child, visible)));
             if let Some((source, _)) = image_source(&node.node.kind) {
@@ -233,26 +376,23 @@ impl StageView {
     pub fn resolve_images(&mut self, images: &BTreeMap<String, ResourceLease>) {
         self.resources.clear();
         let mut handles = std::collections::BTreeSet::new();
-        let mut pending: Vec<_> = self.root.iter_mut().map(|node| (node, true)).collect();
-        while let Some((node, parent_visible)) = pending.pop() {
-            let visible = parent_visible && node.node.props.visible;
-            node.clear_images();
+        resolve_image_nodes(&mut self.root, |node, visible| {
+            let mut resolved = SceneImages::default();
             if !visible {
-                pending.extend(node.children.iter_mut().map(|child| (child, false)));
-                continue;
+                return resolved;
             }
             if let Some((source, _)) = image_source(&node.node.kind) {
                 let lease = &images[source];
                 let ResourceData::Image { image, .. } = lease.data() else {
                     unreachable!()
                 };
-                node.image = Some(image.clone());
+                resolved.image = Some(image.clone());
                 if handles.insert(lease.handle()) {
                     self.resources.push(lease.clone());
                 }
             }
             if let Some(lease) = image_resource(&node.node.kind) {
-                node.image_resource = Some(lease.clone());
+                resolved.image_resource = Some(lease.clone());
                 if handles.insert(lease.handle()) {
                     self.resources.push(lease.clone());
                 }
@@ -262,47 +402,38 @@ impl StageView {
                 let ResourceData::Image { image, .. } = lease.data() else {
                     unreachable!()
                 };
-                node.mask_image = Some(image.clone());
+                resolved.mask_image = Some(image.clone());
                 if handles.insert(lease.handle()) {
                     self.resources.push(lease.clone());
                 }
             }
-            pending.extend(node.children.iter_mut().map(|child| (child, true)));
-        }
+            resolved
+        });
     }
     pub fn resolve_metadata(&mut self, images: &crate::images::Images) {
         self.resources.clear();
         let mut resources = std::collections::BTreeSet::new();
-        let mut pending: Vec<_> = self.root.iter_mut().map(|node| (node, true)).collect();
-        while let Some((node, parent_visible)) = pending.pop() {
-            let visible = parent_visible && node.node.props.visible;
-            node.clear_images();
+        resolve_image_nodes(&mut self.root, |node, visible| {
+            let mut resolved = SceneImages::default();
             if !visible {
-                pending.extend(node.children.iter_mut().map(|child| (child, false)));
-                continue;
+                return resolved;
             }
             if let Some(lease) = image_resource(&node.node.kind) {
-                node.image_resource = Some(lease.clone());
-                let NodeKind::Image { source, .. } = &node.node.kind else {
-                    unreachable!()
-                };
-                if resources.insert(source.key().to_owned()) {
+                resolved.image_resource = Some(lease.clone());
+                if resources.insert(lease.handle()) {
                     self.resources.push(lease.clone());
                 }
             }
             if let Some((source, _)) = image_source(&node.node.kind) {
                 if let Some(manifest) = images.manifests.get(source) {
-                    node.image = None;
-                    node.tiled_size =
+                    resolved.tiled_size =
                         Some(Size::new(manifest.width.into(), manifest.height.into()));
-                    node.tiles.clear();
                 } else if let Some(lease) = images.loaded.get(source) {
                     let ResourceData::Image { image, .. } = lease.data() else {
                         unreachable!()
                     };
-                    node.image = Some(image.clone());
-                    node.tiled_size = None;
-                    if resources.insert(source.to_owned()) {
+                    resolved.image = Some(image.clone());
+                    if resources.insert(lease.handle()) {
                         self.resources.push(lease.clone());
                     }
                 }
@@ -313,31 +444,31 @@ impl StageView {
                 let ResourceData::Image { image, .. } = lease.data() else {
                     unreachable!()
                 };
-                node.mask_image = Some(image.clone());
-                if resources.insert(source.to_string()) {
+                resolved.mask_image = Some(image.clone());
+                if resources.insert(lease.handle()) {
                     self.resources.push(lease.clone());
                 }
             }
-            pending.extend(node.children.iter_mut().map(|child| (child, true)));
-        }
+            resolved
+        });
     }
     pub fn resolve_tiles(
         &mut self,
         images: &crate::images::Images,
         regions: &BTreeMap<NodeId, crate::images::ImageRegion>,
     ) {
-        let mut pending: Vec<_> = self.root.iter_mut().collect();
         let mut resources = std::collections::BTreeSet::new();
-        while let Some(node) = pending.pop() {
-            if !node.node.props.visible {
-                continue;
+        resolve_image_nodes(&mut self.root, |node, visible| {
+            if !visible {
+                return SceneImages::default();
             }
+            let mut resolved = node.images.clone();
             if let Some(region) = regions.get(&node.node.id) {
-                node.tiles = images.tile_paint(region);
+                resolved.tiles = images.tile_paint(region);
                 resources.extend(region.tiles.iter().cloned());
             }
-            pending.extend(node.children.iter_mut());
-        }
+            resolved
+        });
         let mut handles: std::collections::BTreeSet<_> =
             self.resources.iter().map(ResourceLease::handle).collect();
         self.resources.extend(
@@ -347,6 +478,53 @@ impl StageView {
                 .filter(|lease| handles.insert(lease.handle()))
                 .cloned(),
         );
+    }
+}
+
+/// Resource changes use the same persistent tree but remain independent of script revisions.
+fn resolve_image_nodes(
+    root: &mut Option<Arc<SceneNode>>,
+    mut resolve: impl FnMut(&SceneNode, bool) -> SceneImages,
+) {
+    fn visit(
+        node: &Arc<SceneNode>,
+        parent_visible: bool,
+        resolve: &mut impl FnMut(&SceneNode, bool) -> SceneImages,
+    ) -> Arc<SceneNode> {
+        if !node.image_branch {
+            return node.clone();
+        }
+        let visible = parent_visible && node.node.props.visible;
+        let images = resolve(node, visible);
+        let mut children = None;
+        for (index, child) in node.children.iter().enumerate() {
+            if !child.image_branch {
+                continue;
+            }
+            let next = visit(child, visible, resolve);
+            if !Arc::ptr_eq(child, &next) {
+                children.get_or_insert_with(|| node.children.to_vec())[index] = next;
+            }
+        }
+        if images == node.images && children.is_none() {
+            return node.clone();
+        }
+        Arc::new(SceneNode {
+            node: node.node.clone(),
+            revision: node.revision,
+            children: children
+                .map(Arc::from)
+                .unwrap_or_else(|| node.children.clone()),
+            children_summary: node.children_summary,
+            image_branch: node.image_branch,
+            button_branch: node.button_branch,
+            input_branch: node.input_branch,
+            modal: node.modal,
+            images,
+        })
+    }
+    if let Some(node) = root {
+        *node = visit(node, true, &mut resolve);
     }
 }
 
@@ -373,6 +551,7 @@ fn image_resource(kind: &NodeKind) -> Option<&ResourceLease> {
 pub(crate) struct StageWidget {
     root: Option<WidgetPod<SceneWidget>>,
     root_id: Option<NodeId>,
+    identity: Option<StageIdentity>,
     root_props: reel_ui::stage::NodeProps,
 }
 impl StageWidget {
@@ -383,7 +562,7 @@ impl StageWidget {
             this: &mut WidgetMut<'_, SceneWidget>,
             out: &mut Vec<(NodeId, crate::images::tiles::ImageGeometry)>,
         ) {
-            if !this.widget.node.props.visible {
+            if !this.widget.node.props.visible || !this.widget.projection.image_branch {
                 return;
             }
             if let (Some(image), NodeKind::Image { source, fit, .. }) =
@@ -417,13 +596,15 @@ impl StageWidget {
         Self {
             root: root.map(|node| WidgetPod::new(SceneWidget::new(node))),
             root_id: root.map(|node| node.node.id),
+            identity: view.and_then(|view| view.identity.clone()),
             root_props: root.map(|node| node.node.props.clone()).unwrap_or_default(),
         }
     }
     pub fn input_fallback(&self, root: &reel_ui::app::RenderRoot) -> Option<WidgetId> {
         fn visit(root: &reel_ui::app::RenderRoot, id: WidgetId) -> Option<WidgetId> {
             let node = root.get_widget(id)?.downcast::<SceneWidget>()?;
-            if !node.node.props.visible || !node.node.props.enabled {
+            if !node.projection.input_branch || !node.node.props.visible || !node.node.props.enabled
+            {
                 return None;
             }
             node.children
@@ -436,7 +617,7 @@ impl StageWidget {
     }
     pub fn sync(this: &mut WidgetMut<'_, Self>, view: &StageView) {
         let id = view.root.as_ref().map(|node| node.node.id);
-        if id != this.widget.root_id {
+        if id != this.widget.root_id || this.widget.identity != view.identity {
             if let Some(root) = this.widget.root.take() {
                 this.ctx.remove_child(root);
             }
@@ -445,6 +626,7 @@ impl StageWidget {
                 .as_ref()
                 .map(|node| WidgetPod::new(SceneWidget::new(node)));
             this.widget.root_id = id;
+            this.widget.identity = view.identity.clone();
             this.ctx.children_changed();
         } else if let (Some(pod), Some(node)) = (&mut this.widget.root, &view.root)
             && let Some(mut child) = this.ctx.get_mut(pod)
@@ -513,7 +695,9 @@ impl Widget for StageWidget {
 }
 
 struct SceneWidget {
-    node: StageNode,
+    node: Arc<SceneProperties>,
+    projection: Arc<SceneNode>,
+    sync_dirty: bool,
     button: ButtonBehavior,
     interaction: InteractionState,
     input: Option<NodeInput>,
@@ -524,7 +708,7 @@ struct SceneWidget {
     image_size: Size,
     particle_image: Option<ImageData>,
     mask_image: Option<ImageData>,
-    children: Vec<(StageNode, WidgetPod<SceneWidget>)>,
+    children: Vec<(Arc<SceneProperties>, WidgetPod<SceneWidget>)>,
     size: Size,
     scroll: ScrollState,
     scroll_request: Option<Vec2>,
@@ -532,6 +716,8 @@ struct SceneWidget {
     scroll_baseline: Vec2,
     #[cfg(test)]
     layouts: usize,
+    #[cfg(test)]
+    syncs: usize,
 }
 fn color(value: [u8; 4]) -> Color {
     Color::from_rgba8(value[0], value[1], value[2], value[3])
@@ -562,17 +748,20 @@ impl SceneWidget {
         else {
             return None;
         };
-        view.image
+        view.images
+            .image
             .as_ref()
             .map(|image| Image::new(image.clone()))
             .or_else(|| {
-                view.image_resource
+                view.images
+                    .image_resource
                     .as_ref()
                     .map(|lease| Image::from_resource(lease.clone()))
             })
             .or_else(|| {
-                view.tiled_size
-                    .map(|size| Image::tiled(size, view.tiles.clone()))
+                view.images
+                    .tiled_size
+                    .map(|size| Image::tiled(size, view.images.tiles.clone()))
             })
             .map(|image| {
                 NewWidget::new(
@@ -600,7 +789,7 @@ impl SceneWidget {
             NodeKind::Button { .. } | NodeKind::Toggle { .. } | NodeKind::Radio { .. }
         )
     }
-    fn reveal_range(node: &StageNode) -> std::ops::Range<usize> {
+    fn reveal_range(node: &SceneProperties) -> std::ops::Range<usize> {
         let text = Self::caption(&node.kind).unwrap_or("");
         let mut end = node.props.reveal.unwrap_or(text.len()).min(text.len());
         while !text.is_char_boundary(end) {
@@ -608,7 +797,7 @@ impl SceneWidget {
         }
         0..end
     }
-    fn new(view: &SceneNode) -> Self {
+    fn new(view: &Arc<SceneNode>) -> Self {
         let label = match &view.node.kind {
             NodeKind::Text(_)
             | NodeKind::Button { .. }
@@ -644,6 +833,8 @@ impl SceneWidget {
         };
         Self {
             node: view.node.clone(),
+            projection: view.clone(),
+            sync_dirty: false,
             button: ButtonBehavior::default(),
             interaction: InteractionState::default(),
             input: match &view.node.kind {
@@ -695,9 +886,9 @@ impl SceneWidget {
                 None
             },
             particle_image: matches!(view.node.kind, NodeKind::Particles(_))
-                .then(|| view.image.clone())
+                .then(|| view.images.image.clone())
                 .flatten(),
-            mask_image: view.mask_image.clone(),
+            mask_image: view.images.mask_image.clone(),
             image: Self::image_widget(view),
             image_size: view.image_size(),
             children: view
@@ -718,13 +909,22 @@ impl SceneWidget {
             },
             #[cfg(test)]
             layouts: 0,
+            #[cfg(test)]
+            syncs: 0,
         }
     }
-    fn sync(this: &mut WidgetMut<'_, Self>, view: &SceneNode, feedback: bool) -> bool {
-        if this.widget.mask_image.as_ref().map(|image| image.data.id())
-            != view.mask_image.as_ref().map(|image| image.data.id())
+    fn sync(this: &mut WidgetMut<'_, Self>, view: &Arc<SceneNode>, feedback: bool) -> bool {
+        if !this.widget.sync_dirty && Arc::ptr_eq(&this.widget.projection, view) {
+            return false;
+        }
+        #[cfg(test)]
         {
-            this.widget.mask_image = view.mask_image.clone();
+            this.widget.syncs += 1;
+        }
+        if this.widget.mask_image.as_ref().map(|image| image.data.id())
+            != view.images.mask_image.as_ref().map(|image| image.data.id())
+        {
+            this.widget.mask_image = view.images.mask_image.clone();
             this.ctx.request_render();
         }
         if matches!(view.node.kind, NodeKind::Particles(_)) {
@@ -733,14 +933,32 @@ impl SceneWidget {
                 .particle_image
                 .as_ref()
                 .map(|i| (i.width, i.height))
-                != view.image.as_ref().map(|i| (i.width, i.height))
+                != view.images.image.as_ref().map(|i| (i.width, i.height))
             {
                 this.ctx.request_layout();
             }
-            this.widget.particle_image = view.image.clone();
+            if this
+                .widget
+                .particle_image
+                .as_ref()
+                .map(|image| image.data.id())
+                != view.images.image.as_ref().map(|image| image.data.id())
+            {
+                this.ctx.request_render();
+            }
+            this.widget.particle_image = view.images.image.clone();
         }
+        let children_changed = this.widget.sync_dirty
+            || !Arc::ptr_eq(&this.widget.projection.children, &view.children);
+        let order_changed = children_changed
+            && !this
+                .widget
+                .children
+                .iter()
+                .map(|(node, _)| node.id)
+                .eq(view.children.iter().map(|child| child.node.id));
         let mut content_changed = this.widget.node.kind != view.node.kind
-            || this.widget.node.children != view.node.children
+            || order_changed
             || this.widget.node.props.visible != view.node.props.visible
             || this.widget.node.props.enabled != view.node.props.enabled;
         if let (Some(pod), NodeKind::TextInput { value }) =
@@ -808,7 +1026,9 @@ impl SceneWidget {
             this.ctx.set_modal(view.node.props.modal);
         }
         let has_image = matches!(view.node.kind, NodeKind::Image { .. })
-            && (view.image.is_some() || view.image_resource.is_some() || view.tiled_size.is_some());
+            && (view.images.image.is_some()
+                || view.images.image_resource.is_some()
+                || view.images.tiled_size.is_some());
         if has_image && this.widget.image.is_none() {
             this.widget.image = Self::image_widget(view);
             this.widget.image_size = view.image_size();
@@ -828,25 +1048,46 @@ impl SceneWidget {
             (&this.widget.node.kind, &view.node.kind),
             (NodeKind::Image { source: old, .. }, NodeKind::Image { source, .. }) if old != source
         );
-        if image_source_changed
-            && let (Some(pod), Some(lease)) = (&mut this.widget.image, &view.image_resource)
+        if (image_source_changed
+            || this
+                .widget
+                .projection
+                .images
+                .image_resource
+                .as_ref()
+                .map(ResourceLease::handle)
+                != view
+                    .images
+                    .image_resource
+                    .as_ref()
+                    .map(ResourceLease::handle))
+            && let (Some(pod), Some(lease)) = (&mut this.widget.image, &view.images.image_resource)
             && let Some(mut image) = this.ctx.get_mut(pod)
         {
             Image::set_resource(&mut image, lease.clone());
             this.widget.image_size = view.image_size();
         }
-        if let (Some(pod), Some(data)) = (&mut this.widget.image, &view.image)
+        if let (Some(pod), Some(data)) = (&mut this.widget.image, &view.images.image)
             && (image_source_changed
+                || this
+                    .widget
+                    .projection
+                    .images
+                    .image
+                    .as_ref()
+                    .map(|image| image.data.id())
+                    != Some(data.data.id())
                 || this.widget.image_size != Size::new(data.width.into(), data.height.into()))
             && let Some(mut image) = this.ctx.get_mut(pod)
         {
             Image::set_image_data(&mut image, data.clone());
             this.widget.image_size = Size::new(data.width.into(), data.height.into());
         }
-        if let (Some(pod), Some(size)) = (&mut this.widget.image, view.tiled_size)
+        if let (Some(pod), Some(size)) = (&mut this.widget.image, view.images.tiled_size)
+            && this.widget.projection.images != view.images
             && let Some(mut image) = this.ctx.get_mut(pod)
         {
-            Image::set_tiles(&mut image, size, view.tiles.clone());
+            Image::set_tiles(&mut image, size, view.images.tiles.clone());
             this.widget.image_size = size;
         }
         if this.widget.node.kind != view.node.kind
@@ -920,7 +1161,7 @@ impl SceneWidget {
                 label.insert_prop(ContentColor::new(color(view.node.props.color)));
             }
         }
-        if this.widget.node.children != view.node.children {
+        if order_changed {
             let mut retained: BTreeMap<_, _> = std::mem::take(&mut this.widget.children)
                 .into_iter()
                 .map(|(node, pod)| (node.id, (node, pod)))
@@ -939,20 +1180,22 @@ impl SceneWidget {
             }
             this.ctx.children_changed();
         }
-        for ((node, pod), next) in this.widget.children.iter_mut().zip(&view.children) {
-            if node.props.visible != next.node.props.visible
-                || node.props.stretch != next.node.props.stretch
-                || node.props.align_x != next.node.props.align_x
-                || node.props.align_y != next.node.props.align_y
-            {
-                this.ctx.request_layout();
-            }
-            if *node != next.node {
-                *node = next.node.clone();
-                this.ctx.request_compose();
-            }
-            if let Some(mut child) = this.ctx.get_mut(pod) {
-                content_changed |= Self::sync(&mut child, next, feedback);
+        if children_changed {
+            for ((node, pod), next) in this.widget.children.iter_mut().zip(view.children.iter()) {
+                if node.props.visible != next.node.props.visible
+                    || node.props.stretch != next.node.props.stretch
+                    || node.props.align_x != next.node.props.align_x
+                    || node.props.align_y != next.node.props.align_y
+                {
+                    this.ctx.request_layout();
+                }
+                if *node != next.node {
+                    *node = next.node.clone();
+                    this.ctx.request_compose();
+                }
+                if let Some(mut child) = this.ctx.get_mut(pod) {
+                    content_changed |= Self::sync(&mut child, next, feedback);
+                }
             }
         }
         if let (
@@ -1017,6 +1260,8 @@ impl SceneWidget {
             this.widget.button.cancel();
             this.ctx.invalidate_input_configuration();
         }
+        this.widget.projection = view.clone();
+        this.widget.sync_dirty = false;
         content_changed
     }
     fn interaction(&mut self, mut next: InteractionState, available: bool) -> Option<NodeEvent> {
@@ -1040,11 +1285,13 @@ impl SceneWidget {
                 value: ControlValue::Selection(revision),
                 range: None,
             })
-        } else if let NodeKind::Toggle { value, .. } = &mut self.node.kind {
+        } else if let NodeKind::Toggle { value, .. } = &mut Arc::make_mut(&mut self.node).kind {
             *value = !*value;
+            let value = *value;
+            self.sync_dirty = true;
             NodeEvent::Change(NodeChange {
                 node: self.node.id,
-                value: ControlValue::Bool(*value),
+                value: ControlValue::Bool(value),
                 range: None,
             })
         } else {
@@ -1255,6 +1502,14 @@ impl Widget for SceneWidget {
         action: &ErasedAction,
         source: WidgetId,
     ) {
+        // Control proposals bubble through the same widget ancestors as their actions.
+        // Reconcile optimistic values even when the authoritative projection is unchanged.
+        if matches!(
+            action.downcast_ref::<NodeEvent>(),
+            Some(NodeEvent::Change(_) | NodeEvent::Text(_))
+        ) {
+            self.sync_dirty = true;
+        }
         if self.label.as_ref().is_some_and(|pod| pod.id() == source)
             && let Some(link) = action.downcast_ref::<reel_ui::widgets::LinkActivated>()
         {
@@ -1267,13 +1522,15 @@ impl Widget for SceneWidget {
         }
         if self.slider.as_ref().is_some_and(|pod| pod.id() == source)
             && let Some(change) = action.downcast_ref::<SliderMoved>()
-            && let NodeKind::Slider { range, value, .. } = &mut self.node.kind
+            && let NodeKind::Slider { range, value, .. } = &mut Arc::make_mut(&mut self.node).kind
         {
             *value = change.value;
+            let range = *range;
+            self.sync_dirty = true;
             ctx.submit_action::<NodeEvent>(NodeEvent::Change(NodeChange {
                 node: self.node.id,
                 value: ControlValue::Number(change.value),
-                range: Some(*range),
+                range: Some(range),
             }));
             ctx.set_handled();
         }
@@ -1281,7 +1538,8 @@ impl Widget for SceneWidget {
             && let Some(event) = action.downcast_ref::<TextInputEvent>()
         {
             if let TextInputEvent::Changed { value, .. } = event {
-                self.node.kind = NodeKind::TextInput {
+                self.sync_dirty = true;
+                Arc::make_mut(&mut self.node).kind = NodeKind::TextInput {
                     value: value.clone(),
                 };
             }

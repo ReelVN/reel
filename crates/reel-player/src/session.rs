@@ -890,9 +890,10 @@ impl SessionUi {
             .pending_stage
             .as_ref()
             .or(self.stage.as_ref())
-            .is_none_or(|view| view.revision != stage.revision())
+            .is_none_or(|view| !view.matches(stage))
         {
-            let mut view = StageView::capture(stage);
+            let mut view =
+                StageView::update(stage, self.pending_stage.as_ref().or(self.stage.as_ref()));
             view.presentation_request = self
                 .pending_stage
                 .as_ref()
@@ -908,7 +909,9 @@ impl SessionUi {
                 .pending_stage
                 .as_ref()
                 .or(self.stage.as_ref())
-                .is_none_or(|previous| previous.input_scope() != scope);
+                .is_none_or(|previous| {
+                    !previous.same_stage(&view) || previous.input_scope() != scope
+                });
             let modal = scope.1.is_some();
             if modal {
                 self.session.set_skip_reading(false, false, false);
@@ -1022,9 +1025,7 @@ impl SessionUi {
         let mut binding = self.binding.borrow_mut();
         binding.control_accepted = Some(stamp);
         binding.accepted_buttons = Some(stamp.button_revision);
-        if !self.images_pending() {
-            binding.accepted = Some(stamp);
-        }
+        binding.accepted = (!self.images_pending()).then_some(stamp);
     }
     pub(crate) fn gesture_active(&self) -> bool {
         let binding = self.binding.borrow();
@@ -1055,6 +1056,7 @@ impl SessionUi {
         if self.images.metadata_ready() && !self.images.manifests.is_empty() {
             if !self.prepare_tiles(bridge, root_id)? {
                 self.pause_dialogue();
+                self.binding.borrow_mut().accepted = None;
                 return Ok(());
             }
         } else if images_ready {
@@ -1066,6 +1068,7 @@ impl SessionUi {
             }
         } else if self.images_pending() {
             self.pause_dialogue();
+            self.binding.borrow_mut().accepted = None;
             return Ok(());
         }
         let view = self.session.view();

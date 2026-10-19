@@ -367,12 +367,55 @@ impl std::fmt::Display for StageError {
 }
 impl std::error::Error for StageError {}
 
+/// Process-local projection identity; restoring a stage starts a new identity.
+#[derive(Clone, Default, Debug)]
+pub struct StageIdentity(Arc<()>);
+impl PartialEq for StageIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for StageIdentity {}
+
+/// Revisions of the node itself and of its child order or descendants.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct NodeRevision {
+    pub properties: u64,
+    pub children: u64,
+}
+
+#[derive(Debug)]
+struct StoredNode {
+    node: StageNode,
+    revision: NodeRevision,
+}
+impl std::ops::Deref for StoredNode {
+    type Target = StageNode;
+    fn deref(&self) -> &StageNode {
+        &self.node
+    }
+}
+impl std::ops::DerefMut for StoredNode {
+    fn deref_mut(&mut self) -> &mut StageNode {
+        &mut self.node
+    }
+}
+impl From<StageNode> for StoredNode {
+    fn from(node: StageNode) -> Self {
+        Self {
+            node,
+            revision: NodeRevision::default(),
+        }
+    }
+}
+
 #[derive(Default, Debug)]
 pub struct Stage {
     root: Option<NodeId>,
-    nodes: BTreeMap<NodeId, StageNode>,
+    nodes: BTreeMap<NodeId, StoredNode>,
     next_id: u64,
     revision: u64,
+    identity: StageIdentity,
 }
 impl Stage {
     pub fn root(&self) -> Option<NodeId> {
@@ -381,11 +424,31 @@ impl Stage {
     pub fn revision(&self) -> u64 {
         self.revision
     }
+    pub fn identity(&self) -> &StageIdentity {
+        &self.identity
+    }
+    pub fn node_revision(&self, id: NodeId) -> Option<NodeRevision> {
+        self.nodes.get(&id).map(|node| node.revision)
+    }
     pub fn node(&self, id: NodeId) -> Option<&StageNode> {
-        self.nodes.get(&id)
+        self.nodes.get(&id).map(|node| &node.node)
     }
     pub fn nodes(&self) -> impl Iterator<Item = &StageNode> {
-        self.nodes.values()
+        self.nodes.values().map(|node| &node.node)
+    }
+    fn changed(&mut self, id: NodeId, children: bool) {
+        self.revision = self.revision.wrapping_add(1);
+        let node = self.nodes.get_mut(&id).unwrap();
+        node.revision.properties = self.revision;
+        if children {
+            node.revision.children = self.revision;
+        }
+        let mut parent = node.parent;
+        while let Some(id) = parent {
+            let node = self.nodes.get_mut(&id).unwrap();
+            node.revision.children = self.revision;
+            parent = node.parent;
+        }
     }
     /// Publish a constant-size particle clock projection without copying nodes.
     pub fn set_particle_frame(
@@ -399,7 +462,7 @@ impl Stage {
         };
         if batch.frame != frame {
             batch.frame = frame;
-            self.revision = self.revision.wrapping_add(1);
+            self.changed(id, false);
         }
         Ok(())
     }
@@ -431,7 +494,8 @@ impl Stage {
                 props,
                 children: Vec::new(),
                 parent: None,
-            },
+            }
+            .into(),
         );
         Ok(())
     }
@@ -512,7 +576,8 @@ impl Stage {
                 props,
                 children,
                 parent: None,
-            },
+            }
+            .into(),
         );
         Ok(id)
     }
@@ -527,7 +592,7 @@ impl Stage {
         if node.kind != kind || node.props != props {
             node.kind = kind;
             node.props = props;
-            self.revision = self.revision.wrapping_add(1);
+            self.changed(id, false);
         }
         Ok(())
     }
@@ -570,7 +635,8 @@ impl Stage {
             .children
             .insert(index, child);
         self.nodes.get_mut(&child).unwrap().parent = Some(parent);
-        self.revision = self.revision.wrapping_add(1);
+        self.changed(parent, true);
+        self.nodes.get_mut(&child).unwrap().revision.properties = self.revision;
         Ok(())
     }
 
@@ -626,7 +692,11 @@ impl Stage {
         }
         let retained: BTreeSet<_> = children.iter().copied().collect();
         for &child in &children {
-            self.nodes.get_mut(&child).unwrap().parent = Some(parent);
+            let node = self.nodes.get_mut(&child).unwrap();
+            if node.parent != Some(parent) {
+                node.parent = Some(parent);
+                node.revision.properties = self.revision.wrapping_add(1);
+            }
         }
         let old = std::mem::replace(&mut self.nodes.get_mut(&parent).unwrap().children, children);
         let mut retired = Vec::new();
@@ -635,7 +705,7 @@ impl Stage {
                 retired.extend(self.remove_tree(child));
             }
         }
-        self.revision = self.revision.wrapping_add(1);
+        self.changed(parent, true);
         Ok(retired)
     }
 
@@ -645,10 +715,13 @@ impl Stage {
         if let Some(parent) = parent {
             let children = &mut self.nodes.get_mut(&parent).unwrap().children;
             children.remove(children.iter().position(|&child| child == node).unwrap());
+            self.changed(parent, true);
         } else if self.root == Some(node) {
             self.root = None;
         }
-        self.revision = self.revision.wrapping_add(1);
+        if parent.is_none() {
+            self.revision = self.revision.wrapping_add(1);
+        }
         Ok(self.remove_tree(node))
     }
 
@@ -678,7 +751,7 @@ impl Stage {
         for child in children {
             retired.extend(self.remove_tree(child));
         }
-        self.revision = self.revision.wrapping_add(1);
+        self.changed(parent, true);
         Ok(retired)
     }
 
@@ -721,7 +794,7 @@ impl Stage {
         let mut retired = Vec::new();
         while let Some(id) = pending.pop() {
             if let Some(node) = self.nodes.remove(&id) {
-                pending.extend(node.children);
+                pending.extend(node.node.children);
                 retired.push(id);
             }
         }
