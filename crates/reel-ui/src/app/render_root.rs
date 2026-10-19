@@ -107,6 +107,7 @@ pub(crate) struct RenderRootState {
     pub(crate) navigation_target: Option<WidgetId>,
     pub(crate) navigation_walk: Vec<WidgetId>,
     pub(crate) navigation_directions: Vec<crate::input::NavigationAction>,
+    pub(crate) deferred_navigation: Option<crate::passes::navigation::DeferredNavigation>,
 
     /// Widget which will get text events if no widget is focused.
     pub(crate) focus_fallback: Option<WidgetId>,
@@ -355,6 +356,7 @@ impl RenderRoot {
                 navigation_target: None,
                 navigation_walk: Vec::new(),
                 navigation_directions: Vec::with_capacity(4),
+                deferred_navigation: None,
                 focus_fallback: None,
                 modal_scope: None,
                 modal_base_focus: None,

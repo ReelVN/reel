@@ -5,6 +5,7 @@ use super::*;
 use aside_vm::executor::{Continuation, FaultRetention};
 use aside_vm::{Heap, ObjectKind, ValueTag};
 use std::cmp::Ordering;
+pub(super) mod virtualized;
 
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -222,6 +223,12 @@ impl SessionVm {
     }
 
     pub(super) fn dispatch_list(&mut self, ticket: HostTicket) -> Result<(), AdapterError> {
+        if self.vm.host_arguments(ticket)?[3]
+            .as_bool()
+            .ok_or(AdapterError::Input("list virtual must be bool"))?
+        {
+            return self.dispatch_virtual_list(ticket);
+        }
         if ticket.input == NativeInput::Entry {
             let args = self.vm.host_arguments(ticket)?.to_vec();
             let (output, state) = if let Some(output) = self.vm.reactive_output(ticket)? {
@@ -235,7 +242,7 @@ impl SessionVm {
                 }
                 (output, state)
             } else {
-                let mut layout = args[3..].to_vec();
+                let mut layout = args[4..].to_vec();
                 layout.push(Value::NULL);
                 let origin = self.stage_origin(ticket);
                 let node = self.stage.dispatch(

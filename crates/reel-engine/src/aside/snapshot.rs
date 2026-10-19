@@ -41,6 +41,8 @@ struct Header {
     owner: OwnerHandle,
     root_owner: RootOwner,
     task: Option<TaskId>,
+    derived_task: Option<TaskId>,
+    reactive_ready: bool,
     main_wait: Option<WaitId>,
     schedule_cursor: usize,
     claimed: Option<Completion>,
@@ -139,10 +141,10 @@ impl SessionSnapshot {
         // Read the fixed version prefix before decoding the nested VM. Postcard
         // does not retain custom serde error messages from that deserializer.
         let (version, vm_bytes): (u32, _) = postcard::take_from_bytes(bytes)?;
-        if version != 6 {
+        if version != 7 {
             return Err(SnapshotError::Version {
                 format: "session",
-                expected: 5,
+                expected: 7,
                 actual: version,
             });
         }
@@ -185,6 +187,8 @@ impl SessionVm {
                             owner: self.owner,
                             root_owner: self.root_owner,
                             task: self.task,
+                            derived_task: self.derived_task,
+                            reactive_ready: self.reactive_ready,
                             main_wait: self.main_wait,
                             schedule_cursor: self.schedule_cursor,
                             claimed: self.claimed.clone(),
@@ -237,7 +241,8 @@ impl SessionVm {
         if self.issued.is_some()
             || self.choice_reader.is_some()
             || self.dialogue_reader.is_some()
-            || !self.stage_ready()
+            || self.activities.pending()
+            || self.particles.needs_work(self.stage.scene.revision())
             || !self.activities.snapshot_ready()
             || self.exit_requested
             || self.start_requested.is_some()
@@ -401,7 +406,7 @@ impl SessionCapture<'_> {
         }
         Ok(SessionSnapshot {
             committed_save: None,
-            version: 6,
+            version: 7,
             vm: self.vm.finish()?,
             session: self.saved_session,
             records: self.records,
@@ -466,6 +471,9 @@ impl SessionRestore<'_> {
                         runtime.owner = header.owner;
                         runtime.root_owner = header.root_owner;
                         runtime.task = header.task.map(|t| map.task(t)).transpose()?;
+                        runtime.derived_task =
+                            header.derived_task.map(|t| map.task(t)).transpose()?;
+                        runtime.reactive_ready = header.reactive_ready;
                         runtime.main_wait = header.main_wait.map(|w| map.wait(w)).transpose()?;
                         runtime.schedule_cursor = header.schedule_cursor;
                         if let Some(c) = &mut header.claimed {
@@ -583,7 +591,9 @@ impl SessionRestore<'_> {
             runtime
                 .stage
                 .restore_root(runtime.vm.heap(), self.stage_root)?;
-            runtime.sync_narrative(self.session.as_ref().unwrap())?;
+            if runtime.reactive_ready && runtime.derived_task.is_none() {
+                runtime.sync_narrative(self.session.as_ref().unwrap())?;
+            }
             self.complete = true;
         }
         progress.complete = self.complete;

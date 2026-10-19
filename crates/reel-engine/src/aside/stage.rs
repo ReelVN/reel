@@ -131,6 +131,44 @@ struct NodeBinding {
 }
 
 impl StageBinding {
+    pub(in crate::aside) fn discard_unmounted(
+        &mut self,
+        heap: &mut Heap,
+        host: Value,
+    ) -> Result<bool, AdapterError> {
+        let id = self.id(heap, host)?;
+        if self.scene.node(id).unwrap().parent.is_some() || self.scene.root() == Some(id) {
+            return Ok(false);
+        }
+        let retired = self.scene.discard(id)?;
+        self.retire(heap, retired)?;
+        Ok(true)
+    }
+    pub(in crate::aside) fn make_virtual(
+        &mut self,
+        heap: &Heap,
+        host: Value,
+    ) -> Result<(), AdapterError> {
+        let id = self.id(heap, host)?;
+        self.handles.get_mut(&id).unwrap().shape = snapshot::Shape::VirtualList;
+        self.publish_virtual(heap, host)
+    }
+
+    pub(in crate::aside) fn publish_virtual(
+        &mut self,
+        heap: &Heap,
+        host: Value,
+    ) -> Result<(), AdapterError> {
+        let id = self.id(heap, host)?;
+        let props = self.scene.node(id).unwrap().props.clone();
+        validate_virtual_props(&props)?;
+        self.scene.update(
+            id,
+            NodeKind::VirtualList(super::lists::virtualized::project(heap, host)?),
+            props,
+        )?;
+        Ok(())
+    }
     pub fn new(program: &VerifiedProgram) -> Result<Self, AdapterError> {
         let p = program.package();
         let mut methods = [FunctionId(0); 5];
@@ -529,12 +567,46 @@ impl StageBinding {
             pending.extend(node.children.iter().copied());
             let binding = &self.handles[&id];
             let value = heap.import_handle(binding.handle)?;
+            if matches!(node.kind, NodeKind::VirtualList(_))
+                && let Some(parent) = node.parent
+            {
+                let parent = self.scene.node(parent).unwrap();
+                if !matches!(
+                    parent.kind,
+                    NodeKind::Scroll {
+                        axis: reel_ui::widgets::ScrollAxis::Vertical,
+                        ..
+                    }
+                ) || parent
+                    .children
+                    .iter()
+                    .filter(|id| {
+                        !self
+                            .scene
+                            .node(**id)
+                            .unwrap()
+                            .props
+                            .stretch
+                            .axis(reel_ui::kurbo::Axis::Vertical)
+                    })
+                    .count()
+                    != 1
+                {
+                    return Err(AdapterError::Input(
+                        "virtual list must be the only flow child of a vertical scroll",
+                    ));
+                }
+            }
             let fields = heap.host_fields(value)?;
             let version = heap.info(fields)?.content_version;
             if version == binding.fields_version {
                 continue;
             }
             let (kind, offset) = match &node.kind {
+                NodeKind::VirtualList(_) => (
+                    NodeKind::VirtualList(super::lists::virtualized::project(heap, value)?),
+                    0,
+                ),
                 NodeKind::Input { bindings, .. } => {
                     let source = heap.table_entry(fields, 0)?.1;
                     let bindings = if binding.input_source == input::source_handle(heap, source)? {
@@ -663,6 +735,9 @@ impl StageBinding {
                 Some((binding.mask_source, &node.props)),
                 node.props.mask_origin.clone(),
             )?;
+            if matches!(kind, NodeKind::VirtualList(_)) {
+                validate_virtual_props(&props)?;
+            }
             let mask_source = mask_handle(heap, fields, offset)?;
             updates.push((id, kind, props, version, mask_source));
         }
@@ -922,6 +997,25 @@ impl StageBinding {
         }
         false
     }
+}
+
+fn validate_virtual_props(props: &NodeProps) -> Result<(), AdapterError> {
+    if props.height.is_some()
+        || props.max_height.is_some()
+        || props.stretch.axis(reel_ui::kurbo::Axis::Vertical)
+        || props.x != 0.
+        || props.y != 0.
+        || props.rotation != 0.
+        || props.scale_x != 1.
+        || props.scale_y != 1.
+        || props.anchor_x != 0.
+        || props.anchor_y != 0.
+    {
+        return Err(AdapterError::Input(
+            "virtual list requires natural height and no local transform; transform its scroll instead",
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn bindings() -> [NativeBinding<StageBinding, AdapterError>; 6] {

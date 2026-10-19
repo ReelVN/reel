@@ -90,6 +90,8 @@ struct Header {
     native_null_publications: u64,
     slices: u64,
     last_usage: SliceUsage,
+    reactive_capture: Option<Value>,
+    reactive_evaluation: u64,
 }
 #[derive(Serialize, Deserialize)]
 struct SavedTask {
@@ -276,6 +278,8 @@ impl VmCapture<'_> {
                         native_null_publications: vm.native_null_publications,
                         slices: vm.slices,
                         last_usage: vm.last_usage,
+                        reactive_capture: vm.heap.snapshot_reactive_state().0,
+                        reactive_evaluation: vm.heap.snapshot_reactive_state().1,
                     },
                 )?);
                 self.header = true;
@@ -480,6 +484,13 @@ impl VmRestore<'_> {
                 self.vm.native_null_publications = header.native_null_publications;
                 self.vm.slices = header.slices;
                 self.vm.last_usage = header.last_usage;
+                self.vm.heap.restore_reactive_state(
+                    header
+                        .reactive_capture
+                        .map(|value| self.map.value(value))
+                        .transpose()?,
+                    header.reactive_evaluation,
+                )?;
                 self.header = true;
             }
             RecordKind::Task => {

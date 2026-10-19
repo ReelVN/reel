@@ -74,6 +74,8 @@ pub struct GeometryRecord {
     pub is_modal: bool,
     /// Interaction configuration; ordinary value and geometry changes preserve it.
     pub input_revision: u64,
+    /// Logical child projection accepted with this geometry.
+    pub virtual_revision: Option<u64>,
 }
 impl GeometryRecord {
     fn project(s: &WidgetState, parent: Option<usize>, children: std::ops::Range<usize>) -> Self {
@@ -95,6 +97,7 @@ impl GeometryRecord {
             is_stashed: s.is_stashed,
             is_modal: s.is_modal,
             input_revision: s.input_revision,
+            virtual_revision: None,
         }
     }
 }
@@ -479,6 +482,8 @@ impl RenderRoot {
                 parent.map(|(index, _)| index),
                 start..end,
             ));
+            view.records[index].virtual_revision =
+                node.item.widget.virtual_children().map(|v| v.revision);
             view.ids.push((node.item.state.id, index));
             if node.item.state.is_modal && !node.item.state.is_stashed {
                 view.modal_scope = Some(node.item.state.id);
@@ -520,6 +525,7 @@ impl RenderRoot {
         crate::passes::update::transition_pointer_geometry(self, old.borrow(), source.borrow());
         self.global_state.input_geometry_source = source;
         self.accept_input_scope();
+        crate::passes::navigation::resume_virtual(self);
         self.run_rewrite_passes();
     }
     /// Reserve reusable pointer routes before presentation; existing active paths are preserved.

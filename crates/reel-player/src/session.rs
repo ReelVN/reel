@@ -532,6 +532,16 @@ impl Widget for SessionWidget {
                 NodeEvent::Scroll(state) => {
                     self.events.borrow_mut().push(NodeEvent::Scroll(*state))
                 }
+                NodeEvent::VirtualList(state) => {
+                    let mut events = self.events.borrow_mut();
+                    if let Some(NodeEvent::VirtualList(previous)) = events.iter_mut().find(|event| {
+                        matches!(event, NodeEvent::VirtualList(previous) if previous.node == state.node)
+                    }) {
+                        *previous = state.clone();
+                    } else {
+                        events.push(NodeEvent::VirtualList(state.clone()));
+                    }
+                }
                 NodeEvent::Pointer(input)
                     if matches!(
                         input.phase,

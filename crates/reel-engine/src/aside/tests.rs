@@ -14,6 +14,7 @@ mod rich_text;
 mod snapshots;
 mod tasks;
 mod video;
+mod virtual_lists;
 
 const STORY: &str =
     "use reel::prelude::*; pub fn opening() { narrator(\"你好\"); narrator(\"again\"); }";

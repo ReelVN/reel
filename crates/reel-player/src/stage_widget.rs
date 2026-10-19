@@ -10,7 +10,8 @@ use reel_ui::{
     resources::{ResourceData, ResourceLease},
     stage::{
         ControlValue, InteractionState, NodeChange, NodeClick, NodeEvent, NodeId, NodeInteraction,
-        NodeKind, NodeProps, NodeRevision, NodeText, Stage, StageIdentity,
+        NodeKind, NodeProps, NodeRevision, NodeText, NodeVirtualList, Stage, StageIdentity,
+        VirtualListNavigation, VirtualRowMeasurement,
     },
     widgets::{
         ButtonBehavior, Image, Label, ScrollAxis, ScrollState, Slider, SliderMoved, TextInput,
@@ -694,6 +695,15 @@ impl Widget for StageWidget {
     }
 }
 
+#[derive(Default)]
+struct VirtualListState {
+    measurements: Arc<[VirtualRowMeasurement]>,
+    feedback: Option<NodeVirtualList>,
+    retained: Vec<NodeId>,
+    children: Vec<VirtualChild>,
+    navigation: Option<VirtualListNavigation>,
+}
+
 struct SceneWidget {
     node: Arc<SceneProperties>,
     projection: Arc<SceneNode>,
@@ -714,6 +724,7 @@ struct SceneWidget {
     scroll_request: Option<Vec2>,
     scroll_feedback: Option<(Vec2, Size, Size)>,
     scroll_baseline: Vec2,
+    virtual_list: Option<Box<VirtualListState>>,
     #[cfg(test)]
     layouts: usize,
     #[cfg(test)]
@@ -910,6 +921,7 @@ impl SceneWidget {
                 NodeKind::Scroll { offset, .. } => offset,
                 _ => Vec2::ZERO,
             },
+            virtual_list: matches!(view.node.kind, NodeKind::VirtualList(_)).then(Default::default),
             #[cfg(test)]
             layouts: 0,
             #[cfg(test)]
@@ -1234,6 +1246,7 @@ impl SceneWidget {
                 || old.clip != new.clip
                 || old.decorated != new.decorated
                 || match (&this.widget.node.kind, &view.node.kind) {
+                    (NodeKind::VirtualList(a), NodeKind::VirtualList(b)) => a != b,
                     (NodeKind::Particles(a), NodeKind::Particles(b)) => {
                         a.config != b.config
                             || a.frame.map(|f| f.extent) != b.frame.map(|f| f.extent)
@@ -1268,6 +1281,11 @@ impl SceneWidget {
             this.ctx.invalidate_input_configuration();
         }
         this.widget.projection = view.clone();
+        if matches!(this.widget.node.kind, NodeKind::VirtualList(_)) {
+            this.widget
+                .virtual_list
+                .get_or_insert_with(Default::default);
+        }
         this.widget.sync_dirty = false;
         content_changed
     }
@@ -1343,8 +1361,37 @@ macro_rules! publish_interaction {
         }
     };
 }
+impl AllowRawMut for SceneWidget {}
 impl Widget for SceneWidget {
     type Action = NodeEvent;
+    fn virtual_children(&self) -> Option<VirtualChildren<'_>> {
+        let NodeKind::VirtualList(list) = &self.node.kind else {
+            return None;
+        };
+        Some(VirtualChildren {
+            revision: list.revision,
+            total: list.total_rows,
+            children: &self.virtual_list.as_ref()?.children,
+            target: list.navigation.map(|n| (n.index, n.forward)),
+        })
+    }
+    fn request_virtual_child(
+        &mut self,
+        ctx: &mut UpdateCtx<'_>,
+        _: &mut PropertiesMut<'_>,
+        target: Option<(usize, bool)>,
+    ) {
+        let target = target.map(|(index, forward)| VirtualListNavigation { index, forward });
+        let state = self
+            .virtual_list
+            .as_mut()
+            .expect("virtual navigation owner");
+        state.navigation = target;
+        if let Some(feedback) = &mut state.feedback {
+            feedback.navigation = target;
+            ctx.submit_action::<NodeEvent>(NodeEvent::VirtualList(feedback.clone()));
+        }
+    }
     fn on_pointer_preview(
         &mut self,
         ctx: &mut EventCtx<'_>,
@@ -1509,6 +1556,14 @@ impl Widget for SceneWidget {
         action: &ErasedAction,
         source: WidgetId,
     ) {
+        if matches!(self.node.kind, NodeKind::Scroll { .. })
+            && matches!(
+                action.downcast_ref::<NodeEvent>(),
+                Some(NodeEvent::Interaction(_))
+            )
+        {
+            ctx.request_compose();
+        }
         // Control proposals bubble through the same widget ancestors as their actions.
         // Reconcile optimistic values even when the authoritative projection is unchanged.
         if matches!(
@@ -1673,6 +1728,14 @@ impl Widget for SceneWidget {
         {
             return space;
         }
+        if let NodeKind::VirtualList(list) = &self.node.kind {
+            if axis == Axis::Vertical {
+                return Length::px(list.total_height + props.padding * 2.);
+            }
+            if let LenReq::FitContent(space) = request {
+                return space;
+            }
+        }
         let padding = Length::px(props.padding * 2.);
         if self.image.is_some() {
             let other = if props.stretch.axis(axis.cross()) {
@@ -1835,12 +1898,28 @@ impl Widget for SceneWidget {
         }
         let mut cursor = 0.;
         let mut extent = Size::ZERO;
+        let virtual_list = match &self.node.kind {
+            NodeKind::VirtualList(list) => Some(list),
+            _ => None,
+        };
+        let mut measurements = Vec::new();
+        if let Some(state) = &mut self.virtual_list {
+            state.children.clear();
+        }
         for (node, child) in &mut self.children {
             ctx.set_stashed(child, !node.props.visible);
             if !node.props.visible {
+                if virtual_list.is_some() {
+                    measurements.push(VirtualRowMeasurement {
+                        node: node.id,
+                        height: 0.,
+                    });
+                }
                 continue;
             }
-            let definition = if let NodeKind::Scroll { axis, .. } = self.node.kind {
+            let definition = if virtual_list.is_some() {
+                SizeDef::new(LenDef::Fixed(Length::px(inner.width)), LenDef::MaxContent)
+            } else if let NodeKind::Scroll { axis, .. } = self.node.kind {
                 SizeDef::new(
                     if axis.horizontal() {
                         LenDef::MaxContent
@@ -1879,30 +1958,51 @@ impl Widget for SceneWidget {
                 },
             );
             let chosen = ctx.compute_size(child, definition, inner.into());
-            let mut offset = match self.node.kind {
-                NodeKind::Row
-                | NodeKind::Scroll {
-                    axis: ScrollAxis::Horizontal,
-                    ..
-                } if !node.props.stretch.axis(Axis::Horizontal) => {
-                    let offset = Point::new(cursor, 0.);
-                    cursor += chosen.width + self.node.props.gap;
-                    offset
+            let mut offset = if let Some(list) = virtual_list {
+                let row = list
+                    .rows
+                    .iter()
+                    .find(|row| row.node == node.id)
+                    .expect("virtual projection contains every mounted child");
+                measurements.push(VirtualRowMeasurement {
+                    node: node.id,
+                    height: chosen.height,
+                });
+                self.virtual_list
+                    .as_mut()
+                    .unwrap()
+                    .children
+                    .push(VirtualChild {
+                        index: row.index,
+                        widget: child.id(),
+                    });
+                Point::new(0., row.offset)
+            } else {
+                match self.node.kind {
+                    NodeKind::Row
+                    | NodeKind::Scroll {
+                        axis: ScrollAxis::Horizontal,
+                        ..
+                    } if !node.props.stretch.axis(Axis::Horizontal) => {
+                        let offset = Point::new(cursor, 0.);
+                        cursor += chosen.width + self.node.props.gap;
+                        offset
+                    }
+                    NodeKind::Column
+                    | NodeKind::Scroll {
+                        axis: ScrollAxis::Vertical | ScrollAxis::Both,
+                        ..
+                    } if !node.props.stretch.axis(Axis::Vertical) => {
+                        let offset = Point::new(0., cursor);
+                        cursor += chosen.height + self.node.props.gap;
+                        offset
+                    }
+                    _ => Point::ORIGIN,
                 }
-                NodeKind::Column
-                | NodeKind::Scroll {
-                    axis: ScrollAxis::Vertical | ScrollAxis::Both,
-                    ..
-                } if !node.props.stretch.axis(Axis::Vertical) => {
-                    let offset = Point::new(0., cursor);
-                    cursor += chosen.height + self.node.props.gap;
-                    offset
-                }
-                _ => Point::ORIGIN,
             };
             let (flow_x, flow_y) = match self.node.kind {
                 NodeKind::Row => (true, false),
-                NodeKind::Column => (false, true),
+                NodeKind::Column | NodeKind::VirtualList(_) => (false, true),
                 NodeKind::Scroll { axis, .. } => (axis.horizontal(), axis.vertical()),
                 _ => (false, false),
             };
@@ -1920,6 +2020,12 @@ impl Widget for SceneWidget {
             }
             ctx.run_layout(child, chosen);
             ctx.place_child(child, Point::new(padding + offset.x, padding + offset.y));
+        }
+        if let Some(state) = &mut self.virtual_list {
+            if state.measurements.as_ref() != measurements.as_slice() {
+                state.measurements = measurements.into();
+            }
+            state.children.sort_unstable_by_key(|row| row.index);
         }
         if let NodeKind::Scroll {
             axis, follow_end, ..
@@ -1953,6 +2059,50 @@ impl Widget for SceneWidget {
         } else {
             Vec2::ZERO
         };
+        if matches!(self.node.kind, NodeKind::Scroll { .. }) {
+            for (node, child) in &mut self.children {
+                let NodeKind::VirtualList(view) = &node.kind else {
+                    continue;
+                };
+                let Some((list, mut list_ctx)) = ctx.get_raw_mut(child) else {
+                    continue;
+                };
+                let state = list.virtual_list.as_mut().expect("virtual list child");
+                state.retained.clear();
+                for (row, pod) in &mut list.children {
+                    if let Some((_, row_ctx)) = list_ctx.get_raw(pod)
+                        && (row_ctx.has_focus_target() || row_ctx.has_active())
+                    {
+                        state.retained.push(row.id);
+                    }
+                }
+                let retained = state
+                    .feedback
+                    .as_ref()
+                    .filter(|old| old.retained.as_ref() == state.retained.as_slice())
+                    .map(|old| old.retained.clone())
+                    .unwrap_or_else(|| Arc::from(state.retained.as_slice()));
+                let start = -translation.y - node.props.padding;
+                let feedback = NodeVirtualList {
+                    node: node.id,
+                    scroll: self.node.id,
+                    revision: view.revision,
+                    requested: self.scroll_baseline,
+                    offset: self.scroll.offset(),
+                    viewport: self.scroll.viewport(),
+                    width: (list.size.width - node.props.padding * 2.).max(0.),
+                    visible_start: start,
+                    visible_end: start + self.scroll.viewport().height,
+                    measurements: state.measurements.clone(),
+                    retained,
+                    navigation: state.navigation,
+                };
+                if state.feedback.as_ref() != Some(&feedback) {
+                    state.feedback = Some(feedback.clone());
+                    list_ctx.submit_action::<NodeEvent>(NodeEvent::VirtualList(feedback));
+                }
+            }
+        }
         let view = if let NodeKind::Camera(camera) = self.node.kind {
             camera.transform(Size::new(
                 (self.size.width - self.node.props.padding * 2.).max(0.),

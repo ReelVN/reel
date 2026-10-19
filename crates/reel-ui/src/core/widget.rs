@@ -41,6 +41,20 @@ use crate::layout::{LenReq, Length};
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub struct WidgetId(pub(crate) NonZeroU64);
 
+/// One mounted child in a container whose complete logical order is larger.
+#[derive(Clone, Copy, Debug)]
+pub struct VirtualChild {
+    pub index: usize,
+    pub widget: WidgetId,
+}
+/// Borrowed navigation metadata. It never constructs or measures missing children.
+pub struct VirtualChildren<'a> {
+    pub revision: u64,
+    pub total: usize,
+    pub children: &'a [VirtualChild],
+    pub target: Option<(usize, bool)>,
+}
+
 impl WidgetId {
     /// A serialized representation of the `WidgetId` for debugging purposes.
     pub fn trace(self) -> DisplayValue<Self> {
@@ -191,6 +205,20 @@ pub trait Widget: AsDynWidget + Any {
         ctx: &mut EventCtx<'_>,
         props: &mut PropertiesMut<'_>,
         event: &TextEvent,
+    ) {
+    }
+
+    /// Internal logical navigation boundary for containers with unmounted children.
+    fn virtual_children(&self) -> Option<VirtualChildren<'_>> {
+        None
+    }
+
+    /// Request one logical child through the widget's ordinary action channel.
+    fn request_virtual_child(
+        &mut self,
+        ctx: &mut UpdateCtx<'_>,
+        props: &mut PropertiesMut<'_>,
+        target: Option<(usize, bool)>,
     ) {
     }
 

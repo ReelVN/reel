@@ -70,6 +70,7 @@ pub enum NodeEvent {
     Change(NodeChange),
     Interaction(NodeInteraction),
     Scroll(NodeScroll),
+    VirtualList(NodeVirtualList),
     Pointer(NodePointer),
     Text(NodeText),
     Key(NodeKey),
@@ -87,6 +88,48 @@ pub struct NodeScroll {
     pub offset: Vec2,
     pub viewport: Size,
     pub content: Size,
+}
+/// A mounted row's place in the complete logical list. Offsets exclude list padding.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VirtualRow {
+    pub node: NodeId,
+    pub index: usize,
+    pub offset: f64,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VirtualListNavigation {
+    pub index: usize,
+    pub forward: bool,
+}
+/// Compact author-stage projection; only these rows own mounted component trees.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VirtualListView {
+    pub revision: u64,
+    pub total_height: f64,
+    pub total_rows: usize,
+    pub rows: Arc<[VirtualRow]>,
+    pub navigation: Option<VirtualListNavigation>,
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VirtualRowMeasurement {
+    pub node: NodeId,
+    pub height: f64,
+}
+/// Latest layout/input demand. Measurements and offsets use list content coordinates.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NodeVirtualList {
+    pub node: NodeId,
+    pub scroll: NodeId,
+    pub revision: u64,
+    pub requested: Vec2,
+    pub offset: Vec2,
+    pub viewport: Size,
+    pub width: f64,
+    pub visible_start: f64,
+    pub visible_end: f64,
+    pub measurements: Arc<[VirtualRowMeasurement]>,
+    pub retained: Arc<[NodeId]>,
+    pub navigation: Option<VirtualListNavigation>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PointerPhase {
@@ -219,6 +262,7 @@ pub enum NodeKind {
     Camera(CameraView),
     Row,
     Column,
+    VirtualList(VirtualListView),
     Stack,
 }
 
@@ -611,6 +655,7 @@ impl Stage {
             NodeKind::Camera(_)
                 | NodeKind::Row
                 | NodeKind::Column
+                | NodeKind::VirtualList(_)
                 | NodeKind::Scroll { .. }
                 | NodeKind::Stack
                 | NodeKind::Button { .. }
@@ -654,6 +699,7 @@ impl Stage {
             NodeKind::Camera(_)
                 | NodeKind::Row
                 | NodeKind::Column
+                | NodeKind::VirtualList(_)
                 | NodeKind::Scroll { .. }
                 | NodeKind::Stack
                 | NodeKind::Button { .. }
@@ -739,6 +785,7 @@ impl Stage {
             NodeKind::Camera(_)
                 | NodeKind::Row
                 | NodeKind::Column
+                | NodeKind::VirtualList(_)
                 | NodeKind::Scroll { .. }
                 | NodeKind::Stack
                 | NodeKind::Button { .. }

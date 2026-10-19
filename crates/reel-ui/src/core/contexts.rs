@@ -1373,6 +1373,7 @@ impl_context_method!(
 // Methods on all context types
 // Access status information (hovered/pointer captured/disabled/etc).
 impl_context_method!(
+    RawCtx<'_>,
     MutateCtx<'_>,
     ActionCtx<'_>,
     QueryCtx<'_>,

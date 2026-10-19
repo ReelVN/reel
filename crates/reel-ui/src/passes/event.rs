@@ -196,6 +196,9 @@ pub(crate) fn run_on_pointer_event_with_view(
     );
 
     let scale = view.scale(root.global_state.scale_factor);
+    if matches!(event, PointerEvent::Down(_) | PointerEvent::Scroll(_)) {
+        super::navigation::cancel_virtual(root);
+    }
     let physical_pos = try_event_position(event);
     if matches!(event, PointerEvent::Down(_) | PointerEvent::Scroll(_))
         || matches!(event, PointerEvent::Move(_))
@@ -474,6 +477,12 @@ pub(crate) fn run_on_pointer_event_with_view(
 // --- MARK: TEXT EVENT
 /// See the [passes documentation](crate::doc::pass_system#event-passes).
 pub(crate) fn run_on_text_event_pass(root: &mut RenderRoot, event: &TextEvent) -> Handled {
+    if root.global_state.deferred_navigation.is_some()
+        && matches!(event, TextEvent::Keyboard(key) if key.key == Key::Named(NamedKey::Enter)
+            || matches!(&key.key, Key::Character(text) if text == " "))
+    {
+        return Handled::Yes;
+    }
     if matches!(event, TextEvent::Keyboard(key) if key.state == KeyState::Down
         && !matches!(key.key, Key::Named(NamedKey::Shift | NamedKey::Control | NamedKey::Alt | NamedKey::Meta)))
     {
@@ -584,7 +593,9 @@ pub(crate) fn run_on_text_event_pass(root: &mut RenderRoot, event: &TextEvent) -
         {
             let forward = !key.modifiers.shift();
             let next_focused_widget = find_next_focusable(root, forward);
-            root.global_state.next_focused_widget = next_focused_widget;
+            if !super::navigation::defer_virtual(root, next_focused_widget, forward, None) {
+                root.global_state.next_focused_widget = next_focused_widget;
+            }
             handled = Handled::Yes;
         }
 
