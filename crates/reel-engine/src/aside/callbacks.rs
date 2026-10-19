@@ -285,7 +285,13 @@ impl SessionVm {
         closure: Value,
         event: Value,
     ) -> Result<bool, AdapterError> {
-        self.start_owned_task(session, Some(node), closure, &[event], None)?;
+        let arguments = [event];
+        let arguments = if self.vm.callable_has_parameters(closure)? {
+            &arguments[..]
+        } else {
+            &[]
+        };
+        self.start_owned_task(session, Some(node), closure, arguments, None)?;
         Ok(true)
     }
 

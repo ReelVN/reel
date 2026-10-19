@@ -332,3 +332,91 @@ fn null_failure_owner_retirement_and_late_waits_share_terminal_state() {
         );
     }
 }
+
+#[test]
+fn embedded_puzzle_source_pauses_restores_and_returns_to_dialogue() {
+    use aside_vm::snapshot::SnapshotBudget;
+    let code = concat!(
+        include_str!("../../../../../examples/author_embedded_puzzle.aside"),
+        "\nfn opening() { main(); }"
+    );
+    for leave in [false, true] {
+        let (mut session, mut vm) = prepared(code, true);
+        drive(&mut vm, &mut session, false);
+        let intro = session.view().interaction.unwrap().id();
+        for _ in 0..2 {
+            session
+                .handle_local_input(session.root_owner(), InputAction::Advance(intro))
+                .unwrap();
+        }
+        drive(&mut vm, &mut session, false);
+        click(&mut vm, &mut session, "A");
+        super::activities::advance_clock(&mut vm, &session, 0.3, 1);
+        drive(&mut vm, &mut session, false);
+        click(&mut vm, &mut session, "Pause");
+        let hint = |vm: &SessionVm| {
+            vm.stage().nodes().find(|n| matches!(&n.kind, NodeKind::Text(t) if t.as_ref().starts_with("Match the pattern:"))).unwrap().props.opacity
+        };
+        let frozen = hint(&vm);
+        assert_eq!(
+            vm.activities_poll_after(),
+            None,
+            "paused puzzle does not request frames"
+        );
+        super::activities::advance_clock(&mut vm, &session, 30., 1);
+        drive(&mut vm, &mut session, false);
+        assert_eq!(hint(&vm), frozen);
+        let program = vm.vm.program().clone();
+        let mut capture = vm.snapshot_begin(&session).unwrap();
+        while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let bytes = capture.finish().unwrap().encode().unwrap();
+        let mut image = snapshot::SessionSnapshot::decode(&bytes).unwrap();
+        let mut restore = SessionVm::restore_begin(
+            &mut image,
+            program,
+            VmLimits::default(),
+            SessionIdentity {
+                session_id: SessionId(41),
+                epoch: Epoch(19),
+            },
+            crate::ReadProgress::default(),
+            None,
+            None,
+        )
+        .unwrap();
+        while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let (mut session, mut vm) = restore.finish().unwrap();
+        drive(&mut vm, &mut session, false);
+        assert_eq!(hint(&vm), frozen);
+        assert_eq!(vm.activities_poll_after(), None);
+        if leave {
+            click(&mut vm, &mut session, "Leave puzzle");
+        } else {
+            click(&mut vm, &mut session, "Resume");
+            assert!(vm.activities_poll_after().is_some());
+            click(&mut vm, &mut session, "B");
+        }
+        let crate::InteractionView::Dialogue(dialogue) = session.view().interaction.unwrap() else {
+            panic!("story must resume");
+        };
+        assert_eq!(
+            dialogue.text(),
+            if leave {
+                "We leave the puzzle for another day."
+            } else {
+                "The door opens after 2 moves."
+            }
+        );
+        assert!(
+            vm.stage()
+                .nodes()
+                .all(|n| !matches!(n.kind, NodeKind::Button { .. })),
+            "component tree retired"
+        );
+        assert_eq!(
+            vm.activities_poll_after(),
+            None,
+            "clock and animation retired with the component"
+        );
+    }
+}

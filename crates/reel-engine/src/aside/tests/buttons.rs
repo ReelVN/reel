@@ -472,3 +472,86 @@ fn value_controls_recheck_current_flags_and_retire_waiting_change_tasks() {
     assert!(!vm.activities_need_time());
     assert_eq!(session.storage_usage().pending_owner_retirements, 0);
 }
+
+#[test]
+fn event_callbacks_adapt_zero_parameters_bound_receivers_defaults_and_rest() {
+    let code = r#"class Controller {
+        let output;
+        fn init(self, output) { self.output = output; }
+        fn zero(self) { self.output.x += 10; }
+        fn event(self, event) {
+            if !event.target.enabled { throw "bound event"; }
+            self.output.x += 100;
+        }
+    }
+    fn opening() {
+        let output = text("result");
+        let controller = Controller(output);
+        let removed = text("removed");
+        fn zero() { output.x += 1; }
+        fn optional(event = null) {
+            if event == null || !event.target.enabled { throw "optional event"; }
+            output.x += 1000;
+        }
+        fn rest(...events) {
+            if events.len() != 1 || !events[0].target.enabled { throw "rest event"; }
+            output.x += 10000;
+        }
+        let mut strict = false;
+        let dynamic = {call: zero};
+        try { dynamic.call(null); } catch error { strict = true; }
+        if !strict { throw "ordinary calls must reject excess arguments"; }
+        stage.replace(column() {
+            output; removed;
+            button("zero", on_click: zero);
+            button("bound zero", on_click: controller.zero);
+            button("bound event", on_click: controller.event);
+            button("optional", on_click: optional);
+            button("rest", on_click: rest);
+            button("native zero", on_click: removed.remove);
+            button("waiting", on_click: || {
+                await run(delay(10));
+                output.y = 1;
+            });
+        });
+        narrator("callbacks");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        pump(&mut vm, &mut session);
+        for label in [
+            "zero",
+            "bound zero",
+            "bound event",
+            "optional",
+            "rest",
+            "native zero",
+        ] {
+            let id = button(&vm, label);
+            vm.click(&mut session, id).unwrap();
+            pump(&mut vm, &mut session);
+        }
+        assert_eq!(text_x(&vm, "result"), 11111.);
+        assert!(
+            vm.stage()
+                .nodes()
+                .all(|n| n.kind != NodeKind::Text("removed".into()))
+        );
+        let waiting = button(&vm, "waiting");
+        vm.click(&mut session, waiting).unwrap();
+        pump(&mut vm, &mut session);
+        assert_eq!(
+            vm.activities_poll_after(),
+            Some(std::time::Duration::from_secs(10))
+        );
+        super::activities::advance_clock(&mut vm, &session, 10., 1);
+        pump(&mut vm, &mut session);
+        let output = vm
+            .stage()
+            .nodes()
+            .find(|n| n.kind == NodeKind::Text("result".into()))
+            .unwrap();
+        assert_eq!(output.props.y, 1.);
+        assert_eq!(vm.activities_poll_after(), None);
+    }
+}

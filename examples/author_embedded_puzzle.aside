@@ -1,0 +1,64 @@
+// Supply fonts/body.ttf relative to the asset root.
+// A component owns its result, clock and animation. No separate game scene API.
+fn switch_puzzle() {
+    let state = model({lights: [false, false, false], moves: 0, paused: false});
+    let root = stack(x: 40, y: 40, width: 720, height: 340, background: "#182536", modal: true);
+    let result = completion(owner: root);
+    let timer = clock(owner: root);
+    let hint = text("Match the pattern: ON, OFF, ON", x: 32, y: 24, font_size: 28);
+    let pulse = run(repeat(sequence(tween(hint, opacity: 0.55, duration: 0.8),
+        tween(hint, opacity: 1, duration: 0.8))), owner: root);
+    root.add(hint);
+    for index in 0..3 {
+        root.add(button(["A", "B", "C"][index], x: 32 + index * 224, y: 84,
+            width: 208, height: 128, decorated: false, font_size: 42,
+            color: "#ffffff", enabled: derive(|| !state.paused),
+            background: derive(|| if state.lights[index] { "#439b8e" } else { "#344458" }),
+            on_click: || {
+                state.lights[index] = !state.lights[index];
+                let next = (index + 1) % 3;
+                state.lights[next] = !state.lights[next];
+                state.moves += 1;
+                if state.lights[0] && !state.lights[1] && state.lights[2] {
+                    result.resolve({moves: state.moves, seconds: timer.elapsed});
+                }
+            }));
+    }
+    root.add(text(derive(|| f"Moves: {state.moves}  —  Each switch also flips its right neighbor."),
+        x: 32, y: 228, font_size: 18));
+    root.add(row(x: 32, y: 274, gap: 16) {
+        button(derive(|| if state.paused { "Resume" } else { "Pause" }), on_click: || {
+            state.paused = !state.paused;
+            if state.paused { pause(timer); pause(pulse); }
+            else { resume(timer); resume(pulse); }
+        });
+        button("Leave puzzle", on_click: || root.remove());
+    });
+    return {node: root, result: result};
+}
+
+fn main() {
+    game.configure(title: "A puzzle inside a story", width: 800, height: 520,
+        fonts: ["fonts/body.ttf"], text_speed: 0);
+    let dialogue = game.dialogue();
+    let screen = stack(width: 800, height: 520, background: "#101923") {
+        stack(x: 40, y: 400, width: 720, height: 96, background: "#25384b",
+            visible: bind(dialogue.active)) {
+            text(value: bind(dialogue.text), reveal: bind(dialogue.reveal),
+                x: 24, y: 20, width: 672, font_size: 23, color: "#ffffff");
+        }
+    };
+    stage.replace(screen);
+    narrator("The door needs two green lights. Try the switches.");
+    let puzzle = switch_puzzle();
+    screen.add(puzzle.node);
+    let mut answer = null;
+    try {
+        answer = await puzzle.result;
+        puzzle.node.remove();
+    } catch cancelled {
+        // This component only resolves or is cancelled by removing its owner.
+    }
+    if answer == null { narrator("We leave the puzzle for another day."); }
+    else { narrator(f"The door opens after {answer.moves} moves."); }
+}
