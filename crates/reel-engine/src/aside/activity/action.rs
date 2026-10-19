@@ -190,7 +190,7 @@ pub(in crate::aside) fn tween(
     read_limit: usize,
 ) -> Result<Value, AdapterError> {
     let target = args[0];
-    let offset = stage.property_offset(heap, target)?;
+    stage.animation_target(heap, target)?;
     let duration = stage::number(args[1])?;
     if duration < 0. {
         return Err(AdapterError::Input("duration must be nonnegative"));
@@ -209,7 +209,8 @@ pub(in crate::aside) fn tween(
         }
         stage::validate_layout_property(heap, index as u32, value)?;
         stage::number(value)?;
-        heap.array_push(goals, Value::int(i64::from(offset) + index as i64))?;
+        let field = stage.animation_field(heap, target, index)?;
+        heap.array_push(goals, Value::int(i64::from(field)))?;
         heap.array_push(goals, value)?;
     }
     let common = NodeProperty::PROPERTIES

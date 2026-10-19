@@ -649,6 +649,14 @@ impl SessionVm {
                 self.dispatch_scope(ticket)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
+            "reel::scope::override" => {
+                self.dispatch_scope_override(ticket)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
+            "reel::override::remove" => {
+                self.dispatch_override_remove(ticket)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
             "reel::scope::add" => {
                 self.dispatch_scope_add(ticket)?;
                 Ok(NativeDispatch::Ready { work: 1 })

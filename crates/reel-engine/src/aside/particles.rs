@@ -512,13 +512,12 @@ impl SessionVm {
             ));
         }
         let completion = duration.map(|duration| Completion::new(&config, duration));
-        // Read current authored dimensions, including writes since the last projection.
-        let offset = self.stage.property_offset(self.vm.heap(), target)?;
+        // Capture current effective dimensions, including scope overrides and
+        // writes since the last stage projection.
         let dimension = |field: stage::NodeProperty| -> Result<f64, AdapterError> {
-            let value = self.vm.heap().host_property(aside_vm::PropertyId {
-                host: target,
-                field: offset + field.index() as u32,
-            })?;
+            let value = self
+                .stage
+                .effective_property(self.vm.heap(), target, field)?;
             if value.tag() == ValueTag::Null {
                 Ok(0.)
             } else {

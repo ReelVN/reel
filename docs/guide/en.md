@@ -575,7 +575,7 @@ await run(sequence(delay(0.5), tween(panel, opacity: 0, duration: 0.3)));
 
 ## 5 Managing Temporary Scenes with Scopes
 
-Scope ownership of tasks, activities, waits and temporary nodes is implemented. Property overrides and additive offsets remain planned.
+Scope ownership of tasks, activities, waits, temporary nodes and property overrides is implemented. Additive offsets remain planned.
 
 scope executes an ordinary closure within the current story call chain. Its body can deliver dialogue, wait and call other functions. Exiting retires work owned by that scope. Temporary scenes join the same lifetime management as follows:
 ```aside
@@ -587,8 +587,17 @@ fn show_cg(view) {
 }
 ```
 The CG appears at the top of picture and is removed when the player advances and the scope exits. s.add(parent, node, index: 0) chooses an insertion position and returns the original node. Early page removal, scene replacement and exit after loading a save use the same retirement rules.
-s.add(parent, node) mounts a temporary subtree, and s.run(action) starts an activity owned by this scope. The planned s.override(node, props...) will create an animatable override layer, while s.offset(node) will create an independent additive x/y offset. Ordinary node.add continues to use the explicit parent node's lifetime; being inside a scope does not silently change its meaning.
+s.add(parent, node) mounts a temporary subtree, and s.run(action) starts an activity owned by this scope. s.override(node, properties) creates an animatable override layer. The planned s.offset(node) will create an independent additive x/y offset. Ordinary node.add continues to use the explicit parent node's lifetime; being inside a scope does not silently change its meaning.
 Normal return, exceptions, and scene exit all trigger synchronous, idempotent host cleanup. The body explicitly waits for any exit animation. Scopes can be nested. A save records the current call position, activities and temporary subtrees; after restoration, execution continues in the same body, then releases resources under the same rules. Ordinary writes to game variables retain their application meaning. scope manages only explicitly registered temporary effects.
+Property overrides use a record so explicit null retains its meaning. Animate over a read-only derive without saving and writing back an old value:
+```aside
+scope(body: |s| {
+    let effect = s.override(panel, {opacity: 0.4, width: null});
+    await s.run(tween(effect, opacity: 1, duration: 0.3));
+    await game.advance();
+});
+```
+Node properties remain base values; effect properties belong to this layer. Drawing, layout, hit testing and geometry use the effective value. The last created active layer wins per field; editing an older layer does not change its order. Base bindings and hidden animations keep updating, so removal exposes the latest result. effect.remove() removes a layer early; scope exit or target retirement also removes it. Common layout and appearance fields are supported, and the token only exposes fields supplied at creation. Control values, callbacks, read-only interaction states and camera/scroll-specific fields are excluded. Layers animate independently; writers to the same field or final binding source still use normal activity conflict rules. Additive s.offset remains planned.
 By default, scope lives with the current task. Use scope(owner: node, body: ...) when it should end with a particular node. If that node ends first, only the scope region is cancelled, and ScopeCancelled is raised at the outer call site. Main-story code that is still alive can catch it outside the scope. Code involving invalid nodes within the region ends, and the host performs cleanup. If the current task itself is cancelled, the entire task ends.
 visible=false hides the subtree and removes it from hit testing and focus; enabled=false keeps it visible but disables interaction; opacity changes only transparency. Use stage.replace(new_root) for permanent scene changes and a container's replace(new_child) for permanent local replacements.
 
@@ -689,7 +698,7 @@ let card = button("Sketch", on_interaction: |event| {
 
 Images using the same resource are shared by the player. The wgpu backend reuses submitted GPU images, so changes to text or hover state do not require uploading the whole interface again. Cached images are released on resource retirement or when space is needed; authors do not manage GPU handles.
 
-Ordinary functions, style spreading, node property updates, transforms and finite animation are available. Temporary scope overrides remain unimplemented.
+Ordinary functions, style spreading, node property updates, transforms, finite animation and temporary scope overrides are available.
 
 Reusable styles are ordinary data; component functions decide how to apply them to their nodes. Start with defaults, then override them with variants and explicit arguments. Defaults apply only to missing fields; false, 0, and null retain the author's explicit meaning. Temporary scope overrides take precedence over a node's underlying properties.
 ```aside
@@ -730,7 +739,7 @@ scope(body: |s| {
 });
 ```
 
-Stopping an ordinary animation leaves its properties at the current values. Independent property overrides and additive offsets with automatic restoration remain planned. Removing an owner node cancels the scope's inner work; the outer catch receives "ScopeCancelled" and can continue. Inner script finally blocks are skipped, while outer finally blocks execute normally. Cancelling the outer task cleans up its scopes. Work with another explicit owner follows that owner's lifetime. Scopes, waits, activities and cancellation cleanup survive same-package saves.
+Stopping an ordinary animation leaves its properties at the current values. Scope overrides are removed on exit, exposing the latest base values. Additive offsets remain planned. Removing an owner node cancels the scope's inner work; the outer catch receives "ScopeCancelled" and can continue. Inner script finally blocks are skipped, while outer finally blocks execute normally. Cancelling the outer task cleans up its scopes. Work with another explicit owner follows that owner's lifetime. Scopes, waits, activities and cancellation cleanup survive same-package saves.
 
 [author_scope.aside](../../examples/author_scope.aside) uses one button to start animation and background work, and another to stop the whole effect through one task handle. Run `reel dev examples/author_scope.aside`.
 

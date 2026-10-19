@@ -173,7 +173,7 @@ impl Build {
         let action_kind = kind(heap, current)?;
         if action_kind == action::Kind::Tween {
             let target = payload(heap, action, TARGET)?;
-            stage.id(heap, target)?;
+            stage.animation_target(heap, target)?;
             heap.track_host_writes(target)?;
             let goals = payload(heap, action, GOALS)?;
             for i in (0..heap.sequence_len(goals)?).step_by(2) {
