@@ -20,6 +20,11 @@ use reel_ui::{
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
+
+/// Selection authorized by the UI's accepted-frame group navigation. Deferred
+/// navigation completes outside the synchronous keyboard/pointer dispatch span.
+#[derive(Debug)]
+pub(crate) struct NavigationSelection(pub NodeChange);
 mod input;
 #[cfg(test)]
 mod projection_tests;
@@ -1653,10 +1658,12 @@ impl Widget for SceneWidget {
         }
         // Control proposals bubble through the same widget ancestors as their actions.
         // Reconcile optimistic values even when the authoritative projection is unchanged.
-        if matches!(
-            action.downcast_ref::<NodeEvent>(),
-            Some(NodeEvent::Change(_) | NodeEvent::Text(_))
-        ) {
+        if action.downcast_ref::<NavigationSelection>().is_some()
+            || matches!(
+                action.downcast_ref::<NodeEvent>(),
+                Some(NodeEvent::Change(_) | NodeEvent::Text(_))
+            )
+        {
             self.sync_dirty = true;
         }
         if self.label.as_ref().is_some_and(|pod| pod.id() == source)
@@ -2326,6 +2333,22 @@ impl Widget for SceneWidget {
     }
     fn accepts_focus(&self) -> bool {
         self.is_button() || self.input.is_some()
+    }
+    fn selection_group(&self) -> Option<reel_ui::core::SelectionGroup> {
+        match self.node.kind {
+            NodeKind::Radio {
+                group: Some(id),
+                selected,
+                ..
+            } => Some(reel_ui::core::SelectionGroup { id, selected }),
+            _ => None,
+        }
+    }
+    fn select_group_member(&mut self, ctx: &mut UpdateCtx<'_>, _: &mut PropertiesMut<'_>) {
+        let NodeEvent::Change(change) = self.activate() else {
+            unreachable!("selection group member is a radio");
+        };
+        ctx.submit_untyped_action(Box::new(NavigationSelection(change)));
     }
     fn accepts_multiple_pointers(&self) -> bool {
         self.input.is_some()

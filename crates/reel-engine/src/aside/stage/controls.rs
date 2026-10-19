@@ -64,8 +64,27 @@ pub(super) fn radio_kind(
             limit,
         )?
         .is_eq(),
+        group: None,
         revision,
     })
+}
+
+pub(super) fn project_group(
+    heap: &Heap,
+    value: Value,
+    kind: &mut NodeKind,
+) -> Result<(), HeapError> {
+    if let NodeKind::Radio { group, .. } = kind {
+        let (source, writable) = heap.property_source(PropertyId {
+            host: value,
+            field: RadioField::Value.index() as u32,
+        })?;
+        *group = writable.then_some(reel_ui::core::SelectionGroupId(
+            heap.handle(source.host)?.key,
+            source.field,
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn validate_radio(heap: &Heap, index: u32, value: Value) -> Result<(), HeapError> {
