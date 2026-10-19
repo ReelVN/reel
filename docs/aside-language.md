@@ -659,7 +659,7 @@ invoke_sync 的累计硬预算规则保持原定义。该路径遇到 ResourceBl
 
 ## Reel 音频宿主绑定
 
-`cargo test -p reel-cli --test project_scenarios` 的源码与 ASB 工程自检使用真实资源读取、解码和混音，通过 48 kHz 双声道离线输出按单调时间消费 PCM；音频完成仍走原来的 await 协议。自检入口必须自行断言并结束，宿主不生成输入或快进。该测试不改变语言、native ABI 或快照格式，也不证明物理音频设备与画面的同步。
+`cargo test -p reel-cli --test project_scenarios` 的源码与 ASB 工程自检使用真实资源读取、解码和混音，通过 48 kHz 双声道离线输出按单调时间消费 PCM；音频完成仍走原来的 await 协议。自检入口必须自行断言并结束，宿主不生成输入或快进。外部工程每轮源码/ASB运行默认限时90秒，可用 `REEL_SCENARIO_TIMEOUT_SECS` 设置大于0的u64秒数；非法值直接报错，不回退。内置测试固定90秒，不受该环境变量影响。该测试不改变语言、native ABI 或快照格式，也不证明物理音频设备与画面的同步。
 
 Reel 的外围名称环境包含 `audio` 命名空间，独立 Aside 不注册音频名称。`audio.play(source, looping:false, volume:1, owner:null, group:"effects", pan:0, fade_in:0, start:0, loop_start:0, loop_end:null)` 使用 ABI v3，`audio.volume(activity,value,duration:0)` 使用 ABI v2；`audio.seek(activity,seconds)`、`audio.position(activity)`、`audio.group_volume(group,value,duration:0)`、`audio.pan(activity,value,duration:0)`、`audio.stop(activity,fade:0)` 使用 ABI v1。ASB 格式仍为 Aside 字节码，音频调用产物随签名重新编译。
 

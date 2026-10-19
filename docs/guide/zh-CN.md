@@ -1296,10 +1296,11 @@ Windows 播放器向系统提交双声道音频，默认设备配置为多声道
 
 完整例子：[author_audio.aside](../../examples/author_audio.aside)，从 examples 资源根运行，与其他作者示例使用相同字体配置。示例 chime.wav 是仓库自制的短正弦提示音。
 
-项目可提供自行断言并结束的 Aside 检查入口，通过下面的命令分别运行源码和 ASB。宿主使用项目资源根、独立临时存档、真实 CPU 布局与接受帧，并默认启用真实音频解码和混音；48 kHz 双声道 PCM 按单调经过时间离线消费，不发声。每轮最多 90 秒，不自动点击、选择或快进。音频等待、位置、队列和恢复可在此检查，实机音画同步仍需在设备上验收。
+项目可提供自行断言并结束的 Aside 检查入口，通过下面的命令分别运行源码和 ASB。宿主使用项目资源根、独立临时存档、真实 CPU 布局与接受帧，并默认启用真实音频解码和混音；48 kHz 双声道 PCM 按单调经过时间离线消费，不发声。源码和 ASB 每轮默认最多 90 秒；长场景可用 `REEL_SCENARIO_TIMEOUT_SECS` 设置秒数上限，必须是大于 0 的 u64 整数，非法值直接报错。此变量只影响外部工程检查，内置测试固定 90 秒。宿主不自动点击、选择或快进。音频等待、位置、队列和恢复可在此检查，实机音画同步仍需在设备上验收。
 
 ```powershell
 $env:REEL_SCENARIO = "path/to/project/check.aside"
+$env:REEL_SCENARIO_TIMEOUT_SECS = "600"
 cargo test -p reel-cli --test project_scenarios external_project_scenario -- --ignored --nocapture
 ```
 

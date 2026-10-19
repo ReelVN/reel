@@ -22,7 +22,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn execute_project(path: &Path) -> Vec<audio::AudioStats> {
+fn execute_project(path: &Path, timeout: Duration) -> Vec<audio::AudioStats> {
     let loaded =
         reel_cli::project::load(path).unwrap_or_else(|error| panic!("{:?}", error.failure));
     let checked = loaded.check().unwrap();
@@ -81,8 +81,8 @@ fn execute_project(path: &Path) -> Vec<audio::AudioStats> {
                 )
                 .unwrap();
             assert!(
-                started.elapsed() < Duration::from_secs(90),
-                "{kind} scenario did not finish: {}; title={:?}, frame={frame}, progress={progress:?}, state={:?}, capture={}, tasks={}, activities={}, presentation={:?}",
+                started.elapsed() < timeout,
+                "{kind} scenario did not finish within {timeout:?}: {}; title={:?}, frame={frame}, progress={progress:?}, state={:?}, capture={}, tasks={}, activities={}, presentation={:?}",
                 path.display(),
                 runtime.driver().adapter().game_settings().title,
                 runtime.driver().state(),
@@ -161,7 +161,7 @@ fn project_scenario_executes_assertions_across_save_restore_and_new_session() {
     "#,
     )
     .unwrap();
-    execute_project(&source);
+    execute_project(&source, Duration::from_secs(90));
 }
 
 #[test]
@@ -211,7 +211,7 @@ fn project_scenario_mixes_audio_queue_across_save_restore_and_new_session() {
             }
         }
     "#).unwrap();
-    for mixed in execute_project(&source) {
+    for mixed in execute_project(&source, Duration::from_secs(90)) {
         assert!(mixed.frames > 0, "offline device did not consume frames");
         assert!(
             mixed.peak > 0.01,
@@ -248,5 +248,19 @@ fn offline_audio_clock_preserves_fractional_time_and_releases_retired_outputs() 
 #[ignore = "requires REEL_SCENARIO pointing to a self-checking project entry"]
 fn external_project_scenario() {
     let path = std::env::var_os("REEL_SCENARIO").expect("set REEL_SCENARIO to an Aside entry file");
-    execute_project(Path::new(&path));
+    let timeout = std::env::var_os("REEL_SCENARIO_TIMEOUT_SECS")
+        .map(|value| {
+            let seconds = value
+                .to_str()
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|&seconds| seconds > 0)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "REEL_SCENARIO_TIMEOUT_SECS must be a positive u64 integer, got {value:?}"
+                    )
+                });
+            Duration::from_secs(seconds)
+        })
+        .unwrap_or(Duration::from_secs(90));
+    execute_project(Path::new(&path), timeout);
 }

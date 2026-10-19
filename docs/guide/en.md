@@ -1295,10 +1295,11 @@ By default, sound belongs to the current callback node, or to the session in the
 
 The Windows player submits stereo audio to the system, including when the default output device uses multiple channels.
 
-Provide an Aside check entry that makes its own assertions and finishes, then run the command below to check both source and ASB. The host uses the project resource root, isolated temporary saves, real CPU layout and accepted frames, with actual audio decoding and mixing enabled by default. It consumes 48 kHz stereo PCM offline according to monotonic elapsed time, without audible output. Each run has a 90-second limit and supplies no automatic clicks, choices or skipping. This can check audio waits, positions, queues and restoration; audiovisual synchronization still requires device testing.
+Provide an Aside check entry that makes its own assertions and finishes, then run the command below to check both source and ASB. The host uses the project resource root, isolated temporary saves, real CPU layout and accepted frames, with actual audio decoding and mixing enabled by default. It consumes 48 kHz stereo PCM offline according to monotonic elapsed time, without audible output. Each source and ASB run defaults to a 90-second limit. For longer scenarios, set `REEL_SCENARIO_TIMEOUT_SECS` to a positive u64 integer in seconds; invalid values fail immediately. This variable affects external project checks only; built-in tests keep their fixed 90-second limit. The host supplies no automatic clicks, choices or skipping. This can check audio waits, positions, queues and restoration; audiovisual synchronization still requires device testing.
 
 ```powershell
 $env:REEL_SCENARIO = "path/to/project/check.aside"
+$env:REEL_SCENARIO_TIMEOUT_SECS = "600"
 cargo test -p reel-cli --test project_scenarios external_project_scenario -- --ignored --nocapture
 ```
 
