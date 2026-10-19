@@ -52,7 +52,8 @@ pub struct VirtualChildren<'a> {
     pub revision: u64,
     pub total: usize,
     pub children: &'a [VirtualChild],
-    pub target: Option<(usize, bool)>,
+    pub target: Option<(u64, usize, bool)>,
+    pub target_ready: bool,
 }
 
 impl WidgetId {
@@ -218,7 +219,7 @@ pub trait Widget: AsDynWidget + Any {
         &mut self,
         ctx: &mut UpdateCtx<'_>,
         props: &mut PropertiesMut<'_>,
-        target: Option<(usize, bool)>,
+        target: Option<(u64, usize, bool)>,
     ) {
     }
 

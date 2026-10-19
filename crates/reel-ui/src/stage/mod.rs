@@ -83,6 +83,8 @@ pub struct NodeLink {
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NodeScroll {
+    /// True only for a newer user scroll or focus-navigation gesture.
+    pub input: bool,
     pub node: NodeId,
     pub requested: Vec2,
     pub offset: Vec2,
@@ -98,7 +100,11 @@ pub struct VirtualRow {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VirtualListNavigation {
+    pub request: u64,
+    pub ready: bool,
+    /// Requested index identifies the UI gesture; resolved_index follows its key.
     pub index: usize,
+    pub resolved_index: usize,
     pub forward: bool,
 }
 /// Compact author-stage projection; only these rows own mounted component trees.

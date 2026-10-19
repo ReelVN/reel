@@ -141,7 +141,7 @@ fn settle(heap: &mut Heap, object: Value, state: State, value: Value) -> Result<
     heap.set_host_payload(object, Slot::Value as u32, value)?;
     heap.set_host_payload(object, Slot::State as u32, Value::int(state as i64))?;
     heap.set_host_payload(object, Slot::Owner as u32, Value::NULL)?;
-    if kind(heap, object)? == Kind::Particle {
+    if matches!(kind(heap, object)?, Kind::Particle | Kind::Presentation) {
         heap.set_host_payload(object, Slot::Target as u32, Value::NULL)?;
     }
     Ok(())
@@ -214,6 +214,53 @@ fn response(heap: &mut Heap, object: Value) -> Result<Option<Completion>, Adapte
     })
 }
 impl Results {
+    /// One producer root per result, including while its presentation is disarmed.
+    pub(super) fn create_presentation(
+        &mut self,
+        vm: &mut Vm,
+        root_owner: aside_vm::RootOwner,
+        owner: Value,
+    ) -> Result<Value, AdapterError> {
+        let result = self.create(vm, owner, Kind::Presentation)?;
+        reserve_queue(
+            vm.heap(),
+            &mut self.presentations,
+            &mut self.presentation_charge,
+        )?;
+        let root = vm.heap_mut().add_root(root_owner, RootKind::Host, result)?;
+        self.presentations.push_back(root);
+        self.changed();
+        Ok(result)
+    }
+    pub(super) fn arm_presentation(
+        &mut self,
+        vm: &mut Vm,
+        result: Value,
+        value: Value,
+    ) -> Result<u64, AdapterError> {
+        let sequence = self
+            .requested
+            .checked_add(1)
+            .ok_or(AdapterError::Input("presentation sequence exhausted"))?;
+        let barrier = vm
+            .heap_mut()
+            .alloc_array(&[Value::int(sequence as i64), value])?;
+        vm.heap_mut()
+            .set_host_payload(result, Slot::Target as u32, barrier)?;
+        self.requested = sequence;
+        self.changed();
+        Ok(sequence)
+    }
+    pub(super) fn disarm_presentation(
+        &mut self,
+        vm: &mut Vm,
+        result: Value,
+    ) -> Result<(), AdapterError> {
+        vm.heap_mut()
+            .set_host_payload(result, Slot::Target as u32, Value::NULL)?;
+        self.changed();
+        Ok(())
+    }
     pub(super) fn create_window(
         &mut self,
         vm: &mut Vm,
@@ -270,7 +317,11 @@ impl Results {
         ];
         let object = heap.alloc_host(
             fields,
-            &slots[..if kind == Kind::Particle { 5 } else { 4 }],
+            &slots[..if matches!(kind, Kind::Particle | Kind::Presentation) {
+                5
+            } else {
+                4
+            }],
             if kind == Kind::Operation {
                 None
             } else {
@@ -373,10 +424,14 @@ impl Results {
             let object = vm.heap().root_value(root)?;
             let heap = vm.heap_mut();
             let pending = state(heap, object)? == State::Pending;
-            let request = heap.host_payload(object, Slot::Value as u32)?.as_int();
-            let keep = pending && request.is_some_and(|request| request as u64 > self.presented);
-            if pending && !keep {
-                settle(heap, object, State::Resolved, Value::NULL)?;
+            let barrier = heap.host_payload(object, Slot::Target as u32)?;
+            let ready = pending
+                && barrier.tag() != ValueTag::Null
+                && heap.sequence_get(barrier, 0)?.as_int().unwrap() as u64 <= self.presented;
+            let keep = pending && !ready;
+            if ready {
+                let value = heap.sequence_get(barrier, 1)?;
+                settle(heap, object, State::Resolved, value)?;
             }
             self.presentations.pop_front();
             if keep {
@@ -563,32 +618,16 @@ impl SessionVm {
                 } else {
                     Kind::Completion
                 };
-                let result = self.results.create(&mut self.vm, owner, kind)?;
                 if presentation {
-                    reserve_queue(
-                        self.vm.heap(),
-                        &mut self.results.presentations,
-                        &mut self.results.presentation_charge,
-                    )?;
-                    let request = self
-                        .results
-                        .requested
-                        .checked_add(1)
-                        .ok_or(AdapterError::Input("presentation sequence exhausted"))?;
-                    self.vm.heap_mut().set_host_payload(
-                        result,
-                        Slot::Value as u32,
-                        Value::int(request as i64),
-                    )?;
-                    let root =
-                        self.vm
-                            .heap_mut()
-                            .add_root(self.root_owner, RootKind::Host, result)?;
-                    self.results.presentations.push_back(root);
-                    self.results.changed();
-                    self.results.requested = request;
+                    let result =
+                        self.results
+                            .create_presentation(&mut self.vm, self.root_owner, owner)?;
+                    self.results
+                        .arm_presentation(&mut self.vm, result, Value::NULL)?;
+                    result
+                } else {
+                    self.results.create(&mut self.vm, owner, kind)?
                 }
-                result
             } else {
                 let kind = kind(self.vm.heap(), object)?;
                 if kind != Kind::Completion
@@ -606,7 +645,11 @@ impl SessionVm {
                         "reel::completion::cancel" => State::Cancelled,
                         _ => unreachable!(),
                     };
+                    let owner = self.vm.heap().host_payload(object, Slot::Owner as u32)?;
                     settle(self.vm.heap_mut(), object, state, value)?;
+                    if state == State::Cancelled && owner.tag() != ValueTag::Null {
+                        self.virtual_result_cancelled(owner, object)?;
+                    }
                     self.results.changed();
                 }
                 Value::bool(pending)

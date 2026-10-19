@@ -724,6 +724,7 @@ struct SceneWidget {
     scroll_request: Option<Vec2>,
     scroll_feedback: Option<(Vec2, Size, Size)>,
     scroll_baseline: Vec2,
+    scroll_input: bool,
     virtual_list: Option<Box<VirtualListState>>,
     #[cfg(test)]
     layouts: usize,
@@ -917,6 +918,7 @@ impl SceneWidget {
                 _ => None,
             },
             scroll_feedback: None,
+            scroll_input: false,
             scroll_baseline: match view.node.kind {
                 NodeKind::Scroll { offset, .. } => offset,
                 _ => Vec2::ZERO,
@@ -1372,16 +1374,25 @@ impl Widget for SceneWidget {
             revision: list.revision,
             total: list.total_rows,
             children: &self.virtual_list.as_ref()?.children,
-            target: list.navigation.map(|n| (n.index, n.forward)),
+            target: list
+                .navigation
+                .map(|n| (n.request, n.resolved_index, n.forward)),
+            target_ready: list.navigation.is_some_and(|n| n.ready),
         })
     }
     fn request_virtual_child(
         &mut self,
         ctx: &mut UpdateCtx<'_>,
         _: &mut PropertiesMut<'_>,
-        target: Option<(usize, bool)>,
+        target: Option<(u64, usize, bool)>,
     ) {
-        let target = target.map(|(index, forward)| VirtualListNavigation { index, forward });
+        let target = target.map(|(request, index, forward)| VirtualListNavigation {
+            request,
+            ready: false,
+            index,
+            resolved_index: index,
+            forward,
+        });
         let state = self
             .virtual_list
             .as_mut()
@@ -1415,6 +1426,7 @@ impl Widget for SceneWidget {
             .scroll
             .reveal(rect - Vec2::splat(self.node.props.padding));
         if delta != Vec2::ZERO {
+            self.scroll_input = true;
             ctx.request_compose();
         }
         rect + delta
@@ -1428,6 +1440,7 @@ impl Widget for SceneWidget {
     ) {
         if matches!(self.node.kind, NodeKind::Scroll { .. }) {
             if self.scroll.pointer(ctx, event) {
+                self.scroll_input = true;
                 ctx.request_compose();
             }
             return;
@@ -2046,6 +2059,7 @@ impl Widget for SceneWidget {
             );
             if self.scroll_feedback != Some(metrics) || self.scroll_baseline != metrics.0 {
                 ctx.submit_action::<NodeEvent>(NodeEvent::Scroll(reel_ui::stage::NodeScroll {
+                    input: std::mem::take(&mut self.scroll_input),
                     node: self.node.id,
                     requested: self.scroll_baseline,
                     offset: metrics.0,

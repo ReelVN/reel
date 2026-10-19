@@ -109,7 +109,7 @@ impl StageBinding {
             let property = PropertyId { host, field };
             let current = number(heap.host_property(property)?)?;
             // A newer script write wins over feedback from the previous projection.
-            if current == requested && current != actual {
+            if (event.input || current == requested) && current != actual {
                 heap.write_host_property(property, Value::float(actual), true)?;
                 changed = true;
             }

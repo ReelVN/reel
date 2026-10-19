@@ -411,3 +411,84 @@ fn keyboard_edges_repeat_and_cancel_while_focused_editors_keep_ime() {
         driver.cancel().unwrap();
     }
 }
+
+#[test]
+fn virtual_scroll_to_source_and_asb_complete_only_after_real_layout_and_acceptance() {
+    use reel_core::identity::{FrameId, SurfaceEpoch};
+    use reel_ui::bridge::{PresentationNotice, PresentationOutcome};
+    let source = r#"fn main(){
+        let data=model({items:[],done:false});let mut i=0;while i<1000{data.items.append(i);i+=1;}
+        let items=list(||data.items,key:|x|x,virtual:true,build:|row|column(gap:4){
+            button(f"row {row.value}",height:30,width:300);
+            text("description",height:20+row.value%3*15);
+        });
+        stage.replace(stack(width:600,height:400){
+            scroll(width:400,height:180){items};
+            button("jump",x:450,y:0,width:100,height:40,on_click:|e|{
+                let row=await items.scroll_to(980,align:"center");row.opacity=0.75;data.done=true;
+            });
+            text(value:derive(||if data.done{"done"}else{"waiting"}),y:240);
+        });narrator("ready");
+    }"#;
+    let checked = reel_cli::check(source, "position.aside").unwrap();
+    let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
+    for compiled in [
+        reel_cli::into_story(checked, "main::main").unwrap(),
+        reel_cli::decode_story(&artifact.bytes).unwrap(),
+    ] {
+        let mut driver = AsideSessionUi::from_compiled(
+            Session::new(SessionId(1), Epoch(1)).unwrap(),
+            compiled,
+            "en",
+            VmLimits::default(),
+        )
+        .unwrap();
+        settle(&mut driver);
+        let (mut bridge, root) = bridge(&driver);
+        for frame in 1..6 {
+            present(&mut driver, &mut bridge, root, frame);
+            settle(&mut driver);
+        }
+        click_at(&mut driver, &mut bridge, 470., 20.);
+        for frame in 6..14 {
+            driver.sync(&mut bridge, root).unwrap();
+            let recording = bridge.record(FrameId(frame)).unwrap();
+            bridge.resolve(PresentationNotice::new(
+                recording.key(),
+                SurfaceEpoch(1),
+                PresentationOutcome::Skipped,
+            ));
+            settle(&mut driver);
+            assert!(
+                !driver
+                    .adapter()
+                    .stage()
+                    .nodes()
+                    .any(|n| n.kind == NodeKind::Text("done".into()))
+            );
+        }
+        for frame in 14..20 {
+            present(&mut driver, &mut bridge, root, frame);
+            settle(&mut driver);
+        }
+        assert!(
+            driver
+                .adapter()
+                .stage()
+                .nodes()
+                .any(|n| n.kind == NodeKind::Text("done".into()))
+        );
+        let stage = driver.adapter().stage();
+        let list = stage
+            .nodes()
+            .find(|n| matches!(n.kind, NodeKind::VirtualList(_)))
+            .unwrap();
+        let NodeKind::VirtualList(view) = &list.kind else {
+            unreachable!()
+        };
+        let row = view.rows.iter().find(|r| r.index == 980).unwrap();
+        assert_eq!(stage.node(row.node).unwrap().props.opacity, 0.75);
+        assert!(stage.nodes().count() < 80);
+        driver.cancel().unwrap();
+    }
+}

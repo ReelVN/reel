@@ -276,7 +276,7 @@ fn virtual_list_navigation_waits_for_accepted_rows_and_cancels_old_confirmation(
         );
         let next = f.ui.handle_text(&mut f.bridge, advance()).unwrap();
         assert!(next.events.iter().any(|event| matches!(event,
-            NodeEvent::VirtualList(feedback) if feedback.navigation == Some(VirtualListNavigation { index: 1, forward: true })
+            NodeEvent::VirtualList(feedback) if feedback.navigation == Some(VirtualListNavigation { request: 1, ready: false, index: 1, resolved_index: 1, forward: true })
         )));
         assert!(
             next.events
@@ -323,7 +323,10 @@ fn virtual_list_navigation_waits_for_accepted_rows_and_cancels_old_confirmation(
             },
         ]);
         view.navigation = Some(VirtualListNavigation {
+            request: 1,
+            ready: true,
             index: 1,
+            resolved_index: 1,
             forward: true,
         });
         f.stage
@@ -451,7 +454,7 @@ fn virtual_list_navigation_finds_controls_beyond_initial_nonfocusable_rows() {
         };
         let request = f.ui.handle_text(&mut f.bridge, event).unwrap();
         assert!(request.events.iter().any(|event| matches!(event,
-            NodeEvent::VirtualList(feedback) if feedback.navigation == Some(VirtualListNavigation { index: 1, forward: true })
+            NodeEvent::VirtualList(feedback) if feedback.navigation == Some(VirtualListNavigation { request: 1, ready: false, index: 1, resolved_index: 1, forward: true })
         )));
         for index in [1, 2] {
             let kind = if index == 1 {
@@ -488,6 +491,9 @@ fn virtual_list_navigation_finds_controls_beyond_initial_nonfocusable_rows() {
             view.rows = rows.into();
             view.revision += 1;
             view.navigation = Some(VirtualListNavigation {
+                request: index as u64,
+                ready: true,
+                resolved_index: index,
                 index,
                 forward: true,
             });
@@ -501,7 +507,7 @@ fn virtual_list_navigation_finds_controls_beyond_initial_nonfocusable_rows() {
             if index == 1 {
                 assert!(f.bridge.root().focused_widget().is_none());
                 assert!(feedback.iter().any(|event| matches!(event,
-                    NodeEvent::VirtualList(feedback) if feedback.navigation == Some(VirtualListNavigation { index: 2, forward: true })
+                    NodeEvent::VirtualList(feedback) if feedback.navigation == Some(VirtualListNavigation { request: 2, ready: false, index: 2, resolved_index: 2, forward: true })
                 )), "nonfocusable rows continue only after acceptance");
             } else {
                 assert_eq!(
@@ -2748,3 +2754,5 @@ fn subtree_invert_updates_cached_composition_without_relayout() {
     );
     assert_eq!(f.layouts(), layouts);
 }
+
+mod virtual_scroll_cost;
