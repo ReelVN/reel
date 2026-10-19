@@ -12,6 +12,7 @@ fn main() {
     let settings = model({sound: true, captions: true, language: "zh-CN"});
     stage.replace(column(padding: 28, gap: 16) {
         text("Reading preferences", font_size: 32);
+        text("Tab visits each group once. Arrow keys select a language.", font_size: 18);
         checkbox("Sound", value: bind(settings.sound), width: 260, height: 40);
         checkbox("Captions", value: bind(settings.captions), width: 260, height: 40);
         row(gap: 12) {

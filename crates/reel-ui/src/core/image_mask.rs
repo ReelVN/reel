@@ -1,29 +1,24 @@
 // Copyright 2026 Reel contributors
 // SPDX-License-Identifier: Apache-2.0
-
+use crate::stage::MaskProgram;
 use kurbo::Rect;
 use peniko::ImageData;
+use std::sync::Arc;
 
-/// A retained image mask applied to a widget's complete painted subtree.
-///
-/// Bounds are in the widget's content coordinates. The image shares its pixel
-/// storage with the normal resource registry; changing progress does not upload it.
+/// Retained scalar coverage applied once to a widget's painted subtree.
 #[derive(Clone, Debug)]
 pub struct PaintImageMask {
-    pub image: ImageData,
+    pub program: Arc<MaskProgram>,
+    pub images: Arc<[ImageData]>,
     pub bounds: Rect,
-    pub progress: f32,
-    pub softness: f32,
-    pub invert: bool,
+    /// progress, softness, x, y, and the string shorthand's invert flag.
+    pub parameters: [f32; 5],
 }
-
-/// Threshold parameters at a particular use of a retained image mask.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct MaskProgress {
-    /// Zero hides the subtree; one reveals it completely.
-    pub progress: f32,
-    /// Nonnegative transition width; zero selects a hard edge.
-    pub softness: f32,
-    /// Reverse encoded image gray before applying the threshold.
-    pub invert: bool,
+impl PaintImageMask {
+    pub fn is_identity(&self) -> bool {
+        self.program.is_image_threshold() && self.parameters[0] >= 1.
+    }
+    pub fn hides_all(&self) -> bool {
+        self.program.is_image_threshold() && self.parameters[0] <= 0.
+    }
 }

@@ -401,8 +401,6 @@ await run(tween(view, camera_x: 660, camera_y: 210, zoom: 1.8,
 
 四个取景属性支持赋值、bind/derive 和 tween，沿用活动的取消和所有权规则。把 HUD 作为相机外的兄弟节点即可保持固定；相机也能嵌套组合。移动不会重新排版文字或重新加载图片；绘制与指针坐标共用已接受帧的变换和裁剪。完整的 [author_camera.aside](../../examples/author_camera.aside) 仅需提供 `fonts/body.ttf`，沿用第一节 dev/build/run 命令。这里是二维相机，尚未实现透视投影。
 
-
-
 画面的节点、绘制记录和嵌套层级随实际内容增长。输入路径在新画面发布前扩容，已有按下、拖动和释放继续对应正确的节点。实际内存预算与 GPU 纹理尺寸由运行宿主和设备管理。
 以下房间示例是完整画面的设计目标，尚不能直接运行：它依赖未接通的 game:: 模块和自定义对话视图。背景最底，立绘、CG 和作者对话 UI 依次叠放；函数把剧情需要操作的部分命名返回。
 ```aside
@@ -747,6 +745,19 @@ await run(tween(reveal, mask_progress: 1, duration: 1.2), owner: reveal);
 reveal.mask = null;
 ```
 mask_progress 和 mask_softness 使用普通 derive/tween。完整示例：[author_image_mask.aside](../../examples/author_image_mask.aside)。进度为 1 时跳过遮罩合成；用完可将 mask 设为 null 释放资源引用。遮罩不改变逻辑命中，需要禁用交互时使用 enabled/visible。遮罩需要完整 PNG/JPEG，不接受分块 .reel-image。
+
+`mask.alpha` 采样图片 alpha，`mask.gray` 采样编码 sRGB 灰度。用 `mask.add`、`subtract`、`multiply`、`pow`、`clamp` 和 `smoothstep` 组合采样值。采样接受 `x`、`y`、`scale_x`、`scale_y` 及 `repeat`（`"none"`、`"x"`、`"y"`、`"both"`）；坐标按蒙版节点归一化，随节点变换。`mask.param("x")` 和 `mask.param("y")` 读取可动画的 `mask_x`、`mask_y`，`"progress"` 和 `"softness"` 读取已有对应属性。
+
+```aside
+let edge = mask.alpha("assets/mask-waves.png", x: mask.param("x"), repeat: "x");
+let reveal = stack(width: 640, height: 360, mask: edge, mask_x: 0) {
+    stack(width: 640, height: 360, background: "#2d8aab");
+};
+stage.replace(reveal);
+await run(tween(reveal, mask_x: 1, duration: 3), owner: reveal);
+```
+
+`pow` 先把底数夹到零，指数是有限非负常数，`0^0` 为 1。`clamp` 接受有序常量边界。`smoothstep` 支持倒序边界，相等边界则在该值产生硬阶跃。最终结果夹到 0..1。组合表达式在 `mask_progress: 1` 时仍然生效；参数动画复用表达式结构和图片资源。[author_composed_mask.aside](../../examples/author_composed_mask.aside) 使用随附的两张 alpha 图片展示移动显现效果。
 
 节点 `invert` 将整个子树的合成画面反色，范围 0..1，默认 0；1 完全反色，中间值渐变。颜色按 sRGB 反转，透明度保持不变；对白和菜单放在同级节点即可独立于反色场景。可以直接赋值、derive 或 tween，参数随存档恢复。
 
@@ -1154,7 +1165,7 @@ Rust 宿主使用 `InputDeviceId::{Keyboard, Pointer, Gamepad}`、`InputBindings
 
 ## 数值控件与设置页
 
-`checkbox` 与 `toggle` 接受相同参数，前者显示勾选框，后者显示开关。`radio(option, label: null, value: null, on_change: null, ...)` 表达单选项；让同组的 value 绑定到同一个业务字段，即可自动互斥，无需维护多份布尔值。option 可以修改或绑定；value 未匹配任何选项时不选中任何项。业务值比较与 list key 相同。方向键、手柄方向和 Tab 移动焦点，确认键、鼠标或触摸选择；重复选择不触发 on_change。脚本改值不会触发回调，用户选择先更新绑定再交付 `{target,value}`。
+`checkbox` 与 `toggle` 接受相同参数，前者显示勾选框，后者显示开关。`radio(option, label: null, value: null, on_change: null, ...)` 表达单选项；让同组的 value 绑定到同一个业务字段，即可自动互斥，无需维护多份布尔值。option 可以修改或绑定；value 未匹配任何选项时不选中任何项。业务值比较与 list key 相同。组内导航：Tab/Shift-Tab 整组只停一次，进入选中的可用项，否则首项；组在 Tab 顺序中的位置取其第一个可用节点；方向键和手柄方向按节点顺序直接选择前后项，跳过禁用/隐藏项并在边界循环。虚拟列表先滚动挂载下一逻辑行，接受画面后才选择，不在当前窗口提前循环。到组末尾后回到逻辑首项，反向亦然；跨虚拟列表时进入另一列表的逻辑端点，只构造需要的窗口。Tab 离开组时不为寻找下一停靠点构造虚拟行；跨窗口访问选项使用方向键。确认键、鼠标或触摸也可选择；重复选择不触发 on_change。脚本改值不会抢焦点。脚本改值不会触发回调，用户选择先更新绑定再交付 `{target,value}`。
 
 ```aside
 let settings = model({sound: true, language: "zh-CN"});
@@ -1266,7 +1277,7 @@ fn main() {
 可运行示例：[author_audio_queue.aside](../../examples/author_audio_queue.aside) 用内置音频演示 intro → loop → outro 与连续语音片段；创作时把路径换成自己的素材。
 
 ```aside
-let music = audio.play("assets/intro.ogg", group: "music");
+let mut music = audio.play("assets/intro.ogg", group: "music");
 audio.queue(music, "assets/loop.ogg", looping: true);
 narrator("Continue to leave the loop after this pass.");
 audio.queue(music, "assets/outro.ogg");

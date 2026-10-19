@@ -315,7 +315,7 @@ Reel 节点构造把 children 候选归一化为显式提供的完整组件根�
 
 text_input 的显式高度内文字、选区、光标和 IME 位置共同垂直居中；text 的显式宽度参与自动高度测量。富文本事件链接悬停/聚焦下划线仅重绘。均沿既有宿主属性与输入合同，不新增 Aside 语法或 ABI。
 
-Reel 的 `checkbox(label: null, value: false, on_change: null, ...)` 和 `radio(option, label: null, value: null, on_change: null, ...)` 是普通宿主节点，新增 native ABI 1。checkbox.value 为可写布尔值；radio.value 保存业务值，激活写入 option。共享一个可写绑定即组成单选组，值比较与 list key 相同。脚本赋值静默，用户变更先提交再执行节点所属回调 `{target,value}`；option 更新使旧呈现的选项激活失效。children 与 decorated 仍使用共同舞台，不新增语言语法或 Aside 字节码/ASB 编码。
+Reel 的 `checkbox(label: null, value: false, on_change: null, ...)` 和 `radio(option, label: null, value: null, on_change: null, ...)` 是普通宿主节点，新增 native ABI 1。checkbox.value 为可写布尔值；radio.value 保存业务值，激活写入 option。共享一个可写绑定即组成单选组，值比较与 list key 相同。组导航已实现：最终可写属性身份用于 Tab 单停靠和方向选择，不新增语言语法或分组参数；当前模态范围内使用选中的可用项，否则首项。组在 Tab 顺序中的位置取其第一个可用节点；方向移动先回写再回调，脚本赋值不抢焦点。虚拟列表先沿既有逻辑导航挂载并接受目标，再选择；首尾循环及跨列表进入使用逻辑端点，不使用当前窗口边界，不预建中间离屏选项。Tab 离开组时不为寻找下一停靠点构造虚拟行；跨窗口访问选项使用方向键。组身份从恢复后的绑定重建，不进入快照格式。脚本赋值静默，用户变更先提交再执行节点所属回调 `{target,value}`；option 更新使旧呈现的选项激活失效。children 与 decorated 仍使用共同舞台，不新增语言语法或 Aside 字节码/ASB 编码。
 
 Reel 的 `clock(interval: 1, owner: null)` 是普通宿主函数，返回带只读可观察 ticks/elapsed 的活动。复用 pause/resume/stop/await，所有者规则与 run 相同；长步长合并周期、暂停不计时，finish 拒绝无终点活动。新增 native ABI 1，无新语法或 Aside 字节码/ASB 变化。
 
@@ -689,3 +689,5 @@ Reel 注册 `particles`（native ABI 3）和 `emit`（native ABI 1），独立 A
 Reel tween 的 `sine_in`、`sine_out`、`sine_in_out`、`quint_in`、`quint_out`、`quint_in_out`、`bounce_in`、`bounce_out`、`bounce_in_out` 是既有 easing 字符串参数的选项，由宿主动作采样，不新增 Aside 语法、native 签名或 Aside 字节码/ASB 格式。
 
 Reel `stage.geometry(node, relative_to: null, owner: null)` 返回共享呈现请求；await 取得只读的 width/height、bounds 和六系数 transform 数字快照。只接受请求后确切帧的几何；宿主显式传入已挂载根控件 ID 并原子录制候选与回执，不依赖 sync 完成；水位取已发布控件树，未同步模型和旧 source 不能冒充新帧。目标/参考隐藏或未挂载、参考变换不可逆时拒绝值为只读 `{code:"GeometryUnavailable"}`。目标、参考或 owner 退休，以及 cancel，沿现有 Cancelled 故障；catch 读取原拒绝值，取消类别通过 core.error_info().code 查询。构造遵守普通上下文限制，不可在初始化、NoWait 或 derive 内调用。节点守卫与请求在同一 VM 图中保存，未决请求恢复后等待新接受帧，已完成数字不重算。native ABI 1，语言与 ASB 不变，SessionSnapshot 14。
+
+Reel 蒙版表达式：mask.alpha/gray/param 和 add/subtract/multiply/pow/clamp/smoothstep 是普通宿主纯构造，返回不可变被追踪值；共享子表达式和资源路径进入现有 VM 快照。节点 mask 接受该值或字符串，mask_x/mask_y 与已有 mask_progress/mask_softness 使用同一绑定/动画协议。表达式原语与数值边界见引擎架构，不增加语言语法、VM 指令或可执行 shader 字符串。

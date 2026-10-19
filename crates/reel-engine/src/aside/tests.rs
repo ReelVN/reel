@@ -8,6 +8,7 @@ mod dialogue_history;
 mod dynamic_stage;
 mod geometry;
 mod localization;
+mod masks;
 mod models;
 mod particles;
 mod results;

@@ -6,7 +6,7 @@ use crate::bridge::{CandidateGuard, CandidateKey, RecordedSource};
 use crate::resources::{ResourceHandle, ResourceSnapshot};
 use crate::{
     app::{PresentedGeometryView, VisualLayerKind},
-    core::{MaskProgress, WidgetId},
+    core::{PaintImageMask, WidgetId},
     imaging::{
         self, Composite, Filter, MaskMode,
         record::{self, Clip, Command, Draw, Geometry, Scene},
@@ -111,8 +111,6 @@ pub struct ExternalDraw {
 pub struct MaskUse {
     pub mask: u32,
     pub transform: Affine,
-    /// Per-use image threshold; absent for ordinary alpha/luminance masks.
-    pub progress: Option<MaskProgress>,
 }
 /// Explicitly conservative. Unknown glyph outlines and flood effects remain unbounded;
 /// a backend clamps these to its output target rather than trusting a layout rectangle.
@@ -146,7 +144,15 @@ impl InkBounds {
     }
 }
 #[derive(Debug)]
+pub struct FrameImageMask {
+    pub program: Arc<crate::stage::MaskProgram>,
+    pub images: Vec<ResourceHandle>,
+    pub bounds: Rect,
+    pub parameters: [f32; 5],
+}
+#[derive(Debug)]
 pub struct FrameGroup {
+    pub image_mask: Option<FrameImageMask>,
     pub clip: Option<Clip>,
     pub mask: Option<MaskUse>,
     pub filters: Vec<Filter>,
@@ -869,6 +875,23 @@ impl Building {
                     .ok_or_else(|| self.error(BuildErrorKind::Bytes))?;
             }
         }
+        if matches!(command, Command::PushGroup(_)) && cursor.stream.is_none() {
+            let layer = &self.source.plan.layers[cursor.layer];
+            if let Ok(index) = layer
+                .groups
+                .binary_search_by_key(&cursor.position, |group| group.command)
+                && let Some(mask) = &layer.groups[index].image_mask
+            {
+                bytes = bytes
+                    .checked_add(
+                        mask.images
+                            .len()
+                            .checked_mul(size_of::<ResourceHandle>())
+                            .ok_or_else(|| self.error(BuildErrorKind::Bytes))?,
+                    )
+                    .ok_or_else(|| self.error(BuildErrorKind::Bytes))?;
+            }
+        }
         if (bytes as u64)
             .checked_add(self.bytes)
             .is_none_or(|n| n > self.limits.max_bytes)
@@ -956,13 +979,11 @@ impl Building {
                 mask = Some(MaskUse {
                     mask: mask_id,
                     transform: t,
-                    progress: None,
                 });
             } else {
                 mask = Some(MaskUse {
                     mask: mask_id,
                     transform: transform * applied.transform,
-                    progress: None,
                 });
             }
         }
@@ -979,7 +1000,7 @@ impl Building {
                     (
                         layer.groups[i].owner,
                         layer.transform * layer.groups[i].effect_transform,
-                        layer.groups[i].mask_progress,
+                        layer.groups[i].image_mask.clone(),
                         layer.groups[i].invert,
                     )
                 })
@@ -1497,8 +1518,8 @@ fn make_op(
     scene: &Scene,
     c: &Command,
     t: Affine,
-    meta: Option<(WidgetId, Affine, Option<MaskProgress>, f32)>,
-    mut mask: Option<MaskUse>,
+    meta: Option<(WidgetId, Affine, Option<PaintImageMask>, f32)>,
+    mask: Option<MaskUse>,
     paint: ImagePaint,
     resources: &ResourceSnapshot,
 ) -> Result<(LocalId, FrameOp), BuildErrorKind> {
@@ -1512,18 +1533,32 @@ fn make_op(
         Command::PopContext => (LocalId::None, FrameOp::PopContext),
         Command::PushGroup(id) => {
             let g = scene.group(*id);
-            let (owner, effect, progress, invert) =
+            let (owner, effect, image_mask, invert) =
                 meta.ok_or(BuildErrorKind::MissingGroupMetadata)?;
-            if let Some(progress) = progress {
-                if !progress.progress.is_finite()
-                    || !(0.0..=1.).contains(&progress.progress)
-                    || !progress.softness.is_finite()
-                    || progress.softness < 0.
-                {
-                    return Err(BuildErrorKind::InvalidRecord);
-                }
-                mask.as_mut().ok_or(BuildErrorKind::InvalidRecord)?.progress = Some(progress);
-            }
+            let image_mask = image_mask
+                .map(|mask| {
+                    if !mask.bounds.is_finite()
+                        || mask.parameters.iter().any(|n| !n.is_finite())
+                        || mask.images.len() != mask.program.sources().len()
+                    {
+                        return Err(BuildErrorKind::InvalidRecord);
+                    }
+                    let mut images = Vec::with_capacity(mask.images.len());
+                    for image in mask.images.iter() {
+                        images.push(resources.image(image).ok_or(
+                            BuildErrorKind::MissingResource {
+                                blob_id: image.data.id(),
+                            },
+                        )?);
+                    }
+                    Ok(FrameImageMask {
+                        program: mask.program,
+                        images,
+                        bounds: mask.bounds,
+                        parameters: mask.parameters,
+                    })
+                })
+                .transpose()?;
             if !invert.is_finite()
                 || !(0. ..=1.).contains(&invert)
                 || !finite(effect)
@@ -1535,6 +1570,7 @@ fn make_op(
             (
                 LocalId::Group(*id),
                 FrameOp::PushGroup(FrameGroup {
+                    image_mask,
                     clip: g.clip.as_ref().map(|c| empty_clip(c, t)),
                     mask,
                     filters: Vec::with_capacity(g.filters.len()),

@@ -555,6 +555,10 @@ pub(crate) fn find_next_focusable(root: &mut RenderRoot, forward: bool) -> Optio
     {
         focus_anchor_id = None;
     }
+    let group = focus_anchor_id.and_then(|id| super::selection::member(root, id).map(|g| g.id));
+    if let Some(group) = group {
+        focus_anchor_id = super::selection::anchor(root, group);
+    }
 
     // The idea of this algorithm is that we iterate through the entire tree in preorder
     // (or reversed post-order), skipping everything before the ancestors of the anchor.
@@ -574,21 +578,23 @@ pub(crate) fn find_next_focusable(root: &mut RenderRoot, forward: bool) -> Optio
         let mut anchor_path = get_id_path(root, focus_anchor_id);
         anchor_path.truncate(anchor_path.iter().position(|id| *id == scope).unwrap());
 
-        let found = find_first_focusable(root, &anchor_path, scope, forward);
+        let found = find_first_focusable_inner(root, &anchor_path, scope, forward, group);
 
         // Restore the anchor.
         let anchor_state = root.widget_arena.get_state_mut(id);
         anchor_state.accepts_focus = anchor_was_focusable;
         anchor_state.descendant_is_focusable = anchor_had_focusable;
 
-        if found.is_some() {
-            return found;
+        if let Some(found) = found {
+            return Some(super::selection::entry(root, found));
         }
     }
 
     // If nothing is focused, or if we haven't found anything after the anchor,
     // we iterate through the entire tree again, this time without the anchor path.
-    find_first_focusable(root, &[], scope, forward)
+    find_first_focusable_inner(root, &[], scope, forward, group)
+        .or_else(|| find_first_focusable(root, &[], scope, forward))
+        .map(|id| super::selection::entry(root, id))
 }
 
 pub(crate) fn find_first_focusable(
@@ -597,11 +603,25 @@ pub(crate) fn find_first_focusable(
     node: WidgetId,
     forward: bool,
 ) -> Option<WidgetId> {
+    find_first_focusable_inner(root, anchor_path, node, forward, None)
+}
+
+fn find_first_focusable_inner(
+    root: &mut RenderRoot,
+    anchor_path: &[WidgetId],
+    node: WidgetId,
+    forward: bool,
+    skip_group: Option<crate::core::SelectionGroupId>,
+) -> Option<WidgetId> {
     let eligible = root.focus_in_scope(node);
+    let group = super::selection::member(root, node);
     let item = root.widget_arena.get_node_mut(node);
     let widget = &mut *item.item.widget;
     let state = &mut item.item.state;
-    let accepts_focus = state.accepts_focus && eligible;
+    let accepts_focus = state.accepts_focus
+        && eligible
+        && (widget.selection_group().is_none() || group.is_some())
+        && !group.is_some_and(|group| Some(group.id) == skip_group);
 
     if !state.descendant_is_focusable {
         return None;
@@ -612,7 +632,8 @@ pub(crate) fn find_first_focusable(
         let anchor_idx = children.iter().position(|id| *id == *anchor).unwrap();
 
         // First we try the anchor
-        if let Some(found) = find_first_focusable(root, anchor_path, children[anchor_idx], forward)
+        if let Some(found) =
+            find_first_focusable_inner(root, anchor_path, children[anchor_idx], forward, skip_group)
         {
             return Some(found);
         }
@@ -634,13 +655,15 @@ pub(crate) fn find_first_focusable(
             return Some(node);
         }
         for child in children.iter() {
-            if let Some(found) = find_first_focusable(root, &[], *child, forward) {
+            if let Some(found) = find_first_focusable_inner(root, &[], *child, forward, skip_group)
+            {
                 return Some(found);
             }
         }
     } else {
         for child in children.iter().rev() {
-            if let Some(found) = find_first_focusable(root, &[], *child, forward) {
+            if let Some(found) = find_first_focusable_inner(root, &[], *child, forward, skip_group)
+            {
                 return Some(found);
             }
         }

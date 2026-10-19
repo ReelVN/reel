@@ -401,8 +401,6 @@ await run(tween(view, camera_x: 660, camera_y: 210, zoom: 1.8,
 
 The four camera properties work with assignment, bind/derive and tween, including normal cancellation and ownership. Put HUD siblings outside the camera to keep them fixed; nested cameras are ordinary components. Motion preserves text layout and loaded images. Drawing and pointer coordinates share the accepted frame's transforms and clips. See the complete [author_camera.aside](../../examples/author_camera.aside), which needs only `fonts/body.ttf`; run it using section 1's dev/build/run commands. This is a two-dimensional camera; perspective projection is not implemented.
 
-
-
 Scene nodes, drawing records and nesting grow with the actual content. Input paths grow before a new scene is published, keeping existing presses, drags and releases tied to the correct nodes. The host and device manage actual memory budgets and GPU texture dimensions.
 The following room describes the full-scene design and is not directly runnable yet: it relies on game:: modules and the custom dialogue view that are not connected. The background, portrait, CG and author dialogue UI are layered in that order. The function returns named parts that the story needs to manipulate.
 ```aside
@@ -736,6 +734,19 @@ await run(tween(reveal, mask_progress: 1, duration: 1.2), owner: reveal);
 reveal.mask = null;
 ```
 mask_progress and mask_softness use ordinary derive/tween. See [author_image_mask.aside](../../examples/author_image_mask.aside). Progress 1 bypasses mask compositing; set mask to null when finished to release its resource reference. Masks do not change logical hit geometry; use enabled/visible to control interaction. Masks require whole PNG/JPEG images, not tiled .reel-image sources.
+
+`mask.alpha` samples an image's alpha; `mask.gray` samples its encoded sRGB gray. Compose samples with `mask.add`, `subtract`, `multiply`, `pow`, `clamp` and `smoothstep`. Sampling accepts `x`, `y`, `scale_x`, `scale_y` and `repeat` (`"none"`, `"x"`, `"y"`, `"both"`); coordinates are normalized to the masked node, so they follow its transforms. Use `mask.param("x")` and `mask.param("y")` to read the animatable `mask_x` and `mask_y` properties, or `"progress"` and `"softness"` for their existing properties.
+
+```aside
+let edge = mask.alpha("assets/mask-waves.png", x: mask.param("x"), repeat: "x");
+let reveal = stack(width: 640, height: 360, mask: edge, mask_x: 0) {
+    stack(width: 640, height: 360, background: "#2d8aab");
+};
+stage.replace(reveal);
+await run(tween(reveal, mask_x: 1, duration: 3), owner: reveal);
+```
+
+`pow` clamps its base to zero and accepts a finite nonnegative constant power; `0^0` is 1. `clamp` takes ordered constant bounds. `smoothstep` supports reversed edges; equal edges become a hard step at that value. The final result is clamped to 0..1. A composed expression remains active at `mask_progress: 1`. Its structure and image resources are reused during parameter animation. Run [author_composed_mask.aside](../../examples/author_composed_mask.aside) for a moving reveal made from two included alpha images.
 
 The `invert` node property inverts the composited subtree. It ranges from 0 (the default) to 1 for full inversion, with intermediate values blending in sRGB. Alpha is preserved. Put dialogue and menus in sibling nodes to keep them independent of the inverted scene. Direct assignment, derive, tween, and save restoration use the ordinary property protocol.
 
@@ -1157,7 +1168,7 @@ Rust hosts use `InputDeviceId::{Keyboard, Pointer, Gamepad}`, `InputBindings`, `
 
 ## Value controls and settings
 
-`checkbox` takes the same arguments as `toggle`, with a check box appearance instead of a switch. `radio(option, label: null, value: null, on_change: null, ...)` represents one choice. Bind each item's value to the same model field to make an exclusive group, without maintaining separate booleans. option can be changed or bound; an unmatched value selects no item. Values follow list key equality. Arrow keys, controller directions and Tab move focus; confirm, mouse or touch selects. Selecting the current value does not call on_change. Programmatic changes are silent; user changes commit the binding before delivering `{target,value}`.
+`checkbox` takes the same arguments as `toggle`, with a check box appearance instead of a switch. `radio(option, label: null, value: null, on_change: null, ...)` represents one choice. Bind each item's value to the same model field to make an exclusive group, without maintaining separate booleans. option can be changed or bound; an unmatched value selects no item. Values follow list key equality. Tab/Shift-Tab visits each group once, landing on the selected available item or its first item. The first available member determines the group’s position in the Tab order. Arrow keys and controller directions select the previous/next item in node order, skipping hidden or disabled items and wrapping at the boundary. A virtual list first mounts the next logical row and accepts its frame before selection; navigation does not wrap prematurely inside the current window. At the group end it returns to the logical first item, and conversely in reverse. Crossing virtual lists enters the other list at its logical endpoint and constructs only the required window. Leaving a group with Tab does not construct virtual rows to search for an exit. Use direction keys to visit options across windows. Confirm, mouse or touch also selects. Selecting the current value does not call on_change. Programmatic changes do not move focus. Programmatic changes are silent; user changes commit the binding before delivering `{target,value}`.
 
 ```aside
 let settings = model({sound: true, language: "zh-CN"});
@@ -1269,7 +1280,7 @@ fn main() {
 Runnable example: [author_audio_queue.aside](../../examples/author_audio_queue.aside) uses bundled clips for intro → loop → outro and continuous narration. Replace the clip paths with your own audio.
 
 ```aside
-let music = audio.play("assets/intro.ogg", group: "music");
+let mut music = audio.play("assets/intro.ogg", group: "music");
 audio.queue(music, "assets/loop.ogg", looping: true);
 narrator("Continue to leave the loop after this pass.");
 audio.queue(music, "assets/outro.ogg");
