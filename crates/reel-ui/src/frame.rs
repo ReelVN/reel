@@ -725,39 +725,40 @@ impl Building {
             if b.max_commands == 0 {
                 break;
             }
-            if let Some(mut job) = self.job.take() {
-                if job.field < 9 {
+            if self.job.is_some() {
+                // Payload elements advance in place; move the full command only at commit.
+                if self.job.as_ref().unwrap().field < 9 {
                     let resolve_units =
                         2 * self.cursors.last().expect("active cursor").path.len() as u64 + 1;
                     if !self.spend(&mut p, &b, resolve_units, 0)? {
                         p.minimum_units = resolve_units;
-                        self.job = Some(job);
                         break;
                     }
                     let c = self.cursors.last().expect("active cursor");
                     let scene = Self::scene(&self.source, c).expect("copy job scene");
                     let cmd = &scene.commands()[c.position];
+                    let job = self.job.as_ref().unwrap();
                     let size = field_size(scene, cmd, job.field, job.index);
                     if let Some(size) = size {
                         if !self.spend(&mut p, &b, 0, size as u64)? {
                             p.minimum_units = resolve_units;
                             p.minimum_bytes = size as u64;
-                            self.job = Some(job);
                             break;
                         }
                         let scene =
                             Self::scene(&self.source, self.cursors.last().unwrap()).unwrap();
+                        let job = self.job.as_mut().unwrap();
                         copy_field(
                             scene,
                             cmd_id(scene, self.cursors.last().unwrap().position),
-                            &mut job,
+                            job,
                         )?;
                         job.index += 1;
                     } else {
+                        let job = self.job.as_mut().unwrap();
                         job.field += 1;
                         job.index = 0;
                     }
-                    self.job = Some(job);
                     continue;
                 }
                 let cursor = self.cursors.last().unwrap();
@@ -766,9 +767,9 @@ impl Building {
                     + if cursor.stream.is_none() { 3 } else { 1 };
                 if !self.spend(&mut p, &b, commit_units, 0)? {
                     p.minimum_units = commit_units;
-                    self.job = Some(job);
                     break;
                 }
+                let job = self.job.take().unwrap();
                 self.commit(job)?;
                 p.commands += 1;
                 if p.commands >= b.max_commands {
