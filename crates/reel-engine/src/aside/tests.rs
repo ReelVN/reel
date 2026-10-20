@@ -4,6 +4,7 @@ use crate::{Epoch, InputAction, OwnerLifecycle, SessionId};
 use aside_vm::bytecode as bc;
 mod activities;
 mod buttons;
+mod clock_batches;
 mod dialogue_history;
 mod dynamic_stage;
 mod geometry;

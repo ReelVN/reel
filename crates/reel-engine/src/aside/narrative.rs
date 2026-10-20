@@ -452,10 +452,16 @@ impl SessionVm {
         ticket: HostTicket,
         symbol: &str,
     ) -> Result<(), AdapterError> {
-        if self.narrative.is_none() {
+        let initialize = self.narrative.is_none();
+        if initialize {
             self.narrative = Some(Narrative::new(&mut self.vm, self.root_owner)?);
         }
-        self.sync_narrative(session)?;
+        // Getter calls inside a derived computation read its current batch.
+        // Author commands outside that capture still publish immediately.
+        let sync = initialize || !self.vm.heap().reactive_evaluating();
+        if sync {
+            self.sync_narrative(session)?;
+        }
         let model = self.narrative.as_mut().unwrap();
         let value = match symbol {
             "reel::game::dialogue" => model.dialogue,
@@ -577,7 +583,9 @@ impl SessionVm {
             }
             _ => unreachable!(),
         };
-        self.sync_narrative(session)?;
+        if sync {
+            self.sync_narrative(session)?;
+        }
         self.vm.respond(ticket, HostResponse::Ready(value))?;
         self.issued = None;
         Ok(())

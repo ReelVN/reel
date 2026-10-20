@@ -775,7 +775,17 @@ impl Heap {
         if index >= self.host_payload_len(host)? {
             return Err(HeapError::OutOfBounds);
         }
-        self.set_field(host, index + 4, value)
+        // Private continuation/scheduling state is a traced edge, not an
+        // observable property write. Public host fields live in their own table.
+        self.barrier(value)?;
+        let key = self.key(host)?;
+        let object = self.objects.get_mut(key).unwrap();
+        let Payload::Values(values) = &mut object.payload else {
+            unreachable!("validated host storage")
+        };
+        values.set(index + 4, value);
+        object.content_version = object.content_version.wrapping_add(1);
+        Ok(())
     }
     pub(crate) fn validate_host_property(
         &self,

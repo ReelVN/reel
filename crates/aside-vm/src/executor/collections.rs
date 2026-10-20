@@ -399,12 +399,10 @@ impl Vm {
             && work.entry == len
             && !work.matched
             && matches!(work.action, TableAction::MemberGet { symbol, .. } if Builtin::lookup(ObjectKind::Table, &self.program.package().symbols[symbol.index()]).is_some());
-        let extra = if work.matched
+        let extra = if (work.matched
             && matches!(work.action, TableAction::Remove(_))
-            && self.heap.is_model_table(table)?
-        {
-            Values::allocation_bytes(4)
-        } else if (store && work.matched && matches!(work.action, TableAction::PropertyRef { .. }))
+            && self.heap.is_model_table(table)?)
+            || (store && work.matched && matches!(work.action, TableAction::PropertyRef { .. }))
             || fallback
         {
             Values::allocation_bytes(4)

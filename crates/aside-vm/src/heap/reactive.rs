@@ -562,6 +562,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn private_host_payload_keeps_gc_edges_without_invalidating_properties() {
+        let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+        let fields = heap.alloc_table().unwrap();
+        let name = heap.alloc_string("elapsed").unwrap();
+        heap.table_store(fields, 0, name, Value::float(0.)).unwrap();
+        let host = heap.alloc_host(fields, &[Value::NULL], None).unwrap();
+        heap.observe_host_properties(host, 0, 1).unwrap();
+        heap.add_root(RootOwner(1), RootKind::Host, host).unwrap();
+        let output = heap.alloc_derived(Value::NULL).unwrap();
+        heap.add_root(RootOwner(1), RootKind::Host, output).unwrap();
+        heap.begin_derived(output).unwrap();
+        heap.observe_read(host, Some(0)).unwrap();
+        heap.commit_derived(output, Value::float(0.)).unwrap();
+        let child = heap.alloc_array(&[Value::int(42)]).unwrap();
+        let key = heap.key(host).unwrap();
+        heap.begin_collection().unwrap();
+        while heap.object(key).unwrap().mark != heap.gc.cycle || heap.object(key).unwrap().queued {
+            heap.gc_step(crate::GcBudget {
+                units: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        assert_eq!(heap.phase(), GcPhase::Mark);
+        let version = heap.info(host).unwrap().content_version;
+        heap.set_host_payload(host, 0, child).unwrap();
+        assert!(heap.info(host).unwrap().content_version > version);
+        assert!(!heap.derived_pending());
+        assert!(heap.derived_is_current(output, None).unwrap());
+        while heap.phase() != GcPhase::Idle {
+            heap.gc_step(crate::GcBudget {
+                units: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        }
+        assert_eq!(heap.sequence_get(child, 0).unwrap().as_int(), Some(42));
+        heap.publish_host_property(PropertyId { host, field: 0 }, Value::float(1.))
+            .unwrap();
+        assert!(heap.next_derived().unwrap().unwrap().same_bits(output));
+        heap.set_host_payload(host, 0, Value::NULL).unwrap();
+        collect(&mut heap);
+        assert!(heap.info(child).is_err());
+    }
+
+    #[test]
     fn derived_freshness_follows_only_its_inputs_without_consuming_dirty_work() {
         let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
         let source = heap.alloc_array(&[]).unwrap();
@@ -587,11 +633,21 @@ mod tests {
         assert!(!heap.derived_is_current(output, None).unwrap());
         heap.observe_read(source, None).unwrap();
         heap.commit_derived(upstream, Value::int(1)).unwrap();
+        assert!(heap.derived_is_current(output, None).unwrap());
+        assert!(heap.next_derived().unwrap().is_none());
+        heap.publish_host_property(
+            PropertyId {
+                host: upstream,
+                field: 0,
+            },
+            Value::int(2),
+        )
+        .unwrap();
         assert!(!heap.derived_is_current(output, None).unwrap());
         assert!(heap.next_derived().unwrap().unwrap().same_bits(output));
         heap.begin_derived(output).unwrap();
         heap.observe_read(upstream, Some(0)).unwrap();
-        heap.commit_derived(output, Value::int(1)).unwrap();
+        heap.commit_derived(output, Value::int(2)).unwrap();
         assert!(heap.derived_is_current(output, None).unwrap());
         assert!(heap.next_derived().unwrap().is_none());
         heap.begin_untracked(output).unwrap();
