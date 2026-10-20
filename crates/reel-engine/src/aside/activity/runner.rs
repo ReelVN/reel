@@ -771,18 +771,18 @@ impl Activities {
         })
     }
 
-    pub fn advance(
-        &mut self,
-        vm: &mut Vm,
-        seconds: f64,
-        budget: u32,
-    ) -> Result<ActivityProgress, AdapterError> {
+    pub(in crate::aside) fn observe_time(&mut self, seconds: f64) -> Result<(), AdapterError> {
         if !seconds.is_finite() || seconds < self.observed_time {
             return Err(AdapterError::Input(
                 "activity clock must be finite and monotonic",
             ));
         }
         self.observed_time = seconds;
+        Ok(())
+    }
+
+    pub fn advance(&mut self, vm: &mut Vm, budget: u32) -> Result<ActivityProgress, AdapterError> {
+        let seconds = self.observed_time;
         let mut work = 0;
         let mut woke = false;
         // Maintenance has no elapsed time of its own. Finish it before sampling

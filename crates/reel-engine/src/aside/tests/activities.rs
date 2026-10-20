@@ -859,17 +859,17 @@ fn camera_source_asb_binding_animation_takeover_and_retirement() {
         let (mut session, mut vm) = models::prepared(code, encoded);
         models::drive(&mut vm, &mut session, false);
         collect(&mut vm);
-        let chunks = vm.vm.heap().stats().chunk_allocations;
         let started = std::time::Instant::now();
         for step in 1..=256 {
+            let chunks = vm.vm.heap().stats().chunk_allocations;
             advance_clock(&mut vm, &session, step as f64 / 256., 64);
+            assert_eq!(
+                vm.vm.heap().stats().chunk_allocations,
+                chunks,
+                "camera tween must not allocate VM payload chunks per sample"
+            );
+            models::drive(&mut vm, &mut session, false);
         }
-        assert_eq!(
-            vm.vm.heap().stats().chunk_allocations,
-            chunks,
-            "camera tween must not allocate VM payload chunks per sample"
-        );
-        models::drive(&mut vm, &mut session, false);
         let camera = vm
             .stage()
             .nodes()
@@ -889,7 +889,7 @@ fn camera_source_asb_binding_animation_takeover_and_retirement() {
             .unwrap();
         assert_eq!(readout.props.x, 301.5);
         eprintln!(
-            "camera encoded={encoded}: 256 tween samples {:?}; VM chunk growth=0",
+            "camera encoded={encoded}: 256 tween samples with derived projection {:?}; tween sample VM chunk growth=0",
             started.elapsed()
         );
         advance_dialogue(&mut vm, &mut session);

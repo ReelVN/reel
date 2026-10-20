@@ -533,7 +533,7 @@ impl SessionVm {
             self.skip_input = None;
         }
         self.activities.set_skipping(session.reading().skipping());
-        if self.reactive_ready && self.derived_task.is_none() {
+        if self.reactive_ready && self.reactive_settled() {
             self.sync_narrative(session)?;
         }
         self.deliver_completion(session)?;

@@ -386,13 +386,14 @@ impl SessionVm {
         &self.stage.scene
     }
 
+    pub(super) fn reactive_settled(&self) -> bool {
+        self.derived_task.is_none() && !self.vm.heap().derived_pending()
+    }
+
     /// Publish the properties of the same mounted objects after script work.
     pub fn sync_stage(&mut self, session: &Session) -> Result<(), AdapterError> {
         self.same_session(session)?;
-        if self.reactive_ready && self.derived_task.is_none() {
-            self.sync_narrative(session)?;
-        }
-        if self.vm.heap().derived_pending() || self.derived_task.is_some() {
+        if !self.reactive_settled() {
             return Ok(());
         }
         self.stage.sync(self.vm.heap_mut(), self.read_limit)
@@ -424,12 +425,22 @@ impl SessionVm {
         work: u32,
     ) -> Result<ActivityProgress, AdapterError> {
         self.live(session)?;
+        self.activities.observe_time(seconds)?;
+        let sample = self.reactive_settled();
         self.activities.set_skipping(session.reading().skipping());
-        self.particles.begin(seconds)?;
+        if sample {
+            self.particles.begin(seconds)?;
+        }
         let particle_work = self.maintain_particles(work)?;
-        let mut progress = self
-            .activities
-            .advance(&mut self.vm, seconds, work - particle_work)?;
+        // An existing time batch keeps its target, even after its first write
+        // invalidates observers. New time is sampled only once those observers
+        // have settled; cleanup and partially sampled graph work still drain.
+        let mut progress = if sample {
+            self.activities
+                .advance(&mut self.vm, work - particle_work)?
+        } else {
+            self.activities.drain(&mut self.vm, work - particle_work)?
+        };
         progress.work += particle_work;
         progress.woke |= self.particles.take_wake();
         if !self.activities.pending() {
@@ -441,7 +452,7 @@ impl SessionVm {
             progress.pending |= transition.pending;
         }
         progress.pending |= self.particles.needs_work(self.stage.scene.revision());
-        if self.reactive_ready && self.derived_task.is_none() {
+        if self.reactive_ready && sample {
             self.sync_narrative(session)?;
         }
         progress.woke |= self.vm.heap().derived_pending() || self.derived_task.is_some();
