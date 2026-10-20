@@ -42,6 +42,7 @@ pub(super) enum Builtin {
     Get,
     Split,
     Sort,
+    TableRemove,
 }
 impl Builtin {
     pub(super) fn lookup(kind: ObjectKind, name: &str) -> Option<Self> {
@@ -52,6 +53,7 @@ impl Builtin {
             (Array, "pop") => Some(Self::Pop),
             (Table, "has_own") => Some(Self::HasOwn),
             (Table, "get") => Some(Self::Get),
+            (Table, "remove") => Some(Self::TableRemove),
             (Array | Tuple, "slice") => Some(Self::Slice),
             (Array, "insert") => Some(Self::Insert),
             (Array, "remove") => Some(Self::Remove),
@@ -114,6 +116,7 @@ impl Builtin {
             Builtin::Get,
             Builtin::Split,
             Builtin::Sort,
+            Builtin::TableRemove,
         ];
         usize::try_from(id)
             .ok()
@@ -123,7 +126,7 @@ impl Builtin {
     }
     pub(super) fn parameters(self) -> (&'static [&'static str], usize) {
         match self {
-            Self::HasOwn => (&["key"], 1),
+            Self::HasOwn | Self::TableRemove => (&["key"], 1),
             Self::Get => (&["key", "default"], 1),
             Self::Slice | Self::SliceBytes | Self::SliceScalars => (&["range"], 1),
             Self::Insert => (&["index", "value"], 2),
@@ -151,6 +154,7 @@ impl Builtin {
                 | Self::Clear
                 | Self::Swap
                 | Self::Sort
+                | Self::TableRemove
         )
     }
 }
@@ -389,7 +393,7 @@ impl Vm {
                     })
                     .map(|()| receiver)
             }
-            Builtin::HasOwn | Builtin::Get => {
+            Builtin::HasOwn | Builtin::Get | Builtin::TableRemove => {
                 let key = self.builtin_argument(s, call, 0)?;
                 let action = if matches!(call.method, Builtin::Get) {
                     TableAction::GetDefault {
@@ -397,6 +401,8 @@ impl Vm {
                         descriptor: call.descriptor,
                         fallback: call.arguments[1],
                     }
+                } else if matches!(call.method, Builtin::TableRemove) {
+                    TableAction::Remove(call)
                 } else {
                     TableAction::HasOwn(call.dest)
                 };

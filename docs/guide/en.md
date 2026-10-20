@@ -106,7 +106,7 @@ Release export moves original string constants into `game.rtp` and excludes comp
 Release disables loose-file overrides by default. Explicitly enable a mod or development overlay with `reel run release.json --assets overrides`. Later packages in the manifest override earlier ones, and loose files take precedence. `--overwrite` replaces the whole previous export; saves and additional files are not copied into it. Store runtime data separately. Output must be outside the input source and resource directories.
 
 ### Available Ranges, Collections and Interpolation
-Inside a function, use ranges to build content and interpolation to display results. Ranges do not create an array first; `..` excludes the endpoint and `..=` includes it. Arrays support `append`, `pop` and `len`; tables support `has_own`, `get` and `len`. Interpolation currently accepts strings, numbers, booleans and null.
+Inside a function, use ranges to build content and interpolation to display results. Ranges do not create an array first; `..` excludes the endpoint and `..=` includes it. Arrays support `append`, `pop` and `len`; tables support `has_own`, `get`, `remove` and `len`. Interpolation currently accepts strings, numbers, booleans and null.
 ```aside
 let values = [];
 for value in 1..=3 { values.append(value); }
@@ -121,7 +121,11 @@ let settings = {volume: 0, wallpaper: null};
 let volume = settings.get("volume", default: 0.7);
 let wallpaper = settings.get("wallpaper", default: "default.png");
 let language = settings.get("language", default: "zh-CN");
+let removed = settings.remove("wallpaper");
+settings.wallpaper = "new.png";
 ```
+
+`table.remove(key)` returns the removed value and reports an error for a missing key. Other fields keep their order; reinserting the same key places it last. On a model, bindings and control writeback for retained fields remain valid. Connections to the removed field freeze at their last value and need a new bind after reinsertion. Derivations using get/has_own recompute. Large removals advance within the execution budget, cancellation preserves the original table, and saves can resume unfinished work. [collections.aside](../../examples/collections.aside) removes a color field to use the default color.
 
 `array.sort(compare: null)` stably sorts in place and returns the same array. The default orders numbers (including mixed int/float values) or strings; use a comparator returning a negative, zero or positive int for records. Equal items keep their original order. Comparators cannot wait. Sorting advances within the VM execution budget and commits only after success; an exception, cancellation or modification of the source array leaves the working copy unpublished. See [collections.aside](../../examples/collections.aside).
 
@@ -898,7 +902,7 @@ game.clear_history(keep_last: 37);
 
 A caller may await its own save. Loading that snapshot restores the request as succeeded with read-only `restored` set to true (false after a normal write), allowing a menu to close, and continues after await without repeating the save call. Other unfinished external requests settle with OperationInterrupted. A successful load replaces the session; its caller does not resume in the old session.
 
-Execution snapshot capture advances in work slices; encoding, compression and writing run on a worker. If business input needs to mutate state during snapshot capture, that save reports CaptureBusy, input proceeds, and the old slot remains intact. Desktop saves default to the user-data directory; Rust hosts can set `StoryWindowOptions.save_directory` and `save_bytes`. Custom hosts install `RuntimeSaves` with their own `SaveStorage` and audio backend. The directory adapter resolves the existing save directory, writes a temporary file in that same directory tree, syncs it and atomically replaces the old slot, including its thumbnail. The current VM snapshot format is 7 and the session snapshot format is 16. Saves require matching code and formats; older formats report an explicit version mismatch. System data in `persistent` is independent of story snapshots. Cross-version migration is not provided. Existing save restoration check: `cargo test -p reel-player --lib save_slot_survives`.
+Execution snapshot capture advances in work slices; encoding, compression and writing run on a worker. If business input needs to mutate state during snapshot capture, that save reports CaptureBusy, input proceeds, and the old slot remains intact. Desktop saves default to the user-data directory; Rust hosts can set `StoryWindowOptions.save_directory` and `save_bytes`. Custom hosts install `RuntimeSaves` with their own `SaveStorage` and audio backend. The directory adapter resolves the existing save directory, writes a temporary file in that same directory tree, syncs it and atomically replaces the old slot, including its thumbnail. The current VM snapshot format is 8 and the session snapshot format is 18. Saves require matching code and formats; older formats report an explicit version mismatch. System data in `persistent` is independent of story snapshots. Cross-version migration is not provided. Existing save restoration check: `cargo test -p reel-player --lib save_slot_survives`.
 
 Runnable example: [author_saves.aside](../../examples/author_saves.aside).
 

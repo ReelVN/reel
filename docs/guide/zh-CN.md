@@ -106,7 +106,7 @@ build 默认使用 Debug，完整源码与映射保存在包内，运行错误�
 发布默认关闭散文件覆盖；需要模组或调试覆盖时显式 `reel run release.json --assets overrides`。清单里的包按顺序后者覆盖前者，散文件优先。`--overwrite` 会替换整个既有导出目录，旧存档与额外文件不复制到新导出；运行数据应单独保存。导出目录不能放在输入源码或资源目录里面。
 
 ### 已接通的范围、容器与插值
-在函数里可以用范围循环生成内容，再用插值展示结果。范围不会先创建一个大数组；`..` 不含终点，`..=` 包含终点。数组支持 `append`、`pop` 和 `len`，表支持 `has_own`、`get` 和 `len`。插值当前支持字符串、数字、布尔值和 null。
+在函数里可以用范围循环生成内容，再用插值展示结果。范围不会先创建一个大数组；`..` 不含终点，`..=` 包含终点。数组支持 `append`、`pop` 和 `len`，表支持 `has_own`、`get`、`remove` 和 `len`。插值当前支持字符串、数字、布尔值和 null。
 ```aside
 let values = [];
 for value in 1..=3 { values.append(value); }
@@ -121,7 +121,11 @@ let settings = {volume: 0, wallpaper: null};
 let volume = settings.get("volume", default: 0.7);
 let wallpaper = settings.get("wallpaper", default: "default.png");
 let language = settings.get("language", default: "zh-CN");
+let removed = settings.remove("wallpaper");
+settings.wallpaper = "new.png";
 ```
+
+`table.remove(key)` 返回被删除的值，缺键时报错；其余字段保持顺序，同名重插排在末尾。用于 model 时，保留字段的 bind 和控件写回继续有效，被删除字段的连接冻结最后值，重新插入后需重新 bind。通过 get/has_own 读取的 derive 会重新计算。大型删除按执行预算推进，取消时保留原表；存档能恢复未完成的操作。[collections.aside](../../examples/collections.aside) 演示删除颜色字段后使用默认颜色。
 
 `array.sort(compare: null)` 稳定原地排序并返回原数组。缺省按数值（可混合 int/float）或字符串排序；记录使用返回负数、零、正数 int 的比较器。同序元素保留原来的顺序。比较器不能等待。排序按 VM 执行预算推进，成功后才提交；异常、取消或来源数组被修改时不发布工作副本。见 [collections.aside](../../examples/collections.aside)。
 
@@ -909,7 +913,7 @@ game.clear_history(keep_last: 37);
 
 可以等待自己的保存请求。这份存档恢复时，该请求为已成功且只读 `restored` 为 true（正常写盘完成为 false），可据此关闭存档菜单；调用者继续执行 await 后的语句；保存调用不会重复执行。其他未完成的外部请求以 OperationInterrupted 结算。成功读档会替换会话，原来的读档调用不会在旧会话中继续。
 
-执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 7，会话快照格式为 16；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
+执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 8，会话快照格式为 18；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
 
 可运行示例：[author_saves.aside](../../examples/author_saves.aside)。
 

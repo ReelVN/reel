@@ -44,6 +44,78 @@ fn finish(vm: &mut Vm, task: TaskId, tiny: bool) -> Value {
 }
 
 #[test]
+fn table_remove_preserves_order_results_and_key_contracts_with_gc() {
+    let source = r#"fn main() {
+        let item={n:42};
+        let table={first:1, middle:item, last:null, [(2,"key")]:9};
+        let alias=table;
+        let remove=table.remove;
+        if remove(key:"middle")!=item || alias.has_own("middle") {throw "returned identity";}
+        let keys=table.keys(); let values=table.values(); let entries=table.entries();
+        if keys.len()!=3 || keys[0]!="first" || keys[1]!="last" || keys[2]!=(2,"key")
+            || values[1]!=null || entries[2]!=((2,"key"),9) {throw "retained insertion order";}
+        if table.get("middle",default:8)!=8 || table.get("last",default:8)!=null {throw "lookup defaults";}
+        if table.remove((2.0,"key"))!=9 {throw "structural key equality";}
+        let mut missing=false;
+        try {table.remove("absent");} catch error {missing=true;}
+        if !missing || table.len()!=2 {throw "missing key";}
+        let mut invalid=false;
+        try {table.remove([]);} catch error {invalid=true;}
+        if !invalid || table.len()!=2 {throw "invalid key";}
+        table.middle=item;
+        if table.keys()[2]!="middle" {throw "reinsertion order";}
+        if table.remove("first")!=1 {throw "first removal";}
+        if table.remove("last")!=null || table.remove("middle").n!=42 || table.len()!=0 {throw "last removal";}
+        42
+    }"#;
+    let module = analyze_module(source, &AnalysisOptions::default(), &mut NoModules)
+        .unwrap()
+        .into_module()
+        .unwrap();
+    let compiled = lowering::compile(
+        &module,
+        &lowering::Linkage::default(),
+        lowering::Options::default(),
+    )
+    .unwrap();
+    let package = compiled.program.package();
+    let entry = bc::FunctionId(
+        package
+            .functions
+            .iter()
+            .position(|f| package.symbols[f.name.index()] == "main")
+            .unwrap() as u32,
+    );
+    let bytes = bc::encode(package, bc::Limits::default()).unwrap();
+    for tiny in [false, true] {
+        let program = bc::VerifiedProgram::decode(&bytes, bc::Limits::default()).unwrap();
+        let mut vm = Vm::load(
+            program,
+            bc::RuntimeSupport {
+                opcodes: vec![],
+                natives: vec![],
+                capabilities: vec![],
+            },
+            VmLimits::default(),
+            SessionEpoch(1),
+        )
+        .unwrap();
+        let init = vm
+            .start(compiled.entry, &[], RootOwner(1), bc::Context::Init)
+            .unwrap();
+        finish(&mut vm, init, tiny);
+        let task = vm
+            .start(entry, &[], RootOwner(1), bc::Context::Ordinary)
+            .unwrap();
+        assert_eq!(
+            finish(&mut vm, task, tiny).as_int(),
+            Some(42),
+            "tiny={tiny}"
+        );
+    }
+}
+
+#[test]
 fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
     let text = "中文🙂".repeat(1100);
     let long_text = format!(

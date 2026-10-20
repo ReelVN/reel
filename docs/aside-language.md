@@ -1,6 +1,6 @@
 # Aside VM 与完整语言规范
 
-舞台转场沿普通宿主回调续体：`stage.transition(change:, target:null, duration:0.3, ...)` 在当前任务等待旧画面保留、执行 change、完成过渡并返回回调原值，写法与 scope 相同，不在调用外再 await。回调可等待，保留原任务权限；并发使用 spawn。准备、取消、故障与恢复沿既有 native continuation/TaskId/FrameId，不新增语法、VM 指令或隐藏执行器。实现合同见引擎架构“保留画面的舞台转场”；native ABI 1、SessionSnapshot 18，VM7/ASB 不变。
+舞台转场沿普通宿主回调续体：`stage.transition(change:, target:null, duration:0.3, ...)` 在当前任务等待旧画面保留、执行 change、完成过渡并返回回调原值，写法与 scope 相同，不在调用外再 await。回调可等待，保留原任务权限；并发使用 spawn。准备、取消、故障与恢复沿既有 native continuation/TaskId/FrameId，不新增语法、VM 指令或隐藏执行器。实现合同见引擎架构“保留画面的舞台转场”；native ABI 1，当前 SessionSnapshot 18、VM8，ASB 格式保持不变。
 
 舞台指针沿普通宿主接口：`stage.pointer()` 返回当前已接受舞台的鼠标坐标快照或 null；`stage.move_pointer(x,y,owner:node)` 返回归节点所有的可等待结果，bool 表示宿主是否执行。新接口 ABI 1，window.info/configure ABI 3 增加 pointer_move 能力；参数、等待、取消及诊断沿现有协议，无新语法/VM/ASB/SessionSnapshot 格式。真实位置是宿主临时状态，读档后等待真实鼠标输入；查询所得普通表仍可随存档保存。
 
@@ -125,6 +125,8 @@ table 为按插入顺序迭代的动态关联对象；点访问等价于字符�
 has_own 只检查自有槽；has_in_chain 只检查自有与 delegate 链的真实槽，不执行 _get；try_get 执行正常读取并返回 (found, value)。get(key, default: null) 只在缺失时返回缺省，存储的 null 是已找到值。keys/values/entries 明确只枚举自有槽，entries 产生 (key, value) tuple。Map 为 table 的标准库命名别名/构造入口，不建立第二套隐含不同的映射语义。
 
 `table.get(key, default: null)` 已接通：沿当前普通表读取的键验证与可让出查找路径，找到时返回原值（包括 null、false、0），只在缺失时返回缺省，不插入字段或复制值。缺省是普通实参，按调用求值规则执行；方法取值绑定原表，自有同名字段优先。model 中缺失查找也记录依赖，后续插入能更新 derive。非法键与并发修改照常报错。当前 table 读取尚不支持 delegate 或缺失钩子，get 不另造一套读取协议。查找复用原预算，缺省值保留在调用帧的现有根中，暂停、取消和快照沿原路径处理。
+
+`table.remove(key)` 已接通：删除自有键并返回原值，保留其余键的插入顺序及内部对象身份；缺键报 MissingKey，非法键沿普通索引的验证路径报错。方法可取值后调用，也接受 `key:` 具名参数；自有同名字段仍优先。删除再插入的键位于末尾。查找、工作副本及 model 字段位置映射按 VM 预算推进，成功提交时更新内容和结构版本；取消或来源内容在切片间改变时不发布副本。未完成删除的调用及映射进入 VM 快照 8，恢复继续原进度；Aside 字节码和 ASB 格式保持不变。源码示例见 [collections.aside](../examples/collections.aside)。
 
 可散列键为 null、bool、int、除 NaN 外的 float、string、Bytes 及递归可散列 tuple。等值键必须同 hash，包括精确相等的 int/float 与正负零；可变对象及含它们的 tuple 不能作为普通键，错误指出元素路径。Set 使用同一键规则与插入顺序，提供 membership、add/remove、union/intersection/difference。IdentityMap/IdentitySet 另行按对象身份存键，适合对象索引；其键为强引用，弱键版本明确命名且不保证枚举稳定。弱集合及 weakref 的保活、失效和快照使用第十八节规则。
 
@@ -282,7 +284,7 @@ bind(model.volume) 是编译器识别的可观察属性位置表达式，生成 
 
 节点公开只读可观察 `hover`、`pressed`、`focused`、`disabled`。hover/focused 汇总节点及后代；pressed 汇总指针捕获，并包含按钮自身的键盘/手柄确认按住状态。disabled 反映继承祖先禁用后的有效值。隐藏、禁用、失焦及退休清除交互中的状态；状态在调度业务回调前发布，展示节点可以直接 bind，无需回调或逐帧脚本。`decorated: false` 关闭按钮默认焦点框、开关默认指标及其留白，保留交互和普通 children；作者用文字、图片、背景、变换及绑定组合外观。构造参数 decorated 默认 true，当前节点 native ABI 为 3，Aside 字节码 不变。
 
-`model(defaults)` 由 Reel 提供，复制当前支持的纯数据图，保留内部共享引用和环。返回的 table 仍支持普通索引、追加字段和集合方法，其字段可以 bind；嵌套 table 及后来赋入的数据对象保持同一观察身份。clear 删除字段时，旧连接冻结最后值，旧引用失效；重新增加同名字段需重新 bind。默认图不接受闭包、任务、节点等宿主资源；宿主通过 alloc_immutable_host 声明的不可变数据值（如 rich）按身份共享，其内部图的不可变性由宿主保证。复制按 VM 原生 continuation 预算推进，失败或取消不发布半成品。
+`model(defaults)` 由 Reel 提供，复制当前支持的纯数据图，保留内部共享引用和环。返回的 table 仍支持普通索引、追加字段和集合方法，其字段可以 bind；嵌套 table 及后来赋入的数据对象保持同一观察身份。remove 删除单个字段，clear 删除全部字段；被删除字段的旧连接冻结最后值，旧引用失效，重新增加同名字段需重新 bind。保留字段的绑定、可写回引用及活动来源身份继续有效；derive 的普通键读取按当前表重新求值。默认图不接受闭包、任务、节点等宿主资源；宿主通过 alloc_immutable_host 声明的不可变数据值（如 rich）按身份共享，其内部图的不可变性由宿主保证。复制按 VM 原生 continuation 预算推进，失败或取消不发布半成品。
 
 derive(|| expression) 创建只读 DerivedBinding，记录实际可观察读取，版本变化后重算并替换条件依赖集合。禁止修改外部对象、可观察状态、启动活动或等待；native 必须 DerivedSafe，传递调用中继续检查。内部临时分配/写入允许，不能把临时引用逃逸成外部可变影响。普通捕获值保持通常共享语义，不因读取自动响应。环报错，替换/销毁解除订阅。移除最后一个属性消费者时，沿派生输入解除无消费者的订阅；重新绑定保留引用会恢复更新，共享消费者不受影响。输入宿主退休导致的冻结不可恢复。可写控件不可接受只读派生，通知/事务提交由宿主负责。
 派生结果沿用只读属性引用，可通过 `binding.value` 读取并继续派生。依赖变化合并到同步脚本段结束后的提交点，在下一次舞台发布或业务任务运行前稳定；不在每帧扫描所有绑定。首次计算沿原调用栈执行，后续计算保留闭包的源码位置。失败保留上次有效投影并报告脚本故障。

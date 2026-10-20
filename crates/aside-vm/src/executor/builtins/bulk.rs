@@ -1,4 +1,5 @@
-//! One work buffer and a constant-cost commit for collection transformations.
+//! Collection payloads build privately before publication. Observable field
+//! retirement also disconnects the existing property graph during commit.
 use super::*;
 
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
@@ -10,6 +11,7 @@ pub(in crate::executor) struct BulkWork {
     offset: u32,
     receiver_version: u64,
     source_version: Option<u64>,
+    model_fields: u32,
 }
 
 impl Vm {
@@ -32,6 +34,7 @@ impl Vm {
             offset: 0,
             receiver_version: info.content_version,
             source_version: None,
+            model_fields: 0,
         };
         match call.method {
             Builtin::Insert => {
@@ -80,6 +83,36 @@ impl Vm {
         Ok(())
     }
 
+    pub(in crate::executor) fn start_table_remove(
+        &mut self,
+        s: &mut ScriptFrame,
+        call: BuiltinCall,
+        offset: u32,
+    ) -> Result<(), FaultKind> {
+        if s.effects.0 & Effects::ALLOCATE == 0 {
+            return Err(FaultKind::Effect);
+        }
+        let receiver = self.value(s.env, 1).map_err(vm_fault)?;
+        let info = self.heap.info(receiver).map_err(heap_fault)?;
+        let buffer = self.heap.alloc_table().map_err(heap_fault)?;
+        self.put(s.env, 2, buffer).map_err(vm_fault)?;
+        let model_fields = self
+            .heap
+            .prepare_model_table_remove(receiver, buffer)
+            .map_err(heap_fault)?;
+        s.phase = ScriptPhase::Bulk(BulkWork {
+            call,
+            index: 0,
+            len: (info.len - 1).max(model_fields),
+            original_len: info.len,
+            offset,
+            receiver_version: info.content_version,
+            source_version: None,
+            model_fields,
+        });
+        Ok(())
+    }
+
     pub(in crate::executor) fn bulk_step(
         &mut self,
         s: &mut ScriptFrame,
@@ -97,7 +130,19 @@ impl Vm {
             } else {
                 false
             };
-        let extra = if !changed && work.index < work.len {
+        let removing_table = matches!(work.call.method, Builtin::TableRemove);
+        let extra = if !changed && work.index < work.len && removing_table {
+            let copying = work.index < work.original_len - 1;
+            (if copying {
+                Values::growth_bytes(u64::from(work.index) * 2, 2)
+            } else {
+                0
+            }) + if work.model_fields != 0 {
+                Values::growth_bytes(work.index.into(), 1) * (1 + u64::from(copying))
+            } else {
+                0
+            }
+        } else if !changed && work.index < work.len {
             Values::growth_bytes(work.index.into(), 1)
                 + if matches!(work.call.method, Builtin::Entries) {
                     Values::allocation_bytes(2)
@@ -113,7 +158,16 @@ impl Vm {
         if changed {
             self.collection_fault(s, FaultKind::ConcurrentModification)?;
         } else if work.index == work.len {
-            let result = if work.call.method.mutates() {
+            let result = if removing_table {
+                let removed = self.heap.table_entry(receiver, work.offset)?.1;
+                self.heap
+                    .commit_table_remove(receiver, buffer, work.offset)
+                    .map(|()| {
+                        self.heap.request_collection();
+                        removed
+                    })
+                    .map_err(heap_fault)
+            } else if work.call.method.mutates() {
                 let result = if matches!(work.call.method, Builtin::Remove) {
                     self.heap.sequence_get(receiver, work.offset)?
                 } else {
@@ -136,9 +190,21 @@ impl Vm {
             };
             self.builtin_finish(s, work.call, result)?;
         } else {
-            let result = self
-                .bulk_value(s, work, receiver)
-                .and_then(|value| self.heap.array_push(buffer, value).map_err(heap_fault));
+            let result = if removing_table {
+                (|| {
+                    if work.index < work.original_len - 1 {
+                        let source = work.index + u32::from(work.index >= work.offset);
+                        let (key, value) = self.heap.table_entry(receiver, source)?;
+                        self.heap.table_store(buffer, work.index, key, value)?;
+                    }
+                    self.heap
+                        .model_table_remove_step(receiver, buffer, work.offset, work.index)
+                })()
+                .map_err(heap_fault)
+            } else {
+                self.bulk_value(s, work, receiver)
+                    .and_then(|value| self.heap.array_push(buffer, value).map_err(heap_fault))
+            };
             match result {
                 Ok(()) => {
                     work.index += 1;

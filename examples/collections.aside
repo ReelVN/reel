@@ -9,6 +9,7 @@ fn main() {
         {...base, message: "数组组合顺序，表组合内容。", y: 132},
     ];
     captions.sort(compare: |a, b| a.y - b.y);
+    captions[1].remove("color");
     stage.replace(stack() {
         for caption in captions {
             text(caption.message, x: caption.x, y: caption.y,

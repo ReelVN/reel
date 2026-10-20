@@ -69,6 +69,80 @@ pub(super) fn drive(vm: &mut SessionVm, session: &mut Session, collect_copies: b
 }
 
 #[test]
+fn table_remove_preserves_model_bindings_and_recomputes_derived_lookup_from_source_and_asb() {
+    let code = r#"fn opening() {
+        let data=model({removed:1, middle:2, last:3});
+        let original=bind(data.removed);
+        let frozen=text("frozen",x:original);
+        let bound=text("bound",x:bind(data.last));
+        let output=text(derive(|| f"{data.get("removed",default:0)}:{data.last}"));
+        let direct=text(derive(|| f"tail:{data.last}"));
+        stage.replace(column() {
+            frozen; bound; output; direct;
+            button("remove",on_click:|event| {
+                if data.remove(key:"removed")!=1 {throw "remove result";}
+                data.last=4;
+                if frozen.x!=1 || bound.x!=4 {throw "surviving binding";}
+                data.removed=7;
+                let mut retired=false;
+                try {frozen.x=original;} catch error {retired=true;}
+                if !retired || frozen.x!=1 {throw "old reference retargeted";}
+                let control=slider(value:bind(data.last),min:0,max:10);
+                control.value=5;
+                if data.last!=5 || bound.x!=5 {throw "shifted writeback";}
+                data.remove("middle");
+                data.last=6;
+            });
+            button("later",on_click:|event| {data.last=9;});
+        });
+        narrator("ready");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = prepared(code, encoded);
+        drive(&mut vm, &mut session, true);
+        let button = vm
+            .stage()
+            .nodes()
+            .find(|node| matches!(&node.kind, NodeKind::Button { label: Some(label), .. } if label == "remove"))
+            .unwrap()
+            .id;
+        assert!(vm.click(&mut session, button).unwrap());
+        drive(&mut vm, &mut session, true);
+        collect(&mut vm);
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|node| node.kind == NodeKind::Text("7:6".into()))
+        );
+        let bound = vm
+            .stage()
+            .nodes()
+            .find(|node| node.kind == NodeKind::Text("bound".into()))
+            .unwrap();
+        assert_eq!(bound.props.x, 6.);
+        let later = vm
+            .stage()
+            .nodes()
+            .find(|node| matches!(&node.kind, NodeKind::Button { label: Some(label), .. } if label == "later"))
+            .unwrap()
+            .id;
+        assert!(vm.click(&mut session, later).unwrap());
+        drive(&mut vm, &mut session, true);
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|node| node.kind == NodeKind::Text("tail:9".into()))
+        );
+        let frozen = vm
+            .stage()
+            .nodes()
+            .find(|node| node.kind == NodeKind::Text("frozen".into()))
+            .unwrap();
+        assert_eq!(frozen.props.x, 1.);
+    }
+}
+
+#[test]
 fn model_graphs_bind_controls_and_views_from_source_and_asb() {
     let code = r#"let initialized = model({score: 2});
     fn opening() {
