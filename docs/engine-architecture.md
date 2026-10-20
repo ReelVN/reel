@@ -838,11 +838,15 @@ Windows CPAL/WASAPI 输出协商客户端 Mono/Stereo，使用共享音频引擎
 
 音频终点（已实现）：start、非 null 的 end 与循环边界使用有限非负秒，显式 end 必须大于初始 start；null end 使用资源结尾。end 是排他内容终点，后台按现有 round 规则量化到源采样帧并检查位于资源内且至少一帧，通过 StaticSoundData 的 [0,end) 视图共享原 PCM。[0,end) 视图至少一帧不要求量化后的 [start,end) 非空：两端落入同一源帧时无声自然完成；恢复位置恰好为 end 沿同一规则完成。start 仍是初始绝对位置，不是 seek 下界；position/seek 始终使用当前素材的绝对内容秒数。looping:true 时循环区间为 [loop_start, loop_end)，null loop_end 使用 end；循环区间须位于该视图内、量化后至少一帧。start 小于 loop_start 时先播前奏，超过循环终点时按区间取模。looping:false 仅接受默认循环边界，seek 达到 end 后自然完成；加载中可先定位，解码后按最新起点钳取。混音传输在终点完成或接续队列，沿同一重采样历史和退休路径，不用主线程定时 stop，也不复制 PCM。每个队列条目保存自己的 end，恢复保留当前条目实际位置与待播边界。范围为 engine 音频请求/native、player 媒体适配、media PCM 视图及定向检查；无新依赖，play ABI4、queue ABI2、SessionSnapshot19，VM/ASB 按本批整体版本。检查源帧排他边界、44.1/48k 重采样、已准备队列连续样本、暂停/seek/循环退出、终态和源码/ASB存恢复；实际声卡呈现另验。复跑 `cargo test --locked -p reel-media --test audio_contracts playback_end`、`cargo test --locked -p reel-player --lib media::tests`、`cargo test --locked -p reel-engine --lib aside::tests::snapshots::audio`，以及 `cargo run --locked -p reel-dev -- audio-probe`。
 
-`audio.position(activity)` 返回最后观察到的内容位置秒数，加载中为请求起点，暂停或输出挂起时保持，循环时回到区间起点；终态保留最后位置而不保留 PCM。它是显式读取，不自动订阅播放时钟；无 IO、解码或完整快照复制。切换同进度音轨可用 `audio.play(next, start: audio.position(current), group:"music", looping:true, fade_in:2)` 与 `audio.stop(current, fade:2)` 组合，淡入从新音轨实际起播时开始。该组合不承诺两个后台加载音轨的采样级同步。
+`audio.position(activity)` 返回最后观察到的内容位置秒数，加载中为请求起点，暂停或输出挂起时保持，循环时回到区间起点；终态保留最后位置而不保留 PCM。在 derive 内读取会订阅同一内部只读位置，普通读取返回最后发布值；无 IO、解码或完整快照复制。切换同进度音轨可用 `audio.play(next, start: audio.position(current), group:"music", looping:true, fade_in:2)` 与 `audio.stop(current, fade:2)` 组合，淡入从新音轨实际起播时开始。该组合不承诺两个后台加载音轨的采样级同步。
+
+`audio.at(activity, seconds)` 和 `video.at(activity, seconds)` 返回可重复等待的位置条件。seconds 必须有限非负；同一活动发布的位置达到或超过目标时返回 true，目标前正常 Completed/Stopped 返回 false。终态先按最终位置判断，取消和失败沿原错误传播。已结算结果保留，后续 seek 回退也保持；取消等待者只撤销该等待。loop/queue 使用当前片段的内容位置，回绕后继续观察，取样间隔中经过的区间由下一次观察决定。seek 立即发布宿主报告的位置并结算满足的条件。音频和视频共享位置、条件和快照路径。
+
+媒体后台维护收集最新位置；SessionVm 在同一响应式采样批次内发布媒体位置与普通活动时间。尚有派生计算时保留最新后端样本，终态、取消和视频帧继续维护。位置采样沿 64 路轮转；条件结算使用复用队列，批次中的条件检查完成后再发布下一批位置。首加载、暂停和输出挂起沿后端内容位置保持。软件观察位置表示内容消费进度，设备实际呈现时间仍取决于输出端能力。SessionSnapshot 21 保存内部位置、未决条件和已结算结果，共享媒体身份随 VM 图恢复。position ABI 2 是读取已发布 VM 状态的纯 native，at ABI 1 创建可等待对象；VM/ASB 格式保持。
 
 `audio.seek(activity,seconds)` ABI 1 提交绝对内容位置并返回 null，复用原活动和播放终态。加载/解码中更新起点，解码结果按最新请求配置，不重新读取或复制 PCM；播放中使用合并命令槽，源帧量化和循环规则与 start 一致。暂停或输出挂起仍可定位，非循环超尾夹到末尾，已终态不重启。控制端在 seek 命令被消费前报告最新目标，混音器先清空重采样历史、发布新位置再确认该命令序号，旧确认不得覆盖后续目标；紧接保存使用此逻辑位置。音频供给无新增分配、IO 或等待。Aside 字节码 与快照格式不变。
 
-AudioRequest 保存可移植起点、排他终点与循环区间，AudioPlayback 捕获当前内容位置；所有分组均按当前条目实际位置、播放边界、循环区间与待播队列恢复；分组仅控制混音归属，已经结束的音效不重播。音频活动终态位置进入 VM 宿主载荷。当前会话快照版本为 20，未完成淡变沿原有目标值恢复，不引入设备句柄或音频时钟轮询任务。
+AudioRequest 保存可移植起点、排他终点与循环区间，AudioPlayback 捕获当前内容位置；所有分组均按当前条目实际位置、播放边界、循环区间与待播队列恢复；分组仅控制混音归属，已经结束的音效不重播。音频活动终态位置进入 VM 宿主载荷。当前会话快照版本为 21，未完成淡变沿原有目标值恢复，不引入设备句柄或音频时钟轮询任务。
 
 缺省 owner 是当前回调节点，主剧情中是会话；节点退休取消声音与尚未结束的加载。取消一个等待者不取消共享播放。会话关闭先撤销等待，再停止输出、取消加载及活动，持续回收直到实际 PCM 和后台请求释放。挂起保留 mixer，恢复复用；输出失败只结算一次，不自动伪装恢复成功。
 
@@ -856,19 +860,19 @@ AudioGroup 位于 reel-core 的平台无关契约；media 与 engine 使用同�
 
 作者 play 接收 group、pan、fade_in；volume/group_volume/pan 的 duration 和 audio.stop 的 fade 使用非负秒。Kira 在音频消费时钟推进过渡，命令通过现有合并槽传递，无逐帧脚本任务。声音暂停保留播放位置，音量/声像包络继续推进，输出挂起冻结全部包络；淡出停止期间再暂停立即停止；淡出停止只在混音器停止后结算 Stopped，加载中或已暂停则立即停止，owner 取消及会话关闭不等待淡出。新音量/声像命令从当前值覆盖前一个过渡；加载中变更只更新初始值。音量按分贝插值，静音端点 -60 dB，声像线性插值。实时回调不执行分配、析构 PCM、文件 IO 或控制线程等待。
 
-## Rust 音频活动层（PR #53，限定 Rust 范围已验收）
+## Rust 音频活动层
 
-reel-media 的 AudioActivityService 在 Kira 之上保存有界活动账本。请求拥有固定 ResourceVersion、注册 AudioOwner（包含完整 Scope）、MediaEpoch、分组元数据及 DecodedSound；原生句柄不跨模块暴露。接纳前同时保留播放槽和终态槽，拒绝返还原请求，终态保留槽直到排出。MediaId 在服务实例内不重复；替换实例时由宿主提供新的 MediaEpoch。当前分组仅为元数据，循环取自输入声音配置。
+reel-media 的 AudioActivityService 在 Kira 之上保存有界活动账本。请求拥有固定 ResourceVersion、注册 AudioOwner（包含完整 Scope）、MediaEpoch、分组元数据及 DecodedSound；原生句柄不跨模块暴露。接纳前同时保留播放槽和终态槽，拒绝返还原请求，终态保留槽直到排出。MediaId 在服务实例内不重复；替换实例时由宿主提供新的 MediaEpoch。分组映射到宿主混音总线，循环取自输入声音配置。
 
 DecodedSound 不设置独立 PCM 帧数或时长上限；调用方的真实 BudgetTicket 覆盖输入 capacity 与转换存储，并随 Sound 整个生命周期保留至退休。回收量不从固定 64 MiB 假定推导 PCM 上界。
 
-Completed 表示通过 Playback 观察到内容消费结束，不是设备实际呈现，也不表示 PCM 已释放。Stopped 表示停止命令的逻辑结算；供给停止仍由 AudioOutput 的 fence/stop 协议保证，物理 PCM 回收仍经后台服务和预算票据。此 Rust 终态尚未接到作者的媒体等待；完整媒体完成继续遵守前文设备时钟与时间线合同，不能直接把低层 Completed 当作可听终点。
+Completed 表示通过 Playback 观察到内容消费结束，不是设备实际呈现，也不表示 PCM 已释放。Stopped 表示停止命令的逻辑结算；供给停止仍由 AudioOutput 的 fence/stop 协议保证，物理 PCM 回收仍经后台服务和预算票据。播放器将该终态交付 SessionVm 的媒体等待；作者 Completed 表示内容消费结束，声卡实际呈现沿前文设备时钟合同。
 
 撤销 owner 时，宿主先撤销业务等待并禁止该完整 Scope 新增播放，再用有配额的 cancel_owner 游标完成清理。维护、取消和排出按实际槽位（含空槽）计费。接收队列满时保留可交付记录，但继续计费推进游标，使后续取消/失效记录仍可释放。完成一次扫描后不因消费者背压反复自唤醒；消费者释放容量后重新排出。排出以接纳时的 (MediaId, MediaEpoch, Scope) 校验精确业务等待，过滤已失效等待和 Cancelled；输出故障后推进的当前代数不抹去已接纳活动的身份。已结算但尚未交付的 Completed/Stopped/Failed 保留原身份和结果；若延后实际交付，仍需再次校验等待身份。已结算终态不被后来的普通取消重写。输出故障由 fail_output 推进一次后续接纳代数，并通过分片维护将剩余活动按原接纳身份结算失败；宿主负责停止供给。它不代表保位置设备恢复。
 
 output、活动账本和 AudioReclaimService 共用 WakeSignal，宿主先 acknowledge，再排出全部来源，休眠前复核 pending。未扫完的有限工作立即续轮；仍有未结算活动时，poll_after 建议 10 ms 控制侧复查，以补足当前 Playback 缺少逐音轨完成订阅的通知空隙。没有未结算活动时不设置这个周期计时；音频检查不请求布局或呈现。10 ms 是后备调度间隔，不保证过载下完成延迟。
 
-本 PR 的限定 Rust 范围已通过独立验收，覆盖 Linux 离线真实 Kira、默认/关闭 CPAL 路径、终态保留与背压公平释放，以及后台 PCM 释放预算。seek/reload、保位置重建、单活动 pause/finish、分组混音、完整持久描述及脚本会话接线未实现；实体设备、硬件完成时钟与 0.5 ms 控制耗时目标未验收。
+AudioActivityService、MediaPlayer 和 SessionVm 共同实现 seek、pause/resume、分组混音、队列、作者等待及同包持久恢复。输出错误结算活动失败；设备重建、实体设备呈现同步及控制耗时目标仍需对应设备验收。
 
 
 ## 音频 owner 物理退休凭据（PR #56，限定 Rust 独立验收通过）

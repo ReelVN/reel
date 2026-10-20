@@ -1,6 +1,6 @@
 # Aside VM 与完整语言规范
 
-舞台转场沿普通宿主回调续体：`stage.transition(change:, target:null, duration:0.3, ...)` 在当前任务等待旧画面保留、执行 change、完成过渡并返回回调原值，写法与 scope 相同，不在调用外再 await。回调可等待，保留原任务权限；并发使用 spawn。准备、取消、故障与恢复沿既有 native continuation/TaskId/FrameId，不新增语法、VM 指令或隐藏执行器。旧图只提取目标子树的绘制数据，资源内容共享；普通帧的内部命令存储不改变调用、取消或快照续体语义。实现合同见引擎架构“保留画面的舞台转场”；native ABI 1，当前 SessionSnapshot 20、VM8，ASB 格式保持不变。
+舞台转场沿普通宿主回调续体：`stage.transition(change:, target:null, duration:0.3, ...)` 在当前任务等待旧画面保留、执行 change、完成过渡并返回回调原值，写法与 scope 相同，不在调用外再 await。回调可等待，保留原任务权限；并发使用 spawn。准备、取消、故障与恢复沿既有 native continuation/TaskId/FrameId，不新增语法、VM 指令或隐藏执行器。旧图只提取目标子树的绘制数据，资源内容共享；普通帧的内部命令存储不改变调用、取消或快照续体语义。实现合同见引擎架构“保留画面的舞台转场”；native ABI 1，当前 SessionSnapshot 21、VM8，ASB 格式保持不变。
 
 舞台指针沿普通宿主接口：`stage.pointer()` 返回当前已接受舞台的鼠标坐标快照或 null；`stage.move_pointer(x,y,owner:node)` 返回归节点所有的可等待结果，bool 表示宿主是否执行。新接口 ABI 1，window.info/configure ABI 3 增加 pointer_move 能力；参数、等待、取消及诊断沿现有协议，无新语法/VM/ASB/SessionSnapshot 格式。真实位置是宿主临时状态，读档后等待真实鼠标输入；查询所得普通表仍可随存档保存。
 
@@ -413,7 +413,7 @@ Continue 保存版本化 native 算法状态，在同一 Task 下一预算片继
 
 CallScript 不提升权限或取消已有受限上下文；sort 的同步 comparator 仍不能等待，受限 derive 仍不能写外部状态。需要普通可暂停 callback 的宿主操作在签名中明确声明。native frame 的取消/释放由宿主 adapter 幂等完成；脚本 fault 未被 continuation 处理则按原调用链传播。旧 continuation 版本在所有帧/快照引用退出前必须可解析。
 
-native continuation 的回调取消屏障由所属 TaskId 与原生 FrameId 标识；宿主取消后按预算释放内层执行帧，以 CallbackCancelled 恢复原续体，外层任务及其异常处理保留。VM 快照 8 保存未完成的清理边界。Reel 可附加 owner 条件，不改变 Task 的主 owner。Reel scope(owner: node, body: callback) 通过它执行：节点先结束时只撤销该 region，取消其等待并丢弃到屏障为止的 callback 帧，内层脚本 catch/finally 不可阻止撤销；native adapter 幂等清理本区域资源后，在屏障外的原调用位置交付 ScopeCancelled，仍存活 Task 可继续。整个 Task 主 owner 撤销则按硬终止规则结束全部区域。区域层次、取消条件、临时资源及屏障 frame 一同保存；Task 主 owner 保持不变；执行上下文的默认资源 owner 为最内层活动 scope，否则为主 owner。新 async 子任务和未指定 owner 的活动使用该默认资源 owner，显式 owner 表示明确转交生存范围。无新增语言关键字。Reel 的 s.add(parent, node, index:null) 将显式挂载的临时节点登记到作用域对象图，复用普通节点挂载和退休语义；scope ABI 4、SessionSnapshot 20，VM 快照 8。
+native continuation 的回调取消屏障由所属 TaskId 与原生 FrameId 标识；宿主取消后按预算释放内层执行帧，以 CallbackCancelled 恢复原续体，外层任务及其异常处理保留。VM 快照 8 保存未完成的清理边界。Reel 可附加 owner 条件，不改变 Task 的主 owner。Reel scope(owner: node, body: callback) 通过它执行：节点先结束时只撤销该 region，取消其等待并丢弃到屏障为止的 callback 帧，内层脚本 catch/finally 不可阻止撤销；native adapter 幂等清理本区域资源后，在屏障外的原调用位置交付 ScopeCancelled，仍存活 Task 可继续。整个 Task 主 owner 撤销则按硬终止规则结束全部区域。区域层次、取消条件、临时资源及屏障 frame 一同保存；Task 主 owner 保持不变；执行上下文的默认资源 owner 为最内层活动 scope，否则为主 owner。新 async 子任务和未指定 owner 的活动使用该默认资源 owner，显式 owner 表示明确转交生存范围。无新增语言关键字。Reel 的 s.add(parent, node, index:null) 将显式挂载的临时节点登记到作用域对象图，复用普通节点挂载和退休语义；scope ABI 4、SessionSnapshot 21，VM 快照 8。
 
 invoke_sync 仅用于不可保留 native 栈的有界同步重入。它继承最外层同步调用的剩余指令/分配额度与截止时间，嵌套只可收紧并累计扣减，最终返回 Returned、Error 或明确的同步控制失败；完整调用在本次同步边界内结束。预算耗尽终止本次嵌套调用，向 native 返回 NonResumableBudgetExceeded，脚本 catch/finally 不可截获或延长此退出；已经发生的副作用不自动回滚。所有调用此路径的 native 必须能处理失败并释放借用。可变长度或可暂停回调使用 CallScript，不能循环 invoke_sync 绕过累计预算。
 
@@ -435,7 +435,7 @@ Reel 节点的 rotation、scale_x/scale_y 和 anchor_x/anchor_y 是普通宿主�
 
 Reel 的固定节点数值属性通过普通命名参数表达 tween；宿主根据共同节点 schema 生成签名并验证数值。属性写入追踪是通用 Heap 能力：宿主可为既有字段启用逐字段写入版本；成功的脚本赋值递增对应版本，包含同值写入，失败赋值不递增。追踪数组由 GC 管理并计入堆预算，宿主动画内部写入不冒充脚本赋值。Aside 不依赖 Reel 或平台。
 
-Reel scope 属性覆盖（已实现）：`s.override(node, {opacity: 0.4, width: null})` 使用普通记录参数，显式 null 不等于缺失。返回只含所提供共同布局/外观字段及 remove 方法的可观察宿主 token，支持既有属性引用、derive 与 tween，不新增语言语法。node 成员访问保持基础值语义，token 成员访问本层值；有效投影按建立顺序取最后存活的层。覆盖不替换基础绑定；取消只移除层，不写回保存值。控件业务字段、只读交互状态、on_interaction 与 camera/scroll 专属字段不在本切片。scope ABI 4、tween ABI 8、override/remove ABI 1、SessionSnapshot 20；VM 快照 8，ASB 不变。细节见[作用域合同](engine-architecture.md#六-作用域-样式与状态)。
+Reel scope 属性覆盖（已实现）：`s.override(node, {opacity: 0.4, width: null})` 使用普通记录参数，显式 null 不等于缺失。返回只含所提供共同布局/外观字段及 remove 方法的可观察宿主 token，支持既有属性引用、derive 与 tween，不新增语言语法。node 成员访问保持基础值语义，token 成员访问本层值；有效投影按建立顺序取最后存活的层。覆盖不替换基础绑定；取消只移除层，不写回保存值。控件业务字段、只读交互状态、on_interaction 与 camera/scroll 专属字段不在本切片。scope ABI 4、tween ABI 8、override/remove ABI 1、SessionSnapshot 21；VM 快照 8，ASB 不变。细节见[作用域合同](engine-architecture.md#六-作用域-样式与状态)。
 
 Reel scope 加性偏移（已实现）：`s.offset(node, x: 0, y: 0)` 返回含 x/y 和 remove 的普通可观察宿主 token。初值可以 bind/derive，字段赋值和 tween 复用既有属性协议。所有偏移相加到当前基础或 override 结果，node 成员读取仍是基础值；取消移除本层而不写回旧值。token 的所有权、活动、强引用和同包快照与 override 共用；不新增语言语法、VM 指令或执行器。scope ABI4、offset ABI1、SessionSnapshot20；VM8、ASB与tween ABI8保持不变。
 
@@ -683,15 +683,17 @@ invoke_sync 的累计硬预算规则保持原定义。该路径遇到 ResourceBl
 
 `cargo test -p reel-cli --test project_scenarios` 的源码与 ASB 工程自检使用真实资源读取、解码和混音，通过 48 kHz 双声道离线输出按单调时间消费 PCM；音频完成仍走原来的 await 协议。自检入口必须自行断言并结束，宿主不生成输入或快进。外部工程每轮源码/ASB运行默认限时90秒，可用 `REEL_SCENARIO_TIMEOUT_SECS` 设置大于0的u64秒数；非法值直接报错，不回退。内置测试固定90秒，不受该环境变量影响。该测试不改变语言、native ABI 或快照格式，也不证明物理音频设备与画面的同步。
 
-Reel 的外围名称环境包含 `audio` 命名空间，独立 Aside 不注册音频名称。`audio.play(source, looping:false, volume:1, owner:null, group:"effects", pan:0, fade_in:0, start:0, end:null, loop_start:0, loop_end:null)` 使用 ABI v4，`audio.volume(activity,value,duration:0)` 使用 ABI v2；`audio.seek(activity,seconds)`、`audio.position(activity)`、`audio.group_volume(group,value,duration:0)`、`audio.pan(activity,value,duration:0)`、`audio.stop(activity,fade:0)` 使用 ABI v1。ASB 格式仍为 Aside 字节码，音频调用产物随签名重新编译。
+Reel 的外围名称环境包含 `audio` 命名空间，独立 Aside 不注册音频名称。`audio.play(source, looping:false, volume:1, owner:null, group:"effects", pan:0, fade_in:0, start:0, end:null, loop_start:0, loop_end:null)` 使用 ABI v4，`audio.volume(activity,value,duration:0)` 使用 ABI v2；`audio.position(activity)` 使用 ABI v2；`audio.at(activity,seconds)`、`audio.seek(activity,seconds)`、`audio.group_volume(group,value,duration:0)`、`audio.pan(activity,value,duration:0)`、`audio.stop(activity,fade:0)` 使用 ABI v1。ASB 格式仍为 Aside 字节码，音频调用产物随签名重新编译。
 
-start、loop_start 和非 null 的 end/loop_end 为有限非负秒；显式 end 必须大于初始 start，指定排他内容终点，null 表示资源末尾。looping:true 使用 [loop_start,loop_end) 循环，null loop_end 使用 end，区间须位于 [0,end) 内。start 小于 loop_start 时保留前奏，达到循环终点时取模；looping:false 仅接受默认循环边界。区间顺序在调用处检查，资源长度及帧边界在后台解码后验证，失败通过播放活动传播。start/end 量化到同一源帧时无声自然完成，恢复位置恰好为 end 也沿同一路径。position/seek 始终使用当前素材的绝对内容秒数，start 不限制之后向前定位；非循环 seek 超过 end 钳到 end 并自然完成。position 是即时读取，返回内容位置 float；加载中返回起点，终态保留最后位置，不建立响应式时钟依赖。参数、播放位置与终态遵守 Reel 快照协议，不新增 Aside 语法或音频专用 VM 指令。
+start、loop_start 和非 null 的 end/loop_end 为有限非负秒；显式 end 必须大于初始 start，指定排他内容终点，null 表示资源末尾。looping:true 使用 [loop_start,loop_end) 循环，null loop_end 使用 end，区间须位于 [0,end) 内。start 小于 loop_start 时保留前奏，达到循环终点时取模；looping:false 仅接受默认循环边界。区间顺序在调用处检查，资源长度及帧边界在后台解码后验证，失败通过播放活动传播。start/end 量化到同一源帧时无声自然完成，恢复位置恰好为 end 也沿同一路径。position/seek 始终使用当前素材的绝对内容秒数，start 不限制之后向前定位；非循环 seek 超过 end 钳到 end 并自然完成。position 是即时读取，返回内容位置 float；加载中返回起点，终态保留最后位置，在 derive 中订阅同一内部只读位置。参数、播放位置与终态遵守 Reel 快照协议，不新增 Aside 语法或音频专用 VM 指令。
 
 `audio.seek(activity,seconds)` 返回 null，提交有限非负秒的绝对位置，不创建新活动或等待；原活动的 await 仍等待播放终态。加载中更新起点，已解码后按源采样率量化，非循环位置夹到末尾，循环位置采用 start 的前奏与取模规则。暂停、增益和活动身份保持；已终态不重启。position 与紧接的存档立即观察最新目标，混音器应用后观察实际位置。
 
 分组为 music/voice/effects/ui，group_volume 另接受 master 控制总音量。音量为非负有限线性增益，pan 为 [-1,1]（左到右），时间为非负有限秒。每声、组、总音量相乘。过渡复用 Kira：音量在分贝域插值，声像线性插值，静音端点为 -60 dB；新命令从当前值替换未完成过渡。加载中的音量/声像变更设置首次播放值，fade_in 从实际播放开始。组设置也影响随后播放的声音。
 
 播放活动通过标准 native awaitable 协议接入 await；pause/resume/stop 仍由 Reel 按活动类型分派。audio.stop 的淡出使用音频消费时钟，真正停止后才返回 Stopped；尚未开始或已暂停的声音立即停止。音量/声像控制返回原活动，group_volume 返回 null。暂停保留播放位置，音量/声像包络继续按混音时钟推进；输出挂起冻结全部包络。淡出停止期间再暂停会立即完成停止。owner 取消与关闭立即终止。读取与设备错误通过同一 host completion 传播到原始 await 位置。活动是只读宿主值，终态保存在 VM 堆内，活跃生产者保留宿主根；取消消费者仅撤销等待，owner 退休才取消生产者。
+
+`audio.position(activity)` 与 `video.position(activity)` 是读取已发布 VM 状态的纯 native（ABI 2），可直接放入 derive；seek 立即发布宿主实际目标。`audio.at(activity,seconds)`、`video.at(activity,seconds)`（ABI 1）返回可重复等待对象：观察位置 >= 有限非负 seconds 返回 true，提前 Completed/Stopped 返回 false，终态先判断最终位置；失败和取消抛原错误。等待者取消保留播放，已达结果在 seek 回退后仍为 true。循环或队列回绕使用当前素材位置，条件持续等待下一次满足的观察。位置是软件内容消费进度。媒体位置与普通活动共用响应式采样批次；同包 SessionSnapshot 21 保留位置、条件、结果及共享媒体身份。示例见 [author_media_position.aside](../examples/author_media_position.aside)。
 
 Reel `camera` 使用普通宿主节点与 children 合成，camera_x/camera_y/zoom/camera_rotation 为可写、可绑定和可动画数值属性；camera native ABI 1，tween ABI 3。此接口不增加 Aside 语法、VM 每帧回调或平台依赖，Aside 字节码/ASB 不变。
 

@@ -23,7 +23,7 @@ fn registry() -> &'static SnapshotRegistry {
             registry
                 .register_validator(
                     name,
-                    if matches!(name, "reel.media" | "reel.character") {
+                    if name == "reel.media" { 3 } else if name == "reel.character" {
                         2
                     } else {
                         1
@@ -72,6 +72,7 @@ pub(super) enum Part {
     Particle,
     Media,
     MediaWait,
+    MediaCue,
     VideoPoster,
     Translations,
     Catalog,
@@ -116,7 +117,7 @@ pub struct SessionSnapshot {
     pictures: Vec<Option<std::sync::Arc<SavedRetainedScene>>>,
 }
 impl SessionSnapshot {
-    pub const FORMAT_VERSION: u32 = 20;
+    pub const FORMAT_VERSION: u32 = 21;
     /// Serialize directly into the host's compression/file writer on its worker.
     pub fn write_to(
         &self,
@@ -592,7 +593,7 @@ impl SessionRestore<'_> {
                             &mut runtime.stage.scene,
                         )?;
                     }
-                    Part::Media | Part::MediaWait | Part::VideoPoster => {
+                    Part::Media | Part::MediaWait | Part::MediaCue | Part::VideoPoster => {
                         runtime
                             .media
                             .restore_record(record, map, runtime.vm.heap_mut())?;

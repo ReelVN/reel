@@ -601,6 +601,8 @@ impl SessionVm {
             | "reel::audio::group_volume"
             | "reel::audio::pan"
             | "reel::audio::seek"
+            | "reel::audio::at"
+            | "reel::video::at"
             | "reel::audio::position"
             | "reel::audio::stop" => {
                 if symbol == "reel::audio::await" {

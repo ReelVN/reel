@@ -660,7 +660,7 @@ stage.replace(button(width: 1280, height: 720, decorated: false,
 await playing;
 ```
 
-`pause(playing)` / `resume(playing)` / `stop(playing)` 与其他活动一致；`finish(playing)` 完成有限视频，循环视频须 stop。`video.seek(playing, seconds)` 跳到绝对内容时间，`video.position(playing)` 返回当前秒数；视频音轨沿 Music 音量总线。隐藏节点不暂停，可直接组合裁剪、镜头、透明度和其他控件。
+`pause(playing)` / `resume(playing)` / `stop(playing)` 与其他活动一致；`finish(playing)` 完成有限视频，循环视频须 stop。`video.seek(playing, seconds)` 跳到绝对内容时间，`video.position(playing)` 返回当前秒数，可在 derive 中驱动字幕和外观。`await video.at(playing, seconds)` 等待发布位置达到目标并返回 true，提前正常结束或 stop 返回 false，取消和失败抛出原错误；使用与音频位置等待相同的暂停、seek 和恢复规则。视频音轨沿 Music 音量总线。隐藏节点不暂停，可直接组合裁剪、镜头、透明度和其他控件。
 
 存档记录视频路径、区间、当前位置及暂停状态，恢复后继续同一活动；停止/结束后保留的画面也恢复，但不重播声音。像素、解码队列与 GPU 句柄不进入存档。解码在后台进行，有声视频跟随实际消费的音频时钟，静音视频使用会话时间；运行窗口挂起时一起暂停。
 
@@ -1365,7 +1365,7 @@ await music;
 
 `audio.play("assets/chime.wav", start: 0.1, end: 0.2)` 只播放到素材的 0.2 秒之前，由音频混音器在终点完成；省略 end 使用素材结尾。play 与 queue 都接受 end，显式终点必须大于起点且位于素材内。start/position/seek 都使用素材的绝对秒数；起点不限制之后向前定位，非循环 seek 超过 end 时停在 end。起点和终点若量化到同一采样帧，片段会无声完成；存档保留每个片段的终点。
 
-`start` 指定从第几秒起播，`audio.position(sound)` 读取当前内容位置秒数；加载中返回请求起点，暂停时保持，结束后仍可读取最后位置。`looping: true` 可配合 `loop_start` 和 `loop_end` 指定循环区间，默认从 0 循环至 end（省略时为音轨结尾）。start 在 loop_start 之前会先播放前奏，达到 loop_end 后回到 loop_start；start 超过 loop_end 会折回循环区间。循环终点不包含在区间内，循环边界必须位于 end 以内并至少包含一帧。未开启 looping 时使用默认循环边界。
+`start` 指定从第几秒起播，`audio.position(sound)` 读取当前素材的内容位置秒数。把它放进 `derive`，位置更新就会驱动画面；加载中保持请求起点，暂停时保持，结束后保留最后位置。`looping: true` 可配合 `loop_start` 和 `loop_end` 指定循环区间，默认从 0 循环至 end（省略时为音轨结尾）。start 在 loop_start 之前会先播放前奏，达到 loop_end 后回到 loop_start；start 超过 loop_end 会折回循环区间。循环终点不包含在区间内，循环边界必须位于 end 以内并至少包含一帧。未开启 looping 时使用默认循环边界。
 
 `audio.seek(sound, seconds)` 定位同一个声音，返回 null，不需要 await。时间单位为秒且必须有限非负；暂停时定位仍保持暂停，正在播放则继续，增益与循环设置保持。加载中修改起播位置；非循环超出结尾时停在结尾并自然结束，暂停的声音等恢复后结束；循环的定位规则与 start 一致。连续定位采用最新目标，`audio.position` 和紧接的存档立即记录它，混音器应用后再跟随实际进度。已经结束的活动不会重新播放；`await sound` 始终等待原来的播放终态。
 
@@ -1376,7 +1376,11 @@ let next = audio.play("assets/music-next.ogg", group: "music", looping: true,
 audio.stop(music, fade: 2);
 music = next;
 ```
-position 是显式读取，不会让界面持续刷新。存档对所有音频分组记录当前条目、实际位置、循环区间与待播队列，读档后继续播放；已经结束的活动保持终态，不会重播。需要从头重听语音时，显式调用 seek 或 play。
+存档对所有音频分组记录当前条目、实际位置、循环区间与待播队列，读档后继续播放；已经结束的活动保持终态，不会重播。需要从头重听语音时，显式调用 seek 或 play。
+
+`audio.at(sound, seconds)` 返回一个位置等待对象，`await` 在宿主发布的位置达到或超过目标时得到 true；声音提前自然结束或被 stop 时得到 false，取消和播放失败沿原错误传播。目标使用有限非负的素材秒数；调用时已达到目标，也按普通 await 继续。seek 立即发布新位置，循环和队列换段则沿当前素材位置判断；尚未达标时，位置回退后继续等待后续发布值。完成后，同一对象重复 await 保留原结果。取消等待者只解除自己的订阅；其余等待者和持有者继续共享票据，原声音继续播放。存档保留尚未完成的目标和播放活动身份。
+
+[音乐驱动画面示例](../../examples/author_media_position.aside) 将同一内容位置用于方块移动和剧情等待：先 play/pause，构建绑定画面，等待首帧接受后 resume。加载所用时间自然保持在起点。示例用仓库内 0.25 秒的 chime.wav，在 0.125 秒改变文字；换成自己的音乐与时间点即可用于字幕、歌词或片尾。按第一节准备字体和资源后运行 `reel dev examples/author_media_position.aside --assets target/reel-artifacts/author-assets`。
 
 分组音量用 `audio.group_volume("music", value)` 设置，可选 music/voice/effects/ui；master 控制总音量。每声、组、总增益相乘，设置也影响之后开始的声音。`audio.pan(sound, value, duration: seconds)` 将声像从 -1（左）移动到 1（右），0 居中；`audio.volume` 和 `audio.group_volume` 同样接受 duration，省略时立即生效。`fade_in` 从实际播放开始计时；`audio.stop(sound, fade: seconds)` 淡出结束后才让 await 返回 Stopped，加载中或已暂停的声音立即停止。暂停保留播放位置，音量/声像包络继续推进；输出挂起冻结全部包络。淡出停止期间再暂停会立即停止。音量过渡在分贝域进行，静音端点为 -60 dB；新命令从当前值接续，加载中的控制更新首次播放值。
 
