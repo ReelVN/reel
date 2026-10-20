@@ -791,7 +791,9 @@ impl Vm {
             _ => None,
         };
         if let Some((function, count)) = call {
-            work += self.script_push_cost(function, count) + 4;
+            let (call_work, call_bytes) = self.script_push_cost(function, count);
+            work += call_work + 4;
+            bytes += call_bytes;
         }
         let result_cell = match step {
             ClassStep::Build {

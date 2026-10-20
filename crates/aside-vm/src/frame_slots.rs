@@ -54,6 +54,13 @@ pub struct RelocationCost {
     pub new_buffer_bytes: u64,
     pub peak_charged_bytes: u64,
 }
+/// A synchronous operation prepares one contiguous span for all of its windows.
+/// The plan is derived from scalar pool statistics and owns no borrowed values.
+pub(crate) struct WindowAdmission {
+    pub capacity: Option<u32>,
+    pub work: u64,
+    pub allocation_bytes: u64,
+}
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RangeReleaseCursor {
     heap: Option<HeapId>,
@@ -94,6 +101,7 @@ pub struct FrameSlots {
     limits: FrameSlotsLimits,
     active_values: u32,
     active_ranges: u32,
+    largest_free: u32,
     closed: bool,
     // Keep the bounded inline control metadata charged until this owner drops.
     control_charge: Reservation,
@@ -173,6 +181,7 @@ impl FrameSlots {
             limits,
             active_values: 0,
             active_ranges: 0,
+            largest_free: limits.initial_capacity,
             closed: false,
             control_charge,
         })
@@ -321,10 +330,14 @@ impl FrameSlots {
         });
         if let Some(i) = free_index {
             let spans = &mut self.free.as_mut().unwrap().data;
+            let was_largest = spans[i].len == self.largest_free;
             spans[i].base += len;
             spans[i].len -= len;
             if spans[i].len == 0 {
                 spans.remove(i);
+            }
+            if was_largest {
+                self.largest_free = spans.iter().map(|span| span.len).max().unwrap_or(0);
             }
         }
         self.active_values += len;
@@ -378,6 +391,71 @@ impl FrameSlots {
             return Err(HeapError::WindowCapacity);
         }
         self.relocate(heap, capacity)?;
+        Ok(())
+    }
+    pub(crate) fn window_admission(
+        &self,
+        heap: &Heap,
+        windows: usize,
+        values: u64,
+    ) -> WindowAdmission {
+        let (descriptors, work, bytes) = heap.range_admission(windows);
+        let mut plan = WindowAdmission {
+            capacity: None,
+            work,
+            allocation_bytes: bytes,
+        };
+        if descriptors > self.mappings.as_ref().unwrap().data.len() {
+            plan.work += descriptors as u64
+                + self.mappings.as_ref().unwrap().data.len() as u64
+                + self.free.as_ref().unwrap().data.len() as u64;
+            plan.allocation_bytes += descriptors as u64
+                * (std::mem::size_of::<Option<Window>>() + std::mem::size_of::<Span>()) as u64;
+        }
+        if values <= u64::from(self.largest_free) {
+            return plan;
+        }
+        let minimum = u64::from(self.active_values) + values;
+        if minimum > u64::from(self.limits.max_capacity) {
+            // Existing window admission reports the configured capacity limit.
+            return plan;
+        }
+        let old_capacity = self.values.as_ref().unwrap().data.len() as u32;
+        let capacity = if minimum <= u64::from(old_capacity) {
+            old_capacity
+        } else {
+            old_capacity
+                .saturating_mul(2)
+                .max(minimum as u32)
+                .min(self.limits.max_capacity)
+        };
+        let bitmap_words = u64::from(capacity).div_ceil(64);
+        plan.capacity = Some(capacity);
+        // Preflight resolves every live descriptor; relocation traverses the
+        // mapping twice, initializes the entire replacement, and barriers/copies
+        // each registered value and its initialization bit.
+        plan.work += 8 * descriptors as u64
+            + u64::from(capacity)
+            + bitmap_words
+            + 5 * u64::from(self.active_values)
+            + self.free.as_ref().unwrap().data.len() as u64
+            + 8;
+        plan.allocation_bytes +=
+            u64::from(capacity) * std::mem::size_of::<Value>() as u64 + bitmap_words * 8;
+        plan
+    }
+    pub(crate) fn admit_windows(
+        &mut self,
+        heap: &mut Heap,
+        windows: usize,
+        values: u64,
+    ) -> Result<(), HeapError> {
+        let capacity = self.window_admission(heap, windows, values).capacity;
+        heap.ensure_range_slots(windows)?;
+        self.grow_descriptors(heap.range_index.len())?;
+        if let Some(capacity) = capacity {
+            self.relocate(heap, capacity)?;
+        }
         Ok(())
     }
     pub fn read(&self, at: RangePosition) -> Result<Value, HeapError> {
@@ -508,6 +586,9 @@ impl FrameSlots {
         if i > 0 && spans[i - 1].base + spans[i - 1].len == spans[i].base {
             let right = spans.remove(i);
             spans[i - 1].len += right.len;
+            self.largest_free = self.largest_free.max(spans[i - 1].len);
+        } else {
+            self.largest_free = self.largest_free.max(spans[i].len);
         }
     }
     /// Unregister a range and recycle its span while retaining pool capacity.
@@ -661,6 +742,7 @@ impl FrameSlots {
                 len: capacity - next,
             });
         }
+        self.largest_free = capacity - next;
         drop(old_values);
         drop(old_bitmap);
         Ok(cost)

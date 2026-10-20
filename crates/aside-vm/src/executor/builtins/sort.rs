@@ -248,8 +248,8 @@ impl Vm {
             } else {
                 (0, 0)
             };
-            let cost = self.script_push_cost(function, 2) + initializer_work;
-            if !meter.take(0, cost + 6, bytes) {
+            let (call_work, call_bytes) = self.script_push_cost(function, 2);
+            if !meter.take(0, call_work + initializer_work + 6, bytes + call_bytes) {
                 return Ok(false);
             }
             work.phase = SortPhase::Callback;
