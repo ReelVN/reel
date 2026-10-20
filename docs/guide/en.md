@@ -589,7 +589,7 @@ await run(sequence(delay(0.5), tween(panel, opacity: 0, duration: 0.3)));
 
 ## 5 Managing Temporary Scenes with Scopes
 
-Scope ownership of tasks, activities, waits, temporary nodes and property overrides is implemented. Additive offsets remain planned.
+Scopes manage tasks, activities, waits, temporary nodes, property overrides and additive offsets.
 
 scope executes an ordinary closure within the current story call chain. Its body can deliver dialogue, wait and call other functions. Exiting retires work owned by that scope. Temporary scenes join the same lifetime management as follows:
 ```aside
@@ -601,7 +601,7 @@ fn show_cg(view) {
 }
 ```
 The CG appears at the top of picture and is removed when the player advances and the scope exits. s.add(parent, node, index: 0) chooses an insertion position and returns the original node. Early page removal, scene replacement and exit after loading a save use the same retirement rules.
-s.add(parent, node) mounts a temporary subtree, and s.run(action) starts an activity owned by this scope. s.override(node, properties) creates an animatable override layer. The planned s.offset(node) will create an independent additive x/y offset. Ordinary node.add continues to use the explicit parent node's lifetime; being inside a scope does not silently change its meaning.
+s.add(parent, node) mounts a temporary subtree, and s.run(action) starts an activity owned by this scope. s.override(node, properties) creates an animatable override layer. s.offset(node, x: 0, y: 0) creates an independent additive x/y offset. Ordinary node.add continues to use the explicit parent node's lifetime; being inside a scope does not silently change its meaning.
 Normal return, exceptions, and scene exit all trigger synchronous, idempotent host cleanup. The body explicitly waits for any exit animation. Scopes can be nested. A save records the current call position, activities and temporary subtrees; after restoration, execution continues in the same body, then releases resources under the same rules. Ordinary writes to game variables retain their application meaning. scope manages only explicitly registered temporary effects.
 Property overrides use a record so explicit null retains its meaning. Animate over a read-only derive without saving and writing back an old value:
 ```aside
@@ -611,7 +611,24 @@ scope(body: |s| {
     await game.advance();
 });
 ```
-Node properties remain base values; effect properties belong to this layer. Drawing, layout, hit testing and geometry use the effective value. The last created active layer wins per field; editing an older layer does not change its order. Base bindings and hidden animations keep updating, so removal exposes the latest result. effect.remove() removes a layer early; scope exit or target retirement also removes it. Common layout and appearance fields are supported, and the token only exposes fields supplied at creation. Control values, callbacks, read-only interaction states and camera/scroll-specific fields are excluded. Layers animate independently; writers to the same field or final binding source still use normal activity conflict rules. Additive s.offset remains planned.
+Node properties remain base values; effect properties belong to this layer. Drawing, layout, hit testing and geometry use the effective value. The last created active layer wins per field; editing an older layer does not change its order. Base bindings and hidden animations keep updating, so removal exposes the latest result. effect.remove() removes a layer early; scope exit or target retirement also removes it. Common layout and appearance fields are supported, and the token only exposes fields supplied at creation. Control values, callbacks, read-only interaction states and camera/scroll-specific fields are excluded. Layers animate independently; writers to the same field or final binding source still use normal activity conflict rules.
+
+Additive offsets express shaking independently of base movement:
+
+```aside
+let moving = run(tween(panel, x: 500, duration: 4));
+scope(body: |s| {
+    let shake = s.offset(panel, y: -3);
+    await run(repeat(sequence(
+        tween(shake, x: 6, duration: 0.05),
+        tween(shake, x: -6, duration: 0.05)
+    ), times: 8));
+});
+await moving;
+```
+
+Unspecified x/y default to 0; each layer accepts assignments, bind/derive and ordinary tween. Multiple offsets add to the current base or override value in the parent container’s coordinates; node.x/y continue to describe the base value. When shaking finishes and the scope exits, the picture returns to the base animation’s current position. shake.remove() removes the layer early; target retirement, cancellation and loading use the shared scope rules. Ordinary run automatically belongs to the current scope here. Try the interactive [author_offsets.aside](../../examples/author_offsets.aside) example.
+
 By default, scope lives with the current task. Use scope(owner: node, body: ...) when it should end with a particular node. If that node ends first, only the scope region is cancelled, and ScopeCancelled is raised at the outer call site. Main-story code that is still alive can catch it outside the scope. Code involving invalid nodes within the region ends, and the host performs cleanup. If the current task itself is cancelled, the entire task ends.
 visible=false hides the subtree and removes it from hit testing and focus; enabled=false keeps it visible but disables interaction; opacity changes only transparency. Use stage.replace(new_root) for permanent scene changes and a container's replace(new_child) for permanent local replacements.
 
@@ -753,7 +770,7 @@ scope(body: |s| {
 });
 ```
 
-Stopping an ordinary animation leaves its properties at the current values. Scope overrides are removed on exit, exposing the latest base values. Additive offsets remain planned. Removing an owner node cancels the scope's inner work; the outer catch receives "ScopeCancelled" and can continue. Inner script finally blocks are skipped, while outer finally blocks execute normally. Cancelling the outer task cleans up its scopes. Work with another explicit owner follows that owner's lifetime. Scopes, waits, activities and cancellation cleanup survive same-package saves.
+Stopping an ordinary animation leaves its properties at the current values. Scope overrides and additive offsets are removed on exit, exposing the latest base values. Removing an owner node cancels the scope's inner work; the outer catch receives "ScopeCancelled" and can continue. Inner script finally blocks are skipped, while outer finally blocks execute normally. Cancelling the outer task cleans up its scopes. Work with another explicit owner follows that owner's lifetime. Scopes, waits, activities and cancellation cleanup survive same-package saves.
 
 [author_scope.aside](../../examples/author_scope.aside) uses one button to start animation and background work, and another to stop the whole effect through one task handle. Run `reel dev examples/author_scope.aside`.
 
@@ -916,7 +933,7 @@ game.clear_history(keep_last: 37);
 
 A caller may await its own save. Loading that snapshot restores the request as succeeded with read-only `restored` set to true (false after a normal write), allowing a menu to close, and continues after await without repeating the save call. Other unfinished external requests settle with OperationInterrupted. A successful load replaces the session; its caller does not resume in the old session.
 
-Execution snapshot capture advances in work slices; encoding, compression and writing run on a worker. If business input needs to mutate state during snapshot capture, that save reports CaptureBusy, input proceeds, and the old slot remains intact. Desktop saves default to the user-data directory; Rust hosts can set `StoryWindowOptions.save_directory` and `save_bytes`. Custom hosts install `RuntimeSaves` with their own `SaveStorage` and audio backend. The directory adapter resolves the existing save directory, writes a temporary file in that same directory tree, syncs it and atomically replaces the old slot, including its thumbnail. The current VM snapshot format is 8 and the session snapshot format is 19. Saves require matching code and formats; older formats report an explicit version mismatch. System data in `persistent` is independent of story snapshots. Cross-version migration is not provided. Existing save restoration check: `cargo test -p reel-player --lib save_slot_survives`.
+Execution snapshot capture advances in work slices; encoding, compression and writing run on a worker. If business input needs to mutate state during snapshot capture, that save reports CaptureBusy, input proceeds, and the old slot remains intact. Desktop saves default to the user-data directory; Rust hosts can set `StoryWindowOptions.save_directory` and `save_bytes`. Custom hosts install `RuntimeSaves` with their own `SaveStorage` and audio backend. The directory adapter resolves the existing save directory, writes a temporary file in that same directory tree, syncs it and atomically replaces the old slot, including its thumbnail. The current VM snapshot format is 8 and the session snapshot format is 20. Saves require matching code and formats; older formats report an explicit version mismatch. System data in `persistent` is independent of story snapshots. Cross-version migration is not provided. Existing save restoration check: `cargo test -p reel-player --lib save_slot_survives`.
 
 Runnable example: [author_saves.aside](../../examples/author_saves.aside).
 

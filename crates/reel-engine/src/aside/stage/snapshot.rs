@@ -230,7 +230,7 @@ impl StageBinding {
         };
         controls::project_group(heap, value, &mut kind)?;
         let selected = overrides::selection(heap, value)?;
-        let props = read_props(
+        let mut props = read_props(
             heap,
             fields,
             saved.shape.prefix(),
@@ -239,12 +239,13 @@ impl StageBinding {
             None,
             mask_origin,
         )?;
+        overrides::apply_offsets(heap, value, &mut props)?;
         let mask_source = mask_handle(heap, fields, saved.shape.prefix(), selected)?;
         let overrides = if selected.tag() == ValueTag::Null {
             None
         } else {
-            let mut cache = overrides::Cache::new(heap)?;
-            cache.accept(heap, selected)?;
+            let mut cache = overrides::Cache::new(heap, overrides::offset_count(heap, value)?)?;
+            cache.accept(heap, value)?;
             Some(cache)
         };
         let interaction_offset = (saved.shape.prefix() + NodeProperty::PROPERTIES.len()) as u32;

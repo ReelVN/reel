@@ -19,7 +19,7 @@ pub(super) struct Scope {
 
 #[derive(Default)]
 pub(super) struct Scopes {
-    pub methods: Option<[FunctionId; 5]>,
+    pub methods: Option<[FunctionId; 6]>,
     pub live: VecDeque<Scope>,
     charge: Option<HeapReservation>,
 }
@@ -87,7 +87,7 @@ impl SessionVm {
         if overrides.tag() != ValueTag::Null {
             while heap.sequence_len(overrides)? != 0 {
                 let token = heap.sequence_get(overrides, heap.sequence_len(overrides)? - 1)?;
-                self.stage.remove_override(heap, token)?;
+                self.stage.remove_layer(heap, token)?;
                 heap.array_pop(overrides)?;
             }
         }
@@ -221,6 +221,7 @@ impl SessionVm {
                     find("reel::scope::spawn")?,
                     find("reel::scope::add")?,
                     find("reel::scope::override")?,
+                    find("reel::scope::offset")?,
                     find("reel::override::remove")?,
                 ]);
             }
@@ -236,7 +237,7 @@ impl SessionVm {
                 &[Value::int(TAG), owner, Value::NULL, Value::NULL],
                 Some(results::readonly),
             )?;
-            for (i, (name, function)) in ["run", "spawn", "add", "override"]
+            for (i, (name, function)) in ["run", "spawn", "add", "override", "offset"]
                 .into_iter()
                 .zip(self.scopes.methods.unwrap())
                 .enumerate()
@@ -260,7 +261,7 @@ impl SessionVm {
                         &[]
                     },
                     continuation: Continuation {
-                        version: 3,
+                        version: 4,
                         stage: 0,
                         values: &[object],
                         faults: FaultRetention::Preserve,
@@ -318,9 +319,24 @@ impl SessionVm {
         let token = self.stage.create_override(
             &mut self.vm,
             [scope, node, properties],
-            self.scopes.methods.unwrap()[4],
+            self.scopes.methods.unwrap()[5],
             self.read_limit,
         )?;
+        self.vm.respond(ticket, HostResponse::Ready(token))?;
+        self.issued = None;
+        Ok(())
+    }
+
+    pub(super) fn dispatch_scope_offset(&mut self, ticket: HostTicket) -> Result<(), AdapterError> {
+        let args = self.vm.host_arguments(ticket)?;
+        let arguments = [args[0], args[1], args[2], args[3]];
+        self.vm.heap().host_fields(arguments[0])?;
+        if !is_scope(self.vm.heap(), arguments[0]) {
+            return Err(AdapterError::Input("offset requires a scope"));
+        }
+        let token =
+            self.stage
+                .create_offset(&mut self.vm, arguments, self.scopes.methods.unwrap()[5])?;
         self.vm.respond(ticket, HostResponse::Ready(token))?;
         self.issued = None;
         Ok(())
@@ -331,7 +347,7 @@ impl SessionVm {
         ticket: HostTicket,
     ) -> Result<(), AdapterError> {
         let token = self.vm.host_arguments(ticket)?[0];
-        self.stage.remove_override(self.vm.heap_mut(), token)?;
+        self.stage.remove_layer(self.vm.heap_mut(), token)?;
         self.activities.after_script(self.vm.heap())?;
         self.vm.respond(ticket, HostResponse::Ready(Value::NULL))?;
         self.issued = None;

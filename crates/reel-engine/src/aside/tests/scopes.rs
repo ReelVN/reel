@@ -459,4 +459,5 @@ fn effect_scope_cancels_particles_clock_and_presentation_requests() {
     }
 }
 
+mod offsets;
 mod overrides;

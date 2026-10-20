@@ -116,7 +116,7 @@ pub struct SessionSnapshot {
     pictures: Vec<Option<std::sync::Arc<SavedRetainedScene>>>,
 }
 impl SessionSnapshot {
-    pub const FORMAT_VERSION: u32 = 19;
+    pub const FORMAT_VERSION: u32 = 20;
     /// Serialize directly into the host's compression/file writer on its worker.
     pub fn write_to(
         &self,

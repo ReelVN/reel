@@ -33,6 +33,7 @@ pub const SCENES: &[(&str, E)] = &[
     ("timed delay in story", E::Block),
     ("show_cg helper", E::Module),
     ("scoped property override", E::Block),
+    ("scoped additive offset", E::Block),
     ("video startup", E::Block),
     ("temporary hint in story", E::Block),
     ("preferences component", E::Module),
@@ -109,7 +110,9 @@ pub fn enclosing(scene: &str) -> &[&str] {
         "entrance in story" => &["portrait"],
         "parallel entrance" => &["view"],
         "breathing in story" => &["view", "mio"],
-        "timed delay in story" | "scoped property override" => &["panel"],
+        "timed delay in story" | "scoped property override" | "scoped additive offset" => {
+            &["panel"]
+        }
         "temporary hint in story" => &["view", "photo_panel", "mio"],
         "moving group in story" => &["dialogue_view"],
         "scoped choreography in story" => &["view"],

@@ -601,7 +601,7 @@ await run(sequence(delay(0.5), tween(panel, opacity: 0, duration: 0.3)));
 
 ## 五 作用域管理临时画面
 
-scope 的任务、活动、等待、临时节点和属性覆盖已实现。加性偏移继续实现。
+scope 统一管理任务、活动、等待、临时节点、属性覆盖和加性偏移。
 
 scope 在当前剧情调用链执行普通闭包；正文可以对白、等待、调用其他函数，退出时退休本次作用域拥有的工作。临时画面按下面的形式加入同一寿命管理：
 ```aside
@@ -613,7 +613,7 @@ fn show_cg(view) {
 }
 ```
 CG 加在 picture 最上方，玩家继续后随作用域退出移除。s.add(parent, node, index: 0) 可指定插入位置，返回原 node；提前移除页面、替换场景和读档后退出也沿同一退休规则处理。
-s.add(parent, node) 挂载临时子树，s.run(action) 启动归此作用域所有的活动。s.override(node, properties) 创建可动画的覆盖层；待实现的 s.offset(node) 将创建独立的 x/y 附加偏移。普通 node.add 继续使用明确父节点寿命，不因身处 scope 而偷偷改变含义。
+s.add(parent, node) 挂载临时子树，s.run(action) 启动归此作用域所有的活动。s.override(node, properties) 创建可动画的覆盖层；s.offset(node, x: 0, y: 0) 创建独立的 x/y 附加偏移。普通 node.add 继续使用明确父节点寿命，不因身处 scope 而偷偷改变含义。
 属性覆盖使用记录参数保留 null 的含义，覆盖只读 derive 时无需保存和回写原值：
 ```aside
 scope(body: |s| {
@@ -622,7 +622,24 @@ scope(body: |s| {
     await game.advance();
 });
 ```
-node 的属性仍是基础值，effect 的属性是本层值；画面、布局、命中和 geometry 使用有效值。同字段后建立的层优先，修改旧层不改变顺序。基础绑定和被遮挡层的动画继续更新，移除后露出最新结果。effect.remove() 可提前撤销，退出作用域或目标退休也会撤销。可以覆盖共同布局与外观字段，token 只接受创建时列出的字段；控件值、回调、hover 等只读状态及 camera/scroll 专属字段不包含在内。各层动画独立，写同一字段或最终绑定源仍按普通活动冲突处理。s.offset 的加性偏移仍待实现。
+node 的属性仍是基础值，effect 的属性是本层值；画面、布局、命中和 geometry 使用有效值。同字段后建立的层优先，修改旧层不改变顺序。基础绑定和被遮挡层的动画继续更新，移除后露出最新结果。effect.remove() 可提前撤销，退出作用域或目标退休也会撤销。可以覆盖共同布局与外观字段，token 只接受创建时列出的字段；控件值、回调、hover 等只读状态及 camera/scroll 专属字段不包含在内。各层动画独立，写同一字段或最终绑定源仍按普通活动冲突处理。
+
+加性偏移用独立层表达基础移动之上的摇晃：
+
+```aside
+let moving = run(tween(panel, x: 500, duration: 4));
+scope(body: |s| {
+    let shake = s.offset(panel, y: -3);
+    await run(repeat(sequence(
+        tween(shake, x: 6, duration: 0.05),
+        tween(shake, x: -6, duration: 0.05)
+    ), times: 8));
+});
+await moving;
+```
+
+未指定的 x/y 默认为 0，支持赋值、bind/derive 和普通 tween。多层偏移叠加在当前基础值或覆盖值之后，坐标按父容器的方向和单位解释；node.x/y 继续表示基础值。摇晃结束退出 scope 后，画面回到基础动画当时的位置。shake.remove() 提前撤销该层；目标退休、取消和读档沿作用域的共同规则。普通 run 在这里自动归当前 scope。完整交互示例：[author_offsets.aside](../../examples/author_offsets.aside)。
+
 普通返回、异常和场景退出都触发同步、幂等的宿主清理。退场动画由正文主动等待。作用域可以嵌套；记录了当前调用位置、活动和临时子树的存档恢复后，继续同一段正文，再按相同规则释放。游戏变量的正常写入保持其业务含义，scope 只管理显式登记的临时效果。
 默认 scope 随当前任务存活。需要随某个节点结束时写 scope(owner: node, body: ...)。若该节点先结束，仅撤销 scope 区域并在外层调用点产生 ScopeCancelled，仍存活的主剧情可以在 scope 外捕获；区域内的失效节点代码结束，宿主完成清理。当前任务自身被撤销时，整个任务结束。
 visible=false 隐藏子树并退出命中与焦点；enabled=false 保留画面并禁用交互；opacity 只改变透明度。永久换景用 stage.replace(new_root)，局部永久替换用容器的 replace(new_child)。
@@ -764,7 +781,7 @@ scope(body: |s| {
 });
 ```
 
-普通动画在停止位置保留属性值。scope 覆盖在退出时撤销并显露最新底值；加性偏移仍待实现。绑定到 owner 节点的作用域在节点移除时取消内层工作，外层 catch 收到 "ScopeCancelled" 后可以继续；内层脚本 finally 被跳过，外层 finally 正常执行。取消外层任务会清理它的作用域。显式指定另一个 owner 的工作按该 owner 的寿命运行。作用域及其等待、活动和取消清理过程随同包存档恢复。
+普通动画在停止位置保留属性值。scope 覆盖和加性偏移在退出时撤销并显露最新底值。绑定到 owner 节点的作用域在节点移除时取消内层工作，外层 catch 收到 "ScopeCancelled" 后可以继续；内层脚本 finally 被跳过，外层 finally 正常执行。取消外层任务会清理它的作用域。显式指定另一个 owner 的工作按该 owner 的寿命运行。作用域及其等待、活动和取消清理过程随同包存档恢复。
 
 [author_scope.aside](../../examples/author_scope.aside) 展示一个按钮同时启动动画和后台任务，另一个按钮通过一个任务句柄停止整段演出。运行 `reel dev examples/author_scope.aside`。
 
@@ -927,7 +944,7 @@ game.clear_history(keep_last: 37);
 
 可以等待自己的保存请求。这份存档恢复时，该请求为已成功且只读 `restored` 为 true（正常写盘完成为 false），可据此关闭存档菜单；调用者继续执行 await 后的语句；保存调用不会重复执行。其他未完成的外部请求以 OperationInterrupted 结算。成功读档会替换会话，原来的读档调用不会在旧会话中继续。
 
-执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 8，会话快照格式为 19；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
+执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 8，会话快照格式为 20；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
 
 可运行示例：[author_saves.aside](../../examples/author_saves.aside)。
 
