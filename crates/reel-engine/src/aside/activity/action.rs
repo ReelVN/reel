@@ -4,6 +4,7 @@ use aside_vm::executor::{Continuation, FaultRetention, NativeInput};
 
 pub(super) const KIND: u32 = 5;
 pub(super) const TIMES: u32 = 6;
+pub(super) const GOAL_LEN: usize = 3;
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(i64)]
 pub(in crate::aside) enum Kind {
@@ -211,6 +212,7 @@ pub(in crate::aside) fn tween(
         stage::number(value)?;
         let field = stage.animation_field(heap, target, index)?;
         heap.array_push(goals, Value::int(i64::from(field)))?;
+        heap.array_push(goals, Value::NULL)?;
         heap.array_push(goals, value)?;
     }
     let common = NodeProperty::PROPERTIES
@@ -237,6 +239,7 @@ pub(in crate::aside) fn tween(
         }
         stage::camera::CameraField::validate(heap, index as u32, value)?;
         heap.array_push(goals, Value::int(index as i64))?;
+        heap.array_push(goals, Value::NULL)?;
         heap.array_push(goals, value)?;
     }
     let camera = stage::camera::CameraField::PROPERTIES
@@ -263,7 +266,43 @@ pub(in crate::aside) fn tween(
         }
         stage::scroll::ScrollField::validate(heap, index as u32, value)?;
         heap.array_push(goals, Value::int(index as i64))?;
+        heap.array_push(goals, Value::NULL)?;
         heap.array_push(goals, value)?;
+    }
+    let from = *args.last().unwrap();
+    if from.tag() != ValueTag::Null {
+        let count = heap.table_len(from)?;
+        if count > heap.sequence_len(goals)? / GOAL_LEN as u32 {
+            return Err(AdapterError::Input(
+                "tween from keys require matching animation endpoints",
+            ));
+        }
+        for i in 0..count {
+            let (key, value) = heap.table_entry(from, i)?;
+            let name = super::super::text::read_string(heap, key, read_limit)?;
+            let (index, property) = NodeProperty::PROPERTIES
+                .iter()
+                .chain(stage::camera::CameraField::PROPERTIES)
+                .chain(stage::scroll::ScrollField::PROPERTIES)
+                .filter(|p| p.animatable)
+                .enumerate()
+                .find(|(_, p)| p.name == name)
+                .ok_or(AdapterError::Input(
+                    "tween from keys require matching animation endpoints",
+                ))?;
+            if args[3 + index].tag() == ValueTag::Null {
+                return Err(AdapterError::Input(
+                    "tween from keys require matching animation endpoints",
+                ));
+            }
+            let start = Value::float(stage::number(value)?);
+            property.validate(heap, start)?;
+            let goal = args[3..3 + index]
+                .iter()
+                .filter(|v| v.tag() != ValueTag::Null)
+                .count();
+            heap.set_field(goals, (goal * GOAL_LEN + 1) as u32, start)?;
+        }
     }
     let fields = heap.alloc_table()?;
     Ok(heap.alloc_host(

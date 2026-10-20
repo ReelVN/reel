@@ -586,7 +586,7 @@ resume(entrance);
 
 现实时间使用 `use std::time::{now, parts, format};`：now() 返回 UTC Unix 秒整数，parts(timestamp, timezone: null) 返回 year/month/day/hour/minute/second/weekday/offset_seconds，weekday 为周一 1 至周日 7。format(timestamp, pattern: "%Y-%m-%d %H:%M", timezone: null) 按 strftime 模式返回文字；timezone 可设 IANA 时区（如 Asia/Shanghai、UTC），省略使用系统时区，系统无法提供时使用 UTC。保存时间可直接使用 saves.list 的 saved_at。调用不会自动刷新；在普通任务中更新模型，再绑定文字。见 [author_wall_clock.aside](../../examples/author_wall_clock.aside)。
 
-动画与组合活动已接通：`tween(node, x: 320, duration: 0.5, easing: "in_out")` 描述变化，`run(action, owner: node)` 启动。owner 省略时，优先归当前 scope；作用域外的主剧情归会话、按钮回调归事件节点；`pause(activity)`、`resume(activity)`、`stop(activity)`、`finish(activity)` 控制同一活动。await 返回字符串 `Completed` 或 `Stopped`；目标或 owner 退休取消活动并在 await 处抛错。duration 使用非负秒数，0 立即完成；easing 支持 linear、三次 in/out/in_out、二次 quad_in/quad_out/quad_in_out 和正弦 sine_in/sine_out/sine_in_out。可以改变全部共同数值属性；width/height 的起值须先显式指定，null 表示该属性不参与动画。可运行示例：[author_activities.aside](../../examples/author_activities.aside)，使用 `reel dev examples/author_activities.aside --assets target/reel-artifacts/author-assets`。sequence/parallel/repeat 与 scope 的活动、任务所有权已接通。
+动画与组合活动已接通：`tween(node, x: 320, duration: 0.5, easing: "in_out")` 描述变化，`run(action, owner: node)` 启动。owner 省略时，优先归当前 scope；作用域外的主剧情归会话、按钮回调归事件节点；`pause(activity)`、`resume(activity)`、`stop(activity)`、`finish(activity)` 控制同一活动。await 返回字符串 `Completed` 或 `Stopped`；目标或 owner 退休取消活动并在 await 处抛错。duration 使用非负秒数，0 立即完成；easing 支持 linear、三次 in/out/in_out、二次 quad_in/quad_out/quad_in_out 和正弦 sine_in/sine_out/sine_in_out。可以改变全部共同数值属性；width/height 须在节点或 from 提供有限起值，null 表示该属性不参与动画。可运行示例：[author_activities.aside](../../examples/author_activities.aside)，使用 `reel dev examples/author_activities.aside --assets target/reel-artifacts/author-assets`。sequence/parallel/repeat 与 scope 的活动、任务所有权已接通。
 
 `tween(viewport, scroll_y: 400, duration: 0.5, easing: "out")` 平滑移动滚动区域；也可使用 `scroll_x`。目标必须是 scroll 节点，滚动范围仍由实际内容尺寸限制。
 
@@ -607,8 +607,8 @@ await run(tween(portrait, x: 720, duration: 0.8, easing: "sine_out"));
 
 默认启动时，空 sequence/parallel 与 times: 0 立即完成，不写属性。times 必须是非负整数或 null，省略或 null 表示持续循环；持续循环的单轮必须有正时长。含无限分支的组合不能 finish，调用会在改变活动前报错；用 stop 结束。并行分支的全部写入集合在 run 时检查，冲突不会接管已有活动。暂停、停止与取消作用于整组，后续段只在实际开始时接管属性。较大的时钟步长会继续推进跨过的动作段。
 
-tween 只描述目标属性、终值和时长。sequence 顺序组合动作，parallel 同时组合动作，repeat 重复动作。它们都是普通库函数，产生可复用的动作值。run 才启动活动，并返回可等待、可控制的活动；await activity 等待活动结束，输入、声音和其他活动继续进行。run(action) 默认归当前 scope，否则继承任务的资源 owner；主剧情使用会话寿命。显式 owner 可指定舞台节点，s.run(action) 指定所属作用域。
-动作的起始属性在实际激活时读取。sequence 中后一段在前一段结束后读取起值。动作描述可以复用，每次 run 都产生独立进度。活动只在动作段真正激活时取得属性写入权。新演出停止与之冲突的旧根活动并从当前值接管，暂停的旧活动也遵守此规则。sequence 可按顺序写同一属性；parallel 分支的写集合保持互斥。直接赋值，包括赋相同的值，停止正在写该属性的根活动。其他属性的赋值不受影响；终止活动释放全部写入权。
+tween 描述目标属性、终值、时长和可选起值。sequence 顺序组合动作，parallel 同时组合动作，repeat 重复动作。它们都是普通库函数，产生可复用的动作值。run 才启动活动，并返回可等待、可控制的活动；await activity 等待活动结束，输入、声音和其他活动继续进行。run(action) 默认归当前 scope，否则继承任务的资源 owner；主剧情使用会话寿命。显式 owner 可指定舞台节点，s.run(action) 指定所属作用域。
+省略显式起值时，动作在实际激活时读取当前属性。sequence 中后一段在前一段结束后读取起值。动作描述可以复用，每次 run 都产生独立进度。活动只在动作段真正激活时取得属性写入权。新演出停止与之冲突的旧根活动并从当前值接管，暂停的旧活动也遵守此规则。sequence 可按顺序写同一属性；parallel 分支的写集合保持互斥。直接赋值，包括赋相同的值，停止正在写该属性的根活动。其他属性的赋值不受影响；终止活动释放全部写入权。
 ```aside
 let entrance = parallel(
     tween(view.portrait, x: 320, duration: 0.5),
@@ -616,6 +616,17 @@ let entrance = parallel(
 );
 await run(entrance);
 ```
+`from` 把起值写进动作，适合淡入、滑入和每轮从头开始的循环。它接受普通记录，键对应本次动画的终值属性；其余属性仍从激活时的当前值开始。记录在构造动作时按目标属性的约束校验并复制，之后修改记录不改变动作。延迟结束、重复的每一轮、初始暂停后的首次 resume 都在激活时应用起值；需要等待期间就隐藏的节点在创建时设 `opacity: 0`。零时长或 finish 直接到终值。显式 width/height 起值也可用于当前尺寸为 auto 的节点。
+
+```aside
+fn fade_in(node, seconds = 0.5) {
+    tween(node, from: {opacity: 0}, opacity: 1, duration: seconds)
+}
+await run(sequence(delay(0.5), fade_in(view.hud)));
+```
+
+同一个动作可以重复运行；循环移动可直接写 `repeat(tween(particle, from: {y: -20}, y: 740, duration: 3))`。完整入场与重放例子见 [author_activities.aside](../../examples/author_activities.aside)。
+
 每个活动有确定的 owner。启动与主剧情函数归会话所有，UI 回调归发出事件的节点所有。stage.replace 结束旧画面及其回调，调用它的会话剧情继续执行。动作目标只是经过验证的句柄；任一节点或效果目标销毁时，整个根活动结束为 Cancelled，释放所有属性保留。owner 从舞台销毁时，所属活动与回调任务一并结束。pause 暂停进度，resume 继续，stop 停在当前值并使等待返回 Stopped；finish 使有限动作到达其终值，返回 Completed，自然结束也返回 Completed。无限循环使用 stop 结束，其本身没有完成终值。资源错误或活动取消在仍存活的等待任务中产生对应错误，供普通 try/catch 处理。若等待任务自身的 owner 已结束，该任务直接结束；宿主释放其资源，脚本清理代码也随任务结束。
 parallel 等待所有有限子动作。任一子动作失败时结束同组剩余子动作，并报告错误；sequence 随失败停止后续动作。repeat(action, times: 3) 有限重复；省略 times 表示循环。持续的呼吸、雨丝等循环单独运行，由画面所有权管理，剧情只等待自己需要的有限活动。
 ```aside
@@ -982,7 +993,7 @@ game.clear_history(keep_last: 37);
 
 可以等待自己的保存请求。这份存档恢复时，该请求为已成功且只读 `restored` 为 true（正常写盘完成为 false），可据此关闭存档菜单；调用者继续执行 await 后的语句；保存调用不会重复执行。其他未完成的外部请求以 OperationInterrupted 结算。成功读档会替换会话，原来的读档调用不会在旧会话中继续。
 
-执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 8，会话快照格式为 21；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
+执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 8，会话快照格式为 22；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
 
 可运行示例：[author_saves.aside](../../examples/author_saves.aside)。
 

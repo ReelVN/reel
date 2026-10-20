@@ -313,12 +313,30 @@ impl Activities {
         let target = payload(heap, action, TARGET)?;
         let fields = heap.host_fields(target)?;
         let tracks = get(heap, current, Slot::Tracks)?;
+        let goals = payload(heap, action, GOALS)?;
         // Check this segment before stopping any other producer. Future segments
         // are intentionally read here, after prior segments and script changes.
         for i in (0..heap.sequence_len(tracks)?).step_by(Track::LEN) {
             let field = track(heap, tracks, i, Track::Field)?.as_int().unwrap() as u32;
             let end = track(heap, tracks, i, Track::End)?;
-            if stage::number(heap.table_entry(fields, field)?.1).is_err()
+            let explicit =
+                heap.sequence_get(goals, i / Track::LEN as u32 * action::GOAL_LEN as u32 + 1)?;
+            let start = if present(explicit) {
+                explicit
+            } else {
+                heap.table_entry(fields, field)?.1
+            };
+            if stage::number(start).is_err()
+                || present(explicit)
+                    && heap
+                        .validate_property_write(
+                            PropertyId {
+                                host: target,
+                                field,
+                            },
+                            start,
+                        )
+                        .is_err()
                 || heap
                     .validate_property_write(
                         PropertyId {
@@ -367,7 +385,13 @@ impl Activities {
         }
         for i in (0..heap.sequence_len(tracks)?).step_by(Track::LEN) {
             let field = track(heap, tracks, i, Track::Field)?.as_int().unwrap() as u32;
-            let start = stage::number(heap.table_entry(fields, field)?.1)?;
+            let explicit =
+                heap.sequence_get(goals, i / Track::LEN as u32 * action::GOAL_LEN as u32 + 1)?;
+            let start = stage::number(if present(explicit) {
+                explicit
+            } else {
+                heap.table_entry(fields, field)?.1
+            })?;
             heap.set_field(tracks, i + Track::Start as u32, Value::float(start))?;
             heap.set_field(
                 tracks,
@@ -387,6 +411,25 @@ impl Activities {
                 Value::int(i64::from(source.field)),
             )?;
             heap.set_property_claim(source, current)?;
+        }
+        // Explicit starts belong to activation, including every repeat.
+        // Zero duration and finish publish only their endpoint.
+        if !forcing && action::duration(heap, action)? != 0. {
+            for i in (0..heap.sequence_len(tracks)?).step_by(Track::LEN) {
+                let explicit =
+                    heap.sequence_get(goals, i / Track::LEN as u32 * action::GOAL_LEN as u32 + 1)?;
+                if present(explicit) {
+                    let field = track(heap, tracks, i, Track::Field)?.as_int().unwrap() as u32;
+                    heap.write_host_property(
+                        PropertyId {
+                            host: target,
+                            field,
+                        },
+                        explicit,
+                        false,
+                    )?;
+                }
+            }
         }
         self.start_leaf(heap, current, time, forcing)
     }

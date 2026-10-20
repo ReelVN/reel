@@ -838,6 +838,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             .filter(|p| p.animatable)
             .map(|p| parameter(p.name, Some(bc::Const::Null))),
     );
+    tween.push(parameter("from", Some(bc::Const::Null)));
     for (name, parameters, waits) in [
         ("tween", tween, false),
         (
@@ -1000,7 +1001,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             rest: None,
             symbol: format!("reel::{name}"),
             abi_version: match name {
-                "tween" => 8,
+                "tween" => 9,
                 "scope" => 4,
                 "clock" => 3,
                 "run" | "scope::run" => 2,
