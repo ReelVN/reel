@@ -169,6 +169,8 @@ Reel 会话调度显式选择 `SessionBudget::Exact(SliceBudget)` 或 `RetryMini
 
 key 接受任意 Aside 值，标量保留类型、字符串按内容、其他对象按完整堆身份比较；浮点正负零为同一 key，NaN 使用稳定的位模式顺序。不调用作者比较器或对象钩子。引擎返回的不透明选项 id 可直接作 key；列表保留原键的强引用，GC 与槽复用不改变行身份。
 
+隐藏滚动区域继续保留作者请求的位置与上次有效尺寸。恢复后重新创建的隐藏控件尚未布局时，合成阶段保留待应用偏移，并停止向 VM 发布滚动与虚拟列表几何反馈；重新显示并完成布局后，再按实际范围应用位置。此修复范围为 reel-player 舞台适配与定向布局/恢复检查，无接口、ABI、快照格式或依赖变化；隐藏节点沿原有活动与寿命规则运行。复跑 `cargo test --locked -p reel-player --lib hidden_scroll`，并用源码/ASB 检查菜单中保存恢复的长诗页。
+
 `list(items, key:, build:, virtual:false, ...NodeProps)` 是 Reel native ABI 11，Aside 字节码/ASB 不变。来源函数与 key 函数沿既有 NoWait/reactive/native continuation 执行；每项构造可让出，候选数组、行与节点由 VM 根追踪。行工厂通过 VM 的 untracked capture 隔离外围 view 依赖，嵌套 derive/list 仍独立记录读取，故障和取消沿 NativeFrame 恢复上层捕获。稳定行公开只读可观察 key/value/index，保留 key 时只更新 value/index，局部订阅驱动外观。节点复用同一 Stage；子节点批量协调先验证单父、重复与环，再重排保留身份并退休移除的树。已呈现输入仍按实际接受帧和节点寿命判断。
 
 结构协调使用排序索引和二分查找，O(n log n)，不逐项线性搜索全表；只为新 key 执行组件工厂。普通行字段更新由 bind/derive 完成，列表无每帧扫描。排序及最后的树提交为同步批次；索引临时内存通过 Aside 的 HeapBudgetUsage::reserve 归入同一预算，HeapReservation 析构释放计账，持续状态全在 VM 堆。失败/取消不留下 Rust 侧工作副本或独立根。默认保留全部行实例；virtual:true 的组件寿命与窗口协调见下节。示例见 [author_list.aside](../examples/author_list.aside)。

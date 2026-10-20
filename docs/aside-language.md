@@ -343,7 +343,7 @@ Reel `tween(target, from: null, ...)` 使用普通具名参数及记录值表达
 
 `model(defaults)` 接受已完成构造的实例及其数据图。复制保留类身份、字段契约、内部别名与环，不执行构造或复制类定义；方法读取复制后的接收者。`bind(instance.field)` 解析可观察实例的现有字段 cell；只读字段提供单向引用，可写字段支持双向回写，派生读取记录同一字段依赖。后续替换字段中的对象保留赋入身份并观察其数据子图。所有写入沿共享属性事务验证完整的字段类型和连接控件约束，失败保持原值。正在构造或失败的实例不能进入 model；静态字段和方法闭包不复制进实例数据。
 
-Reel `scroll` 的 scroll_x/scroll_y 是普通可写可绑定数值属性，四个 viewport_width/viewport_height/content_width/content_height 为宿主发布的只读可观察尺寸；content_align 接受 start/center/end。Reel `input` 的 on_pointer 接收只读 `{target,x,y,phase}` 主指针拖动事件，沿用节点回调任务和取消。新增参数后 scroll native ABI 为 3、input 为 7；无新语言语法，Aside 字节码/ASB 不变。
+Reel `scroll` 的 scroll_x/scroll_y 是普通可写可绑定数值属性，四个 viewport_width/viewport_height/content_width/content_height 为宿主发布的只读可观察尺寸；content_align 接受 start/center/end。Reel `input` 的 on_pointer 接收只读 `{target,x,y,phase}` 主指针拖动事件，沿用节点回调任务和取消。新增参数后 scroll native ABI 为 3、input 为 7；无新语言语法，Aside 字节码/ASB 不变。 隐藏期间保留请求位置与有效尺寸；恢复后的隐藏控件在重新显示并布局后才按实际范围钳制位置。
 
 普通 fn 在当前 Task 的可恢复调用栈执行，可 await；Reel 入口和 UI 回调由带明确 OwnerId 的任务运行。say 等可暂停 native 能挂起普通 helper 链，不要求每层改写 async。没有任务上下文或位于受限边界时，动态尝试外部等待报错。
 
