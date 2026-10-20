@@ -937,7 +937,7 @@ fn camera_source_asb_binding_animation_takeover_and_retirement() {
         if !view.clip || view.zoom != 1 { throw "camera defaults"; }
         let mut rejected = 0;
         try { view.zoom = 0; } catch e { rejected += 1; }
-        try { camera(zoom: -1); } catch e { rejected += 1; }
+        try { let _ = camera(zoom: -1); } catch e { rejected += 1; }
         try { tween(view, zoom: 0); } catch e { rejected += 1; }
         try { tween(readout, camera_x: 10); } catch e { rejected += 1; }
         if rejected != 4 || view.zoom != 1 { throw "camera validation"; }

@@ -301,6 +301,8 @@ GPU 回放在一次帧准备内复用已经完成合成的离屏目标；复用�
 
 脚本组合、共享节点和窗口宿主已接通。`reel-ui::stage` 持有唯一的作者节点模型，engine 管理脚本值和会话寿命，player 将同一模型投影到既有控件、呈现桥和渲染器。`text`、`image`、`row`、`column`、`stack` 返回具有稳定身份的未挂载节点；`stage.replace(root)` 挂载新根并结束旧子树。普通函数可返回节点，尾随 children、条件和集合循环按语言的收集规则组合子树。可运行源码为 [author_stage.aside](../examples/author_stage.aside)。当前验证覆盖源码、ASB、VM、实际控件和帧记录生成；Windows 上另使用 AMD Radeon RX 7900 GRE / Vulkan 完成中文作者画面的离屏 GPU 读回。此证据不覆盖原生窗口生命周期和设备热插拔。
 
+节点构造器的源码声明标记 `ExternalSymbol::must_use_result`，由 Aside 通用语义分析报告实际丢弃结果的 `ASS016`。直接调用、导入及不可变简单别名采用同一声明；结果传给参数、保存到绑定、返回或被 children 收集时合法，`let _ = ...` 明确丢弃。函数末尾的 `text(...);` 因分号丢弃节点，诊断指向该调用；普通函数和动态函数值保留现有调用语义。收集边界沿 lowering 的词法规则：children 内独立语句收集，参数、绑定初值和函数体建立各自的取值环境。范围为 aside-compiler、Reel 源码环境、规范与双语指南；无运行期任务或分配，native ABI、VM/ASB 与 SessionSnapshot 格式不变。分析使用已有工作预算，临时上下文随 HIR 节点数线性增长，离开分析即释放。
+
 节点公开位置 x/y、可选 width/height、opacity、visible、clip、gap、padding、font_size、color 和 background。未指定宽高采用内容布局；位置默认 0，opacity 默认 1，visible 默认 true，clip 默认 false，gap/padding 默认 0，font_size 默认 24，color 默认白色，background 默认透明。row/column 顺序排布，stack 按书写顺序叠放；x/y 是布局位置上的局部偏移。属性赋值修改原节点，既有引用继续指向同一对象。节点身份、属性和子对象引用由真正的宿主对象承载，不能靠复制普通 table 冒充节点。单父关系、节点退休和根对象保活在挂载/会话边界处理。
 
 共同节点的 `stretch: "none" | "x" | "y" | "both"` 默认 none；所选轴不贡献父节点的内容测量，父节点尺寸确定后沿该轴填满父 padding 内的可用尺寸，并覆盖该轴显式 width/height。x/y 和 anchor 仍是布局完成后的局部变换。row/column 流轴上拉伸的子节点作为覆盖层，不消耗流位置或 gap；仅跨轴拉伸仍参与正常流排。scroll 使用视口内框作为拉伸尺寸，该轴不计入滚动内容范围。父布局一次确定尺寸，不通过脚本回写测量值，不引入下一帧反馈。范围为 reel-ui 共同 NodeProps、reel-engine 绑定和快照、reel-player 布局、作者示例和双语指南；共同节点构造 native ABI 本批各加 1，节点宿主快照适配器为 2（image 为 4），SessionSnapshot 为 17，Aside 字节码/ASB 无变化、无新增依赖。验收覆盖内容撑高背景、顺序容器覆盖层、滚动范围、动态修改与存档恢复。

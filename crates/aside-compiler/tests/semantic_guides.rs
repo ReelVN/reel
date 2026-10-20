@@ -66,6 +66,34 @@ const PRELUDE: &[&str] = &[
     "localization",
     "tr",
 ];
+fn prelude_symbol(name: &str) -> ExternalSymbol {
+    ExternalSymbol {
+        must_use_result: matches!(
+            name,
+            "text"
+                | "text_input"
+                | "image"
+                | "video"
+                | "particles"
+                | "row"
+                | "column"
+                | "stack"
+                | "cursor"
+                | "button"
+                | "input"
+                | "slider"
+                | "toggle"
+                | "checkbox"
+                | "radio"
+                | "scroll"
+                | "camera"
+                | "list"
+                | "view"
+                | "layered_image"
+        ),
+        ..ExternalSymbol::dynamic(name)
+    }
+}
 #[test]
 fn all_bilingual_scenes_analyze_with_explicit_host_and_lexical_context() {
     let zh = snippets(ZH);
@@ -79,10 +107,7 @@ fn all_bilingual_scenes_analyze_with_explicit_host_and_lexical_context() {
     resolver.insert(ModuleInterface {
         canonical_path: "reel::prelude".into(),
         version: "guide-1.1".into(),
-        exports: PRELUDE
-            .iter()
-            .map(|&n| ExternalSymbol::dynamic(n))
-            .collect(),
+        exports: PRELUDE.iter().map(|&n| prelude_symbol(n)).collect(),
     });
     for (path, name) in [
         ("game::ui::title", "title"),
@@ -110,10 +135,7 @@ fn all_bilingual_scenes_analyze_with_explicit_host_and_lexical_context() {
                     AnalysisContext::Module
                 },
                 // The documented Reel prelude supplies the outer host scope.
-                hosts: PRELUDE
-                    .iter()
-                    .map(|&name| ExternalSymbol::dynamic(name))
-                    .collect(),
+                hosts: PRELUDE.iter().map(|&name| prelude_symbol(name)).collect(),
                 enclosing: scenes::enclosing(name)
                     .iter()
                     .map(|&binding| EnclosingBinding {

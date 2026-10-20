@@ -106,7 +106,7 @@ fn mask_construction_rejects_invalid_values_at_author_calls() {
         try { mask.param("unknown"); } catch e { rejected += 1; }
         try { mask.pow(1, -1); } catch e { rejected += 1; }
         try { mask.clamp(1, min: 2, max: 1); } catch e { rejected += 1; }
-        try { stack(mask_x: 1e300); } catch e { rejected += 1; }
+        try { let _ = stack(mask_x: 1e300); } catch e { rejected += 1; }
         if rejected != 8 { throw f"rejected {rejected}"; }
         narrator("checked");
     }"#;

@@ -77,7 +77,7 @@ fn text_input_commits_bindings_rejects_stale_edits_and_retires_callbacks() {
             button("remove", on_click: |event| { editor.remove(); });
         });
         let mut rejected = 0;
-        try { text_input(value: derive(|| profile.name)); } catch e { rejected += 1; }
+        try { let _ = text_input(value: derive(|| profile.name)); } catch e { rejected += 1; }
         try { editor.value = "two\nlines"; } catch e { rejected += 1; }
         if rejected != 2 { throw "invalid text binding"; }
         narrator("still reading");
