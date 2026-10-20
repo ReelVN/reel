@@ -22,7 +22,7 @@ pub use tracing_backend::{
     try_init_tracing,
 };
 pub use visual_layers::{
-    CommandOwnerRange, GroupMetadata, VisualLayer, VisualLayerKind, VisualLayerPlan,
+    CommandOwnerRange, GroupMetadata, SubtreePaint, VisualLayer, VisualLayerKind, VisualLayerPlan,
 };
 
 pub(crate) use render_root::{MutateCallback, RenderRootState};

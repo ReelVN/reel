@@ -81,6 +81,7 @@ pub struct AsideSessionUi {
     locale: String,
     state: StoryState,
     host_failure: Option<HostFailure>,
+    transitions: crate::transitions::Transitions,
 }
 
 impl AsideSessionUi {
@@ -111,6 +112,7 @@ impl AsideSessionUi {
             locale,
             state: StoryState::Running,
             host_failure: None,
+            transitions: Default::default(),
         })
     }
     pub(crate) fn locale(&self) -> &str {
@@ -125,6 +127,10 @@ impl AsideSessionUi {
         self.awaiting_stage = true;
     }
     pub(crate) fn prepare_restored(&mut self, budget: SliceBudget) -> Result<bool, Error> {
+        self.transitions.maintain(&mut self.vm, &self.ui.assets())?;
+        if !self.transitions.ready() {
+            return Ok(false);
+        }
         self.vm.maintain_media()?;
         self.vm.maintain_localization()?;
         if self.vm.localization_pending() {
@@ -189,6 +195,7 @@ impl AsideSessionUi {
             locale: locale.into(),
             state: StoryState::Running,
             host_failure: None,
+            transitions: Default::default(),
         })
     }
     pub fn with_media(
@@ -304,6 +311,13 @@ impl AsideSessionUi {
     pub fn projection_stamp(&self) -> ProjectionStamp {
         self.ui.projection_stamp()
     }
+    /// Transition pictures use the same resource snapshot as ordinary stage images.
+    pub fn transition_resources(&self) -> &[reel_ui::resources::ResourceLease] {
+        self.transitions.resources()
+    }
+    pub fn transitions_pending(&self) -> bool {
+        self.transitions.pending()
+    }
     pub fn record(
         &self,
         bridge: &mut PresentationBridge,
@@ -313,7 +327,9 @@ impl AsideSessionUi {
         // sync can turn layout feedback into more reactive work. Do not record
         // that intermediate tree (for example an empty far-scroll window), or
         // mint a receipt that could complete a geometry/presentation barrier.
-        if self.state == StoryState::Running && !self.vm.stage_ready() {
+        if self.state == StoryState::Running
+            && (!self.vm.stage_ready() || self.ui.images_pending() || !self.transitions.ready())
+        {
             return Ok(None);
         }
         let (source, mut frame) = self.ui.record(bridge, root, id)?;
@@ -324,7 +340,29 @@ impl AsideSessionUi {
                     .read_geometry(bridge, &source, frame.stage_widget, query)
             },
         )?);
+        (frame.transitions, frame.frame_transitions) = self.transitions.record(
+            &self.vm,
+            bridge,
+            frame.stage_widget,
+            &source,
+            frame.stamp.presentation_request,
+        )?;
         Ok(Some((source, frame)))
+    }
+    /// Accept the actual compiled drawing together with its projection receipt.
+    /// CPU hosts compile the same frame and resolve it without GPU submission.
+    pub fn presented_frame(
+        &mut self,
+        bridge: &PresentationBridge,
+        receipt: &RecordedProjection,
+        frame: &reel_ui::frame::RenderFrame,
+    ) -> Result<(), Error> {
+        if frame.key() != receipt.key || !self.ui.presented(bridge, receipt) {
+            return Ok(());
+        }
+        self.transitions
+            .accepted(&mut self.vm, &receipt.transitions, frame, &self.ui.assets())?;
+        self.accept_recorded(receipt)
     }
     pub fn presented(
         &mut self,
@@ -334,6 +372,14 @@ impl AsideSessionUi {
         if !self.ui.presented(bridge, frame) {
             return Ok(());
         }
+        if frame.needs_transition_drawing() {
+            return Err("transition presentation requires the accepted compiled frame".into());
+        }
+        self.accept_recorded(frame)
+    }
+    fn accept_recorded(&mut self, frame: &RecordedProjection) -> Result<(), Error> {
+        self.transitions
+            .accepted_projection(&mut self.vm, &frame.transitions)?;
         if self.state == StoryState::Running {
             if let Some(identity) = &frame.identity {
                 if let Some(geometry) = &frame.geometry {
@@ -357,6 +403,13 @@ impl AsideSessionUi {
             return Ok(());
         }
         self.awaiting_stage = false;
+        self.transitions.maintain(&mut self.vm, &self.ui.assets())?;
+        if self.transitions.revision_changed(&self.vm) {
+            self.ui.invalidate_projection();
+        }
+        if let Some(stage) = SessionUi::stage_widget(bridge, root) {
+            self.transitions.gate(&self.vm, bridge, stage)?;
+        }
         if self.vm.activities_pending() {
             return Ok(());
         }
@@ -372,7 +425,11 @@ impl AsideSessionUi {
             }
             self.ui.request_presentation(self.vm.presentation_request());
         }
-        self.sync_input(bridge, root)
+        self.sync_input(bridge, root)?;
+        if let Some(stage) = SessionUi::stage_widget(bridge, root) {
+            self.transitions.gate(&self.vm, bridge, stage)?;
+        }
+        Ok(())
     }
     /// Physical input updates session/focus state and schedules callbacks. No
     /// script has executed yet, so do not scan or reproject the script stage.
@@ -588,6 +645,7 @@ impl AsideSessionUi {
     }
 
     pub fn cancel(&mut self) -> Result<(), Error> {
+        self.transitions.close();
         self.ui.close_resources();
         if matches!(self.state, StoryState::Finished | StoryState::Cancelled) {
             return Ok(());

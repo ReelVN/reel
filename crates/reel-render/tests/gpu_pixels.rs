@@ -750,3 +750,253 @@ fn rgba_encodings_and_alpha_modes_match_independent_linear_pixels() {
         }
     }
 }
+
+fn retained_picture(
+    frame: &reel_ui::frame::RenderFrame,
+    root: Option<reel_ui::core::WidgetId>,
+    pool: &reel_core::budget::BudgetPool,
+) -> reel_ui::frame::RetainedScene {
+    let mut build = reel_ui::frame::RetainBuild::new(frame, root, limits(), pool).unwrap();
+    while !build.step(step_budget()).unwrap().complete {}
+    build.finish().unwrap()
+}
+fn transition_frame(
+    source: reel_ui::bridge::RecordedSource,
+    transitions: Vec<reel_ui::frame::FrameTransition>,
+    pool: &reel_core::budget::BudgetPool,
+) -> reel_ui::frame::RenderFrame {
+    use reel_ui::frame::*;
+    let mut builder = FrameBuild::new(
+        source,
+        empty_snapshot(pool),
+        FrameInfo {
+            logical_size: [400., 300.],
+            physical_size: [400, 300],
+        },
+        limits(),
+        pool,
+    )
+    .unwrap();
+    builder.set_transitions(transitions).unwrap();
+    while !builder.step(step_budget()).unwrap().complete {}
+    builder.finish().unwrap()
+}
+#[test]
+#[ignore = "requires an actual graphics adapter"]
+fn retained_transition_uses_current_parent_backdrop_and_replaces_linear_pixels() {
+    use reel_ui::{
+        core::Widget,
+        frame::FrameTransition,
+        kurbo::{Point, Size},
+        peniko::{BlendMode, Compose, Mix},
+    };
+    let mut renderer = device();
+    for blend in [
+        BlendMode::default(),
+        BlendMode::new(Mix::Normal, Compose::PlusLighter),
+        BlendMode::new(Mix::Multiply, Compose::SrcOver),
+        BlendMode::new(Mix::Screen, Compose::SrcOver),
+    ] {
+        let pool = pool();
+        let tree = |color| {
+            let mut parent = RecordWidget::new(scene(Color::from_rgba8(80, 140, 200, 180)));
+            parent.opacity = 0.7;
+            let mut child = RecordWidget::new(scene(color));
+            child.blend = blend;
+            child.opacity = 0.6;
+            let id = parent.inner.add(
+                child.prepare().with_transform(Affine::rotate(0.15)),
+                Point::new(70., 55.),
+                Size::new(140., 95.),
+            );
+            (
+                widget_bridge(parent, Affine::translate((4., 8.)) * Affine::scale(0.9)),
+                id,
+            )
+        };
+        let (mut old_bridge, old_id) = tree(Color::from_rgba8(255, 40, 30, 150));
+        let old = build(
+            old_bridge.record(FrameId(1)).unwrap(),
+            empty_snapshot(&pool),
+            &pool,
+        );
+        let old_pixels = renderer.readback(renderer.prepare(&old).unwrap()).unwrap();
+        let picture = retained_picture(&old, Some(old_id), &pool);
+        drop(old);
+        drop(old_bridge);
+        let (mut new_bridge, new_id) = tree(Color::from_rgba8(20, 255, 150, 110));
+        let new = build(
+            new_bridge.record(FrameId(1)).unwrap(),
+            empty_snapshot(&pool),
+            &pool,
+        );
+        let new_pixels = renderer.readback(renderer.prepare(&new).unwrap()).unwrap();
+        drop(new);
+        for (i, progress) in [0., 0.25, 0.5, 1.].into_iter().enumerate() {
+            let frame = transition_frame(
+                new_bridge.record(FrameId(2 + i as u64)).unwrap(),
+                vec![FrameTransition {
+                    root: Some(new_id),
+                    previous: picture.clone(),
+                    progress,
+                    mask: None,
+                }],
+                &pool,
+            );
+            let pixels = renderer
+                .readback(renderer.prepare(&frame).unwrap())
+                .unwrap();
+            for (index, pixel) in pixels.into_iter().enumerate() {
+                let expected = std::array::from_fn(|channel| {
+                    old_pixels[index][channel] * (1. - progress)
+                        + new_pixels[index][channel] * progress
+                });
+                close(pixel, expected);
+            }
+        }
+    }
+}
+#[test]
+#[ignore = "requires an actual graphics adapter"]
+fn retained_transition_mask_endpoints_and_nested_midpoint_survive_new_frames() {
+    use reel_ui::{
+        core::PaintImageMask,
+        frame::FrameTransition,
+        stage::{MaskOp, MaskProgram},
+    };
+    let pool = pool();
+    let mut renderer = device();
+    let mut old_bridge = widget_bridge(
+        RecordWidget::new(scene(Color::from_rgba8(255, 0, 0, 128))),
+        Affine::IDENTITY,
+    );
+    let old = build(
+        old_bridge.record(FrameId(1)).unwrap(),
+        empty_snapshot(&pool),
+        &pool,
+    );
+    let picture = retained_picture(&old, None, &pool);
+    drop(old);
+    drop(old_bridge);
+    let mut current = widget_bridge(
+        RecordWidget::new(scene(Color::from_rgba8(0, 0, 255, 200))),
+        Affine::IDENTITY,
+    );
+    let mask = PaintImageMask {
+        program: MaskProgram::new(vec![MaskOp::Constant(0.25_f32.to_bits())], vec![]).unwrap(),
+        images: std::sync::Arc::from([]),
+        bounds: Rect::new(0., 0., 400., 300.),
+        parameters: [0.5, 0.06, 0., 0., 0.],
+    };
+    for (i, progress) in [0., 0.5, 1.].into_iter().enumerate() {
+        let frame = transition_frame(
+            current.record(FrameId(i as u64 + 1)).unwrap(),
+            vec![FrameTransition {
+                root: None,
+                previous: picture.clone(),
+                progress,
+                mask: Some(mask.clone()),
+            }],
+            &pool,
+        );
+        let pixels = renderer
+            .readback(renderer.prepare(&frame).unwrap())
+            .unwrap();
+        let coverage = if progress == 0. || progress == 1. {
+            progress
+        } else {
+            0.25
+        };
+        close(
+            pixel(&pixels, 100, 100),
+            [
+                128. / 255. * (1. - coverage),
+                0.,
+                200. / 255. * coverage,
+                (128. * (1. - coverage) + 200. * coverage) / 255.,
+            ],
+        );
+        if progress == 0.5 {
+            let middle = retained_picture(&frame, None, &pool);
+            drop(frame);
+            let mut green = widget_bridge(
+                RecordWidget::new(scene(Color::from_rgb8(0, 255, 0))),
+                Affine::IDENTITY,
+            );
+            let nested = transition_frame(
+                green.record(FrameId(1)).unwrap(),
+                vec![FrameTransition {
+                    root: None,
+                    previous: middle,
+                    progress: 0.5,
+                    mask: None,
+                }],
+                &pool,
+            );
+            let pixels = renderer
+                .readback(renderer.prepare(&nested).unwrap())
+                .unwrap();
+            close(
+                pixel(&pixels, 100, 100),
+                [
+                    128. / 255. * 0.75 * 0.5,
+                    0.5,
+                    200. / 255. * 0.25 * 0.5,
+                    ((128. * 0.75 + 200. * 0.25) / 255. + 1.) * 0.5,
+                ],
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires an actual graphics adapter"]
+fn retained_transition_hidden_target_keeps_empty_subtree_boundary() {
+    use reel_ui::{
+        core::Widget,
+        frame::FrameTransition,
+        kurbo::{Point, Size},
+    };
+    let pool = pool();
+    let mut renderer = device();
+    let mut parent = RecordWidget::new(scene(Color::from_rgb8(0, 0, 255)));
+    let child = parent.inner.add(
+        RecordWidget::new(scene(Color::from_rgb8(255, 0, 0))).prepare(),
+        Point::new(50., 40.),
+        Size::new(100., 90.),
+    );
+    let parent = parent.prepare();
+    let parent_id = parent.id();
+    let mut bridge = r01_fixture::bridge(fixture::root(parent).0);
+    let old = build(
+        bridge.record(FrameId(1)).unwrap(),
+        empty_snapshot(&pool),
+        &pool,
+    );
+    let picture = retained_picture(&old, Some(child), &pool);
+    drop(old);
+    bridge.edit_widget(parent_id, |mut node| {
+        let mut node = node.downcast::<RecordWidget>();
+        node.ctx
+            .set_stashed(&mut node.widget.inner.children[0].0, true);
+    });
+    let hidden = transition_frame(
+        bridge.record(FrameId(2)).unwrap(),
+        vec![FrameTransition {
+            root: Some(child),
+            previous: picture,
+            progress: 0.5,
+            mask: None,
+        }],
+        &pool,
+    );
+    let pixels = renderer
+        .readback(renderer.prepare(&hidden).unwrap())
+        .unwrap();
+    close(pixel(&pixels, 60, 60), [0.5, 0., 0.5, 1.]);
+    close(pixel(&pixels, 20, 20), [0., 0., 1., 1.]);
+    let empty = retained_picture(&hidden, Some(child), &pool);
+    assert!(empty.drawing().commands().is_empty());
+    // The accepted intermediate content is retained through its nested transition.
+    assert_eq!(empty.drawing().transitions().len(), 1);
+}

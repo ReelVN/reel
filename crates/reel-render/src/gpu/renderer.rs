@@ -335,10 +335,10 @@ impl Renderer {
             f64::from(size[0]) / frame.info().logical_size[0],
             f64::from(size[1]) / frame.info().logical_size[1],
         );
-        let mut output = ctx.stream(frame, frame.commands(), transform)?;
+        let mut output = ctx.stream(frame.drawing(), transform)?;
         let mut frames = vec![frame.clone()];
         if let Some((second, progress)) = second {
-            let b = ctx.stream(second, second.commands(), transform)?;
+            let b = ctx.stream(second.drawing(), transform)?;
             let mixed = ctx.target()?;
             ctx.combine(
                 &mixed,

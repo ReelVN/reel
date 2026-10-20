@@ -708,7 +708,7 @@ fn mask_definitions_reuse_local_id_and_independent_transform_and_stack() {
     assert_eq!(uses[0].transform, Affine::translate((42., 68.)));
     assert_eq!(uses[1].transform, Affine::translate((70., 68.)));
     assert!(matches!(
-        frame.masks()[0].commands[0].op,
+        frame.masks()[&0].commands[0].op,
         FrameOp::Draw(FrameDraw::Fill {
             transform: Affine::IDENTITY,
             ..
@@ -948,7 +948,10 @@ fn large_scene_and_nested_masks_use_growing_stacks_and_small_work_slices() {
         &pool,
     );
     assert_eq!(frame.masks().len(), 96);
-    assert_eq!(frame.masks().last().unwrap().commands.len(), 4097);
+    assert_eq!(
+        frame.masks().last_key_value().unwrap().1.commands.len(),
+        4097
+    );
     assert!(frame.accounted_bytes() <= frame.reserved_bytes());
     drop(frame);
     assert_eq!(bridge.pending_count(), 0);
@@ -1125,4 +1128,243 @@ fn actual_parley_label_glyphs_are_copied_without_reshaping() {
         actual.len(),
         actual.iter().map(|g| g.0.len()).sum::<usize>()
     );
+}
+
+#[test]
+fn retained_subtree_is_balanced_independent_of_candidate_and_sibling_resources() {
+    let pool = pool();
+    let mut registry = ResourceRegistry::new(2, 8192).unwrap();
+    let old_image = fixture::image_data([255, 0, 0, 255]);
+    let sibling_image = fixture::image_data([0, 255, 0, 255]);
+    let handles = [old_image.clone(), sibling_image.clone()]
+        .into_iter()
+        .enumerate()
+        .map(|(index, image)| {
+            registry
+                .register(
+                    version(index as u8),
+                    ResourceData::Image {
+                        image,
+                        encoding: ColorEncoding::Srgb,
+                    },
+                    ticket(&pool, 4),
+                )
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let weak = registry.acquire(handles[1]).unwrap().downgrade();
+    let image_scene = |image| {
+        let mut scene = Scene::new();
+        scene.draw(Draw::Fill {
+            transform: Affine::IDENTITY,
+            fill_rule: Default::default(),
+            brush: Brush::Image(peniko::ImageBrush::new(image)),
+            brush_transform: None,
+            shape: Geometry::Rect(Rect::new(0., 0., 20., 20.)),
+            composite: Default::default(),
+        });
+        scene
+    };
+    let mut parent = RecordWidget::new(image_scene(sibling_image));
+    let mut child = RecordWidget::new(image_scene(old_image));
+    child.opacity = 0.5;
+    let child_id = parent
+        .inner
+        .add(child.prepare(), Point::new(25., 30.), Size::new(70., 60.));
+    let mut bridge = widget_bridge(parent, Affine::scale(1.5));
+    let frame = build(
+        bridge.record(FrameId(1)).unwrap(),
+        registry.freeze(&handles, &pool).unwrap(),
+        &pool,
+    );
+    let mut retaining = RetainBuild::new(&frame, Some(child_id), limits(), &pool).unwrap();
+    for handle in &handles {
+        registry.retire(*handle);
+    }
+    drop(frame);
+    assert_eq!(
+        bridge.pending_count(),
+        0,
+        "retention must not retain an input candidate guard"
+    );
+    let zero = retaining
+        .step(StepBudget {
+            max_commands: 0,
+            max_units: 0,
+            max_bytes: 0,
+        })
+        .unwrap();
+    assert_eq!(zero.commands, 0);
+    assert!(!zero.complete);
+    loop {
+        let budget = step_budget();
+        let progress = retaining.step(budget).unwrap();
+        assert!(
+            progress.commands <= budget.max_commands
+                && progress.units <= budget.max_units
+                && progress.bytes <= budget.max_bytes
+        );
+        if progress.complete {
+            break;
+        }
+    }
+    let retained = retaining.finish().unwrap();
+    assert_eq!(retained.drawing().resources().leases().len(), 1);
+    assert_eq!(
+        retained.drawing().resources().leases()[0].handle(),
+        handles[0]
+    );
+    assert!(retained.drawing().resources().leases()[0].is_retired());
+    assert!(
+        weak.is_released(),
+        "unrelated sibling resource must leave with the candidate"
+    );
+    let commands = retained.drawing().commands();
+    assert!(matches!(
+        commands.first().unwrap().op,
+        FrameOp::PushGroup(_)
+    ));
+    assert!(matches!(commands.last().unwrap().op, FrameOp::PopGroup));
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|c| matches!(c.op, FrameOp::Draw(_)))
+            .count(),
+        1
+    );
+    assert_eq!(retained.to_parent(), Affine::scale(1. / 1.5));
+}
+
+#[test]
+fn retained_reusable_mask_copies_all_commands_with_tiny_steps() {
+    let pool = pool();
+    let mut scene = Scene::new();
+    let mut mask_scene = Scene::new();
+    for _ in 0..11 {
+        mask_scene.append_transformed(&fill(Color::WHITE), Affine::IDENTITY);
+    }
+    let mask = scene.define_mask(Mask::new(MaskMode::Alpha, mask_scene));
+    scene.push_group(Group {
+        mask: Some(AppliedMask {
+            mask,
+            transform: Affine::IDENTITY,
+        }),
+        ..Default::default()
+    });
+    scene.append_transformed(&fill(Color::WHITE), Affine::IDENTITY);
+    scene.pop_group();
+    let mut bridge = widget_bridge(RecordWidget::new(scene), Affine::IDENTITY);
+    let frame = build(
+        bridge.record(FrameId(1)).unwrap(),
+        empty_snapshot(&pool),
+        &pool,
+    );
+    let mut retaining = RetainBuild::new(&frame, None, limits(), &pool).unwrap();
+    let mut budget = StepBudget {
+        max_commands: 1,
+        max_units: 1,
+        max_bytes: 512,
+    };
+    let mut steps = 0;
+    let mut largest_minimum = 0;
+    loop {
+        let progress = retaining.step(budget).unwrap();
+        if progress.complete {
+            break;
+        }
+        assert!(
+            progress.commands <= budget.max_commands
+                && progress.bytes <= budget.max_bytes
+                && progress.units <= budget.max_units
+        );
+        budget.max_bytes = budget.max_bytes.max(progress.minimum_bytes);
+        budget.max_units = budget.max_units.max(progress.minimum_units);
+        largest_minimum = largest_minimum.max(progress.minimum_bytes);
+        steps += 1;
+        assert!(steps < 100);
+    }
+    let retained = retaining.finish().unwrap();
+    assert_eq!(retained.drawing().masks().len(), 1);
+    assert_eq!(retained.drawing().masks()[&0].commands.len(), 11);
+    assert!(
+        largest_minimum > 512,
+        "mask reference storage must request its allocation before proceeding"
+    );
+    println!("retain mask: {steps} slices, largest requested allocation {largest_minimum} bytes");
+}
+
+#[test]
+fn retained_empty_siblings_at_one_command_gap_keep_separate_transitions() {
+    let pool = pool();
+    let mut parent = RecordWidget::new(fill(Color::BLACK));
+    let first = parent.inner.add(
+        RecordWidget::new(fill(Color::WHITE)).prepare(),
+        Point::new(10., 10.),
+        Size::new(30., 30.),
+    );
+    let second = parent.inner.add(
+        RecordWidget::new(fill(Color::BLACK)).prepare(),
+        Point::new(60., 10.),
+        Size::new(30., 30.),
+    );
+    let parent = parent.prepare();
+    let parent_id = parent.id();
+    let mut bridge = r01_fixture::bridge(fixture::root(parent).0);
+    let old = build(
+        bridge.record(FrameId(1)).unwrap(),
+        empty_snapshot(&pool),
+        &pool,
+    );
+    let retain = |frame: &RenderFrame, root| {
+        let mut build = RetainBuild::new(frame, root, limits(), &pool).unwrap();
+        while !build.step(step_budget()).unwrap().complete {}
+        build.finish().unwrap()
+    };
+    let previous = [retain(&old, Some(first)), retain(&old, Some(second))];
+    drop(old);
+    bridge.edit_widget(parent_id, |mut node| {
+        let mut node = node.downcast::<RecordWidget>();
+        for child in &mut node.widget.inner.children {
+            node.ctx.set_stashed(&mut child.0, true);
+        }
+    });
+    let mut builder = FrameBuild::new(
+        bridge.record(FrameId(2)).unwrap(),
+        empty_snapshot(&pool),
+        FrameInfo {
+            logical_size: [400., 300.],
+            physical_size: [400, 300],
+        },
+        limits(),
+        &pool,
+    )
+    .unwrap();
+    builder
+        .set_transitions(vec![
+            FrameTransition {
+                root: Some(second),
+                previous: previous[1].clone(),
+                progress: 0.75,
+                mask: None,
+            },
+            FrameTransition {
+                root: Some(first),
+                previous: previous[0].clone(),
+                progress: 0.25,
+                mask: None,
+            },
+        ])
+        .unwrap();
+    while !builder.step(step_budget()).unwrap().complete {}
+    let frame = builder.finish().unwrap();
+    assert_eq!(
+        frame.drawing().transitions()[0].commands,
+        frame.drawing().transitions()[1].commands
+    );
+    for (root, expected) in [(first, 0.25), (second, 0.75)] {
+        let picture = retain(&frame, Some(root));
+        assert!(picture.drawing().commands().is_empty());
+        assert_eq!(picture.drawing().transitions().len(), 1);
+        assert_eq!(picture.drawing().transitions()[0].progress, expected);
+    }
 }

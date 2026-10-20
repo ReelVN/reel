@@ -117,6 +117,55 @@ impl SessionVm {
         Ok(())
     }
 
+    pub(super) fn cancel_inner_scopes(
+        &mut self,
+        task: TaskId,
+        frame: FrameId,
+    ) -> Result<(), AdapterError> {
+        for index in (0..self.scopes.live.len()).rev() {
+            let scope = &self.scopes.live[index];
+            if scope.task == task && scope.frame.0 > frame.0 {
+                self.close_scope(index)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Scope and transition revocation use the same native cancellation barrier.
+    pub(super) fn cancel_native_region(
+        &mut self,
+        session: &mut Session,
+        task: TaskId,
+        frame: FrameId,
+    ) -> Result<(), AdapterError> {
+        self.vm.cancel_host_callback(task, frame)?;
+        self.cancel_task_transitions(task, Some(frame))?;
+        self.activities.cancel_native(self.vm.heap_mut(), task)?;
+        if self.issued.is_some_and(|ticket| ticket.task == task) {
+            self.issued = None;
+            self.saves.capture = None;
+            if let Some(reader) = self.choice_reader.take() {
+                reader.release(self.vm.heap_mut())?;
+            }
+            if let Some(reader) = self.dialogue_reader.take() {
+                reader.release(self.vm.heap_mut())?;
+            }
+        }
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.task == task)
+        {
+            session.cancel_interaction(crate::CancellationReason::OwnerRevoked);
+            session.take_completion();
+            self.claimed = None;
+            let pending = self.pending.take().unwrap();
+            self.release_keys(pending.keys)?;
+            self.main_wait = None;
+        }
+        Ok(())
+    }
+
     pub(super) fn maintain_scopes(&mut self, session: &mut Session) -> Result<(), AdapterError> {
         let mut index = 0;
         while index < self.scopes.live.len() {
@@ -128,30 +177,7 @@ impl SessionVm {
                 continue;
             }
             let task = scope.task;
-            self.vm.cancel_host_callback(task, scope.frame)?;
-            self.activities.cancel_native(self.vm.heap_mut(), task)?;
-            if self.issued.is_some_and(|ticket| ticket.task == task) {
-                self.issued = None;
-                self.saves.capture = None;
-                if let Some(reader) = self.choice_reader.take() {
-                    reader.release(self.vm.heap_mut())?;
-                }
-                if let Some(reader) = self.dialogue_reader.take() {
-                    reader.release(self.vm.heap_mut())?;
-                }
-            }
-            if self
-                .pending
-                .as_ref()
-                .is_some_and(|pending| pending.task == task)
-            {
-                session.cancel_interaction(crate::CancellationReason::OwnerRevoked);
-                session.take_completion();
-                self.claimed = None;
-                let pending = self.pending.take().unwrap();
-                self.release_keys(pending.keys)?;
-                self.main_wait = None;
-            }
+            self.cancel_native_region(session, task, scope.frame)?;
             self.close_scope(index)?;
         }
         Ok(())

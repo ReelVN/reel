@@ -125,9 +125,13 @@ pub(super) fn project(
                 + (size_of::<MaskProgram>() + 5 * size_of::<MaskOp>() + size_of::<Arc<str>>())
                     as u64,
         )?;
-        return Ok(MaskProgram::image(Arc::from(text::read_string(
-            heap, root, limit,
-        )?)));
+        let source = text::read_string(heap, root, limit)?;
+        if source.is_empty() || source.ends_with(".reel-image") {
+            return Err(AdapterError::Input(
+                "mask source must be a whole PNG or JPEG image",
+            ));
+        }
+        return Ok(MaskProgram::image(Arc::from(source)));
     }
     let mut charge = heap.budget_usage().reserve(
         (size_of::<Vec<MaskOp>>()

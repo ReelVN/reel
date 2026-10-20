@@ -37,6 +37,11 @@ fn covered_source(v: Varying) -> vec4<f32> {
     }
     let m = textureSample(mask, linear_sampler, v.uv);
     if params.mode == 3u { return mix(s, m, params.progress); }
+    if params.mode == 4u {
+        if params.progress <= 0.0 { return s; }
+        if params.progress >= 1.0 { return m; }
+        return mix(s, m, clamp(expression_coverage(v.pos.xy), 0.0, 1.0));
+    }
     var coverage = 1.0;
     if params.mode == 1u { coverage = clamp(m.a, 0.0, 1.0); }
     if params.mode == 2u { coverage = clamp(dot(m.rgb, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0); }

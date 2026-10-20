@@ -12,9 +12,68 @@ const PNG: &[u8] = include_bytes!("../../../../examples/assets/panels.png");
 const JPEG: &[u8] = include_bytes!("../../../../examples/assets/sun.jpg");
 mod packed;
 
+fn load_until_done(assets: &Assets, id: LoadId) -> Result<ResourceLease, String> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(lease) = assets.poll(id)? {
+            return Ok(lease);
+        }
+        assert!(std::time::Instant::now() < deadline, "asset worker stalled");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn retained_assets_preserve_provenance_and_fixed_versions() {
+    let assets = memory_assets();
+    let file = load_until_done(
+        &assets,
+        assets.request("assets/panels.png", AssetKind::Image),
+    )
+    .unwrap();
+    let saved = assets.retained_asset(&file).unwrap();
+    assert_eq!(saved.version, *file.version());
+    assert_eq!(saved.kind, RetainedAssetKind::Image);
+    let reloaded = load_until_done(
+        &assets,
+        assets.request_version(saved.version.clone(), AssetKind::Image),
+    )
+    .unwrap();
+    assert_eq!(reloaded.version(), file.version());
+    let encoded = load_until_done(
+        &assets,
+        assets
+            .request_encoded("assets/panels.png".into(), PNG)
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        assets.retained_asset(&encoded).is_none(),
+        "a matching key cannot turn author bytes into a reloadable asset"
+    );
+    let wrong = ResourceVersion {
+        version: ContentVersion([0x55; 32]),
+        ..saved.version
+    };
+    assert!(
+        load_until_done(&assets, assets.request_version(wrong, AssetKind::Image)).is_err(),
+        "restore silently substituted the current asset"
+    );
+    let invalid = memory_assets_with_description(Some(None));
+    assert!(
+        load_until_done(
+            &invalid,
+            invalid.request_version(file.version().clone(), AssetKind::Image),
+        )
+        .unwrap_err()
+        .contains("described a different version"),
+        "the host erased the fixed version when Describe omitted it"
+    );
+}
+
 // A deterministic in-memory host drives the contract fixture at admission.
 // Image work still uses the production codec adapter, without a filesystem.
-struct MemoryHost(MemoryAssetIo);
+struct MemoryHost(MemoryAssetIo, Option<Option<ContentVersion>>);
 impl AssetIo for MemoryHost {
     fn capabilities(&self) -> IoCaps {
         self.0.capabilities()
@@ -36,11 +95,22 @@ impl AssetIo for MemoryHost {
         self.0.cancel(id);
     }
     fn poll(&mut self, out: &mut Vec<IoEvent>, limit: usize) {
+        let first = out.len();
         self.0.poll(out, limit);
+        if let Some(version) = self.1 {
+            for event in &mut out[first..] {
+                if let Terminal::Completed(IoPayload::Described(info)) = &mut event.result {
+                    info.version = version;
+                }
+            }
+        }
     }
 }
 
 pub(crate) fn memory_assets() -> Assets {
+    memory_assets_with_description(None)
+}
+fn memory_assets_with_description(version: Option<Option<ContentVersion>>) -> Assets {
     Assets::with_adapters(AssetOptions::default(), |wake| {
         let limits = QueueLimits {
             max_requests: 32,
@@ -66,7 +136,7 @@ pub(crate) fn memory_assets() -> Assets {
             .unwrap();
         }
         (
-            Box::new(MemoryHost(io)),
+            Box::new(MemoryHost(io, version)),
             Box::new(ImageExecutor::new(limits, wake)),
         )
     })

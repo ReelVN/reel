@@ -52,6 +52,88 @@ fn tab(backward: bool) -> TextEvent {
 }
 
 #[test]
+fn input_gates_cancel_owned_controls_and_keep_other_subtrees_interactive() {
+    use reel_ui::input::{ActionPhase as P, NavigationAction as A, NavigationEvent};
+    let confirm = |phase| {
+        TextEvent::Navigation(NavigationEvent {
+            action: A::Confirm,
+            phase,
+            value: if phase == P::Released { 0. } else { 1. },
+        })
+    };
+    for presented in [false, true] {
+        let mut f = fixture();
+        f.root.redraw();
+        accept_view(&mut f.root, presented);
+        assert!(f.root.set_focus_fallback(Some(f.first)));
+        assert!(f.root.focus_on(Some(f.first)));
+        f.root.handle_text_event(confirm(P::Pressed));
+        f.root
+            .handle_pointer_event(mouse("down", Point::new(30., 90.)));
+        assert_eq!(f.root.pointer_capture_target(), Some(f.first));
+        f.trace.borrow_mut().clear();
+        f.signals.borrow_mut().clear();
+
+        f.root.set_input_gates(&[f.panel]);
+        assert_eq!(f.root.pointer_capture_target(), None);
+        assert_eq!(f.root.focused_widget(), None);
+        assert!(!f.root.permits_input(f.first));
+        assert!(!f.root.focus_on(Some(f.first)));
+        assert!(f.root.permits_input(f.outside));
+        assert_eq!(
+            f.trace
+                .borrow()
+                .iter()
+                .filter(|e| e.widget == f.first && e.kind == "cancel")
+                .count(),
+            1
+        );
+        f.root.handle_text_event(confirm(P::Released));
+        f.root
+            .handle_pointer_event(mouse("up", Point::new(30., 90.)));
+        f.root
+            .handle_access_event(reel_ui::accesskit::ActionRequest {
+                action: reel_ui::accesskit::Action::Click,
+                target_tree: reel_ui::accesskit::TreeId::ROOT,
+                target_node: reel_ui::accesskit::NodeId(f.first.to_raw()),
+                data: None,
+            });
+        assert!(
+            !f.signals
+                .borrow()
+                .iter()
+                .any(|s| matches!(s, RenderRootSignal::Action(..)))
+        );
+        assert!(f.root.focus_on(Some(f.outside)));
+        f.root.handle_text_event(confirm(P::Pressed));
+        // Re-applying the same gates must leave an external held confirm intact.
+        f.root.set_input_gates(&[f.panel]);
+        f.root.handle_text_event(confirm(P::Released));
+        assert_eq!(
+            f.signals
+                .borrow()
+                .iter()
+                .filter(|s| matches!(s, RenderRootSignal::Action(_, id) if *id == f.outside))
+                .count(),
+            1
+        );
+        f.root.set_input_gates(&[]);
+        assert!(f.root.permits_input(f.first));
+        assert!(f.root.focus_on(Some(f.first)));
+        f.root.handle_text_event(confirm(P::Pressed));
+        f.root.handle_text_event(confirm(P::Released));
+        assert_eq!(
+            f.signals
+                .borrow()
+                .iter()
+                .filter(|s| matches!(s, RenderRootSignal::Action(_, id) if *id == f.first))
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
 fn navigation_uses_presented_space_and_cancels_confirmation_and_repeat_at_scope_changes() {
     use reel_ui::input::{ActionPhase as P, NavigationAction as A, NavigationEvent};
     let nav = |action, phase| {

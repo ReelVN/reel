@@ -93,6 +93,15 @@ pub(super) struct Results {
     presentation_remaining: usize,
 }
 impl Results {
+    pub(super) fn request_presentation(&mut self) -> Result<u64, AdapterError> {
+        self.requested = self
+            .requested
+            .checked_add(1)
+            .ok_or(AdapterError::Input("presentation sequence exhausted"))?;
+        self.changed();
+        Ok(self.requested)
+    }
+
     pub(super) fn presentation_roots(&self) -> impl Iterator<Item = RootToken> + '_ {
         self.presentations.iter().copied()
     }

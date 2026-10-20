@@ -381,6 +381,8 @@ impl SessionVm {
             return true;
         }
         self.scopes_pending()
+            || self.transitions_pending()
+            || self.transitions.pending(self.activities.time())
             || self.particles.needs_work(self.stage.scene.revision())
             || self.results.needs_work(self.stage.scene.revision())
             || self.issued.is_some()
@@ -407,6 +409,7 @@ impl SessionVm {
             || self.media.active()
             || self.saves.active()
             || self.captures.active()
+            || self.transitions.active()
             || self.stage.has_handlers()
     }
 
@@ -449,6 +452,7 @@ impl SessionVm {
         session: &mut Session,
         index: usize,
     ) -> Result<(), AdapterError> {
+        self.cancel_task_transitions(self.tasks[index].task, None)?;
         self.cancel_task_scopes(self.tasks[index].task)?;
         let callback = &mut self.tasks[index];
         if !callback.cancelling {
@@ -530,6 +534,7 @@ impl SessionVm {
         }
         self.deliver_completion(session)?;
         self.maintain_scopes(session)?;
+        self.maintain_transitions(session)?;
         for index in 0..self.tasks.len() {
             let callback = &self.tasks[index];
             if !callback.lifetime_live(self.vm.heap(), &self.stage)
@@ -567,6 +572,10 @@ impl SessionVm {
         }
         if self.activities.pending() {
             self.activities.drain(&mut self.vm, 64)?;
+            return Ok(SessionStep::Progress);
+        }
+        if self.transitions.pending(self.activities.time()) {
+            self.transitions.advance(self.activities.time(), 64);
             return Ok(SessionStep::Progress);
         }
         if let Some(ticket) = self.issued {

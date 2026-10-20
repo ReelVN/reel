@@ -9,8 +9,8 @@ use peniko::{Color, Fill};
 use tracing::{info_span, trace};
 
 use crate::app::{
-    CommandOwnerRange, GroupMetadata, RenderRoot, RenderRootState, VisualLayer, VisualLayerKind,
-    VisualLayerPlan,
+    CommandOwnerRange, GroupMetadata, RenderRoot, RenderRootState, SubtreePaint, VisualLayer,
+    VisualLayerKind, VisualLayerPlan,
 };
 use crate::core::{
     DefaultProperties, PaintCtx, PaintImageMask, PaintLayerMode, PropertiesRef, PropertyArena,
@@ -26,6 +26,8 @@ struct LayerCollector {
     groups: Vec<GroupMetadata>,
     command_owners: Vec<CommandOwnerRange>,
     layers: Vec<VisualLayer>,
+    subtrees: Vec<SubtreePaint>,
+    commands_before_layer: usize,
     current_owner_id: WidgetId,
     transform: Affine,
     suppress_output: bool,
@@ -38,10 +40,28 @@ impl LayerCollector {
             groups: Vec::new(),
             command_owners: Vec::new(),
             layers: Vec::new(),
+            subtrees: Vec::new(),
+            commands_before_layer: 0,
             current_owner_id: root_id,
             transform,
             suppress_output: false,
         }
+    }
+
+    fn begin_subtree(&mut self, widget: WidgetId, suppressed_by_ancestor: bool) -> usize {
+        let position = self.commands_before_layer + self.current_scene.commands().len();
+        let index = self.subtrees.len();
+        self.subtrees.push(SubtreePaint {
+            widget,
+            commands: position..position,
+            suppressed_by_ancestor,
+        });
+        index
+    }
+
+    fn end_subtree(&mut self, index: usize) {
+        self.subtrees[index].commands.end =
+            self.commands_before_layer + self.current_scene.commands().len();
     }
 
     fn append(
@@ -164,6 +184,7 @@ impl LayerCollector {
         }
 
         let scene = std::mem::replace(&mut self.current_scene, empty_scene);
+        self.commands_before_layer += scene.commands().len();
         self.layers.push(VisualLayer {
             kind: VisualLayerKind::Scene(scene),
             transform: self.transform,
@@ -180,6 +201,7 @@ impl LayerCollector {
         bounds: kurbo::Rect,
         content_transform: Affine,
     ) {
+        self.commands_before_layer += 1;
         self.layers.push(VisualLayer {
             kind: VisualLayerKind::External {
                 token,
@@ -356,6 +378,7 @@ fn paint_widget(
         border_box_to_layer_transform.pre_translate(state.border_box_translation());
     let has_clip = state.clip_path.is_some();
     let paint_as_external = paint_layer_mode == PaintLayerMode::External;
+    let subtree = layer_collector.begin_subtree(id, previous_suppression);
     let has_composite_group = !suppress_output
         && layer_collector.push_subtree_composite(
             state.subtree_image_mask.as_deref(),
@@ -503,6 +526,8 @@ fn paint_widget(
         layer_collector.paint(id, |scene| scene.pop_group());
     }
 
+    layer_collector.end_subtree(subtree);
+
     if matches!(
         paint_layer_mode,
         PaintLayerMode::IsolatedScene | PaintLayerMode::External
@@ -527,6 +552,8 @@ pub(crate) fn run_paint_pass(root: &mut RenderRoot) -> VisualLayerPlan {
     let layer_root_ids = root.layer_root_ids();
 
     let mut layers = Vec::new();
+    let mut subtrees = Vec::new();
+    let mut body_commands = 0;
     let mut cursor_layers = Vec::new();
 
     for &layer_widget_id in &layer_root_ids {
@@ -544,13 +571,24 @@ pub(crate) fn run_paint_pass(root: &mut RenderRoot) -> VisualLayerPlan {
             root_id,
             layer_widget_id,
         );
+        let offset = body_commands;
+        body_commands += collector.commands_before_layer + collector.current_scene.commands().len();
+        for mut subtree in std::mem::take(&mut collector.subtrees) {
+            subtree.commands.start += offset;
+            subtree.commands.end += offset;
+            subtrees.push(subtree);
+        }
         layers.extend(collector.into_layers());
     }
     layers.extend(cursor_layers);
 
     root.global_state.scene_cache = scene_cache;
 
-    VisualLayerPlan { layers }
+    VisualLayerPlan {
+        layers,
+        subtrees,
+        body_commands,
+    }
 }
 
 /// Paint a single layer's widget subtree into `target_scene`.

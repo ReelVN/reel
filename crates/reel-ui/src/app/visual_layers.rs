@@ -35,6 +35,14 @@ pub struct GroupMetadata {
     pub invert: f32,
 }
 
+/// A balanced widget paint range; coordinates identify gaps between commands.
+#[derive(Clone, Debug)]
+pub struct SubtreePaint {
+    pub widget: WidgetId,
+    pub commands: std::ops::Range<usize>,
+    pub suppressed_by_ancestor: bool,
+}
+
 /// Snapshot of Masonry's current visual layers in painter order.
 ///
 /// This is the semantic paint output of Masonry. Current hosts still consume it through
@@ -43,6 +51,8 @@ pub struct GroupMetadata {
 pub struct VisualLayerPlan {
     /// Layers in painter order, back to front.
     pub layers: Vec<VisualLayer>,
+    pub subtrees: Vec<SubtreePaint>,
+    pub body_commands: usize,
 }
 
 impl VisualLayerPlan {
@@ -146,6 +156,8 @@ mod tests {
             filled_scene(Rect::new(0.0, 0.0, 4.0, 4.0), Color::from_rgb8(0, 0, 255));
 
         let plan = VisualLayerPlan {
+            subtrees: Vec::new(),
+            body_commands: 3,
             layers: vec![
                 VisualLayer {
                     kind: VisualLayerKind::Scene(root_scene.clone()),
@@ -196,6 +208,8 @@ mod tests {
             filled_scene(Rect::new(0.0, 0.0, 4.0, 4.0), Color::from_rgb8(0, 0, 255));
 
         let plan = VisualLayerPlan {
+            subtrees: Vec::new(),
+            body_commands: 3,
             layers: vec![
                 VisualLayer {
                     kind: VisualLayerKind::Scene(root_scene),

@@ -22,21 +22,52 @@ pub(super) fn collect<'a>(
 ) -> Result<Vec<Required<'a>>, GpuError> {
     let mut required = Vec::new();
     let mut seen = HashSet::new();
+    let mut drawings = Vec::new();
+    let mut visited_drawings = HashSet::new();
     for frame in frames {
+        let at = frame.commands().first().map_or(
+            RecordLocation {
+                fragment: 0,
+                command: 0,
+                mask_depth: 0,
+                owner: frame.geometry().root_id(),
+            },
+            |c| c.origin.at,
+        );
+        super::scopes::push_stack(&mut drawings, (frame.drawing(), at), &mut reserve)?;
+    }
+    while let Some((frame, fallback_at)) = drawings.pop() {
+        if !visited_drawings.insert(frame as *const _) {
+            continue;
+        }
         let leases = frame.resources().leases();
-        // Charge the bounded lookup/work lists before allocating. They contain
-        // at most one entry per frame lease/mask, not one per sprite instance.
         reserve(
             (leases.len()
                 * (size_of::<Required<'_>>()
                     + 4 * size_of::<ResourceHandle>()
                     + 2 * size_of::<&ResourceLease>())
-                + (frame.masks().len() + 1) * (size_of::<&[reel_ui::frame::FrameCommand]>() + 1))
-                as u64,
+                + (frame.masks().len() + frame.transitions().len() + 1) * 96) as u64,
         )?;
         let sources: HashMap<_, _> = leases.iter().map(|lease| (lease.handle(), lease)).collect();
-        let mut visited = vec![false; frame.masks().len()];
+        let mut visited = HashSet::new();
+        let mut used = HashMap::new();
         let mut streams = vec![frame.commands()];
+        for transition in frame.transitions() {
+            super::scopes::push_stack(
+                &mut drawings,
+                (transition.previous.drawing(), fallback_at),
+                &mut reserve,
+            )?;
+            if let Some(mask) = &transition.mask {
+                let at = frame
+                    .commands()
+                    .get(transition.commands.start)
+                    .map_or(fallback_at, |c| c.origin.at);
+                for &handle in &mask.images {
+                    used.insert(handle, at);
+                }
+            }
+        }
         while let Some(commands) = streams.pop() {
             for command in commands {
                 let at = command.origin.at;
@@ -51,71 +82,76 @@ pub(super) fn collect<'a>(
                             ..
                         },
                     ) => std::slice::from_ref(&brush.image.resource),
+                    FrameOp::Draw(FrameDraw::GlyphRun(g)) => match &g.brush {
+                        Brush::Image(brush) => std::slice::from_ref(&brush.image.resource),
+                        _ => &[],
+                    },
                     FrameOp::PushGroup(group) => {
-                        if let Some(mask) = group.mask {
-                            let index = mask.mask as usize;
+                        if let Some(mask) = group.mask
+                            && visited.insert(mask.mask)
+                        {
                             let definition =
-                                frame.masks().get(index).ok_or(GpuError::Unsupported {
+                                frame.masks().get(&mask.mask).ok_or(GpuError::Unsupported {
                                     at,
                                     record: "missing mask",
                                 })?;
-                            if !visited[index] {
-                                visited[index] = true;
-                                streams.push(&definition.commands);
-                            }
+                            streams.push(&definition.commands);
                         }
                         group.image_mask.as_ref().map_or(&[], |mask| &mask.images)
                     }
                     _ => continue,
                 };
                 for &handle in handles {
-                    if !seen.insert(handle) {
-                        continue;
-                    }
-                    let source = *sources.get(&handle).ok_or(GpuError::Unsupported {
-                        at,
-                        record: "missing image lease",
-                    })?;
-                    let (size, resident, staging, minimum_staging) = match source.data() {
-                        ResourceData::Image { image, .. } => {
-                            if image.format != ImageFormat::Rgba8 {
-                                return Err(GpuError::Unsupported {
-                                    at,
-                                    record: "image format",
-                                });
-                            }
-                            let size = [image.width, image.height];
-                            let resident = u64::from(image.width) * u64::from(image.height) * 8;
-                            (
-                                size,
-                                resident,
-                                resources::upload_cost(size)? - resident,
-                                resources::row_bytes(size[0]),
-                            )
-                        }
-                        ResourceData::Yuv420(image) => {
-                            let (resident, staging) = super::video::costs(image);
-                            (image.size(), resident, staging, staging)
-                        }
-                        _ => {
-                            return Err(GpuError::Unsupported {
-                                at,
-                                record: "non-image resource",
-                            });
-                        }
-                    };
-                    if size.contains(&0) || size.iter().any(|&n| n > max_dimension) {
-                        return Err(GpuError::InvalidSize);
-                    }
-                    required.push(Required {
-                        source,
-                        at,
-                        resident,
-                        staging,
-                        minimum_staging,
-                    });
+                    used.insert(handle, at);
                 }
             }
+        }
+        for (handle, at) in used {
+            if !seen.insert(handle) {
+                continue;
+            }
+            let source = *sources.get(&handle).ok_or(GpuError::Unsupported {
+                at,
+                record: "missing image lease",
+            })?;
+            let (size, resident, staging, minimum_staging) = match source.data() {
+                ResourceData::Image { image, .. } => {
+                    if image.format != ImageFormat::Rgba8 {
+                        return Err(GpuError::Unsupported {
+                            at,
+                            record: "image format",
+                        });
+                    }
+                    let size = [image.width, image.height];
+                    let resident = u64::from(image.width) * u64::from(image.height) * 8;
+                    (
+                        size,
+                        resident,
+                        resources::upload_cost(size)? - resident,
+                        resources::row_bytes(size[0]),
+                    )
+                }
+                ResourceData::Yuv420(image) => {
+                    let (resident, staging) = super::video::costs(image);
+                    (image.size(), resident, staging, staging)
+                }
+                _ => {
+                    return Err(GpuError::Unsupported {
+                        at,
+                        record: "non-image resource",
+                    });
+                }
+            };
+            if size.contains(&0) || size.iter().any(|&n| n > max_dimension) {
+                return Err(GpuError::InvalidSize);
+            }
+            required.push(Required {
+                source,
+                at,
+                resident,
+                staging,
+                minimum_staging,
+            });
         }
     }
     Ok(required)

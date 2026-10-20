@@ -6,6 +6,38 @@ use super::{GeometryView, InputGeometrySource, RenderRoot};
 use crate::core::WidgetId;
 
 impl RenderRoot {
+    /// Pause input in these subtrees without changing widget properties.
+    /// The host releases a pause after the replacement picture is accepted.
+    pub fn set_input_gates(&mut self, roots: &[WidgetId]) {
+        if self.global_state.input_gates.as_ref() == roots {
+            return;
+        }
+        self.global_state.input_gates = roots.into();
+        let source = self.global_state.input_geometry_source.clone();
+        let blocked = self
+            .global_state
+            .focused_widget
+            .or(self.global_state.focus_fallback)
+            .is_some_and(|id| self.input_is_gated(id, source.borrow()));
+        if blocked {
+            crate::passes::event::run_on_text_event_pass(
+                self,
+                &crate::core::TextEvent::Input(crate::input::InputEvent::Cancel),
+            );
+        }
+        crate::passes::navigation::cancel_gated(self);
+        self.global_state.needs_pointer_pass = true;
+        self.run_rewrite_passes();
+    }
+
+    pub(crate) fn input_is_gated(&self, id: WidgetId, view: GeometryView<'_>) -> bool {
+        self.global_state.input_gates.iter().any(|&root| {
+            self.is_descendant(id, root)
+                || matches!(view, GeometryView::Presented(Some(view))
+                    if view.contains_in_scope(id, root))
+        })
+    }
+
     /// Host commands use the same live eligibility and accepted scope as input.
     pub fn permits_input(&self, id: WidgetId) -> bool {
         let view = self.global_state.input_geometry_source.borrow();
@@ -42,6 +74,9 @@ impl RenderRoot {
     }
 
     pub(crate) fn input_in_scope(&self, id: WidgetId, view: GeometryView<'_>) -> bool {
+        if self.input_is_gated(id, view) {
+            return false;
+        }
         match view {
             GeometryView::Presented(None) => false,
             GeometryView::Presented(Some(view)) => view.get(id).is_some_and(|record| {
@@ -59,6 +94,7 @@ impl RenderRoot {
 
     pub(crate) fn focus_in_scope(&self, id: WidgetId) -> bool {
         self.is_still_interactive(id)
+            && !self.input_is_gated(id, self.global_state.input_geometry_source.borrow())
             && match &self.global_state.input_geometry_source {
                 // Losing presentation blocks delivery, not the remembered focus.
                 InputGeometrySource::Presented(None) => true,

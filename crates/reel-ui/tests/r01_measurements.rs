@@ -24,17 +24,18 @@ fn phase(name: &str, initial: Stats) {
     let stats = ALLOCATOR.stats();
     let live = stats.bytes_allocated as i64 - stats.bytes_deallocated as i64;
     let baseline = initial.bytes_allocated as i64 - initial.bytes_deallocated as i64;
-    let status = std::fs::read_to_string("/proc/self/status").unwrap();
-    let rss = status
-        .lines()
-        .find(|line| line.starts_with("VmRSS:"))
-        .unwrap();
-    let hwm = status
-        .lines()
-        .find(|line| line.starts_with("VmHWM:"))
-        .unwrap();
+    let resident = std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .map(|status| {
+            status
+                .lines()
+                .filter(|line| line.starts_with("VmRSS:") || line.starts_with("VmHWM:"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_else(|| "os_resident_bytes=unavailable".into());
     println!(
-        "phase={name} live_request_bytes_delta={} {rss} {hwm}",
+        "phase={name} live_request_bytes_delta={} {resident}",
         live - baseline
     );
 }

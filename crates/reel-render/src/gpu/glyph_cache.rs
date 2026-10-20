@@ -7,7 +7,7 @@ use super::{
 use guillotiere::{AllocId, AtlasAllocator, size2};
 use reel_core::budget::{BudgetPool, BudgetTicket};
 use reel_ui::{
-    frame::{FrameGlyphRun, RecordLocation, RenderFrame},
+    frame::{FrameDrawing, FrameGlyphRun, RecordLocation},
     resources::{ResourceHandle, ResourceLease, ResourceVersion},
 };
 use std::{
@@ -173,7 +173,7 @@ impl GlyphCache {
         &self,
         gpu: &Gpu,
         encoder: &mut wgpu::CommandEncoder,
-        frame: &RenderFrame,
+        frame: &FrameDrawing,
         run: &FrameGlyphRun,
         density: f64,
         index: usize,

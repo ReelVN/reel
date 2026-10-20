@@ -16,6 +16,7 @@ mod rich_text;
 mod scopes;
 mod snapshots;
 mod tasks;
+mod transitions;
 mod video;
 mod virtual_lists;
 mod window;

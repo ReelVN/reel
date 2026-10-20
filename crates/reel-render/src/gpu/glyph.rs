@@ -1,6 +1,6 @@
 //! Consumes shaped glyph IDs/positions; this module never invokes Swash shaping.
 use super::GpuError;
-use reel_ui::frame::{FrameGlyphRun, RecordLocation, RenderFrame};
+use reel_ui::frame::{FrameDrawing, FrameGlyphRun, RecordLocation};
 use reel_ui::resources::ResourceData;
 use reel_ui::{kurbo, peniko};
 use swash::{
@@ -39,7 +39,7 @@ pub(super) fn raster_density(transform: kurbo::Affine) -> f64 {
 
 pub fn rasterize(
     context: &mut Rasterizer,
-    frame: &RenderFrame,
+    frame: &FrameDrawing,
     run: &FrameGlyphRun,
     density: f64,
     index: usize,

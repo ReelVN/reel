@@ -1,7 +1,7 @@
 //! Reusable descriptions and traced execution graphs share the VM heap.
 //! Rust keeps only scheduling indexes and bounded traversal cursors.
 pub(super) mod action;
-mod easing;
+pub(super) mod easing;
 mod graph;
 mod runner;
 mod service;

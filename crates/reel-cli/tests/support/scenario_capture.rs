@@ -29,6 +29,7 @@ pub struct CaptureStats {
     pub size: [u32; 2],
     pub center: [u8; 4],
     pub right: [u8; 4],
+    pub centers: Vec<[u8; 4]>,
 }
 
 // Renderer already implements the offscreen readback. The window adapter's
@@ -62,19 +63,18 @@ impl CaptureBackend for Offscreen {
                 let start = ((height / 2 * width + x) * 4) as usize;
                 pixels.rgba.as_slice()[start..start + 4].try_into().unwrap()
             };
-            self.stats = CaptureStats {
-                count: self.stats.count + 1,
-                size: pixels.size,
-                center: sample(width / 2),
-                right: sample(width * 7 / 8),
-            };
+            self.stats.count += 1;
+            self.stats.size = pixels.size;
+            self.stats.center = sample(width / 2);
+            self.stats.right = sample(width * 7 / 8);
+            self.stats.centers.push(self.stats.center);
         }
         Ok(pixels)
     }
 }
 
 pub struct ScenarioCapture {
-    backend: Offscreen,
+    backend: Option<Offscreen>,
     captures: CaptureService<GpuCapture>,
     pool: BudgetPool,
     accepted: Option<RenderFrame>,
@@ -93,11 +93,17 @@ impl ScenarioCapture {
         ))
         .expect("REEL_SCENARIO_GPU_CAPTURE requires an available GPU adapter");
         eprintln!("scenario GPU: {:?}", gpu.adapter.get_info());
+        Self::assemble(Some(Offscreen {
+            renderer: Renderer::new(gpu),
+            stats: CaptureStats::default(),
+        }))
+    }
+    pub fn cpu() -> Self {
+        Self::assemble(None)
+    }
+    fn assemble(backend: Option<Offscreen>) -> Self {
         Self {
-            backend: Offscreen {
-                renderer: Renderer::new(gpu),
-                stats: CaptureStats::default(),
-            },
+            backend,
             captures: CaptureService::new(128 << 20, WakeSignal::new(|| {})),
             pool: BudgetPool::new(
                 BudgetCategory::CpuOutput,
@@ -115,7 +121,9 @@ impl ScenarioCapture {
     }
 
     pub fn stats(&self) -> CaptureStats {
-        self.backend.stats.clone()
+        self.backend
+            .as_ref()
+            .map_or_else(CaptureStats::default, |backend| backend.stats.clone())
     }
 
     pub fn new_session(&mut self) {
@@ -128,12 +136,15 @@ impl ScenarioCapture {
     }
 
     pub fn drive(&mut self, driver: &mut AsideSessionUi) -> bool {
-        self.backend.renderer.poll().unwrap();
+        let Some(backend) = &mut self.backend else {
+            return false;
+        };
+        backend.renderer.poll().unwrap();
         // Drain prior submissions before starting a readback; the production
         // capture service treats a rejected admission as the request's result.
-        if self.captures.busy() || !self.backend.renderer.has_pending() {
+        if self.captures.busy() || !backend.renderer.has_pending() {
             self.captures
-                .drive(&mut self.backend, driver, self.accepted.as_ref())
+                .drive(backend, driver, self.accepted.as_ref())
                 .unwrap()
         } else {
             false
@@ -210,10 +221,23 @@ impl ScenarioCapture {
             return;
         };
         let key = source.key();
+        if self.backend.is_none() && !receipt.needs_transition_drawing() {
+            assert_eq!(
+                bridge.resolve(PresentationNotice::new(
+                    key,
+                    SurfaceEpoch(1),
+                    PresentationOutcome::Accepted(FrameId(frame)),
+                )),
+                NoticeResult::Accepted
+            );
+            driver.presented(bridge, &receipt).unwrap();
+            return;
+        }
         let leases = self
             .fonts
             .values()
             .chain(driver.ui().image_resources())
+            .chain(driver.transition_resources())
             .cloned()
             .map(Ok)
             .collect::<Vec<_>>();
@@ -230,6 +254,9 @@ impl ScenarioCapture {
             &self.pool,
         )
         .unwrap();
+        build
+            .set_transitions(receipt.frame_transitions().to_vec())
+            .unwrap();
         let mut budget = StepBudget {
             max_commands: 64,
             max_units: 8192,
@@ -244,19 +271,21 @@ impl ScenarioCapture {
             budget.max_bytes = budget.max_bytes.max(progress.minimum_bytes);
         }
         let candidate = build.finish().unwrap();
-        let prepared = match self.backend.renderer.prepare(&candidate) {
-            Ok(prepared) => prepared,
-            Err(error) if error.is_retryable() => {
-                bridge.resolve(PresentationNotice::new(
-                    key,
-                    SurfaceEpoch(1),
-                    PresentationOutcome::Skipped,
-                ));
-                return;
-            }
-            Err(error) => panic!("scenario GPU frame: {error}"),
-        };
-        self.backend.renderer.submit(prepared).unwrap();
+        if let Some(backend) = &mut self.backend {
+            let prepared = match backend.renderer.prepare(&candidate) {
+                Ok(prepared) => prepared,
+                Err(error) if error.is_retryable() => {
+                    bridge.resolve(PresentationNotice::new(
+                        key,
+                        SurfaceEpoch(1),
+                        PresentationOutcome::Skipped,
+                    ));
+                    return;
+                }
+                Err(error) => panic!("scenario GPU frame: {error}"),
+            };
+            backend.renderer.submit(prepared).unwrap();
+        }
         assert_eq!(
             bridge.resolve(PresentationNotice::new(
                 key,
@@ -265,7 +294,9 @@ impl ScenarioCapture {
             )),
             NoticeResult::Accepted
         );
-        driver.presented(bridge, &receipt).unwrap();
+        driver
+            .presented_frame(bridge, &receipt, &candidate)
+            .unwrap();
         self.accepted = Some(candidate);
     }
 }

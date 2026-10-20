@@ -76,7 +76,11 @@ fn execute_project_with_capture(
         let mut runtime = StoryRuntime::new(driver)
             .with_saves(RuntimeSaves::new(storage, 256 << 20))
             .with_media_factory(media);
-        let mut captures = gpu_capture.then(scenario_capture::ScenarioCapture::new);
+        let mut captures = if gpu_capture {
+            scenario_capture::ScenarioCapture::new()
+        } else {
+            scenario_capture::ScenarioCapture::cpu()
+        };
         runtime.set_frame_capture_enabled(gpu_capture);
         let (mut bridge, mut root) = support::bridge(runtime.driver());
         let mut identity = runtime.driver().ui().session().identity();
@@ -130,17 +134,11 @@ fn execute_project_with_capture(
                     (bridge, root) = support::bridge(runtime.driver());
                     identity = next;
                     replacements += 1;
-                    if let Some(captures) = &mut captures {
-                        captures.new_session();
-                    }
+                    captures.new_session();
                 }
-                if let Some(captures) = &mut captures {
-                    let driver = runtime.driver_mut().unwrap();
-                    captures.drive(driver);
-                    captures.present(driver, &mut bridge, root, frame);
-                } else {
-                    support::present(runtime.driver_mut().unwrap(), &mut bridge, root, frame);
-                }
+                let driver = runtime.driver_mut().unwrap();
+                captures.drive(driver);
+                captures.present(driver, &mut bridge, root, frame);
                 runtime.wake_input();
             }
             // Give filesystem/resource workers CPU time between presentation attempts.
@@ -148,7 +146,7 @@ fn execute_project_with_capture(
         }
         assert!(!runtime.driver().cleanup_pending());
         audio_stats.push(audio.stats());
-        if let Some(captures) = &captures {
+        if gpu_capture {
             eprintln!("{kind} GPU captures: {:?}", captures.stats());
             capture_stats.push(captures.stats());
         }
@@ -254,6 +252,159 @@ fn project_scenario_executes_assertions_across_save_restore_and_new_session() {
     )
     .unwrap();
     execute_project(&source, Duration::from_secs(90));
+}
+
+#[test]
+fn project_scenario_retains_transition_assets_across_playing_save_restore() {
+    let project = tempfile::tempdir().unwrap();
+    for (name, color) in [
+        ("old.png", [255, 0, 0, 255]),
+        ("new.png", [0, 0, 255, 255]),
+        ("mask.png", [128, 128, 128, 255]),
+    ] {
+        image::RgbaImage::from_pixel(16, 16, image::Rgba(color))
+            .save(project.path().join(name))
+            .unwrap();
+    }
+    let source = project.path().join("main.aside");
+    std::fs::write(
+        &source,
+        r##"
+        fn main() {
+            game.configure(width: 320, height: 180);
+            let panel = stack(x: 30, width: 200, height: 180) {
+                image("old.png", width: 200, height: 180);
+            };
+            stage.replace(stack(width: 320, height: 180, background: "#000000") { panel; });
+            let state = {calls: 0, result: {value: 42}};
+            let changed = completion();
+            let work = spawn(|| {
+                stage.transition(target: panel, duration: 0.4, mask: "mask.png", change: || {
+                    state.calls += 1;
+                    panel.clear();
+                    panel.add(image("new.png", width: 200, height: 180));
+                    changed.resolve(null);
+                    state.result
+                })
+            });
+            await changed;
+            await stage.presented();
+            await run(delay(0.03));
+            let save = saves.save("transition");
+            await save;
+            if !save.restored {
+                await saves.load("transition");
+                throw "load returned to the old transition";
+            }
+            if state.calls != 1 { throw "transition change replayed on restore"; }
+            if await work != state.result { throw "transition callback result identity changed"; }
+            if state.calls != 1 { throw "transition callback executed twice"; }
+            let zero = stage.transition(target: panel, duration: 0, mask: "unused.png", change: || {
+                state.calls += 1;
+                panel.x = 90;
+                state.result
+            });
+            if zero != state.result || state.calls != 2 || panel.x != 90 {
+                throw "zero-duration transition did not finish its new frame";
+            }
+            stage.transition(target: panel, duration: 0.02, change: || {
+                panel.visible = false;
+            });
+            if panel.visible { throw "transition to an empty subtree failed"; }
+            stage.transition(duration: 0.02, change: || {
+                stage.replace(stack(width: 320, height: 180, background: "#00ff00"));
+            });
+        }
+    "##,
+    )
+    .unwrap();
+    execute_project_with_capture(&source, Duration::from_secs(30), false);
+}
+
+#[test]
+#[ignore = "requires a GPU adapter for transition pixels and saved drawing restoration"]
+fn project_scenario_gpu_transition_keeps_ancestor_opacity_and_restores_old_drawing() {
+    let project = tempfile::tempdir().unwrap();
+    for (name, color) in [("old.png", [255, 0, 0, 255]), ("new.png", [0, 0, 255, 255])] {
+        image::RgbaImage::from_pixel(16, 16, image::Rgba(color))
+            .save(project.path().join(name))
+            .unwrap();
+    }
+    let source = project.path().join("main.aside");
+    std::fs::write(
+        &source,
+        r##"
+        fn main() {
+            game.configure(width: 960, height: 540);
+            let panel = stack(width: 640, height: 360) {
+                image("old.png", width: 640, height: 360);
+            };
+            stage.replace(stack(width: 960, height: 540, background: "#00ff00") {
+                stack(x: 160, y: 90, width: 640, height: 360, opacity: 0.5, clip: true) {
+                    panel;
+                }
+            });
+            await stage.presented();
+            await stage.capture();
+            let changed = completion();
+            let state = {calls: 0};
+            let work = spawn(|| {
+                stage.transition(target: panel, duration: 2, change: || {
+                    state.calls += 1;
+                    panel.clear();
+                    panel.add(image("new.png", width: 640, height: 360));
+                    changed.resolve(null);
+                });
+            });
+            await changed;
+            await stage.presented();
+            await run(delay(0.25));
+            await stage.capture();
+            let save = saves.save("middle");
+            await save;
+            if !save.restored {
+                await saves.load("middle");
+                throw "load returned to old transition";
+            }
+            await stage.presented();
+            await stage.capture();
+            await work;
+            if state.calls != 1 { throw "saved transition replayed change"; }
+            await stage.capture();
+        }
+    "##,
+    )
+    .unwrap();
+    let (_, stats) = execute_project_with_capture(&source, Duration::from_secs(90), true);
+    assert_eq!(stats.len(), 2);
+    for stats in stats {
+        assert_eq!(
+            stats.count, 4,
+            "source and ASB both capture four actual accepted frames"
+        );
+        let old = stats.centers[0];
+        let middle = stats.centers[1];
+        let restored = stats.centers[2];
+        let new = stats.centers[3];
+        assert!(old[0] >= 180 && old[1] >= 180 && old[2] <= 3, "{old:?}");
+        assert!(new[0] <= 3 && new[1] >= 180 && new[2] >= 180, "{new:?}");
+        for pixel in [middle, restored] {
+            assert!(
+                pixel[0] > 5 && pixel[2] > 5,
+                "transition lost an input: {pixel:?}"
+            );
+            assert!(
+                pixel[1].abs_diff(old[1]) <= 3,
+                "ancestor opacity was applied twice: {pixel:?}"
+            );
+            assert_eq!(pixel[3], 255);
+        }
+        assert_eq!(
+            stats.right,
+            [0, 255, 0, 255],
+            "transition changed pixels outside its ancestor clip"
+        );
+    }
 }
 
 #[test]

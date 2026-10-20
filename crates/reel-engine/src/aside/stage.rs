@@ -1442,7 +1442,7 @@ pub(super) fn number(value: Value) -> Result<f64, AdapterError> {
     }
     Ok(value)
 }
-fn nonnegative(value: Value) -> Result<f64, AdapterError> {
+pub(super) fn nonnegative(value: Value) -> Result<f64, AdapterError> {
     let value = number(value)?;
     if value < 0. {
         return Err(AdapterError::Input("node size must be nonnegative"));
@@ -1577,7 +1577,7 @@ fn mask_progress(value: Value) -> Result<f64, AdapterError> {
     }
     Ok(value)
 }
-fn mask_offset(value: Value) -> Result<f64, AdapterError> {
+pub(super) fn mask_offset(value: Value) -> Result<f64, AdapterError> {
     let value = number(value)?;
     if !(value as f32).is_finite() {
         return Err(AdapterError::Input(
@@ -1592,7 +1592,7 @@ fn validate_mask_offset(_: &Heap, value: Value) -> Result<(), HeapError> {
 fn validate_mask_progress(_: &Heap, value: Value) -> Result<(), HeapError> {
     validation(mask_progress(value))
 }
-fn validate_mask(heap: &Heap, value: Value) -> Result<(), HeapError> {
+pub(super) fn validate_mask(heap: &Heap, value: Value) -> Result<(), HeapError> {
     if value.tag() == ValueTag::Null {
         return Ok(());
     }

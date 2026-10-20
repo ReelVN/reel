@@ -145,7 +145,7 @@ fn transformed_text_raster_keeps_logical_metrics_and_scales_fill_and_outline() {
         };
         let normal = super::super::glyph::rasterize(
             &mut raster,
-            &frame,
+            frame.drawing(),
             run,
             1.,
             0,
@@ -159,7 +159,7 @@ fn transformed_text_raster_keeps_logical_metrics_and_scales_fill_and_outline() {
         .unwrap();
         let enlarged = super::super::glyph::rasterize(
             &mut raster,
-            &frame,
+            frame.drawing(),
             run,
             2.,
             0,
@@ -310,7 +310,7 @@ fn long_text_reuses_atlas_and_batches_glyphs_across_frames_and_aborted_preparati
     assert!(matches!(
         super::super::glyph::rasterize(
             &mut raster,
-            &frame,
+            frame.drawing(),
             run,
             1.,
             0,
@@ -328,7 +328,7 @@ fn long_text_reuses_atlas_and_batches_glyphs_across_frames_and_aborted_preparati
     assert!(matches!(
         super::super::glyph::rasterize(
             &mut raster,
-            &frame,
+            frame.drawing(),
             run,
             1.,
             0,
@@ -1197,4 +1197,74 @@ fn sprite_batches_share_uploads_and_respect_paint_boundaries() {
         );
     }
     counts(&renderer, 1);
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter"]
+fn retained_transition_reuploads_retired_images_and_releases_them_after_completion() {
+    use reel_ui::frame::{FrameTransition, RetainBuild};
+    let pool = pool();
+    let (old, mut registry, handles) = image_restore_fixture([4, 4]);
+    let mut retaining = RetainBuild::new(&old, None, limits(), &pool).unwrap();
+    while !retaining.step(step_budget()).unwrap().complete {}
+    let previous = retaining.finish().unwrap();
+    let saved = previous.snapshot(|_| None).unwrap();
+    let mut restore = saved.restore_begin(limits(), &pool).unwrap();
+    let mut budget = step_budget();
+    loop {
+        let progress = restore.step(budget).unwrap();
+        if progress.build.complete {
+            break;
+        }
+        budget.max_units = budget.max_units.max(progress.build.minimum_units);
+        budget.max_bytes = budget.max_bytes.max(progress.build.minimum_bytes);
+    }
+    let restored = restore.finish().unwrap();
+    for handle in handles {
+        registry.retire(handle);
+    }
+    drop(old);
+    drop(previous);
+    drop(saved);
+    drop(registry);
+    let mut scene = Scene::new();
+    fill(&mut scene, Color::from_rgba8(255, 0, 0, 128));
+    let mut widget = RecordWidget::new(scene);
+    widget.clip = false;
+    let mut bridge = widget_bridge(widget, Affine::IDENTITY);
+    let mut build = FrameBuild::new(
+        bridge.record(FrameId(1)).unwrap(),
+        empty_snapshot(&pool),
+        FrameInfo {
+            logical_size: [400., 300.],
+            physical_size: [64, 48],
+        },
+        limits(),
+        &pool,
+    )
+    .unwrap();
+    build
+        .set_transitions(vec![FrameTransition {
+            root: None,
+            previous: restored,
+            progress: 0.5,
+            mask: None,
+        }])
+        .unwrap();
+    while !build.step(step_budget()).unwrap().complete {}
+    let frame = build.finish().unwrap();
+    let mut renderer = renderer(Default::default());
+    let pixels = renderer
+        .readback(renderer.prepare(&frame).unwrap())
+        .unwrap();
+    assert!(pixels.iter().all(|pixel| {
+        pixel
+            .iter()
+            .zip([128. / 255. * 0.5, 0., 0.5, (128. / 255. + 1.) * 0.5])
+            .all(|(a, b)| (*a - b).abs() < 0.006)
+    }));
+    counts(&renderer, 4); // Three retained images and the shared solid-color white texture.
+    drop(frame);
+    renderer.poll().unwrap();
+    empty(&renderer);
 }
