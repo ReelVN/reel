@@ -726,6 +726,59 @@ impl Drop for FrameSlots {
 mod tests {
     use super::*;
     use crate::{GcBudget, GcPhase, HeapLimits};
+    #[test]
+    fn task_admission_compacts_fragmented_free_windows_without_losing_roots() {
+        let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+        let mut slots = FrameSlots::new(
+            &mut heap,
+            FrameSlotsLimits {
+                initial_capacity: 128,
+                max_capacity: 256,
+                max_window_len: 64,
+            },
+        )
+        .unwrap();
+        let ranges = (0..4)
+            .map(|_| {
+                slots
+                    .open(&mut heap, RootOwner(1), RootKind::TaskFrame, 32)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let object = heap.alloc_cell(Value::int(73)).unwrap();
+        let retained = RangePosition {
+            range: ranges[1],
+            index: 31,
+        };
+        slots.write(&mut heap, retained, object).unwrap();
+        slots.release(&mut heap, ranges[0]).unwrap();
+        slots.release(&mut heap, ranges[2]).unwrap();
+        assert_eq!(slots.stats().capacity - slots.stats().active_values, 64);
+        assert_eq!(
+            slots.open(&mut heap, RootOwner(2), RootKind::Arguments, 64),
+            Err(HeapError::WindowCapacity)
+        );
+        slots.reserve_task(&mut heap, 0).unwrap();
+        let admitted = slots
+            .open(&mut heap, RootOwner(2), RootKind::Arguments, 64)
+            .unwrap();
+        heap.begin_collection().unwrap();
+        while heap.phase() != GcPhase::Idle {
+            heap.gc_step_with_ranges(
+                GcBudget {
+                    units: 1,
+                    ..GcBudget::default()
+                },
+                slots.roots(),
+            )
+            .unwrap();
+        }
+        assert!(slots.read(retained).unwrap().same_bits(object));
+        assert_eq!(heap.cell_read(object).unwrap().as_int(), Some(73));
+        slots.release(&mut heap, admitted).unwrap();
+        slots.close(&mut heap).unwrap();
+    }
+
     fn make() -> (Heap, FrameSlots) {
         let mut h = Heap::new(
             SessionEpoch(1),

@@ -1145,7 +1145,10 @@ impl Vm {
         };
         self.restore_active();
         let slot = match self.tasks.data.iter().position(|s| s.task_id.is_none()) {
-            Some(slot) => slot,
+            Some(slot) => {
+                self.slots.reserve_task(&mut self.heap, 0)?;
+                slot
+            }
             None => self.grow_task_pool()?,
         };
         self.select_slot(slot);

@@ -2692,6 +2692,69 @@ fn task_pool_growth_failure_releases_partial_roots_and_preserves_the_live_task()
     v.start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
         .unwrap();
 }
+
+#[test]
+fn reused_task_admission_reserves_execution_windows_and_respects_the_host_ceiling() {
+    for maximum in [1024, u32::MAX] {
+        let package = fixtures::helper_native();
+        let mut limits = VmLimits::default();
+        limits.slots.initial_capacity = 1024;
+        limits.slots.max_capacity = maximum;
+        limits.slots.max_window_len = 1024;
+        let mut vm = Vm::load(
+            verify(package.clone(), Limits::default()).unwrap(),
+            support(&package),
+            limits,
+            SessionEpoch(4),
+        )
+        .unwrap();
+        // The initial pooled task and every subsequent activation reuse the
+        // same slot. Its permanent roots leave less than one native window.
+        let capacity = vm.stats().slots.capacity;
+        let pooled = vm.pooled_root_ranges();
+        for _ in 0..3 {
+            vm.start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+                .unwrap();
+            let result = loop {
+                let outcome = slice(&mut vm);
+                gc(&mut vm);
+                match outcome {
+                    RunOutcome::BudgetYield(_) => {}
+                    RunOutcome::HostCall(ticket) => {
+                        assert_eq!(
+                            vm.host_arguments(ticket).unwrap()[0].as_int(),
+                            Some(fixtures::ECHO_ARGUMENT)
+                        );
+                        let wait = ticket.wait_id();
+                        vm.respond(ticket, HostResponse::Pending(wait)).unwrap();
+                        collect(&mut vm);
+                        vm.complete(wait, Completion::Ready(Value::int(fixtures::ECHO_RESULT)))
+                            .unwrap();
+                    }
+                    RunOutcome::Returned(result) | RunOutcome::Fault(result) => break result,
+                    other => panic!("{other:?}"),
+                }
+            };
+            if maximum == 1024 {
+                assert_eq!(
+                    vm.delivery_fault(result).unwrap().unwrap().kind,
+                    FaultKind::Resource
+                );
+                assert_eq!(vm.stats().slots.capacity, capacity);
+            } else {
+                assert_eq!(vm.delivery_fault(result).unwrap(), None);
+                assert_eq!(
+                    vm.delivery_value(result).unwrap().as_int(),
+                    Some(fixtures::ECHO_RESULT)
+                );
+                assert!(vm.stats().slots.capacity > capacity);
+            }
+            vm.discard_delivery(result).unwrap();
+            assert_eq!(vm.stats().slots.active_ranges, pooled);
+        }
+    }
+}
+
 #[test]
 fn explicit_throw_in_catch_sets_new_source_and_retains_original_value_as_cause() {
     let mut p = fixtures::exception_regions();
