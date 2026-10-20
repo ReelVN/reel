@@ -3,7 +3,7 @@ use super::AdapterError;
 
 #[derive(Clone, Copy)]
 #[repr(i64)]
-pub(super) enum Easing {
+pub(in crate::aside) enum Easing {
     Linear,
     CubicIn,
     CubicOut,
@@ -23,7 +23,7 @@ pub(super) enum Easing {
 }
 
 impl Easing {
-    pub(super) fn parse(name: &str) -> Result<Self, AdapterError> {
+    pub(in crate::aside) fn parse(name: &str) -> Result<Self, AdapterError> {
         Ok(match name {
             "linear" => Self::Linear,
             "in" => Self::CubicIn,
@@ -49,7 +49,7 @@ impl Easing {
         })
     }
 
-    pub(super) fn from_code(code: i64) -> Self {
+    pub(in crate::aside) fn from_code(code: i64) -> Self {
         match code {
             0 => Self::Linear,
             1 => Self::CubicIn,
@@ -71,7 +71,7 @@ impl Easing {
         }
     }
 
-    pub(super) fn sample(self, t: f64) -> f64 {
+    pub(in crate::aside) fn sample(self, t: f64) -> f64 {
         // Trigonometric roundoff must not leave a completed tween short of its goal.
         if t == 0. || t == 1. {
             return t;

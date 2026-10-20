@@ -2,6 +2,7 @@
 use super::*;
 pub use aside_vm::snapshot::{SnapshotBudget, SnapshotError, SnapshotProgress};
 use aside_vm::snapshot::{SnapshotMap, SnapshotRegistry, VmCapture, VmRestore, VmSnapshot};
+use reel_ui::frame::SavedRetainedScene;
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 
@@ -78,6 +79,8 @@ pub(super) enum Part {
     Node,
     Saves,
     SaveRequest,
+    Transitions,
+    Transition,
 }
 #[derive(Serialize, Deserialize)]
 pub(super) struct Record {
@@ -108,9 +111,12 @@ pub struct SessionSnapshot {
     session: Option<Session>,
     records: Vec<Record>,
     committed_save: Option<saves::SaveRequestId>,
+    // Large immutable picture resources are encoded directly by the storage
+    // worker, rather than copied into a synchronous adapter Record::bytes.
+    pictures: Vec<Option<std::sync::Arc<SavedRetainedScene>>>,
 }
 impl SessionSnapshot {
-    pub const FORMAT_VERSION: u32 = 17;
+    pub const FORMAT_VERSION: u32 = 18;
     /// Serialize directly into the host's compression/file writer on its worker.
     pub fn write_to(
         &self,
@@ -175,13 +181,15 @@ pub struct SessionCapture<'a> {
     saved_session: Option<Session>,
     records: Vec<Record>,
     adapters: RecordStream<'a>,
+    pictures: Vec<Option<std::sync::Arc<SavedRetainedScene>>>,
+    picture_sizes: Option<Box<dyn Iterator<Item = u64> + 'a>>,
     vm_complete: bool,
     complete: bool,
 }
 impl SessionVm {
     fn snapshot_records(&self) -> RecordStream<'_> {
         use std::iter::once_with;
-        let streams: [RecordStream<'_>; 11] = [
+        let streams: [RecordStream<'_>; 12] = [
             Box::new(
                 once_with(|| {
                     Record::new(
@@ -240,6 +248,7 @@ impl SessionVm {
                     .map(|node| Record::new(Part::Node, &node)),
             ),
             self.particles.snapshot_records(),
+            self.transition_snapshot_records(),
         ];
         Box::new(streams.into_iter().flatten())
     }
@@ -253,7 +262,7 @@ impl SessionVm {
         if self.issued.is_some()
             || self.choice_reader.is_some()
             || self.dialogue_reader.is_some()
-            || self.activities.pending()
+            || self.activities_pending()
             || self.particles.needs_work(self.stage.scene.revision())
             || !self.activities.snapshot_ready()
             || self.exit_requested
@@ -261,6 +270,8 @@ impl SessionVm {
             || self.save_results_pending()
             || self.captures.active()
             || self.window.active()
+            || self.transitions_pending()
+            || !self.transitions.snapshot_ready()
         {
             return Err(SnapshotError::Busy(
                 "finish native admission and stage maintenance before capture",
@@ -273,6 +284,8 @@ impl SessionVm {
             saved_session: None,
             records: Vec::new(),
             adapters: self.snapshot_records(),
+            pictures: self.transition_pictures(),
+            picture_sizes: Some(Box::new(self.transition_picture_sizes())),
             vm_complete: false,
             complete: false,
         })
@@ -330,6 +343,7 @@ impl SessionVm {
             candidate: None,
             session: Some(session),
             records: &image.records,
+            pictures: &image.pictures,
             cursor: 0,
             children: Vec::new(),
             child: 0,
@@ -389,6 +403,14 @@ impl SessionCapture<'_> {
         let mut progress = SnapshotProgress::default();
         while !self.complete && progress.units < budget.units {
             progress.units += 1;
+            if let Some(sizes) = &mut self.picture_sizes {
+                if let Some(bytes) = sizes.next() {
+                    progress.bytes += bytes;
+                } else {
+                    self.picture_sizes = None;
+                }
+                continue;
+            }
             if let Some(session) = &mut self.session {
                 if session.step() {
                     self.saved_session = Some(self.session.take().unwrap().finish());
@@ -422,6 +444,7 @@ impl SessionCapture<'_> {
             vm: self.vm.finish()?,
             session: self.saved_session,
             records: self.records,
+            pictures: self.pictures,
         })
     }
 }
@@ -433,6 +456,7 @@ pub struct SessionRestore<'a> {
     candidate: Option<SessionVm>,
     session: Option<Session>,
     records: &'a [Record],
+    pictures: &'a [Option<std::sync::Arc<SavedRetainedScene>>],
     cursor: usize,
     children: Vec<reel_ui::stage::NodeId>,
     child: usize,
@@ -474,6 +498,9 @@ impl SessionRestore<'_> {
             let runtime = self.candidate.as_mut().unwrap();
             if let Some(record) = self.records.get(self.cursor) {
                 match record.part {
+                    Part::Transitions | Part::Transition => {
+                        runtime.restore_transition_record(record, map, self.pictures)?;
+                    }
                     Part::Saves | Part::SaveRequest => {
                         runtime.restore_save_record(record, map, self.committed_save)?;
                     }

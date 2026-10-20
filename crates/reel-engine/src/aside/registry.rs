@@ -800,6 +800,25 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     for (name, parameters, waits) in [
         ("tween", tween, false),
         (
+            "stage::transition",
+            vec![
+                parameter("change", None),
+                parameter("target", Some(bc::Const::Null)),
+                parameter("duration", Some(bc::Const::FloatBits(0.3_f64.to_bits()))),
+                parameter("easing", Some(bc::Const::Utf8("linear".into()))),
+                parameter("mask", Some(bc::Const::Null)),
+                parameter(
+                    "mask_softness",
+                    Some(bc::Const::FloatBits(0.06_f64.to_bits())),
+                ),
+                parameter("mask_invert", Some(bc::Const::Bool(false))),
+                parameter("mask_x", Some(bc::Const::Int(0))),
+                parameter("mask_y", Some(bc::Const::Int(0))),
+                parameter("owner", Some(bc::Const::Null)),
+            ],
+            true,
+        ),
+        (
             "scope",
             vec![
                 parameter("body", None),

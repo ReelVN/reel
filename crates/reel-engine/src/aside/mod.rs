@@ -25,6 +25,7 @@ mod publication;
 mod registry;
 mod results;
 mod scopes;
+pub mod transitions;
 pub use results::geometry::{GeometryQuery, GeometryReplies, GeometryReply, NodeGeometry};
 mod masks;
 mod rich_text;
@@ -205,6 +206,7 @@ pub struct SessionVm {
     main_wait: Option<WaitId>,
     tasks: Vec<callbacks::ScriptTask>,
     scopes: scopes::Scopes,
+    transitions: transitions::Transitions,
     schedule_cursor: usize,
     derived_task: Option<TaskId>,
     reactive_ready: bool,
@@ -271,6 +273,7 @@ impl SessionVm {
             main_wait: None,
             tasks: Vec::new(),
             scopes: scopes::Scopes::default(),
+            transitions: transitions::Transitions::default(),
             schedule_cursor: 0,
             derived_task: None,
             reactive_ready: true,
@@ -390,6 +393,7 @@ impl SessionVm {
     /// Reactive factories must settle before a host acknowledges their narrative frame.
     pub fn stage_ready(&self) -> bool {
         !self.activities.pending()
+            && !self.transitions.pending(self.activities.time())
             && !self.particles.needs_work(self.stage.scene.revision())
             && self.derived_task.is_none()
             && !self.vm.heap().derived_pending()
@@ -421,6 +425,14 @@ impl SessionVm {
             .advance(&mut self.vm, seconds, work - particle_work)?;
         progress.work += particle_work;
         progress.woke |= self.particles.take_wake();
+        if !self.activities.pending() {
+            let transition = self
+                .transitions
+                .advance(self.activities.time(), work - progress.work);
+            progress.work += transition.work;
+            progress.woke |= transition.woke;
+            progress.pending |= transition.pending;
+        }
         progress.pending |= self.particles.needs_work(self.stage.scene.revision());
         if self.reactive_ready && self.derived_task.is_none() {
             self.sync_narrative(session)?;
@@ -431,20 +443,23 @@ impl SessionVm {
 
     pub fn activities_pending(&self) -> bool {
         !self.revoked
-            && (self.activities.pending() || self.particles.needs_work(self.stage.scene.revision()))
+            && (self.activities.pending()
+                || self.particles.needs_work(self.stage.scene.revision())
+                || self.transitions.pending(self.activities.time()))
     }
 
     pub fn activities_need_time(&self) -> bool {
-        !self.revoked && (self.activities.needs_time() || self.particles.needs_time())
+        !self.revoked
+            && (self.activities.needs_time()
+                || self.particles.needs_time()
+                || self.transitions.needs_time())
     }
 
     pub fn activities_poll_after(&self) -> Option<std::time::Duration> {
         if self.revoked {
             return None;
         }
-        let particles = self
-            .particles
-            .needs_time()
+        let particles = (self.particles.needs_time() || self.transitions.needs_time())
             .then_some(std::time::Duration::from_secs_f64(1. / 60.));
         match (self.activities.poll_after(), particles) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -479,6 +494,10 @@ impl SessionVm {
             }
             "reel::stage::capture" => {
                 self.dispatch_capture(ticket)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
+            "reel::stage::transition" => {
+                self.dispatch_transition(ticket)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::window::info"
@@ -977,6 +996,7 @@ impl SessionVm {
             text::alloc_string(self.vm.heap_mut(), &error.to_string(), self.read_limit)?
         };
         self.vm.respond_language_error(ticket, kind, details)?;
+        self.reject_transition(ticket)?;
         self.activities
             .cancel_native(self.vm.heap_mut(), ticket.task)?;
         if let Some(reader) = self.choice_reader.take() {
@@ -1283,6 +1303,7 @@ impl SessionVm {
             self.cancel_callback(session, index)?;
         }
         if let Some(task) = self.task {
+            self.cancel_task_transitions(task, None)?;
             self.cancel_task_scopes(task)?;
         }
         for index in 0..session.owners.len() {
@@ -1298,6 +1319,7 @@ impl SessionVm {
         self.results.clear();
         self.saves.clear();
         self.captures = capture::Captures::default();
+        self.transitions = transitions::Transitions::default();
         self.window = window::Window::default();
         self.particles.clear();
         self.activities.revoke(self.vm.heap_mut())?;
