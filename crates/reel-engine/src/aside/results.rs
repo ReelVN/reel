@@ -19,6 +19,7 @@ pub(super) enum Kind {
     Capture = -1106,
     Window = -1107,
 }
+
 #[repr(u32)]
 enum Slot {
     Tag,
@@ -91,6 +92,13 @@ pub(super) struct Results {
     #[serde(skip)]
     presentation_charge: Option<HeapReservation>,
     presentation_remaining: usize,
+    #[serde(skip)]
+    owned: VecDeque<RootToken>,
+    #[serde(skip)]
+    owned_charge: Option<HeapReservation>,
+    owned_remaining: usize,
+    owned_dirty: bool,
+    owner_revision: u64,
 }
 impl Results {
     pub(super) fn request_presentation(&mut self) -> Result<u64, AdapterError> {
@@ -118,6 +126,11 @@ impl Results {
                     self.presentations
                         .iter()
                         .map(|root| Record::new(Part::Presentation, root)),
+                )
+                .chain(
+                    self.owned
+                        .iter()
+                        .map(|root| Record::new(Part::OwnedResult, root)),
                 ),
         )
     }
@@ -133,6 +146,7 @@ impl Results {
                 *self = record.read()?;
                 self.presented = 0;
                 self.dirty = true;
+                self.owned_dirty = true;
             }
             Part::ResultWait => {
                 let (wait, value): (WaitId, Value) = record.read()?;
@@ -145,15 +159,39 @@ impl Results {
                 reserve_queue(heap, &mut self.presentations, &mut self.presentation_charge)?;
                 self.presentations.push_back(root);
             }
+            Part::OwnedResult => {
+                let root = map.root(record.read()?)?;
+                reserve_queue(heap, &mut self.owned, &mut self.owned_charge)?;
+                self.owned.push_back(root);
+            }
             _ => unreachable!(),
         }
         Ok(())
     }
 }
-pub(super) fn readonly(_: &Heap, _: Value, _: u32, _: Value) -> Result<(), HeapError> {
-    Err(HeapError::ReadOnly)
+pub(super) fn readonly(
+    heap: &Heap,
+    object: Value,
+    field: u32,
+    value: Value,
+) -> Result<(), HeapError> {
+    // The property is registered read-only. This validator also runs when the
+    // producer publishes it; methods remain immutable ordinary fields.
+    if field == 0
+        && matches!(heap.host_payload(object, 0)?.as_int(), Some(-1101 | -1102))
+        && value.as_bool().is_some()
+    {
+        Ok(())
+    } else {
+        Err(HeapError::ReadOnly)
+    }
 }
 fn settle(heap: &mut Heap, object: Value, state: State, value: Value) -> Result<(), AdapterError> {
+    // Publication may reserve property traversal space. Complete it before the
+    // infallible writes to this validated result's private terminal slots.
+    if matches!(kind(heap, object)?, Kind::Completion | Kind::Task) {
+        super::observable::publish(heap, object, 0, Value::bool(false))?;
+    }
     heap.set_host_payload(object, Slot::Value as u32, value)?;
     heap.set_host_payload(object, Slot::State as u32, Value::int(state as i64))?;
     heap.set_host_payload(object, Slot::Owner as u32, Value::NULL)?;
@@ -357,6 +395,12 @@ impl Results {
                 Some(readonly)
             },
         )?;
+        let observable = matches!(kind, Kind::Completion | Kind::Task);
+        if observable {
+            let key = heap.alloc_string("pending")?;
+            heap.table_store(fields, 0, key, Value::bool(true))?;
+            heap.observe_host_properties(object, 0, 1)?;
+        }
         for (index, (name, function)) in ["resolve", "reject", "cancel"]
             .into_iter()
             .zip(methods.settle)
@@ -377,17 +421,34 @@ impl Results {
             let key = heap.alloc_string(name)?;
             heap.table_store(
                 fields,
-                if kind != Kind::Completion {
-                    0
-                } else {
-                    index as u32
-                },
+                u32::from(observable)
+                    + if kind != Kind::Completion {
+                        0
+                    } else {
+                        index as u32
+                    },
                 key,
                 method,
             )?;
         }
         vm.bind_awaitable(object, methods.wait)?;
         Ok(object)
+    }
+    fn track_completion(
+        &mut self,
+        vm: &mut Vm,
+        root_owner: aside_vm::RootOwner,
+        result: Value,
+    ) -> Result<(), AdapterError> {
+        if owner(vm.heap(), result)?.tag() == ValueTag::Null {
+            return Ok(());
+        }
+        reserve_queue(vm.heap(), &mut self.owned, &mut self.owned_charge)?;
+        let weak = vm.heap_mut().alloc_weakref(result)?;
+        let root = vm.heap_mut().add_root(root_owner, RootKind::Host, weak)?;
+        self.owned.push_back(root);
+        self.owners_changed();
+        Ok(())
     }
     pub(super) fn create_operation(&mut self, vm: &mut Vm) -> Result<Value, AdapterError> {
         self.create(vm, Value::NULL, Kind::Operation)
@@ -427,12 +488,20 @@ impl Results {
     pub fn changed(&mut self) {
         self.dirty = true;
     }
-    pub fn needs_work(&self, stage_revision: u64) -> bool {
-        (!self.waits.is_empty() || !self.presentations.is_empty())
-            && (self.dirty
-                || self.remaining != 0
-                || self.presentation_remaining != 0
-                || self.stage_revision != stage_revision)
+    pub fn owners_changed(&mut self) {
+        self.owned_dirty = true;
+        self.changed();
+    }
+    pub fn needs_work(&self, stage_revision: u64, owner_revision: u64) -> bool {
+        !self.owned.is_empty()
+            && (self.owned_dirty
+                || self.owned_remaining != 0
+                || self.owner_revision != owner_revision)
+            || (!self.waits.is_empty() || !self.presentations.is_empty())
+                && (self.dirty
+                    || self.remaining != 0
+                    || self.presentation_remaining != 0
+                    || self.stage_revision != stage_revision)
     }
     /// Finish a registration-order round before running more scripts. Values in
     /// cancelled native frames may already be collected: check WaitId first.
@@ -440,10 +509,41 @@ impl Results {
         &mut self,
         vm: &mut Vm,
         stage_revision: u64,
+        owner_revision: u64,
         mut current: impl FnMut(&mut Heap, Value, Value) -> Result<bool, AdapterError>,
     ) -> Result<bool, AdapterError> {
-        if !self.needs_work(stage_revision) {
+        if !self.needs_work(stage_revision, owner_revision) {
             return Ok(false);
+        }
+        if self.owned_remaining == 0 && (self.owned_dirty || self.owner_revision != owner_revision)
+        {
+            self.owned_remaining = self.owned.len();
+            self.owned_dirty = false;
+            self.owner_revision = owner_revision;
+        }
+        for _ in 0..self.owned_remaining.min(64) {
+            let root = *self.owned.front().unwrap();
+            let heap = vm.heap_mut();
+            let weak = heap.root_value(root)?;
+            let keep = if let Some(object) = heap.peek_weakref(weak)? {
+                state(heap, object)? == State::Pending
+            } else {
+                false
+            };
+            self.owned.pop_front();
+            if keep {
+                self.owned.push_back(root);
+            } else {
+                heap.release_root(root)?;
+            }
+            self.owned_remaining -= 1;
+        }
+        if self.owned_remaining != 0 {
+            return Ok(true);
+        }
+        if self.owned.is_empty() {
+            self.owned = VecDeque::new();
+            self.owned_charge = None;
         }
         if self.remaining == 0 && self.presentation_remaining == 0 {
             self.remaining = self.waits.len();
@@ -510,7 +610,7 @@ impl Results {
             self.waits = VecDeque::new();
             self.charge = None;
         }
-        Ok(self.needs_work(stage_revision))
+        Ok(self.needs_work(stage_revision, owner_revision))
     }
     pub fn clear(&mut self) {
         // The session's bounded owner scan retires outstanding producer roots.
@@ -521,6 +621,10 @@ impl Results {
         self.charge = None;
         self.remaining = 0;
         self.dirty = false;
+        self.owned = VecDeque::new();
+        self.owned_charge = None;
+        self.owned_remaining = 0;
+        self.owned_dirty = false;
     }
 }
 
@@ -666,7 +770,10 @@ impl SessionVm {
                         .arm_presentation(&mut self.vm, result, Value::NULL)?;
                     result
                 } else {
-                    self.results.create(&mut self.vm, owner, kind)?
+                    let result = self.results.create(&mut self.vm, owner, kind)?;
+                    self.results
+                        .track_completion(&mut self.vm, self.root_owner, result)?;
+                    result
                 }
             } else {
                 let kind = kind(self.vm.heap(), object)?;
@@ -691,6 +798,9 @@ impl SessionVm {
                         self.virtual_result_cancelled(owner, object)?;
                     }
                     self.results.changed();
+                    if kind == Kind::Completion {
+                        self.results.owners_changed();
+                    }
                 }
                 Value::bool(pending)
             };
@@ -698,5 +808,62 @@ impl SessionVm {
         }
         self.issued = None;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn result_pending_publication_failure_preserves_the_terminal_transaction() {
+        let mut heap = Heap::new(
+            aside_vm::SessionEpoch(1),
+            aside_vm::HeapLimits {
+                max_bytes: 1_000_000,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let fields = heap.alloc_table().unwrap();
+        let name = heap.alloc_string("pending").unwrap();
+        heap.table_store(fields, 0, name, Value::bool(true))
+            .unwrap();
+        let result = heap
+            .alloc_host(
+                fields,
+                &[
+                    Value::int(Kind::Completion as i64),
+                    Value::int(State::Pending as i64),
+                    Value::NULL,
+                    Value::NULL,
+                ],
+                Some(readonly),
+            )
+            .unwrap();
+        heap.observe_host_properties(result, 0, 1).unwrap();
+        let usage = heap.budget_usage();
+        let full = usage.reserve(usage.remaining_bytes()).unwrap();
+        assert!(settle(&mut heap, result, State::Resolved, Value::int(42)).is_err());
+        assert!(pending(&mut heap, result).unwrap());
+        assert_eq!(heap.table_entry(fields, 0).unwrap().1.as_bool(), Some(true));
+        assert!(
+            heap.host_payload(result, Slot::Value as u32)
+                .unwrap()
+                .same_bits(Value::NULL)
+        );
+        drop(full);
+        settle(&mut heap, result, State::Resolved, Value::int(42)).unwrap();
+        assert!(!pending(&mut heap, result).unwrap());
+        assert_eq!(
+            heap.table_entry(fields, 0).unwrap().1.as_bool(),
+            Some(false)
+        );
+        assert_eq!(
+            heap.host_payload(result, Slot::Value as u32)
+                .unwrap()
+                .as_int(),
+            Some(42)
+        );
     }
 }

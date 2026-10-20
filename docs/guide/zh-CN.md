@@ -970,6 +970,19 @@ let name = await form.result;
 
 `.reject(error)` 在 await 处抛出该值，`.cancel()` 抛出 Cancelled。三个结算方法首次返回 true，之后返回 false，便于处理重复点击；多次 await 得到同一终态。删除 owner 节点取消未结算结果，隐藏节点不会取消；取消一个等待者不影响其他等待者。省略 owner 时，主剧情归会话、回调归事件节点。resolve 原样传递对象，不自动等待其中的其他结果。此接口不占用 choose 或对白，也不产生历史记录。完整表单与子游戏组合见 [author_results.aside](../../examples/author_results.aside)；运行前提供 fonts/body.ttf。
 
+`completion` 和 `spawn` 的结果都提供只读的 `pending`。它在实际工作结束后变成 false，可以用 bind/derive 表达按钮可用性、忙碌提示或组件重入条件；任务取消清理完成前保持 true。在 scope 内创建 completion()，让结果和临时画面一起结束：
+
+```aside
+scope(owner: root, body: |s| {
+    let result = completion();
+    s.add(root, button("Confirm", enabled: bind(result.pending),
+        on_click: || result.resolve(true)));
+    await result
+});
+```
+
+长期组件可以保存当前 request，用 `request != null && request.pending` 判断是否已有请求。普通返回、错误、调用者取消和 owner 退休都由 scope 收起临时画面；等待者取消本身不会取消作用域外的共享结果。完整可重复打开的提示框见 [author_prompt.aside](../../examples/author_prompt.aside)。
+
 [author_embedded_puzzle.aside](../../examples/author_embedded_puzzle.aside) 将一个二维开关谜题嵌进自定义对白：点击图形或通过键盘/手柄焦点操作，暂停时同时停止组件时钟和提示动画，完成后将步数交回剧情；离开组件会取消未决结果并退休所属活动。谜题、对白和菜单都使用普通舞台节点。示例使用现有事件与活动，不提供物理或固定步进更新循环；运行前提供 fonts/body.ttf。
 
 choose、自定义 choice_view 和只读选择模型已实现。引擎不自动叠加对白或选择界面；作者将自己的组件挂到舞台，普通函数可封装并复用外观。完整 ADV/NVL 切换及选择示例见 [author_narrative.aside](../../examples/author_narrative.aside)。

@@ -25,7 +25,7 @@ fn registry() -> &'static SnapshotRegistry {
                     name,
                     if name == "reel.media" {
                         3
-                    } else if name == "reel.character" {
+                    } else if matches!(name, "reel.character" | "reel.result") {
                         2
                     } else {
                         1
@@ -70,6 +70,7 @@ pub(super) enum Part {
     Results,
     ResultWait,
     Presentation,
+    OwnedResult,
     Particles,
     Particle,
     Media,
@@ -119,7 +120,7 @@ pub struct SessionSnapshot {
     pictures: Vec<Option<std::sync::Arc<SavedRetainedScene>>>,
 }
 impl SessionSnapshot {
-    pub const FORMAT_VERSION: u32 = 23;
+    pub const FORMAT_VERSION: u32 = 24;
     /// Serialize directly into the host's compression/file writer on its worker.
     pub fn write_to(
         &self,
@@ -582,7 +583,7 @@ impl SessionRestore<'_> {
                     Part::Activities | Part::ActivityEvent | Part::ActivityWait => {
                         runtime.activities.restore_record(record, map)?;
                     }
-                    Part::Results | Part::ResultWait | Part::Presentation => {
+                    Part::Results | Part::ResultWait | Part::Presentation | Part::OwnedResult => {
                         runtime
                             .results
                             .restore_record(record, map, runtime.vm.heap_mut())?;

@@ -102,7 +102,7 @@ impl SessionVm {
         heap.retire_host(value)?;
         heap.release_root(root)?;
         self.scopes.live.remove(index);
-        self.results.changed();
+        self.results.owners_changed();
         self.particles.owners_changed();
         self.activities.after_script(self.vm.heap())?;
         Ok(())

@@ -959,6 +959,19 @@ let name = await form.result;
 
 `.reject(error)` throws that value at await; `.cancel()` throws Cancelled. All three settlement methods return true the first time and false afterwards, so repeated clicks cannot replace a result. Repeated awaits observe the same terminal state. Removing the owner cancels pending results; hiding it does not. Cancelling one waiter leaves other waiters unaffected. Without owner, the result belongs to the session in the main story or the event node in a callback. Resolve passes objects through without adopting other awaitables. Results do not occupy choose or dialogue and add no history. See the complete form and child-game composition in [author_results.aside](../../examples/author_results.aside); provide fonts/body.ttf before running.
 
+`completion` and `spawn` results expose read-only `pending`. It becomes false when the work reaches its terminal result. Use bind/derive for button availability, busy indicators or component reentry; a cancelling task remains pending until cleanup finishes. Create completion() inside a scope to end the result together with its temporary view:
+
+```aside
+scope(owner: root, body: |s| {
+    let result = completion();
+    s.add(root, button("Confirm", enabled: bind(result.pending),
+        on_click: || result.resolve(true)));
+    await result
+});
+```
+
+A persistent component can retain its current request and check `request != null && request.pending` before opening another. The scope removes the temporary view on return, error, caller cancellation or owner retirement. Cancelling a waiter alone preserves shared results outside that scope. See [author_prompt.aside](../../examples/author_prompt.aside) for a reusable prompt.
+
 [author_embedded_puzzle.aside](../../examples/author_embedded_puzzle.aside) embeds a 2D switch puzzle in custom dialogue. Operate graphical controls by pointer or keyboard/gamepad focus, pause both the component clock and hint animation, and return the move count to the story. Leaving the component cancels its pending result and retires its activities. The puzzle, dialogue and menu use ordinary stage nodes. This example uses existing events and activities; it does not provide physics or a fixed-step update loop. Supply fonts/body.ttf before running.
 
 choose, custom choice_view and the read-only choice model are implemented. The engine adds no automatic dialogue or choice UI; mount your own components on the stage and use ordinary functions to package reusable appearances. See [author_narrative.aside](../../examples/author_narrative.aside) for ADV/NVL switching and custom choices.

@@ -5,6 +5,8 @@ use super::{
 use reel_ui::stage::{NodeId, NodeKind, NodeText};
 use reel_ui::widgets::TextInputEvent;
 
+mod pending;
+
 fn button(vm: &SessionVm, label: &str) -> NodeId {
     vm.stage()
         .nodes()
