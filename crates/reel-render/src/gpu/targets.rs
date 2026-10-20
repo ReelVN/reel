@@ -1,5 +1,5 @@
 use super::{GpuError, Quality};
-use reel_ui::frame::{FrameCommand, FrameOp, RenderFrame};
+use reel_ui::frame::{FrameCommand, FrameDrawing, FrameOp, RenderFrame, SceneTransition};
 use reel_ui::{
     imaging::record::{Clip, Geometry},
     kurbo::{Affine, Rect},
@@ -82,22 +82,46 @@ pub(super) fn peak_targets(
     size: [u32; 2],
     mut reserve: impl FnMut(u64) -> Result<(), GpuError>,
 ) -> Result<u64, GpuError> {
+    enum Pending<'a> {
+        Old(&'a SceneTransition),
+        New,
+    }
     struct Stream<'a> {
-        commands: &'a [FrameCommand],
+        drawing: &'a FrameDrawing,
+        offset: usize,
+        transition_next: usize,
+        transitions_enabled: bool,
+        pending: Option<Pending<'a>>,
+        commands: &'a [std::sync::Arc<FrameCommand>],
         next: usize,
         live: u64,
         peak: u64,
         transform: Affine,
         isolated: Vec<bool>,
     }
-    let stream = |commands, transform| Stream {
-        commands,
-        next: 0,
-        live: 1,
-        peak: 1,
-        transform,
-        isolated: Vec::new(),
-    };
+    fn stream<'a>(
+        drawing: &'a FrameDrawing,
+        commands: &'a [std::sync::Arc<FrameCommand>],
+        offset: usize,
+        transitions_enabled: bool,
+        transform: Affine,
+    ) -> Stream<'a> {
+        Stream {
+            drawing,
+            offset,
+            transitions_enabled,
+            pending: None,
+            transition_next: drawing
+                .transitions()
+                .partition_point(|t| t.commands.start < offset),
+            commands,
+            next: 0,
+            live: 1,
+            peak: 1,
+            transform,
+            isolated: Vec::new(),
+        }
+    }
     let mut stack = Vec::new();
     let transform = Affine::scale_non_uniform(
         size[0] as f64 / frame.info().logical_size[0],
@@ -105,17 +129,55 @@ pub(super) fn peak_targets(
     );
     super::scopes::push_stack(
         &mut stack,
-        stream(frame.commands(), transform),
+        stream(frame.drawing(), frame.commands(), 0, true, transform),
         &mut reserve,
     )?;
     loop {
         let current = stack.last_mut().unwrap();
+        if current.transitions_enabled {
+            if let Some(transition) = current.drawing.transitions().get(current.transition_next)
+                && transition.commands.start == current.offset + current.next
+            {
+                current.transition_next += 1;
+                current.next = transition.commands.end - current.offset;
+                current.pending = Some(Pending::Old(transition));
+                let child = stream(
+                    transition.previous.drawing(),
+                    transition.previous.drawing().commands(),
+                    0,
+                    true,
+                    current.transform
+                        * transition.parent_to_window
+                        * transition.previous.to_parent(),
+                );
+                super::scopes::push_stack(&mut stack, child, &mut reserve)?;
+                continue;
+            }
+        }
         let Some(command) = current.commands.get(current.next) else {
             let finished = stack.pop().unwrap();
             let Some(parent) = stack.last_mut() else {
                 return Ok(finished.peak);
             };
             parent.peak = parent.peak.max(parent.live + finished.peak);
+            match parent.pending.take() {
+                Some(Pending::Old(transition)) => {
+                    parent.live += 1; // Retain the old route while drawing the new route.
+                    parent.pending = Some(Pending::New);
+                    let child = stream(
+                        parent.drawing,
+                        &parent.drawing.commands()[transition.commands.clone()],
+                        transition.commands.start,
+                        false,
+                        parent.transform,
+                    );
+                    super::scopes::push_stack(&mut stack, child, &mut reserve)?;
+                }
+                Some(Pending::New) => {
+                    parent.live -= 1;
+                }
+                None => {}
+            }
             continue;
         };
         current.next += 1;
@@ -151,19 +213,17 @@ pub(super) fn peak_targets(
                     .max(current.live + clip_targets.max(composite_targets));
                 if let Some(mask) = group.mask {
                     let definition =
-                        frame
+                        current
+                            .drawing
                             .masks()
-                            .get(mask.mask as usize)
+                            .get(&mask.mask)
                             .ok_or(GpuError::Unsupported {
                                 at: command.origin.at,
                                 record: "missing mask",
                             })?;
                     let transform = current.transform * mask.transform;
-                    super::scopes::push_stack(
-                        &mut stack,
-                        stream(&definition.commands, transform),
-                        &mut reserve,
-                    )?;
+                    let child = stream(current.drawing, &definition.commands, 0, false, transform);
+                    super::scopes::push_stack(&mut stack, child, &mut reserve)?;
                 }
             }
             FrameOp::PopClip | FrameOp::PopGroup => {

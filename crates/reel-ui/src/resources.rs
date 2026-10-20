@@ -12,13 +12,15 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct ResourceHandle {
     pub registry: u64,
     pub slot: u32,
     pub generation: u64,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ColorEncoding {
     Srgb,
     Linear,
@@ -416,6 +418,27 @@ pub struct ResourceSnapshot {
     _ticket: BudgetTicket,
 }
 impl ResourceSnapshot {
+    /// Transfer existing accepted leases; retirement only forbids new admissions.
+    pub(crate) fn retain(
+        mut leases: Vec<ResourceLease>,
+        pool: &BudgetPool,
+    ) -> Result<Self, ResourceError> {
+        let ticket = pool
+            .reserve((leases.capacity() * size_of::<ResourceLease>()) as u64)
+            .map_err(|_| ResourceError::Bytes)?;
+        leases.sort_unstable_by_key(|r| {
+            (
+                r.data().blob().is_none(),
+                r.data().blob().map_or(0, Blob::id),
+                r.handle(),
+            )
+        });
+        Ok(Self {
+            leases,
+            _ticket: ticket,
+        })
+    }
+
     /// Capture prepared leases from independent resource producers. Existing
     /// snapshots survive retirement; a new snapshot cannot admit retired data.
     pub fn capture(

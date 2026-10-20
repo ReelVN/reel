@@ -92,6 +92,14 @@ pub(super) enum CompositeOperation {
     AlphaMask,
     LuminanceMask,
     Crossfade(f32),
+    Transition(f32),
+    MaskedTransition(f32),
+}
+
+impl CompositeOperation {
+    pub(super) fn replaces(self) -> bool {
+        matches!(self, Self::Transition(_) | Self::MaskedTransition(_))
+    }
 }
 
 pub(super) struct CompositeParams {
@@ -352,7 +360,7 @@ impl Pipelines {
             multiview_mask: None,
             occlusion_query_set: None,
         });
-        pass.set_pipeline(if params.blend == 0 {
+        pass.set_pipeline(if params.blend == 0 && !params.operation.replaces() {
             &self.composite
         } else {
             &self.composite_blend
@@ -467,7 +475,10 @@ pub(super) fn operation_words(operation: CompositeOperation) -> (u32, f32, f32) 
         CompositeOperation::SourceOver => (0, 0., 0.),
         CompositeOperation::AlphaMask => (1, 0., 0.),
         CompositeOperation::LuminanceMask => (2, 0., 0.),
-        CompositeOperation::Crossfade(progress) => (3, progress, 0.),
+        CompositeOperation::Crossfade(progress) | CompositeOperation::Transition(progress) => {
+            (3, progress, 0.)
+        }
+        CompositeOperation::MaskedTransition(progress) => (4, progress, 0.),
     }
 }
 

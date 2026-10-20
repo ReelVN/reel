@@ -6,7 +6,7 @@ use super::{
     scopes::{Kind, Scopes, push_stack},
     targets::{Scissor, Target, target_bytes},
 };
-use reel_ui::frame::{FrameCommand, FrameOp, RecordLocation, RenderFrame};
+use reel_ui::frame::{FrameCommand, FrameDrawing, FrameOp, RecordLocation, SceneTransition};
 use reel_ui::{
     imaging::{Composite, MaskMode, record::Clip},
     kurbo::Affine,
@@ -50,12 +50,23 @@ struct MaskComposition<'a> {
     blend: reel_ui::peniko::BlendMode,
     operation: CompositeOperation,
 }
+enum Pending<'a> {
+    Mask(MaskComposition<'a>),
+    Transition {
+        definition: &'a SceneTransition,
+        previous: Option<Target>,
+    },
+}
 struct Stream<'a> {
-    commands: &'a [FrameCommand],
+    drawing: &'a FrameDrawing,
+    offset: usize,
+    transition_next: usize,
+    transitions_enabled: bool,
+    commands: &'a [std::sync::Arc<FrameCommand>],
     next: usize,
     transform: Affine,
     scopes: Scopes<Scope<'a>>,
-    mask: Option<MaskComposition<'a>>,
+    pending: Option<Pending<'a>>,
 }
 impl Context<'_> {
     pub(super) fn target(&mut self) -> Result<Target, GpuError> {
@@ -119,36 +130,119 @@ impl Context<'_> {
     }
     pub(super) fn stream(
         &mut self,
-        frame: &RenderFrame,
-        commands: &[FrameCommand],
+        frame: &FrameDrawing,
         transform: Affine,
     ) -> Result<Target, GpuError> {
-        let first = self.start_stream(commands, transform)?;
+        let first = self.start_stream(
+            frame,
+            frame.commands(),
+            0,
+            true,
+            transform,
+            Scissor::full(self.size),
+        )?;
         let mut streams = Vec::new();
         push_stack(&mut streams, first, |bytes| self.transient(bytes))?;
         loop {
             let current = streams.last_mut().expect("active replay stream");
+            // A transition boundary is a gap, including an empty hidden subtree.
+            if current.transitions_enabled {
+                if let Some(transition) = current.drawing.transitions().get(current.transition_next)
+                    && transition.commands.start == current.offset + current.next
+                {
+                    current.transition_next += 1;
+                    current.next = transition.commands.end - current.offset;
+                    self.scissor = current.scopes.last().scissor;
+                    let child = self.start_stream(
+                        transition.previous.drawing(),
+                        transition.previous.drawing().commands(),
+                        0,
+                        true,
+                        current.transform
+                            * transition.parent_to_window
+                            * transition.previous.to_parent(),
+                        self.scissor,
+                    )?;
+                    self.combine(
+                        &child.scopes.last().target,
+                        &current.scopes.last().target.view,
+                        &current.scopes.last().target.view,
+                        1.,
+                        0.,
+                        CompositeOperation::Transition(0.),
+                    )?;
+                    current.pending = Some(Pending::Transition {
+                        definition: transition,
+                        previous: None,
+                    });
+                    push_stack(&mut streams, child, |bytes| self.transient(bytes))?;
+                    continue;
+                }
+            }
             let Some(command) = current.commands.get(current.next) else {
                 let finished = streams.pop().unwrap().scopes.finish()?.target;
                 let Some(parent) = streams.last_mut() else {
                     return Ok(finished);
                 };
-                let mask = parent.mask.take().expect("suspended mask composition");
                 self.scissor = parent.scopes.last().scissor;
-                self.combine_group(
-                    &parent.scopes.last().target,
-                    &mask.source.view,
-                    &finished.view,
-                    reel_ui::imaging::Composite {
-                        alpha: mask.opacity,
-                        blend: mask.blend,
-                    },
-                    mask.invert,
-                    mask.operation,
-                    mask.image_mask,
-                )?;
-                self.recycle_target(mask.source)?;
-                self.recycle_target(finished)?;
+                match parent.pending.take().expect("suspended composition") {
+                    Pending::Mask(mask) => {
+                        self.combine_group(
+                            &parent.scopes.last().target,
+                            &mask.source.view,
+                            &finished.view,
+                            reel_ui::imaging::Composite {
+                                alpha: mask.opacity,
+                                blend: mask.blend,
+                            },
+                            mask.invert,
+                            mask.operation,
+                            mask.image_mask,
+                        )?;
+                        self.recycle_target(mask.source)?;
+                        self.recycle_target(finished)?;
+                    }
+                    Pending::Transition {
+                        definition,
+                        previous: None,
+                    } => {
+                        let child = self.start_stream(
+                            parent.drawing,
+                            &parent.drawing.commands()[definition.commands.clone()],
+                            definition.commands.start,
+                            false,
+                            parent.transform,
+                            self.scissor,
+                        )?;
+                        self.combine(
+                            &child.scopes.last().target,
+                            &parent.scopes.last().target.view,
+                            &parent.scopes.last().target.view,
+                            1.,
+                            0.,
+                            CompositeOperation::Transition(0.),
+                        )?;
+                        parent.pending = Some(Pending::Transition {
+                            definition,
+                            previous: Some(finished),
+                        });
+                        push_stack(&mut streams, child, |bytes| self.transient(bytes))?;
+                    }
+                    Pending::Transition {
+                        definition,
+                        previous: Some(previous),
+                    } => {
+                        self.combine_transition(
+                            &parent.scopes.last().target,
+                            &previous.view,
+                            &finished.view,
+                            definition,
+                            parent.transform,
+                        )?;
+                        self.recycle_target(previous)?;
+                        self.recycle_target(finished)?;
+                    }
+                }
                 continue;
             };
             current.next += 1;
@@ -260,15 +354,13 @@ impl Context<'_> {
                         source = clipped;
                     }
                     if let Some(mask) = group.mask {
-                        let definition =
-                            frame
-                                .masks()
-                                .get(mask.mask as usize)
-                                .ok_or(GpuError::Unsupported {
-                                    at,
-                                    record: "missing mask",
-                                })?;
-                        current.mask = Some(MaskComposition {
+                        let definition = current.drawing.masks().get(&mask.mask).ok_or(
+                            GpuError::Unsupported {
+                                at,
+                                record: "missing mask",
+                            },
+                        )?;
+                        current.pending = Some(Pending::Mask(MaskComposition {
                             image_mask: group.image_mask,
                             source,
                             opacity: group.opacity,
@@ -278,9 +370,15 @@ impl Context<'_> {
                                 MaskMode::Alpha => CompositeOperation::AlphaMask,
                                 MaskMode::Luminance => CompositeOperation::LuminanceMask,
                             },
-                        });
-                        let child =
-                            self.start_stream(&definition.commands, transform * mask.transform)?;
+                        }));
+                        let child = self.start_stream(
+                            current.drawing,
+                            &definition.commands,
+                            0,
+                            false,
+                            transform * mask.transform,
+                            self.scissor,
+                        )?;
                         push_stack(&mut streams, child, |bytes| self.transient(bytes))?;
                     } else {
                         self.combine_group(
@@ -299,13 +397,33 @@ impl Context<'_> {
                     }
                 }
                 FrameOp::Draw(draw) => {
+                    let batch_end = if current.transitions_enabled {
+                        current
+                            .drawing
+                            .transitions()
+                            .get(current.transition_next)
+                            .map_or(current.commands.len(), |t| {
+                                t.commands
+                                    .start
+                                    .saturating_sub(current.offset)
+                                    .min(current.commands.len())
+                            })
+                    } else {
+                        current.commands.len()
+                    };
                     let consumed = self.image_batch(
                         &current.scopes.last().target,
-                        &current.commands[current.next - 1..],
+                        &current.commands[current.next - 1..batch_end],
                         transform,
                     )?;
                     if consumed == 0 {
-                        self.draw(frame, &current.scopes.last().target, draw, transform, at)?;
+                        self.draw(
+                            current.drawing,
+                            &current.scopes.last().target,
+                            draw,
+                            transform,
+                            at,
+                        )?;
                     } else {
                         current.next += consumed - 1;
                     }
@@ -321,10 +439,20 @@ impl Context<'_> {
     }
     fn start_stream<'a>(
         &mut self,
-        commands: &'a [FrameCommand],
+        drawing: &'a FrameDrawing,
+        commands: &'a [std::sync::Arc<FrameCommand>],
+        offset: usize,
+        transitions_enabled: bool,
         transform: Affine,
+        scissor: Scissor,
     ) -> Result<Stream<'a>, GpuError> {
         Ok(Stream {
+            drawing,
+            offset,
+            transitions_enabled,
+            transition_next: drawing
+                .transitions()
+                .partition_point(|t| t.commands.start < offset),
             commands,
             next: 0,
             transform,
@@ -336,10 +464,10 @@ impl Context<'_> {
                 opacity: 1.,
                 invert: 0.,
                 blend: Default::default(),
-                scissor: Scissor::full(self.size),
+                scissor,
                 isolated: true,
             }),
-            mask: None,
+            pending: None,
         })
     }
     pub(super) fn combine(
@@ -478,6 +606,82 @@ impl Context<'_> {
         if let Some(backdrop) = backdrop {
             self.recycle_target(backdrop)?;
         }
+        Ok(())
+    }
+    fn combine_transition(
+        &mut self,
+        target: &Target,
+        old: &wgpu::TextureView,
+        new: &wgpu::TextureView,
+        transition: &SceneTransition,
+        outer: Affine,
+    ) -> Result<(), GpuError> {
+        if self.scissor.empty() {
+            return Ok(());
+        }
+        let Some(definition) = transition
+            .mask
+            .as_ref()
+            .filter(|_| transition.progress > 0. && transition.progress < 1.)
+        else {
+            return self.combine(
+                target,
+                old,
+                new,
+                1.,
+                0.,
+                CompositeOperation::Transition(transition.progress),
+            );
+        };
+        let transform = outer * transition.mask_to_window;
+        if definition.bounds.width() <= 0.
+            || definition.bounds.height() <= 0.
+            || transform.determinant() == 0.
+        {
+            return self.combine(target, old, new, 1., 0., CompositeOperation::Transition(0.));
+        }
+        let uv = Affine::scale_non_uniform(
+            1. / definition.bounds.width(),
+            1. / definition.bounds.height(),
+        ) * Affine::translate((-definition.bounds.x0, -definition.bounds.y0))
+            * transform.inverse();
+        self.transient(
+            96 + ((8 + definition.images.len()) * size_of::<wgpu::BindGroupEntry>()
+                + definition.images.len() * size_of::<&wgpu::TextureView>())
+                as u64,
+        )?;
+        let pipeline = self.pipelines.masks.get(
+            self.gpu,
+            self.quality,
+            &definition.program,
+            &self.budgets.resources,
+        )?;
+        let images = definition
+            .images
+            .iter()
+            .map(|handle| &self.images[handle].view)
+            .collect();
+        pipeline.draw(
+            &self.gpu.device,
+            &mut self.encoder,
+            target,
+            super::mask::Inputs {
+                source: old,
+                mask: new,
+                backdrop: old,
+                images,
+            },
+            super::pipeline::CompositeParams {
+                scissor: self.scissor,
+                opacity: 1.,
+                invert: 0.,
+                operation: CompositeOperation::MaskedTransition(transition.progress),
+                blend: 0,
+            },
+            definition,
+            uv,
+            &self.pipelines.samplers,
+        );
         Ok(())
     }
     pub(super) fn transient(&mut self, bytes: u64) -> Result<(), GpuError> {

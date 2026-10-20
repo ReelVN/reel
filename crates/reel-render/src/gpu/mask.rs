@@ -322,7 +322,7 @@ impl Compiled {
             multiview_mask: None,
             occlusion_query_set: None,
         });
-        pass.set_pipeline(if params.blend == 0 {
+        pass.set_pipeline(if params.blend == 0 && !params.operation.replaces() {
             &self.normal
         } else {
             &self.blend

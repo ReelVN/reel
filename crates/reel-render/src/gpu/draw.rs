@@ -1,5 +1,5 @@
 use super::{GpuError, mesh, renderer::reserve, replay::Context, resources, targets::Target};
-use reel_ui::frame::{FrameDraw, ImageColorGradient, RecordLocation, RenderFrame};
+use reel_ui::frame::{FrameDraw, FrameDrawing, ImageColorGradient, RecordLocation};
 use reel_ui::{
     imaging::record::Clip,
     kurbo::{Affine, Rect},
@@ -86,7 +86,7 @@ impl Context<'_> {
     }
     pub(super) fn draw(
         &mut self,
-        frame: &RenderFrame,
+        frame: &FrameDrawing,
         target: &Target,
         draw: &FrameDraw,
         outer: Affine,
@@ -211,7 +211,7 @@ impl Context<'_> {
     }
     fn glyphs(
         &mut self,
-        frame: &RenderFrame,
+        frame: &FrameDrawing,
         target: &Target,
         run: &reel_ui::frame::FrameGlyphRun,
         outer: Affine,

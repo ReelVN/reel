@@ -13,7 +13,7 @@ default = []
 tracy = ["dep:tracing-tracy", "tracing-tracy/enable"]
 
 [dependencies]
-serde = { version = "=1.0.229", features = ["derive"] }
+serde = { version = "=1.0.229", features = ["derive", "rc"] }
 accesskit.workspace = true
 anymap3 = "=1.1.0"
 anymore.workspace = true
@@ -22,7 +22,7 @@ dpi.workspace = true
 imaging.workspace = true
 kurbo.workspace = true
 reel-text.workspace = true
-peniko.workspace = true
+peniko = { workspace = true, features = ["serde"] }
 smallvec.workspace = true
 skrifa = "=0.48.0"
 tracing = { workspace = true, features = ["default"] }

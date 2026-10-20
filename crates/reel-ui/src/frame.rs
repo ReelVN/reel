@@ -18,7 +18,15 @@ use reel_core::{
     budget::{BudgetPool, BudgetTicket},
     identity::{FrameId, SurfaceEpoch},
 };
-use std::{mem::size_of, sync::Arc};
+use std::{collections::BTreeMap, mem::size_of, ops::Range, sync::Arc};
+
+mod archive;
+mod retained;
+mod wire;
+pub use archive::{
+    RestoreProgress, RetainedAsset, RetainedAssetKind, RetainedRestore, SavedRetainedScene,
+};
+pub use retained::{FrameTransition, RetainBuild, RetainError, RetainedScene, SceneTransition};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FrameInfo {
@@ -83,14 +91,16 @@ pub struct CommandOrigin {
     pub local: LocalId,
     pub at: RecordLocation,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FrameCommand {
+    // Retained drawings have no source recording or live widget identity to restore.
+    #[serde(skip, default = "wire::origin")]
     pub origin: CommandOrigin,
     pub op: FrameOp,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum FrameOp {
-    PushClip(Clip),
+    PushClip(#[serde(with = "wire::ClipDef")] Clip),
     PopClip,
     PushGroup(FrameGroup),
     PopGroup,
@@ -99,22 +109,23 @@ pub enum FrameOp {
     Draw(FrameDraw),
     External(ExternalDraw),
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ExternalDraw {
     pub resource: ResourceHandle,
     pub token: u64,
+    #[serde(with = "wire::widget")]
     pub owner: WidgetId,
     pub local_bounds: Rect,
     pub content_to_window: Affine,
 }
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MaskUse {
     pub mask: u32,
     pub transform: Affine,
 }
 /// Explicitly conservative. Unknown glyph outlines and flood effects remain unbounded;
 /// a backend clamps these to its output target rather than trusting a layout rectangle.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum InkBounds {
     Empty,
     Rect(Rect),
@@ -143,28 +154,33 @@ impl InkBounds {
         }
     }
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FrameImageMask {
+    #[serde(with = "wire::mask_program")]
     pub program: Arc<crate::stage::MaskProgram>,
     pub images: Vec<ResourceHandle>,
     pub bounds: Rect,
     pub parameters: [f32; 5],
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FrameGroup {
     pub image_mask: Option<FrameImageMask>,
+    #[serde(with = "wire::optional_clip")]
     pub clip: Option<Clip>,
     pub mask: Option<MaskUse>,
+    #[serde(with = "wire::filters")]
     pub filters: Vec<Filter>,
+    #[serde(with = "wire::CompositeDef")]
     pub composite: Composite,
     pub invert: f32,
+    #[serde(with = "wire::widget")]
     pub owner: WidgetId,
     pub effect_to_target: Affine,
     pub ink_bounds: InkBounds,
 }
 /// One use of shared image pixels. Multiplication is carried by draw vertices,
 /// never by a separate colored texture or an offscreen composition.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FrameImage {
     pub resource: ResourceHandle,
     /// Linear premultiplied RGBA multiplier, including its own alpha once.
@@ -172,7 +188,7 @@ pub struct FrameImage {
     pub gradient: Option<ImageColorGradient>,
 }
 /// Four linear premultiplied colors and their unit square in frame coordinates.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ImageColorGradient {
     pub colors: [[f32; 4]; 4],
     pub transform: Affine,
@@ -184,14 +200,16 @@ impl ImageColorGradient {
     }
 }
 pub type FrameBrush = Brush<ImageBrush<FrameImage>, Gradient>;
-#[derive(Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum FrameDraw {
     Fill {
         transform: Affine,
         fill_rule: peniko::Fill,
         brush: FrameBrush,
         brush_transform: Option<Affine>,
+        #[serde(with = "wire::GeometryDef")]
         shape: Geometry,
+        #[serde(with = "wire::CompositeDef")]
         composite: Composite,
     },
     Stroke {
@@ -199,13 +217,15 @@ pub enum FrameDraw {
         stroke: Stroke,
         brush: FrameBrush,
         brush_transform: Option<Affine>,
+        #[serde(with = "wire::GeometryDef")]
         shape: Geometry,
+        #[serde(with = "wire::CompositeDef")]
         composite: Composite,
     },
     GlyphRun(FrameGlyphRun),
-    BlurredRoundedRect(imaging::BlurredRoundedRect),
+    BlurredRoundedRect(#[serde(with = "wire::BlurredRectDef")] imaging::BlurredRoundedRect),
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FrameGlyphRun {
     pub font: ResourceHandle,
     pub font_index: u32,
@@ -217,18 +237,20 @@ pub struct FrameGlyphRun {
     pub hint: bool,
     pub normalized_coords: Vec<imaging::NormalizedCoord>,
     pub style: Style,
+    #[serde(with = "wire::glyphs")]
     pub glyphs: Vec<record::Glyph>,
     pub brush: FrameBrush,
+    #[serde(with = "wire::CompositeDef")]
     pub composite: Composite,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct OwnedText(Vec<u8>);
 impl OwnedText {
     pub fn as_str(&self) -> &str {
         std::str::from_utf8(&self.0).expect("compiler copied complete UTF-8 source")
     }
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum FrameContextKind {
     Label,
     Widget,
@@ -236,7 +258,7 @@ pub enum FrameContextKind {
     Slot,
     Named(OwnedText),
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum FrameContextValue {
     Str(OwnedText),
     U64(u64),
@@ -244,22 +266,23 @@ pub enum FrameContextValue {
     Usize(usize),
     Bool(bool),
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FrameSourceLocation {
     pub file: OwnedText,
     pub line: u32,
     pub column: u32,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FrameContext {
     pub kind: FrameContextKind,
     pub value: FrameContextValue,
     pub source: Option<FrameSourceLocation>,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FrameMask {
+    #[serde(with = "wire::MaskModeDef")]
     pub mode: MaskMode,
-    pub commands: Vec<FrameCommand>,
+    pub commands: Vec<Arc<FrameCommand>>,
 }
 #[derive(Clone, Debug)]
 pub struct RenderFrame {
@@ -271,13 +294,43 @@ struct FrameData {
     key: CandidateKey,
     info: FrameInfo,
     geometry: Arc<PresentedGeometryView>,
-    commands: Vec<FrameCommand>,
-    masks: Vec<FrameMask>,
+    drawing: Arc<FrameDrawing>,
+    subtrees: Vec<FrameSubtree>,
+    transition_roots: Vec<Option<WidgetId>>,
+    body_end: usize,
+}
+/// Immutable drawing and resource ownership, independent of frame acceptance and input.
+#[derive(Debug)]
+pub struct FrameDrawing {
+    commands: Vec<Arc<FrameCommand>>,
+    masks: BTreeMap<u32, Arc<FrameMask>>,
     resources: ResourceSnapshot,
+    transitions: Vec<SceneTransition>,
     accounted_bytes: u64,
     _ticket: BudgetTicket,
 }
+type FrameSubtree = crate::app::SubtreePaint;
+impl FrameDrawing {
+    pub fn commands(&self) -> &[Arc<FrameCommand>] {
+        &self.commands
+    }
+    pub fn masks(&self) -> &BTreeMap<u32, Arc<FrameMask>> {
+        &self.masks
+    }
+    pub fn resources(&self) -> &ResourceSnapshot {
+        &self.resources
+    }
+    pub fn transitions(&self) -> &[SceneTransition] {
+        &self.transitions
+    }
+    pub fn accounted_bytes(&self) -> u64 {
+        self.accounted_bytes
+    }
+}
 impl RenderFrame {
+    pub fn drawing(&self) -> &FrameDrawing {
+        &self.inner.drawing
+    }
     pub fn key(&self) -> CandidateKey {
         self.inner.key.clone()
     }
@@ -293,20 +346,20 @@ impl RenderFrame {
     pub fn geometry(&self) -> &PresentedGeometryView {
         &self.inner.geometry
     }
-    pub fn commands(&self) -> &[FrameCommand] {
-        &self.inner.commands
+    pub fn commands(&self) -> &[Arc<FrameCommand>] {
+        &self.inner.drawing.commands
     }
-    pub fn masks(&self) -> &[FrameMask] {
-        &self.inner.masks
+    pub fn masks(&self) -> &BTreeMap<u32, Arc<FrameMask>> {
+        &self.inner.drawing.masks
     }
     pub fn resources(&self) -> &ResourceSnapshot {
-        &self.inner.resources
+        &self.inner.drawing.resources
     }
     pub fn accounted_bytes(&self) -> u64 {
-        self.inner.accounted_bytes
+        self.inner.drawing.accounted_bytes
     }
     pub fn reserved_bytes(&self) -> u64 {
-        self.inner._ticket.bytes()
+        self.inner.drawing._ticket.bytes()
     }
 }
 
@@ -385,9 +438,10 @@ struct CopyJob {
 }
 struct Building {
     source: RecordedSource,
+    transitions: Vec<FrameTransition>,
     resources: ResourceSnapshot,
     info: FrameInfo,
-    commands: Vec<FrameCommand>,
+    commands: Vec<Arc<FrameCommand>>,
     masks: Vec<FrameMask>,
     cursors: Vec<Cursor>,
     mappings: Vec<MaskMapping>,
@@ -458,8 +512,21 @@ impl FrameBuild {
             .reserve(limits.max_bytes)
             .map_err(|_| error(BuildErrorKind::Bytes))?;
         let initial = size_of::<FrameData>()
-            .checked_add(2 * size_of::<usize>() + size_of::<Building>())
-            .and_then(|n| n.checked_add(main_count.checked_mul(size_of::<FrameCommand>())?))
+            .checked_add(4 * size_of::<usize>() + size_of::<Building>() + size_of::<FrameDrawing>())
+            .and_then(|n| {
+                n.checked_add(
+                    main_count.checked_mul(size_of::<FrameCommand>() + 3 * size_of::<usize>())?,
+                )
+            })
+            .and_then(|n| {
+                n.checked_add(
+                    source
+                        .plan
+                        .subtrees
+                        .capacity()
+                        .checked_mul(size_of::<FrameSubtree>())?,
+                )
+            })
             .and_then(|n| n.checked_add(size_of::<Cursor>()))
             .ok_or_else(|| error(BuildErrorKind::Bytes))?;
         if initial as u64 > limits.max_bytes {
@@ -481,6 +548,7 @@ impl FrameBuild {
         Ok(Self {
             state: Some(Building {
                 source,
+                transitions: Vec::new(),
                 resources,
                 info,
                 commands: Vec::with_capacity(main_count),
@@ -498,6 +566,31 @@ impl FrameBuild {
             }),
             error: None,
         })
+    }
+    pub fn set_transitions(&mut self, transitions: Vec<FrameTransition>) -> Result<(), BuildError> {
+        let state = self.state.as_mut().expect("unfinished build");
+        if !state.commands.is_empty() || state.job.is_some() || state.complete {
+            return Err(state.error(BuildErrorKind::InvalidRecord));
+        }
+        let bytes = transitions
+            .iter()
+            .try_fold(
+                transitions.capacity() * size_of::<FrameTransition>(),
+                |bytes, t| {
+                    bytes.checked_add(
+                        2 * size_of::<SceneTransition>()
+                            + 3 * size_of::<Option<WidgetId>>()
+                            + size_of::<usize>()
+                            + t.mask
+                                .as_ref()
+                                .map_or(0, |m| m.images.len() * size_of::<ResourceHandle>()),
+                    )
+                },
+            )
+            .ok_or_else(|| state.error(BuildErrorKind::Bytes))?;
+        state.charge(bytes)?;
+        state.transitions = transitions;
+        Ok(())
     }
     pub fn step(&mut self, budget: StepBudget) -> Result<BuildProgress, BuildError> {
         if let Some(error) = self.error {
@@ -525,7 +618,8 @@ impl FrameBuild {
             return Err(state.error(BuildErrorKind::Incomplete));
         }
         let Building {
-            source,
+            mut source,
+            transitions,
             resources,
             info,
             commands,
@@ -534,6 +628,15 @@ impl FrameBuild {
             ticket,
             ..
         } = state;
+        let subtrees = std::mem::take(&mut source.plan.subtrees);
+        let body_end = source.plan.body_commands;
+        let (compiled, transition_roots) = retained::compile_transitions(
+            &transitions,
+            &subtrees,
+            body_end,
+            &source.geometry,
+            &resources,
+        )?;
         let RecordedSource {
             key,
             geometry,
@@ -545,12 +648,22 @@ impl FrameBuild {
                 key,
                 info,
                 geometry,
-                commands,
-                masks,
-                resources,
-                accounted_bytes: bytes,
+                drawing: Arc::new(FrameDrawing {
+                    commands,
+                    masks: masks
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, mask)| (i as u32, Arc::new(mask)))
+                        .collect(),
+                    resources,
+                    transitions: compiled,
+                    accounted_bytes: bytes,
+                    _ticket: ticket,
+                }),
+                subtrees,
+                body_end,
+                transition_roots,
                 _guard: guard,
-                _ticket: ticket,
             }),
         })
     }
@@ -601,7 +714,7 @@ impl Building {
         }
         Some(scene)
     }
-    fn program(&mut self, stream: Option<usize>) -> &mut Vec<FrameCommand> {
+    fn program(&mut self, stream: Option<usize>) -> &mut Vec<Arc<FrameCommand>> {
         match stream {
             None => &mut self.commands,
             Some(index) => &mut self.masks[index].commands,
@@ -740,8 +853,13 @@ impl Building {
                     continue;
                 }
             } else {
-                if !self.spend(&mut p, &b, 0, size_of::<FrameCommand>() as u64)? {
-                    p.minimum_bytes = size_of::<FrameCommand>() as u64;
+                if !self.spend(
+                    &mut p,
+                    &b,
+                    0,
+                    (size_of::<FrameCommand>() + 2 * size_of::<usize>()) as u64,
+                )? {
+                    p.minimum_bytes = (size_of::<FrameCommand>() + 2 * size_of::<usize>()) as u64;
                     break;
                 }
                 self.start_credit = 0;
@@ -781,7 +899,7 @@ impl Building {
                     InkBounds::Rect(bounds).transformed(transform),
                     1. / self.source.geometry.scale_factor(),
                 ));
-                self.commands.push(command);
+                self.commands.push(Arc::new(command));
                 p.commands += 1;
                 self.cursors
                     .last_mut()
@@ -790,8 +908,13 @@ impl Building {
                 continue;
             }
             if self.allocation_need.is_none() {
-                if !self.spend(&mut p, &b, 0, size_of::<FrameCommand>() as u64)? {
-                    p.minimum_bytes = size_of::<FrameCommand>() as u64;
+                if !self.spend(
+                    &mut p,
+                    &b,
+                    0,
+                    (size_of::<FrameCommand>() + 2 * size_of::<usize>()) as u64,
+                )? {
+                    p.minimum_bytes = (size_of::<FrameCommand>() + 2 * size_of::<usize>()) as u64;
                     break;
                 }
                 // Validate the already selected range once after prepayment.
@@ -858,7 +981,7 @@ impl Building {
                     .scene
                     .commands()
                     .len()
-                    .checked_mul(size_of::<FrameCommand>())
+                    .checked_mul(size_of::<FrameCommand>() + 3 * size_of::<usize>())
                     .and_then(|n| {
                         n.checked_add(
                             cursor
@@ -871,6 +994,10 @@ impl Building {
                     .and_then(|n| n.checked_add(growth_bytes(&self.masks)?))
                     .and_then(|n| n.checked_add(growth_bytes(&self.mappings)?))
                     .and_then(|n| n.checked_add(growth_bytes(&self.cursors)?))
+                    // Immutable mask Arc and conservative B-tree node storage at publication.
+                    .and_then(|n| {
+                        n.checked_add(size_of::<FrameMask>() + 2 * size_of::<usize>() + 1024)
+                    })
                     .and_then(|n| n.checked_add(bytes))
                     .ok_or_else(|| self.error(BuildErrorKind::Bytes))?;
             }
@@ -1115,7 +1242,11 @@ impl Building {
             }
             let scope = c.scopes.pop().unwrap();
             if scope.kind == ScopeKind::Group {
-                let FrameOp::PushGroup(group) = &mut self.program(stream)[scope.command].op else {
+                let FrameOp::PushGroup(group) =
+                    &mut Arc::get_mut(&mut self.program(stream)[scope.command])
+                        .expect("unpublished command")
+                        .op
+                else {
                     unreachable!()
                 };
                 // Filters and shaped glyphs may extend arbitrarily beyond layout boxes.
@@ -1151,7 +1282,7 @@ impl Building {
             FrameOp::PushGroup(g) => g.owner,
             _ => job.command.origin.at.owner,
         };
-        self.program(stream).push(job.command);
+        self.program(stream).push(Arc::new(job.command));
         self.cursors
             .last_mut()
             .unwrap()
@@ -1202,6 +1333,23 @@ fn finite(t: Affine) -> bool {
 }
 fn valid_color(c: [f32; 4]) -> bool {
     c.iter().all(|v| v.is_finite()) && (0.0..=1.).contains(&c[3])
+}
+fn valid_path_element(element: PathEl) -> bool {
+    match element {
+        PathEl::MoveTo(p) | PathEl::LineTo(p) => p.is_finite(),
+        PathEl::QuadTo(a, b) => a.is_finite() && b.is_finite(),
+        PathEl::CurveTo(a, b, c) => a.is_finite() && b.is_finite() && c.is_finite(),
+        PathEl::ClosePath => true,
+    }
+}
+fn valid_dash(dash: f64) -> bool {
+    dash.is_finite() && dash >= 0.
+}
+fn valid_stop(stop: peniko::ColorStop) -> bool {
+    stop.offset.is_finite() && valid_color(stop.color.components)
+}
+fn valid_glyph(glyph: record::Glyph) -> bool {
+    glyph.x.is_finite() && glyph.y.is_finite()
 }
 fn valid_geometry(g: &Geometry) -> bool {
     match g {
@@ -1870,31 +2018,21 @@ fn copy_field(scene: &Scene, c: &Command, job: &mut CopyJob) -> Result<(), Build
                 unreachable!()
             };
             let el = source.elements()[i];
+            if !valid_path_element(el) {
+                return Err(error());
+            }
             let points: &[_] = match &el {
                 PathEl::MoveTo(p) | PathEl::LineTo(p) => std::slice::from_ref(p),
                 _ => &[],
             };
             for p in points {
-                if !p.x.is_finite() || !p.y.is_finite() {
-                    return Err(error());
-                }
                 job.ink = job.ink.union(InkBounds::Rect(Rect::from_points(*p, *p)));
             }
             match el {
                 PathEl::QuadTo(a, b) => {
-                    if !a.x.is_finite() || !a.y.is_finite() || !b.x.is_finite() || !b.y.is_finite()
-                    {
-                        return Err(error());
-                    }
                     job.ink = job.ink.union(InkBounds::Rect(Rect::from_points(a, b)));
                 }
                 PathEl::CurveTo(a, b, c) => {
-                    if [a, b, c]
-                        .iter()
-                        .any(|p| !p.x.is_finite() || !p.y.is_finite())
-                    {
-                        return Err(error());
-                    }
                     job.ink = job.ink.union(InkBounds::Rect(
                         Rect::from_points(a, b).union(Rect::from_points(c, c)),
                     ));
@@ -1905,7 +2043,7 @@ fn copy_field(scene: &Scene, c: &Command, job: &mut CopyJob) -> Result<(), Build
         }
         1 => {
             let dash = source_stroke(scene, c).unwrap().dash_pattern[i];
-            if !dash.is_finite() || dash < 0. {
+            if !valid_dash(dash) {
                 return Err(error());
             }
             target_stroke(op).unwrap().dash_pattern.push(dash);
@@ -1918,14 +2056,14 @@ fn copy_field(scene: &Scene, c: &Command, job: &mut CopyJob) -> Result<(), Build
                 unreachable!()
             };
             let stop = source.stops[i];
-            if !stop.offset.is_finite() || !valid_color(stop.color.components) {
+            if !valid_stop(stop) {
                 return Err(error());
             }
             target.stops.push(stop);
         }
         3 => {
             let glyph = source_glyph(scene, c).unwrap().glyphs[i];
-            if !glyph.x.is_finite() || !glyph.y.is_finite() {
+            if !valid_glyph(glyph) {
                 return Err(error());
             }
             let FrameOp::Draw(FrameDraw::GlyphRun(g)) = op else {
