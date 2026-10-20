@@ -759,6 +759,19 @@ scope(body: |s| {
 
 历史验证（R02）：wgpu 后端与 winit 诊断窗口包含图片、分组透明度、裁剪和 Parley 文字；这些历史 Rust 诊断能力不意味着高级效果接口已实现；当前 PNG/JPEG 作者图片使用共同舞台和播放器资源加载器。当前作者源码和 ASB 由 dev/run 进入真实剧情窗口。[窗口说明](../../crates/reel-player/README.md) · [设备验证范围](../../crates/reel-render/R02-REPORT.md)。
 
+舞台转场正在按下述合同接入：`stage.transition` 保留目标当前画面，执行 change，再将旧画面过渡到继续运行的新内容。调用完成后返回 change 的结果；与 scope 一样直接调用。并发使用 spawn。
+
+```aside
+stage.transition(target: scene, duration: 0.6, change: || {
+    scene.clear();
+    scene.add(image("assets/room-evening.png"));
+});
+```
+
+省略 target 可在 change 中用 stage.replace 更换整个逻辑舞台。指定 target 时保留容器本身，只修改属性或子节点。默认淡化；mask 接受下文的图像路径或组合表达式，mask_softness、mask_invert、mask_x/y 沿已有规则，easing 使用 tween 的曲线。duration 为零直接换景并等待呈现。图片和字体准备好后才开始计时。
+
+转场会保留实际粒子、文字和视频画面，作者负责构造新内容。目标的输入暂停到最终画面接受，外部菜单继续工作；change 可以等待，交互等待放在转场返回后。互不重叠的子树可同时过渡；相同或相互包含的目标会报告冲突。取消解除过渡并显示当前舞台，已经执行的 change 写入保留。播放中存档恢复旧画面和进度，继续原调用。
+
 节点的 mask 属性给整个子树应用灰度图像遮罩，沿用普通图片资源加载与存档。mask_progress 从 0 到 1 表示由全隐藏到全显示，mask_softness 控制软边宽度，0 为硬边；较暗区域先显现，mask_invert: true 反转先后顺序。遮罩 PNG/JPEG 按节点矩形拉伸，设置明确的 width/height 即可控制覆盖区域。
 ```aside
 let reveal = stack(width: 1280, height: 720,

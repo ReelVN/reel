@@ -89,6 +89,20 @@ VM 对象的代际身份与实体存储分离：slotmap 保存小型位置记录
 
 `stage.presented(owner: null)` 返回可等待的呈现请求；`await` 在请求之后的舞台投影实际接受呈现后返回 null。派生状态先稳定，字体与图片先完成准备；录制、拒帧和重绘旧帧均不结算请求。多个请求可随同一帧完成，重复等待同一对象共享终态。请求不暂停其他任务、音频或动画，转场组件可先挂载透明的新内容、等待呈现，再开始动画。owner 沿现有活动规则，退休取消未决请求；`.cancel()` 只取消这个请求，等待者取消不取消请求。请求不允许脚本 resolve/reject。无挂载根但显式请求呈现时允许提交空舞台。复用 completion 的 VM 根、订阅及错误路径，帧携带单调请求序号，不为等待保留场景或纹理副本；没有忙等和新线程。Rust 宿主把 `presentation_request()` 固定到稳定投影，在该投影实际接受后调用 `accept_presentation(session, request)`；旧序号不会完成新请求。范围为 reel-engine、reel-player、公开示例和双语指南；新增 native ABI 1，Aside 字节码/ASB 与其他 native ABI 不变，无新依赖。
 
+### 保留画面的舞台转场（本批实现合同）
+
+`stage.transition(change:, target:null, duration:0.3, easing:"linear", mask:null, mask_softness:0.06, mask_invert:false, mask_x:0, mask_y:0, owner:null)` 在当前任务执行完整转场并返回零参数 change 回调的原返回值，调用本身等待完成，不再在外面 await。并发沿用 spawn；初始化、纯派生及 NoWait 边界拒绝调用。target 为仍挂载的容器节点时仅过渡该子树，null 为整个逻辑舞台正文，窗口光标保持独立。目标容器应保持身份，通过 change 修改其属性或子节点；整个舞台的 change 可 stage.replace。duration 有限且非负，easing 沿 tween 的现有曲线，mask 使用已有字符串或 MaskExpression，参数沿已有节点遮罩规则；null 用统一进度混合。duration 为零直接执行变更并等待新画面接受，省去旧图保留和计时。
+
+阶段为 OldPending → Changing → NewPending → Playing → FinalPending。先等待稳定舞台实际接受，按这份画面的真正子树边界保留旧绘制与资源，再执行 change；回调可等待，其普通活动与新侧内容沿原所有权继续运行。新资源、布局和零进度合成帧接受后才开始时间；最终进度为一的帧接受后返回并释放旧画面。相同或相互包含的目标在已有转场期间请求另一转场会在执行新 change 前报告目标冲突；独立子树可并行。change 中的交互等待应放到转场返回后：转场目标的输入、焦点和确认准入在整个过程暂停，外部 UI 照常；此门控属于宿主呈现状态，保留作者 enabled/visible 值及绑定。取消后按当前真实舞台的下一接受帧恢复准入。
+
+旧侧是不可变绘制内容，含实际文字、粒子、内存图和视频当前帧；新侧是继续运行的普通舞台。旧内容保留目标自己的变换、裁剪、遮罩和组效果，使用目标父坐标系；祖先合成在外层应用一次。两侧在共同组/目标规划中以线性预乘色 mix(old,new,coverage) 合成，复用 mask 表达式、资源上传、绘制管线和 GPU 完成退休。目标使用 multiply/screen/add 时，两路先继承同一当前父背景再各自绘制，混合结果替换父目标，保留与背景的混合语义；不能把透明底上的结果简单 source-over 当作等价实现。转场的零/一端点强制完整旧/新画面，中间进度沿普通 mask 语义：字符串由 progress 推进阈值，表达式须显式使用 mask.param("progress") 表达变化，mask.gray 本身仍只是灰度采样。冻结画面没有输入、任务或可变节点。正常转场使用 CPU 绘制描述及已有资源租约，GPU 读回与 PNG 编解码仍只属于截图服务。
+
+owner 缺省继承当前作用域/任务。owner 或局部 target 退休、任务取消均撤销转场，清理原 native 续体及保留内容。change 前取消保持原状态；执行后取消显露当前舞台，保留已经发生的业务写入。回调故障清理后原样传播；节点 owner 撤销通过既有 native 回调撤销边界在外围报告 TransitionCancelled，整任务取消仍按原规则。阶段、原续体、返回值、目标/owner 和逻辑计时进入快照，恢复不重跑 change。短暂旧图提取沿保存准备屏障完成；播放中保存共享不可变画面描述，恢复先准备其资源再交换会话。
+
+共享 Rust 接线：reel-ui 的 `RetainBuild::new(&RenderFrame, Option<WidgetId>, BuildLimits, &BudgetPool)`、step、finish 产出不含 CandidateGuard/输入几何的 `RetainedScene`；`RetainedScene::snapshot(describe)` 返回共享的 `SavedRetainedScene`，普通资产以固定 ResourceVersion 与 Image/Font 种类保存，动态内存图和视频保存已有 CPU 内容。player 提供资产来源分类；恢复通过 assets/restore_begin/bind_asset/step/finish 重载并核对固定版本。SessionSnapshot 独立持有这些共享画面供后台编码，adapter Record 仅保存编号。`FrameBuild::set_transitions(Vec<FrameTransition>)` 在构造前接收目标、旧画面、进度与普通 PaintImageMask，产出共同帧中的平衡合成子流。FrameBuild/RetainBuild 记录真实子树边界，不能用 owner 过滤或矩形截图代替。
+
+范围为 reel-ui/frame/resources、reel-render、reel-engine、reel-player、reel-cli 验证、公开示例和四份规范/指南；Aside VM 保持独立，无新依赖。native ABI 1，SessionSnapshot 18，VM7/ASB 不变。绘制提取和恢复按 StepBudget 推进；旧命令、资源引用、动态资源、两侧合成目标及保存暂存均纳入现有预算，最后租约与 GPU 使用结束后退款。普通帧没有转场时保持原路径；进度变化复用旧绘制、图片上传和遮罩程序，不重排旧文字或复制旧像素。检查覆盖源码/ASB、透明子树/祖先裁剪、粒子/文字/图像/视频、独立并行、冷资源、零时长、异常/取消/退休、播放中保存恢复、资源版本不符、设备重建及真实 GPU 像素和计账。
+
 作者窗口在首个已挂载舞台投影及其字体、图片准备好后才提交首帧；作品直接正常结束时也允许呈现其最终空舞台。支持隐藏窗口的平台在首帧实际接受后显示窗口，Wayland 沿首次提交映射窗口的原生规则；不以窗口可见性查询驱动渲染。启动仍由有界 VM 执行片和资源完成通知推进，隐藏窗口不能依赖原生重绘事件才能完成首帧。显示后沿既有按需呈现、旧帧保留、输入验收与设备恢复路径。范围为 reel-player，语言、ASB/native ABI 和依赖不变；验收覆盖实际 Windows 首帧、字体/图片等待、拒帧及退出，其他平台分别验证。
 
 共享舞台文字属性 `text_fit` 默认 `none`；`shrink` 按完整、不自动折行的文本与可用宽度等比缩小，保留显式换行，最高为作者字号，最低为 `min_font_size`（默认 0）。富文本字号和 ruby 一起缩放，打字机揭示不改变适配结果；最低字号仍不足时允许溢出，裁剪由节点 clip 决定。布局缓存区分字体缩放与换行宽度，输入链接和无障碍几何使用同一布局。`text_outline` 默认 0，表示字形向外描边的逻辑宽度；`text_outline_color` 默认黑色。描边复用字形 stroke，先描边再填色，并服从完整 cluster 揭示；不复制文字节点或引入专用光栅器。文字属性应用于 text 与控件标签，现有输入编辑器保持自己的布局语义。

@@ -748,6 +748,19 @@ Historical verification (R01 / Issue #25): focused cases cover internal Rust fra
 
 Historical verification (R02): the wgpu backend and winit diagnostic window included images, group opacity, clipping and Parley text. Those historical Rust diagnostics do not establish implementation of advanced-effect APIs. PNG/JPEG author images now use the shared stage and player resource loader. Current author source and ASB enter the real story window through dev/run. See [window documentation](../../crates/reel-player/README.md) and [device verification scope](../../crates/reel-render/R02-REPORT.md).
 
+Stage transitions are being implemented under this contract: `stage.transition` retains the target's current appearance, runs change, then blends the old picture into the continuing new content. The call returns change's result after completion; call it directly, like scope. Use spawn for concurrency.
+
+```aside
+stage.transition(target: scene, duration: 0.6, change: || {
+    scene.clear();
+    scene.add(image("assets/room-evening.png"));
+});
+```
+
+Omit target to replace the whole logical stage with stage.replace inside change. With a target, keep that container and modify its properties or children. The default is a dissolve; mask accepts an image path or the expressions below. mask_softness, mask_invert and mask_x/y follow the existing rules, and easing uses tween's curves. A zero duration changes the scene and waits for presentation. Timing begins after images and fonts are ready.
+
+The transition retains actual particles, text and video content while the author constructs the new scene. Target input pauses until the final frame is accepted; external menus continue working. change may wait, with interactive waits placed after the transition call. Disjoint subtrees can transition concurrently; identical or overlapping targets report a conflict. Cancellation reveals the current stage and preserves writes already made by change. Saving during playback restores the old picture and progress and continues the original call.
+
 The mask node property applies a grayscale image mask to an entire subtree, sharing normal image loading and save state. mask_progress ranges from 0 for fully hidden to 1 for fully visible; mask_softness controls edge width, with 0 producing a hard edge. Dark regions appear first; mask_invert: true reverses their order. PNG/JPEG masks stretch to the node rectangle, so set width/height to define the covered area.
 ```aside
 let reveal = stack(width: 1280, height: 720,
