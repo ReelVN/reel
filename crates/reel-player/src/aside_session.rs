@@ -384,10 +384,10 @@ impl AsideSessionUi {
         self.transitions
             .accepted_projection(&mut self.vm, &frame.transitions)?;
         if self.state == StoryState::Running {
-            if let Some(identity) = &frame.identity {
-                if let Some(geometry) = &frame.geometry {
-                    self.vm.accept_geometry(identity, geometry)?;
-                }
+            if let Some(identity) = &frame.identity
+                && let Some(geometry) = &frame.geometry
+            {
+                self.vm.accept_geometry(identity, geometry)?;
             }
             self.vm
                 .accept_presentation(self.ui.session(), frame.stamp.presentation_request)?;
