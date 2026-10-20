@@ -23,6 +23,7 @@ fn accepted_interactions_reveal_advance_select_and_cancel_without_allocating() {
                 text: "e\u{301}👩🏽‍🚀 雨水停在玻璃上。".into(),
             }],
             "zh-CN",
+            true,
         )
         .unwrap();
     let mut choice = Session::new(SessionId(2), Epoch(1)).unwrap();
@@ -59,6 +60,7 @@ fn accepted_interactions_reveal_advance_select_and_cancel_without_allocating() {
                 text: ("cleanup").into(),
             }],
             "en",
+            true,
         )
         .unwrap();
     let mut retirement = Session::new(SessionId(4), Epoch(1)).unwrap();
@@ -81,6 +83,7 @@ fn accepted_interactions_reveal_advance_select_and_cancel_without_allocating() {
                 text: (&rich).into(),
             }],
             "zh-CN",
+            true,
         )
         .unwrap();
 

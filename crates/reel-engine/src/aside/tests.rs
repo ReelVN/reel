@@ -441,13 +441,14 @@ fn staged_history_can_be_discarded_without_spending_identity() {
         text: ("hello").into(),
     };
     let staged =
-        publication::Publication::stage(&mut s, |s| s.begin_say(owner, &[line], "en")).unwrap();
+        publication::Publication::stage(&mut s, |s| s.begin_say(owner, &[line], "en", true))
+            .unwrap();
     let id = staged.id();
     assert!(s.view().interaction.is_none());
     assert!(s.view().history.is_empty());
     assert_eq!(s.storage_usage().retained_history_text_bytes, 0);
     drop(staged); // same rollback path as failed VM Pending acceptance
-    assert_eq!(s.begin_say(owner, &[line], "en").unwrap(), id);
+    assert_eq!(s.begin_say(owner, &[line], "en", true).unwrap(), id);
 }
 
 #[test]
@@ -468,6 +469,7 @@ fn failed_pending_response_rolls_back_history_and_releases_new_key_roots() {
                 text: ("text").into(),
             }],
             "en",
+            true,
         )
     })
     .unwrap();

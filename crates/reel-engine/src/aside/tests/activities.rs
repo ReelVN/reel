@@ -994,3 +994,92 @@ fn sine_easing_public_example_source_asb_endpoints_midpoints_and_sampling_cost()
         models::drive(&mut vm, &mut session, false);
     }
 }
+
+#[test]
+fn quart_elastic_easing_source_asb_overshoot_pause_restore_and_terminal_values() {
+    use aside_vm::snapshot::SnapshotBudget;
+    let source = r#"fn opening() {
+        let owner = stack(); stage.replace(owner);
+        let active = [];
+        for curve in ["quart_in", "quart_out", "quart_in_out",
+                      "elastic_in", "elastic_out", "elastic_in_out"] {
+            let node = text(curve); owner.add(node);
+            active.append(run(tween(node, x: 100, duration: 1, easing: curve), owner: owner));
+        }
+        narrator("running");
+        for item in active { pause(item); }
+        narrator("paused");
+        for item in active { resume(item); }
+        narrator("resumed");
+        for item in active {
+            if await item != "Completed" { throw "curve terminal"; }
+        }
+        narrator("done");
+    }"#;
+    let positions = |vm: &SessionVm| {
+        vm.stage()
+            .node(vm.stage().root().unwrap())
+            .unwrap()
+            .children
+            .iter()
+            .map(|id| vm.stage().node(*id).unwrap().props.x)
+            .collect::<Vec<_>>()
+    };
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(source, encoded);
+        models::drive(&mut vm, &mut session, false);
+        assert_eq!(positions(&vm), vec![0.; 6]);
+        let allocations = vm.vm.heap().stats().chunk_allocations;
+        advance_clock(&mut vm, &session, 0.25, 1);
+        vm.sync_stage(&session).unwrap();
+        let sampled = positions(&vm);
+        for (actual, expected) in sampled.iter().zip([
+            0.390625,
+            68.359375,
+            3.125,
+            -0.5524271728019903,
+            91.16116523516816,
+            -0.78125,
+        ]) {
+            assert!((actual - expected).abs() < 1e-9, "{sampled:?}");
+        }
+        advance_clock(&mut vm, &session, 0.4, 1);
+        vm.sync_stage(&session).unwrap();
+        assert!(positions(&vm)[4] > 100., "elastic destination overshoot");
+        assert_eq!(vm.vm.heap().stats().chunk_allocations, allocations);
+        advance_dialogue(&mut vm, &mut session);
+        let paused = positions(&vm);
+        let program = vm.vm.program().clone();
+        let mut capture = vm.snapshot_begin(&session).unwrap();
+        while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let mut image =
+            snapshot::SessionSnapshot::decode(&capture.finish().unwrap().encode().unwrap())
+                .unwrap();
+        let mut restore = SessionVm::restore_begin(
+            &mut image,
+            program,
+            VmLimits::default(),
+            SessionIdentity {
+                session_id: SessionId(41),
+                epoch: Epoch(20),
+            },
+            crate::ReadProgress::default(),
+            None,
+            None,
+        )
+        .unwrap();
+        while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let (mut session, mut vm) = restore.finish().unwrap();
+        advance_clock(&mut vm, &session, 10.4, 1);
+        models::drive(&mut vm, &mut session, false);
+        assert_eq!(positions(&vm), paused);
+        advance_dialogue(&mut vm, &mut session);
+        advance_clock(&mut vm, &session, 11., 1);
+        vm.sync_stage(&session).unwrap();
+        assert_eq!(positions(&vm), vec![100.; 6]);
+        advance_dialogue(&mut vm, &mut session);
+        assert!(matches!(session.view().interaction,
+            Some(crate::InteractionView::Dialogue(dialogue)) if dialogue.text() == "done"));
+        assert!(!vm.activities_need_time());
+    }
+}

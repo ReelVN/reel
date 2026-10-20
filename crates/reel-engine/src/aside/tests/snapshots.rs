@@ -106,10 +106,11 @@ mod audio {
 
     #[test]
     fn audio_snapshot_restores_all_groups_current_position_queue_and_terminal_once() {
-        let code = r#"fn opening() {
-        let voice = audio.play("voice-current.wav", group: "voice", start: 0.42);
-        audio.queue(voice, "voice-next.wav", start: 0.1);
-        audio.queue(voice, "voice-last.wav", looping: true, loop_start: 0.2, loop_end: 0.8);
+        for encoded in [false, true] {
+            let code = r#"fn opening() {
+        let voice = audio.play("voice-current.wav", group: "voice", start: 0.42, end: 0.75);
+        audio.queue(voice, "voice-next.wav", start: 0.1, end: 0.3);
+        audio.queue(voice, "voice-last.wav", end: 0.9, looping: true, loop_start: 0.2, loop_end: 0.8);
         pause(voice);
         let effect = audio.play("effect.wav", start: 0.15);
         let ended = audio.play("ended.wav", group: "ui", start: 0.25);
@@ -118,70 +119,80 @@ mod audio {
         if await ended != "Completed" || await ended != "Completed" { throw "ended audio replayed"; }
         narrator("restored audio");
     }"#;
-        let (mut session, mut runtime) = models::prepared(code, true);
-        let original = Host::default();
-        runtime.set_media(Box::new(original.clone())).unwrap();
-        models::drive(&mut runtime, &mut session, false);
-        original.0.borrow_mut()[2].result = Some(MediaResult::Completed);
-        let program = runtime.vm.program().clone();
-        let mut capture = runtime.snapshot_begin(&session).unwrap();
-        while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
-        let bytes = capture.finish().unwrap().encode().unwrap();
-        let mut image = snapshot::SessionSnapshot::decode(&bytes).unwrap();
-        let restored_host = Host::default();
-        let mut restore = SessionVm::restore_begin(
-            &mut image,
-            program,
-            VmLimits::default(),
-            SessionIdentity {
-                session_id: SessionId(41),
-                epoch: Epoch(20),
-            },
-            crate::ReadProgress::default(),
-            Some(Box::new(restored_host.clone())),
-            None,
-        )
-        .unwrap();
-        while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
-        let (mut session, mut runtime) = restore.finish().unwrap();
-        {
-            let played = restored_host.0.borrow();
-            assert_eq!(played.len(), 2, "ended audio must not be reissued");
-            let voice = played
-                .iter()
-                .find(|entry| entry.request.group == AudioGroup::Voice)
-                .unwrap();
-            assert_eq!(voice.request.start_position, Duration::from_millis(420));
-            assert!(voice.paused);
-            assert_eq!(
-                voice
-                    .queue
+            let (mut session, mut runtime) = models::prepared(code, encoded);
+            let original = Host::default();
+            runtime.set_media(Box::new(original.clone())).unwrap();
+            models::drive(&mut runtime, &mut session, false);
+            original.0.borrow_mut()[2].result = Some(MediaResult::Completed);
+            let program = runtime.vm.program().clone();
+            let mut capture = runtime.snapshot_begin(&session).unwrap();
+            while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+            let bytes = capture.finish().unwrap().encode().unwrap();
+            let mut image = snapshot::SessionSnapshot::decode(&bytes).unwrap();
+            let restored_host = Host::default();
+            let mut restore = SessionVm::restore_begin(
+                &mut image,
+                program,
+                VmLimits::default(),
+                SessionIdentity {
+                    session_id: SessionId(41),
+                    epoch: Epoch(20),
+                },
+                crate::ReadProgress::default(),
+                Some(Box::new(restored_host.clone())),
+                None,
+            )
+            .unwrap();
+            while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+            let (mut session, mut runtime) = restore.finish().unwrap();
+            {
+                let played = restored_host.0.borrow();
+                assert_eq!(played.len(), 2, "ended audio must not be reissued");
+                let voice = played
                     .iter()
-                    .map(|item| item.source.as_str())
-                    .collect::<Vec<_>>(),
-                ["voice-next.wav", "voice-last.wav"]
-            );
-            assert_eq!(
-                voice.queue[1].loop_region.unwrap().end,
-                Some(Duration::from_millis(800))
-            );
+                    .find(|entry| entry.request.group == AudioGroup::Voice)
+                    .unwrap();
+                assert_eq!(voice.request.start_position, Duration::from_millis(420));
+                assert!(voice.paused);
+                assert_eq!(voice.request.end_position, Some(Duration::from_millis(750)));
+                assert_eq!(
+                    voice.queue[0].end_position,
+                    Some(Duration::from_millis(300))
+                );
+                assert_eq!(
+                    voice.queue[1].end_position,
+                    Some(Duration::from_millis(900))
+                );
+                assert_eq!(
+                    voice
+                        .queue
+                        .iter()
+                        .map(|item| item.source.as_str())
+                        .collect::<Vec<_>>(),
+                    ["voice-next.wav", "voice-last.wav"]
+                );
+                assert_eq!(
+                    voice.queue[1].loop_region.unwrap().end,
+                    Some(Duration::from_millis(800))
+                );
+                assert!(
+                    played
+                        .iter()
+                        .any(|entry| entry.request.group == AudioGroup::Effects
+                            && entry.request.start_position == Duration::from_millis(150))
+                );
+            }
+            let interaction = session.view().interaction.unwrap().id();
+            for _ in 0..2 {
+                session
+                    .handle_local_input(session.root_owner(), InputAction::Advance(interaction))
+                    .unwrap();
+            }
+            models::drive(&mut runtime, &mut session, false);
             assert!(
-                played
-                    .iter()
-                    .any(|entry| entry.request.group == AudioGroup::Effects
-                        && entry.request.start_position == Duration::from_millis(150))
+                matches!(session.view().interaction, Some(crate::InteractionView::Dialogue(d)) if d.text() == "restored audio")
             );
         }
-        let interaction = session.view().interaction.unwrap().id();
-        for _ in 0..2 {
-            session
-                .handle_local_input(session.root_owner(), InputAction::Advance(interaction))
-                .unwrap();
-        }
-        models::drive(&mut runtime, &mut session, false);
-        assert!(
-            matches!(session.view().interaction, Some(crate::InteractionView::Dialogue(d)) if d.text() == "restored audio")
-        );
     }
 
     #[test]

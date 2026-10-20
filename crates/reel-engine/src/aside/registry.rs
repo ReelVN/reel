@@ -46,7 +46,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     .map(|(name, parameter, input, result)| NativeContract {
         rest: None,
         symbol: format!("reel::{name}"),
-        abi_version: if name == "narrator" { 3 } else { 1 },
+        abi_version: if name == "narrator" { 4 } else { 1 },
         parameters: {
             let mut parameters = vec![NativeParameter {
                 name: parameter.into(),
@@ -57,6 +57,11 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 parameters.push(NativeParameter {
                     name: "history".into(),
                     ty: BuiltinType::Any,
+                    default: Some(bc::Const::Bool(true)),
+                });
+                parameters.push(NativeParameter {
+                    name: "reveal_skippable".into(),
+                    ty: BuiltinType::Bool,
                     default: Some(bc::Const::Bool(true)),
                 });
             }
@@ -152,22 +157,35 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 ("character", BuiltinType::Any, None),
                 ("text", BuiltinType::Any, None),
                 ("history", BuiltinType::Any, Some(bc::Const::Bool(true))),
+                (
+                    "reveal_skippable",
+                    BuiltinType::Bool,
+                    Some(bc::Const::Bool(true)),
+                ),
             ],
             Effects::ALL.0,
         ),
         (
             "say",
-            vec![("lines", BuiltinType::Array, None)],
+            vec![
+                ("lines", BuiltinType::Array, None),
+                (
+                    "reveal_skippable",
+                    BuiltinType::Bool,
+                    Some(bc::Const::Bool(true)),
+                ),
+            ],
             Effects::ALL.0,
         ),
     ] {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::{symbol}"),
-            abi_version: if symbol.starts_with("character::") {
-                3
-            } else {
-                1
+            abi_version: match symbol {
+                "character::speak" => 4,
+                "character::line" => 3,
+                "say" => 2,
+                _ => 1,
             },
             parameters: parameters
                 .into_iter()
@@ -597,6 +615,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 parameter("activity", None),
                 parameter("source", None),
                 parameter("start", Some(bc::Const::Int(0))),
+                parameter("end", Some(bc::Const::Null)),
                 parameter("looping", Some(bc::Const::Bool(false))),
                 parameter("loop_start", Some(bc::Const::Int(0))),
                 parameter("loop_end", Some(bc::Const::Null)),
@@ -614,6 +633,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 parameter("pan", Some(bc::Const::Int(0))),
                 parameter("fade_in", Some(bc::Const::Int(0))),
                 parameter("start", Some(bc::Const::Int(0))),
+                parameter("end", Some(bc::Const::Null)),
                 parameter("loop_start", Some(bc::Const::Int(0))),
                 parameter("loop_end", Some(bc::Const::Null)),
             ],
@@ -666,8 +686,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             rest: None,
             symbol: format!("reel::audio::{name}"),
             abi_version: match name {
-                "play" => 3,
-                "volume" => 2,
+                "play" => 4,
+                "volume" | "queue" => 2,
                 _ => 1,
             },
             parameters,

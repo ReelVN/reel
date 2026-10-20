@@ -490,7 +490,9 @@ fn history_is_stable_readonly_incremental_and_survives_page_and_stage_replacemen
             .unwrap();
         models::drive(&mut vm, &mut session, true);
         // Rust hosts can submit an empty group; its history has empty shortcuts.
-        session.begin_say(session.root_owner(), &[], "en").unwrap();
+        session
+            .begin_say(session.root_owner(), &[], "en", true)
+            .unwrap();
         vm.sync_narrative(&session).unwrap();
         let before = vm.vm.heap().stats();
         for _ in 0..1000 {

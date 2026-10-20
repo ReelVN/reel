@@ -109,6 +109,7 @@ pub(super) fn request(looping: bool) -> AudioRequest {
         pan: 0.,
         fade_in: Duration::ZERO,
         start_position: Duration::ZERO,
+        end_position: None,
     }
 }
 
@@ -194,6 +195,7 @@ fn ready_intro_waits_for_explicit_batch_and_blocked_successor() {
             AudioQueueItem {
                 source: "slow.wav".into(),
                 start_position: Duration::ZERO,
+                end_position: None,
                 loop_region: None,
             },
         )
@@ -238,6 +240,7 @@ fn queue_preserves_current_item_remaining_order_pause_and_content_restore() {
     let mut intro = request(false);
     intro.group = AudioGroup::Voice;
     intro.start_position = ms(200);
+    intro.end_position = Some(ms(220));
     let id = player.play_audio(intro).unwrap();
     player
         .queue_audio(
@@ -245,6 +248,7 @@ fn queue_preserves_current_item_remaining_order_pause_and_content_restore() {
             AudioQueueItem {
                 source: "assets/chime.wav".into(),
                 start_position: ms(20),
+                end_position: Some(ms(100)),
                 loop_region: Some(AudioLoopRegion {
                     start: ms(40),
                     end: Some(ms(90)),
@@ -258,6 +262,7 @@ fn queue_preserves_current_item_remaining_order_pause_and_content_restore() {
             AudioQueueItem {
                 source: "assets/chime.wav".into(),
                 start_position: ms(120),
+                end_position: Some(ms(180)),
                 loop_region: None,
             },
         )
@@ -287,9 +292,11 @@ fn queue_preserves_current_item_remaining_order_pause_and_content_restore() {
     assert!(saved.paused);
     assert_eq!(saved.request.group, AudioGroup::Voice);
     assert!(saved.request.loop_region.is_some());
+    assert_eq!(saved.request.end_position, Some(ms(100)));
     assert!((ms(20)..ms(90)).contains(&saved.request.start_position));
     assert_eq!(saved.queue.len(), 1);
     assert_eq!(saved.queue[0].start_position, ms(120));
+    assert_eq!(saved.queue[0].end_position, Some(ms(180)));
     let position = saved.request.start_position;
     let (mut restored, second_output) = rig();
     let second = restored.play_audio(saved.request).unwrap();
@@ -315,7 +322,8 @@ fn queue_preserves_current_item_remaining_order_pause_and_content_restore() {
     let done = restored.audio_snapshot(second).unwrap();
     assert!(done.queue.is_empty());
     assert_eq!(done.request.loop_region, None);
-    assert_eq!(done.request.start_position, ms(250));
+    assert_eq!(done.request.start_position, ms(180));
+    assert_eq!(done.request.end_position, Some(ms(180)));
     assert_eq!(done.result, Some(MediaResult::Completed));
     assert!(
         restored
@@ -324,6 +332,7 @@ fn queue_preserves_current_item_remaining_order_pause_and_content_restore() {
                 AudioQueueItem {
                     source: "assets/chime.wav".into(),
                     start_position: Duration::ZERO,
+                    end_position: None,
                     loop_region: None
                 }
             )
@@ -360,6 +369,7 @@ fn queue_capacity_rejection_keeps_original_and_missing_successor_fails_it_once()
     let missing = AudioQueueItem {
         source: "assets/missing.wav".into(),
         start_position: Duration::ZERO,
+        end_position: None,
         loop_region: None,
     };
     player.queue_audio(id, missing.clone()).unwrap();
@@ -439,11 +449,12 @@ fn seek_preserves_activity_pause_loop_and_immediate_snapshot_through_decode() {
     let ms = Duration::from_millis;
     let mut music = request(true);
     music.group = AudioGroup::Music;
+    music.end_position = Some(ms(60));
     music.volume = 0.5;
     music.pan = -0.5;
     music.loop_region = Some(AudioLoopRegion {
         start: ms(20),
-        end: Some(ms(60)),
+        end: None,
     });
     let id = player.play_audio(music).unwrap();
     player.commit_audio(id);
@@ -484,6 +495,7 @@ fn seek_preserves_activity_pause_loop_and_immediate_snapshot_through_decode() {
     assert_eq!(saved.request.volume, 0.5);
     assert_eq!(saved.request.pan, -0.5);
     assert_eq!(saved.request.loop_region.unwrap().start, ms(20));
+    assert_eq!(saved.request.end_position, Some(ms(60)));
     for _ in 0..4 {
         output.render();
     }
@@ -519,7 +531,10 @@ fn seek_preserves_activity_pause_loop_and_immediate_snapshot_through_decode() {
     player.maintain(Duration::ZERO);
     assert_eq!(player.take_result(id).unwrap().result, MediaResult::Stopped);
 
-    let ending = player.play_audio(request(false)).unwrap();
+    let mut bounded = request(false);
+    bounded.start_position = ms(10);
+    bounded.end_position = Some(ms(50));
+    let ending = player.play_audio(bounded).unwrap();
     player.commit_audio(ending);
     until(|| {
         player.maintain(Duration::ZERO);
@@ -529,7 +544,7 @@ fn seek_preserves_activity_pause_loop_and_immediate_snapshot_through_decode() {
     player
         .command(ending, MediaCommand::Seek(ms(10_000)))
         .unwrap();
-    assert_eq!(player.position(ending), Some(ms(250)));
+    assert_eq!(player.position(ending), Some(ms(50)));
     for _ in 0..4 {
         output.render();
         player.maintain(Duration::ZERO);
@@ -549,7 +564,7 @@ fn seek_preserves_activity_pause_loop_and_immediate_snapshot_through_decode() {
         .unwrap();
     let completion = player.take_result(ending).unwrap();
     assert_eq!(completion.result, MediaResult::Completed);
-    assert_eq!(completion.position, ms(250));
+    assert_eq!(completion.position, ms(50));
     player.close();
     until(|| {
         player.maintain(Duration::ZERO);
@@ -565,10 +580,12 @@ fn author_audio_source_and_bytecode_share_real_decode_playback_waits_and_retirem
         let early = audio.play("assets/chime.wav", group: "ui", looping: true, pan: -1, fade_in: 0.01);
         audio.stop(early, fade: 0.1);
         if await early != "Stopped" || await early != "Stopped" { throw "early stop"; }
+        let tiny = audio.play("assets/chime.wav", start: 0.1, end: 0.100000001);
+        if await tiny != "Completed" || audio.position(tiny) != 0.1 { throw "quantized empty segment"; }
         let crossfade = audio.play("assets/chime.wav", group: "music", looping: true, fade_in: 0.01);
-        let sound = audio.play("assets/chime.wav", group: "voice");
-        if audio.queue(sound, "assets/chime.wav", start: 0.03) != null { throw "queue result"; }
-        audio.queue(sound, "assets/chime.wav", start: 0.1);
+        let sound = audio.play("assets/chime.wav", group: "voice", end: 0.2);
+        if audio.queue(sound, "assets/chime.wav", start: 0.03, end: 0.12) != null { throw "queue result"; }
+        audio.queue(sound, "assets/chime.wav", start: 0.1, end: 0.18);
         pause(sound);
         if audio.seek(sound, 0.02) != null || audio.position(sound) != 0.02 { throw "seek result"; }
         audio.seek(sound, 0.01);
@@ -577,6 +594,7 @@ fn author_audio_source_and_bytecode_share_real_decode_playback_waits_and_retirem
         audio.pan(sound, 1, duration: 0.01);
         audio.volume(sound, 0.5, duration: 0.01);
         if await sound != "Completed" || await sound != "Completed" { throw "completion"; }
+        if audio.position(sound) != 0.18 { throw "queue end not retained"; }
         audio.seek(sound, 0);
         if await sound != "Completed" { throw "seek restarted completed activity"; }
         audio.stop(crossfade, fade: 0.01);
@@ -588,7 +606,11 @@ fn author_audio_source_and_bytecode_share_real_decode_playback_waits_and_retirem
         try { audio.seek(crossfade, -1); } catch error { invalid += 1; }
         try { audio.queue(sound, "assets/chime.wav"); } catch error { invalid += 1; }
         try { audio.queue(crossfade, "assets/chime.wav", looping: false, loop_start: 1); } catch error { invalid += 1; }
-        if invalid != 6 { throw "audio validation"; }
+        try { audio.play("assets/chime.wav", start: 0.1, end: 0.1); } catch error { invalid += 1; }
+        try { audio.queue(sound, "assets/chime.wav", start: 0.1, end: 0.05); } catch error { invalid += 1; }
+        try { await audio.play("assets/chime.wav", end: 1); } catch error { invalid += 1; }
+        try { await audio.play("assets/chime.wav", end: 0.1, looping: true, loop_end: 0.2); } catch error { invalid += 1; }
+        if invalid != 10 { throw "audio validation"; }
         let music = audio.play("assets/chime.wav", looping: true);
         pause(music); audio.volume(music, 0); resume(music);
         stop(music);
@@ -652,6 +674,125 @@ fn author_audio_source_and_bytecode_share_real_decode_playback_waits_and_retirem
             !runtime.needs_tick(),
             "retired audio must not keep the story polling"
         );
+    }
+}
+
+#[test]
+fn bounded_audio_source_and_asb_restore_real_transport_and_queue_endpoints() {
+    use aside_vm::snapshot::SnapshotBudget;
+    use reel_engine::{
+        InputAction, SessionIdentity,
+        aside::{SessionVm, snapshot::SessionSnapshot},
+    };
+    let text = r#"fn main() {
+        let sound = audio.play("assets/chime.wav", start: 0.04, end: 0.08);
+        audio.queue(sound, "assets/chime.wav", start: 0.02, end: 0.12);
+        pause(sound);
+        narrator("save bounded audio");
+        if audio.position(sound) != 0.04 { throw "restored absolute position"; }
+        resume(sound);
+        if await sound != "Completed" || audio.position(sound) != 0.12 { throw "restored queue end"; }
+        if await sound != "Completed" { throw "terminal replay"; }
+    }"#;
+    for binary in [false, true] {
+        let (backend, output) = rig();
+        let pcm = backend.pcm.clone();
+        let mut compiled = source::compile_story(text, "bounded_audio", 1, "main").unwrap();
+        if binary {
+            let bytes =
+                aside_vm::bytecode::encode(compiled.program.package(), Default::default()).unwrap();
+            compiled.program =
+                aside_vm::bytecode::VerifiedProgram::decode(&bytes, Default::default()).unwrap();
+        }
+        let driver = AsideSessionUi::from_compiled(
+            Session::new(SessionId(1), Epoch(1)).unwrap(),
+            compiled,
+            "en",
+            VmLimits::default(),
+        )
+        .unwrap()
+        .with_media(Box::new(backend))
+        .unwrap();
+        let mut original = StoryRuntime::new(driver);
+        until(|| {
+            original.tick(SliceBudget::default(), || 0).unwrap();
+            assert_eq!(original.driver().state(), StoryState::Running);
+            assert_eq!(
+                output.render(),
+                0.,
+                "paused initial batch must remain silent"
+            );
+            original
+                .driver()
+                .ui()
+                .session()
+                .view()
+                .interaction
+                .is_some()
+                && pcm.usage().bytes > 0
+        });
+        let live = original.driver();
+        let mut capture = live.snapshot_begin().unwrap();
+        while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let bytes = capture.finish().unwrap().encode().unwrap();
+        let mut image = SessionSnapshot::decode(&bytes).unwrap();
+        let (backend, output) = rig();
+        let restored_pcm = backend.pcm.clone();
+        let mut restore = SessionVm::restore_begin(
+            &mut image,
+            live.adapter().vm().program().clone(),
+            VmLimits::default(),
+            SessionIdentity {
+                session_id: SessionId(2),
+                epoch: Epoch(2),
+            },
+            Default::default(),
+            Some(Box::new(backend)),
+            None,
+        )
+        .unwrap();
+        while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let (session, vm) = restore.finish().unwrap();
+        let mut restored = AsideSessionUi::restored(
+            session,
+            vm,
+            "en".into(),
+            live.ui().assets(),
+            live.initializer(),
+        )
+        .unwrap();
+        while !restored.prepare_restored(SliceBudget::default()).unwrap() {}
+        restored.resume_media();
+        original.close().unwrap();
+        until(|| {
+            original.tick(SliceBudget::default(), || 0).unwrap();
+            original.close_complete()
+        });
+        assert_eq!(pcm.usage().bytes, 0);
+        let session = restored.ui_mut().session_mut();
+        let interaction = session.view().interaction.unwrap().id();
+        for _ in 0..2 {
+            session
+                .handle_local_input(session.root_owner(), InputAction::Advance(interaction))
+                .unwrap();
+        }
+        let mut runtime = StoryRuntime::new(restored);
+        let mut peak = 0_f32;
+        until(|| {
+            peak = peak.max(output.render());
+            runtime.tick(SliceBudget::default(), || 0).unwrap();
+            assert!(
+                matches!(
+                    runtime.driver().state(),
+                    StoryState::Running | StoryState::Finished
+                ),
+                "{:?}",
+                runtime.driver().fault()
+            );
+            runtime.driver().state() == StoryState::Finished && !runtime.needs_tick()
+        });
+        assert!(peak > 0.1);
+        assert_eq!(restored_pcm.usage().bytes, 0);
     }
 }
 

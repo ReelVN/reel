@@ -27,6 +27,7 @@ fn begin_dialogue(session: &mut Session) -> InteractionId {
                 text: ("retained history").into(),
             }],
             "en",
+            true,
         )
         .unwrap()
 }
@@ -383,7 +384,7 @@ fn cursor_budget_and_bound_checks_use_differences_without_overflow() {
 fn already_completed_main_result_becomes_cleanup_only_on_extended_revoke() {
     let mut session = session();
     let root = session.root_owner();
-    let id = session.begin_say(root, &[], "en").unwrap();
+    let id = session.begin_say(root, &[], "en", true).unwrap();
     session
         .handle_input(InputEvent {
             source_owner: root,

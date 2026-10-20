@@ -1034,20 +1034,70 @@ fn source_and_asb_characters_share_history_unicode_playback_and_group_advance() 
         settle(runtime.driver_mut().unwrap());
         present(runtime.driver_mut().unwrap(), &mut bridge, root, 7);
         tick(&mut runtime, 21_000_000_000);
-        assert_eq!(
-            reveal(runtime.driver()),
-            ["The conversation stays in history."]
-        );
-        assert!(!runtime.needs_tick());
-        present(runtime.driver_mut().unwrap(), &mut bridge, root, 8);
         gamepad_press(
             runtime.driver_mut().unwrap(),
             &mut bridge,
             reel_ui::input::GamepadButton::South,
         );
         settle(runtime.driver_mut().unwrap());
+        assert_eq!(
+            reveal(runtime.driver()),
+            [""],
+            "protected reveal consumes advance"
+        );
+        for frame in 8..=28 {
+            tick(&mut runtime, 21_000_000_000 + (frame - 7) * 100_000_000);
+            present(runtime.driver_mut().unwrap(), &mut bridge, root, frame);
+        }
+        assert_eq!(reveal(runtime.driver()), ["Listen."]);
+        gamepad_press(
+            runtime.driver_mut().unwrap(),
+            &mut bridge,
+            reel_ui::input::GamepadButton::South,
+        );
+        settle(runtime.driver_mut().unwrap());
+        present(runtime.driver_mut().unwrap(), &mut bridge, root, 29);
+        tick(&mut runtime, 24_000_000_000);
+        assert_eq!(
+            reveal(runtime.driver()),
+            ["The conversation stays in history."]
+        );
+        assert!(!runtime.needs_tick());
+        for (index, expected) in [
+            vec!["The conversation stays in history."],
+            vec!["……"],
+            vec!["A fleeting thought."],
+            vec!["Noise.", "Stay."],
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let frame = 30 + index as u64 * 2;
+            present(runtime.driver_mut().unwrap(), &mut bridge, root, frame);
+            tick(&mut runtime, 25_000_000_000 + index as u64 * 1_000_000_000);
+            assert_eq!(reveal(runtime.driver()), expected);
+            present(runtime.driver_mut().unwrap(), &mut bridge, root, frame + 1);
+            gamepad_press(
+                runtime.driver_mut().unwrap(),
+                &mut bridge,
+                reel_ui::input::GamepadButton::South,
+            );
+            settle(runtime.driver_mut().unwrap());
+        }
         assert_eq!(runtime.driver().state(), StoryState::Finished);
-        assert_eq!(runtime.driver().ui().session().view().history.len(), 3);
+        let history = &runtime.driver().ui().session().view().history;
+        assert_eq!(history.len(), 7);
+        assert_eq!(
+            history[4].lines()[0].resolved_text(),
+            "I remember the rain."
+        );
+        assert_eq!(
+            history[5].lines()[0].resolved_text(),
+            "The train is arriving."
+        );
+        assert_eq!(history[6].lines().len(), 1);
+        assert_eq!(history[6].lines()[0].speaker_id(), Some("eri"));
+        assert_eq!(history[6].lines()[0].resolved_text(), "Stay.");
     }
 }
 

@@ -182,23 +182,38 @@ impl DecodedSound {
         self.data.settings.fade_in_tween = (!duration.is_zero()).then(|| tween(duration));
         self
     }
-    /// Resolve the initial position and loop once after decoding, before admission.
+    /// Resolve the initial position, exclusive endpoint and loop after decoding.
     /// The transport uses frame indices and retains the same PCM allocation.
     pub fn with_playback(
         mut self,
         start: Duration,
+        end: Option<Duration>,
         loop_region: Option<AudioLoopRegion>,
     ) -> Result<Self, AudioError> {
         let frames = self.data.num_frames();
         let sample_rate = f64::from(self.data.sample_rate);
         let frame = |time: Duration| (time.as_secs_f64() * sample_rate).round() as usize;
+        let frames = if let Some(end) = end {
+            let end = frame(end);
+            if end == 0 || end > frames {
+                return Err(AudioError::new(
+                    AudioErrorKind::InvalidRequest,
+                    "audio end must fit within the source and include at least one frame",
+                ));
+            }
+            // Keep absolute source positions and share the original PCM backing.
+            self.data.slice = Some((0, end));
+            end
+        } else {
+            frames
+        };
         self.data.settings.loop_region = if let Some(region) = loop_region {
             let from = frame(region.start);
             let to = region.end.map_or(frames, frame);
             if from >= to || to > frames {
                 return Err(AudioError::new(
                     AudioErrorKind::InvalidRequest,
-                    "audio loop must fit within the source and contain at least one frame",
+                    "audio loop must fit within the playback end and contain at least one frame",
                 ));
             }
             Some(Region {

@@ -461,6 +461,14 @@ narrator、character、say 和 choose 支持顺序等待并继续。`let mio = c
 
 `game.configure(text_speed: 30)` 设置每秒显示的 Unicode 字素数，默认 30；0 立即显示全文，省略保留原值。普通推进先补全文字，再结束本句；角色、旁白和行组使用相同规则。挂起、资源等待和输入配对期间暂停揭示，不在恢复时突发补字。Rust 宿主与窗口共用播放逻辑。
 
+需要保持某句的显示节奏时，传 `reveal_skippable: false`。点击和快进会等待正文及句内、尾部停顿完成；完成后的推进、自动阅读和 `[next]` 照常工作。它只影响这次调用，存读档后继续同一节奏。玩家速度设为 0 时，false 仍执行显式 speed 和 pause；未指定固定速度的段落立即显示。默认 true 允许点击补全。示例见 [author_dialogue.aside](../../examples/author_dialogue.aside)。
+
+```aside
+mio(rich("Listen.[pause=0.5]"), reveal_skippable: false);
+narrator("The light is moving.", reveal_skippable: false);
+say([mio.line("One."), eri.line("Two.")], reveal_skippable: false);
+```
+
 可绑定对白、作者 ADV/NVL 视图和自定义选择已接通，见 [author_narrative.aside](../../examples/author_narrative.aside)。语音与章节启动仍待实现；say 提交共享推进的行组，布局由作者视图决定。
 
 对白行数、选项数量、单次交互文字和会话历史按内容增长。历史保留整个会话的记录；它不会因达到展示缓存容量而中断剧情或丢弃旧记录。实际内存不足会报告错误。
@@ -549,6 +557,8 @@ story.register("chapter01.opening", opening, title: "窗上的光");
 需要正弦曲线运动时，使用 `sine_in` 从慢到快加速，`sine_out` 从快到慢减速，或 `sine_in_out` 两端慢、中间快。所有曲线都精确到达指定终点；它们与三次 in/out/in_out、二次 quad_in/quad_out/quad_in_out 的运动节奏不同。
 
 五次曲线 `quint_in`、`quint_out`、`quint_in_out` 提供更明显的加速与减速；`bounce_out` 在抵达终点时回弹，`bounce_in` 是其反向，`bounce_in_out` 在两端组合回弹。回弹不会越过起终值。用同一个 tween 描述菜单滑入和 Logo 落下，见 [author_activities.aside](../../examples/author_activities.aside)。
+
+`quart_in`、`quart_out`、`quart_in_out` 使用四次曲线。`elastic_out` 在终点附近衰减振荡，`elastic_in` 是其反向，`elastic_in_out` 组合两端；弹性会越过起终值，适合位置、旋转和缩放，opacity 等有限区间属性应选择不超调曲线。暂停、停止和存档恢复与其他 tween 相同。[author_activities.aside](../../examples/author_activities.aside) 将四次淡入与弹性入场组合在一起。
 
 ```aside
 await run(tween(portrait, x: 720, duration: 0.8, easing: "sine_out"));
@@ -772,7 +782,7 @@ stage.transition(target: scene, duration: 0.6, change: || {
 });
 ```
 
-省略 target 可在 change 中用 stage.replace 更换整个逻辑舞台。指定 target 时保留容器本身，只修改属性或子节点。默认淡化；mask 接受下文的图像路径或组合表达式，mask_softness、mask_invert、mask_x/y 沿已有规则，easing 使用 tween 的曲线。图像路径按进度推进阈值；组合表达式通过 mask.param("progress") 表达随时间变化的覆盖率。duration 为零直接换景并等待呈现。图片和字体准备好后才开始计时。
+省略 target 可在 change 中用 stage.replace 更换整个逻辑舞台。指定 target 时保留容器本身，只修改属性或子节点。默认淡化；mask 接受下文的图像路径或组合表达式，mask_softness、mask_invert、mask_x/y 沿已有规则，easing 使用 tween 的曲线，转场进度始终夹在 0..1；弹性超调仍等到 duration 结束。图像路径按进度推进阈值；组合表达式通过 mask.param("progress") 表达随时间变化的覆盖率。duration 为零直接换景并等待呈现。图片和字体准备好后才开始计时。
 
 转场会保留实际粒子、文字和视频画面，作者负责构造新内容。目标的输入暂停到最终画面接受，外部菜单继续工作；change 可以等待，交互等待放在转场返回后。互不重叠的子树可同时过渡；相同或相互包含的目标会报告冲突。取消解除过渡并显示当前舞台，已经执行的 change 写入保留。播放中存档恢复旧画面和进度，继续原调用。
 
@@ -915,7 +925,7 @@ game.clear_history(keep_last: 37);
 
 可以等待自己的保存请求。这份存档恢复时，该请求为已成功且只读 `restored` 为 true（正常写盘完成为 false），可据此关闭存档菜单；调用者继续执行 await 后的语句；保存调用不会重复执行。其他未完成的外部请求以 OperationInterrupted 结算。成功读档会替换会话，原来的读档调用不会在旧会话中继续。
 
-执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 8，会话快照格式为 18；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
+执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 8，会话快照格式为 19；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
 
 可运行示例：[author_saves.aside](../../examples/author_saves.aside)。
 
@@ -1317,7 +1327,7 @@ fn main() {
 
 `audio.play` 在后台读取、解码并播放，立即返回活动。`await` 返回 `Completed` 或 `Stopped`；加载与设备错误可以 `try/catch`。`volume` 是非负线性增益，1 是原始音量，0 静音。pause/resume 保留播放位置，stop 不重启声音，重复等待保留同一个结果。
 
-`audio.queue(activity, source, start: 0, looping: false, loop_start: 0, loop_end: null)` 将音乐或旁白片段追加到同一活动，返回 null。活动保留 owner、分组、音量、声像和控制。已准备的片段在混音边界接续；后继准备迟到时保持内容时钟并输出静音，准备好后继续。新音频可提前在后台准备，创建它的任务开始显式 await、普通调用实际等待或返回时，将同一同步执行段追加的片段一起准备后起播；await 已完成的对象也会提交；内部工作切片不触发起播，未捕获错误或取消会撤销尚未提交的声音。当前片段循环时，后继让它在本轮循环结尾退出；没有后继则继续循环。position 与 seek 对应当前素材。停止或 owner 退休取消剩余队列；加载错误使原活动失败，已结束的活动不能追加。存档保留当前片段、位置和剩余队列。
+`audio.queue(activity, source, start: 0, end: null, looping: false, loop_start: 0, loop_end: null)` 将音乐或旁白片段追加到同一活动，返回 null。活动保留 owner、分组、音量、声像和控制。已准备的片段在混音边界接续；后继准备迟到时保持内容时钟并输出静音，准备好后继续。新音频可提前在后台准备，创建它的任务开始显式 await、普通调用实际等待或返回时，将同一同步执行段追加的片段一起准备后起播；await 已完成的对象也会提交；内部工作切片不触发起播，未捕获错误或取消会撤销尚未提交的声音。当前片段循环时，后继让它在本轮循环结尾退出；没有后继则继续循环。position 与 seek 对应当前素材。停止或 owner 退休取消剩余队列；加载错误使原活动失败，已结束的活动不能追加。存档保留当前片段、位置和剩余队列。
 可运行示例：[author_audio_queue.aside](../../examples/author_audio_queue.aside) 用内置音频演示 intro → loop → outro 与连续语音片段；创作时把路径换成自己的素材。
 
 ```aside
@@ -1334,7 +1344,9 @@ await music;
 
 音频解码仅在缓冲扩容和最终共享存储转换时计入新旧存储重叠；普通包解码复用已有 PCM 容量。内存预算不足时会报告解码阶段所需字节。
 
-`start` 指定从第几秒起播，`audio.position(sound)` 读取当前内容位置秒数；加载中返回请求起点，暂停时保持，结束后仍可读取最后位置。`looping: true` 可配合 `loop_start` 和 `loop_end` 指定循环区间，默认从 0 循环至音轨结尾。start 在 loop_start 之前会先播放前奏，达到 loop_end 后回到 loop_start；start 超过 loop_end 会折回循环区间。循环终点不包含在区间内，边界必须位于资源内并至少包含一帧。未开启 looping 时使用默认循环边界。
+`audio.play("assets/chime.wav", start: 0.1, end: 0.2)` 只播放到素材的 0.2 秒之前，由音频混音器在终点完成；省略 end 使用素材结尾。play 与 queue 都接受 end，显式终点必须大于起点且位于素材内。start/position/seek 都使用素材的绝对秒数；起点不限制之后向前定位，非循环 seek 超过 end 时停在 end。起点和终点若量化到同一采样帧，片段会无声完成；存档保留每个片段的终点。
+
+`start` 指定从第几秒起播，`audio.position(sound)` 读取当前内容位置秒数；加载中返回请求起点，暂停时保持，结束后仍可读取最后位置。`looping: true` 可配合 `loop_start` 和 `loop_end` 指定循环区间，默认从 0 循环至 end（省略时为音轨结尾）。start 在 loop_start 之前会先播放前奏，达到 loop_end 后回到 loop_start；start 超过 loop_end 会折回循环区间。循环终点不包含在区间内，循环边界必须位于 end 以内并至少包含一帧。未开启 looping 时使用默认循环边界。
 
 `audio.seek(sound, seconds)` 定位同一个声音，返回 null，不需要 await。时间单位为秒且必须有限非负；暂停时定位仍保持暂停，正在播放则继续，增益与循环设置保持。加载中修改起播位置；非循环超出结尾时停在结尾并自然结束，暂停的声音等恢复后结束；循环的定位规则与 start 一致。连续定位采用最新目标，`audio.position` 和紧接的存档立即记录它，混音器应用后再跟随实际进度。已经结束的活动不会重新播放；`await sound` 始终等待原来的播放终态。
 

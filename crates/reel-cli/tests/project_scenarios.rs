@@ -77,7 +77,7 @@ fn execute_project_with_capture(
             .with_saves(RuntimeSaves::new(storage, 256 << 20))
             .with_media_factory(media);
         let mut captures = if gpu_capture {
-            scenario_capture::ScenarioCapture::new()
+            scenario_capture::ScenarioCapture::new(kind)
         } else {
             scenario_capture::ScenarioCapture::cpu()
         };
@@ -101,7 +101,13 @@ fn execute_project_with_capture(
                     },
                     || started.elapsed().as_nanos() as u64,
                 )
-                .unwrap();
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "{kind}: {error}; title={:?}; vm={:?}",
+                        runtime.driver().adapter().game_settings().title,
+                        runtime.driver().adapter().vm().stats(),
+                    )
+                });
             assert!(
                 started.elapsed() < timeout,
                 "{kind} scenario did not finish within {timeout:?}: {}; title={:?}, frame={frame}, state={:?}, capture={}, tasks={}, activities={}, presentation={:?}",

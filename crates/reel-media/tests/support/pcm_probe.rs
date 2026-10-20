@@ -136,15 +136,17 @@ fn group_envelopes_are_allocation_free() {
 }
 fn queued_segments_have_no_callback_allocation() {
     let mut service = AudioReclaimService::new(ReclaimLimits::default(), WakeSignal::new(|| {})).unwrap();
-    let pool = BudgetPool::new(BudgetCategory::CpuOutput, QueueLimits { max_requests: 4, max_bytes: 4096 });
+    let pool = BudgetPool::new(BudgetCategory::CpuOutput, QueueLimits { max_requests: 4, max_bytes: 8192 });
     let mut output = OfflineOutput::new(AudioDeviceConfig { sample_rate_hz: 48_000, sample_format: SampleFormat::F32, layout: ChannelLayout::Stereo }, WakeSignal::new(|| {})).unwrap();
     let format = output.configure(AudioRequest::default()).unwrap();
     let mut mixer = KiraMixer::new(&format, MixerLimits { max_sounds: 4, internal_buffer_frames: 64 }, &service).unwrap();
-    let mut sound = mixer.play(decoded(&pool, [0.1, -0.1], 64)).unwrap();
+    let segment = |frame| decoded(&pool, frame, 128)
+        .with_playback(std::time::Duration::ZERO, Some(std::time::Duration::from_secs_f64(64. / 48_000.)), None).unwrap();
+    let mut sound = mixer.play(segment([0.1, -0.1])).unwrap();
     mixer.announce(&sound, 3).unwrap();
     for index in 1..=3 {
         let amplitude = (index + 1) as f32 / 10.;
-        mixer.queue(&mut sound, index, decoded(&pool, [amplitude, -amplitude], 64)).unwrap();
+        mixer.queue(&mut sound, index, segment([amplitude, -amplitude])).unwrap();
     }
     assert!(output.start(mixer.take_fill().unwrap()).is_ok());
     let mut pcm = [0.0_f32; 1024];
@@ -167,7 +169,7 @@ fn queued_segments_have_no_callback_allocation() {
     output.stop().unwrap();
     drop(mixer);
     service.drain_and_join().unwrap();
-    println!("prepared_queue segments=4 boundary_gaps=0 callback_alloc=0 realloc=0 dealloc=0 final_pcm_bytes={}", pool.usage().bytes);
+    println!("prepared_queue segments=4 exclusive_end=64/128 boundary_gaps=0 callback_alloc=0 realloc=0 dealloc=0 final_pcm_bytes={}", pool.usage().bytes);
 }
 
 fn main() {

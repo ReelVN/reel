@@ -86,6 +86,7 @@ fn dialogue_owns_full_content_and_history_as_one_group() {
                     },
                 ],
                 "zh-CN",
+                true,
             )
             .unwrap();
         text.replace_range(.., "changed caller data");
@@ -124,7 +125,7 @@ fn reveal_uses_graphemes_and_never_changes_full_text_layout_or_history() {
     let root = session.root_owner();
     let text = "e\u{301}👩🏽‍🚀\r\n🇨🇳\0";
     let id = session
-        .begin_say(root, &[line(text), line("第二行")], "zh-CN")
+        .begin_say(root, &[line(text), line("第二行")], "zh-CN", true)
         .unwrap();
     let text_pointer = dialogue(&session).lines()[0].resolved_text().as_ptr();
     let boundaries_pointer = dialogue(&session).lines()[0].grapheme_boundaries().as_ptr();
@@ -166,7 +167,9 @@ fn terminal_slot_must_be_claimed_and_history_is_written_exactly_once() {
     let mut session = session();
     let root = session.root_owner();
     let ui_owner = session.create_owner().unwrap();
-    let id = session.begin_say(root, &[line("first")], "en").unwrap();
+    let id = session
+        .begin_say(root, &[line("first")], "en", true)
+        .unwrap();
     assert_eq!(
         session.begin_choice(root, &choices()),
         Err(SessionError::InteractionActive)
@@ -184,7 +187,7 @@ fn terminal_slot_must_be_claimed_and_history_is_written_exactly_once() {
         Ok(InputOutcome::Completed)
     );
     assert_eq!(
-        session.begin_say(root, &[line("second")], "en"),
+        session.begin_say(root, &[line("second")], "en", true),
         Err(SessionError::CompletionPending)
     );
     assert_eq!(session.end(), Err(SessionError::CompletionPending));
@@ -198,7 +201,9 @@ fn terminal_slot_must_be_claimed_and_history_is_written_exactly_once() {
         advance(&mut session, ui_owner, 3, id),
         Err(InputRejection::NoActiveInteraction)
     );
-    let successor = session.begin_say(root, &[line("second")], "en").unwrap();
+    let successor = session
+        .begin_say(root, &[line("second")], "en", true)
+        .unwrap();
     assert_eq!(successor.generation(), id.generation() + 1);
     assert_eq!(
         advance(&mut session, ui_owner, 4, id),
@@ -289,14 +294,16 @@ fn only_root_submits_and_dead_ui_owner_cannot_advance_or_poison_sequence() {
     let root = session.root_owner();
     let retired = session.create_owner().unwrap();
     assert_eq!(
-        session.begin_say(retired, &[line("no")], "en"),
+        session.begin_say(retired, &[line("no")], "en", true),
         Err(SessionError::MainOwnerRequired)
     );
     assert_eq!(
         session.begin_choice(retired, &choices()),
         Err(SessionError::MainOwnerRequired)
     );
-    let id = session.begin_say(root, &[line("main")], "en").unwrap();
+    let id = session
+        .begin_say(root, &[line("main")], "en", true)
+        .unwrap();
     assert_eq!(
         session.reveal_more(retired, id, 1),
         Err(SessionError::MainOwnerRequired)
@@ -346,11 +353,13 @@ fn owner_slots_reuse_storage_but_never_identity() {
 fn new_epoch_and_new_session_reject_old_owner_interaction_and_reveal() {
     let mut old = session();
     let old_root = old.root_owner();
-    let old_id = old.begin_say(old_root, &[line("old")], "en").unwrap();
+    let old_id = old.begin_say(old_root, &[line("old")], "en", true).unwrap();
     for identity in [(SessionId(7), Epoch(4)), (SessionId(8), Epoch(3))] {
         let mut current = Session::new(identity.0, identity.1).unwrap();
         let root = current.root_owner();
-        let id = current.begin_say(root, &[line("current")], "en").unwrap();
+        let id = current
+            .begin_say(root, &[line("current")], "en", true)
+            .unwrap();
         assert_eq!(id.generation(), old_id.generation());
         assert_ne!(id, old_id);
         assert_eq!(
@@ -388,7 +397,7 @@ fn dialogue_validation_preserves_storage_history_and_generation() {
     let root = session.root_owner();
     let before = session.storage_usage();
     assert_eq!(
-        session.begin_say(root, &[input], ""),
+        session.begin_say(root, &[input], "", true),
         Err(SessionError::EmptyLocale)
     );
     let invalid = DialogueLineInput {
@@ -397,13 +406,13 @@ fn dialogue_validation_preserves_storage_history_and_generation() {
         ..input
     };
     assert_eq!(
-        session.begin_say(root, &[invalid], "en"),
+        session.begin_say(root, &[invalid], "en", true),
         Err(SessionError::EmptyContentId)
     );
     assert_eq!(session.storage_usage(), before);
     assert!(session.view().history.is_empty());
     assert!(session.view().interaction.is_none());
-    let id = session.begin_say(root, &[input], "en").unwrap();
+    let id = session.begin_say(root, &[input], "en", true).unwrap();
     assert_eq!(id.generation(), 1);
     assert_eq!(session.storage_usage().retained_history_text_bytes, 18);
     advance(&mut session, root, 1, id).unwrap();
@@ -420,7 +429,7 @@ fn dialogue_lines_text_and_complete_history_grow_with_author_content() {
     let root = session.root_owner();
     let text = "雨".repeat(22_000);
     let lines = vec![line(&text); 17];
-    let id = session.begin_say(root, &lines, "zh-CN").unwrap();
+    let id = session.begin_say(root, &lines, "zh-CN", true).unwrap();
     assert_eq!(dialogue(&session).lines().len(), 17);
     assert_eq!(dialogue(&session).lines()[16].id().index(), 16_usize);
     session
@@ -431,7 +440,9 @@ fn dialogue_lines_text_and_complete_history_grow_with_author_content() {
         .unwrap();
     session.take_completion().unwrap();
     for _ in 1..300 {
-        let id = session.begin_say(root, &[line("continued")], "en").unwrap();
+        let id = session
+            .begin_say(root, &[line("continued")], "en", true)
+            .unwrap();
         session
             .handle_local_input(root, InputAction::Advance(id))
             .unwrap();
@@ -513,7 +524,7 @@ fn cancel_keeps_history_and_commits_cleanup_once() {
     let root = session.root_owner();
     let ui_owner = session.create_owner().unwrap();
     let id = session
-        .begin_say(root, &[line("before cancel")], "en")
+        .begin_say(root, &[line("before cancel")], "en", true)
         .unwrap();
     assert!(session.cancel());
     assert!(!session.cancel());
@@ -562,7 +573,7 @@ fn root_revoke_is_cleanup_and_pending_success_is_not_settled_twice() {
 
     let mut completed = session();
     let root = completed.root_owner();
-    let id = completed.begin_say(root, &[], "en").unwrap();
+    let id = completed.begin_say(root, &[], "en", true).unwrap();
     advance(&mut completed, root, 1, id).unwrap();
     assert!(completed.cancel());
     let completion = completed.take_completion().unwrap();
@@ -576,7 +587,7 @@ fn root_revoke_is_cleanup_and_pending_success_is_not_settled_twice() {
 fn claimed_record_is_not_permanent_owner_delivery_permission() {
     let mut session = session();
     let root = session.root_owner();
-    let id = session.begin_say(root, &[], "en").unwrap();
+    let id = session.begin_say(root, &[], "en", true).unwrap();
     advance(&mut session, root, 1, id).unwrap();
     let claimed = session.take_completion().unwrap();
     assert_eq!(claimed.delivery(), CompletionDelivery::Resume);
@@ -592,7 +603,7 @@ fn claimed_record_is_not_permanent_owner_delivery_permission() {
 fn empty_group_projects_zero_and_end_requires_an_idle_claimed_session() {
     let mut session = session();
     let root = session.root_owner();
-    let id = session.begin_say(root, &[], "en").unwrap();
+    let id = session.begin_say(root, &[], "en", true).unwrap();
     assert_eq!(dialogue(&session).speaker_name(), "");
     assert_eq!(dialogue(&session).text(), "");
     assert_eq!(
@@ -643,7 +654,9 @@ fn input_sequence_high_water_is_shared_by_all_live_ui_owners() {
     let root = session.root_owner();
     let first = session.create_owner().unwrap();
     let second = session.create_owner().unwrap();
-    let id = session.begin_say(root, &[line("one click")], "en").unwrap();
+    let id = session
+        .begin_say(root, &[line("one click")], "en", true)
+        .unwrap();
     assert_eq!(
         advance(&mut session, first, 10, id),
         Ok(InputOutcome::Revealed)
@@ -661,7 +674,9 @@ fn input_sequence_high_water_is_shared_by_all_live_ui_owners() {
         Ok(InputOutcome::Completed)
     );
     session.take_completion().unwrap();
-    let next = session.begin_say(root, &[line("next")], "en").unwrap();
+    let next = session
+        .begin_say(root, &[line("next")], "en", true)
+        .unwrap();
     assert_eq!(
         advance(&mut session, first, 10, next),
         Err(InputRejection::DuplicateOrOutOfOrder)
@@ -678,7 +693,9 @@ fn new_local_actions_and_stamped_replays_share_one_session_sequence() {
     let mut session = session();
     let root = session.root_owner();
     let local_owner = session.create_owner().unwrap();
-    let first = session.begin_say(root, &[line("first")], "en").unwrap();
+    let first = session
+        .begin_say(root, &[line("first")], "en", true)
+        .unwrap();
     assert_eq!(
         session.handle_local_input(local_owner, InputAction::Advance(first)),
         Ok(InputOutcome::Revealed)
@@ -695,7 +712,9 @@ fn new_local_actions_and_stamped_replays_share_one_session_sequence() {
         session.take_completion().unwrap().outcome(),
         &CompletionOutcome::Advanced
     );
-    let next = session.begin_say(root, &[line("next")], "en").unwrap();
+    let next = session
+        .begin_say(root, &[line("next")], "en", true)
+        .unwrap();
     assert_eq!(
         advance(&mut session, root, 101, first),
         Err(InputRejection::StaleInteraction)
@@ -730,9 +749,11 @@ fn local_input_exhaustion_never_wraps_and_dead_or_foreign_sources_cannot_poison_
     let mut foreign = Session::new(SessionId(99), Epoch(1)).unwrap();
     let foreign_owner = foreign.root_owner();
     let foreign_interaction = foreign
-        .begin_say(foreign_owner, &[line("foreign")], "en")
+        .begin_say(foreign_owner, &[line("foreign")], "en", true)
         .unwrap();
-    let id = session.begin_say(root, &[line("live")], "en").unwrap();
+    let id = session
+        .begin_say(root, &[line("live")], "en", true)
+        .unwrap();
     assert_eq!(
         advance(&mut session, dead, u64::MAX, id),
         Err(InputRejection::OwnerNotLive)
@@ -786,7 +807,7 @@ fn local_input_exhaustion_never_wraps_and_dead_or_foreign_sources_cannot_poison_
 fn zero_line_dialogue_has_one_history_group_and_one_advance_completion() {
     let mut session = session();
     let root = session.root_owner();
-    let id = session.begin_say(root, &[], "en").unwrap();
+    let id = session.begin_say(root, &[], "en", true).unwrap();
     assert!(dialogue(&session).lines().is_empty());
     assert_eq!(dialogue(&session).text(), "");
     assert!(!session.reveal_more(root, id, 1).unwrap());
@@ -813,7 +834,9 @@ fn zero_line_dialogue_has_one_history_group_and_one_advance_completion() {
 fn read_progress_is_committed_on_advance_and_reusable_without_display_history() {
     let mut first = session();
     let owner = first.root_owner();
-    let id = first.begin_say(owner, &[line("first")], "en").unwrap();
+    let id = first
+        .begin_say(owner, &[line("first")], "en", true)
+        .unwrap();
     assert!(!dialogue(&first).previously_read());
     first.set_skip_reading(true, false, false);
     assert!(
@@ -830,7 +853,7 @@ fn read_progress_is_committed_on_advance_and_reusable_without_display_history() 
     let progress = ReadProgress::from_ids(saved).unwrap();
     let mut next = Session::new_with_read_progress(SessionId(8), Epoch(1), progress).unwrap();
     let owner = next.root_owner();
-    next.begin_say(owner, &[line("same statement")], "en")
+    next.begin_say(owner, &[line("same statement")], "en", true)
         .unwrap();
     assert!(dialogue(&next).previously_read());
     next.set_skip_reading(true, false, false);
@@ -842,7 +865,12 @@ fn read_progress_is_committed_on_advance_and_reusable_without_display_history() 
     assert_eq!(next.read_progress().ids().count(), 1);
     let mut cancelled = session();
     cancelled
-        .begin_say(cancelled.root_owner(), &[line("never advanced")], "en")
+        .begin_say(
+            cancelled.root_owner(),
+            &[line("never advanced")],
+            "en",
+            true,
+        )
         .unwrap();
     cancelled.cancel();
     assert_eq!(cancelled.read_progress().ids().count(), 0);

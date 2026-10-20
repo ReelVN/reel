@@ -12,11 +12,13 @@ pub struct AudioRequest {
     pub pan: f64,
     pub fade_in: Duration,
     pub start_position: Duration,
+    pub end_position: Option<Duration>,
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AudioQueueItem {
     pub source: String,
     pub start_position: Duration,
+    pub end_position: Option<Duration>,
     pub loop_region: Option<AudioLoopRegion>,
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

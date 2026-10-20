@@ -1025,9 +1025,12 @@ impl SessionVm {
             return Err(AdapterError::Input("not narrator"));
         }
         let arguments = self.vm.host_arguments(ticket)?;
-        let [text, history] = arguments else {
+        let [text, history, reveal_skippable] = arguments else {
             return Err(AdapterError::Input("narrator arity"));
         };
+        let reveal_skippable = reveal_skippable
+            .as_bool()
+            .ok_or(AdapterError::Input("reveal_skippable must be bool"))?;
         let text = rich_text::read(self.vm.heap(), *text, self.read_limit)?;
         let history = dialogue::HistoryText::read(self.vm.heap(), *history, self.read_limit)?;
         let content_id = self.dialogue_content_id(ticket);
@@ -1042,6 +1045,7 @@ impl SessionVm {
                 text: (&text).into(),
             }],
             locale,
+            reveal_skippable,
         )
     }
 
@@ -1078,12 +1082,14 @@ impl SessionVm {
         ticket: HostTicket,
         lines: &[DialogueLineInput<'_>],
         locale: &str,
+        reveal_skippable: bool,
     ) -> Result<InteractionId, AdapterError> {
         self.check_story_wait(session, ticket)?;
         let selected_locale = self.locale();
         let locale = selected_locale.as_deref().unwrap_or(locale);
-        let publication =
-            publication::Publication::stage(session, |s| s.begin_say(self.owner, lines, locale))?;
+        let publication = publication::Publication::stage(session, |s| {
+            s.begin_say(self.owner, lines, locale, reveal_skippable)
+        })?;
         let interaction = publication.id();
         self.accept_wait(session, ticket, publication, None)?;
         Ok(interaction)

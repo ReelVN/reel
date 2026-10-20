@@ -7,6 +7,7 @@ fn main() {
     stage.replace(text("An ordinary story, with shared stage and dialogue."));
     mio(text: "Aé👨‍👩‍👧‍👦雨");
     say([mio.line("一二三"), eri.line("四五")]);
+    mio(rich("Listen.[pause=0.5]"), reveal_skippable: false);
     game.configure(text_speed: 0);
     narrator("The conversation stays in history.");
     mio("……", history: "I remember the rain.");

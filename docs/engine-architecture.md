@@ -25,7 +25,7 @@ Reel 的目标是让创作者直观地表达想象中的画面和交互，包括
 
 共享资源读取区分单资源过大与瞬时容量争用：文件超过宿主 input_bytes 容量时报告资源路径和所需/配置字节；并发读取暂时占满输入容量时保留尚未提交的读取，随既有资源维护继续准入，不结算为加载失败。取消可直接撤销未提交读取，无额外文件缓存或同步等待。范围为 reel-player 资源服务；作者接口、ABI、ASB 与依赖保持不变。
 
-模型来源的依赖捕获使用 Aside 的私有有序强边载荷与平衡树索引，去重和捕获期间的写冲突查询不再逐项扫描所有已捕获依赖；作者接口、list native ABI 及 ASB 不变。索引按堆预算准入、分片回收，捕获嵌套、取消与失败保留同一提交语义；VM 快照 7 恢复每个值块时重建已映射身份的索引，当前 SessionSnapshot 为 18。范围为 aside-vm 响应式载荷、快照/GC、reel-engine 的定向行为与成本检查，无新依赖。来源生成、捕获、订阅、列表索引、首窗、定位有效性和远跳分别测量；依赖有效性查询仍与登记依赖图有关，虚拟窗口不意味着数据与来源索引按需加载。
+模型来源的依赖捕获使用 Aside 的私有有序强边载荷与平衡树索引，去重和捕获期间的写冲突查询不再逐项扫描所有已捕获依赖；作者接口、list native ABI 及 ASB 不变。索引按堆预算准入、分片回收，捕获嵌套、取消与失败保留同一提交语义；VM 快照 7 恢复每个值块时重建已映射身份的索引，当前 SessionSnapshot 为 19。范围为 aside-vm 响应式载荷、快照/GC、reel-engine 的定向行为与成本检查，无新依赖。来源生成、捕获、订阅、列表索引、首窗、定位有效性和远跳分别测量；依赖有效性查询仍与登记依赖图有关，虚拟窗口不意味着数据与来源索引按需加载。
 
 冷查询和订阅提交沿私有 Dependencies 的既有 64 值块读取，每块复制到固定栈空间后按原顺序处理依赖，省去逐值重复容器验证与块查找。逐来源绑定解析、环检查、反向订阅准入/释放、弱边与失败发布语义保留；不增加常驻图副本或跨让出缓存。现有同步步骤仍处理全部实际条目，不能按块数缩小预算或声称恒定帧成本。每来源反向订阅数组的初次分配保持原样，仍单列 CPU 与分配成本。范围仅为 Aside 内部遍历和现有实际 model 成本检查，无作者 API、native ABI、VM/Session 快照格式或依赖变更。
 
@@ -87,6 +87,8 @@ VM 对象的代际身份与实体存储分离：slotmap 保存小型位置记录
 
 `tween` 另支持 quint_in/quint_out/quint_in_out 五次曲线和 bounce_in/bounce_out/bounce_in_out 回弹曲线。in 加速、out 减速或在终点回弹、in_out 对称组合；采样位于 [0,1] 且起止精确为 0/1。沿既有活动采样、所有权、取消与快照路径，不分配逐帧脚本对象。范围为 reel-engine 活动采样、作者示例和双语指南；无新增依赖，native ABI、Aside 字节码/ASB 不变。
 
+`quart_in/out/in_out` 为四次曲线；`elastic_in/out/in_out` 为衰减弹性曲线，允许中途越过起终值，起止仍精确为 0/1。elastic_out 使用 `1 + 2^(-10t) sin((t - 0.075) 2π / 0.3)`，in 为反向，in_out 为两半对称组合。属性自身的合法范围保持原规则，弹性适合位置、旋转和缩放；opacity 等有限区间属性应选不超调曲线。动作描述保存曲线编号，暂停、取消、预算和恢复沿既有活动路径，无新逐帧脚本分配、参数或格式变化。
+
 `stage.presented(owner: null)` 返回可等待的呈现请求；`await` 在请求之后的舞台投影实际接受呈现后返回 null。派生状态先稳定，字体与图片先完成准备；录制、拒帧和重绘旧帧均不结算请求。多个请求可随同一帧完成，重复等待同一对象共享终态。请求不暂停其他任务、音频或动画，转场组件可先挂载透明的新内容、等待呈现，再开始动画。owner 沿现有活动规则，退休取消未决请求；`.cancel()` 只取消这个请求，等待者取消不取消请求。请求不允许脚本 resolve/reject。无挂载根但显式请求呈现时允许提交空舞台。复用 completion 的 VM 根、订阅及错误路径，帧携带单调请求序号，不为等待保留场景或纹理副本；没有忙等和新线程。Rust 宿主把 `presentation_request()` 固定到稳定投影，在该投影实际接受后调用 `accept_presentation(session, request)`；旧序号不会完成新请求。范围为 reel-engine、reel-player、公开示例和双语指南；新增 native ABI 1，Aside 字节码/ASB 与其他 native ABI 不变，无新依赖。
 
 ### 保留画面的舞台转场
@@ -95,7 +97,7 @@ VM 对象的代际身份与实体存储分离：slotmap 保存小型位置记录
 
 阶段为 OldPending → Changing → NewPending → Playing → FinalPending。先等待稳定舞台实际接受，按这份画面的真正子树边界保留旧绘制与资源，再执行 change；回调可等待，其普通活动与新侧内容沿原所有权继续运行。新资源、布局和零进度合成帧接受后才开始时间；最终进度为一的帧接受后返回并释放旧画面。相同或相互包含的目标在已有转场期间请求另一转场会在执行新 change 前报告目标冲突；独立子树可并行。change 中的交互等待应放到转场返回后：转场目标的输入、焦点和确认准入在整个过程暂停，外部 UI 照常；此门控属于宿主呈现状态，保留作者 enabled/visible 值及绑定。取消后按当前真实舞台的下一接受帧恢复准入。
 
-旧侧是不可变绘制内容，含实际文字、粒子、内存图和视频当前帧；新侧是继续运行的普通舞台。旧内容保留目标自己的变换、裁剪、遮罩和组效果，使用目标父坐标系；祖先合成在外层应用一次。两侧在共同组/目标规划中以线性预乘色 mix(old,new,coverage) 合成，复用 mask 表达式、资源上传、绘制管线和 GPU 完成退休。目标使用 multiply/screen/add 时，两路先继承同一当前父背景再各自绘制，混合结果替换父目标，保留与背景的混合语义；不能把透明底上的结果简单 source-over 当作等价实现。转场的零/一端点强制完整旧/新画面，中间进度沿普通 mask 语义：字符串由 progress 推进阈值，表达式须显式使用 mask.param("progress") 表达变化，mask.gray 本身仍只是灰度采样。冻结画面没有输入、任务或可变节点。正常转场使用 CPU 绘制描述及已有资源租约，GPU 读回与 PNG 编解码仍只属于截图服务。
+旧侧是不可变绘制内容，含实际文字、粒子、内存图和视频当前帧；新侧是继续运行的普通舞台。旧内容保留目标自己的变换、裁剪、遮罩和组效果，使用目标父坐标系；祖先合成在外层应用一次。两侧在共同组/目标规划中以线性预乘色 mix(old,new,coverage) 合成，复用 mask 表达式、资源上传、绘制管线和 GPU 完成退休。目标使用 multiply/screen/add 时，两路先继承同一当前父背景再各自绘制，混合结果替换父目标，保留与背景的混合语义；不能把透明底上的结果简单 source-over 当作等价实现。转场的零/一端点强制完整旧/新画面；曲线采样夹在 0..1，中途弹性超调不提前结束转场。中间进度沿普通 mask 语义：字符串由 progress 推进阈值，表达式须显式使用 mask.param("progress") 表达变化，mask.gray 本身仍只是灰度采样。冻结画面没有输入、任务或可变节点。正常转场使用 CPU 绘制描述及已有资源租约，GPU 读回与 PNG 编解码仍只属于截图服务。
 
 owner 缺省继承当前作用域/任务。owner 或局部 target 退休、任务取消均撤销转场，清理原 native 续体及保留内容。change 前取消保持原状态；执行后取消显露当前舞台，保留已经发生的业务写入。回调故障清理后原样传播；节点 owner 撤销通过既有 native 回调撤销边界在外围报告 TransitionCancelled，整任务取消仍按原规则。阶段、原续体、返回值、目标/owner 和逻辑计时进入快照，恢复不重跑 change。短暂旧图提取沿保存准备屏障完成；播放中保存共享不可变画面描述，恢复先准备其资源再交换会话。
 
@@ -105,7 +107,7 @@ owner 缺省继承当前作用域/任务。owner 或局部 target 退休、任�
 
 运行时命令存储（已实现）：普通帧与遮罩使用连续 `Vec<FrameCommand>`，后端读取 `&[FrameCommand]`，不为每条命令创建 Arc。只有实际 RetainBuild 提取目标时，复制目标范围及可达遮罩的命令载荷；图片、字体与视频像素继续共享资源租约。整份独立 FrameDrawing、嵌套旧图和保存描述仍共享不可变所有权，提取完成即释放来源整帧，未选中兄弟的命令与资源不继续存活。复制按命令预付载荷字节与工作量；大型单条路径/字形命令通过 minimum_bytes/minimum_units 请求足够的单步额度，额度不足时尚不复制，不能把该最小额度误称为固定时间上限。取消释放已复制部分；恢复沿同一连续表示和现有资源重映射。序列化命令顺序/字段、作者接口、native ABI 与快照版本不变。范围仅 UI frame/retained/archive、共同 renderer 消费和相应测试文档；无新依赖。用既有 r01_measurements 的矩形/长路径负载比较普通帧运行时分配、录制/编译，并单列 retain 的复制耗时、源与目标重叠峰值和完成后存活量。复跑：`cargo test --release --locked -p reel-ui --test r01_measurements -- --ignored --nocapture --test-threads=1`；行为检查沿 `reel-ui --test r01`、`reel-ui --lib frame::archive`、`reel-render --features wgpu --test gpu_pixels retained_transition -- --ignored` 及原作者转场源码/ASB 检查。
 
-范围为 reel-ui/frame/resources、reel-render、reel-engine、reel-player、reel-cli 验证、公开示例和四份规范/指南；Aside VM 保持独立。启用现有锁定依赖 peniko 的 serde 功能及 serde 的 rc 功能，锁文件增加其传递依赖 serde_bytes 0.11.19。native ABI 1，当前 SessionSnapshot 18、VM8，ASB 格式保持不变。绘制提取和恢复按 StepBudget 推进；旧命令、资源引用、动态资源、两侧合成目标及保存暂存均纳入现有预算，最后租约与 GPU 使用结束后退款。普通帧使用连续命令，独立保留画面以 FrameDrawing 共享不可变内容；无转场帧沿原绘制路径，转场进度变化复用旧绘制、图片上传和遮罩程序，不重排旧文字或复制旧像素。检查覆盖源码/ASB、透明子树/祖先裁剪、粒子/文字/图像/视频、独立并行、冷资源、零时长、异常/取消/退休、播放中保存恢复、资源版本不符及真实 GPU 像素和计账。设备丢失后的恢复仍需实机验收。可运行示例为 [author_transition.aside](../examples/author_transition.aside)。
+范围为 reel-ui/frame/resources、reel-render、reel-engine、reel-player、reel-cli 验证、公开示例和四份规范/指南；Aside VM 保持独立。启用现有锁定依赖 peniko 的 serde 功能及 serde 的 rc 功能，锁文件增加其传递依赖 serde_bytes 0.11.19。native ABI 1，当前 SessionSnapshot 19、VM8，ASB 格式保持不变。绘制提取和恢复按 StepBudget 推进；旧命令、资源引用、动态资源、两侧合成目标及保存暂存均纳入现有预算，最后租约与 GPU 使用结束后退款。普通帧使用连续命令，独立保留画面以 FrameDrawing 共享不可变内容；无转场帧沿原绘制路径，转场进度变化复用旧绘制、图片上传和遮罩程序，不重排旧文字或复制旧像素。检查覆盖源码/ASB、透明子树/祖先裁剪、粒子/文字/图像/视频、独立并行、冷资源、零时长、异常/取消/退休、播放中保存恢复、资源版本不符及真实 GPU 像素和计账。设备丢失后的恢复仍需实机验收。可运行示例为 [author_transition.aside](../examples/author_transition.aside)。
 
 作者窗口在首个已挂载舞台投影及其字体、图片准备好后才提交首帧；作品直接正常结束时也允许呈现其最终空舞台。支持隐藏窗口的平台在首帧实际接受后显示窗口，Wayland 沿首次提交映射窗口的原生规则；不以窗口可见性查询驱动渲染。启动仍由有界 VM 执行片和资源完成通知推进，隐藏窗口不能依赖原生重绘事件才能完成首帧。显示后沿既有按需呈现、旧帧保留、输入验收与设备恢复路径。范围为 reel-player，语言、ASB/native ABI 和依赖不变；验收覆盖实际 Windows 首帧、字体/图片等待、拒帧及退出，其他平台分别验证。
 
@@ -184,6 +186,8 @@ reel-ui Stage 只投影当前行、逻辑索引、位置、总估计高度及修
 快照保留目标 key、请求身份、结果及构造续体，未决定位恢复后重新测量并等待新接受帧；候选仍不提前发布。范围为列表模块、共享结果屏障、UI/播放器反馈、测试和列表示例及四份文档；list ABI 11、新 scroll_to native ABI 1、SessionSnapshot 17、VM 快照 7，无新依赖、无兼容层。验证远跳 10 万行的工厂/节点/文字布局有界且来源/key 不重算，变高/宽度/重排、快速覆盖、删除/退休/取消、旧帧及未测量/构造中/已安装屏障三阶段快照。 行为命令：`cargo test --locked -p reel-engine --lib virtual_list_scroll_to`、`cargo test --locked -p reel-cli --test author_lists`。定位成本命令：`cargo test --release --locked -p reel-engine --lib virtual_list_scroll_to_far_window_is_bounded_without_reindexing -- --nocapture`；设置 `REEL_SESSION_FONT` 后运行 `cargo test --release --locked -p reel-player --lib virtual_scroll_to_far_target_has_bounded_actual_text_layout -- --ignored --nocapture` 验证 1 千/1 万/10 万项的真实文字排版与接受帧 CPU 路径，均不包含 GPU 呈现。交互示例 [author_list.aside](../examples/author_list.aside) 的 Item 998 按钮演示按业务 key 定位。
 
 ### 角色对白与公共播放时钟
+
+对白调用 `character(text, history:true, reveal_skippable:true)`、`narrator(text, history:true, reveal_skippable:true)` 和 `say(lines, reveal_skippable:true)` 在提交时固定本组的揭示策略。false 时，正文及尾部停顿完成前的手动推进被消费并返回 `InputOutcome::Pending`，不补字、不结束等待；快进仍按公共时钟揭示，完整画面实际接受后才推进。默认 true 保留点击补全和快进直达；自动阅读、`[next]`、速度设置、历史及已读规则沿既有路径。玩家速度 0 在 false 策略下仍执行显式 speed/pause，未指定固定速度的片段即时显示。策略只作用于本次调用；无需脚本帧任务或临时修改全局阅读状态。Rust `Session::begin_say` 增加末尾 bool 参数，`DialogueInteraction::reveal_skippable()` 读取策略。范围为 engine、player 播放时钟、作者示例及双语指南，无新依赖；narrator/character::speak ABI 4、say ABI 2、SessionSnapshot 19，VM/ASB 编码不变。检查按时钟推进、尾部停顿、输入序号、组内多行、快进等待接受帧、源码/ASB 和中途恢复；稳定揭示更新保持零分配。
 
 富文本值的只读 `.plain` 返回正文，`.markup` 返回创建时的完整标记字符串；两者读取共享已有不可变值，不复制正文。作者可组合姓名前缀与历史标记，普通字符串仍须经过 `rich_escape`。此属性沿现有 rich 宿主值和快照保存，不改变 VM 指令或 native 调用 ABI。
 
@@ -816,23 +820,23 @@ PR #54 的宿主值读取使用公开 sequence_len/get 与 table_own_string_look
 host_work 仅计选择查找工作，文本复制及发布同步，读取按块推进且不另设总文字长度门。作者文本仍须符合 VM 的实际堆内存预算；会话复制通过可失败的内存申请处理真实分配失败。内容身份由模块路径、版本、源区间或函数/PC 后备组成，不宣称是本地化或跨保存稳定身份。
 
 PR #55 的 Windows 原生 debug/release 验证覆盖真实执行、取消、GC 与终态；性能与设备仍需各自验收。无窗口入口 cargo run --locked -p reel-engine --example story_contract 保留。当前作者舞台已连接 text/image/row/column/stack、children 组合、属性更新、局部子树编辑和有限动画，源码 dev 与 ASB run 共用窗口宿主；命令及边界见本文开头和作者指南。角色、事件/绑定、媒体等待、资源包与快照继续沿同一宿主/呈现边界实现。
-## 作者音频活动（play ABI v3、volume ABI v2、queue ABI v1，其余 v1）
+## 作者音频活动（play ABI v4、volume/queue ABI v2，其余 v1）
 
 Windows CPAL/WASAPI 输出协商客户端 Mono/Stereo，使用共享音频引擎的声道矩阵转换；设备默认多声道格式不再被单/双声道筛选排除。其他后端仅公布其已知有序布局，不根据未知原生声道数量猜测扬声器位置。
 
-`audio.play(source, looping:false, volume:1, owner:null, group:"effects", pan:0, fade_in:0, start:0, loop_start:0, loop_end:null)` 立即返回可等待活动，后台完成读取与预解码后开始播放。`volume` 是非负线性增益，0 静音；`audio.volume(activity, value, duration:0)` 更新增益。`pause`、`resume`、`stop` 和 `await` 与演出活动共用作者入口。await 返回 Completed 或 Stopped；读取、解码、输出失败抛出错误，重复等待保留相同终态。Completed 表示混音器消费完内容，不承诺声卡已经播放完。
+`audio.play(source, looping:false, volume:1, owner:null, group:"effects", pan:0, fade_in:0, start:0, end:null, loop_start:0, loop_end:null)` 立即返回可等待活动，后台完成读取与预解码后开始播放。`volume` 是非负线性增益，0 静音；`audio.volume(activity, value, duration:0)` 更新增益。`pause`、`resume`、`stop` 和 `await` 与演出活动共用作者入口。await 返回 Completed 或 Stopped；读取、解码、输出失败抛出错误，重复等待保留相同终态。Completed 表示混音器消费完内容，不承诺声卡已经播放完。
 
-`audio.queue(activity, source, start:0, looping:false, loop_start:0, loop_end:null)` ABI 1 向同一音频活动追加片段，成功提交返回 null。参数沿 play 的位置/循环边界验证一次，终态活动拒绝追加；读取、解码或输出失败通过原活动唯一终态传播。owner、group、volume、pan、暂停和停止作用于整条队列，seek 作用于当前片段；position 是当前片段素材的内容秒数。当前片段循环且已有后继时，在本轮 loop_end 退出；没有后继则继续循环。已准备好的片段由混音回调在内容边界接续，不经过主线程重新 play。后继未准备好时输出静音、保持内容时钟和未完成活动；准备好再继续，无缝保证仅覆盖已准备好的片段。
+`audio.queue(activity, source, start:0, end:null, looping:false, loop_start:0, loop_end:null)` ABI 2 向同一音频活动追加片段，成功提交返回 null。参数沿 play 的位置/循环边界验证一次，终态活动拒绝追加；读取、解码或输出失败通过原活动唯一终态传播。owner、group、volume、pan、暂停和停止作用于整条队列，seek 作用于当前片段；position 是当前片段素材的内容秒数。当前片段循环且已有后继时，在本轮 loop_end 退出；没有后继则继续循环。已准备好的片段由混音回调在内容边界接续，不经过主线程重新 play。后继未准备好时输出静音、保持内容时钟和未完成活动；准备好再继续，无缝保证仅覆盖已准备好的片段。
 
 新音频在创建任务的同步执行段结束前保持静音，后台读取和解码可以提前进行。任务开始显式 await、普通调用真正 Waiting 或任务 Returned 时通过 MediaBackend::commit_audio(id) 冻结当时已知片段作为首批，等待这些片段完成准备；BudgetYield 和普通 HostCall 不封口，后续追加不延长已封口首批。任务故障或取消撤销尚未提交的声音，不短暂起播。未提交声音的 TaskId 随会话快照重映射，恢复后继续等待原任务边界；已提交声音在恢复其完整队列后重新提交。队列请求、待解码、PCM 和退休都有界：沿宿主现有 mixer.max_sounds 限制未退休片段与队列描述符，PCM 与解码继续使用 pcm_bytes、queue_bytes 及其 BudgetTicket；原生队列固定存储按 mixer 的实际容量计入 AudioActivityService::slot_bytes(slots, mixer)，不假设活动槽数等于混音容量。没有作者容量参数。回调只消费预分配队列、切换播放游标和移交退休载荷，不分配、执行 IO、等待或析构 PCM。当前片段身份、实际位置、循环退出状态、待播片段和暂停状态进入 AudioPlayback，会话快照版本相应递增，不保留旧格式兼容。验收覆盖多段音乐/旁白、循环退出、准备迟到、失败、取消/owner 退休、跨片段保存恢复和离线真实混音样本边界；这些检查不等同于设备呈现同步。
 
-start 与循环边界使用有限非负秒。looping:true 时循环区间为 [loop_start, loop_end)，null 终点表示音轨结尾；start 可以小于 loop_start，先播放前奏再进入循环，超过循环终点则按区间取模。looping:false 时只接受默认循环边界，start 达到音轨结尾时无声完成。解码后一次检查循环区间位于资源内、量化后至少一帧，再把起点和区间直接交给 Kira transport，不复制 PCM、不逐帧检查边界。
+音频终点（已实现）：start、非 null 的 end 与循环边界使用有限非负秒，显式 end 必须大于初始 start；null end 使用资源结尾。end 是排他内容终点，后台按现有 round 规则量化到源采样帧并检查位于资源内且至少一帧，通过 StaticSoundData 的 [0,end) 视图共享原 PCM。[0,end) 视图至少一帧不要求量化后的 [start,end) 非空：两端落入同一源帧时无声自然完成；恢复位置恰好为 end 沿同一规则完成。start 仍是初始绝对位置，不是 seek 下界；position/seek 始终使用当前素材的绝对内容秒数。looping:true 时循环区间为 [loop_start, loop_end)，null loop_end 使用 end；循环区间须位于该视图内、量化后至少一帧。start 小于 loop_start 时先播前奏，超过循环终点时按区间取模。looping:false 仅接受默认循环边界，seek 达到 end 后自然完成；加载中可先定位，解码后按最新起点钳取。混音传输在终点完成或接续队列，沿同一重采样历史和退休路径，不用主线程定时 stop，也不复制 PCM。每个队列条目保存自己的 end，恢复保留当前条目实际位置与待播边界。范围为 engine 音频请求/native、player 媒体适配、media PCM 视图及定向检查；无新依赖，play ABI4、queue ABI2、SessionSnapshot19，VM/ASB 按本批整体版本。检查源帧排他边界、44.1/48k 重采样、已准备队列连续样本、暂停/seek/循环退出、终态和源码/ASB存恢复；实际声卡呈现另验。复跑 `cargo test --locked -p reel-media --test audio_contracts playback_end`、`cargo test --locked -p reel-player --lib media::tests`、`cargo test --locked -p reel-engine --lib aside::tests::snapshots::audio`，以及 `cargo run --locked -p reel-dev -- audio-probe`。
 
 `audio.position(activity)` 返回最后观察到的内容位置秒数，加载中为请求起点，暂停或输出挂起时保持，循环时回到区间起点；终态保留最后位置而不保留 PCM。它是显式读取，不自动订阅播放时钟；无 IO、解码或完整快照复制。切换同进度音轨可用 `audio.play(next, start: audio.position(current), group:"music", looping:true, fade_in:2)` 与 `audio.stop(current, fade:2)` 组合，淡入从新音轨实际起播时开始。该组合不承诺两个后台加载音轨的采样级同步。
 
 `audio.seek(activity,seconds)` ABI 1 提交绝对内容位置并返回 null，复用原活动和播放终态。加载/解码中更新起点，解码结果按最新请求配置，不重新读取或复制 PCM；播放中使用合并命令槽，源帧量化和循环规则与 start 一致。暂停或输出挂起仍可定位，非循环超尾夹到末尾，已终态不重启。控制端在 seek 命令被消费前报告最新目标，混音器先清空重采样历史、发布新位置再确认该命令序号，旧确认不得覆盖后续目标；紧接保存使用此逻辑位置。音频供给无新增分配、IO 或等待。Aside 字节码 与快照格式不变。
 
-AudioRequest 保存可移植起点与循环区间，AudioPlayback 捕获当前内容位置；所有分组均按当前条目实际位置、循环区间与待播队列恢复；分组仅控制混音归属，已经结束的音效不重播。音频活动终态位置进入 VM 宿主载荷。会话快照版本为 8，未完成淡变沿原有目标值恢复，不引入设备句柄或音频时钟轮询任务。
+AudioRequest 保存可移植起点、排他终点与循环区间，AudioPlayback 捕获当前内容位置；所有分组均按当前条目实际位置、播放边界、循环区间与待播队列恢复；分组仅控制混音归属，已经结束的音效不重播。音频活动终态位置进入 VM 宿主载荷。当前会话快照版本为 19，未完成淡变沿原有目标值恢复，不引入设备句柄或音频时钟轮询任务。
 
 缺省 owner 是当前回调节点，主剧情中是会话；节点退休取消声音与尚未结束的加载。取消一个等待者不取消共享播放。会话关闭先撤销等待，再停止输出、取消加载及活动，持续回收直到实际 PCM 和后台请求释放。挂起保留 mixer，恢复复用；输出失败只结算一次，不自动伪装恢复成功。
 
