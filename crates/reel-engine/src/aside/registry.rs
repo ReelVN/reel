@@ -679,6 +679,11 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             vec![parameter("activity", None), parameter("seconds", None)],
             false,
         ),
+        (
+            "at",
+            vec![parameter("activity", None), parameter("seconds", None)],
+            false,
+        ),
         ("position", vec![parameter("activity", None)], false),
         ("await", vec![parameter("activity", None)], true),
     ] {
@@ -687,7 +692,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             symbol: format!("reel::audio::{name}"),
             abi_version: match name {
                 "play" => 4,
-                "volume" | "queue" => 2,
+                "volume" | "queue" | "position" => 2,
                 _ => 1,
             },
             parameters,
@@ -703,9 +708,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                     | if name == "position" {
                         0
                     } else {
-                        Effects::WRITE
+                        Effects::WRITE | Effects::HOST
                     }
-                    | Effects::HOST
                     | if waits { Effects::WAIT } else { 0 },
             ),
             required_capabilities: vec!["reel.audio".into()],
@@ -727,21 +731,24 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             "seek",
             vec![parameter("activity", None), parameter("seconds", None)],
         ),
+        (
+            "at",
+            vec![parameter("activity", None), parameter("seconds", None)],
+        ),
         ("position", vec![parameter("activity", None)]),
     ] {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::video::{name}"),
-            abi_version: 1,
+            abi_version: if name == "position" { 2 } else { 1 },
             parameters,
             result: BuiltinType::Any,
             effects: Effects(
                 Effects::ALLOCATE
-                    | Effects::HOST
                     | if name == "position" {
                         0
                     } else {
-                        Effects::WRITE
+                        Effects::WRITE | Effects::HOST
                     },
             ),
             required_capabilities: vec!["reel.stage".into()],

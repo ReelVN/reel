@@ -428,7 +428,7 @@ fn project_scenario_mixes_audio_queue_across_save_restore_and_new_session() {
             await stage.presented();
             let sound = audio.play("chime.wav", group: "music", volume: 0.5,
                 looping: true, loop_start: 0.02, loop_end: 0.2);
-            while audio.position(sound) < 0.03 { await run(delay(0.005)); }
+            if !(await audio.at(sound,0.03)) {throw "queue position not reached";}
             pause(sound);
             await run(delay(0.02));
             audio.queue(sound, "chime.wav", start: 0.1);
@@ -466,6 +466,53 @@ fn project_scenario_mixes_audio_queue_across_save_restore_and_new_session() {
             mixed.peak > 0.01,
             "decoded fixture produced no audible PCM: {mixed:?}"
         );
+    }
+}
+
+#[test]
+fn project_scenario_media_position_cue_restores_with_real_audio() {
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(
+        project.path().join("chime.wav"),
+        include_bytes!("../../../examples/assets/chime.wav"),
+    )
+    .unwrap();
+    let source = project.path().join("main.aside");
+    std::fs::write(
+        &source,
+        r#"
+        fn main() {
+            let root=stack(width:320,height:180);
+            let sound=audio.play("chime.wav"); pause(sound);
+            let cursor=derive(||audio.position(sound));
+            let marker=stack(width:20,height:20,x:derive(||cursor.value*100));
+            root.add(marker); stage.replace(root);
+            await stage.presented();
+            if audio.position(sound)!=0 || marker.x!=0 {throw "paused loading advanced";}
+            let cue=audio.at(sound,0.125);
+            audio.seek(sound,0.05);
+            if audio.position(sound)!=0.05 {throw "seek observation";}
+            await stage.presented();
+            if marker.x!=5 {throw "seek binding";}
+            let save=saves.save("position");
+            await save;
+            if !save.restored {await saves.load("position"); throw "old session returned";}
+            if audio.position(sound)!=0.05 || marker.x!=5 {throw "restored position";}
+            resume(sound);
+            if !(await cue) || !(await cue) {throw "restored position wait";}
+            if audio.position(sound)<0.125 {throw "cue preceded observed position";}
+            if await sound!="Completed" {throw "audio terminal";}
+            await stage.presented();
+            if marker.x<24 {throw "final reactive position";}
+            if !(await audio.at(sound,audio.position(sound))) {throw "final threshold";}
+            if await audio.at(sound,1) {throw "early ending reported arrival";}
+        }
+    "#,
+    )
+    .unwrap();
+    for mixed in execute_project(&source, Duration::from_secs(30)) {
+        assert!(mixed.frames > 0);
+        assert!(mixed.peak > 0.01, "real decoded PCM was not consumed");
     }
 }
 

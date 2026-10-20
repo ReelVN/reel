@@ -11,6 +11,7 @@ mod geometry;
 mod host_budget;
 mod localization;
 mod masks;
+mod media_positions;
 mod models;
 mod particles;
 mod results;

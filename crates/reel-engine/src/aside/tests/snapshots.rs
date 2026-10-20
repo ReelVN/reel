@@ -77,6 +77,18 @@ mod audio {
         }
     }
 
+    fn drive(vm: &mut SessionVm, session: &mut Session, collect_copies: bool) {
+        for _ in 0..32 {
+            models::drive(vm, session, collect_copies);
+            let media = vm.maintain_media().unwrap();
+            let sampled = vm.advance_time(session, vm.logical_time(), 64).unwrap();
+            if !media && !sampled.woke {
+                return;
+            }
+        }
+        panic!("media failed to settle");
+    }
+
     #[test]
     fn effect_scope_audio_retirement_cancels_uncommitted_sound_and_preserves_explicit_owner() {
         let code = r#"fn opening() {
@@ -96,7 +108,7 @@ mod audio {
             let (mut session, mut vm) = models::prepared(code, encoded);
             let host = Host::default();
             vm.set_media(Box::new(host.clone())).unwrap();
-            models::drive(&mut vm, &mut session, false);
+            drive(&mut vm, &mut session, false);
             assert_eq!(host.0.borrow()[0].result, Some(MediaResult::Cancelled));
             assert_eq!(host.0.borrow()[1].result, Some(MediaResult::Stopped));
             assert_eq!(*host.1.borrow(), vec![MediaId(2)]);
@@ -122,7 +134,7 @@ mod audio {
             let (mut session, mut runtime) = models::prepared(code, encoded);
             let original = Host::default();
             runtime.set_media(Box::new(original.clone())).unwrap();
-            models::drive(&mut runtime, &mut session, false);
+            drive(&mut runtime, &mut session, false);
             original.0.borrow_mut()[2].result = Some(MediaResult::Completed);
             let program = runtime.vm.program().clone();
             let mut capture = runtime.snapshot_begin(&session).unwrap();
@@ -188,7 +200,7 @@ mod audio {
                     .handle_local_input(session.root_owner(), InputAction::Advance(interaction))
                     .unwrap();
             }
-            models::drive(&mut runtime, &mut session, false);
+            drive(&mut runtime, &mut session, false);
             assert!(
                 matches!(session.view().interaction, Some(crate::InteractionView::Dialogue(d)) if d.text() == "restored audio")
             );
@@ -360,7 +372,7 @@ mod audio {
             .unwrap();
             while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
             let (mut session, mut runtime) = restore.finish().unwrap();
-            models::drive(&mut runtime, &mut session, false);
+            drive(&mut runtime, &mut session, false);
             assert!(
                 matches!(session.view().interaction, Some(crate::InteractionView::Dialogue(d)) if d.text() == "ready await restored")
             );
@@ -401,7 +413,7 @@ mod audio {
             let (mut session, mut runtime) = models::prepared(&code, true);
             let host = Host::default();
             runtime.set_media(Box::new(host.clone())).unwrap();
-            models::drive(&mut runtime, &mut session, false);
+            drive(&mut runtime, &mut session, false);
             assert_eq!(host.1.borrow().len(), usize::from(commits));
             assert_eq!(
                 host.0.borrow()[0].result,

@@ -427,6 +427,7 @@ impl SessionVm {
         self.live(session)?;
         self.activities.observe_time(seconds)?;
         let sample = self.reactive_settled();
+        let media_woke = sample && self.sample_media_positions()?;
         self.activities.set_skipping(session.reading().skipping());
         if sample {
             self.particles.begin(seconds)?;
@@ -442,7 +443,7 @@ impl SessionVm {
             self.activities.drain(&mut self.vm, work - particle_work)?
         };
         progress.work += particle_work;
-        progress.woke |= self.particles.take_wake();
+        progress.woke |= media_woke | self.particles.take_wake();
         if !self.activities.pending() {
             let transition = self
                 .transitions
@@ -498,6 +499,15 @@ impl SessionVm {
             return Ok(NativeDispatch::Ready { work: 1 });
         }
         let p = self.vm.program().package();
+        let media_read = match p.symbols[p.natives[ticket.native.index()].symbol.index()].as_str() {
+            "reel::audio::position" => Some("reel::audio::position"),
+            "reel::video::position" => Some("reel::video::position"),
+            _ => None,
+        };
+        if let Some(symbol) = media_read {
+            self.dispatch_media(ticket, symbol)?;
+            return Ok(NativeDispatch::Ready { work: 1 });
+        }
         let symbol = p.symbols[p.natives[ticket.native.index()].symbol.index()].clone();
         match symbol.as_str() {
             "reel::game::start" => {
@@ -601,6 +611,8 @@ impl SessionVm {
             | "reel::audio::group_volume"
             | "reel::audio::pan"
             | "reel::audio::seek"
+            | "reel::audio::at"
+            | "reel::video::at"
             | "reel::audio::position"
             | "reel::audio::stop" => {
                 if symbol == "reel::audio::await" {
