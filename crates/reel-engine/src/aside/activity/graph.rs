@@ -176,9 +176,9 @@ impl Build {
             stage.animation_target(heap, target)?;
             heap.track_host_writes(target)?;
             let goals = payload(heap, action, GOALS)?;
-            for i in (0..heap.sequence_len(goals)?).step_by(2) {
+            for i in (0..heap.sequence_len(goals)?).step_by(action::GOAL_LEN) {
                 let field = heap.sequence_get(goals, i)?;
-                let end = Value::float(stage::number(heap.sequence_get(goals, i + 1)?)?);
+                let end = Value::float(stage::number(heap.sequence_get(goals, i + 2)?)?);
                 for value in [
                     field,
                     Value::NULL,

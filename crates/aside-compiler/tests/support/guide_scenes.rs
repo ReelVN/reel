@@ -31,6 +31,7 @@ pub const SCENES: &[(&str, E)] = &[
     ("paused scene entrance", E::Block),
     ("entrance in story", E::Block),
     ("parallel entrance", E::Block),
+    ("reusable entrance action", E::Block),
     ("breathing in story", E::Block),
     ("timed delay in story", E::Block),
     ("show_cg helper", E::Module),
@@ -110,7 +111,7 @@ pub fn enclosing(scene: &str) -> &[&str] {
         "selective history" | "protected dialogue reveal" => &["mio", "eri"],
         "simultaneous dialogue in story" => &["mio"],
         "entrance in story" => &["portrait"],
-        "parallel entrance" => &["view"],
+        "parallel entrance" | "reusable entrance action" => &["view"],
         "breathing in story" => &["view", "mio"],
         "timed delay in story" | "scoped property override" | "scoped additive offset" => {
             &["panel"]

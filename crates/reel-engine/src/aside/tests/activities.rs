@@ -1,4 +1,5 @@
 use super::*;
+mod tween_from;
 
 #[test]
 fn initially_paused_activity_restores_before_first_activation() {

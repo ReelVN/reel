@@ -7,9 +7,9 @@ fn main() {
     };
     stage.replace(card);
     let entrance = parallel(
-        tween(card, opacity: 1, duration: 0.5, easing: "quart_in"),
-        tween(card, x: 220, duration: 0.8, easing: "elastic_out"),
-        tween(card, y: 180, duration: 1.2, easing: "bounce_out")
+        tween(card, from: {opacity: 0}, opacity: 1, duration: 0.5, easing: "quart_in"),
+        tween(card, from: {x: 80}, x: 220, duration: 0.8, easing: "elastic_out"),
+        tween(card, from: {y: 120}, y: 180, duration: 1.2, easing: "bounce_out")
     );
     await run(entrance);
 
@@ -27,4 +27,7 @@ fn main() {
     await run(tween(card, x: 220, rotation: 0, duration: 0.5, easing: "in_out"));
     narrator("写作时只需描述画面应该如何变化。");
     await run(tween(card, opacity: 0, duration: 0.4));
+    // 复用动作中的起值，延迟结束后重新入场。
+    await run(sequence(delay(0.5), entrance));
+    narrator("同一个入场动作，也可以留给重播按钮。");
 }
