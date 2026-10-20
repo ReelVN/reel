@@ -99,6 +99,9 @@ pub(super) struct Results {
     owned_remaining: usize,
     owned_dirty: bool,
     owner_revision: u64,
+    #[cfg(test)]
+    #[serde(skip)]
+    pub(super) owned_inspections: usize,
 }
 impl Results {
     pub(super) fn request_presentation(&mut self) -> Result<u64, AdapterError> {
@@ -447,7 +450,6 @@ impl Results {
         let weak = vm.heap_mut().alloc_weakref(result)?;
         let root = vm.heap_mut().add_root(root_owner, RootKind::Host, weak)?;
         self.owned.push_back(root);
-        self.owners_changed();
         Ok(())
     }
     pub(super) fn create_operation(&mut self, vm: &mut Vm) -> Result<Value, AdapterError> {
@@ -522,6 +524,10 @@ impl Results {
             self.owner_revision = owner_revision;
         }
         for _ in 0..self.owned_remaining.min(64) {
+            #[cfg(test)]
+            {
+                self.owned_inspections += 1;
+            }
             let root = *self.owned.front().unwrap();
             let heap = vm.heap_mut();
             let weak = heap.root_value(root)?;

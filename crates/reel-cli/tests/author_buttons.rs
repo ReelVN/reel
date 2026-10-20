@@ -13,6 +13,38 @@ use support::*;
 const SOURCE: &str = include_str!("../../../examples/author_buttons.aside");
 
 #[test]
+fn source_and_asb_retire_a_batch_of_live_completion_owners() {
+    let source = r#"fn main() {
+        let owner=stack(); stage.replace(owner);
+        let requests=[];
+        for i in 0..1024 {requests.append(completion(owner:owner));}
+        for request in requests {
+            if !request.pending {throw "live result ended";}
+        }
+        owner.remove();
+        for request in requests {
+            if request.pending {throw "retired owner retained result";}
+        }
+    }"#;
+    let checked = reel_cli::check(source, "completion-batch.aside").unwrap();
+    let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
+    for story in [
+        reel_engine::aside::source::compile_story(source, "main", 1, "main").unwrap(),
+        reel_cli::decode_story(&artifact.bytes).unwrap(),
+    ] {
+        let mut driver = AsideSessionUi::from_compiled(
+            Session::new(SessionId(1), Epoch(1)).unwrap(),
+            story,
+            "en",
+            VmLimits::default(),
+        )
+        .unwrap();
+        settle(&mut driver);
+        assert_eq!(driver.state(), StoryState::Finished);
+    }
+}
+
+#[test]
 fn bound_class_method_keeps_its_receiver_after_entry_returns() {
     let source = r#"
     class Counter {
