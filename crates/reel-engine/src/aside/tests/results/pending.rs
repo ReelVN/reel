@@ -7,6 +7,56 @@ fn has_text(vm: &SessionVm, text: &str) -> bool {
 }
 
 #[test]
+fn result_pending_registration_visits_existing_results_only_after_lifecycle_changes() {
+    for encoded in [false, true] {
+        for count in [64, 256, 1024] {
+            let code = r#"fn opening() {
+                let root=column(); stage.replace(root);
+                let owner=root.add(stack());
+                let requests=[];
+                for i in 0..COUNT {requests.append(completion(owner:owner));}
+                root.add(button("live",on_click:|| {
+                    for request in requests {
+                        if !request.pending {throw "live request ended";}
+                    }
+                }));
+                root.add(button("remove",on_click:owner.remove));
+                root.add(button("retired",on_click:|| {
+                    for request in requests {
+                        if request.pending {throw "owner did not cancel request";}
+                    }
+                    root.add(text("all cancelled"));
+                }));
+            }"#
+            .replace("COUNT", &count.to_string());
+            let (mut session, mut vm) = prepared(&code, encoded);
+            drive(&mut vm, &mut session, false);
+            let creation = vm.results.owned_inspections;
+            eprintln!("completion registration: encoded={encoded} count={count} visits={creation}");
+            assert_eq!(creation, 0, "registration only appends its own weak record");
+            collect(&mut vm);
+            drive(&mut vm, &mut session, false);
+            let after_gc = vm.results.owned_inspections;
+            assert_eq!(
+                after_gc - creation,
+                count,
+                "GC completion visits each live result once"
+            );
+            click(&mut vm, &mut session, "live");
+            assert_eq!(vm.results.owned_inspections, after_gc);
+            click(&mut vm, &mut session, "remove");
+            assert_eq!(vm.results.owned_inspections - after_gc, count);
+            click(&mut vm, &mut session, "retired");
+            assert!(has_text(&vm, "all cancelled"));
+            assert!(
+                !vm.results
+                    .needs_work(vm.stage.scene.revision(), vm.stage.retirement_revision)
+            );
+        }
+    }
+}
+
+#[test]
 fn result_pending_publishes_terminals_and_owner_exit_without_await() {
     let code = r#"fn opening() {
         let root=column(); stage.replace(root);
