@@ -282,7 +282,7 @@ pub struct FrameContext {
 pub struct FrameMask {
     #[serde(with = "wire::MaskModeDef")]
     pub mode: MaskMode,
-    pub commands: Vec<Arc<FrameCommand>>,
+    pub commands: Vec<FrameCommand>,
 }
 #[derive(Clone, Debug)]
 pub struct RenderFrame {
@@ -302,7 +302,7 @@ struct FrameData {
 /// Immutable drawing and resource ownership, independent of frame acceptance and input.
 #[derive(Debug)]
 pub struct FrameDrawing {
-    commands: Vec<Arc<FrameCommand>>,
+    commands: Vec<FrameCommand>,
     masks: BTreeMap<u32, Arc<FrameMask>>,
     resources: ResourceSnapshot,
     transitions: Vec<SceneTransition>,
@@ -311,7 +311,7 @@ pub struct FrameDrawing {
 }
 type FrameSubtree = crate::app::SubtreePaint;
 impl FrameDrawing {
-    pub fn commands(&self) -> &[Arc<FrameCommand>] {
+    pub fn commands(&self) -> &[FrameCommand] {
         &self.commands
     }
     pub fn masks(&self) -> &BTreeMap<u32, Arc<FrameMask>> {
@@ -346,7 +346,7 @@ impl RenderFrame {
     pub fn geometry(&self) -> &PresentedGeometryView {
         &self.inner.geometry
     }
-    pub fn commands(&self) -> &[Arc<FrameCommand>] {
+    pub fn commands(&self) -> &[FrameCommand] {
         &self.inner.drawing.commands
     }
     pub fn masks(&self) -> &BTreeMap<u32, Arc<FrameMask>> {
@@ -441,7 +441,7 @@ struct Building {
     transitions: Vec<FrameTransition>,
     resources: ResourceSnapshot,
     info: FrameInfo,
-    commands: Vec<Arc<FrameCommand>>,
+    commands: Vec<FrameCommand>,
     masks: Vec<FrameMask>,
     cursors: Vec<Cursor>,
     mappings: Vec<MaskMapping>,
@@ -513,11 +513,7 @@ impl FrameBuild {
             .map_err(|_| error(BuildErrorKind::Bytes))?;
         let initial = size_of::<FrameData>()
             .checked_add(4 * size_of::<usize>() + size_of::<Building>() + size_of::<FrameDrawing>())
-            .and_then(|n| {
-                n.checked_add(
-                    main_count.checked_mul(size_of::<FrameCommand>() + 3 * size_of::<usize>())?,
-                )
-            })
+            .and_then(|n| n.checked_add(main_count.checked_mul(size_of::<FrameCommand>())?))
             .and_then(|n| {
                 n.checked_add(
                     source
@@ -714,7 +710,7 @@ impl Building {
         }
         Some(scene)
     }
-    fn program(&mut self, stream: Option<usize>) -> &mut Vec<Arc<FrameCommand>> {
+    fn program(&mut self, stream: Option<usize>) -> &mut Vec<FrameCommand> {
         match stream {
             None => &mut self.commands,
             Some(index) => &mut self.masks[index].commands,
@@ -729,39 +725,40 @@ impl Building {
             if b.max_commands == 0 {
                 break;
             }
-            if let Some(mut job) = self.job.take() {
-                if job.field < 9 {
+            if self.job.is_some() {
+                // Payload elements advance in place; move the full command only at commit.
+                if self.job.as_ref().unwrap().field < 9 {
                     let resolve_units =
                         2 * self.cursors.last().expect("active cursor").path.len() as u64 + 1;
                     if !self.spend(&mut p, &b, resolve_units, 0)? {
                         p.minimum_units = resolve_units;
-                        self.job = Some(job);
                         break;
                     }
                     let c = self.cursors.last().expect("active cursor");
                     let scene = Self::scene(&self.source, c).expect("copy job scene");
                     let cmd = &scene.commands()[c.position];
+                    let job = self.job.as_ref().unwrap();
                     let size = field_size(scene, cmd, job.field, job.index);
                     if let Some(size) = size {
                         if !self.spend(&mut p, &b, 0, size as u64)? {
                             p.minimum_units = resolve_units;
                             p.minimum_bytes = size as u64;
-                            self.job = Some(job);
                             break;
                         }
                         let scene =
                             Self::scene(&self.source, self.cursors.last().unwrap()).unwrap();
+                        let job = self.job.as_mut().unwrap();
                         copy_field(
                             scene,
                             cmd_id(scene, self.cursors.last().unwrap().position),
-                            &mut job,
+                            job,
                         )?;
                         job.index += 1;
                     } else {
+                        let job = self.job.as_mut().unwrap();
                         job.field += 1;
                         job.index = 0;
                     }
-                    self.job = Some(job);
                     continue;
                 }
                 let cursor = self.cursors.last().unwrap();
@@ -770,9 +767,9 @@ impl Building {
                     + if cursor.stream.is_none() { 3 } else { 1 };
                 if !self.spend(&mut p, &b, commit_units, 0)? {
                     p.minimum_units = commit_units;
-                    self.job = Some(job);
                     break;
                 }
+                let job = self.job.take().unwrap();
                 self.commit(job)?;
                 p.commands += 1;
                 if p.commands >= b.max_commands {
@@ -853,13 +850,8 @@ impl Building {
                     continue;
                 }
             } else {
-                if !self.spend(
-                    &mut p,
-                    &b,
-                    0,
-                    (size_of::<FrameCommand>() + 2 * size_of::<usize>()) as u64,
-                )? {
-                    p.minimum_bytes = (size_of::<FrameCommand>() + 2 * size_of::<usize>()) as u64;
+                if !self.spend(&mut p, &b, 0, size_of::<FrameCommand>() as u64)? {
+                    p.minimum_bytes = size_of::<FrameCommand>() as u64;
                     break;
                 }
                 self.start_credit = 0;
@@ -899,7 +891,7 @@ impl Building {
                     InkBounds::Rect(bounds).transformed(transform),
                     1. / self.source.geometry.scale_factor(),
                 ));
-                self.commands.push(Arc::new(command));
+                self.commands.push(command);
                 p.commands += 1;
                 self.cursors
                     .last_mut()
@@ -908,13 +900,8 @@ impl Building {
                 continue;
             }
             if self.allocation_need.is_none() {
-                if !self.spend(
-                    &mut p,
-                    &b,
-                    0,
-                    (size_of::<FrameCommand>() + 2 * size_of::<usize>()) as u64,
-                )? {
-                    p.minimum_bytes = (size_of::<FrameCommand>() + 2 * size_of::<usize>()) as u64;
+                if !self.spend(&mut p, &b, 0, size_of::<FrameCommand>() as u64)? {
+                    p.minimum_bytes = size_of::<FrameCommand>() as u64;
                     break;
                 }
                 // Validate the already selected range once after prepayment.
@@ -981,7 +968,7 @@ impl Building {
                     .scene
                     .commands()
                     .len()
-                    .checked_mul(size_of::<FrameCommand>() + 3 * size_of::<usize>())
+                    .checked_mul(size_of::<FrameCommand>())
                     .and_then(|n| {
                         n.checked_add(
                             cursor
@@ -1242,11 +1229,7 @@ impl Building {
             }
             let scope = c.scopes.pop().unwrap();
             if scope.kind == ScopeKind::Group {
-                let FrameOp::PushGroup(group) =
-                    &mut Arc::get_mut(&mut self.program(stream)[scope.command])
-                        .expect("unpublished command")
-                        .op
-                else {
+                let FrameOp::PushGroup(group) = &mut self.program(stream)[scope.command].op else {
                     unreachable!()
                 };
                 // Filters and shaped glyphs may extend arbitrarily beyond layout boxes.
@@ -1282,7 +1265,7 @@ impl Building {
             FrameOp::PushGroup(g) => g.owner,
             _ => job.command.origin.at.owner,
         };
-        self.program(stream).push(Arc::new(job.command));
+        self.program(stream).push(job.command);
         self.cursors
             .last_mut()
             .unwrap()

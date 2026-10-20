@@ -62,7 +62,7 @@ struct Stream<'a> {
     offset: usize,
     transition_next: usize,
     transitions_enabled: bool,
-    commands: &'a [std::sync::Arc<FrameCommand>],
+    commands: &'a [FrameCommand],
     next: usize,
     transform: Affine,
     scopes: Scopes<Scope<'a>>,
@@ -440,7 +440,7 @@ impl Context<'_> {
     fn start_stream<'a>(
         &mut self,
         drawing: &'a FrameDrawing,
-        commands: &'a [std::sync::Arc<FrameCommand>],
+        commands: &'a [FrameCommand],
         offset: usize,
         transitions_enabled: bool,
         transform: Affine,

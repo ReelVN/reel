@@ -763,6 +763,8 @@ scope(body: |s| {
 
 `stage.transition` 保留目标当前画面，执行 change，再将旧画面过渡到继续运行的新内容。调用完成后返回 change 的结果；与 scope 一样直接调用。并发使用 spawn。
 
+保留准备只提取目标范围的绘制数据并共享图像、字体和视频内容；目标越复杂，准备的复制工作越多。这项工作发生在请求转场时，播放中继续复用旧画面。
+
 ```aside
 stage.transition(target: scene, duration: 0.6, change: || {
     scene.clear();

@@ -146,7 +146,7 @@ pub(super) fn transition(
     value: &SavedTransition,
     index: usize,
     prior: Option<&SavedTransition>,
-    commands: &[Arc<FrameCommand>],
+    commands: &[FrameCommand],
 ) -> Result<(), RetainError> {
     if value.previous >= index
         || value.commands.start > value.commands.end

@@ -148,6 +148,12 @@ fn record_paused_finish_cancel_and_source_drop_cost() {
         }
         let export_time = clock.elapsed();
         let export_alloc = region.change();
+        if payload == 0 {
+            assert_eq!(
+                export_alloc.allocations, 0,
+                "ordinary rectangle export must not allocate per command"
+            );
+        }
         phase("complete_before_source_release", initial);
         let region = Region::new(ALLOCATOR);
         let clock = Instant::now();
@@ -229,4 +235,88 @@ fn record_paused_finish_cancel_and_source_drop_cost() {
     );
     assert!(completed > 0, "measurement must perform record/export work");
     println!("completed_workloads={completed}");
+}
+
+#[test]
+#[ignore = "run alone with --ignored --nocapture; isolates retained target copy and overlap"]
+fn retained_target_copy_cost() {
+    use reel_ui::{
+        core::Widget,
+        kurbo::{Point, Size},
+    };
+    fn live() -> i64 {
+        let stats = ALLOCATOR.stats();
+        stats.bytes_allocated as i64 - stats.bytes_deallocated as i64
+    }
+    for (count, payload) in [(512, 0), (16, 2048)] {
+        let initial = live();
+        let mut parent = RecordWidget::new(workload(512, 0));
+        let child = parent.inner.add(
+            RecordWidget::new(workload(count, payload)).prepare(),
+            Point::new(0., 0.),
+            Size::new(400., 300.),
+        );
+        let mut bridge = widget_bridge(parent, Affine::IDENTITY);
+        let pool = pool();
+        let frame = build(
+            bridge.record(FrameId(1)).unwrap(),
+            empty_snapshot(&pool),
+            &pool,
+        );
+        let before = live();
+        let mut times = Vec::with_capacity(20);
+        let mut peak = before;
+        let mut maximum_step = std::time::Duration::ZERO;
+        let mut minimum_bytes = 0;
+        let mut minimum_units = 0;
+        let mut allocations = None;
+        let mut last = None;
+        for index in 0..20 {
+            let region = Region::new(ALLOCATOR);
+            let start = Instant::now();
+            let mut build = RetainBuild::new(&frame, Some(child), limits(), &pool).unwrap();
+            let mut budget = step_budget();
+            loop {
+                let started = Instant::now();
+                let progress = build.step(budget).unwrap();
+                maximum_step = maximum_step.max(started.elapsed());
+                peak = peak.max(live());
+                assert!(
+                    progress.commands <= budget.max_commands
+                        && progress.bytes <= budget.max_bytes
+                        && progress.units <= budget.max_units
+                );
+                if progress.complete {
+                    break;
+                }
+                minimum_bytes = minimum_bytes.max(progress.minimum_bytes);
+                minimum_units = minimum_units.max(progress.minimum_units);
+                budget.max_bytes = budget.max_bytes.max(progress.minimum_bytes);
+                budget.max_units = budget.max_units.max(progress.minimum_units);
+            }
+            let retained = build.finish().unwrap();
+            peak = peak.max(live());
+            times.push(start.elapsed());
+            assert_eq!(retained.drawing().commands().len(), count + 2);
+            if index == 19 {
+                allocations = Some(region.change());
+                last = Some(retained);
+            }
+        }
+        times.sort();
+        let overlap = live() - before;
+        drop(frame);
+        drop(bridge);
+        let retained_only = live() - initial;
+        drop(last);
+        assert_eq!(pool.usage().bytes, 0);
+        println!(
+            "retain count={count} path_elements={payload} p50/p95/max={:?}/{:?}/{:?} max_step={maximum_step:?} minimum_bytes={minimum_bytes} minimum_units={minimum_units} overlap_delta={overlap} peak_delta={} retained_only_delta={retained_only} allocations={:?}",
+            times[9],
+            times[18],
+            times[19],
+            peak - before,
+            allocations.unwrap()
+        );
+    }
 }

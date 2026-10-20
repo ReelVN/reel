@@ -148,7 +148,7 @@ pub struct RetainBuild {
     range: Range<usize>,
     to_parent: Affine,
     next: usize,
-    commands: Vec<Arc<FrameCommand>>,
+    commands: Vec<FrameCommand>,
     masks: BTreeMap<u32, Arc<FrameMask>>,
     mask_queue: Vec<u32>,
     mask_next: usize,
@@ -199,7 +199,7 @@ impl RetainBuild {
         let bytes = size_of::<Self>() as u64
             + size_of::<FrameDrawing>() as u64
             + 2 * size_of::<usize>() as u64
-            + (range.len() * size_of::<Arc<FrameCommand>>()) as u64
+            + (range.len() * size_of::<FrameCommand>()) as u64
             + frame.inner.transition_roots.len() as u64;
         if bytes > limits.max_bytes {
             return Err(error(BuildErrorKind::Bytes));
@@ -293,8 +293,8 @@ impl RetainBuild {
     }
     fn reference_cost(&self, command: &FrameCommand) -> (u64, u64) {
         let references = resource_handles(command);
-        let mut units = 1;
-        let mut bytes = 0;
+        let mut units = 1 + command_bytes(command).div_ceil(8);
+        let mut bytes = command_payload_bytes(command);
         for handle in references {
             units += 1 + u64::from(usize::BITS - self.handles.len().leading_zeros());
             if !self.handles.contains(&handle) {
@@ -311,11 +311,17 @@ impl RetainBuild {
         }
         (units, bytes)
     }
+    fn source_command(&self, mask: Option<u32>) -> &FrameCommand {
+        match mask {
+            None => &self.source.commands[self.next],
+            Some(id) => &self.source.masks[&id].commands[self.masks[&id].commands.len()],
+        }
+    }
     pub fn step(&mut self, b: StepBudget) -> Result<BuildProgress, BuildError> {
         let mut p = BuildProgress::default();
         while !self.complete && p.commands < b.max_commands {
             let action = if self.next < self.range.end {
-                RetainAction::Command(self.source.commands[self.next].clone(), None)
+                RetainAction::Command(None)
             } else if !self.main_checked {
                 RetainAction::CheckMain
             } else if self.mask_next < self.mask_queue.len() {
@@ -328,7 +334,7 @@ impl RetainBuild {
                 match self.masks.get(&id) {
                     None => RetainAction::Mask(id, mask.clone()),
                     Some(target) => match mask.commands.get(target.commands.len()) {
-                        Some(command) => RetainAction::Command(command.clone(), Some(id)),
+                        Some(_) => RetainAction::Command(Some(id)),
                         None => RetainAction::NextMask,
                     },
                 }
@@ -340,12 +346,12 @@ impl RetainBuild {
                 RetainAction::Done
             };
             let (units, allocation) = match &action {
-                RetainAction::Command(command, _) => self.reference_cost(command),
+                RetainAction::Command(mask) => self.reference_cost(self.source_command(*mask)),
                 RetainAction::Mask(_, mask) => (
                     1,
                     1024 + (size_of::<FrameMask>()
                         + 2 * size_of::<usize>()
-                        + mask.commands.len() * size_of::<Arc<FrameCommand>>())
+                        + mask.commands.len() * size_of::<FrameCommand>())
                         as u64,
                 ),
                 RetainAction::Transition => {
@@ -391,8 +397,10 @@ impl RetainBuild {
             p.commands += 1;
             self.charge(allocation)?;
             match action {
-                RetainAction::Command(command, mask) => {
-                    self.charge(command_bytes(&command))?;
+                RetainAction::Command(mask) => {
+                    // Copy only after the payload and its work have been admitted.
+                    // Pixel/font/video data remain in shared resource leases.
+                    let command = self.source_command(mask).clone();
                     if let FrameOp::PushGroup(group) = &command.op
                         && group.mask.is_some()
                     {
@@ -491,7 +499,7 @@ impl RetainBuild {
     }
 }
 enum RetainAction {
-    Command(Arc<FrameCommand>, Option<u32>),
+    Command(Option<u32>),
     Mask(u32, Arc<FrameMask>),
     CheckMain,
     NextMask,
@@ -545,10 +553,13 @@ pub(crate) fn command_resources(
     }
 }
 pub(crate) fn command_bytes(command: &FrameCommand) -> u64 {
+    size_of::<FrameCommand>() as u64 + command_payload_bytes(command)
+}
+pub(crate) fn command_payload_bytes(command: &FrameCommand) -> u64 {
     fn geometry(shape: &Geometry) -> usize {
         // The frame compiler reserves the exact path element count.
         match shape {
-            Geometry::Path(path) => path.elements().len() * size_of::<PathEl>(),
+            Geometry::Path(path) => std::mem::size_of_val(path.elements()),
             _ => 0,
         }
     }
@@ -619,5 +630,5 @@ pub(crate) fn command_bytes(command: &FrameCommand) -> u64 {
         }
         _ => 0,
     };
-    (size_of::<FrameCommand>() + 2 * size_of::<usize>() + payload) as u64
+    payload as u64
 }

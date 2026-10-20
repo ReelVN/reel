@@ -47,10 +47,10 @@ impl Context<'_> {
     pub(super) fn image_batch(
         &mut self,
         target: &Target,
-        commands: &[std::sync::Arc<FrameCommand>],
+        commands: &[FrameCommand],
         outer: Affine,
     ) -> Result<usize, GpuError> {
-        let Some(first) = commands.first().and_then(|command| quad(command)) else {
+        let Some(first) = commands.first().and_then(quad) else {
             return Ok(0);
         };
         let handle = first.brush.image.resource;

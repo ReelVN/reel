@@ -92,7 +92,7 @@ pub(super) fn peak_targets(
         transition_next: usize,
         transitions_enabled: bool,
         pending: Option<Pending<'a>>,
-        commands: &'a [std::sync::Arc<FrameCommand>],
+        commands: &'a [FrameCommand],
         next: usize,
         live: u64,
         peak: u64,
@@ -101,7 +101,7 @@ pub(super) fn peak_targets(
     }
     fn stream<'a>(
         drawing: &'a FrameDrawing,
-        commands: &'a [std::sync::Arc<FrameCommand>],
+        commands: &'a [FrameCommand],
         offset: usize,
         transitions_enabled: bool,
         transform: Affine,
