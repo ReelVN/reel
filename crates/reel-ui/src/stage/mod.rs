@@ -326,6 +326,8 @@ pub struct NodeProps {
     pub padding: f64,
     pub font_size: f64,
     pub font_weight: f64,
+    pub letter_spacing: f64,
+    pub word_spacing: f64,
     pub font: String,
     pub text_align: crate::TextAlign,
     /// Automatic wrapping for text nodes; explicit newlines are always retained.
@@ -375,6 +377,8 @@ impl Default for NodeProps {
             padding: 0.,
             font_size: 24.,
             font_weight: 400.,
+            letter_spacing: 0.,
+            word_spacing: 0.,
             font: "system-ui".into(),
             text_align: crate::TextAlign::Start,
             text_wrap: true,

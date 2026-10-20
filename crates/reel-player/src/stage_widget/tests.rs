@@ -2790,3 +2790,4 @@ impl std::ops::Deref for TestFrame {
 
 mod font_weight;
 mod natural_height;
+mod text_spacing;

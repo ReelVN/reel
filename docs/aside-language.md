@@ -1,6 +1,6 @@
 # Aside VM 与完整语言规范
 
-舞台转场沿普通宿主回调续体：`stage.transition(change:, target:null, duration:0.3, ...)` 在当前任务等待旧画面保留、执行 change、完成过渡并返回回调原值，写法与 scope 相同，不在调用外再 await。回调可等待，保留原任务权限；并发使用 spawn。准备、取消、故障与恢复沿既有 native continuation/TaskId/FrameId，不新增语法、VM 指令或隐藏执行器。旧图只提取目标子树的绘制数据，资源内容共享；普通帧的内部命令存储不改变调用、取消或快照续体语义。实现合同见引擎架构“保留画面的舞台转场”；native ABI 1，当前 SessionSnapshot 23、VM8，ASB 格式保持不变。
+舞台转场沿普通宿主回调续体：`stage.transition(change:, target:null, duration:0.3, ...)` 在当前任务等待旧画面保留、执行 change、完成过渡并返回回调原值，写法与 scope 相同，不在调用外再 await。回调可等待，保留原任务权限；并发使用 spawn。准备、取消、故障与恢复沿既有 native continuation/TaskId/FrameId，不新增语法、VM 指令或隐藏执行器。旧图只提取目标子树的绘制数据，资源内容共享；普通帧的内部命令存储不改变调用、取消或快照续体语义。实现合同见引擎架构“保留画面的舞台转场”；native ABI 1，当前 SessionSnapshot 25、VM8，ASB 格式保持不变。
 
 舞台指针沿普通宿主接口：`stage.pointer()` 返回当前已接受舞台的鼠标坐标快照或 null；`stage.move_pointer(x,y,owner:node)` 返回归节点所有的可等待结果，bool 表示宿主是否执行。新接口 ABI 1，window.info/configure ABI 3 增加 pointer_move 能力；参数、等待、取消及诊断沿现有协议，无新语法/VM/ASB/SessionSnapshot 格式。真实位置是宿主临时状态，读档后等待真实鼠标输入；查询所得普通表仍可随存档保存。
 
@@ -114,7 +114,7 @@ int 加减乘、负号及整数除法溢出报错；MIN/-1 报错。int/int 的 
 
 `std::math::curve(keys)` 构造不可变标量曲线，`curve.sample(time)` 返回指定时间的 float64 值。keys 为非空 array/tuple，元素为 `{time, value, mode: "linear", in_tangent: 0, out_tangent: 0}`；time/value 必需，其余字段可省略。所有数值及采样时间须有限，时间允许负值并按非递减顺序提供。mode 描述从该关键帧出发的区间：linear 线性插值，step 保持左值，cubic 使用左帧 out_tangent 与右帧 in_tangent 作三次 Hermite 插值，切线单位为值/秒。重复时刻表示瞬时跳变，恰在该时刻取最后一帧；到达该时刻之前的区间以第一帧为右端。首尾以外保持端值，单帧曲线为常量。插值保留超出端值的结果；中间运算遵循 float64 规则。
 
-构造按顺序复制关键帧数值，每个记录在一个构造步骤内读取；已复制记录随后改变不改写副本。构造期间外层数组内容变化报告 ConcurrentModification，部分结果随原生续体取消回收。构造与 sample 可在初始化和 derive 中调用；derive 追踪构造时实际读取的可观察数据及 sample 实参的读取。曲线本身只读，没有任务、节点 owner 或播放状态；保存恢复沿普通堆对象保留曲线和已取出的 sample 方法。记录只接受上述五个字段；非法形状、顺序、mode 和数值在相应原生调用位置报告。构造与 sample native ABI 均为 1，当前 VM 快照 8、SessionSnapshot 23，ASB 格式保持。
+构造按顺序复制关键帧数值，每个记录在一个构造步骤内读取；已复制记录随后改变不改写副本。构造期间外层数组内容变化报告 ConcurrentModification，部分结果随原生续体取消回收。构造与 sample 可在初始化和 derive 中调用；derive 追踪构造时实际读取的可观察数据及 sample 实参的读取。曲线本身只读，没有任务、节点 owner 或播放状态；保存恢复沿普通堆对象保留曲线和已取出的 sample 方法。记录只接受上述五个字段；非法形状、顺序、mode 和数值在相应原生调用位置报告。构造与 sample native ABI 均为 1，当前 VM 快照 8、SessionSnapshot 25，ASB 格式保持。
 
 位运算使用 64 位补码；移位量须为 0..63。>> 算术右移，左移按位截断，逻辑右移使用标准函数 unsigned_shr。位移不假装算术乘法。字面量支持十进制、0x、0o、0b 与分隔下划线；超出 int64 范围时报错，负最小值按整体常量处理。浮点比较、解析、舍入、格式化及常量折叠与运行时一致。优先级从高到低为：成员/索引/调用，前缀 await ! ~ + -，* / %，+ -，<< >>，&，^，|，< <= > >= 与 is，== !=，&&，||，??，.. / ..=，yield，赋值。二元运算左结合，?? 与赋值右结合，比较与区间不允许无括号连用。is 只测试类型，不转换值；赋值无可用于运算的结果。parser 与非法类型测试直接依据此表。
 
@@ -339,7 +339,7 @@ Reel 的 `checkbox(label: null, value: false, on_change: null, ...)` 和 `radio(
 
 Reel 的 `clock(interval: 1, owner: null, paused:false)` 是普通宿主函数，返回带只读可观察 ticks/elapsed 的活动。ticks 是 int 完整周期数，初值 0，直接用于索引或 slice 范围；elapsed 是 float 已完成周期总秒数，初值 0.0。复用 pause/resume/stop/await，所有者规则与 run 相同；长步长合并周期、暂停不计时，停止保留最后值，finish 拒绝无终点活动。一次活动采样及其派生计算使用固定逻辑时间；计算跨预算片时，新时间合并为最新请求，完成当前舞台属性提交后才开始下一轮，避免持续计时让派生永远无法稳定。快照保留这两种值类型、周期与暂停偏移，恢复后继续原期限。周期计数超出 int 范围时在发布前报错。clock native ABI 3，无新语法或 VM/ASB/SessionSnapshot 格式变化。
 
-Reel 的 `audio.play`、`video.play`（包括节点 `.play`）、`clock`、`run` 和 `scope.run` 接受 `paused:false`，参数必须为 bool。`paused:true` 创建暂停活动，沿现有 `resume` 开始推进。媒体继续读取、解码和准备首帧，内容位置保持请求起点；暂停时 seek 更新目标并保留暂停状态。run 在创建时验证并构造活动图，首次 resume 才激活动作、读取起值并取得属性写入权；空组合和零时长动作也等到 resume，finish 显式完成有限动作，stop 保留当前属性。clock 的 ticks/elapsed 在首次 resume 前为 0/0.0。owner、取消、终态和恢复沿现有活动协议，保存后仍从暂停状态继续。audio.play ABI 5、video.play ABI 2、clock ABI 3、run 与 scope.run ABI 2；VM 快照 8，当前 SessionSnapshot 23，ASB 格式保持。
+Reel 的 `audio.play`、`video.play`（包括节点 `.play`）、`clock`、`run` 和 `scope.run` 接受 `paused:false`，参数必须为 bool。`paused:true` 创建暂停活动，沿现有 `resume` 开始推进。媒体继续读取、解码和准备首帧，内容位置保持请求起点；暂停时 seek 更新目标并保留暂停状态。run 在创建时验证并构造活动图，首次 resume 才激活动作、读取起值并取得属性写入权；空组合和零时长动作也等到 resume，finish 显式完成有限动作，stop 保留当前属性。clock 的 ticks/elapsed 在首次 resume 前为 0/0.0。owner、取消、终态和恢复沿现有活动协议，保存后仍从暂停状态继续。audio.play ABI 5、video.play ABI 2、clock ABI 3、run 与 scope.run ABI 2；VM 快照 8，当前 SessionSnapshot 25，ASB 格式保持。
 
 Reel `tween(target, from: null, ...)` 使用普通具名参数及记录值表达显式起值。from 接受动态记录，构造时按目标的可动画属性 schema 校验并复制数值；键须属于本次给出非 null 终值的属性，值须为符合属性约束的有限数值。未指定的起值在段激活时读取。显式起值在延迟结束、每轮重复或初始暂停后的首次 resume 时生效；零时长和 finish 直接到终值。动作描述、绑定、属性产权、取消与恢复沿同一活动协议。tween ABI 9，SessionSnapshot 22；VM8/ASB 格式保持。完整行为见[活动合同](engine-architecture.md#作者活动与窗口时钟)。
 
@@ -362,6 +362,10 @@ Reel `image(..., slice: null, slice_scale: 1)` 使用普通属性表达九宫格
 宿主字段的分片名称查找依据字段结构版本；输入、布局或派生更新字段值不使合法属性读写与 bind 失败，提交时访问当前值并检查对象仍存活。普通集合遍历、复制和批量修改继续检查内容版本。VM 执行快照版本为 7，包含排序、比较器返回续体与响应式捕获，旧版本明确报告版本不匹配；Aside 字节码/ASB 与 native ABI 不变，独立 persistent 系统数据不受影响。
 
 Reel 共同节点字段 `font_weight` 默认 400，接受 1..1000 的有限数值，可在构造时给出、直接赋值或 bind/derive。文字、控件标签和文本输入使用同一字体匹配与布局通路，实际变化时重新排版；富文本局部粗体保留所在范围的样式覆盖。该样式字段随节点宿主对象保存恢复。共同节点构造 native ABI（含 list/view/layered_image）及节点宿主字段验证器各递增 1，SessionSnapshot 23，VM8 与 ASB 格式保持。
+
+共同文字属性 `letter_spacing` 与 `word_spacing` 默认 0，表示以逻辑舞台像素计的附加间距，接受可表示为有限 float32 的整数或浮点数。letter_spacing 加到每个整形字符簇的推进宽度，包含末簇；组合字符和连字沿字体整形保留。word_spacing 额外加到普通空格 U+0020 和不换行空格 U+00A0，和 letter_spacing 叠加。负值收紧文字，允许字形重叠。间距参与换行、布局宽度、命中及编辑光标位置。
+
+text、控件标签与 text_input 共用间距属性，支持构造、赋值和 bind/derive。富文本字号、粗体及 ruby 正文和注音继承同一逻辑间距；text_fit 的整体缩放同时缩放间距。值变化沿既有样式更新重新排版，稳定值复用布局缓存；节点、绑定和派生在保存恢复后保持。共同节点构造器和字段验证器各递增 1，SessionSnapshot 25，VM8/ASB 格式保持。
 
 Reel 舞台文字支持 `text_fit: "none" | "shrink"`、`min_font_size`、`text_outline` 与 `text_outline_color`，可直接赋值或 bind/derive。缩放与描边由共享文字布局/渲染处理，完整文本决定适配，未揭示字形不描边。这些是宿主属性，不引入新语言语法；节点 native ABI 随属性表更新，Aside 字节码/ASB 不变。
 
@@ -389,7 +393,7 @@ task.request_cancel(reason) 为合作请求，在下一个合法安全点注入�
 
 Reel 的 `completion(owner: null)` 是此协议的具体宿主接口：resolve(value)、reject(error)、cancel() 第一次结算返回 true，重复返回 false；await 返回原值或抛出拒绝值/Cancelled。它是归会话或舞台节点所有的一次性 UI 结果，不是上文尚未实现的语言 Future，不执行 adoption，也不引入 Aside 对舞台或平台的依赖。等待者被取消只解除其订阅；节点退休取消未结算结果，已结算值可重复等待。
 
-Reel 的 completion 与 spawn 结果含只读可观察 `pending: bool`；开始为 true，实际终态为 false，任务取消清理期间仍为 true。普通读取、bind/derive 使用共同宿主属性通路；所有者取消在宿主维护与响应式稳定阶段发布，无须等待者调用 await。scope 内省略 owner 的 completion 随 scope 结束，绑定可直接表达请求是否仍进行中。状态与弱所有者登记进入快照；completion/spawn/scope::spawn ABI 2、reel.result 验证器 2、SessionSnapshot 24，VM8/ASB1 保持，不增加语言语法或指令。
+Reel 的 completion 与 spawn 结果含只读可观察 `pending: bool`；开始为 true，实际终态为 false，任务取消清理期间仍为 true。普通读取、bind/derive 使用共同宿主属性通路；所有者取消在宿主维护与响应式稳定阶段发布，无须等待者调用 await。scope 内省略 owner 的 completion 随 scope 结束，绑定可直接表达请求是否仍进行中。状态与弱所有者登记进入快照；completion/spawn/scope::spawn ABI 2、reel.result 验证器 2、SessionSnapshot 25，VM8/ASB1 保持，不增加语言语法或指令。
 
 Rust 宿主内部弱登记复用 `Heap::peek_weakref`，在不运行 GC 的事务内检查目标，不给当前标记周期保活；需跨事务持有值时使用 `upgrade_weakref`。属性订阅采用相同窄入口。新增 Rust 查询方法，VM 与 ASB 格式保持。
 
