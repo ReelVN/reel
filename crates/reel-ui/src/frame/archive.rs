@@ -67,7 +67,7 @@ struct SavedResource {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct StoredDrawing {
-    commands: Vec<Arc<FrameCommand>>,
+    commands: Vec<FrameCommand>,
     masks: BTreeMap<u32, Arc<FrameMask>>,
 }
 #[derive(Debug)]
@@ -76,7 +76,7 @@ enum Drawing {
     Stored(StoredDrawing),
 }
 impl Drawing {
-    fn commands(&self) -> &[Arc<FrameCommand>] {
+    fn commands(&self) -> &[FrameCommand] {
         match self {
             Self::Live(v) => &v.commands,
             Self::Stored(v) => &v.commands,
@@ -322,7 +322,7 @@ impl SavedRetainedScene {
             let drawing = match &node.drawing {
                 Drawing::Live(drawing) => drawing.accounted_bytes,
                 Drawing::Stored(drawing) => {
-                    (drawing.commands.capacity() * size_of::<Arc<FrameCommand>>()) as u64
+                    (drawing.commands.capacity() * size_of::<FrameCommand>()) as u64
                 }
             };
             let metadata = drawing
@@ -332,7 +332,7 @@ impl SavedRetainedScene {
             let commands = stored
                 .into_iter()
                 .flat_map(|drawing| &drawing.commands)
-                .map(|command| retained::command_bytes(command));
+                .map(retained::command_payload_bytes);
             let masks = stored
                 .into_iter()
                 .flat_map(|drawing| drawing.masks.values())
@@ -340,14 +340,10 @@ impl SavedRetainedScene {
                     std::iter::once(
                         (512 + size_of::<FrameMask>()
                             + 2 * size_of::<usize>()
-                            + mask.commands.capacity() * size_of::<Arc<FrameCommand>>())
+                            + mask.commands.capacity() * size_of::<FrameCommand>())
                             as u64,
                     )
-                    .chain(
-                        mask.commands
-                            .iter()
-                            .map(|command| retained::command_bytes(command)),
-                    )
+                    .chain(mask.commands.iter().map(retained::command_payload_bytes))
                 });
             let transitions = node.transitions.iter().map(move |transition| {
                 transition.mask.as_ref().map_or(0, |mask| {
@@ -435,7 +431,7 @@ pub struct RestoreProgress {
 }
 
 struct Building {
-    commands: Vec<Arc<FrameCommand>>,
+    commands: Vec<FrameCommand>,
     masks: BTreeMap<u32, Arc<FrameMask>>,
     current_mask: Option<u32>,
     last_mask: Option<u32>,
@@ -562,13 +558,15 @@ impl RetainedRestore {
                 break;
             }
             if self.building.is_none() {
-                let bytes = size_of::<FrameDrawing>() as u64;
+                let commands = self.source.0.nodes[self.drawings.len()].drawing.commands();
+                let count = commands.len();
+                let bytes = (size_of::<FrameDrawing>() + std::mem::size_of_val(commands)) as u64;
                 if !admit(&mut progress.build, budget, 1, bytes) {
                     break;
                 }
                 self.charge(bytes)?;
                 self.building = Some(Building {
-                    commands: Vec::new(),
+                    commands: Vec::with_capacity(count),
                     masks: BTreeMap::new(),
                     current_mask: None,
                     last_mask: None,
@@ -628,7 +626,10 @@ impl RetainedRestore {
                             .next(),
                     };
                     if let Some((&id, mask)) = next {
-                        let bytes = size_of::<FrameMask>() as u64 + 128;
+                        let bytes = (size_of::<FrameMask>()
+                            + mask.commands.len() * size_of::<FrameCommand>())
+                            as u64
+                            + 128;
                         if !admit(&mut progress.build, budget, 1, bytes) {
                             break;
                         }
@@ -646,7 +647,7 @@ impl RetainedRestore {
                             id,
                             Arc::new(FrameMask {
                                 mode: mask.mode,
-                                commands: Vec::new(),
+                                commands: Vec::with_capacity(mask.commands.len()),
                             }),
                         );
                         continue;
@@ -670,8 +671,9 @@ impl RetainedRestore {
                 None
             };
             if let Some((mask, command)) = next {
-                let bytes = retained::command_bytes(command) + 64;
-                if !admit(&mut progress.build, budget, bytes.div_ceil(8), bytes) {
+                let bytes = retained::command_payload_bytes(command) + 64;
+                let units = retained::command_bytes(command).div_ceil(8);
+                if !admit(&mut progress.build, budget, units, bytes) {
                     break;
                 }
                 if self
@@ -688,15 +690,15 @@ impl RetainedRestore {
                 self.bytes += bytes;
                 validate::command(command, mask, node.drawing.masks())?;
                 build.balance.command(&command.op)?;
-                let mut command = (**command).clone();
+                let mut command = command.clone();
                 remap_command(&mut command, &build.handles)?;
                 if let Some(id) = mask {
                     Arc::get_mut(build.masks.get_mut(&id).unwrap())
                         .unwrap()
                         .commands
-                        .push(Arc::new(command));
+                        .push(command);
                 } else {
-                    build.commands.push(Arc::new(command));
+                    build.commands.push(command);
                 }
                 continue;
             }

@@ -10,16 +10,13 @@ fn pool() -> BudgetPool {
         },
     )
 }
-fn command(op: FrameOp) -> Arc<FrameCommand> {
-    Arc::new(FrameCommand {
+fn command(op: FrameOp) -> FrameCommand {
+    FrameCommand {
         origin: wire::origin(),
         op,
-    })
+    }
 }
-fn saved(
-    commands: Vec<Arc<FrameCommand>>,
-    masks: BTreeMap<u32, Arc<FrameMask>>,
-) -> SavedRetainedScene {
+fn saved(commands: Vec<FrameCommand>, masks: BTreeMap<u32, Arc<FrameMask>>) -> SavedRetainedScene {
     SavedRetainedScene(Arc::new(Archive {
         nodes: vec![SavedNode {
             drawing: Drawing::Stored(StoredDrawing { commands, masks }),
@@ -157,7 +154,7 @@ fn saved_drawing_charges_large_clip_payload_before_copying_and_empty_masks_per_s
         .step(StepBudget {
             max_commands: 8,
             max_units: 128,
-            max_bytes: 1024,
+            max_bytes: 4096,
         })
         .unwrap();
     assert!(progress.build.minimum_bytes > 4096 * size_of::<PathEl>() as u64);

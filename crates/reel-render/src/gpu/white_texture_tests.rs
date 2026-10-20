@@ -1206,7 +1206,15 @@ fn retained_transition_reuploads_retired_images_and_releases_them_after_completi
     let pool = pool();
     let (old, mut registry, handles) = image_restore_fixture([4, 4]);
     let mut retaining = RetainBuild::new(&old, None, limits(), &pool).unwrap();
-    while !retaining.step(step_budget()).unwrap().complete {}
+    let mut budget = step_budget();
+    loop {
+        let progress = retaining.step(budget).unwrap();
+        if progress.complete {
+            break;
+        }
+        budget.max_units = budget.max_units.max(progress.minimum_units);
+        budget.max_bytes = budget.max_bytes.max(progress.minimum_bytes);
+    }
     let previous = retaining.finish().unwrap();
     let saved = previous.snapshot(|_| None).unwrap();
     let mut restore = saved.restore_begin(limits(), &pool).unwrap();

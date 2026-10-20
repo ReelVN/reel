@@ -757,7 +757,15 @@ fn retained_picture(
     pool: &reel_core::budget::BudgetPool,
 ) -> reel_ui::frame::RetainedScene {
     let mut build = reel_ui::frame::RetainBuild::new(frame, root, limits(), pool).unwrap();
-    while !build.step(step_budget()).unwrap().complete {}
+    let mut budget = step_budget();
+    loop {
+        let progress = build.step(budget).unwrap();
+        if progress.complete {
+            break;
+        }
+        budget.max_units = budget.max_units.max(progress.minimum_units);
+        budget.max_bytes = budget.max_bytes.max(progress.minimum_bytes);
+    }
     build.finish().unwrap()
 }
 fn transition_frame(

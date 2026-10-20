@@ -752,6 +752,8 @@ The stage supports group opacity, clipping, image masks, blending and transition
 
 `stage.transition` retains the target's current appearance, runs change, then blends the old picture into the continuing new content. The call returns change's result after completion; call it directly, like scope. Use spawn for concurrency.
 
+Preparation extracts drawing data only for the target and shares image, font and video content. More complex targets require more copying during preparation. This work happens when requesting the transition; playback reuses the retained picture.
+
 ```aside
 stage.transition(target: scene, duration: 0.6, change: || {
     scene.clear();

@@ -1,6 +1,6 @@
 # Aside VM 与完整语言规范
 
-舞台转场沿普通宿主回调续体：`stage.transition(change:, target:null, duration:0.3, ...)` 在当前任务等待旧画面保留、执行 change、完成过渡并返回回调原值，写法与 scope 相同，不在调用外再 await。回调可等待，保留原任务权限；并发使用 spawn。准备、取消、故障与恢复沿既有 native continuation/TaskId/FrameId，不新增语法、VM 指令或隐藏执行器。实现合同见引擎架构“保留画面的舞台转场”；native ABI 1，当前 SessionSnapshot 18、VM8，ASB 格式保持不变。
+舞台转场沿普通宿主回调续体：`stage.transition(change:, target:null, duration:0.3, ...)` 在当前任务等待旧画面保留、执行 change、完成过渡并返回回调原值，写法与 scope 相同，不在调用外再 await。回调可等待，保留原任务权限；并发使用 spawn。准备、取消、故障与恢复沿既有 native continuation/TaskId/FrameId，不新增语法、VM 指令或隐藏执行器。旧图只提取目标子树的绘制数据，资源内容共享；普通帧的内部命令存储不改变调用、取消或快照续体语义。实现合同见引擎架构“保留画面的舞台转场”；native ABI 1，当前 SessionSnapshot 18、VM8，ASB 格式保持不变。
 
 舞台指针沿普通宿主接口：`stage.pointer()` 返回当前已接受舞台的鼠标坐标快照或 null；`stage.move_pointer(x,y,owner:node)` 返回归节点所有的可等待结果，bool 表示宿主是否执行。新接口 ABI 1，window.info/configure ABI 3 增加 pointer_move 能力；参数、等待、取消及诊断沿现有协议，无新语法/VM/ASB/SessionSnapshot 格式。真实位置是宿主临时状态，读档后等待真实鼠标输入；查询所得普通表仍可随存档保存。
 

@@ -1368,3 +1368,93 @@ fn retained_empty_siblings_at_one_command_gap_keep_separate_transitions() {
         assert_eq!(picture.drawing().transitions()[0].progress, expected);
     }
 }
+
+#[test]
+fn retained_large_command_waits_for_payload_budget_then_owns_only_selected_copy() {
+    let pool = pool();
+    let mut path = BezPath::with_capacity(8193);
+    path.move_to((0., 0.));
+    for i in 0..8192 {
+        path.line_to(((i % 100) as f64, (i / 100) as f64));
+    }
+    let mut scene = Scene::new();
+    scene.draw(Draw::Fill {
+        transform: Affine::IDENTITY,
+        fill_rule: Default::default(),
+        brush: Brush::Solid(Color::WHITE),
+        brush_transform: None,
+        shape: Geometry::Path(path),
+        composite: Default::default(),
+    });
+    let mut parent = RecordWidget::new(fill(Color::BLACK));
+    let child = parent.inner.add(
+        RecordWidget::new(scene).prepare(),
+        Point::new(10., 10.),
+        Size::new(100., 100.),
+    );
+    let mut bridge = widget_bridge(parent, Affine::IDENTITY);
+    let frame = build(
+        bridge.record(FrameId(1)).unwrap(),
+        empty_snapshot(&pool),
+        &pool,
+    );
+    let path = frame
+        .commands()
+        .iter()
+        .find_map(|command| match &command.op {
+            FrameOp::Draw(FrameDraw::Fill {
+                shape: Geometry::Path(path),
+                ..
+            }) => Some(path),
+            _ => None,
+        })
+        .unwrap();
+    let source_pointer = path.elements().as_ptr();
+    let expected = path.elements().to_vec();
+    let initial = pool.usage().bytes;
+    let small = StepBudget {
+        max_commands: 8,
+        max_units: 128,
+        max_bytes: 1024,
+    };
+    let mut retaining = RetainBuild::new(&frame, Some(child), limits(), &pool).unwrap();
+    let blocked = retaining.step(small).unwrap();
+    assert!(blocked.minimum_bytes >= (8193 * size_of::<reel_ui::kurbo::PathEl>()) as u64);
+    assert!(blocked.minimum_units > small.max_units);
+    let still_blocked = retaining.step(small).unwrap();
+    assert_eq!(still_blocked.commands, 0);
+    assert_eq!(still_blocked.bytes, 0);
+    drop(retaining);
+    assert_eq!(
+        pool.usage().bytes,
+        initial,
+        "cancellation releases the partial copy"
+    );
+
+    let mut retaining = RetainBuild::new(&frame, Some(child), limits(), &pool).unwrap();
+    let mut budget = small;
+    loop {
+        let progress = retaining.step(budget).unwrap();
+        assert!(progress.units <= budget.max_units && progress.bytes <= budget.max_bytes);
+        if progress.complete {
+            break;
+        }
+        budget.max_units = budget.max_units.max(progress.minimum_units);
+        budget.max_bytes = budget.max_bytes.max(progress.minimum_bytes);
+    }
+    let retained = retaining.finish().unwrap();
+    assert_eq!(retained.drawing().commands().len(), 3);
+    let FrameOp::Draw(FrameDraw::Fill {
+        shape: Geometry::Path(path),
+        ..
+    }) = &retained.drawing().commands()[1].op
+    else {
+        panic!("retained selected path")
+    };
+    assert_ne!(path.elements().as_ptr(), source_pointer);
+    drop(frame);
+    drop(bridge);
+    assert_eq!(path.elements(), expected);
+    drop(retained);
+    assert_eq!(pool.usage().bytes, 0);
+}
