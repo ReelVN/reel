@@ -465,6 +465,32 @@ pub(crate) fn cancel_all(root: &mut RenderRoot) {
     root.global_state.navigation_directions.clear();
     cancel(root);
 }
+pub(crate) fn cancel_gated(root: &mut RenderRoot) {
+    let source = root.global_state.input_geometry_source.clone();
+    let view = source.borrow();
+    if root
+        .global_state
+        .deferred_navigation
+        .is_some_and(|request| root.input_is_gated(request.owner, view))
+    {
+        cancel_virtual(root);
+    }
+    if root
+        .global_state
+        .navigation_target
+        .is_some_and(|id| root.input_is_gated(id, view))
+    {
+        cancel(root);
+    }
+    if root
+        .global_state
+        .focused_widget
+        .or(root.global_state.focus_fallback)
+        .is_some_and(|id| root.input_is_gated(id, view))
+    {
+        root.global_state.navigation_directions.clear();
+    }
+}
 pub(crate) fn cancel(root: &mut RenderRoot) {
     if let Some(id) = root.global_state.navigation_target.take()
         && root.has_widget(id)

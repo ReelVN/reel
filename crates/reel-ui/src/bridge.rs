@@ -38,6 +38,14 @@ pub struct CandidateKey {
     // One allocation is both exact identity and the key/view budget lease.
     identity: Arc<CandidateIdentity>,
 }
+impl PartialEq for CandidateKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.frame == other.frame
+            && self.epoch == other.epoch
+            && Arc::ptr_eq(&self.identity, &other.identity)
+    }
+}
+impl Eq for CandidateKey {}
 impl CandidateKey {
     pub fn frame_id(&self) -> FrameId {
         self.frame
@@ -336,6 +344,25 @@ impl PresentationBridge {
     /// Target for unclaimed focused input, such as a story's dialogue surface.
     pub fn set_focus_fallback(&mut self, target: Option<WidgetId>) -> bool {
         self.root.set_focus_fallback(target)
+    }
+    /// Pause input without applying disabled styles or changing widget properties.
+    pub fn set_input_gates(&mut self, roots: &[WidgetId]) -> Result<(), InputBudgetExceeded> {
+        if self.root.global_state.input_gates.as_ref() == roots {
+            return Ok(());
+        }
+        // Include the overlap while replacing the previous root array.
+        let planned = self
+            .root
+            .input_path_storage_bytes()
+            .checked_add(self.registry_bytes)
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of_val(roots)))
+            .ok_or(InputBudgetExceeded)?;
+        self._routes
+            .resize(planned as u64)
+            .map_err(|_| InputBudgetExceeded)?;
+        self.root.set_input_gates(roots);
+        self.release_pointer_storage();
+        Ok(())
     }
     /// Text input follows accepted geometry; loss of focus also cancels pointer capture.
     pub fn handle_text_event(&mut self, event: TextEvent) -> Handled {

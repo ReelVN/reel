@@ -115,6 +115,8 @@ pub(crate) struct RenderRootState {
     pub(crate) modal_scope: Option<WidgetId>,
     pub(crate) modal_base_focus: Option<WidgetId>,
     pub(crate) modal_dirty: bool,
+    /// Host-owned input pauses, independent of widget enabled state and styling.
+    pub(crate) input_gates: Box<[WidgetId]>,
 
     /// Whether the window is focused.
     pub(crate) window_focused: bool,
@@ -366,6 +368,7 @@ impl RenderRoot {
                 modal_scope: None,
                 modal_base_focus: None,
                 modal_dirty: true,
+                input_gates: Box::default(),
                 window_focused: true,
                 scroll_request_targets: Vec::new(),
                 cursor_icon: CursorIcon::Default,

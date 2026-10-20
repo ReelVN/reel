@@ -581,6 +581,8 @@ impl RenderRoot {
             + contact_paths)
             * size_of::<WidgetId>()
             + 6 * size_of::<Vec<WidgetId>>()
+            + size_of::<Box<[WidgetId]>>()
+            + std::mem::size_of_val(s.input_gates.as_ref())
             + s.other_pointers.capacity() * size_of::<super::pointer::PointerContact>()
             + self.widget_arena.nodes.lookup_path_storage_bytes()
     }
@@ -603,7 +605,8 @@ impl RenderRoot {
             born && s.pointer.info != info && !s.other_pointers.iter().any(|p| p.info == info)
         }) as usize;
         let count = s.other_pointers.len().checked_add(additional)?;
-        Self::planned_pointer_storage(depth, count, s.other_pointers.capacity().max(count))
+        Self::planned_pointer_storage(depth, count, s.other_pointers.capacity().max(count))?
+            .checked_add(std::mem::size_of_val(s.input_gates.as_ref()))
     }
 
     fn planned_pointer_storage(depth: usize, others: usize, capacity: usize) -> Option<usize> {
@@ -612,6 +615,7 @@ impl RenderRoot {
             .checked_mul(arrays)?
             .checked_mul(size_of::<WidgetId>())?
             .checked_add(6 * size_of::<Vec<WidgetId>>())?
+            .checked_add(size_of::<Box<[WidgetId]>>())?
             .checked_add(capacity.checked_mul(size_of::<super::pointer::PointerContact>())?)?
             .checked_add(
                 crate::tree_arena::TreeArena::<WidgetArenaNode>::lookup_path_storage_bytes_for(
