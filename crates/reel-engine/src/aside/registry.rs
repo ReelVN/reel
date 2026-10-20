@@ -876,6 +876,16 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             false,
         ),
         ("override::remove", vec![parameter("token", None)], false),
+        (
+            "scope::offset",
+            vec![
+                parameter("scope", None),
+                parameter("node", None),
+                parameter("x", Some(bc::Const::Int(0))),
+                parameter("y", Some(bc::Const::Int(0))),
+            ],
+            false,
+        ),
         ("delay", vec![parameter("seconds", None)], false),
         (
             "clock",
@@ -964,7 +974,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             symbol: format!("reel::{name}"),
             abi_version: match name {
                 "tween" => 8,
-                "scope" => 3,
+                "scope" => 4,
                 "clock" => 2,
                 _ => 1,
             },

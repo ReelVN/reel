@@ -1,6 +1,6 @@
 # Aside VM 与完整语言规范
 
-舞台转场沿普通宿主回调续体：`stage.transition(change:, target:null, duration:0.3, ...)` 在当前任务等待旧画面保留、执行 change、完成过渡并返回回调原值，写法与 scope 相同，不在调用外再 await。回调可等待，保留原任务权限；并发使用 spawn。准备、取消、故障与恢复沿既有 native continuation/TaskId/FrameId，不新增语法、VM 指令或隐藏执行器。旧图只提取目标子树的绘制数据，资源内容共享；普通帧的内部命令存储不改变调用、取消或快照续体语义。实现合同见引擎架构“保留画面的舞台转场”；native ABI 1，当前 SessionSnapshot 19、VM8，ASB 格式保持不变。
+舞台转场沿普通宿主回调续体：`stage.transition(change:, target:null, duration:0.3, ...)` 在当前任务等待旧画面保留、执行 change、完成过渡并返回回调原值，写法与 scope 相同，不在调用外再 await。回调可等待，保留原任务权限；并发使用 spawn。准备、取消、故障与恢复沿既有 native continuation/TaskId/FrameId，不新增语法、VM 指令或隐藏执行器。旧图只提取目标子树的绘制数据，资源内容共享；普通帧的内部命令存储不改变调用、取消或快照续体语义。实现合同见引擎架构“保留画面的舞台转场”；native ABI 1，当前 SessionSnapshot 20、VM8，ASB 格式保持不变。
 
 舞台指针沿普通宿主接口：`stage.pointer()` 返回当前已接受舞台的鼠标坐标快照或 null；`stage.move_pointer(x,y,owner:node)` 返回归节点所有的可等待结果，bool 表示宿主是否执行。新接口 ABI 1，window.info/configure ABI 3 增加 pointer_move 能力；参数、等待、取消及诊断沿现有协议，无新语法/VM/ASB/SessionSnapshot 格式。真实位置是宿主临时状态，读档后等待真实鼠标输入；查询所得普通表仍可随存档保存。
 
@@ -413,7 +413,7 @@ Continue 保存版本化 native 算法状态，在同一 Task 下一预算片继
 
 CallScript 不提升权限或取消已有受限上下文；sort 的同步 comparator 仍不能等待，受限 derive 仍不能写外部状态。需要普通可暂停 callback 的宿主操作在签名中明确声明。native frame 的取消/释放由宿主 adapter 幂等完成；脚本 fault 未被 continuation 处理则按原调用链传播。旧 continuation 版本在所有帧/快照引用退出前必须可解析。
 
-native continuation 的回调取消屏障由所属 TaskId 与原生 FrameId 标识；宿主取消后按预算释放内层执行帧，以 CallbackCancelled 恢复原续体，外层任务及其异常处理保留。VM 快照 7 保存未完成的清理边界。Reel 可附加 owner 条件，不改变 Task 的主 owner。Reel scope(owner: node, body: callback) 通过它执行：节点先结束时只撤销该 region，取消其等待并丢弃到屏障为止的 callback 帧，内层脚本 catch/finally 不可阻止撤销；native adapter 幂等清理本区域资源后，在屏障外的原调用位置交付 ScopeCancelled，仍存活 Task 可继续。整个 Task 主 owner 撤销则按硬终止规则结束全部区域。区域层次、取消条件、临时资源及屏障 frame 一同保存；Task 主 owner 保持不变；执行上下文的默认资源 owner 为最内层活动 scope，否则为主 owner。新 async 子任务和未指定 owner 的活动使用该默认资源 owner，显式 owner 表示明确转交生存范围。无新增语言关键字。Reel 的 s.add(parent, node, index:null) 将显式挂载的临时节点登记到作用域对象图，复用普通节点挂载和退休语义；scope ABI 3、SessionSnapshot 17，VM 快照 7 不变。
+native continuation 的回调取消屏障由所属 TaskId 与原生 FrameId 标识；宿主取消后按预算释放内层执行帧，以 CallbackCancelled 恢复原续体，外层任务及其异常处理保留。VM 快照 8 保存未完成的清理边界。Reel 可附加 owner 条件，不改变 Task 的主 owner。Reel scope(owner: node, body: callback) 通过它执行：节点先结束时只撤销该 region，取消其等待并丢弃到屏障为止的 callback 帧，内层脚本 catch/finally 不可阻止撤销；native adapter 幂等清理本区域资源后，在屏障外的原调用位置交付 ScopeCancelled，仍存活 Task 可继续。整个 Task 主 owner 撤销则按硬终止规则结束全部区域。区域层次、取消条件、临时资源及屏障 frame 一同保存；Task 主 owner 保持不变；执行上下文的默认资源 owner 为最内层活动 scope，否则为主 owner。新 async 子任务和未指定 owner 的活动使用该默认资源 owner，显式 owner 表示明确转交生存范围。无新增语言关键字。Reel 的 s.add(parent, node, index:null) 将显式挂载的临时节点登记到作用域对象图，复用普通节点挂载和退休语义；scope ABI 4、SessionSnapshot 20，VM 快照 8。
 
 invoke_sync 仅用于不可保留 native 栈的有界同步重入。它继承最外层同步调用的剩余指令/分配额度与截止时间，嵌套只可收紧并累计扣减，最终返回 Returned、Error 或明确的同步控制失败；完整调用在本次同步边界内结束。预算耗尽终止本次嵌套调用，向 native 返回 NonResumableBudgetExceeded，脚本 catch/finally 不可截获或延长此退出；已经发生的副作用不自动回滚。所有调用此路径的 native 必须能处理失败并释放借用。可变长度或可暂停回调使用 CallScript，不能循环 invoke_sync 绕过累计预算。
 
@@ -435,7 +435,9 @@ Reel 节点的 rotation、scale_x/scale_y 和 anchor_x/anchor_y 是普通宿主�
 
 Reel 的固定节点数值属性通过普通命名参数表达 tween；宿主根据共同节点 schema 生成签名并验证数值。属性写入追踪是通用 Heap 能力：宿主可为既有字段启用逐字段写入版本；成功的脚本赋值递增对应版本，包含同值写入，失败赋值不递增。追踪数组由 GC 管理并计入堆预算，宿主动画内部写入不冒充脚本赋值。Aside 不依赖 Reel 或平台。
 
-Reel scope 属性覆盖（已实现）：`s.override(node, {opacity: 0.4, width: null})` 使用普通记录参数，显式 null 不等于缺失。返回只含所提供共同布局/外观字段及 remove 方法的可观察宿主 token，支持既有属性引用、derive 与 tween，不新增语言语法。node 成员访问保持基础值语义，token 成员访问本层值；有效投影按建立顺序取最后存活的层。覆盖不替换基础绑定；取消只移除层，不写回保存值。控件业务字段、只读交互状态、on_interaction 与 camera/scroll 专属字段不在本切片。scope ABI 3、tween ABI 8、override/remove ABI 1、SessionSnapshot 17；VM 快照 7 与 ASB 不变。细节见[作用域合同](engine-architecture.md#六-作用域-样式与状态)。
+Reel scope 属性覆盖（已实现）：`s.override(node, {opacity: 0.4, width: null})` 使用普通记录参数，显式 null 不等于缺失。返回只含所提供共同布局/外观字段及 remove 方法的可观察宿主 token，支持既有属性引用、derive 与 tween，不新增语言语法。node 成员访问保持基础值语义，token 成员访问本层值；有效投影按建立顺序取最后存活的层。覆盖不替换基础绑定；取消只移除层，不写回保存值。控件业务字段、只读交互状态、on_interaction 与 camera/scroll 专属字段不在本切片。scope ABI 4、tween ABI 8、override/remove ABI 1、SessionSnapshot 20；VM 快照 8，ASB 不变。细节见[作用域合同](engine-architecture.md#六-作用域-样式与状态)。
+
+Reel scope 加性偏移（已实现）：`s.offset(node, x: 0, y: 0)` 返回含 x/y 和 remove 的普通可观察宿主 token。初值可以 bind/derive，字段赋值和 tween 复用既有属性协议。所有偏移相加到当前基础或 override 结果，node 成员读取仍是基础值；取消移除本层而不写回旧值。token 的所有权、活动、强引用和同包快照与 override 共用；不新增语言语法、VM 指令或执行器。scope ABI4、offset ABI1、SessionSnapshot20；VM8、ASB与tween ABI8保持不变。
 
 以下动态 schema 尾袋仍为设计合同，尚未进入执行子集。签名可显式声明 PropertyBagTail：先绑定普通已声明参数，再将余下具名参数按指定目标参数的实际 PropertySchema 验证。描述包含目标参数、允许属性集合/能力、值类型、读写与可动画要求；未知名、只读属性、类型错误和与保留参数冲突均报错。tween(target, x: 80, duration: 0.5) 中 duration 是普通参数，x 按 target 的可动画属性 schema 检查；本设计不改变当前 s.override(node, {visible: false}) 的记录参数接口。普通无此元数据的函数仍拒绝未知名。call(fn,positional:,named:) 使用同一绑定器，脚本包装器通过显式 properties/named 表接收再转发动态属性；普通 fn 只接收自己声明的参数，不会自动捕获任意未知具名项。全程使用同一绑定器。工具能从签名和目标类型生成属性补全。宿主类型声明身份/值语义、字段读写/版本、结构模式可见字段、可观察属性、克隆与迭代行为。脚本与 native 使用同一参数错误和类型诊断，不允许只有内建函数支持命名参数。
 

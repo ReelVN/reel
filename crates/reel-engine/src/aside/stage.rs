@@ -629,7 +629,7 @@ impl StageBinding {
                 && !binding
                     .overrides
                     .as_ref()
-                    .map(|cache| cache.changed(heap, selected))
+                    .map(|cache| cache.changed(heap, value))
                     .transpose()?
                     .unwrap_or(false)
             {
@@ -761,7 +761,7 @@ impl StageBinding {
                 kind => (kind.clone(), 0),
             };
             controls::project_group(heap, value, &mut kind)?;
-            let props = read_props(
+            let mut props = read_props(
                 heap,
                 fields,
                 offset,
@@ -770,6 +770,7 @@ impl StageBinding {
                 Some((binding.mask_source, &node.props)),
                 node.props.mask_origin.clone(),
             )?;
+            overrides::apply_offsets(heap, value, &mut props)?;
             if matches!(kind, NodeKind::VirtualList(_)) {
                 validate_virtual_props(&props)?;
             }
@@ -814,10 +815,7 @@ impl StageBinding {
             binding.fields_version = version;
             binding.projection_dirty = false;
             if let Some(cache) = &mut binding.overrides {
-                cache.accept(
-                    heap,
-                    overrides::selection(heap, heap.import_handle(binding.handle)?)?,
-                )?;
+                cache.accept(heap, heap.import_handle(binding.handle)?)?;
             }
             binding.mask_source = mask_source;
             let fields = heap.host_fields(heap.import_handle(binding.handle)?)?;
