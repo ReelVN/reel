@@ -16,6 +16,7 @@ impl Session {
         let active = self.active.as_ref().map(|active| match active {
             Interaction::Dialogue(d) => Interaction::Dialogue(DialogueInteraction {
                 previously_read: d.previously_read,
+                reveal_skippable: d.reveal_skippable,
                 id: d.id,
                 mode: d.mode,
                 current_line_ids: Vec::new(),

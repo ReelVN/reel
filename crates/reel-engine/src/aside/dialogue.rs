@@ -154,6 +154,9 @@ impl SessionVm {
         let (id, name) = (read(id)?, read(name)?);
         let text = rich_text::read(self.vm.heap(), args[1], self.read_limit)?;
         let history = HistoryText::read(self.vm.heap(), args[2], self.read_limit)?;
+        let reveal_skippable = args[3]
+            .as_bool()
+            .ok_or(AdapterError::Input("reveal_skippable must be bool"))?;
         let content_id = self.dialogue_content_id(ticket);
         let interaction = self.publish_say(
             session,
@@ -166,6 +169,7 @@ impl SessionVm {
                 text: (&text).into(),
             }],
             locale,
+            reveal_skippable,
         )?;
         Ok(NativeDispatch::Published {
             interaction,
@@ -181,6 +185,9 @@ impl SessionVm {
         budget: u32,
     ) -> Result<NativeDispatch, AdapterError> {
         self.check_story_wait(session, ticket)?;
+        let reveal_skippable = self.vm.host_arguments(ticket)?[1]
+            .as_bool()
+            .ok_or(AdapterError::Input("reveal_skippable must be bool"))?;
         let mut reader = if let Some(reader) = self.dialogue_reader.take() {
             reader
         } else {
@@ -209,7 +216,7 @@ impl SessionVm {
                         content_id: id,
                     })
                     .collect();
-                let result = self.publish_say(session, ticket, &inputs, locale);
+                let result = self.publish_say(session, ticket, &inputs, locale, reveal_skippable);
                 reader.release(self.vm.heap_mut())?;
                 result.map(|interaction| NativeDispatch::Published { interaction, work })
             }

@@ -20,6 +20,12 @@ fn continues(session: &Session) -> bool {
         && d.lines().iter().all(|line| line.content().styled().continue_after()))
 }
 
+fn skip_can_advance(session: &Session) -> bool {
+    session.reading().skipping()
+        && matches!(session.view().interaction, Some(InteractionView::Dialogue(d))
+            if d.reveal_skippable() || dialogue_complete(session))
+}
+
 impl SessionUi {
     /// A pending presentation, menu, pause or paired gesture freezes reading.
     pub fn dialogue_needs_time(&self) -> bool {
@@ -46,7 +52,8 @@ impl SessionUi {
     }
 
     /// Supply monotonic logical nanoseconds and finite nonnegative graphemes/sec.
-    /// Zero reveals the full group. Auto advances only after a fully presented group.
+    /// Zero reveals skippable groups immediately; protected groups retain authored
+    /// speeds and pauses. Auto advances only after a fully presented group.
     /// Returns whether the interaction or its projection changed.
     pub fn advance_dialogue(&mut self, now_ns: u64, speed: f64) -> Result<bool, Error> {
         if !speed.is_finite() || speed < 0. {
@@ -66,7 +73,20 @@ impl SessionUi {
             self.pause_dialogue();
             self.playback.interaction = Some(id);
         }
-        if self.session.reading().skipping() {
+        if skip_can_advance(&self.session) {
+            // A protected reveal must reach an accepted complete frame first.
+            let Some(InteractionView::Dialogue(dialogue)) = self.session.view().interaction else {
+                unreachable!()
+            };
+            if !dialogue.reveal_skippable()
+                && !self
+                    .binding
+                    .borrow()
+                    .accepted
+                    .is_some_and(|stamp| stamp.dialogue_complete)
+            {
+                return Ok(false);
+            }
             let owner = self.session.root_owner();
             if self
                 .session
@@ -114,7 +134,7 @@ impl SessionUi {
         if !self.dialogue_needs_time() {
             return Duration::MAX;
         }
-        if self.session.reading().skipping() {
+        if skip_can_advance(&self.session) {
             return Duration::ZERO;
         }
         if dialogue_complete(&self.session) {
@@ -131,7 +151,7 @@ impl SessionUi {
         dialogue
             .lines()
             .iter()
-            .map(|line| line.playback_interval(speed))
+            .map(|line| line.playback_interval(speed, dialogue.reveal_skippable()))
             .min()
             .unwrap_or(Duration::MAX)
     }

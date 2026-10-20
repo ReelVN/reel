@@ -164,6 +164,40 @@ fn transition_zero_duration_waits_for_accepted_frame_returns_identity_and_restor
 }
 
 #[test]
+fn elastic_transition_limits_coverage_without_finishing_at_an_overshoot() {
+    for encoded in [false, true] {
+        for (curve, time, coverage) in [("elastic_out", 0.1, 1.), ("elastic_in", 0.9, 0.)] {
+            let code = format!(
+                "fn opening() {{ stage.replace(stack()); stage.transition(duration:1,\
+                 easing:\"{curve}\",change:|| stage.replace(text(\"new\"))); }}"
+            );
+            let (mut session, mut vm) = prepared(&code, encoded);
+            drive(&mut vm, &mut session, false);
+            let request = vm.take_transition_request().unwrap().unwrap();
+            vm.complete_transition_request(request.id, Ok(retained_picture()))
+                .unwrap();
+            drive(&mut vm, &mut session, false);
+            let view = vm.transition_views().next().unwrap();
+            assert!(
+                vm.accept_transition(view.id, TransitionPhase::NewPending, 0.)
+                    .unwrap()
+            );
+            vm.advance_time(&session, time, 64).unwrap();
+            let view = vm.transition_views().next().unwrap();
+            assert_eq!(view.progress, coverage);
+            assert_eq!(view.phase, TransitionPhase::Playing);
+            assert!(
+                !vm.accept_transition(view.id, TransitionPhase::FinalPending, 1.)
+                    .unwrap()
+            );
+            vm.advance_time(&session, 1., 64).unwrap();
+            accept_final(&mut vm);
+            drive(&mut vm, &mut session, true);
+        }
+    }
+}
+
+#[test]
 fn transition_change_awaits_on_original_main_task_and_restores_inside_callback() {
     for encoded in [false, true] {
         let code = r#"fn opening() {

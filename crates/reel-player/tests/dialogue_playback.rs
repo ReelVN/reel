@@ -15,6 +15,11 @@ static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
 #[test]
 fn stable_typewriter_updates_do_not_copy_text_or_allocate_projection_storage() {
+    stable_typewriter_cost(true);
+    stable_typewriter_cost(false);
+}
+
+fn stable_typewriter_cost(reveal_skippable: bool) {
     let mut session = Session::new(SessionId(1), Epoch(1)).unwrap();
     let text = "雨".repeat(10_001);
     session
@@ -28,6 +33,7 @@ fn stable_typewriter_updates_do_not_copy_text_or_allocate_projection_storage() {
                 text: (&text).into(),
             }],
             "zh-CN",
+            reveal_skippable,
         )
         .unwrap();
     let mut ui = SessionUi::new(session).unwrap();
@@ -125,4 +131,73 @@ fn accept(
         PresentationOutcome::Accepted(id),
     ));
     assert!(ui.presented(bridge, &receipt));
+}
+
+#[test]
+fn protected_reveal_skip_uses_time_and_waits_for_complete_presentation() {
+    let mut session = Session::new(SessionId(1), Epoch(1)).unwrap();
+    let id = session
+        .begin_say(
+            session.root_owner(),
+            &[DialogueLineInput {
+                history: Default::default(),
+                speaker_id: None,
+                speaker_name: "",
+                content_id: "protected",
+                text: "AB".into(),
+            }],
+            "en",
+            false,
+        )
+        .unwrap();
+    let mut ui = SessionUi::new(session).unwrap();
+    let widget = ui.widget().prepare();
+    let root_id = widget.id();
+    let root = RenderRoot::new(
+        widget,
+        |_| {},
+        RenderRootOptions {
+            use_system_fonts: false,
+            size: PhysicalSize::new(640, 420),
+            size_policy: WindowSizePolicy::User,
+            default_properties: std::sync::Arc::new(DefaultProperties::new()),
+            scale_factor: 1.,
+            default_font: None,
+        },
+    );
+    let mut bridge = PresentationBridge::new(
+        root,
+        SurfaceEpoch(1),
+        BridgeLimits {
+            geometry: reel_ui::app::GeometryLimits { max_bytes: 1 << 20 },
+            max_candidates: 4,
+            max_bridge_bytes: 64 << 10,
+            max_snapshot_bytes: 16 << 20,
+        },
+    )
+    .unwrap();
+    ui.sync(&mut bridge, root_id).unwrap();
+    accept(&mut ui, &mut bridge, root_id);
+    ui.session_mut().set_skip_reading(true, true, false);
+    assert!(!ui.advance_dialogue(0, 2.).unwrap());
+    assert!(ui.advance_dialogue(500_000_000, 2.).unwrap());
+    let Some(InteractionView::Dialogue(d)) = ui.session().view().interaction else {
+        panic!()
+    };
+    assert_eq!(d.reveal().revealed_count, 1);
+    let owner = ui.session().root_owner();
+    assert_eq!(
+        ui.session_mut()
+            .handle_local_input(owner, reel_engine::InputAction::Advance(id))
+            .unwrap(),
+        reel_engine::InputOutcome::Pending
+    );
+    assert!(ui.advance_dialogue(1_000_000_000, 2.).unwrap());
+    assert!(!ui.advance_dialogue(1_100_000_000, 2.).unwrap());
+    assert!(ui.session().view().interaction.is_some());
+    ui.sync(&mut bridge, root_id).unwrap();
+    accept(&mut ui, &mut bridge, root_id);
+    assert!(ui.advance_dialogue(1_200_000_000, 2.).unwrap());
+    assert!(ui.session().view().interaction.is_none());
+    assert!(ui.session().read_progress().contains("protected"));
 }

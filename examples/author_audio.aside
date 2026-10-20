@@ -8,7 +8,7 @@ fn main() {
     narrator("音乐暂停并回到开头。继续后恢复，再播放一个音效。");
     resume(music);
     audio.volume(music, 0.2, duration: 0.5);
-    let sound = audio.play("assets/chime.wav", pan: -0.5);
+    let sound = audio.play("assets/chime.wav", pan: -0.5, start: 0.05, end: 0.2);
     await sound;
     audio.stop(music, fade: 0.5);
     await music;

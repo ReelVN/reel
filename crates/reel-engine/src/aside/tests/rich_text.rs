@@ -75,6 +75,118 @@ fn dialogue_ready_tracks_group_timing_and_interaction_boundaries_from_source_and
 use reel_ui::stage::{NodeKind, NodeLink};
 
 #[test]
+fn protected_reveal_consumes_input_and_restores_its_timing() {
+    use aside_vm::snapshot::SnapshotBudget;
+    use std::time::Duration;
+
+    let code = r#"
+    fn opening() {
+        let a = character("A");
+        a(rich("[speed=10]A[pause=1]B[/speed]"), reveal_skippable: false);
+        say([a.line("C"), a.line(rich("D[pause=1]"))], reveal_skippable: false);
+        narrator("E", reveal_skippable: false);
+        narrator("default");
+    }
+    "#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, true);
+        let id = session.view().interaction.unwrap().id();
+        let owner = session.root_owner();
+        session
+            .advance_reveal(owner, id, Duration::from_millis(100), 10.)
+            .unwrap();
+        assert_eq!(
+            session
+                .handle_local_input(owner, InputAction::Advance(id))
+                .unwrap(),
+            crate::InputOutcome::Pending
+        );
+        let Some(crate::InteractionView::Dialogue(d)) = session.view().interaction else {
+            panic!()
+        };
+        assert_eq!(d.reveal().revealed_count, 1);
+        assert!(!d.reveal_skippable());
+
+        let program = vm.vm.program().clone();
+        let mut capture = vm.snapshot_begin(&session).unwrap();
+        while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let mut image =
+            snapshot::SessionSnapshot::decode(&capture.finish().unwrap().encode().unwrap())
+                .unwrap();
+        let mut restore = SessionVm::restore_begin(
+            &mut image,
+            program,
+            VmLimits::default(),
+            SessionIdentity {
+                session_id: SessionId(41),
+                epoch: Epoch(20),
+            },
+            crate::ReadProgress::default(),
+            None,
+            None,
+        )
+        .unwrap();
+        while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let (mut restored_session, mut restored) = restore.finish().unwrap();
+        for (session, vm) in [
+            (&mut session, &mut vm),
+            (&mut restored_session, &mut restored),
+        ] {
+            for expected in ["A", "C", "E"] {
+                models::drive(vm, session, true);
+                let owner = session.root_owner();
+                let Some(crate::InteractionView::Dialogue(d)) = session.view().interaction else {
+                    panic!()
+                };
+                assert!(d.text().starts_with(expected));
+                assert!(!d.reveal_skippable());
+                let id = d.id();
+                assert_eq!(
+                    session
+                        .handle_local_input(owner, InputAction::Advance(id))
+                        .unwrap(),
+                    crate::InputOutcome::Pending
+                );
+                // Completing characters alone cannot skip the rich tail pause.
+                session
+                    .advance_reveal(owner, id, Duration::from_millis(100), 10.)
+                    .unwrap();
+                if expected == "C" {
+                    assert_eq!(
+                        session
+                            .handle_local_input(owner, InputAction::Advance(id))
+                            .unwrap(),
+                        crate::InputOutcome::Pending
+                    );
+                }
+                session
+                    .advance_reveal(owner, id, Duration::from_secs(2), 10.)
+                    .unwrap();
+                assert_eq!(
+                    session
+                        .handle_local_input(owner, InputAction::Advance(id))
+                        .unwrap(),
+                    crate::InputOutcome::Completed
+                );
+            }
+            models::drive(vm, session, true);
+            let Some(crate::InteractionView::Dialogue(d)) = session.view().interaction else {
+                panic!()
+            };
+            assert!(d.reveal_skippable());
+            let id = d.id();
+            assert_eq!(
+                session
+                    .handle_local_input(session.root_owner(), InputAction::Advance(id))
+                    .unwrap(),
+                crate::InputOutcome::Revealed
+            );
+        }
+    }
+}
+
+#[test]
 fn text_wrap_validates_reacts_and_restores_from_source_and_asb() {
     use aside_vm::snapshot::SnapshotBudget;
 

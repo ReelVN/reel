@@ -262,6 +262,7 @@ pub enum DialogueMode {
 #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, Clone)]
 pub struct DialogueInteraction {
     previously_read: bool,
+    reveal_skippable: bool,
     id: InteractionId,
     mode: DialogueMode,
     current_line_ids: Vec<DialogueLineId>,
@@ -270,6 +271,11 @@ pub struct DialogueInteraction {
 }
 
 impl DialogueInteraction {
+    /// Whether advance may complete the group's text and timing immediately.
+    pub fn reveal_skippable(&self) -> bool {
+        self.reveal_skippable
+    }
+
     /// All content IDs were completed before this group was submitted.
     pub fn previously_read(&self) -> bool {
         self.previously_read
@@ -466,6 +472,8 @@ pub struct InputEvent {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InputOutcome {
+    /// Consumed while a dialogue's authored reveal timing is still playing.
+    Pending,
     Revealed,
     Completed,
 }
@@ -1116,6 +1124,7 @@ impl Session {
         owner: OwnerHandle,
         lines: &[DialogueLineInput<'_>],
         page_locale: &str,
+        reveal_skippable: bool,
     ) -> Result<InteractionId, SessionError> {
         let id = self.prepare_interaction(owner)?;
         if page_locale.is_empty() {
@@ -1182,6 +1191,7 @@ impl Session {
         let previously_read = owned_lines.iter().all(DialogueLine::previously_read);
         let dialogue = DialogueInteraction {
             previously_read,
+            reveal_skippable,
             id,
             mode: DialogueMode::Adv,
             current_line_ids,
@@ -1360,7 +1370,7 @@ impl Session {
         }
         let mut changed = false;
         for line in &mut dialogue.lines {
-            changed |= line.advance_reveal(elapsed, player_speed);
+            changed |= line.advance_reveal(elapsed, player_speed, dialogue.reveal_skippable);
         }
         Ok(changed)
     }
@@ -1467,6 +1477,11 @@ impl Session {
         }
         match (active, event.action) {
             (Interaction::Dialogue(dialogue), InputAction::Advance(_)) => {
+                if !dialogue.reveal_skippable
+                    && dialogue.lines.iter().any(|line| !line.playback_complete())
+                {
+                    return Ok(InputOutcome::Pending);
+                }
                 let mut revealed = false;
                 for line in &mut dialogue.lines {
                     let total_count = line.grapheme_boundaries.len() - 1;
@@ -1646,7 +1661,7 @@ mod identity_tests {
         let mut session = Session::new(SessionId(1), Epoch(1)).unwrap();
         let root = session.root_owner();
         session.next_interaction = Some(u64::MAX);
-        let id = session.begin_say(root, &[], "en").unwrap();
+        let id = session.begin_say(root, &[], "en", true).unwrap();
         assert_eq!(id.generation(), u64::MAX);
         session
             .handle_input(InputEvent {
@@ -1658,7 +1673,7 @@ mod identity_tests {
         session.take_completion().unwrap();
         let before = session.storage_usage();
         assert_eq!(
-            session.begin_say(root, &[], "en"),
+            session.begin_say(root, &[], "en", true),
             Err(SessionError::IdentityExhausted)
         );
         assert_eq!(session.storage_usage(), before);

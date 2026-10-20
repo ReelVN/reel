@@ -7,8 +7,8 @@ fn main() {
     };
     stage.replace(card);
     let entrance = parallel(
-        tween(card, opacity: 1, duration: 0.5),
-        tween(card, x: 220, duration: 0.8, easing: "quint_out"),
+        tween(card, opacity: 1, duration: 0.5, easing: "quart_in"),
+        tween(card, x: 220, duration: 0.8, easing: "elastic_out"),
         tween(card, y: 180, duration: 1.2, easing: "bounce_out")
     );
     await run(entrance);

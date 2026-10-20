@@ -20,6 +20,12 @@ pub(in crate::aside) enum Easing {
     BounceIn,
     BounceOut,
     BounceInOut,
+    QuartIn,
+    QuartOut,
+    QuartInOut,
+    ElasticIn,
+    ElasticOut,
+    ElasticInOut,
 }
 
 impl Easing {
@@ -41,9 +47,15 @@ impl Easing {
             "bounce_in" => Self::BounceIn,
             "bounce_out" => Self::BounceOut,
             "bounce_in_out" => Self::BounceInOut,
+            "quart_in" => Self::QuartIn,
+            "quart_out" => Self::QuartOut,
+            "quart_in_out" => Self::QuartInOut,
+            "elastic_in" => Self::ElasticIn,
+            "elastic_out" => Self::ElasticOut,
+            "elastic_in_out" => Self::ElasticInOut,
             _ => {
                 return Err(AdapterError::Input(
-                    "easing requires linear, in/out/in_out, quad_in/out/in_out, sine_in/out/in_out, quint_in/out/in_out or bounce_in/out/in_out",
+                    "easing requires linear or in/out/in_out with an optional quad_, quart_, quint_, sine_, bounce_ or elastic_ prefix",
                 ));
             }
         })
@@ -67,6 +79,12 @@ impl Easing {
             13 => Self::BounceIn,
             14 => Self::BounceOut,
             15 => Self::BounceInOut,
+            16 => Self::QuartIn,
+            17 => Self::QuartOut,
+            18 => Self::QuartInOut,
+            19 => Self::ElasticIn,
+            20 => Self::ElasticOut,
+            21 => Self::ElasticInOut,
             _ => unreachable!("private easing code"),
         }
     }
@@ -97,8 +115,20 @@ impl Easing {
             Self::BounceOut => bounce_out(t),
             Self::BounceInOut if t < 0.5 => (1. - bounce_out(1. - 2. * t)) / 2.,
             Self::BounceInOut => (1. + bounce_out(2. * t - 1.)) / 2.,
+            Self::QuartIn => t.powi(4),
+            Self::QuartOut => 1. - (1. - t).powi(4),
+            Self::QuartInOut if t < 0.5 => 8. * t.powi(4),
+            Self::QuartInOut => 1. - (-2. * t + 2.).powi(4) / 2.,
+            Self::ElasticIn => 1. - elastic_out(1. - t),
+            Self::ElasticOut => elastic_out(t),
+            Self::ElasticInOut if t < 0.5 => (1. - elastic_out(1. - 2. * t)) / 2.,
+            Self::ElasticInOut => (1. + elastic_out(2. * t - 1.)) / 2.,
         }
     }
+}
+
+fn elastic_out(t: f64) -> f64 {
+    1. + 2_f64.powf(-10. * t) * ((t - 0.075) * std::f64::consts::TAU / 0.3).sin()
 }
 
 fn bounce_out(t: f64) -> f64 {

@@ -1,4 +1,5 @@
 use reel_core::{
+    audio::AudioLoopRegion,
     budget::{BudgetCategory, BudgetPool, QueueLimits},
     clock::MonoTime,
     wake::WakeSignal,
@@ -64,6 +65,163 @@ fn near(actual: [f32; 2], expected: [f32; 2]) {
     for (a, b) in actual.into_iter().zip(expected) {
         assert!((a - b).abs() < 0.0001, "{actual:?} != {expected:?}");
     }
+}
+
+#[test]
+fn playback_end_matches_cropped_pcm_through_resampling_and_queued_loop_exit() {
+    use std::time::Duration;
+    fn render(source_rate: u32, output_rate: u32, sliced: bool, looping: bool) -> Vec<f32> {
+        let mut service =
+            AudioReclaimService::new(ReclaimLimits::default(), WakeSignal::new(|| {})).unwrap();
+        let mut output = OfflineOutput::new(
+            AudioDeviceConfig {
+                sample_rate_hz: output_rate,
+                sample_format: SampleFormat::F32,
+                layout: ChannelLayout::Stereo,
+            },
+            WakeSignal::new(|| {}),
+        )
+        .unwrap();
+        let format = output.configure(AudioRequest::default()).unwrap();
+        let mut mixer = KiraMixer::new(
+            &format,
+            MixerLimits {
+                max_sounds: 4,
+                internal_buffer_frames: 64,
+            },
+            &service,
+        )
+        .unwrap();
+        let pool = pool();
+        let time = |frame: usize| Duration::from_secs_f64(frame as f64 / f64::from(source_rate));
+        let make = |start: usize, end: usize, amplitude: f32, looping: bool| {
+            // The excluded suffix is deliberately loud and unlike either clip.
+            let mut frames = vec![[amplitude, -amplitude]; end];
+            if sliced {
+                frames.extend(std::iter::repeat_n([0.99, 0.98], 200));
+            }
+            let ticket = pool
+                .reserve((frames.capacity() + frames.len()) as u64 * 8)
+                .unwrap();
+            DecodedSound::new(source_rate, frames, ticket)
+                .unwrap()
+                .with_playback(
+                    time(start),
+                    sliced.then(|| time(end)),
+                    looping.then_some(AudioLoopRegion {
+                        start: time(60),
+                        end: None,
+                    }),
+                )
+                .unwrap()
+        };
+        let mut playback = mixer.play(make(40, 160, 0.2, looping)).unwrap();
+        mixer.announce(&playback, 1).unwrap();
+        mixer
+            .queue(&mut playback, 1, make(20, 120, 0.4, false))
+            .unwrap();
+        assert!(output.start(mixer.take_fill().unwrap()).is_ok());
+        let mut pcm = vec![0.; 2048];
+        output.render(&mut pcm, timing(0));
+        assert!(playback.is_stopped());
+        assert_eq!(playback.queue_cursor().0, 1);
+        assert!((playback.position_seconds() - time(120).as_secs_f64()).abs() < 1e-8);
+        if source_rate == output_rate {
+            for (index, frame) in pcm[..440].chunks_exact(2).enumerate() {
+                let amplitude = if index < 120 { 0.2 } else { 0.4 };
+                near([frame[0], frame[1]], [amplitude, -amplitude]);
+            }
+        }
+        output.stop().unwrap();
+        drop(mixer);
+        service.drain_and_join().unwrap();
+        assert_eq!(pool.usage().bytes, 0);
+        pcm
+    }
+    for (source, output) in [(48_000, 48_000), (44_100, 48_000), (48_000, 44_100)] {
+        for looping in [false, true] {
+            assert_eq!(
+                render(source, output, true, looping),
+                render(source, output, false, looping),
+                "slice must retain the same sample history at {source}->{output}, loop={looping}"
+            );
+        }
+    }
+}
+
+#[test]
+fn playback_end_quantized_empty_segment_and_restored_endpoint_complete_silently() {
+    use std::time::Duration;
+    let time = |frame: f64| Duration::from_secs_f64(frame / 48_000.);
+    // Initial times differ but round to the same source frame; the second case
+    // restores an already reached endpoint rather than a new author play call.
+    for (start, end) in [(time(0.9), time(1.1)), (time(1.), time(1.))] {
+        let pool = pool();
+        let mut service =
+            AudioReclaimService::new(ReclaimLimits::default(), WakeSignal::new(|| {})).unwrap();
+        let (mut output, format) = setup(ChannelLayout::Stereo, SampleFormat::F32, 128);
+        let mut mixer = KiraMixer::new(&format, MixerLimits::default(), &service).unwrap();
+        let playback = mixer
+            .play(
+                sound(&pool, vec![[0.9; 2]; 64])
+                    .with_playback(start, Some(end), None)
+                    .unwrap(),
+            )
+            .unwrap();
+        assert!(output.start(mixer.take_fill().unwrap()).is_ok());
+        let mut pcm = [0.0_f32; 256];
+        output.render(&mut pcm, timing(0));
+        assert!(pcm.iter().all(|sample| *sample == 0.));
+        assert!(
+            playback.is_stopped(),
+            "start={start:?} end={end:?} cursor={:?} output={:?}",
+            playback.queue_cursor(),
+            output.status()
+        );
+        assert!((playback.position_seconds() - 1. / 48_000.).abs() < 1e-9);
+        output.stop().unwrap();
+        drop(mixer);
+        service.drain_and_join().unwrap();
+        assert_eq!(pool.usage().bytes, 0);
+    }
+}
+
+#[test]
+fn playback_end_validates_quantized_bounds_and_keeps_pcm_residency() {
+    use std::time::Duration;
+    let pool = pool();
+    let time = |frame: f64| Duration::from_secs_f64(frame / 48_000.);
+    for end in [0., 0.1, 65.] {
+        assert!(
+            sound(&pool, vec![[0.2; 2]; 64])
+                .with_playback(Duration::ZERO, Some(time(end)), None)
+                .is_err()
+        );
+        assert_eq!(pool.usage().bytes, 0);
+    }
+    let clip = sound(&pool, vec![[0.2; 2]; 64]);
+    let bytes = clip.resident_bytes();
+    let mut clip = clip
+        .with_playback(time(10.), Some(time(32.)), None)
+        .unwrap();
+    assert_eq!(clip.resident_bytes(), bytes);
+    assert_eq!(pool.usage().tickets, 1);
+    assert_eq!(clip.seek(time(3.)), time(3.));
+    assert_eq!(clip.seek(time(100.)), time(32.));
+    drop(clip);
+    assert!(
+        sound(&pool, vec![[0.2; 2]; 64])
+            .with_playback(
+                Duration::ZERO,
+                Some(time(32.)),
+                Some(AudioLoopRegion {
+                    start: time(10.),
+                    end: Some(time(40.))
+                })
+            )
+            .is_err()
+    );
+    assert_eq!(pool.usage().bytes, 0);
 }
 
 #[test]

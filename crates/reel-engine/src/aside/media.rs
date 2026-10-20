@@ -6,6 +6,7 @@ use crate::media::{
 use aside_vm::executor::{Completion, HostResponse, TaskId, WaitId};
 use aside_vm::{Heap, HeapError, RootKind, RootToken, Value, ValueTag};
 use reel_ui::stage::NodeId;
+use std::time::Duration;
 
 const TAG: i64 = -1003;
 #[repr(u32)]
@@ -486,7 +487,8 @@ impl SessionVm {
             let pan = pan(args[5])?;
             let fade_in = duration(args[6])?;
             let start_position = duration(args[7])?;
-            let loop_region = audio_loop(args[1], args[8], args[9])?;
+            let end_position = audio_end(start_position, args[8])?;
+            let loop_region = audio_loop(args[1], args[9], args[10])?;
             let request = AudioRequest {
                 source,
                 loop_region,
@@ -495,6 +497,7 @@ impl SessionVm {
                 pan,
                 fade_in,
                 start_position,
+                end_position,
             };
             self.start_media(
                 ticket,
@@ -562,7 +565,8 @@ impl SessionVm {
             if symbol == "reel::audio::queue" {
                 let source = text::read_string(self.vm.heap(), args[1], self.read_limit)?;
                 let start_position = duration(args[2])?;
-                let loop_region = audio_loop(args[3], args[4], args[5])?;
+                let end_position = audio_end(start_position, args[3])?;
+                let loop_region = audio_loop(args[4], args[5], args[6])?;
                 let id = MediaId(
                     self.vm
                         .heap()
@@ -585,6 +589,7 @@ impl SessionVm {
                         crate::audio::AudioQueueItem {
                             source,
                             start_position,
+                            end_position,
                             loop_region,
                         },
                     )
@@ -820,6 +825,17 @@ impl Media {
             backend.close();
         }
     }
+}
+
+fn audio_end(start: Duration, end: Value) -> Result<Option<Duration>, AdapterError> {
+    if end.tag() == ValueTag::Null {
+        return Ok(None);
+    }
+    let end = duration(end)?;
+    if end <= start {
+        return Err(AdapterError::Input("audio end must follow start"));
+    }
+    Ok(Some(end))
 }
 
 fn audio_loop(

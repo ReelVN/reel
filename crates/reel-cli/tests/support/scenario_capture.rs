@@ -21,7 +21,7 @@ use reel_ui::{
     frame::{BuildLimits, FrameBuild, FrameInfo, RenderFrame, StepBudget},
     resources::{ResourceData, ResourceLease, ResourceSnapshot},
 };
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::PathBuf};
 
 #[derive(Clone, Debug, Default)]
 pub struct CaptureStats {
@@ -37,6 +37,7 @@ pub struct CaptureStats {
 struct Offscreen {
     renderer: Renderer,
     stats: CaptureStats,
+    capture_dir: Option<PathBuf>,
 }
 impl CaptureBackend for Offscreen {
     type Error = GpuError;
@@ -68,6 +69,18 @@ impl CaptureBackend for Offscreen {
             self.stats.center = sample(width / 2);
             self.stats.right = sample(width * 7 / 8);
             self.stats.centers.push(self.stats.center);
+            if let Some(directory) = &self.capture_dir {
+                let path = directory.join(format!("capture-{:03}.png", self.stats.count));
+                image::save_buffer(
+                    &path,
+                    pixels.rgba.as_slice(),
+                    width,
+                    height,
+                    image::ColorType::Rgba8,
+                )
+                .unwrap_or_else(|error| panic!("scenario capture {}: {error}", path.display()));
+                eprintln!("scenario capture PNG: {}", path.display());
+            }
         }
         Ok(pixels)
     }
@@ -84,7 +97,14 @@ pub struct ScenarioCapture {
     active_fonts: Vec<String>,
 }
 impl ScenarioCapture {
-    pub fn new() -> Self {
+    pub fn new(kind: &str) -> Self {
+        let capture_dir = std::env::var_os("REEL_SCENARIO_CAPTURE_DIR").map(|directory| {
+            let directory = PathBuf::from(directory).join(kind);
+            std::fs::create_dir_all(&directory).unwrap_or_else(|error| {
+                panic!("scenario capture {}: {error}", directory.display())
+            });
+            directory
+        });
         let gpu = pollster::block_on(Gpu::request(
             &wgpu::Instance::default(),
             None,
@@ -96,6 +116,7 @@ impl ScenarioCapture {
         Self::assemble(Some(Offscreen {
             renderer: Renderer::new(gpu),
             stats: CaptureStats::default(),
+            capture_dir,
         }))
     }
     pub fn cpu() -> Self {

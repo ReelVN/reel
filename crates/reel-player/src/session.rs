@@ -1375,6 +1375,7 @@ impl SessionHostDiagnostic {
                     .into(),
             }],
             "en",
+            true,
         )?;
         Ok(Self {
             ui: SessionUi::preview(session)?,
@@ -1393,7 +1394,7 @@ impl SessionHostDiagnostic {
                         history: Default::default(),
                         speaker_id: Some("host"), speaker_name: "Host", content_id: "host-diagnostic/second",
                         text: ("The first click reveals the full line. The next click settles this interaction once.").into(),
-                    }], "en")?;
+                    }], "en", true)?;
                     self.step = 1;
                 }
                 (1, CompletionOutcome::Advanced) => {
@@ -1457,6 +1458,7 @@ mod tests {
                     text: text.into(),
                 }],
                 "en",
+                true,
             )
             .unwrap()
     }
@@ -2060,7 +2062,9 @@ mod tests {
     #[test]
     fn zero_line_dialogue_advances_through_the_presented_pointer_path_once() {
         let mut session = session();
-        let interaction = session.begin_say(session.root_owner(), &[], "en").unwrap();
+        let interaction = session
+            .begin_say(session.root_owner(), &[], "en", true)
+            .unwrap();
         let mut ui = SessionUi::preview(session).unwrap();
         let (mut bridge, root) = mount(&ui);
         click(&mut ui, &mut bridge, (100., 300.));
@@ -2113,7 +2117,7 @@ mod tests {
             text: (&text).into(),
         };
         ui.session
-            .begin_say(ui.session.root_owner(), &[line; 6], "en")
+            .begin_say(ui.session.root_owner(), &[line; 6], "en", true)
             .unwrap();
         ui.sync(&mut bridge, root).unwrap();
         accept(&mut ui, &mut bridge, root, 2);

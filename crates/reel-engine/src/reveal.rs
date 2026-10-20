@@ -19,11 +19,11 @@ impl DialogueLine {
     }
 
     /// Time until the next change. Hosts freeze this clock while presentation is blocked.
-    pub fn playback_interval(&self, player_speed: f64) -> Duration {
+    pub fn playback_interval(&self, player_speed: f64, reveal_skippable: bool) -> Duration {
         if self.playback_complete() {
             return Duration::MAX;
         }
-        if player_speed == 0. {
+        if player_speed == 0. && reveal_skippable {
             return Duration::ZERO;
         }
         if self.timing.pause > 0. {
@@ -62,10 +62,15 @@ impl DialogueLine {
         self.timing.fraction = 0.;
     }
 
-    pub(crate) fn advance_reveal(&mut self, elapsed: Duration, player_speed: f64) -> bool {
+    pub(crate) fn advance_reveal(
+        &mut self,
+        elapsed: Duration,
+        player_speed: f64,
+        reveal_skippable: bool,
+    ) -> bool {
         let before = (self.revealed_count, self.playback_complete());
         let total = self.grapheme_boundaries.len() - 1;
-        if player_speed == 0. {
+        if player_speed == 0. && reveal_skippable {
             self.revealed_count = total;
             self.skip_timing();
         } else {

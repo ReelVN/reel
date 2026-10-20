@@ -258,7 +258,8 @@ impl SessionVm {
             let progress = match state.phase {
                 TransitionPhase::FinalPending => 1.,
                 TransitionPhase::Playing => activity::easing::Easing::from_code(state.easing)
-                    .sample(state.elapsed / state.duration),
+                    .sample(state.elapsed / state.duration)
+                    .clamp(0., 1.),
                 _ => 0.,
             };
             Some(TransitionView {

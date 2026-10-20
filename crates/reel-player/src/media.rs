@@ -93,6 +93,7 @@ impl Entry {
             self.key = segment.key;
             self.request.source = segment.request.source;
             self.request.loop_region = segment.request.loop_region;
+            self.request.end_position = segment.request.end_position;
             self.descriptor = segment.descriptor;
         }
         self.request.start_position = position;
@@ -105,6 +106,7 @@ fn resolve_decoded(
     event: Decoded,
     phase: &mut Phase,
     start: &mut Duration,
+    end: Option<Duration>,
     loop_region: Option<reel_core::audio::AudioLoopRegion>,
     source: &String,
     descriptor: &mut BudgetTicket,
@@ -114,7 +116,7 @@ fn resolve_decoded(
         .expect("release decode input charge");
     *phase = match event.sound.and_then(|sound| {
         sound
-            .with_playback(*start, loop_region)
+            .with_playback(*start, end, loop_region)
             .map_err(|error| error.to_string())
     }) {
         Ok(sound) => {
@@ -540,6 +542,7 @@ impl MediaBackend for MediaPlayer {
         if let Some(segment) = entry.queue.iter().find(|segment| segment.item == item) {
             request.source = segment.request.source.clone();
             request.loop_region = segment.request.loop_region;
+            request.end_position = segment.request.end_position;
         }
         request.start_position = state
             .as_ref()
@@ -779,6 +782,7 @@ impl MediaBackend for MediaPlayer {
                         event,
                         &mut entry.phase,
                         &mut entry.request.start_position,
+                        entry.request.end_position,
                         entry.request.loop_region,
                         &entry.request.source,
                         &mut entry.descriptor,
@@ -790,6 +794,7 @@ impl MediaBackend for MediaPlayer {
                         event,
                         &mut segment.phase,
                         &mut segment.request.start_position,
+                        segment.request.end_position,
                         segment.request.loop_region,
                         &segment.request.source,
                         &mut segment.descriptor,
