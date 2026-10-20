@@ -636,6 +636,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 parameter("end", Some(bc::Const::Null)),
                 parameter("loop_start", Some(bc::Const::Int(0))),
                 parameter("loop_end", Some(bc::Const::Null)),
+                parameter("paused", Some(bc::Const::Bool(false))),
             ],
             false,
         ),
@@ -691,7 +692,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             rest: None,
             symbol: format!("reel::audio::{name}"),
             abi_version: match name {
-                "play" => 4,
+                "play" => 5,
                 "volume" | "queue" | "position" => 2,
                 _ => 1,
             },
@@ -725,6 +726,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 parameter("start", Some(bc::Const::Int(0))),
                 parameter("end", Some(bc::Const::Null)),
                 parameter("owner", Some(bc::Const::Null)),
+                parameter("paused", Some(bc::Const::Bool(false))),
             ],
         ),
         (
@@ -740,7 +742,11 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::video::{name}"),
-            abi_version: if name == "position" { 2 } else { 1 },
+            abi_version: if matches!(name, "position" | "play") {
+                2
+            } else {
+                1
+            },
             parameters,
             result: BuiltinType::Any,
             effects: Effects(
@@ -855,7 +861,11 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ),
         (
             "scope::run",
-            vec![parameter("scope", None), parameter("action", None)],
+            vec![
+                parameter("scope", None),
+                parameter("action", None),
+                parameter("paused", Some(bc::Const::Bool(false))),
+            ],
             false,
         ),
         (
@@ -899,6 +909,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             vec![
                 parameter("interval", Some(bc::Const::Int(1))),
                 parameter("owner", Some(bc::Const::Null)),
+                parameter("paused", Some(bc::Const::Bool(false))),
             ],
             false,
         ),
@@ -907,6 +918,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             vec![
                 parameter("action", None),
                 parameter("owner", Some(bc::Const::Null)),
+                parameter("paused", Some(bc::Const::Bool(false))),
             ],
             false,
         ),
@@ -982,7 +994,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             abi_version: match name {
                 "tween" => 8,
                 "scope" => 4,
-                "clock" => 2,
+                "clock" => 3,
+                "run" | "scope::run" => 2,
                 _ => 1,
             },
             parameters,

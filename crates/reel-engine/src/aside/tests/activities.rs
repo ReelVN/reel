@@ -1,6 +1,110 @@
 use super::*;
 
 #[test]
+fn initially_paused_activity_restores_before_first_activation() {
+    use aside_vm::snapshot::SnapshotBudget;
+    let source = r#"fn opening() {
+        let node=stack(x:0); stage.replace(node);
+        let moving=run(tween(node,x:100,duration:10));
+        let prepared=run(tween(node,x:60,duration:1),paused:true);
+        let timer=clock(interval:0.25,paused:true);
+        node.add(text("clock",x:bind(timer.ticks),y:bind(timer.elapsed)));
+        narrator("prepared");
+        if node.x!=20 || timer.ticks!=0 || timer.elapsed!=0 {throw "initial pause";}
+        stop(moving);
+        node.x=30;
+        resume(prepared);resume(timer);
+        narrator("resumed");
+        if node.x!=45 || timer.ticks!=2 {throw "activation must read current start";}
+        narrator("halfway");
+        if await prepared!="Completed" || node.x!=60 || timer.ticks!=4 {throw "completion";}
+        stop(timer);
+        narrator("done");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(source, encoded);
+        models::drive(&mut vm, &mut session, false);
+        let allocations = vm.vm.heap().stats().chunk_allocations;
+        for i in 1..=120 {
+            advance_clock(&mut vm, &session, i as f64 / 60., 64);
+        }
+        assert_eq!(vm.vm.heap().stats().chunk_allocations, allocations);
+        let node = vm.stage().root().unwrap();
+        vm.sync_stage(&session).unwrap();
+        assert_eq!(vm.stage().node(node).unwrap().props.x, 20.);
+        let program = vm.vm.program().clone();
+        let mut capture = vm.snapshot_begin(&session).unwrap();
+        while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let mut image =
+            snapshot::SessionSnapshot::decode(&capture.finish().unwrap().encode().unwrap())
+                .unwrap();
+        let mut restore = SessionVm::restore_begin(
+            &mut image,
+            program,
+            VmLimits::default(),
+            SessionIdentity {
+                session_id: SessionId(42),
+                epoch: Epoch(21),
+            },
+            crate::ReadProgress::default(),
+            None,
+            None,
+        )
+        .unwrap();
+        while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let (mut session, mut vm) = restore.finish().unwrap();
+        advance_dialogue(&mut vm, &mut session);
+        advance_clock(&mut vm, &session, 2.5, 64);
+        advance_dialogue(&mut vm, &mut session);
+        advance_clock(&mut vm, &session, 3., 64);
+        advance_dialogue(&mut vm, &mut session);
+        assert!(matches!(session.view().interaction,
+            Some(crate::InteractionView::Dialogue(d)) if d.text()=="done"));
+        assert!(!vm.activities_need_time());
+    }
+}
+
+#[test]
+fn initially_paused_actions_defer_zero_duration_and_preserve_controls() {
+    let source = r#"fn opening() {
+        let node=stack(x:7);stage.replace(node);
+        let zero=run(tween(node,x:99,duration:0),paused:true);
+        let empty=run(sequence(),paused:true);
+        if node.x!=7 {throw "paused zero wrote";}
+        stop(zero);
+        if await zero!="Stopped" || node.x!=7 {throw "paused stop";}
+        resume(empty);
+        if await empty!="Completed" {throw "empty resume";}
+        let forced=run(tween(node,x:42,duration:0),paused:true);
+        finish(forced);
+        if await forced!="Completed" || node.x!=42 {throw "paused finish";}
+        scope(body:|s| {
+            let grouped=s.run(sequence(tween(node,x:50,duration:0),delay(0)),paused:true);
+            if node.x!=42 {throw "scope activated early";}
+            resume(grouped);
+            if await grouped!="Completed" || node.x!=50 {throw "scope resume";}
+        });
+        let waiting=run(tween(node,x:60,duration:1),paused:true,owner:node);
+        node.remove();
+        let mut cancelled=false;
+        try {await waiting;} catch error {cancelled=true;}
+        if !cancelled {throw "paused owner retirement";}
+        let mut rejected=0;
+        try {clock(paused:1);} catch error {rejected+=1;}
+        try {run(delay(1),paused:1);} catch error {rejected+=1;}
+        if rejected!=2 {throw "paused requires bool";}
+        narrator("done");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(source, encoded);
+        models::drive(&mut vm, &mut session, false);
+        assert!(matches!(session.view().interaction,
+            Some(crate::InteractionView::Dialogue(d)) if d.text()=="done"));
+        assert!(!vm.activities_need_time());
+    }
+}
+
+#[test]
 fn observable_clock_coalesces_deadlines_and_keeps_activity_ownership() {
     use std::time::Duration;
     let source = r#"fn opening() {

@@ -62,14 +62,14 @@ impl Backend {
 }
 impl MediaBackend for Backend {
     fn commit_audio(&mut self, _: MediaId) {}
-    fn play_audio(&mut self, _: crate::audio::AudioRequest) -> Result<MediaId, String> {
+    fn play_audio(&mut self, _: crate::audio::AudioRequest, _: bool) -> Result<MediaId, String> {
         Err("no audio fixture".into())
     }
-    fn play_video(&mut self, request: VideoRequest) -> Result<MediaId, String> {
+    fn play_video(&mut self, request: VideoRequest, paused: bool) -> Result<MediaId, String> {
         self.restore_video(VideoPlaybackState {
             position: request.start_position,
             request,
-            paused: false,
+            paused,
             result: None,
         })
     }

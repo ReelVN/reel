@@ -114,6 +114,54 @@ pub(super) fn request(looping: bool) -> AudioRequest {
 }
 
 #[test]
+fn initially_paused_audio_prepares_seeks_and_resumes_before_or_after_decode() {
+    for resume_early in [false, true] {
+        let (mut player, output) = rig();
+        let id = player.play_audio(request(false), true).unwrap();
+        player.commit_audio(id);
+        assert!(player.entries[&id].paused);
+        player
+            .command(id, MediaCommand::Seek(Duration::from_millis(50)))
+            .unwrap();
+        if resume_early {
+            player.command(id, MediaCommand::Resume).unwrap();
+        } else {
+            until(|| {
+                player.maintain(Duration::from_secs(1));
+                assert_eq!(output.render(), 0.);
+                assert_eq!(player.position(id), Some(Duration::from_millis(50)));
+                matches!(player.entries[&id].phase, Phase::Ready(..))
+            });
+            assert!(player.entries[&id].paused);
+            for _ in 0..120 {
+                player.maintain(Duration::from_millis(16));
+                assert_eq!(output.render(), 0.);
+            }
+            assert_eq!(player.position(id), Some(Duration::from_millis(50)));
+            player.command(id, MediaCommand::Resume).unwrap();
+        }
+        until(|| {
+            player.maintain(Duration::from_millis(1));
+            output.render() > 0.1
+        });
+        player.command(id, MediaCommand::Stop).unwrap();
+        until(|| {
+            player.maintain(Duration::ZERO);
+            output.render();
+            player.take_result(id).is_some_and(|result| {
+                assert_eq!(result.result, MediaResult::Stopped);
+                true
+            })
+        });
+        player.close();
+        until(|| {
+            player.maintain(Duration::ZERO);
+            !player.cleanup_pending()
+        });
+    }
+}
+
+#[test]
 fn ready_intro_waits_for_explicit_batch_and_blocked_successor() {
     use reel_core::{
         identity::{AssetKey, ContentVersion, IoId},
@@ -181,7 +229,7 @@ fn ready_intro_waits_for_explicit_batch_and_blocked_successor() {
     let control = control.unwrap();
     let (mut player, output) = rig_assets(assets, MediaOptions::default());
     // Native play returns; allow all preparation and PCM callbacks before queue.
-    let id = player.play_audio(request(false)).unwrap();
+    let id = player.play_audio(request(false), false).unwrap();
     until(|| {
         control.borrow_mut().complete_next_read();
         player.maintain(Duration::ZERO);
@@ -241,7 +289,7 @@ fn queue_preserves_current_item_remaining_order_pause_and_content_restore() {
     intro.group = AudioGroup::Voice;
     intro.start_position = ms(200);
     intro.end_position = Some(ms(220));
-    let id = player.play_audio(intro).unwrap();
+    let id = player.play_audio(intro, false).unwrap();
     player
         .queue_audio(
             id,
@@ -299,7 +347,7 @@ fn queue_preserves_current_item_remaining_order_pause_and_content_restore() {
     assert_eq!(saved.queue[0].end_position, Some(ms(180)));
     let position = saved.request.start_position;
     let (mut restored, second_output) = rig();
-    let second = restored.play_audio(saved.request).unwrap();
+    let second = restored.play_audio(saved.request, false).unwrap();
     for item in saved.queue {
         restored.queue_audio(second, item).unwrap();
     }
@@ -364,7 +412,7 @@ fn queue_capacity_rejection_keeps_original_and_missing_successor_fails_it_once()
             ..Default::default()
         },
     );
-    let id = player.play_audio(request(true)).unwrap();
+    let id = player.play_audio(request(true), false).unwrap();
     player.commit_audio(id);
     let missing = AudioQueueItem {
         source: "assets/missing.wav".into(),
@@ -404,7 +452,7 @@ fn restored_music_starts_at_saved_content_position_before_output_resumes() {
     let (mut first, output) = rig();
     let mut music = request(true);
     music.group = AudioGroup::Music;
-    let id = first.play_audio(music).unwrap();
+    let id = first.play_audio(music, false).unwrap();
     first.commit_audio(id);
     until(|| {
         first.maintain(Duration::ZERO);
@@ -421,7 +469,7 @@ fn restored_music_starts_at_saved_content_position_before_output_resumes() {
     let position = saved.request.start_position;
     let (mut restored, restored_output) = rig();
     restored.suspend();
-    let id = restored.play_audio(saved.request).unwrap();
+    let id = restored.play_audio(saved.request, false).unwrap();
     restored.commit_audio(id);
     until(|| {
         restored.maintain(Duration::ZERO);
@@ -456,7 +504,7 @@ fn seek_preserves_activity_pause_loop_and_immediate_snapshot_through_decode() {
         start: ms(20),
         end: None,
     });
-    let id = player.play_audio(music).unwrap();
+    let id = player.play_audio(music, false).unwrap();
     player.commit_audio(id);
     player.command(id, MediaCommand::Pause).unwrap();
     player.command(id, MediaCommand::Seek(ms(10))).unwrap();
@@ -534,7 +582,7 @@ fn seek_preserves_activity_pause_loop_and_immediate_snapshot_through_decode() {
     let mut bounded = request(false);
     bounded.start_position = ms(10);
     bounded.end_position = Some(ms(50));
-    let ending = player.play_audio(bounded).unwrap();
+    let ending = player.play_audio(bounded, false).unwrap();
     player.commit_audio(ending);
     until(|| {
         player.maintain(Duration::ZERO);
@@ -799,7 +847,7 @@ fn bounded_audio_source_and_asb_restore_real_transport_and_queue_endpoints() {
 #[test]
 fn real_audio_controls_freeze_position_mute_loop_and_reclaim_on_output_failure() {
     let (mut player, output) = rig();
-    let id = player.play_audio(request(true)).unwrap();
+    let id = player.play_audio(request(true), false).unwrap();
     player.commit_audio(id);
     until(|| {
         player.maintain(Duration::ZERO);
@@ -867,7 +915,7 @@ fn real_audio_controls_freeze_position_mute_loop_and_reclaim_on_output_failure()
 #[test]
 fn loading_cancellation_and_pcm_budget_failure_leave_no_resident_requests() {
     let (mut player, output) = rig();
-    let id = player.play_audio(request(false)).unwrap();
+    let id = player.play_audio(request(false), false).unwrap();
     player.commit_audio(id);
     player.cancel(id);
     player.close();
@@ -885,7 +933,7 @@ fn loading_cancellation_and_pcm_budget_failure_leave_no_resident_requests() {
             max_bytes: 64,
         },
     );
-    let id = player.play_audio(request(false)).unwrap();
+    let id = player.play_audio(request(false), false).unwrap();
     player.commit_audio(id);
     let mut result = None;
     until(|| {

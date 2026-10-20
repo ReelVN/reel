@@ -716,10 +716,10 @@ impl SessionVm {
             }
             "reel::run" | "reel::clock" | "reel::scope::run" => {
                 let args = self.vm.host_arguments(ticket)?;
-                let [action, owner] = if symbol == "reel::scope::run" {
-                    [args[1], args[0]]
+                let [action, owner, paused] = if symbol == "reel::scope::run" {
+                    [args[1], args[0], args[2]]
                 } else {
-                    [args[0], args[1]]
+                    [args[0], args[1], args[2]]
                 };
                 let owner = if owner.tag() == aside_vm::ValueTag::Null {
                     self.default_activity_owner(ticket.task)?
@@ -737,7 +737,7 @@ impl SessionVm {
                     &self.stage,
                     self.root_owner,
                     ticket,
-                    [action, owner],
+                    [action, owner, paused],
                     work,
                 )?;
                 if done {

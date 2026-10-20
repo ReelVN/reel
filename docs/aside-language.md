@@ -37,7 +37,7 @@ class/super、静态成员、继承与绑定方法已贯通源码和 ASB；元�
 
 宿主可通过 AnalysisOptions.hosts 提供外围名称环境，默认为空。作者模块声明、局部绑定和显式 use 导入优先于外围宿主名称；use 与别名仍遵循普通模块规则。Reel 的编译入口以此提供当前注册的 reel::prelude，而独立 Aside 不含这些名称。此配置不改写源码，语义分析、链接和运行诊断沿用作者原始位置；语言与 VM 不依赖 Reel。
 
-Reel 视频沿普通宿主函数、节点与 Awaitable 协议：`video(source, ...)` 创建节点，绑定 `.play(...)` 返回媒体活动，video.seek/position 操作活动。媒体与动画共享 pause/resume/stop/finish 名称，不增加语言语法或另一种异步值。新 video native ABI 1，媒体宿主快照保存逻辑状态而不携带像素或设备，Aside 字节码 不变。
+Reel 视频沿普通宿主函数、节点与 Awaitable 协议：`video(source, ...)` 创建节点，绑定 `.play(...)` 返回媒体活动，video.seek/position 操作活动。媒体与动画共享 pause/resume/stop/finish 名称，不增加语言语法或另一种异步值。video.play/position native ABI 2，video.at/seek native ABI 1；媒体宿主快照保存逻辑状态而不携带像素或设备，Aside 字节码 不变。
 
 Reel 本地化使用普通宿主调用 `tr(source, id: null, params: null, locale: null)`，返回普通 string。原文优先、自动内容身份和 Fluent 提取由 Reel 负责，不引入语言关键字或隐式字符串翻译；`tr` native ABI 3，不改变 Aside/Aside 字节码。作者工具通过已解析的宿主绑定识别调用，不把用户自定义的同名函数当成翻译。`reel loc extract --output-dir` 按模块组织原文 FTL，`reel loc bundle` 把同语言的模块译文编成一个运行时 FTL；文件组织不改变消息身份、运行时接口或存档格式。
 
@@ -329,7 +329,9 @@ text_input 的显式高度内文字、选区、光标和 IME 位置共同垂直�
 
 Reel 的 `checkbox(label: null, value: false, on_change: null, ...)` 和 `radio(option, label: null, value: null, on_change: null, ...)` 是普通宿主节点，新增 native ABI 1。checkbox.value 为可写布尔值；radio.value 保存业务值，激活写入 option。共享一个可写绑定即组成单选组，值比较与 list key 相同。组导航已实现：最终可写属性身份用于 Tab 单停靠和方向选择，不新增语言语法或分组参数；当前模态范围内使用选中的可用项，否则首项。组在 Tab 顺序中的位置取其第一个可用节点；方向移动先回写再回调，脚本赋值不抢焦点。虚拟列表先沿既有逻辑导航挂载并接受目标，再选择；首尾循环及跨列表进入使用逻辑端点，不使用当前窗口边界，不预建中间离屏选项。Tab 离开组时不为寻找下一停靠点构造虚拟行；跨窗口访问选项使用方向键。组身份从恢复后的绑定重建，不进入快照格式。脚本赋值静默，用户变更先提交再执行节点所属回调 `{target,value}`；option 更新使旧呈现的选项激活失效。children 与 decorated 仍使用共同舞台，不新增语言语法或 Aside 字节码/ASB 编码。
 
-Reel 的 `clock(interval: 1, owner: null)` 是普通宿主函数，返回带只读可观察 ticks/elapsed 的活动。ticks 是 int 完整周期数，初值 0，直接用于索引或 slice 范围；elapsed 是 float 已完成周期总秒数，初值 0.0。复用 pause/resume/stop/await，所有者规则与 run 相同；长步长合并周期、暂停不计时，停止保留最后值，finish 拒绝无终点活动。一次活动采样及其派生计算使用固定逻辑时间；计算跨预算片时，新时间合并为最新请求，完成当前舞台属性提交后才开始下一轮，避免持续计时让派生永远无法稳定。快照保留这两种值类型、周期与暂停偏移，恢复后继续原期限。周期计数超出 int 范围时在发布前报错。clock native ABI 2，无新语法或 VM/ASB/SessionSnapshot 格式变化。
+Reel 的 `clock(interval: 1, owner: null, paused:false)` 是普通宿主函数，返回带只读可观察 ticks/elapsed 的活动。ticks 是 int 完整周期数，初值 0，直接用于索引或 slice 范围；elapsed 是 float 已完成周期总秒数，初值 0.0。复用 pause/resume/stop/await，所有者规则与 run 相同；长步长合并周期、暂停不计时，停止保留最后值，finish 拒绝无终点活动。一次活动采样及其派生计算使用固定逻辑时间；计算跨预算片时，新时间合并为最新请求，完成当前舞台属性提交后才开始下一轮，避免持续计时让派生永远无法稳定。快照保留这两种值类型、周期与暂停偏移，恢复后继续原期限。周期计数超出 int 范围时在发布前报错。clock native ABI 3，无新语法或 VM/ASB/SessionSnapshot 格式变化。
+
+Reel 的 `audio.play`、`video.play`（包括节点 `.play`）、`clock`、`run` 和 `scope.run` 接受 `paused:false`，参数必须为 bool。`paused:true` 创建暂停活动，沿现有 `resume` 开始推进。媒体继续读取、解码和准备首帧，内容位置保持请求起点；暂停时 seek 更新目标并保留暂停状态。run 在创建时验证并构造活动图，首次 resume 才激活动作、读取起值并取得属性写入权；空组合和零时长动作也等到 resume，finish 显式完成有限动作，stop 保留当前属性。clock 的 ticks/elapsed 在首次 resume 前为 0/0.0。owner、取消、终态和恢复沿现有活动协议，保存后仍从暂停状态继续。audio.play ABI 5、video.play ABI 2、clock ABI 3、run 与 scope.run ABI 2；VM 快照 8、SessionSnapshot 21 和 ASB 格式保持。
 
 独立 `aside-std` 提供 `std` 与 `std::prelude` 模块，宿主通过 Aside host SDK 注册同一份接口与实现；Reel 默认导入该 prelude。首批 `random(seed: null)` 及其 int/float/pick 绑定方法使用普通 native 调用和共享身份，随机状态在 VM 堆中保存。构造有宿主效果，抽取有写入效果，不能用于模块初始化或纯派生表达式；在主函数或事件中创建并保存随机流。没有新增语言语法、VM 指令或 Aside 字节码/ASB 编码，Aside 不依赖 Reel。
 
@@ -683,7 +685,7 @@ invoke_sync 的累计硬预算规则保持原定义。该路径遇到 ResourceBl
 
 `cargo test -p reel-cli --test project_scenarios` 的源码与 ASB 工程自检使用真实资源读取、解码和混音，通过 48 kHz 双声道离线输出按单调时间消费 PCM；音频完成仍走原来的 await 协议。自检入口必须自行断言并结束，宿主不生成输入或快进。外部工程每轮源码/ASB运行默认限时90秒，可用 `REEL_SCENARIO_TIMEOUT_SECS` 设置大于0的u64秒数；非法值直接报错，不回退。内置测试固定90秒，不受该环境变量影响。该测试不改变语言、native ABI 或快照格式，也不证明物理音频设备与画面的同步。
 
-Reel 的外围名称环境包含 `audio` 命名空间，独立 Aside 不注册音频名称。`audio.play(source, looping:false, volume:1, owner:null, group:"effects", pan:0, fade_in:0, start:0, end:null, loop_start:0, loop_end:null)` 使用 ABI v4，`audio.volume(activity,value,duration:0)` 使用 ABI v2；`audio.position(activity)` 使用 ABI v2；`audio.at(activity,seconds)`、`audio.seek(activity,seconds)`、`audio.group_volume(group,value,duration:0)`、`audio.pan(activity,value,duration:0)`、`audio.stop(activity,fade:0)` 使用 ABI v1。ASB 格式仍为 Aside 字节码，音频调用产物随签名重新编译。
+Reel 的外围名称环境包含 `audio` 命名空间，独立 Aside 不注册音频名称。`audio.play(source, looping:false, volume:1, owner:null, group:"effects", pan:0, fade_in:0, start:0, end:null, loop_start:0, loop_end:null, paused:false)` 使用 ABI v5，`audio.volume(activity,value,duration:0)` 使用 ABI v2；`audio.position(activity)` 使用 ABI v2；`audio.at(activity,seconds)`、`audio.seek(activity,seconds)`、`audio.group_volume(group,value,duration:0)`、`audio.pan(activity,value,duration:0)`、`audio.stop(activity,fade:0)` 使用 ABI v1。ASB 格式仍为 Aside 字节码，音频调用产物随签名重新编译。
 
 start、loop_start 和非 null 的 end/loop_end 为有限非负秒；显式 end 必须大于初始 start，指定排他内容终点，null 表示资源末尾。looping:true 使用 [loop_start,loop_end) 循环，null loop_end 使用 end，区间须位于 [0,end) 内。start 小于 loop_start 时保留前奏，达到循环终点时取模；looping:false 仅接受默认循环边界。区间顺序在调用处检查，资源长度及帧边界在后台解码后验证，失败通过播放活动传播。start/end 量化到同一源帧时无声自然完成，恢复位置恰好为 end 也沿同一路径。position/seek 始终使用当前素材的绝对内容秒数，start 不限制之后向前定位；非循环 seek 超过 end 钳到 end 并自然完成。position 是即时读取，返回内容位置 float；加载中返回起点，终态保留最后位置，在 derive 中订阅同一内部只读位置。参数、播放位置与终态遵守 Reel 快照协议，不新增 Aside 语法或音频专用 VM 指令。
 

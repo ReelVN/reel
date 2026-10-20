@@ -213,7 +213,7 @@ impl Media {
                             .as_mut()
                             .ok_or(AdapterError::Input("restoring media requires a backend"))?;
                         id = backend
-                            .play_audio(playback.request)
+                            .play_audio(playback.request, playback.paused)
                             .map_err(aside_vm::snapshot::SnapshotError::Invalid)?;
                         for item in playback.queue {
                             backend
@@ -222,11 +222,6 @@ impl Media {
                         }
                         if pending_start.is_none() {
                             backend.commit_audio(id);
-                        }
-                        if playback.paused {
-                            backend
-                                .command(id, MediaCommand::Pause)
-                                .map_err(aside_vm::snapshot::SnapshotError::Invalid)?;
                         }
                     }
                 }
@@ -681,6 +676,9 @@ impl SessionVm {
             let start_position = duration(args[7])?;
             let end_position = audio_end(start_position, args[8])?;
             let loop_region = audio_loop(args[1], args[9], args[10])?;
+            let paused = args[11]
+                .as_bool()
+                .ok_or(AdapterError::Input("paused must be bool"))?;
             let request = AudioRequest {
                 source,
                 loop_region,
@@ -696,7 +694,7 @@ impl SessionVm {
                 MediaPlayback::Audio(crate::audio::AudioPlayback {
                     request,
                     queue: Vec::new(),
-                    paused: false,
+                    paused,
                     result: None,
                 }),
                 owner,
@@ -730,6 +728,9 @@ impl SessionVm {
                 args[5]
             };
             super::scopes::validate_owner(self.vm.heap(), &self.stage, owner)?;
+            let paused = args[6]
+                .as_bool()
+                .ok_or(AdapterError::Input("paused must be bool"))?;
             let request = crate::video::VideoRequest {
                 source,
                 looping,
@@ -742,7 +743,7 @@ impl SessionVm {
                 MediaPlayback::Video(crate::video::VideoPlaybackState {
                     position: start_position,
                     request,
-                    paused: false,
+                    paused,
                     result: None,
                 }),
                 owner,
@@ -1020,8 +1021,8 @@ impl SessionVm {
                     }
                 }
                 match playback {
-                    MediaPlayback::Audio(p) => backend.play_audio(p.request),
-                    MediaPlayback::Video(p) => backend.play_video(p.request),
+                    MediaPlayback::Audio(p) => backend.play_audio(p.request, p.paused),
+                    MediaPlayback::Video(p) => backend.play_video(p.request, p.paused),
                 }
             });
         match admitted {
