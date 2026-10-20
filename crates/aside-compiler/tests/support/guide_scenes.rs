@@ -34,6 +34,7 @@ pub const SCENES: &[(&str, E)] = &[
     ("reusable entrance action", E::Block),
     ("breathing in story", E::Block),
     ("timed delay in story", E::Block),
+    ("sampled scalar curves", E::Module),
     ("show_cg helper", E::Module),
     ("scoped property override", E::Block),
     ("scoped additive offset", E::Block),

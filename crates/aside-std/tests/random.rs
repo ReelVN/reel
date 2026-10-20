@@ -72,7 +72,7 @@ fn drive(vm: &mut Vm, library: &mut aside_std::StandardLibrary, task: TaskId) ->
                     [package.natives[ticket.native.index()].symbol.index()]
                     == "std::random::float";
                 let region = Region::new(GLOBAL);
-                assert!(library.dispatch(vm, ticket).unwrap());
+                assert!(library.dispatch(vm, ticket, 1).unwrap().is_some());
                 if measured {
                     let stats = region.change();
                     assert_eq!(stats.allocations, 0, "random draw: {stats:?}");

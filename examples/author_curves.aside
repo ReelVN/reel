@@ -1,0 +1,21 @@
+use std::math::curve;
+
+fn main() {
+    game.configure(width: 640, height: 360, title: "Sample a curve", fonts: "fonts/body.ttf");
+    let motion = curve([
+        {time: 0, value: 40, mode: "cubic", out_tangent: 0},
+        {time: 1.5, value: 260, mode: "cubic", in_tangent: 0, out_tangent: 0},
+        {time: 3, value: 40, in_tangent: 0},
+    ]);
+    let timer = clock(paused: true);
+    let marker = stack(x: 300, y: derive(|| motion.sample(timer.elapsed)),
+        width: 40, height: 40, background: "#6cd4c5");
+    stage.replace(stack(width: 640, height: 360, background: "#182330") {
+        marker;
+        text("One curve, any time source", x: 24, y: 16, color: "#ffffff");
+    });
+    await stage.presented();
+    resume(timer);
+    await run(delay(3));
+    stop(timer);
+}

@@ -10,6 +10,7 @@ const PRELUDE: &[&str] = &[
     "audio",
     "rich",
     "camera",
+    "clock",
     "cursor",
     "view",
     "window",
@@ -110,6 +111,7 @@ fn all_bilingual_scenes_analyze_with_explicit_host_and_lexical_context() {
         exports: PRELUDE.iter().map(|&n| prelude_symbol(n)).collect(),
     });
     for (path, name) in [
+        ("std::math", "curve"),
         ("game::ui::title", "title"),
         ("game::story::opening", "opening"),
         ("game::ui::dialogue", "dialogue_view"),

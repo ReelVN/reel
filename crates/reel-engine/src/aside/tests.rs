@@ -5,6 +5,7 @@ use aside_vm::bytecode as bc;
 mod activities;
 mod buttons;
 mod clock_batches;
+mod curves;
 mod dialogue_history;
 mod dynamic_stage;
 mod geometry;
