@@ -902,3 +902,4 @@ fn authored_components_keep_node_identity_across_gc_updates_and_replacement() {
 
 mod keyed_lists;
 mod reactive_views;
+mod text_spacing;

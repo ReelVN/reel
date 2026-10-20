@@ -919,6 +919,12 @@ impl SceneWidget {
                         .with_style(StyleProperty::FontWeight(
                             reel_ui::reel_text::FontWeight::new(view.node.props.font_weight as f32),
                         ))
+                        .with_style(StyleProperty::LetterSpacing(
+                            view.node.props.letter_spacing as f32,
+                        ))
+                        .with_style(StyleProperty::WordSpacing(
+                            view.node.props.word_spacing as f32,
+                        ))
                         .with_text_alignment(view.node.props.text_align)
                         .with_text_fit(view.node.props.text_fit)
                         .with_outline(text_outline(&view.node.props))
@@ -960,6 +966,12 @@ impl SceneWidget {
                                 reel_ui::reel_text::FontWeight::new(
                                     view.node.props.font_weight as f32,
                                 ),
+                            ))
+                            .with_style(StyleProperty::LetterSpacing(
+                                view.node.props.letter_spacing as f32,
+                            ))
+                            .with_style(StyleProperty::WordSpacing(
+                                view.node.props.word_spacing as f32,
                             ))
                             .with_style(font_style(&view.node.props.font)),
                     )
@@ -1099,6 +1111,18 @@ impl SceneWidget {
                     StyleProperty::FontWeight(reel_ui::reel_text::FontWeight::new(
                         view.node.props.font_weight as f32,
                     )),
+                );
+            }
+            if this.widget.node.props.letter_spacing != view.node.props.letter_spacing {
+                TextInput::insert_style(
+                    &mut editor,
+                    StyleProperty::LetterSpacing(view.node.props.letter_spacing as f32),
+                );
+            }
+            if this.widget.node.props.word_spacing != view.node.props.word_spacing {
+                TextInput::insert_style(
+                    &mut editor,
+                    StyleProperty::WordSpacing(view.node.props.word_spacing as f32),
                 );
             }
             if this.widget.node.props.font != view.node.props.font {
@@ -1278,6 +1302,18 @@ impl SceneWidget {
                     )),
                 );
             }
+            if this.widget.node.props.letter_spacing != view.node.props.letter_spacing {
+                Label::insert_style(
+                    &mut label,
+                    StyleProperty::LetterSpacing(view.node.props.letter_spacing as f32),
+                );
+            }
+            if this.widget.node.props.word_spacing != view.node.props.word_spacing {
+                Label::insert_style(
+                    &mut label,
+                    StyleProperty::WordSpacing(view.node.props.word_spacing as f32),
+                );
+            }
             if this.widget.node.props.font != view.node.props.font {
                 Label::insert_style(&mut label, font_style(&view.node.props.font));
             }
@@ -1383,6 +1419,8 @@ impl SceneWidget {
                 || old.padding != new.padding
                 || old.font_size != new.font_size
                 || old.font_weight != new.font_weight
+                || old.letter_spacing != new.letter_spacing
+                || old.word_spacing != new.word_spacing
                 || old.font != new.font
                 || old.text_fit != new.text_fit
                 || text_line_breaking(&this.widget.node) != text_line_breaking(&view.node)

@@ -1,5 +1,6 @@
 use aside_compiler::EntryPoint as E;
 pub const SCENES: &[(&str, E)] = &[
+    ("text spacing", E::Block),
     ("main module", E::Module),
     ("title module", E::Module),
     ("ranges, collections and interpolation", E::Block),

@@ -113,6 +113,10 @@ pub(super) enum NodeProperty {
     OnInteraction,
     #[aside(name = "font_weight", ty = Any, default = 400, validate = validate_font_weight)]
     FontWeight,
+    #[aside(name = "letter_spacing", ty = Any, default = 0, validate = validate_text_spacing)]
+    LetterSpacing,
+    #[aside(name = "word_spacing", ty = Any, default = 0, validate = validate_text_spacing)]
+    WordSpacing,
 }
 
 pub(super) struct StageBinding {
@@ -1634,6 +1638,19 @@ fn font_weight(value: Value) -> Result<f64, AdapterError> {
 fn validate_font_weight(_: &Heap, value: Value) -> Result<(), HeapError> {
     validation(font_weight(value))
 }
+fn text_spacing(value: Value) -> Result<f64, AdapterError> {
+    let spacing = number(value)?;
+    if (spacing as f32).is_finite() {
+        Ok(spacing)
+    } else {
+        Err(AdapterError::Input(
+            "text spacing must be representable as finite f32",
+        ))
+    }
+}
+fn validate_text_spacing(_: &Heap, value: Value) -> Result<(), HeapError> {
+    validation(text_spacing(value))
+}
 fn validate_nonnegative(_: &Heap, value: Value) -> Result<(), HeapError> {
     validation(nonnegative(value))
 }
@@ -1766,6 +1783,8 @@ fn read_props(
         padding: nonnegative(get(NodeProperty::Padding)?)?,
         font_size: nonnegative(get(NodeProperty::FontSize)?)?,
         font_weight: font_weight(get(NodeProperty::FontWeight)?)?,
+        letter_spacing: text_spacing(get(NodeProperty::LetterSpacing)?)?,
+        word_spacing: text_spacing(get(NodeProperty::WordSpacing)?)?,
         font: text::read_string(heap, get(NodeProperty::Font)?, read_limit)?,
         text_align: text_align(heap, get(NodeProperty::TextAlign)?)?,
         text_wrap: boolean(get(NodeProperty::TextWrap)?)?,

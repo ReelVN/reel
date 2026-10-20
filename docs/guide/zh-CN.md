@@ -25,6 +25,15 @@ button 与可等待的 on_click 回调已接通，见文末可运行示例。mod
 
 从 main.aside 的 main 启动工程。check/build/dev 接受源码文件或工程目录，run 执行已经构建的 .asb。可运行多文件工程见 [author_project](../../examples/author_project/main.aside)。标题页可用 game.start 切换到全新剧情会话。
 在 main 中调用 game.configure(title: "窗边", width: 960, height: 540) 设置标题与逻辑画布，参数可以使用普通表达式。省略项保留原值；未设置画布时沿用窗口空间，设置后按 contain 等比缩放并留边，绘制与输入使用同一换算。首设一个维度时，另一个维度采用 1920×1080 的对应值。桌面窗口默认匹配首次配置的画布尺寸；未配置画布时为 1280×720。Rust 宿主可用 StoryWindowOptions.logical_size 显式指定其他初始尺寸。首次应用画布后不再自动调整窗口，玩家改变窗口尺寸时仍按 contain 缩放。fonts 接受字体文件字符串或按优先顺序排列的数组，例如 game.configure(fonts: ["fonts/body.ttf", "fonts/cjk.ttf"])；路径相对资源根，作品须在首次呈现前提供至少一个字体文件。text 和 button 的 font 属性选择字体族或逗号分隔的回退列表，例如 text("标题", font: "Noto Serif SC, system-ui")，font_size 控制大小。`font_weight` 选择字重，默认为 400，接受 1 到 1000 的有限数值；例如 `text("标题", font: "HK Grotesk", font_weight: 600)` 从已配置的该字体族中选择合适字重。作品应同时提供所需字重的字体文件。text、控件标签和 text_input 共用该属性，可以直接赋值、bind 或 derive；更改后重新排版。富文本 `[b]` 将对应文字局部设为 700。字体文件共享加载；system-ui 表示配置的默认列表。播放器只使用作品提供的字体，不读取系统字体；未配置字体会报错。
+
+`letter_spacing` 和 `word_spacing` 分别调整字簇间距和空格宽度，默认 0，单位为逻辑舞台像素。正值拉开、负值收紧；词距作用于普通空格和不换行空格，与字距叠加。字距按整形后的字簇增加 advance，包含末字簇，组合字符和连字保留字体整形。text、控件标签和 text_input 共用这两个属性，支持直接赋值、bind/derive；实际变化时更新换行、光标和命中位置。富文本和 ruby 注音继承间距，text_fit: "shrink" 将间距与字号一起缩放。示例：[author_text_spacing.aside](../../examples/author_text_spacing.aside)。
+
+```aside
+stage.replace(column(gap: 12) {
+    text("CHAPTER ONE", font_size: 32, letter_spacing: 2);
+    text("made with love", font_size: 28, word_spacing: -2);
+});
+```
 Reel 自动提供当前已注册的基础节点与剧情服务：text、image、button、row、column、stack、stage、narrator 和 choose，每个源码文件都可直接使用。作者的模块声明、局部绑定和显式导入优先于这些默认名称。若定义了自己的 text 函数，可用 `use reel::prelude::text as reel_text;` 为 Reel 构造函数另取名称。显式 prelude 导入仍是有效的普通导入。这套默认环境由 Reel 提供，独立 Aside 不包含 Reel 名称。动作和完整业务服务仍按后文设计。作者用自己的函数构造页面和外观。所有文档统一使用 fn、let、let mut、|参数| 闭包和 use 导入。除完整模块与函数示例外，独立代码片段放在正在运行的函数内部，沿用前文变量。普通语句写分号，函数末尾表达式可直接返回；对象字面量写 {字段: 值}。以下导入使用已实现的模块组织；标题按钮中的 game.start 已实现。
 ```aside
 use game::ui::title::title;
@@ -1035,7 +1044,7 @@ game.clear_history(keep_last: 37);
 
 可以等待自己的保存请求。这份存档恢复时，该请求为已成功且只读 `restored` 为 true（正常写盘完成为 false），可据此关闭存档菜单；调用者继续执行 await 后的语句；保存调用不会重复执行。其他未完成的外部请求以 OperationInterrupted 结算。成功读档会替换会话，原来的读档调用不会在旧会话中继续。
 
-执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 8，会话快照格式为 23；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
+执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 8，会话快照格式为 25；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
 
 可运行示例：[author_saves.aside](../../examples/author_saves.aside)。
 
