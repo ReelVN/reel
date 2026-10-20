@@ -111,6 +111,8 @@ pub(super) enum NodeProperty {
     AlignY,
     #[aside(name = "on_interaction", ty = Any, default = null, validate = validate_callback)]
     OnInteraction,
+    #[aside(name = "font_weight", ty = Any, default = 400, validate = validate_font_weight)]
+    FontWeight,
 }
 
 pub(super) struct StageBinding {
@@ -1614,6 +1616,19 @@ fn mask_handle(
         heap.handle(value).map(Some)
     }
 }
+fn font_weight(value: Value) -> Result<f64, AdapterError> {
+    let weight = number(value)?;
+    if (1. ..=1000.).contains(&weight) {
+        Ok(weight)
+    } else {
+        Err(AdapterError::Input(
+            "font_weight must be between 1 and 1000",
+        ))
+    }
+}
+fn validate_font_weight(_: &Heap, value: Value) -> Result<(), HeapError> {
+    validation(font_weight(value))
+}
 fn validate_nonnegative(_: &Heap, value: Value) -> Result<(), HeapError> {
     validation(nonnegative(value))
 }
@@ -1745,6 +1760,7 @@ fn read_props(
         gap: nonnegative(get(NodeProperty::Gap)?)?,
         padding: nonnegative(get(NodeProperty::Padding)?)?,
         font_size: nonnegative(get(NodeProperty::FontSize)?)?,
+        font_weight: font_weight(get(NodeProperty::FontWeight)?)?,
         font: text::read_string(heap, get(NodeProperty::Font)?, read_limit)?,
         text_align: text_align(heap, get(NodeProperty::TextAlign)?)?,
         text_wrap: boolean(get(NodeProperty::TextWrap)?)?,

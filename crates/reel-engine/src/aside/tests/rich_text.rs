@@ -481,3 +481,99 @@ fn styled_dialogue_history_reveal_and_owned_links_from_source_and_asb() {
         );
     }
 }
+
+#[test]
+fn font_weight_validates_reacts_and_restores_from_source_and_asb() {
+    use aside_vm::snapshot::SnapshotBudget;
+
+    let code = r#"
+    fn opening() {
+        let state = model({weight: 600});
+        let defaulted = text("default");
+        let direct = text("direct");
+        if defaulted.font_weight != 400 || direct.font_weight != 400 { throw "default weight"; }
+        direct.font_weight = 600;
+        let bound = text("bound", font_weight: bind(state.weight));
+        let derived = text("derived", font_weight: derive(|| state.weight));
+        let mut rejected = 0;
+        for invalid in [0, 1001, -1, null, true, "bold"] {
+            try { direct.font_weight = invalid; } catch e { rejected += 1; }
+            try { let _ = text("invalid", font_weight: invalid); } catch e { rejected += 1; }
+        }
+        try { state.weight = 1001; } catch e { rejected += 1; }
+        if rejected != 13 || direct.font_weight != 600 || state.weight != 600 { throw f"weight validation {rejected} {direct.font_weight} {state.weight}"; }
+        stage.replace(column() {
+            defaulted; direct; bound; derived;
+            text("minimum", font_weight: 1);
+            text("maximum", font_weight: 1000.0);
+            text_input(value: "edit", font_weight: bind(state.weight));
+            button("toggle", font_weight: derive(|| state.weight), on_click: |event| {
+                state.weight = if state.weight == 600 { 450.5 } else { 600 };
+                direct.font_weight = state.weight;
+            });
+        });
+        narrator("ready");
+    }
+    "#;
+    let assert_weight = |vm: &SessionVm, expected| {
+        for node in vm.stage().nodes() {
+            let weight = match &node.kind {
+                NodeKind::Text(name) if *name == "default".into() => 400.,
+                NodeKind::Text(name) if *name == "minimum".into() => 1.,
+                NodeKind::Text(name) if *name == "maximum".into() => 1000.,
+                NodeKind::Text(_) | NodeKind::TextInput { .. } | NodeKind::Button { .. } => {
+                    expected
+                }
+                _ => continue,
+            };
+            assert_eq!(node.props.font_weight, weight, "{:?}", node.kind);
+        }
+    };
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, true);
+        assert_weight(&vm, 600.);
+        let program = vm.vm.program().clone();
+        let mut capture = vm.snapshot_begin(&session).unwrap();
+        while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let bytes = capture.finish().unwrap().encode().unwrap();
+        let mut image = snapshot::SessionSnapshot::decode(&bytes).unwrap();
+        let mut restore = SessionVm::restore_begin(
+            &mut image,
+            program,
+            VmLimits::default(),
+            SessionIdentity {
+                session_id: SessionId(41),
+                epoch: Epoch(20),
+            },
+            crate::ReadProgress::default(),
+            None,
+            None,
+        )
+        .unwrap();
+        while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let (mut restored_session, mut restored) = restore.finish().unwrap();
+        for (session, vm) in [
+            (&mut session, &mut vm),
+            (&mut restored_session, &mut restored),
+        ] {
+            models::drive(vm, session, true);
+            assert_weight(vm, 600.);
+            let button = vm
+                .stage()
+                .nodes()
+                .find(|node| {
+                    matches!(
+                        &node.kind, NodeKind::Button { label: Some(label), .. } if label == "toggle"
+                    )
+                })
+                .unwrap()
+                .id;
+            for expected in [450.5, 600.] {
+                assert!(vm.click(session, button).unwrap());
+                models::drive(vm, session, true);
+                assert_weight(vm, expected);
+            }
+        }
+    }
+}
