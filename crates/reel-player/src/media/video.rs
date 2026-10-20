@@ -136,6 +136,7 @@ impl MediaPlayer {
         request: &VideoRequest,
         position: Duration,
         poster: bool,
+        paused: bool,
     ) -> Result<(StreamControl, VideoPlayback), String> {
         let (control, stream) = self.assets.stream(&request.source)?;
         let cancel = control.clone();
@@ -148,15 +149,19 @@ impl MediaPlayer {
                 start: position,
                 poster,
                 end: request.end_position,
+                paused: paused || self.suspended,
             },
             self.movies.budget.clone(),
             self.wake.clone(),
         )?;
         playback.set_volume(request.volume)?;
-        playback.pause(self.suspended);
         Ok((control, playback))
     }
-    pub(super) fn start_video(&mut self, request: VideoRequest) -> Result<MediaId, String> {
+    pub(super) fn start_video(
+        &mut self,
+        request: VideoRequest,
+        paused: bool,
+    ) -> Result<MediaId, String> {
         if self.closed {
             return Err("media session closed".into());
         }
@@ -169,7 +174,7 @@ impl MediaPlayer {
         // A silent movie remains usable without a device. Audio admission below
         // reports an actual output failure only when the container has a track.
         let (source, playback) = self
-            .open_movie(&request, request.start_position, false)
+            .open_movie(&request, request.start_position, false, paused)
             .map_err(|e| format!("{}: {e}", request.source))?;
         self.next = self.next.checked_add(1).ok_or("media identity exhausted")?;
         let id = MediaId(self.next);
@@ -178,7 +183,7 @@ impl MediaPlayer {
             Movie {
                 position: request.start_position,
                 request,
-                paused: false,
+                paused,
                 playback: Some(playback),
                 retiring: None,
                 pending_seek: false,
@@ -198,9 +203,13 @@ impl MediaPlayer {
             return Err("media activity capacity exhausted".into());
         }
         let (source, playback) = self
-            .open_movie(&state.request, state.position, state.result.is_some())
+            .open_movie(
+                &state.request,
+                state.position,
+                state.result.is_some(),
+                state.paused,
+            )
             .map_err(|e| format!("{}: {e}", state.request.source))?;
-        playback.pause(state.paused || self.suspended);
         self.next = self.next.checked_add(1).ok_or("media identity exhausted")?;
         let id = MediaId(self.next);
         self.movies.entries.insert(
@@ -303,9 +312,8 @@ impl MediaPlayer {
             }
             if movie.pending_seek && movie.retiring.is_none() && movie.result.is_none() {
                 movie.pending_seek = false;
-                match self.open_movie(&movie.request, movie.position, false) {
+                match self.open_movie(&movie.request, movie.position, false, movie.paused) {
                     Ok((source, playback)) => {
-                        playback.pause(movie.paused || self.suspended);
                         movie.source = source;
                         movie.playback = Some(playback);
                     }
@@ -367,9 +375,8 @@ impl MediaPlayer {
                 && movie.poster_result.is_none()
             {
                 let request = &movie.request;
-                match self.open_movie(request, request.start_position, false) {
+                match self.open_movie(request, request.start_position, false, movie.paused) {
                     Ok((source, playback)) => {
-                        playback.pause(movie.paused || self.suspended);
                         let previous = movie.playback.replace(playback).unwrap();
                         movie.source = source;
                         self.movies.retire(previous);

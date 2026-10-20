@@ -512,7 +512,7 @@ StageGraph 唯一拥有作者可见节点、稳定 NodeId、父子结构、声�
 
 ## 六 作用域 样式与状态
 
-`clock(interval: 1, owner: null)` 启动可观察的周期活动，复用活动图、期限索引、暂停/恢复/停止、等待和所有者退休。只读 `ticks` 是 int 完整周期数，初值为整数 0，可直接用作索引或 slice 范围；`elapsed` 是 float 周期总秒数，初值为 0.0。仅在周期边界发布，elapsed 等于已完成周期数乘 interval；interval 必须有限且大于 0。长时钟步长合并为最新周期，不逐个补发，也不创建脚本回调。暂停不计时，停止后保留最后发布值；无终点的 clock 不能 finish。快照保存整数 ticks、浮点 elapsed、周期与暂停偏移，恢复后保留类型与下一期限。owner 规则与 run 相同。周期计数超出 int 范围时在发布前报错。clock native ABI 2，复用已有 Value 快照，不改变 VM/ASB/SessionSnapshot 格式；参见 examples/author_clock.aside。
+`clock(interval: 1, owner: null, paused:false)` 启动可观察的周期活动，复用活动图、期限索引、暂停/恢复/停止、等待和所有者退休。只读 `ticks` 是 int 完整周期数，初值为整数 0，可直接用作索引或 slice 范围；`elapsed` 是 float 周期总秒数，初值为 0.0。仅在周期边界发布，elapsed 等于已完成周期数乘 interval；interval 必须有限且大于 0。长时钟步长合并为最新周期，不逐个补发，也不创建脚本回调。暂停不计时，停止后保留最后发布值；无终点的 clock 不能 finish。快照保存整数 ticks、浮点 elapsed、周期与暂停偏移，恢复后保留类型与下一期限。owner 规则与 run 相同。周期计数超出 int 范围时在发布前报错。clock native ABI 3，复用已有 Value 快照，不改变 VM/ASB/SessionSnapshot 格式；参见 examples/author_clock.aside。
 scope 已接通任务、活动、等待、临时节点和属性覆盖；加性偏移沿下述合同继续实现。范围为 aside-vm 原生回调屏障、reel-engine 所有权/调度/快照、私有演出消费者及规范和双语指南。独立 Aside 只认识 TaskId 与原生 FrameId：宿主可撤销指定原生回调区域，旧 ticket/wait 立即失效，按现有切片预算清理内层帧，保留外层 catch/finally，再以 CallbackCancelled 恢复该原生续体；整个任务撤销仍优先。清理期间的边界进入 VM 快照 8，SessionSnapshot 20；无新依赖。scope native ABI 3，源码与 ASB 共用。检查覆盖正常返回/错误、嵌套、节点退休、任务取消、旧完成、清理中及等待中恢复。VM 帧释放计入现有切片预算，宿主寿命检查线性访问当前活动作用域；登记容量计入 VM 堆预算，空闲不重建资源。
 
 `scope(body:, owner:null)` 通过 VM 的 CallScript/native continuation 在原 Task 中执行 body，返回 body 的结果，故障保留原身份。body 可接受零参数或一个作用域对象。作用域用普通宿主 owner 对象和 TaskId/FrameId 关联；`s.run(action)` 与 `s.spawn(work)` 显式归该作用域。run、spawn、clock、音视频、粒子、completion 与呈现请求默认继承当前作用域；子任务继续继承其资源 owner，显式 owner 转交生存范围。正常返回/异常退休 owner，后台资源沿现有账本清理，退场动画由 body 显式等待。附加 owner 撤销时，VM 只释放到指定 native 屏障，宿主退休资源后在原 scope 调用点交付 ScopeCancelled；外层主剧情仍可处理。硬撤销跳过区域内脚本 catch/finally，普通 return/throw 按语言规则展开。活动停止保留当前属性值。可运行示例为 [author_scope.aside](../examples/author_scope.aside)。
@@ -826,7 +826,11 @@ PR #54 的宿主值读取使用公开 sequence_len/get 与 table_own_string_look
 host_work 仅计选择查找工作，文本复制及发布同步，读取按块推进且不另设总文字长度门。作者文本仍须符合 VM 的实际堆内存预算；会话复制通过可失败的内存申请处理真实分配失败。内容身份由模块路径、版本、源区间或函数/PC 后备组成，不宣称是本地化或跨保存稳定身份。
 
 PR #55 的 Windows 原生 debug/release 验证覆盖真实执行、取消、GC 与终态；性能与设备仍需各自验收。无窗口入口 cargo run --locked -p reel-engine --example story_contract 保留。当前作者舞台已连接 text/image/row/column/stack、children 组合、属性更新、局部子树编辑和有限动画，源码 dev 与 ASB run 共用窗口宿主；命令及边界见本文开头和作者指南。角色、事件/绑定、媒体等待、资源包与快照继续沿同一宿主/呈现边界实现。
-## 作者音频活动（play ABI v4、volume/queue/position ABI v2，其余 v1）
+## 作者音频活动（play ABI v5、volume/queue/position ABI v2，其余 v1）
+
+统一初始暂停：`audio.play(..., paused:false)`、`video.play(..., paused:false)`（含节点 `.play`）、`clock(..., paused:false)`、`run(..., paused:false)` 和 `scope.run(..., paused:false)` 在创建边界接受 bool 初始状态。媒体把暂停状态随首次后台请求交付；读取、解码和首帧准备继续，内容位置保持 start，resume 允许内容推进。seek 更新位置后仍保持暂停，resume 可在解码完成前调用；音频首批仍在创建任务显式等待或返回时提交。暂停 run 完成描述图的预算构造与验证，首次 resume 才激活、读取起值并取得属性写入权；空组合和零时长动作保留未完成状态至 resume，finish 主动完成有限动作，stop 保留当前属性。clock 在首次 resume 前保持 ticks=0、elapsed=0.0。作用域和节点退休沿现有取消路径。
+
+范围为 engine 活动/native/媒体边界、player 后台准备与 media 视频传输初态、定向源码/ASB和真实媒体检查。Rust MediaBackend 的 play_audio/play_video 接受 paused bool，视频 worker 在创建 transport 时设置暂停；复用已有 AudioPlayback/VideoPlaybackState、活动 Paused 与图未激活状态。现有存档同时保留未提交音频批次和暂停状态，恢复后继续同一首批及活动。audio.play ABI 5、video.play ABI 2、clock ABI 3、run/scope.run ABI 2，SessionSnapshot 21、VM8 和 ASB 结构保持；无新依赖、逐帧任务或队列。稳态继续现有暂停索引和媒体维护成本，构造少一次 pause 分派。作者可先创建暂停媒体或时钟、绑定画面，等待 stage.presented 后调用 resume。
 
 Windows CPAL/WASAPI 输出协商客户端 Mono/Stereo，使用共享音频引擎的声道矩阵转换；设备默认多声道格式不再被单/双声道筛选排除。其他后端仅公布其已知有序布局，不根据未知原生声道数量猜测扬声器位置。
 

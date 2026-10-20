@@ -546,6 +546,20 @@ story.register("chapter01.opening", opening, title: "窗上的光");
 
 ## 四 时间顺序与同时发生的变化
 
+音乐、视频、动画和时钟可以先创建为暂停状态，再随画面开始：`audio.play(..., paused: true)`、`movie.play(..., paused: true)`、`run(..., paused: true)` 和 `clock(..., paused: true)`。省略 paused 时照常启动。媒体在暂停中继续加载、解码和准备首帧，位置保持 start；seek 后仍保持暂停。动画在创建时检查动作，首次 resume 时才读取属性起值并取得写入权；时钟此前保持 ticks 为 0、elapsed 为 0.0。
+
+```aside
+panel.opacity = 0;
+let music = audio.play("assets/chime.wav", owner: panel, paused: true);
+let entrance = run(tween(panel, opacity: 1, duration: 0.25), owner: panel, paused: true);
+stage.replace(panel);
+await stage.presented(owner: panel);
+resume(music);
+resume(entrance);
+```
+
+`s.run(action, paused: true)` 使用相同规则。暂停的空组合和零时长动作也等到 resume 才完成；finish 可以主动完成有限动作，stop 保留当前属性。存档保留暂停状态，节点和作用域结束时按原所有权清理。完整的 [音乐进度示例](../../examples/author_media_position.aside) 使用这一写法等画面准备好后开始播放。
+
 `clock(interval: 60, owner: panel)` 创建可绑定的周期时钟。只读 ticks 是 int 完整周期数，初值 0，可直接作为数组索引或字符串 slice 范围；elapsed 是这些周期的 float 总秒数，初值 0.0。用 derive 组合时钟、倒计时或进度显示；时间跨过多个周期时直接更新到最新值。一批时间更新触发的派生会共同完成后再提交画面；计算跨帧时合并期间的新时间，再计算下一批，避免一边计算一边被时钟反复打断。pause/resume/stop 和 await 沿用活动接口，暂停期间不计时，停止保留最后值，节点退休取消；clock 无终点，不能 finish。读档保留两者类型、已有计数和暂停状态，继续原周期。参见 [时钟示例](../../examples/author_clock.aside)。
 
 现实时间使用 `use std::time::{now, parts, format};`：now() 返回 UTC Unix 秒整数，parts(timestamp, timezone: null) 返回 year/month/day/hour/minute/second/weekday/offset_seconds，weekday 为周一 1 至周日 7。format(timestamp, pattern: "%Y-%m-%d %H:%M", timezone: null) 按 strftime 模式返回文字；timezone 可设 IANA 时区（如 Asia/Shanghai、UTC），省略使用系统时区，系统无法提供时使用 UTC。保存时间可直接使用 saves.list 的 saved_at。调用不会自动刷新；在普通任务中更新模型，再绑定文字。见 [author_wall_clock.aside](../../examples/author_wall_clock.aside)。
@@ -569,7 +583,7 @@ await run(tween(portrait, x: 720, duration: 0.8, easing: "sine_out"));
 
 语言底层现已支持等待宿主注册的可等待对象，普通 fn 可以直接写 `await request`；它会暂停当前调用链，让宿主继续处理其他工作。已完成对象也在下一调度步骤返回，错误在 await 位置报告并保留生产者原因。引擎活动现已接入这一协议；async fn 与 Future 构造尚未实现。可运行的宿主接入检查见 [host_awaitables.rs](../../crates/aside-compiler/tests/host_awaitables.rs)，命令为 `cargo test -p aside-compiler --test host_awaitables`。
 
-空 sequence/parallel 与 times: 0 立即完成，不写属性。times 必须是非负整数或 null，省略或 null 表示持续循环；持续循环的单轮必须有正时长。含无限分支的组合不能 finish，调用会在改变活动前报错；用 stop 结束。并行分支的全部写入集合在 run 时检查，冲突不会接管已有活动。暂停、停止与取消作用于整组，后续段只在实际开始时接管属性。较大的时钟步长会继续推进跨过的动作段。
+默认启动时，空 sequence/parallel 与 times: 0 立即完成，不写属性。times 必须是非负整数或 null，省略或 null 表示持续循环；持续循环的单轮必须有正时长。含无限分支的组合不能 finish，调用会在改变活动前报错；用 stop 结束。并行分支的全部写入集合在 run 时检查，冲突不会接管已有活动。暂停、停止与取消作用于整组，后续段只在实际开始时接管属性。较大的时钟步长会继续推进跨过的动作段。
 
 tween 只描述目标属性、终值和时长。sequence 顺序组合动作，parallel 同时组合动作，repeat 重复动作。它们都是普通库函数，产生可复用的动作值。run 才启动活动，并返回可等待、可控制的活动；await activity 等待活动结束，输入、声音和其他活动继续进行。run(action) 默认归当前 scope，否则继承任务的资源 owner；主剧情使用会话寿命。显式 owner 可指定舞台节点，s.run(action) 指定所属作用域。
 动作的起始属性在实际激活时读取。sequence 中后一段在前一段结束后读取起值。动作描述可以复用，每次 run 都产生独立进度。活动只在动作段真正激活时取得属性写入权。新演出停止与之冲突的旧根活动并从当前值接管，暂停的旧活动也遵守此规则。sequence 可按顺序写同一属性；parallel 分支的写集合保持互斥。直接赋值，包括赋相同的值，停止正在写该属性的根活动。其他属性的赋值不受影响；终止活动释放全部写入权。

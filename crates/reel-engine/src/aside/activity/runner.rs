@@ -650,6 +650,12 @@ impl Activities {
         if self.cleanup.is_some() {
             return Ok(());
         }
+        if int(heap, current, Slot::Index)? == 0
+            && phase(heap, current)? == Phase::Inactive
+            && matches!(command, Command::Resume | Command::Finish)
+        {
+            return self.queue(heap, current, Job::Activate, self.time, false);
+        }
         if kind(heap, current)?.is_leaf() && phase(heap, current)? == Phase::Active {
             match command {
                 Command::Pause => self.remove_event(heap, current)?,

@@ -483,7 +483,7 @@ fn project_scenario_media_position_cue_restores_with_real_audio() {
         r#"
         fn main() {
             let root=stack(width:320,height:180);
-            let sound=audio.play("chime.wav"); pause(sound);
+            let sound=audio.play("chime.wav",paused:true);
             let cursor=derive(||audio.position(sound));
             let marker=stack(width:20,height:20,x:derive(||cursor.value*100));
             root.add(marker); stage.replace(root);

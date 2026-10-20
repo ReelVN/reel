@@ -18,7 +18,7 @@ static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
 struct Host(Rc<Cell<f64>>);
 impl MediaBackend for Host {
-    fn play_audio(&mut self, _: AudioRequest) -> Result<MediaId, String> {
+    fn play_audio(&mut self, _: AudioRequest, _: bool) -> Result<MediaId, String> {
         Ok(MediaId(1))
     }
     fn commit_audio(&mut self, _: MediaId) {}
@@ -51,6 +51,40 @@ impl MediaBackend for Host {
     fn cleanup_pending(&self) -> bool {
         false
     }
+}
+
+#[test]
+fn initially_paused_activities_have_no_per_sample_allocation() {
+    let source = r#"fn opening() {
+        let node=stack();stage.replace(node);
+        run(tween(node,x:100,duration:1),paused:true);
+        clock(interval:0.01,paused:true);
+        narrator("paused");
+    }"#;
+    let mut session = Session::new(SessionId(2), Epoch(1)).unwrap();
+    let story = aside::source::compile_story(source, "paused_cost", 1, "opening").unwrap();
+    let mut vm = SessionVm::load(&session, story.program, VmLimits::default()).unwrap();
+    for entry in [story.initializer, story.entry] {
+        vm.start(&session, entry).unwrap();
+        drive(&mut vm, &mut session);
+    }
+    let before = vm.vm().heap().stats().chunk_allocations;
+    let region = Region::new(GLOBAL);
+    for i in 1..=120 {
+        assert!(!vm.advance_time(&session, i as f64, 1024).unwrap().pending);
+    }
+    let measured = region.change();
+    let chunks = vm.vm().heap().stats().chunk_allocations - before;
+    eprintln!(
+        "paused samples=120; allocations={}; reallocations={}; VM new_chunks={chunks}",
+        measured.allocations, measured.reallocations
+    );
+    assert_eq!(
+        (measured.allocations, measured.reallocations, chunks),
+        (0, 0, 0)
+    );
+    assert!(!vm.activities_need_time());
+    assert_eq!(vm.activities_poll_after(), None);
 }
 
 #[test]

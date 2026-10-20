@@ -29,6 +29,8 @@ pub struct VideoOptions {
     pub end: Option<Duration>,
     /// Restore a terminal visual without admitting or decoding its audio track.
     pub poster: bool,
+    /// Initial transport state; decoding can prepare the first picture while paused.
+    pub paused: bool,
 }
 impl Default for VideoOptions {
     fn default() -> Self {
@@ -38,6 +40,7 @@ impl Default for VideoOptions {
             start: Duration::ZERO,
             end: None,
             poster: false,
+            paused: false,
         }
     }
 }
@@ -245,7 +248,7 @@ impl VideoPlayback {
             }),
             available: Condvar::new(),
             transport: Arc::new(Transport {
-                paused: AtomicBool::new(false),
+                paused: AtomicBool::new(options.paused),
                 cancelled: AtomicBool::new(false),
                 audio_end: AtomicBool::new(false),
                 audio_drained: AtomicBool::new(false),

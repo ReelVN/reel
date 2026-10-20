@@ -12,12 +12,12 @@ mod audio {
         fn commit_audio(&mut self, id: MediaId) {
             self.1.borrow_mut().push(id);
         }
-        fn play_audio(&mut self, request: AudioRequest) -> Result<MediaId, String> {
+        fn play_audio(&mut self, request: AudioRequest, paused: bool) -> Result<MediaId, String> {
             let mut entries = self.0.borrow_mut();
             entries.push(AudioPlayback {
                 request,
                 queue: Vec::new(),
-                paused: false,
+                paused,
                 result: None,
             });
             Ok(MediaId(entries.len() as u64))

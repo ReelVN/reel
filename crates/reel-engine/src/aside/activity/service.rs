@@ -8,7 +8,7 @@ impl Activities {
         stage: &StageBinding,
         root_owner: RootOwner,
         ticket: HostTicket,
-        args: [Value; 2],
+        args: [Value; 3],
         budget: u32,
     ) -> Result<(bool, u32), AdapterError> {
         let action = if self.native.is_none() {
@@ -16,7 +16,14 @@ impl Activities {
         } else {
             Value::NULL
         };
-        self.run(vm, stage, root_owner, ticket, [action, args[1]], budget)
+        self.run(
+            vm,
+            stage,
+            root_owner,
+            ticket,
+            [action, args[1], args[2]],
+            budget,
+        )
     }
     pub fn run(
         &mut self,
@@ -24,11 +31,14 @@ impl Activities {
         stage: &StageBinding,
         root_owner: RootOwner,
         ticket: HostTicket,
-        args: [Value; 2],
+        args: [Value; 3],
         budget: u32,
     ) -> Result<(bool, u32), AdapterError> {
-        let [action, owner] = args;
+        let [action, owner, paused] = args;
         if self.native.is_none() {
+            let paused = paused
+                .as_bool()
+                .ok_or(AdapterError::Input("paused must be bool"))?;
             tagged(vm.heap(), action, ACTION)?;
             super::super::scopes::validate_owner(vm.heap(), stage, owner)?;
             let native = vm
@@ -70,7 +80,11 @@ impl Activities {
             self.serial = serial;
             let mut slots = [Value::NULL; RootSlot::Forcing as usize + 1];
             slots[RootSlot::Tag as usize] = Value::int(ACTIVITY);
-            slots[RootSlot::State as usize] = Value::int(State::Running as i64);
+            slots[RootSlot::State as usize] = Value::int(if paused {
+                State::Paused
+            } else {
+                State::Running
+            } as i64);
             slots[RootSlot::Description as usize] = action;
             slots[RootSlot::Owner as usize] = owner;
             slots[RootSlot::Graph as usize] = graph;
@@ -228,13 +242,15 @@ impl Activities {
                 }
                 heap.set_root(self.head.unwrap(), activity)?;
                 operation.build = None;
-                self.queue(
-                    heap,
-                    graph::node(heap, activity, 0)?,
-                    graph::Job::Activate,
-                    self.time,
-                    false,
-                )?;
+                if state(heap, activity)? == State::Running {
+                    self.queue(
+                        heap,
+                        graph::node(heap, activity, 0)?,
+                        graph::Job::Activate,
+                        self.time,
+                        false,
+                    )?;
+                }
                 self.begin_round(heap, self.time)?;
             }
             let progress = self.drain(vm, budget - work)?;

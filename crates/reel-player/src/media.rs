@@ -494,8 +494,12 @@ fn media_result(terminal: AudioActivityTerminal) -> MediaResult {
 }
 impl MediaBackend for MediaPlayer {
     #[cfg(feature = "video")]
-    fn play_video(&mut self, request: reel_engine::video::VideoRequest) -> Result<MediaId, String> {
-        self.start_video(request)
+    fn play_video(
+        &mut self,
+        request: reel_engine::video::VideoRequest,
+        paused: bool,
+    ) -> Result<MediaId, String> {
+        self.start_video(request, paused)
     }
     #[cfg(feature = "video")]
     fn restore_video(
@@ -565,7 +569,7 @@ impl MediaBackend for MediaPlayer {
             },
         }))
     }
-    fn play_audio(&mut self, request: AudioRequest) -> Result<MediaId, String> {
+    fn play_audio(&mut self, request: AudioRequest, paused: bool) -> Result<MediaId, String> {
         if self.closed {
             return Err("audio session closed".into());
         }
@@ -595,7 +599,7 @@ impl MediaBackend for MediaPlayer {
             Entry {
                 request,
                 phase: Phase::Loading(load),
-                paused: false,
+                paused,
                 queue: VecDeque::with_capacity(self.options.mixer.max_sounds),
                 item: 0,
                 tail: 0,

@@ -3,8 +3,7 @@ fn main() {
     game.configure(title: "Music drives the scene", width: 560, height: 180,
         fonts: ["fonts/body.ttf"]);
     let panel = stack(width: 560, height: 180, background: "#142232");
-    let music = audio.play("assets/chime.wav", group: "music", owner: panel);
-    pause(music);
+    let music = audio.play("assets/chime.wav", group: "music", owner: panel, paused: true);
     let position = derive(|| audio.position(music));
     let caption = text("Waiting for the cue", x: 32, y: 108, color: "#ffffff");
     panel.add(stack(x: 32, y: 56, width: 424, height: 24, background: "#30465c") {

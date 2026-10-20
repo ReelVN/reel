@@ -26,20 +26,20 @@ impl Host {
     }
 }
 impl MediaBackend for Host {
-    fn play_audio(&mut self, request: AudioRequest) -> Result<MediaId, String> {
+    fn play_audio(&mut self, request: AudioRequest, paused: bool) -> Result<MediaId, String> {
         Ok(self.push(MediaPlayback::Audio(AudioPlayback {
             request,
             queue: Vec::new(),
-            paused: false,
+            paused,
             result: None,
         })))
     }
     fn commit_audio(&mut self, _: MediaId) {}
-    fn play_video(&mut self, request: VideoRequest) -> Result<MediaId, String> {
+    fn play_video(&mut self, request: VideoRequest, paused: bool) -> Result<MediaId, String> {
         self.restore_video(VideoPlaybackState {
             position: request.start_position,
             request,
-            paused: false,
+            paused,
             result: None,
         })
     }
@@ -98,6 +98,81 @@ impl MediaBackend for Host {
     fn close(&mut self) {}
     fn cleanup_pending(&self) -> bool {
         false
+    }
+}
+
+#[test]
+fn initially_paused_media_seeks_restores_and_resumes_shared_activity() {
+    for encoded in [false, true] {
+        for video in [false, true] {
+            let start = if video {
+                r#"let movie=video("track");root.add(movie);let media=movie.play(start:1,paused:true);"#
+            } else {
+                r#"let media=audio.play("track",start:1,paused:true);"#
+            };
+            let api = if video { "video" } else { "audio" };
+            let source = format!(
+                r#"fn opening() {{
+                let root=stack();stage.replace(root);
+                {start}
+                let alias=media;
+                root.add(text("position",x:derive(|| {api}.position(media))));
+                if {api}.position(media)!=1 {{throw "initial position";}}
+                {api}.seek(media,2);
+                let reached={api}.at(media,2);
+                if !(await reached) {{throw "paused seek";}}
+                narrator("paused");
+                if media!=alias || {api}.position(alias)!=2 || !(await reached) {{throw "restored paused state";}}
+                resume(media);
+                narrator("resumed");
+                stop(media);
+                if await media!="Stopped" {{throw "stop result";}}
+                narrator("done");
+            }}"#
+            );
+            let (mut session, mut vm) = models::prepared(&source, encoded);
+            let host = Host::default();
+            vm.set_media(Box::new(host.clone())).unwrap();
+            flush(&mut vm, &mut session, 0.);
+            dialogue(&session, "paused");
+            let paused = |host: &Host| match &host.0.borrow()[0] {
+                MediaPlayback::Audio(p) => p.paused,
+                MediaPlayback::Video(p) => p.paused,
+            };
+            assert!(paused(&host));
+            let program = vm.vm.program().clone();
+            let mut capture = vm.snapshot_begin(&session).unwrap();
+            while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+            let mut image =
+                snapshot::SessionSnapshot::decode(&capture.finish().unwrap().encode().unwrap())
+                    .unwrap();
+            let restored = Host::default();
+            let mut restore = SessionVm::restore_begin(
+                &mut image,
+                program,
+                VmLimits::default(),
+                SessionIdentity {
+                    session_id: SessionId(45),
+                    epoch: Epoch(23),
+                },
+                crate::ReadProgress::default(),
+                Some(Box::new(restored.clone())),
+                None,
+            )
+            .unwrap();
+            while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+            let (mut session, mut vm) = restore.finish().unwrap();
+            assert!(paused(&restored));
+            flush(&mut vm, &mut session, 20.);
+            assert_eq!(restored.position(MediaId(1)), Some(Duration::from_secs(2)));
+            say(&mut session);
+            flush(&mut vm, &mut session, 20.);
+            dialogue(&session, "resumed");
+            assert!(!paused(&restored));
+            say(&mut session);
+            flush(&mut vm, &mut session, 20.);
+            dialogue(&session, "done");
+        }
     }
 }
 fn flush(vm: &mut SessionVm, session: &mut Session, seconds: f64) {
