@@ -36,7 +36,8 @@ struct Live {
 pub(super) struct Media {
     backend: Option<Box<dyn MediaBackend>>,
     live: Vec<Live>,
-    waits: Vec<(WaitId, Value)>,
+    waits: VecDeque<(WaitId, Value)>,
+    wait_charge: Option<aside_vm::HeapReservation>,
     cursor: usize,
     last_time: f64,
     posters: Vec<Poster>,
@@ -175,7 +176,8 @@ impl Media {
         }
         if matches!(record.part, super::snapshot::Part::MediaWait) {
             let (wait, value): (WaitId, Value) = record.read()?;
-            self.waits.push((map.wait(wait)?, map.value(value)?));
+            super::results::reserve_queue(heap, &mut self.waits, &mut self.wait_charge)?;
+            self.waits.push_back((map.wait(wait)?, map.value(value)?));
             return Ok(());
         }
         if matches!(record.part, super::snapshot::Part::VideoPoster) {
@@ -404,7 +406,7 @@ impl SessionVm {
         if self.media.cue_remaining != 0 || self.media.pending_terminals != 0 {
             Some(Duration::ZERO)
         } else {
-            backend
+            backend.or_else(|| (!self.media.waits.is_empty()).then_some(Duration::from_millis(10)))
         }
     }
     pub fn suspend_media(&mut self) {
@@ -503,17 +505,15 @@ impl SessionVm {
     }
     fn complete_media_waits(&mut self) -> Result<bool, AdapterError> {
         let mut woke = false;
-        let mut i = 0;
-        while i < self.media.waits.len() {
-            let (wait, value) = self.media.waits[i];
+        for _ in 0..self.media.waits.len().min(64) {
+            let (wait, value) = self.media.waits.pop_front().expect("pending media wait");
             if !self.vm.wait_is_pending(wait) {
-                self.media.waits.swap_remove(i);
+                continue;
             } else if let Some(result) = response(self.vm.heap(), value)? {
                 self.vm.complete(wait, result)?;
-                self.media.waits.swap_remove(i);
                 woke = true;
             } else {
-                i += 1;
+                self.media.waits.push_back((wait, value));
             }
         }
         Ok(woke)
@@ -751,8 +751,8 @@ impl SessionVm {
             )?;
         } else {
             let value = args[0];
-            if !is_media(self.vm.heap(), value)
-                && !(symbol == "reel::audio::await" && is_cue(self.vm.heap(), value))
+            if !(is_media(self.vm.heap(), value)
+                || symbol == "reel::audio::await" && is_cue(self.vm.heap(), value))
             {
                 return Err(AdapterError::Input("expected media activity"));
             }
@@ -806,13 +806,14 @@ impl SessionVm {
                         _ => unreachable!(),
                     }
                 } else {
-                    self.media
-                        .waits
-                        .try_reserve(1)
-                        .map_err(|_| AdapterError::Allocation)?;
+                    super::results::reserve_queue(
+                        self.vm.heap(),
+                        &mut self.media.waits,
+                        &mut self.media.wait_charge,
+                    )?;
                     let wait = ticket.wait_id();
                     self.vm.respond(ticket, HostResponse::Pending(wait))?;
-                    self.media.waits.push((wait, value));
+                    self.media.waits.push_back((wait, value));
                 }
             } else {
                 let command = match symbol {
@@ -1071,7 +1072,8 @@ impl Media {
     }
     pub fn close(&mut self) {
         self.posters.clear();
-        self.waits.clear();
+        self.waits = VecDeque::new();
+        self.wait_charge = None;
         self.live.clear(); // Session owner scan releases the retained heap roots.
         self.cues = VecDeque::new();
         self.cue_charge = None;

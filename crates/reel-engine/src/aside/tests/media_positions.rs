@@ -370,6 +370,58 @@ fn cue_round_does_not_restart_the_position_publication_barrier() {
 }
 
 #[test]
+fn shared_cue_delivers_more_than_one_wait_slice_after_backend_stops_polling() {
+    let source = r#"fn opening() {
+        let root=stack();stage.replace(root);
+        let sound=audio.play("track");
+        let cue=audio.at(sound,1);
+        for i in 0..130 {
+            spawn(|| {if !(await cue) {throw "cue result";} root.x+=1;});
+        }
+        let cancelled=spawn(|| {await cue;throw "cancelled waiter resumed";});
+        await run(delay(0.01));
+        cancelled.cancel();
+        try {await cancelled;} catch error {}
+        narrator("ready");
+        if root.x!=130 {throw "waiters lost after backend stopped polling";}
+        narrator("done");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(source, encoded);
+        let host = Host::default();
+        vm.set_media(Box::new(host.clone())).unwrap();
+        flush(&mut vm, &mut session, 0.);
+        flush(&mut vm, &mut session, 0.1);
+        dialogue(&session, "ready");
+        host.set(0, 1., Some(MediaResult::Completed));
+        vm.maintain_media().unwrap();
+        vm.advance_time(&session, 0.1, 1024).unwrap();
+        assert_eq!(
+            vm.media_poll_after(),
+            Some(Duration::from_millis(10)),
+            "the remaining wait slice must wake a host whose backend stopped polling"
+        );
+        for _ in 0..12 {
+            if vm.media_poll_after().is_none() {
+                break;
+            }
+            vm.maintain_media().unwrap();
+            vm.advance_time(&session, 0.1, 1024).unwrap();
+            models::drive(&mut vm, &mut session, false);
+        }
+        say(&mut session);
+        flush(&mut vm, &mut session, 0.1);
+        dialogue(&session, "done");
+        assert_eq!(vm.media_poll_after(), None);
+        assert!(
+            !vm.media
+                .snapshot_records()
+                .any(|record| matches!(record.unwrap().part, snapshot::Part::MediaWait))
+        );
+    }
+}
+
+#[test]
 fn continuous_media_and_clock_settle_the_same_sliced_reactive_batch() {
     let source = r#"fn sample(media) {
         let before=audio.position(media);
