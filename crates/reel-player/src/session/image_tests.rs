@@ -167,7 +167,7 @@ fn frame_with_receipt(
         )),
         NoticeResult::Accepted
     );
-    driver.presented(&bridge, &receipt).unwrap();
+    driver.presented(bridge, &receipt).unwrap();
     (frame, receipt)
 }
 fn image_ids(bridge: &PresentationBridge, root: WidgetId) -> Vec<WidgetId> {

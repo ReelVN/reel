@@ -133,49 +133,54 @@ fn cancel_segment(assets: &Assets, worker: &mut Worker<Decode, Decoded>, key: u6
         _ => {}
     }
 }
-fn poll_segment(
-    assets: &Assets,
-    worker: &mut Worker<Decode, Decoded>,
-    pcm: &BudgetPool,
-    id: MediaId,
-    item: u64,
-    key: u64,
-    source: &String,
-    phase: &mut Phase,
-    descriptor: &mut BudgetTicket,
-) {
-    let Phase::Loading(load) = *phase else {
-        return;
-    };
-    match assets.poll_bytes(load) {
-        Ok(Some((version, bytes))) => {
-            let result = descriptor
-                .resize(descriptor_bytes(source) + bytes.as_slice().len() as u64)
-                .map_err(|error| error.message)
-                .and_then(|_| pcm.reserve(0).map_err(|error| error.message))
-                .and_then(|ticket| {
-                    worker
-                        .accept(
-                            key,
-                            Decode {
-                                id,
-                                item,
-                                version,
-                                bytes,
-                                ticket,
-                            },
-                            0,
-                            Priority::Visible,
-                        )
-                        .map_err(|error| error.reason.message)
-                });
-            *phase = match result {
-                Ok(()) => Phase::Queued,
-                Err(error) => Phase::Done(MediaResult::Failed(error)),
-            };
+struct SegmentLoader<'a> {
+    assets: &'a Assets,
+    worker: &'a mut Worker<Decode, Decoded>,
+    pcm: &'a BudgetPool,
+}
+impl SegmentLoader<'_> {
+    fn poll(
+        &mut self,
+        id: MediaId,
+        item: u64,
+        key: u64,
+        source: &String,
+        phase: &mut Phase,
+        descriptor: &mut BudgetTicket,
+    ) {
+        let Phase::Loading(load) = *phase else {
+            return;
+        };
+        match self.assets.poll_bytes(load) {
+            Ok(Some((version, bytes))) => {
+                let result = descriptor
+                    .resize(descriptor_bytes(source) + bytes.as_slice().len() as u64)
+                    .map_err(|error| error.message)
+                    .and_then(|_| self.pcm.reserve(0).map_err(|error| error.message))
+                    .and_then(|ticket| {
+                        self.worker
+                            .accept(
+                                key,
+                                Decode {
+                                    id,
+                                    item,
+                                    version,
+                                    bytes,
+                                    ticket,
+                                },
+                                0,
+                                Priority::Visible,
+                            )
+                            .map_err(|error| error.reason.message)
+                    });
+                *phase = match result {
+                    Ok(()) => Phase::Queued,
+                    Err(error) => Phase::Done(MediaResult::Failed(error)),
+                };
+            }
+            Ok(None) => {}
+            Err(error) => *phase = Phase::Done(MediaResult::Failed(error)),
         }
-        Ok(None) => {}
-        Err(error) => *phase = Phase::Done(MediaResult::Failed(error)),
     }
 }
 type OutputFactory = Box<dyn FnOnce(WakeSignal) -> Result<Box<dyn AudioOutput>, String>>;
@@ -818,10 +823,12 @@ impl MediaBackend for MediaPlayer {
             {
                 entry.advance_to(state.item, Duration::from_secs_f64(state.position_seconds));
             }
-            poll_segment(
-                &self.assets,
-                &mut self.worker,
-                &self.pcm,
+            let mut loader = SegmentLoader {
+                assets: &self.assets,
+                worker: &mut self.worker,
+                pcm: &self.pcm,
+            };
+            loader.poll(
                 id,
                 entry.item,
                 entry.key,
@@ -830,10 +837,7 @@ impl MediaBackend for MediaPlayer {
                 &mut entry.descriptor,
             );
             for segment in &mut entry.queue {
-                poll_segment(
-                    &self.assets,
-                    &mut self.worker,
-                    &self.pcm,
+                loader.poll(
                     id,
                     segment.item,
                     segment.key,

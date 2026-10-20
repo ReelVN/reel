@@ -129,7 +129,7 @@ fn retained_inline_rgba_and_yuv_share_pixels_then_restore_color_and_planes() {
         let yuv = registry
             .register_yuv420(version("dynamic-video", 1), image.clone())
             .unwrap();
-        let rgba_bytes = vec![64, 128, 192, 255].repeat(64 * 64);
+        let rgba_bytes = [64, 128, 192, 255].repeat(64 * 64);
         let rgba = registry
             .register_image(
                 version("dynamic-image", 2),

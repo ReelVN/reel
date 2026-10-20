@@ -1693,7 +1693,7 @@ mod tests {
                 )),
                 NoticeResult::Accepted
             );
-            driver.presented(&bridge, &receipt).unwrap();
+            driver.presented(bridge, &receipt).unwrap();
             let root_widget = bridge
                 .root()
                 .get_widget(root)
