@@ -275,8 +275,8 @@ fn virtual_list_failed_factory_restores_outer_capture_and_previous_stage() {
             let original=text("kept"); stage.replace(original);
             let mut failed=false;
             try {
-                view(|| scroll(width:320,height:120) {
-                    list(|| [1],key:|x|x,virtual:true,build:|row|{text("private");throw "failed";});
+                let _ = view(|| scroll(width:320,height:120) {
+                    list(|| [1],key:|x|x,virtual:true,build:|row|{let _=text("private");throw "failed";});
                 });
             } catch error {failed=true;}
             if !failed {throw "missed failure";}

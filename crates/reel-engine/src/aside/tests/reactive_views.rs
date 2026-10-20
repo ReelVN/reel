@@ -333,11 +333,11 @@ fn reactive_computation_allows_private_work_and_rejects_effects_and_cycles() {
         let mut rejected = 0;
         try { derive(|| mutate(data)); } catch e { rejected += 1; }
         try { derive(wait); } catch e { rejected += 1; }
-        try { slider(value: temporary); } catch e { rejected += 1; }
+        try { let _ = slider(value: temporary); } catch e { rejected += 1; }
         let node = text("cycle", x: 3);
         let cyclic = derive(|| node.x + 1);
         try { node.x = cyclic; } catch e { rejected += 1; }
-        try { view(|| { let n = data.n; data.n = n + 1; text("cycle"); }); } catch e { rejected += 1; }
+        try { let _ = view(|| { let n = data.n; data.n = n + 1; let _ = text("cycle"); }); } catch e { rejected += 1; }
         if rejected != 5 || data.n != 2 || node.x != 3 { throw "effect boundary"; }
         stage.replace(column() { text("pure"); text(value: derive(|| game.dialogue().text)); });
         narrator("ready");
@@ -403,7 +403,7 @@ fn conditional_dependencies_and_rebinding_drop_old_sources() {
 
 #[test]
 fn cancellation_during_initial_computation_releases_capture_and_frames() {
-    let code = "fn opening() { let result = derive(|| { let mut n = 0; while n < 10000 { n += 1; } n }); text(value: result); }";
+    let code = "fn opening() { let result = derive(|| { let mut n = 0; while n < 10000 { n += 1; } n }); let _ = text(value: result); }";
     let (mut session, mut vm) = models::prepared(code, false);
     loop {
         if let SessionStep::Vm(RunOutcome::HostCall(ticket)) = vm

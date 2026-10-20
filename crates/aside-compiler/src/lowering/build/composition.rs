@@ -10,29 +10,8 @@ impl FunctionBuilder<'_, '_> {
         }
     }
 
-    pub(super) fn collects(&self, mut node: h::NodeId) -> bool {
-        while let (H::Group, Form::Single { child }) = (
-            self.l.m.hir().node(node).kind,
-            self.l.m.hir().node(node).form,
-        ) {
-            node = child;
-        }
-        !matches!(
-            self.l.m.hir().node(node).kind,
-            H::Assignment
-                | H::Block
-                | H::If
-                | H::Match
-                | H::For
-                | H::While
-                | H::Loop
-                | H::Try
-                | H::Return
-                | H::Throw
-                | H::Break
-                | H::Continue
-                | H::Label
-        )
+    pub(super) fn collects(&self, node: h::NodeId) -> bool {
+        self.l.m.hir().collects(node)
     }
 
     pub(super) fn children_value(

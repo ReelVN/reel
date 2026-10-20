@@ -1,5 +1,6 @@
 use super::*;
 mod arguments;
+mod results;
 use crate::hir::*;
 use crate::{DiagnosticCode as D, RelatedRange, SyntaxKind as K, TextRange};
 use smallvec::{SmallVec, smallvec};
@@ -352,6 +353,7 @@ pub(super) fn analyze(
         );
     }
     b.effects();
+    b.check_results();
     b.account();
     let stats = b.out.stats.clone();
     Analysis {

@@ -1,10 +1,18 @@
+fn heading(title, accent) {
+    text(title, font_size: 23, color: accent)
+}
+
+fn hint(message) {
+    if message == "" { return null; }
+    text(message, font_size: 16, color: "#aab8cb")
+}
 
 fn card(title, accent, children = []) {
     column(width: 264, height: 202, padding: 20, gap: 14,
            background: "#1b2a40") {
         row(gap: 10) {
             stack(width: 4, height: 26, background: accent);
-            text(title, font_size: 23, color: accent);
+            heading(title, accent);
         }
         for child in children { child; }
     }
@@ -25,7 +33,8 @@ pub fn main() {
             row(gap: 20) {
                 card("空间", "#73dac3") {
                     text("层叠，也可以留白。", font_size: 18);
-                    text("组件就是普通函数。", font_size: 16, color: "#aab8cb");
+                    hint("组件就是普通函数。");
+                    hint("");
                 }
                 card("文字", "#eac184") {
                     for word in ["一行标题", "几句低语", "同一种表达"] {

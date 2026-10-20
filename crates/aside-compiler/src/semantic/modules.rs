@@ -90,6 +90,9 @@ pub struct ExternalSymbol {
     pub signature: Option<ExternalSignature>,
     pub namespace: Option<NamespaceRef>,
     pub intrinsic: Option<Intrinsic>,
+    /// A discarded call result is a source error; explicit wildcard bindings
+    /// and lexical children collection consume the result.
+    pub must_use_result: bool,
 }
 impl ExternalSymbol {
     /// Use the exact registration identity; no ABI/capability/default registry
@@ -140,6 +143,7 @@ impl ExternalSymbol {
             signature: None,
             namespace: None,
             intrinsic: None,
+            must_use_result: false,
         }
     }
     pub fn value(name: impl Into<String>, ty: TypeHint) -> Self {
@@ -151,6 +155,7 @@ impl ExternalSymbol {
             signature: None,
             namespace: None,
             intrinsic: None,
+            must_use_result: false,
         }
     }
     pub fn function(name: impl Into<String>, signature: ExternalSignature) -> Self {
@@ -162,6 +167,7 @@ impl ExternalSymbol {
             signature: Some(signature),
             namespace: None,
             intrinsic: None,
+            must_use_result: false,
         }
     }
 }
@@ -357,6 +363,7 @@ impl ModuleResolver for MemoryResolver {
                         ty: TypeHint::Table,
                         signature: None,
                         intrinsic: None,
+                        must_use_result: false,
                         namespace: Some(NamespaceRef {
                             module: m.canonical_path.clone(),
                             version: m.version.clone(),

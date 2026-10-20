@@ -111,7 +111,7 @@ build 默认使用 Debug，完整源码与映射保存在包内，运行错误�
 let values = [];
 for value in 1..=3 { values.append(value); }
 let latest = values.pop();
-text(f"剩余 {values.len()} 项，最后一项 {latest}");
+stage.replace(text(f"剩余 {values.len()} 项，最后一项 {latest}"));
 ```
 
 `table.get(key, default: null)` 仅在键缺失时使用缺省，已有的 null、false、0 都保持原值，不添加字段；返回的对象仍是原对象。default 是普通实参，会照常求值。它也可用于 derive，随后插入或修改字段会更新结果。完整用法见 [collections.aside](../../examples/collections.aside)。
@@ -142,9 +142,11 @@ captions.sort(compare: |a, b| a.layer - b.layer);
 let base = {message: "窗上的光", x: 32, y: 48};
 let opening = [base];
 let captions = [...opening, {...base, message: "第二句", y: 90}];
-for caption in captions {
-    text(caption.message, x: caption.x, y: caption.y);
-}
+stage.replace(stack {
+    for caption in captions {
+        text(caption.message, x: caption.x, y: caption.y);
+    }
+});
 ```
 
 ## 二 让代码表达整幅画面
@@ -201,6 +203,26 @@ to_ascii_lowercase()/to_ascii_uppercase() 只转换 ASCII 字母，保留中文�
 带尾随子节点块的组件调用作为独立语句时可省略结尾分号；块后换行结束该语句，下一行括号表达式不会被接到前一个调用上。普通调用和属性赋值仍使用分号。显式分号不改变子节点收集。
 
 已实现：text、image、row、column、stack 与 stage.replace 使用同一节点模型。普通函数可以返回节点；尾随 children 块、if 与 array/tuple 上的 for 可以组合节点。value、x/y、width/height、color/background、opacity、visible 和 clip 等属性直接修改原节点，挂载后的身份保持不变。替换舞台会退休旧树，仍持有的旧节点不能继续读写，也不会因此保活整棵旧树。完整代码见[作者舞台示例](../../examples/author_stage.aside)。
+
+组件函数用末尾表达式或 `return` 返回节点。普通函数里的 `text("Title");` 会丢弃构造结果，编译器在该调用处报错；改成末尾的 `text("Title")` 即可返回。children 块内的分号照常收集节点，返回 null 的可选组件照常省略。诊断识别静态已知的节点构造器及其不可变别名；动态调用和普通包装函数仍按各自的返回值处理。确实需要丢弃构造结果时写 `let _ = text("Title");`。
+
+```aside
+fn heading(title) {
+    text(title, font_size: 28)
+}
+fn hint(message) {
+    if message == "" { return null; }
+    text(message, color: "#aab8cb")
+}
+let panel = column(gap: 12) {
+    heading("Sound");
+    hint("");
+    hint("Adjust the music volume.");
+};
+stage.replace(panel);
+```
+
+可运行的 [author_stage.aside](../../examples/author_stage.aside) 同时使用返回节点的标题组件、可选提示和尾随 children。
 
 stack 按书写顺序从后往前叠放子节点，row 横排，column 竖排。未指定宽高时按内容布局；x/y 在布局位置上叠加，逻辑坐标原点在左上，x 向右、y 向下。默认字体大小为 24、文字白色、背景透明，gap/padding 为 0；clip 限制容器的可见区域。`scroll(height: 360) { ... }` 创建纵向滚动区域；axis 可设为 "horizontal" 或 "both"。滚轮、触摸拖动和键盘/手柄焦点跟随共用正常输入；滚动不会重建文字布局。`follow_end: true` 使已处于末端的 NVL 页跟随新内容，上滚阅读后保留位置。
 
@@ -859,7 +881,9 @@ await run(tween(scene, invert: 1, duration: 0.4), owner: scene);
 图片、文字、UI 与演出可以用共同节点属性 `blend` 混合整个子树：`normal` 正常叠放，`add` 加色发光，`multiply` 正片叠底，`screen` 滤色。`opacity`、遮罩与反色先处理子树，再与后方画面混合；混合不改变布局或交互。颜色在线性空间计算。下面的光层也可放进图片、粒子或组件，完整示例见 [author_blend.aside](../../examples/author_blend.aside)。
 
 ```aside
-stack(width: 320, height: 180, background: "#800000", blend: "add", opacity: 0.5);
+stage.replace(stack(width: 320, height: 180, background: "#204060") {
+    stack(width: 320, height: 180, background: "#800000", blend: "add", opacity: 0.5);
+});
 ```
 
 效果参数与节点属性采用同一动画规则。更复杂画面可以嵌套 group：背景单独模糊，人物保持清晰，图片按钮仍在最上方；再对整组使用遮罩或镜头变换。所有子节点的前后顺序由树结构决定。
@@ -871,8 +895,8 @@ stack(width: 320, height: 180, background: "#800000", blend: "add", opacity: 0.5
 text 默认按可用宽度自动折行。设置 `text_wrap: false` 保留每个显式书写的行，超出宽度的部分仍显示，或由 clip 裁剪；它可以直接赋值，也可以 bind/derive。这个开关只作用于 text，按钮等控件的标签仍不自动折行，文本编辑器使用自身规则。完整示例：[author_text_wrap.aside](../../examples/author_text_wrap.aside)。
 
 ```aside
-text("A long authored line without automatic wrapping.\nA second explicit line.",
-    width: 240, text_wrap: false, clip: true);
+stage.replace(text("A long authored line without automatic wrapping.\nA second explicit line.",
+    width: 240, text_wrap: false, clip: true));
 ```
 
 固定宽度的选项或标题可以用 `text_fit: "shrink"` 自动缩小完整文字，`min_font_size` 指定最低字号；默认 `text_fit: "none"` 保留普通排版。shrink 始终按不自动折行的完整文本适配，不受 text_wrap 开关影响。适配只缩小、不放大，保留显式换行，富文本和 ruby 一起缩放；打字机不会逐字改变字号。最低字号仍放不下时可以配合 clip。`text_outline` 设置字形向外描边宽度，`text_outline_color` 设置颜色，适用于 text 和控件标签。例如 `text("Long option", width: 140, font_size: 30, text_fit: "shrink", min_font_size: 14, color: "#000000", text_outline: 2, text_outline_color: "#ffaaff")`。这些属性可以 derive，让悬停或焦点只改变文字外观。
@@ -977,7 +1001,7 @@ fn save_slot(id: string) {
     catch error { menu.error = error; }
     menu.busy = false;
 }
-button("Save", enabled: derive(|| !menu.busy), on_click: |e| save_slot("page1/slot1"));
+stage.replace(button("Save", enabled: derive(|| !menu.busy), on_click: |e| save_slot("page1/slot1")));
 ```
 
 game.restart(story_id) 使用当前会话固定的主剧情模块集合，从命名章节入口重新执行剧情任务，保留当前剧情变量，结束旧主剧情任务及其交互；目标函数负责构造自己的画面。game.start(entry) 创建全新会话，适合新游戏。saves.load 恢复保存的位置、变量和画面。作者据此给路线按钮选择含义清楚的操作。
@@ -988,7 +1012,7 @@ game.restart(story_id) 使用当前会话固定的主剧情模块集合，从命
 重置已读进度使用 `game.clear_read_progress()`。当前等待对白的组与各行 `read` 立即变为 false，仅跳已读的快进停止；之后的对白重新算未读，正常推进后重新登记。历史和已完成 NVL 行保留原有样式，自动阅读与允许跳过未读的策略保持原值。读档时，当前等待对白也按最新已读记录重新判断。此操作释放旧已读记录，耗时随记录容量增长，不读写磁盘，也不删除游戏存档或 `persistent` 系统数据。Rust 宿主提供相同的 `Session::clear_read_progress()`。运行示例见 [author_reading.aside](../../examples/author_reading.aside)。
 
 ```aside
-button("Reset read progress", on_click: |event| game.clear_read_progress());
+stage.replace(button("Reset read progress", on_click: |event| game.clear_read_progress()));
 ```
 
 这些服务提供数据与操作，页面外观由作者组合。手动点击或确认对白会执行一次正常显现/推进，并关闭自动阅读和快进；无效输入不改变模式。存读档、历史与阅读控制已实现；路线和章节注册仍待补齐。
@@ -1088,8 +1112,10 @@ column(gap: 6) {
 localization.load("en", "en.ftl");
 localization.set_locale("zh-CN");
 let data = model({name: "Mio", count: 2});
-text(value: derive(|| tr("你好，{ $name }。", id: "welcome", params: {name: data.name})));
-button("English", on_click: |event| localization.set_locale("en"));
+stage.replace(column(gap: 12) {
+    text(value: derive(|| tr("你好，{ $name }。", id: "welcome", params: {name: data.name})));
+    button("English", on_click: |event| localization.set_locale("en"));
+});
 ```
 
 通常直接写 `tr("雨停了。")`。提取工具为相同原文生成相同 ID，移动代码或调整缩进不改变 ID；修改原文则生成新 ID。相同文字需要不同译法，或希望修改原文后仍沿用原作编号时，使用 `tr("雨停了。", id: "opening")`。源文不含参数时不要传空参数表。
@@ -1314,9 +1340,9 @@ Rust 宿主可通过 `SessionUi::handle_access` / `AsideSessionUi::handle_access
 
 ```aside
 let profile = model({name: ""});
-text_input(value: bind(profile.name), width: 280, height: 40,
+stage.replace(text_input(value: bind(profile.name), width: 280, height: 40,
     color: "#202020", background: "#ffffff",
-    on_submit: |event| { profile.name = event.value; });
+    on_submit: |event| { profile.name = event.value; }));
 ```
 
 可运行示例：[author_text_input.aside](../../examples/author_text_input.aside)。

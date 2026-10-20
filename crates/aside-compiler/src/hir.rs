@@ -134,6 +134,31 @@ impl Hir {
     pub fn text(&self, span: TextRange) -> &str {
         &self.source[crate::byte_range(span)]
     }
+    /// A lexical statement or match arm collects its direct value, while
+    /// control-flow bodies collect their own expressions.
+    pub(crate) fn collects(&self, mut node: NodeId) -> bool {
+        while let (HirKind::Group, Form::Single { child }) =
+            (self.node(node).kind, self.node(node).form)
+        {
+            node = child;
+        }
+        !matches!(
+            self.node(node).kind,
+            HirKind::Assignment
+                | HirKind::Block
+                | HirKind::If
+                | HirKind::Match
+                | HirKind::For
+                | HirKind::While
+                | HirKind::Loop
+                | HirKind::Try
+                | HirKind::Return
+                | HirKind::Throw
+                | HirKind::Break
+                | HirKind::Continue
+                | HirKind::Label
+        )
+    }
 }
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {

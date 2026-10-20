@@ -111,7 +111,7 @@ Inside a function, use ranges to build content and interpolation to display resu
 let values = [];
 for value in 1..=3 { values.append(value); }
 let latest = values.pop();
-text(f"剩余 {values.len()} 项，最后一项 {latest}");
+stage.replace(text(f"剩余 {values.len()} 项，最后一项 {latest}"));
 ```
 
 `table.get(key, default: null)` uses the default only for a missing key. Existing null, false and zero values are preserved, and no field is inserted. Returned objects retain their identity. The default is an ordinary argument and is evaluated normally. Use it in derive as well: later field insertion or modification updates the result. See [collections.aside](../../examples/collections.aside) for a complete example.
@@ -142,9 +142,11 @@ Array spreading `[...items, last]` accepts arrays or tuples. Table spreading `{.
 let base = {message: "窗上的光", x: 32, y: 48};
 let opening = [base];
 let captions = [...opening, {...base, message: "第二句", y: 90}];
-for caption in captions {
-    text(caption.message, x: caption.x, y: caption.y);
-}
+stage.replace(stack {
+    for caption in captions {
+        text(caption.message, x: caption.x, y: caption.y);
+    }
+});
 ```
 
 ## 2 Describing the Whole Scene in Code
@@ -201,6 +203,26 @@ Registered functions can be stored and passed as values, for example `let say = 
 Component calls with a trailing children block may omit the ending semicolon when used as standalone statements. A newline after the block ends that statement, so a parenthesized expression on the next line does not continue the previous call. Ordinary calls and property assignments still use semicolons. An explicit semicolon does not change child collection.
 
 Implemented: text, image, row, column, stack and stage.replace use one shared node model. Ordinary functions can return nodes, composed through trailing children blocks, if and for over arrays/tuples. Properties such as value, x/y, width/height, color/background, opacity, visible and clip update the original node while its mounted identity stays unchanged. Replacing the stage retires the old tree. Retained old nodes cannot be read or written afterward, and do not keep the entire old tree alive. See the complete [author-stage example](../../examples/author_stage.aside).
+
+Return a component's node with its final expression or `return`. In an ordinary function, `text("Title");` discards the constructed node and produces a compiler error at that call; use the final expression `text("Title")` to return it. Semicolons inside children blocks still collect nodes, and optional components returning null are still omitted. The diagnostic recognizes statically known node constructors and their immutable aliases; dynamic calls and ordinary wrapper functions retain their own return behavior. To deliberately discard a constructor result, write `let _ = text("Title");`.
+
+```aside
+fn heading(title) {
+    text(title, font_size: 28)
+}
+fn hint(message) {
+    if message == "" { return null; }
+    text(message, color: "#aab8cb")
+}
+let panel = column(gap: 12) {
+    heading("Sound");
+    hint("");
+    hint("Adjust the music volume.");
+};
+stage.replace(panel);
+```
+
+The runnable [author_stage.aside](../../examples/author_stage.aside) combines a heading component that returns a node, optional hints and trailing children.
 
 Stack layers children from back to front in source order; row arranges them horizontally and column vertically. Omitted dimensions use content layout. x/y offset the layout position, with the logical origin at the top left, x increasing rightward and y downward. Defaults are font size 24, white text, a transparent background and zero gap/padding. Clip limits the visible area of a container. `scroll(height: 360) { ... }` creates a vertical scrolling region; axis can be "horizontal" or "both". Wheel input, touch dragging and keyboard/gamepad focus use the same input routing. Scrolling preserves text layout. With `follow_end: true`, an NVL page already at the end follows new content; scrolling back preserves the reading position.
 
@@ -848,7 +870,9 @@ Runnable example: [author_invert.aside](../../examples/author_invert.aside). Inv
 Images, text, UI and effects share `blend`, which composites the completed subtree: `normal` uses source-over, `add` adds light, `multiply` darkens, and `screen` lightens. Opacity, masks and inversion apply before blending with the backdrop. Layout and input stay the same; color calculations use linear space. The light layer below can also contain images, particles or components. See [author_blend.aside](../../examples/author_blend.aside).
 
 ```aside
-stack(width: 320, height: 180, background: "#800000", blend: "add", opacity: 0.5);
+stage.replace(stack(width: 320, height: 180, background: "#204060") {
+    stack(width: 320, height: 180, background: "#800000", blend: "add", opacity: 0.5);
+});
 ```
 
 Effect parameters follow the same animation rules as node properties. More complex scenes can nest group nodes: blur the background separately, keep characters sharp, and leave image buttons on top, then apply a mask or camera transform to the whole group. The tree structure determines the front-to-back order of all children.
@@ -860,8 +884,8 @@ Pixels changed by an effect and logical input regions are declared separately. O
 Text automatically wraps to the available width by default. Set `text_wrap: false` to retain each explicitly authored line; excess text remains visible unless clip trims it. The property supports direct assignment and bind/derive. This switch applies only to text: control labels such as buttons still do not wrap automatically, and text editors keep their own rules. See [author_text_wrap.aside](../../examples/author_text_wrap.aside) for a complete example.
 
 ```aside
-text("A long authored line without automatic wrapping.\nA second explicit line.",
-    width: 240, text_wrap: false, clip: true);
+stage.replace(text("A long authored line without automatic wrapping.\nA second explicit line.",
+    width: 240, text_wrap: false, clip: true));
 ```
 
 Use `text_fit: "shrink"` to fit a complete title or option into a fixed width; `min_font_size` sets its lower font-size bound. The default, `text_fit: "none"`, keeps normal layout. Shrink always fits the complete text without automatic wrapping, independently of text_wrap. Fitting only shrinks, preserves explicit line breaks and scales rich text and ruby together; typewriter reveal does not change the size. Use clip if text still overflows at the minimum. `text_outline` sets the outward glyph outline width and `text_outline_color` sets its color for text and control labels. For example: `text("Long option", width: 140, font_size: 30, text_fit: "shrink", min_font_size: 14, color: "#000000", text_outline: 2, text_outline_color: "#ffaaff")`. These properties accept derive, so hover or focus can change the text appearance.
@@ -966,7 +990,7 @@ fn save_slot(id: string) {
     catch error { menu.error = error; }
     menu.busy = false;
 }
-button("Save", enabled: derive(|| !menu.busy), on_click: |e| save_slot("page1/slot1"));
+stage.replace(button("Save", enabled: derive(|| !menu.busy), on_click: |e| save_slot("page1/slot1")));
 ```
 
 game.restart(story_id) uses the current session's fixed main-story module set to rerun the story task from a named chapter entry point. It preserves current story variables and ends the previous main-story task and its interaction; the target function is responsible for constructing its own scene. game.start(entry) creates a fresh session, suitable for a new game. saves.load restores the saved position, variables, and scene. Authors use these distinctions to give route buttons clearly defined actions.
@@ -976,7 +1000,7 @@ game.restart(story_id) uses the current session's fixed main-story module set to
 Use `game.clear_read_progress()` to reset read progress. The current waiting dialogue group and its lines immediately report `read: false`, and skipping that is limited to read dialogue stops. Future dialogue is unread until normal advancement records it again. History and completed NVL lines retain their presentation; automatic reading and skipping that includes unread dialogue keep their policies. Loading a save also evaluates its waiting dialogue against the current read records. This operation releases the old records and takes time proportional to their capacity. It performs no disk IO and does not delete game saves or `persistent` system data. Rust hosts have the corresponding `Session::clear_read_progress()` method. See the runnable [author_reading.aside](../../examples/author_reading.aside).
 
 ```aside
-button("Reset read progress", on_click: |event| game.clear_read_progress());
+stage.replace(button("Reset read progress", on_click: |event| game.clear_read_progress()));
 ```
 Chapter skipping via `game.skip_to(story_id)` still depends on the future chapter registry.
 
@@ -1089,8 +1113,10 @@ This fragment comes from [localization.aside](../../examples/localization.aside)
 localization.load("en", "en.ftl");
 localization.set_locale("zh-CN");
 let data = model({name: "Mio", count: 2});
-text(value: derive(|| tr("你好，{ $name }。", id: "welcome", params: {name: data.name})));
-button("English", on_click: |event| localization.set_locale("en"));
+stage.replace(column(gap: 12) {
+    text(value: derive(|| tr("你好，{ $name }。", id: "welcome", params: {name: data.name})));
+    button("English", on_click: |event| localization.set_locale("en"));
+});
 ```
 
 Usually write `tr("雨停了。")` directly. Extraction gives identical source text the same ID; moving code or changing indentation preserves it, while editing the text creates a new ID. Use `tr("雨停了。", id: "opening")` to distinguish meanings or retain an original content ID across edits. Omit the parameter table when the source has no parameters.
@@ -1317,9 +1343,9 @@ Inline event links show an underline on hover or keyboard focus without reshapin
 
 ```aside
 let profile = model({name: ""});
-text_input(value: bind(profile.name), width: 280, height: 40,
+stage.replace(text_input(value: bind(profile.name), width: 280, height: 40,
     color: "#202020", background: "#ffffff",
-    on_submit: |event| { profile.name = event.value; });
+    on_submit: |event| { profile.name = event.value; }));
 ```
 
 Runnable example: [author_text_input.aside](../../examples/author_text_input.aside).

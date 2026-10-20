@@ -293,7 +293,7 @@ fn class_models_preserve_types_methods_aliases_and_control_transactions() {
         let mut rejected = 0;
         try { bind(original.score); } catch error { rejected += 1; }
         try { data.first.title = "changed"; } catch error { rejected += 1; }
-        try { text_input(bind(data.first.title)); } catch error { rejected += 1; }
+        try { let _ = text_input(bind(data.first.title)); } catch error { rejected += 1; }
         try { model({method: data.first.caption}); } catch error { rejected += 1; }
         try { bind(data.first[42]); } catch error { rejected += 1; }
         try { bind(data.first.caption); } catch error { rejected += 1; }

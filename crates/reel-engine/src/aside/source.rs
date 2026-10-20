@@ -105,6 +105,7 @@ fn environment() -> (
         .iter()
         .map(|contract| {
             let mut external = contract.external();
+            external.must_use_result = registry::is_node_constructor(&contract.symbol);
             if contract.symbol == "reel::derive" {
                 external.intrinsic = Some(aside_compiler::semantic::Intrinsic::Derive);
             }

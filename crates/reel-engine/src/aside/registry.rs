@@ -14,6 +14,32 @@ pub(super) const IMAGE_PREFIX: &[&str] = &[
     "slice_center",
 ];
 
+const BASIC_NODE_CONSTRUCTORS: &[&str] = &[
+    "text",
+    "text_input",
+    "image",
+    "video",
+    "particles",
+    "row",
+    "column",
+    "stack",
+    "cursor",
+    "button",
+    "input",
+    "slider",
+    "toggle",
+    "checkbox",
+    "radio",
+    "scroll",
+    "camera",
+];
+
+pub(super) fn is_node_constructor(symbol: &str) -> bool {
+    symbol.strip_prefix("reel::").is_some_and(|name| {
+        BASIC_NODE_CONSTRUCTORS.contains(&name) || matches!(name, "list" | "view" | "layered_image")
+    })
+}
+
 pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
     match symbol {
         "reel::camera" => &["camera_x", "camera_y", "zoom", "camera_rotation"],
@@ -200,25 +226,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             required_capabilities: capabilities(),
         });
     }
-    for name in [
-        "text",
-        "text_input",
-        "image",
-        "video",
-        "particles",
-        "row",
-        "column",
-        "stack",
-        "cursor",
-        "button",
-        "input",
-        "slider",
-        "toggle",
-        "checkbox",
-        "radio",
-        "scroll",
-        "camera",
-    ] {
+    for &name in BASIC_NODE_CONSTRUCTORS {
         let mut parameters = Vec::new();
         if name == "camera" {
             parameters.extend(
