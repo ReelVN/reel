@@ -1040,6 +1040,9 @@ impl SessionUi {
             ..self.stamp
         }
     }
+    pub(crate) fn invalidate_projection(&mut self) {
+        self.stage_dirty = true;
+    }
     pub(crate) fn gesture_active(&self) -> bool {
         let binding = self.binding.borrow();
         !binding.contacts.is_empty() || binding.navigation_down.is_some()

@@ -22,3 +22,4 @@ pub mod media;
 pub mod saves;
 pub mod session;
 mod stage_widget;
+mod transitions;

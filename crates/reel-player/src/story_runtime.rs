@@ -144,6 +144,7 @@ impl StoryRuntime {
     fn needs_work(&self) -> bool {
         self.runnable
             || self.driver().adapter().capture_results_pending()
+            || self.driver().transitions_pending()
             || self.collecting
             || self.driver().cleanup_pending()
             || self.driver().activities_pending()

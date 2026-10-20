@@ -17,8 +17,9 @@ use reel_core::{
     work::{WorkBudget, WorkEvent, WorkExecutor, WorkRequest, WorkReservations},
 };
 use reel_ui::{
+    frame::{RetainedAsset, RetainedAssetKind},
     peniko::{ImageAlphaType, ImageFormat},
-    resources::{ColorEncoding, ResourceLease, ResourceRegistry},
+    resources::{ColorEncoding, ResourceHandle, ResourceLease, ResourceRegistry, ResourceWeak},
 };
 use std::{
     cell::RefCell,
@@ -79,6 +80,7 @@ enum Phase {
 }
 struct Load {
     source: AssetSource,
+    reloadable: bool,
     kind: AssetKind,
     phase: Phase,
     input: Option<Arc<OwnedBytes>>,
@@ -99,6 +101,7 @@ struct Service {
     options: AssetOptions,
     next: u64,
     loads: BTreeMap<LoadId, Load>,
+    origins: BTreeMap<ResourceHandle, (ResourceWeak, RetainedAssetKind)>,
     streams: stream::Streams,
     io_events: Vec<IoEvent>,
     work_events: Vec<WorkEvent>,
@@ -182,6 +185,7 @@ impl Assets {
             options,
             next: 0,
             loads: BTreeMap::new(),
+            origins: BTreeMap::new(),
             streams: stream::Streams::default(),
             io_events: Vec::with_capacity(32),
             work_events: Vec::with_capacity(32),
@@ -211,6 +215,7 @@ impl Assets {
     pub fn close(&self) {
         let mut service = self.0.borrow_mut();
         service.loads.clear();
+        service.origins.clear();
         service.streams.close();
         service.io = None;
         service.executor = None;
@@ -235,6 +240,25 @@ impl Assets {
         Ok(service.streams.create(source.into(), wake, chunk))
     }
     pub fn request(&self, source: impl Into<String>, kind: AssetKind) -> LoadId {
+        self.request_source(
+            AssetSource {
+                key: AssetKey(source.into()),
+                version: None,
+            },
+            kind,
+        )
+    }
+    /// Restore exactly the asset version retained by an accepted drawing.
+    pub fn request_version(&self, version: ResourceVersion, kind: AssetKind) -> LoadId {
+        self.request_source(
+            AssetSource {
+                key: version.key,
+                version: Some(version.version),
+            },
+            kind,
+        )
+    }
+    fn request_source(&self, source: AssetSource, kind: AssetKind) -> LoadId {
         let mut service = self.0.borrow_mut();
         service.next = service
             .next
@@ -249,10 +273,8 @@ impl Assets {
         service.loads.insert(
             id,
             Load {
-                source: AssetSource {
-                    key: AssetKey(source.into()),
-                    version: None,
-                },
+                source,
+                reloadable: true,
                 kind,
                 phase,
                 input: None,
@@ -262,6 +284,15 @@ impl Assets {
             },
         );
         id
+    }
+    /// Origin is registered by the producer; keys never imply file provenance.
+    pub fn retained_asset(&self, lease: &ResourceLease) -> Option<RetainedAsset> {
+        let service = self.0.borrow();
+        let (_, kind) = service.origins.get(&lease.handle())?;
+        Some(RetainedAsset {
+            version: lease.version().clone(),
+            kind: *kind,
+        })
     }
     /// Encoded immutable author images use the same probe/decode/resident budgets as assets.
     pub fn request_encoded(&self, key: String, bytes: &[u8]) -> Result<LoadId, String> {
@@ -283,6 +314,7 @@ impl Assets {
                     key: AssetKey(key),
                     version: Some(reel_core::identity::ContentVersion([0; 32])),
                 },
+                reloadable: false,
                 kind: AssetKind::Image,
                 phase: Phase::Probe,
                 input: Some(Arc::new(input)),
@@ -301,9 +333,23 @@ impl Assets {
             .get(&id)
             .ok_or("asset request no longer active")?;
         if matches!(load.phase, Phase::Done(_)) {
-            let Phase::Done(result) = service.loads.remove(&id).unwrap().phase else {
+            let load = service.loads.remove(&id).unwrap();
+            let Phase::Done(result) = load.phase else {
                 unreachable!()
             };
+            if load.reloadable
+                && let Ok(lease) = &result
+            {
+                let kind = match load.kind {
+                    AssetKind::Image => RetainedAssetKind::Image,
+                    AssetKind::Font => RetainedAssetKind::Font,
+                    AssetKind::Bytes => unreachable!(),
+                };
+                service.origins.retain(|_, (weak, _)| !weak.is_released());
+                service
+                    .origins
+                    .insert(lease.handle(), (lease.downgrade(), kind));
+            }
             result.map(Some)
         } else {
             Ok(None)
@@ -400,13 +446,21 @@ impl Service {
             let Some(load) = self.loads.values_mut().find(|load| matches!(load.phase, Phase::Describing(id) | Phase::Reading(id) if id == event.id)) else { continue; };
             let result = match event.result {
                 Terminal::Completed(IoPayload::Described(info)) => {
-                    load.source.version = info.version;
-                    match info.length.and_then(|n| u32::try_from(n).ok()) {
-                        Some(length) => {
-                            load.phase = Phase::Read(length);
-                            Ok(())
+                    if load
+                        .source
+                        .version
+                        .is_some_and(|version| info.version != Some(version))
+                    {
+                        Err("asset adapter described a different version".into())
+                    } else {
+                        load.source.version = info.version;
+                        match info.length.and_then(|n| u32::try_from(n).ok()) {
+                            Some(length) => {
+                                load.phase = Phase::Read(length);
+                                Ok(())
+                            }
+                            None => Err("asset must have a bounded length for preparation".into()),
                         }
-                        None => Err("asset must have a bounded length for preparation".into()),
                     }
                 }
                 Terminal::Completed(IoPayload::Read(read)) => {

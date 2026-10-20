@@ -755,11 +755,9 @@ scope(body: |s| {
 [author_scope.aside](../../examples/author_scope.aside) 展示一个按钮同时启动动画和后台任务，另一个按钮通过一个任务句柄停止整段演出。运行 `reel dev examples/author_scope.aside`。
 
 ## 九 遮罩 特效与自定义演出
-历史验证（R01 / Issue #25）：内部 Rust 帧记录、资源租约、分组、裁剪与透明度已有针对性用例。R01 当时尚无 GPU 窗口，记录型消费者不代表物理设备通过。本节节点图像遮罩已接入作者接口，blur 等效果仍是设计目标；当前基础舞台与真实窗口已接通，范围见第一、二节。[历史验证范围](../../crates/reel-ui/R01-REPORT.md)。
+舞台支持分组透明度、裁剪、图像遮罩、混合及转场。源码和 ASB 通过 dev/run 使用同一舞台与资源加载器。blur 等效果仍待实现；平台验收范围见[窗口说明](../../crates/reel-player/README.md)。
 
-历史验证（R02）：wgpu 后端与 winit 诊断窗口包含图片、分组透明度、裁剪和 Parley 文字；这些历史 Rust 诊断能力不意味着高级效果接口已实现；当前 PNG/JPEG 作者图片使用共同舞台和播放器资源加载器。当前作者源码和 ASB 由 dev/run 进入真实剧情窗口。[窗口说明](../../crates/reel-player/README.md) · [设备验证范围](../../crates/reel-render/R02-REPORT.md)。
-
-舞台转场正在按下述合同接入：`stage.transition` 保留目标当前画面，执行 change，再将旧画面过渡到继续运行的新内容。调用完成后返回 change 的结果；与 scope 一样直接调用。并发使用 spawn。
+`stage.transition` 保留目标当前画面，执行 change，再将旧画面过渡到继续运行的新内容。调用完成后返回 change 的结果；与 scope 一样直接调用。并发使用 spawn。
 
 ```aside
 stage.transition(target: scene, duration: 0.6, change: || {
@@ -768,9 +766,11 @@ stage.transition(target: scene, duration: 0.6, change: || {
 });
 ```
 
-省略 target 可在 change 中用 stage.replace 更换整个逻辑舞台。指定 target 时保留容器本身，只修改属性或子节点。默认淡化；mask 接受下文的图像路径或组合表达式，mask_softness、mask_invert、mask_x/y 沿已有规则，easing 使用 tween 的曲线。duration 为零直接换景并等待呈现。图片和字体准备好后才开始计时。
+省略 target 可在 change 中用 stage.replace 更换整个逻辑舞台。指定 target 时保留容器本身，只修改属性或子节点。默认淡化；mask 接受下文的图像路径或组合表达式，mask_softness、mask_invert、mask_x/y 沿已有规则，easing 使用 tween 的曲线。图像路径按进度推进阈值；组合表达式通过 mask.param("progress") 表达随时间变化的覆盖率。duration 为零直接换景并等待呈现。图片和字体准备好后才开始计时。
 
 转场会保留实际粒子、文字和视频画面，作者负责构造新内容。目标的输入暂停到最终画面接受，外部菜单继续工作；change 可以等待，交互等待放在转场返回后。互不重叠的子树可同时过渡；相同或相互包含的目标会报告冲突。取消解除过渡并显示当前舞台，已经执行的 change 写入保留。播放中存档恢复旧画面和进度，继续原调用。
+
+运行 `reel dev examples/author_transition.aside` 可试用淡化和图像擦除，并在转场时操作目标之外的按钮。完整代码见 [author_transition.aside](../../examples/author_transition.aside)。
 
 节点的 mask 属性给整个子树应用灰度图像遮罩，沿用普通图片资源加载与存档。mask_progress 从 0 到 1 表示由全隐藏到全显示，mask_softness 控制软边宽度，0 为硬边；较暗区域先显现，mask_invert: true 反转先后顺序。遮罩 PNG/JPEG 按节点矩形拉伸，设置明确的 width/height 即可控制覆盖区域。
 ```aside

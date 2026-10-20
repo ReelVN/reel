@@ -717,7 +717,11 @@ impl State {
             && !self.settings_pending()
             && let (Some(session), Some(stamp)) = (&mut self.session, &self.recorded_projection)
         {
-            session.presented(&self.presentation.bridge, stamp)?;
+            session.presented(
+                &self.presentation.bridge,
+                stamp,
+                self.presentation.accepted_frame.as_ref().unwrap(),
+            )?;
         }
         if result.accepted && self.first_frame_pending {
             self.first_frame_pending = false;
@@ -1077,12 +1081,15 @@ fn build_frame(
             .map_err(|error| format!("record: {error:?}"))?
     };
     let images = session.map_or(&[][..], |session| session.ui().image_resources());
+    let transitions = session.map_or(&[][..], WindowSession::transition_resources);
     let snapshot = reel_ui::resources::ResourceSnapshot::capture(
-        (0..resources.len() + images.len()).map(|index| {
+        (0..resources.len() + images.len() + transitions.len()).map(|index| {
             if index < resources.len() {
                 Ok(resources[index].clone())
-            } else {
+            } else if index < resources.len() + images.len() {
                 Ok(images[index - resources.len()].clone())
+            } else {
+                Ok(transitions[index - resources.len() - images.len()].clone())
             }
         }),
         pool,
@@ -1101,6 +1108,11 @@ fn build_frame(
         pool,
     )
     .map_err(|e| format!("build: {e:?}"))?;
+    if let Some(receipt) = recorded_projection {
+        build
+            .set_transitions(receipt.frame_transitions().to_vec())
+            .map_err(|error| format!("transition frame: {error:?}"))?;
+    }
     let mut budget = StepBudget {
         max_commands: 64,
         max_units: 8192,

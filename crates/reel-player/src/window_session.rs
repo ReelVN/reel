@@ -173,6 +173,7 @@ impl WindowSession {
         &mut self,
         bridge: &PresentationBridge,
         frame: &crate::session::RecordedProjection,
+        drawing: &reel_ui::frame::RenderFrame,
     ) -> Result<(), Error> {
         match self {
             Self::Diagnostic(host) => {
@@ -182,11 +183,19 @@ impl WindowSession {
                 if story.capturing() {
                     return Ok(());
                 }
-                story.driver_mut()?.presented(bridge, frame)?;
+                story
+                    .driver_mut()?
+                    .presented_frame(bridge, frame, drawing)?;
                 story.wake_input();
             }
         }
         Ok(())
+    }
+    pub(crate) fn transition_resources(&self) -> &[reel_ui::resources::ResourceLease] {
+        match self {
+            Self::Aside { story, .. } => story.driver().transition_resources(),
+            Self::Diagnostic(_) => &[],
+        }
     }
     pub(crate) fn needs_tick(&self) -> bool {
         match self {

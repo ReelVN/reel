@@ -15,6 +15,20 @@ pub struct RecordedProjection {
     pub(crate) stage_widget: WidgetId,
     pub(crate) identity: Option<StageIdentity>,
     pub(crate) geometry: Option<GeometryReplies>,
+    pub(crate) transitions: crate::transitions::TransitionReceipt,
+    pub(crate) frame_transitions: Vec<reel_ui::frame::FrameTransition>,
+}
+impl RecordedProjection {
+    pub fn key(&self) -> CandidateKey {
+        self.key.clone()
+    }
+    pub fn needs_transition_drawing(&self) -> bool {
+        self.transitions.needs_drawing()
+    }
+    /// Feed the same recorded transition projection to every frame compiler.
+    pub fn frame_transitions(&self) -> &[reel_ui::frame::FrameTransition] {
+        &self.frame_transitions
+    }
 }
 fn visible(view: &PresentedGeometryView, id: WidgetId) -> Option<&reel_ui::app::GeometryRecord> {
     let record = view.get(id)?;
@@ -54,6 +68,30 @@ fn geometry(
     })
 }
 impl SessionUi {
+    pub(crate) fn stage_widget(bridge: &PresentationBridge, root: WidgetId) -> Option<WidgetId> {
+        Some(
+            bridge
+                .root()
+                .get_widget(root)?
+                .downcast::<SessionWidget>()?
+                .stage
+                .id(),
+        )
+    }
+    pub(crate) fn transition_target(
+        bridge: &PresentationBridge,
+        stage_widget: WidgetId,
+        target: Option<reel_ui::stage::NodeId>,
+    ) -> Option<WidgetId> {
+        let stage = bridge
+            .root()
+            .get_widget(stage_widget)?
+            .downcast::<StageWidget>()?;
+        match target {
+            Some(node) => stage.node_widget(node),
+            None => Some(stage_widget),
+        }
+    }
     #[cfg(any(feature = "window", test))]
     fn accepted_stage(
         &self,
@@ -140,6 +178,8 @@ impl SessionUi {
             stage_widget,
             identity: stage.identity.clone(),
             geometry: None,
+            transitions: Default::default(),
+            frame_transitions: Vec::new(),
         };
         Ok((source, receipt))
     }

@@ -47,16 +47,78 @@ pub fn present(
     let Some((recording, stamp)) = driver.record(bridge, root, FrameId(frame)).unwrap() else {
         return;
     };
+    let (drawing, _recording) = if stamp.needs_transition_drawing() {
+        use reel_core::budget::{BudgetCategory, BudgetPool, QueueLimits};
+        use reel_ui::{
+            frame::{BuildLimits, FrameBuild, FrameInfo, StepBudget},
+            resources::ResourceSnapshot,
+        };
+        let pool = BudgetPool::new(
+            BudgetCategory::CpuOutput,
+            QueueLimits {
+                max_requests: 256,
+                max_bytes: 128 << 20,
+            },
+        );
+        let resources = driver
+            .ui()
+            .image_resources()
+            .iter()
+            .chain(driver.transition_resources())
+            .cloned()
+            .map(Ok)
+            .collect::<Vec<_>>();
+        let resources = ResourceSnapshot::capture(resources.into_iter(), &pool).unwrap();
+        let size = driver
+            .adapter()
+            .game_settings()
+            .canvas_size
+            .unwrap_or([640, 420]);
+        let mut build = FrameBuild::new(
+            recording,
+            resources,
+            FrameInfo {
+                logical_size: size.map(f64::from),
+                physical_size: size,
+            },
+            BuildLimits { max_bytes: 8 << 20 },
+            &pool,
+        )
+        .unwrap();
+        build
+            .set_transitions(stamp.frame_transitions().to_vec())
+            .unwrap();
+        let mut budget = StepBudget {
+            max_commands: 64,
+            max_units: 8192,
+            max_bytes: 64 << 10,
+        };
+        loop {
+            let progress = build.step(budget).unwrap();
+            if progress.complete {
+                break;
+            }
+            budget.max_units = budget.max_units.max(progress.minimum_units);
+            budget.max_bytes = budget.max_bytes.max(progress.minimum_bytes);
+        }
+        (Some(build.finish().unwrap()), None)
+    } else {
+        (None, Some(recording))
+    };
 
     assert_eq!(
         bridge.resolve(PresentationNotice::new(
-            recording.key(),
+            stamp.key(),
             SurfaceEpoch(1),
             PresentationOutcome::Accepted(FrameId(frame))
         )),
         NoticeResult::Accepted
     );
-    driver.presented(bridge, &stamp).unwrap();
+    if let Some(drawing) = &drawing {
+        driver.presented_frame(bridge, &stamp, drawing).unwrap();
+    } else {
+        driver.presented(bridge, &stamp).unwrap();
+    }
 }
 
 pub fn click_at(driver: &mut AsideSessionUi, bridge: &mut PresentationBridge, x: f64, y: f64) {
