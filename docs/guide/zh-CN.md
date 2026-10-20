@@ -850,6 +850,8 @@ text("A long authored line without automatic wrapping.\nA second explicit line."
 
 任务容量随实际并发数量增长和复用。连续启动短任务会复用已结束的任务槽，每次启动按当前驻留情况准备执行空间。调用入栈时，VM 按当前执行片预算准备所需窗口；预算不足保留该调用，获得所需额度后继续。Rust 宿主可用 `VmLimits.max_tasks` 设置自己的准入配额；分配和执行空间整理计入堆预算。
 
+播放器会按任务在下一执行片提供 VM 实际请求的最小工作和分配额度，随后恢复普通片额度。截止时间、指令数和堆硬限仍然生效；一次执行空间搬迁可能超过目标帧时间。嵌入式 Rust 宿主用 `SessionBudget::Exact` 保留精确额度，或用 `RetryMinimum` 采用播放器的重试策略。
+
 普通函数在当前任务内调用，内部等待完成后才返回。例如 `ask()` 内部已 `await result` 并返回 bool，调用者直接写 `if ask() { ... }`；只有返回活动或 completion 等可等待对象时才再写 await。对 bool 等普通值使用 await 会在该行报告 `NotAwaitable`。
 
 可运行的缩字、语言切换和悬停描边示例见 [author_fitted_text.aside](../../examples/author_fitted_text.aside)。

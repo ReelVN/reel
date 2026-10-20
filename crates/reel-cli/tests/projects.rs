@@ -48,7 +48,14 @@ fn execute(
     for function in [story.initializer, story.entry] {
         vm.start(&session, function).unwrap();
         for _ in 0..10_000 {
-            match vm.step(&mut session, SliceBudget::default(), || 0).unwrap() {
+            match vm
+                .step(
+                    &mut session,
+                    reel_engine::aside::SessionBudget::Exact(SliceBudget::default()),
+                    || 0,
+                )
+                .unwrap()
+            {
                 SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
                     vm.dispatch(&mut session, ticket, "en", 8).unwrap();
                 }

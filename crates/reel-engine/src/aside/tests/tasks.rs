@@ -82,8 +82,13 @@ fn owned_script_tasks_share_results_faults_and_cancellation_from_source_and_asb(
         assert!(!vm.has_runnable_tasks());
         vm.revoke(&mut session).unwrap();
         while vm.cleanup_pending() {
-            vm.cleanup_step(&mut session, 1, SliceBudget::default(), || 0)
-                .unwrap();
+            vm.cleanup_step(
+                &mut session,
+                1,
+                SessionBudget::Exact(SliceBudget::default()),
+                || 0,
+            )
+            .unwrap();
         }
     }
 }
@@ -104,8 +109,13 @@ fn session_shutdown_releases_waiting_script_task_roots() {
             if !vm.cleanup_pending() {
                 break;
             }
-            vm.cleanup_step(&mut session, 1, SliceBudget::default(), || 0)
-                .unwrap();
+            vm.cleanup_step(
+                &mut session,
+                1,
+                SessionBudget::Exact(SliceBudget::default()),
+                || 0,
+            )
+            .unwrap();
         }
         assert!(!vm.cleanup_pending());
         assert!(vm.tasks.is_empty());
@@ -179,10 +189,10 @@ fn completed_awaits_yield_to_other_tasks_even_on_a_slow_host() {
                     match vm
                         .step(
                             &mut session,
-                            SliceBudget {
+                            SessionBudget::Exact(SliceBudget {
                                 instructions,
                                 ..Default::default()
-                            },
+                            }),
                             || 0,
                         )
                         .unwrap()

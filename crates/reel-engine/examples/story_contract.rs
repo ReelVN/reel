@@ -15,10 +15,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..10_000 {
         let reel_engine::aside::SessionStep::Vm(outcome) = vm.step(
             &mut session,
-            SliceBudget {
+            reel_engine::aside::SessionBudget::Exact(SliceBudget {
                 instructions: 1,
                 ..Default::default()
-            },
+            }),
             || 0,
         )?
         else {
@@ -69,7 +69,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if !vm.cleanup_pending() {
             break;
         }
-        vm.cleanup_step(&mut session, 1, SliceBudget::default(), || 0)?;
+        vm.cleanup_step(
+            &mut session,
+            1,
+            reel_engine::aside::SessionBudget::Exact(SliceBudget::default()),
+            || 0,
+        )?;
         vm.gc_step(GcBudget {
             units: 1,
             ..Default::default()

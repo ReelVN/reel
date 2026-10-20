@@ -7,6 +7,7 @@ mod buttons;
 mod dialogue_history;
 mod dynamic_stage;
 mod geometry;
+mod host_budget;
 mod localization;
 mod masks;
 mod models;
@@ -31,10 +32,10 @@ fn next(vm: &mut SessionVm, session: &mut Session) -> RunOutcome {
         let outcome = vm
             .step(
                 session,
-                SliceBudget {
+                SessionBudget::Exact(SliceBudget {
                     instructions: 1,
                     ..Default::default()
-                },
+                }),
                 || 0,
             )
             .unwrap();
@@ -518,7 +519,10 @@ fn revoked_wait_never_resumes_and_cleanup_only_is_not_a_result() {
             .complete(ticket.wait_id(), VmCompletion::Ready(Value::NULL))
             .is_err()
     );
-    assert!(vm.step(&mut s, SliceBudget::default(), || 0).is_err());
+    assert!(
+        vm.step(&mut s, SessionBudget::Exact(SliceBudget::default()), || 0)
+            .is_err()
+    );
     assert_eq!(
         s.take_completion().unwrap().delivery(),
         CompletionDelivery::CleanupOnly
@@ -530,10 +534,10 @@ fn revoked_wait_never_resumes_and_cleanup_only_is_not_a_result() {
         vm.cleanup_step(
             &mut s,
             1,
-            SliceBudget {
+            SessionBudget::Exact(SliceBudget {
                 instructions: 1,
                 ..Default::default()
-            },
+            }),
             || 0,
         )
         .unwrap();
@@ -560,7 +564,12 @@ fn cancellation_cleans_host_roots_with_no_task_and_counts_holes() {
     let mut work = 0;
     while s.owner_lifecycle(s.root_owner()) != Some(OwnerLifecycle::Retired) {
         work += vm
-            .cleanup_step(&mut s, 1, SliceBudget::default(), || 0)
+            .cleanup_step(
+                &mut s,
+                1,
+                SessionBudget::Exact(SliceBudget::default()),
+                || 0,
+            )
             .unwrap();
     }
     assert_eq!(work, end);
@@ -603,7 +612,13 @@ fn long_story_and_many_choices_keep_complete_text_and_original_key_across_gc() {
     let mut choice_roots = None;
     let mut finished = false;
     for _ in 0..20_000 {
-        let SessionStep::Vm(outcome) = vm.step(&mut session, SliceBudget::default(), || 0).unwrap()
+        let SessionStep::Vm(outcome) = vm
+            .step(
+                &mut session,
+                SessionBudget::Exact(SliceBudget::default()),
+                || 0,
+            )
+            .unwrap()
         else {
             panic!("expected main task progress");
         };

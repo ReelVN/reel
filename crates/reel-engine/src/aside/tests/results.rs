@@ -69,8 +69,13 @@ fn presentation_requests_settle_before_late_waits_and_follow_owner_cancellation(
         vm.accept_presentation(&session, 1).unwrap();
         vm.revoke(&mut session).unwrap();
         while vm.cleanup_pending() {
-            vm.cleanup_step(&mut session, 1, SliceBudget::default(), || 0)
-                .unwrap();
+            vm.cleanup_step(
+                &mut session,
+                1,
+                SessionBudget::Exact(SliceBudget::default()),
+                || 0,
+            )
+            .unwrap();
         }
         collect(&mut vm);
         assert_eq!(vm.vm.heap().stats().roots, 0);

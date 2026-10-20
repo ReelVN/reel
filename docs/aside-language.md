@@ -423,6 +423,8 @@ invoke_sync 仅用于不可保留 native 栈的有界同步重入。它继承最
 
 Reel 作者事件通过宿主已有 start_closure 创建节点拥有的普通任务，不引入 Aside 事件语法或 UI 依赖。回调接受一个事件对象并共享闭包捕获；可以等待普通宿主 Awaitable。Reel 在显式 await 首次宿主入口、普通调用真正等待或任务结束后切换任务；已完成的可等待对象也产生该边界。宿主使用 HostTicket.await_activation 与 NativeInput::Entry 识别，不把 WAIT 效果或 continuation 当作新的 await；指令预算和普通同步 native 往返只让出宿主执行，不在同步脚本段内切换其他任务。每个任务保留自己的等待和源码故障，节点退休使用既有硬取消与分片释放。Reel 的 SessionVm::step 返回 SessionStep，将实际 VM 结果、已处理的回调完成 Progress 和无可运行任务 Idle 区分；不会伪造 VM WaitId 表示 UI 空闲。
 
+Rust 会话宿主通过 `SessionBudget::Exact` 或 `RetryMinimum` 明确选择预算策略，独立 VM 的 `run_slice` 始终精确遵守传入预算。RetryMinimum 按任务保存 BudgetYield 的 required_work/required_allocation，下一片仅提高工作与分配额度到这次真实需求，保留指令数、deadline 和 Heap 硬配额。零进度的 deadline 让出不清除需求；任务推进且无新需求、终止或移除后清除。主任务、回调、派生及取消清理共用此规则，恢复后按实际 VM 状态重新报告需求，调度提示不属于语言快照。
+
 Reel 共同节点的 `on_interaction` 是默认 null 的普通可写回调属性；节点交互状态实际变化后，宿主先发布整批只读属性，再创建节点任务。不可变事件提供 target、hover、pressed、focused、disabled、focus_visible，该次布尔值在等待后仍保持原值。赋予或替换回调不触发初始事件；没有回调时不创建事件对象或任务。业务选中和演出由此回调修改，derive 保持只读求值；回调、捕获与等待复用既有任务快照和退休规则。
 
 native 注册表包含稳定符号/版本、参数与命名调用描述、类型/返回值、允许效果、能力要求、Owner 规则、错误码和恢复 adapter。

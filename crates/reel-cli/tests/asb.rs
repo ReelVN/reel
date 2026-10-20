@@ -595,8 +595,13 @@ fn authored_scene_builds_loads_and_runs_without_recompilation() {
     let mut publications = 0;
     let mut finished = false;
     for _ in 0..20_000 {
-        let reel_engine::aside::SessionStep::Vm(outcome) =
-            vm.step(&mut session, SliceBudget::default(), || 0).unwrap()
+        let reel_engine::aside::SessionStep::Vm(outcome) = vm
+            .step(
+                &mut session,
+                reel_engine::aside::SessionBudget::Exact(SliceBudget::default()),
+                || 0,
+            )
+            .unwrap()
         else {
             panic!("expected main task progress");
         };
@@ -651,7 +656,12 @@ fn authored_scene_builds_loads_and_runs_without_recompilation() {
     assert!(finished);
     assert_eq!(publications, 2);
     while vm.cleanup_pending() {
-        vm.cleanup_step(&mut session, 64, SliceBudget::default(), || 0)
-            .unwrap();
+        vm.cleanup_step(
+            &mut session,
+            64,
+            reel_engine::aside::SessionBudget::Exact(SliceBudget::default()),
+            || 0,
+        )
+        .unwrap();
     }
 }

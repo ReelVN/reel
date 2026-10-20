@@ -839,6 +839,8 @@ Use `spawn(work, owner: root)` for independent scripted scenes or background gam
 
 Task capacity grows with actual concurrency and is reused. Successive short tasks reuse completed task slots, preparing execution space for the current resident work at each start. Before entering a call, the VM admits its execution windows against the current slice budget; an insufficient budget preserves the call for a retry with the required grant. Rust hosts can set their own admission quota through `VmLimits.max_tasks`; allocation and execution storage compaction count against the heap budget.
 
+The player grants each task the VM's actual minimum work and allocation request on its next slice, then returns to the ordinary slice budget. Deadlines, instruction counts and hard heap limits still apply; one execution-storage relocation can exceed the target frame time. Embedded Rust hosts select `SessionBudget::Exact` for exact grants or `RetryMinimum` for the player's retry policy.
+
 Ordinary functions run in the current task and return after their internal waits complete. If `ask()` already uses `await result` and returns bool, call it as `if ask() { ... }`; use another await only when a function returns an awaitable activity or completion. Awaiting a plain value such as bool reports `NotAwaitable` at that line.
 
 See [author_fitted_text.aside](../../examples/author_fitted_text.aside) for a runnable example of resizing, switching text languages and hover outlines.

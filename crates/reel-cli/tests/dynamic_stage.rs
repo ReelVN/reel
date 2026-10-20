@@ -72,7 +72,14 @@ fn children_compose_owned_subtrees_without_duplicate_mounting() {
         for function in [story.initializer, story.entry] {
             vm.start(&session, function).unwrap();
             loop {
-                match vm.step(&mut session, SliceBudget::default(), || 0).unwrap() {
+                match vm
+                    .step(
+                        &mut session,
+                        reel_engine::aside::SessionBudget::Exact(SliceBudget::default()),
+                        || 0,
+                    )
+                    .unwrap()
+                {
                     reel_engine::aside::SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
                         if let Err(error) = vm.dispatch(&mut session, ticket, "en", 1024) {
                             vm.reject_native(&session, ticket, error).unwrap();
@@ -125,7 +132,14 @@ fn children_compose_owned_subtrees_without_duplicate_mounting() {
                 .unwrap();
         }
         loop {
-            match vm.step(&mut session, SliceBudget::default(), || 0).unwrap() {
+            match vm
+                .step(
+                    &mut session,
+                    reel_engine::aside::SessionBudget::Exact(SliceBudget::default()),
+                    || 0,
+                )
+                .unwrap()
+            {
                 reel_engine::aside::SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
                     vm.dispatch(&mut session, ticket, "en", 1024).unwrap();
                 }
