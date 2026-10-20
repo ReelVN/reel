@@ -1117,6 +1117,30 @@ fn scene_presentation_wait_includes_image_io_and_rejects_old_or_unaccepted_frame
             .set_resource_waker(std::sync::Arc::new(move || {
                 let _ = send.send(());
             }));
+        let (mut bridge, root) = mount(runtime.driver().ui());
+        runtime
+            .driver_mut()
+            .unwrap()
+            .sync(&mut bridge, root)
+            .unwrap();
+        let (recording, old) = runtime
+            .driver()
+            .record(&mut bridge, root, FrameId(1))
+            .unwrap()
+            .expect("prepared initial frame");
+        assert_eq!(
+            bridge.resolve(PresentationNotice::new(
+                recording.key(),
+                SurfaceEpoch(1),
+                PresentationOutcome::Accepted(FrameId(1)),
+            )),
+            NoticeResult::Accepted
+        );
+        runtime
+            .driver_mut()
+            .unwrap()
+            .presented(&bridge, &old)
+            .unwrap();
         drain(&mut runtime);
         let state = |runtime: &StoryRuntime| {
             runtime
@@ -1133,23 +1157,20 @@ fn scene_presentation_wait_includes_image_io_and_rejects_old_or_unaccepted_frame
                 })
                 .unwrap()
         };
-        let (mut bridge, root) = mount(runtime.driver().ui());
         runtime
             .driver_mut()
             .unwrap()
             .sync(&mut bridge, root)
             .unwrap();
         assert!(runtime.driver().ui().images_pending());
-        let (recording, old) = runtime
-            .driver()
-            .record(&mut bridge, root, FrameId(1))
-            .unwrap()
-            .expect("settled frame");
-        bridge.resolve(PresentationNotice::new(
-            recording.key(),
-            SurfaceEpoch(1),
-            PresentationOutcome::Accepted(FrameId(1)),
-        ));
+        assert!(
+            runtime
+                .driver()
+                .record(&mut bridge, root, FrameId(2))
+                .unwrap()
+                .is_none(),
+            "pending images retain the accepted frame without issuing a new receipt"
+        );
         runtime
             .driver_mut()
             .unwrap()
