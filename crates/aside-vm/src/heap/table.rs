@@ -31,6 +31,24 @@ impl Heap {
     /// for incremental reclamation;
     /// callers release that root and may request collection after large trims.
     pub fn commit_collection(&mut self, target: Value, prepared: Value) -> Result<(), HeapError> {
+        self.commit_collection_change(target, prepared, None)
+    }
+
+    pub(crate) fn commit_table_remove(
+        &mut self,
+        target: Value,
+        prepared: Value,
+        position: u32,
+    ) -> Result<(), HeapError> {
+        self.commit_collection_change(target, prepared, Some(position))
+    }
+
+    fn commit_collection_change(
+        &mut self,
+        target: Value,
+        prepared: Value,
+        removed: Option<u32>,
+    ) -> Result<(), HeapError> {
         let target_value = target;
         let prepared_value = prepared;
         let target = self.key(target)?;
@@ -44,11 +62,28 @@ impl Heap {
         if target == prepared {
             return Ok(());
         }
-        self.adopt_model_contents(target_value, prepared_value)?;
+        // Removal only retains already adopted values; the prepared table's
+        // metadata contains its new position map and must remain private.
+        if removed.is_none() {
+            self.adopt_model_contents(target_value, prepared_value)?;
+        }
         if self.is_model_table(target_value)? {
-            // The only table bulk mutation is clear; freeze the old subscribers.
-            self.disconnect_host_properties(target_value)?;
-            self.reset_model_properties(target_value)?;
+            if let Some(position) = removed {
+                self.disconnect_property(PropertyId {
+                    host: target_value,
+                    field: self.model_field(target_value, position)?,
+                })?;
+                self.finish_model_table_remove(target_value, prepared_value)?;
+                let old = self.object(target)?.model_metadata;
+                let new = self.object(prepared)?.model_metadata;
+                self.barrier(old)?;
+                self.barrier(new)?;
+                self.objects.get_mut(target).unwrap().model_metadata = new;
+                self.objects.get_mut(prepared).unwrap().model_metadata = old;
+            } else {
+                self.disconnect_host_properties(target_value)?;
+                self.reset_model_properties(target_value)?;
+            }
         }
         let empty = || Payload::Values(crate::payload::Values::default());
         let a = self.objects.get_mut(target).unwrap();
@@ -119,7 +154,7 @@ impl Heap {
         if self.is_model_table(table)? {
             let property = PropertyId {
                 host: table,
-                field: position,
+                field: self.model_field(table, position)?,
             };
             if position < self.table_len(table)? {
                 return self.write_host_property(property, value, true);
@@ -143,6 +178,7 @@ impl Heap {
                     object.content_version = before.content_version;
                     object.structure_version = before.structure_version;
                     self.freed(freed);
+                    self.rollback_model_position(table)?;
                     return Err(error);
                 }
                 return Ok(());
@@ -175,11 +211,19 @@ impl Heap {
         if append {
             values.len.checked_add(2).ok_or(HeapError::OutOfBounds)?;
         }
-        self.ensure_bytes(extra)?;
+        let mapping_bytes = if append {
+            self.model_append_bytes(table)?
+        } else {
+            0
+        };
+        self.ensure_bytes(extra + mapping_bytes)?;
         // Both barriers and the complete allocation preflight precede publication.
-        self.adopt_model_value_reserving(table, value, extra)?;
+        self.adopt_model_value_reserving(table, value, extra + mapping_bytes)?;
         self.barrier(key_value)?;
         self.barrier(value)?;
+        if append {
+            self.append_model_position(table)?;
+        }
         self.charge(extra, u64::from(extra != 0));
         let object = self.objects.get_mut(key).unwrap();
         let Payload::Table(values) = &mut object.payload else {
@@ -198,7 +242,7 @@ impl Heap {
         }
         object.content_version = object.content_version.wrapping_add(1);
         object.charged += extra;
-        self.invalidate_reactive(table, Some(position))?;
+        self.invalidate_reactive(table, Some(self.model_field(table, position)?))?;
         Ok(())
     }
 }

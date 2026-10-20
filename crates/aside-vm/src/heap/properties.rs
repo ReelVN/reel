@@ -56,6 +56,7 @@ impl Heap {
         if property.field >= object.observable_fields {
             return Err(HeapError::WrongKind);
         }
+        self.model_position(property)?;
         Ok(property.field < object.observable_writable)
     }
 
@@ -116,7 +117,10 @@ impl Heap {
             return self.cell_read(property.host);
         }
         Ok(self
-            .table_entry(self.property_fields(property.host)?, property.field)?
+            .table_entry(
+                self.property_fields(property.host)?,
+                self.model_position(property)?,
+            )?
             .1)
     }
 
@@ -271,6 +275,7 @@ impl Heap {
         let value = self.property_proposal?;
         let owner = self.object(self.key(table).ok()?).ok()?.property_owner?;
         let host = Value::object(self.id, owner.data().as_ffi());
+        let field = self.model_field(host, field).ok()?;
         if self
             .property_work
             .first()
@@ -331,9 +336,10 @@ impl Heap {
                 }
             } else {
                 let fields = self.property_fields(property.host)?;
-                let (key, old) = self.table_entry(fields, property.field)?;
+                let position = self.model_position(property)?;
+                let (key, old) = self.table_entry(fields, position)?;
                 if !old.same_bits(value) {
-                    self.store_table_entry(fields, property.field, key, value)?;
+                    self.store_table_entry(fields, position, key, value)?;
                 }
             }
             if script {
@@ -534,27 +540,32 @@ impl Heap {
     pub(super) fn disconnect_host_properties(&mut self, host: Value) -> Result<(), HeapError> {
         let count = self.object(self.key(host)?)?.observable_fields;
         for field in 0..count {
-            let source = PropertyId { host, field };
-            self.detach_property(source)?;
-            let list = self.subscribers(source)?;
-            if list.same_bits(Value::NULL) {
-                continue;
+            self.disconnect_property(PropertyId { host, field })?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn disconnect_property(&mut self, source: PropertyId) -> Result<(), HeapError> {
+        self.detach_property(source)?;
+        let list = self.subscribers(source)?;
+        while !list.same_bits(Value::NULL) && self.sequence_len(list)? != 0 {
+            let weak = self.sequence_get(list, 0)?;
+            let field = self.sequence_get(list, 1)?.as_int().unwrap() as u32;
+            if let Some(host) = self.subscriber_target(weak)?
+                && self.property_fields(host).is_ok()
+            {
+                let target = PropertyId { host, field };
+                let value = self.host_property(target)?;
+                self.collect_properties(target)?;
+                self.detach_property(target)?;
+                self.commit_properties(value, true)?;
+            } else {
+                self.remove_subscriber(list, 0)?;
             }
-            while self.sequence_len(list)? != 0 {
-                let weak = self.sequence_get(list, 0)?;
-                let field = self.sequence_get(list, 1)?.as_int().unwrap() as u32;
-                if let Some(host) = self.subscriber_target(weak)?
-                    && self.property_fields(host).is_ok()
-                {
-                    let target = PropertyId { host, field };
-                    let value = self.host_property(target)?;
-                    self.collect_properties(target)?;
-                    self.detach_property(target)?;
-                    self.commit_properties(value, true)?;
-                } else {
-                    self.remove_subscriber(list, 0)?;
-                }
-            }
+        }
+        if !self.property_metadata(source)?.same_bits(Value::NULL) {
+            let metadata = self.property_metadata_array(source.host)?;
+            self.set_field(metadata, source.field, Value::NULL)?;
         }
         Ok(())
     }

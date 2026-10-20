@@ -1,6 +1,7 @@
 //! Collection instructions keep unpublished builders in the frame's rooted
 //! return/work slot. PC advances only after publication; cancellation uses the
 //! existing frame/return-slot teardown, so partially built values never escape.
+use super::builtins::BuiltinCall;
 use super::*;
 mod spread;
 pub(super) use spread::{CaptureKind, SpreadCapture, TableFinish, TableSpread};
@@ -219,6 +220,7 @@ pub(super) enum TableAction {
         // The caller retains argument roots through key validation and lookup.
         fallback: Option<u32>,
     },
+    Remove(BuiltinCall),
 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(super) struct TableWork {
@@ -391,19 +393,23 @@ impl Vm {
                     | TableAction::GetHost { .. }
                     | TableAction::MemberGet { .. }
                     | TableAction::HasOwn(_)
+                    | TableAction::Remove(_)
             );
         let fallback = scan
             && work.entry == len
             && !work.matched
             && matches!(work.action, TableAction::MemberGet { symbol, .. } if Builtin::lookup(ObjectKind::Table, &self.program.package().symbols[symbol.index()]).is_some());
-        let extra = if (store
-            && work.matched
-            && matches!(work.action, TableAction::PropertyRef { .. }))
+        let extra = if work.matched
+            && matches!(work.action, TableAction::Remove(_))
+            && self.heap.is_model_table(table)?
+        {
+            Values::allocation_bytes(4)
+        } else if (store && work.matched && matches!(work.action, TableAction::PropertyRef { .. }))
             || fallback
         {
             Values::allocation_bytes(4)
         } else if store && !matches!(work.action, TableAction::SetHost { .. }) && !work.matched {
-            Values::growth_bytes(u64::from(len) * 2, 2)
+            Values::growth_bytes(u64::from(len) * 2, 2) + self.heap.model_append_bytes(table)?
         } else {
             0
         };
@@ -528,6 +534,16 @@ impl Vm {
         let table = self.value(s.env, 1)?;
         let key = self.value(s.env, 2)?;
         match work.action {
+            TableAction::Remove(call) => {
+                if !work.matched {
+                    return self.collection_fault(s, FaultKind::MissingKey);
+                }
+                if let Err(kind) = self.start_table_remove(s, call, work.entry) {
+                    return self.collection_fault(s, kind);
+                }
+                s.table_work = None;
+                return Ok(());
+            }
             TableAction::Spread(mut spread) => {
                 let source = self.value(s.regs, spread.source.0)?;
                 let value = self.heap.table_entry(source, spread.index)?.1;
@@ -558,7 +574,7 @@ impl Vm {
                 match self.heap.alloc_property_ref(
                     crate::PropertyId {
                         host,
-                        field: work.entry,
+                        field: self.heap.model_field(host, work.entry)?,
                     },
                     writable,
                 ) {
@@ -592,7 +608,8 @@ impl Vm {
             | TableAction::GetDefault { dest, .. }
             | TableAction::MemberGet { dest, .. } => {
                 let value = if work.matched {
-                    self.heap.observe_read(table, Some(work.entry))?;
+                    self.heap
+                        .observe_read(table, Some(self.heap.model_field(table, work.entry)?))?;
                     self.heap.table_entry(table, work.entry)?.1
                 } else if let TableAction::GetDefault {
                     descriptor,
@@ -647,7 +664,10 @@ impl Vm {
                 {
                     return self.collection_fault(s, FaultKind::Effect);
                 }
-                if let Err(error) = self.heap.observe_write(table, Some(work.entry)) {
+                if let Err(error) = self
+                    .heap
+                    .observe_write(table, Some(self.heap.model_field(table, work.entry)?))
+                {
                     return self.collection_fault(s, heap_fault(error));
                 }
                 let result = if let TableAction::SetHost { object, .. } = work.action {

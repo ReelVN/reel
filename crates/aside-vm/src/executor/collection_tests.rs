@@ -1186,6 +1186,138 @@ fn method_package(method: &str) -> BytecodePackage {
 }
 
 #[test]
+fn table_remove_cancel_and_concurrent_write_preserve_the_original_until_commit() {
+    use crate::snapshot::{SnapshotBudget, SnapshotRegistry, VmSnapshot};
+    for observed in [false, true] {
+        for action in 0..3 {
+            let mut p = method_package("remove");
+            let key_name = SymbolId(p.symbols.len() as u32);
+            p.symbols.push("key".into());
+            p.signatures[0].parameters.push(Parameter {
+                name: key_name,
+                ty: TypeId(0),
+                mutable: false,
+                default: None,
+            });
+            p.functions[0].register_count = 4;
+            p.functions[0].code[0].operands[0] = 2;
+            p.functions[0].code[1].operands[0] = 3;
+            p.functions[0].code[2].operands[0] = 3;
+            let Descriptor::Call(call) = &mut p.functions[0].descriptors[0] else {
+                unreachable!()
+            };
+            call.target = CallTarget::Register(Reg(2));
+            call.arguments = Arguments::Window(RegWindow {
+                start: Reg(1),
+                len: 1,
+            });
+            let mut vm = load(p);
+            let mut table = vm.heap_mut().alloc_table().unwrap();
+            for n in 0..130 {
+                let child = vm.heap_mut().alloc_array(&[Value::int(n)]).unwrap();
+                vm.heap_mut()
+                    .table_store(table, n as u32, Value::int(n), child)
+                    .unwrap();
+            }
+            if observed {
+                vm.heap_mut().observe_model_object(table).unwrap();
+            }
+            let mut root = vm
+                .heap_mut()
+                .add_root(RootOwner(8), RootKind::Host, table)
+                .unwrap();
+            let mut task = vm
+                .start(
+                    FunctionId(0),
+                    &[table, Value::int(64)],
+                    RootOwner(9),
+                    Context::Ordinary,
+                )
+                .unwrap();
+            loop {
+                let result = tick(&mut vm, task);
+                assert!(matches!(result, RunOutcome::BudgetYield(_)));
+                let Frame::Script(s) = *vm.active.frames.data.last().unwrap() else {
+                    panic!()
+                };
+                if matches!(s.phase, ScriptPhase::Bulk(_))
+                    && vm.heap().info(vm.value(s.env, 2).unwrap()).unwrap().len >= 65
+                {
+                    assert_eq!(vm.heap().table_len(table).unwrap(), 130);
+                    break;
+                }
+            }
+            if action == 0 {
+                let registry = SnapshotRegistry::default();
+                let mut capture = vm.snapshot_begin(&registry).unwrap();
+                while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+                let image = capture.finish().unwrap();
+                let image = VmSnapshot::decode(&image.encode().unwrap()).unwrap();
+                let mut restore = Vm::restore_begin(
+                    &image,
+                    vm.program().clone(),
+                    RuntimeSupport {
+                        opcodes: vec![],
+                        capabilities: vec![],
+                        natives: vec![],
+                    },
+                    VmLimits::default(),
+                    SessionEpoch(82),
+                    &registry,
+                )
+                .unwrap();
+                while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+                let (restored, map) = restore.finish().unwrap();
+                table = map.value(table).unwrap();
+                root = map.root(root).unwrap();
+                task = map.task(task).unwrap();
+                vm = restored;
+            }
+            match action {
+                0 => {
+                    let RunOutcome::Returned(id) = terminal(&mut vm, task) else {
+                        panic!()
+                    };
+                    let removed = vm.delivery_value(id).unwrap();
+                    assert_eq!(
+                        vm.heap().sequence_get(removed, 0).unwrap().as_int(),
+                        Some(64)
+                    );
+                    vm.discard_delivery(id).unwrap();
+                }
+                1 => {
+                    vm.heap_mut()
+                        .table_store(table, 0, Value::int(0), Value::NULL)
+                        .unwrap();
+                    fault(&mut vm, task, FaultKind::ConcurrentModification);
+                }
+                _ => {
+                    vm.cancel(RootOwner(9)).unwrap();
+                    while let Ok(outcome) = vm.run_slice(task, SliceBudget::default(), || 0) {
+                        assert!(matches!(outcome, RunOutcome::BudgetYield(_)));
+                    }
+                }
+            }
+            let len = if action == 0 { 129 } else { 130 };
+            for n in 0..len {
+                let source = n + u32::from(action == 0 && n >= 64);
+                let (key, value) = vm.heap().table_entry(table, n).unwrap();
+                assert_eq!(key.as_int(), Some(i64::from(source)));
+                if action == 1 && n == 0 {
+                    assert!(value.same_bits(Value::NULL));
+                } else {
+                    assert_eq!(
+                        vm.heap().sequence_get(value, 0).unwrap().as_int(),
+                        Some(i64::from(source))
+                    );
+                }
+            }
+            vm.heap_mut().release_root(root).unwrap();
+        }
+    }
+}
+
+#[test]
 fn bulk_edit_commit_cancel_and_concurrent_write_preserve_identity_and_gc_edges() {
     for action in 0..3 {
         let mut vm = load(method_package("reverse"));

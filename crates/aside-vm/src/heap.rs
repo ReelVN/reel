@@ -832,7 +832,9 @@ impl Heap {
             versions = self.alloc_array(&[])?;
             self.set_property_versions(host, versions)?;
         }
-        let count = if self.is_model_cell(host)? {
+        let count = if self.is_model_table(host)? {
+            self.object(self.key(host)?)?.observable_fields
+        } else if self.is_model_cell(host)? {
             1
         } else {
             self.table_len(fields)?
