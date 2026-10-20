@@ -916,6 +916,9 @@ impl SceneWidget {
                         })
                         .with_visible_bytes(Self::reveal_range(&view.node))
                         .with_style(StyleProperty::FontSize(view.node.props.font_size as f32))
+                        .with_style(StyleProperty::FontWeight(
+                            reel_ui::reel_text::FontWeight::new(view.node.props.font_weight as f32),
+                        ))
                         .with_text_alignment(view.node.props.text_align)
                         .with_text_fit(view.node.props.text_fit)
                         .with_outline(text_outline(&view.node.props))
@@ -953,6 +956,11 @@ impl SceneWidget {
                     NewWidget::new(
                         TextInput::new(value.clone())
                             .with_style(StyleProperty::FontSize(view.node.props.font_size as f32))
+                            .with_style(StyleProperty::FontWeight(
+                                reel_ui::reel_text::FontWeight::new(
+                                    view.node.props.font_weight as f32,
+                                ),
+                            ))
                             .with_style(font_style(&view.node.props.font)),
                     )
                     .with_props(ContentColor::new(color(view.node.props.color)))
@@ -1083,6 +1091,14 @@ impl SceneWidget {
                 TextInput::insert_style(
                     &mut editor,
                     StyleProperty::FontSize(view.node.props.font_size as f32),
+                );
+            }
+            if this.widget.node.props.font_weight != view.node.props.font_weight {
+                TextInput::insert_style(
+                    &mut editor,
+                    StyleProperty::FontWeight(reel_ui::reel_text::FontWeight::new(
+                        view.node.props.font_weight as f32,
+                    )),
                 );
             }
             if this.widget.node.props.font != view.node.props.font {
@@ -1254,6 +1270,14 @@ impl SceneWidget {
                     StyleProperty::FontSize(view.node.props.font_size as f32),
                 );
             }
+            if this.widget.node.props.font_weight != view.node.props.font_weight {
+                Label::insert_style(
+                    &mut label,
+                    StyleProperty::FontWeight(reel_ui::reel_text::FontWeight::new(
+                        view.node.props.font_weight as f32,
+                    )),
+                );
+            }
             if this.widget.node.props.font != view.node.props.font {
                 Label::insert_style(&mut label, font_style(&view.node.props.font));
             }
@@ -1358,6 +1382,7 @@ impl SceneWidget {
                 || old.gap != new.gap
                 || old.padding != new.padding
                 || old.font_size != new.font_size
+                || old.font_weight != new.font_weight
                 || old.font != new.font
                 || old.text_fit != new.text_fit
                 || text_line_breaking(&this.widget.node) != text_line_breaking(&view.node)

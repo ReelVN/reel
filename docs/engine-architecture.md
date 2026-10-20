@@ -25,7 +25,7 @@ Reel 的目标是让创作者直观地表达想象中的画面和交互，包括
 
 共享资源读取区分单资源过大与瞬时容量争用：文件超过宿主 input_bytes 容量时报告资源路径和所需/配置字节；并发读取暂时占满输入容量时保留尚未提交的读取，随既有资源维护继续准入，不结算为加载失败。取消可直接撤销未提交读取，无额外文件缓存或同步等待。范围为 reel-player 资源服务；作者接口、ABI、ASB 与依赖保持不变。
 
-模型来源的依赖捕获使用 Aside 的私有有序强边载荷与平衡树索引，去重和捕获期间的写冲突查询不再逐项扫描所有已捕获依赖；作者接口、list native ABI 及 ASB 不变。索引按堆预算准入、分片回收，捕获嵌套、取消与失败保留同一提交语义；VM 快照 7 恢复每个值块时重建已映射身份的索引，当前 SessionSnapshot 为 22。范围为 aside-vm 响应式载荷、快照/GC、reel-engine 的定向行为与成本检查，无新依赖。来源生成、捕获、订阅、列表索引、首窗、定位有效性和远跳分别测量；依赖有效性查询仍与登记依赖图有关，虚拟窗口不意味着数据与来源索引按需加载。
+模型来源的依赖捕获使用 Aside 的私有有序强边载荷与平衡树索引，去重和捕获期间的写冲突查询不再逐项扫描所有已捕获依赖；作者接口、list native ABI 及 ASB 不变。索引按堆预算准入、分片回收，捕获嵌套、取消与失败保留同一提交语义；VM 快照 7 恢复每个值块时重建已映射身份的索引，当前 SessionSnapshot 为 23。范围为 aside-vm 响应式载荷、快照/GC、reel-engine 的定向行为与成本检查，无新依赖。来源生成、捕获、订阅、列表索引、首窗、定位有效性和远跳分别测量；依赖有效性查询仍与登记依赖图有关，虚拟窗口不意味着数据与来源索引按需加载。
 
 冷查询和订阅提交沿私有 Dependencies 的既有 64 值块读取，每块复制到固定栈空间后按原顺序处理依赖，省去逐值重复容器验证与块查找。逐来源绑定解析、环检查、反向订阅准入/释放、弱边与失败发布语义保留；不增加常驻图副本或跨让出缓存。现有同步步骤仍处理全部实际条目，不能按块数缩小预算或声称恒定帧成本。每来源反向订阅数组的初次分配保持原样，仍单列 CPU 与分配成本。范围仅为 Aside 内部遍历和现有实际 model 成本检查，无作者 API、native ABI、VM/Session 快照格式或依赖变更。
 
@@ -317,6 +317,10 @@ GPU 回放在一次帧准备内复用已经完成合成的离屏目标；复用�
 
 节点公开位置 x/y、可选 width/height、opacity、visible、clip、gap、padding、font_size、color 和 background。未指定宽高采用内容布局；位置默认 0，opacity 默认 1，visible 默认 true，clip 默认 false，gap/padding 默认 0，font_size 默认 24，color 默认白色，background 默认透明。row/column 顺序排布，stack 按书写顺序叠放；x/y 是布局位置上的局部偏移。属性赋值修改原节点，既有引用继续指向同一对象。节点身份、属性和子对象引用由真正的宿主对象承载，不能靠复制普通 table 冒充节点。单父关系、节点退休和根对象保活在挂载/会话边界处理。
 
+共同节点 `font_weight` 选择字体族内的字重，默认 400，接受 1..1000 的有限整数或浮点数。构造、赋值和 bind/derive 经同一宿主字段验证；实际变化使 text、button、toggle、radio 和 text_input 重新整形及布局，并保留控件身份。字体家族由 font 指定，具体 face 和可变字体轴沿 reel-text/fontique 匹配；富文本局部粗体样式继续覆盖所在范围的字重。该字段作为文字样式属性保存，恢复后按原字重重新建立布局。
+
+范围为共同 NodeProps、Reel 宿主属性与快照、player 文字样式桥接及源码/ASB检查。共同节点构造器（含 list/view/layered_image）native ABI 各递增 1，节点宿主字段验证器递增 1，SessionSnapshot 23；VM8/ASB 格式保持。复用现有依赖与字体资源，每节点增加一个数值字段；稳定字重沿现有文字布局缓存，实际改字重时支付重新整形和布局成本。验证同族不同 face、动态绑定/赋值、非法写入保持原值，以及同包快照恢复。运行 `cargo test --locked -p reel-engine -p reel-player --lib font_weight`，使用项目原创的三份同族微型字体检查实际绘制所选 face、局部富文本覆盖和稳定布局缓存。
+
 共同节点的 `stretch: "none" | "x" | "y" | "both"` 默认 none；所选轴不贡献父节点的内容测量，父节点尺寸确定后沿该轴填满父 padding 内的可用尺寸，并覆盖该轴显式 width/height。x/y 和 anchor 仍是布局完成后的局部变换。row/column 流轴上拉伸的子节点作为覆盖层，不消耗流位置或 gap；仅跨轴拉伸仍参与正常流排。scroll 使用视口内框作为拉伸尺寸，该轴不计入滚动内容范围。父布局一次确定尺寸，不通过脚本回写测量值，不引入下一帧反馈。范围为 reel-ui 共同 NodeProps、reel-engine 绑定和快照、reel-player 布局、作者示例和双语指南；共同节点构造 native ABI 本批各加 1，节点宿主快照适配器为 2（image 为 4），SessionSnapshot 为 17，Aside 字节码/ASB 无变化、无新增依赖。验收覆盖内容撑高背景、顺序容器覆盖层、滚动范围、动态修改与存档恢复。
 
 节点变换合同：所有基础节点共同提供 rotation、scale_x/scale_y、anchor_x/anchor_y。rotation 使用顺时针角度，默认 0；缩放默认 1，负数翻转，0 可折叠；锚点按节点布局宽高的比例取值，默认左上角 (0,0)，(0.5,0.5) 表示中心。锚点不限制在节点内部。布局位置加 x/y 表示锚点所在的父坐标位置；变换为 T(layout + x/y) × R(rotation) × S(scale_x,scale_y) × T(-anchor × size)。角度、缩放、锚点均要求有限数值；角度不钳制在一圈内。width/height 与容器排布使用变换前尺寸，变换作用于整棵子树、裁剪和呈现几何。奇异变换沿现有几何规则不参与命中；零缩放不退休节点。
@@ -537,7 +541,7 @@ scope 已接通任务、活动、等待、临时节点和属性覆盖；加性�
 基础字段与各层使用真实独立 PropertyId，动画只在实际写同一层或同一绑定源时冲突；隐藏层的动画照常计时。目标退休也退休其全部 token，未完成活动沿原退休路径取消。节点 VM payload 保存有序层与预分配的按字段选择槽，创建/移除才维护优先序；清理不创建引用或订阅，不依赖新分配。token 的绑定、目标、选择引用及 scope 登记都在既有 VM 对象图内，强边保活和退休断开遵循原属性协议；无另一调度器。未覆盖节点保留原版本快路径；有覆盖节点同步检查固定共同属性数的选中层字段版本，成本不随隐藏层数量增长。创建/移除按提供字段与现存层数处理，VM 图和宿主版本缓存计入堆预算。恢复重建投影缓存，保留层序、绑定、活动时间和原 scope 续体，不重跑正文。范围为 reel-engine scopes/stage/activity/registry/snapshot、源码与 ASB 行为检查、示例及双语指南；无新依赖或 VM 改动，scope ABI 4、tween ABI 9、新 override/remove ABI 1、SessionSnapshot 20，VM/ASB 不变。检查基础 derive 更新、显式 null、嵌套和同 scope 多层、非顶层提前移除、独立动画/真实源冲突、节点先退休、取消/故障/恢复及取消无新增分配。可运行示例为 [author_scope.aside](../examples/author_scope.aside)，Start 覆盖只读透明度、Stop 恢复持续变化的基础绑定。验证命令：`cargo test --locked -p reel-engine scope_override`、`cargo test --locked -p reel-cli --test author_scopes`；release 成本命令为 `cargo test --release --locked -p reel-engine --lib scope_override_cancellation_uses_existing_storage_and_idle_cost_ignores_layer_count -- --nocapture`。
 加性偏移（已实现）：`let shake = s.offset(node, x: 0, y: 0)` 创建固定含 x/y 和 remove 的可观察属性层；初始化参数接受有限数值或既有 bind/derive，并在发布前验证。token 与 override 共用构建、属性验证、动画目标、scope 登记和退休路径。每个轴取当前基础值或最后存活的 override 值，再按建立次序加上全部 offset；偏移在父坐标系中，node.x/y 仍读写基础值，token.x/y 读写本层。普通 run 在作用域内继承 scope，基础动画可在外层继续；独立层可同时运动，实际同 PropertyId 或最终绑定源的写入仍按原冲突规则处理。remove、正常退出、故障、取消及目标退休撤销本层，不保存或回写旧坐标。最终偏移进入现有 NodeProps 变换，绘制、geometry 与命中共用矩阵，行列测量和原布局尺寸保持不变。旋转和缩放继续通过有序变换及组节点表达。
 
-节点 VM payload 分别保存 override 与 offset 层，仍复用同一 scope 拥有列表。覆盖选择槽与全部偏移 token 都由 VM 图保活，宿主只缓存字段版本；无 offset 的节点保持现有路径。稳定同步对 offset 数量线性检查，变化时线性求和，覆盖检查仍为固定共同字段数；创建预留缓存容量，稳定赋值/动画推进及移除不新增逐帧层存储或 VM 分配。缓存和创建期间新旧存储重叠计入 HeapReservation。快照保存全部 token、绑定、活动和作用域续体，恢复重建同一投影缓存。接口为 scope ABI 4、scope::offset ABI 1、tween ABI 9、override/remove ABI 1；当前 SessionSnapshot 22、VM8，ASB不变。范围限 engine 共享层/活动/快照、必要 UI/player 消费者、公开示例和双语指南，无新依赖；检查源码/ASB、基础运动与摇晃并行、重叠/嵌套/提前移除、绑定与真实写冲突、取消/目标退休/同包恢复，以及实际呈现 geometry/命中。成本检查覆盖 0、1、64、256 层的稳定/变化同步和撤销。复跑 `cargo test --locked -p reel-engine --lib scope_`、`cargo test --locked -p reel-cli --test author_scopes`，成本命令为 `cargo test --locked --release -p reel-engine --test scope_offsets_allocations -- --nocapture`；检查包含既有遍历/原生分发分配的同负载基线，不将零新增层分配写成整个同步零分配。示例：[author_offsets.aside](../examples/author_offsets.aside)。
+节点 VM payload 分别保存 override 与 offset 层，仍复用同一 scope 拥有列表。覆盖选择槽与全部偏移 token 都由 VM 图保活，宿主只缓存字段版本；无 offset 的节点保持现有路径。稳定同步对 offset 数量线性检查，变化时线性求和，覆盖检查仍为固定共同字段数；创建预留缓存容量，稳定赋值/动画推进及移除不新增逐帧层存储或 VM 分配。缓存和创建期间新旧存储重叠计入 HeapReservation。快照保存全部 token、绑定、活动和作用域续体，恢复重建同一投影缓存。接口为 scope ABI 4、scope::offset ABI 1、tween ABI 9、override/remove ABI 1；当前 SessionSnapshot 23、VM8，ASB不变。范围限 engine 共享层/活动/快照、必要 UI/player 消费者、公开示例和双语指南，无新依赖；检查源码/ASB、基础运动与摇晃并行、重叠/嵌套/提前移除、绑定与真实写冲突、取消/目标退休/同包恢复，以及实际呈现 geometry/命中。成本检查覆盖 0、1、64、256 层的稳定/变化同步和撤销。复跑 `cargo test --locked -p reel-engine --lib scope_`、`cargo test --locked -p reel-cli --test author_scopes`，成本命令为 `cargo test --locked --release -p reel-engine --test scope_offsets_allocations -- --nocapture`；检查包含既有遍历/原生分发分配的同负载基线，不将零新增层分配写成整个同步零分配。示例：[author_offsets.aside](../examples/author_offsets.aside)。
 样式复用由普通组件函数、记录与参数完成。组件默认值、变体、显式参数按序合并；显式缺失与 null/false/0 区分，scope 覆盖最高。运行期样式通过可观察属性绑定，布局/绘制失效分类保持一致。引擎提供通用属性和控件槽位，作者决定视觉风格。
 model(defaults) 复制默认图并保持其中的别名/环，所有可变内嵌数据对象使用观察变更钩子，读取与结构操作记录对应依赖；后续会话对象赋值保留共享身份并纳入观察，别名修改同样通知。原输入默认图保持独立。对象按可达性保活。state(id,defaults) 是会话内的具名状态根，随保存/回滚恢复，新游戏初始化。node.state(key,defaults) 属于具体节点实例的状态槽，在节点 key 与槽 key 同时匹配时重载复用；同名不同实例互相独立。组件销毁后保留的普通脚本引用按正常 GC 规则决定对象是否继续存活。
 `model` 的数据图复制由原生 continuation 分片执行，工作对象随 NativeFrame 取消释放，不把复制循环塞进单帧。当前数据范围为已完成构造的类实例、table、array、tuple、字符串、字节串及可变缓冲；可执行对象与宿主资源不属于可复制数据。model table 复用普通 table 身份、方法与属性连接图，新字段可以追加；clear 断开旧字段连接并冻结消费者，旧 PropertyRef 不得指向后来同位置的新字段。后续赋入的数据保持共享身份，嵌套 table 同样可 bind。Reel 在这些同步 continuation 之间保持当前任务，复制不会与其它脚本任务交错。新增 `reel::model` native ABI 1，Aside 字节码/ASB 不变。
@@ -864,7 +868,7 @@ Windows CPAL/WASAPI 输出协商客户端 Mono/Stereo，使用共享音频引擎
 
 `audio.seek(activity,seconds)` ABI 1 提交绝对内容位置并返回 null，复用原活动和播放终态。加载/解码中更新起点，解码结果按最新请求配置，不重新读取或复制 PCM；播放中使用合并命令槽，源帧量化和循环规则与 start 一致。暂停或输出挂起仍可定位，非循环超尾夹到末尾，已终态不重启。控制端在 seek 命令被消费前报告最新目标，混音器先清空重采样历史、发布新位置再确认该命令序号，旧确认不得覆盖后续目标；紧接保存使用此逻辑位置。音频供给无新增分配、IO 或等待。Aside 字节码 与快照格式不变。
 
-AudioRequest 保存可移植起点、排他终点与循环区间，AudioPlayback 捕获当前内容位置；所有分组均按当前条目实际位置、播放边界、循环区间与待播队列恢复；分组仅控制混音归属，已经结束的音效不重播。音频活动终态位置进入 VM 宿主载荷。当前会话快照版本为 22，未完成淡变沿原有目标值恢复，不引入设备句柄或音频时钟轮询任务。
+AudioRequest 保存可移植起点、排他终点与循环区间，AudioPlayback 捕获当前内容位置；所有分组均按当前条目实际位置、播放边界、循环区间与待播队列恢复；分组仅控制混音归属，已经结束的音效不重播。音频活动终态位置进入 VM 宿主载荷。当前会话快照版本为 23，未完成淡变沿原有目标值恢复，不引入设备句柄或音频时钟轮询任务。
 
 缺省 owner 是当前回调节点，主剧情中是会话；节点退休取消声音与尚未结束的加载。取消一个等待者不取消共享播放。会话关闭先撤销等待，再停止输出、取消加载及活动，持续回收直到实际 PCM 和后台请求释放。挂起保留 mixer，恢复复用；输出失败只结算一次，不自动伪装恢复成功。
 
