@@ -494,9 +494,9 @@ impl SessionVm {
         work: u32,
     ) -> Result<NativeDispatch, AdapterError> {
         self.check_ticket(session, ticket)?;
-        if self.standard.dispatch(&mut self.vm, ticket)? {
+        if let Some(work) = self.standard.dispatch(&mut self.vm, ticket, work)? {
             self.issued = None;
-            return Ok(NativeDispatch::Ready { work: 1 });
+            return Ok(NativeDispatch::Ready { work });
         }
         let p = self.vm.program().package();
         let media_read = match p.symbols[p.natives[ticket.native.index()].symbol.index()].as_str() {

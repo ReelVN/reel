@@ -43,6 +43,10 @@ Reel 的目标是让创作者直观地表达想象中的画面和交互，包括
 
 `std::math` 提供独立宿主的纯 float64 数学函数：sin/cos/tan/asin/acos/atan、atan2(y,x)、sqrt/hypot(x,y)、pow(base,exponent)、exp/ln/log2/log10、abs/floor/ceil/round，以及 radians/degrees。直接复用 Rust f64 运算，不持有状态、不分配 VM 对象，允许 derive 与初始化调用。三角角度为弧度，round 中点远离零；NaN/Infinity 沿 Aside float 语义返回，不伪造有效数值或隐式限幅；宿主节点继续在自己的属性边界要求有效范围。整数参数在标准库参数边界按 float64 转换，结果仍为 float；普通脚本的 float 参数与 host SDK 的 Rust f64 绑定保持严格浮点类型。上述数学函数 native ABI 2，无新依赖，Aside/Aside 字节码 不变；范围仅 aside-std、示例和双语指南。
 
+`std::math::curve(keys)` 是由 VM 堆拥有的不可变标量曲线；`.sample(time)` 沿普通 native 调用返回 float64。关键帧记录含 time/value、可选 mode（linear/step/cubic）与 in_tangent/out_tangent；切线以值/秒表示，cubic 为 Hermite 插值。构造接受有序非空 array/tuple，复制有限数值并预计算区间；重复时刻按输入次序保留跳变，采样取该时刻最后一帧，外部时间保持端值。构造捕获与验证分片计入既有堆/工作额度，外层数组变化报 ConcurrentModification；每个关键帧记录在单步内读取并复制。未完成对象仅由原生续体持有，取消后沿 GC 回收。只读对象、数值载荷、绑定 sample 方法和续体使用共同快照，不持有平行 Rust 数据图。
+
+采样沿平衡树定位区间，再做固定标量计算，复杂度 O(log n)；每个关键帧使用现有八值内联载荷，读取无需外部索引。构造的临时关键帧数组沿 VM 分块索引寻址，建立树的总成本为 O(n log n)，结束后释放工作区引用。稳态采样不创建曲线存储或脚本轮询任务。构造允许初始化和纯派生，捕获模型字段沿同一依赖机制；在条件 derive 的隐藏分支省略 sample/time 读取即可撤销该来源订阅。曲线由引用决定生存期，调用者选择 clock、audio.position、滚动位置或任意有限标量作为采样时间。范围为 aside-std、通用测试、[author_curves.aside](../examples/author_curves.aside) 与规范/双语指南；curve/sample ABI 1，VM8/Session22/ASB 不变，无新依赖。验证真实源码/ASB、关键帧边界与跳变、反向采样、构造来源更改/取消、派生门控与快照，并分列构造和稳定采样的分配/工作成本。
+
 Reel 的脚本服务通过独立 [Aside host SDK](aside-host.md) 接入。节点、会话和活动业务留在 Reel；可复用的 Rust native 声明、编译链接、运行时准入和属性 schema 生成归 Aside 扩展层。绑定宏从同一声明产生元数据与调用包装，不复制舞台类型或引入第二套语言实现。
 
 脚本堆的对象、宿主根和根区间存储按实际需求增长，默认不以固定数量或字节额度限制作品规模；宿主可以显式设置资源配额。GC 与释放队列在对象准入前准备容量，增长保留代际身份与扫描状态；队列、根映射及增长时的新旧存储都进入同一内存计账。执行任务和切片预算独立于这些堆存储额度。

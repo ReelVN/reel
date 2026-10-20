@@ -26,7 +26,7 @@ fn drive(
         match vm.run_slice(task, SliceBudget::default(), || 0).unwrap() {
             RunOutcome::HostCall(ticket) => {
                 let region = Region::new(GLOBAL);
-                assert!(library.dispatch(vm, ticket).unwrap());
+                library.dispatch(vm, ticket, 1).unwrap().unwrap();
                 if measure {
                     let stats = region.change();
                     assert_eq!((stats.allocations, stats.reallocations), (0, 0));

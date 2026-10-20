@@ -4,6 +4,7 @@
 //! Script values and mutable random state belong to the VM heap, not this adapter.
 #![forbid(unsafe_code)]
 
+mod curve;
 mod math;
 mod random;
 mod time;
@@ -27,6 +28,8 @@ fn bindings() -> Vec<NativeBinding<StandardLibrary, NativeError>> {
         time::format::binding(),
     ];
     bindings.extend(math::bindings());
+    bindings.push(curve::binding());
+    bindings.push(curve::sample::binding());
     bindings
 }
 
@@ -72,6 +75,7 @@ pub fn modules() -> Vec<ModuleInterface> {
         version: "1".into(),
         exports: math::bindings()
             .into_iter()
+            .chain([curve::binding()])
             .map(|binding| binding.contract.external())
             .collect(),
     });
@@ -84,6 +88,8 @@ pub fn modules() -> Vec<ModuleInterface> {
 pub struct StandardLibrary {
     handlers: Vec<Option<NativeHandler<Self, NativeError>>>,
     random_methods: [Option<FunctionId>; 3],
+    curve_sample: Option<FunctionId>,
+    curve_constructor: Option<aside_host::aside_vm::bytecode::NativeId>,
 }
 
 impl StandardLibrary {
@@ -103,9 +109,16 @@ impl StandardLibrary {
             })
             .collect();
         let mut random_methods = [None; 3];
+        let mut curve_sample = None;
+        let mut curve_constructor = None;
         for (index, function) in package.functions.iter().enumerate() {
             if let FunctionKind::Native(native) = function.kind {
                 let symbol = &package.symbols[package.natives[native.index()].symbol.index()];
+                if symbol == "std::math::curve::sample" {
+                    curve_sample = Some(FunctionId(index as u32));
+                } else if symbol == "std::math::curve" {
+                    curve_constructor = Some(native);
+                }
                 for (slot, binding) in random_methods.iter_mut().zip(&bindings[1..4]) {
                     if *symbol == binding.contract.symbol {
                         *slot = Some(FunctionId(index as u32));
@@ -116,17 +129,34 @@ impl StandardLibrary {
         Self {
             handlers,
             random_methods,
+            curve_sample,
+            curve_constructor,
         }
     }
 
-    /// Returns false for another host's native without consuming its ticket.
+    /// Returns the consumed work, or None for another host's native.
     /// Invalid script input becomes a catchable fault at the native call site.
-    pub fn dispatch(&mut self, vm: &mut Vm, ticket: HostTicket) -> Result<bool, Error> {
+    pub fn dispatch(
+        &mut self,
+        vm: &mut Vm,
+        ticket: HostTicket,
+        work: u32,
+    ) -> Result<Option<u32>, Error> {
         let Some(handler) = self.handlers.get(ticket.native.index()).copied().flatten() else {
-            return Ok(false);
+            return Ok(None);
         };
-        let message = match handler(self, vm, ticket) {
-            Ok(()) => return Ok(true),
+        let result = if self.curve_constructor == Some(ticket.native) {
+            curve::construct(self, vm, ticket, work)
+        } else {
+            handler(self, vm, ticket).map(|()| 1)
+        };
+        let mut kind = FaultKind::Type;
+        let message = match result {
+            Ok(work) => return Ok(Some(work)),
+            Err(NativeError::ConcurrentModification) => {
+                kind = FaultKind::ConcurrentModification;
+                std::borrow::Cow::Borrowed("curve keys changed during construction")
+            }
             Err(NativeError::Input(message)) => std::borrow::Cow::Borrowed(message),
             Err(NativeError::Message(message)) => std::borrow::Cow::Owned(message),
             Err(NativeError::Host(Error::Heap(HeapError::TypeMismatch | HeapError::WrongKind))) => {
@@ -139,16 +169,17 @@ impl StandardLibrary {
             ticket,
             HostResponse::Error(NewFault {
                 value,
-                code: FaultCode::core(FaultKind::Type),
+                code: FaultCode::core(kind),
                 cause: None,
             }),
         )?;
-        Ok(true)
+        Ok(Some(1))
     }
 }
 
 #[derive(Debug)]
 enum NativeError {
+    ConcurrentModification,
     Host(Error),
     Input(&'static str),
     Message(String),

@@ -636,6 +636,33 @@ await run(delay(1.5));
 await run(sequence(delay(0.5), tween(panel, opacity: 0, duration: 0.3)));
 ```
 
+Use `std::math::curve` to describe values that follow music, a scrubber, or a game variable, then call `sample`. A curve computes a value from the time you supply:
+
+```aside
+use std::math::curve;
+
+fn main() {
+    let height = curve([
+        {time: 0, value: 120, mode: "cubic", out_tangent: 0},
+        {time: 1, value: 40, in_tangent: 0, mode: "step"},
+        {time: 2, value: 120},
+    ]);
+    let timer = clock(interval: 1.0 / 60, paused: true);
+    stage.replace(stack(width: 320, height: 180) {
+        stack(x: 140, y: derive(|| height.sample(timer.elapsed)),
+            width: 40, height: 40, background: "#ec769e");
+    });
+    await stage.presented();
+    resume(timer);
+    await run(delay(3));
+    stop(timer);
+}
+```
+
+The square rises smoothly during the first second, holds for a second, then returns to its starting position. Replace the input with `height.sample(audio.position(music))` to follow music, including pauses, seeks, and restored playback. The default `mode: "linear"` interpolates directly between neighboring keys. `step` holds the left value until the next key. `cubic` uses the current key's `out_tangent` and the next key's `in_tangent`, measured in value units per second and defaulting to 0. A key's mode describes the segment following it.
+
+Keys have finite times in ascending order; negative times are allowed. At a repeated time, the last key wins. Values outside the range hold at the endpoints; a single key describes a constant. Construction copies the keys, so later changes to the source array or records leave the completed curve unchanged. Sample times must also be finite. Curves survive execution snapshots and can be shared by multiple properties. Construction prepares interpolation coefficients; sampling finds the segment with binary search. See the complete [author_curves.aside](../../examples/author_curves.aside) example.
+
 ## 5 Managing Temporary Scenes with Scopes
 
 Scopes manage tasks, activities, waits, temporary nodes, property overrides and additive offsets.

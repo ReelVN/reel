@@ -112,6 +112,10 @@ int 加减乘、负号及整数除法溢出报错；MIN/-1 报错。int/int 的 
 
 `std::math` 为宿主可安装的纯浮点标准库，复用 Rust f64 数学函数，支持弧度三角函数、atan2、sqrt/hypot、pow、指数/对数、abs/floor/ceil/round 与 radians/degrees。入参允许 int 在标准库调用边界按 float64 转换，结果为 float；其他类型在调用处报告错误。上述数学函数 native ABI 2，普通脚本 float 类型与 host SDK 的严格 f64 绑定沿原类型规则。NaN/Infinity 遵循上述浮点值规则。它不引入 VM 指令或 Reel 依赖。
 
+`std::math::curve(keys)` 构造不可变标量曲线，`curve.sample(time)` 返回指定时间的 float64 值。keys 为非空 array/tuple，元素为 `{time, value, mode: "linear", in_tangent: 0, out_tangent: 0}`；time/value 必需，其余字段可省略。所有数值及采样时间须有限，时间允许负值并按非递减顺序提供。mode 描述从该关键帧出发的区间：linear 线性插值，step 保持左值，cubic 使用左帧 out_tangent 与右帧 in_tangent 作三次 Hermite 插值，切线单位为值/秒。重复时刻表示瞬时跳变，恰在该时刻取最后一帧；到达该时刻之前的区间以第一帧为右端。首尾以外保持端值，单帧曲线为常量。插值保留超出端值的结果；中间运算遵循 float64 规则。
+
+构造按顺序复制关键帧数值，每个记录在一个构造步骤内读取；已复制记录随后改变不改写副本。构造期间外层数组内容变化报告 ConcurrentModification，部分结果随原生续体取消回收。构造与 sample 可在初始化和 derive 中调用；derive 追踪构造时实际读取的可观察数据及 sample 实参的读取。曲线本身只读，没有任务、节点 owner 或播放状态；保存恢复沿普通堆对象保留曲线和已取出的 sample 方法。记录只接受上述五个字段；非法形状、顺序、mode 和数值在相应原生调用位置报告。构造与 sample native ABI 均为 1，VM 快照 8、SessionSnapshot 22、ASB 格式保持。
+
 位运算使用 64 位补码；移位量须为 0..63。>> 算术右移，左移按位截断，逻辑右移使用标准函数 unsigned_shr。位移不假装算术乘法。字面量支持十进制、0x、0o、0b 与分隔下划线；超出 int64 范围时报错，负最小值按整体常量处理。浮点比较、解析、舍入、格式化及常量折叠与运行时一致。优先级从高到低为：成员/索引/调用，前缀 await ! ~ + -，* / %，+ -，<< >>，&，^，|，< <= > >= 与 is，== !=，&&，||，??，.. / ..=，yield，赋值。二元运算左结合，?? 与赋值右结合，比较与区间不允许无括号连用。is 只测试类型，不转换值；赋值无可用于运算的结果。parser 与非法类型测试直接依据此表。
 
 ## 四 对象 集合与键

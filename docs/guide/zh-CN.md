@@ -648,6 +648,33 @@ await run(delay(1.5));
 await run(sequence(delay(0.5), tween(panel, opacity: 0, duration: 0.3)));
 ```
 
+要让画面跟随音乐位置、拖动进度或游戏变量变化，可以用 `std::math::curve` 定义数值曲线，再调用 `sample`。曲线只计算数值，输入时间由作者决定：
+
+```aside
+use std::math::curve;
+
+fn main() {
+    let height = curve([
+        {time: 0, value: 120, mode: "cubic", out_tangent: 0},
+        {time: 1, value: 40, in_tangent: 0, mode: "step"},
+        {time: 2, value: 120},
+    ]);
+    let timer = clock(interval: 1.0 / 60, paused: true);
+    stage.replace(stack(width: 320, height: 180) {
+        stack(x: 140, y: derive(|| height.sample(timer.elapsed)),
+            width: 40, height: 40, background: "#ec769e");
+    });
+    await stage.presented();
+    resume(timer);
+    await run(delay(3));
+    stop(timer);
+}
+```
+
+这个方块在第一秒平滑上升，停留一秒，然后回到原处。换成 `height.sample(audio.position(music))` 就跟随音乐，暂停、定位和读档后仍按当前播放位置取值。默认 `mode: "linear"` 在相邻关键点之间直线插值；`step` 保持左侧数值，到下一点时跳变；`cubic` 使用当前点的 `out_tangent` 和下一点的 `in_tangent`，切线单位是数值/秒，省略时为 0。mode 描述该点之后的一段。
+
+关键点按有限时间从小到大排列，时间可以为负；同一时刻取最后一个关键点，范围外保持端点值，单点曲线始终返回该值。构造时复制关键点，完成后修改原数组或记录不会改变曲线；采样时间也须有限。曲线随普通执行快照保存，可以在多个属性中复用。曲线在构造时准备插值系数，采样二分定位所在段。完整示例见 [author_curves.aside](../../examples/author_curves.aside)。
+
 ## 五 作用域管理临时画面
 
 scope 统一管理任务、活动、等待、临时节点、属性覆盖和加性偏移。
