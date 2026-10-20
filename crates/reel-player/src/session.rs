@@ -1516,7 +1516,7 @@ mod tests {
         ui.presented(bridge, &stamp);
     }
     #[test]
-    fn initial_record_uses_explicit_root_when_stage_sync_returns_early() {
+    fn initial_record_waits_for_preparation_then_uses_explicit_root() {
         let mut driver = crate::aside_session::AsideSessionUi::from_source(
             session(),
             "fn main() { stage.replace(stack(width:40,height:30)); await stage.presented(); }",
@@ -1528,31 +1528,58 @@ mod tests {
         )
         .unwrap();
         let (mut bridge, root) = mount(driver.ui());
-        // Recording the mounted initial tree has no sync-registration prerequisite.
-        let (initial, receipt) = driver
-            .record(&mut bridge, root, FrameId(1))
-            .unwrap()
-            .expect("settled frame");
-        assert_eq!(receipt.stamp.presentation_request, 0);
-        assert_eq!(receipt.key.frame_id(), initial.key().frame_id());
+        assert!(driver.ui().images_pending());
+        assert!(
+            driver
+                .record(&mut bridge, root, FrameId(1))
+                .unwrap()
+                .is_none()
+        );
         driver.await_initial_stage();
         assert!(driver.adapter().stage().root().is_none());
         driver.sync(&mut bridge, root).unwrap(); // Must take awaiting_stage's early return.
+        assert!(
+            driver
+                .record(&mut bridge, root, FrameId(2))
+                .unwrap()
+                .is_none()
+        );
+        for _ in 0..1000 {
+            let progress = driver
+                .tick(reel_engine::aside::SliceBudget::default(), 256, || 0)
+                .unwrap();
+            if matches!(
+                progress,
+                crate::aside_session::StoryProgress::Vm(reel_engine::aside::RunOutcome::Waiting(_))
+            ) {
+                break;
+            }
+            assert_eq!(driver.state(), crate::aside_session::StoryState::Running);
+        }
+        assert_eq!(driver.adapter().presentation_request(), 1);
+        driver.sync(&mut bridge, root).unwrap();
         let (source, receipt) = driver
-            .record(&mut bridge, root, FrameId(2))
+            .record(&mut bridge, root, FrameId(3))
             .unwrap()
-            .expect("settled frame");
-        assert_eq!(receipt.stamp.presentation_request, 0);
+            .expect("prepared author frame");
+        assert_eq!(receipt.stamp.presentation_request, 1);
+        assert_eq!(receipt.key.frame_id(), source.key().frame_id());
+        assert_eq!(
+            receipt.stage_widget,
+            SessionUi::stage_widget(&bridge, root).unwrap()
+        );
         assert_eq!(
             bridge.resolve(PresentationNotice::new(
                 source.key(),
                 SurfaceEpoch(1),
-                PresentationOutcome::Accepted(FrameId(2))
+                PresentationOutcome::Accepted(FrameId(3))
             )),
             NoticeResult::Accepted
         );
         driver.presented(&bridge, &receipt).unwrap();
-        assert!(driver.adapter().stage().root().is_none());
+        let authored = driver.adapter().stage();
+        let props = &authored.node(authored.root().unwrap()).unwrap().props;
+        assert_eq!((props.width, props.height), (Some(40.), Some(30.)));
     }
     pub(super) fn mouse(kind: &str, point: (f64, f64)) -> PointerEvent {
         let pointer = PointerInfo {

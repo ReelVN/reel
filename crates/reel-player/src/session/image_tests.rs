@@ -116,6 +116,15 @@ fn frame_with_info(
     id: u64,
     info: FrameInfo,
 ) -> RenderFrame {
+    frame_with_receipt(driver, bridge, root, id, info).0
+}
+fn frame_with_receipt(
+    driver: &mut AsideSessionUi,
+    bridge: &mut PresentationBridge,
+    root: WidgetId,
+    id: u64,
+    info: FrameInfo,
+) -> (RenderFrame, RecordedProjection) {
     let pool = BudgetPool::new(
         BudgetCategory::CpuOutput,
         QueueLimits {
@@ -159,7 +168,7 @@ fn frame_with_info(
         NoticeResult::Accepted
     );
     driver.presented(&bridge, &receipt).unwrap();
-    frame
+    (frame, receipt)
 }
 fn image_ids(bridge: &PresentationBridge, root: WidgetId) -> Vec<WidgetId> {
     fn walk(widget: WidgetRef<'_, dyn Widget>, ids: &mut Vec<WidgetId>) {
@@ -258,7 +267,16 @@ fn image_pipeline(
     drive(&mut driver);
     settle(&mut driver, &mut bridge, root, &wake);
     let mut id = 1;
-    let first = frame(&mut driver, &mut bridge, root, id);
+    let (first, first_receipt) = frame_with_receipt(
+        &mut driver,
+        &mut bridge,
+        root,
+        id,
+        FrameInfo {
+            logical_size: [640., 420.],
+            physical_size: [640, 420],
+        },
+    );
     let ids = image_ids(&bridge, root);
     assert_eq!(ids.len(), 6);
     assert_eq!(driver.ui().images.loads, 1);
@@ -311,9 +329,16 @@ fn image_pipeline(
     assert!(driver.ui().images_pending());
     assert_eq!(image_ids(&bridge, root), ids);
     assert_eq!(driver.ui().image_resources().len(), 1);
-    let pending = frame(&mut driver, &mut bridge, root, id + 1);
-    assert_eq!(image_transforms(&pending), transforms);
-    assert_eq!(image_pixel_ids(&pending), pixel_ids);
+    assert!(
+        driver
+            .record(&mut bridge, root, FrameId(id + 1))
+            .unwrap()
+            .is_none(),
+        "pending replacement retains the submitted frame"
+    );
+    assert_eq!(image_transforms(&first), transforms);
+    assert_eq!(image_pixel_ids(&first), pixel_ids);
+    driver.presented(&bridge, &first_receipt).unwrap();
     assert!(
         driver.ui().binding.borrow().accepted.is_none(),
         "presenting the retained scene must not re-enable story input"
@@ -375,7 +400,6 @@ fn image_pipeline(
     drop(driver);
     drop(bridge);
     drop(first);
-    drop(pending);
     drop(changed);
     drop(final_frame);
     assert_eq!(resident.usage().bytes, 0);

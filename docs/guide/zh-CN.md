@@ -588,6 +588,8 @@ resume(entrance);
 
 动画与组合活动已接通：`tween(node, x: 320, duration: 0.5, easing: "in_out")` 描述变化，`run(action, owner: node)` 启动。owner 省略时，优先归当前 scope；作用域外的主剧情归会话、按钮回调归事件节点；`pause(activity)`、`resume(activity)`、`stop(activity)`、`finish(activity)` 控制同一活动。await 返回字符串 `Completed` 或 `Stopped`；目标或 owner 退休取消活动并在 await 处抛错。duration 使用非负秒数，0 立即完成；easing 支持 linear、三次 in/out/in_out、二次 quad_in/quad_out/quad_in_out 和正弦 sine_in/sine_out/sine_in_out。可以改变全部共同数值属性；width/height 须在节点或 from 提供有限起值，null 表示该属性不参与动画。可运行示例：[author_activities.aside](../../examples/author_activities.aside)，使用 `reel dev examples/author_activities.aside --assets target/reel-artifacts/author-assets`。sequence/parallel/repeat 与 scope 的活动、任务所有权已接通。
 
+隐藏滚动区域会保留位置和已测量尺寸；在菜单中存读档后，再次显示时仍从原位置继续，内容尺寸发生变化时按新范围调整。
+
 `tween(viewport, scroll_y: 400, duration: 0.5, easing: "out")` 平滑移动滚动区域；也可使用 `scroll_x`。目标必须是 scroll 节点，滚动范围仍由实际内容尺寸限制。
 
 需要正弦曲线运动时，使用 `sine_in` 从慢到快加速，`sine_out` 从快到慢减速，或 `sine_in_out` 两端慢、中间快。所有曲线都精确到达指定终点；它们与三次 in/out/in_out、二次 quad_in/quad_out/quad_in_out 的运动节奏不同。

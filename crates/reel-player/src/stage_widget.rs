@@ -656,10 +656,16 @@ impl StageWidget {
             this.widget.root_id = id;
             this.widget.identity = view.identity.clone();
             this.ctx.children_changed();
-        } else if let (Some(pod), Some(node)) = (&mut this.widget.root, &view.root)
-            && let Some(mut child) = this.ctx.get_mut(pod)
-        {
-            SceneWidget::sync(&mut child, node, view.feedback, &mut this.widget.nodes);
+        } else if let (Some(pod), Some(node)) = (&mut this.widget.root, &view.root) {
+            let registered = if let Some(mut child) = this.ctx.get_mut(pod) {
+                SceneWidget::sync(&mut child, node, view.feedback, &mut this.widget.nodes);
+                true
+            } else {
+                false
+            };
+            if registered {
+                this.ctx.set_stashed(pod, !node.node.props.visible);
+            }
         }
         let props = view
             .root
@@ -789,6 +795,7 @@ struct SceneWidget {
     children: Vec<(Arc<SceneProperties>, WidgetPod<SceneWidget>)>,
     size: Size,
     scroll: ScrollState,
+    scroll_laid_out: bool,
     scroll_request: Option<Vec2>,
     scroll_feedback: Option<(Vec2, Size, Size)>,
     scroll_baseline: Vec2,
@@ -992,6 +999,7 @@ impl SceneWidget {
                 .collect(),
             size: Size::ZERO,
             scroll: ScrollState::default(),
+            scroll_laid_out: false,
             scroll_request: match view.node.kind {
                 NodeKind::Scroll { offset, .. } if offset != Vec2::ZERO => Some(offset),
                 _ => None,
@@ -1315,8 +1323,14 @@ impl SceneWidget {
                     *node = next.node.clone();
                     this.ctx.request_compose();
                 }
-                if let Some(mut child) = this.ctx.get_mut(pod) {
+                let registered = if let Some(mut child) = this.ctx.get_mut(pod) {
                     content_changed |= Self::sync(&mut child, next, feedback, nodes);
+                    true
+                } else {
+                    false
+                };
+                if registered {
+                    this.ctx.set_stashed(pod, !next.node.props.visible);
                 }
             }
         }
@@ -2166,9 +2180,17 @@ impl Widget for SceneWidget {
         } = self.node.kind
         {
             self.scroll.layout(inner, extent, axis, follow_end);
+            self.scroll_laid_out = true;
         }
     }
     fn compose(&mut self, ctx: &mut ComposeCtx<'_>) {
+        // A restored hidden scroll has not been laid out. Keep its pending
+        // position until showing it supplies the actual viewport and content.
+        if matches!(self.node.kind, NodeKind::Scroll { .. })
+            && (ctx.is_stashed() || !self.scroll_laid_out)
+        {
+            return;
+        }
         if let Some(offset) = self.scroll_request.take() {
             self.scroll.set_offset(offset);
         }
