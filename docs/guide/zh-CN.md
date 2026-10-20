@@ -944,7 +944,7 @@ game.clear_history(keep_last: 37);
 
 可以等待自己的保存请求。这份存档恢复时，该请求为已成功且只读 `restored` 为 true（正常写盘完成为 false），可据此关闭存档菜单；调用者继续执行 await 后的语句；保存调用不会重复执行。其他未完成的外部请求以 OperationInterrupted 结算。成功读档会替换会话，原来的读档调用不会在旧会话中继续。
 
-执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 8，会话快照格式为 20；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
+执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 8，会话快照格式为 21；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
 
 可运行示例：[author_saves.aside](../../examples/author_saves.aside)。
 
@@ -1376,7 +1376,7 @@ let next = audio.play("assets/music-next.ogg", group: "music", looping: true,
 audio.stop(music, fade: 2);
 music = next;
 ```
-存档对所有音频分组记录当前条目、实际位置、循环区间与待播队列，读档后继续播放；已经结束的活动保持终态，不会重播。需要从头重听语音时，显式调用 seek 或 play。
+存档对所有音频分组记录当前条目、实际位置、循环区间与待播队列，读档后继续播放；已经结束的活动保持终态，不会重播。从头重听正在播放或暂停的语音时，seek 到 0；已经结束的语音重新 play。
 
 `audio.at(sound, seconds)` 返回一个位置等待对象，`await` 在宿主发布的位置达到或超过目标时得到 true；声音提前自然结束或被 stop 时得到 false，取消和播放失败沿原错误传播。目标使用有限非负的素材秒数；调用时已达到目标，也按普通 await 继续。seek 立即发布新位置，循环和队列换段则沿当前素材位置判断；尚未达标时，位置回退后继续等待后续发布值。完成后，同一对象重复 await 保留原结果。取消等待者只解除自己的订阅；其余等待者和持有者继续共享票据，原声音继续播放。存档保留尚未完成的目标和播放活动身份。
 

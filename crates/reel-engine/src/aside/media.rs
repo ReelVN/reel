@@ -43,7 +43,9 @@ pub(super) struct Media {
     poster_cursor: usize,
     position_cursor: usize,
     cues: VecDeque<RootToken>,
+    cue_charge: Option<aside_vm::HeapReservation>,
     cue_remaining: usize,
+    pending_terminals: usize,
     keys: observable::SchemaKeys,
 }
 
@@ -85,6 +87,7 @@ impl Media {
                     result: MediaResult::Cancelled,
                     position,
                 });
+                self.pending_terminals += 1;
             }
         }
     }
@@ -117,8 +120,34 @@ impl Media {
                     )
                 })
                 .chain(
-                    self.cues.iter().map(|root| Record::new(Part::MediaCue, root)),
+                    self.cues
+                        .iter()
+                        .map(|root| Record::new(Part::MediaCue, root)),
                 )
+                .chain(self.live.iter().filter_map(|live| {
+                    let completion = live.result.as_ref()?;
+                    let target = live.target?;
+                    let request = live.video.as_ref()?;
+                    (live.has_frame
+                        && matches!(
+                            completion.result,
+                            MediaResult::Completed | MediaResult::Stopped
+                        ))
+                    .then(|| {
+                        Record::new(
+                            Part::VideoPoster,
+                            &SavedPoster {
+                                target,
+                                playback: crate::video::VideoPlaybackState {
+                                    request: request.clone(),
+                                    position: completion.position,
+                                    paused: true,
+                                    result: Some(completion.result.clone()),
+                                },
+                            },
+                        )
+                    })
+                }))
                 .chain(
                     self.posters
                         .iter()
@@ -139,6 +168,7 @@ impl Media {
         heap: &mut Heap,
     ) -> Result<(), AdapterError> {
         if matches!(record.part, super::snapshot::Part::MediaCue) {
+            super::results::reserve_queue(heap, &mut self.cues, &mut self.cue_charge)?;
             self.cues.push_back(map.root(record.read()?)?);
             self.cue_remaining = self.cues.len();
             return Ok(());
@@ -216,10 +246,14 @@ impl Media {
         )?;
         let latest_position = match &saved.result {
             Some(completion) => completion.position,
-            None => self.backend.as_ref().unwrap().position(id)
+            None => self
+                .backend
+                .as_ref()
+                .unwrap()
+                .position(id)
                 .ok_or(AdapterError::Input("restored media transport missing"))?,
         };
-        publish_position(heap, heap.root_value(root)?, latest_position)?;
+        self.pending_terminals += usize::from(saved.result.is_some());
         self.live.push(Live {
             id,
             root,
@@ -245,11 +279,17 @@ pub(super) fn is_media(heap: &Heap, value: Value) -> bool {
         == Some(TAG)
 }
 fn is_cue(heap: &Heap, value: Value) -> bool {
-    heap.host_payload(value, Slot::Tag as u32).ok().and_then(Value::as_int) == Some(CUE_TAG)
+    heap.host_payload(value, Slot::Tag as u32)
+        .ok()
+        .and_then(Value::as_int)
+        == Some(CUE_TAG)
 }
 fn position(heap: &Heap, value: Value) -> Result<Value, AdapterError> {
     let record = heap.host_payload(value, Slot::Position as u32)?;
-    Ok(heap.host_property(aside_vm::PropertyId {host: record, field: 0})?)
+    Ok(heap.host_property(aside_vm::PropertyId {
+        host: record,
+        field: 0,
+    })?)
 }
 fn publish_position(heap: &mut Heap, value: Value, position: Duration) -> Result<(), AdapterError> {
     let record = heap.host_payload(value, Slot::Position as u32)?;
@@ -269,7 +309,10 @@ fn settle_cue(heap: &mut Heap, cue: Value) -> Result<bool, AdapterError> {
         return Ok(true);
     }
     let source = heap.host_payload(cue, Slot::Id as u32)?;
-    let threshold = heap.host_payload(cue, Slot::Position as u32)?.as_float().unwrap();
+    let threshold = heap
+        .host_payload(cue, Slot::Position as u32)?
+        .as_float()
+        .unwrap();
     let terminal = heap.host_payload(source, Slot::Result as u32)?;
     let error = heap.host_payload(source, Slot::Error as u32)?;
     // Error/cancellation retain their category even when the final cursor has
@@ -358,7 +401,7 @@ impl SessionVm {
     }
     pub fn media_poll_after(&self) -> Option<std::time::Duration> {
         let backend = self.media.backend.as_ref().and_then(|b| b.poll_after());
-        if self.media.cue_remaining != 0 {
+        if self.media.cue_remaining != 0 || self.media.pending_terminals != 0 {
             Some(Duration::ZERO)
         } else {
             backend
@@ -410,7 +453,8 @@ impl SessionVm {
                         position,
                     });
                 } else {
-                    live.latest_position = backend.position(live.id)
+                    live.latest_position = backend
+                        .position(live.id)
                         .ok_or(AdapterError::Input("media transport missing"))?;
                     if let Some(target) = live.target
                         && let Some(frame) = backend.take_video_frame(live.id)
@@ -421,6 +465,7 @@ impl SessionVm {
                     }
                     live.result = backend.take_result(live.id);
                 }
+                self.media.pending_terminals += usize::from(live.result.is_some());
             }
             if let Some(completion) = &live.result {
                 live.latest_position = completion.position;
@@ -454,7 +499,10 @@ impl SessionVm {
             }
             self.media.poster_cursor += 1;
         }
-        let mut woke = changed | self.settle_media_cues()?;
+        Ok(changed | self.settle_media_cues()? | self.complete_media_waits()?)
+    }
+    fn complete_media_waits(&mut self) -> Result<bool, AdapterError> {
+        let mut woke = false;
         let mut i = 0;
         while i < self.media.waits.len() {
             let (wait, value) = self.media.waits[i];
@@ -530,19 +578,25 @@ impl SessionVm {
                 heap.set_host_payload(value, Slot::Owner as u32, Value::NULL)?;
                 heap.release_root(live.root)?;
                 self.media.live.swap_remove(self.media.position_cursor);
+                self.media.pending_terminals -= 1;
             } else {
                 self.media.position_cursor += 1;
             }
         }
         self.media.cue_remaining = self.media.cues.len();
-        Ok(self.settle_media_cues()? || self.vm.heap().derived_pending())
+        Ok(self.settle_media_cues()?
+            | self.complete_media_waits()?
+            | self.vm.heap().derived_pending())
     }
     fn settle_media_cues(&mut self) -> Result<bool, AdapterError> {
-        if self.media.cue_remaining == 0 {
-            self.media.cue_remaining = self.media.cues.len();
-        }
+        let batch = self.media.cue_remaining != 0;
+        let count = if batch {
+            self.media.cue_remaining
+        } else {
+            self.media.cues.len()
+        };
         let mut changed = false;
-        for _ in 0..self.media.cue_remaining.min(64) {
+        for _ in 0..count.min(64) {
             let root = self.media.cues.pop_front().expect("pending media cue");
             let value = self.vm.heap().root_value(root)?;
             if settle_cue(self.vm.heap_mut(), value)? {
@@ -551,14 +605,21 @@ impl SessionVm {
             } else {
                 self.media.cues.push_back(root);
             }
-            self.media.cue_remaining -= 1;
+            if batch {
+                self.media.cue_remaining -= 1;
+            }
         }
         Ok(changed)
     }
     fn settle_source_cues(&mut self, source: Value) -> Result<(), AdapterError> {
         for root in &self.media.cues {
             let value = self.vm.heap().root_value(*root)?;
-            if self.vm.heap().host_payload(value, Slot::Id as u32)?.same_bits(source) {
+            if self
+                .vm
+                .heap()
+                .host_payload(value, Slot::Id as u32)?
+                .same_bits(source)
+            {
                 settle_cue(self.vm.heap_mut(), value)?;
             }
         }
@@ -569,6 +630,18 @@ impl SessionVm {
         ticket: HostTicket,
         symbol: &str,
     ) -> Result<(), AdapterError> {
+        if matches!(symbol, "reel::audio::position" | "reel::video::position") {
+            let value = self.vm.host_arguments(ticket)?[0];
+            if !is_media(self.vm.heap(), value) {
+                return Err(AdapterError::Input("expected media activity"));
+            }
+            let record = self.vm.heap().host_payload(value, Slot::Position as u32)?;
+            self.vm.heap_mut().observe_read(record, Some(0))?;
+            let position = position(self.vm.heap(), value)?;
+            self.vm.respond(ticket, HostResponse::Ready(position))?;
+            self.issued = None;
+            return Ok(());
+        }
         let args = self.vm.host_arguments(ticket)?.to_vec();
         if symbol == "reel::audio::group_volume" {
             let name = text::read_string(self.vm.heap(), args[0], self.read_limit)?;
@@ -679,7 +752,8 @@ impl SessionVm {
         } else {
             let value = args[0];
             if !is_media(self.vm.heap(), value)
-                && !(symbol == "reel::audio::await" && is_cue(self.vm.heap(), value)) {
+                && !(symbol == "reel::audio::await" && is_cue(self.vm.heap(), value))
+            {
                 return Err(AdapterError::Input("expected media activity"));
             }
             if matches!(symbol, "reel::audio::at" | "reel::video::at") {
@@ -720,11 +794,6 @@ impl SessionVm {
                     Ok(()) => self.vm.respond(ticket, HostResponse::Ready(Value::NULL))?,
                     Err(error) => self.media_error(ticket, &error)?,
                 }
-            } else if matches!(symbol, "reel::audio::position" | "reel::video::position") {
-                let record = self.vm.heap().host_payload(value, Slot::Position as u32)?;
-                self.vm.heap_mut().observe_read(record, Some(0))?;
-                let position = position(self.vm.heap(), value)?;
-                self.vm.respond(ticket, HostResponse::Ready(position))?;
             } else if symbol == "reel::audio::await" {
                 if let Some(result) = response(self.vm.heap(), value)? {
                     match result {
@@ -784,7 +853,12 @@ impl SessionVm {
                     }
                     if matches!(symbol, "reel::audio::seek" | "reel::video::seek") {
                         self.settle_source_cues(value)?;
-                        let position = self.media.backend.as_ref().unwrap().position(id)
+                        let position = self
+                            .media
+                            .backend
+                            .as_ref()
+                            .unwrap()
+                            .position(id)
                             .ok_or(AdapterError::Input("media transport missing"))?;
                         publish_position(self.vm.heap_mut(), value, position)?;
                         if let Some(live) = self.media.live.iter_mut().find(|live| live.id == id) {
@@ -804,22 +878,56 @@ impl SessionVm {
         self.issued = None;
         Ok(())
     }
-    fn start_media_cue(&mut self, ticket: HostTicket, source: Value, seconds: Value) -> Result<(), AdapterError> {
-        let seconds = duration(seconds)?.as_secs_f64();
+    fn start_media_cue(
+        &mut self,
+        ticket: HostTicket,
+        source: Value,
+        seconds: Value,
+    ) -> Result<(), AdapterError> {
+        let seconds = seconds
+            .as_float()
+            .or_else(|| seconds.as_int().map(|value| value as f64))
+            .filter(|value| value.is_finite() && *value >= 0.)
+            .ok_or(AdapterError::Input(
+                "media position target must be finite and nonnegative",
+            ))?;
         let owner = self.default_activity_owner(ticket.task)?;
         super::scopes::validate_owner(self.vm.heap(), &self.stage, owner)?;
-        self.media.cues.try_reserve(1).map_err(|_| AdapterError::Allocation)?;
-        let native = self.vm.program().package().natives.iter().position(|native|
-            self.vm.program().package().symbols[native.symbol.index()] == "reel::audio::await"
-        ).ok_or(AdapterError::Input("media await binding missing"))?;
+        super::results::reserve_queue(
+            self.vm.heap(),
+            &mut self.media.cues,
+            &mut self.media.cue_charge,
+        )?;
+        let native = self
+            .vm
+            .program()
+            .package()
+            .natives
+            .iter()
+            .position(|native| {
+                self.vm.program().package().symbols[native.symbol.index()] == "reel::audio::await"
+            })
+            .ok_or(AdapterError::Input("media await binding missing"))?;
         let heap = self.vm.heap_mut();
         let fields = heap.alloc_table()?;
-        let value = heap.alloc_host(fields, &[
-            Value::int(CUE_TAG), source, Value::NULL, Value::int(0),
-            Value::float(seconds), Value::NULL, owner,
-        ], Some(readonly))?;
+        let value = heap.alloc_host(
+            fields,
+            &[
+                Value::int(CUE_TAG),
+                source,
+                Value::NULL,
+                Value::int(0),
+                Value::float(seconds),
+                Value::NULL,
+                owner,
+            ],
+            Some(readonly),
+        )?;
         let root = heap.add_root(self.root_owner, RootKind::Host, value)?;
-        if let Err(error) = self.vm.bind_awaitable(value, aside_vm::bytecode::NativeId(native as u32)) {
+        if let Err(error) = self
+            .vm
+            .bind_awaitable(value, aside_vm::bytecode::NativeId(native as u32))
+        {
             self.vm.heap_mut().release_root(root)?;
             return Err(error.into());
         }
@@ -858,7 +966,11 @@ impl SessionVm {
             MediaPlayback::Video(p) => p.request.start_position,
         };
         let heap = self.vm.heap_mut();
-        let position = self.media.keys.record(heap, &[("position", Value::float(start.as_secs_f64()))], &[])?;
+        let position = self.media.keys.record(
+            heap,
+            &[("position", Value::float(start.as_secs_f64()))],
+            &[],
+        )?;
         let fields = heap.alloc_table()?;
         let value = heap.alloc_host(
             fields,
@@ -961,8 +1073,10 @@ impl Media {
         self.posters.clear();
         self.waits.clear();
         self.live.clear(); // Session owner scan releases the retained heap roots.
-        self.cues.clear();
+        self.cues = VecDeque::new();
+        self.cue_charge = None;
         self.cue_remaining = 0;
+        self.pending_terminals = 0;
         if let Some(backend) = &mut self.backend {
             backend.close();
         }

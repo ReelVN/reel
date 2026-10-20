@@ -679,7 +679,11 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             vec![parameter("activity", None), parameter("seconds", None)],
             false,
         ),
-        ("at", vec![parameter("activity", None), parameter("seconds", None)], false),
+        (
+            "at",
+            vec![parameter("activity", None), parameter("seconds", None)],
+            false,
+        ),
         ("position", vec![parameter("activity", None)], false),
         ("await", vec![parameter("activity", None)], true),
     ] {
@@ -701,7 +705,11 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             },
             effects: Effects(
                 Effects::ALLOCATE
-                    | if name == "position" { 0 } else { Effects::WRITE | Effects::HOST }
+                    | if name == "position" {
+                        0
+                    } else {
+                        Effects::WRITE | Effects::HOST
+                    }
                     | if waits { Effects::WAIT } else { 0 },
             ),
             required_capabilities: vec!["reel.audio".into()],
@@ -723,7 +731,10 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             "seek",
             vec![parameter("activity", None), parameter("seconds", None)],
         ),
-        ("at", vec![parameter("activity", None), parameter("seconds", None)]),
+        (
+            "at",
+            vec![parameter("activity", None), parameter("seconds", None)],
+        ),
         ("position", vec![parameter("activity", None)]),
     ] {
         contracts.push(NativeContract {
@@ -733,7 +744,12 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             parameters,
             result: BuiltinType::Any,
             effects: Effects(
-                Effects::ALLOCATE | if name == "position" { 0 } else { Effects::WRITE | Effects::HOST },
+                Effects::ALLOCATE
+                    | if name == "position" {
+                        0
+                    } else {
+                        Effects::WRITE | Effects::HOST
+                    },
             ),
             required_capabilities: vec!["reel.stage".into()],
         });

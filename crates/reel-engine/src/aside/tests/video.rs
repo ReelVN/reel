@@ -163,7 +163,9 @@ impl MediaBackend for Backend {
 fn pump(vm: &mut SessionVm, session: &mut Session) {
     for _ in 0..50 {
         models::drive(vm, session, false);
-        if !vm.maintain_media().unwrap() {
+        let media = vm.maintain_media().unwrap();
+        let sampled = vm.advance_time(session, vm.logical_time(), 64).unwrap();
+        if !media && !sampled.woke {
             return;
         }
     }
@@ -207,6 +209,29 @@ fn has_frame(vm: &SessionVm) -> bool {
     vm.stage()
         .nodes()
         .any(|n| matches!(&n.kind, NodeKind::Image { source, .. } if source.lease().is_some()))
+}
+#[test]
+fn terminal_video_collected_before_publication_restores_its_picture() {
+    for encoded in [false, true] {
+        let source = r#"fn opening(){
+            let movie=video("movie.mp4",width:32,height:18); stage.replace(movie);
+            let playing=movie.play(); narrator("save");
+            if await playing!="Completed" || video.position(playing)!=1 {throw "restored terminal";}
+            narrator("done");
+        }"#;
+        let (mut session, mut vm) = models::prepared(source, encoded);
+        vm.set_media(Box::new(Backend::new())).unwrap();
+        pump(&mut vm, &mut session);
+        activities::advance_clock(&mut vm, &session, 2., 16);
+        vm.maintain_media().unwrap();
+        assert_eq!(vm.media_poll_after(), Some(Duration::ZERO));
+        restore(&mut vm, &mut session);
+        assert!(has_frame(&vm));
+        advance(&mut vm, &mut session);
+        assert!(
+            matches!(session.view().interaction,Some(crate::InteractionView::Dialogue(d)) if d.text()=="done")
+        );
+    }
 }
 #[test]
 fn video_nodes_share_activity_ownership_and_restore_live_and_terminal_frames() {

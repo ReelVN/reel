@@ -23,7 +23,9 @@ fn registry() -> &'static SnapshotRegistry {
             registry
                 .register_validator(
                     name,
-                    if name == "reel.media" { 3 } else if name == "reel.character" {
+                    if name == "reel.media" {
+                        3
+                    } else if name == "reel.character" {
                         2
                     } else {
                         1
