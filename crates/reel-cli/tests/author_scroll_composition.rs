@@ -189,3 +189,61 @@ fn scroll_feedback_dragging_and_retirement_share_one_authoritative_position() {
         }
     }
 }
+
+#[test]
+fn scroll_cross_axis_source_and_asb_keep_explicit_list_sizes() {
+    let source = r#"
+fn main() {
+    let values = [0, 1, 2, 3, 4, 5];
+    let ordinary = list(|| values, key: |value| value, width: 200, align_x: 0.625,
+        build: |entry| stack(width: 200, height: 60));
+    let virtual_rows = list(|| values, key: |value| value, virtual: true, width: 200, align_x: 0.625,
+        build: |entry| stack(width: 200, height: 60));
+    let first = scroll(width: 360, height: 100) { ordinary; };
+    let second = scroll(y: 150, width: 360, height: 100) { virtual_rows; };
+    let horizontal_child = stack(width: 600, height: 40, align_y: 0.5);
+    let third = scroll(y: 280, width: 300, height: 120, axis: "horizontal") { horizontal_child; };
+    stage.replace(stack() { first; second; third; });
+    let a = await stage.geometry(ordinary, relative_to: first);
+    let b = await stage.geometry(virtual_rows, relative_to: second);
+    let c = await stage.geometry(horizontal_child, relative_to: third);
+    if a.bounds.width != 200 || b.bounds.width != 200 || a.transform.tx != 100 || b.transform.tx != 100
+        || c.bounds.height != 40 || c.transform.ty != 40 {
+        throw "Scroll replaced a child's explicit cross-axis dimension";
+    }
+    stage.replace(text("aligned"));
+    narrator("aligned");
+}
+"#;
+    let artifact = reel_cli::build(
+        &reel_cli::check(source, "scroll_alignment.aside").unwrap(),
+        Some("main::main"),
+    )
+    .unwrap();
+    for story in [
+        compile_story(source, "main", 1, "main").unwrap(),
+        reel_cli::decode_story(&artifact.bytes).unwrap(),
+    ] {
+        let mut driver = AsideSessionUi::from_compiled(
+            Session::new(SessionId(1), Epoch(1)).unwrap(),
+            story,
+            "en",
+            VmLimits::default(),
+        )
+        .unwrap();
+        settle(&mut driver);
+        let (mut bridge, root) = bridge(&driver);
+        for frame in 1..16 {
+            present(&mut driver, &mut bridge, root, frame);
+            settle(&mut driver);
+        }
+        assert!(
+            driver
+                .adapter()
+                .stage()
+                .nodes()
+                .any(|node| { node.kind == NodeKind::Text("aligned".into()) })
+        );
+        driver.cancel().unwrap();
+    }
+}

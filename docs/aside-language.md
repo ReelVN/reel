@@ -349,6 +349,8 @@ Reel `tween(target, from: null, ...)` 使用普通具名参数及记录值表达
 
 Reel `scroll` 的 scroll_x/scroll_y 是普通可写可绑定数值属性，四个 viewport_width/viewport_height/content_width/content_height 为宿主发布的只读可观察尺寸；content_align 接受 start/center/end。Reel `input` 的 on_pointer 接收只读 `{target,x,y,phase}` 主指针拖动事件，沿用节点回调任务和取消。新增参数后 scroll native ABI 为 3、input 为 7；无新语言语法，Aside 字节码/ASB 不变。 隐藏期间保留请求位置与有效尺寸；恢复后的隐藏控件在重新显示并布局后才按实际范围钳制位置。
 
+Reel `scroll` 保留非滚动轴上子节点的显式尺寸与 max 上限，按 align_x/align_y 在剩余内框中对齐；只有 stretch 对应轴填满内框。普通和虚拟 list 共用该布局语义，无新增参数、ABI 或快照格式。
+
 普通 fn 在当前 Task 的可恢复调用栈执行，可 await；Reel 入口和 UI 回调由带明确 OwnerId 的任务运行。say 等可暂停 native 能挂起普通 helper 链，不要求每层改写 async。没有任务上下文或位于受限边界时，动态尝试外部等待报错。
 
 Reel `stage.capture(width: null, height: null, owner: null)` 返回沿相同等待和取消协议工作的宿主结果，成功值为普通不可变 Bytes。`image(source:)` 可消费该值，`saves.save(..., thumbnail:)` 可保存它，`saves.thumbnail(slot)` 可按需读回。截图及存储由宿主实现，不增加 Aside 图形类型、平台依赖或 Aside 字节码 指令；capture/thumbnail ABI 1、save ABI 2。

@@ -251,6 +251,8 @@ stack(max_width: 420) {
 
 `max_width/max_height` 限制节点的自然或显式尺寸，默认 null；长文本会在可用宽度内换行，短文本仍按内容收缩。上限含 padding，stretch 对应轴仍填满父内框。`align_x/align_y` 默认 0，取 0 到 1：0 为起端，0.5 居中，1 为末端，按父 padding 内的剩余空间定位；stack 两轴生效，row/column 只在非流轴生效，scroll 只在非滚动轴生效。它们不改变 x/y 与 anchor 的变换含义，可绑定或动画。示例 [author_stretch.aside](../../examples/author_stretch.aside) 的弹窗随内容改变宽高，背景伸展、按钮保持居中。
 
+纵向 scroll 内的 `width` 与 `max_width` 仍约束子节点，`align_x` 使用剩余宽度；横向 scroll 对应 height/max_height/align_y。需要填满非滚动轴时使用 stretch。例如宽 1000 的纵向 scroll 内，宽 840、align_x 为 0.625 的 list 从左侧 100 像素处开始；普通与虚拟 list 相同。
+
 `view` 的内容按 stack 布局，可同时使用 `align_x/align_y`。input 可以嵌入普通容器；没有焦点时，最前方可见且启用的内层 input 接收键盘和手柄输入，模态面板和已聚焦编辑框仍优先。调整 `game.configure(text_speed:)` 不会中断正在拖动的控件。窗口、画布或父节点放大文字时，WGPU 按实际显示倍率生成并缓存更高分辨率字形，不改变逻辑排版。
 
 ### 自定义鼠标光标

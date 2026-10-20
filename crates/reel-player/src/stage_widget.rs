@@ -2136,12 +2136,12 @@ impl Widget for SceneWidget {
                     if axis.horizontal() {
                         LenDef::MaxContent
                     } else {
-                        LenDef::Fixed(Length::px(inner.width))
+                        LenDef::FitContent(Length::px(inner.width))
                     },
                     if axis.vertical() {
                         LenDef::MaxContent
                     } else {
-                        LenDef::Fixed(Length::px(inner.height))
+                        LenDef::FitContent(Length::px(inner.height))
                     },
                 )
             } else {
