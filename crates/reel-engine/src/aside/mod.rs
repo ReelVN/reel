@@ -7,7 +7,10 @@
 mod activity;
 mod media;
 pub use activity::ActivityProgress;
+mod budget;
 mod callbacks;
+pub use budget::SessionBudget;
+use budget::SliceMinimum;
 pub mod capture;
 mod game;
 pub use game::GameSettings;
@@ -203,12 +206,14 @@ pub struct SessionVm {
     owner: OwnerHandle,
     root_owner: RootOwner,
     task: Option<TaskId>,
+    main_minimum: SliceMinimum,
     main_wait: Option<WaitId>,
     tasks: Vec<callbacks::ScriptTask>,
     scopes: scopes::Scopes,
     transitions: transitions::Transitions,
     schedule_cursor: usize,
     derived_task: Option<TaskId>,
+    derived_minimum: SliceMinimum,
     reactive_ready: bool,
     feedback_only: bool,
     issued: Option<HostTicket>,
@@ -270,12 +275,14 @@ impl SessionVm {
             owner,
             root_owner: RootOwner(owner.owner_id().0),
             task: None,
+            main_minimum: SliceMinimum::default(),
             main_wait: None,
             tasks: Vec::new(),
             scopes: scopes::Scopes::default(),
             transitions: transitions::Transitions::default(),
             schedule_cursor: 0,
             derived_task: None,
+            derived_minimum: SliceMinimum::default(),
             reactive_ready: true,
             feedback_only: false,
             issued: None,
@@ -921,6 +928,7 @@ impl SessionVm {
             .vm
             .start(entry, &[], self.root_owner, Context::Ordinary)?;
         self.task = Some(task);
+        self.main_minimum = SliceMinimum::default();
         self.main_wait = None;
         Ok(task)
     }
@@ -930,7 +938,7 @@ impl SessionVm {
     pub fn step(
         &mut self,
         session: &mut Session,
-        budget: SliceBudget,
+        budget: SessionBudget,
         now: impl FnMut() -> u64,
     ) -> Result<SessionStep, AdapterError> {
         if self.exit_requested || self.start_requested.is_some() {
@@ -1339,6 +1347,8 @@ impl SessionVm {
             },
         )?;
         self.revoked = true;
+        self.main_minimum = SliceMinimum::default();
+        self.derived_minimum = SliceMinimum::default();
         self.issued = None;
         // Tokens are invalidated by the owner scan; never release them twice.
         self.pending = None;
@@ -1360,7 +1370,7 @@ impl SessionVm {
         &mut self,
         session: &mut Session,
         root_work: u32,
-        budget: SliceBudget,
+        budget: SessionBudget,
         now: impl FnMut() -> u64,
     ) -> Result<u32, AdapterError> {
         self.same_session(session)?;
@@ -1381,8 +1391,11 @@ impl SessionVm {
             self.root_cursor as usize,
             slots as usize,
         )?;
-        if let Some(callback) = self.tasks.first() {
-            match self.vm.run_slice(callback.task, budget, now) {
+        if let Some(callback) = self.tasks.first_mut() {
+            match callback
+                .minimum
+                .run(&mut self.vm, callback.task, budget, now)
+            {
                 Err(VmError::Idle) => {
                     self.retire_callback(session, 0)?;
                 }
@@ -1397,7 +1410,7 @@ impl SessionVm {
             return Ok(self.root_cursor - before);
         }
         if let Some(task) = self.derived_task {
-            match self.vm.run_slice(task, budget, now) {
+            match self.derived_minimum.run(&mut self.vm, task, budget, now) {
                 Err(VmError::Idle) => {
                     self.derived_task = None;
                     if self.task.is_none() {
@@ -1415,7 +1428,7 @@ impl SessionVm {
             return Ok(self.root_cursor - before);
         }
         if let Some(task) = self.task {
-            match self.vm.run_slice(task, budget, now) {
+            match self.main_minimum.run(&mut self.vm, task, budget, now) {
                 Err(VmError::Idle) => {
                     self.task = None;
                     session.confirm_owner_task_cleanup(self.owner)?;

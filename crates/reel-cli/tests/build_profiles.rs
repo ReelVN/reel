@@ -75,10 +75,10 @@ fn until_dialogue(vm: &mut SessionVm, session: &mut Session) -> InteractionId {
         match vm
             .step(
                 session,
-                SliceBudget {
+                reel_engine::aside::SessionBudget::Exact(SliceBudget {
                     instructions: 7,
                     ..Default::default()
-                },
+                }),
                 || 0,
             )
             .unwrap()
@@ -123,7 +123,14 @@ fn both_profiles_restore_the_same_artifact_without_replaying_initialization() {
         let mut vm = SessionVm::load(&session, story.program.clone(), VmLimits::default()).unwrap();
         vm.start(&session, story.initializer).unwrap();
         loop {
-            match vm.step(&mut session, SliceBudget::default(), || 0).unwrap() {
+            match vm
+                .step(
+                    &mut session,
+                    reel_engine::aside::SessionBudget::Exact(SliceBudget::default()),
+                    || 0,
+                )
+                .unwrap()
+            {
                 SessionStep::Vm(RunOutcome::BudgetYield(_)) => {}
                 SessionStep::Vm(RunOutcome::Returned(_)) => {
                     vm.discard_delivery(&mut session).unwrap();

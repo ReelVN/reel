@@ -186,18 +186,32 @@ impl<K: Key, T> Slots<K, T> {
         self.map.as_ref().unwrap().len() >= self.limit
     }
     pub fn growth_capacity(&self) -> Option<usize> {
+        self.growth_capacity_for(1)
+    }
+    pub fn growth_capacity_for(&self, additional: usize) -> Option<usize> {
         let map = self.map.as_ref().unwrap();
-        (map.len() == map.capacity()).then(|| ((map.capacity() + 1) * 2).max(4) - 1)
+        let required = map.len() + additional;
+        (required > map.capacity()).then(|| ((map.capacity() + 1) * 2).max(4).max(required + 1) - 1)
+    }
+    pub fn admits(&self, additional: usize) -> bool {
+        self.map.as_ref().unwrap().len() + additional <= self.limit
     }
     /// The pinned slotmap delegates growth to Vec, including its sentinel.
     /// Callers prepare all side tables before allowing insertion to grow.
     pub fn reserve_one(&mut self, usage: &HeapBudgetUsage) -> Result<u64, HeapError> {
-        let Some(capacity) = self.growth_capacity() else {
+        self.reserve(usage, 1)
+    }
+    pub fn reserve(
+        &mut self,
+        usage: &HeapBudgetUsage,
+        additional: usize,
+    ) -> Result<u64, HeapError> {
+        let Some(capacity) = self.growth_capacity_for(additional) else {
             return Ok(0);
         };
         let old = self.reserved_bytes();
         let reservation = usage.reserve(Self::bytes_for(capacity))?;
-        let result = self.map.as_mut().unwrap().try_reserve(1);
+        let result = self.map.as_mut().unwrap().try_reserve(additional);
         let added = self.reserved_bytes() - old;
         drop(reservation);
         usage.charge(added);

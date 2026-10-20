@@ -88,12 +88,36 @@ impl Heap {
     }
 
     pub(crate) fn ensure_range_slot(&mut self) -> Result<(), HeapError> {
-        if self.ranges.full() {
+        self.ensure_range_slots(1)
+    }
+    /// Side-table size, conservative work, and full replacement allocations.
+    pub(crate) fn range_admission(&self, additional: usize) -> (usize, u64, u64) {
+        let Some(capacity) = self
+            .ranges
+            .growth_capacity_for(additional)
+            .filter(|_| self.ranges.admits(additional))
+        else {
+            return (self.range_index.len(), 0, 0);
+        };
+        let slots = capacity + 1;
+        let index_bytes = if slots > self.range_index.len() {
+            (slots * size_of::<Option<RangeKey>>()) as u64
+        } else {
+            0
+        };
+        (
+            self.range_index.len().max(slots),
+            2 * slots as u64,
+            index_bytes + Slots::<RangeKey, RangeDescriptor>::bytes_for(capacity),
+        )
+    }
+    pub(crate) fn ensure_range_slots(&mut self, additional: usize) -> Result<(), HeapError> {
+        if !self.ranges.admits(additional) {
             return Err(HeapError::RootRangeCapacity);
         }
-        if let Some(capacity) = self.ranges.growth_capacity() {
+        if let Some(capacity) = self.ranges.growth_capacity_for(additional) {
             self.reserved += grow_index(&mut self.range_index, capacity + 1, &self.usage)?;
-            self.reserved += self.ranges.reserve_one(&self.usage)?;
+            self.reserved += self.ranges.reserve(&self.usage, additional)?;
         }
         Ok(())
     }

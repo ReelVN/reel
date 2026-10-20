@@ -197,10 +197,10 @@ fn virtual_list_scroll_to_snapshot_before_measurement_inside_factory_and_after_a
                 match vm
                     .step(
                         &mut session,
-                        SliceBudget {
+                        SessionBudget::Exact(SliceBudget {
                             instructions: 1,
                             ..Default::default()
-                        },
+                        }),
                         || 0,
                     )
                     .unwrap()
@@ -254,10 +254,10 @@ fn virtual_list_scroll_to_new_target_discards_inflight_far_candidate() {
         if let SessionStep::Vm(RunOutcome::HostCall(t)) = vm
             .step(
                 &mut session,
-                SliceBudget {
+                SessionBudget::Exact(SliceBudget {
                     instructions: 1,
                     ..Default::default()
-                },
+                }),
                 || 0,
             )
             .unwrap()
@@ -477,10 +477,10 @@ fn pause_source_update(vm: &mut SessionVm, session: &mut Session, action: &str, 
         match vm
             .step(
                 session,
-                SliceBudget {
+                SessionBudget::Exact(SliceBudget {
                     instructions: 1,
                     ..Default::default()
-                },
+                }),
                 || 0,
             )
             .unwrap()
@@ -507,12 +507,12 @@ fn pause_source_update(vm: &mut SessionVm, session: &mut Session, action: &str, 
         {
             vm.step(
                 session,
-                SliceBudget {
+                SessionBudget::Exact(SliceBudget {
                     instructions: 0,
                     work: 0,
                     deadline_ns: Some(0),
                     ..Default::default()
-                },
+                }),
                 || 0,
             )
             .unwrap();

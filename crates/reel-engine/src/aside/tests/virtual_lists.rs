@@ -9,10 +9,10 @@ fn drive(vm: &mut SessionVm, session: &mut Session) {
         match vm
             .step(
                 session,
-                SliceBudget {
+                SessionBudget::Exact(SliceBudget {
                     instructions: 1000,
                     ..Default::default()
-                },
+                }),
                 || 0,
             )
             .unwrap()
@@ -198,10 +198,10 @@ fn virtual_list_native_capture_survives_snapshot_and_cancellation_inside_factory
         if let SessionStep::Vm(RunOutcome::HostCall(ticket)) = vm
             .step(
                 &mut session,
-                SliceBudget {
+                SessionBudget::Exact(SliceBudget {
                     instructions: 1,
                     ..Default::default()
-                },
+                }),
                 || 0,
             )
             .unwrap()
@@ -254,10 +254,10 @@ fn virtual_list_native_capture_survives_snapshot_and_cancellation_inside_factory
         vm.cleanup_step(
             &mut session,
             8,
-            SliceBudget {
+            SessionBudget::Exact(SliceBudget {
                 instructions: 1,
                 ..Default::default()
-            },
+            }),
             || 0,
         )
         .unwrap();
@@ -448,10 +448,10 @@ fn virtual_list_derived_factory_snapshot_keeps_old_projection_and_latest_request
         if let SessionStep::Vm(RunOutcome::HostCall(t)) = vm
             .step(
                 &mut session,
-                SliceBudget {
+                SessionBudget::Exact(SliceBudget {
                     instructions: 1,
                     ..Default::default()
-                },
+                }),
                 || 0,
             )
             .unwrap()
@@ -507,10 +507,10 @@ fn virtual_list_derived_factory_snapshot_keeps_old_projection_and_latest_request
         vm.cleanup_step(
             &mut session,
             8,
-            SliceBudget {
+            SessionBudget::Exact(SliceBudget {
                 instructions: 1,
                 ..Default::default()
-            },
+            }),
             || 0,
         )
         .unwrap();
@@ -543,10 +543,10 @@ fn virtual_list_invalid_factory_retires_candidates_and_restores_queued_fault() {
         match vm
             .step(
                 &mut session,
-                SliceBudget {
+                SessionBudget::Exact(SliceBudget {
                     instructions: 1,
                     ..Default::default()
-                },
+                }),
                 || 0,
             )
             .unwrap()
@@ -690,10 +690,10 @@ fn virtual_list_first_window_cost_against_full_materialization() {
                 match vm
                     .step(
                         &mut session,
-                        SliceBudget {
+                        SessionBudget::Exact(SliceBudget {
                             instructions: 1000,
                             ..Default::default()
-                        },
+                        }),
                         || 0,
                     )
                     .unwrap()

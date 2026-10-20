@@ -2692,6 +2692,265 @@ fn task_pool_growth_failure_releases_partial_roots_and_preserves_the_live_task()
     v.start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
         .unwrap();
 }
+
+#[test]
+fn reused_task_admission_reserves_execution_windows_and_respects_the_host_ceiling() {
+    for maximum in [1024, u32::MAX] {
+        let package = fixtures::helper_native();
+        let mut limits = VmLimits::default();
+        limits.slots.initial_capacity = 1024;
+        limits.slots.max_capacity = maximum;
+        limits.slots.max_window_len = 1024;
+        let mut vm = Vm::load(
+            verify(package.clone(), Limits::default()).unwrap(),
+            support(&package),
+            limits,
+            SessionEpoch(4),
+        )
+        .unwrap();
+        // The initial pooled task and every subsequent activation reuse the
+        // same slot. Its permanent roots leave less than one native window.
+        let capacity = vm.stats().slots.capacity;
+        let pooled = vm.pooled_root_ranges();
+        for _ in 0..3 {
+            vm.start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+                .unwrap();
+            let result = loop {
+                let outcome = slice(&mut vm);
+                gc(&mut vm);
+                match outcome {
+                    RunOutcome::BudgetYield(_) => {}
+                    RunOutcome::HostCall(ticket) => {
+                        assert_eq!(
+                            vm.host_arguments(ticket).unwrap()[0].as_int(),
+                            Some(fixtures::ECHO_ARGUMENT)
+                        );
+                        let wait = ticket.wait_id();
+                        vm.respond(ticket, HostResponse::Pending(wait)).unwrap();
+                        collect(&mut vm);
+                        vm.complete(wait, Completion::Ready(Value::int(fixtures::ECHO_RESULT)))
+                            .unwrap();
+                    }
+                    RunOutcome::Returned(result) | RunOutcome::Fault(result) => break result,
+                    other => panic!("{other:?}"),
+                }
+            };
+            if maximum == 1024 {
+                assert_eq!(
+                    vm.delivery_fault(result).unwrap().unwrap().kind,
+                    FaultKind::Resource
+                );
+                assert_eq!(vm.stats().slots.capacity, capacity);
+            } else {
+                assert_eq!(vm.delivery_fault(result).unwrap(), None);
+                assert_eq!(
+                    vm.delivery_value(result).unwrap().as_int(),
+                    Some(fixtures::ECHO_RESULT)
+                );
+                assert!(vm.stats().slots.capacity > capacity);
+            }
+            vm.discard_delivery(result).unwrap();
+            assert_eq!(vm.stats().slots.active_ranges, pooled);
+        }
+    }
+}
+
+#[test]
+fn admitted_tasks_can_enter_native_calls_after_other_tasks_consume_the_pool() {
+    use aside_vm::snapshot::{SnapshotBudget, SnapshotRegistry};
+    let package = fixtures::helper_native();
+    let mut limits = VmLimits::default();
+    limits.slots.initial_capacity = 1024;
+    limits.slots.max_window_len = 1024;
+    let mut vm = Vm::load(
+        verify(package.clone(), Limits::default()).unwrap(),
+        support(&package),
+        limits,
+        SessionEpoch(4),
+    )
+    .unwrap();
+    let tasks: Vec<_> = (0..13)
+        .map(|_| {
+            vm.start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+                .unwrap()
+        })
+        .collect();
+    let mut waits = Vec::new();
+    let mut growths = 0;
+    for &task in &tasks {
+        let ticket = loop {
+            let outcome = vm
+                .run_slice(
+                    task,
+                    SliceBudget {
+                        instructions: 1,
+                        allocation_bytes: 0,
+                        ..SliceBudget::default()
+                    },
+                    || 0,
+                )
+                .unwrap();
+            gc(&mut vm);
+            match outcome {
+                RunOutcome::HostCall(ticket) => break ticket,
+                RunOutcome::BudgetYield(usage) if usage.required_allocation != 0 => {
+                    let before = vm.stats();
+                    let denied = vm
+                        .run_slice(
+                            task,
+                            SliceBudget {
+                                work: usage.required_work - 1,
+                                allocation_bytes: usage.required_allocation,
+                                ..SliceBudget::default()
+                            },
+                            || 0,
+                        )
+                        .unwrap();
+                    assert!(matches!(denied, RunOutcome::BudgetYield(_)));
+                    assert_eq!(vm.stats().slots.capacity, before.slots.capacity);
+                    assert_eq!(vm.stats().slots.active_ranges, before.slots.active_ranges);
+                    assert_eq!(vm.stats().native_entries, before.native_entries);
+                    let granted = vm
+                        .run_slice(
+                            task,
+                            SliceBudget {
+                                instructions: 1,
+                                work: usage.required_work,
+                                allocation_bytes: usage.required_allocation,
+                                ..SliceBudget::default()
+                            },
+                            || 0,
+                        )
+                        .unwrap();
+                    assert!(matches!(granted, RunOutcome::BudgetYield(_)));
+                    assert!(
+                        vm.stats().slots.capacity > before.slots.capacity
+                            || vm.stats().slots.metadata_bytes > before.slots.metadata_bytes
+                    );
+                    assert_eq!(vm.stats().usage.allocation_bytes, usage.required_allocation);
+                    growths += usize::from(vm.stats().slots.capacity > before.slots.capacity);
+                }
+                RunOutcome::BudgetYield(_) => {}
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(
+            vm.host_arguments(ticket).unwrap()[0].as_int(),
+            Some(fixtures::ECHO_ARGUMENT)
+        );
+        let wait = ticket.wait_id();
+        vm.respond(ticket, HostResponse::Pending(wait)).unwrap();
+        waits.push(wait);
+    }
+    assert!(growths > 0);
+    let registry = SnapshotRegistry::default();
+    let mut capture = vm.snapshot_begin(&registry).unwrap();
+    while !capture.step(SnapshotBudget::default()).unwrap().complete {}
+    let image = capture.finish().unwrap();
+    let mut restore = Vm::restore_begin(
+        &image,
+        vm.program().clone(),
+        support(&package),
+        limits,
+        SessionEpoch(5),
+        &registry,
+    )
+    .unwrap();
+    while !restore.step(SnapshotBudget::default()).unwrap().complete {}
+    let (restored, map) = restore.finish().unwrap();
+    let restored_tasks = tasks
+        .iter()
+        .map(|&task| map.task(task).unwrap())
+        .collect::<Vec<_>>();
+    let restored_waits = waits
+        .iter()
+        .map(|&wait| map.wait(wait).unwrap())
+        .collect::<Vec<_>>();
+    for (mut vm, mut tasks, mut waits) in [
+        (vm, tasks, waits),
+        (restored, restored_tasks, restored_waits),
+    ] {
+        let cancelled = tasks.pop().unwrap();
+        let old_wait = waits.pop().unwrap();
+        vm.cancel_task(cancelled).unwrap();
+        while !matches!(
+            vm.run_slice(cancelled, SliceBudget::default(), || 0),
+            Err(VmError::Idle)
+        ) {}
+        assert!(
+            vm.complete(old_wait, Completion::Ready(Value::int(0)))
+                .is_err()
+        );
+        collect(&mut vm);
+        for (task, wait) in tasks.into_iter().zip(waits) {
+            vm.complete(wait, Completion::Ready(Value::int(fixtures::ECHO_RESULT)))
+                .unwrap();
+            let result = task_finish(&mut vm, task);
+            assert_eq!(vm.delivery_fault(result).unwrap(), None);
+            assert_eq!(
+                vm.delivery_value(result).unwrap().as_int(),
+                Some(fixtures::ECHO_RESULT)
+            );
+            vm.discard_delivery(result).unwrap();
+        }
+        assert_eq!(vm.stats().slots.active_ranges, vm.pooled_root_ranges());
+    }
+}
+
+#[test]
+fn one_slice_can_admit_a_deep_script_call_chain_and_its_native_continuation() {
+    let mut package = fixtures::helper_native();
+    let template = package.functions[1].clone();
+    for index in 1..=20 {
+        let mut helper = template.clone();
+        helper.register_count = 1024;
+        if index < 20 {
+            let Descriptor::Call(call) = &mut helper.descriptors[0] else {
+                unreachable!()
+            };
+            call.target = CallTarget::Function(FunctionId(index + 1));
+        }
+        if index == 1 {
+            package.functions[1] = helper;
+        } else {
+            package.functions.push(helper);
+        }
+    }
+    let mut vm = vm(package);
+    let task = vm
+        .start(fixtures::ENTRY, &[], OWNER, Context::Ordinary)
+        .unwrap();
+    let before = vm.stats().slots.capacity;
+    let budget = SliceBudget {
+        instructions: 100_000,
+        work: 10_000_000,
+        allocation_bytes: 16 * 1024 * 1024,
+        deadline_ns: None,
+    };
+    let RunOutcome::HostCall(ticket) = vm.run_slice(task, budget, || 0).unwrap() else {
+        panic!("deep call did not reach the native");
+    };
+    assert!(vm.stats().slots.capacity > before);
+    assert_eq!(
+        vm.host_arguments(ticket).unwrap()[0].as_int(),
+        Some(fixtures::ECHO_ARGUMENT)
+    );
+    vm.respond(
+        ticket,
+        HostResponse::Ready(Value::int(fixtures::ECHO_RESULT)),
+    )
+    .unwrap();
+    collect(&mut vm);
+    let result = task_finish(&mut vm, task);
+    assert_eq!(vm.delivery_fault(result).unwrap(), None);
+    assert_eq!(
+        vm.delivery_value(result).unwrap().as_int(),
+        Some(fixtures::ECHO_RESULT)
+    );
+    vm.discard_delivery(result).unwrap();
+    assert_eq!(vm.stats().slots.active_ranges, vm.pooled_root_ranges());
+}
+
 #[test]
 fn explicit_throw_in_catch_sets_new_source_and_retains_original_value_as_cause() {
     let mut p = fixtures::exception_regions();

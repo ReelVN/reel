@@ -23,10 +23,10 @@ fn drive(vm: &mut SessionVm, session: &mut Session, gc: bool) {
         match vm
             .step(
                 session,
-                SliceBudget {
+                SessionBudget::Exact(SliceBudget {
                     instructions: 23,
                     ..Default::default()
-                },
+                }),
                 || 0,
             )
             .unwrap()
@@ -105,8 +105,13 @@ fn keys_preserve_nodes_local_state_and_callbacks_while_values_and_order_change()
         assert!(has_text(&vm, "built 4, selected Ay"));
         vm.revoke(&mut session).unwrap();
         while vm.cleanup_pending() {
-            vm.cleanup_step(&mut session, 32, SliceBudget::default(), || 0)
-                .unwrap();
+            vm.cleanup_step(
+                &mut session,
+                32,
+                SessionBudget::Exact(SliceBudget::default()),
+                || 0,
+            )
+            .unwrap();
         }
         collect(&mut vm);
         assert!(!vm.vm.heap().reactive_evaluating());
@@ -227,7 +232,12 @@ fn large_reorder_builds_only_the_new_row_and_idle_has_no_list_work() {
     let entries_before = vm.vm.stats().native_entries;
     for _ in 0..1000 {
         assert!(matches!(
-            vm.step(&mut session, SliceBudget::default(), || 0).unwrap(),
+            vm.step(
+                &mut session,
+                SessionBudget::Exact(SliceBudget::default()),
+                || 0
+            )
+            .unwrap(),
             SessionStep::Idle | SessionStep::Vm(RunOutcome::Waiting(_))
         ));
     }
@@ -289,10 +299,10 @@ fn cancelling_inside_a_row_factory_releases_candidates_and_native_roots() {
         if let SessionStep::Vm(RunOutcome::HostCall(ticket)) = vm
             .step(
                 &mut session,
-                SliceBudget {
+                SessionBudget::Exact(SliceBudget {
                     instructions: 1,
                     ..Default::default()
-                },
+                }),
                 || 0,
             )
             .unwrap()
@@ -316,10 +326,10 @@ fn cancelling_inside_a_row_factory_releases_candidates_and_native_roots() {
         vm.cleanup_step(
             &mut session,
             8,
-            SliceBudget {
+            SessionBudget::Exact(SliceBudget {
                 instructions: 1,
                 ..Default::default()
-            },
+            }),
             || 0,
         )
         .unwrap();
@@ -349,7 +359,14 @@ fn failed_reconciliation_preserves_mounted_children_and_reports_the_source() {
     let duplicate = button(&vm, "duplicate");
     vm.click(&mut session, duplicate).unwrap();
     loop {
-        match vm.step(&mut session, SliceBudget::default(), || 0).unwrap() {
+        match vm
+            .step(
+                &mut session,
+                SessionBudget::Exact(SliceBudget::default()),
+                || 0,
+            )
+            .unwrap()
+        {
             SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
                 if let Err(error) = vm.dispatch(&mut session, ticket, "en", 1) {
                     vm.reject_native(&session, ticket, error).unwrap();

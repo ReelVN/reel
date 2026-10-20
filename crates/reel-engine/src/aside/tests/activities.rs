@@ -200,7 +200,8 @@ fn drive(vm: &mut SessionVm, session: &mut Session) -> RunOutcome {
             other => {
                 while vm.activities_pending() {
                     assert!(matches!(
-                        vm.step(session, SliceBudget::default(), || 0).unwrap(),
+                        vm.step(session, SessionBudget::Exact(SliceBudget::default()), || 0)
+                            .unwrap(),
                         SessionStep::Progress
                     ));
                 }

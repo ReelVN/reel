@@ -140,10 +140,10 @@ fn virtual_list_natural_height_cost() {
             match vm
                 .step(
                     &mut session,
-                    SliceBudget {
+                    SessionBudget::Exact(SliceBudget {
                         instructions: 1000,
                         ..Default::default()
-                    },
+                    }),
                     || 0,
                 )
                 .unwrap()

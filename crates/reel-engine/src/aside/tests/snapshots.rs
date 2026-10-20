@@ -210,10 +210,10 @@ mod audio {
             let progress = runtime
                 .step(
                     &mut session,
-                    SliceBudget {
+                    SessionBudget::Exact(SliceBudget {
                         instructions: 1,
                         ..Default::default()
-                    },
+                    }),
                     || 0,
                 )
                 .unwrap();
@@ -256,10 +256,10 @@ mod audio {
             let progress = runtime
                 .step(
                     &mut session,
-                    SliceBudget {
+                    SessionBudget::Exact(SliceBudget {
                         instructions: 1,
                         ..Default::default()
-                    },
+                    }),
                     || 0,
                 )
                 .unwrap();
@@ -306,10 +306,10 @@ mod audio {
                 if let SessionStep::Vm(RunOutcome::HostCall(ticket)) = runtime
                     .step(
                         &mut session,
-                        SliceBudget {
+                        SessionBudget::Exact(SliceBudget {
                             instructions: 1,
                             ..Default::default()
-                        },
+                        }),
                         || 0,
                     )
                     .unwrap()

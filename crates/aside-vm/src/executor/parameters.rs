@@ -142,7 +142,8 @@ impl Vm {
                 parameter,
                 function,
             } => {
-                if !m.take(0, self.script_push_cost(function, parameter) + 1, 0) {
+                let (work, bytes) = self.script_push_cost(function, parameter);
+                if !m.take(0, work + 1, bytes) {
                     return Ok(false);
                 }
                 let top = self.active.frames.data.len() - 1;

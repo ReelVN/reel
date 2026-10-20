@@ -206,10 +206,10 @@ fn author_example(source: &str, coordinates: &[(f64, f64)]) -> Vec<String> {
             let outcome = vm
                 .step(
                     &mut session,
-                    SliceBudget {
+                    reel_engine::aside::SessionBudget::Exact(SliceBudget {
                         instructions: 1,
                         ..Default::default()
-                    },
+                    }),
                     || 0,
                 )
                 .unwrap();

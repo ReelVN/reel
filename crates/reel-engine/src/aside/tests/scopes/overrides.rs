@@ -255,7 +255,14 @@ fn scope_override_cancellation_uses_existing_storage_and_idle_cost_ignores_layer
         }
         let mut measured = false;
         for _ in 0..1000 {
-            match vm.step(&mut session, SliceBudget::default(), || 0).unwrap() {
+            match vm
+                .step(
+                    &mut session,
+                    SessionBudget::Exact(SliceBudget::default()),
+                    || 0,
+                )
+                .unwrap()
+            {
                 SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
                     let package = vm.vm.program().package();
                     let closing = package.symbols

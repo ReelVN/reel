@@ -925,19 +925,29 @@ impl Vm {
         // Vec shifts/coalesces. Include growth across this entire transaction.
         count * (4 * (self.slots.stats().free_spans as u64 + count) + 8)
     }
-    fn window_push_cost(&self, windows: u64, values: u64) -> u64 {
+    fn window_push_cost(&self, windows: u64, values: u64) -> (u64, u64) {
         let spans = self.slots.stats().free_spans as u64;
         let rollback = windows - 1;
+        let admission = self
+            .slots
+            .window_admission(&self.heap, windows as usize, values);
         // Open scans/removes from the current free list, physically fills each
         // Value and clears its bit. A later failure can roll back earlier opens;
         // those releases can grow the free list even when success would not.
-        2 * values + windows * (2 * spans + 8) + rollback * (4 * (spans + rollback) + 8)
+        (
+            2 * values
+                + windows * (3 * spans + 8)
+                + rollback * (4 * (spans + rollback) + 8)
+                + admission.work,
+            admission.allocation_bytes,
+        )
     }
-    fn script_push_cost(&self, function: FunctionId, count: u32) -> u64 {
+    fn script_push_cost(&self, function: FunctionId, count: u32) -> (u64, u64) {
         let f = &self.program.package().functions[function.index()];
         if let FunctionKind::Native(native) = f.kind {
             // A callable may carry one prebound receiver root.
-            return self.native_push_cost(native, count) + 1;
+            let (work, bytes) = self.native_push_cost(native, count);
+            return (work + 1, bytes);
         }
         let values = f.register_count as u64
             + 4
@@ -951,9 +961,10 @@ impl Vm {
                     .rest
                     .is_some(),
             );
-        self.window_push_cost(4, values) + 1
+        let (work, bytes) = self.window_push_cost(4, values);
+        (work + 1, bytes)
     }
-    fn native_push_cost(&self, native: NativeId, count: u32) -> u64 {
+    fn native_push_cost(&self, native: NativeId, count: u32) -> (u64, u64) {
         let signature = self.program.package().natives[native.index()].signature;
         let sig = &self.program.package().signatures[signature.index()];
         let cells = self.native_cells.data[native.index()];
@@ -964,10 +975,11 @@ impl Vm {
             + self.limits.max_continuation_values as u64
             + count as u64 * 2
             + parameters * (1 + u64::from(cells));
-        self.window_push_cost(3 + u64::from(cells), values)
-            + sig.parameters.len() as u64
-            + self.native_layout_work()
-            + 3
+        let (work, bytes) = self.window_push_cost(3 + u64::from(cells), values);
+        (
+            work + sig.parameters.len() as u64 + self.native_layout_work() + 3,
+            bytes,
+        )
     }
     // All construction inputs are explicit so failed root publication rolls back
     // as one transaction before a frame becomes visible.
@@ -997,6 +1009,14 @@ impl Vm {
                 .flatten();
             return self.push_native_bound(native, source, count, site, receiver);
         }
+        let parameters = &self.program.package().signatures[f.signature.index()];
+        let values = u64::from(f.register_count)
+            + 4
+            + 2 * f.regions.len() as u64
+            + u64::from(count) * 2
+            + parameters.parameters.len() as u64
+            + u64::from(parameters.rest.is_some());
+        self.slots.admit_windows(&mut self.heap, 4, values)?;
         if !matches!(source, ArgSource::Prefix { .. })
             && let Some(closure) = closure
         {
@@ -1145,7 +1165,10 @@ impl Vm {
         };
         self.restore_active();
         let slot = match self.tasks.data.iter().position(|s| s.task_id.is_none()) {
-            Some(slot) => slot,
+            Some(slot) => {
+                self.slots.reserve_task(&mut self.heap, 0)?;
+                slot
+            }
             None => self.grow_task_pool()?,
         };
         self.select_slot(slot);
@@ -1440,6 +1463,14 @@ impl Vm {
         let n = sig.parameters.len() as u32 + u32::from(sig.rest.is_some());
         let has_defaults = sig.parameters.iter().any(|p| p.default.is_some());
         let needs_cells = self.native_cells.data[native.index()];
+        let values = 3
+            + u64::from(self.limits.max_continuation_values)
+            + u64::from(self.limits.max_arguments)
+            + u64::from(self.limits.max_native_faults)
+            + u64::from(count) * 2
+            + u64::from(n) * (1 + u64::from(needs_cells));
+        self.slots
+            .admit_windows(&mut self.heap, 3 + usize::from(needs_cells), values)?;
         let id = FrameId(self.serial()?);
         let args = self.open(site.owner, RootKind::Arguments, count * 2)?;
         let bound = match self.open(site.owner, RootKind::Arguments, n) {
@@ -2333,7 +2364,8 @@ impl Vm {
                 parameter,
                 function: default,
             } => {
-                if !m.take(0, self.script_push_cost(default, parameter) + 1, 0) {
+                let (work, bytes) = self.script_push_cost(default, parameter);
+                if !m.take(0, work + 1, bytes) {
                     return Ok(false);
                 }
                 let closure = if s.closure {
@@ -2639,15 +2671,15 @@ impl Vm {
                 let replacing_fault =
                     superseded.is_some() && matches!(reason, ExitReason::Throw(_));
                 let roots = if superseded.is_some() {
-                    self.release_cost(1)
+                    (self.release_cost(1), 0)
                 } else if handler.is_some_and(|h| h.kind == HandlerKind::Finally) {
                     self.window_push_cost(1, 2)
                 } else {
-                    0
+                    (0, 0)
                 };
                 let work = 2 * self.active.caught.data.len() as u64
                     + 12
-                    + roots
+                    + roots.0
                     + if replacing_fault {
                         self.native_layout_work()
                     } else {
@@ -2658,7 +2690,7 @@ impl Vm {
                 } else {
                     0
                 };
-                if !m.take(0, work, alloc) {
+                if !m.take(0, work, alloc + roots.1) {
                     return Ok(false);
                 }
                 if !self.exit_step(&mut s, origin, reason, handler, superseded)? {
@@ -2762,31 +2794,34 @@ impl Vm {
                         let target = self.slots.read(at(s.regs, r.0))?;
                         if self.is_text(target, ObjectKind::Class) {
                             allocation = Values::allocation_bytes(4);
-                            24
+                            (24, 0)
                         } else {
                             let cost = self
                                 .closure_function(target)
                                 .map(|id| self.script_push_cost(id, count))
-                                .unwrap_or(1);
+                                .unwrap_or((1, 0));
                             if self.is_text(target, ObjectKind::BoundScript) {
                                 let (work, bytes) = self.initializer_cost(target)?;
                                 allocation = bytes;
-                                cost + work
+                                (cost.0 + work, cost.1)
                             } else {
                                 cost
                             }
                         }
                     }
                 };
-                (cost + self.active.unwinds.data.len() as u64 + 1, allocation)
+                (
+                    cost.0 + self.active.unwinds.data.len() as u64 + 1,
+                    allocation + cost.1,
+                )
             }
             Opcode::Await => {
                 let cost = self
                     .heap
                     .host_await(self.slots.read(at(s.regs, b))?)
                     .map(|id| self.native_push_cost(id, 1))
-                    .unwrap_or(1);
-                (cost + self.active.unwinds.data.len() as u64 + 1, 0)
+                    .unwrap_or((1, 0));
+                (cost.0 + self.active.unwinds.data.len() as u64 + 1, cost.1)
             }
             Opcode::MakeClosure => {
                 let Descriptor::Closure { function, captures } = &f.descriptors[b as usize] else {
@@ -4105,7 +4140,12 @@ impl Vm {
                         );
                         return Ok(true);
                     }
-                    let root = match self.open(s.owner, RootKind::Exception, 2) {
+                    let root = match self
+                        .slots
+                        .admit_windows(&mut self.heap, 1, 2)
+                        .map_err(VmError::Heap)
+                        .and_then(|()| self.open(s.owner, RootKind::Exception, 2))
+                    {
                         Ok(r) => r,
                         Err(e) => {
                             match e {
@@ -4390,8 +4430,8 @@ impl Vm {
             NativePhase::Callback { count } => {
                 let closure = self.value(n.roots, 1)?;
                 let function = self.closure_function(closure)?;
-                let cost = self.script_push_cost(function, count);
-                if !m.take(0, cost, 0) {
+                let (work, bytes) = self.script_push_cost(function, count);
+                if !m.take(0, work, bytes) {
                     return Ok(Some(RunOutcome::BudgetYield(m.usage)));
                 }
                 self.active.frames.data[top] = Frame::Native(n);

@@ -202,7 +202,14 @@ fn particles_stop_during_a_partial_clock_pass_keeps_the_pending_prefix_exact() {
     for encoded in [false, true] {
         let (mut session, mut vm) = models::prepared(code, encoded);
         let stop = loop {
-            match vm.step(&mut session, SliceBudget::default(), || 0).unwrap() {
+            match vm
+                .step(
+                    &mut session,
+                    SessionBudget::Exact(SliceBudget::default()),
+                    || 0,
+                )
+                .unwrap()
+            {
                 SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
                     let package = vm.vm.program().package();
                     if package.symbols[package.natives[ticket.native.index()].symbol.index()]
@@ -527,7 +534,14 @@ fn particle_restore_keeps_paint_order_after_emit_during_a_clock_slice() {
         let (mut session, mut vm) = models::prepared(code, encoded);
         let mut emissions = 0;
         let third = loop {
-            match vm.step(&mut session, SliceBudget::default(), || 0).unwrap() {
+            match vm
+                .step(
+                    &mut session,
+                    SessionBudget::Exact(SliceBudget::default()),
+                    || 0,
+                )
+                .unwrap()
+            {
                 SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
                     let package = vm.vm.program().package();
                     if package.symbols[package.natives[ticket.native.index()].symbol.index()]

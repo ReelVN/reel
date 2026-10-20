@@ -11,6 +11,8 @@ pub(super) struct ScriptTask {
     pub result: Option<RootToken>,
     pub wait: Option<WaitId>,
     pub cancelling: bool,
+    #[serde(skip)]
+    pub minimum: SliceMinimum,
     // The not-yet-run VM argument roots this event. Once execution starts its
     // coordinates are immutable, even if the callback later awaits. A zero-argument
     // handler retains only the coalescing marker, with no event value.
@@ -368,6 +370,7 @@ impl SessionVm {
             result,
             wait: None,
             cancelling: false,
+            minimum: SliceMinimum::default(),
             pending_move: None,
         });
         Ok(task)
@@ -456,6 +459,7 @@ impl SessionVm {
         self.cancel_task_scopes(self.tasks[index].task)?;
         let callback = &mut self.tasks[index];
         if !callback.cancelling {
+            callback.minimum = SliceMinimum::default();
             callback.pending_move = None;
             // Spawned result roots remain owned by this task until cleanup. Node
             // and activity roots belong to the session and their explicit nodes.
@@ -515,7 +519,7 @@ impl SessionVm {
     pub(super) fn step_tasks(
         &mut self,
         session: &mut Session,
-        budget: SliceBudget,
+        budget: SessionBudget,
         mut now: impl FnMut() -> u64,
     ) -> Result<SessionStep, AdapterError> {
         self.live(session)?;
@@ -622,7 +626,12 @@ impl SessionVm {
         };
         self.feedback_only = false;
         self.reactive_ready = false;
-        let outcome = match self.vm.run_slice(task, budget, now) {
+        let minimum = if index == 0 {
+            &mut self.main_minimum
+        } else {
+            &mut self.tasks[index - 1].minimum
+        };
+        let outcome = match minimum.run(&mut self.vm, task, budget, now) {
             Ok(outcome) => outcome,
             Err(VmError::Idle) if index > 0 && self.tasks[index - 1].cancelling => {
                 self.media.finish_batch(task, false);
@@ -705,7 +714,7 @@ impl SessionVm {
     pub fn step_reactive(
         &mut self,
         session: &Session,
-        budget: SliceBudget,
+        budget: SessionBudget,
         now: impl FnMut() -> u64,
     ) -> Result<Option<SessionStep>, AdapterError> {
         if self.reactive_ready
@@ -713,9 +722,10 @@ impl SessionVm {
             && let Some(output) = self.vm.heap_mut().next_derived()?
         {
             self.derived_task = Some(self.vm.start_derived(output, self.root_owner)?);
+            self.derived_minimum = SliceMinimum::default();
         }
         if let Some(task) = self.derived_task {
-            let outcome = self.vm.run_slice(task, budget, now)?;
+            let outcome = self.derived_minimum.run(&mut self.vm, task, budget, now)?;
             match outcome {
                 RunOutcome::HostCall(ticket) => self.issued = Some(ticket),
                 RunOutcome::Returned(id) => {

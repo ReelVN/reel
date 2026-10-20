@@ -1,8 +1,8 @@
 //! Compiler/VM-to-SessionUi assembly shared by library hosts and the native window.
 use crate::session::{ProjectionStamp, RecordedProjection, SessionUi, SessionWidget};
 use reel_engine::aside::{
-    DeliveryId, FaultInfo, GcBudget, GcProgress, NativeDispatch, RunOutcome, SessionStep,
-    SessionVm, SliceBudget, VmLimits, source,
+    DeliveryId, FaultInfo, GcBudget, GcProgress, NativeDispatch, RunOutcome, SessionBudget,
+    SessionStep, SessionVm, SliceBudget, VmLimits, source,
 };
 use reel_engine::{InteractionId, InteractionView, Session};
 use reel_ui::{
@@ -136,7 +136,10 @@ impl AsideSessionUi {
         if self.vm.localization_pending() {
             return Ok(false);
         }
-        match self.vm.step_reactive(self.ui.session(), budget, || 0)? {
+        match self
+            .vm
+            .step_reactive(self.ui.session(), SessionBudget::RetryMinimum(budget), || 0)?
+        {
             Some(reel_engine::aside::SessionStep::Vm(RunOutcome::HostCall(ticket))) => {
                 self.vm
                     .dispatch(self.ui.session_mut(), ticket, &self.locale, 64)?;
@@ -567,7 +570,11 @@ impl AsideSessionUi {
         host_work: u32,
         now: impl FnMut() -> u64,
     ) -> Result<StoryProgress, Error> {
-        let outcome = match self.vm.step(self.ui.session_mut(), budget, now)? {
+        let outcome = match self.vm.step(
+            self.ui.session_mut(),
+            SessionBudget::RetryMinimum(budget),
+            now,
+        )? {
             SessionStep::Vm(outcome) => outcome,
             SessionStep::Progress => return Ok(StoryProgress::CallbackProgress),
             SessionStep::Idle => {
@@ -666,9 +673,12 @@ impl AsideSessionUi {
         budget: SliceBudget,
         now: impl FnMut() -> u64,
     ) -> Result<u32, Error> {
-        Ok(self
-            .vm
-            .cleanup_step(self.ui.session_mut(), root_work, budget, now)?)
+        Ok(self.vm.cleanup_step(
+            self.ui.session_mut(),
+            root_work,
+            SessionBudget::RetryMinimum(budget),
+            now,
+        )?)
     }
 }
 

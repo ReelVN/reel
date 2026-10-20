@@ -9,10 +9,10 @@ fn drive(vm: &mut SessionVm, session: &mut Session, project: bool) {
         match vm
             .step(
                 session,
-                SliceBudget {
+                SessionBudget::Exact(SliceBudget {
                     instructions: 7,
                     ..Default::default()
-                },
+                }),
                 || 0,
             )
             .unwrap()
@@ -239,8 +239,13 @@ fn callbacks_share_captures_reuse_retired_storage_and_outlive_main() {
     );
     vm.revoke(&mut s).unwrap();
     while vm.cleanup_pending() {
-        vm.cleanup_step(&mut s, 1, SliceBudget::default(), || 0)
-            .unwrap();
+        vm.cleanup_step(
+            &mut s,
+            1,
+            SessionBudget::Exact(SliceBudget::default()),
+            || 0,
+        )
+        .unwrap();
     }
     assert_eq!(
         s.owner_lifecycle(s.root_owner()),
@@ -295,8 +300,13 @@ fn independent_callbacks_await_one_producer_beside_main_dialogue() {
     assert_eq!(s.view().interaction.unwrap().id(), interaction);
     vm.revoke(&mut s).unwrap();
     while vm.cleanup_pending() {
-        vm.cleanup_step(&mut s, 1, SliceBudget::default(), || 0)
-            .unwrap();
+        vm.cleanup_step(
+            &mut s,
+            1,
+            SessionBudget::Exact(SliceBudget::default()),
+            || 0,
+        )
+        .unwrap();
     }
 }
 
@@ -346,8 +356,13 @@ fn removing_callback_owner_cancels_task_and_its_motion_before_next_statement() {
     assert_eq!(vm.tasks.len(), 1);
     vm.revoke(&mut s).unwrap();
     while vm.cleanup_pending() {
-        vm.cleanup_step(&mut s, 1, SliceBudget::default(), || 0)
-            .unwrap();
+        vm.cleanup_step(
+            &mut s,
+            1,
+            SessionBudget::Exact(SliceBudget::default()),
+            || 0,
+        )
+        .unwrap();
     }
     assert!(vm.tasks.is_empty());
     assert_eq!(s.storage_usage().pending_owner_retirements, 0);

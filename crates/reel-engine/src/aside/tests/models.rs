@@ -25,10 +25,10 @@ pub(super) fn drive(vm: &mut SessionVm, session: &mut Session, collect_copies: b
         match vm
             .step(
                 session,
-                SliceBudget {
+                SessionBudget::Exact(SliceBudget {
                     instructions: 7,
                     ..Default::default()
-                },
+                }),
                 || 0,
             )
             .unwrap()
@@ -416,8 +416,13 @@ fn cancelling_a_large_model_copy_releases_its_work_graph() {
     let before = vm.vm.heap().stats();
     vm.revoke(&mut session).unwrap();
     while vm.cleanup_pending() {
-        vm.cleanup_step(&mut session, 1, SliceBudget::default(), || 0)
-            .unwrap();
+        vm.cleanup_step(
+            &mut session,
+            1,
+            SessionBudget::Exact(SliceBudget::default()),
+            || 0,
+        )
+        .unwrap();
     }
     collect(&mut vm);
     let after = vm.vm.heap().stats();

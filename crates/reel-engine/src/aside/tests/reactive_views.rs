@@ -409,10 +409,10 @@ fn cancellation_during_initial_computation_releases_capture_and_frames() {
         if let SessionStep::Vm(RunOutcome::HostCall(ticket)) = vm
             .step(
                 &mut session,
-                SliceBudget {
+                SessionBudget::Exact(SliceBudget {
                     instructions: 1,
                     ..Default::default()
-                },
+                }),
                 || 0,
             )
             .unwrap()
@@ -426,8 +426,13 @@ fn cancellation_during_initial_computation_releases_capture_and_frames() {
     collect(&mut vm);
     vm.revoke(&mut session).unwrap();
     while vm.cleanup_pending() {
-        vm.cleanup_step(&mut session, 32, SliceBudget::default(), || 0)
-            .unwrap();
+        vm.cleanup_step(
+            &mut session,
+            32,
+            SessionBudget::Exact(SliceBudget::default()),
+            || 0,
+        )
+        .unwrap();
     }
     assert!(!vm.vm.heap().reactive_evaluating());
 }
