@@ -214,17 +214,7 @@ impl Heap {
     // No collection step runs inside a property transaction and these values
     // never escape it; live unmarked targets still receive their cached update.
     pub(super) fn subscriber_target(&self, reference: Value) -> Result<Option<Value>, HeapError> {
-        let handle = self.object(self.key(reference)?)?.weak;
-        let Some(handle) = handle else {
-            return Ok(None);
-        };
-        let Some(object) = heap_key(handle.key).and_then(|key| self.objects.get(key)) else {
-            return Ok(None);
-        };
-        if object.dying || (self.gc.cutoff() && object.mark != self.gc.cycle) {
-            return Ok(None);
-        }
-        Ok(Some(Value::object(self.id, handle.key)))
+        self.peek_weakref(reference)
     }
 
     fn collect_properties(&mut self, property: PropertyId) -> Result<(), HeapError> {

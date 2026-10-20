@@ -117,6 +117,7 @@ pub(super) enum NodeProperty {
 
 pub(super) struct StageBinding {
     pub scene: Stage,
+    pub retirement_revision: u64,
     handles: BTreeMap<NodeId, NodeBinding>,
     root: Option<RootToken>,
     methods: [FunctionId; 5],
@@ -206,6 +207,7 @@ impl StageBinding {
         }
         Ok(Self {
             scene: Stage::default(),
+            retirement_revision: 0,
             handles: BTreeMap::new(),
             root: None,
             methods,
@@ -854,6 +856,9 @@ impl StageBinding {
     }
 
     fn retire(&mut self, heap: &mut Heap, nodes: Vec<NodeId>) -> Result<(), AdapterError> {
+        if !nodes.is_empty() {
+            self.retirement_revision = self.retirement_revision.wrapping_add(1);
+        }
         for id in nodes {
             if let Some(binding) = self.handles.remove(&id)
                 && let Ok(value) = heap.import_handle(binding.handle)

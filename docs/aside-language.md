@@ -389,6 +389,10 @@ task.request_cancel(reason) 为合作请求，在下一个合法安全点注入�
 
 Reel 的 `completion(owner: null)` 是此协议的具体宿主接口：resolve(value)、reject(error)、cancel() 第一次结算返回 true，重复返回 false；await 返回原值或抛出拒绝值/Cancelled。它是归会话或舞台节点所有的一次性 UI 结果，不是上文尚未实现的语言 Future，不执行 adoption，也不引入 Aside 对舞台或平台的依赖。等待者被取消只解除其订阅；节点退休取消未结算结果，已结算值可重复等待。
 
+Reel 的 completion 与 spawn 结果含只读可观察 `pending: bool`；开始为 true，实际终态为 false，任务取消清理期间仍为 true。普通读取、bind/derive 使用共同宿主属性通路；所有者取消在宿主维护与响应式稳定阶段发布，无须等待者调用 await。scope 内省略 owner 的 completion 随 scope 结束，绑定可直接表达请求是否仍进行中。状态与弱所有者登记进入快照；completion/spawn/scope::spawn ABI 2、reel.result 验证器 2、SessionSnapshot 24，VM8/ASB1 保持，不增加语言语法或指令。
+
+Rust 宿主内部弱登记复用 `Heap::peek_weakref`，在不运行 GC 的事务内检查目标，不给当前标记周期保活；需跨事务持有值时使用 `upgrade_weakref`。属性订阅采用相同窄入口。新增 Rust 查询方法，VM 与 ASB 格式保持。
+
 TaskGroup 拥有自己创建的子任务。all 返回输入顺序的结果 array；首次失败请求取消其余任务并等其终止，再抛含主/收尾失败的 GroupError。race 交付最先结算项的 (index,result) 或失败，同一调度步骤依完成队列顺序决定，按组策略取消其余自有任务并完成收尾。owner 硬撤销使整组立即失效。wait_any 对外部共享 Future 只解除本次订阅，不能取消其生产者。组、取消请求、待结果和收尾状态均进入快照。
 
 async 正文返回尚未结算的 Future 时进入 Adopting，任务及其结果仍受原 owner 管理。被采用者结算后才结算采用者并终止任务；owner 撤销解除本次 adoption 订阅，取消采用者自己的任务 Future，保留共享被采用者的生产者。取消请求与 adoption 订阅状态进入快照。

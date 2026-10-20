@@ -1005,6 +1005,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 "scope" => 4,
                 "clock" => 3,
                 "run" | "scope::run" => 2,
+                "completion" | "spawn" | "scope::spawn" => 2,
                 _ => 1,
             },
             parameters,

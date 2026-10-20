@@ -1472,6 +1472,10 @@ impl SessionVm {
         Ok(self.vm.begin_collection()?)
     }
     pub fn gc_step(&mut self, budget: GcBudget) -> Result<GcProgress, AdapterError> {
-        Ok(self.vm.gc_step(budget)?)
+        let progress = self.vm.gc_step(budget)?;
+        if progress.cycle_complete {
+            self.results.owners_changed();
+        }
+        Ok(progress)
     }
 }

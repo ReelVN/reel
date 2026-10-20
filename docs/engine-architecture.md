@@ -138,6 +138,10 @@ Reel 会话调度显式选择 `SessionBudget::Exact(SliceBudget)` 或 `RetryMini
 
 普通 UI 流程使用 `completion(owner: null)` 创建一次性结果，`await result` 等待，回调用 `result.resolve(value: null)`、`result.reject(error)` 或 `result.cancel()` 结算。owner 省略时沿用活动规则：主剧情归会话，回调归事件节点；显式节点退休使未结算结果取消。第一次结算返回 true，之后返回 false；null 也是合法结果。重复等待读取同一终态，resolve 原样返回值，不采用另一个可等待对象。结果不占用对白/选择权限，不记录剧情历史；组件可以返回 `{root, result}` 供主剧情或其他回调组合。
 
+`completion` 和 `spawn` 的结果提供只读可观察 bool `pending`：创建时为 true，返回、拒绝、故障或取消清理完成时变为 false；任务取消清理期间保持 true。支持普通读取、bind 与 derive，不允许脚本赋值。等待者取消只解除订阅；completion 归当前 scope 时，scope 退出取消该生产者并发布状态，长期组件可据此判断重入，无需维护独立的 open 标志。拥有节点/作用域的 completion 用有预算的弱登记追踪；未被 await 的结果也在所有者变化后的维护阶段发布取消，随后响应式求值稳定再呈现。登记不保活结果及其 owner，正常结算与所有者变化才触发分片扫描，每步最多 64 项；稳定帧不扫描，退出释放已有存储。登记和可观察值随快照恢复。范围为 reel-engine 结果/快照/注册、实际组件示例、双语指南；completion/spawn/scope::spawn ABI 2、reel.result 验证器 2、SessionSnapshot 24，VM8/ASB1 保持，无新增依赖。
+
+Rust 宿主内部弱登记复用 `Heap::peek_weakref`，在不运行 GC 的事务内检查目标，不给当前标记周期保活；需跨事务持有值时使用 `upgrade_weakref`。属性订阅采用相同窄入口。新增 Rust 查询方法，VM 与 ASB 格式保持。
+
 此接口属于 Reel 的宿主 Awaitable，复用 Aside NativeFrame、WaitId、错误传播与任务取消；新增 native ABI 1，Aside 字节码/ASB 不变，不增加依赖。结果、owner 和任意返回值在 VM 堆中追踪，终态释放 owner；服务只保存尚未交付的等待订阅，取消等待者不取消结果。订阅按登记顺序分批维护，每步最多检查 64 项，一轮完成后才调度脚本，避免结算顺序随切片变化。空闲不启动计时轮询，未被引用且未被等待的结果可直接 GC。验证范围为 reel-engine、公开组件示例、双语指南与本地移植烟测，覆盖源码/ASB、表单及子游戏返回值、失败、节点退休、多个消费者和 GC。
 
 工程直接从 main.aside 启动。main 中的 `game.configure(title: null, width: null, height: null, fonts: null, text_speed: null)` 更新会话的呈现设置；省略项保留当前设置，参数按普通 Aside 表达式求值。设置以不可变值发布给宿主，宿主只在值身份变化时应用。画布采用 contain 变换并共用绘制/输入几何；未设置画布时沿用视口。设置首个画布维度时，另一维默认 1920×1080 的对应值。fonts 接受一个字体文件或非空有序数组；作品须在首次呈现前显式配置字体，缺少字体时报错。节点 font 使用已提供字体中的字体族/回退列表，system-ui 指向配置的默认列表。文件相对资源根解析并共享计量后的数据，字体回退和文字整形复用 Fontique/Parley；作者播放器关闭系统字体发现。平台窗口句柄始终留在适配器。ASB 1.0 元数据 schema 4 只保存代码图与入口，运行设置由脚本执行产生。

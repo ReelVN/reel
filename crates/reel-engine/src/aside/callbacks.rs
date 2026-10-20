@@ -387,7 +387,9 @@ impl SessionVm {
             || self.transitions_pending()
             || self.transitions.pending(self.activities.time())
             || self.particles.needs_work(self.stage.scene.revision())
-            || self.results.needs_work(self.stage.scene.revision())
+            || self
+                .results
+                .needs_work(self.stage.scene.revision(), self.stage.retirement_revision)
             || self.issued.is_some()
             || self.task.is_some()
                 && self
@@ -562,6 +564,7 @@ impl SessionVm {
         if self.results.maintain(
             &mut self.vm,
             self.stage.scene.revision(),
+            self.stage.retirement_revision,
             |heap, result, owner| {
                 lists::virtualized::presentation_current(
                     heap,

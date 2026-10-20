@@ -1246,6 +1246,25 @@ impl Heap {
             None => Ok(None),
         }
     }
+    /// Inspect an internal weak subscription without retaining its target in
+    /// the current GC cycle. The value must stay within a transaction that
+    /// cannot run collection; use `upgrade_weakref` when it needs to escape.
+    pub fn peek_weakref(&self, reference: Value) -> Result<Option<Value>, HeapError> {
+        let reference = self.object(self.key(reference)?)?;
+        if reference.kind != ObjectKind::WeakRef {
+            return Err(HeapError::WrongKind);
+        }
+        let Some(handle) = reference.weak else {
+            return Ok(None);
+        };
+        let Some(object) = heap_key(handle.key).and_then(|key| self.objects.get(key)) else {
+            return Ok(None);
+        };
+        if object.dying || (self.gc.cutoff() && object.mark != self.gc.cycle) {
+            return Ok(None);
+        }
+        Ok(Some(Value::object(self.id, handle.key)))
+    }
     pub(crate) fn weak_confirmed(&self, handle: HeapHandle) -> bool {
         heap_key(handle.key)
             .and_then(|k| self.objects.get(k))
