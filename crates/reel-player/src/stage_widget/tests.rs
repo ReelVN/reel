@@ -2,6 +2,7 @@ use super::*;
 mod cursor;
 mod radio_navigation;
 mod retained;
+mod scroll_alignment;
 mod scroll_restore;
 use crate::session::SessionUi;
 use reel_core::budget::{BudgetCategory, BudgetPool, QueueLimits};
@@ -1064,7 +1065,15 @@ fn stretched_background_follows_content_without_changing_flow_or_scroll_extent()
         .unwrap()
         .downcast::<SceneWidget>()
         .unwrap();
-    assert_eq!(scene.scroll.content(), Size::new(80., 97.));
+    assert_eq!(scene.scroll.content(), Size::new(60., 97.));
+    assert_eq!(
+        scrolled.geometry().get(ids[&f.blue].0).unwrap().size.width,
+        60.
+    );
+    assert_eq!(
+        scrolled.geometry().get(ids[&tail].0).unwrap().size.width,
+        40.
+    );
 }
 
 #[test]
