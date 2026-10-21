@@ -87,7 +87,7 @@ build 默认使用 Debug，完整源码与映射保存在包内，运行错误�
 
 启用 window 后，源码与构建产物都使用真实窗口、文字布局和呈现输入路径。同步构造组件在同一运行时间片内连续推进，到等待或时间片结束才更新画面，不会每创建一个节点就单独显示一帧。对白或选择等待时会先完成当前 GC，再休眠等待输入；自然结束后窗口保留最后画面，关闭窗口退出并完成清理；Escape 作为返回输入交给当前 UI。
 
-工程只读取入口实际导入的源码。game::ui::scene 对应入口目录下的 ui/scene.aside；--module first=../library 可提供外部源码根，同一目录的别名共享环境。函数循环引用允许链接，顶层读取未初始化绑定在实际读取处报 ModuleInitializationCycle。build 把完整模块图和入口放入同一 .asb，移动后无需原源码，初始化设置仍由同一段 main 执行。资源根默认为源码或 ASB 所在目录，也可用 --assets 指定；export 另外生成资源包与可搬移的 release.json 清单。
+工程只读取入口实际导入的源码。game::ui::scene 对应入口目录下的 ui/scene.aside；--module first=../library 可提供外部源码根，同一目录的别名共享环境。函数循环引用允许链接，顶层读取未初始化绑定在实际读取处报 ModuleInitializationCycle。build 把完整模块图和入口放入同一 .asb，移动后无需原源码，初始化设置仍由同一段 main 执行。资源根默认为源码或 ASB 所在目录，也可用 --assets 指定；export 另外生成资源包，并将可搬移的清单嵌入 ASB。
 
 源码、完整源码定位文本和文字常量统一使用实际包预算。长文本和拼接按执行片推进，分片不会截断文字，也不规定台词长度。
 
@@ -95,16 +95,18 @@ build 默认使用 Debug，完整源码与映射保存在包内，运行错误�
 
 ### 导出开发工程和发布目录
 
-`reel export` 在同一次构建中组织代码和资源；默认导出开发工程，`--release` 导出发布目录。先按前面的示例准备字体，再执行：
+`reel export` 在同一次构建中组织代码和资源；默认导出开发工程，`--release` 导出发布目录。先按前面的示例准备字体，并用 `cargo build -p reel-cli --features window` 构建工具与独立播放器，再执行：
 
 ```powershell
 ./target/debug/reel.exe export examples/author_stage.aside --output target/reel-artifacts/development --resource assets=examples/assets --resource fonts=target/reel-artifacts/author-assets/fonts
 ./target/debug/reel.exe export examples/author_stage.aside --release --output target/reel-artifacts/release --resource assets=examples/assets --resource fonts=target/reel-artifacts/author-assets/fonts
-./target/debug/reel.exe run target/reel-artifacts/release/release.json
-./target/debug/reel.exe dev target/reel-artifacts/development/release.json
+./target/debug/reel.exe run target/reel-artifacts/release/game.asb
+./target/debug/reel.exe dev target/reel-artifacts/development/game.asb
 ```
 
-开发目录包含可修改的 `script/`、散资源、带源码诊断的 `game.asb` 和 `release.json`；可以直接 run，也可以 dev 重新编译。发布目录包含 `game.asb`、`game.rtp`、`resources.rpk` 和 `release.json`，另外携带对应平台播放器即可分发。复制整个目录后仍使用相同命令，不依赖构建机绝对路径。
+开发目录包含可修改的 `script/`、散资源和带源码诊断的 `game.asb`；可以直接 run，也可以 dev 按内嵌源码配置重新编译。发布目录包含 `game.exe`、`game.asb`、`game.rtp` 和 `resources.rpk`（资源较多时还有后续卷）。将整个目录交给玩家，双击 `game.exe` 即可开始；其他平台使用对应可执行文件。清单内嵌于 `game.asb`，所有资源路径相对主包目录。
+
+发布播放器从自身目录寻找 `game.asb`，存档默认写入同级 `saves/`；`--save-directory <directory>` 可另选位置。更新游戏时保留 saves。发布导出使用 reel 工具同级的 reel-game 播放器；发行构建可用 `cargo build --release -p reel-cli --features window`。当前 ASB 为 2.0，旧产物需重新构建。
 
 `--resource prefix=directory` 把一个目录映射到脚本中的逻辑路径；可重复声明。`--text locales=build/locales` 将已合并的翻译目录放入文本包，脚本仍使用 `localization.load("en", "locales/en.ftl")`。开发导出复制这些文件，发布导出将它们打包。翻译源文件可继续按剧情和 UI 模块组织，先用 `reel loc bundle` 生成运行目录。
 
@@ -112,7 +114,7 @@ build 默认使用 Debug，完整源码与映射保存在包内，运行错误�
 
 发布时原文常量移入 `game.rtp`，ASB 不携带完整源码。池目前整体驻留，字符串按使用共享引用；不是启动就把所有正文复制成永久 VM 对象。修改译文无需重编代码，但原文池必须与 ASB 对应。图片、音频和视频按资源包索引读取，不整体解包。
 
-发布默认关闭散文件覆盖；需要模组或调试覆盖时显式 `reel run release.json --assets overrides`。清单里的包按顺序后者覆盖前者，散文件优先。`--overwrite` 会替换整个既有导出目录，旧存档与额外文件不复制到新导出；运行数据应单独保存。导出目录不能放在输入源码或资源目录里面。
+发布默认关闭散文件覆盖；需要模组或调试覆盖时显式 `reel run game.asb --assets overrides`。清单里的包按顺序后者覆盖前者，散文件优先。`--overwrite` 会替换整个既有导出目录，旧存档与额外文件不复制到新导出；运行数据应单独保存。导出目录不能放在输入源码或资源目录里面。
 
 ### 已接通的范围、容器与插值
 在函数里可以用范围循环生成内容，再用插值展示结果。范围不会先创建一个大数组；`..` 不含终点，`..=` 包含终点。数组支持 `append`、`pop` 和 `len`，表支持 `has_own`、`get`、`remove` 和 `len`。插值当前支持字符串、数字、布尔值和 null。
