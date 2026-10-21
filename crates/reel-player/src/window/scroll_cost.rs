@@ -273,7 +273,7 @@ fn accepted_position(state: &State) -> f64 {
     let geometry = state
         .presentation
         .bridge
-        .accepted_geometry(&state.presentation.bridge.accepted_key().unwrap())
+        .accepted_geometry(state.presentation.bridge.accepted_key().unwrap())
         .unwrap();
     let list = geometry.get(stage.node_widget(list.id).unwrap()).unwrap();
     list.window_transform.translation().y

@@ -196,10 +196,10 @@ impl SessionVm {
         }
         for i in 0..h.sequence_len(get(h, s, S::Pinned)?)? {
             let key = h.sequence_get(get(h, s, S::Pinned)?, i)?;
-            if let Some(entry) = find(h, get(h, s, S::Sorted)?, key, self.read_limit)? {
-                if !includes(h.sequence_get(entry, INDEX)?.as_int().unwrap() as u32)? {
-                    return Ok(false);
-                }
+            if let Some(entry) = find(h, get(h, s, S::Sorted)?, key, self.read_limit)?
+                && !includes(h.sequence_get(entry, INDEX)?.as_int().unwrap() as u32)?
+            {
+                return Ok(false);
             }
         }
         // The unchanged target was included at preparation. A replacement or
