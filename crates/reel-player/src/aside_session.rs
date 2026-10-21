@@ -331,11 +331,18 @@ impl AsideSessionUi {
         // that intermediate tree (for example an empty far-scroll window), or
         // mint a receipt that could complete a geometry/presentation barrier.
         if self.state == StoryState::Running
-            && (!self.vm.stage_ready() || self.ui.images_pending() || !self.transitions.ready())
+            && (!self.vm.stage_ready()
+                || self.ui.images_block_presentation()
+                || !self.transitions.ready()
+                || (self.ui.images_pending()
+                    && (self.transitions.pending() || self.vm.transition_views().next().is_some())))
         {
             return Ok(None);
         }
         let (source, mut frame) = self.ui.record(bridge, root, id)?;
+        if !frame.current {
+            return Ok(Some((source, frame)));
+        }
         frame.geometry = Some(self.vm.record_geometry(
             frame.stamp.presentation_request,
             |query| {
@@ -383,7 +390,7 @@ impl AsideSessionUi {
     fn accept_recorded(&mut self, frame: &RecordedProjection) -> Result<(), Error> {
         self.transitions
             .accepted_projection(&mut self.vm, &frame.transitions)?;
-        if self.state == StoryState::Running {
+        if self.state == StoryState::Running && frame.current {
             if let Some(identity) = &frame.identity
                 && let Some(geometry) = &frame.geometry
             {

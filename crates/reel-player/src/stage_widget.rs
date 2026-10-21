@@ -31,6 +31,7 @@ mod projection_tests;
 mod selection;
 #[cfg(test)]
 mod tests;
+mod virtual_images;
 use input::NodeInput;
 
 #[derive(Clone, Default)]
@@ -310,10 +311,13 @@ impl StageView {
             .collect()
     }
     pub fn image_requests(&self) -> Result<ImageRequests, String> {
+        Self::image_requests_for(self.root.as_ref())
+    }
+    fn image_requests_for(root: Option<&Arc<SceneNode>>) -> Result<ImageRequests, String> {
         let mut requests = BTreeMap::new();
         let mut mounted = std::collections::BTreeSet::new();
         let mut encoded = BTreeMap::new();
-        let mut pending: Vec<_> = self.root.iter().map(|node| (node, true)).collect();
+        let mut pending: Vec<_> = root.into_iter().map(|node| (node, true)).collect();
         while let Some((node, parent_visible)) = pending.pop() {
             if !node.image_branch {
                 continue;

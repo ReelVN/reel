@@ -650,7 +650,7 @@ impl State {
         if self
             .session
             .as_ref()
-            .is_some_and(|session| session.ui().images_pending())
+            .is_some_and(|session| session.ui().images_block_presentation())
         {
             return Ok(());
         }

@@ -10,6 +10,7 @@ use reel_ui::{
 
 #[derive(Debug)]
 pub struct RecordedProjection {
+    pub(crate) current: bool,
     pub(crate) key: CandidateKey,
     pub(crate) stamp: ProjectionStamp,
     pub(crate) stage_widget: WidgetId,
@@ -173,6 +174,7 @@ impl SessionUi {
             .and_then(|widget| widget.downcast::<StageWidget>())
             .ok_or("recorded stage widget is unavailable")?;
         let receipt = RecordedProjection {
+            current: !self.images_pending(),
             key: source.key(),
             stamp: widget.current_stamp(),
             stage_widget,
@@ -214,6 +216,9 @@ impl SessionUi {
         binding.control_accepted = Some(stamp);
         binding.accepted_buttons = Some(stamp.button_revision);
         binding.accepted = (!self.images_pending()).then_some(stamp);
+        if frame.current && !self.images_pending() && stamp == self.stamp {
+            self.images_waiting_presentation = false;
+        }
         true
     }
 }

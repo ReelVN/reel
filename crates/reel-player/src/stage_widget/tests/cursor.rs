@@ -2,7 +2,7 @@ use super::*;
 use reel_ui::dpi::PhysicalPosition;
 use std::{cell::RefCell, rc::Rc};
 
-fn pointer(kind: PointerType, position: (f64, f64), down: Option<bool>) -> PointerEvent {
+pub(super) fn pointer(kind: PointerType, position: (f64, f64), down: Option<bool>) -> PointerEvent {
     let pointer = PointerInfo {
         pointer_id: Some(PointerId::PRIMARY),
         persistent_device_id: None,

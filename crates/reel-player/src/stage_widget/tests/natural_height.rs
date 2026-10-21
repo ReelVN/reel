@@ -258,6 +258,12 @@ fn virtual_list_natural_external_wheel_frames() {
     natural_scroll_motion(true, true);
 }
 
+#[test]
+#[ignore = "requires REEL_SCROLL_ASB, REEL_SCROLL_ASSETS and REEL_SESSION_FONT"]
+fn virtual_list_natural_external_drag_frames() {
+    natural_scroll_motion(false, true);
+}
+
 fn natural_scroll_motion(wheel: bool, external: bool) {
     let code = r#"
         fn main(){
@@ -346,8 +352,40 @@ fn natural_scroll_motion(wheel: bool, external: bool) {
         )
         .unwrap();
         let mut frame = 0;
-        let mut render = |d: &mut AsideSessionUi, bridge: &mut PresentationBridge| {
-            d.sync(bridge, root).unwrap();
+        let mut resource_wait: Option<(std::time::Instant, String, usize, std::time::Duration)> =
+            None;
+        let cadence = std::time::Duration::from_secs_f64(
+            std::env::var("REEL_SCROLL_FRAME_MS")
+                .ok()
+                .map(|s| s.parse::<f64>().unwrap())
+                .unwrap_or(1000. / 60.)
+                / 1000.,
+        );
+        let mut last_accepted = std::time::Instant::now();
+        let mut next_frame = last_accepted;
+        let mut blocked = false;
+        let mut render = |d: &mut AsideSessionUi, bridge: &mut PresentationBridge, step: &str| {
+            loop {
+                d.sync(bridge, root).unwrap();
+                if external && d.ui().images_pending() && resource_wait.is_none() {
+                    resource_wait = Some((
+                        std::time::Instant::now(),
+                        step.to_owned(),
+                        0,
+                        std::time::Duration::ZERO,
+                    ));
+                }
+                if !external || std::time::Instant::now() >= next_frame {
+                    break;
+                }
+                // Resource completions and VM feedback keep progressing between
+                // display deadlines, as they do on the window host's wake path.
+                settle(d);
+                std::thread::sleep(
+                    std::time::Duration::from_millis(1)
+                        .min(next_frame.saturating_duration_since(std::time::Instant::now())),
+                );
+            }
             let accepted = bridge.accepted_key().map(|key| key.frame_id());
             let pending = bridge.pending_count();
             frame += 1;
@@ -355,6 +393,15 @@ fn natural_scroll_motion(wheel: bool, external: bool) {
                 assert!(d.has_runnable_tasks() || d.ui().images_pending());
                 assert_eq!(bridge.pending_count(), pending);
                 assert_eq!(bridge.accepted_key().map(|key| key.frame_id()), accepted);
+                if external && !blocked {
+                    eprintln!(
+                        "blocked step={step} stage_ready={} images_pending={} images_block={}",
+                        d.adapter().stage_ready(),
+                        d.ui().images_pending(),
+                        d.ui().images_block_presentation()
+                    );
+                    blocked = true;
+                }
                 settle(d);
                 if external {
                     std::thread::sleep(std::time::Duration::from_millis(1));
@@ -370,6 +417,24 @@ fn natural_scroll_motion(wheel: bool, external: bool) {
                 )),
                 NoticeResult::Accepted
             );
+            let now = std::time::Instant::now();
+            if let Some((start, label, frames, longest)) = &mut resource_wait {
+                *longest = (*longest).max(now - last_accepted);
+                if !receipt.current {
+                    *frames += 1;
+                } else {
+                    eprintln!(
+                        "resources step={label} pending={:?} retained_accepted={} longest_accept_gap={:?}",
+                        start.elapsed(),
+                        frames,
+                        longest
+                    );
+                    resource_wait = None;
+                }
+            }
+            last_accepted = now;
+            next_frame = now + cadence;
+            blocked = false;
             d.presented(bridge, &receipt).unwrap();
             settle(d);
             Some(rows)
@@ -377,16 +442,29 @@ fn natural_scroll_motion(wheel: bool, external: bool) {
         let mut previous_rows = BTreeMap::new();
         let mut warm_frames = 0;
         for _ in 0..2000 {
-            if let Some(rows) = render(&mut d, &mut bridge) {
+            if let Some(rows) = render(&mut d, &mut bridge, "warm") {
                 previous_rows = rows;
-                warm_frames += 1;
-                if warm_frames == 5 {
+                warm_frames = if d.ui().images_pending() {
+                    0
+                } else {
+                    warm_frames + 1
+                };
+                if warm_frames >= 5 {
                     break;
                 }
             }
         }
         assert!(!previous_rows.is_empty());
-        for jump in 0..if wheel { 180 } else { 6 } {
+        if external && !wheel {
+            d.handle_pointer(
+                &mut bridge,
+                super::cursor::pointer(PointerType::Mouse, (876., 20.), Some(true)),
+            )
+            .unwrap();
+            settle(&mut d);
+        }
+        let motion_started = std::time::Instant::now();
+        for jump in 0..if wheel || external { 180 } else { 6 } {
             if wheel {
                 d.handle_pointer(
                     &mut bridge,
@@ -405,6 +483,17 @@ fn natural_scroll_motion(wheel: bool, external: bool) {
                             if jump < 90 { 40.25 } else { -37.25 },
                         )),
                     }),
+                )
+                .unwrap();
+            } else if external {
+                let y = if jump < 90 {
+                    20. + (jump + 1) as f64 * 3.
+                } else {
+                    290. - (jump - 89) as f64 * 3.
+                };
+                d.handle_pointer(
+                    &mut bridge,
+                    super::cursor::pointer(PointerType::Mouse, (876., y), None),
                 )
                 .unwrap();
             } else {
@@ -438,7 +527,15 @@ fn natural_scroll_motion(wheel: bool, external: bool) {
             let started = std::time::Instant::now();
             let mut waiting_images = 0;
             for phase in 0..if external { 1000 } else { 5 } {
-                let Some(rows) = render(&mut d, &mut bridge) else {
+                let Some(rows) = render(
+                    &mut d,
+                    &mut bridge,
+                    &format!(
+                        "{}-{}:{jump}",
+                        if wheel { "wheel" } else { "drag" },
+                        if jump < 90 { "down" } else { "up" }
+                    ),
+                ) else {
                     waiting_images += usize::from(d.ui().images_pending());
                     continue;
                 };
@@ -488,12 +585,40 @@ fn natural_scroll_motion(wheel: bool, external: bool) {
                         );
                     }
                 }
+                if external && !wheel && jump == 89 {
+                    assert!(
+                        rows.keys().next().copied().unwrap() > 0,
+                        "drag must move to a later window"
+                    );
+                }
                 before = rows;
                 if accepted == 3 {
                     break;
                 }
             }
             assert!(accepted >= 2, "far window did not become ready");
+        }
+        if external {
+            eprintln!(
+                "motion kind={} cadence={cadence:?} duration={:?}",
+                if wheel { "wheel" } else { "drag" },
+                motion_started.elapsed()
+            );
+            if !wheel {
+                d.handle_pointer(
+                    &mut bridge,
+                    super::cursor::pointer(PointerType::Mouse, (876., 20.), Some(false)),
+                )
+                .unwrap();
+                settle(&mut d);
+            }
+            for _ in 0..1000 {
+                render(&mut d, &mut bridge, "drain");
+                if !d.ui().images_pending() {
+                    break;
+                }
+            }
+            assert!(!d.ui().images_pending());
         }
     }
 }
