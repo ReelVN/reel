@@ -261,7 +261,7 @@ impl SessionVm {
                         &[]
                     },
                     continuation: Continuation {
-                        version: 4,
+                        version: 1,
                         stage: 0,
                         values: &[object],
                         faults: FaultRetention::Preserve,

@@ -282,7 +282,7 @@ fn build_inner(
         }
     }
     let metadata = rp::Metadata {
-        schema_version: 4,
+        schema_version: 1,
         bytecode_blake3: rp::digest(bytecode),
         language_version: p.language_version,
         bytecode_version: p.format_version,

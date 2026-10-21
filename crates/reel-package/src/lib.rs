@@ -1,4 +1,4 @@
-//! ASB 2.0 containers for linked source graphs and embedded distribution metadata.
+//! ASB 1.0 containers for linked source graphs and embedded distribution metadata.
 //! Integrity hashes are not signatures or host authorization.
 pub mod archive;
 mod codec;

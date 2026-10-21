@@ -4,7 +4,7 @@ use crate::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-pub(crate) const VERSION: u32 = 10;
+pub(crate) const VERSION: u32 = 1;
 const MAGIC: &[u8; 8] = b"ASIDSN01";
 
 #[derive(Debug)]

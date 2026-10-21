@@ -151,7 +151,7 @@ impl SessionVm {
         self.vm.respond(
             t,
             HostResponse::Continue(Continuation {
-                version: 2,
+                version: 1,
                 stage: phase,
                 values: &w.values(),
                 faults: FaultRetention::Preserve,
@@ -173,7 +173,7 @@ impl SessionVm {
                 closure,
                 arguments: &[arg],
                 continuation: Continuation {
-                    version: 2,
+                    version: 1,
                     stage: phase,
                     values: &w.values(),
                     faults: FaultRetention::Preserve,
