@@ -561,6 +561,9 @@ impl Widget for SessionWidget {
                 {
                     self.events.borrow_mut().push(NodeEvent::Pointer(*input))
                 }
+                NodeEvent::Wheel(input) if self.binding.borrow().control_accepted.is_some() => {
+                    self.events.borrow_mut().push(NodeEvent::Wheel(*input));
+                }
                 _ => {}
             }
             ctx.set_handled();

@@ -92,7 +92,7 @@ impl Shape {
             )?,
             Self::Radio => controls::radio_kind(heap, fields, 0, limit)?,
             Self::Input => {
-                for index in 1..=3 {
+                for index in 1..=4 {
                     input::validate(heap, index, get(index)?)?;
                 }
                 NodeKind::Input {
@@ -100,6 +100,7 @@ impl Shape {
                     listening: get(1)?.tag() != ValueTag::Null,
                     keyboard: get(2)?.tag() != ValueTag::Null,
                     pointer: get(3)?.tag() != ValueTag::Null,
+                    wheel: get(4)?.tag() != ValueTag::Null,
                 }
             }
             Self::Image | Self::Video => NodeKind::Image {
@@ -193,6 +194,7 @@ impl StageBinding {
             ("reel.layout", Shape::Stack),
         ] {
             let version = match shape {
+                Shape::Input => 10,
                 Shape::TextArea => 1,
                 Shape::Video => 7,
                 Shape::Image => 11,

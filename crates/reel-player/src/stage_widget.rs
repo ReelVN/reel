@@ -999,8 +999,14 @@ impl SceneWidget {
                     bindings,
                     keyboard,
                     pointer,
+                    wheel,
                     ..
-                } => Some(NodeInput::new(bindings.clone(), *keyboard, *pointer)),
+                } => Some(NodeInput::new(
+                    bindings.clone(),
+                    *keyboard,
+                    *pointer,
+                    *wheel,
+                )),
                 _ => None,
             },
             label,
@@ -1208,17 +1214,19 @@ impl SceneWidget {
                 bindings,
                 keyboard,
                 pointer,
+                wheel,
                 ..
             },
         ) = (&mut this.widget.input, &view.node.kind)
             && (input.bindings != *bindings
                 || input.keyboard != *keyboard
-                || input.pointer_enabled != *pointer)
+                || input.pointer_enabled != *pointer
+                || input.wheel_enabled != *wheel)
         {
             input.cancel(this.widget.node.id, |event| {
                 this.ctx.submit_action::<NodeEvent>(event)
             });
-            *input = NodeInput::new(bindings.clone(), *keyboard, *pointer);
+            *input = NodeInput::new(bindings.clone(), *keyboard, *pointer, *wheel);
         }
         if this.widget.node.props.enabled != view.node.props.enabled {
             this.ctx.set_disabled(!view.node.props.enabled);
@@ -1670,6 +1678,9 @@ impl Widget for SceneWidget {
             return;
         }
         if let Some(input) = &mut self.input {
+            if input.wheel(self.node.id, event, ctx) {
+                return;
+            }
             input.drag(self.node.id, event, ctx);
             if input.pointer(self.node.id, event, |e| ctx.submit_action::<NodeEvent>(e)) {
                 if matches!(event, PointerEvent::Down(_)) {

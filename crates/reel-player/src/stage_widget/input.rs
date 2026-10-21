@@ -6,7 +6,9 @@ use reel_ui::{
     },
     input::{ActionMap, ActionPhase, Control, InputDeviceId, InputEvent},
     kurbo::Point,
-    stage::{InputBindings, NodeAction, NodeEvent, NodeId, NodeKey, NodePointer, PointerPhase},
+    stage::{
+        InputBindings, NodeAction, NodeEvent, NodeId, NodeKey, NodePointer, NodeWheel, PointerPhase,
+    },
 };
 
 pub(super) struct NodeInput {
@@ -14,11 +16,17 @@ pub(super) struct NodeInput {
     map: ActionMap<usize>,
     pub keyboard: bool,
     pub pointer_enabled: bool,
+    pub wheel_enabled: bool,
     drag: Option<(PointerInfo, Point)>,
     held_keys: Vec<KeyboardEvent>,
 }
 impl NodeInput {
-    pub fn new(bindings: InputBindings, keyboard: bool, pointer_enabled: bool) -> Self {
+    pub fn new(
+        bindings: InputBindings,
+        keyboard: bool,
+        pointer_enabled: bool,
+        wheel_enabled: bool,
+    ) -> Self {
         let map = ActionMap::new(
             bindings
                 .iter()
@@ -31,6 +39,7 @@ impl NodeInput {
             map,
             keyboard,
             pointer_enabled,
+            wheel_enabled,
             drag: None,
             held_keys: Vec::new(),
         }
@@ -138,6 +147,29 @@ impl NodeInput {
             _ => return false,
         };
         self.update(node, &input, emit)
+    }
+    pub fn wheel(&self, node: NodeId, event: &PointerEvent, ctx: &mut EventCtx<'_>) -> bool {
+        let PointerEvent::Scroll(event) = event else {
+            return false;
+        };
+        if !self.wheel_enabled {
+            return false;
+        }
+        let delta = reel_ui::widgets::wheel_delta_pixels(
+            event.delta,
+            ctx.scale_factor(),
+            ctx.content_box().size(),
+        );
+        if !delta.is_finite() {
+            return false;
+        }
+        ctx.submit_action::<NodeEvent>(NodeEvent::Wheel(NodeWheel {
+            node,
+            position: ctx.local_position(event.state.position),
+            delta,
+        }));
+        ctx.set_handled();
+        true
     }
     pub fn drag(&mut self, node: NodeId, event: &PointerEvent, ctx: &mut EventCtx<'_>) -> bool {
         if !self.pointer_enabled {

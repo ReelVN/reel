@@ -74,6 +74,7 @@ pub enum NodeEvent {
     Scroll(NodeScroll),
     VirtualList(NodeVirtualList),
     Pointer(NodePointer),
+    Wheel(NodeWheel),
     Text(NodeText),
     Key(NodeKey),
 }
@@ -151,6 +152,14 @@ pub struct NodePointer {
     pub node: NodeId,
     pub position: Point,
     pub phase: PointerPhase,
+}
+
+/// Unconsumed wheel input: local accepted position and logical window-axis pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NodeWheel {
+    pub node: NodeId,
+    pub position: Point,
+    pub delta: Vec2,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -262,6 +271,7 @@ pub enum NodeKind {
         listening: bool,
         keyboard: bool,
         pointer: bool,
+        wheel: bool,
     },
     Scroll {
         axis: crate::widgets::ScrollAxis,

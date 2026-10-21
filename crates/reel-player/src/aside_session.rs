@@ -533,6 +533,9 @@ impl AsideSessionUi {
                         NodeEvent::Pointer(input) => {
                             self.vm.input_pointer(self.ui.session_mut(), input)?;
                         }
+                        NodeEvent::Wheel(input) => {
+                            self.vm.input_wheel(self.ui.session_mut(), input)?;
+                        }
                         NodeEvent::Interaction(_)
                         | NodeEvent::Scroll(_)
                         | NodeEvent::VirtualList(_) => {}

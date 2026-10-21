@@ -32,6 +32,28 @@ impl ScriptTask {
 }
 
 impl SessionVm {
+    pub fn input_wheel(
+        &mut self,
+        session: &mut Session,
+        input: &reel_ui::stage::NodeWheel,
+    ) -> Result<bool, AdapterError> {
+        self.live(session)?;
+        let Some((target, callback)) = self.stage.input_wheel(self.vm.heap(), input)? else {
+            return Ok(false);
+        };
+        let event = super::observable::record(
+            self.vm.heap_mut(),
+            &[
+                ("target", target),
+                ("x", Value::float(input.position.x)),
+                ("y", Value::float(input.position.y)),
+                ("delta_x", Value::float(input.delta.x)),
+                ("delta_y", Value::float(input.delta.y)),
+            ],
+            &[],
+        )?;
+        self.start_callback(session, input.node, callback, event)
+    }
     pub fn input_pointer(
         &mut self,
         session: &mut Session,

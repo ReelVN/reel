@@ -59,7 +59,7 @@ pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
         "reel::slider" => &["value", "min", "max", "step", "on_change"],
         "reel::toggle" | "reel::checkbox" => &["label", "value", "on_change"],
         "reel::radio" => &["option", "label", "value", "on_change"],
-        "reel::input" => &["bindings", "on_action", "on_key", "on_pointer"],
+        "reel::input" => &["bindings", "on_action", "on_key", "on_pointer", "on_wheel"],
         _ => &[],
     }
 }
@@ -351,7 +351,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             } else if matches!(name, "checkbox" | "radio") {
                 12
             } else if name == "input" {
-                18
+                19
             } else if name == "scroll" {
                 14
             } else if name == "text_input" {

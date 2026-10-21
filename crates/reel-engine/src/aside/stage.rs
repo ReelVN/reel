@@ -694,12 +694,15 @@ impl StageBinding {
                     input::validate(heap, 2, keyboard)?;
                     let pointer = heap.table_entry(fields, 3)?.1;
                     input::validate(heap, 3, pointer)?;
+                    let wheel = heap.table_entry(fields, 4)?.1;
+                    input::validate(heap, 4, wheel)?;
                     (
                         NodeKind::Input {
                             bindings,
                             listening: callback.tag() != ValueTag::Null,
                             keyboard: keyboard.tag() != ValueTag::Null,
                             pointer: pointer.tag() != ValueTag::Null,
+                            wheel: wheel.tag() != ValueTag::Null,
                         },
                         input::InputField::PROPERTIES.len(),
                     )
@@ -1084,8 +1087,9 @@ impl StageBinding {
                         bindings,
                         keyboard,
                         pointer,
+                        wheel,
                         ..
-                    } => *keyboard || *pointer || !bindings.is_empty(),
+                    } => *keyboard || *pointer || *wheel || !bindings.is_empty(),
                     _ => false,
                 }
             {
