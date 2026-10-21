@@ -498,6 +498,12 @@ impl SessionVm {
         index: usize,
     ) -> Result<(), AdapterError> {
         let callback = self.tasks.remove(index);
+        // Removing a callback shifts later scheduler slots (slot 0 is main).
+        // Keep the next task's identity, including across an empty idle period.
+        if self.schedule_cursor > index + 1 {
+            self.schedule_cursor -= 1;
+        }
+        self.schedule_cursor %= self.tasks.len() + 1;
         if let Some(root) = callback.result {
             if callback.cancelling {
                 let object = self.vm.heap().root_value(root)?;

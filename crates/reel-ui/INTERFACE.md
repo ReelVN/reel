@@ -13,6 +13,8 @@ layout are not contracts. See [origin](ORIGIN.md).
 
 ## UI runtime and presented geometry
 
+`EventCtx::stop_propagation()` stops delivery to ancestors while leaving the event's handled result unchanged. Focused buttons use it for raw South values so the host can produce their semantic confirmation through NavigationInput. `set_handled()` both consumes an event and stops its propagation. Focus ownership changes continue to cancel the previous input owner before subsequent releases; cleanup events retain their normal route.
+
 - `InputGeometrySource::{Live, Presented(Option<Arc<PresentedGeometryView>>)}`.
   Presented(None) has no geometric hit; standalone RenderRoot defaults to Live.
 - `GeometryLimits { max_bytes }` accounts export heap peak without an additional

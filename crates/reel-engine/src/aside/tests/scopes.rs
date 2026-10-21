@@ -178,7 +178,7 @@ fn scope_nodes_retirement_reuses_parent_edges_without_vm_chunk_allocation() {
     );
 }
 
-fn restored(vm: &mut SessionVm, session: &Session) -> (Session, SessionVm) {
+pub(super) fn restored(vm: &mut SessionVm, session: &Session) -> (Session, SessionVm) {
     use super::snapshot::{SessionSnapshot, SnapshotBudget};
     let bytecode = bc::encode(vm.vm.program().package(), bc::Limits::default()).unwrap();
     let mut capture = vm.snapshot_begin(session).unwrap();

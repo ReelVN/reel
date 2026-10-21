@@ -107,6 +107,7 @@ pub(super) fn run_event_pass<E>(
         }
     }
     let mut is_handled = false;
+    let mut propagation_stopped = false;
     for &widget_id in route.unwrap_or(&buffer) {
         let Some(geometry) = view.bind(widget_id) else {
             continue;
@@ -122,7 +123,7 @@ pub(super) fn run_event_pass<E>(
             continue;
         }
 
-        if !is_handled && !outside_scope {
+        if !is_handled && !propagation_stopped && !outside_scope {
             let _span = enter_span(&node.item.state);
             let widget_type_id = node.item.widget.type_id();
             let stack = root
@@ -137,6 +138,7 @@ pub(super) fn run_event_pass<E>(
                 target: original_target.unwrap(),
                 allow_pointer_capture,
                 is_handled: false,
+                propagation_stopped: false,
             };
             let widget = &mut *node.item.widget;
             if trace {
@@ -158,6 +160,7 @@ pub(super) fn run_event_pass<E>(
             };
             pass_fn(widget, &mut ctx, &mut props, event);
             is_handled = ctx.is_handled;
+            propagation_stopped = ctx.propagation_stopped;
         }
 
         merge_state_up(&mut root.widget_arena, widget_id);
@@ -284,6 +287,7 @@ pub(crate) fn run_on_pointer_event_with_view(
                 target: layer_id,
                 allow_pointer_capture: false,
                 is_handled: false,
+                propagation_stopped: false,
             };
             let mut props = PropertiesMut {
                 local: &mut layer_root.item.properties,

@@ -108,6 +108,7 @@ pub struct EventCtx<'a> {
     pub(crate) target: WidgetId,
     pub(crate) allow_pointer_capture: bool,
     pub(crate) is_handled: bool,
+    pub(crate) propagation_stopped: bool,
 }
 
 /// A context provided to the [`Widget::register_children`] method.
@@ -454,6 +455,12 @@ impl_context_method!(
 
 // --- MARK: EVENT HANDLING
 impl EventCtx<'_> {
+    /// Stops delivery to ancestors without consuming the event. The host may
+    /// still use an unhandled physical input for semantic navigation.
+    pub fn stop_propagation(&mut self) {
+        self.propagation_stopped = true;
+    }
+
     /// Whether this event uses the current interaction configuration.
     pub fn input_configuration_is_current(&self) -> bool {
         self.geometry_state().input_revision() == self.widget_state.input_revision
@@ -1779,6 +1786,7 @@ impl_context_method!(
                                 target,
                                 allow_pointer_capture: false,
                                 is_handled: false,
+                                propagation_stopped: false,
                             };
                             let info = ctx.global_state.pointer.info;
                             let dispatching = ctx.global_state.dispatching_pointer;
