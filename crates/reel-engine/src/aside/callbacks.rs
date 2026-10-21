@@ -252,34 +252,35 @@ impl SessionVm {
         action: &reel_ui::stage::NodeAction,
     ) -> Result<bool, AdapterError> {
         self.live(session)?;
-        let Some((target, closure)) = self.stage.input_action(self.vm.heap(), action)? else {
+        let Some(selected) = self.stage.input_action(self.vm.heap_mut(), action)? else {
             return Ok(false);
         };
         use reel_ui::input::ActionPhase;
-        let phase = match action.phase {
+        let phase = match selected.phase {
             ActionPhase::Pressed => "pressed",
             ActionPhase::Changed => "changed",
             ActionPhase::Repeated => "repeated",
             ActionPhase::Released => "released",
             ActionPhase::Cancelled => "cancelled",
         };
-        let heap = self.vm.heap_mut();
-        let event = heap.alloc_table()?;
-        let name = heap.alloc_string(&action.action)?;
-        let phase = heap.alloc_string(phase)?;
-        for (i, (name, value)) in [
-            ("target", target),
-            ("action", name),
-            ("value", Value::float(action.value.into())),
-            ("phase", phase),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let key = heap.alloc_string(name)?;
-            heap.table_store(event, i as u32, key, value)?;
-        }
-        self.start_callback(session, action.node, closure, event)
+        self.start_callback_with_event(session, action.node, selected.closure, |heap| {
+            let event = heap.alloc_table()?;
+            let name = heap.alloc_string(&action.action)?;
+            let phase = heap.alloc_string(phase)?;
+            for (i, (name, value)) in [
+                ("target", selected.target),
+                ("action", name),
+                ("value", Value::float(selected.value.into())),
+                ("phase", phase),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let key = heap.alloc_string(name)?;
+                heap.table_store(event, i as u32, key, value)?;
+            }
+            Ok(event)
+        })
     }
 
     /// Commit the user value before scheduling the node-owned callback.
@@ -335,16 +336,6 @@ impl SessionVm {
             })?;
         }
         Ok(true)
-    }
-
-    fn start_callback(
-        &mut self,
-        session: &mut Session,
-        node: NodeId,
-        closure: Value,
-        event: Value,
-    ) -> Result<bool, AdapterError> {
-        self.start_callback_with_event(session, node, closure, |_| Ok(event))
     }
 
     // Build the input payload only when the callable accepts an argument.

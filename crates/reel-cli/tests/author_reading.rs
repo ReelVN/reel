@@ -368,11 +368,12 @@ fn source_and_asb_skip_actions_follow_read_boundaries_release_and_choices() {
         game.configure(text_speed: 0);
         let moving = text("moving");
         stage.replace(input(width: 640, height: 420,
-            bindings: {skip: [binding("ControlLeft"), binding("RightShoulder")]},
-            on_action: |e| {
-                if e.phase == "pressed" { game.set_skip(true); }
-                if e.phase == "released" || e.phase == "cancelled" { game.set_skip(false); }
-            }) {
+            actions: {skip: {
+                bindings: ["ControlLeft", "RightShoulder"],
+                on_press: || game.set_skip(true),
+                on_release: || game.set_skip(false),
+                on_cancel: || game.set_skip(false),
+            }}) {
             moving;
             text(value: derive(|| if r.skipping { "skip:on" } else { "skip:off" }), y: 60);
             button("Skip all", x: 10, y: 10, width: 140, height: 40,

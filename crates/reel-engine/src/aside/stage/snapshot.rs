@@ -91,18 +91,7 @@ impl Shape {
                 },
             )?,
             Self::Radio => controls::radio_kind(heap, fields, 0, limit)?,
-            Self::Input => {
-                for index in 1..=4 {
-                    input::validate(heap, index, get(index)?)?;
-                }
-                NodeKind::Input {
-                    bindings: input::read_bindings(heap, get(0)?)?,
-                    listening: get(1)?.tag() != ValueTag::Null,
-                    keyboard: get(2)?.tag() != ValueTag::Null,
-                    pointer: get(3)?.tag() != ValueTag::Null,
-                    wheel: get(4)?.tag() != ValueTag::Null,
-                }
-            }
+            Self::Input => input::kind(heap, fields, input::read_bindings(heap, get(0)?)?)?,
             Self::Image | Self::Video => NodeKind::Image {
                 source: if self == Self::Video {
                     let source = text::read_string(heap, get(0)?, limit)?;
@@ -224,10 +213,22 @@ impl StageBinding {
         let value = heap.import_handle(handle)?;
         let fields = heap.host_fields(value)?;
         let mask_origin = saved.origin.as_deref().map(Arc::from);
-        let mut kind = if saved.shape == Shape::VirtualList {
-            NodeKind::VirtualList(super::super::lists::virtualized::project(heap, value)?)
+        let restored_input = if saved.shape == Shape::Input {
+            Some(input::restore(heap, value, fields)?)
         } else {
-            saved.shape.project(heap, fields, saved.origin, limit)?
+            None
+        };
+        let (mut kind, input) = if let Some((kind, state)) = restored_input {
+            (kind, Some(state))
+        } else {
+            (
+                if saved.shape == Shape::VirtualList {
+                    NodeKind::VirtualList(super::super::lists::virtualized::project(heap, value)?)
+                } else {
+                    saved.shape.project(heap, fields, saved.origin, limit)?
+                },
+                None,
+            )
         };
         controls::project_group(heap, value, &mut kind)?;
         let selected = overrides::selection(heap, value)?;
@@ -263,12 +264,6 @@ impl StageBinding {
         if heap.host_payload(value, 0)?.as_int() != Some(saved.id as i64) {
             return Err(AdapterError::Input("saved node identity"));
         }
-        let input_values = match &kind {
-            NodeKind::Input { bindings, .. } => {
-                bindings.iter().map(|a| (a.name.clone(), 0.)).collect()
-            }
-            _ => BTreeMap::new(),
-        };
         self.scene.restore_node(id, kind, props)?;
         self.handles.insert(
             id,
@@ -285,11 +280,7 @@ impl StageBinding {
                 projection_dirty: false,
                 overrides,
                 mask_source,
-                input_source: if matches!(saved.shape, Shape::Input) {
-                    input::source_handle(heap, heap.table_entry(fields, 0)?.1)?
-                } else {
-                    None
-                },
+                input,
                 text_source: if matches!(
                     saved.shape,
                     Shape::Text | Shape::TextInput | Shape::TextArea | Shape::Image | Shape::Video
@@ -308,7 +299,6 @@ impl StageBinding {
                 } else {
                     None
                 },
-                input_values,
             },
         );
         Ok(Some(id))

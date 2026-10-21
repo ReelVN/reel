@@ -34,11 +34,12 @@ fn history_page() {
 pub fn main() {
     game.configure(width: 1000, height: 720, fonts: ["fonts/body.ttf"]);
     stage.replace(input(width: 1000, height: 720,
-        bindings: {skip: [binding("ControlLeft"), binding("RightShoulder")]},
-        on_action: |event| {
-            if event.phase == "pressed" { game.set_skip(true, after_choices: preferences.after_choices); }
-            if event.phase == "released" || event.phase == "cancelled" { game.set_skip(false); }
-        }) { stack() {
+        actions: {skip: {
+            bindings: ["ControlLeft", "RightShoulder"],
+            on_press: || game.set_skip(true, after_choices: preferences.after_choices),
+            on_release: || game.set_skip(false),
+            on_cancel: || game.set_skip(false),
+        }}) { stack() {
         column(x: 40, y: 420, width: 920, gap: 16) {
             text(value: bind(dialogue.speaker_name), color: "#9ed8ff");
             text(value: bind(dialogue.text), reveal: bind(dialogue.reveal), width: 880);

@@ -924,35 +924,39 @@ fn main() {
         width: 340, height: 48, background: "#284860");
     let status = text("Ready", x: 24, y: 160, width: 340, height: 48);
     let controls = input(modal: true, width: 640, height: 280,
-        bindings: {
-            move_x: [binding("KeyA", scale: -1), binding("KeyD"),
-                binding("LeftX", dead_zone: 0.2)],
-            jump: [binding("Space"), binding("South"), binding("PointerPrimary")],
-            finish: [binding("Escape"), binding("East")],
-        },
-        on_action: |event| {
-            if event.action == "move_x" {
-                marker.x = 160 + 120 * event.target.value("move_x");
-                status.value = event.phase;
-            }
-            if event.action == "jump" && event.phase == "pressed" {
-                await run(sequence(
-                    tween(marker, y: 16, duration: 0.15),
-                    tween(marker, y: 64, duration: 0.15)
-                ));
-            }
-            if event.action == "finish" && event.phase == "released" {
-                stage.replace(text("Finished", x: 24, y: 24));
-            }
+        actions: {
+            move_x: {
+                bindings: [binding("KeyA", scale: -1), "KeyD",
+                    binding("LeftX", dead_zone: 0.2)],
+                on_action: |event| {
+                    marker.x = 160 + 120 * event.target.value("move_x");
+                    status.value = event.phase;
+                },
+            },
+            jump: {
+                bindings: ["Space", "South", "PointerPrimary"],
+                on_press: || {
+                    await run(sequence(
+                        tween(marker, y: 16, duration: 0.15),
+                        tween(marker, y: 64, duration: 0.15)
+                    ));
+                },
+            },
+            finish: {
+                bindings: ["Escape", "East"],
+                on_release: || stage.replace(text("Finished", x: 24, y: 24)),
+            },
         }
     ) { marker; status; };
     stage.replace(controls);
 }
 ```
 
-Each key in bindings names an action; its value is an array of binding descriptions. Controls use physical key names (KeyA, KeyD, Space, Escape), standard gamepad buttons (South, East, DpadLeft), axes (LeftX, LeftY, RightX, RightY, LeftZ, RightZ), or pointer buttons (PointerPrimary, PointerSecondary, PointerAuxiliary, PointerX1, PointerX2). Axes range from -1 to 1, with positive Y pointing down; trigger buttons range from 0 to 1. scale defaults to 1 and dead_zone to 0. Values outside the dead zone are normalized again before scaling; contributions are added and clamped to -1 through 1. Releasing one device or touch contact does not release an action still held by another.
+Each key in actions names an action whose record contains a bindings array. Plain control names use scale 1 and dead_zone 0; use binding only to configure them. Controls include physical key names (KeyA, Space, Escape), standard gamepad buttons (South, East, DpadLeft), axes (LeftX, LeftY, RightX, RightY, LeftZ, RightZ), and pointer buttons (PointerPrimary, PointerSecondary, PointerAuxiliary, PointerX1, PointerX2). Axis values range from -1 to 1 with positive Y down; triggers range from 0 to 1. Contributions outside the dead zone are normalized, scaled, added and clamped to -1 through 1. Releasing one binding does not release another device's hold.
 
-Events carry target, action, value and phase. Phases are pressed, changed, released and cancelled; keyboard repeat does not produce another pressed event. `node.value("move_x")` reads the latest held value and rejects unknown actions; event.value retains the value of that particular event. Callbacks may await and belong to their node. Assigning `node.bindings = new_table` cancels the old state and installs the new map; edits inside the original table do not implicitly update it. Assign a closure or null to node.on_action.
+Choose on_press, on_change, on_release and on_cancel for the phases you handle. A single on_action receives the complete stream and cannot be combined with phase handlers on the same action. Each handler accepts zero parameters or one event with target, action, value and phase. Phases are pressed, changed, released and cancelled; keyboard repeat does not create another press. Unhandled phases still update held values and consume input, without creating an event object or callback task. Callbacks may wait and belong to their node; a returned Task is not implicitly awaited.
+
+`node.value("move_x")` reads the latest held value; event.value retains that event's value. A new table assigned to `node.actions` takes effect as a whole at stage synchronization, installing bindings and handlers together and resetting held values. Construction installs the declaration immediately; later synchronous script work may finish assembling a replacement before synchronization. Once installed, internal edits do not update the map; assign a new table for subsequent changes. Even a handler-only replacement cancels old holds through their old handlers; a stale release never calls the new handler. Saves preserve the installed declaration and restore with neutral held values.
 
 The input node receives keyboard and gamepad actions while it has focus. When a child control gains focus, it takes ownership and cancels the parent input node's held actions. Use modal: true to give an independent interaction scope focus immediately. Inputs with on_key or keyboard/gamepad bindings can receive focus through Tab; bound pointer presses also focus them and capture that contact. Inputs that only handle pointers or wheels preserve the current keyboard focus. When a focused container has available child controls, unbound Down/Right enters the first in tree order, and Up/Left enters the last; subsequent navigation follows their displayed positions and skips focus ancestors. Tab can still reach the parent container. Hiding, disabling, losing focus, changing modal scope or clearing the presented frame cancels held actions. Removing a node ends its tasks and activities. A consumed action does not also navigate or advance dialogue. Ordinary buttons and dialogue activate with the primary pointer button or touch; other mouse buttons remain available to author actions.
 
@@ -1083,7 +1087,7 @@ Runnable example: [author_text_input.aside](../../examples/author_text_input.asi
 
 Use `text_area` for multiline notes or messages, with the same parameters as text_input. It wraps at its width and aligns text to the top. Enter inserts a newline; Ctrl+Enter (Command+Enter on macOS) calls on_submit; Tab moves focus. Up/Down moves the caret, with Shift extending the selection. Home/End goes to the current visual line's boundaries; Ctrl/Command goes to the document boundaries. The wheel scrolls overflowing content, and editing reveals the caret. Pasted CRLF/CR becomes LF; IME preedit writes value only when committed. Save restoration preserves text and bindings, while selection and the internal viewport reset with the input widget. Runnable example: [author_text_area.aside](../../examples/author_text_area.aside).
 
-For scripted typing or keyboard games, use `input(on_key: |event| { ... })`. Events provide code, key, phase and shift/ctrl/alt/meta; phase is pressed/repeated/released/cancelled. Keys are delivered separately, and focus loss cancels held keys. Focused buttons consume their confirmation keys; other unclaimed keys bubble to an ancestor on_key, so clicking a language button does not stop scripted typing. Focused text editors retain all keyboard and system IME events. Omit bindings when no action mapping is needed, or combine on_action for gamepad and pointer controls; action mappings still follow focus ownership. Example: [author_keyboard.aside](../../examples/author_keyboard.aside).
+For scripted typing or keyboard games, use `input(on_key: |event| { ... })`. Events provide code, key, phase and shift/ctrl/alt/meta; phase is pressed/repeated/released/cancelled. Keys are delivered separately, and focus loss cancels held keys. Focused buttons consume their confirmation keys; other unclaimed keys bubble to an ancestor on_key, so clicking a language button does not stop scripted typing. Focused text editors retain all keyboard and system IME events. Omit actions when no action mapping is needed, or combine named actions for gamepad and pointer controls; action mappings still follow focus ownership. Example: [author_keyboard.aside](../../examples/author_keyboard.aside).
 
 `bind` and `unbind` work with existing node properties. These sliders share a position value, and the text position and visibility connect directly to the controls, without callbacks that copy state. Run [author_bindings.aside](../../examples/author_bindings.aside) in a window using the font setup from section 1.
 
