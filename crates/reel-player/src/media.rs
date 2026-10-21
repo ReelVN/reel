@@ -128,16 +128,13 @@ fn resolve_decoded(
                 )),
             }
         }
-        Err(error) => Phase::Done(MediaResult::Failed(error)),
+        Err(error) => Phase::Done(MediaResult::Failed(format!("{source}: {error}"))),
     };
 }
 fn cancel_segment(_assets: &Assets, worker: &mut Worker<Decode, Decoded>, key: u64, phase: &Phase) {
-    match phase {
-        Phase::Queued(control) => {
-            control.cancel();
-            worker.cancel(key);
-        }
-        _ => {}
+    if let Phase::Queued(control) = phase {
+        control.cancel();
+        worker.cancel(key);
     }
 }
 struct SegmentLoader<'a> {
@@ -153,7 +150,7 @@ impl SegmentLoader<'_> {
         id: MediaId,
         item: u64,
         key: u64,
-        source: &String,
+        source: &str,
         phase: &mut Phase,
         descriptor: &mut BudgetTicket,
     ) {
@@ -162,7 +159,7 @@ impl SegmentLoader<'_> {
         }
         let result = self
             .assets
-            .stream(source.clone())
+            .stream(source.to_owned())
             .and_then(|(control, reader)| {
                 let request = Decode {
                     id,
@@ -183,7 +180,7 @@ impl SegmentLoader<'_> {
             });
         *phase = match result {
             Ok(control) => Phase::Queued(control),
-            Err(error) => Phase::Done(MediaResult::Failed(error)),
+            Err(error) => Phase::Done(MediaResult::Failed(format!("{source}: {error}"))),
         };
         let _ = descriptor;
     }
@@ -407,12 +404,9 @@ impl MediaPlayer {
                     cancel_segment(&self.assets, &mut self.worker, segment.key, &segment.phase);
                 }
                 if !matches!(entry.phase, Phase::Playing(_) | Phase::Done(_)) {
-                    match entry.phase {
-                        Phase::Queued(ref control) => {
-                            control.cancel();
-                            self.worker.cancel(entry.key);
-                        }
-                        _ => {}
+                    if let Phase::Queued(ref control) = entry.phase {
+                        control.cancel();
+                        self.worker.cancel(entry.key);
                     }
                     entry.phase =
                         Phase::Done(MediaResult::Failed(format!("audio output: {reason:?}")));
@@ -975,7 +969,12 @@ impl MediaBackend for MediaPlayer {
                     for segment in entry.queue.drain(..) {
                         cancel_segment(&self.assets, &mut self.worker, segment.key, &segment.phase);
                     }
-                    entry.phase = Phase::Done(media_result(event.terminal));
+                    entry.phase = Phase::Done(match media_result(event.terminal) {
+                        MediaResult::Failed(error) => {
+                            MediaResult::Failed(format!("{}: {error}", entry.request.source))
+                        }
+                        result => result,
+                    });
                 }
             }
         }

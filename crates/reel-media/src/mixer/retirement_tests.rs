@@ -472,7 +472,7 @@ fn completed_stream_releases_window_before_queued_infinite_successor_and_status_
     );
     assert!(b_pool.usage().bytes > 0);
     assert!(!playback.is_stopped());
-    assert!(status.len() > 0);
+    assert!(!status.is_empty());
     playback.stop();
     fill(&mut [0.0f32; 1024]);
     drop(playback);

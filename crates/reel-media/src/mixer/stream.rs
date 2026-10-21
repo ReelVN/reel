@@ -122,6 +122,9 @@ impl Window {
                 // Keep its high-water reservation until this worker retires.
                 packet = decoder
                     .decode_reserved(|bytes| {
+                        if self.stopped.load(Ordering::Acquire) {
+                            return Err(std::io::Error::other("audio preparation cancelled"));
+                        }
                         scratch
                             .resize(scratch.bytes().max(READER_BYTES + bytes as u64))
                             .map_err(|e| std::io::Error::other(e.message))
@@ -318,5 +321,48 @@ mod tests {
         handle.join().unwrap().unwrap();
         drop(window);
         assert_eq!(pool.usage().bytes, 0);
+    }
+    #[test]
+    fn mp3_priming_packet_prepares_static_and_windowed_pcm_and_releases_budget() {
+        let bytes = include_bytes!("../../../reel-audio/tests/fixtures/short-tone.mp3");
+        for threshold in [0, 1 << 20] {
+            let pool = BudgetPool::new(
+                reel_core::budget::BudgetCategory::CpuOutput,
+                reel_core::budget::QueueLimits {
+                    max_requests: 8,
+                    max_bytes: 1 << 20,
+                },
+            );
+            let sound = DecodedSound::prepare(
+                std::io::Cursor::new(bytes),
+                bytes.len() as u64,
+                pool.clone(),
+                threshold,
+                4096,
+                Arc::new(|| {}),
+                &AtomicBool::new(false),
+            )
+            .unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            loop {
+                if let Some(frame) = sound.data.frames.frame(80) {
+                    assert!(frame.left != 0. || frame.right != 0.);
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "priming packet prevented PCM preparation"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            drop(sound);
+            while pool.usage().bytes != 0 {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "decoder retained residency after retirement"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
     }
 }
