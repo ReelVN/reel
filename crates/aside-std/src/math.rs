@@ -30,7 +30,7 @@ impl FromValue for Number {
 
 macro_rules! unary {
     ($($name:ident, $symbol:tt, $method:ident);* $(;)?) => {$ (
-        #[native(symbol = $symbol, abi = 2, effects = Effects(0))]
+        #[native(symbol = $symbol, abi = 1, effects = Effects(0))]
         fn $name(
             #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,
             value: Number,
@@ -59,7 +59,7 @@ unary! {
     degrees, "std::math::degrees", to_degrees;
 }
 
-#[native(symbol = "std::math::atan2", abi = 2, effects = Effects(0))]
+#[native(symbol = "std::math::atan2", abi = 1, effects = Effects(0))]
 fn atan2(
     #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,
     y: Number,
@@ -68,7 +68,7 @@ fn atan2(
     Ok(y.0.atan2(x.0))
 }
 
-#[native(symbol = "std::math::hypot", abi = 2, effects = Effects(0))]
+#[native(symbol = "std::math::hypot", abi = 1, effects = Effects(0))]
 fn hypot(
     #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,
     x: Number,
@@ -77,7 +77,7 @@ fn hypot(
     Ok(x.0.hypot(y.0))
 }
 
-#[native(symbol = "std::math::pow", abi = 2, effects = Effects(0))]
+#[native(symbol = "std::math::pow", abi = 1, effects = Effects(0))]
 fn pow(
     #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,
     base: Number,

@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license = "MIT OR Apache-2.0"
-description = "Lossless Aside 1.1 source frontend"
+description = "Lossless Aside v1 source frontend"
 
 [dependencies]
 aside-vm = { path = "../aside-vm" }

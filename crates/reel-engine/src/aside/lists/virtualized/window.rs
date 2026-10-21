@@ -33,7 +33,7 @@ impl SessionVm {
             output,
             false,
             Continuation {
-                version: 2,
+                version: 1,
                 stage: PREPARE_WINDOW,
                 values: &w.values(),
                 faults: FaultRetention::Preserve,

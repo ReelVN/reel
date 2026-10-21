@@ -30,7 +30,7 @@ impl Metadata {
         use ErrorKind::Metadata as Invalid;
         let p = program.package();
         require(
-            self.schema_version == 4,
+            self.schema_version == 1,
             ErrorKind::Version,
             "unsupported metadata schema",
         )?;

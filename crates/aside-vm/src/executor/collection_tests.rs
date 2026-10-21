@@ -1253,7 +1253,7 @@ fn point_lookup_survives_value_updates_but_rejects_structural_changes() {
 }
 
 #[test]
-fn point_lookup_snapshot_preserves_structure_version_and_rejects_old_semantics() {
+fn point_lookup_snapshot_preserves_structure_version_and_rejects_unsupported_format() {
     check_point_lookup_value_and_structure_changes(true);
 }
 
@@ -1291,13 +1291,13 @@ fn check_point_lookup_value_and_structure_changes(restore: bool) {
                     while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
                     let mut image = capture.finish().unwrap();
                     if !model && !indexed && !write && mutation == 0 {
-                        image.version = 8;
+                        image.version = 2;
                         assert!(matches!(
                             VmSnapshot::decode(&image.encode().unwrap()),
                             Err(SnapshotError::Version {
                                 format: "VM",
-                                actual: 8,
-                                expected: 10,
+                                actual: 2,
+                                expected: 1,
                             })
                         ));
                         assert!(matches!(
@@ -1315,8 +1315,8 @@ fn check_point_lookup_value_and_structure_changes(restore: bool) {
                             ),
                             Err(SnapshotError::Version {
                                 format: "VM",
-                                actual: 8,
-                                expected: 10,
+                                actual: 2,
+                                expected: 1,
                             })
                         ));
                         image.version = VmSnapshot::FORMAT_VERSION;

@@ -1,7 +1,7 @@
-# Reel ASB 2.0
+# Reel ASB 1.0
 
 ASB is Reel's code container. Aside bytecode remains independent of filesystem,
-distribution, and player configuration. The reader accepts version 2.0.
+distribution, and player configuration. The reader accepts version 1.0.
 
 All integers are little-endian. The 72-byte header contains `REELASB\0`,
 `major:u16`, `minor:u16`, `flags:u32`, `total_len:u64`, `index_offset:u64`,
@@ -12,7 +12,7 @@ Each 56-byte index record contains `kind:u32`, `flags:u32`, `offset:u64`,
 | Kind | Payload | Presence |
 | --- | --- | --- |
 | 1 | Verified Aside bytecode | Required |
-| 2 | UTF-8 JSON code metadata, schema 4 | Required |
+| 2 | UTF-8 JSON code metadata, schema 1 | Required |
 | 3 | UTF-8 JSON `Distribution` | Present in exported projects |
 
 Every known section has flags=1 (required when present). Section kinds are

@@ -792,7 +792,7 @@ fn native_seed() -> bc::VerifiedProgram {
         natives: vec![bc::NativeDef {
             symbol: bc::SymbolId(0),
             signature: bc::SignatureId(1),
-            abi_version: 19,
+            abi_version: 1,
             capabilities: vec![bc::SymbolId(2)],
         }],
         capabilities: vec![bc::SymbolId(2)],
@@ -877,7 +877,7 @@ fn direct_native_uses_trusted_identity_abi_capabilities_and_real_default() {
     let result = lowering::compile(&module, &linkage, Options::default()).unwrap();
     let p = result.program.package();
     assert_eq!(p.natives[0], seed.package().natives[0]);
-    assert_eq!(p.natives[0].abi_version, 19);
+    assert_eq!(p.natives[0].abi_version, 1);
     assert_eq!(p.functions[0], seed.package().functions[0]);
     assert_eq!(
         p.signatures[1].parameters[0].default,
