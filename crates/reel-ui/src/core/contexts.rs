@@ -1819,6 +1819,12 @@ impl_context_method!(
                     global_state.focus_anchor = Some(parent_state.id);
                 }
 
+                // Hover/active callbacks can retire the target before cursor refresh.
+                if global_state.cursor.target == Some(state.id) {
+                    global_state.cursor.target = None;
+                    global_state.needs_pointer_pass = true;
+                }
+
                 global_state.scene_cache.remove(&state.id);
 
                 if let Some(layers) = global_state.attached_layers.remove(&state.id) {
