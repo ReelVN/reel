@@ -34,8 +34,9 @@ aside_host::native_documentation! {
         /// false after the interaction ends. Older displayed rows retain their last
         /// projected value; current_line_ids identifies the active segment's lines.
         "reel::game::dialogue";
-        /// Clear displayed dialogue and retire its current interaction. History entries
-        /// are retained; use `game.clear_history` to change history separately.
+        /// Clear displayed lines and ADV fields while retaining the current speech's
+        /// wait and advance ownership. History entries are retained. Append displays
+        /// the updated speech again; the cleared page survives ticks and snapshots.
         "reel::dialogue::clear";
         /// Return the observable choice view with options and active. Call `.select(option.id)`
         /// from an authored control using the opaque id of a current option. The option's
@@ -135,6 +136,7 @@ pub(super) struct Narrative {
     choice: Value,
     interaction: Option<InteractionId>,
     text_revision: u64,
+    display_cleared: bool,
     #[serde(skip)]
     option_ids: Vec<(HeapHandle, ChoiceId)>,
     roots: Value,
@@ -286,6 +288,7 @@ impl Narrative {
             choice,
             interaction: None,
             text_revision: 0,
+            display_cleared: false,
             option_ids: Vec::new(),
             roots,
             reading,
@@ -313,6 +316,33 @@ impl Narrative {
         ] {
             publish(heap, self.reading, field as u32, value)?;
         }
+        Ok(())
+    }
+
+    fn clear_display(&mut self, heap: &mut Heap, session: &Session) -> Result<(), AdapterError> {
+        clear_collection(heap, self.dialogue, DialogueField::Lines as u32)?;
+        clear_collection(heap, self.dialogue, DialogueField::CurrentLineIds as u32)?;
+        if !matches!(
+            session.view().interaction,
+            Some(InteractionView::Dialogue(_))
+        ) {
+            let rows = heap.alloc_array(&[])?;
+            heap.set_host_payload(self.dialogue, 0, rows)?;
+        }
+        let empty = heap.alloc_string("")?;
+        for (field, value) in [
+            (DialogueField::SpeakerName, empty),
+            (DialogueField::Text, empty),
+            (DialogueField::SpeakerId, Value::NULL),
+            (DialogueField::ContentId, Value::NULL),
+            (DialogueField::Reveal, Value::int(0)),
+            (DialogueField::Read, Value::bool(false)),
+            (DialogueField::Ready, Value::bool(false)),
+            (DialogueField::AdvanceRequested, Value::bool(false)),
+        ] {
+            publish(heap, self.dialogue, field as u32, value)?;
+        }
+        self.display_cleared = true;
         Ok(())
     }
 
@@ -366,6 +396,7 @@ impl Narrative {
             }
             match active {
                 Some(InteractionView::Dialogue(dialogue)) => {
+                    self.display_cleared = false;
                     let rows = heap.alloc_array(&[])?;
                     let ids = array(heap)?;
                     for line in dialogue.lines() {
@@ -479,11 +510,56 @@ impl Narrative {
                 }
             }
             self.interaction = interaction;
+            if self.display_cleared && !matches!(active, Some(InteractionView::Dialogue(_))) {
+                let rows = heap.alloc_array(&[])?;
+                heap.set_host_payload(self.dialogue, 0, rows)?;
+            }
         }
         let mut ready = false;
         if let Some(InteractionView::Dialogue(dialogue)) = active {
             ready = true;
             let rows = heap.host_payload(self.dialogue, 0)?;
+            if self.display_cleared && update_text {
+                let lines = heap.host_property(PropertyId {
+                    host: self.dialogue,
+                    field: DialogueField::Lines as u32,
+                })?;
+                let ids = array(heap)?;
+                for index in 0..heap.sequence_len(rows)? {
+                    let row = heap.sequence_get(rows, index)?;
+                    heap.array_push(lines, row)?;
+                    heap.array_push(
+                        ids,
+                        heap.host_property(PropertyId {
+                            host: row,
+                            field: LineField::Id as u32,
+                        })?,
+                    )?;
+                }
+                publish(
+                    heap,
+                    self.dialogue,
+                    DialogueField::CurrentLineIds as u32,
+                    ids,
+                )?;
+                let first = heap.sequence_get(rows, 0)?;
+                for (target, source) in [
+                    (DialogueField::SpeakerName, LineField::SpeakerName),
+                    (DialogueField::SpeakerId, LineField::SpeakerId),
+                    (DialogueField::ContentId, LineField::ContentId),
+                ] {
+                    publish(
+                        heap,
+                        self.dialogue,
+                        target as u32,
+                        heap.host_property(PropertyId {
+                            host: first,
+                            field: source as u32,
+                        })?,
+                    )?;
+                }
+                self.display_cleared = false;
+            }
             for (i, line) in dialogue.lines().iter().enumerate() {
                 let complete = line.playback_complete();
                 ready &= complete;
@@ -515,24 +591,26 @@ impl Narrative {
                     Value::int(line.reveal().visible_bytes.end as i64),
                 )?;
             }
-            publish(
-                heap,
-                self.dialogue,
-                DialogueField::Read as u32,
-                Value::bool(dialogue.previously_read()),
-            )?;
-            publish(
-                heap,
-                self.dialogue,
-                DialogueField::Reveal as u32,
-                Value::int(dialogue.reveal().visible_bytes.end as i64),
-            )?;
+            if !self.display_cleared {
+                publish(
+                    heap,
+                    self.dialogue,
+                    DialogueField::Read as u32,
+                    Value::bool(dialogue.previously_read()),
+                )?;
+                publish(
+                    heap,
+                    self.dialogue,
+                    DialogueField::Reveal as u32,
+                    Value::int(dialogue.reveal().visible_bytes.end as i64),
+                )?;
+            }
         }
         publish(
             heap,
             self.dialogue,
             DialogueField::Ready as u32,
-            Value::bool(ready),
+            Value::bool(ready && !self.display_cleared),
         )?;
         publish(
             heap,
@@ -719,13 +797,8 @@ impl SessionVm {
                 Value::NULL
             }
             "reel::dialogue::clear" => {
-                let rows = array(self.vm.heap_mut())?;
-                publish(
-                    self.vm.heap_mut(),
-                    model.dialogue,
-                    DialogueField::Lines as u32,
-                    rows,
-                )?;
+                session.clear_dialogue_advance_request();
+                model.clear_display(self.vm.heap_mut(), session)?;
                 Value::NULL
             }
             "reel::choice::select" => {

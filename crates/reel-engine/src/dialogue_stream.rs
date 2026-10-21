@@ -38,6 +38,14 @@ fn joined(prefix: &Text, suffix: &Text) -> Result<Text, SessionError> {
 }
 
 impl Session {
+    pub(crate) fn clear_dialogue_advance_request(&mut self) {
+        if let Some(Interaction::Dialogue(dialogue)) = &mut self.active {
+            for line in &mut dialogue.lines {
+                line.advance_requested = false;
+            }
+        }
+    }
+
     pub fn begin_open_say(
         &mut self,
         owner: OwnerHandle,
