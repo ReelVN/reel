@@ -32,7 +32,7 @@ pub(super) fn node_type(symbol: &str) -> Option<&'static str> {
         .iter()
         .find(|(constructor, _)| *constructor == name)
         .map(|(_, ty)| *ty)
-        .or_else(|| match name {
+        .or(match name {
             "list" | "view" | "layered_image" => Some("reel::types::Node"),
             _ => None,
         })

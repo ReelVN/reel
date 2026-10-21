@@ -79,8 +79,8 @@ pub fn documentation() -> Vec<aside_host::NativeDocumentation> {
     markdown.insert("reel::when".into(), super::conditions::DOCUMENTATION);
     contracts()
         .iter()
-        .cloned()
         .filter(|contract| contract.symbol != "reel::when::evaluate")
+        .cloned()
         .map(|contract| {
             let documentation = markdown
                 .remove(&contract.symbol)
