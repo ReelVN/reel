@@ -206,6 +206,7 @@ pub enum FrameDraw {
         transform: Affine,
         fill_rule: peniko::Fill,
         brush: FrameBrush,
+        /// For images: local-to-source pixel sampling, permitting zero scale.
         brush_transform: Option<Affine>,
         #[serde(with = "wire::GeometryDef")]
         shape: Geometry,
@@ -216,6 +217,7 @@ pub enum FrameDraw {
         transform: Affine,
         stroke: Stroke,
         brush: FrameBrush,
+        /// For images: local-to-source pixel sampling, permitting zero scale.
         brush_transform: Option<Affine>,
         #[serde(with = "wire::GeometryDef")]
         shape: Geometry,
@@ -1142,6 +1144,8 @@ impl Building {
             ImagePaint {
                 color: image_color,
                 gradient: image_gradient,
+                sampling_transform: c.stream.is_none()
+                    && layer.command_owners[c.owner_range].image_sampling_transform,
                 resource: if c.stream.is_none() {
                     layer.command_owners[c.owner_range].image_resource
                 } else {
@@ -1561,11 +1565,44 @@ fn empty_stroke(s: &Stroke) -> Stroke {
     stroke
 }
 #[derive(Clone, Copy)]
-struct ImagePaint {
-    color: [f32; 4],
-    gradient: Option<ImageColorGradient>,
-    resource: Option<crate::resources::ResourceImageBrush>,
+pub(crate) struct ImagePaint {
+    pub(crate) color: [f32; 4],
+    pub(crate) gradient: Option<ImageColorGradient>,
+    pub(crate) resource: Option<crate::resources::ResourceImageBrush>,
+    pub(crate) sampling_transform: bool,
 }
+impl Default for ImagePaint {
+    fn default() -> Self {
+        Self {
+            color: [1.; 4],
+            gradient: None,
+            resource: None,
+            sampling_transform: false,
+        }
+    }
+}
+/// Frame images store local-to-source maps, including constant source axes.
+/// Other brush kinds retain the Painter transform convention.
+fn image_sampling_transform(
+    brush: &Brush,
+    transform: Option<Affine>,
+    paint: ImagePaint,
+) -> Result<Option<Affine>, BuildErrorKind> {
+    if (matches!(brush, Brush::Image(_)) || paint.resource.is_some()) && !paint.sampling_transform {
+        transform
+            .map(|transform| {
+                if transform.determinant() == 0. {
+                    Err(BuildErrorKind::InvalidRecord)
+                } else {
+                    Ok(transform.inverse())
+                }
+            })
+            .transpose()
+    } else {
+        Ok(transform)
+    }
+}
+
 fn empty_brush(
     b: &Brush,
     resources: &ResourceSnapshot,
@@ -1575,6 +1612,7 @@ fn empty_brush(
         color: image_color,
         gradient: image_gradient,
         resource: image_resource,
+        ..
     } = paint;
     if let Some(binding) = image_resource {
         if !matches!(b, Brush::Solid(_)) {
@@ -1753,7 +1791,7 @@ fn make_op(
                     transform: t * *transform,
                     fill_rule: *fill_rule,
                     brush: empty_brush(brush, resources, paint)?,
-                    brush_transform: *brush_transform,
+                    brush_transform: image_sampling_transform(brush, *brush_transform, paint)?,
                     shape: empty_geometry(shape),
                     composite: *composite,
                 },
@@ -1768,7 +1806,7 @@ fn make_op(
                     transform: t * *transform,
                     stroke: empty_stroke(stroke),
                     brush: empty_brush(brush, resources, paint)?,
-                    brush_transform: *brush_transform,
+                    brush_transform: image_sampling_transform(brush, *brush_transform, paint)?,
                     shape: empty_geometry(shape),
                     composite: *composite,
                 },
@@ -1781,7 +1819,14 @@ fn make_op(
                     font_index: g.font.index,
                     transform: t * g.transform,
                     glyph_transform: g.glyph_transform,
-                    brush_transform: g.brush_transform,
+                    brush_transform: image_sampling_transform(
+                        &g.brush,
+                        g.brush_transform,
+                        ImagePaint {
+                            resource: None,
+                            ..paint
+                        },
+                    )?,
                     font_size: g.font_size,
                     font_embolden: g.font_embolden,
                     hint: g.hint,

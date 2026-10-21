@@ -395,7 +395,7 @@ fn main() {
 
 用 `image(source, fit: "contain", ...)` 将 PNG/JPEG 文件放到舞台。省略 width/height 时，图片的像素尺寸作为逻辑尺寸；只指定一边时保持宽高比。指定两边后，contain 完整显示并留空，cover 填满并裁剪，stretch 拉伸填满。图片也支持共同的位置、可见性、透明度和 padding 属性。可以直接修改原节点的 source 和 fit。
 
-面板、按钮底图等可用 `slice: 24` 开启九宫格，或用 `slice: [24, 16, 24, 16]` 分别指定左、上、右、下边距。边距以源图像像素计，`slice_scale` 默认 1，用于调整目标边宽；数值均须有限且非负。九宫格填满内容框，角保持比例，边和中心拉伸；框过小或源边距超出图片时四边统一按比例收缩，零面积切片不绘制。`slice: null` 恢复普通 fit。两项属性可直接赋值或绑定，也可写入 layered_image 的图层描述。使用完整 PNG/JPEG 或图片 Bytes，分块 .reel-image 不适用于九宫格；多个切片共享图片，不生成或上传额外像素。
+面板、按钮底图等可用 `slice: 24` 开启九宫格，或用 `slice: [24, 16, 24, 16]` 分别指定左、上、右、下边距。边距以源图像像素计，`slice_scale` 默认 1，用于调整目标边宽；数值均须有限且非负。九宫格填满内容框，角保持比例，边和中心拉伸；框过小或源边距超出图片时四边统一按比例收缩，源中间跨度为零时，重合边界的颜色延展到目标中间；两个轴都重合时使用交点颜色。目标面积为零的切片不绘制。`slice: null` 恢复普通 fit。两项属性可直接赋值或绑定，也可写入 layered_image 的图层描述。使用完整 PNG/JPEG 或图片 Bytes，分块 .reel-image 不适用于九宫格；多个切片共享图片，不生成或上传额外像素。
 
 `slice_center: false` 让九宫格只绘边框，中心保持透明；默认 true。例如 `image("assets/frame.png", width: 320, height: 180, slice: 10, slice_center: false)`。
 
@@ -1060,7 +1060,7 @@ game.clear_history(keep_last: 37);
 
 可以等待自己的保存请求。这份存档恢复时，该请求为已成功且只读 `restored` 为 true（正常写盘完成为 false），可据此关闭存档菜单；调用者继续执行 await 后的语句；保存调用不会重复执行。其他未完成的外部请求以 OperationInterrupted 结算。成功读档会替换会话，原来的读档调用不会在旧会话中继续。
 
-执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 9，会话快照格式为 26；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
+执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 9，会话快照格式为 27；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
 
 可运行示例：[author_saves.aside](../../examples/author_saves.aside)。
 

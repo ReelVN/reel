@@ -69,12 +69,6 @@ impl Context<'_> {
                 break;
             }
             let at = command.origin.at;
-            if quad.brush_transform.determinant() == 0. {
-                return Err(GpuError::Unsupported {
-                    at,
-                    record: "singular brush transform",
-                });
-            }
             let transform = outer * quad.transform;
             let visible = transform
                 .transform_rect_bbox(quad.bounds)
@@ -89,7 +83,7 @@ impl Context<'_> {
                 let uv = Affine::scale_non_uniform(
                     1. / f64::from(image.size[0]),
                     1. / f64::from(image.size[1]),
-                ) * quad.brush_transform.inverse();
+                ) * quad.brush_transform;
                 batch.image_quad(
                     quad.bounds,
                     transform,

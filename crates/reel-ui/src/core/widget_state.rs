@@ -217,6 +217,7 @@ pub(crate) struct WidgetState {
     pub(crate) image_color: [f32; 4],
     pub(crate) image_gradient: Option<crate::frame::ImageColorGradient>,
     pub(crate) image_resource: Option<crate::resources::ResourceImageBrush>,
+    pub(crate) image_sampling_transform: bool,
 
     /// The `accessibility` method must be called on this widget
     pub(crate) request_accessibility: bool,
@@ -351,6 +352,7 @@ impl WidgetState {
             image_color: [1.; 4],
             image_gradient: None,
             image_resource: None,
+            image_sampling_transform: false,
             request_accessibility: true,
             needs_accessibility: true,
             request_anim: true,

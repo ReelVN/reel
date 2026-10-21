@@ -69,9 +69,7 @@ impl LayerCollector {
         scene: &Scene,
         transform: Affine,
         owner: WidgetId,
-        image_color: [f32; 4],
-        image_gradient: Option<crate::frame::ImageColorGradient>,
-        image_resource: Option<crate::resources::ResourceImageBrush>,
+        image: crate::frame::ImagePaint,
     ) {
         let start = self.current_scene.commands().len();
         self.current_scene.append_transformed(scene, transform);
@@ -89,9 +87,12 @@ impl LayerCollector {
         self.record_owner(
             start,
             owner,
-            image_color,
-            image_gradient.map(|gradient| gradient.transformed(transform)),
-            image_resource,
+            crate::frame::ImagePaint {
+                gradient: image
+                    .gradient
+                    .map(|gradient| gradient.transformed(transform)),
+                ..image
+            },
         );
     }
 
@@ -124,18 +125,17 @@ impl LayerCollector {
             image_mask: mask.cloned(),
             invert,
         });
-        self.record_owner(command, owner, [1.; 4], None, None);
+        self.record_owner(command, owner, crate::frame::ImagePaint::default());
         true
     }
 
-    fn record_owner(
-        &mut self,
-        start: usize,
-        owner: WidgetId,
-        image_color: [f32; 4],
-        image_gradient: Option<crate::frame::ImageColorGradient>,
-        image_resource: Option<crate::resources::ResourceImageBrush>,
-    ) {
+    fn record_owner(&mut self, start: usize, owner: WidgetId, image: crate::frame::ImagePaint) {
+        let crate::frame::ImagePaint {
+            color: image_color,
+            gradient: image_gradient,
+            resource: image_resource,
+            sampling_transform: image_sampling_transform,
+        } = image;
         let end = self.current_scene.commands().len();
         if start == end {
             return;
@@ -145,6 +145,7 @@ impl LayerCollector {
             && last.image_color == image_color
             && last.image_gradient == image_gradient
             && last.image_resource == image_resource
+            && last.image_sampling_transform == image_sampling_transform
             && last.commands.end == start
         {
             last.commands.end = end;
@@ -155,6 +156,7 @@ impl LayerCollector {
                 image_color,
                 image_gradient,
                 image_resource,
+                image_sampling_transform,
             });
         }
     }
@@ -162,7 +164,7 @@ impl LayerCollector {
     fn paint(&mut self, owner: WidgetId, draw: impl FnOnce(&mut Scene)) {
         let start = self.current_scene.commands().len();
         draw(&mut self.current_scene);
-        self.record_owner(start, owner, [1.; 4], None, None);
+        self.record_owner(start, owner, crate::frame::ImagePaint::default());
     }
 
     fn paint_window(&mut self, owner: WidgetId, draw: impl FnOnce(&mut Scene)) {
@@ -401,9 +403,12 @@ fn paint_widget(
             pre_scene,
             content_box_to_layer_transform,
             id,
-            state.image_color,
-            state.image_gradient,
-            state.image_resource,
+            crate::frame::ImagePaint {
+                color: state.image_color,
+                gradient: state.image_gradient,
+                resource: state.image_resource,
+                sampling_transform: state.image_sampling_transform,
+            },
         );
 
         if let Some(clip) = state.clip_path {
@@ -430,9 +435,12 @@ fn paint_widget(
                 scene,
                 content_box_to_layer_transform,
                 id,
-                state.image_color,
-                state.image_gradient,
-                state.image_resource,
+                crate::frame::ImagePaint {
+                    color: state.image_color,
+                    gradient: state.image_gradient,
+                    resource: state.image_resource,
+                    sampling_transform: state.image_sampling_transform,
+                },
             );
         }
     }
@@ -505,9 +513,12 @@ fn paint_widget(
             post_scene,
             content_box_to_layer_transform,
             id,
-            state.image_color,
-            state.image_gradient,
-            state.image_resource,
+            crate::frame::ImagePaint {
+                color: state.image_color,
+                gradient: state.image_gradient,
+                resource: state.image_resource,
+                sampling_transform: state.image_sampling_transform,
+            },
         );
 
         if global_state.inspector_state.hovered_widget == Some(id) {
