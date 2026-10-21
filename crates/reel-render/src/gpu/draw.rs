@@ -161,16 +161,10 @@ impl Context<'_> {
                 }
                 let image = self.image_resource(brush.image.resource, at)?;
                 let bt = brush_transform.unwrap_or(Affine::IDENTITY);
-                if bt.determinant() == 0. {
-                    return Err(GpuError::Unsupported {
-                        at,
-                        record: "singular brush transform",
-                    });
-                }
                 let uv = Affine::scale_non_uniform(
                     1. / f64::from(image.size[0]),
                     1. / f64::from(image.size[1]),
-                ) * bt.inverse();
+                ) * bt;
                 let alpha = composite.alpha * brush.sampler.alpha;
                 (
                     image,

@@ -350,22 +350,20 @@ impl Image {
                 }
                 let source = Rect::new(source_x[x], source_y[y], source_x[x + 1], source_y[y + 1]);
                 let target = Rect::new(target_x[x], target_y[y], target_x[x + 1], target_y[y + 1]);
-                if source.width() <= 0.
-                    || source.height() <= 0.
-                    || target.width() <= 0.
-                    || target.height() <= 0.
-                {
+                if target.width() <= 0. || target.height() <= 0. {
                     continue;
                 }
-                let scale_x = target.width() / source.width();
-                let scale_y = target.height() / source.height();
+                // Destination-to-source sampling also represents a collapsed
+                // source center: its corresponding coordinate stays constant.
+                let scale_x = source.width() / target.width();
+                let scale_y = source.height() / target.height();
                 let transform = Affine::new([
                     scale_x,
                     0.,
                     0.,
                     scale_y,
-                    target.x0 - source.x0 * scale_x,
-                    target.y0 - source.y0 * scale_y,
+                    source.x0 - target.x0 * scale_x,
+                    source.y0 - target.y0 * scale_y,
                 ]);
                 // Each rectangle already lies in the content box. Shared brush
                 // identity keeps the same resource; no per-slice clip layer.
@@ -457,6 +455,7 @@ impl Widget for Image {
         painter: &mut Painter<'_>,
     ) {
         ctx.set_image_color(self.color);
+        ctx.set_image_sampling_transform(self.slice.is_some());
         ctx.set_image_resource(self.resource.as_ref().map(|lease| ResourceImageBrush {
             resource: lease.handle(),
             sampler: crate::peniko::ImageSampler {

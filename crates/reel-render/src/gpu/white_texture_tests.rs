@@ -14,6 +14,9 @@ use reel_ui::{
 };
 use std::time::Instant;
 
+#[path = "nine_slice_tests.rs"]
+mod nine_slice;
+
 fn renderer(limits: super::super::GpuLimits) -> Renderer {
     Renderer::new(
         pollster::block_on(Gpu::request(
