@@ -19,25 +19,59 @@ use reel_player::{
     story_runtime::StoryRuntime,
 };
 use std::{
+    collections::VecDeque,
     path::Path,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 fn execute_project(path: &Path, timeout: Duration) -> Vec<audio::AudioStats> {
+    let clicks = scenario_clicks();
     execute_project_with_capture(
         path,
         timeout,
         std::env::var("REEL_SCENARIO_GPU_CAPTURE").is_ok_and(|value| value == "1"),
+        &clicks,
     )
     .0
+}
+
+// JSON file: [[capture_ordinal, [canvas_x, canvas_y]], ...]. Coordinates use the
+// logical canvas, which this offscreen host presents at one pixel per unit.
+fn scenario_clicks() -> Vec<(u64, [f64; 2])> {
+    let Some(path) = std::env::var_os("REEL_SCENARIO_CLICKS") else {
+        return Vec::new();
+    };
+    let bytes = std::fs::read(&path).expect("read REEL_SCENARIO_CLICKS JSON file");
+    let clicks: Vec<(u64, [f64; 2])> =
+        serde_json::from_slice(&bytes).expect("REEL_SCENARIO_CLICKS expects [[capture,[x,y]],...]");
+    let mut previous = 0;
+    for &(capture, point) in &clicks {
+        assert!(
+            capture > previous,
+            "click capture ordinals must be positive and strictly increasing"
+        );
+        assert!(
+            point
+                .into_iter()
+                .all(|value| value.is_finite() && value >= 0.),
+            "click coordinates must be finite and nonnegative"
+        );
+        previous = capture;
+    }
+    clicks
 }
 
 fn execute_project_with_capture(
     path: &Path,
     timeout: Duration,
     gpu_capture: bool,
+    clicks: &[(u64, [f64; 2])],
 ) -> (Vec<audio::AudioStats>, Vec<scenario_capture::CaptureStats>) {
+    assert!(
+        gpu_capture || clicks.is_empty(),
+        "scenario clicks require GPU captures"
+    );
     let loaded =
         reel_cli::project::load(path).unwrap_or_else(|error| panic!("{:?}", error.failure));
     let checked = loaded.check().unwrap();
@@ -85,6 +119,8 @@ fn execute_project_with_capture(
         let (mut bridge, mut root) = support::bridge(runtime.driver());
         let mut identity = runtime.driver().ui().session().identity();
         let mut replacements = 0;
+        let mut clicks = clicks.iter().peekable();
+        let mut pointer_events = VecDeque::new();
         let started = Instant::now();
         let mut frame = 0;
         loop {
@@ -145,12 +181,42 @@ fn execute_project_with_capture(
                 let driver = runtime.driver_mut().unwrap();
                 captures.drive(driver);
                 captures.present(driver, &mut bridge, root, frame);
+                if pointer_events.is_empty()
+                    && let Some(&&(capture, [x, y])) = clicks.peek()
+                    && captures.stats().count >= capture
+                {
+                    let size = driver
+                        .adapter()
+                        .game_settings()
+                        .canvas_size
+                        .unwrap_or([640, 420]);
+                    assert!(
+                        x < f64::from(size[0]) && y < f64::from(size[1]),
+                        "scenario click is outside the accepted canvas"
+                    );
+                    pointer_events.extend(support::click_events(
+                        x,
+                        y,
+                        reel_ui::core::PointerType::Mouse,
+                    ));
+                    clicks.next();
+                    eprintln!("{kind}: pointer click after capture {capture} at ({x}, {y})");
+                }
+                // Move, press and release each pass through a separate runtime
+                // tick and the actual accepted frame's input routing.
+                if let Some(event) = pointer_events.pop_front() {
+                    driver.handle_pointer(&mut bridge, event).unwrap();
+                }
                 runtime.wake_input();
             }
             // Give filesystem/resource workers CPU time between presentation attempts.
             std::thread::sleep(Duration::from_millis(1));
         }
         assert!(!runtime.driver().cleanup_pending());
+        assert!(
+            clicks.next().is_none() && pointer_events.is_empty(),
+            "scenario ended before its configured clicks"
+        );
         audio_stats.push(audio.stats());
         if gpu_capture {
             eprintln!("{kind} GPU captures: {:?}", captures.stats());
@@ -163,6 +229,45 @@ fn execute_project_with_capture(
         );
     }
     (audio_stats, capture_stats)
+}
+
+#[test]
+#[ignore = "requires a GPU adapter for capture-gated pointer input"]
+fn project_scenario_pointer_clicks_reach_modal_buttons_after_accepted_frames() {
+    let project = tempfile::tempdir().unwrap();
+    let source = project.path().join("main.aside");
+    std::fs::write(
+        &source,
+        r##"
+        fn main() {
+            game.configure(width:64, height:64);
+            let clicked=completion();
+            let root=stack(width:64,height:64,background:"#ff0000") {
+                button(width:64,height:64,on_click:|| clicked.reject("background click"));
+            };
+            stage.replace(root);
+            scope(body:|s| {
+                s.add(root,input(width:64,height:64,modal:true) {
+                    button(x:16,y:16,width:32,height:32,decorated:false,background:"#0000ff",
+                        on_click:|| clicked.resolve(true));
+                });
+                await stage.presented(); await stage.capture();
+                if !(await clicked) {throw "modal click missing";}
+                if clicked.resolve(true) {throw "modal click was not settled";}
+            });
+            await stage.presented();
+            stage.replace(stack());
+        }
+    "##,
+    )
+    .unwrap();
+    let (_, stats) =
+        execute_project_with_capture(&source, Duration::from_secs(30), true, &[(1, [32., 32.])]);
+    assert_eq!(stats.len(), 2);
+    for capture in stats {
+        assert_eq!(capture.count, 1);
+        assert_eq!(capture.center, [0, 0, 255, 255]);
+    }
 }
 
 #[test]
@@ -201,7 +306,7 @@ fn project_scenario_gpu_capture_restores_png_images_and_particles_at_canvas_size
     "##,
     )
     .unwrap();
-    let (_, stats) = execute_project_with_capture(&source, Duration::from_secs(90), true);
+    let (_, stats) = execute_project_with_capture(&source, Duration::from_secs(90), true, &[]);
     assert_eq!(stats.len(), 2, "source and actual ASB must both render");
     for captured in stats {
         assert_eq!(captured.count, 2);
@@ -324,7 +429,7 @@ fn project_scenario_retains_transition_assets_across_playing_save_restore() {
     "##,
     )
     .unwrap();
-    execute_project_with_capture(&source, Duration::from_secs(30), false);
+    execute_project_with_capture(&source, Duration::from_secs(30), false, &[]);
 }
 
 #[test]
@@ -381,7 +486,7 @@ fn project_scenario_gpu_transition_keeps_ancestor_opacity_and_restores_old_drawi
     "##,
     )
     .unwrap();
-    let (_, stats) = execute_project_with_capture(&source, Duration::from_secs(90), true);
+    let (_, stats) = execute_project_with_capture(&source, Duration::from_secs(90), true, &[]);
     assert_eq!(stats.len(), 2);
     for stats in stats {
         assert_eq!(

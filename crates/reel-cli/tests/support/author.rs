@@ -132,6 +132,13 @@ pub fn click_with_pointer(
     y: f64,
     pointer_type: PointerType,
 ) {
+    for event in click_events(x, y, pointer_type) {
+        driver.handle_pointer(bridge, event).unwrap();
+    }
+    settle(driver);
+}
+
+pub fn click_events(x: f64, y: f64, pointer_type: PointerType) -> [PointerEvent; 3] {
     let pointer = PointerInfo {
         pointer_id: Some(PointerId::PRIMARY),
         persistent_device_id: None,
@@ -141,7 +148,7 @@ pub fn click_with_pointer(
         position: PhysicalPosition::new(x, y),
         ..Default::default()
     };
-    for event in [
+    [
         PointerEvent::Move(PointerUpdate {
             pointer,
             current: state.clone(),
@@ -158,10 +165,7 @@ pub fn click_with_pointer(
             state,
             button: Some(PointerButton::Primary),
         }),
-    ] {
-        driver.handle_pointer(bridge, event).unwrap();
-    }
-    settle(driver);
+    ]
 }
 
 pub fn bridge(driver: &AsideSessionUi) -> (PresentationBridge, WidgetId) {
