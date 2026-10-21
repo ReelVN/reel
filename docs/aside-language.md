@@ -222,7 +222,7 @@ use reel::{stage,text}; 为分组导入，use game::ui::dialogue::dialogue_view;
 
 候选初始化仅可分配/写候选对象，并调用标为 InitSafe 的宿主操作；禁止修改旧会话、全局设置、外部资源。候选失败释放候选图，活会话不变。Reel 规划中的 story.register(id,entry,title:) 为普通 InitSafe 登记 API，id 为唯一稳定 string，entry 为模块级、零必需参数普通 fn；发布前检查冲突，普通调用仍保留原闭包版本，不以登记替换函数机制。
 
-类型注解支持 any、基础类别、class/native 名称、T|null/union、固定 tuple (T,U)、函数签名。函数类型写 fn(T,U) -> R，箭头右结合，返回类型可为 union；函数类型本身参与 union 写 (fn(T) -> R)|null。() 为零元 tuple 类型，单类型圆括号作分组，含逗号为一元或多元 tuple 类型。注解不改变动态存储，在能确定时静态诊断，否则参数进入/返回及声明写入时验证。array/table 类别注解不谎称元素永久受保护；强约束容器使用显式 schema 容器构造，每次脚本/native 写入都验证，别名共享同一 schema。不能对普通共享容器检查一次就宣称永久 Array<int>。
+类型注解支持 any、基础类别、class/native 名称、T|null/union、固定 tuple (T,U)、函数签名。函数类型写 fn(T,U) -> R，箭头右结合，返回类型可为 union；函数类型本身参与 union 写 (fn(T) -> R)|null。具有明确函数签名类型的值也满足不限定签名的 closure 类别。显式函数签名注解目前支持解析和静态分析，执行编译尚未实现。() 为零元 tuple 类型，单类型圆括号作分组，含逗号为一元或多元 tuple 类型。注解不改变动态存储，在能确定时静态诊断，否则参数进入/返回及声明写入时验证。array/table 类别注解不谎称元素永久受保护；强约束容器使用显式 schema 容器构造，每次脚本/native 写入都验证，别名共享同一 schema。不能对普通共享容器检查一次就宣称永久 Array<int>。
 
 type_of、is、signature、members、own_fields 提供一致反射。签名包含参数名、顺序、缺省是否存在、变参、返回契约和效果，不因反射而执行缺省表达式。native 与脚本类型遵循同一描述。反射不泄露原生地址、任意私有环境、恢复 PC 的写权限或绕过字段/schema 的写入口。
 
