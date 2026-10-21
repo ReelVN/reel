@@ -1,11 +1,11 @@
-# Reel session host (S01)
+# Reel session host
 
 This crate owns the Rust session model specified by architecture 1.1.
 The Rust model remains independently usable. The `aside` adapter executes real
 source programs, owns story waits and publishes the common author stage.
-Snapshot/restore is not implemented.
-PR #50 / Issue #48 introduces it as one substantive engine crate; UI remains
-in reel-ui and platform/window assembly remains in reel-player.
+Execution snapshots include the VM, dialogue, stage, activities and owned work.
+System data, save slots and resource restoration use explicit host services.
+UI remains in reel-ui and platform/window assembly remains in reel-player.
 
 Session::new receives a caller-assigned unique SessionId/Epoch.
 The root owner alone submits the main interaction. begin_say atomically copies
@@ -44,12 +44,12 @@ obligations. Retirement requires every recorded obligation to finish.
 
 ## Verification boundary
 
-Rust tests cover identity, atomic admission, input filtering, history/completion,
-retirement and allocation-free accepted hot paths. See PR #50 for actual counts
-and independent acceptance. PR #55 connects VM waits, deliveries and native registration in source, preserving
-BudgetYield/ResourceBlocked. Native Windows execution checks cover this adapter; restore remains outstanding.
-The S01 Rust-model tests do not execute or simulate Aside bytecode.
-PR #55 compiler/VM regressions execute real bytecode and host transitions.
+Rust session tests cover identity, atomic admission, input filtering,
+history/completion and retirement. The Aside adapter tests execute source through
+the real VM, including waits, deliveries, native registration, reactive state,
+scopes and same-package snapshot restoration. `BudgetYield` and
+`ResourceBlocked` remain distinct outcomes. Device acceptance belongs to the
+player and each platform adapter.
 
 Local input dispatch uses Session::handle_local_input(owner, action), which
 allocates the next sequence from the Session's current high-water mark at dispatch
@@ -60,9 +60,9 @@ sequence exhaustion returns SequenceExhausted. A zero-line dialogue is a valid
 interaction and completes with one accepted Advance, retaining exactly-once
 history/completion semantics.
 
-## Aside session adapter (PR #55)
+## Aside session adapter
 
-The host-owned ABI v1 registry defines `reel.session` contracts independently
+The host-owned registry defines versioned `reel.session` contracts independently
 of package claims. The compiler resolver/prelude and runtime admission consume
 the same descriptors; runtime checks exact signatures, ABI and capabilities.
 `source::compile_module` is shared with the author CLI; `compile_story` selects
@@ -91,17 +91,20 @@ charged as VM instructions or wholly covered by player `host_work`.
 
 Revocation first establishes all peer retirement obligations, then releases
 single roots against a frozen high-water end (including holes), and drives task
-cleanup independently. This adapter owns no non-task RootRange or external
-resource gate. GC uses the VM provider, not a heap-only substitute. Result delivery
+cleanup independently. Media and other external services keep their resource
+gates until their retirement completes. GC uses the VM root provider. Result delivery
 transfers its root before retirement; the retained result slot is reused by a
 later result, so an earlier bare Value is not a permanent host root.
 
-Native Windows checks execute compiler/VM, wait/root, rejection, GC, cancellation
-and player terminal contracts. Character objects, multiline say, observable bindings, media waits and save/restore remain outside this adapter. Node-owned button callback tasks now share the VM with the main story.
+Character dialogue, observable model/bind/derive state, media waits and save
+restoration use this adapter. Node-owned button callbacks and scoped tasks share
+the VM with the main story. See `src/aside/tests` for their source and restoration
+contracts, and the [creator guide](../../docs/guide/en.md) for runnable examples.
 
 ### Source linkage and runnable contract
 
-The host seed carries the requested content_version; native ABI remains v1.
+The host seed carries the requested content_version; each native contract has
+its own ABI version.
 Lowering coalesces symbol/node matches only when their independently checked
 registrations identify the same NativeId. Conflicting IDs still reject.
 

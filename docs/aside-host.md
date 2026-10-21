@@ -17,7 +17,7 @@ let binding = add::binding();
 
 The original Rust function remains callable. Its body keeps the compiler's original tokens and delimiter spans; only the declaration is parsed to generate the interface. Its same-named module provides `SYMBOL`, `binding()` and `invoke()`. The binding contains a `NativeContract` and a direct function pointer. A host builds these declarations during compilation/loading, then dispatches each admitted `NativeId` to its handler. Calling `invoke` does not rebuild the registry, look up parameter names or allocate a parameter vector.
 
-`NativeContract::external()` supplies source-analysis metadata. `aside_host::lower()` generates B01 native linkage and constant default functions. `aside_host::runtime_support()` resolves the host's independently supplied contracts against the package; pass its result to `Vm::load`. A package cannot supply its own authority to call native code. B01/ASB v1 and native ABI v1 are unchanged.
+`NativeContract::external()` supplies source-analysis metadata. `aside_host::lower()` generates bytecode native linkage and constant default functions. `aside_host::runtime_support()` resolves the host's independently supplied contracts against the package; pass its result to `Vm::load`. A package cannot supply its own authority to call native code. bytecode/ASB v1 and native ABI v1 are unchanged.
 
 Once the host includes this declaration in its analysis environment, Aside can use positional, named and default arguments, including through a function value:
 
@@ -39,7 +39,7 @@ cargo test --locked -p aside-host --test extension
 ### Variadic native declarations
 
 Scope: aside-host declarations, aside-host-macros, their end-to-end checks, Reel's
-contract initializers and the shared specifications/guides. B01/ASB v1 and native
+contract initializers and the shared specifications/guides. bytecode/ASB v1 and native
 ABI v1 stay unchanged; there are no new dependencies. `NativeContract::rest` is
 an optional parameter name. The compiler and runtime declare it as the ordinary
 array rest parameter. `#[aside(rest)] values: Value` must be the last script
@@ -50,7 +50,7 @@ values, bound receivers, GC, admission and source diagnostics reuse the existing
 binder and NativeFrame. The rest name cannot be supplied as a named argument.
 
 This supports ordinary variadic library calls without teaching the compiler
-about Reel. Validation covers source to B01,
+about Reel. Validation covers source to bytecode,
 loading, empty and spread calls, defaults, bound methods, interleaved collection
 and mismatched runtime declarations. Work and allocations for packing arguments
 remain governed by VM slice/heap budgets; wrappers add no collection or copy.
@@ -73,7 +73,7 @@ spread and function-value calls and checks fresh outer-array ownership. The
 [bound native host](../crates/aside-host/tests/bound_native.rs) exercises rest
 with defaults, a bound receiver, host entry/callback calls and incremental GC.
 
-Functions are synchronous, safe, monomorphic free functions. Parameters must have identifier patterns. `#[aside(name = "script_name")]` changes the script parameter name. Defaults are literal integers, floats, booleans, strings or `null`; they are ordinary B01 defaults, not a second Rust argument binder. The `abi` option defaults to 1.
+Functions are synchronous, safe, monomorphic free functions. Parameters must have identifier patterns. `#[aside(name = "script_name")]` changes the script parameter name. Defaults are literal integers, floats, booleans, strings or `null`; they are ordinary bytecode defaults, not a second Rust argument binder. The `abi` option defaults to 1.
 
 An optional `#[aside(context)] context: &mut CallContext<'_, Host>` parameter supplies mutable host state, the VM and the current ticket. It is omitted from the script signature. For example:
 
@@ -109,7 +109,7 @@ The first parameter is already bound. Remaining positional, named and default ar
 
 For a host object with properties that should also be callable, use `Vm::bind_callable(object, function)`. It binds the object itself as the required first parameter without allocating a wrapper for each call. The trusted registration is separate from script-visible fields; argument preparation, entry calls, callbacks, GC and waiting use the same paths as bound methods. It does not implement user-defined class metamethods.
 
-The runnable [bound_native.rs](../crates/aside-host/tests/bound_native.rs) host verifies these call paths with interleaved GC and B01 encoding/decoding:
+The runnable [bound_native.rs](../crates/aside-host/tests/bound_native.rs) host verifies these call paths with interleaved GC and bytecode encoding/decoding:
 
 ```sh
 cargo test --locked -p aside-host --test bound_native

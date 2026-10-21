@@ -1,9 +1,9 @@
-# L03 semantic interface v1
+# Aside semantic interface
 
-Scope: `aside-compiler` HIR, lexical binding, capture, injectable module imports,
-control context, and statically provable diagnostics. Baseline L02 `a50f1f7`;
-frozen language `999a8e3:docs/aside-language.md` §3, §7–14, §22.
-No opcode/runtime, B01 code, platform paths, or author-guide changes.
+The compiler's source-owned HIR covers lexical binding, captures, injectable
+module imports, control context and statically provable diagnostics. The current
+language specification and lowering contract define the consuming interfaces.
+Original review boundaries are preserved in the [fixed earlier contract](https://github.com/jhq223/reel/blob/f916ffedceb91465633fd549e4db1084c070edf3/crates/aside-compiler/SEMANTICS.md).
 
 `Hir` is a source-owned flat arena. Each grammar production has a `HirKind`;
 ordered significant tokens carry exact original byte spans (including string
@@ -117,21 +117,16 @@ Full external signatures survive analysis with name/mut/default/rest/effect/safe
 metadata. Namespace references are versioned identities, not recursively copied
 module trees (legal reexport cycles remain finite).
 
-The initial checkpoint was `9723802`; implementation and source contract tests are
-separate commits. The PR retains base main by owner instruction. Review only the
-incremental changes after L02 `a50f1f7` (PR #9 dependency). The only L02 parser fix (separate commit) admits the `class` value category
-in a type atom, as required by §3 value categories / §10 basic type annotations:
-`let value: class = class {};`. No expression/control grammar changed.
-
-Current source checks include 25 paired author scenes in their documented contexts.
-The 24 reviewed Quirrel migrations retain 52 original assertion call sites and
-run through B01 on the real VM; parsing/analysis and execution have separate
+Current source checks use the named bilingual scene registry in
+`tests/support/guide_scenes.rs` with each documented execution context.
+Registered Quirrel migrations retain their original assertion call sites and
+run through bytecode on the real VM; parsing/analysis and execution have separate
 checks. See `tests/fixtures/quirrel/README.md` for the runnable command and the
 unmigrated corpus boundary.
 
-Limits are 1,000,000 HIR nodes, 200,000 symbols/captures, 16,000,000 work units,
-10,000 imports/modules, 128 source levels/diagnostics and 32 MiB total project
-source by default; callers may tighten them. Node/work/symbol/capture/import
+Default nodes, symbols, captures, imports and modules use u32 index capacities;
+work uses usize::MAX and total source uses isize::MAX bytes. Source depth and
+diagnostics default to 128. Hosts may set explicit quotas. Node/work/symbol/capture/import
 budgets are shared across source-project modules. External descriptors/resolvers
 are trusted embedding metadata; dynamic script behavior is still checked at
 runtime. Returned statistics describe semantic arenas, excluding the retained
@@ -168,7 +163,7 @@ Statistics expose `signature_builds` and `signature_parameters`; this cache is
 temporary and is not part of retained HIR memory.
 
 The owner clarification in `9cfe5ece49a419c13b7f65992f8b68e46ab4ffac`
-was read without importing B01 code. Finally restrictions are lexical; runtime
+was read without importing bytecode code. Finally restrictions are lexical; runtime
 NoWait/Init/Derived constraints accumulate through actual calls and callbacks.
 HIR check flags retain obligations and never waive the caller's restrictions.
 
@@ -251,21 +246,21 @@ stay independent. No extra AST traversal or per-node marker allocation is added.
 UTF-8 statement/boundary spans, nested-function target identity, nested defaults,
 diagnostic limits, previous mutable parameters, internal labeled loop transfers,
 throw and rethrow. Valid defaults retain their expression type and contain no
-fabricated source Return. L04 can lower that result to its compiler-generated
+fabricated source Return. Lowering emits that result through its compiler-generated
 thunk Return as specified; this source-HIR check does not inspect or prohibit
 bytecode Return. This semantic-analysis check does not execute lowering or the VM;
-L04 lowering is described separately in [LOWERING.md](LOWERING.md).
+Lowering is described separately in [LOWERING.md](LOWERING.md).
 Historical verification commands/results are preserved in the
 [default-return boundary log](https://github.com/jhq223/reel/blob/21e0ea09ddbd6c3926df72a6689183bb73b21598/crates/aside-compiler/bench-results/semantic/default-return-boundary.txt).
 
-## L09 call-spread/rest consistency
+## Call-spread/rest consistency
 
-Call spread accepts array/tuple; known disjoint types diagnose while unknown
+Call spread accepts array/tuple positional values and own string-keyed table entries; known disjoint types diagnose while unknown
 sources retain runtime checks. Unknown length never reserves a static argument
 slot. Rest's annotation constrains the whole newly created outer array and
 known incompatible annotations reject. Rest is positional-only: its declaration
 name is excluded from named supply, including a collision with PropertyBagTail.
-Other ordinary tail-bag behavior remains unchanged. ExternalSignature does not
-yet project PropertyBagTail; this increment does not expand that interface.
+ExternalSignature does not project PropertyBagTail; the executor does not yet
+implement that format-level feature.
 Static signature checks do not execute defaults or establish runtime capture,
 version conflict, allocation or error-order behavior.

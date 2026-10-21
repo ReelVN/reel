@@ -29,7 +29,7 @@ dependency is introduced.
 4. Only a successful 0→ACTIVE exchange permits a call. The callback then attempts one AtomicRefCell mutable borrow; it never retries, spins, or waits for that borrow. A conflict is a DeviceContract fault and whole-buffer silence. suspend/stop atomically add CLOSED and wait for ACTIVE to clear. The mutable slot borrow ends before CallGuard releases ACTIVE, when the entire native buffer finishes. This control-side wait is solely the required in-flight fence; the realtime thread never waits for the main thread, acquires a callback Mutex or participates in a command acknowledgement handshake.
 5. Successful suspend waits for the active call, pauses the native stream and retains the same closure/Renderer. reel-audio's logical content position freezes because no Renderer calls occur. Resume verifies device identity, default format and support for the negotiated pair, then plays and reopens the same gate. Failure remains Failed with retained fill, until stop.
 6. Stop closes entry, fences the active call and **takes/disposes the fill shell on its caller** before native pause/drop. reel-audio's shell moves its whole Option<Renderer> with a pre-reserved teardown credit; physical PCM destruction occurs on the service worker. Stopped means supply stopped, while tickets describe asynchronous residency. A pause failure still returns Stopped; native callback retention cannot recover the disposed fill. Native pause/stream Drop/in-flight fencing have no 0.5ms promise. Renderer ownership never relies on native callback destruction; device physical drain is also not guaranteed.
-7. Each new native stream gets its own gate/fault latch. Late old-stream errors cannot close a replacement stream or change its epoch. Generic WakeSignal notification runs on a dedicated control notifier (2ms polling of a coalesced atomic flag), not in the realtime callback. Host code must acknowledge WakeSignal before draining as D01 specifies.
+7. Each new native stream gets its own gate/fault latch. Late old-stream errors cannot close a replacement stream or change its epoch. Generic WakeSignal notification runs on a dedicated control notifier (2ms polling of a coalesced atomic flag), not in the realtime callback. Host code acknowledges WakeSignal before draining the shared queue.
 
 Official versioned sources used for the interface audit:
 
@@ -38,11 +38,11 @@ Official versioned sources used for the interface audit:
 - [CPAL traits](https://docs.rs/crate/cpal/0.18.1/source/src/traits.rs): build consumes a FnMut callback, returns a Stream, and play/pause return Result. There is no generic callback recovery API for a failed build and no public ordered speaker layout API.
 - [CPAL ALSA](https://docs.rs/crate/cpal/0.18.1/source/src/host/alsa/mod.rs): `StreamTrait::play` releases its worker latch and can fail on ALSA start/unpause; `pause` can be unsupported or fail; `Stream::drop` wakes and joins the worker.
 - [CPAL WASAPI stream](https://docs.rs/crate/cpal/0.18.1/source/src/host/wasapi/stream.rs): `play` **enqueues** PlayStream. Ok proves command acceptance, not that IAudioClient::Start already succeeded. Subsequent native startup failures are accepted-stream faults reported by AudioStatus, as the contract permits. The callback/queue handoff never treats this as synchronous rejection. Drop sends Terminate and joins.
-- [CPAL WASAPI device](https://docs.rs/crate/cpal/0.18.1/source/src/host/wasapi/device.rs): generated WAVEFORMATEXTENSIBLE uses `KSAUDIO_SPEAKER_DIRECTOUT`. StreamConfig exposes channel count, rate and buffer size, not an ordered device speaker map. The default adapter therefore negotiates known mono/stereo; a multichannel-only device returns Unsupported. It does **not** infer Windows 7.1 order from the number 8.
+- [CPAL WASAPI device](https://docs.rs/crate/cpal/0.18.1/source/src/host/wasapi/device.rs): generated WAVEFORMATEXTENSIBLE uses `KSAUDIO_SPEAKER_DIRECTOUT`. StreamConfig exposes channel count, rate and buffer size, not an ordered device speaker map. The Windows adapter requests stereo/mono client streams through WASAPI PCM conversion even when enumeration reports only the multichannel device default. The system performs the channel conversion. Other platforms require enumerated mono/stereo layouts. Physical speaker order remains a device-specific check.
 - [AtomicRefCell source](https://docs.rs/crate/atomic_refcell/0.1.13/source/src/lib.rs): `AtomicBorrowRefMut::try_new` performs one compare_exchange, returning an error on conflict; no retry or blocking path. [SyncWrapper source](https://docs.rs/crate/sync_wrapper/1.0.2/source/src/lib.rs): Sync is sound without requiring the contained value to be Sync because access requires exclusive `&mut self`. Together they support the exact `FnMut + Send` contract without a callback Mutex or custom unsafe code.
 - [CPAL CoreAudio lifecycle](https://docs.rs/crate/cpal/0.18.1/source/src/host/coreaudio/macos/mod.rs): native start/stop and an Arc<Mutex<StreamInner>> lifetime shared with device monitors. This is why outer Stream destruction alone is insufficient as a proof of synchronous fill disposal. The control-owned slot addresses it without changing the public contract. macOS source was audited but not built or run in this environment.
 
-The explicit offline Surround71 order is FL, FR, Center, LFE, BackLeft, BackRight, SideLeft, SideRight. Only FL/FR receive L/R. This is a declared test layout, not a claim about an actual Windows device. Unknown hardware layouts require additional native layout discovery or known-layout renegotiation. The existing contract is preserved.
+The explicit offline Surround71 order is FL, FR, Center, LFE, BackLeft, BackRight, SideLeft, SideRight. Only FL/FR receive L/R. This is a declared test layout, not a claim about an actual Windows device. Windows client-stream conversion does not establish this physical speaker order; native multichannel output on other platforms still requires a known layout.
 
 ## PCM, timing and bounds
 
@@ -86,11 +86,11 @@ Audio library tests use the root workspace and Cargo.lock. See
 [VERIFICATION.md](VERIFICATION.md) for contracts, current commands and fixed
 historical evidence links.
 
-## Logical audio activities (PR #53)
+## Logical audio activities
 
-The draft adds AudioActivityService over the existing reel-audio bridge. Requests own a ResourceVersion, MediaEpoch, group metadata and DecodedSound.
-PR #56 replaces the raw request Scope with a registered AudioOwner carrying the
-complete Scope and a service-local admission capability. Fixed ledger slots reserve terminal capacity before play; refusals return the owned request. QueueLimits charges slot storage and asset-key capacity, while existing tickets retain PCM charges. IDs are unique within a service lifetime; the host must allocate a fresh epoch when replacing that service. Group is metadata only, and looping follows the supplied DecodedSound.
+AudioActivityService runs over the reel-audio bridge. Requests own a ResourceVersion, MediaEpoch, group metadata and DecodedSound.
+Requests use a registered AudioOwner carrying the complete Scope and a
+service-local admission capability. Fixed ledger slots reserve terminal capacity before play; refusals return the owned request. QueueLimits charges slot storage and asset-key capacity, while existing tickets retain PCM charges. IDs are unique within a service lifetime; the host must allocate a fresh epoch when replacing that service. Group is metadata only, and looping follows the supplied DecodedSound.
 
 play/stop/set_volume_db/snapshot operate on logical activity identities. Completed observes content consumption through Playback; it does not certify hardware presentation or released PCM. Stopped settles a control command; AudioOutput still owns the supply fence and the reclaim service still owns physical destruction. This low-level terminal must not silently become the final creator media-wait completion contract.
 
@@ -98,9 +98,13 @@ Before cancel_owner, revoke business waits and prevent new plays for that comple
 
 Share a WakeSignal across output, this ledger and AudioReclaimService. Acknowledge before draining all sources and recheck pending before sleeping. Partial scans request an immediate next turn. While unsettled activities remain, poll_after recommends a 10 ms control-only timer because Playback has no per-handle completion subscription. No unsettled activity means no periodic timer from this API. This polling does not request layout or presentation and does not guarantee completion latency under overload.
 
-The corrected source at 8d3f5a2b passed independent default/feature-off real reel-audio/offline checks, including pre-fault terminal preservation, fair draining under backpressure, exact identity, ID/epoch bounds and worker-side PCM release accounting. The five-document revision at 888cc550 was independently checked against the same production code. This is limited Rust acceptance; the PR remains unmerged. No VM/Aside or physical device execution was performed. No seek/reload, position-preserving device reconstruction, per-activity pause/finish, group mixer, stream decoder, persisted restoration schema or engine/player binding is provided. AudioActivitySnapshot is borrowed inspection data, not a complete restore descriptor. Hardware completion and the 0.5 ms control-side target remain unverified.
+AudioActivitySnapshot exposes borrowed low-level inspection data. The player and
+SessionVm compose full save descriptors, per-activity controls and resource
+restoration above this service. Hardware completion, position-preserving device
+reconstruction and the control-side timing targets need separate device checks.
+Original review results remain in the [fixed activity record](https://github.com/jhq223/reel/blob/f916ffedceb91465633fd549e4db1084c070edf3/crates/reel-media/README.md).
 
-## Physical owner retirement (PR #56)
+## Physical owner retirement
 
 Register the complete core Scope with `register_owner`, then pass the resulting
 AudioOwner in AudioActivityRequest.owner. A foreign-service or closed capability
@@ -136,11 +140,9 @@ A taken fill can still retain sound resources; suspended output can keep
 retirement pending until its stop/fence and normal worker cleanup finish.
 No elapsed-time guarantee or hardware-presentation assertion follows.
 
-At b64ae9d the author reports 44 tests under both default and feature-off builds,
-strict Clippy and i686 checking, including a 64 MiB allocator witness. Independent
-limited Rust acceptance passed at documentation head 654a899e: default and
-feature-off each passed 44 existing and 37 reviewer tests (16 independent
-additions/history counterexamples), plus three actual 64 MiB destruction paths.
-Independent Clippy/i686 repetition was not performed; those remain author checks. This increment supplies Rust resource evidence only:
-SessionVm external-resource gates, script media activities and player audio
-assembly are not yet connected.
+The [fixed retirement verification record](https://github.com/jhq223/reel/blob/f916ffedceb91465633fd549e4db1084c070edf3/crates/reel-media/README.md)
+preserves the original allocator and lifecycle checks. The current player connects
+these services through `reel-player/src/media.rs`; `SessionVm` exposes the matching
+script audio activities and snapshot resource gates. Video demux/decoding lives in
+`src/video.rs`, with bounded PCM output connected to the same mixer. Use
+[VERIFICATION.md](VERIFICATION.md) for current commands and device boundaries.
