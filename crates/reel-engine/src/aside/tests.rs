@@ -8,6 +8,7 @@ mod clock_batches;
 mod curves;
 mod dialogue_history;
 mod dynamic_stage;
+mod frame_animation;
 mod geometry;
 mod host_budget;
 mod localization;
