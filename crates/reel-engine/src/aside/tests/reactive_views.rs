@@ -839,8 +839,8 @@ fn retiring_the_input_scope_clears_skipping_even_when_its_cancel_callback_cannot
         stage::{NodeAction, NodeKind},
     };
     let code = r#"fn opening() {
-        stage.replace(input(bindings: {skip: [binding("ControlLeft")]},
-            on_action: |e| game.set_skip(e.phase == "pressed", unread: true)));
+        stage.replace(input(actions: {skip: {bindings: ["ControlLeft"],
+            on_action: |e| game.set_skip(e.phase == "pressed", unread: true)}}));
         narrator("before");
         stage.replace(text("new scene"));
         narrator("after");

@@ -16,12 +16,12 @@ const SOURCE: &str = include_str!("../../../examples/author_buttons.aside");
 fn conditional_table_tails_configure_input_from_source_and_asb() {
     let source = r#"fn main() {
         for flag in [true, false] {
-            let actions=if flag { {accept: [binding("Enter")]} }
-                else { {back: [binding("Escape")]} };
+            let actions=if flag { {accept: {bindings: ["Enter"]}} }
+                else { {back: {bindings: ["Escape"]}} };
             if actions.has_own("accept") != flag || actions.has_own("back") == flag {
                 throw "wrong conditional input table";
             }
-            stage.replace(input(bindings: actions, on_action: |event| {}) {
+            stage.replace(input(actions: actions) {
                 column { text("Conditional input"); }
             });
         }
@@ -639,6 +639,141 @@ fn source_and_asb_author_actions_share_keyboard_gamepad_values_and_cancellation(
 }
 
 #[test]
+fn source_and_asb_handler_only_replacement_cancels_held_actions_through_old_handlers() {
+    use reel_ui::input::*;
+    let source = r#"fn main() {
+        let result = text("result", width: 100, height: 30);
+        let pad = input(modal: true, width: 640, height: 300, actions: {
+            hold: {bindings: ["ControlLeft"], on_press: || {result.x += 1;},
+                on_release: || {throw "old release activated";},
+                on_cancel: |e| {
+                    if e.phase != "cancelled" || e.target.value("hold") != 0 {throw "cancel state";}
+                    result.y += 1;
+                }},
+            replace: {bindings: ["North"], on_press: |e| {
+                e.target.actions = {
+                    hold: {bindings: ["ControlLeft"],
+                        on_release: || {result.rotation += 1;},
+                        on_cancel: || {throw "new handler received old cancellation";}},
+                    replace: {bindings: ["North"]},
+                };
+            }},
+        }) {result;};
+        stage.replace(pad);
+    }"#;
+    let checked = reel_cli::check(source, "handler-replacement.aside").unwrap();
+    let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
+    for story in [
+        reel_cli::into_story(checked, "main::main").unwrap(),
+        reel_cli::decode_story(&artifact.bytes).unwrap(),
+    ] {
+        let mut driver = AsideSessionUi::from_compiled(
+            Session::new(SessionId(1), Epoch(1)).unwrap(),
+            story,
+            "en",
+            VmLimits::default(),
+        )
+        .unwrap();
+        settle(&mut driver);
+        let result = driver
+            .adapter()
+            .stage()
+            .nodes()
+            .find(|n| n.kind == NodeKind::Text("result".into()))
+            .unwrap()
+            .id;
+        let (mut bridge, root) = bridge(&driver);
+        let mut frame = 0;
+        let mut flush = |driver: &mut AsideSessionUi, bridge: &mut PresentationBridge| {
+            for _ in 0..2 {
+                settle(driver);
+                frame += 1;
+                present(driver, bridge, root, frame);
+            }
+        };
+        flush(&mut driver, &mut bridge);
+        let send =
+            |driver: &mut AsideSessionUi, bridge: &mut PresentationBridge, control, value| {
+                driver
+                    .handle_text(
+                        bridge,
+                        TextEvent::Input(InputEvent::Value {
+                            device: InputDeviceId::Gamepad(1),
+                            control,
+                            value,
+                        }),
+                    )
+                    .unwrap()
+            };
+        assert_eq!(
+            send(
+                &mut driver,
+                &mut bridge,
+                Control::Key(keyboard::Code::ControlLeft),
+                1.
+            ),
+            Handled::Yes
+        );
+        flush(&mut driver, &mut bridge);
+        assert_eq!(driver.adapter().stage().node(result).unwrap().props.x, 1.);
+        assert_eq!(
+            send(
+                &mut driver,
+                &mut bridge,
+                Control::Button(GamepadButton::North),
+                1.
+            ),
+            Handled::Yes
+        );
+        flush(&mut driver, &mut bridge);
+        assert_eq!(driver.adapter().stage().node(result).unwrap().props.y, 1.);
+        assert_eq!(
+            send(
+                &mut driver,
+                &mut bridge,
+                Control::Key(keyboard::Code::ControlLeft),
+                0.
+            ),
+            Handled::Yes
+        );
+        flush(&mut driver, &mut bridge);
+        assert_eq!(
+            driver
+                .adapter()
+                .stage()
+                .node(result)
+                .unwrap()
+                .props
+                .rotation,
+            0.,
+            "old release cannot activate replacement"
+        );
+        for value in [1., 0.] {
+            assert_eq!(
+                send(
+                    &mut driver,
+                    &mut bridge,
+                    Control::Key(keyboard::Code::ControlLeft),
+                    value
+                ),
+                Handled::Yes
+            );
+        }
+        flush(&mut driver, &mut bridge);
+        assert_eq!(
+            driver
+                .adapter()
+                .stage()
+                .node(result)
+                .unwrap()
+                .props
+                .rotation,
+            1.
+        );
+    }
+}
+
+#[test]
 fn source_and_asb_input_scope_remaps_and_retires_multitouch_ownership() {
     use reel_ui::input::*;
     let input_source = r#"
@@ -648,28 +783,23 @@ fn main() {
     let counts = model({back: 0, pick: 0, other: 0});
     let popup = stack(x: 200, width: 200, height: 100, modal: true, visible: false);
     popup.add(button("Close", width: 180, height: 80, on_click: |e| { popup.visible = false; }));
+    fn move(e) { marker.x = e.target.value("move_x") * 100; }
+    fn fire(e) { status.value = e.phase; }
     let pad = input(modal: true, width: 640, height: 300,
-        bindings: {
-            move_x: [binding("KeyD")],
-            fire: [binding("PointerPrimary")],
-            menu: [binding("Start")],
-            remap: [binding("North")],
-        },
-        on_action: |e| {
-            if e.action == "move_x" { marker.x = e.target.value("move_x") * 100; }
-            if e.action == "fire" { status.value = e.phase; }
-            if e.action == "menu" && e.phase == "pressed" { popup.visible = true; }
-            if e.action == "back" && e.phase == "pressed" { counts.back += 1; }
-            if e.action == "pick" && e.phase == "pressed" { counts.pick += 1; }
-            if e.action == "other" && e.phase == "pressed" { counts.other += 1; }
-            if e.action == "remap" && e.phase == "pressed" {
-                e.target.bindings = {
-                    move_x: [binding("KeyJ")],
-                    fire: [binding("PointerPrimary"), binding("PointerSecondary"), binding("South"), binding("Space")],
-                    back: [binding("East")], pick: [binding("DpadDown")], other: [binding("West")]
+        actions: {
+            move_x: {bindings: ["KeyD"], on_action: move},
+            fire: {bindings: ["PointerPrimary"], on_action: fire},
+            menu: {bindings: ["Start"], on_press: || { popup.visible = true; }},
+            remap: {bindings: ["North"], on_press: |e| {
+                e.target.actions = {
+                    move_x: {bindings: ["KeyJ"], on_action: move},
+                    fire: {bindings: ["PointerPrimary", "PointerSecondary", "South", "Space"], on_action: fire},
+                    back: {bindings: ["East"], on_press: || { counts.back += 1; }},
+                    pick: {bindings: ["DpadDown"], on_press: || { counts.pick += 1; }},
+                    other: {bindings: ["West"], on_press: || { counts.other += 1; }},
                 };
                 marker.x = e.target.value("move_x") * 100;
-            }
+            }},
         }
     ) {
         marker; status; popup;
@@ -678,7 +808,7 @@ fn main() {
             on_click: |e| { marker.y += 1; });
     };
     let mut rejected = false;
-    try { pad.bindings = {bad: [["no-such-control", 1, 0]]}; }
+    try { pad.actions = {bad: {bindings: ["no-such-control"]}}; }
     catch error { rejected = true; }
     if !rejected { throw "invalid binding assignment must fail at the script boundary"; }
     stage.replace(pad);
@@ -967,6 +1097,21 @@ fn main() {
                 Handled::No,
                 "unbound direction remains available to spatial navigation"
             );
+        }
+        flush(&mut driver, &mut bridge, &mut frame);
+        // Spatial navigation skips focus ancestors; Tab retains the input's stop.
+        for state in [keyboard::KeyState::Down, keyboard::KeyState::Up] {
+            driver
+                .handle_text(
+                    &mut bridge,
+                    TextEvent::Keyboard(keyboard::KeyboardEvent {
+                        code: keyboard::Code::Tab,
+                        key: keyboard::Key::Named(keyboard::NamedKey::Tab),
+                        state,
+                        ..Default::default()
+                    }),
+                )
+                .unwrap();
         }
         flush(&mut driver, &mut bridge, &mut frame);
         for value in [1., 0.] {
