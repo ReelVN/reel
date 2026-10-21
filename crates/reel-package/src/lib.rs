@@ -1,4 +1,4 @@
-//! ASB 1.0 containers for linked source graphs. No compiler, runtime admission or IO.
+//! ASB 2.0 containers for linked source graphs and embedded distribution metadata.
 //! Integrity hashes are not signatures or host authorization.
 pub mod archive;
 mod codec;
@@ -6,7 +6,7 @@ mod declarations;
 pub mod distribution;
 mod metadata;
 use aside_vm::bytecode as bc;
-pub use codec::{HEADER_LEN, INDEX_ENTRY_LEN, MAGIC, decode, encode};
+pub use codec::{HEADER_LEN, INDEX_ENTRY_LEN, MAGIC, VERSION, decode, encode, read_distribution};
 pub use metadata::*;
 
 #[derive(Clone, Copy, Debug)]
@@ -82,6 +82,7 @@ pub(crate) fn require(ok: bool, kind: ErrorKind, detail: &str) -> Result<(), Err
 pub struct CodePackage {
     program: bc::VerifiedProgram,
     metadata: Metadata,
+    distribution: Option<distribution::Distribution>,
 }
 impl CodePackage {
     /// Bind the external immutable text storage before runtime admission.
@@ -97,6 +98,9 @@ impl CodePackage {
     }
     pub fn metadata(&self) -> &Metadata {
         &self.metadata
+    }
+    pub fn distribution(&self) -> Option<&distribution::Distribution> {
+        self.distribution.as_ref()
     }
     pub fn into_parts(self) -> (bc::VerifiedProgram, Metadata) {
         (self.program, self.metadata)

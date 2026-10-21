@@ -1,0 +1,26 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
+use clap::Parser;
+use std::{path::PathBuf, process::ExitCode};
+
+#[derive(Parser)]
+#[command(about = "Play the game next to this executable")]
+struct Options {
+    /// Override the save directory; defaults to saves beside this executable.
+    #[arg(long, value_name = "DIRECTORY")]
+    save_directory: Option<PathBuf>,
+}
+
+fn main() -> ExitCode {
+    let options = Options::parse();
+    let result = std::env::current_exe()
+        .map_err(|error| error.to_string())
+        .and_then(|executable| reel_cli::playback::standalone(&executable, options.save_directory));
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("game: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}

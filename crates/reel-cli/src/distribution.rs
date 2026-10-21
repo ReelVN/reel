@@ -15,6 +15,15 @@ use std::{
 };
 
 pub const TEXT_POOL_ENTRY: &str = "__reel/text.pool";
+pub const MAIN_PACKAGE: &str = "game.asb";
+
+pub fn player_path(cli: &Path) -> PathBuf {
+    cli.with_file_name(format!("reel-game{}", std::env::consts::EXE_SUFFIX))
+}
+
+pub fn exported_player_name() -> String {
+    format!("game{}", std::env::consts::EXE_SUFFIX)
+}
 
 #[derive(Clone, Debug)]
 pub struct Mount {
@@ -43,6 +52,8 @@ pub struct ExportOptions {
     pub modules: BTreeMap<String, PathBuf>,
     pub entry: String,
     pub pack_bytes: NonZeroU64,
+    /// Platform player to copy into a release export.
+    pub player: Option<PathBuf>,
 }
 
 fn resource_volumes(
@@ -241,7 +252,7 @@ pub fn export(
         if fs::symlink_metadata(&output)?.file_type().is_symlink() {
             return Err(io::Error::other("export output must not be a link"));
         }
-        read_manifest(&output.join("release.json"))?;
+        read_manifest(&output.join(MAIN_PACKAGE))?;
     }
     let mut resources = BTreeMap::new();
     let mut text = BTreeMap::new();
@@ -267,14 +278,22 @@ pub fn export(
             )));
         }
     }
+    let player = if artifact.profile == BuildProfile::Release {
+        Some(
+            options
+                .player
+                .as_deref()
+                .ok_or_else(|| io::Error::other("release export requires the platform player"))?,
+        )
+    } else {
+        None
+    };
     let candidate = tempfile::Builder::new()
         .prefix(".reel-export-")
         .tempdir_in(&parent)?;
     let staging = candidate.path();
     let result: io::Result<Exported> = (|| {
-        fs::write(staging.join("game.asb"), &artifact.bytes)?;
         let mut manifest = Distribution {
-            code: "game.asb".into(),
             text: None,
             resources: vec![],
             loose: None,
@@ -302,11 +321,20 @@ pub fn export(
             manifest.source = Some(sources(loaded, options, staging)?);
         }
         manifest.validate()?;
-        fs::write(
-            staging.join("release.json"),
-            serde_json::to_vec_pretty(&manifest)?,
-        )?;
-        let bytes = artifact.bytes.len() as u64
+        let limits = reel_package::Limits::default();
+        let package = reel_package::decode(&artifact.bytes, limits).map_err(io::Error::other)?;
+        let bytecode = aside_vm::bytecode::encode(package.program().package(), limits.bytecode)
+            .map_err(io::Error::other)?;
+        let encoded = reel_package::encode(&bytecode, package.metadata(), Some(&manifest), limits)
+            .map_err(io::Error::other)?;
+        fs::write(staging.join(MAIN_PACKAGE), &encoded)?;
+        let player_bytes = if let Some(player) = player {
+            fs::copy(player, staging.join(exported_player_name()))?
+        } else {
+            0
+        };
+        let bytes = encoded.len() as u64
+            + player_bytes
             + resources
                 .values()
                 .chain(text.values())
@@ -335,7 +363,7 @@ pub fn export(
         ));
     }
     if replacing {
-        read_manifest(&output.join("release.json"))?;
+        read_manifest(&output.join(MAIN_PACKAGE))?;
     }
     if replacing {
         fs::rename(&output, &old)?;
@@ -355,9 +383,8 @@ pub fn export(
 }
 
 pub fn read_manifest(path: &Path) -> io::Result<Distribution> {
-    let manifest: Distribution = serde_json::from_reader(File::open(path)?)?;
-    manifest.validate()?;
-    Ok(manifest)
+    reel_package::read_distribution(&mut File::open(path)?, Default::default())?
+        .ok_or_else(|| io::Error::other("ASB has no embedded distribution"))
 }
 
 pub struct LoadedDistribution {
@@ -368,14 +395,22 @@ pub struct LoadedDistribution {
 }
 
 pub fn load(path: &Path) -> io::Result<LoadedDistribution> {
-    let manifest = read_manifest(path)?;
     let root = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."))
         .canonicalize()?;
-    let bytes = fs::read(root.join(&manifest.code))?;
+    let bytes = fs::read(path)?;
     let mut package = reel_package::decode(&bytes, Default::default()).map_err(io::Error::other)?;
+    let manifest = package
+        .distribution()
+        .cloned()
+        .unwrap_or_else(|| Distribution {
+            text: None,
+            resources: vec![],
+            loose: Some(".".into()),
+            source: None,
+        });
     let mut packages = Vec::new();
     if let Some(text) = &manifest.text {
         let path = root.join(text);

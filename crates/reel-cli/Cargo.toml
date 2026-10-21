@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license = "MIT OR Apache-2.0"
 description = "Check, build and play Aside stories"
+default-run = "reel"
 
 [features]
 default = []
@@ -13,6 +14,11 @@ window = ["dep:reel-player", "reel-player/window"]
 [[bin]]
 name = "reel"
 path = "src/main.rs"
+
+[[bin]]
+name = "reel-game"
+path = "src/bin/reel-game.rs"
+required-features = ["window"]
 
 [dependencies]
 clap = { version = "=4.6.7", features = ["derive"] }
