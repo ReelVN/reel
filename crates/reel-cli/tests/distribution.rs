@@ -67,6 +67,8 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
     let library = root.join("library");
     let catalogs = root.join("catalogs");
     let resources = root.join("assets");
+    let player = root.join("platform-player");
+    fs::write(&player, b"platform player fixture").unwrap();
     for directory in [&source, &library, &catalogs, &resources] {
         fs::create_dir(directory).unwrap();
     }
@@ -114,6 +116,7 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
         overwrite: false,
         entry: loaded.entry(None),
         pack_bytes: std::num::NonZeroU64::new(128).unwrap(),
+        player: Some(player),
         modules,
         resources: vec![Mount {
             prefix: "assets".into(),
@@ -133,7 +136,8 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
         distribution::export(&loaded, &artifact, &options).unwrap();
         let relocated = root.join(format!("relocated-{name}"));
         fs::rename(&options.output, &relocated).unwrap();
-        let manifest = distribution::read_manifest(&relocated.join("release.json")).unwrap();
+        assert!(!relocated.join("release.json").exists());
+        let manifest = distribution::read_manifest(&relocated.join("game.asb")).unwrap();
         if profile == BuildProfile::Debug {
             let author = manifest.source.unwrap();
             let roots = author
@@ -141,11 +145,28 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
                 .iter()
                 .map(|(key, value)| (key.clone(), relocated.join(value)))
                 .collect();
-            let copied = project::load_with_modules(&relocated.join(author.entry), &roots)
+            let copied = project::load_with_modules(&relocated.join(&author.entry), &roots)
                 .unwrap_or_else(|e| panic!("{:?}", e.failure));
             copied.check().unwrap();
             assert!(relocated.join("assets/sample.bin").exists());
+            // dev follows the relocated editable source; run still uses the ASB.
+            fs::write(relocated.join(&author.entry), "fn main(").unwrap();
+            let failed = std::process::Command::new(env!("CARGO_BIN_EXE_reel"))
+                .args(["dev", relocated.join("game.asb").to_str().unwrap()])
+                .current_dir(root)
+                .output()
+                .unwrap();
+            assert!(!failed.status.success());
+            assert!(
+                String::from_utf8_lossy(&failed.stderr).contains("main.aside"),
+                "{}",
+                String::from_utf8_lossy(&failed.stderr)
+            );
         } else {
+            assert_eq!(
+                fs::read(relocated.join(distribution::exported_player_name())).unwrap(),
+                b"platform player fixture"
+            );
             assert!(manifest.source.is_none());
             assert!(manifest.loose.is_none());
             assert!(!relocated.join("script").exists());
@@ -178,7 +199,7 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
                     );
                 }
             }
-            let decoded = distribution::load(&relocated.join("release.json")).unwrap();
+            let decoded = distribution::load(&relocated.join("game.asb")).unwrap();
             let program = decoded.package.program();
             assert!(program.package().sources.is_empty());
             assert!(
@@ -197,7 +218,7 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
             )
             .unwrap();
             assert_eq!(
-                read_line(&relocated.join("release.json")),
+                read_line(&relocated.join("game.asb")),
                 "Packaged translation."
             );
             drop(decoded);
@@ -222,7 +243,7 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
                 .unwrap();
             writer.finish().unwrap();
             assert_eq!(
-                distribution::load(&relocated.join("release.json"))
+                distribution::load(&relocated.join("game.asb"))
                     .unwrap()
                     .package
                     .metadata()
@@ -230,19 +251,185 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
                 identity
             );
             assert_eq!(
-                read_line(&relocated.join("release.json")),
+                read_line(&relocated.join("game.asb")),
                 "Updated translation."
             );
             fs::remove_file(relocated.join("game.rtp")).unwrap();
-            assert!(distribution::load(&relocated.join("release.json")).is_err());
+            assert!(distribution::load(&relocated.join("game.asb")).is_err());
             continue;
         }
         assert_eq!(
-            read_line(&relocated.join("release.json")),
+            read_line(&relocated.join("game.asb")),
             "Packaged translation."
         );
     }
     let archive = root.join("relocated-release/resources-003.rpk");
     let index = ArchiveIndex::read(&mut File::open(archive).unwrap()).unwrap();
     assert_eq!(index.get("assets/sample.bin").unwrap().length, 23);
+}
+
+#[test]
+fn failed_player_copy_preserves_previous_export_and_overwrite_requires_embedded_manifest() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    let source = root.join("source");
+    fs::create_dir(&source).unwrap();
+    fs::write(
+        source.join("main.aside"),
+        "fn main() { narrator(\"original\"); }",
+    )
+    .unwrap();
+    let loaded = project::load_with_modules(&source, &BTreeMap::new())
+        .unwrap_or_else(|error| panic!("{:?}", error.failure));
+    let artifact = build_export(
+        &loaded.check().unwrap(),
+        "main::main",
+        BuildProfile::Release,
+    )
+    .unwrap();
+    let player = root.join("player");
+    fs::write(&player, "player fixture").unwrap();
+    let mut options = ExportOptions {
+        output: root.join("release"),
+        overwrite: false,
+        entry: "main::main".into(),
+        pack_bytes: std::num::NonZeroU64::new(1024).unwrap(),
+        modules: BTreeMap::new(),
+        resources: vec![],
+        text: vec![],
+        player: Some(player),
+    };
+    distribution::export(&loaded, &artifact, &options).unwrap();
+    let original = fs::read(options.output.join("game.asb")).unwrap();
+    options.overwrite = true;
+    options.player = Some(root.join("missing-player"));
+    assert!(distribution::export(&loaded, &artifact, &options).is_err());
+    assert_eq!(fs::read(options.output.join("game.asb")).unwrap(), original);
+    assert_eq!(read_line(&options.output.join("game.asb")), "original");
+    let legacy = root.join("legacy");
+    fs::create_dir(&legacy).unwrap();
+    fs::write(legacy.join("release.json"), r#"{"code":"game.asb"}"#).unwrap();
+    options.output = legacy.clone();
+    assert!(distribution::export(&loaded, &artifact, &options).is_err());
+    assert!(legacy.join("release.json").exists());
+}
+
+#[cfg(feature = "window")]
+#[test]
+#[ignore = "requires a native window and GPU; launches the exported executable"]
+fn exported_player_launches_beside_its_executable_from_foreign_cwd() {
+    use reel_player::saves::{DirectorySaves, SaveStorage};
+    use std::process::{Command, Stdio};
+    fn run(mut command: Command) {
+        let mut child = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(45);
+        loop {
+            if child.try_wait().unwrap().is_some() {
+                break;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                let output = child.wait_with_output().unwrap();
+                panic!(
+                    "player did not exit: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    let source = root.join("source");
+    fs::create_dir(&source).unwrap();
+    fs::write(
+        source.join("main.aside"),
+        r#"fn main() {
+        game.configure(width: 320, height: 180, fonts: ["fonts/400.ttf"]);
+        stage.replace(text("A", font_size: 32));
+        await stage.presented();
+        await persistent.write("launched", true);
+        game.exit();
+    }"#,
+    )
+    .unwrap();
+    let output = root.join("export");
+    let fonts =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../reel-player/tests/fixtures/font-weight");
+    let exported = Command::new(env!("CARGO_BIN_EXE_reel"))
+        .arg("export")
+        .arg(&source)
+        .arg("--release")
+        .arg("--output")
+        .arg(&output)
+        .arg("--resource")
+        .arg(format!("fonts={}", fonts.display()))
+        .output()
+        .unwrap();
+    assert!(
+        exported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&exported.stderr)
+    );
+    let relocated = root.join("moved-game");
+    fs::rename(&output, &relocated).unwrap();
+    let cwd = root.join("unrelated");
+    fs::create_dir(&cwd).unwrap();
+    fs::write(cwd.join("game.asb"), "this is not the game").unwrap();
+    let executable = relocated.join(distribution::exported_player_name());
+    let mut default = Command::new(&executable);
+    default.current_dir(&cwd);
+    run(default);
+    assert!(
+        DirectorySaves::new(relocated.join("saves"), 1 << 20)
+            .read_data("launched")
+            .unwrap()
+            .is_some()
+    );
+    assert!(!cwd.join("saves").exists());
+    let custom = root.join("custom-saves");
+    let mut overridden = Command::new(&executable);
+    overridden
+        .current_dir(&cwd)
+        .arg("--save-directory")
+        .arg(&custom);
+    run(overridden);
+    assert!(
+        DirectorySaves::new(&custom, 1 << 20)
+            .read_data("launched")
+            .unwrap()
+            .is_some()
+    );
+    let cli_saves = root.join("cli-saves");
+    let mut cli = Command::new(env!("CARGO_BIN_EXE_reel"));
+    cli.current_dir(&cwd)
+        .arg("run")
+        .arg(relocated.join("game.asb"))
+        .arg("--save-directory")
+        .arg(&cli_saves);
+    run(cli);
+    assert!(
+        DirectorySaves::new(cli_saves, 1 << 20)
+            .read_data("launched")
+            .unwrap()
+            .is_some()
+    );
+    let names: Vec<_> = fs::read_dir(&relocated)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(!names.iter().any(|name| name == "release.json"
+        || name.ends_with(".cmd")
+        || name == "script"
+        || name == "fonts"));
 }

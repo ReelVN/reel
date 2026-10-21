@@ -1,4 +1,4 @@
-//! Author-facing static compilation. No runtime admission or execution occurs.
+//! Author compilation, relocatable packages, and shared player startup.
 use aside_compiler::{Diagnostic, SourceMap, TextRange, lowering};
 use aside_vm::bytecode as bc;
 use reel_engine::aside::source::{self, CompiledStory, ProjectSourceCompilation, SourceError};
@@ -12,6 +12,7 @@ pub use artifact::{
 };
 pub mod distribution;
 pub mod localization;
+pub mod playback;
 pub mod prepare_image;
 pub mod project;
 

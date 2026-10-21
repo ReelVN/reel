@@ -350,7 +350,7 @@ GPU 回放在一次帧准备内复用已经完成合成的离屏目标；复用�
 
 窗口入口为 `reel_player::shell::run_story(CompiledStory, StoryWindowOptions)`。选项包含标题、资源来源、locale、可选的原生窗口 logical_size 和逻辑 canvas_size；字体由作品的 game.configure 提供。窗口复用 SessionUi、PresentationBridge 和现有渲染路径，交替推进 VM 与增量 GC 工作片；等待玩家输入时完成当前回收周期后休眠，输入完成后继续。正常剧情结束保留画面；关闭执行任务取消及清理后退出。ResourceBlocked 保留执行状态，允许 GC 后重试，持续阻塞时停止忙等。源码和 ASB 入口共用编译/注册描述及运行宿主。新能力使用已有资源所有权和预算，不再叠加仅为演示设定的行数、选项或节点上限。
 
-作者命令 `reel check`、`reel build` 和 `reel dev` 共用 engine 的宿主注册与源码编译入口。check/build 保持不执行脚本，允许已解析的 Reel 原生接口；ASB v1 保存既有 Aside 字节码 原生声明，运行时仍由 SessionVm 的宿主注册提供能力。`reel dev <source.aside>` 运行源码，`reel run <file.asb>` 直接解码并运行构建产物，不重编译内嵌源码。window feature 提供窗口命令，未编入时说明所需构建命令。默认源码入口为 main::main；源码文件或工程目录按 main/--entry 加载实际多源码模块。模块共用一个字节码程序、固定导入和独立的会话全局环境，函数先链接，顶层表达式按依赖/SCC 顺序初始化。配置标题与 contain 画布沿共同 UI 变换处理绘制和输入。资源包与 release.json 仍由发布链路交付。
+作者命令 `reel check`、`reel build` 和 `reel dev` 共用 engine 的宿主注册与源码编译入口。check/build 保持不执行脚本，允许已解析的 Reel 原生接口；ASB v2 保存既有 Aside 字节码原生声明，运行时仍由 SessionVm 的宿主注册提供能力。`reel dev <source.aside>` 运行源码，`reel run <file.asb>` 直接解码并运行构建产物，不重编译内嵌源码。window feature 提供窗口命令，未编入时说明所需构建命令。默认源码入口为 main::main；源码文件或工程目录按 main/--entry 加载实际多源码模块。模块共用一个字节码程序、固定导入和独立的会话全局环境，函数先链接，顶层表达式按依赖/SCC 顺序初始化。配置标题与 contain 画布沿共同 UI 变换处理绘制和输入。发布链路将清单嵌入 ASB，并交付文本包、资源卷及独立播放器。
 
 一次窗口推进在既有 2 ms deadline 内连续处理同步调用与 VM/GC 工作，直到真实等待、终态或时间片耗尽，再同步画面。创建多个组件或同步替换场景不会被拆成每个 native 一次重绘；时间片包含宿主调用耗时。没有 deadline 的库级 tick 保留单片推进语义。
 
@@ -678,17 +678,21 @@ UI 交互：按钮、图片按钮、滑条、输入框、滚动、虚拟列表/�
 
 `reel build <project> --output <file.asb>` 生成可独立加载的代码包。默认 Debug 保留完整源码、指令源码映射和声明位置；`--release` 剥离这些调试数据，保留运行时符号、结构与实际使用的常量。两者共用编译、验证与执行语义。Release 故障报告错误类型、函数与指令位置，不伪造源码行列。执行快照核对实际代码身份，不跨不同产物迁移。
 
-`reel export <project> --output <directory> [--release] [--resource prefix=directory] [--text prefix=directory]` 使用同一编译器与入口选择，额外组织可搬移的工程或发行目录。开发导出包含 Debug ASB、已导入的源码模块、散资源和相对路径的源码配置；`reel dev <release.json>` 可继续编译源码。发布导出包含 `game.asb`、`game.rtp`、`resources.rpk` 和 `release.json`，不复制源码或散资源。资源按逻辑路径排序，以完整资源为边界分卷；默认目标为 2 GiB（含包头和索引），发布参数 `--pack-bytes <非零字节数>` 可调整。第一卷为 `resources.rpk`，后续为 `resources-002.rpk` 等，由清单按顺序挂载。单个资源超过目标时独占一卷，不切断图片或媒体范围、不限制资源总量。两者均可 `reel run <release.json>`。模块与入口参数沿用 build，文本和资源挂载前缀保持脚本逻辑路径。
+`reel export <project> --output <directory> [--release] [--resource prefix=directory] [--text prefix=directory]` 使用同一编译器与入口选择，额外组织可搬移的工程或发行目录。开发导出包含 Debug `game.asb`、已导入的源码模块和散资源；内嵌 source 配置保存入口、模块根与函数名，`reel dev <game.asb>` 按此配置重新编译。发布导出包含 `game.exe`（其他平台为对应可执行文件）、`game.asb`、`game.rtp` 和资源卷。两者均可 `reel run <game.asb>`。模块与入口参数沿用 build，文本和资源挂载前缀保持脚本逻辑路径。
 
-发布清单只保存相对路径：code、可空 text、按覆盖顺序排列的 resources、可空 loose、可空 source。source 保存入口源码、模块根与函数名。加载先验证清单路径与代码，再绑定文本池；图片、字体、翻译和媒体统一交给 AssetIo。发布默认 loose 为 null，不探测附近散文件；显式 `run --assets <directory>` 开启覆盖。散文件只在 NotFound 时回退包，包按声明顺序后者覆盖前者。资源内容版本由实际选中的条目决定。
+发布播放器为 reel-cli 包内启用 window feature 的 `reel-game` 薄入口，与 CLI 共用 ASB 加载及窗口启动路径。export 从当前 CLI 同级复制该平台播放器为 game；Windows 入口使用 GUI subsystem。无参启动从播放器所在目录定位 `game.asb`，默认存档为同级 `saves/`，显式 `--save-directory` 可覆盖；工作目录不影响主包定位。普通 CLI run 保留原有存档目录策略。`cargo build --release -p reel-cli --features window` 同时构建工具和播放器，缺失播放器时发布导出给出此命令。
 
-导出在输出目录同级创建候选目录，全部文件成功后发布，失败保留原导出。`--overwrite` 仅替换带有效 Reel 清单的目录，替换的是整个导出，不复制旧存档或其他附加文件。输出必须位于输入源码和资源树之外。目录切换失败时恢复旧目录；不提供并发运行中的热更新或断电恢复协议。普通 build 的单文件发布仍复用 reel-storage；CLI 参数解析用 clap，候选目录生命周期用 tempfile。
+资源按逻辑路径排序，以完整资源为边界分卷；默认目标为 2 GiB（含包头和索引），发布参数 `--pack-bytes <非零字节数>` 可调整。第一卷为 `resources.rpk`，后续为 `resources-002.rpk` 等，由内嵌清单按顺序挂载。单个资源超过目标时独占一卷。
+
+清单位于 ASB 的 Distribution 区段，只保存相对主 ASB 目录的可空 text、按覆盖顺序排列的 resources、可空 loose 和可空 source。加载在同次容器解码取得代码与清单，验证路径后绑定文本池；图片、字体、翻译和媒体统一交给 AssetIo。开发启动与导出覆盖检查通过 Read+Seek 只读取头、索引及受 Limits 约束并校验摘要的清单。发布默认 loose 为 null；显式 `run --assets <directory>` 开启覆盖。散文件只在 NotFound 时回退包，包按声明顺序后者覆盖前者。普通 build 的 ASB 可省略清单，资源根仍为主包目录。
+
+导出在输出目录同级创建候选目录，全部文件成功后发布，失败保留原导出。`--overwrite` 仅替换 game.asb 内含有效 Reel 清单的目录，替换的是整个导出，不复制旧存档或其他附加文件。输出必须位于输入源码和资源树之外。目录切换失败时恢复旧目录；不提供并发运行中的热更新或断电恢复协议。普通 build 的单文件发布仍复用 reel-storage；CLI 参数解析用 clap，候选目录生命周期用 tempfile。
 
 ### 代码容器与文本池
 
 ASB 保存已经链接的完整模块图、初始化顺序与实际入口。Aside 字节码是代码、常量、函数、导入导出、类型与 native 合同的唯一来源；容器元数据不复制另一套执行模型。容器由 reel-package 定义，编译器 HIR 到便携元数据的转换由 reel-cli 完成。模块/函数索引在验证时准备，运行时不扫描模块表。
 
-容器头固定 72 字节：magic[8]=REELASB 加零字节、major:u16、minor:u16、flags:u32、total_len:u64、index_offset:u64、index_len:u64、index_blake3[32]。整数小端，偏移为文件绝对位置。索引项为 kind:u32、flags:u32、offset:u64、len:u64、blake3[32]；必需且唯一的区段为字节码与 UTF-8 JSON 元数据。读取检查范围、重叠、摘要与结构，未知必需语义拒绝。只读写当前格式，不保留旧格式解码分支。摘要用于完整性与身份，不授予宿主权限。
+ASB 当前格式为 2.0，旧版本按 Version 拒绝；Aside 字节码、VM 快照与会话快照版本保持。容器头固定 72 字节：magic[8]=REELASB 加零字节、major:u16、minor:u16、flags:u32、total_len:u64、index_offset:u64、index_len:u64、index_blake3[32]。整数小端，偏移为文件绝对位置。索引项为 kind:u32、flags:u32、offset:u64、len:u64、blake3[32]；必需且唯一的区段为字节码与 UTF-8 JSON 元数据；导出另含唯一的 kind=3 UTF-8 JSON Distribution 区段，该区段存在时标记 required。读取检查范围、重叠、摘要与结构，未知必需语义拒绝。只读写当前格式，不保留旧格式解码分支。摘要用于完整性与身份，不授予宿主权限。
 
 元数据保存规范模块路径、源码版本、声明/绑定/global 映射、初始化顺序、initializer 与可空 game_entry。可空 debug 记录保存源码描述与声明位置；Release 中为 null，字节码 sources/source_map 为空。读取端交叉验证模块归属、索引唯一性、实际入口及精确字节码摘要。build/export/dev 默认 `main::main`；`--entry` 可选择普通模块级、无捕获、无必需参数的函数。消费者完成工程初始化后启动入口。
 

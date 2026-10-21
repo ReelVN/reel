@@ -87,7 +87,7 @@ Build defaults to Debug, retaining complete source and mappings so runtime error
 
 With window enabled, source and built packages use the real window, text layout and presented-input path. Synchronous component construction continues within one execution time slice, updating the scene when it waits or the slice ends, without displaying a separate frame for every node. When waiting for dialogue or a choice, the player completes the current GC cycle and then sleeps until input arrives. Natural completion keeps the final scene in the window. Close the window to exit and finish cleanup; Escape sends Back to the current UI.
 
-Projects read only modules imported by the entry. game::ui::scene resolves to ui/scene.aside beside the entry file; --module first=../library supplies an external source root. Aliases for the same directory share one environment. Function cycles can link; top-level reads of uninitialized bindings report ModuleInitializationCycle at the read. build stores the complete graph and entry in one movable .asb. The same main executes its initialization settings in source and ASB runs. Assets default to the source or ASB directory and can be selected with --assets; export additionally creates resource packages and a relocatable release.json manifest.
+Projects read only modules imported by the entry. game::ui::scene resolves to ui/scene.aside beside the entry file; --module first=../library supplies an external source root. Aliases for the same directory share one environment. Function cycles can link; top-level reads of uninitialized bindings report ModuleInitializationCycle at the read. build stores the complete graph and entry in one movable .asb. The same main executes its initialization settings in source and ASB runs. Assets default to the source or ASB directory and can be selected with --assets; export additionally creates resource packages and embeds a relocatable manifest in the ASB.
 
 Source files, embedded source text and string constants share the actual package budget. Long text and concatenation advance in execution slices; slicing never truncates text or imposes a dialogue length limit.
 
@@ -95,16 +95,18 @@ Left-associated operations and member or call chains compile in source order wit
 
 ### Exporting Development and Release Directories
 
-`reel export` builds code and organizes its resources together. It exports a development project by default; `--release` creates a release directory. Prepare the font as shown above, then run:
+`reel export` builds code and organizes its resources together. It exports a development project by default; `--release` creates a release directory. Prepare the font as shown above and build the tool and standalone player with `cargo build -p reel-cli --features window`, then run:
 
 ```powershell
 ./target/debug/reel.exe export examples/author_stage.aside --output target/reel-artifacts/development --resource assets=examples/assets --resource fonts=target/reel-artifacts/author-assets/fonts
 ./target/debug/reel.exe export examples/author_stage.aside --release --output target/reel-artifacts/release --resource assets=examples/assets --resource fonts=target/reel-artifacts/author-assets/fonts
-./target/debug/reel.exe run target/reel-artifacts/release/release.json
-./target/debug/reel.exe dev target/reel-artifacts/development/release.json
+./target/debug/reel.exe run target/reel-artifacts/release/game.asb
+./target/debug/reel.exe dev target/reel-artifacts/development/game.asb
 ```
 
-Development output contains editable `script/` files, loose resources, `game.asb` with source diagnostics, and `release.json`. Use run directly or dev to recompile the copied sources. Release output contains `game.asb`, `game.rtp`, `resources.rpk`, and `release.json`; distribute these with the player for the target platform. Moving the complete directory does not require paths from the build machine.
+Development output contains editable `script/` files, loose resources, and `game.asb` with source diagnostics. Use run directly or dev to recompile through the embedded source configuration. Release output contains `game.exe`, `game.asb`, `game.rtp`, and `resources.rpk`, plus further volumes when needed. Distribute the complete directory; players double-click `game.exe` to start, or use the equivalent executable on other platforms. The manifest lives inside `game.asb`, with resource paths relative to that file.
+
+The standalone player locates `game.asb` beside its executable and writes saves to the adjacent `saves/` directory by default. Use `--save-directory <directory>` to choose another location, and preserve saves when updating the game. Release export copies the reel-game player beside the reel tool; build release executables with `cargo build --release -p reel-cli --features window`. The current ASB format is 2.0; rebuild older artifacts.
 
 Each `--resource prefix=directory` maps a directory to its logical script path. Use `--text locales=build/locales` to put bundled translation catalogs in the text package; scripts still call `localization.load("en", "locales/en.ftl")`. Development copies these files; release packages them. Translators can maintain source catalogs beside their story and UI modules and use `reel loc bundle` to produce runtime catalogs first.
 
@@ -112,7 +114,7 @@ Resource packages split automatically at a target of 2 GiB including headers and
 
 Release export moves original string constants into `game.rtp` and excludes complete source from the ASB. The pool currently remains resident, with strings sharing its bytes when used; startup does not copy every passage into permanent VM objects. Translations can change without recompiling code, while the original text pool must match its ASB. Images, audio and video use indexed resource reads without extracting the entire archive.
 
-Release disables loose-file overrides by default. Explicitly enable a mod or development overlay with `reel run release.json --assets overrides`. Later packages in the manifest override earlier ones, and loose files take precedence. `--overwrite` replaces the whole previous export; saves and additional files are not copied into it. Store runtime data separately. Output must be outside the input source and resource directories.
+Release disables loose-file overrides by default. Explicitly enable a mod or development overlay with `reel run game.asb --assets overrides`. Later packages in the manifest override earlier ones, and loose files take precedence. `--overwrite` replaces the whole previous export; saves and additional files are not copied into it. Store runtime data separately. Output must be outside the input source and resource directories.
 
 ### Available Ranges, Collections and Interpolation
 Inside a function, use ranges to build content and interpolation to display results. Ranges do not create an array first; `..` excludes the endpoint and `..=` includes it. Arrays support `append`, `pop` and `len`; tables support `has_own`, `get`, `remove` and `len`. Interpolation currently accepts strings, numbers, booleans and null.
