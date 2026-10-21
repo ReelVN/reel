@@ -1415,7 +1415,9 @@ impl Binder<'_> {
                         .zip(p)
                         .all(|(a, &b)| self.compatible(self.out.symbols[a.symbol.0 as usize].ty, b))
             }
-            (Type::Function(_) | Type::BoundMethod(_), Type::Closure) => true,
+            (Type::Function(_) | Type::BoundMethod(_) | Type::Callable(_, _), Type::Closure) => {
+                true
+            }
             (Type::Class(_), Type::Named(name)) if self.out.hir.name(*name) == "class" => true,
             (Type::Named(actual), Type::Named(expected)) => self
                 .resolver

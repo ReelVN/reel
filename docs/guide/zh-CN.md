@@ -29,7 +29,7 @@ reel export --release
 
 ### 在 VS Code 中编写
 
-Aside 扩展提供诊断、补全、参数提示、悬停说明和定义跳转。安装 VSIX 后打开 `.aside` 文件，或运行 **Aside: New File**。函数调用中按 Ctrl+Shift+Space 查看具名参数、类型和默认值；F12 跳转到作者源码，内置接口则打开由 Rust 声明生成的只读 Aside 定义。
+Aside 扩展提供语义着色、诊断、补全、参数提示、悬停说明和定义跳转。安装 VSIX 后打开 `.aside` 文件，或运行 **Aside: New File**。函数调用中按 Ctrl+Shift+Space 查看具名参数、类型和默认值；F12 跳转到作者源码，内置接口则打开由 Rust 声明生成的只读 Aside 定义。
 
 扩展优先使用 PATH 中的 `reel-lsp`，Windows 扩展包也内含语言服务。`aside.server.path` 可指定其他服务端的完整路径；独立语言工程使用 `aside-lsp`。**Aside: Run Project** 保存文件并调用 PATH 中的 `reel` 启动当前项目，`aside.reel.path` 可另选 CLI，`aside.reel.assets` 指定资源目录。修改 PATH 后重新打开 VS Code。编辑检查直接使用未保存内容。
 

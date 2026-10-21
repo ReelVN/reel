@@ -6,6 +6,10 @@ aside_host::native_documentation! {
         /// Set title, logical canvas size, font assets and text speed. Omitted values
         /// remain unchanged. Register fonts before first presentation. The canvas uses
         /// contain scaling and one transform for drawing and input.
+        /// `title` accepts string or null; `width` and `height` accept positive integers
+        /// or null; `text_speed` accepts nonnegative numeric values or null.
+        /// `fonts` accepts one asset-path string, an array or tuple of asset-path strings,
+        /// or null.
         "reel::game::configure";
         /// Replace the current session with a fresh invocation of entry. Persistent
         /// storage remains available; tasks and transient stage state belong to the new session.
@@ -13,6 +17,29 @@ aside_host::native_documentation! {
         /// Request that the host close this game session.
         "reel::game::exit";
     }
+}
+
+pub(super) fn describe(api: &mut aside_host::source::Api) {
+    use aside_compiler::semantic::TypeHint;
+    use aside_host::source::{nullable, number};
+    // Fonts accept strings and sequences of arbitrary tuple length. The current
+    // hints express fixed tuple shapes, so retain runtime checking for this argument.
+    api.refine(
+        "reel::game::configure",
+        TypeHint::Null,
+        &[
+            ("title", nullable(TypeHint::String)),
+            ("width", nullable(TypeHint::Int)),
+            ("height", nullable(TypeHint::Int)),
+            ("text_speed", nullable(number())),
+        ],
+    );
+    api.refine(
+        "reel::game::start",
+        TypeHint::Null,
+        &[("entry", TypeHint::Closure)],
+    );
+    api.refine("reel::game::exit", TypeHint::Null, &[]);
 }
 use aside_vm::{Value, ValueTag, executor::HostResponse};
 use std::sync::Arc;

@@ -164,6 +164,32 @@ pub enum SyntaxKind {
     ModifiedDecl,
     GroupType,
 }
+macro_rules! keywords {
+    ($($kind:ident => $text:literal),+ $(,)?) => {
+        impl SyntaxKind {
+            /// Keyword spellings shared by the lexer and editor tooling.
+            pub const KEYWORDS: &'static [(Self, &'static str)] = &[$((Self::$kind, $text)),+];
+
+            pub(crate) fn keyword(text: &str) -> Self {
+                match text {
+                    $($text => Self::$kind,)+
+                    _ => Self::Ident,
+                }
+            }
+        }
+    };
+}
+
+keywords! {
+    Let => "let", Mut => "mut", Fn => "fn", Async => "async", Gen => "gen",
+    Class => "class", Static => "static", Pub => "pub", Use => "use", As => "as",
+    If => "if", Else => "else", While => "while", For => "for", In => "in",
+    Loop => "loop", Match => "match", Is => "is", Await => "await", Return => "return",
+    Break => "break", Continue => "continue", Throw => "throw", Yield => "yield",
+    Try => "try", Catch => "catch", Finally => "finally", True => "true",
+    False => "false", Null => "null",
+}
+
 impl SyntaxKind {
     pub fn is_trivia(self) -> bool {
         matches!(

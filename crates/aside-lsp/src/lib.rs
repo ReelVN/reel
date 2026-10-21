@@ -3,6 +3,7 @@
 mod host;
 mod position;
 mod queries;
+mod semantic_tokens;
 mod server;
 mod workspace;
 pub use server::{run_connection, run_stdio};

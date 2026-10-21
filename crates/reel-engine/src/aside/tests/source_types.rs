@@ -2,6 +2,78 @@ use super::*;
 use aside_compiler::semantic::TypeHint;
 
 #[test]
+fn annotated_callable_parameters_reach_real_host_callback_contracts_in_analysis() {
+    use aside_compiler::semantic::{AnalysisOptions, MemoryResolver};
+    let api = source::api();
+    let mut resolver = MemoryResolver::default();
+    for module in &api.modules {
+        resolver.insert(module.clone());
+    }
+    let code = "fn run(change:fn()->null){stage.transition(change,duration:0);}fn start(entry:fn()->null){game.start(entry);}";
+    let analysis = aside_compiler::analyze_module(
+        code,
+        &AnalysisOptions {
+            hosts: api.globals.clone(),
+            ..Default::default()
+        },
+        &mut resolver,
+    )
+    .unwrap();
+    assert!(analysis.is_ok(), "{:?}", analysis.diagnostics);
+    let Err(source::SourceError::Lowering(error)) =
+        source::compile_module(code, "typed_callback", "typed_callback.aside", 1)
+    else {
+        panic!("explicit callable lowering retains its current boundary")
+    };
+    assert_eq!(error.kind, aside_compiler::lowering::ErrorKind::Unsupported);
+    assert!(
+        error
+            .detail
+            .contains("explicit structural callable annotations"),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn closure_annotations_pass_functions_and_bound_methods_to_real_host_callbacks() {
+    use crate::aside::transitions::TransitionPhase;
+    for callback in [
+        "plain",
+        "Scene().change",
+        "||{game.record(\"closure\");null}",
+    ] {
+        let code = format!(
+            r#"
+            fn plain()->null {{game.record("plain");null}}
+            class Scene {{fn change(self)->null {{game.record("bound");null}}}}
+            fn run(change:closure) {{stage.transition(change,duration:0);}}
+            fn opening() {{
+                let callback:closure={callback};
+                run(callback);
+                if game.history().len()!=1 {{throw "callback was not invoked exactly once";}}
+            }}
+        "#
+        );
+        for encoded in [false, true] {
+            let (mut session, mut vm) = models::prepared(&code, encoded);
+            models::drive(&mut vm, &mut session, false);
+            let view = vm
+                .transition_views()
+                .next()
+                .expect("transition awaits final presentation");
+            assert_eq!(view.phase, TransitionPhase::FinalPending);
+            assert!(
+                vm.accept_transition(view.id, view.phase, view.progress)
+                    .unwrap()
+            );
+            models::drive(&mut vm, &mut session, false);
+            assert!(vm.task().is_none());
+            assert!(vm.transition_views().next().is_none());
+        }
+    }
+}
+
+#[test]
 fn registered_source_types_share_defaults_members_and_definition_locations() {
     let api = source::api();
     assert!(std::ptr::eq(api, source::api()));

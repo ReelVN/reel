@@ -2,6 +2,20 @@
 use super::*;
 
 #[test]
+fn explicit_callable_types_satisfy_the_unspecialized_closure_category() {
+    valid("fn take(value:closure){}fn forward(value:fn()->null){take(value);}");
+    valid("fn take(value:closure){}fn forward(value:fn(int)->string){take(value);}");
+    rejects(
+        "fn forward(value:closure){let exact:fn()->null=value;}",
+        DiagnosticCode::TypeMismatch,
+    );
+    rejects(
+        "fn take(value:closure){}take(1);",
+        DiagnosticCode::TypeMismatch,
+    );
+}
+
+#[test]
 fn rest_annotation_describes_array_binding_and_names_cannot_supply_rest() {
     for source in [
         "fn f(...r:array){r}f();f(1,\"two\",null);",

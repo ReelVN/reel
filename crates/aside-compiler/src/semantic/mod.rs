@@ -10,6 +10,7 @@ pub mod modules;
 use crate::hir::AnalyzedModule;
 use crate::{Diagnostic, Limits, Parse, ParseOptions, SourceTooLarge, parse_with_options};
 pub use modules::*;
+pub use types::BUILTIN_TYPE_NAMES;
 
 #[derive(Debug, Clone, Copy)]
 pub struct AnalysisLimits {

@@ -29,7 +29,7 @@ reel export --release
 
 ### Writing in VS Code
 
-The Aside extension provides diagnostics, completion, signature help, hover documentation and definition navigation. Install the VSIX and open an `.aside` file, or run **Aside: New File**. Press Ctrl+Shift+Space inside a call to see named parameters, types and defaults. F12 opens author source or a read-only Aside definition generated from the built-in interface's Rust declaration.
+The Aside extension provides semantic highlighting, diagnostics, completion, signature help, hover documentation and definition navigation. Install the VSIX and open an `.aside` file, or run **Aside: New File**. Press Ctrl+Shift+Space inside a call to see named parameters, types and defaults. F12 opens author source or a read-only Aside definition generated from the built-in interface's Rust declaration.
 
 The extension prefers `reel-lsp` on PATH; the Windows extension package also includes a server. Set `aside.server.path` to select another server's full executable path, or use `aside-lsp` for standalone language projects. **Aside: Run Project** saves files and starts the current project through `reel` on PATH. `aside.reel.path` selects another CLI, and `aside.reel.assets` selects the asset directory. Restart VS Code after changing PATH. Editor checks use unsaved document contents.
 

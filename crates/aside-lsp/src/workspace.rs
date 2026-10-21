@@ -482,6 +482,81 @@ impl Workspace {
         }
         (roots, dependencies.into_inner())
     }
+
+    /// Discover one import-path level without loading or analyzing its sources.
+    pub(crate) fn import_modules(&self, uri: &Uri, prefix: &[&str]) -> Vec<String> {
+        let (roots, _) = self.effective_roots(uri);
+        let explicit_root = roots
+            .iter()
+            .any(|root| !root.prefix.is_empty() && prefix.first() == Some(&root.prefix.as_str()));
+        let mut names = BTreeSet::new();
+        for root in roots {
+            let suffix = if root.prefix.is_empty() {
+                if explicit_root {
+                    continue;
+                }
+                prefix
+            } else {
+                if prefix.is_empty() {
+                    names.insert(root.prefix);
+                    continue;
+                }
+                if prefix.first() != Some(&root.prefix.as_str()) {
+                    continue;
+                }
+                &prefix[1..]
+            };
+            let directory = suffix.iter().fold(root.path, |path, part| path.join(part));
+            if let Ok(entries) = std::fs::read_dir(&directory) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let name = if path.is_dir() {
+                        path.file_name()
+                    } else if path
+                        .extension()
+                        .is_some_and(|extension| extension == "aside")
+                    {
+                        path.file_stem()
+                    } else {
+                        None
+                    };
+                    if let Some(name) = name.and_then(|name| name.to_str())
+                        && import_name(name)
+                    {
+                        names.insert(name.to_owned());
+                    }
+                }
+            }
+            for document in self.documents.values() {
+                let Some(path) = uri_path(&document.source.uri) else {
+                    continue;
+                };
+                let Ok(relative) = path.strip_prefix(&directory) else {
+                    continue;
+                };
+                let Some(first) = relative.components().next() else {
+                    continue;
+                };
+                let name = if relative.components().count() > 1 {
+                    Some(first.as_os_str())
+                } else if relative
+                    .extension()
+                    .is_some_and(|extension| extension == "aside")
+                {
+                    relative.file_stem()
+                } else {
+                    None
+                };
+                if let Some(name) = name.and_then(|name| name.to_str())
+                    && import_name(name)
+                {
+                    names.insert(name.to_owned());
+                }
+            }
+        }
+        names.into_iter().collect()
+    }
+
     pub fn diagnostics(
         &mut self,
         uri: &Uri,
@@ -525,6 +600,14 @@ impl Workspace {
 struct ModuleRoot {
     prefix: String,
     path: PathBuf,
+}
+
+fn import_name(name: &str) -> bool {
+    aside_compiler::lex(name).is_ok_and(|lexed| {
+        lexed.tokens.first().is_some_and(|token| {
+            token.kind == aside_compiler::SyntaxKind::Ident && token.text(name) == name
+        })
+    })
 }
 
 pub(crate) fn file_uri(path: &Path) -> Result<Uri, String> {
@@ -630,4 +713,51 @@ fn module_file(module: &str, roots: &[ModuleRoot]) -> Option<PathBuf> {
         })
         .max_by_key(|(length, _)| *length)
         .map(|(_, path)| path)
+}
+
+#[cfg(test)]
+mod import_tests {
+    use super::*;
+
+    #[test]
+    fn import_modules_include_disk_and_unsaved_children_without_analysis() {
+        let project = tempfile::tempdir().unwrap();
+        let source = project.path().join("src");
+        std::fs::create_dir_all(source.join("ui")).unwrap();
+        for name in ["旁白.aside", "bad-name.aside", "readme.md"] {
+            std::fs::write(source.join("ui").join(name), "invalid source").unwrap();
+        }
+        let mut workspace = Workspace::new(ServerOptions {
+            source_root: Some(|directory, exists| {
+                directory
+                    .ancestors()
+                    .find(|root| exists(&root.join("src/main.aside")))
+                    .map(|root| root.join("src"))
+            }),
+            project_prefix: Some("game".into()),
+            ..Default::default()
+        });
+        let main = file_uri(&source.join("main.aside")).unwrap();
+        workspace
+            .open(main.clone(), 1, "fn main() {}".into())
+            .unwrap();
+        workspace
+            .open(
+                file_uri(&source.join("ui/draft.aside")).unwrap(),
+                1,
+                "".into(),
+            )
+            .unwrap();
+        assert_eq!(workspace.import_modules(&main, &[]), ["game", "main", "ui"]);
+        assert_eq!(
+            workspace.import_modules(&main, &["game", "ui"]),
+            ["draft", "旁白"]
+        );
+        std::fs::write(source.join("ui/added.aside"), "").unwrap();
+        assert_eq!(
+            workspace.import_modules(&main, &["ui"]),
+            ["added", "draft", "旁白"]
+        );
+        assert_eq!((workspace.analyses, workspace.disk_reads), (0, 0));
+    }
 }

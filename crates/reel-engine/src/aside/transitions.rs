@@ -1,6 +1,33 @@
 //! Same-task transitions retain accepted drawing, never script nodes or input.
 use super::*;
 
+pub(super) fn describe(api: &mut aside_host::source::Api) {
+    use aside_compiler::semantic::TypeHint;
+    use aside_host::source::{named, nullable, number};
+    api.refine(
+        "reel::stage::transition",
+        TypeHint::Any,
+        &[
+            ("change", TypeHint::Closure),
+            ("target", nullable(named("reel::types::Node"))),
+            ("duration", number()),
+            ("easing", TypeHint::String),
+            (
+                "mask",
+                nullable(TypeHint::Union(vec![
+                    TypeHint::String,
+                    number(),
+                    named("reel::types::Mask"),
+                ])),
+            ),
+            ("mask_softness", number()),
+            ("mask_invert", TypeHint::Bool),
+            ("mask_x", number()),
+            ("mask_y", number()),
+        ],
+    );
+}
+
 aside_host::native_documentation! {
     pub(super) fn documentation {
         /// Retain the accepted drawing of target, call change in the current task, then

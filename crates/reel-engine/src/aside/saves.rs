@@ -6,6 +6,67 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+pub(super) fn describe(api: &mut aside_host::source::Api) {
+    use aside_compiler::semantic::TypeHint;
+    use aside_host::source::{Member, named, nullable};
+    let operation = named("reel::types::Operation");
+    api.refine(
+        "reel::saves::save",
+        operation.clone(),
+        &[
+            ("slot", TypeHint::String),
+            ("title", nullable(TypeHint::String)),
+            ("thumbnail", nullable(named("Bytes"))),
+        ],
+    );
+    for method in ["load", "delete", "thumbnail"] {
+        api.refine(
+            &format!("reel::saves::{method}"),
+            operation.clone(),
+            &[("slot", TypeHint::String)],
+        );
+    }
+    api.refine("reel::saves::list", operation.clone(), &[]);
+    for method in ["read", "write", "delete"] {
+        api.refine(
+            &format!("reel::persistent::{method}"),
+            operation.clone(),
+            &[("key", TypeHint::String)],
+        );
+    }
+    let descriptor = api
+        .types
+        .iter_mut()
+        .find(|ty| ty.name == "reel::types::Operation")
+        .expect("registered save operation type");
+    for (name, ty, documentation) in [
+        (
+            "status",
+            TypeHint::String,
+            "The storage request's current status: pending, succeeded or failed.",
+        ),
+        (
+            "error",
+            nullable(TypeHint::String),
+            "The storage failure message, or null before failure.",
+        ),
+        (
+            "restored",
+            TypeHint::Bool,
+            "Whether this save operation resumed from its committed story snapshot.",
+        ),
+    ] {
+        descriptor.members.push(Member::field(
+            &descriptor.name,
+            name,
+            ty,
+            None,
+            documentation,
+            None,
+        ));
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SaveRequestId {
     pub session: crate::SessionIdentity,

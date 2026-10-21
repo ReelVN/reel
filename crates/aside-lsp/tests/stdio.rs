@@ -1,116 +1,95 @@
 //! Exercise the shipped executable through its actual stdio protocol.
-use std::{
-    io::{BufReader, Write},
-    process::{Child, ChildStdin, Command, Stdio},
-    sync::mpsc::{self, Receiver},
-    thread,
-    time::{Duration, Instant},
-};
+#[path = "support/stdio.rs"]
+mod support;
+use serde_json::json;
+use support::Server;
 
-use lsp_server::Message;
-use serde_json::{Value, json};
-
-struct Server {
-    child: Child,
-    input: ChildStdin,
-    output: Receiver<Value>,
+fn server() -> Server {
+    let executable = std::env::var_os("ASIDE_LSP_EXECUTABLE")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_aside-lsp").into());
+    Server::start(executable)
 }
 
-impl Server {
-    fn start() -> Self {
-        let executable = std::env::var_os("ASIDE_LSP_EXECUTABLE")
-            .unwrap_or_else(|| env!("CARGO_BIN_EXE_aside-lsp").into());
-        let mut command = Command::new(executable);
-        command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            command.creation_flags(0x0800_0000);
-        }
-        let mut child = command.spawn().unwrap();
-        let input = child.stdin.take().unwrap();
-        let stdout = child.stdout.take().unwrap();
-        let (sender, output) = mpsc::channel();
-        thread::spawn(move || {
-            let mut reader = BufReader::new(stdout);
-            while let Some(message) = Message::read(&mut reader).unwrap() {
-                if sender.send(serde_json::to_value(message).unwrap()).is_err() {
-                    break;
-                }
+#[test]
+fn real_stdio_colors_names_and_completes_unfinished_declarations() {
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(
+        project.path().join("helper.aside"),
+        "/// Narration text.\npub let 旁白 = \"Hello\";",
+    )
+    .unwrap();
+    let uri = url::Url::from_file_path(project.path().join("main.aside")).unwrap();
+    let source = "use helper::旁白;\r\nfn main() { let 文 = \"😀\"; let 值 = 旁白; 值; }\r\ncla";
+    for encoding in ["utf-8", "utf-16"] {
+        let mut server = server();
+        let initialized = server.request(
+            1,
+            "initialize",
+            json!({"capabilities":{"general":{"positionEncodings":[encoding]}}}),
+        );
+        assert_eq!(initialized["capabilities"]["positionEncoding"], encoding);
+        let provider = &initialized["capabilities"]["semanticTokensProvider"];
+        assert_eq!(provider["full"], true);
+        let legend = provider["legend"]["tokenTypes"].as_array().unwrap();
+        server.notify("initialized", json!({}));
+        server.notify(
+            "textDocument/didOpen",
+            json!({"textDocument":{
+                "uri":uri.as_str(),"languageId":"aside","version":1,"text":source
+            }}),
+        );
+        server.diagnostics(uri.as_str(), 1);
+        let at = |line, character| json!({"textDocument":{"uri":uri.as_str()},"position":{"line":line,"character":character}});
+        assert!(
+            server.request(2, "textDocument/hover", at(0, 1)).is_null(),
+            "the use keyword must not borrow another declaration's hover"
+        );
+        let hover = server.request(3, "textDocument/hover", at(0, "use helper::".len()));
+        assert!(hover.to_string().contains("旁白"), "{hover}");
+        assert!(hover.to_string().contains("string"), "{hover}");
+        assert_eq!(hover["range"]["start"], json!({"line":0,"character":12}));
+        let items = server.request(4, "textDocument/completion", at(2, 3));
+        assert!(
+            items.as_array().unwrap().iter().any(|item| {
+                item["label"] == "class"
+                    && item["kind"]
+                        == serde_json::to_value(lsp_types::CompletionItemKind::KEYWORD).unwrap()
+            }),
+            "unfinished class keyword has no completion: {items}"
+        );
+        let tokens = server.request(
+            5,
+            "textDocument/semanticTokens/full",
+            json!({"textDocument":{"uri":uri.as_str()}}),
+        );
+        let line = source.lines().nth(1).unwrap();
+        let prefix = &line[..line.find('值').unwrap()];
+        let expected_column = if encoding == "utf-8" {
+            prefix.len()
+        } else {
+            prefix.encode_utf16().count()
+        } as u64;
+        let expected_length = if encoding == "utf-8" { 3 } else { 1 };
+        let mut token_line = 0;
+        let mut column = 0;
+        let mut found = false;
+        let data = tokens["data"].as_array().unwrap();
+        assert_eq!(data.len() % 5, 0);
+        for token in data.chunks_exact(5) {
+            let delta_line = token[0].as_u64().unwrap();
+            token_line += delta_line;
+            column = if delta_line == 0 { column } else { 0 } + token[1].as_u64().unwrap();
+            if token_line == 1 && column == expected_column {
+                assert_eq!(token[2], expected_length);
+                assert_eq!(legend[token[3].as_u64().unwrap() as usize], "variable");
+                found = true;
             }
-        });
-        Self {
-            child,
-            input,
-            output,
         }
-    }
-
-    fn send(&mut self, value: Value) {
-        let bytes = serde_json::to_vec(&value).unwrap();
-        write!(self.input, "Content-Length: {}\r\n\r\n", bytes.len()).unwrap();
-        self.input.write_all(&bytes).unwrap();
-        self.input.flush().unwrap();
-    }
-
-    fn receive(&self, predicate: impl Fn(&Value) -> bool) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(15);
-        loop {
-            let message = self
-                .output
-                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                .expect("language server did not answer the real stdio client");
-            if predicate(&message) {
-                return message;
-            }
-        }
-    }
-
-    fn request(&mut self, id: i32, method: &str, params: Value) -> Value {
-        self.send(json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params}));
-        let message = self.receive(|message| message["id"] == id);
-        assert!(message.get("error").is_none(), "{message}");
-        message["result"].clone()
-    }
-
-    fn notify(&mut self, method: &str, params: Value) {
-        self.send(json!({"jsonrpc":"2.0", "method":method, "params":params}));
-    }
-
-    fn diagnostics(&self, uri: &str, version: i32) -> Value {
-        self.receive(|message| {
-            message["method"] == "textDocument/publishDiagnostics"
-                && message["params"]["uri"] == uri
-                && message["params"]["version"] == version
-        })["params"]["diagnostics"]
-            .clone()
-    }
-
-    fn stop(&mut self) {
-        assert!(self.request(99, "shutdown", Value::Null).is_null());
-        self.notify("exit", Value::Null);
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            if let Some(status) = self.child.try_wait().unwrap() {
-                assert!(status.success(), "server exited with {status}");
-                return;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "server did not exit after shutdown"
-            );
-            thread::sleep(Duration::from_millis(10));
-        }
-    }
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        assert!(
+            found,
+            "missing Chinese variable after emoji with {encoding}: {tokens}"
+        );
+        server.stop();
     }
 }
 
@@ -139,7 +118,7 @@ fn real_stdio_preserves_unicode_edits_unsaved_imports_and_shutdown() {
         "/// Double the number.\npub fn twice(value: int) -> int { value * 2 }",
     )
     .unwrap();
-    let mut server = Server::start();
+    let mut server = server();
     let initialized = server.request(
         1,
         "initialize",

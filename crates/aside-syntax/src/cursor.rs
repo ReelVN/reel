@@ -472,10 +472,44 @@ impl SyntaxNode {
     }
 
     pub fn first_token(&self) -> Option<SyntaxToken> {
-        self.first_child_or_token()?.first_token()
+        self.edge_token(Direction::Next)
     }
     pub fn last_token(&self) -> Option<SyntaxToken> {
-        self.last_child_or_token()?.last_token()
+        self.edge_token(Direction::Prev)
+    }
+
+    fn edge_token(&self, direction: Direction) -> Option<SyntaxToken> {
+        let mut current: SyntaxElement = self.clone().into();
+        loop {
+            match &current {
+                NodeOrToken::Token(token) => return Some(token.clone()),
+                NodeOrToken::Node(node) => {
+                    let child = match direction {
+                        Direction::Next => node.first_child_or_token(),
+                        Direction::Prev => node.last_child_or_token(),
+                    };
+                    if let Some(child) = child {
+                        current = child;
+                        continue;
+                    }
+                }
+            }
+            // Recovery can leave empty subtrees between real tokens.
+            loop {
+                if current.as_node() == Some(self) {
+                    return None;
+                }
+                let sibling = match direction {
+                    Direction::Next => current.next_sibling_or_token(),
+                    Direction::Prev => current.prev_sibling_or_token(),
+                };
+                if let Some(sibling) = sibling {
+                    current = sibling;
+                    break;
+                }
+                current = current.parent()?.into();
+            }
+        }
     }
 
     #[inline]
@@ -694,21 +728,31 @@ impl SyntaxToken {
     }
 
     pub fn next_token(&self) -> Option<SyntaxToken> {
-        match self.next_sibling_or_token() {
-            Some(element) => element.first_token(),
-            None => self
-                .ancestors()
-                .find_map(|it| it.next_sibling_or_token())
-                .and_then(|element| element.first_token()),
-        }
+        self.adjacent_token(Direction::Next)
     }
     pub fn prev_token(&self) -> Option<SyntaxToken> {
-        match self.prev_sibling_or_token() {
-            Some(element) => element.last_token(),
-            None => self
-                .ancestors()
-                .find_map(|it| it.prev_sibling_or_token())
-                .and_then(|element| element.last_token()),
+        self.adjacent_token(Direction::Prev)
+    }
+
+    fn adjacent_token(&self, direction: Direction) -> Option<SyntaxToken> {
+        let mut current: SyntaxElement = self.clone().into();
+        loop {
+            let sibling = match direction {
+                Direction::Next => current.next_sibling_or_token(),
+                Direction::Prev => current.prev_sibling_or_token(),
+            };
+            if let Some(sibling) = sibling {
+                let token = match direction {
+                    Direction::Next => sibling.first_token(),
+                    Direction::Prev => sibling.last_token(),
+                };
+                if token.is_some() {
+                    return token;
+                }
+                current = sibling;
+            } else {
+                current = current.parent()?.into();
+            }
         }
     }
 }

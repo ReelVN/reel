@@ -107,6 +107,10 @@ pub(in crate::aside) fn describe(api: &mut Api) {
     for &(constructor, type_name) in registry::NODE_CONSTRUCTORS {
         let symbol = format!("reel::{constructor}");
         let property_docs = properties(&symbol);
+        api.native_mut(&symbol).property_parameters = property_docs
+            .iter()
+            .map(|doc| doc.property.name.to_owned())
+            .collect();
         let mut hints = property_docs
             .iter()
             .map(|doc| {
@@ -199,6 +203,10 @@ pub(in crate::aside) fn describe(api: &mut Api) {
             .map(|property| (property.name, bindable(property.source_type())))
             .collect::<Vec<_>>();
         api.refine(symbol, result, &hints);
+        api.native_mut(symbol).property_parameters = NodeProperty::PROPERTIES
+            .iter()
+            .map(|property| property.name.to_owned())
+            .collect();
     }
     api.refine("reel::stage::replace", TypeHint::Null, &[("root", node)]);
 }

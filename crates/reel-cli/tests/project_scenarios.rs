@@ -813,7 +813,8 @@ fn offline_audio_clock_preserves_fractional_time_and_releases_retired_outputs() 
 #[test]
 #[ignore = "requires REEL_SCENARIO pointing to a self-checking project directory"]
 fn external_project_scenario() {
-    let path = std::env::var_os("REEL_SCENARIO").expect("set REEL_SCENARIO to a Reel project directory");
+    let path =
+        std::env::var_os("REEL_SCENARIO").expect("set REEL_SCENARIO to a Reel project directory");
     let timeout = std::env::var_os("REEL_SCENARIO_TIMEOUT_SECS")
         .map(|value| {
             let seconds = value
