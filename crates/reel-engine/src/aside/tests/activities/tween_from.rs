@@ -31,6 +31,59 @@ fn position(vm: &mut SessionVm, session: &Session) -> (f64, f64, Option<f64>) {
 }
 
 #[test]
+fn tween_custom_curve_shared_sampling_restore_and_controls() {
+    let source = r#"use std::math::curve as scalar_curve;
+    fn opening() {
+        let curve=scalar_curve([
+            {time:0,value:0,mode:"cubic",out_tangent:0.5},
+            {time:1,value:1,in_tangent:1.5}]);
+        let node=stack(x:0,y:0);stage.replace(node);
+        let action=tween(node,x:100,y:200,duration:2,easing:curve);
+        let moving=run(action);
+        narrator("moving");
+        if node.x!=37.5 || node.y!=75 {throw "accelerated midpoint";}
+        pause(moving);
+        narrator("paused");
+        if node.x!=37.5 {throw "paused moved";}
+        resume(moving);
+        narrator("resumed");
+        finish(moving);
+        if await moving!="Completed" || node.x!=100 || node.y!=200 {throw "exact endpoint";}
+        let stopped=run(tween(node,x:300,duration:2,easing:curve));
+        stop(stopped);
+        if await stopped!="Stopped" || node.x!=100 {throw "cancel jump";}
+        let zero=run(tween(node,x:400,duration:0,easing:curve));
+        if await zero!="Completed" || node.x!=400 {throw "zero duration";}
+        let mut rejected=0;
+        try {tween(node,x:0,easing:scalar_curve([{time:0,value:1}]));}
+        catch error {rejected+=1;}
+        try {tween(node,x:0,easing:{});} catch error {rejected+=1;}
+        if rejected!=2 {throw "curve contract";}
+        narrator("done");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(source, encoded);
+        models::drive(&mut vm, &mut session, false);
+        let chunks = vm.vm.heap().stats().chunk_allocations;
+        for step in 1..=60 {
+            advance_clock(&mut vm, &session, step as f64 / 60., 64);
+        }
+        assert_eq!(vm.vm.heap().stats().chunk_allocations, chunks);
+        assert_eq!(position(&mut vm, &session).0, 37.5);
+        (session, vm) = restore(&session, &mut vm);
+        advance_dialogue(&mut vm, &mut session);
+        advance_clock(&mut vm, &session, 5., 64);
+        assert_eq!(position(&mut vm, &session).0, 37.5);
+        advance_dialogue(&mut vm, &mut session);
+        advance_clock(&mut vm, &session, 5.5, 64);
+        assert_eq!(position(&mut vm, &session).0, 65.625);
+        advance_dialogue(&mut vm, &mut session);
+        assert!(matches!(session.view().interaction,
+            Some(crate::InteractionView::Dialogue(d)) if d.text()=="done"));
+    }
+}
+
+#[test]
 fn tween_from_dynamic_record_delayed_repeat_and_snapshot() {
     let source = r#"fn opening() {
         let node=stack(x:7,y:3);stage.replace(node);

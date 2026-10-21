@@ -5,6 +5,7 @@ use std::time::Duration;
 #[derive(Default)]
 pub(super) struct Playback {
     interaction: Option<InteractionId>,
+    dialogue_revision: u64,
     last_ns: Option<u64>,
     reading_revision: u64,
     auto_last: Option<u64>,
@@ -15,6 +16,17 @@ pub(super) fn dialogue_complete(session: &Session) -> bool {
     matches!(session.view().interaction, Some(InteractionView::Dialogue(d)) if d.lines().iter().all(|line| line.playback_complete()))
 }
 
+pub(super) fn dialogue_revision(session: &Session) -> u64 {
+    match session.view().interaction {
+        Some(InteractionView::Dialogue(d)) => d.revision(),
+        _ => 0,
+    }
+}
+
+fn awaiting_advance(session: &Session) -> bool {
+    matches!(session.view().interaction, Some(InteractionView::Dialogue(d)) if d.awaiting_advance())
+}
+
 fn continues(session: &Session) -> bool {
     matches!(session.view().interaction, Some(InteractionView::Dialogue(d)) if !d.lines().is_empty()
         && d.lines().iter().all(|line| line.content().styled().continue_after()))
@@ -22,6 +34,7 @@ fn continues(session: &Session) -> bool {
 
 fn skip_can_advance(session: &Session) -> bool {
     session.reading().skipping()
+        && (!dialogue_complete(session) || awaiting_advance(session))
         && matches!(session.view().interaction, Some(InteractionView::Dialogue(d))
             if d.reveal_skippable() || dialogue_complete(session))
 }
@@ -39,9 +52,10 @@ impl SessionUi {
             && self.reading_focused
             && !self.reading_modal
             && !self.session.reading().paused()
-            && (self.session.reading().skipping()
+            && (skip_can_advance(&self.session)
                 || !dialogue_complete(&self.session)
-                || ((self.session.reading().automatic() || continues(&self.session))
+                || (awaiting_advance(&self.session)
+                    && (self.session.reading().automatic() || continues(&self.session))
                     && accepted.is_some_and(|stamp| stamp.dialogue_complete)))
     }
 
@@ -69,9 +83,11 @@ impl SessionUi {
             return Ok(false);
         }
         let id = self.session.view().interaction.unwrap().id();
-        if self.playback.interaction != Some(id) {
+        let revision = dialogue_revision(&self.session);
+        if self.playback.interaction != Some(id) || self.playback.dialogue_revision != revision {
             self.pause_dialogue();
             self.playback.interaction = Some(id);
+            self.playback.dialogue_revision = revision;
         }
         if skip_can_advance(&self.session) {
             // A protected reveal must reach an accepted complete frame first.

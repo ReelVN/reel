@@ -569,7 +569,34 @@ story.register("chapter01.opening", opening, title: "窗上的光");
 ```
 `game.start(entry)` accepts an ordinary function in the current ASB with no captures or required parameters. After acceptance, the old script does not continue. The new session reruns module initialization and then calls entry. Previous dialogue, UI callbacks and activities end; script globals, history, auto-play and skip state reset. Read progress, game.configure settings, host assets and save storage remain. The entry constructs its scene; do not clear the old stage after the call. Cross-ASB hot-reload entry resolution and persistent script globals are not implemented. See [author_game_start.aside](../../examples/author_game_start.aside).
 
+Pass `wait: false` to speak in segments. Write sounds, animation and delays between text updates, then call `line.wait()` for player advance. You can append again after waiting; the displayed prefix and history entry retain their identities. The next dialogue or choice retires the old handle. Strings, rich text and embedded newlines are accepted. A multi-speaker say group supports waiting; append targets single-speaker groups. The complete example is [author_dialogue_append.aside](../../examples/author_dialogue_append.aside).
+
+```aside
+let line = mio("Starting", wait: false);
+await run(delay(0.5));
+line.append(" ...");
+audio.play("assets/chime.wav");
+line.append(" ready.");
+line.wait();
+line.append("\nWelcome back.");
+line.wait();
+```
+
+Before line.wait, input may reveal text; advance waits for the script to reach a checkpoint. Append preserves revealed graphemes. Its history parameter follows character calls: true appends displayed text, false omits that segment, and a string or rich value appends replacement text. An omitted or cleared entry stays omitted. Handles belong to the main story; saves resume the current segment and wait.
+
 ## 4 Sequencing Changes and Running Them Together
+
+Pass a scalar curve directly to tween when speed changes over time. This curve represents constant acceleration, starting at half the average speed and ending at 1.5 times it. Its sample(0) and sample(1) must be 0 and 1. Curves can be shared; pause, cancellation, repetition and save restoration use the usual activity controls.
+
+```aside
+use std::math::curve;
+
+let acceleration = curve([
+    {time: 0, value: 0, mode: "cubic", out_tangent: 0.5},
+    {time: 1, value: 1, in_tangent: 1.5},
+]);
+await run(tween(portrait, x: 640, duration: 2, easing: acceleration));
+```
 
 Create music, video, animation, and clocks paused, then start them with the scene: `audio.play(..., paused: true)`, `movie.play(..., paused: true)`, `run(..., paused: true)`, and `clock(..., paused: true)`. Omitting paused starts them as usual. Paused media continues loading, decoding, and preparing its first frame while position stays at start; seeking preserves the paused state. Animations validate their actions at creation, then read starting property values and acquire write ownership on their first resume. Clocks keep ticks at 0 and elapsed at 0.0 until then.
 

@@ -53,6 +53,7 @@ pub(super) struct Narrative {
     dialogue: Value,
     choice: Value,
     interaction: Option<InteractionId>,
+    text_revision: u64,
     #[serde(skip)]
     option_ids: Vec<(HeapHandle, ChoiceId)>,
     roots: Value,
@@ -185,6 +186,7 @@ impl Narrative {
             dialogue,
             choice,
             interaction: None,
+            text_revision: 0,
             option_ids: Vec::new(),
             roots,
             reading,
@@ -221,6 +223,11 @@ impl Narrative {
     ) -> Result<(), AdapterError> {
         let active = session.view().interaction;
         let interaction = active.map(|view| view.id());
+        let text_revision = match active {
+            Some(InteractionView::Dialogue(d)) => d.text_revision,
+            _ => 0,
+        };
+        let update_text = self.interaction == interaction && self.text_revision != text_revision;
         if interaction != self.interaction {
             if self.interaction.is_some() {
                 // Completion can remove the active Session row before its final reveal is projected.
@@ -379,6 +386,13 @@ impl Narrative {
                 let complete = line.playback_complete();
                 ready &= complete;
                 let row = heap.sequence_get(rows, i as u32)?;
+                if update_text {
+                    let value = super::rich_text::alloc(heap, line.content().styled(), chunk)?;
+                    publish(heap, row, LineField::Text as u32, value)?;
+                    if i == 0 {
+                        publish(heap, self.dialogue, DialogueField::Text as u32, value)?;
+                    }
+                }
                 publish(heap, row, LineField::Ready as u32, Value::bool(complete))?;
                 publish(
                     heap,
@@ -422,7 +436,13 @@ impl Narrative {
                 self.roots,
                 chunk,
             )?;
+            if update_text {
+                if let Some(InteractionView::Dialogue(d)) = active {
+                    history.update_dialogue(heap, session, d, self.dialogue, chunk)?;
+                }
+            }
         }
+        self.text_revision = text_revision;
         Ok(())
     }
 }

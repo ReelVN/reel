@@ -10,6 +10,7 @@ use std::{collections::HashSet, ops::Range};
 
 pub mod aside;
 pub mod audio;
+mod dialogue_stream;
 pub mod localization;
 pub mod media;
 mod reading;
@@ -268,9 +269,20 @@ pub struct DialogueInteraction {
     current_line_ids: Vec<DialogueLineId>,
     lines: Vec<DialogueLine>,
     page_locale: String,
+    open: bool,
+    awaiting_advance: bool,
+    revision: u64,
+    text_revision: u64,
+    pending_read_ids: Vec<String>,
 }
 
 impl DialogueInteraction {
+    pub fn awaiting_advance(&self) -> bool {
+        self.awaiting_advance
+    }
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
     /// Whether advance may complete the group's text and timing immediately.
     pub fn reveal_skippable(&self) -> bool {
         self.reveal_skippable
@@ -546,6 +558,9 @@ impl Completion {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionError {
+    SingleDialogueLineRequired,
+    InvalidDialogueHandle,
+    InvalidTextComposition,
     InvalidTextSpeed,
     SessionNotRunning,
     ForeignOwner,
@@ -857,6 +872,12 @@ impl Session {
             Some(Interaction::Dialogue(dialogue)) => {
                 bytes += vector_capacity_bytes(&dialogue.lines)
                     + vector_capacity_bytes(&dialogue.current_line_ids)
+                    + vector_capacity_bytes(&dialogue.pending_read_ids)
+                    + dialogue
+                        .pending_read_ids
+                        .iter()
+                        .map(String::capacity)
+                        .sum::<usize>()
                     + dialogue.page_locale.capacity();
                 for line in &dialogue.lines {
                     bytes += line.speaker_id.as_ref().map_or(0, String::capacity)
@@ -1197,6 +1218,11 @@ impl Session {
             current_line_ids,
             lines: owned_lines,
             page_locale: copy_text(page_locale)?,
+            open: false,
+            awaiting_advance: true,
+            revision: 0,
+            text_revision: 0,
+            pending_read_ids: Vec::new(),
         };
         let history = HistoryGroup {
             group_id: HistoryGroupId(id),
@@ -1494,6 +1520,9 @@ impl Session {
                 if revealed {
                     return Ok(InputOutcome::Revealed);
                 }
+                if !dialogue.awaiting_advance {
+                    return Ok(InputOutcome::Pending);
+                }
                 self.complete(CompletionOutcome::Advanced);
             }
             (Interaction::Choice(choice), InputAction::Select(id)) => {
@@ -1521,13 +1550,17 @@ impl Session {
     /// external cleanup. Previously declared revoked records remain pending.
     pub fn end(&mut self) -> Result<(), SessionError> {
         self.ensure_running()?;
-        if self.active.is_some() {
+        if self.active.as_ref().is_some_and(|active| {
+            !matches!(active,
+            Interaction::Dialogue(d) if d.open && !d.awaiting_advance)
+        }) {
             return Err(SessionError::InteractionActive);
         }
         if self.completion.is_some() {
             return Err(SessionError::CompletionPending);
         }
         self.status = SessionStatus::Ended;
+        self.active = None;
         self.retire_live_owners_without_obligations();
         Ok(())
     }
@@ -1565,7 +1598,10 @@ impl Session {
         if owner != self.root_owner() {
             return Err(SessionError::MainOwnerRequired);
         }
-        if self.active.is_some() {
+        if self.active.as_ref().is_some_and(|active| {
+            !matches!(active,
+            Interaction::Dialogue(d) if d.open && !d.awaiting_advance)
+        }) {
             return Err(SessionError::InteractionActive);
         }
         if self.completion.is_some() {
@@ -1580,18 +1616,31 @@ impl Session {
     }
 
     fn complete(&mut self, outcome: CompletionOutcome) {
-        let interaction = self
+        let mut interaction = self
             .active
             .take()
             .expect("active interaction reserves completion");
         let interaction_id = interaction.id();
         if matches!(outcome, CompletionOutcome::Advanced)
-            && let Interaction::Dialogue(dialogue) = interaction
+            && let Interaction::Dialogue(dialogue) = &mut interaction
         {
             // Admission reserved the hash table; move owned IDs without allocating on input.
-            for line in dialogue.lines {
-                self.read_progress.ids.insert(line.content.id);
+            if dialogue.open {
+                for id in dialogue.pending_read_ids.drain(..) {
+                    self.read_progress.ids.insert(id);
+                }
+                dialogue.awaiting_advance = false;
+                dialogue.revision = dialogue.revision.wrapping_add(1);
+            } else {
+                for line in &mut dialogue.lines {
+                    self.read_progress
+                        .ids
+                        .insert(std::mem::take(&mut line.content.id));
+                }
             }
+        }
+        if matches!(&interaction, Interaction::Dialogue(d) if d.open) {
+            self.active = Some(interaction);
         }
         debug_assert!(self.completion.is_none());
         self.completion = Some(Completion {

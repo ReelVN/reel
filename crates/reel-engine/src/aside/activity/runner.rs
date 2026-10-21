@@ -170,8 +170,18 @@ impl Activities {
         } else {
             ((time - start_time) / duration).clamp(0., 1.)
         };
-        let t = super::easing::Easing::from_code(payload(heap, action, EASING)?.as_int().unwrap())
-            .sample(t);
+        let easing = payload(heap, action, EASING)?;
+        let t = if t == 0. || t == 1. {
+            t
+        } else if let Some(code) = easing.as_int() {
+            super::easing::Easing::from_code(code).sample(t)
+        } else {
+            let value = aside_std::sample_curve(heap, easing, t)?;
+            if !value.is_finite() {
+                return Err(AdapterError::Input("tween curve sample must be finite"));
+            }
+            value
+        };
         let target = payload(heap, action, TARGET)?;
         let fields = heap.host_fields(target)?;
         let tracks = get(heap, leaf, Slot::Tracks)?;

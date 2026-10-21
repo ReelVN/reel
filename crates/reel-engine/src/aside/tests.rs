@@ -6,6 +6,7 @@ mod activities;
 mod buttons;
 mod clock_batches;
 mod curves;
+mod dialogue_append;
 mod dialogue_history;
 mod dynamic_stage;
 mod geometry;

@@ -109,7 +109,7 @@ fn read_key(heap: &mut Heap, record: Value) -> Result<Key, NativeError> {
     })
 }
 
-fn number(heap: &Heap, keys: Value, index: u32) -> Result<f64, NativeError> {
+fn number(heap: &Heap, keys: Value, index: u32) -> Result<f64, HeapError> {
     Ok(heap.sequence_get(keys, index)?.as_float().unwrap())
 }
 
@@ -261,9 +261,17 @@ pub(super) fn sample(
     time: Value,
 ) -> Result<f64, NativeError> {
     let time = finite(time)?;
-    let heap = context.vm.heap();
+    Ok(sample_curve(context.vm.heap(), receiver, time)?)
+}
+
+/// Samples an immutable standard-library curve without allocating or invoking
+/// script. The caller retains the curve through the ordinary VM roots.
+pub fn sample_curve(heap: &Heap, receiver: Value, time: f64) -> Result<f64, HeapError> {
+    if !time.is_finite() {
+        return Err(HeapError::TypeMismatch);
+    }
     if heap.host_payload(receiver, 0)?.as_int() != Some(TAG) {
-        return Err(HeapError::TypeMismatch.into());
+        return Err(HeapError::TypeMismatch);
     }
     let mut node = heap.host_payload(receiver, 1)?;
     let mut before = Value::NULL;

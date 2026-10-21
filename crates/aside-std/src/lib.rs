@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 mod curve;
+pub use curve::sample_curve;
 mod math;
 mod random;
 mod time;
