@@ -146,3 +146,31 @@ these services through `reel-player/src/media.rs`; `SessionVm` exposes the match
 script audio activities and snapshot resource gates. Video demux/decoding lives in
 `src/video.rs`, with bounded PCM output connected to the same mixer. Use
 [VERIFICATION.md](VERIFICATION.md) for current commands and device boundaries.
+
+Automatic audio preparation uses the existing Kira queue/transport for immutable
+PCM and worker-backed frame windows. The player host policy defaults to 8 MiB
+stereo-f32 static PCM and a 16384-frame stream window. `Assets::stream` performs
+range reads; long encoded files are not loaded whole. Missing samples produce
+silence and freeze content position. Seeking, mixed-rate queues, looping and
+restoration keep one logical activity. Stream workers poll at 1 ms during refill
+and 8 ms while the requested position is unchanged; paused/prepared sources keep
+only their current bounded window. These intervals are worker delays, not callback
+waits. Each streaming source owns one decoder thread with an explicitly requested
+512 KiB native stack; logical source capacity bounds their count (default 64, up
+to 32 MiB requested stack reservation). OS thread/stack and decoder bookkeeping
+remain outside the PCM pool. A stopped source cancels IO, and its budget survives until decoder teardown.
+
+The PCM budget covers the window, 64 KiB reader buffer, current encoded packet,
+codec output sample capacity and normalized conversion storage, retaining a
+high-water reservation while the codec can retain samples. Symphonia format/codec
+bookkeeping and allocation-before-return are not enclosed by that budget: this is
+not a hard bound on arbitrary decoder input. A complete hard decoder budget needs
+budget-aware allocations in Symphonia's format packet readers and audio-buffer
+resize/allocation paths. No such borrowed dependency fork is introduced here.
+
+Reproduce the full unmodified long-track check with `REEL_LONG_AUDIO` set to an
+external full track and `cargo test --locked --offline -p reel-player --lib
+external_long_audio_streams -- --ignored --nocapture`. It covers startup under a
+2 MiB PCM budget, uncached seeking, loop wraps, paused request restoration and
+zero residency after shutdown. `cargo run --locked --offline -p reel-dev --
+audio-probe` also observes the streaming loop/seek/stop callback in debug/release.

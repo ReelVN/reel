@@ -8,7 +8,7 @@ use super::StaticSoundData;
 fn duration() {
 	let static_sound = StaticSoundData {
 		sample_rate: 1,
-		frames: Arc::new([Frame::from_mono(0.0); 4]),
+		frames: Arc::new([Frame::from_mono(0.0); 4]).into(),
 		settings: Default::default(),
 		slice: None,
 	};
@@ -19,7 +19,7 @@ fn duration() {
 fn unsliced_duration() {
 	let static_sound = StaticSoundData {
 		sample_rate: 1,
-		frames: Arc::new([Frame::from_mono(0.0); 4]),
+		frames: Arc::new([Frame::from_mono(0.0); 4]).into(),
 		settings: Default::default(),
 		slice: Some((2, 3)),
 	};
@@ -30,7 +30,7 @@ fn unsliced_duration() {
 fn sliced_duration() {
 	let static_sound = StaticSoundData {
 		sample_rate: 1,
-		frames: Arc::new([Frame::from_mono(0.0); 4]),
+		frames: Arc::new([Frame::from_mono(0.0); 4]).into(),
 		settings: Default::default(),
 		slice: None,
 	};
@@ -38,7 +38,7 @@ fn sliced_duration() {
 
 	let static_sound = StaticSoundData {
 		sample_rate: 1,
-		frames: Arc::new([Frame::from_mono(0.0); 4]),
+		frames: Arc::new([Frame::from_mono(0.0); 4]).into(),
 		settings: Default::default(),
 		slice: Some((2, 3)),
 	};

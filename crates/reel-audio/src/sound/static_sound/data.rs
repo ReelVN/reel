@@ -29,7 +29,7 @@ pub struct StaticSoundData {
 	/// The sample rate of the audio (in Hz).
 	pub sample_rate: u32,
 	/// The raw samples that make up the audio.
-	pub frames: Arc<[Frame]>,
+	pub frames: super::FrameStorage,
 	/// Settings for the sound.
 	pub settings: StaticSoundSettings,
 	/**
@@ -475,9 +475,9 @@ impl Debug for FramesDebug {
 	}
 }
 
-pub(crate) fn num_frames(frames: &[Frame], slice: Option<(usize, usize)>) -> usize {
+pub(crate) fn num_frames(frames: &super::FrameStorage, slice: Option<(usize, usize)>) -> usize {
 	if let Some((start, end)) = slice {
-		end - start
+		end.min(frames.len()).saturating_sub(start)
 	} else {
 		frames.len()
 	}
@@ -485,12 +485,12 @@ pub(crate) fn num_frames(frames: &[Frame], slice: Option<(usize, usize)>) -> usi
 
 pub(crate) fn frame_at_index(
 	index: usize,
-	frames: &[Frame],
+	frames: &super::FrameStorage,
 	slice: Option<(usize, usize)>,
 ) -> Option<Frame> {
 	if index >= num_frames(frames, slice) {
 		return None;
 	}
 	let start = slice.map(|(start, _)| start).unwrap_or_default();
-	Some(frames[index + start])
+	frames.frame(index + start)
 }

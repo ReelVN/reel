@@ -30,7 +30,7 @@ use super::{
 pub(super) struct StaticSound {
 	command_readers: CommandReaders,
 	sample_rate: u32,
-	frames: Arc<[Frame]>,
+	frames: super::FrameStorage,
 	slice: Option<(usize, usize)>,
 	reverse: bool,
 	playback_state_manager: PlaybackStateManager,
@@ -46,6 +46,8 @@ pub(super) struct StaticSound {
 	retention: Option<Arc<dyn Send + Sync>>,
 	item: u64,
 	queue_preroll: bool,
+	preroll_remaining: u8,
+	observed_frames: usize,
 	observed_tail: u64,
 	item_settings: super::StaticSoundSettings,
 	history: VecDeque<QueuedStaticSound>,
@@ -56,6 +58,7 @@ impl StaticSound {
 	#[must_use]
 	pub fn new(data: StaticSoundData, command_readers: CommandReaders) -> Self {
 		let settings = data.settings;
+		let observed_frames = data.num_frames();
 		let transport = Transport::new(
 			data.settings.start_position.into_samples(data.sample_rate),
 			data.settings.loop_region,
@@ -90,6 +93,8 @@ impl StaticSound {
 			retention: None,
 			item: 0,
 			queue_preroll: false,
+			preroll_remaining: 3,
+			observed_frames,
 			observed_tail: 0,
 			item_settings: settings,
 			history: VecDeque::new(),
@@ -97,8 +102,11 @@ impl StaticSound {
 		};
 		// fill the resample buffer with 3 samples so playback can
 		// start immediately
-		for _ in 0..3 {
-			sound.update_position();
+		while sound.preroll_remaining > 0 {
+			if !sound.advance_frame() {
+				break;
+			}
+			sound.preroll_remaining -= 1;
 		}
 		sound
 	}
@@ -142,6 +150,7 @@ impl StaticSound {
 		self.reverse = next.data.settings.reverse;
 		self.item = next.index;
 		self.item_settings = next.data.settings;
+		self.observed_frames = num_frames(&self.frames, self.slice);
 		self.transport = Transport::new(
 			next.data
 				.settings
@@ -156,6 +165,8 @@ impl StaticSound {
 			self.transport.position,
 			num_frames(&self.frames, self.slice),
 		);
+		self.frames
+			.seek(self.transport.position + self.slice.map_or(0, |s| s.0));
 		old
 	}
 	fn retire_history(&mut self) {
@@ -257,13 +268,15 @@ impl StaticSound {
 	}
 
 	/// Updates the current frame index by 1 and pushes a new sample to the resampler.
-	fn advance_frame(&mut self) {
+	fn advance_frame(&mut self) -> bool {
 		while !self.transport.playing && self.has_successor() {
 			if !self.advance_queue() {
 				break;
 			}
 		}
-		self.push_frame_to_resampler();
+		if !self.push_frame_to_resampler() {
+			return false;
+		}
 		self.retire_history();
 		if self.is_playing_backwards() {
 			self.transport.decrement_position();
@@ -281,10 +294,13 @@ impl StaticSound {
 					.increment_position(num_frames(&self.frames, self.slice));
 			}
 		}
+		true
 	}
 
-	fn update_position(&mut self) {
-		self.advance_frame();
+	fn update_position(&mut self) -> bool {
+		if !self.advance_frame() {
+			return false;
+		}
 		if !self.transport.playing
 			&& self.resampler.empty()
 			&& !self.has_successor()
@@ -298,6 +314,7 @@ impl StaticSound {
 			self.playback_state_manager.mark_as_stopped();
 			self.update_shared_playback_state();
 		}
+		true
 	}
 
 	fn seek_to_index(&mut self, index: usize) {
@@ -306,6 +323,8 @@ impl StaticSound {
 		}
 		self.transport
 			.seek_to(index, num_frames(&self.frames, self.slice));
+		self.frames
+			.seek(self.transport.position + self.slice.map_or(0, |s| s.0));
 		self.resampler =
 			Resampler::for_source(self.transport.position, self.item, self.sample_rate);
 		self.fractional_position = 0.0;
@@ -320,21 +339,32 @@ impl StaticSound {
 		self.queue_preroll = false;
 		// Discard interpolation history from the old position, including while paused.
 		// Completion remains driven by consumption, after a paused sound resumes.
-		for _ in 0..3 {
-			self.advance_frame();
+		self.preroll_remaining = 3;
+		while self.preroll_remaining > 0 {
+			if !self.advance_frame() {
+				break;
+			}
+			self.preroll_remaining -= 1;
 		}
 	}
 
-	fn push_frame_to_resampler(&mut self) {
-		let frame = self.transport.playing.then(|| {
-			frame_at_index(self.transport.position, &self.frames, self.slice).unwrap_or_default()
-		});
+	fn push_frame_to_resampler(&mut self) -> bool {
+		let frame = if self.transport.playing {
+			let Some(frame) = frame_at_index(self.transport.position, &self.frames, self.slice)
+			else {
+				return false;
+			};
+			Some(frame)
+		} else {
+			None
+		};
 		self.resampler.push_source_frame(
 			frame,
 			self.transport.position,
 			self.item,
 			self.sample_rate,
 		);
+		true
 	}
 
 	fn seek_by(&mut self, amount: f64) {
@@ -402,11 +432,34 @@ impl StaticSound {
 
 impl Sound for StaticSound {
 	fn on_start_processing(&mut self) {
+		let frames = num_frames(&self.frames, self.slice);
+		if frames != self.observed_frames {
+			self.observed_frames = frames;
+			self.transport.set_loop_region(
+				self.item_settings.loop_region,
+				self.sample_rate,
+				frames,
+			);
+			if self
+				.transport
+				.loop_region
+				.is_some_and(|(start, end)| start >= end)
+			{
+				self.transport.loop_region = None;
+			}
+			self.transport.seek_to(self.transport.position, frames);
+		}
 		self.publish_position();
 		self.read_commands();
 	}
 
 	fn process(&mut self, out: &mut [Frame], dt: f64, info: &Info) {
+		if self.frames.failed() {
+			self.playback_state_manager.mark_as_stopped();
+			self.update_shared_playback_state();
+			out.fill(Frame::ZERO);
+			return;
+		}
 		// update parameters
 		self.volume.update(dt * out.len() as f64, info);
 		self.playback_rate.update(dt * out.len() as f64, info);
@@ -469,14 +522,42 @@ impl Sound for StaticSound {
 		}
 		if self.queue_preroll {
 			self.queue_preroll = false;
-			for _ in 0..3 {
-				self.advance_frame();
+			self.preroll_remaining = 3;
+		}
+		while self.preroll_remaining > 0 {
+			if !self.advance_frame() {
+				out.fill(Frame::ZERO);
+				return;
 			}
+			self.preroll_remaining -= 1;
 		}
 
 		// play back audio
 		let num_frames = out.len();
 		for (i, frame) in out.iter_mut().enumerate() {
+			while self.preroll_remaining > 0 {
+				if !self.advance_frame() {
+					break;
+				}
+				self.preroll_remaining -= 1;
+			}
+			if self.preroll_remaining > 0 {
+				*frame = Frame::ZERO;
+				continue;
+			}
+			while self.fractional_position >= 1.0 {
+				let previous_rate = self.resampler.current_sample_rate();
+				if !self.update_position() {
+					*frame = Frame::ZERO;
+					break;
+				}
+				self.fractional_position -= 1.0;
+				self.fractional_position *=
+					self.resampler.current_sample_rate() as f64 / previous_rate as f64;
+			}
+			if self.fractional_position >= 1.0 {
+				continue;
+			}
 			if !self.transport.playing && self.resampler.empty() && self.has_successor() {
 				if !self.advance_queue() {
 					*frame = Frame::ZERO;
@@ -485,8 +566,16 @@ impl Sound for StaticSound {
 				self.resampler =
 					Resampler::for_source(self.transport.position, self.item, self.sample_rate);
 				self.fractional_position = 0.0;
-				for _ in 0..3 {
-					self.advance_frame();
+				self.preroll_remaining = 3;
+				while self.preroll_remaining > 0 {
+					if !self.advance_frame() {
+						break;
+					}
+					self.preroll_remaining -= 1;
+				}
+				if self.preroll_remaining > 0 {
+					*frame = Frame::ZERO;
+					continue;
 				}
 			}
 			let time_in_chunk = (i + 1) as f64 / num_frames as f64;
@@ -502,8 +591,10 @@ impl Sound for StaticSound {
 				self.resampler.current_sample_rate() as f64 * playback_rate.0.abs() * dt;
 			while self.fractional_position >= 1.0 {
 				let previous_rate = self.resampler.current_sample_rate();
+				if !self.update_position() {
+					break;
+				}
 				self.fractional_position -= 1.0;
-				self.update_position();
 				self.fractional_position *=
 					self.resampler.current_sample_rate() as f64 / previous_rate as f64;
 			}

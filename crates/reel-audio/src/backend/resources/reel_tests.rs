@@ -69,7 +69,7 @@ fn reel_retirement_interleaving_retains_pcm_and_explicit_reclaim_has_quota() {
 	})
 	.unwrap();
 	let a = sound(0.1, -0.2);
-	let a_pcm = Arc::downgrade(&a.frames);
+	let a_pcm = Arc::downgrade(a.frames.static_frames().unwrap());
 	let a_handle = manager.play(a).unwrap();
 	let mut renderer = manager.backend_mut().0.take().unwrap();
 	let schedule = Arc::new(Schedule {
@@ -108,7 +108,7 @@ fn reel_retirement_interleaving_retains_pcm_and_explicit_reclaim_has_quota() {
 	schedule.removed.wait(); // A arena slot freed, but original queue push not yet run.
 	assert!(a_pcm.upgrade().is_some());
 	let b = sound(0.3, -0.4);
-	let b_pcm = Arc::downgrade(&b.frames);
+	let b_pcm = Arc::downgrade(b.frames.static_frames().unwrap());
 	let b_handle = manager.play(b).unwrap();
 	schedule.resume.wait();
 	assert_eq!(

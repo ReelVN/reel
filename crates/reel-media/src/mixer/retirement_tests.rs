@@ -196,9 +196,18 @@ fn full_normal_queue_preserves_unused_and_reserved_teardowns_and_bounds_rebuild(
     assert_eq!(pool.usage().tickets, 3);
     assert_eq!(service.status().outstanding_work, 2); // exact R+1 bound
     let refused = sound(&pool, 0.9);
-    let original_pcm = refused.data.frames.as_ptr();
+    let original_pcm = refused.data.frames.static_frames().unwrap().as_ptr();
     let rejected = mixer.play(refused).err().unwrap();
-    assert_eq!(rejected.request.data.frames.as_ptr(), original_pcm);
+    assert_eq!(
+        rejected
+            .request
+            .data
+            .frames
+            .static_frames()
+            .unwrap()
+            .as_ptr(),
+        original_pcm
+    );
     drop(rejected); // Refused request still belongs to caller.
     assert_eq!(
         KiraMixer::new(&format(), limits(1), &service)
@@ -401,4 +410,134 @@ fn service_drop_detaches_and_retains_consumers_until_late_mixer_teardown() {
     wait(|| owner.is_retired());
     assert!(receipt.is_retired());
     assert_eq!(pool.usage().tickets, 0);
+}
+
+#[cfg(feature = "decode")]
+#[test]
+fn completed_stream_releases_window_before_queued_infinite_successor_and_status_survives() {
+    use std::sync::atomic::AtomicBool;
+    fn stream(pool: &BudgetPool) -> DecodedSound {
+        let bytes = include_bytes!("../../../../examples/assets/chime.wav").to_vec();
+        let length = bytes.len() as u64;
+        DecodedSound::prepare(
+            std::io::Cursor::new(bytes),
+            length,
+            pool.clone(),
+            0,
+            256,
+            Arc::new(|| {}),
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+    }
+    let a_pool = BudgetPool::new(
+        BudgetCategory::CpuOutput,
+        QueueLimits {
+            max_requests: 4,
+            max_bytes: 1 << 20,
+        },
+    );
+    let b_pool = BudgetPool::new(
+        BudgetCategory::CpuOutput,
+        QueueLimits {
+            max_requests: 2,
+            max_bytes: 4096,
+        },
+    );
+    let mut service =
+        AudioReclaimService::new(ReclaimLimits::default(), WakeSignal::new(|| {})).unwrap();
+    let mut mixer = KiraMixer::new(&format(), limits(3), &service).unwrap();
+    let mut fill = mixer.take_fill().unwrap();
+    let a = stream(&a_pool)
+        .with_playback(Duration::ZERO, Some(Duration::from_millis(10)), None)
+        .unwrap();
+    let reel_audio::sound::static_sound::FrameStorage::Stream(source) = &a.data.frames else {
+        panic!("expected stream")
+    };
+    let weak = Arc::downgrade(source);
+    let status = source.status().unwrap();
+    let mut playback = mixer.play(a).unwrap();
+    mixer.announce(&playback, 1).unwrap();
+    mixer
+        .queue(&mut playback, 1, sound(&b_pool, 0.3).looping())
+        .unwrap();
+    wait(|| {
+        fill(&mut [0.0f32; 1024]);
+        mixer.reclaim_unused(64);
+        playback.queue_cursor().0 == 1 && a_pool.usage().bytes == 0
+    });
+    assert!(
+        weak.upgrade().is_none(),
+        "consumed source owns no decoder/window despite retained queue descriptor"
+    );
+    assert!(b_pool.usage().bytes > 0);
+    assert!(!playback.is_stopped());
+    assert!(status.len() > 0);
+    playback.stop();
+    fill(&mut [0.0f32; 1024]);
+    drop(playback);
+    drop(fill);
+    drop(mixer);
+    service.drain_and_join().unwrap();
+    assert_eq!(a_pool.usage().bytes + b_pool.usage().bytes, 0);
+
+    // A native stop can retire PCM before the control poll; retain only facts.
+    let mut service =
+        AudioReclaimService::new(ReclaimLimits::default(), WakeSignal::new(|| {})).unwrap();
+    let mixer = KiraMixer::new(&format(), limits(1), &service).unwrap();
+    let mut activities = crate::AudioActivityService::new(
+        mixer,
+        QueueLimits {
+            max_requests: 1,
+            max_bytes: 1 << 20,
+        },
+        crate::MediaEpoch(1),
+        WakeSignal::new(|| {}),
+    )
+    .ok()
+    .unwrap();
+    let mut fill = activities.take_fill().unwrap();
+    let a = stream(&a_pool);
+    let reel_audio::sound::static_sound::FrameStorage::Stream(source) = &a.data.frames else {
+        unreachable!()
+    };
+    let weak = Arc::downgrade(source);
+    let status = source.status().unwrap();
+    let owner = activities.register_owner(Scope::Process).unwrap();
+    let id = activities
+        .play(crate::AudioActivityRequest {
+            epoch: crate::MediaEpoch(1),
+            owner,
+            resource: reel_core::identity::ResourceVersion {
+                key: reel_core::identity::AssetKey("stream".into()),
+                version: reel_core::identity::ContentVersion([1; 32]),
+            },
+            group: AudioGroup::Music,
+            sound: a,
+        })
+        .unwrap();
+    status.fail("late decode error".into());
+    // Deliberately do not inspect activity state until the callback and reclaimer finish.
+    wait(|| {
+        fill(&mut [0.0f32; 1024]);
+        activities.maintain(0, 64);
+        a_pool.usage().bytes == 0
+    });
+    assert!(weak.upgrade().is_none());
+    assert_eq!(
+        activities.snapshot(id).unwrap().terminal,
+        Some(crate::AudioActivityTerminal::Failed(
+            AudioErrorKind::DecodeFailure
+        ))
+    );
+    activities.maintain(64, 64);
+    assert_eq!(
+        activities.snapshot(id).unwrap().terminal,
+        Some(crate::AudioActivityTerminal::Failed(
+            AudioErrorKind::DecodeFailure
+        ))
+    );
+    drop(activities);
+    drop(fill);
+    service.drain_and_join().unwrap();
 }

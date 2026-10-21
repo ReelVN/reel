@@ -1544,7 +1544,7 @@ music = next;
 
 Windows 播放器向系统提交双声道音频，默认设备配置为多声道时同样可以使用。
 
-支持 WAV/PCM、Ogg/Vorbis、FLAC、MP3 预解码播放。PCM 按宿主内存预算计账，不另限时长。指定起播位置、定区间循环、播放中定位与存档恢复已接通；长音轨流式仍按完整设计推进。Completed 表示混音器消费完成，不能用于精确声卡同步。实体设备的验证范围见[音频验证](../../crates/reel-media/VERIFICATION.md)。
+支持 WAV/PCM、Ogg/Vorbis、FLAC、MP3。音频自动准备：普通audio.play与audio.queue保持相同写法，宿主自动预解码短声音，以有界PCM窗读取长音轨；默认以双声道f32 PCM的8MiB作为静态阈值，作者无需按素材长度选择播放器。宿主可以配置阈值，音频分组仍只控制混音。补给不足时内容位置暂停，声音恢复后继续；保存恢复重新准备同一资源和位置。未知长度在EOF确定实际末尾，整曲循环使用该末尾，显式end/loop_end超过实际末尾时活动失败。指定起播位置、定区间循环、播放中定位与存档恢复沿同一活动合同。Completed 表示混音器消费完成，不能用于精确声卡同步。实体设备的验证范围见[音频验证](../../crates/reel-media/VERIFICATION.md)。
 
 完整例子：[author_audio.aside](../../examples/author_audio.aside)，从 examples 资源根运行，与其他作者示例使用相同字体配置。示例 chime.wav 是仓库自制的短正弦提示音。
 

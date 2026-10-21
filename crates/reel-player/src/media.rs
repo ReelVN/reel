@@ -1,7 +1,7 @@
 //! Session media assembly. Audio and video share one output and resource service.
-use crate::assets::{AssetKind, Assets, LoadId, worker::Worker};
+use crate::assets::{AssetStream, Assets, StreamControl, worker::Worker};
 use reel_core::{
-    budget::{BudgetCategory, BudgetPool, BudgetTicket, OwnedBytes, QueueLimits},
+    budget::{BudgetCategory, BudgetPool, BudgetTicket, QueueLimits},
     identity::{Priority, ResourceVersion, Scope},
     wake::WakeSignal,
 };
@@ -20,6 +20,8 @@ use std::{
 pub struct MediaOptions {
     pub mixer: MixerLimits,
     pub pcm_bytes: u64,
+    pub static_pcm_threshold_bytes: u64,
+    pub stream_window_frames: usize,
     pub queue_bytes: u64,
     #[cfg(feature = "video")]
     pub video: video::VideoLimits,
@@ -29,34 +31,32 @@ impl Default for MediaOptions {
         Self {
             mixer: MixerLimits::default(),
             pcm_bytes: 256 << 20,
+            static_pcm_threshold_bytes: 8 << 20,
+            stream_window_frames: 16_384,
             queue_bytes: 64 << 20,
             #[cfg(feature = "video")]
             video: video::VideoLimits::default(),
         }
     }
 }
-struct Input(Arc<OwnedBytes>);
-impl AsRef<[u8]> for Input {
-    fn as_ref(&self) -> &[u8] {
-        self.0.as_slice()
-    }
-}
 struct Decode {
     id: MediaId,
     item: u64,
-    version: ResourceVersion,
-    bytes: Arc<OwnedBytes>,
-    ticket: reel_core::budget::BudgetTicket,
+    reader: AssetStream,
+    control: StreamControl,
+    pool: BudgetPool,
+    threshold: u64,
+    window: usize,
 }
 struct Decoded {
     id: MediaId,
     item: u64,
-    version: ResourceVersion,
+    version: Option<ResourceVersion>,
     sound: Result<DecodedSound, String>,
 }
 enum Phase {
-    Loading(LoadId),
-    Queued,
+    Loading,
+    Queued(StreamControl),
     Ready(ResourceVersion, Box<DecodedSound>),
     Playing(reel_media::MediaId),
     Done(MediaResult),
@@ -121,15 +121,22 @@ fn resolve_decoded(
     }) {
         Ok(sound) => {
             *start = sound.start_position();
-            Phase::Ready(event.version, Box::new(sound))
+            match event.version {
+                Some(version) => Phase::Ready(version, Box::new(sound)),
+                None => Phase::Done(MediaResult::Failed(
+                    "audio resource version unavailable".into(),
+                )),
+            }
         }
         Err(error) => Phase::Done(MediaResult::Failed(error)),
     };
 }
-fn cancel_segment(assets: &Assets, worker: &mut Worker<Decode, Decoded>, key: u64, phase: &Phase) {
+fn cancel_segment(_assets: &Assets, worker: &mut Worker<Decode, Decoded>, key: u64, phase: &Phase) {
     match phase {
-        Phase::Loading(load) => assets.cancel(*load),
-        Phase::Queued => worker.cancel(key),
+        Phase::Queued(control) => {
+            control.cancel();
+            worker.cancel(key);
+        }
         _ => {}
     }
 }
@@ -137,6 +144,8 @@ struct SegmentLoader<'a> {
     assets: &'a Assets,
     worker: &'a mut Worker<Decode, Decoded>,
     pcm: &'a BudgetPool,
+    threshold: u64,
+    window: usize,
 }
 impl SegmentLoader<'_> {
     fn poll(
@@ -148,41 +157,38 @@ impl SegmentLoader<'_> {
         phase: &mut Phase,
         descriptor: &mut BudgetTicket,
     ) {
-        let Phase::Loading(load) = *phase else {
+        if !matches!(phase, Phase::Loading) {
             return;
-        };
-        match self.assets.poll_bytes(load) {
-            Ok(Some((version, bytes))) => {
-                let result = descriptor
-                    .resize(descriptor_bytes(source) + bytes.as_slice().len() as u64)
-                    .map_err(|error| error.message)
-                    .and_then(|_| self.pcm.reserve(0).map_err(|error| error.message))
-                    .and_then(|ticket| {
-                        self.worker
-                            .accept(
-                                key,
-                                Decode {
-                                    id,
-                                    item,
-                                    version,
-                                    bytes,
-                                    ticket,
-                                },
-                                0,
-                                Priority::Visible,
-                            )
-                            .map_err(|error| error.reason.message)
-                    });
-                *phase = match result {
-                    Ok(()) => Phase::Queued,
-                    Err(error) => Phase::Done(MediaResult::Failed(error)),
-                };
-            }
-            Ok(None) => {}
-            Err(error) => *phase = Phase::Done(MediaResult::Failed(error)),
         }
+        let result = self
+            .assets
+            .stream(source.clone())
+            .and_then(|(control, reader)| {
+                let request = Decode {
+                    id,
+                    item,
+                    reader,
+                    control: control.clone(),
+                    pool: self.pcm.clone(),
+                    threshold: self.threshold,
+                    window: self.window,
+                };
+                match self.worker.accept(key, request, 0, Priority::Visible) {
+                    Ok(()) => Ok(control),
+                    Err(error) => {
+                        control.cancel();
+                        Err(error.reason.message)
+                    }
+                }
+            });
+        *phase = match result {
+            Ok(control) => Phase::Queued(control),
+            Err(error) => Phase::Done(MediaResult::Failed(error)),
+        };
+        let _ = descriptor;
     }
 }
+
 type OutputFactory = Box<dyn FnOnce(WakeSignal) -> Result<Box<dyn AudioOutput>, String>>;
 
 /// A session-local backend. A custom host supplies AssetIo through Assets and
@@ -240,7 +246,7 @@ impl MediaPlayer {
         let pcm = BudgetPool::new(
             BudgetCategory::CpuOutput,
             QueueLimits {
-                max_requests: queue.max_requests,
+                max_requests: queue.max_requests.saturating_mul(2),
                 max_bytes: options.pcm_bytes,
             },
         );
@@ -266,11 +272,34 @@ impl MediaPlayer {
             worker: Worker::new(
                 queue,
                 wake,
-                |request: Decode, cancelled| Decoded {
-                    id: request.id,
-                    item: request.item,
-                    version: request.version,
-                    sound: DecodedSound::decode(Input(request.bytes), request.ticket, cancelled),
+                |mut request: Decode, cancelled| {
+                    let control = request.control.clone();
+                    let cancel_control = control.clone();
+                    let sound =
+                        request
+                            .reader
+                            .open()
+                            .map_err(|e| e.to_string())
+                            .and_then(|length| {
+                                DecodedSound::prepare(
+                                    request.reader,
+                                    length,
+                                    request.pool,
+                                    request.threshold,
+                                    request.window,
+                                    Arc::new(move || cancel_control.cancel()),
+                                    cancelled,
+                                )
+                            });
+                    if sound.is_err() {
+                        control.cancel();
+                    }
+                    Decoded {
+                        id: request.id,
+                        item: request.item,
+                        version: control.version(),
+                        sound,
+                    }
                 },
                 |event| event.sound = Err("audio decode cancelled".into()),
             ),
@@ -379,8 +408,10 @@ impl MediaPlayer {
                 }
                 if !matches!(entry.phase, Phase::Playing(_) | Phase::Done(_)) {
                     match entry.phase {
-                        Phase::Loading(id) => self.assets.cancel(id),
-                        Phase::Queued => self.worker.cancel(entry.key),
+                        Phase::Queued(ref control) => {
+                            control.cancel();
+                            self.worker.cancel(entry.key);
+                        }
                         _ => {}
                     }
                     entry.phase =
@@ -408,8 +439,10 @@ impl MediaPlayer {
                 cancel_segment(&self.assets, &mut self.worker, segment.key, &segment.phase);
             }
             match entry.phase {
-                Phase::Loading(load) => self.assets.cancel(load),
-                Phase::Queued => self.worker.cancel(entry.key),
+                Phase::Queued(ref control) => {
+                    control.cancel();
+                    self.worker.cancel(entry.key);
+                }
                 Phase::Playing(media) => {
                     if let Some(service) = &mut self.service {
                         service.stop(media);
@@ -444,20 +477,7 @@ impl MediaPlayer {
         }
     }
     fn audio_capacity_full(&self) -> bool {
-        let loading = self
-            .entries
-            .values()
-            .map(|entry| {
-                usize::from(matches!(entry.phase, Phase::Loading(_)))
-                    + entry
-                        .queue
-                        .iter()
-                        .filter(|segment| matches!(segment.phase, Phase::Loading(_)))
-                        .count()
-            })
-            .sum::<usize>();
         self.active_count() >= self.options.mixer.max_sounds
-            || self.pcm.usage().tickets as usize + loading >= self.options.mixer.max_sounds
     }
     fn video_pending(&self) -> bool {
         #[cfg(feature = "video")]
@@ -598,12 +618,11 @@ impl MediaBackend for MediaPlayer {
             .map_err(|error| error.message)?;
         self.next = self.next.checked_add(1).ok_or("audio identity exhausted")?;
         let id = MediaId(self.next);
-        let load = self.assets.request(&request.source, AssetKind::Bytes);
         self.entries.insert(
             id,
             Entry {
                 request,
-                phase: Phase::Loading(load),
+                phase: Phase::Loading,
                 paused,
                 queue: VecDeque::with_capacity(self.options.mixer.max_sounds),
                 item: 0,
@@ -650,12 +669,11 @@ impl MediaBackend for MediaPlayer {
                 .map_err(|error| error.to_string())?;
         }
         self.next = key;
-        let load = self.assets.request(&request.source, AssetKind::Bytes);
         entry.queue.push_back(Segment {
             item,
             key: self.next,
             request,
-            phase: Phase::Loading(load),
+            phase: Phase::Loading,
             descriptor,
         });
         entry.tail = item;
@@ -786,7 +804,7 @@ impl MediaBackend for MediaPlayer {
         self.worker.drain(&mut self.decoded, 64);
         for event in self.decoded.drain(..) {
             if let Some(entry) = self.entries.get_mut(&event.id) {
-                if event.item == entry.item && matches!(entry.phase, Phase::Queued) {
+                if event.item == entry.item && matches!(entry.phase, Phase::Queued(_)) {
                     resolve_decoded(
                         event,
                         &mut entry.phase,
@@ -797,7 +815,7 @@ impl MediaBackend for MediaPlayer {
                         &mut entry.descriptor,
                     );
                 } else if let Some(segment) = entry.queue.iter_mut().find(|segment| {
-                    segment.item == event.item && matches!(segment.phase, Phase::Queued)
+                    segment.item == event.item && matches!(segment.phase, Phase::Queued(_))
                 }) {
                     resolve_decoded(
                         event,
@@ -827,6 +845,8 @@ impl MediaBackend for MediaPlayer {
                 assets: &self.assets,
                 worker: &mut self.worker,
                 pcm: &self.pcm,
+                threshold: self.options.static_pcm_threshold_bytes,
+                window: self.options.stream_window_frames,
             };
             loader.poll(
                 id,
@@ -848,7 +868,7 @@ impl MediaBackend for MediaPlayer {
             }
             if !entry.paused && matches!(entry.phase, Phase::Ready(_, _)) {
                 let Phase::Ready(version, sound) =
-                    std::mem::replace(&mut entry.phase, Phase::Queued)
+                    std::mem::replace(&mut entry.phase, Phase::Loading)
                 else {
                     unreachable!()
                 };
@@ -889,7 +909,7 @@ impl MediaBackend for MediaPlayer {
                         break;
                     }
                     let Phase::Ready(version, sound) =
-                        std::mem::replace(&mut segment.phase, Phase::Queued)
+                        std::mem::replace(&mut segment.phase, Phase::Loading)
                     else {
                         unreachable!()
                     };
@@ -1047,7 +1067,8 @@ impl MediaBackend for MediaPlayer {
         // Cancelled asset reads belong to the shared service. Waiting for its
         // global input pool would also wait for the replacement session's work.
         self.closed
-            && (self.video_pending()
+            && (self.pcm.usage().bytes != 0
+                || self.video_pending()
                 || !self.worker.is_idle()
                 || self.owner.as_ref().is_some_and(|owner| !owner.is_retired())
                 || self.reclaim.as_ref().is_some_and(|reclaim| {

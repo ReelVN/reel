@@ -28,6 +28,8 @@ use std::{
     sync::{Arc, atomic::Ordering},
     time::Duration,
 };
+#[cfg(feature = "decode")]
+mod stream;
 
 pub(crate) struct Bridge {
     sample_rate: u32,
@@ -98,7 +100,7 @@ pub struct DecodedSound {
 #[derive(Debug)]
 struct Residency {
     ticket: BudgetTicket,
-    release: Option<PhysicalRelease>,
+    release: std::sync::Mutex<Option<PhysicalRelease>>,
 }
 pub type DecodedSoundRequest = (u32, Vec<[f32; 2]>, BudgetTicket);
 impl DecodedSound {
@@ -132,7 +134,7 @@ impl DecodedSound {
             data,
             budget: Arc::new(Residency {
                 ticket,
-                release: None,
+                release: std::sync::Mutex::new(None),
             }),
         })
     }
@@ -159,13 +161,13 @@ impl DecodedSound {
             return Err("audio contains no PCM frames".into());
         }
         ticket
-            .resize(std::mem::size_of_val(data.frames.as_ref()) as u64)
+            .resize((data.frames.len() * std::mem::size_of::<Frame>()) as u64)
             .map_err(|e| e.message)?;
         Ok(Self {
             data,
             budget: Arc::new(Residency {
                 ticket,
-                release: None,
+                release: std::sync::Mutex::new(None),
             }),
         })
     }
@@ -218,7 +220,11 @@ impl DecodedSound {
             }
             Some(Region {
                 start: PlaybackPosition::Samples(from),
-                end: EndPosition::Custom(PlaybackPosition::Samples(to)),
+                end: if region.end.is_none() && end.is_none() {
+                    EndPosition::EndOfAudio
+                } else {
+                    EndPosition::Custom(PlaybackPosition::Samples(to))
+                },
             })
         } else {
             None
@@ -257,17 +263,14 @@ impl DecodedSound {
     }
     /// Called before admission while this request has no internal PCM aliases.
     pub(crate) fn track_retirement(&mut self, release: PhysicalRelease) {
-        let residency =
-            Arc::get_mut(&mut self.budget).expect("unaccepted request uniquely owns its residency");
-        assert!(residency.release.is_none(), "request already tracked");
-        residency.release = Some(release);
+        let mut slot = self.budget.release.lock().unwrap();
+        assert!(slot.is_none(), "request already tracked");
+        *slot = Some(release);
     }
     /// Failed admission has already discarded every temporary Kira alias. The
     /// caller discards its provisional evidence; returned PCM remains unaccepted.
     pub(crate) fn untrack_retirement(&mut self) {
-        let residency =
-            Arc::get_mut(&mut self.budget).expect("rejected request uniquely owns its residency");
-        drop(residency.release.take());
+        drop(self.budget.release.lock().unwrap().take());
     }
 }
 struct BudgetedData {
@@ -762,12 +765,24 @@ struct PlaybackBounds {
     sample_rate: u32,
     frames: usize,
     loop_region: Option<(usize, usize)>,
+    source: Option<Arc<reel_audio::sound::static_sound::StreamStatus>>,
+    source_loop_end: bool,
+    explicit_end: bool,
 }
 impl PlaybackBounds {
     fn new(data: &StaticSoundData) -> Self {
         Self {
             sample_rate: data.sample_rate,
             frames: data.num_frames(),
+            source: match &data.frames {
+                reel_audio::sound::static_sound::FrameStorage::Stream(source) => source.status(),
+                _ => None,
+            },
+            source_loop_end: data
+                .settings
+                .loop_region
+                .is_some_and(|r| matches!(r.end, EndPosition::EndOfAudio)),
+            explicit_end: data.slice.is_some(),
             loop_region: data.settings.loop_region.map(|region| {
                 let from = region.start.into_samples(data.sample_rate);
                 let to = match region.end {
@@ -780,10 +795,20 @@ impl PlaybackBounds {
     }
     fn frame(&self, position: Duration) -> usize {
         let frame = (position.as_secs_f64() * f64::from(self.sample_rate)).round() as usize;
-        match self.loop_region {
+        let frames = self.frames.min(
+            self.source
+                .as_ref()
+                .cloned()
+                .map_or(self.frames, |s| s.len()),
+        );
+        let region = self
+            .loop_region
+            .map(|(from, to)| (from, if self.source_loop_end { frames } else { to }));
+        match region {
+            Some((from, to)) if from >= to => frames,
             Some((from, to)) if frame >= to => from + (frame - from) % (to - from),
             Some(_) => frame,
-            None => frame.min(self.frames),
+            None => frame.min(frames),
         }
     }
     fn time(&self, frame: usize) -> Duration {
@@ -797,6 +822,25 @@ pub struct Playback {
     queue_slot: usize,
 }
 impl Playback {
+    /// A worker error or interval invalidated when an unknown source reaches EOF.
+    pub fn error(&self) -> Option<String> {
+        let current = self.queue_cursor().0;
+        let bounds = &self.bounds.iter().find(|(item, _)| *item == current)?.1;
+        let source = bounds.source.as_ref()?;
+        if let Some(error) = source.error() {
+            return Some(error);
+        }
+        let length = source.len();
+        if length != usize::MAX
+            && (bounds.explicit_end && bounds.frames > length
+                || bounds.loop_region.is_some_and(|(from, to)| {
+                    from >= length || !bounds.source_loop_end && to > length
+                }))
+        {
+            return Some("audio interval exceeds the actual source end".into());
+        }
+        None
+    }
     pub fn queue_cursor(&self) -> (u64, f64) {
         self.handle.queue_cursor()
     }
