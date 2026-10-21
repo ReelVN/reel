@@ -373,6 +373,8 @@ let caption = word.caption;
 
 ### 在运行中修改组件
 
+字段名由数据决定时，可以写 `state[field_name]`；字符串索引与点访问使用相同的类型、只读和绑定规则。`bind(state[field_name])` 固定选中的字段，需要随字段名变化重新选择时使用 `derive(|| state[field_name])`。
+
 需要让演出从资源就绪后的画面开始，可先挂载节点，再 `await stage.presented(owner: node)`，之后启动动画。等待包含派生布局和图片、字体准备，以实际接受的帧为准；其他任务、音乐和动画继续运行。返回对象可重复等待，`.cancel()` 取消该请求，owner 节点退休也会取消。省略 owner 时沿用当前回调/任务节点，主剧情中归会话。见 [author_scene_entry.aside](../../examples/author_scene_entry/src/main.aside)：
 
 ```aside

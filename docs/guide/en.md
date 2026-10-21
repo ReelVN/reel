@@ -373,6 +373,8 @@ let caption = word.caption;
 
 ### Editing components while running
 
+Use `state[field_name]` when data selects a field name. String indexing shares the same type, read-only and binding rules as dot access. `bind(state[field_name])` fixes the selected field; use `derive(|| state[field_name])` to follow changes to the field name.
+
 To start an animation from a ready frame, mount the nodes, then `await stage.presented(owner: node)` before starting it. The wait includes derived layout and image/font preparation and settles only after actual frame acceptance; other tasks, music and animations continue. The returned object supports repeated waits and `.cancel()`; retiring its owner also cancels it. Omitted ownership follows the current callback/task node, or the session in the main story. See [author_scene_entry.aside](../../examples/author_scene_entry/src/main.aside):
 
 ```aside
