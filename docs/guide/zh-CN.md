@@ -600,20 +600,18 @@ text 默认按可用宽度自然换行；width、x/y、padding、scroll 决定 N
 
 `game.start(entry)` 使用当前 ASB 中无捕获、无必需参数的普通函数。接受请求后，旧脚本不再继续；新会话重新执行模块初始化，再调用 entry。旧对白、UI 回调和活动结束，脚本全局、历史、自动和快进状态重建；已读记录、game.configure 配置、宿主资源与存档服务保留。目标入口负责构造画面；调用后无需清空旧舞台。跨 ASB 的热更新入口解析与持久脚本全局尚未实现。可运行示例见 [author_game_start.aside](../../examples/author_game_start.aside)。
 
-分段说话时传 `wait: false`，在文字之间照常写音效、动画或等待，再调用 `line.wait()` 等玩家推进。等待之后仍可追加，显示前文和同一条历史会保留；下一句对白或选择开始后，旧句柄结束。正文可以换行，普通字符串和 rich 都支持。多角色 say 行组可以等待，追加用于单角色行组。完整示例为 [author_dialogue_append.aside](../../examples/author_dialogue_append.aside)。
+传 `wait: false` 开始一句可继续追加的对白。`line.append(text)` 追加下一段并等待推进，与普通角色发言一致。需要衔接音效、动画或延时时写 `line.append(text, wait: false)`，到下一个推进点再调用 `line.wait()`。等待之后仍可追加，显示前文和同一条历史会保留；下一句对白或选择开始后，旧句柄结束。正文可以换行，普通字符串和 rich 都支持。多角色 say 行组可以等待，追加用于单角色行组。完整示例为 [author_dialogue_append.aside](../../examples/author_dialogue_append.aside)。
 
 ```aside
 let line = mio("Starting", wait: false);
 await run(delay(0.5));
-line.append(" ...");
+line.append(" ...", wait: false);
 audio.play("assets/chime.wav");
 line.append(" ready.");
-line.wait();
 line.append("\nWelcome back.");
-line.wait();
 ```
 
-line.wait 之前的点击可补全文字；推进会等脚本到达等待点。追加保留已经显示的字素，append 的 history 参数与角色调用采用相同选择：true 追加显示正文、false 省略这一段、字符串或 rich 追加替代正文。原条目已省略或清除时继续保持省略。句柄只在主剧情使用，保存恢复继续当前段和等待位置。
+脚本在推进点之间执行时，输入可补全文字。等待型 append 与 line.wait 共用手动、自动和快进规则。追加保留已经显示的字素，append 的 history 参数与角色调用采用相同选择：true 追加显示正文、false 省略这一段、字符串或 rich 追加替代正文。原条目已省略或清除时继续保持省略。句柄只在主剧情使用，保存恢复继续当前段和等待位置。
 
 
 用 `await when(|| game.dialogue().ready)` 等待打印与句内停顿完成，再衔接音效或演出。`when` 随实际读取的可观察属性更新；结果、所有者与取消规则见 [源码接口文档](../../crates/reel-engine/src/aside/conditions.rs)。

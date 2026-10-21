@@ -9,11 +9,9 @@ pub fn main() {
     });
     let line = mio("Starting", wait: false);
     await run(delay(0.5));
-    line.append(" ...");
+    line.append(" ...", wait: false);
     audio.play("assets/chime.wav");
     line.append(" ready.");
-    line.wait();
     line.append("\nWelcome back.");
-    line.wait();
     narrator("The next line retires the previous handle.");
 }

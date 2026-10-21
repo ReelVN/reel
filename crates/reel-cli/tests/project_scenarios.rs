@@ -749,14 +749,23 @@ fn segmented_dialogue_resumes_after_deferred_skip_and_auto_advance() {
                 await run(delay(0.02), owner:owner);
                 if !game.dialogue().ready {throw "deferred line was not revealed";}
                 line.wait();
-                line.append(" and another segment");
+                line.append(" and another segment", wait:false);
                 await stage.presented(owner:owner);
                 await run(delay(0.02), owner:owner);
                 if !game.dialogue().ready {throw "appended line was not revealed";}
                 line.wait();
+                line.append(" and a waiting segment");
+                if game.dialogue().text!="Deferred advance and another segment and a waiting segment" {
+                    throw "waiting append did not retain its open speech";
+                }
                 if !game.dialogue().active {throw "open dialogue was retired";}
             }
             game.set_auto(false);
+            game.set_skip(false);
+            let timed=narrator(rich("Timed[next]"),wait:false,reveal_skippable:false);
+            timed.wait();
+            timed.append(rich(" continuation[pause=0.01][next]"));
+            if game.dialogue().text.plain!="Timed continuation" {throw "waiting append did not honor next";}
         }
         "#,
     )
