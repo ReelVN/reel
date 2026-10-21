@@ -700,7 +700,12 @@ impl StageWidget {
                 .iter()
                 .rev()
                 .find_map(|(_, child)| visit(root, child.id()))
-                .or_else(|| node.input.as_ref().map(|_| id))
+                .or_else(|| {
+                    node.input
+                        .as_ref()
+                        .filter(|input| input.accepts_focus())
+                        .map(|_| id)
+                })
         }
         visit(root, self.root.as_ref()?.id())
     }
@@ -1262,6 +1267,10 @@ impl SceneWidget {
                 this.ctx.submit_action::<NodeEvent>(event)
             });
             *input = NodeInput::new(bindings.clone(), *keyboard, *pointer, *wheel);
+            this.ctx.set_interactive(
+                this.widget.accepts_pointer_interaction(),
+                this.widget.accepts_focus(),
+            );
         }
         if this.widget.node.props.enabled != view.node.props.enabled {
             this.ctx.set_disabled(!view.node.props.enabled);
@@ -1728,7 +1737,7 @@ impl Widget for SceneWidget {
             input.drag(self.node.id, event, ctx);
             if input.pointer(self.node.id, event, |e| ctx.submit_action::<NodeEvent>(e)) {
                 if matches!(event, PointerEvent::Down(_)) {
-                    ctx.request_focus();
+                    input.pointer_focus(ctx);
                     ctx.capture_pointer();
                 }
                 ctx.set_handled();
@@ -2575,7 +2584,7 @@ impl Widget for SceneWidget {
         matches!(self.node.kind, NodeKind::Cursor)
     }
     fn accepts_focus(&self) -> bool {
-        self.is_button() || self.input.is_some()
+        self.is_button() || self.input.as_ref().is_some_and(NodeInput::accepts_focus)
     }
     fn selection_group(&self) -> Option<reel_ui::core::SelectionGroup> {
         match self.node.kind {

@@ -52,6 +52,54 @@ fn tab(backward: bool) -> TextEvent {
 }
 
 #[test]
+fn directional_focus_enters_container_descendants_and_skips_ancestors() {
+    use reel_ui::input::{ActionPhase, NavigationAction as A, NavigationEvent};
+    let direction = |action| {
+        TextEvent::Navigation(NavigationEvent {
+            action,
+            phase: ActionPhase::Pressed,
+            value: 1.,
+        })
+    };
+    for presented in [false, true] {
+        let mut f = fixture();
+        f.root.edit_widget(f.panel, |mut widget| {
+            widget.ctx.set_interactive(false, true)
+        });
+        f.root.redraw();
+        accept_view(&mut f.root, presented);
+        for (action, expected) in [
+            (A::Down, f.first),
+            (A::Right, f.first),
+            (A::Up, f.nested),
+            (A::Left, f.nested),
+        ] {
+            assert!(f.root.focus_on(Some(f.panel)));
+            f.root.handle_text_event(direction(action));
+            assert_eq!(f.root.focused_widget(), Some(expected));
+        }
+        f.root.handle_text_event(direction(A::Down));
+        assert_eq!(
+            f.root.focused_widget(),
+            Some(f.nested),
+            "the enclosing panel is not a spatial destination"
+        );
+
+        f.root
+            .edit_widget(f.first, |mut widget| widget.ctx.set_disabled(true));
+        // Gate the last control instead of changing its visual contents.
+        f.root.set_input_gates(&[f.nested]);
+        accept_view(&mut f.root, presented);
+        assert!(f.root.focus_on(Some(f.panel)));
+        f.root.handle_text_event(direction(A::Down));
+        assert_eq!(f.root.focused_widget(), Some(f.second));
+        assert!(f.root.focus_on(Some(f.panel)));
+        f.root.handle_text_event(direction(A::Up));
+        assert_eq!(f.root.focused_widget(), Some(f.second));
+    }
+}
+
+#[test]
 fn input_gates_cancel_owned_controls_and_keep_other_subtrees_interactive() {
     use reel_ui::input::{ActionPhase as P, NavigationAction as A, NavigationEvent};
     let confirm = |phase| {

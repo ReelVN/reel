@@ -21,6 +21,23 @@ pub(super) struct NodeInput {
     held_keys: Vec<KeyboardEvent>,
 }
 impl NodeInput {
+    pub fn accepts_focus(&self) -> bool {
+        self.keyboard
+            || self.bindings.iter().any(|action| {
+                action
+                    .bindings
+                    .iter()
+                    .any(|binding| !matches!(binding.control, Control::Pointer(_)))
+            })
+    }
+    pub fn pointer_focus(&self, ctx: &mut EventCtx<'_>) {
+        if self.accepts_focus() {
+            ctx.request_focus();
+        } else if let Some(focus) = ctx.focus_target_id() {
+            // Pointer-only input keeps the keyboard owner when taking a drag.
+            ctx.set_focus(focus);
+        }
+    }
     pub fn new(
         bindings: InputBindings,
         keyboard: bool,
@@ -181,7 +198,7 @@ impl NodeInput {
                 if self.drag.is_none()
                     && matches!(e.button, None | Some(PointerButton::Primary)) =>
             {
-                ctx.request_focus();
+                self.pointer_focus(ctx);
                 ctx.capture_pointer();
                 (ctx.local_position(e.state.position), PointerPhase::Pressed)
             }
