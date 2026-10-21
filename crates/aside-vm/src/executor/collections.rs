@@ -249,7 +249,7 @@ impl Vm {
             return Err(FaultKind::Type);
         }
         self.heap.table_len(table).map_err(heap_fault)?;
-        let version = self.table_version(*s, table, action).map_err(vm_fault)?;
+        let version = self.table_version(table, action).map_err(vm_fault)?;
         self.put(s.env, 1, table).map_err(vm_fault)?;
         self.put(s.env, 2, key).map_err(vm_fault)?;
         s.table_work = Some(TableWork {
@@ -330,27 +330,23 @@ impl Vm {
             _ => unreachable!(),
         }
     }
-    fn table_version(
-        &self,
-        s: ScriptFrame,
-        table: Value,
-        action: TableAction,
-    ) -> Result<u64, VmError> {
-        let host_property = match action {
-            TableAction::GetHost { .. } | TableAction::SetHost { .. } => true,
-            TableAction::PropertyRef { object, .. } => {
-                self.heap.info(self.value(s.regs, object.0)?)?.kind == ObjectKind::Host
-            }
-            _ => false,
-        };
+    fn table_version(&self, table: Value, action: TableAction) -> Result<u64, VmError> {
         let info = self.heap.info(table)?;
-        // Host property names identify stable slots. Input, animation and layout
-        // may update their values between slices without invalidating name lookup.
-        // Collection operations still require their original content snapshot.
-        Ok(if host_property {
-            info.structure_version
-        } else {
-            info.content_version
+        // Point lookups commit against the current slot after comparing stable
+        // keys. Value overwrites cannot invalidate that scan. Bulk operations
+        // retain their complete source-content snapshot.
+        Ok(match action {
+            TableAction::Get(_)
+            | TableAction::MemberGet { .. }
+            | TableAction::GetDefault { .. }
+            | TableAction::GetHost { .. }
+            | TableAction::Set(_)
+            | TableAction::SetHost { .. }
+            | TableAction::HasOwn(_)
+            | TableAction::PropertyRef { .. } => info.structure_version,
+            TableAction::Build { .. } | TableAction::Spread(_) | TableAction::Remove(_) => {
+                info.content_version
+            }
         })
     }
 
@@ -367,7 +363,7 @@ impl Vm {
             false
         };
         Ok(source_changed
-            || self.table_version(s, self.value(s.env, 1)?, work.action)? != work.version)
+            || self.table_version(self.value(s.env, 1)?, work.action)? != work.version)
     }
     pub(super) fn table_step(
         &mut self,

@@ -709,7 +709,7 @@ fn optional_null_branch_skips_missing_member_but_nonnull_missing_faults() {
     fault(&mut vm, task, FaultKind::MissingKey);
 }
 #[test]
-fn table_lookup_version_change_and_cooperative_cancel_release_key_stack() {
+fn table_lookup_structure_change_and_cooperative_cancel_release_key_stack() {
     for cancel in [false, true] {
         let mut p = table_package(vec![Const::Utf8("x".repeat(256))], vec![Const::Int(7)]);
         p.functions[0].code.pop();
@@ -737,7 +737,7 @@ fn table_lookup_version_change_and_cooperative_cancel_release_key_stack() {
             vm.cancel_cooperatively(task).unwrap();
         } else {
             vm.heap_mut()
-                .table_store(table, 0, Value::NULL, Value::int(8))
+                .table_store(table, 1, Value::NULL, Value::int(8))
                 .unwrap();
         }
         fault(
@@ -1183,6 +1183,246 @@ fn method_package(method: &str) -> BytecodePackage {
         default: None,
     });
     p
+}
+
+fn point_lookup_package(indexed: bool, write: bool) -> BytecodePackage {
+    let mut p = method_package("position");
+    if write {
+        let symbol = p.functions[0].code[0].operands[2];
+        p.constants.push(Const::Int(126));
+        p.functions[0].code = if indexed {
+            p.constants.push(Const::Utf8("position".into()));
+            vec![
+                op(Opcode::LoadConst, 1, 1, 0),
+                op(Opcode::LoadConst, 2, 0, 0),
+                op(Opcode::IndexSet, 0, 1, 2),
+                op(Opcode::Return, 2, 0, 0),
+            ]
+        } else {
+            vec![
+                op(Opcode::LoadConst, 1, 0, 0),
+                op(Opcode::MemberSet, 0, 1, symbol),
+                op(Opcode::Return, 1, 0, 0),
+            ]
+        };
+        p.functions[0].source_map.clear();
+    } else if indexed {
+        p.constants.push(Const::Utf8("position".into()));
+        p.functions[0].code = vec![
+            op(Opcode::LoadConst, 1, 0, 0),
+            op(Opcode::IndexGet, 2, 0, 1),
+            op(Opcode::Return, 2, 0, 0),
+        ];
+    } else {
+        p.functions[0].code = vec![p.functions[0].code[0], op(Opcode::Return, 1, 0, 0)];
+        p.functions[0].source_map.truncate(2);
+    }
+    p
+}
+
+fn pause_point_lookup(vm: &mut Vm, table: Value, context: Context) -> TaskId {
+    let task = vm
+        .start(FunctionId(0), &[table], RootOwner(9), context)
+        .unwrap();
+    for attempt in 0..1000 {
+        assert!(attempt < 999, "lookup did not reach its bounded scan");
+        let outcome = vm
+            .run_slice(
+                task,
+                SliceBudget {
+                    instructions: 1,
+                    work: 1.max(vm.last_usage.required_work),
+                    allocation_bytes: VALUE_CHUNK_BYTES.max(vm.last_usage.required_allocation),
+                    ..SliceBudget::default()
+                },
+                || 0,
+            )
+            .unwrap();
+        assert!(matches!(outcome, RunOutcome::BudgetYield(_)));
+        if matches!(vm.active.frames.data.last(), Some(Frame::Script(s)) if s.table_work.is_some())
+        {
+            break;
+        }
+    }
+    task
+}
+
+#[test]
+fn point_lookup_survives_value_updates_but_rejects_structural_changes() {
+    check_point_lookup_value_and_structure_changes(false);
+}
+
+#[test]
+fn point_lookup_snapshot_preserves_structure_version_and_rejects_old_semantics() {
+    check_point_lookup_value_and_structure_changes(true);
+}
+
+fn check_point_lookup_value_and_structure_changes(restore: bool) {
+    use crate::snapshot::{SnapshotBudget, SnapshotError, SnapshotRegistry, VmSnapshot};
+    for model in [false, true] {
+        for (indexed, write) in [(false, false), (true, false), (false, true), (true, true)] {
+            for mutation in 0..4 {
+                let mut vm = load(point_lookup_package(indexed, write));
+                let mut table = vm.heap_mut().alloc_table().unwrap();
+                let mut position = vm.heap_mut().alloc_string("position").unwrap();
+                let mut repeat = vm.heap_mut().alloc_string("repeat").unwrap();
+                vm.heap_mut()
+                    .table_store(table, 0, position, Value::int(41))
+                    .unwrap();
+                vm.heap_mut()
+                    .table_store(table, 1, repeat, Value::bool(false))
+                    .unwrap();
+                if model {
+                    vm.heap_mut().observe_model_object(table).unwrap();
+                }
+                // Diverge content and structure versions before capture. Equal
+                // counters would hide restoring the wrong version semantics.
+                vm.heap_mut()
+                    .table_store(table, 0, position, Value::int(42))
+                    .unwrap();
+                assert_ne!(
+                    vm.heap().info(table).unwrap().content_version,
+                    vm.heap().info(table).unwrap().structure_version
+                );
+                let mut task = pause_point_lookup(&mut vm, table, Context::Ordinary);
+                if restore {
+                    let registry = SnapshotRegistry::default();
+                    let mut capture = vm.snapshot_begin(&registry).unwrap();
+                    while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+                    let mut image = capture.finish().unwrap();
+                    if !model && !indexed && !write && mutation == 0 {
+                        image.version = 8;
+                        assert!(matches!(
+                            VmSnapshot::decode(&image.encode().unwrap()),
+                            Err(SnapshotError::Version {
+                                format: "VM",
+                                actual: 8,
+                                expected: 9,
+                            })
+                        ));
+                        assert!(matches!(
+                            Vm::restore_begin(
+                                &image,
+                                vm.program().clone(),
+                                RuntimeSupport {
+                                    opcodes: vec![],
+                                    capabilities: vec![],
+                                    natives: vec![],
+                                },
+                                VmLimits::default(),
+                                SessionEpoch(82),
+                                &registry,
+                            ),
+                            Err(SnapshotError::Version {
+                                format: "VM",
+                                actual: 8,
+                                expected: 9,
+                            })
+                        ));
+                        image.version = VmSnapshot::FORMAT_VERSION;
+                    }
+                    let image = VmSnapshot::decode(&image.encode().unwrap()).unwrap();
+                    let mut restore = Vm::restore_begin(
+                        &image,
+                        vm.program().clone(),
+                        RuntimeSupport {
+                            opcodes: vec![],
+                            capabilities: vec![],
+                            natives: vec![],
+                        },
+                        VmLimits::default(),
+                        SessionEpoch(82),
+                        &registry,
+                    )
+                    .unwrap();
+                    while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+                    let (restored, map) = restore.finish().unwrap();
+                    table = map.value(table).unwrap();
+                    position = map.value(position).unwrap();
+                    repeat = map.value(repeat).unwrap();
+                    task = map.task(task).unwrap();
+                    vm = restored;
+                }
+                match mutation {
+                    0 => vm
+                        .heap_mut()
+                        .table_store(table, 0, position, Value::int(84))
+                        .unwrap(),
+                    1 => vm
+                        .heap_mut()
+                        .table_store(table, 1, repeat, Value::bool(true))
+                        .unwrap(),
+                    2 => vm
+                        .heap_mut()
+                        .table_store(table, 2, Value::int(99), Value::NULL)
+                        .unwrap(),
+                    _ => vm.heap_mut().clear_collection(table).unwrap(),
+                }
+                if mutation < 2 {
+                    let expected = if write {
+                        126
+                    } else if mutation == 0 {
+                        84
+                    } else {
+                        42
+                    };
+                    assert_eq!(returned(&mut vm, task).as_int(), Some(expected));
+                    assert_eq!(
+                        vm.heap().table_entry(table, 0).unwrap().1.as_int(),
+                        Some(expected)
+                    );
+                } else {
+                    fault(&mut vm, task, FaultKind::ConcurrentModification);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn derived_point_lookup_observes_the_field_read_at_commit() {
+    let mut vm = load(point_lookup_package(false, false));
+    let table = vm.heap_mut().alloc_table().unwrap();
+    let position = vm.heap_mut().alloc_string("position").unwrap();
+    let repeat = vm.heap_mut().alloc_string("repeat").unwrap();
+    vm.heap_mut()
+        .table_store(table, 0, position, Value::int(42))
+        .unwrap();
+    vm.heap_mut()
+        .table_store(table, 1, repeat, Value::bool(false))
+        .unwrap();
+    vm.heap_mut().observe_model_object(table).unwrap();
+    let output = vm.heap_mut().alloc_derived(Value::NULL).unwrap();
+    let root = vm
+        .heap_mut()
+        .add_root(RootOwner(8), RootKind::Host, output)
+        .unwrap();
+    vm.heap_mut().begin_derived(output).unwrap();
+    let task = pause_point_lookup(&mut vm, table, Context::Derived);
+    vm.heap_mut()
+        .table_store(table, 0, position, Value::int(84))
+        .unwrap();
+    let value = returned(&mut vm, task);
+    assert_eq!(value.as_int(), Some(84));
+    vm.heap_mut().commit_derived(output, value).unwrap();
+    vm.heap_mut()
+        .table_store(table, 1, repeat, Value::bool(true))
+        .unwrap();
+    assert!(
+        !vm.heap().derived_pending(),
+        "an unrelated value became a dependency"
+    );
+    vm.heap_mut()
+        .table_store(table, 0, position, Value::int(126))
+        .unwrap();
+    assert!(
+        vm.heap_mut()
+            .next_derived()
+            .unwrap()
+            .unwrap()
+            .same_bits(output)
+    );
+    vm.heap_mut().release_root(root).unwrap();
 }
 
 #[test]
