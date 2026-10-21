@@ -17,6 +17,7 @@ pub(super) const IMAGE_PREFIX: &[&str] = &[
 const BASIC_NODE_CONSTRUCTORS: &[&str] = &[
     "text",
     "text_input",
+    "text_area",
     "image",
     "video",
     "particles",
@@ -51,7 +52,7 @@ pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
             "scroll_y",
         ],
         "reel::text" => &["value", "on_link"],
-        "reel::text_input" => &["value", "on_change", "on_submit"],
+        "reel::text_input" | "reel::text_area" => &["value", "on_change", "on_submit"],
         "reel::particles" => super::particles::PREFIX,
         "reel::image" | "reel::video" => IMAGE_PREFIX,
         "reel::button" => &["label", "on_click"],
@@ -248,7 +249,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                     .iter()
                     .map(|p| p.parameter()),
             );
-        } else if name == "text_input" {
+        } else if matches!(name, "text_input" | "text_area") {
             parameters.extend(
                 super::stage::text_input::TextInputField::PROPERTIES
                     .iter()
@@ -355,6 +356,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 14
             } else if name == "text_input" {
                 13
+            } else if name == "text_area" {
+                1
             } else {
                 16
             },

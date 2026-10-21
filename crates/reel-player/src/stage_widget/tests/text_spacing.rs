@@ -69,6 +69,7 @@ fn text_spacing_moves_real_glyphs_and_keeps_stable_widget_layouts() {
             listening: false,
         },
         NodeKind::TextInput {
+            multiline: false,
             value: "A A A".into(),
         },
         NodeKind::Toggle {
@@ -221,6 +222,7 @@ fn text_spacing_negative_words_update_input_hit_and_caret() {
     use reel_ui::widgets::TextInputEvent;
 
     let mut f = fixture(NodeKind::TextInput {
+        multiline: false,
         value: "A A A".into(),
     });
     let initial = f.record();
@@ -268,4 +270,180 @@ fn text_spacing_negative_words_update_input_hit_and_caret() {
         "the real pointer placed the insertion caret before the second A: {:?}",
         outcome.events
     );
+}
+
+#[test]
+fn text_area_wrap_scroll_and_caret_share_geometry_without_idle_layout() {
+    use reel_ui::core::{
+        PointerId, PointerInfo, PointerScrollEvent, PointerState, PointerType, ScrollDelta,
+    };
+    use reel_ui::dpi::PhysicalPosition;
+    let mut f = fixture(NodeKind::TextInput {
+        value: "A A A A A A A A A A A A A A A A A A A A A A A A A A A A A A".into(),
+        multiline: true,
+    });
+    f.edit(f.blue, |props| {
+        props.width = Some(100.);
+        props.height = Some(40.);
+    });
+    let first = f.record();
+    f.accept(&first);
+    let original = letters(&first);
+    assert!(
+        original.last().unwrap().y > original[0].y + 40.,
+        "text wraps beyond the viewport"
+    );
+    let stable = f.layouts();
+    for _ in 0..8 {
+        let idle = f.record();
+        f.accept(&idle);
+        assert_eq!(f.layouts(), stable, "unchanged frames reuse layout");
+    }
+    let geometry = first.geometry().get(stable[&f.blue].0).unwrap();
+    let p = geometry.window_transform * Point::new(30., 20.);
+    f.ui.handle_pointer(
+        &mut f.bridge,
+        PointerEvent::Scroll(PointerScrollEvent {
+            pointer: PointerInfo {
+                pointer_id: Some(PointerId::PRIMARY),
+                persistent_device_id: None,
+                pointer_type: PointerType::Mouse,
+            },
+            state: PointerState {
+                position: PhysicalPosition::new(p.x, p.y),
+                ..Default::default()
+            },
+            delta: ScrollDelta::PixelDelta(PhysicalPosition::new(0., 30.)),
+        }),
+    )
+    .unwrap();
+    let scrolled = f.record();
+    f.accept(&scrolled);
+    assert_eq!(letters(&scrolled)[0].y, original[0].y - 30.);
+    assert_eq!(
+        f.layouts(),
+        stable,
+        "wheel movement does not reshape or lay out the scene"
+    );
+
+    // Clicking the visible text uses the same offset as its glyphs.
+    let point = Point::new(
+        f64::from(letters(&scrolled)[10].x + 1.),
+        f64::from(letters(&scrolled)[10].y - 5.),
+    );
+    let e = reel_ui::core::PointerButtonEvent {
+        pointer: PointerInfo {
+            pointer_id: Some(PointerId::PRIMARY),
+            persistent_device_id: None,
+            pointer_type: PointerType::Mouse,
+        },
+        state: PointerState {
+            position: PhysicalPosition::new(point.x, point.y),
+            ..Default::default()
+        },
+        button: Some(reel_ui::core::PointerButton::Primary),
+    };
+    f.ui.handle_pointer(&mut f.bridge, PointerEvent::Down(e.clone()))
+        .unwrap();
+    f.ui.handle_pointer(&mut f.bridge, PointerEvent::Up(e))
+        .unwrap();
+    let clicked = f.record();
+    f.accept(&clicked);
+    let preedit = "A\n".repeat(20);
+    let end = preedit.len();
+    f.ui.handle_text(
+        &mut f.bridge,
+        TextEvent::Ime(reel_ui::core::Ime::Preedit(preedit, Some((end, end)))),
+    )
+    .unwrap();
+    let composing = f.record();
+    f.accept(&composing);
+    let composing_y = letters(&composing)[0].y;
+    assert!(composing_y < letters(&clicked)[0].y - 100.);
+    f.ui.handle_text(
+        &mut f.bridge,
+        TextEvent::Ime(reel_ui::core::Ime::Preedit("".into(), None)),
+    )
+    .unwrap();
+    let cancelled = f.record();
+    f.accept(&cancelled);
+    assert!(
+        letters(&cancelled)[0].y > composing_y + 100.,
+        "cancelled preedit reveals the restored caret"
+    );
+    let output =
+        f.ui.handle_text(
+            &mut f.bridge,
+            TextEvent::Ime(reel_ui::core::Ime::Commit("A".into())),
+        )
+        .unwrap();
+    assert!(output.events.iter().any(|e| matches!(e,
+        NodeEvent::Text(NodeText { event: reel_ui::widgets::TextInputEvent::Changed { value, .. }, .. })
+            if value.as_ref() == "A A A A A A A A A A AA A A A A A A A A A A A A A A A A A A A")));
+}
+
+#[test]
+fn text_area_stage_mode_updates_preserve_identity_and_change_enter_behavior() {
+    let mut f = fixture(NodeKind::TextInput {
+        value: "A".into(),
+        multiline: false,
+    });
+    let first = f.record();
+    f.accept(&first);
+    let id = f.layouts()[&f.blue].0;
+    let scene = f
+        .bridge
+        .root()
+        .get_widget(id)
+        .unwrap()
+        .downcast::<SceneWidget>()
+        .unwrap();
+    let editor = scene.editor.as_ref().unwrap().id();
+    f.ui.handle_text(
+        &mut f.bridge,
+        TextEvent::key_down(keyboard::Key::Named(keyboard::NamedKey::Tab)),
+    )
+    .unwrap();
+    assert_eq!(f.bridge.root().focused_widget(), Some(editor));
+    for multiline in [true, false] {
+        let props = f.stage.node(f.blue).unwrap().props.clone();
+        f.stage
+            .update(
+                f.blue,
+                NodeKind::TextInput {
+                    value: if multiline {
+                        "A\nA".into()
+                    } else {
+                        "A A".into()
+                    },
+                    multiline,
+                },
+                props,
+            )
+            .unwrap();
+        let frame = f.record();
+        f.accept(&frame);
+        let glyphs = letters(&frame);
+        assert_eq!(glyphs.len(), 2);
+        assert_eq!(glyphs[0].y != glyphs[1].y, multiline);
+        assert_eq!(f.layouts()[&f.blue].0, id);
+        assert_eq!(f.bridge.root().focused_widget(), Some(editor));
+        let output =
+            f.ui.handle_text(
+                &mut f.bridge,
+                TextEvent::key_down(keyboard::Key::Named(keyboard::NamedKey::Enter)),
+            )
+            .unwrap();
+        assert!(output.events.iter().any(|event| match event {
+            NodeEvent::Text(NodeText {
+                event: reel_ui::widgets::TextInputEvent::Changed { .. },
+                ..
+            }) => multiline,
+            NodeEvent::Text(NodeText {
+                event: reel_ui::widgets::TextInputEvent::Submitted(_),
+                ..
+            }) => !multiline,
+            _ => false,
+        }));
+    }
 }

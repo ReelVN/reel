@@ -865,6 +865,7 @@ impl SessionVm {
             "reel::choose" => self.dispatch_choose(session, ticket, work),
             "reel::text"
             | "reel::text_input"
+            | "reel::text_area"
             | "reel::slider"
             | "reel::toggle"
             | "reel::checkbox"

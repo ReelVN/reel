@@ -219,6 +219,7 @@ pub enum NodeKind {
     Text(reel_core::text::Text),
     TextInput {
         value: Arc<str>,
+        multiline: bool,
     },
     Button {
         label: Option<String>,

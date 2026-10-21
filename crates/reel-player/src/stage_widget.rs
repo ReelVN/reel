@@ -957,10 +957,10 @@ impl SceneWidget {
                 _ => None,
             },
             label,
-            editor: if let NodeKind::TextInput { value } = &view.node.kind {
+            editor: if let NodeKind::TextInput { value, multiline } = &view.node.kind {
                 Some(
                     NewWidget::new(
-                        TextInput::new(value.clone())
+                        TextInput::with_mode(value.clone(), *multiline)
                             .with_style(StyleProperty::FontSize(view.node.props.font_size as f32))
                             .with_style(StyleProperty::FontWeight(
                                 reel_ui::reel_text::FontWeight::new(
@@ -1094,10 +1094,11 @@ impl SceneWidget {
             || order_changed
             || this.widget.node.props.visible != view.node.props.visible
             || this.widget.node.props.enabled != view.node.props.enabled;
-        if let (Some(pod), NodeKind::TextInput { value }) =
+        if let (Some(pod), NodeKind::TextInput { value, multiline }) =
             (&mut this.widget.editor, &view.node.kind)
             && let Some(mut editor) = this.ctx.get_mut(pod)
         {
+            TextInput::set_multiline(&mut editor, *multiline);
             TextInput::set_value(&mut editor, value.clone());
             if this.widget.node.props.font_size != view.node.props.font_size {
                 TextInput::insert_style(
@@ -1792,9 +1793,11 @@ impl Widget for SceneWidget {
         {
             if let TextInputEvent::Changed { value, .. } = event {
                 self.sync_dirty = true;
-                Arc::make_mut(&mut self.node).kind = NodeKind::TextInput {
-                    value: value.clone(),
-                };
+                if let NodeKind::TextInput { value: current, .. } =
+                    &mut Arc::make_mut(&mut self.node).kind
+                {
+                    *current = value.clone();
+                }
             }
             ctx.submit_action::<NodeEvent>(NodeEvent::Text(NodeText {
                 node: self.node.id,

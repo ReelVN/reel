@@ -450,7 +450,9 @@ impl StageBinding {
             "reel::slider" => Some(controls::SliderField::Value.index()),
             "reel::toggle" | "reel::checkbox" => Some(controls::ToggleField::Value.index()),
             "reel::radio" => Some(controls::RadioField::Value.index()),
-            "reel::text_input" => Some(text_input::TextInputField::Value.index()),
+            "reel::text_input" | "reel::text_area" => {
+                Some(text_input::TextInputField::Value.index())
+            }
             _ => None,
         };
         if let Some(field) = control_field {
@@ -539,7 +541,11 @@ impl StageBinding {
                 },
                 text_source: if matches!(
                     symbol,
-                    "reel::text" | "reel::text_input" | "reel::image" | "reel::video"
+                    "reel::text"
+                        | "reel::text_input"
+                        | "reel::text_area"
+                        | "reel::image"
+                        | "reel::video"
                 ) {
                     Some(heap.handle(args[0])?)
                 } else {
@@ -724,10 +730,11 @@ impl StageBinding {
                         2,
                     )
                 }
-                NodeKind::TextInput { value } => {
+                NodeKind::TextInput { value, multiline } => {
                     let source = heap.table_entry(fields, 0)?.1;
                     (
                         NodeKind::TextInput {
+                            multiline: *multiline,
                             value: if binding.text_source == Some(heap.handle(source)?) {
                                 value.clone()
                             } else {

@@ -140,6 +140,99 @@ fn text_input_commits_bindings_rejects_stale_edits_and_retires_callbacks() {
 }
 
 #[test]
+fn text_area_restores_multiline_binding_and_owned_submit() {
+    use aside_vm::snapshot::SnapshotBudget;
+    use reel_ui::{stage::NodeText, widgets::TextInputEvent};
+    let code = r#"fn opening() {
+        let data = model({body: "first\nsecond"});
+        let output = text("status");
+        let editor = text_area(value: bind(data.body), on_change: |e| {
+            if data.body != e.value { throw "binding"; } output.x += 1;
+        }, on_submit: |e| {
+            output.y += 1; await run(delay(20)); throw "retired editor resumed";
+        });
+        stage.replace(column { editor; output;
+            button("replace", on_click: || { data.body = "author\nreplacement"; });
+            button("remove", on_click: || { editor.remove(); });
+        });
+        narrator("waiting");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, true);
+        let program = vm.vm.program().clone();
+        let mut capture = vm.snapshot_begin(&session).unwrap();
+        while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let bytes = capture.finish().unwrap().encode().unwrap();
+        let mut image = snapshot::SessionSnapshot::decode(&bytes).unwrap();
+        let mut restore = SessionVm::restore_begin(
+            &mut image,
+            program,
+            VmLimits::default(),
+            SessionIdentity {
+                session_id: SessionId(41),
+                epoch: Epoch(20),
+            },
+            crate::ReadProgress::default(),
+            None,
+            None,
+        )
+        .unwrap();
+        while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let (mut session, mut vm) = restore.finish().unwrap();
+        models::drive(&mut vm, &mut session, true);
+        let editor = vm
+            .stage()
+            .nodes()
+            .find(|n| {
+                matches!(&n.kind,
+            NodeKind::TextInput { value, multiline: true } if value.as_ref() == "first\nsecond")
+            })
+            .unwrap()
+            .id;
+        let edit = |previous: &str, value: &str| NodeText {
+            node: editor,
+            event: TextInputEvent::Changed {
+                previous: previous.into(),
+                value: value.into(),
+            },
+        };
+        assert!(
+            vm.text_input(&mut session, &edit("first\nsecond", "edited\ntext"))
+                .unwrap()
+        );
+        models::drive(&mut vm, &mut session, true);
+        assert_eq!(text_x(&vm, "status"), 1.);
+        assert!(
+            vm.text_input(
+                &mut session,
+                &NodeText {
+                    node: editor,
+                    event: TextInputEvent::Submitted("edited\ntext".into())
+                }
+            )
+            .unwrap()
+        );
+        models::drive(&mut vm, &mut session, true);
+        assert!(vm.activities_need_time());
+        vm.click(&mut session, button(&vm, "replace")).unwrap();
+        models::drive(&mut vm, &mut session, true);
+        assert!(
+            !vm.text_input(&mut session, &edit("edited\ntext", "stale\nedit"))
+                .unwrap()
+        );
+        vm.click(&mut session, button(&vm, "remove")).unwrap();
+        models::drive(&mut vm, &mut session, true);
+        assert!(vm.tasks.is_empty());
+        assert!(!vm.activities_need_time());
+        assert!(
+            !vm.text_input(&mut session, &edit("author\nreplacement", "retired"))
+                .unwrap()
+        );
+    }
+}
+
+#[test]
 fn modal_click_validation_reads_script_writes_before_projection() {
     let (mut s, mut vm) = setup(
         r#"fn opening() {

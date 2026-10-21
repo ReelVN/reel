@@ -23,6 +23,7 @@ pub(in crate::aside) enum Shape {
     Stack,
     VirtualList,
     Cursor,
+    TextArea,
 }
 
 impl Shape {
@@ -30,6 +31,7 @@ impl Shape {
         match symbol {
             "reel::text" => Self::Text,
             "reel::text_input" => Self::TextInput,
+            "reel::text_area" => Self::TextArea,
             "reel::button" => Self::Button,
             "reel::slider" => Self::Slider,
             "reel::toggle" => Self::Switch,
@@ -52,7 +54,7 @@ impl Shape {
         match self {
             Self::Text | Self::Button => 2,
             Self::Image | Self::Video => registry::IMAGE_PREFIX.len(),
-            Self::TextInput => text_input::TextInputField::PROPERTIES.len(),
+            Self::TextInput | Self::TextArea => text_input::TextInputField::PROPERTIES.len(),
             Self::Slider => controls::SliderField::PROPERTIES.len(),
             Self::Switch | Self::Checkbox => controls::ToggleField::PROPERTIES.len(),
             Self::Radio => controls::RadioField::PROPERTIES.len(),
@@ -73,7 +75,9 @@ impl Shape {
         let get = |index| Ok::<_, HeapError>(heap.table_entry(fields, index)?.1);
         Ok(match self {
             Self::Text => NodeKind::Text(super::super::rich_text::read(heap, get(0)?, limit)?),
-            Self::TextInput => text_input::kind(heap, fields, limit)?,
+            Self::TextInput | Self::TextArea => {
+                text_input::kind(heap, fields, limit, self == Self::TextArea)?
+            }
             Self::Button => button_kind(heap, get(0)?, get(1)?, limit)?,
             Self::Slider => controls::slider_kind(heap, fields)?,
             Self::Switch | Self::Checkbox => controls::toggle_kind(
@@ -135,7 +139,8 @@ impl Shape {
     pub(super) fn validator(self) -> aside_vm::HostPropertyValidator {
         match self {
             Self::Text => |h, _, i, v| validate_text_property(h, i, v),
-            Self::TextInput => |h, _, i, v| text_input::validate(h, i, v),
+            Self::TextInput => |h, _, i, v| text_input::validate(h, i, v, false),
+            Self::TextArea => |h, _, i, v| text_input::validate(h, i, v, true),
             Self::Button => |h, _, i, v| validate_button_property(h, i, v),
             Self::Slider => controls::validate_slider,
             Self::Switch | Self::Checkbox => |h, _, i, v| controls::validate_toggle(h, i, v),
@@ -174,6 +179,7 @@ impl StageBinding {
         for (name, shape) in [
             ("reel.text", Shape::Text),
             ("reel.text_input", Shape::TextInput),
+            ("reel.text_area", Shape::TextArea),
             ("reel.button", Shape::Button),
             ("reel.slider", Shape::Slider),
             ("reel.toggle", Shape::Switch),
@@ -187,6 +193,7 @@ impl StageBinding {
             ("reel.layout", Shape::Stack),
         ] {
             let version = match shape {
+                Shape::TextArea => 1,
                 Shape::Video => 7,
                 Shape::Image => 11,
                 Shape::Particles => 10,
@@ -291,7 +298,7 @@ impl StageBinding {
                 },
                 text_source: if matches!(
                     saved.shape,
-                    Shape::Text | Shape::TextInput | Shape::Image | Shape::Video
+                    Shape::Text | Shape::TextInput | Shape::TextArea | Shape::Image | Shape::Video
                 ) {
                     Some(heap.handle(heap.table_entry(fields, 0)?.1)?)
                 } else {
