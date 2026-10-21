@@ -581,7 +581,34 @@ story.register("chapter01.opening", opening, title: "窗上的光");
 ```
 `game.start(entry)` 使用当前 ASB 中无捕获、无必需参数的普通函数。接受请求后，旧脚本不再继续；新会话重新执行模块初始化，再调用 entry。旧对白、UI 回调和活动结束，脚本全局、历史、自动和快进状态重建；已读记录、game.configure 配置、宿主资源与存档服务保留。目标入口负责构造画面；调用后无需清空旧舞台。跨 ASB 的热更新入口解析与持久脚本全局尚未实现。可运行示例见 [author_game_start.aside](../../examples/author_game_start.aside)。
 
+分段说话时传 `wait: false`，在文字之间照常写音效、动画或等待，再调用 `line.wait()` 等玩家推进。等待之后仍可追加，显示前文和同一条历史会保留；下一句对白或选择开始后，旧句柄结束。正文可以换行，普通字符串和 rich 都支持。多角色 say 行组可以等待，追加用于单角色行组。完整示例为 [author_dialogue_append.aside](../../examples/author_dialogue_append.aside)。
+
+```aside
+let line = mio("Starting", wait: false);
+await run(delay(0.5));
+line.append(" ...");
+audio.play("assets/chime.wav");
+line.append(" ready.");
+line.wait();
+line.append("\nWelcome back.");
+line.wait();
+```
+
+line.wait 之前的点击可补全文字；推进会等脚本到达等待点。追加保留已经显示的字素，append 的 history 参数与角色调用采用相同选择：true 追加显示正文、false 省略这一段、字符串或 rich 追加替代正文。原条目已省略或清除时继续保持省略。句柄只在主剧情使用，保存恢复继续当前段和等待位置。
+
 ## 四 时间顺序与同时发生的变化
+
+速度随时间改变时，把标量曲线直接交给 tween。以下曲线表示匀加速：开始速度为平均速度的一半，结束为一点五倍。曲线的 sample(0) 和 sample(1) 须为 0 和 1；可以共享曲线，暂停、取消、重复与保存恢复照常使用。
+
+```aside
+use std::math::curve;
+
+let acceleration = curve([
+    {time: 0, value: 0, mode: "cubic", out_tangent: 0.5},
+    {time: 1, value: 1, in_tangent: 1.5},
+]);
+await run(tween(portrait, x: 640, duration: 2, easing: acceleration));
+```
 
 音乐、视频、动画和时钟可以先创建为暂停状态，再随画面开始：`audio.play(..., paused: true)`、`movie.play(..., paused: true)`、`run(..., paused: true)` 和 `clock(..., paused: true)`。省略 paused 时照常启动。媒体在暂停中继续加载、解码和准备首帧，位置保持 start；seek 后仍保持暂停。动画在创建时检查动作，首次 resume 时才读取属性起值并取得写入权；时钟此前保持 ticks 为 0、elapsed 为 0.0。
 

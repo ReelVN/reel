@@ -87,11 +87,17 @@ VM 对象的代际身份与实体存储分离：slotmap 保存小型位置记录
 
 ### 对白推进状态
 
+分段对白沿既有角色、旁白与 say 提交：`wait: false` 立即返回当前行组句柄，正文照常揭示。`line.append(text, history: true)` 在单发言者行组中追加普通或富文本（正文允许换行），保留行与历史组身份、已揭示前缀和进行中的句内时序；`line.wait()` 等待一次新的推进，返回后仍可追加。多发言者行组可以 wait，append 因目标不明确而拒绝。未进入 wait 时输入只可补全正文；自动与快进同样不越过作者正在执行的演出。下一次对白或选择提交退休旧句柄，旧句柄操作在调用位置报错。普通调用默认等待，现有调用行为保留。
+
+句柄只允许主剧情任务修改或等待；它保存会话内交互编号，宿主快照恢复按当前会话重新核对。每次 wait 完成登记此检查点之前的内容来源；追加部分独立参与已读判断。历史沿原省略/替换策略，append 的 history 选择追加显示正文、替代正文或省略该段；原组已省略或清除时不重新建立历史。文本与历史共享不可变正文，只在实际追加时更新投影；不逐帧拼接或保留历次正文版本。范围为 engine 叙事、player 阅读调度、示例与双语指南；SessionSnapshot 30、VM10/ASB2.0，narrator ABI5、character.speak ABI5、say ABI3，句柄方法 ABI1。检查涵盖演出间追加、多个推进点、富文本/字素边界、历史绑定、旧句柄、输入序号、取消与保存恢复。
+
 滑条与按钮共享可组合子节点：`slider(..., children: [])` 的子节点按 stack 布局，`decorated: false` 关闭内置轨道、滑块和焦点描边，保留输入、绑定及无障碍行为。无装饰时数值轨道覆盖内容区完整宽度，作者以归一化 value 放置滑块并自行绘制悬停/焦点外观；padding 仍定义内容区。子节点沿共同舞台的所有权、裁剪和快照路径，不引入第二套滑条输入处理。slider native ABI 升至 8；其余 native、Aside 字节码/ASB 不变，无新增依赖。范围为 reel-ui、reel-engine、reel-player、作者示例与双语指南；复核项为拖动端点、键盘/手柄、绑定回写、子树更换及恢复。外观变化不重建控件或复制资源。
 
 `game.dialogue().ready` 与 `lines` 中每行的 `ready` 是只读可观察字段，表示正文和包括尾部停顿在内的时序已完成。组字段仅在当前对白有效且所有行均完成时为 true；行在对白结束后保留 true，清页删除对应行。它不包含自动、快进、暂停或窗口焦点策略，作者与 `game.reading()` 组合决定推进光标的显隐和样式。沿已有叙事投影循环更新，不扫描正文、不创建逐帧任务；无新依赖，Aside/Aside 字节码/ASB/native ABI 不变。范围为 reel-engine、现有作者示例与双语指南。
 
 ### 作者活动与窗口时钟
+
+`tween(..., easing: curve)` 接受 `std::math::curve` 创建的不可变曲线。时间归一化为 0..1，采样值作为起值到终值的插值比例；构造时要求 sample(0)=0、sample(1)=1，允许中途超调，属性约束保持原规则。零时长、正常终点与 finish 精确提交终值。沿用标准库的 O(log n) 曲线采样和 VM 追踪引用，多个动作可共享一条曲线；采样不建立脚本任务或逐帧对象。暂停、取消、属性写入冲突、重复与快照沿现有 tween 协议。范围为 aside-std 公共采样、engine 动作和规范/双语指南，无新依赖；tween ABI10，SessionSnapshot30、VM10/ASB2.0。检查源码/ASB、分段加速、终点、取消、恢复与稳定采样成本。
 
 `tween` 另支持 quint_in/quint_out/quint_in_out 五次曲线和 bounce_in/bounce_out/bounce_in_out 回弹曲线。in 加速、out 减速或在终点回弹、in_out 对称组合；采样位于 [0,1] 且起止精确为 0/1。沿既有活动采样、所有权、取消与快照路径，不分配逐帧脚本对象。范围为 reel-engine 活动采样、作者示例和双语指南；无新增依赖，native ABI、Aside 字节码/ASB 不变。
 
@@ -101,7 +107,7 @@ VM 对象的代际身份与实体存储分离：slotmap 保存小型位置记录
 
 ### 保留画面的舞台转场
 
-`stage.transition(change:, target:null, duration:0.3, easing:"linear", mask:null, mask_softness:0.06, mask_invert:false, mask_x:0, mask_y:0, owner:null)` 在当前任务执行完整转场并返回零参数 change 回调的原返回值，调用本身等待完成，不再在外面 await。并发沿用 spawn；初始化、纯派生及 NoWait 边界拒绝调用。target 为仍挂载的容器节点时仅过渡该子树，null 为整个逻辑舞台正文，窗口光标保持独立。目标容器应保持身份，通过 change 修改其属性或子节点；整个舞台的 change 可 stage.replace。duration 有限且非负，easing 沿 tween 的现有曲线，mask 使用已有字符串或 MaskExpression，参数沿已有节点遮罩规则；null 用统一进度混合。duration 为零直接执行变更并等待新画面接受，省去旧图保留和计时。
+`stage.transition(change:, target:null, duration:0.3, easing:"linear", mask:null, mask_softness:0.06, mask_invert:false, mask_x:0, mask_y:0, owner:null)` 在当前任务执行完整转场并返回零参数 change 回调的原返回值，调用本身等待完成，不再在外面 await。并发沿用 spawn；初始化、纯派生及 NoWait 边界拒绝调用。target 为仍挂载的容器节点时仅过渡该子树，null 为整个逻辑舞台正文，窗口光标保持独立。目标容器应保持身份，通过 change 修改其属性或子节点；整个舞台的 change 可 stage.replace。duration 有限且非负，easing 使用 tween 的内置具名曲线，mask 使用已有字符串或 MaskExpression，参数沿已有节点遮罩规则；null 用统一进度混合。duration 为零直接执行变更并等待新画面接受，省去旧图保留和计时。
 
 阶段为 OldPending → Changing → NewPending → Playing → FinalPending。先等待稳定舞台实际接受，按这份画面的真正子树边界保留旧绘制与资源，再执行 change；回调可等待，其普通活动与新侧内容沿原所有权继续运行。新资源、布局和零进度合成帧接受后才开始时间；最终进度为一的帧接受后返回并释放旧画面。相同或相互包含的目标在已有转场期间请求另一转场会在执行新 change 前报告目标冲突；独立子树可并行。change 中的交互等待应放到转场返回后：转场目标的输入、焦点和确认准入在整个过程暂停，外部 UI 照常；此门控属于宿主呈现状态，保留作者 enabled/visible 值及绑定。取消后按当前真实舞台的下一接受帧恢复准入。
 

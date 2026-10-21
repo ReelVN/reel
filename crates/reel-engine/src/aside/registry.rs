@@ -66,14 +66,14 @@ pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
 
 pub(super) fn contracts() -> Vec<NativeContract> {
     let mut contracts: Vec<_> = [
-        ("narrator", "text", BuiltinType::Any, BuiltinType::Null),
+        ("narrator", "text", BuiltinType::Any, BuiltinType::Any),
         ("choose", "options", BuiltinType::Array, BuiltinType::String),
     ]
     .into_iter()
     .map(|(name, parameter, input, result)| NativeContract {
         rest: None,
         symbol: format!("reel::{name}"),
-        abi_version: if name == "narrator" { 4 } else { 1 },
+        abi_version: if name == "narrator" { 5 } else { 1 },
         parameters: {
             let mut parameters = vec![NativeParameter {
                 name: parameter.into(),
@@ -88,6 +88,11 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 });
                 parameters.push(NativeParameter {
                     name: "reveal_skippable".into(),
+                    ty: BuiltinType::Bool,
+                    default: Some(bc::Const::Bool(true)),
+                });
+                parameters.push(NativeParameter {
+                    name: "wait".into(),
                     ty: BuiltinType::Bool,
                     default: Some(bc::Const::Bool(true)),
                 });
@@ -189,6 +194,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                     BuiltinType::Bool,
                     Some(bc::Const::Bool(true)),
                 ),
+                ("wait", BuiltinType::Bool, Some(bc::Const::Bool(true))),
             ],
             Effects::ALL.0,
         ),
@@ -201,7 +207,22 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                     BuiltinType::Bool,
                     Some(bc::Const::Bool(true)),
                 ),
+                ("wait", BuiltinType::Bool, Some(bc::Const::Bool(true))),
             ],
+            Effects::ALL.0,
+        ),
+        (
+            "speech::append",
+            vec![
+                ("speech", BuiltinType::Any, None),
+                ("text", BuiltinType::Any, None),
+                ("history", BuiltinType::Any, Some(bc::Const::Bool(true))),
+            ],
+            Effects::ALL.0,
+        ),
+        (
+            "speech::wait",
+            vec![("speech", BuiltinType::Any, None)],
             Effects::ALL.0,
         ),
     ] {
@@ -209,9 +230,9 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             rest: None,
             symbol: format!("reel::{symbol}"),
             abi_version: match symbol {
-                "character::speak" => 4,
+                "character::speak" => 5,
                 "character::line" => 3,
-                "say" => 2,
+                "say" => 3,
                 _ => 1,
             },
             parameters: parameters
@@ -819,7 +840,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         parameter("duration", Some(bc::Const::FloatBits(0.3_f64.to_bits()))),
         NativeParameter {
             name: "easing".into(),
-            ty: BuiltinType::String,
+            ty: BuiltinType::Any,
             default: Some(bc::Const::Utf8("linear".into())),
         },
     ];
@@ -1004,7 +1025,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             rest: None,
             symbol: format!("reel::{name}"),
             abi_version: match name {
-                "tween" => 9,
+                "tween" => 10,
                 "scope" => 4,
                 "clock" => 3,
                 "run" | "scope::run" => 2,

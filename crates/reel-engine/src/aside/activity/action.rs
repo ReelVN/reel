@@ -196,8 +196,25 @@ pub(in crate::aside) fn tween(
     if duration < 0. {
         return Err(AdapterError::Input("duration must be nonnegative"));
     }
-    let easing =
-        super::easing::Easing::parse(&super::super::text::read_string(heap, args[2], read_limit)?)?;
+    let easing = if heap
+        .info(args[2])
+        .is_ok_and(|info| info.kind == aside_vm::ObjectKind::Host)
+    {
+        if aside_std::sample_curve(heap, args[2], 0.)? != 0.
+            || aside_std::sample_curve(heap, args[2], 1.)? != 1.
+        {
+            return Err(AdapterError::Input(
+                "tween curve must sample to 0 at time 0 and 1 at time 1",
+            ));
+        }
+        args[2]
+    } else {
+        Value::int(
+            super::easing::Easing::parse(&super::super::text::read_string(
+                heap, args[2], read_limit,
+            )?)? as i64,
+        )
+    };
     let goals = heap.alloc_array(&[])?;
     for ((index, _), &value) in NodeProperty::PROPERTIES
         .iter()
@@ -311,7 +328,7 @@ pub(in crate::aside) fn tween(
             Value::int(ACTION),
             target,
             Value::float(duration),
-            Value::int(easing as i64),
+            easing,
             goals,
             Value::int(Kind::Tween as i64),
             Value::NULL,

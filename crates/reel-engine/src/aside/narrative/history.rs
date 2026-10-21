@@ -62,6 +62,49 @@ pub(super) fn line_id(heap: &mut Heap, id: crate::DialogueLineId) -> Result<Valu
 }
 
 impl History {
+    pub(super) fn update_dialogue(
+        &mut self,
+        heap: &mut Heap,
+        session: &Session,
+        dialogue: &crate::DialogueInteraction,
+        model: Value,
+        chunk: usize,
+    ) -> Result<(), AdapterError> {
+        let Ok(index) = session
+            .view()
+            .history
+            .binary_search_by_key(&dialogue.id().generation(), |g| {
+                g.interaction_id().generation()
+            })
+        else {
+            return Ok(());
+        };
+        let group = &session.view().history[index];
+        let projected = heap.sequence_get(self.value, index as u32)?;
+        let lines = heap.host_property(PropertyId {
+            host: projected,
+            field: HistoryGroupField::Lines as u32,
+        })?;
+        let active = heap.host_payload(model, 0)?;
+        for (index, line) in group.lines().iter().enumerate() {
+            let row = heap.sequence_get(lines, index as u32)?;
+            let display = &dialogue.lines()[line.id().index()];
+            let text = if display.content() == line.content() {
+                heap.host_property(PropertyId {
+                    host: heap.sequence_get(active, line.id().index() as u32)?,
+                    field: LineField::Text as u32,
+                })?
+            } else {
+                super::super::rich_text::alloc(heap, line.content().styled(), chunk)?
+            };
+            publish(heap, row, HistoryLineField::Text as u32, text)?;
+            if index == 0 {
+                publish(heap, projected, HistoryGroupField::Text as u32, text)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn new(heap: &mut Heap) -> Result<Self, AdapterError> {
         Ok(Self {
             value: array(heap)?,

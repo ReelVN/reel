@@ -15,13 +15,25 @@ impl Publication {
     ) -> Result<Self, SessionError> {
         let history_len = session.history.len();
         let old_next = session.next_interaction;
-        prepare(session)?;
+        let previous = if matches!(&session.active, Some(Interaction::Dialogue(d)) if d.open && !d.awaiting_advance)
+        {
+            session.active.take()
+        } else {
+            None
+        };
+        if let Err(error) = prepare(session) {
+            if previous.is_some() {
+                session.active = previous;
+            }
+            return Err(error);
+        }
         let publication = Self {
             interaction: session.active.take().expect("successful admission"),
             history: (session.history.len() > history_len).then(|| session.history.pop().unwrap()),
             next: session.next_interaction,
         };
         session.next_interaction = old_next;
+        session.active = previous;
         Ok(publication)
     }
     pub fn id(&self) -> InteractionId {

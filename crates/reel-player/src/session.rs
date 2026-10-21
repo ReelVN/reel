@@ -6,7 +6,7 @@ mod geometry;
 mod playback;
 use crate::stage_widget::{StageView, StageWidget};
 pub use geometry::RecordedProjection;
-use playback::dialogue_complete;
+use playback::{dialogue_complete, dialogue_revision};
 #[cfg(test)]
 mod button_tests;
 #[cfg(test)]
@@ -47,6 +47,7 @@ type Error = Box<dyn std::error::Error>;
 pub struct ProjectionStamp {
     pub(crate) presentation_request: u64,
     dialogue_complete: bool,
+    dialogue_revision: u64,
     revision: u64,
     advance_revision: u64,
     button_revision: u64,
@@ -58,6 +59,7 @@ impl ProjectionStamp {
         self.advance_revision == other.advance_revision
             && self.interaction == other.interaction
             && self.dialogue_complete == other.dialogue_complete
+            && self.dialogue_revision == other.dialogue_revision
             && self.scroll_bits == other.scroll_bits
     }
 }
@@ -861,6 +863,7 @@ impl SessionUi {
         let stamp = ProjectionStamp {
             presentation_request: 0,
             dialogue_complete: dialogue_complete(&session),
+            dialogue_revision: dialogue_revision(&session),
             revision: 1,
             advance_revision: 1,
             button_revision: 0,
@@ -1177,7 +1180,10 @@ impl SessionUi {
         let interaction = view.interaction.map(|i| i.id());
         let mut changed = view.status != self.projection.status
             || view.history.len() != self.projection.history_count;
-        if interaction != self.projection.interaction {
+        let dialogue_revision = dialogue_revision(&self.session);
+        if interaction != self.projection.interaction
+            || dialogue_revision != self.stamp.dialogue_revision
+        {
             let projection = Projection::from_session(&self.session, self.preview)?;
             let replacement =
                 match allocate_choice_owners(&mut self.session, projection.choices.len()) {
@@ -1211,6 +1217,7 @@ impl SessionUi {
         }
         if changed || self.stage_dirty {
             self.stamp.dialogue_complete = complete;
+            self.stamp.dialogue_revision = dialogue_revision;
             self.stamp.revision = self
                 .stamp
                 .revision

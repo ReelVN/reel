@@ -201,3 +201,84 @@ fn protected_reveal_skip_uses_time_and_waits_for_complete_presentation() {
     assert!(ui.session().view().interaction.is_none());
     assert!(ui.session().read_progress().contains("protected"));
 }
+
+#[test]
+fn open_dialogue_auto_waits_for_authored_checkpoint_and_fresh_presentation() {
+    use reel_engine::HistoryInput;
+    use std::time::Duration;
+    let mut session = Session::new(SessionId(1), Epoch(1)).unwrap();
+    let owner = session.root_owner();
+    let id = session
+        .begin_open_say(
+            owner,
+            &[DialogueLineInput {
+                history: HistoryInput::Display,
+                speaker_id: None,
+                speaker_name: "",
+                content_id: "first",
+                text: "A".into(),
+            }],
+            "en",
+            true,
+        )
+        .unwrap();
+    session.set_auto_reading(true, Some(Duration::from_millis(100)));
+    let mut ui = SessionUi::new(session).unwrap();
+    let widget = ui.widget().prepare();
+    let root_id = widget.id();
+    let root = RenderRoot::new(
+        widget,
+        |_| {},
+        RenderRootOptions {
+            use_system_fonts: false,
+            size: PhysicalSize::new(640, 420),
+            default_properties: std::sync::Arc::new(DefaultProperties::new()),
+            size_policy: WindowSizePolicy::User,
+            scale_factor: 1.,
+            default_font: None,
+        },
+    );
+    let mut bridge = PresentationBridge::new(
+        root,
+        SurfaceEpoch(1),
+        BridgeLimits {
+            geometry: reel_ui::app::GeometryLimits { max_bytes: 1 << 20 },
+            max_candidates: 4,
+            max_bridge_bytes: 64 << 10,
+            max_snapshot_bytes: 8 << 20,
+        },
+    )
+    .unwrap();
+    ui.sync(&mut bridge, root_id).unwrap();
+    accept(&mut ui, &mut bridge, root_id);
+    assert!(ui.advance_dialogue(0, 0.).unwrap());
+    ui.sync(&mut bridge, root_id).unwrap();
+    accept(&mut ui, &mut bridge, root_id);
+    assert!(!ui.dialogue_needs_time());
+    assert!(!ui.advance_dialogue(5_000_000_000, 0.).unwrap());
+    assert!(ui.session_mut().take_completion().is_none());
+    ui.session_mut().wait_dialogue(owner, id).unwrap();
+    ui.sync(&mut bridge, root_id).unwrap();
+    assert!(!ui.advance_dialogue(6_000_000_000, 0.).unwrap());
+    accept(&mut ui, &mut bridge, root_id);
+    assert!(!ui.advance_dialogue(7_000_000_000, 0.).unwrap());
+    assert!(ui.advance_dialogue(7_100_000_000, 0.).unwrap());
+    assert!(ui.session_mut().take_completion().is_some());
+    assert!(ui.session().read_progress().contains("first"));
+    ui.session_mut()
+        .append_dialogue(owner, id, &"B".into(), "second", HistoryInput::Display)
+        .unwrap();
+    ui.session_mut().wait_dialogue(owner, id).unwrap();
+    ui.sync(&mut bridge, root_id).unwrap();
+    assert!(!ui.advance_dialogue(20_000_000_000, 0.).unwrap());
+    accept(&mut ui, &mut bridge, root_id);
+    assert!(ui.advance_dialogue(21_000_000_000, 0.).unwrap());
+    // The newly revealed suffix must be accepted before auto starts its delay.
+    assert!(!ui.advance_dialogue(22_000_000_000, 0.).unwrap());
+    ui.sync(&mut bridge, root_id).unwrap();
+    accept(&mut ui, &mut bridge, root_id);
+    assert!(!ui.advance_dialogue(23_000_000_000, 0.).unwrap());
+    assert!(ui.advance_dialogue(23_100_000_000, 0.).unwrap());
+    assert!(ui.session_mut().take_completion().is_some());
+    assert!(ui.session().read_progress().contains("second"));
+}
