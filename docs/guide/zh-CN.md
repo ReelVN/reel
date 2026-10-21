@@ -646,6 +646,20 @@ resume(entrance);
 
 `clock(interval: 60, owner: panel)` 创建可绑定的周期时钟。只读 ticks 是 int 完整周期数，初值 0，可直接作为数组索引或字符串 slice 范围；elapsed 是这些周期的 float 总秒数，初值 0.0。用 derive 组合时钟、倒计时或进度显示；时间跨过多个周期时直接更新到最新值。一批时间更新触发的派生会共同完成后再提交画面；计算跨帧时合并期间的新时间，再计算下一批，避免一边计算一边被时钟反复打断。pause/resume/stop 和 await 沿用活动接口，暂停期间不计时，停止保留最后值，节点退休取消；clock 无终点，不能 finish。读档保留两者类型、已有计数和暂停状态，继续原周期。参见 [时钟示例](../../examples/author_clock.aside)。
 
+等间隔帧动画可以直接用周期数选择图片来源。先保存帧数，再在派生中只做索引；同一个 image 节点持续更新来源。先暂停时钟，首帧呈现后再恢复，动画便从实际可见的第一帧开始：
+
+```aside
+let frames = ["assets/frame-a.png", "assets/frame-b.png"];
+let count = frames.len();
+let timer = clock(interval: 0.125, paused: true, owner: root);
+root.add(image(source: derive(|| frames[timer.ticks % count]), width: 64, height: 64));
+stage.replace(root);
+await stage.presented(owner: root);
+resume(timer);
+```
+
+`pause(timer)` 保留当前帧，`resume(timer)` 接续周期，`stop(timer)` 冻结最后一帧；owner 退休取消时钟。存读档保留周期数与暂停状态。时间跨过多帧时直接选择当前帧，适合只需要显示当前画面的动画。需要逐次执行音效、计分或其他事件时，用普通顺序代码安排这些事件。完整示例 [author_frame_animation.aside](../../examples/author_frame_animation.aside) 使用仓库现有图片，可运行 `reel dev examples/author_frame_animation.aside --assets examples`。
+
 现实时间使用 `use std::time::{now, parts, format};`：now() 返回 UTC Unix 秒整数，parts(timestamp, timezone: null) 返回 year/month/day/hour/minute/second/weekday/offset_seconds，weekday 为周一 1 至周日 7。format(timestamp, pattern: "%Y-%m-%d %H:%M", timezone: null) 按 strftime 模式返回文字；timezone 可设 IANA 时区（如 Asia/Shanghai、UTC），省略使用系统时区，系统无法提供时使用 UTC。保存时间可直接使用 saves.list 的 saved_at。调用不会自动刷新；在普通任务中更新模型，再绑定文字。见 [author_wall_clock.aside](../../examples/author_wall_clock.aside)。
 
 动画与组合活动：`tween(node, x: 320, duration: 0.5, easing: "in_out")` 描述变化，`run(action, owner: node)` 启动。owner 省略时，优先归当前 scope；作用域外的主剧情归会话、按钮回调归事件节点；`pause(activity)`、`resume(activity)`、`stop(activity)`、`finish(activity)` 控制同一活动。await 返回字符串 `Completed` 或 `Stopped`；目标或 owner 退休取消活动并在 await 处抛错。duration 使用非负秒数，0 立即完成；easing 支持 linear、三次 in/out/in_out、二次 quad_in/quad_out/quad_in_out 和正弦 sine_in/sine_out/sine_in_out。可以改变全部共同数值属性；width/height 须在节点或 from 提供有限起值，null 表示该属性不参与动画。可运行示例：[author_activities.aside](../../examples/author_activities.aside)，使用 `reel dev examples/author_activities.aside --assets target/reel-artifacts/author-assets`。sequence/parallel/repeat 与 scope 共同管理活动和任务所有权。
