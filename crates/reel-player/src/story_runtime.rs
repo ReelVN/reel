@@ -1,6 +1,8 @@
 //! Event-loop scheduling for the existing Aside session driver, without native handles.
 use crate::aside_session::{AsideSessionUi, StoryProgress, StoryState};
 use reel_engine::aside::{GcBudget, RunOutcome, SliceBudget};
+#[cfg(test)]
+mod save_cost;
 mod saves;
 mod start;
 
