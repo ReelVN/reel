@@ -296,14 +296,28 @@ impl Assets {
     }
     /// Encoded immutable author images use the same probe/decode/resident budgets as assets.
     pub fn request_encoded(&self, key: String, bytes: &[u8]) -> Result<LoadId, String> {
+        self.try_request_encoded(key, bytes)?
+            .ok_or_else(|| "image input budget temporarily occupied".into())
+    }
+    pub(crate) fn try_request_encoded(
+        &self,
+        key: String,
+        bytes: &[u8],
+    ) -> Result<Option<LoadId>, String> {
         let mut service = self.0.borrow_mut();
         if service.executor.is_none() {
             return Err("asset service closed".into());
         }
-        let ticket = service
-            .input
-            .reserve(bytes.len() as u64)
-            .map_err(|e| e.message)?;
+        if bytes.len() as u64 > service.options.input_bytes {
+            return Err(format!(
+                "image {key:?} requires {} input bytes; configured capacity is {}",
+                bytes.len(),
+                service.options.input_bytes
+            ));
+        }
+        let Ok(ticket) = service.input.reserve(bytes.len() as u64) else {
+            return Ok(None);
+        };
         let input = OwnedBytes::new(bytes.to_vec(), ticket).map_err(|e| e.reason.message)?;
         service.next += 1;
         let id = LoadId(service.next);
@@ -323,11 +337,15 @@ impl Assets {
                 temporary: 0,
             },
         );
-        Ok(id)
+        Ok(Some(id))
     }
     pub fn poll(&self, id: LoadId) -> Result<Option<ResourceLease>, String> {
+        self.maintain();
+        self.take_ready(id)
+    }
+    /// Take a completed image/font after maintain, without pumping once per consumer.
+    pub(crate) fn take_ready(&self, id: LoadId) -> Result<Option<ResourceLease>, String> {
         let mut service = self.0.borrow_mut();
-        service.pump();
         let load = service
             .loads
             .get(&id)

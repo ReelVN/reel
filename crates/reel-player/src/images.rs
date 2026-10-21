@@ -38,7 +38,7 @@ pub(crate) struct Images {
     mounted: BTreeSet<String>,
     encoded: BTreeMap<String, Arc<[u8]>>,
     displayed: BTreeSet<String>,
-    pending: Option<Pending>,
+    pending: Vec<Pending>,
     failure: Option<String>,
     closed: bool,
     #[cfg(test)]
@@ -60,7 +60,7 @@ impl Images {
             mounted: BTreeSet::new(),
             encoded: BTreeMap::new(),
             displayed: BTreeSet::new(),
-            pending: None,
+            pending: Vec::new(),
             failure: None,
             closed: false,
             #[cfg(test)]
@@ -99,15 +99,17 @@ impl Images {
         if self.closed {
             return;
         }
-        if self.pending.as_ref().is_some_and(|p| {
-            !wanted.contains_key(&p.source)
-                && !self
+        self.pending.retain(|pending| {
+            let retain = wanted.contains_key(&pending.source)
+                || self
                     .tiles
-                    .get(&p.source)
-                    .is_some_and(|tile| wanted.contains_key(&tile.owner))
-        }) {
-            self.assets.cancel(self.pending.take().unwrap().id);
-        }
+                    .get(&pending.source)
+                    .is_some_and(|tile| wanted.contains_key(&tile.owner));
+            if !retain {
+                self.assets.cancel(pending.id);
+            }
+            retain
+        });
         self.wanted = wanted;
         self.mounted = mounted;
         self.tiles
@@ -138,103 +140,113 @@ impl Images {
         if let Some(failure) = &self.failure {
             return Err(failure.clone());
         }
-        if self
-            .pending
-            .as_ref()
-            .is_some_and(|pending| pending.manifest)
-        {
-            let pending = self.pending.as_ref().unwrap();
-            match self.assets.poll_bytes(pending.id) {
-                Ok(Some((_, bytes))) => {
-                    let manifest = PreparedImage::decode(bytes.as_slice())
-                        .map_err(|error| self.diagnostic(&pending.source, error))?;
-                    self.manifests.insert(pending.source.clone(), manifest);
-                    self.pending = None;
-                }
-                Ok(None) => {}
-                Err(error) => return Err(self.diagnostic(&pending.source, &error)),
-            }
-        } else if let Some(pending) = &self.pending {
-            match self.assets.poll(pending.id) {
-                Ok(Some(lease)) => {
-                    if let Some(tile) = self.tiles.get(&pending.source) {
-                        let ResourceData::Image { image, .. } = lease.data() else {
-                            unreachable!()
-                        };
-                        if [image.width, image.height] != tile.dimensions {
-                            let error = self.diagnostic(
-                                &tile.owner,
-                                &format!(
-                                    "tile {:?} dimensions differ from manifest",
-                                    pending.source
-                                ),
-                            );
-                            let pending = self.pending.take().unwrap();
-                            if pending.optional {
-                                self.skipped.insert(pending.source);
-                                return self.poll_tiles();
+        let mut index = 0;
+        while index < self.pending.len() {
+            let pending = &self.pending[index];
+            let result = if pending.manifest {
+                self.assets.poll_bytes(pending.id).and_then(|result| {
+                    result
+                        .map(|(_, bytes)| {
+                            let manifest =
+                                PreparedImage::decode(bytes.as_slice()).map_err(str::to_owned)?;
+                            self.manifests.insert(pending.source.clone(), manifest);
+                            Ok(())
+                        })
+                        .transpose()
+                })
+            } else {
+                self.assets.take_ready(pending.id).and_then(|result| {
+                    result
+                        .map(|lease| {
+                            if let Some(tile) = self.tiles.get(&pending.source) {
+                                let ResourceData::Image { image, .. } = lease.data() else {
+                                    unreachable!()
+                                };
+                                if [image.width, image.height] != tile.dimensions {
+                                    return Err("tile dimensions differ from manifest".into());
+                                }
                             }
-                            self.failure = Some(error.clone());
-                            return Err(error);
-                        }
-                    }
-                    self.loaded.insert(pending.source.clone(), lease);
-                    self.pending = None;
+                            self.loaded.insert(pending.source.clone(), lease);
+                            Ok(())
+                        })
+                        .transpose()
+                })
+            };
+            match result {
+                Ok(None) => index += 1,
+                Ok(Some(())) => {
+                    self.pending.remove(index);
                 }
-                Ok(None) => {}
                 Err(error) => {
-                    let pending = self.pending.take().unwrap();
+                    let pending = self.pending.remove(index);
                     if pending.optional {
                         self.skipped.insert(pending.source);
-                        return Ok(true);
+                    } else {
+                        let error = self.diagnostic(&pending.source, &error);
+                        self.failure = Some(error.clone());
+                        return Err(error);
                     }
-                    let origin = self
-                        .wanted
-                        .get(
-                            self.tiles
-                                .get(&pending.source)
-                                .map_or(&pending.source, |tile| &tile.owner),
-                        )
-                        .and_then(|origin| origin.as_deref())
-                        .unwrap_or("stage");
-                    let error = format!("{origin}: image {:?}: {error}", pending.source);
-                    self.failure = Some(error.clone());
-                    return Err(error);
                 }
             }
         }
-        if let Some(source) = self.wanted.keys().find(|source| {
-            !self.loaded.contains_key(*source) && !self.manifests.contains_key(*source)
-        }) {
-            if self.pending.is_none() {
-                let manifest = source.ends_with(".reel-image");
-                let id = if let Some(bytes) = self.encoded.get(source) {
-                    self.assets.request_encoded(source.clone(), bytes)?
-                } else {
-                    self.assets.request(
-                        source.clone(),
-                        if manifest {
-                            AssetKind::Bytes
-                        } else {
-                            AssetKind::Image
-                        },
-                    )
+        let sources = self
+            .wanted
+            .keys()
+            .filter(|source| {
+                !self.loaded.contains_key(*source)
+                    && !self.manifests.contains_key(*source)
+                    && !self.is_loading(source)
+            })
+            .take(self.free_slots())
+            .cloned()
+            .collect::<Vec<_>>();
+        for source in sources {
+            let manifest = source.ends_with(".reel-image");
+            let id = if let Some(bytes) = self.encoded.get(&source) {
+                let Some(id) = self
+                    .assets
+                    .try_request_encoded(source.clone(), bytes)
+                    .map_err(|error| self.diagnostic(&source, &error))?
+                else {
+                    continue;
                 };
-                self.pending = Some(Pending {
-                    source: source.clone(),
-                    id,
-                    manifest,
-                    optional: false,
-                });
-                self.assets.maintain();
-                #[cfg(test)]
-                {
-                    self.loads += 1;
-                }
-            }
-            Ok(false)
-        } else {
+                id
+            } else {
+                self.assets.request(
+                    source.clone(),
+                    if manifest {
+                        AssetKind::Bytes
+                    } else {
+                        AssetKind::Image
+                    },
+                )
+            };
+            self.push_pending(Pending {
+                source,
+                id,
+                manifest,
+                optional: false,
+            });
+        }
+        let ready = if self.metadata_ready() {
             self.poll_tiles()
+        } else {
+            false
+        };
+        self.assets.maintain();
+        Ok(ready)
+    }
+    fn is_loading(&self, source: &str) -> bool {
+        self.pending.iter().any(|pending| pending.source == source)
+    }
+    fn free_slots(&self) -> usize {
+        (self.assets.worker_limits().max_requests as usize).saturating_sub(self.pending.len())
+    }
+    fn push_pending(&mut self, pending: Pending) {
+        self.pending.push(pending);
+        #[cfg(test)]
+        {
+            self.loads += 1;
         }
     }
     pub(crate) fn metadata_ready(&self) -> bool {
@@ -243,20 +255,28 @@ impl Images {
             .all(|source| self.loaded.contains_key(source) || self.manifests.contains_key(source))
     }
     fn diagnostic(&self, source: &str, error: &str) -> String {
+        let owner = self
+            .tiles
+            .get(source)
+            .map_or(source, |tile| tile.owner.as_str());
         let origin = self
             .wanted
-            .get(source)
+            .get(owner)
             .and_then(|origin| origin.as_deref())
             .unwrap_or("stage");
         format!("{origin}: image {source:?}: {error}")
     }
     pub(crate) fn request_tiles(&mut self, tiles: BTreeMap<String, TileDemand>) -> bool {
         let changed = self.tiles != tiles;
-        if self.pending.as_ref().is_some_and(|p| {
-            !p.manifest && !self.wanted.contains_key(&p.source) && !tiles.contains_key(&p.source)
-        }) {
-            self.assets.cancel(self.pending.take().unwrap().id);
-        }
+        self.pending.retain(|pending| {
+            let retain = pending.manifest
+                || self.wanted.contains_key(&pending.source)
+                || tiles.contains_key(&pending.source);
+            if !retain {
+                self.assets.cancel(pending.id);
+            }
+            retain
+        });
         self.tiles = tiles;
         let missing_bytes: u64 = self
             .tiles
@@ -265,14 +285,19 @@ impl Images {
             .map(|(_, tile)| tile.bytes())
             .fold(0, u64::saturating_add);
         if missing_bytes != 0 {
-            if self.pending.as_ref().is_some_and(|p| {
-                p.optional && self.tiles.get(&p.source).is_none_or(|tile| !tile.required)
-            }) {
-                self.assets.cancel(self.pending.take().unwrap().id);
-            }
-            if let Some(pending) = &mut self.pending {
+            self.pending.retain_mut(|pending| {
+                if pending.optional
+                    && self
+                        .tiles
+                        .get(&pending.source)
+                        .is_none_or(|tile| !tile.required)
+                {
+                    self.assets.cancel(pending.id);
+                    return false;
+                }
                 pending.optional = false;
-            }
+                true
+            });
             if missing_bytes.saturating_add(24) > self.assets.resident_available() {
                 self.loaded.retain(|source, lease| {
                     let retain = self.wanted.contains_key(source)
@@ -301,40 +326,53 @@ impl Images {
             retain
         });
     }
-    fn poll_tiles(&mut self) -> Result<bool, String> {
+    fn poll_tiles(&mut self) -> bool {
         let required = self
             .tiles
             .iter()
-            .find(|(source, tile)| tile.required && !self.loaded.contains_key(*source))
-            .map(|(source, _)| source.clone());
-        if self.pending.is_none() {
-            let next = required.clone().or_else(|| {
-                self.tiles
-                    .iter()
-                    .find(|(source, tile)| {
-                        !self.loaded.contains_key(*source)
-                            && !self.skipped.contains(*source)
-                            && tile.bytes().saturating_add(24) <= self.assets.resident_available()
-                    })
-                    .map(|(source, _)| source.clone())
-            });
-            if let Some(source) = next {
-                let optional = !self.tiles[&source].required;
-                let id = self.assets.request(source.clone(), AssetKind::Image);
-                self.pending = Some(Pending {
-                    source,
-                    id,
-                    manifest: false,
-                    optional,
-                });
-                self.assets.maintain();
-                #[cfg(test)]
-                {
-                    self.loads += 1;
+            .any(|(source, tile)| tile.required && !self.loaded.contains_key(source));
+        let sources = self
+            .tiles
+            .iter()
+            .filter(|(source, tile)| {
+                !self.loaded.contains_key(*source)
+                    && !self.is_loading(source)
+                    && if required {
+                        tile.required
+                    } else {
+                        !self.skipped.contains(*source)
+                    }
+            })
+            .take(self.free_slots())
+            .map(|(source, _)| source.clone())
+            .collect::<Vec<_>>();
+        // Pending optional tiles have not reserved their eventual decoded storage yet.
+        let reserved = self
+            .pending
+            .iter()
+            .filter_map(|pending| self.tiles.get(&pending.source))
+            .map(|tile| tile.bytes().saturating_add(24))
+            .fold(0, u64::saturating_add);
+        let mut available = self.assets.resident_available().saturating_sub(reserved);
+        for source in sources {
+            let tile = &self.tiles[&source];
+            let optional = !tile.required;
+            if optional {
+                let bytes = tile.bytes().saturating_add(24);
+                if bytes > available {
+                    continue;
                 }
+                available -= bytes;
             }
+            let id = self.assets.request(source.clone(), AssetKind::Image);
+            self.push_pending(Pending {
+                source,
+                id,
+                manifest: false,
+                optional,
+            });
         }
-        Ok(required.is_none())
+        !required
     }
     pub(crate) fn tile_paint(&self, region: &ImageRegion) -> Vec<ImageTile> {
         region
@@ -372,7 +410,7 @@ impl Images {
     }
     pub fn close(&mut self) {
         self.closed = true;
-        if let Some(pending) = self.pending.take() {
+        for pending in self.pending.drain(..) {
             self.assets.cancel(pending.id);
         }
         self.wanted.clear();
