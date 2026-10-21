@@ -1,5 +1,6 @@
 use super::*;
 use reel_ui::stage::{NodeId, NodeKind};
+mod callback_cost;
 
 fn pump(vm: &mut SessionVm, session: &mut Session) {
     drive(vm, session, true);
