@@ -1,5 +1,6 @@
 use super::*;
 use reel_ui::stage::{NodeId, NodeKind};
+mod callback_cost;
 
 #[test]
 fn named_actions_validate_declarations_and_skip_unhandled_phase_cost() {

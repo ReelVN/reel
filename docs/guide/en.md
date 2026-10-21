@@ -588,20 +588,18 @@ Compose an upward exit in an ordinary dialogue function: wait for the character'
 
 `game.start(entry)` accepts an ordinary function in the current ASB with no captures or required parameters. After acceptance, the old script does not continue. The new session reruns module initialization and then calls entry. Previous dialogue, UI callbacks and activities end; script globals, history, auto-play and skip state reset. Read progress, game.configure settings, host assets and save storage remain. The entry constructs its scene; do not clear the old stage after the call. Cross-ASB hot-reload entry resolution and persistent script globals are not implemented. See [author_game_start.aside](../../examples/author_game_start.aside).
 
-Pass `wait: false` to speak in segments. Write sounds, animation and delays between text updates, then call `line.wait()` for player advance. You can append again after waiting; the displayed prefix and history entry retain their identities. The next dialogue or choice retires the old handle. Strings, rich text and embedded newlines are accepted. A multi-speaker say group supports waiting; append targets single-speaker groups. The complete example is [author_dialogue_append.aside](../../examples/author_dialogue_append.aside).
+Pass `wait: false` to start a speech that you can extend. `line.append(text)` adds the next segment and waits for advance, just like an ordinary character call. Use `line.append(text, wait: false)` to continue with sounds, animation or delays, then call `line.wait()` at the next advance point. You can append again after waiting; the displayed prefix and history entry retain their identities. The next dialogue or choice retires the old handle. Strings, rich text and embedded newlines are accepted. A multi-speaker say group supports waiting; append targets single-speaker groups. The complete example is [author_dialogue_append.aside](../../examples/author_dialogue_append.aside).
 
 ```aside
 let line = mio("Starting", wait: false);
 await run(delay(0.5));
-line.append(" ...");
+line.append(" ...", wait: false);
 audio.play("assets/chime.wav");
 line.append(" ready.");
-line.wait();
 line.append("\nWelcome back.");
-line.wait();
 ```
 
-Before line.wait, input may reveal text; advance waits for the script to reach a checkpoint. Append preserves revealed graphemes. Its history parameter follows character calls: true appends displayed text, false omits that segment, and a string or rich value appends replacement text. An omitted or cleared entry stays omitted. Handles belong to the main story; saves resume the current segment and wait.
+While the script is between advance points, input may reveal text. Both a waiting append and line.wait use the usual manual, automatic and skip rules. Append preserves revealed graphemes. Its history parameter follows character calls: true appends displayed text, false omits that segment, and a string or rich value appends replacement text. An omitted or cleared entry stays omitted. Handles belong to the main story; saves resume the current segment and wait.
 
 
 Use `await when(|| game.dialogue().ready)` to wait for printing and inline pauses before continuing sound or choreography. `when` follows the observable properties actually read by its predicate. See its [source API documentation](../../crates/reel-engine/src/aside/conditions.rs) for result ownership and cancellation.

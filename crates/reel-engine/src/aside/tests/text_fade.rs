@@ -97,7 +97,7 @@ fn manual_advance_request_source_asb_append_playback_and_snapshot() {
         let speech=narrator("Initial text",wait:false);
         await when(||d.advance_requested);
         if !d.lines[0].advance_requested {throw "line request missing";}
-        speech.append(" continuation");
+        speech.append(" continuation",wait:false);
         if d.advance_requested || d.lines[0].advance_requested {throw "append retained request";}
         await when(||d.advance_requested);
         narrator("New group",wait:false);

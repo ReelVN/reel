@@ -43,32 +43,47 @@ impl SessionVm {
         &mut self,
         id: crate::InteractionId,
     ) -> Result<Value, AdapterError> {
+        let methods = if let Some(methods) = self.speech_methods {
+            methods
+        } else {
+            let p = self.vm.program().package();
+            let find = |symbol: &str| {
+                p.functions
+                    .iter()
+                    .enumerate()
+                    .find_map(|(i, f)| match f.kind {
+                        FunctionKind::Native(n)
+                            if p.symbols[p.natives[n.index()].symbol.index()] == symbol =>
+                        {
+                            Some(FunctionId(i as u32))
+                        }
+                        _ => None,
+                    })
+                    .ok_or(AdapterError::Input("speech method missing"))
+            };
+            let methods = [find("reel::speech::append")?, find("reel::speech::wait")?];
+            self.speech_methods = Some(methods);
+            #[cfg(test)]
+            {
+                self.speech_costs[0] += 1;
+            }
+            methods
+        };
         let fields = self.vm.heap_mut().alloc_table()?;
         let value = self.vm.heap_mut().alloc_host(
             fields,
             &[Value::int(id.generation() as i64)],
             Some(immutable),
         )?;
-        for name in ["append", "wait"] {
-            let symbol = format!("reel::speech::{name}");
-            let p = self.vm.program().package();
-            let function = p
-                .functions
-                .iter()
-                .enumerate()
-                .find_map(|(i, f)| match f.kind {
-                    FunctionKind::Native(n)
-                        if p.symbols[p.natives[n.index()].symbol.index()] == symbol =>
-                    {
-                        Some(FunctionId(i as u32))
-                    }
-                    _ => None,
-                })
-                .ok_or(AdapterError::Input("speech method missing"))?;
+        for (name, function) in ["append", "wait"].into_iter().zip(methods) {
             let method = self.vm.bind_native(value, function)?;
             let heap = self.vm.heap_mut();
             let key = heap.alloc_string(name)?;
             heap.table_store(fields, heap.table_len(fields)?, key, method)?;
+        }
+        #[cfg(test)]
+        {
+            self.speech_costs[1] += 1;
         }
         Ok(value)
     }
@@ -94,21 +109,27 @@ impl SessionVm {
             generation,
         };
         session.open_dialogue(id)?;
+        let wait = !append
+            || args[3]
+                .as_bool()
+                .ok_or(AdapterError::Input("wait must be bool"))?;
+        if wait && session.completion.is_some() {
+            return Err(crate::SessionError::CompletionPending.into());
+        }
         if append {
             let text = rich_text::read(heap, args[1], self.read_limit)?;
             let history = HistoryText::read(heap, args[2], self.read_limit)?;
             let content_id = self.dialogue_content_id(ticket);
             session.append_dialogue(self.owner, id, &text, &content_id, history.input())?;
             self.sync_narrative(session)?;
+        }
+        if !wait {
             self.vm.respond(ticket, HostResponse::Ready(Value::NULL))?;
             self.issued = None;
             Ok(NativeDispatch::Ready { work: 1 })
         } else {
             // Validate admission before publishing the VM wait; no scripts run
             // between this response and arming the existing interaction.
-            if session.completion.is_some() {
-                return Err(crate::SessionError::CompletionPending.into());
-            }
             let wait = ticket.wait_id();
             self.vm.respond(ticket, HostResponse::Pending(wait))?;
             session.wait_dialogue(self.owner, id)?;

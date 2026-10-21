@@ -217,6 +217,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 ("speech", BuiltinType::Any, None),
                 ("text", BuiltinType::Any, None),
                 ("history", BuiltinType::Any, Some(bc::Const::Bool(true))),
+                ("wait", BuiltinType::Bool, Some(bc::Const::Bool(true))),
             ],
             Effects::ALL.0,
         ),
