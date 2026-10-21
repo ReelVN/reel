@@ -308,3 +308,80 @@ fn run_defaults_to_project_profile_and_rejects_profile_with_an_explicit_asb() {
     assert_eq!(output.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&output.stderr).contains("cannot be used with"));
 }
+
+#[test]
+fn project_commands_prepare_indexed_languages_and_preserve_older_builds() {
+    let temporary = temporary();
+    let root = temporary.path();
+    write(
+        root,
+        "src/main.aside",
+        "fn main() { localization.set_locale(\"en\"); tr(\"source\", id: \"greeting\") }",
+    );
+    write(
+        root,
+        "translations/en/ui.ftl",
+        "greeting = First translation\n",
+    );
+    success(command(root, &["check", "--format", "json"]));
+    assert!(!root.join("build").exists());
+    let report = success(command(root, &["build", "--format", "json"]));
+    let package = root.join("build/debug/game.asb");
+    let first = fs::read(&package).unwrap();
+    assert_eq!(report["artifact"]["blake3"], reel_package::digest(&first));
+    let manifest = distribution::read_manifest(&package).unwrap();
+    assert_eq!(manifest.catalogs["en"], "__reel/catalogs/en.ftl");
+    assert_eq!(
+        manifest.loose,
+        Some(reel_package::distribution::LooseResources::Project)
+    );
+    let first_archive = package.parent().unwrap().join(manifest.text.unwrap());
+    assert!(first_archive.is_file());
+    let old = package.with_file_name("old.asb");
+    fs::write(&old, &first).unwrap();
+    write(
+        root,
+        "translations/en/ui.ftl",
+        "greeting = Second translation\n",
+    );
+    let report = success(command(root, &["build", "--format", "json"]));
+    let second = fs::read(&package).unwrap();
+    assert_eq!(report["artifact"]["blake3"], reel_package::digest(&second));
+    let current = distribution::load(&package).unwrap();
+    let previous = distribution::load(&old).unwrap();
+    assert_eq!(previous.packages, [first_archive.canonicalize().unwrap()]);
+    assert_ne!(current.packages, previous.packages);
+    assert_eq!(current.catalogs, previous.catalogs);
+    assert!(first_archive.is_file());
+    success(command(root, &["build", "--release", "--format", "json"]));
+    let release = distribution::load(&root.join("build/release/game.asb")).unwrap();
+    assert_eq!(release.catalogs, current.catalogs);
+    assert_eq!(release.packages.len(), 1);
+    assert!(
+        release
+            .package
+            .metadata()
+            .modules
+            .iter()
+            .all(|module| module.debug.is_none())
+    );
+    write(
+        root,
+        "translations/en/duplicate.ftl",
+        "greeting = Duplicate\n",
+    );
+    for action in ["check", "build"] {
+        let result = command(root, &[action, "--format", "json"]);
+        assert!(!result.status.success());
+        let report: Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert_eq!(report["stage"], "localization");
+        assert!(
+            report["diagnostics"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("translations")
+        );
+        assert_eq!(fs::read(&package).unwrap(), second);
+        assert_eq!(fs::read(&old).unwrap(), first);
+    }
+}

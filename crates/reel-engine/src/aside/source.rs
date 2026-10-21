@@ -238,6 +238,7 @@ fn build_api() -> Api {
     super::capture::describe(&mut api);
     super::window::describe(&mut api);
     super::particles::describe(&mut api);
+    super::localization::describe(&mut api);
     api.refine(
         "reel::derive",
         aside_host::source::named("Binding"),

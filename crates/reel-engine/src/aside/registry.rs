@@ -1059,14 +1059,17 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ),
         (
             "reel::localization::load",
-            vec![parameter("locale", None), parameter("source", None)],
+            vec![
+                parameter("locale", None),
+                parameter("source", Some(bc::Const::Null)),
+            ],
             Effects::ALL.0,
             BuiltinType::Null,
         ),
         (
             "reel::localization::set_locale",
             vec![parameter("locale", None)],
-            Effects::ALLOCATE | Effects::WRITE | Effects::HOST,
+            Effects::ALL.0,
             BuiltinType::Null,
         ),
         (

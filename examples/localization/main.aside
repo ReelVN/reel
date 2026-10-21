@@ -1,5 +1,5 @@
 fn main() {
-    localization.load("en", "en.ftl");
+    game.configure(fonts: ["fonts/body.ttf"]);
     localization.set_locale("zh-CN");
     let data = model({name: "Mio", count: 2});
     stage.replace(column(gap: 12) {

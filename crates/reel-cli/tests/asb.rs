@@ -506,6 +506,7 @@ fn embedded_distribution_roundtrips_and_seek_reader_skips_code_payloads() {
     let manifest = Distribution {
         text: Some("game.rtp".into()),
         resources: vec!["resources.rpk".into(), "resources-002.rpk".into()],
+        catalogs: BTreeMap::new(),
         loose: None,
         source: Some(SourceProject {
             entry: "script/序章.aside".into(),
@@ -608,11 +609,11 @@ fn embedded_distribution_rejects_paths_duplicates_and_unknown_fields_at_both_bou
     let original = artifact("fn main() { 1 }", None).bytes;
     let original_index = u64_at(&original, 24);
     for json in [
-        r#"{"text":"../secret.rtp","resources":[],"loose":null,"source":null}"#,
-        r#"{"text":null,"resources":["/absolute.rpk"],"loose":null,"source":null}"#,
-        r#"{"text":null,"resources":[],"loose":null,"source":{"entry":"main.aside","modules":{"shared":"../outside"},"function":"main::main"}}"#,
-        r#"{"text":null,"text":null,"resources":[],"loose":null,"source":null}"#,
-        r#"{"code":"game.asb","text":null,"resources":[],"loose":null,"source":null}"#,
+        r#"{"text":"../secret.rtp","resources":[],"catalogs":{},"loose":null,"source":null}"#,
+        r#"{"text":null,"resources":["/absolute.rpk"],"catalogs":{},"loose":null,"source":null}"#,
+        r#"{"text":null,"resources":[],"catalogs":{},"loose":null,"source":{"entry":"main.aside","modules":{"shared":"../outside"},"function":"main::main"}}"#,
+        r#"{"text":null,"text":null,"resources":[],"catalogs":{},"loose":null,"source":null}"#,
+        r#"{"code":"game.asb","text":null,"resources":[],"catalogs":{},"loose":null,"source":null}"#,
     ] {
         let mut bytes = original[..original_index].to_vec();
         bytes.extend_from_slice(json.as_bytes());

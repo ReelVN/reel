@@ -1,5 +1,8 @@
 //! Shared entry for author commands and the exported platform player.
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 fn asset_overlay(
     loaded: &crate::distribution::LoadedDistribution,
@@ -21,7 +24,13 @@ pub fn run(path: &Path, assets: Option<PathBuf>, saves: Option<PathBuf>) -> Resu
     let loaded = crate::distribution::load(path).map_err(|error| error.to_string())?;
     let assets = asset_overlay(&loaded, assets);
     let story = crate::story_from_package(loaded.package).map_err(|error| error.to_string())?;
-    launch(story, loaded.root, Some((loaded.packages, assets)), saves)
+    launch(
+        story,
+        loaded.root,
+        Some((loaded.packages, assets)),
+        loaded.catalogs,
+        saves,
+    )
 }
 
 #[cfg(test)]
@@ -104,12 +113,14 @@ pub fn launch(
     story: reel_engine::aside::source::CompiledStory,
     root: PathBuf,
     packages: Option<(Vec<PathBuf>, Option<PathBuf>)>,
+    catalogs: BTreeMap<String, String>,
     saves: Option<PathBuf>,
 ) -> Result<(), String> {
     #[cfg(feature = "window")]
     {
         let mut options = reel_player::shell::StoryWindowOptions::default();
         options.assets.root = root;
+        options.catalogs = std::sync::Arc::new(catalogs);
         if let Some((packages, overlay)) = packages {
             options.asset_packages = Some(packages);
             options.asset_overlay = overlay;
@@ -119,7 +130,7 @@ pub fn launch(
     }
     #[cfg(not(feature = "window"))]
     {
-        let _ = (story, root, packages, saves);
+        let _ = (story, root, packages, catalogs, saves);
         Err("playback requires the complete Reel tool package; download the package containing the platform player".into())
     }
 }

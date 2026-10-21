@@ -79,6 +79,7 @@ pub struct AsideSessionUi {
     initializer: source::StoryFunction,
     awaiting_stage: bool,
     locale: String,
+    catalogs: crate::localization::CatalogIndex,
     state: StoryState,
     host_failure: Option<HostFailure>,
     transitions: crate::transitions::Transitions,
@@ -100,6 +101,7 @@ impl AsideSessionUi {
         locale: String,
         assets: crate::assets::Assets,
         initializer: source::StoryFunction,
+        catalogs: crate::localization::CatalogIndex,
     ) -> Result<Self, Error> {
         let mut ui = SessionUi::new(session)?.with_assets(assets);
         ui.set_stage(vm.stage());
@@ -110,6 +112,7 @@ impl AsideSessionUi {
             initializer,
             awaiting_stage: false,
             locale,
+            catalogs,
             state: StoryState::Running,
             host_failure: None,
             transitions: Default::default(),
@@ -117,6 +120,17 @@ impl AsideSessionUi {
     }
     pub(crate) fn locale(&self) -> &str {
         &self.locale
+    }
+
+    pub(crate) fn catalogs(&self) -> crate::localization::CatalogIndex {
+        self.catalogs.clone()
+    }
+
+    pub(crate) fn catalog_loader(&self) -> Box<dyn reel_engine::localization::CatalogLoader> {
+        Box::new(crate::localization::AssetCatalogLoader::new(
+            self.ui.assets(),
+            self.catalogs(),
+        ))
     }
 
     pub(crate) fn initializer(&self) -> source::StoryFunction {
@@ -184,8 +198,10 @@ impl AsideSessionUi {
         story.validate()?;
         let mut ui = SessionUi::new(session)?;
         let mut vm = SessionVm::load(ui.session(), story.program, limits)?;
+        let catalogs = crate::localization::CatalogIndex::default();
         vm.set_catalog_loader(Box::new(crate::localization::AssetCatalogLoader::new(
             ui.assets(),
+            catalogs.clone(),
         )))?;
         vm.start(ui.session(), story.initializer)?;
         ui.set_stage(vm.stage());
@@ -196,6 +212,7 @@ impl AsideSessionUi {
             initializer: story.initializer,
             awaiting_stage: false,
             locale: locale.into(),
+            catalogs,
             state: StoryState::Running,
             host_failure: None,
             transitions: Default::default(),
@@ -229,22 +246,32 @@ impl AsideSessionUi {
         self
     }
     pub fn set_asset_options(&mut self, options: crate::assets::AssetOptions) {
-        self.ui
-            .set_assets(crate::assets::Assets::directory(options));
-        self.vm
-            .set_catalog_loader(Box::new(crate::localization::AssetCatalogLoader::new(
-                self.ui.assets(),
-            )))
-            .expect("select assets before driving the story");
+        self.set_asset_context(crate::assets::Assets::directory(options), self.catalogs());
     }
-    pub fn with_assets(mut self, assets: crate::assets::Assets) -> Self {
-        self.ui = self.ui.with_assets(assets);
-        self.vm
-            .set_catalog_loader(Box::new(crate::localization::AssetCatalogLoader::new(
-                self.ui.assets(),
-            )))
-            .expect("select assets before driving the story");
+    pub fn with_assets(self, assets: crate::assets::Assets) -> Self {
+        let catalogs = self.catalogs();
+        self.with_asset_context(assets, catalogs)
+    }
+    /// Install assets and their validated language index before driving the story.
+    /// The same index follows fresh sessions and save restoration.
+    pub fn with_asset_context(
+        mut self,
+        assets: crate::assets::Assets,
+        catalogs: crate::localization::CatalogIndex,
+    ) -> Self {
+        self.set_asset_context(assets, catalogs);
         self
+    }
+    fn set_asset_context(
+        &mut self,
+        assets: crate::assets::Assets,
+        catalogs: crate::localization::CatalogIndex,
+    ) {
+        self.ui.set_assets(assets);
+        self.catalogs = catalogs;
+        self.vm
+            .set_catalog_loader(self.catalog_loader())
+            .expect("select assets before driving the story");
     }
     /// Install the host's completion wake-up before requesting resources.
     /// Adapters may call it from a worker; synchronize on the host thread.

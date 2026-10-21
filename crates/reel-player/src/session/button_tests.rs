@@ -221,6 +221,7 @@ fn radio_group_snapshot_rebuilds_binding_identity_and_restores_selection_without
         "en".into(),
         live.ui().assets(),
         live.initializer(),
+        live.catalogs(),
     )
     .unwrap();
     while !restored.prepare_restored(SliceBudget::default()).unwrap() {}

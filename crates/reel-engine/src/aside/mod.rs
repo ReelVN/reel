@@ -634,7 +634,7 @@ impl SessionVm {
             | "reel::localization::load"
             | "reel::localization::locale"
             | "reel::localization::set_locale" => {
-                if symbol == "reel::localization::load" {
+                if symbol != "reel::localization::locale" && symbol != "reel::tr" {
                     self.check_wait(session, ticket)?;
                 }
                 self.dispatch_localization(ticket, &symbol)?;

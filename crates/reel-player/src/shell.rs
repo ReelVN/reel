@@ -31,6 +31,8 @@ pub struct StoryWindowOptions {
     pub asset_packages: Option<Vec<std::path::PathBuf>>,
     /// Explicit loose overrides for an archive-backed work.
     pub asset_overlay: Option<std::path::PathBuf>,
+    /// Canonical language tags resolved through the same asset service as images and media.
+    pub catalogs: crate::localization::CatalogIndex,
     pub media: crate::media::MediaOptions,
     pub title: String,
     pub locale: String,
@@ -46,6 +48,7 @@ impl Default for StoryWindowOptions {
             assets: Default::default(),
             asset_packages: None,
             asset_overlay: None,
+            catalogs: Default::default(),
             media: Default::default(),
             title: "Reel".into(),
             locale: "en".into(),
@@ -72,7 +75,7 @@ pub fn run_story(story: CompiledStory, options: StoryWindowOptions) -> Result<()
     };
     let driver =
         AsideSessionUi::from_compiled(session, story, &options.locale, VmLimits::default())?
-            .with_assets(assets);
+            .with_asset_context(assets, options.catalogs.clone());
     run_mode(Mode::Story(Box::new((driver, options))))
 }
 

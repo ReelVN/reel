@@ -520,6 +520,7 @@ fn cursor_snapshot_restores_subtree_and_owned_activity() {
         "en".into(),
         live.ui().assets(),
         live.initializer(),
+        live.catalogs(),
     )
     .unwrap();
     while !restored.prepare_restored(SliceBudget::default()).unwrap() {}

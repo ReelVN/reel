@@ -212,7 +212,7 @@ set_delegate/get_delegate 管理 table 的显式后备链，拒绝环，改变�
 
 use reel::{stage,text}; 为分组导入，use game::ui::dialogue::dialogue_view; 为单项导入，use reel::prelude::*; 为公开名字通配导入。别名用 as，pub 控制导出，pub use 重导出；命名空间导入使用 use game::ui::dialogue as dialogue;，解析器依据模块/符号声明区分，若两者同名则要求显式分组选择符号。通配不能静默覆盖已有名字。
 
-入口源码所在目录是源码根；工程目录默认启动 main.aside 的 main。game:: 后的模块段对应目录和 .aside 文件，名称须合法标识符。外部源码根可由工具的 --module 别名=目录 参数提供，同一实际文件只建立一个模块环境。main/game/reel/std 保留；reel 与 std 由宿主注册，不搜索同名源码目录。启动函数可以私有，这不使其余私有符号可被导入。use 在编译时解析，构建产物保存确定的模块集合。
+入口源码所在目录是源码根；Reel 项目工具按 src/main.aside、main.aside 的顺序选择入口，默认启动其中的 main。game:: 后的模块段对应源码根中的目录和 .aside 文件，名称须合法标识符。外部源码根可由工具的 --module 别名=目录 参数提供，同一实际文件只建立一个模块环境。main/game/reel/std 保留；reel 与 std 由宿主注册，不搜索同名源码目录。启动函数可以私有，这不使其余私有符号可被导入。use 在编译时解析，构建产物保存确定的模块集合。
 
 当前普通函数与值模块已贯通多源码分析、Aside 字节码 和 VM。文件提供方按真实导入发现源码，模块别名归一到固定声明身份；同一文件只产生一份环境。导入读取与重导出共享原 cell，Aside 字节码 的模块绑定编号依次包含自有全局和导入，验证时解析并缓存实际 cell 索引。物理来源独立保存在 SourceFile.path，运行故障保留对应文件与表达式范围。
 

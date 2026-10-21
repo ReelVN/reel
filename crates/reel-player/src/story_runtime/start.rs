@@ -35,7 +35,7 @@ impl StoryRuntime {
             old.locale(),
             old.adapter().vm().limits(),
         )?
-        .with_assets(old.ui().assets());
+        .with_asset_context(old.ui().assets(), old.catalogs());
         next.adapter_mut()
             .inherit_game_settings(old.adapter().game_settings().clone());
         next.adapter_mut()

@@ -1,6 +1,8 @@
 # Cargo builds and all generated verification/measurement output.
 target/
 /target/reel-artifacts/
+# Project examples keep generated packages beside their source.
+/examples/**/build/
 # Prevent obsolete output locations from being accidentally committed again.
 /crates/reel-ui/evidence/
 /crates/reel-render/evidence/

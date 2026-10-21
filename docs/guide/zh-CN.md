@@ -31,7 +31,7 @@ reel export --release
 
 Aside 扩展提供诊断、补全、参数提示、悬停说明和定义跳转。安装 VSIX 后打开 `.aside` 文件，或运行 **Aside: New File**。函数调用中按 Ctrl+Shift+Space 查看具名参数、类型和默认值；F12 跳转到作者源码，内置接口则打开由 Rust 声明生成的只读 Aside 定义。
 
-扩展优先使用 PATH 中的 `reel-lsp`，Windows 扩展包也内含语言服务。`aside.server.path` 可指定其他服务端的完整路径；独立语言工程使用 `aside-lsp`。**Aside: Run Current File** 保存当前文件并调用 PATH 中的 `reel`，`aside.reel.path` 可另选 CLI，`aside.reel.assets` 指定资源目录。修改 PATH 后重新打开 VS Code。编辑检查直接使用未保存内容。
+扩展优先使用 PATH 中的 `reel-lsp`，Windows 扩展包也内含语言服务。`aside.server.path` 可指定其他服务端的完整路径；独立语言工程使用 `aside-lsp`。**Aside: Run Project** 保存文件并从当前项目启动，**Aside: Run Current File** 以当前文件为入口。两者调用 PATH 中的 `reel`，`aside.reel.path` 可另选 CLI，`aside.reel.assets` 指定资源目录。修改 PATH 后重新打开 VS Code。编辑检查直接使用未保存内容。
 
 内置节点的共同类型是 `Node`，具体节点保留自己的成员提示。`bind` 和 `derive` 返回 `Binding`；属性提示分别显示读取的值类型和允许赋入的类型。
 
@@ -93,7 +93,7 @@ reel run target/reel-artifacts/author-stage.asb --assets target/reel-artifacts/a
 
 check 编译并报告源码错误，不运行剧情；加 `--format json` 可取得带 UTF-8 范围与行列位置的诊断。build 生成单个 .asb，包含字节码、模块初始化与选定入口。两者提供与播放器相同的默认 Reel 名称、已注册 native 与宿主默认参数。
 
-dev 与 build 默认选择 main::main，可用 `--entry main::name` 选择其他函数。缺少入口或入口无效会在构建时报告；入口可以私有，但不能要求参数或捕获外层环境。run 直接加载包中的初始化函数和入口，不重新编译源码。已有输出只在指定 --overwrite 时替换。
+dev 与 build 默认选择 main::main，可用 `--entry main::name` 选择其他函数。缺少入口或入口无效会在构建时报告；入口可以私有，但不能要求参数或捕获外层环境。run 直接加载包中的初始化函数和入口，不重新编译源码。默认 build 产物随构建更新，显式输出通过 --overwrite 替换。
 
 build 默认使用 Debug，完整源码与映射保存在包内，运行错误能指向原来的 .aside 文件。发布时加 `--release`，只生成去除源码、指令映射和声明位置的 ASB，减少文件体积及加载后驻留的调试数据。两种模式的语言行为和运行检查相同；Release 仍报告错误类型、函数和指令位置，保留执行需要的符号与文本常量。单独 build 的剧情文本保留在 ASB 内。现有执行存档对应实际 ASB，同一源码的 Debug 与 Release 存档不互换。
 
@@ -103,7 +103,7 @@ reel build examples/author_stage.aside --release --output target/reel-artifacts/
 
 工具包中的播放器为源码与构建产物提供真实窗口、文字布局和呈现输入路径。同步构造组件在同一运行时间片内连续推进，到等待或时间片结束才更新画面，不会每创建一个节点就单独显示一帧。对白或选择等待时会先完成当前 GC，再休眠等待输入；自然结束后窗口保留最后画面，关闭窗口退出并完成清理；Escape 作为返回输入交给当前 UI。
 
-工程只读取入口实际导入的源码。game::ui::scene 对应入口目录下的 ui/scene.aside；--module first=../library 可提供外部源码根，同一目录的别名共享环境。函数循环引用允许链接，顶层读取未初始化绑定在实际读取处报 ModuleInitializationCycle。build 把完整模块图和入口放入同一 .asb，移动后无需原源码，初始化设置仍由同一段 main 执行。资源根默认为源码或 ASB 所在目录，也可用 --assets 指定；export 另外生成资源包，并将可搬移的清单嵌入 ASB。
+工程只读取入口实际导入的源码。game::ui::scene 对应入口目录下的 ui/scene.aside；--module first=../library 可提供外部源码根，同一目录的别名共享环境。函数循环引用允许链接，顶层读取未初始化绑定在实际读取处报 ModuleInitializationCycle。build 把完整模块图和入口放入同一 .asb，移动后无需原源码，初始化设置仍由同一段 main 执行。开发运行使用项目的 resources 目录，缺少该目录时使用项目根；--assets 可显式指定目录。导出包使用内嵌的资源清单。
 
 源码、完整源码定位文本和文字常量统一使用实际包预算。长文本和拼接按执行片推进，分片不会截断文字，也不规定台词长度。
 
@@ -124,7 +124,7 @@ reel dev target/reel-artifacts/development/game.asb
 
 发布播放器从自身目录寻找 `game.asb`，存档默认写入同级 `saves/`；`--save-directory <directory>` 可另选位置。更新游戏时保留 saves。发布导出使用 reel 工具同级的 reel-game 播放器。工具包将播放器与 CLI 放在同一目录。ASB 使用 v1 格式。
 
-`--resource prefix=directory` 把一个目录映射到脚本中的逻辑路径；可重复声明。`--text locales=build/locales` 将已合并的翻译目录放入文本包，脚本仍使用 `localization.load("en", "locales/en.ftl")`。开发导出复制这些文件，发布导出将它们打包。翻译源文件可继续按剧情和 UI 模块组织，先用 `reel loc bundle` 生成运行目录。
+`--resource prefix=directory` 把一个目录映射到脚本中的逻辑路径；可重复声明。`--resource .=directory` 挂载到资源根，`--text prefix=directory` 把额外文本资源放入文本包。项目的 `translations/<locale>/` 自动参与检查、开发运行、构建和导出。开发导出同时携带可编辑译文；发布导出将语言内容装入文本包，脚本通过 `localization.set_locale("en")` 选择语言。
 
 资源包默认按 2 GiB 目标体积自动分卷，包头和索引计入体积；可在发布命令添加 `--pack-bytes 1073741824`，改为 1 GiB。分卷沿完整资源边界进行，单个大资源独占一卷；后续文件名为 `resources-002.rpk` 等，清单自动列出，脚本路径无需修改。挂载只读取索引，资源内容按范围读取。
 
@@ -1533,12 +1533,17 @@ Rust 扩展也可以用 `#[aside(rest)]` 声明可变位置参数。作者按普
 
 作者音频已接入后台资源读取、真实混音器和剧情等待，见[作者音频](#作者音频)。原生设备验证与离线混音验证分别记录于[音频验证范围](../../crates/reel-media/VERIFICATION.md)。视频与同一混音器的内容时钟已接入，见上文视频节点。
 
-`localization.load(locale, source)` 从资源目录读取 UTF-8 Fluent 语言包，当前任务等待后台读取和解析完成。成功后替换该语言的目录；读取、语法或重复 ID 错误可用 try/catch 处理，旧目录保留。取消调用任务会取消加载。`localization.set_locale(locale)` 切换语言，`localization.locale()` 返回可观察的语言标记。
+在项目的 `translations/<locale>/` 中维护 UTF-8 Fluent 译文，例如 `translations/en/story/opening.ftl`。`reel check` 验证译文，`dev`、`build` 和 `export` 自动准备语言包。单语言作品直接使用原文。
+
+`localization.set_locale(locale)` 按需读取目标语言及其可用的基础语言，当前任务等待后台读取和解析完成，再一起更新译文与语言选择。`localization.locale()` 返回可观察的语言标记。读取或解析失败可用 try/catch 处理，已显示的语言保持原值；取消调用会撤销尚未提交的选择。连续切换时，以最新有效请求为准。
+
+需要同时使用多个语言时，先用 `localization.load(locale)` 预热；预热的目录在切换语言后继续保留。`localization.load(locale, source)` 可读取指定的资源。普通语言切换只保留当前语言及其基础语言的自动加载目录。
 
 `tr(source, id: null, params: null, locale: null)` 返回当前语言的普通字符串，查找精确语言、基础语言，再回退到原文。未传 params 时原文按字面使用；传入参数表时原文使用 Fluent 模板。译文始终使用 Fluent，参数接受 string/int/float，支持命名参数和复数选择。参数不会作为模板再次解析；缺参数等格式错误可捕获。Fluent 保留双向文本隔离标记，避免不同方向的姓名影响周围文字。
 
 单次指定 `locale` 可同时取得多种语言，不改变全局语言；例如双语对白把下面两行加入自己的视图，再独立绑定主行的 reveal。未加载或缺少翻译时沿用相同的原文回退。两行共享已加载的目录，不复制语言包。
 ```aside
+localization.load("en");
 column(gap: 6) {
     text(tr("你好。", id: "greeting", locale: "zh-CN"), font_size: 28);
     text(tr("你好。", id: "greeting", locale: "en"), font_size: 18);
@@ -1547,10 +1552,9 @@ column(gap: 6) {
 
 界面使用 `derive(|| tr(...))`，语言改变时只重新计算订阅的表达式；普通 tr 调用、已提交对白/选择、输入草稿与历史字符串保留求值时的内容。需要即时翻译的聊天历史或选择外观，可以保存 ID、原文和参数，在展示绑定中调用 tr；分支 key 始终独立于文案。无需特殊 LocalText 类型。
 
-以下片段来自 [localization.aside](../../examples/localization.aside)，英文译文位于 [locales/en](../../examples/locales/en/)。按下方命令合并后，运行时以 target/reel-artifacts/localization 为资源根目录，并在宿主或 game.configure 中提供字体。
+以下片段来自[翻译示例](../../examples/localization/main.aside)，英文译文位于 [translations/en](../../examples/localization/translations/en/)。运行 `reel dev examples/localization --assets target/reel-artifacts/author-assets`，使用第一节准备的字体。
 
 ```aside
-localization.load("en", "en.ftl");
 localization.set_locale("zh-CN");
 let data = model({name: "Mio", count: 2});
 stage.replace(column(gap: 12) {
@@ -1562,15 +1566,14 @@ stage.replace(column(gap: 12) {
 通常直接写 `tr("雨停了。")`。提取工具为相同原文生成相同 ID，移动代码或调整缩进不改变 ID；修改原文则生成新 ID。相同文字需要不同译法，或希望修改原文后仍沿用原作编号时，使用 `tr("雨停了。", id: "opening")`。源文不含参数时不要传空参数表。
 
 ```sh
-reel loc extract examples/localization.aside --output source.ftl
-reel loc extract examples/localization.aside --output-dir source-catalog
-reel loc bundle examples/locales/en --output target/reel-artifacts/localization/en.ftl
-reel loc check target/reel-artifacts/localization/en.ftl --locale en
+reel loc extract examples/localization --output-dir target/reel-artifacts/source-catalog
+reel check examples/localization
+reel build examples/localization
 ```
 
 提取跟随导入模块，包含源码位置与函数上下文。`--output-dir` 镜像模块路径，例如 story/day_one.aside 对应 story/day_one.ftl。相同 ID 只写入按相对路径排序最早的模块，保留所有调用位置。普通正文自动转义，带 params 的原文作为 Fluent 模板检查。动态文字或 ID 会报告位置，需由内容生成器提供目录。`--overwrite` 显式替换指定输出。目录模式保留其他文件，并逐一报告本次无归属的旧 FTL；合并前检查并移除，或提取到新的目录。手工译文与生成的原文目录分开维护，提取不隐式合并或改写译文。
 
-每种语言在独立目录中按剧情和 UI 组织，例如 locales/en/story/day_one.ftl 和 locales/en/ui/settings.ftl；公共术语可放在 common.ftl。`loc bundle` 按相对路径顺序合并为源目录之外的普通 FTL；作者只维护模块文件，发行语言包在构建时生成。跨文件引用照常使用，重复消息/术语 ID 与语法错误定位到原文件行列，失败保留旧产物；替换已有合并文件需加 `--overwrite`。移动译文文件不改变身份，运行时仍为每种语言加载一个目录，只加载游戏使用的语言。解析和静态文字准备在加载时完成，每次翻译不扫描文件。翻译资源替代仍属后续能力。
+译文可按内容拆成 `translations/en/story/day_one.ftl` 和 `translations/en/ui/settings.ftl`，公共术语放在 `common.ftl`。工具按相对路径合并，跨文件引用照常使用；重复 ID 与语法错误定位到原文件行列。移动译文文件不改变消息身份。已有自定义流水线可用 `reel loc bundle <directory> --output <file.ftl>` 单独生成目录，`reel loc check <file.ftl> --locale en` 单独验证。运行时按语言读取和解析，每次翻译复用已加载的目录。翻译资源替代仍属后续能力。
 视频与音频播放返回可等待活动，所有权、控制及存档行为见各自章节。作者滤镜与同步组接口仍属规划。
 规划中的 `custom_node` 将开放 Aside 的 state、measure、record、route 和 event 回调：布局与绘制回调只读，路由先决定消费、捕获与焦点，再执行可暂停的事件任务。当前作者接口尚未注册；宿主扩展使用 [Aside host SDK](../aside-host.md)。
 透视舞台、Mesh、Material 与可编程 Effect 接口仍属规划；已实现的 `camera` 用于二维取景。Live2D、系统朗读、移动/Web 打包及外部服务适配需要分别实现并提供能力说明。

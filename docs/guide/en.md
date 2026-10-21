@@ -31,7 +31,7 @@ reel export --release
 
 The Aside extension provides diagnostics, completion, signature help, hover documentation and definition navigation. Install the VSIX and open an `.aside` file, or run **Aside: New File**. Press Ctrl+Shift+Space inside a call to see named parameters, types and defaults. F12 opens author source or a read-only Aside definition generated from the built-in interface's Rust declaration.
 
-The extension prefers `reel-lsp` on PATH; the Windows extension package also includes a server. Set `aside.server.path` to select another server's full executable path, or use `aside-lsp` for standalone language projects. **Aside: Run Current File** saves the current file and invokes `reel` on PATH. `aside.reel.path` selects another CLI, and `aside.reel.assets` selects the asset directory. Restart VS Code after changing PATH. Editor checks use unsaved document contents.
+The extension prefers `reel-lsp` on PATH; the Windows extension package also includes a server. Set `aside.server.path` to select another server's full executable path, or use `aside-lsp` for standalone language projects. **Aside: Run Project** saves files and starts the current project; **Aside: Run Current File** uses the current file as its entry. Both invoke `reel` on PATH. `aside.reel.path` selects another CLI, and `aside.reel.assets` selects the asset directory. Restart VS Code after changing PATH. Editor checks use unsaved document contents.
 
 Built-in nodes share the `Node` type, and concrete nodes retain their own member suggestions. `bind` and `derive` return `Binding`; property hints distinguish the value read from a property from the types it accepts on assignment.
 
@@ -91,7 +91,7 @@ reel run target/reel-artifacts/author-stage.asb --assets target/reel-artifacts/a
 
 Check compiles the source and reports errors without running the story. Add `--format json` for diagnostics with UTF-8 ranges and line/column positions. Build produces one .asb containing bytecode, module initialization and the selected entry. Both commands provide the same default Reel names, registered native functions and host default arguments as the player.
 
-Dev and build select main::main by default; `--entry main::name` selects another function. A missing or invalid entry is reported during the build. The entry may be private but cannot require parameters or capture an enclosing environment. Run loads the package initializer and entry directly without recompiling source. Existing output is replaced only with --overwrite.
+Dev and build select main::main by default; `--entry main::name` selects another function. A missing or invalid entry is reported during the build. The entry may be private but cannot require parameters or capture an enclosing environment. Run loads the package initializer and entry directly without recompiling source. Default build outputs are updated by each build; use --overwrite to replace an explicit output.
 
 Build defaults to Debug, retaining complete source and mappings so runtime errors can point to the original .aside file. Add `--release` for publication: the ASB omits source, instruction mappings and declaration locations, reducing its size and resident debug data. Both modes use the same language behavior and runtime checks. Release still reports the error kind, function and instruction position, and retains runtime symbols and text constants. A standalone build retains story text inside the ASB. Execution saves belong to the actual ASB, so Debug and Release builds of the same source do not exchange saves.
 
@@ -101,7 +101,7 @@ reel build examples/author_stage.aside --release --output target/reel-artifacts/
 
 The bundled player runs source and built packages with the real window, text layout and presented-input path. Synchronous component construction continues within one execution time slice, updating the scene when it waits or the slice ends, without displaying a separate frame for every node. When waiting for dialogue or a choice, the player completes the current GC cycle and then sleeps until input arrives. Natural completion keeps the final scene in the window. Close the window to exit and finish cleanup; Escape sends Back to the current UI.
 
-Projects read only modules imported by the entry. game::ui::scene resolves to ui/scene.aside beside the entry file; --module first=../library supplies an external source root. Aliases for the same directory share one environment. Function cycles can link; top-level reads of uninitialized bindings report ModuleInitializationCycle at the read. build stores the complete graph and entry in one movable .asb. The same main executes its initialization settings in source and ASB runs. Assets default to the source or ASB directory and can be selected with --assets; export additionally creates resource packages and embeds a relocatable manifest in the ASB.
+Projects read only modules imported by the entry. game::ui::scene resolves to ui/scene.aside beside the entry file; --module first=../library supplies an external source root. Aliases for the same directory share one environment. Function cycles can link; top-level reads of uninitialized bindings report ModuleInitializationCycle at the read. build stores the complete graph and entry in one movable .asb. The same main executes its initialization settings in source and ASB runs. Development uses the project's resources directory when present, otherwise its root; --assets selects an explicit directory. Exported packages use their embedded resource manifest.
 
 Source files, embedded source text and string constants share the actual package budget. Long text and concatenation advance in execution slices; slicing never truncates text or imposes a dialogue length limit.
 
@@ -124,7 +124,7 @@ Development output contains editable `script/` files, loose resources, and `game
 
 The standalone player locates `game.asb` beside its executable and writes saves to the adjacent `saves/` directory by default. Use `--save-directory <directory>` to choose another location, and preserve saves when updating the game. Release export copies the reel-game player beside the reel tool. The tool package keeps the CLI and player together. Rebuild packages with the player version you distribute.
 
-Each `--resource prefix=directory` maps a directory to its logical script path. Use `--text locales=build/locales` to put bundled translation catalogs in the text package; scripts still call `localization.load("en", "locales/en.ftl")`. Development copies these files; release packages them. Translators can maintain source catalogs beside their story and UI modules and use `reel loc bundle` to produce runtime catalogs first.
+Each `--resource prefix=directory` maps a directory to its logical script path. Use `--resource .=directory` to mount at the resource root, or `--text prefix=directory` for additional text resources. Project `translations/<locale>/` directories participate automatically in checking, development, builds and exports. Development exports include editable translations; release exports put language content in the text package. Scripts select a language with `localization.set_locale("en")`.
 
 Resource packages split automatically at a target of 2 GiB including headers and indexes. Add `--pack-bytes 1073741824` to the release command for 1 GiB volumes. Splits occur between complete resources; an oversized resource occupies its own volume. Additional files are named `resources-002.rpk` and so on, and the manifest lists them automatically without changing script paths. Mounting reads indexes only; payloads are read by range.
 
@@ -1531,12 +1531,17 @@ Basic text uses real text layout; external catalogs and reactive language switch
 
 Author audio connects background resource loading, the real mixer and story waits; see [Author audio](#author-audio). Native-device and offline-mixing coverage are recorded separately in [audio verification](../../crates/reel-media/VERIFICATION.md). Video uses the same mixer content clock; see the video node section.
 
-`localization.load(locale, source)` reads a UTF-8 Fluent catalog through the asset service. The calling task waits for background IO and parsing. Success replaces that locale's catalog; IO, syntax and duplicate-ID errors can be caught with try/catch and preserve the old catalog. Cancelling the task cancels the load. `localization.set_locale(locale)` selects a language; `localization.locale()` reads the observable language tag.
+Maintain UTF-8 Fluent translations under the project's `translations/<locale>/`, such as `translations/en/story/opening.ftl`. `reel check` validates them; `dev`, `build` and `export` prepare language packages automatically. A single-language game uses its original text directly.
+
+`localization.set_locale(locale)` loads the requested language and its available base language on demand. The calling task waits for background IO and parsing, then commits the catalogs and selection together. `localization.locale()` reads the observable language tag. Catch IO or parsing failures with try/catch; the displayed language keeps its previous value. Cancelling the call discards an uncommitted selection. When requests overlap, the latest valid request owns the selection.
+
+To use several languages together, preload them with `localization.load(locale)`; preloaded catalogs remain available across language switches. `localization.load(locale, source)` reads a specific resource. Ordinary language selection retains only the current and base language's automatically loaded catalogs.
 
 `tr(source, id: null, params: null, locale: null)` returns an ordinary string, searching the exact locale, its base language, then the source fallback. Without params, the fallback is literal text; with a parameter table, it is a Fluent pattern. Translations always use Fluent. Named string/int/float parameters and plural selectors are supported. Parameters are never reparsed as templates; missing parameters and other formatting errors are catchable. Fluent preserves bidirectional isolation marks so names in another writing direction cannot reorder surrounding text.
 
 A per-call `locale` lets one view retrieve several languages without changing the global selection. For bilingual dialogue, include both lines in your view and bind reveal independently on the main line. Missing catalogs or translations use the same source fallback. Both calls share loaded catalogs rather than copying a language pack.
 ```aside
+localization.load("en");
 column(gap: 6) {
     text(tr("你好。", id: "greeting", locale: "zh-CN"), font_size: 28);
     text(tr("你好。", id: "greeting", locale: "en"), font_size: 18);
@@ -1545,10 +1550,9 @@ column(gap: 6) {
 
 Use `derive(|| tr(...))` for live UI: changing language reevaluates subscribed expressions. Ordinary tr calls, submitted dialogue/choices, input drafts and stored history strings retain their evaluated content. For live chat history or choice presentation, retain IDs, source text and parameters and call tr in the display binding; branch keys remain independent of labels. No special LocalText type is required.
 
-This fragment comes from [localization.aside](../../examples/localization.aside), with English translations in [locales/en](../../examples/locales/en/). Bundle them with the commands below, use target/reel-artifacts/localization as the asset root, and supply fonts through the host or game.configure.
+This fragment comes from the [translation example](../../examples/localization/main.aside), with English translations in [translations/en](../../examples/localization/translations/en/). Run `reel dev examples/localization --assets target/reel-artifacts/author-assets` with the font prepared in the first section.
 
 ```aside
-localization.load("en", "en.ftl");
 localization.set_locale("zh-CN");
 let data = model({name: "Mio", count: 2});
 stage.replace(column(gap: 12) {
@@ -1560,15 +1564,14 @@ stage.replace(column(gap: 12) {
 Usually write `tr("雨停了。")` directly. Extraction gives identical source text the same ID; moving code or changing indentation preserves it, while editing the text creates a new ID. Use `tr("雨停了。", id: "opening")` to distinguish meanings or retain an original content ID across edits. Omit the parameter table when the source has no parameters.
 
 ```sh
-reel loc extract examples/localization.aside --output source.ftl
-reel loc extract examples/localization.aside --output-dir source-catalog
-reel loc bundle examples/locales/en --output target/reel-artifacts/localization/en.ftl
-reel loc check target/reel-artifacts/localization/en.ftl --locale en
+reel loc extract examples/localization --output-dir target/reel-artifacts/source-catalog
+reel check examples/localization
+reel build examples/localization
 ```
 
 Extraction follows imported modules and includes source locations and function context. `--output-dir` mirrors module paths: story/day_one.aside becomes story/day_one.ftl. Identical IDs appear once in the first module by sorted relative path, with all call sites retained. Literal text is escaped automatically; source text with params is checked as a Fluent template. Dynamic text or IDs are reported with their locations and need a catalog supplied by the content generator. `--overwrite` explicitly replaces the selected outputs. Directory mode leaves other files in place and reports old FTL files with no current messages; review and remove them before bundling, or extract to a fresh directory. Keep translations separate from generated source catalogs; extraction does not implicitly merge or modify them.
 
-Keep each language's translations in a separate directory, organized like the story and UI: locales/en/story/day_one.ftl and locales/en/ui/settings.ftl. Shared terms can live in common.ftl. `loc bundle` merges those files in relative-path order into one ordinary FTL outside the source directory; only maintain the module files, and generate the distribution catalog during the build. Cross-file references work normally. Duplicate message or term IDs and syntax errors report the original file, line and column; failed builds preserve the old output. Replacing an existing bundle requires `--overwrite`. Moving a translation between files does not change its identity. Runtime code continues to load one catalog per language; only load languages the game uses. Parsing and static text preparation happen during loading, with no per-translation directory scan. Localized asset substitution remains a future capability.
+Organize translations by content, such as `translations/en/story/day_one.ftl` and `translations/en/ui/settings.ftl`, with shared terms in `common.ftl`. The tools merge files in relative-path order and resolve cross-file references. Duplicate IDs and syntax errors report the original file, line and column. Moving a translation file preserves message identity. Custom pipelines can use `reel loc bundle <directory> --output <file.ftl>` to produce a standalone catalog and `reel loc check <file.ftl> --locale en` to validate it. Runtime loads and parses by language; individual translations reuse the loaded catalog. Localized asset substitution remains a future capability.
 Video and audio playback return awaitable activities, with the ownership, controls and save behavior described in their sections. Filters and synchronization-group author APIs remain planned.
 Planned: `custom_node` will expose Aside state, measure, record, route and event callbacks. Its layout/render callbacks are read-only; routing decides consumption, capture and focus before a suspendable event task runs. This author interface is not registered yet; host extensions use the [Aside host SDK](../aside-host.md).
 Perspective stages, Mesh, Material and programmable Effect interfaces remain planned. The implemented `camera` is two-dimensional. Live2D, system speech, mobile/Web packaging and external-service adapters need separate implementations and capability documentation.
