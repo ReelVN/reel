@@ -407,7 +407,7 @@ fn keyboard_edges_repeat_and_cancel_while_focused_editors_keep_ime() {
         );
         assert_eq!(log(&driver), expected);
         assert!(driver.adapter().stage().nodes().any(|n| matches!(&n.kind,
-            NodeKind::TextInput { value } if value.as_ref() == "你x")));
+            NodeKind::TextInput { value, .. } if value.as_ref() == "你x")));
         driver.cancel().unwrap();
     }
 }

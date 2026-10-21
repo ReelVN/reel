@@ -30,20 +30,37 @@ fn validate_value(heap: &Heap, value: Value) -> Result<(), HeapError> {
 fn validate_callback(heap: &Heap, value: Value) -> Result<(), HeapError> {
     validate_button_property(heap, 1, value)
 }
-pub(super) fn validate(heap: &Heap, index: u32, value: Value) -> Result<(), HeapError> {
+pub(super) fn validate(
+    heap: &Heap,
+    index: u32,
+    value: Value,
+    multiline: bool,
+) -> Result<(), HeapError> {
     let count = TextInputField::PROPERTIES.len() as u32;
-    if index < count {
+    if multiline && index == TextInputField::Value.index() as u32 {
+        if heap.info(value)?.kind == ObjectKind::String {
+            Ok(())
+        } else {
+            Err(HeapError::TypeMismatch)
+        }
+    } else if index < count {
         TextInputField::validate(heap, index, value)
     } else {
         validate_layout_property(heap, index - count, value)
     }
 }
-pub(super) fn kind(heap: &Heap, fields: Value, limit: usize) -> Result<NodeKind, AdapterError> {
+pub(super) fn kind(
+    heap: &Heap,
+    fields: Value,
+    limit: usize,
+    multiline: bool,
+) -> Result<NodeKind, AdapterError> {
     for index in 0..TextInputField::PROPERTIES.len() as u32 {
-        TextInputField::validate(heap, index, heap.table_entry(fields, index)?.1)?;
+        validate(heap, index, heap.table_entry(fields, index)?.1, multiline)?;
     }
     Ok(NodeKind::TextInput {
         value: read_text(heap, heap.table_entry(fields, 0)?.1, limit)?.into(),
+        multiline,
     })
 }
 

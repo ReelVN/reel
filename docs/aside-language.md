@@ -1,6 +1,6 @@
 # Aside VM 与完整语言规范
 
-舞台转场沿普通宿主回调续体：`stage.transition(change:, target:null, duration:0.3, ...)` 在当前任务等待旧画面保留、执行 change、完成过渡并返回回调原值，写法与 scope 相同，不在调用外再 await。回调可等待，保留原任务权限；并发使用 spawn。准备、取消、故障与恢复沿既有 native continuation/TaskId/FrameId，不新增语法、VM 指令或隐藏执行器。旧图只提取目标子树的绘制数据，资源内容共享；普通帧的内部命令存储不改变调用、取消或快照续体语义。实现合同见引擎架构“保留画面的舞台转场”；native ABI 1，当前 SessionSnapshot 25、VM8，ASB 格式保持不变。
+舞台转场沿普通宿主回调续体：`stage.transition(change:, target:null, duration:0.3, ...)` 在当前任务等待旧画面保留、执行 change、完成过渡并返回回调原值，写法与 scope 相同，不在调用外再 await。回调可等待，保留原任务权限；并发使用 spawn。准备、取消、故障与恢复沿既有 native continuation/TaskId/FrameId，不新增语法、VM 指令或隐藏执行器。旧图只提取目标子树的绘制数据，资源内容共享；普通帧的内部命令存储不改变调用、取消或快照续体语义。实现合同见引擎架构“保留画面的舞台转场”；native ABI 1，当前 SessionSnapshot 26、VM8，ASB 格式保持不变。
 
 舞台指针沿普通宿主接口：`stage.pointer()` 返回当前已接受舞台的鼠标坐标快照或 null；`stage.move_pointer(x,y,owner:node)` 返回归节点所有的可等待结果，bool 表示宿主是否执行。新接口 ABI 1，window.info/configure ABI 3 增加 pointer_move 能力；参数、等待、取消及诊断沿现有协议，无新语法/VM/ASB/SessionSnapshot 格式。真实位置是宿主临时状态，读档后等待真实鼠标输入；查询所得普通表仍可随存档保存。
 
@@ -114,7 +114,7 @@ int 加减乘、负号及整数除法溢出报错；MIN/-1 报错。int/int 的 
 
 `std::math::curve(keys)` 构造不可变标量曲线，`curve.sample(time)` 返回指定时间的 float64 值。keys 为非空 array/tuple，元素为 `{time, value, mode: "linear", in_tangent: 0, out_tangent: 0}`；time/value 必需，其余字段可省略。所有数值及采样时间须有限，时间允许负值并按非递减顺序提供。mode 描述从该关键帧出发的区间：linear 线性插值，step 保持左值，cubic 使用左帧 out_tangent 与右帧 in_tangent 作三次 Hermite 插值，切线单位为值/秒。重复时刻表示瞬时跳变，恰在该时刻取最后一帧；到达该时刻之前的区间以第一帧为右端。首尾以外保持端值，单帧曲线为常量。插值保留超出端值的结果；中间运算遵循 float64 规则。
 
-构造按顺序复制关键帧数值，每个记录在一个构造步骤内读取；已复制记录随后改变不改写副本。构造期间外层数组内容变化报告 ConcurrentModification，部分结果随原生续体取消回收。构造与 sample 可在初始化和 derive 中调用；derive 追踪构造时实际读取的可观察数据及 sample 实参的读取。曲线本身只读，没有任务、节点 owner 或播放状态；保存恢复沿普通堆对象保留曲线和已取出的 sample 方法。记录只接受上述五个字段；非法形状、顺序、mode 和数值在相应原生调用位置报告。构造与 sample native ABI 均为 1，当前 VM 快照 8、SessionSnapshot 25，ASB 格式保持。
+构造按顺序复制关键帧数值，每个记录在一个构造步骤内读取；已复制记录随后改变不改写副本。构造期间外层数组内容变化报告 ConcurrentModification，部分结果随原生续体取消回收。构造与 sample 可在初始化和 derive 中调用；derive 追踪构造时实际读取的可观察数据及 sample 实参的读取。曲线本身只读，没有任务、节点 owner 或播放状态；保存恢复沿普通堆对象保留曲线和已取出的 sample 方法。记录只接受上述五个字段；非法形状、顺序、mode 和数值在相应原生调用位置报告。构造与 sample native ABI 均为 1，当前 VM 快照 8、SessionSnapshot 26，ASB 格式保持。
 
 位运算使用 64 位补码；移位量须为 0..63。>> 算术右移，左移按位截断，逻辑右移使用标准函数 unsigned_shr。位移不假装算术乘法。字面量支持十进制、0x、0o、0b 与分隔下划线；超出 int64 范围时报错，负最小值按整体常量处理。浮点比较、解析、舍入、格式化及常量折叠与运行时一致。优先级从高到低为：成员/索引/调用，前缀 await ! ~ + -，* / %，+ -，<< >>，&，^，|，< <= > >= 与 is，== !=，&&，||，??，.. / ..=，yield，赋值。二元运算左结合，?? 与赋值右结合，比较与区间不允许无括号连用。is 只测试类型，不转换值；赋值无可用于运算的结果。parser 与非法类型测试直接依据此表。
 
@@ -335,11 +335,13 @@ Reel 节点构造把 children 候选归一化为显式提供的完整组件根�
 
 text_input 的显式高度内文字、选区、光标和 IME 位置共同垂直居中；text 的显式宽度参与自动高度测量。富文本事件链接悬停/聚焦下划线仅重绘。均沿既有宿主属性与输入合同，不新增 Aside 语法或 ABI。
 
+Reel 的 `text_area` 与 `text_input` 使用相同的 value/on_change/on_submit 参数、可写 bind 和节点所有权；多行编辑复用普通宿主字段与输入事件，不新增语言语法。换行、提交和选区规则见架构及双语指南。text_area native/validator ABI 1，SessionSnapshot 26，VM8/ASB1 保持。
+
 Reel 的 `checkbox(label: null, value: false, on_change: null, ...)` 和 `radio(option, label: null, value: null, on_change: null, ...)` 是普通宿主节点，新增 native ABI 1。checkbox.value 为可写布尔值；radio.value 保存业务值，激活写入 option。共享一个可写绑定即组成单选组，值比较与 list key 相同。组导航已实现：最终可写属性身份用于 Tab 单停靠和方向选择，不新增语言语法或分组参数；当前模态范围内使用选中的可用项，否则首项。组在 Tab 顺序中的位置取其第一个可用节点；方向移动先回写再回调，脚本赋值不抢焦点。虚拟列表先沿既有逻辑导航挂载并接受目标，再选择；首尾循环及跨列表进入使用逻辑端点，不使用当前窗口边界，不预建中间离屏选项。Tab 离开组时不为寻找下一停靠点构造虚拟行；跨窗口访问选项使用方向键。组身份从恢复后的绑定重建，不进入快照格式。脚本赋值静默，用户变更先提交再执行节点所属回调 `{target,value}`；option 更新使旧呈现的选项激活失效。children 与 decorated 仍使用共同舞台，不新增语言语法或 Aside 字节码/ASB 编码。
 
 Reel 的 `clock(interval: 1, owner: null, paused:false)` 是普通宿主函数，返回带只读可观察 ticks/elapsed 的活动。ticks 是 int 完整周期数，初值 0，直接用于索引或 slice 范围；elapsed 是 float 已完成周期总秒数，初值 0.0。复用 pause/resume/stop/await，所有者规则与 run 相同；长步长合并周期、暂停不计时，停止保留最后值，finish 拒绝无终点活动。一次活动采样及其派生计算使用固定逻辑时间；计算跨预算片时，新时间合并为最新请求，完成当前舞台属性提交后才开始下一轮，避免持续计时让派生永远无法稳定。快照保留这两种值类型、周期与暂停偏移，恢复后继续原期限。周期计数超出 int 范围时在发布前报错。clock native ABI 3，无新语法或 VM/ASB/SessionSnapshot 格式变化。
 
-Reel 的 `audio.play`、`video.play`（包括节点 `.play`）、`clock`、`run` 和 `scope.run` 接受 `paused:false`，参数必须为 bool。`paused:true` 创建暂停活动，沿现有 `resume` 开始推进。媒体继续读取、解码和准备首帧，内容位置保持请求起点；暂停时 seek 更新目标并保留暂停状态。run 在创建时验证并构造活动图，首次 resume 才激活动作、读取起值并取得属性写入权；空组合和零时长动作也等到 resume，finish 显式完成有限动作，stop 保留当前属性。clock 的 ticks/elapsed 在首次 resume 前为 0/0.0。owner、取消、终态和恢复沿现有活动协议，保存后仍从暂停状态继续。audio.play ABI 5、video.play ABI 2、clock ABI 3、run 与 scope.run ABI 2；VM 快照 8，当前 SessionSnapshot 25，ASB 格式保持。
+Reel 的 `audio.play`、`video.play`（包括节点 `.play`）、`clock`、`run` 和 `scope.run` 接受 `paused:false`，参数必须为 bool。`paused:true` 创建暂停活动，沿现有 `resume` 开始推进。媒体继续读取、解码和准备首帧，内容位置保持请求起点；暂停时 seek 更新目标并保留暂停状态。run 在创建时验证并构造活动图，首次 resume 才激活动作、读取起值并取得属性写入权；空组合和零时长动作也等到 resume，finish 显式完成有限动作，stop 保留当前属性。clock 的 ticks/elapsed 在首次 resume 前为 0/0.0。owner、取消、终态和恢复沿现有活动协议，保存后仍从暂停状态继续。audio.play ABI 5、video.play ABI 2、clock ABI 3、run 与 scope.run ABI 2；VM 快照 8，当前 SessionSnapshot 26，ASB 格式保持。
 
 Reel `tween(target, from: null, ...)` 使用普通具名参数及记录值表达显式起值。from 接受动态记录，构造时按目标的可动画属性 schema 校验并复制数值；键须属于本次给出非 null 终值的属性，值须为符合属性约束的有限数值。未指定的起值在段激活时读取。显式起值在延迟结束、每轮重复或初始暂停后的首次 resume 时生效；零时长和 finish 直接到终值。动作描述、绑定、属性产权、取消与恢复沿同一活动协议。tween ABI 9，SessionSnapshot 22；VM8/ASB 格式保持。完整行为见[活动合同](engine-architecture.md#作者活动与窗口时钟)。
 

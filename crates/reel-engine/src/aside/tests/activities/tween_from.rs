@@ -223,7 +223,7 @@ fn tween_from_unmatched_key_reports_the_authors_call() {
             match next(&mut vm, &mut session) {
                 RunOutcome::HostCall(ticket) => {
                     if let Err(error) = vm.dispatch(&mut session, ticket, "en", 32) {
-                        vm.reject_native(&mut session, ticket, error).unwrap();
+                        vm.reject_native(&session, ticket, error).unwrap();
                     }
                 }
                 RunOutcome::Fault(id) => break id,

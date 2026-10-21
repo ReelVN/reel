@@ -1,7 +1,7 @@
 // Copyright 2026 Reel contributors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Single-line editing using the shared Parley editor and platform IME events.
+//! Text editing using the shared Parley editor, scroll geometry and platform IME events.
 use std::{borrow::Cow, sync::Arc};
 
 use crate::{
@@ -16,6 +16,7 @@ use crate::{
     peniko::Color,
     properties::ContentColor,
     reel_text::editing::PlainEditor,
+    widgets::{ScrollAxis, ScrollState},
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -28,13 +29,21 @@ pub struct TextInput {
     editor: PlainEditor<BrushIndex>,
     value: Arc<str>,
     composition: Option<(Arc<str>, usize, usize)>,
-    width: f64,
-    scroll_x: f64,
+    multiline: bool,
+    wrap_width: Option<f32>,
+    scroll: ScrollState,
     text_y: f64,
+    reveal_caret: bool,
 }
 
-fn single_line(text: &str) -> Cow<'_, str> {
-    if text.contains(['\r', '\n']) {
+fn input_text(text: &str, multiline: bool) -> Cow<'_, str> {
+    if multiline {
+        if text.contains('\r') {
+            Cow::Owned(text.replace("\r\n", "\n").replace('\r', "\n"))
+        } else {
+            Cow::Borrowed(text)
+        }
+    } else if text.contains(['\r', '\n']) {
         Cow::Owned(text.replace("\r\n", " ").replace(['\r', '\n'], " "))
     } else {
         Cow::Borrowed(text)
@@ -47,8 +56,16 @@ fn rect(bounds: crate::reel_text::BoundingBox) -> Rect {
 
 impl TextInput {
     pub fn new(value: impl Into<Arc<str>>) -> Self {
+        Self::with_mode(value, false)
+    }
+
+    pub fn with_mode(value: impl Into<Arc<str>>, multiline: bool) -> Self {
         let value = value.into();
-        let value = match single_line(&value) {
+        let value = match if multiline {
+            Cow::Borrowed(value.as_ref())
+        } else {
+            input_text(&value, false)
+        } {
             Cow::Owned(text) => text.into(),
             Cow::Borrowed(_) => value,
         };
@@ -58,9 +75,11 @@ impl TextInput {
             editor,
             value,
             composition: None,
-            width: 0.,
-            scroll_x: 0.,
+            multiline,
+            wrap_width: None,
+            scroll: ScrollState::default(),
             text_y: 0.,
+            reveal_caret: true,
         }
     }
 
@@ -69,9 +88,29 @@ impl TextInput {
         self
     }
 
+    pub fn set_multiline(this: &mut WidgetMut<'_, Self>, multiline: bool) {
+        if this.widget.multiline == multiline {
+            return;
+        }
+        let composing = this.widget.composition.is_some();
+        let (fonts, layout) = this.ctx.text_contexts();
+        this.widget.cancel_compose(fonts, layout);
+        this.widget.multiline = multiline;
+        this.widget.wrap_at(None);
+        this.widget.reveal_caret = true;
+        if composing {
+            this.ctx.reset_ime();
+        }
+        this.ctx.request_layout();
+    }
+
     /// Authoritative model updates preserve selection when they echo the current value.
     pub fn set_value(this: &mut WidgetMut<'_, Self>, value: Arc<str>) {
-        let value = match single_line(&value) {
+        let value = match if this.widget.multiline {
+            Cow::Borrowed(value.as_ref())
+        } else {
+            input_text(&value, false)
+        } {
             Cow::Owned(text) => text.into(),
             Cow::Borrowed(_) => value,
         };
@@ -83,6 +122,7 @@ impl TextInput {
         this.widget.cancel_compose(fonts, layout);
         this.widget.editor.set_text(&value);
         this.widget.value = value;
+        this.widget.reveal_caret = true;
         if composing {
             this.ctx.reset_ime();
         }
@@ -91,7 +131,17 @@ impl TextInput {
 
     pub fn insert_style(this: &mut WidgetMut<'_, Self>, style: StyleProperty) {
         this.widget.editor.edit_styles().insert(style);
+        this.widget.reveal_caret = true;
         this.ctx.request_layout();
+    }
+
+    fn wrap_at(&mut self, width: Option<f32>) {
+        let width = if self.multiline { width } else { None };
+        if self.wrap_width != width {
+            self.wrap_width = width;
+            self.editor.set_width(width);
+            self.reveal_caret = true;
+        }
     }
 
     fn cancel_compose(
@@ -105,6 +155,7 @@ impl TextInput {
             self.editor
                 .driver(fonts, layout)
                 .select_byte_range(anchor, focus);
+            self.reveal_caret = true;
         }
     }
 
@@ -117,22 +168,25 @@ impl TextInput {
     }
 
     fn keep_caret_visible(&mut self) {
+        let content = self.editor.try_layout().map_or(Size::ZERO, |layout| {
+            Size::new(
+                f64::from(layout.full_width()) + 1.,
+                f64::from(layout.height()),
+            )
+        });
+        self.scroll
+            .layout(self.scroll.viewport(), content, ScrollAxis::Both, false);
         if let Some(caret) = self.editor.cursor_geometry(1.) {
-            if caret.x0 < self.scroll_x {
-                self.scroll_x = caret.x0;
-            } else if caret.x1 > self.scroll_x + self.width {
-                self.scroll_x = (caret.x1 - self.width).max(0.);
-            }
+            self.scroll.reveal(rect(caret) - self.scroll.offset());
         }
-        let end = self
-            .editor
-            .try_layout()
-            .map_or(0., |layout| f64::from(layout.full_width()) + 1.);
-        self.scroll_x = self.scroll_x.min((end - self.width).max(0.));
     }
 
     fn ime_area(&self) -> Rect {
-        rect(self.editor.ime_cursor_area()) + Vec2::new(-self.scroll_x, self.text_y)
+        rect(self.editor.ime_cursor_area()) + self.translation()
+    }
+
+    fn translation(&self) -> Vec2 {
+        Vec2::new(0., self.text_y) - self.scroll.offset()
     }
 }
 
@@ -160,6 +214,13 @@ impl Widget for TextInput {
         if ctx.is_disabled() || !ctx.input_configuration_is_current() {
             return;
         }
+        if matches!(event, PointerEvent::Scroll(_)) {
+            if self.scroll.pointer(ctx, event) {
+                ctx.set_ime_area(self.ime_area());
+                ctx.request_render();
+            }
+            return;
+        }
         let (position, extend) = match event {
             PointerEvent::Down(e) if e.button.is_none_or(|b| b == PointerButton::Primary) => {
                 ctx.request_focus();
@@ -173,7 +234,7 @@ impl Widget for TextInput {
             }
             _ => return,
         };
-        let point = ctx.local_position(position) + Vec2::new(self.scroll_x, -self.text_y);
+        let point = ctx.local_position(position) - self.translation();
         let composing = self.composition.is_some();
         let (fonts, layout) = ctx.text_contexts();
         self.cancel_compose(fonts, layout);
@@ -227,7 +288,7 @@ impl Widget for TextInput {
                 let (fonts, layout) = ctx.text_contexts();
                 let mut driver = self.editor.driver(fonts, layout);
                 driver.clear_compose();
-                driver.insert_or_replace_selection(&single_line(text));
+                driver.insert_or_replace_selection(&input_text(text, self.multiline));
                 self.composition = None;
                 changed = true;
             }
@@ -241,7 +302,7 @@ impl Widget for TextInput {
                 self.cancel_compose(fonts, layout);
                 self.editor
                     .driver(fonts, layout)
-                    .insert_or_replace_selection(&single_line(text));
+                    .insert_or_replace_selection(&input_text(text, self.multiline));
                 if composing {
                     ctx.reset_ime();
                 }
@@ -285,7 +346,13 @@ impl Widget for TextInput {
                         changed = true;
                     }
                 } else if event.key == Key::Named(NamedKey::Enter) {
-                    if !event.repeat {
+                    if self.multiline && !command {
+                        let (fonts, layout) = ctx.text_contexts();
+                        self.editor
+                            .driver(fonts, layout)
+                            .insert_or_replace_selection("\n");
+                        changed = true;
+                    } else if !event.repeat {
                         ctx.submit_action::<TextInputEvent>(TextInputEvent::Submitted(
                             self.value.clone(),
                         ));
@@ -305,7 +372,7 @@ impl Widget for TextInput {
                                     || !event.modifiers.alt()
                                     || cfg!(target_os = "macos")) =>
                         {
-                            driver.insert_or_replace_selection(&single_line(key));
+                            driver.insert_or_replace_selection(&input_text(key, self.multiline));
                             changed = true;
                         }
                         Key::Named(NamedKey::Backspace) => {
@@ -337,17 +404,43 @@ impl Widget for TextInput {
                             (false, false) => driver.move_right(),
                         },
                         Key::Named(NamedKey::Home) => {
-                            if shift {
+                            if self.multiline && !command {
+                                if shift {
+                                    driver.select_to_line_start();
+                                } else {
+                                    driver.move_to_line_start();
+                                }
+                            } else if shift {
                                 driver.select_to_text_start();
                             } else {
                                 driver.move_to_text_start();
                             }
                         }
                         Key::Named(NamedKey::End) => {
-                            if shift {
+                            if self.multiline && !command {
+                                if shift {
+                                    driver.select_to_line_end();
+                                } else {
+                                    driver.move_to_line_end();
+                                }
+                            } else if shift {
                                 driver.select_to_text_end();
                             } else {
                                 driver.move_to_text_end();
+                            }
+                        }
+                        Key::Named(NamedKey::ArrowUp) if self.multiline => {
+                            if shift {
+                                driver.select_up();
+                            } else {
+                                driver.move_up();
+                            }
+                        }
+                        Key::Named(NamedKey::ArrowDown) if self.multiline => {
+                            if shift {
+                                driver.select_down();
+                            } else {
+                                driver.move_down();
                             }
                         }
                         _ => return,
@@ -362,6 +455,7 @@ impl Widget for TextInput {
         self.keep_caret_visible();
         ctx.set_ime_area(self.ime_area());
         if changed || matches!(event, TextEvent::Ime(_) | TextEvent::ClipboardPaste(_)) {
+            self.reveal_caret = true;
             ctx.request_layout();
         } else {
             ctx.request_render();
@@ -382,6 +476,7 @@ impl Widget for TextInput {
             Update::FocusChanged(_) | Update::WindowFocusChanged(_) => ctx.request_render(),
             Update::FontsChanged => {
                 self.editor.set_scale(1.);
+                self.reveal_caret = true;
                 ctx.request_layout();
             }
             _ => {}
@@ -398,7 +493,7 @@ impl Widget for TextInput {
         _: &PropertiesRef<'_>,
         axis: Axis,
         request: LenReq,
-        _: Option<Length>,
+        cross_length: Option<Length>,
     ) -> Length {
         if axis == Axis::Horizontal {
             return match request {
@@ -406,22 +501,40 @@ impl Widget for TextInput {
                 _ => Length::px(160.),
             };
         }
+        self.wrap_at(cross_length.map(|width| width.get() as f32));
         let (fonts, layout) = ctx.text_contexts();
         Length::px(f64::from(self.editor.layout(fonts, layout).height()))
     }
 
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, _: &PropertiesRef<'_>, size: Size) {
-        self.width = size.width;
+        self.wrap_at(Some(size.width as f32));
+        if self.scroll.viewport() != size {
+            self.reveal_caret = true;
+        }
         let (fonts, layout) = ctx.text_contexts();
         self.editor.refresh_layout(fonts, layout);
-        self.text_y = ((size.height
-            - self
-                .editor
-                .try_layout()
-                .map_or(0., |layout| f64::from(layout.height())))
-            * 0.5)
-            .max(0.);
-        self.keep_caret_visible();
+        self.text_y = if self.multiline {
+            0.
+        } else {
+            ((size.height
+                - self
+                    .editor
+                    .try_layout()
+                    .map_or(0., |layout| f64::from(layout.height())))
+                * 0.5)
+                .max(0.)
+        };
+        let content = self.editor.try_layout().map_or(Size::ZERO, |layout| {
+            Size::new(
+                f64::from(layout.full_width()) + 1.,
+                f64::from(layout.height()),
+            )
+        });
+        self.scroll.layout(size, content, ScrollAxis::Both, false);
+        if self.reveal_caret {
+            self.keep_caret_visible();
+            self.reveal_caret = false;
+        }
         ctx.set_clip_path(size.to_rect());
         ctx.set_ime_area(self.ime_area());
     }
@@ -433,7 +546,7 @@ impl Widget for TextInput {
         painter: &mut Painter<'_>,
     ) {
         let color = props.get::<ContentColor>(ctx.property_cache()).color;
-        let transform = Affine::translate((-self.scroll_x, self.text_y));
+        let transform = Affine::translate(self.translation());
         if ctx.is_focus_target() {
             self.editor.selection_geometry_with(|bounds, _| {
                 painter
@@ -454,7 +567,11 @@ impl Widget for TextInput {
     }
 
     fn accessibility_role(&self) -> Role {
-        Role::TextInput
+        if self.multiline {
+            Role::MultilineTextInput
+        } else {
+            Role::TextInput
+        }
     }
     fn accessibility(&mut self, _: &mut AccessCtx<'_>, _: &PropertiesRef<'_>, node: &mut Node) {
         node.set_value(self.value.as_ref());
@@ -475,11 +592,12 @@ impl Widget for TextInput {
             let composing = self.composition.is_some();
             let (fonts, layout) = ctx.text_contexts();
             self.cancel_compose(fonts, layout);
-            self.editor.set_text(&single_line(text));
+            self.editor.set_text(&input_text(text, self.multiline));
             if composing {
                 ctx.reset_ime();
             }
             self.publish(ctx);
+            self.reveal_caret = true;
             ctx.request_layout();
             ctx.set_handled();
         }
