@@ -4,26 +4,28 @@ fn main() {
         width: 340, height: 48, background: "#284860");
     let status = text("Ready", x: 24, y: 160, width: 340, height: 48);
     let controls = input(modal: true, width: 640, height: 280,
-        bindings: {
-            move_x: [binding("KeyA", scale: -1), binding("KeyD"),
-                binding("LeftX", dead_zone: 0.2)],
-            jump: [binding("Space"), binding("South"), binding("PointerPrimary")],
-            finish: [binding("Escape"), binding("East")],
-        },
-        on_action: |event| {
-            if event.action == "move_x" {
-                marker.x = 160 + 120 * event.target.value("move_x");
-                status.value = event.phase;
-            }
-            if event.action == "jump" && event.phase == "pressed" {
-                await run(sequence(
-                    tween(marker, y: 16, duration: 0.15),
-                    tween(marker, y: 64, duration: 0.15)
-                ));
-            }
-            if event.action == "finish" && event.phase == "released" {
-                stage.replace(text("Finished", x: 24, y: 24));
-            }
+        actions: {
+            move_x: {
+                bindings: [binding("KeyA", scale: -1), "KeyD",
+                    binding("LeftX", dead_zone: 0.2)],
+                on_action: |event| {
+                    marker.x = 160 + 120 * event.target.value("move_x");
+                    status.value = event.phase;
+                },
+            },
+            jump: {
+                bindings: ["Space", "South", "PointerPrimary"],
+                on_press: || {
+                    await run(sequence(
+                        tween(marker, y: 16, duration: 0.15),
+                        tween(marker, y: 64, duration: 0.15)
+                    ));
+                },
+            },
+            finish: {
+                bindings: ["Escape", "East"],
+                on_release: || stage.replace(text("Finished", x: 24, y: 24)),
+            },
         }
     ) { marker; status; };
     stage.replace(controls);

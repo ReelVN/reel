@@ -7,11 +7,17 @@ aside_host::native_documentation! {
         /// activity. Common image fit, clipping, transforms and masks apply to decoded
         /// frames; hiding the node leaves playback running.
         "reel::video";
-        /// Create an input scope with named bindings and action, key, pointer or wheel
-        /// callbacks. Events not consumed by a focused child reach this scope. Input
-        /// ownership, cancellation and callbacks follow the node's lifetime.
-        /// on_key or keyboard/gamepad bindings enable focus and unfocused routing.
-        /// Pointer-only scopes preserve the current keyboard focus.
+        /// Create an input scope with `actions: {name: {bindings: ["Escape"],
+        /// on_release: callback}}` and optional key, pointer or wheel callbacks.
+        /// Each action chooses phase handlers or an exclusive `on_action` stream.
+        /// Handlers accept zero parameters or one target/action/value/phase event.
+        /// Missing handlers create no event or task; held values still update.
+        /// An assigned actions table replaces bindings and handlers together at
+        /// stage synchronization; construction installs immediately. Old held actions
+        /// cancel through their old handlers. Internal edits after installation do
+        /// not update the map: assign a new table. Input ownership and callback lifetime
+        /// follow the node. on_key or keyboard/gamepad bindings enable focus and
+        /// unfocused routing. Pointer-only scopes preserve keyboard focus.
         "reel::input";
         /// Create a text node from plain or rich text. Common font, reveal, outline,
         /// shadow and layout properties apply to the same paragraph. `on_link` receives
@@ -266,13 +272,12 @@ struct NodeBinding {
     fields_version: u64,
     projection_dirty: bool,
     overrides: Option<Box<overrides::Cache>>,
-    input_source: Option<HeapHandle>,
+    input: Option<Box<input::State>>,
     text_source: Option<HeapHandle>,
     mask_source: Option<HeapHandle>,
     text_listening: bool,
     /// Weak identity stamp only: never dereferenced or treated as a GC root.
     radio_option: Option<Value>,
-    input_values: BTreeMap<std::sync::Arc<str>, f32>,
 }
 
 impl StageBinding {
@@ -518,7 +523,12 @@ impl StageBinding {
         }
         let shape = snapshot::Shape::from_symbol(symbol);
         let mask_origin = origin.as_deref().map(Arc::from);
-        let mut kind = shape.project(heap, fields, origin, read_limit)?;
+        let (mut kind, input_declaration) = if shape == snapshot::Shape::Input {
+            let (kind, declaration) = input::prepare(heap, fields)?;
+            (kind, Some(declaration))
+        } else {
+            (shape.project(heap, fields, origin, read_limit)?, None)
+        };
         let props = read_props(
             heap,
             fields,
@@ -665,11 +675,10 @@ impl StageBinding {
             heap.table_store(fields, heap.table_len(fields)?, key, method)?;
         }
         let heap = vm.heap_mut();
-        let input_values = match &kind {
-            NodeKind::Input { bindings, .. } => {
-                bindings.iter().map(|a| (a.name.clone(), 0.)).collect()
-            }
-            _ => BTreeMap::new(),
+        let input = if let Some(declaration) = input_declaration {
+            Some(input::initialize(heap, value, args[0], declaration)?)
+        } else {
+            None
         };
         controls::project_group(heap, value, &mut kind)?;
         self.scene.create(kind, props, children)?;
@@ -691,11 +700,7 @@ impl StageBinding {
                 fields_version: heap.info(fields)?.content_version,
                 projection_dirty: false,
                 overrides: None,
-                input_source: if symbol == "reel::input" {
-                    input::source_handle(heap, args[0])?
-                } else {
-                    None
-                },
+                input,
                 text_source: if matches!(
                     symbol,
                     "reel::text"
@@ -711,7 +716,6 @@ impl StageBinding {
                 text_listening: symbol == "reel::text" && args[1].tag() != ValueTag::Null,
                 mask_source,
                 radio_option: (symbol == "reel::radio").then_some(args[0]),
-                input_values,
             },
         );
         Ok(value)
@@ -744,7 +748,7 @@ impl StageBinding {
 
     fn sync_tree(
         &mut self,
-        heap: &Heap,
+        heap: &mut Heap,
         root: NodeId,
         read_limit: usize,
     ) -> Result<(), AdapterError> {
@@ -756,7 +760,7 @@ impl StageBinding {
                 .node(id)
                 .ok_or(AdapterError::Input("retired stage node"))?;
             pending.extend(node.children.iter().copied());
-            let binding = &self.handles[&id];
+            let binding = self.handles.get_mut(&id).unwrap();
             let value = heap.import_handle(binding.handle)?;
             if matches!(node.kind, NodeKind::VirtualList(_))
                 && let Some(parent) = node.parent
@@ -813,27 +817,10 @@ impl StageBinding {
                 ),
                 NodeKind::Input { bindings, .. } => {
                     let source = heap.table_entry(fields, 0)?.1;
-                    let bindings = if binding.input_source == input::source_handle(heap, source)? {
-                        bindings.clone()
-                    } else {
-                        input::read_bindings(heap, source)?
-                    };
-                    let callback = heap.table_entry(fields, 1)?.1;
-                    input::validate(heap, 1, callback)?;
-                    let keyboard = heap.table_entry(fields, 2)?.1;
-                    input::validate(heap, 2, keyboard)?;
-                    let pointer = heap.table_entry(fields, 3)?.1;
-                    input::validate(heap, 3, pointer)?;
-                    let wheel = heap.table_entry(fields, 4)?.1;
-                    input::validate(heap, 4, wheel)?;
+                    let state = binding.input.as_mut().unwrap();
+                    let bindings = input::replace(heap, value, source, bindings, state)?;
                     (
-                        NodeKind::Input {
-                            bindings,
-                            listening: callback.tag() != ValueTag::Null,
-                            keyboard: keyboard.tag() != ValueTag::Null,
-                            pointer: pointer.tag() != ValueTag::Null,
-                            wheel: wheel.tag() != ValueTag::Null,
-                        },
+                        input::kind(heap, fields, bindings)?,
                         input::InputField::PROPERTIES.len(),
                     )
                 }
@@ -976,16 +963,6 @@ impl StageBinding {
                         heap.table_entry(heap.host_fields(value)?, 1)?.1.tag() != ValueTag::Null;
                 }
             }
-            if let NodeKind::Input { bindings, .. } = &kind {
-                let binding = self.handles.get_mut(&id).unwrap();
-                let source = heap
-                    .table_entry(heap.host_fields(heap.import_handle(binding.handle)?)?, 0)?
-                    .1;
-                if binding.input_source != input::source_handle(heap, source)? {
-                    binding.input_values = bindings.iter().map(|a| (a.name.clone(), 0.)).collect();
-                    binding.input_source = input::source_handle(heap, source)?;
-                }
-            }
             self.scene.update(id, kind, props)?;
             let binding = self.handles.get_mut(&id).unwrap();
             binding.fields_version = version;
@@ -1037,7 +1014,9 @@ impl StageBinding {
             {
                 interaction::publish(heap, value, binding.interaction_offset, Default::default())?;
                 let view = heap.host_payload(value, 3)?;
-                if view.tag() != ValueTag::Null {
+                if binding.input.is_some() {
+                    heap.set_host_payload(value, 3, Value::NULL)?;
+                } else if view.tag() != ValueTag::Null {
                     heap.disconnect_derived(view)?;
                 }
                 overrides::retire(heap, value)?;

@@ -1,17 +1,23 @@
 use super::*;
 use aside_host::FromValue;
 use reel_ui::{
-    input::{Binding, Control},
+    input::{ActionPhase, Binding, Control},
     stage::{ActionDefinition, InputBindings, NodeAction, NodeKey},
 };
 use std::sync::Arc;
 
 #[derive(aside_host::Properties)]
 pub(in crate::aside) enum InputField {
-    #[aside(name = "bindings", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Table), default = null, validate = validate_bindings)]
-    Bindings,
-    #[aside(name = "on_action", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
-    OnAction,
+    /// Named action records with required `bindings` and optional `on_press`,
+    /// `on_change`, `on_release`, `on_cancel`, or exclusive `on_action`.
+    /// Plain control strings use scale 1 and dead_zone 0; configured controls use
+    /// `binding`. Construction installs immediately; an assigned replacement
+    /// table installs bindings and handlers together at stage synchronization.
+    /// Once installed, internal edits do not update the map: assign a new table.
+    /// Unhandled phases
+    /// update held values without creating callback tasks or event objects.
+    #[aside(name = "actions", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Table), default = null, validate = validate_actions)]
+    Actions,
     #[aside(name = "on_key", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnKey,
     #[aside(name = "on_pointer", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
@@ -19,8 +25,8 @@ pub(in crate::aside) enum InputField {
     #[aside(name = "on_wheel", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnWheel,
 }
-fn validate_bindings(heap: &Heap, value: Value) -> Result<(), HeapError> {
-    read_bindings(heap, value)
+fn validate_actions(heap: &Heap, value: Value) -> Result<(), HeapError> {
+    read_actions(heap, value, false)
         .map(|_| ())
         .map_err(|_| HeapError::TypeMismatch)
 }
@@ -28,37 +34,277 @@ fn validate_callback(heap: &Heap, value: Value) -> Result<(), HeapError> {
     validate_button_property(heap, 1, value)
 }
 
-pub(super) fn read_bindings(heap: &Heap, value: Value) -> Result<InputBindings, AdapterError> {
-    let mut definitions = Vec::new();
-    if value.tag() == ValueTag::Null {
-        return Ok(InputBindings::new(definitions).expect("empty bindings"));
-    }
-    for i in 0..heap.table_len(value)? {
-        let (name, values) = heap.table_entry(value, i)?;
-        let name: Arc<str> = String::from_value(heap, name)?.into();
-        let mut bindings = Vec::new();
-        for j in 0..heap.sequence_len(values)? {
-            let item = heap.sequence_get(values, j)?;
+const HANDLERS: [&str; 5] = [
+    "on_action",
+    "on_press",
+    "on_change",
+    "on_release",
+    "on_cancel",
+];
+// Input-only payload: [installed declaration, retiring declaration]. Each
+// declaration is an array of [name, bindings, full, press, change, release, cancel].
+const NODE_SLOT: u32 = 3;
+const CURRENT: u32 = 0;
+const RETIRING: u32 = 1;
+type Row = [Value; 7];
+
+pub(super) struct Declaration {
+    bindings: InputBindings,
+    rows: Vec<Row>,
+}
+struct ActionValue {
+    index: u32,
+    value: f32,
+}
+pub(super) struct State {
+    source: Option<HeapHandle>,
+    values: BTreeMap<Arc<str>, ActionValue>,
+    retiring: Option<Retiring>,
+}
+struct Retiring {
+    bindings: InputBindings,
+    held: BTreeMap<Arc<str>, u32>,
+}
+pub(in crate::aside) struct Callback {
+    pub target: Value,
+    pub closure: Value,
+    pub phase: ActionPhase,
+    pub value: f32,
+}
+
+fn read_controls(heap: &Heap, values: Value) -> Result<Vec<Binding>, AdapterError> {
+    let mut bindings = Vec::new();
+    for j in 0..heap.sequence_len(values)? {
+        let item = heap.sequence_get(values, j)?;
+        let (name, scale, dead_zone) = if heap
+            .info(item)
+            .is_ok_and(|info| info.kind == ObjectKind::String)
+        {
+            (item, 1., 0.)
+        } else {
             if heap.sequence_len(item)? != 3 {
                 return Err(AdapterError::Input(
-                    "expected binding(control, scale:, dead_zone:)",
+                    "expected a control name or binding(control, scale:, dead_zone:)",
                 ));
             }
-            let name = String::from_value(heap, heap.sequence_get(item, 0)?)?;
-            let control: Control = name
-                .parse()
-                .map_err(|_| AdapterError::Input("unknown physical control"))?;
-            bindings.push(Binding {
-                control,
-                scale: number(heap.sequence_get(item, 1)?)? as f32,
-                dead_zone: number(heap.sequence_get(item, 2)?)? as f32,
-                positive_only: false,
-            });
-        }
-        definitions.push(ActionDefinition { name, bindings });
+            (
+                heap.sequence_get(item, 0)?,
+                number(heap.sequence_get(item, 1)?)? as f32,
+                number(heap.sequence_get(item, 2)?)? as f32,
+            )
+        };
+        let control: Control = String::from_value(heap, name)?
+            .parse()
+            .map_err(|_| AdapterError::Input("unknown physical control"))?;
+        bindings.push(Binding {
+            control,
+            scale,
+            dead_zone,
+            positive_only: false,
+        });
     }
-    InputBindings::new(definitions)
-        .map_err(|_| AdapterError::Input("invalid action name, scale or dead zone"))
+    Ok(bindings)
+}
+
+fn read_actions(heap: &Heap, value: Value, capture: bool) -> Result<Declaration, AdapterError> {
+    let mut definitions = Vec::new();
+    let mut rows = Vec::new();
+    if value.tag() == ValueTag::Null {
+        return Ok(Declaration {
+            bindings: InputBindings::new(definitions).expect("empty bindings"),
+            rows,
+        });
+    }
+    for i in 0..heap.table_len(value)? {
+        let (key, record) = heap.table_entry(value, i)?;
+        let name: Arc<str> = String::from_value(heap, key)?.into();
+        let mut row = [Value::NULL; 7];
+        row[0] = key;
+        for j in 0..heap.table_len(record)? {
+            let (field, value) = heap.table_entry(record, j)?;
+            let field = String::from_value(heap, field)?;
+            if field == "bindings" {
+                row[1] = value;
+            } else if let Some(index) = HANDLERS.iter().position(|name| *name == field) {
+                validate_callback(heap, value)?;
+                row[2 + index] = value;
+            } else {
+                return Err(AdapterError::Input("unknown action field"));
+            }
+        }
+        if row[1].tag() == ValueTag::Null {
+            return Err(AdapterError::Input("an action requires bindings"));
+        }
+        if row[2].tag() != ValueTag::Null && row[3..].iter().any(|v| v.tag() != ValueTag::Null) {
+            return Err(AdapterError::Input(
+                "on_action and phase handlers are mutually exclusive",
+            ));
+        }
+        definitions.push(ActionDefinition {
+            name,
+            bindings: read_controls(heap, row[1])?,
+        });
+        if capture {
+            rows.push(row);
+        }
+    }
+    let bindings = InputBindings::new(definitions)
+        .map_err(|_| AdapterError::Input("invalid action name, scale or dead zone"))?;
+    Ok(Declaration { bindings, rows })
+}
+
+pub(super) fn read_bindings(heap: &Heap, value: Value) -> Result<InputBindings, AdapterError> {
+    Ok(read_actions(heap, value, false)?.bindings)
+}
+
+fn freeze(heap: &mut Heap, rows: Vec<Row>) -> Result<Value, AdapterError> {
+    let snapshot = heap.alloc_array(&[])?;
+    for mut row in rows {
+        let controls = heap.alloc_array(&[])?;
+        for j in 0..heap.sequence_len(row[1])? {
+            let item = heap.sequence_get(row[1], j)?;
+            let item = if heap
+                .info(item)
+                .is_ok_and(|info| info.kind == ObjectKind::String)
+            {
+                item
+            } else {
+                let fields = [
+                    heap.sequence_get(item, 0)?,
+                    heap.sequence_get(item, 1)?,
+                    heap.sequence_get(item, 2)?,
+                ];
+                heap.alloc_array(&fields)?
+            };
+            heap.array_push(controls, item)?;
+        }
+        row[1] = controls;
+        let row = heap.alloc_array(&row)?;
+        heap.array_push(snapshot, row)?;
+    }
+    Ok(snapshot)
+}
+
+fn values(bindings: &InputBindings) -> BTreeMap<Arc<str>, ActionValue> {
+    bindings
+        .iter()
+        .enumerate()
+        .map(|(i, action)| {
+            (
+                action.name.clone(),
+                ActionValue {
+                    index: i as u32,
+                    value: 0.,
+                },
+            )
+        })
+        .collect()
+}
+
+pub(super) fn prepare(heap: &Heap, fields: Value) -> Result<(NodeKind, Declaration), AdapterError> {
+    let declaration = read_actions(heap, heap.table_entry(fields, 0)?.1, true)?;
+    Ok((
+        kind(heap, fields, declaration.bindings.clone())?,
+        declaration,
+    ))
+}
+
+pub(super) fn initialize(
+    heap: &mut Heap,
+    node: Value,
+    source: Value,
+    declaration: Declaration,
+) -> Result<Box<State>, AdapterError> {
+    let snapshot = freeze(heap, declaration.rows)?;
+    let payload = heap.alloc_array(&[snapshot, Value::NULL])?;
+    heap.set_host_payload(node, NODE_SLOT, payload)?;
+    Ok(Box::new(State {
+        source: source_handle(heap, source)?,
+        values: values(&declaration.bindings),
+        retiring: None,
+    }))
+}
+
+pub(super) fn restore(
+    heap: &mut Heap,
+    node: Value,
+    fields: Value,
+) -> Result<(NodeKind, Box<State>), AdapterError> {
+    let payload = heap.host_payload(node, NODE_SLOT)?;
+    let snapshot = heap.sequence_get(payload, CURRENT)?;
+    let mut definitions = Vec::new();
+    for i in 0..heap.sequence_len(snapshot)? {
+        let row = heap.sequence_get(snapshot, i)?;
+        definitions.push(ActionDefinition {
+            name: String::from_value(heap, heap.sequence_get(row, 0)?)?.into(),
+            bindings: read_controls(heap, heap.sequence_get(row, 1)?)?,
+        });
+    }
+    let bindings =
+        InputBindings::new(definitions).map_err(|_| AdapterError::Input("saved input bindings"))?;
+    heap.set_field(payload, RETIRING, Value::NULL)?;
+    let state = Box::new(State {
+        source: source_handle(heap, heap.table_entry(fields, 0)?.1)?,
+        values: values(&bindings),
+        retiring: None,
+    });
+    Ok((kind(heap, fields, bindings)?, state))
+}
+
+pub(super) fn kind(
+    heap: &Heap,
+    fields: Value,
+    bindings: InputBindings,
+) -> Result<NodeKind, AdapterError> {
+    for index in 1..InputField::PROPERTIES.len() as u32 {
+        validate(heap, index, heap.table_entry(fields, index)?.1)?;
+    }
+    Ok(NodeKind::Input {
+        bindings,
+        listening: true,
+        keyboard: heap.table_entry(fields, 1)?.1.tag() != ValueTag::Null,
+        pointer: heap.table_entry(fields, 2)?.1.tag() != ValueTag::Null,
+        wheel: heap.table_entry(fields, 3)?.1.tag() != ValueTag::Null,
+    })
+}
+
+pub(super) fn replace(
+    heap: &mut Heap,
+    node: Value,
+    source: Value,
+    bindings: &InputBindings,
+    state: &mut State,
+) -> Result<InputBindings, AdapterError> {
+    let source_handle = source_handle(heap, source)?;
+    if state.source == source_handle {
+        return Ok(bindings.clone());
+    }
+    let declaration = read_actions(heap, source, true)?;
+    let snapshot = freeze(heap, declaration.rows)?;
+    let payload = heap.host_payload(node, NODE_SLOT)?;
+    let held: BTreeMap<_, _> = state
+        .values
+        .iter()
+        .filter(|(_, value)| value.value != 0.)
+        .map(|(name, value)| (name.clone(), value.index))
+        .collect();
+    if !held.is_empty() {
+        // The player drains cancellation before routing the next generation.
+        assert!(
+            state.retiring.is_none(),
+            "input cancellation was not delivered"
+        );
+        let old = heap.sequence_get(payload, CURRENT)?;
+        heap.set_field(payload, RETIRING, old)?;
+        state.retiring = Some(Retiring {
+            bindings: bindings.clone(),
+            held,
+        });
+    }
+    heap.set_field(payload, CURRENT, snapshot)?;
+    state.source = source_handle;
+    state.values = values(&declaration.bindings);
+    Ok(declaration.bindings)
 }
 pub(super) fn validate(heap: &Heap, index: u32, value: Value) -> Result<(), HeapError> {
     let count = InputField::PROPERTIES.len() as u32;
@@ -146,10 +392,9 @@ impl StageBinding {
     }
     pub(in crate::aside) fn input_action(
         &mut self,
-        heap: &Heap,
+        heap: &mut Heap,
         action: &NodeAction,
-    ) -> Result<Option<(Value, Value)>, AdapterError> {
-        use reel_ui::input::ActionPhase;
+    ) -> Result<Option<Callback>, AdapterError> {
         let Some(node) = self.scene.node(action.node) else {
             return Ok(None);
         };
@@ -157,9 +402,6 @@ impl StageBinding {
             return Ok(None);
         };
         let terminal = matches!(action.phase, ActionPhase::Released | ActionPhase::Cancelled);
-        if *bindings != action.bindings && action.phase != ActionPhase::Cancelled {
-            return Ok(None);
-        }
         let target = self.value(heap, action.node)?;
         // Terminal events clean old ownership even when visibility or modal scope changed.
         // The UI already routed against accepted modal geometry. Recheck this
@@ -167,24 +409,90 @@ impl StageBinding {
         if !terminal && !self.mounted_in_scope(heap, action.node, None)? {
             return Ok(None);
         }
-        if *bindings == action.bindings {
-            let values = &mut self.handles.get_mut(&action.node).unwrap().input_values;
-            if let Some(value) = values.get_mut(&action.action) {
-                *value = action.value;
+        let state = self
+            .handles
+            .get_mut(&action.node)
+            .unwrap()
+            .input
+            .as_mut()
+            .unwrap();
+        let payload = heap.host_payload(target, NODE_SLOT)?;
+        let (snapshot, index, phase, value, release_retiring) = if *bindings == action.bindings {
+            let Some(value) = state.values.get_mut(&action.action) else {
+                return Ok(None);
+            };
+            let source = heap
+                .table_entry(
+                    heap.host_fields(target)?,
+                    InputField::Actions.index() as u32,
+                )?
+                .1;
+            let replacing = state.source != source_handle(heap, source)?;
+            if replacing && (!terminal || value.value == 0.) {
+                return Ok(None);
             }
+            let phase = if replacing {
+                ActionPhase::Cancelled
+            } else {
+                action.phase
+            };
+            let event_value = if replacing { 0. } else { action.value };
+            value.value = event_value;
+            (
+                heap.sequence_get(payload, CURRENT)?,
+                value.index,
+                phase,
+                event_value,
+                false,
+            )
+        } else {
+            let Some(retiring) = &mut state.retiring else {
+                return Ok(None);
+            };
+            if !terminal || retiring.bindings != action.bindings {
+                return Ok(None);
+            }
+            let Some(index) = retiring.held.remove(&action.action) else {
+                return Ok(None);
+            };
+            (
+                heap.sequence_get(payload, RETIRING)?,
+                index,
+                ActionPhase::Cancelled,
+                0.,
+                retiring.held.is_empty(),
+            )
+        };
+        let row = heap.sequence_get(snapshot, index)?;
+        let full = heap.sequence_get(row, 2)?;
+        let closure = if full.tag() != ValueTag::Null {
+            full
+        } else {
+            let field = match phase {
+                ActionPhase::Pressed => 3,
+                ActionPhase::Changed => 4,
+                ActionPhase::Released => 5,
+                ActionPhase::Cancelled => 6,
+                ActionPhase::Repeated => return Ok(None),
+            };
+            heap.sequence_get(row, field)?
+        };
+        if release_retiring {
+            heap.set_field(payload, RETIRING, Value::NULL)?;
+            state.retiring = None;
         }
-        let closure = heap
-            .table_entry(
-                heap.host_fields(target)?,
-                InputField::OnAction.index() as u32,
-            )?
-            .1;
-        Ok((closure.tag() != ValueTag::Null).then_some((target, closure)))
+        Ok((closure.tag() != ValueTag::Null).then_some(Callback {
+            target,
+            closure,
+            phase,
+            value,
+        }))
     }
 }
 
 /// Describe a physical control mapping with a scale and analog dead zone.
-/// Put the returned descriptor in an input node's named bindings.
+/// Put the returned descriptor in a named action's `bindings` array. A plain
+/// control name string uses the same mapping with scale 1 and dead_zone 0.
 /// `control` names a supported keyboard, pointer or gamepad control. `scale`
 /// defaults to 1; `dead_zone` defaults to 0. Invalid controls, non-finite scales
 /// and dead zones outside 0 <= dead_zone < 1 are rejected.
@@ -221,8 +529,8 @@ pub(crate) fn binding(
 }
 
 /// Read the current numeric value of a named action on this input node.
-/// Replacing bindings resets their values to neutral until new input arrives.
-/// `action` must name an action declared in this node's bindings; unknown names
+/// Replacing `actions` resets values to neutral until new input arrives.
+/// `action` must name an action declared in this node's actions; unknown names
 /// are rejected. Reading the value does not consume an event or wait for input.
 #[aside_host::native(symbol = "reel::node::input_value", effects = Effects(Effects::HOST), capabilities = ["reel.stage"])]
 pub(crate) fn value(
@@ -231,27 +539,30 @@ pub(crate) fn value(
     action: String,
 ) -> Result<f64, AdapterError> {
     let id = context.host.id(context.vm.heap(), receiver)?;
-    // A synchronous read after bindings assignment observes the new neutral state.
+    // A synchronous read after actions assignment observes the new neutral state.
     let heap = context.vm.heap();
     let source = heap
         .table_entry(
             heap.host_fields(receiver)?,
-            InputField::Bindings.index() as u32,
+            InputField::Actions.index() as u32,
         )?
         .1;
-    if context.host.handles[&id].input_source != source_handle(heap, source)? {
-        for i in 0..heap.table_len(source)? {
-            if String::from_value(heap, heap.table_entry(source, i)?.0)? == action {
-                return Ok(0.);
+    let state = context.host.handles[&id].input.as_ref().unwrap();
+    if state.source != source_handle(heap, source)? {
+        if source.tag() != ValueTag::Null {
+            for index in 0..heap.table_len(source)? {
+                if String::from_value(heap, heap.table_entry(source, index)?.0)? == action {
+                    return Ok(0.);
+                }
             }
         }
         return Err(AdapterError::Input("unknown input action"));
     }
-    let value = context.host.handles[&id]
-        .input_values
+    let value = state
+        .values
         .get(action.as_str())
         .ok_or(AdapterError::Input("unknown input action"))?;
-    Ok((*value).into())
+    Ok(value.value.into())
 }
 
 pub(super) fn source_handle(heap: &Heap, value: Value) -> Result<Option<HeapHandle>, HeapError> {

@@ -606,20 +606,18 @@ text 默认按可用宽度自然换行；width、x/y、padding、scroll 决定 N
 
 `game.start(entry)` 使用当前 ASB 中无捕获、无必需参数的普通函数。接受请求后，旧脚本不再继续；新会话重新执行模块初始化，再调用 entry。旧对白、UI 回调和活动结束，脚本全局、历史、自动和快进状态重建；已读记录、game.configure 配置、宿主资源与存档服务保留。目标入口负责构造画面；调用后无需清空旧舞台。跨 ASB 的热更新入口解析与持久脚本全局尚未实现。可运行示例见 [author_game_start.aside](../../examples/author_game_start.aside)。
 
-分段说话时传 `wait: false`，在文字之间照常写音效、动画或等待，再调用 `line.wait()` 等玩家推进。等待之后仍可追加，显示前文和同一条历史会保留；下一句对白或选择开始后，旧句柄结束。正文可以换行，普通字符串和 rich 都支持。多角色 say 行组可以等待，追加用于单角色行组。完整示例为 [author_dialogue_append.aside](../../examples/author_dialogue_append.aside)。
+传 `wait: false` 开始一句可继续追加的对白。`line.append(text)` 追加下一段并等待推进，与普通角色发言一致。需要衔接音效、动画或延时时写 `line.append(text, wait: false)`，到下一个推进点再调用 `line.wait()`。等待之后仍可追加，显示前文和同一条历史会保留；下一句对白或选择开始后，旧句柄结束。正文可以换行，普通字符串和 rich 都支持。多角色 say 行组可以等待，追加用于单角色行组。完整示例为 [author_dialogue_append.aside](../../examples/author_dialogue_append.aside)。
 
 ```aside
 let line = mio("Starting", wait: false);
 await run(delay(0.5));
-line.append(" ...");
+line.append(" ...", wait: false);
 audio.play("assets/chime.wav");
 line.append(" ready.");
-line.wait();
 line.append("\nWelcome back.");
-line.wait();
 ```
 
-line.wait 之前的点击可补全文字；推进会等脚本到达等待点。追加保留已经显示的字素，append 的 history 参数与角色调用采用相同选择：true 追加显示正文、false 省略这一段、字符串或 rich 追加替代正文。原条目已省略或清除时继续保持省略。句柄只在主剧情使用，保存恢复继续当前段和等待位置。
+脚本在推进点之间执行时，输入可补全文字。等待型 append 与 line.wait 共用手动、自动和快进规则。追加保留已经显示的字素，append 的 history 参数与角色调用采用相同选择：true 追加显示正文、false 省略这一段、字符串或 rich 追加替代正文。原条目已省略或清除时继续保持省略。句柄只在主剧情使用，保存恢复继续当前段和等待位置。
 
 
 用 `await when(|| game.dialogue().ready)` 等待打印与句内停顿完成，再衔接音效或演出。`when` 随实际读取的可观察属性更新；结果、所有者与取消规则见 [源码接口文档](../../crates/reel-engine/src/aside/conditions.rs)。
@@ -944,35 +942,39 @@ fn main() {
         width: 340, height: 48, background: "#284860");
     let status = text("Ready", x: 24, y: 160, width: 340, height: 48);
     let controls = input(modal: true, width: 640, height: 280,
-        bindings: {
-            move_x: [binding("KeyA", scale: -1), binding("KeyD"),
-                binding("LeftX", dead_zone: 0.2)],
-            jump: [binding("Space"), binding("South"), binding("PointerPrimary")],
-            finish: [binding("Escape"), binding("East")],
-        },
-        on_action: |event| {
-            if event.action == "move_x" {
-                marker.x = 160 + 120 * event.target.value("move_x");
-                status.value = event.phase;
-            }
-            if event.action == "jump" && event.phase == "pressed" {
-                await run(sequence(
-                    tween(marker, y: 16, duration: 0.15),
-                    tween(marker, y: 64, duration: 0.15)
-                ));
-            }
-            if event.action == "finish" && event.phase == "released" {
-                stage.replace(text("Finished", x: 24, y: 24));
-            }
+        actions: {
+            move_x: {
+                bindings: [binding("KeyA", scale: -1), "KeyD",
+                    binding("LeftX", dead_zone: 0.2)],
+                on_action: |event| {
+                    marker.x = 160 + 120 * event.target.value("move_x");
+                    status.value = event.phase;
+                },
+            },
+            jump: {
+                bindings: ["Space", "South", "PointerPrimary"],
+                on_press: || {
+                    await run(sequence(
+                        tween(marker, y: 16, duration: 0.15),
+                        tween(marker, y: 64, duration: 0.15)
+                    ));
+                },
+            },
+            finish: {
+                bindings: ["Escape", "East"],
+                on_release: || stage.replace(text("Finished", x: 24, y: 24)),
+            },
         }
     ) { marker; status; };
     stage.replace(controls);
 }
 ```
 
-`bindings` 的键是动作名，值是 binding 数组。control 使用物理键名（KeyA、KeyD、Space、Escape 等）、标准手柄按钮（South、East、DpadLeft 等）、轴（LeftX、LeftY、RightX、RightY、LeftZ、RightZ）或指针按钮（PointerPrimary、PointerSecondary、PointerAuxiliary、PointerX1、PointerX2）。轴范围为 -1 到 1，Y 轴向下为正；扳机按钮范围为 0 到 1。scale 默认 1，dead_zone 默认 0；死区外的值重新归一化后应用 scale，同一动作的绑定相加并限制在 -1 到 1。两个设备或触点同时保持动作时，松开其中一个不会提前结束动作。
+actions 的每个键是动作名，每项含 bindings 数组。普通控制名字符串使用 scale=1、dead_zone=0，需要配置时才调用 binding。控制名包括物理键（KeyA、Space、Escape）、标准手柄按钮（South、East、DpadLeft）、轴（LeftX、LeftY、RightX、RightY、LeftZ、RightZ）和指针按钮（PointerPrimary、PointerSecondary、PointerAuxiliary、PointerX1、PointerX2）。轴范围为 -1..1，正 Y 向下，扳机为 0..1。越过死区的值重新归一化、缩放、求和并限制为 -1..1；释放一个绑定不会取消另一设备仍保持的动作。
 
-事件有 target、action、value、phase；phase 为 pressed、changed、released 或 cancelled，键盘系统重复不会再次产生 pressed。`node.value("move_x")` 读取最新保持值，未知动作报错；回调里的 event.value 保留该次事件值。回调可以 await，生命周期与节点一致。`node.bindings = 新表` 撤销旧状态并启用新映射；对原表内部的编辑不会自动更新映射。`node.on_action` 可赋闭包或 null。
+按需要配置 on_press、on_change、on_release 和 on_cancel。单个 on_action 接收完整流，与同动作的阶段处理函数互斥。处理函数可为零参或接收一个含 target、action、value、phase 的事件；phase 为 pressed/changed/released/cancelled，键盘重复不产生新的 pressed。没有处理函数的阶段仍更新保持值并消费输入，省去事件对象和回调任务。回调可以等待并归节点所有；返回 Task 仍按普通返回值处理。
+
+`node.value("move_x")` 读取最新保持值，event.value 保留那次事件的数值。赋给 `node.actions` 的新表在舞台同步时整体生效，同时安装绑定和处理函数并重置保持值。构造立即安装声明；后续同步脚本段可继续组装待生效的新表。生效后的内部修改不更新映射，后续更改赋一张新表。仅替换处理函数也会向旧处理函数取消旧保持，旧释放不会调用新处理函数。存档保留已安装声明，恢复时保持值归零。
 
 输入节点自身拥有焦点时接收键盘和手柄动作。子控件取得焦点会取消父输入节点的保持，并独立处理输入；使用 modal: true 可让独立交互场景直接接管焦点。声明 on_key 或键盘/手柄绑定的 input 可通过 Tab 聚焦，绑定了指针按钮时点击也会聚焦并捕获该触点。只处理指针或滚轮的 input 保留当前键盘焦点。聚焦容器包含可用的子控件时，未绑定的下/右方向进入首项，上/左进入末项，随后按画面位置导航并跳过焦点祖先；Tab 仍可访问父容器。隐藏、禁用、失焦、切换模态和清除已呈现画面会取消保持；移除节点会结束其任务和活动。动作消费的同一次输入不会继续导航或推进对白。普通按钮与对白由主指针按钮或触摸激活，其他鼠标按钮可用于作者动作。
 
@@ -1106,7 +1108,7 @@ stage.replace(text_input(value: bind(profile.name), width: 280, height: 40,
 
 多行笔记或留言使用 `text_area`，参数与 text_input 相同。它按宽度自动换行，正文从顶部开始；Enter 换行，Ctrl+Enter（macOS 为 Command+Enter）触发 on_submit，Tab 切换焦点。上下方向键移动光标，配合 Shift 扩展选区；Home/End 定位当前显示行，配合 Ctrl/Command 定位全文首尾。滚轮查看溢出内容，编辑时自动将光标滚入可见区域。粘贴的 CRLF/CR 转为 LF；IME 预编辑在确认后才写回 value。保存恢复保留正文和绑定，选区及内部滚动位置随输入控件重建。可运行示例：[author_text_area.aside](../../examples/author_text_area.aside)。
 
-按键打字演出或键盘小游戏使用 `input(on_key: |event| { ... })`。事件提供 code、key、phase 和 shift/ctrl/alt/meta，phase 为 pressed/repeated/released/cancelled；多键分别交付，失焦会取消旧按键。聚焦按钮先处理自己的确认键，其余未消费的键向祖先 on_key 冒泡，因此点击语言按钮后仍能继续按键打字。聚焦的文本编辑控件保留全部键盘和系统输入法事件。bindings 可省略，on_action 可同时用于手柄或鼠标映射，动作映射仍遵守焦点所有权。示例：[author_keyboard.aside](../../examples/author_keyboard.aside)。
+按键打字演出或键盘小游戏使用 `input(on_key: |event| { ... })`。事件提供 code、key、phase 和 shift/ctrl/alt/meta，phase 为 pressed/repeated/released/cancelled；多键分别交付，失焦会取消旧按键。聚焦按钮先处理自己的确认键，其余未消费的键向祖先 on_key 冒泡，因此点击语言按钮后仍能继续按键打字。聚焦的文本编辑控件保留全部键盘和系统输入法事件。actions 可省略，命名动作可同时用于手柄或鼠标映射，动作映射仍遵守焦点所有权。示例：[author_keyboard.aside](../../examples/author_keyboard.aside)。
 
 `bind` 和 `unbind` 已支持现有节点属性。下面两个滑条共用一个位置值，文字位置和显隐也直接连接控件；不需要回调复制状态。可运行窗口示例见 [author_bindings.aside](../../examples/author_bindings.aside)，字体资源准备方式与第一节相同。
 

@@ -21,8 +21,9 @@ fn main() {
     let cancelled = text("cancelled", x: bind(state.cancelled), y: 400);
     let actions = text("actions", x: bind(state.actions), y: 420);
     let drag = input(x: 200, y: 20, width: 40, height: 100, scale_y: 2,
-        bindings: {drag: [binding("PointerPrimary")]},
-        on_action: |e| { if e.phase == "pressed" || e.phase == "released" { state.actions += 1; } },
+        actions: {drag: {bindings: ["PointerPrimary"],
+            on_press: || { state.actions += 1; },
+            on_release: || { state.actions += 1; }}},
         on_pointer: |e| {
             if e.phase == "cancelled" { state.cancelled += 1; }
             if e.phase == "pressed" || e.phase == "moved" { page.scroll_y = e.y * 2; }

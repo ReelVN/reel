@@ -1,5 +1,300 @@
 use super::*;
 use reel_ui::stage::{NodeId, NodeKind};
+mod callback_cost;
+
+#[test]
+fn named_actions_validate_declarations_and_skip_unhandled_phase_cost() {
+    use reel_ui::{input::ActionPhase, stage::NodeAction};
+    let code = r#"fn opening() {
+        let result = text("result");
+        let pad = input(actions: {
+            hold: {bindings: ["KeyD"], on_release: || { result.x += 1; }},
+            configured: {bindings: [binding("KeyD")]},
+        });
+        for invalid in [
+            {bad: {}}, {bad: {bindings: ["missing-control"]}},
+            {bad: {bindings: ["KeyD"], on_relese: || {}}},
+            {bad: {bindings: ["KeyD"], on_release: 42}},
+            {bad: {bindings: ["KeyD"], on_action: || {}, on_press: || {}}},
+        ] {
+            let mut rejected = false;
+            try { pad.actions = invalid; } catch e { rejected = true; }
+            if !rejected { throw "invalid action declaration accepted"; }
+        }
+        stage.replace(stack { pad; result;
+            button("sample", on_click: || {
+                if pad.value("hold") != 0.75 { throw "unhandled phase lost held value"; }
+            });
+        });
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        pump(&mut vm, &mut session);
+        let node = vm
+            .stage()
+            .nodes()
+            .find(|n| matches!(n.kind, NodeKind::Input { .. }))
+            .unwrap();
+        let NodeKind::Input { bindings, .. } = &node.kind else {
+            unreachable!()
+        };
+        let mut event = NodeAction {
+            node: node.id,
+            action: "hold".into(),
+            value: 1.,
+            phase: ActionPhase::Pressed,
+            bindings: bindings.clone(),
+        };
+        let controls: Vec<_> = bindings.iter().map(|a| &a.bindings).collect();
+        assert_eq!(
+            controls[0], controls[1],
+            "string and default binding share the same control mapping"
+        );
+        collect(&mut vm);
+        let before = vm.vm.heap().stats();
+        let tasks = vm.tasks.len();
+        for _ in 0..4096 {
+            event.phase = ActionPhase::Pressed;
+            event.value = 1.;
+            assert!(!vm.input_action(&mut session, &event).unwrap());
+            event.phase = ActionPhase::Changed;
+            event.value = 0.75;
+            assert!(!vm.input_action(&mut session, &event).unwrap());
+            event.phase = ActionPhase::Cancelled;
+            event.value = 0.;
+            assert!(!vm.input_action(&mut session, &event).unwrap());
+        }
+        let after = vm.vm.heap().stats();
+        assert_eq!(vm.tasks.len(), tasks);
+        assert_eq!(
+            (
+                after.live_objects,
+                after.payload_bytes,
+                after.chunk_allocations,
+                after.roots
+            ),
+            (
+                before.live_objects,
+                before.payload_bytes,
+                before.chunk_allocations,
+                before.roots
+            )
+        );
+        eprintln!(
+            "named actions: source/ASB={encoded}, 12288 unhandled phases, event/task allocations=0, heap objects/payload/chunks/roots unchanged"
+        );
+        event.phase = ActionPhase::Changed;
+        event.value = 0.75;
+        assert!(!vm.input_action(&mut session, &event).unwrap());
+        assert!(vm.click(&mut session, button(&vm, "sample")).unwrap());
+        pump(&mut vm, &mut session);
+        event.phase = ActionPhase::Released;
+        event.value = 0.;
+        assert!(vm.input_action(&mut session, &event).unwrap());
+        pump(&mut vm, &mut session);
+        assert_eq!(text_x(&vm, "result"), 1.);
+    }
+}
+
+#[test]
+fn named_action_handler_replacement_cancels_old_generation_and_freezes_nested_data() {
+    use reel_ui::{input::ActionPhase, stage::NodeAction};
+    let code = r#"fn opening() {
+        let result = text("result");
+        let record = {bindings: ["KeyD"], on_press: || { result.x += 1; },
+            on_release: || { throw "stale release activated"; },
+            on_cancel: |e| {
+                if e.phase != "cancelled" || e.value != 0 || e.target.value("hold") != 0 {
+                    throw "old generation was not cancelled";
+                }
+                result.y += 10;
+            }};
+        let pad = input(actions: {hold: record});
+        stage.replace(stack { pad; result;
+            button("mutate", on_click: || {
+                record.bindings[0] = "KeyJ";
+                record.on_cancel = || { throw "nested handler edit leaked"; };
+                pad.x += 1;
+            });
+            button("replace", on_click: || {
+                let next = {hold: {bindings: ["KeyD"],
+                    on_release: || { throw "replacement installed before synchronization"; },
+                    on_cancel: || { throw "new handler received old cancel"; }}};
+                pad.actions = next;
+                next.hold.on_release = || {result.x += 100;};
+                if pad.value("hold") != 0 { throw "replacement retained old hold"; }
+            });
+        });
+    }"#;
+    for encoded in [false, true] {
+        for terminal in [ActionPhase::Cancelled, ActionPhase::Released] {
+            for project in [false, true] {
+                let (mut session, mut vm) = models::prepared(code, encoded);
+                pump(&mut vm, &mut session);
+                let node = vm
+                    .stage()
+                    .nodes()
+                    .find(|n| matches!(n.kind, NodeKind::Input { .. }))
+                    .unwrap();
+                let NodeKind::Input { bindings, .. } = &node.kind else {
+                    unreachable!()
+                };
+                let mut event = NodeAction {
+                    node: node.id,
+                    action: "hold".into(),
+                    value: 1.,
+                    phase: ActionPhase::Pressed,
+                    bindings: bindings.clone(),
+                };
+                assert!(vm.input_action(&mut session, &event).unwrap());
+                pump(&mut vm, &mut session);
+                assert_eq!(text_x(&vm, "result"), 1.);
+                assert!(vm.click(&mut session, button(&vm, "mutate")).unwrap());
+                pump(&mut vm, &mut session);
+                let NodeKind::Input { bindings, .. } = &vm.stage().node(event.node).unwrap().kind
+                else {
+                    unreachable!()
+                };
+                assert_eq!(
+                    *bindings, event.bindings,
+                    "nested mutation does not rebuild a generation"
+                );
+                assert!(vm.click(&mut session, button(&vm, "replace")).unwrap());
+                drive(&mut vm, &mut session, project);
+                collect(&mut vm);
+                event.phase = terminal;
+                event.value = 0.;
+                assert!(vm.input_action(&mut session, &event).unwrap());
+                pump(&mut vm, &mut session);
+                let output = vm
+                    .stage()
+                    .nodes()
+                    .find(|n| n.kind == NodeKind::Text("result".into()))
+                    .unwrap();
+                assert_eq!((output.props.x, output.props.y), (1., 10.));
+                assert!(
+                    !vm.input_action(&mut session, &event).unwrap(),
+                    "old generation terminates exactly once"
+                );
+                let NodeKind::Input { bindings, .. } = &vm.stage().node(event.node).unwrap().kind
+                else {
+                    unreachable!()
+                };
+                assert_ne!(
+                    *bindings, event.bindings,
+                    "handler-only replacement cancels physical holds too"
+                );
+                assert_eq!(
+                    bindings.iter().next().unwrap().bindings,
+                    event.bindings.iter().next().unwrap().bindings
+                );
+                event.bindings = bindings.clone();
+                event.phase = ActionPhase::Pressed;
+                event.value = 1.;
+                assert!(!vm.input_action(&mut session, &event).unwrap());
+                event.phase = ActionPhase::Released;
+                event.value = 0.;
+                assert!(vm.input_action(&mut session, &event).unwrap());
+                pump(&mut vm, &mut session);
+                assert_eq!(text_x(&vm, "result"), 101.);
+            }
+        }
+    }
+}
+
+#[test]
+fn named_actions_restore_the_installed_snapshot_with_neutral_holds() {
+    use aside_vm::snapshot::SnapshotBudget;
+    use reel_ui::{input::ActionPhase, stage::NodeAction};
+    let code = r#"fn opening() {
+        let result = text("result");
+        let record = {bindings: ["KeyD"], on_release: || { result.x += 1; }};
+        let replacement = {bindings: ["KeyD"], on_release: || { result.x += 1; }};
+        let pad = input(actions: {hold: record});
+        stage.replace(stack { pad; result;
+            button("replace", on_click: || {pad.actions = {hold: replacement};});
+            button("mutate", on_click: || {
+                replacement.bindings[0] = "KeyJ";
+                replacement.on_release = || {throw "snapshot reread nested edits";};
+                pad.x += 1;
+            });
+            button("neutral", on_click: || {
+                if pad.value("hold") != 0 { throw "restored physical hold"; }
+            });
+        });
+        record.bindings[0] = "KeyJ";
+        record.on_release = || { throw "snapshot reread nested edits"; };
+        narrator("waiting");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        pump(&mut vm, &mut session);
+        let node = vm
+            .stage()
+            .nodes()
+            .find(|n| matches!(n.kind, NodeKind::Input { .. }))
+            .unwrap();
+        let NodeKind::Input { bindings, .. } = &node.kind else {
+            unreachable!()
+        };
+        let original_controls = bindings.iter().next().unwrap().bindings.clone();
+        let mut event = NodeAction {
+            node: node.id,
+            action: "hold".into(),
+            value: 1.,
+            phase: ActionPhase::Pressed,
+            bindings: bindings.clone(),
+        };
+        assert!(!vm.input_action(&mut session, &event).unwrap());
+        assert!(vm.click(&mut session, button(&vm, "replace")).unwrap());
+        pump(&mut vm, &mut session);
+        assert!(vm.click(&mut session, button(&vm, "mutate")).unwrap());
+        pump(&mut vm, &mut session);
+        let program = vm.vm.program().clone();
+        let mut capture = vm.snapshot_begin(&session).unwrap();
+        while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let bytes = capture.finish().unwrap().encode().unwrap();
+        let mut image = snapshot::SessionSnapshot::decode(&bytes).unwrap();
+        let mut restore = SessionVm::restore_begin(
+            &mut image,
+            program,
+            VmLimits::default(),
+            SessionIdentity {
+                session_id: SessionId(41),
+                epoch: Epoch(20),
+            },
+            crate::ReadProgress::default(),
+            None,
+            None,
+        )
+        .unwrap();
+        while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let (mut session, mut vm) = restore.finish().unwrap();
+        pump(&mut vm, &mut session);
+        let NodeKind::Input { bindings, .. } = &vm.stage().node(event.node).unwrap().kind else {
+            unreachable!()
+        };
+        assert_eq!(bindings.iter().next().unwrap().bindings, original_controls);
+        let bindings = bindings.clone();
+        event.phase = ActionPhase::Cancelled;
+        event.value = 0.;
+        assert!(
+            !vm.input_action(&mut session, &event).unwrap(),
+            "restore drops old-generation cancellation state"
+        );
+        event.bindings = bindings;
+        assert!(vm.click(&mut session, button(&vm, "neutral")).unwrap());
+        pump(&mut vm, &mut session);
+        event.phase = ActionPhase::Pressed;
+        event.value = 1.;
+        assert!(!vm.input_action(&mut session, &event).unwrap());
+        event.phase = ActionPhase::Released;
+        event.value = 0.;
+        assert!(vm.input_action(&mut session, &event).unwrap());
+        pump(&mut vm, &mut session);
+        assert_eq!(text_x(&vm, "result"), 1.);
+    }
+}
 
 fn pump(vm: &mut SessionVm, session: &mut Session) {
     drive(vm, session, true);

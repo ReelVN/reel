@@ -44,6 +44,143 @@ fn advance(session: &mut Session) {
 }
 
 #[test]
+fn dialogue_append_wait_source_asb_defaults_and_nonblocking_choreography() {
+    let code = r#"
+    fn opening() {
+        let d=game.dialogue();let history=game.history();
+        let speech=character("Mio",id:"mio")(rich("[b]A[/b]"),wait:false);
+        let row=d.lines[0];let group=history[0];let recorded=group.lines[0];
+        speech.append("e",wait:false);
+        if d.text.plain!="Ae" {throw "nonblocking append did not continue";}
+        let cue=completion();
+        stage.replace(button("continue",on_click:||cue.resolve()));
+        await cue;
+        speech.append("́",wait:false);
+        let result=speech.append(rich("\n[b]C[/b]"),history:false);
+        if result!=null {throw "waiting append returned a value";}
+        if d.lines[0]!=row || history[0]!=group || group.lines[0]!=recorded {
+            throw "waiting append changed dialogue or history identity";
+        }
+        if d.text.plain!="Aé\nC" || group.text.plain!="Aé" {
+            throw "waiting append lost styled display or history selection";
+        }
+        speech.append("D",history:"H",wait:true);
+        if d.text.plain!="Aé\nCD" || group.text.plain!="AéH" {
+            throw "repeated waiting append lost its prefix or replacement history";
+        }
+        narrator("Replacement",wait:false);
+        let mut rejected=0;
+        try {speech.append("stale");}catch error {rejected+=1;}
+        let mixed=say([character("One").line("one"),character("Two").line("two")],wait:false);
+        try {mixed.append("ambiguous");}catch error {rejected+=1;}
+        if rejected!=2 {throw "invalid waiting append was accepted";}
+        stage.replace(text("completed"));
+    }
+    "#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        assert!(vm.speech_methods.is_none());
+        models::drive(&mut vm, &mut session, true);
+        let methods = vm.speech_methods.unwrap();
+        let id = session.view().interaction.unwrap().id();
+        assert!(matches!(session.view().interaction,
+            Some(InteractionView::Dialogue(d)) if !d.awaiting_advance() && d.text()=="Ae"));
+        // Between advance points, input can reveal but cannot finish the speech.
+        assert_eq!(
+            session
+                .handle_local_input(session.root_owner(), InputAction::Advance(id))
+                .unwrap(),
+            InputOutcome::Revealed
+        );
+        assert_eq!(
+            session
+                .handle_local_input(session.root_owner(), InputAction::Advance(id))
+                .unwrap(),
+            InputOutcome::Pending
+        );
+        assert!(session.take_completion().is_none());
+        let cue = vm
+            .stage()
+            .nodes()
+            .find_map(|node| match &node.kind {
+                reel_ui::stage::NodeKind::Button {
+                    label: Some(label), ..
+                } if label == "continue" => Some(node.id),
+                _ => None,
+            })
+            .unwrap();
+        vm.click(&mut session, cue).unwrap();
+        models::drive(&mut vm, &mut session, true);
+        assert!(matches!(session.view().interaction,
+            Some(InteractionView::Dialogue(d)) if d.id()==id && d.awaiting_advance()
+                && d.text()=="Aé\nC" && d.lines()[0].visible_text()=="Aé"));
+        advance(&mut session);
+        models::drive(&mut vm, &mut session, true);
+        assert!(matches!(session.view().interaction,
+            Some(InteractionView::Dialogue(d)) if d.id()==id && d.awaiting_advance() && d.text()=="Aé\nCD"));
+        advance(&mut session);
+        models::drive(&mut vm, &mut session, true);
+        assert_eq!(vm.speech_methods.unwrap(), methods);
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|node| node.kind == reel_ui::stage::NodeKind::Text("completed".into()))
+        );
+        vm.finish(&mut session).unwrap();
+    }
+}
+
+#[test]
+fn dialogue_append_wait_keeps_direct_speech_without_handle_initialization() {
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(
+            r#"fn opening(){narrator("One");character("Mio")("Two");}"#,
+            encoded,
+        );
+        models::drive(&mut vm, &mut session, true);
+        assert!(vm.speech_methods.is_none());
+        advance(&mut session);
+        models::drive(&mut vm, &mut session, true);
+        assert!(vm.speech_methods.is_none());
+        advance(&mut session);
+        models::drive(&mut vm, &mut session, true);
+        assert!(vm.speech_methods.is_none());
+        assert_eq!(vm.speech_costs, [0, 0]);
+        vm.finish(&mut session).unwrap();
+    }
+}
+
+#[test]
+fn dialogue_append_wait_method_resolution_cost_is_per_package() {
+    let mut code = String::from(
+        r#"
+        fn opening(){
+            let mio=character("Mio");
+            for index in 0..128 {
+                let line=mio("segment",wait:false);
+                line.append(" suffix",wait:false);
+            }
+        }
+    "#,
+    );
+    for index in 0..256 {
+        code.push_str(&format!("fn unused_{index}(){{{index}}}\n"));
+    }
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(&code, encoded);
+        let functions = vm.vm.program().package().functions.len();
+        assert!(functions >= 256);
+        models::drive(&mut vm, &mut session, false);
+        assert_eq!(vm.speech_costs, [1, 128]);
+        println!(
+            "speech method cost: ASB={encoded}, functions={functions}, resolution_passes={}, handles={}",
+            vm.speech_costs[0], vm.speech_costs[1]
+        );
+        vm.finish(&mut session).unwrap();
+    }
+}
+
+#[test]
 fn dialogue_append_source_asb_checkpoints_history_prefix_and_restore() {
     let code = r#"
     fn opening() {
@@ -53,13 +190,13 @@ fn dialogue_append_source_asb_checkpoints_history_prefix_and_restore() {
         let row = d.lines[0]; let group = history[0]; let recorded = group.lines[0];
         stage.replace(text(value:derive(||group.text)));
         await run(delay(1));
-        speech.append("e");
+        speech.append("e",wait:false);
         if row != d.lines[0] || recorded != group.lines[0] || d.lines.len()!=1 || history.len()!=1 {
             throw "append changed identity";
         }
         speech.wait();
-        speech.append("́");
-        speech.append("\nC",history:false);
+        speech.append("́",wait:false);
+        speech.append("\nC",history:false,wait:false);
         if d.text.plain!="Aé\nC" || group.text.plain!="Aé" || recorded.text!=group.text {
             throw "styled display or history projection";
         }
@@ -271,7 +408,7 @@ fn dialogue_clear_open_speech_append_restores_same_rows_and_new_dialogue_retires
                 button("append",on_click:||done.resolve());
             }});
             await done;
-            speech.append(" appended");
+            speech.append(" appended",wait:false);
             if d.lines.len()!=1 || d.lines[0]!=row || d.current_line_ids[0]!=id || d.text!="First appended" {{
                 throw "append did not restore the current row";
             }}

@@ -224,6 +224,10 @@ pub struct SessionVm {
     pending: Option<PendingInteraction>,
     choice_reader: Option<choice::ChoiceReader>,
     dialogue_reader: Option<dialogue::DialogueReader>,
+    speech_methods: Option<[FunctionId; 2]>,
+    // Method-resolution passes and constructed handles, without production counters.
+    #[cfg(test)]
+    speech_costs: [usize; 2],
     claimed: Option<Completion>,
     delivery: Option<DeliveryId>,
     delivery_task: Option<TaskId>,
@@ -293,6 +297,9 @@ impl SessionVm {
             pending: None,
             choice_reader: None,
             dialogue_reader: None,
+            speech_methods: None,
+            #[cfg(test)]
+            speech_costs: [0; 2],
             claimed: None,
             delivery: None,
             delivery_task: None,
