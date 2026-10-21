@@ -31,9 +31,9 @@ Quirrel 4.41，提交 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe，是行为参照
 
 完成条件同时覆盖语言、标准库、扩展契约、调试工具和 Reel 作者场景。只运行一段剧情、只解析全部语法或只通过旧语言测试，都不算完整 Aside。
 
-实现状态（L04–L09 / V03）：源码解析、语义、IR、Aside 字节码 编解码和 VM 执行已贯通。当前支持普通调用/缺省、初始化局部绑定与共享捕获 Cell、异常/finally、tuple/array/table 与集合展开、索引/成员及混合赋值、可选取值链、位置调用 spread/rest、Array/Tuple for 和尾随 children 收集。通用 Host 支持稳定身份、共享属性表、被追踪的私有内容及退休；语言不依赖 Reel 节点类型。微小预算、交错 GC、缺失/null、非法键和取消检查实际执行。索引位置在右值前保存；可选链只在显式可选段检查 null，括号结束传播；rest 每次创建独立外层 array。
+当前执行状态：源码解析、语义、IR、Aside 字节码 编解码和 VM 执行已贯通。当前支持普通调用/缺省、初始化局部绑定与共享捕获 Cell、异常/finally、tuple/array/table 与集合展开、索引/成员及混合赋值、可选取值链、位置调用 spread/rest、Array/Tuple for 和尾随 children 收集。通用 Host 支持稳定身份、共享属性表、被追踪的私有内容及退休；语言不依赖 Reel 节点类型。微小预算、交错 GC、缺失/null、非法键和取消检查实际执行。索引位置在右值前保存；可选链只在显式可选段检查 null，括号结束传播；rest 每次创建独立外层 array。
 
-class/super、静态成员、继承与绑定方法已贯通源码和 ASB；元方法 callable、完整模式与快照等仍按未实现边界拒绝。静态编译、受支持子集执行和完整语言验收分别记录。具体接口、资源边界及检查命令见[编译接口](../crates/aside-compiler/LOWERING.md)与[VM](../crates/aside-vm/README.md)。Reel 宿主不为 choose 或对白另设两项/两行语义上限，实际容量由宿主资源配置决定。
+class/super、静态成员、继承与绑定方法已贯通源码和 ASB；同包执行快照已接通；元方法 callable 与剩余结构模式仍未实现。静态编译、受支持子集执行和完整语言验收分别记录。具体接口、资源边界及检查命令见[编译接口](../crates/aside-compiler/LOWERING.md)与[VM](../crates/aside-vm/README.md)。Reel 宿主不为 choose 或对白另设两项/两行语义上限，实际容量由宿主资源配置决定。
 
 宿主可通过 AnalysisOptions.hosts 提供外围名称环境，默认为空。作者模块声明、局部绑定和显式 use 导入优先于外围宿主名称；use 与别名仍遵循普通模块规则。Reel 的编译入口以此提供当前注册的 reel::prelude，而独立 Aside 不含这些名称。此配置不改写源码，语义分析、链接和运行诊断沿用作者原始位置；语言与 VM 不依赖 Reel。
 
@@ -691,9 +691,9 @@ invoke_sync 的累计硬预算规则保持原定义。该路径遇到 ResourceBl
 - 增量回收参考：https://github.com/kyren/gc-arena
 
 
-执行器整合状态（PR #49）：已接入 PR #23 的 V03 执行器及 PR #54 的 array/table、Index/Member、tuple 常量、调用展开和脚本 rest；Windows 原生 debug/release 已通过实际执行、GC、异常、取消及源码贯通检查。未支持的 delegate/hooks、property-bag、ArgsNamedSpread 和模式仍定位拒绝。owner 完整撤销由宿主协调，Vm::cancel(owner) 仅取消任务；Idle 不能代表独立宿主根已释放。单根与非任务 RootRange、任务状态及外部资源都完成有界清理后才能退休，细节见架构的 owner 撤销合同。
+执行器与编译器共用同一字节码模型，已执行普通调用、类与继承、脚本模块、集合、索引/成员、调用展开和 rest。作者的具名 table 展开使用 ArgsSpread；独立 ArgsNamedSpread 指令、delegate/hooks、property-bag 和结构模式仍未实现。owner 完整撤销由宿主协调，Vm::cancel(owner) 仅取消任务；Idle 不能代表独立宿主根已释放。单根与非任务 RootRange、任务状态及外部资源都完成有界清理后才能退休，细节见架构的 owner 撤销合同。
 
-实现边界补充（S01 / PR #50）：Rust 会话宿主和真实窗口的对白、选择、取消及退休账本不执行 Aside。它们为后续宿主适配提供模型和视图，不能证明可信 native 已注册、等待恢复/根移交已接通，或本规范的完整会话与保存恢复已完成。
+Rust 会话模型检查对白、选择、取消及退休账本；SessionVm 集成检查实际字节码、可信 native 注册、等待恢复、根移交与同包执行快照。两类检查分别覆盖会话业务与脚本运行，平台设备验收沿用各适配器的检查入口。
 
 集合执行源码进展（PR #54）：分片构造先保留中间根再发布；table 同键覆盖保留首次插入顺序，比较使用既有精确数值规则，嵌套不可散列键的错误 details 为零起始 tuple 元素路径。FaultKind 追加 OutOfBounds=14、MissingKey=15、UnhashableKey=16、ConcurrentModification=17，原编号和 Aside 字节码 v1 不变。ArgsSpread 保留浅捕获与捕获期间完整内容版本检查，packed 目的状态也需验证并原子预检双项追加；rest 每次创建独立外层 array，包括空值和宿主启动。运行、GC、异常和取消合同已通过 Windows 原生 debug/release 验证。table 为预算内线性查找，反复构造可能为平方复杂度；同步 tuple 常量受单项额度限制，不能据此宣称性能达标或完整语言已接通。
 

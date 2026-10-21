@@ -1,37 +1,43 @@
-# Aside storage, bytecode and executor sources (L01, V02, B01 and V03)
+# Aside VM
 
-This crate implements Value storage, an object heap, explicit roots, continuous
-root ranges, one incremental tracing collector, and the B01 shared bytecode
-format, codec, verifier and disassembler. See [B01](src/bytecode/README.md) for
-program loading and validation boundaries. PR #49 integrates V03 executor sources from PR #23 onto the current baseline.
-The current source execution matrix in `aside-compiler/tests/execution.rs` runs
-compiled B01 on this executor with ordinary slices and interleaved incremental GC.
-It does not implement the parser, full language collection operations, platform
-native adapters or snapshot format.
-Aside depends only on slotmap, never on Reel crates. The bilingual creator guide
-is maintained by the integration owner.
+This crate owns values, the object heap, explicit roots, frame slots, incremental
+GC, the shared bytecode codec/verifier and the sliced executor. It also captures
+and restores the VM object graph and execution state. The compiler and platform
+adapters remain separate; this crate depends on no Reel or platform library.
+See the [language specification](../../docs/aside-language.md),
+[bytecode contract](src/bytecode/FORMAT.md) and
+[loading guide](src/bytecode/README.md).
 
-String methods expose explicit byte/scalar lengths and slices, exact prefix/suffix
-checks, and separator-based joining of string arrays/tuples. Rust std supplies
-UTF-8 validation and scalar iteration, including scalars split across heap chunks.
-Text scans borrow bounded heap segments; copying/joining append into one rooted
-private buffer and seal it without copying. Work is metered by bytes and elements,
-and source-array changes invalidate a pending join. See the runnable
-[text example](../../examples/text_operations.aside) and the
-[text contract](../../docs/aside-language.md#六-unicode-文本和可变缓冲).
+Current execution includes ordinary functions/defaults/closures, exceptions,
+classes with inheritance and static members, collections and ordered spreads,
+linked script modules, typed field writes, fixed tuple destructuring, host waits
+and cancellation. Source
+named spreads use ArgsSpread with own string-keyed table entries. The separate
+ArgsNamedSpread opcode, remaining array/object/rest and match structural
+patterns, delegates/hooks,
+property-bag tails and native async/generator/thread execution remain unsupported.
+Runtime admission checks the executor's implemented instruction set.
 
-Composable Host values have stable heap identity, a script-visible field table
-and private strong payload edges. Member/index property access shares the table;
-retiring a host invalidates access. Children collection and array/tuple iteration
-execute on the same VM, including lexical NoWait calls, nested components and
-per-iteration captures. See the [instruction contract](src/bytecode/FORMAT.md).
+## Storage and ownership
 
-V02 implements the frozen section 22 at `1226c6b`: continuous FrameSlots,
-generation-checked RootRangeToken descriptors and temporary RootRanges provider
-borrows. The owner approved the [interface/ownership contract](ROOT-RANGES-DRAFT.md)
-before implementation. See [V02 validation](ROOT-RANGES-VALIDATION.md) for current
-commands, allocator-boundary evidence and measured costs; the L01 measurements
-below remain historical evidence for the original heap.
+`Value` has explicit tags and full-width scalar or generational key payloads.
+Copying it creates no root. Rust locals holding values or handles therefore need
+an explicit heap root when kept across execution, collection or mutable responses.
+`HeapHandle` checks the owning heap and session epoch; restoration gives the new
+heap its own identity. Values and scoped tokens stay on their owning thread.
+
+Object identity is separate from compact entity storage. Retired objects release
+entity pages while their generational handles retain identity protection.
+Object/root/range storage grows from small buffers; hosts can set count and byte
+quotas. Growth charges overlapping storage and prepares GC queues before
+publication. Root changes, container writes and newly published edges share the
+insertion barrier. Weak fields remain separate from strong graph edges.
+
+`GcBudget` caps roots, edges, weak inspection, sweeping and physical release.
+Long operations retain their cursor and roots across slices. `GcProgress`
+reports actual work and blocked release; quotas do not promise a wall-clock
+deadline. Heap pressure and explicit collection requests let the embedding
+player avoid scanning a stable live heap after every low-allocation interaction.
 
 `FrameSlots::new` binds one pool to a Heap with explicit initial/max capacity and
 max window length. `open` publishes all-null storage and its mapping together.
@@ -61,120 +67,9 @@ explicitly. `close(&mut self, &mut Heap)` preflights before changing ownership;
 an error retains the pool, while success permits a new provider. Closed inline
 control metadata stays charged until that FrameSlots owner drops. The Rc byte
 book itself stays charged while any observer/pool still physically owns it.
-Future executor frame/continuation metadata must use this same internal budget;
-this milestone allocates and accounts for window/provider metadata only.
+Execution frames and native continuations use the same heap accounting.
 
-## Public interface draft
-
-- `Value`: private explicit tag, full 64-bit scalar/key payload, and `HeapId`;
-  16 bytes in native tests and i686 compile-time assertions. 32-bit runtime
-  verification remains pending. Copying a value performs no reference counting
-  and does not create a root. Float storage preserves all IEEE bits.
-- `HeapHandle`: full `KeyData::as_ffi()` u64 plus `HeapId` and `SessionEpoch`.
-  Checked reimport uses the owning heap, never truncates the generation, and
-  rejects foreign heaps/epochs. A restored session creates a fresh heap identity.
-  This is an internal runtime handle, not a snapshot object number or C ABI.
-- `RootToken`: explicit registration in one heap/session with a `RootOwner` and
-  `RootKind`. `set_root` publishes through the insertion barrier; `release_root`
-  relinquishes ownership. Tokens have no script finalizer. Rust locals containing
-  Values or handles alone do not retain objects.
-- `HeapLimits`: optional object/root quotas and a total charged-byte ceiling.
-  Reserved slots, allocation/gray/release queues, root scan index, retired
-  slots, chunk metadata and pending payload all count against that ceiling.
-- `GcBudget` / `GcProgress`: independent root slots, mark edges, weak decisions,
-  sweep objects, released edges and bytes, with a total work-unit cap.
-  `begin_collection` and `gc_step` expose Mark -> Weak -> Sweep -> Idle.
-  Mutation between steps is supported. Weak and Sweep share the same cutoff.
-- `ObjectKind`: cell, array, tuple, table, string/bytes and mutable buffers plus
-  storage records for class/instance/closure/generator/thread/Future/host/Set/
-  Range/iterator. Record fields are strong edges; executable semantics are not
-  claimed. `WeakRef` is a separately scanned weak field, never a strong edge.
-
-All mutations pass through Heap methods; no mutable payload reference escapes.
-Partial container scans retain an index. Swapping positions shades both moved
-values before publishing; append/set and root changes use the same barrier.
-New allocations during marking are gray; after the cutoff they are confirmed
-live, and their validated initial edges only point to confirmed-live objects.
-
-Constructors and mutation calls have explicit input limits. Large arrays and
-buffers are built by repeated bounded appends. Chunked payloads release without
-recursive graph destruction. Dropping the entire Heap is synchronous and may
-free its reserved storage; there are no user callbacks. Scheduled cleanup uses
-`gc_step`, including for deeply linked and cyclic graphs.
-
-Dependency adapter provenance: slotmap 1.1.1 `src/lib.rs` KeyData packing and
-`src/basic.rs` Slot/SlotUnion and remove_from_slot were inspected. Only the
-adapter extracts generation/index for retirement and root indexing. Occupied
-version 0xffffffff is retained as a Retired record rather than removed; tests
-use a smaller threshold through the identical deletion path. No upstream source
-is imported and no gc-arena dependency is linked; its mark/barrier/cutoff design
-is an algorithm reference.
-
-See [VALIDATION.md](VALIDATION.md) for reproducible commands, behavior evidence, measured load results and platform limitations.
-
-HeapId is a process-global u32 allocated with AtomicU32 (no AtomicU64). IDs
-1 through u32::MAX-1 are issued once; exhaustion returns IdentityExhausted
-permanently before wrap. Heap, Value and scoped tokens cannot cross threads.
-
-## Storage and work accounting
-
-Object, root and root-range storage grows geometrically from small initial
-buffers. Default count quotas use the generational handle's representation ceiling;
-the default byte quota is unlimited. Hosts can explicitly set either quota.
-Growth accounts for overlapping old/new storage and preserves live handles and
-GC cursors. Queue capacity is prepared before publishing an object; barriers
-and collection steps do not allocate. Value constructors and individual mutations accept at most
-256 Values by default. Individual byte reads/appends use a 4,096-byte default
-copy budget; it does not limit a string's total length. String/byte constants are
-stored in charged chunks, and string concatenation copies through resumable
-rooted construction before publishing its immutable result. Explicit host quotas
-and allocation failures return errors without publishing a partial object or root.
-No method silently executes a whole collection to obtain space.
-
-Cells store their one Value inside the reserved object slot. Other value fields
-use 64-element chunks; text and bytes use 1,024-byte chunks. A chunk is charged
-its 1,024-byte payload plus a conservative 1,024-byte tree metadata reserve.
-The original reserve covered Rust 1.90 BTreeMap leaf/internal nodes with u32/Box entries
-(up to 11 entries and 12 child links per node), including transient splits.
-After removing the final chunk, the empty tree node is freed immediately.
-Rust 1.96's original seven loads were rerun for V02 and still covered all observed
-allocator peaks. Pinned RawVec/Global/Rc source and actual root-pool deallocation
-were also checked. The accounting adapter must be rechecked with further
-toolchain/dependency changes.
-
-`HeapStats` includes actual queue lengths, reserved capacity, payload/pending
-bytes, peaks and cumulative chunk allocations. Reserved slots stay charged when
-vacant, pending or retired. Retired object/root slots reduce reusable capacity.
-Root scan indices and object edge cursors use this preallocated storage. Weak
-work counts allocation-record inspections, including records with no weak field.
-
-Default `GcBudget` allows up to 256 total units per call, with separate caps of
-256 root slots, strong edges, weak inspections, sweep objects and released edges,
-and 16 KiB of released charged bytes. Empty-object/queue completion also costs
-a unit. The host checks its clock between calls; quotas bound work, not a hard
-wall-clock deadline. A byte cap below 2,048 cannot release a chunk and reports
-`blocked`; partial edge teardown still advances separately. New allocations
-append after the weak/sweep snapshot boundary and are left for the next cycle.
-After logical invalidation, lookup fails immediately; pending chunks continue
-to consume the byte ceiling until physically freed. Owner cancellation similarly
-uses a persistent root-slot cursor with a caller-provided slot quota.
-
-No graph destruction follows Rust references recursively, and collection does
-not invoke user/script/native callbacks. Host records contain traced fields only;
-registered adapter behavior and native resource ownership belong to later work.
-Immutable strings/Bytes are available with bounded construction, and large text
-or byte buffers are built by bounded appends. General Unicode editing, table
-key operations, tuple equality/hash, copying continuations and snapshot codecs
-are explicitly outside this storage milestone.
-
-## V03 source integration and host lifecycle
-
-PR #49 ports the PR #23 executor onto the current shared B01/compiler baseline.
-Native Windows debug/release checks now execute the VM and the later #54/#55
-collection/session integration. Source-to-codec-to-VM checks cover tiny budgets
-with interleaved GC, calls/defaults, closures, exceptions and collections.
-Run `cargo test --locked -p aside-compiler --test execution` for the
-source pipeline, or `cargo test --locked -p aside-vm` for VM contracts.
+## Execution and host lifecycle
 
 Vm::load takes a VerifiedProgram and independently trusted RuntimeSupport native
 metadata. It enforces the dispatcher's actual supported opcodes across all
@@ -210,39 +105,37 @@ cleanup complete. Invalidate host root records so later cleanup cannot double
 release or reuse revoked FaultRoot handles. Reclamation of now-unreachable
 objects remains separate budgeted GC work.
 
-PR #54 extends this integration branch with source implementations for sliced
-MakeTuple/MakeArray/MakeTable, IndexGet/IndexSet, MemberGet/MemberSet, tuple
-constants, positional ArgsSpread and script rest (including host-start calls).
-Native Windows debug/release tests execute the VM, collection and source pipeline. Source review found deferred
-operand-fault and packed-argument admission defects; both fixes passed
-independent source recheck. The checks cover runtime/GC/cancellation, but not snapshot restoration or devices.
+Structural tuple/union contracts validate nested values, parameters, returns and
+Cell writes with accounted scratch storage. Native function values are stable
+rooted code constants and enter the ordinary native frame, including defaults,
+waits and host callbacks.
 
-Structural tuple/union contracts check nested values, parameters, returns and
-Cell writes with a load-time charged scratch stack and no per-check allocation.
-Native function values are rooted code constants: repeated reads preserve
-identity without allocation and calls enter NativeFrame directly, including
-shared default-parameter Cells, waits and host callbacks.
+`Vm::bind_awaitable(object, native)` attaches a trusted unary adapter to a Host
+value. Await dispatches it with the object as its only argument;
+`HostTicket::await_activation` identifies that execution. Ready resumes on a
+subsequent VM run, while Pending uses the generation-checked wait/completion path.
+Hosts retain terminal results and prune cancelled subscriptions using
+`wait_is_pending`. A subscriber's cancellation preserves other subscribers and
+the shared producer. Forwarded faults retain the producer envelope and the
+consumer's await location.
 
-Host Awaitables use the same path. `Vm::bind_awaitable(object, native)` attaches a
-trusted unary adapter to a Host value; `await object` dispatches that adapter with
-the object as its only argument. `HostTicket::await_activation` identifies this
-wait execution. Ready resumes only on another VM run; Pending uses the existing
-WaitId/complete protocol. Hosts retain terminal results and serve subscribers in
-registration order, pruning cancelled subscriptions with `wait_is_pending`.
-Removing a subscriber must not cancel a shared producer. ForwardFault retains the
-producer envelope and creates a distinct consumer envelope at the await location;
-native continuations receive the original fault before deciding to forward it.
-No Rust stack or new polling scheduler is retained. Identity binding is local to
-the loaded package; snapshot/rebinding support, async functions and Future
-adoption are not yet implemented. Run the source/codec/GC/cancellation contract:
-`cargo test -p aside-compiler --test host_awaitables -- --nocapture`.
+## Snapshots
 
-Value match branches compile to existing comparisons/type tests/control flow;
-MatchFail raises a catchable MatchError through normal cleanup. Structural
-pattern execution remains pending.
+`VmSnapshot` captures the object graph, roots, execution frames, waits and native
+continuations in slices. Hosts register versioned adapters for supported Host
+payloads and rebuild external resources in the candidate session. Awaitable
+bindings restore against that registered adapter and the same verified code.
+Unregistered host state and mismatched code/adapter versions return explicit
+errors. Capture and candidate restoration each expose progress and retain their
+own roots until completion or cancellation. See `src/snapshot.rs` and the
+source-level `aside-compiler/tests/host_awaitables.rs` round-trip checks.
 
-Remaining unsupported forms include delegates/hooks, classes, property-bag tails, ArgsNamedSpread, structural patterns, full
-module/library binding and snapshots. RuntimeSupport cannot add missing handlers.
+## Collections and text
+
+String methods expose byte/scalar lengths and slices, prefix/suffix checks and
+separator-based joins. UTF-8 scans borrow bounded segments; copying and joining
+use rooted private buffers and detect source mutation before publication.
+The [text example](../../examples/text_operations.aside) runs through the same VM.
 
 Collection methods include array insert/remove/resize/reverse/extend/clear/top/swap,
 range slice on arrays and tuples, and table keys/values/entries/clear. Method
@@ -253,7 +146,7 @@ survives, and GC reclaims the old payload incrementally. A concurrent overwrite 
 cancellation cannot publish a partial edit. Storage accounting moves with payloads;
 GC restarts tracing moved edges using one queue entry per object.
 
-### Collection host access and execution source boundaries (PR #54)
+### Collection host access and execution source boundaries
 
 sequence_len/get validate array/tuple kinds and bounds without exposing private
 storage layout. table_own_string_lookup(table, key) returns a borrowed-key cursor;
@@ -268,12 +161,12 @@ lookup, rather than interpreted as alternating private fields.
 
 Language tables retain insertion order; overwriting an equal key replaces only
 the value and advances content version. Sequence indices are nonnegative ints;
-tuple mutation is rejected. Member and Index remain distinct B01 operations,
+tuple mutation is rejected. Member and Index remain distinct bytecode operations,
 and ordinary stored closures do not receive an implicit self. Numeric key
 comparison follows exact int/float equivalence; NaN and mutable nested keys
 reject. UnhashableKey details contain a zero-based tuple element path (empty for
 a top-level invalid key). Appended FaultKind IDs are OutOfBounds=14, MissingKey=15,
-UnhashableKey=16 and ConcurrentModification=17; prior IDs and B01 v1 are unchanged.
+UnhashableKey=16 and ConcurrentModification=17; prior IDs and bytecode v1 are unchanged.
 
 Intermediate builders, comparison stacks and fault-detail paths retain roots
 until publication or budgeted cleanup. ArgsSpread captures array/tuple elements
@@ -315,3 +208,17 @@ charged work and exactly the required payload chunks. The table_merge check
 separately verifies linear growth for a fixed two-entry destination prefix and
 retained overwrite order. Its timings are local
 measurements, not device or rendering performance claims.
+
+## Checks and historical evidence
+
+```sh
+cargo test --locked -p aside-vm
+cargo test --locked -p aside-compiler --test execution --test classes --test lowering_modules --test host_awaitables
+cargo test --locked -p aside-vm --test gc_scheduling
+```
+
+The fixed [original heap measurements](https://github.com/jhq223/reel/blob/f916ffedceb91465633fd549e4db1084c070edf3/crates/aside-vm/VALIDATION.md)
+and [root-range measurements](https://github.com/jhq223/reel/blob/f916ffedceb91465633fd549e4db1084c070edf3/crates/aside-vm/ROOT-RANGES-VALIDATION.md)
+retain their tested commits, environments and allocator evidence. Run the current
+tests for present behavior; these historical reports do not establish current
+device or performance acceptance.

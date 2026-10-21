@@ -17,7 +17,7 @@ cargo run --locked -p reel-dev -- compiler-probe lowering
 ```
 
 `check` verifies retained Quirrel assertion mappings and executes the registered
-Aside migrations through B01 and the real VM. `deps` verifies module boundaries;
+Aside migrations through bytecode and the real VM. `deps` verifies module boundaries;
 `audit-ui` verifies one owned UI implementation and its package license/provenance.
 Retain attribution in borrowed code; new Reel files do not require source headers.
 `audio-regression` runs the workspace reel-audio tests directly. `audio-probe`

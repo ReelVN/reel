@@ -1,38 +1,22 @@
-# L04/L05/L06/L07/L08/L09 lowering contract (IR v1, bytecode v1)
+# Aside lowering contract (IR v1, bytecode v1)
 
-Issue [#24](https://github.com/jhq223/reel/issues/24) consumes L03
-`AnalyzedModule`; it does not analyze a second semantic model or execute programs.
-The owner's language baseline is
-`65f8ba9177ab81e817202fb56fdd92bab10fe6d0:docs/aside-language.md`, superseding
-`7322292a32a416e6963e5b70162a25fb4e38e54a`. The branch retains real merge ancestry
-from L03 `4500f788c5cd56bd431d6f75424f0c8a756a540d` (PR #20) and B01
-`57ff60e635b2f81f0ccbcf323ce420e45b908ce8` (PR #21). No V03 implementation is
-copied or merged. Dependency acceptance remains the integration owner's decision.
-
-Issue [#37](https://github.com/jhq223/reel/issues/37) continues from main
-`9e0e10b856a1a6995da0a9268b605cd508e3ad71`. Its allowed edits are compiler
-semantic/lowering, static tests/measurements and technical documentation. The
-integration owner maintains the language specification, index and both guides.
-No VM dispatch, host execution tests, Actions, remote merge, ready transition,
-release or acceptance comment belongs to this task.
-
-Issue [#40](https://github.com/jhq223/reel/issues/40) continues from main
-`6203ee138242baa74847f41c66e92382147aa5b1`, including L05. It adds fixed
-collections and ordinary index locations inside the existing compiler crate.
-Allowed edits remain compiler internals, static tests/probes and technical
-reports; the owner synchronizes language/index/bilingual guide changes.
+Lowering consumes the compiler's analyzed modules and trusted host linkage,
+produces register IR, and emits the shared verified bytecode. This document
+describes the current compiler contract; original increment-specific review
+boundaries are preserved in the [fixed earlier contract](https://github.com/jhq223/reel/blob/f916ffedceb91465633fd549e4db1084c070edf3/crates/aside-compiler/LOWERING.md).
 
 ## Interface and behavior
 
-Class execution now lowers named/local/anonymous declarations to the shared B01
+Class execution now lowers named/local/anonymous declarations to the shared bytecode
 Class descriptor. Typed fields, per-instance initializers, constructors, methods,
 static members, inheritance and lexical super execute in the common VM. Imported
-class types retain canonical module/export identity. See `tests/classes.rs` and
-`tests/lowering_modules.rs`; the historical increments below describe their own
-acceptance boundaries rather than current class support.
+class types retain canonical module/export identity. Script module imports,
+reexports and legal cycles use `compile_project` and deterministic initialization
+plans; imported reads retain initialization checks. See `tests/classes.rs`,
+`tests/lowering_modules.rs` and `tests/execution.rs`.
 
 `lowering::lower(&AnalyzedModule, &Linkage, Options)` produces immutable IR;
-`IrModule::emit()` relocates it and returns a B01 `VerifiedProgram`, metadata,
+`IrModule::emit()` relocates it and returns a bytecode `VerifiedProgram`, metadata,
 entry function and resource statistics. `compile` combines these steps. `Linkage`
 borrows a trusted verified package and exact symbol/node-to-native registrations;
 the numeric package version comes from `Options::content_version`. Original
@@ -44,14 +28,14 @@ identity/signature checks, matches to the same NativeId coalesce; different
 NativeIds remain a LinkContract error. The host seed uses the requested content
 version independently of its native ABI version.
 
-The IR reuses B01 instructions, bindings, captures, types and descriptors.
+The IR reuses bytecode instructions, bindings, captures, types and descriptors.
 It adds ordered basic blocks, explicit terminators and exact source spans.
 Final emission interns identical UTF-8 constants across the complete package,
 including host defaults and all project modules. Tuple identities stay distinct;
 constant references in instructions, tuples and patterns are relocated together.
 Adjacent instruction locations with the same source span share one source-map
 run; every PC still resolves to the same source span. Both passes use the existing
-work/capacity ledger and leave B01 v1 and author behavior unchanged.
+work/capacity ledger and leave bytecode v1 and author behavior unchanged.
 Parameters occupy fixed prefix slots. Lexical bindings retain stable slots;
 temporary slots and contiguous call windows are reclaimed when their last
 lowering use ends. The callee and all actual arguments are evaluated before
@@ -60,7 +44,7 @@ the single Call instruction. The binder, not the compiler, runs defaults.
 Default functions receive the preceding parameters with the same binding
 storage/type/mutability and the body's definition capture layout. Parameter
 Cells are created by the call binder, never replaced by a body CellNew. Mutable
-script parameters use Cells before later defaults. B01 derives and retains native
+script parameters use Cells before later defaults. The bytecode verifier derives and retains native
 prefix layouts once; the compiler preserves that shared contract.
 Native identities, ABI, capabilities and default implementations come from an
 explicit trusted verified linkage package. An external default-presence flag
@@ -69,7 +53,7 @@ and MakeClosure; the VM reads a rooted code constant and dispatches directly to
 the native frame. Repeated reads allocate nothing and preserve identity.
 
 Try lowering records shared exception regions and emits Return/Leave/EndFinally;
-cleanup selection belongs to B01/V03. All emitted PCs have source maps.
+cleanup selection belongs to the bytecode contract and VM. All emitted PCs have source maps.
 Unknown lowering nodes and absent links fail with a source range, never a
 placeholder null success. Author annotations supply runtime type contracts;
 inferred function types do not create structural signature contracts.
@@ -80,14 +64,17 @@ short circuit, null coalescing, positional/named calls, defaults, trusted direct
 native calls, forward shared Cells, and try/catch/finally/throw/rethrow. Module
 initializer and ordinary function loops with cleanup-aware break/continue are supported. Uninitialized
 bindings stay distinct from null. Fixed tuple/array/table and ordinary index
-reads/writes are supported by L06; L07 adds nonoptional member values/locations
-and dynamic calls through their results; L08 adds optional value chains.
+reads/writes, nonoptional member values/locations, dynamic calls through their
+results, and optional value chains are supported.
 Value match arms support names, wildcards, literals, grouping, type tests, OR and
 NoWait guards. Tests reuse ordinary comparison/type/branch instructions; arm
 bindings initialize once after acceptance, and each entry prepares fresh storage.
 MatchFail reports MatchError through ordinary exception cleanup and source maps.
-Structural patterns, optional-chain assignment targets, full script imports/linking, structural callable annotations, generator/thread/async and the broader language/library scopes remain
-deferred. L03 rejects explicit source return in a parameter default with
+Fixed tuple destructuring in let/for supports nested tuples, names, wildcards
+and types. Array/object/rest destructuring, destructuring assignment, structural
+match patterns, optional-chain assignment targets, structural callable annotations
+and native generator/thread/async execution remain deferred. Analysis
+rejects explicit source return in a parameter default with
 InvalidDefault before producing an AnalyzedModule, including conditional and
 short-circuit branches. Nested author functions return through their own boundary;
 default expression/block tails produce a compiler-generated thunk Return.
@@ -102,7 +89,7 @@ edge even when the complete condition terminates; continue targets the condition
 head. Targets are retired before the next source statement/loop. Loops without an
 exit edge do not fabricate a fallthrough path.
 
-## Initializer-local bindings (L05)
+## Initializer-local bindings
 
 The semantic `Symbol.origin` is authoritative for binding ownership. Only
 ModuleGlobal enters ModuleDef.globals/exports; EntryLocal is allocated in the
@@ -137,11 +124,11 @@ range with MissingLink before allocating output. A native registration cannot
 substitute for that environment. Trusted host/import native links remain supported.
 NoWait-only ownerless declarations and non-root exports likewise retain located
 rejections before table admission. Module-context block fragments use initializer
-locals. Complete script imports, patterns, unified callable/standard
-library and engine sessions remain separate tasks.
+locals. Script imports use project lowering; remaining structural patterns retain
+their separate unsupported boundary.
 
 [Initializer contracts](tests/lowering/initializer_locals.rs) check actual source
-through parse/analysis/IR/B01 verification/codec/disassembly, not only successful
+through parse/analysis/IR/bytecode verification/codec/disassembly, not only successful
 verification. Static checks include:
 
 | Source scope | Required structure |
@@ -150,24 +137,23 @@ verification. Static checks include:
 | Blocks, conditions, while bodies, catch | One static reset per used binding; reset dominates BindInit/read/capture |
 | Forward read-only / mutual recursion | Uninitialized Cell before closure construction; later declaration initializes it |
 | Sibling and transitive closures / defaults | Exact Binding/Capture source identity and complete Value/Cell layouts |
-| Labels and finally | Correct condition-head destination and B01 cleanup selection; handler entry prepares its own binding |
+| Labels and finally | Correct condition-head destination and bytecode cleanup selection; handler entry prepares its own binding |
 | Enclosing / NoWait / nested pub / quotas | Located refusal before output admission or before the failing allocation/emission |
 
 The dominance graph conservatively includes ordinary, shared exception/cleanup
-and Leave-continuation edges. These are structural compilation checks: they do
-not establish actual closure sharing, reentry isolation, GC/host restoration,
-module publication or playable-story behavior. No V03/Aside execution is run.
+and Leave-continuation edges. These tests inspect structural compilation;
+`tests/execution.rs` separately checks closure sharing, reentry and interleaved GC.
 
-## Fixed collections and index locations (L06)
+## Fixed collections and index locations
 
 `build::collections` lowers `()`, `(value,)`, multi-element tuples, arrays and
 tables without spread. `(value)` remains grouping. Sequence elements are evaluated
 once left to right into a reserved contiguous register window, then consumed by
-the existing B01 Sequence descriptor and MakeTuple/MakeArray. Named table keys
+the existing bytecode Sequence descriptor and MakeTuple/MakeArray. Named table keys
 become UTF-8 string constants; dynamic keys retain their expressions. Every key
 then value is evaluated once in source field order into saved registers before
 one MakeTable consumes the ordered Table descriptor. There is no intermediate
-IndexSet, hash check or deduplication. The owner's contract puts key/hash
+IndexSet, hash check or deduplication. The language contract puts key/hash
 construction errors after expression evaluation. Later duplicate values overwrite
 earlier values while retaining the first insertion position, according to ordinary
 table semantics; this task establishes descriptor order, not runtime hashing or
@@ -188,20 +174,18 @@ Saved windows/receiver/key registers stay reserved across later calls and are
 cleared and reclaimed after their last lowering use. Terminal receiver/key/element
 or RHS paths release compiler scratch without generating subsequent evaluation,
 construction or writes. A remaining conditional fallthrough retains its saved
-operands. Return/Throw and finally continue to use B01's existing shared regions
+operands. Return/Throw and finally continue to use bytecode's existing shared regions
 and cleanup selection. Work, descriptor/pair capacity, temporary locations and
 register windows are admitted before traversal/reservation/emission. Quota errors
 identify the failing collection, target or subexpression. IR/bytecode v1, VM
 interfaces and RuntimeSupport are unchanged.
 
-Collection spread, patterns, classes, full script imports
-and unified callable/library work retain located rejection. L07 extends the
-location machinery below with Member values/locations. Member is never
+Member locations below use the same prepared-location machinery. Member is never
 rewritten as Index. The existing trusted namespace-qualified direct native call
 exception retains its exact linkage/provenance checks.
 
-[L06 static matrix](tests/lowering/collections_locations.rs) uses actual source
-through analysis, IR, B01 verification, codec and disassembly:
+[Collection static matrix](tests/lowering/collections_locations.rs) uses actual source
+through analysis, IR, bytecode verification, codec and disassembly:
 
 | Case | Structural evidence / negative boundary |
 | --- | --- |
@@ -210,21 +194,17 @@ through analysis, IR, B01 verification, codec and disassembly:
 | Unhashable expression key | Compiles with all expression calls before MakeTable; no claim that construction succeeds |
 | Ordinary/nested Index and mixed Name/Index chains | Receiver/key called once; common RHS register; reverse IndexSet/BindWrite/CellWrite/GlobalWrite order |
 | All ten index compound operators | IndexGet precedes RHS call, operation consumes the old value, IndexSet uses original receiver/key |
-| Defaults, initializer captures and closures | Shared capture/default layouts survive B01 roundtrip; compiler-generated default Return retained |
+| Defaults, initializer captures and closures | Shared capture/default layouts survive bytecode roundtrip; compiler-generated default Return retained |
 | Terminal receiver/key/element/RHS and finally | No unreachable calls, constructors or writes; shared Return/Throw cleanup targets; partial fallthrough use-def and conservative CFG dominance |
 | Sequential collection/location expressions | Bounded register high water with 300 repetitions; explicit Clears before reuse |
 | Deferred forms, tuple writes and quotas | Located preflight/semantic refusals; register/depth/work/capacity failure and exact-budget admission |
 
-No instruction/value evaluator or execution simulation is used. Actual hash,
-index bounds, alias mutation, GC, restoration and full engine behavior are untested.
+This matrix inspects emitted instructions. The source execution and VM
+collection tests check index bounds, alias mutation and interleaved GC.
 
-## Member values and locations (L07)
+## Member values and locations
 
-Issue [#42](https://github.com/jhq223/reel/issues/42) builds on main
-`fd12d1441fab0a06a5030e89001cc54abefebe6d`. It extends existing compiler
-modules without new crates, descriptors, bytecode versions or VM execution.
-
-`PreparedLocation::Member` retains an evaluated object register, a mapped B01
+`PreparedLocation::Member` retains an evaluated object register, a mapped bytecode
 SymbolId and the source node. HIR NameId is not a bytecode symbol index.
 MemberGet uses (destination, object, symbol); MemberSet uses
 (object, value, symbol), unlike IndexSet's (object, key, value).
@@ -242,34 +222,31 @@ the existing cleanup/CFG rules without emitting pending writes.
 
 MemberGet results feed CallTarget::Register. The callee is evaluated before
 source-order arguments; the compiler does not inject self or classify arbitrary
-callable values as methods. B01 retains its class-method binding contract and
-table closures remain ordinary functions. IndexGet is not rewritten to
-MemberGet, and this increment does not settle class string-index binding.
-Class method classification and field/delegate/hook behavior remain separate.
+callable values as methods. The bytecode contract retains its class-method binding contract and
+table closures remain ordinary functions. IndexGet retains its distinct
+instruction; class execution and method binding have dedicated tests.
 Native values use the registration callable path described above.
 
 Resolved namespace exports retain the trusted direct-native call exception:
 identity, version, ABI, capabilities and actual default implementation checks
 still apply. Linked namespace function values and optional calls use the same
 registration; namespace writes and unlinked references are rejected.
-L08 extends value chains below. Optional-chain assignment targets, class/super,
-full module linking
-and complete unified callable support remain outside this increment.
+Optional value chains are described below; same-chain assignment targets remain
+a located rejection. Classes and module linking share this compiler.
 
 [Member static tests](tests/lowering/members.rs) inspect emitted operands,
 Chinese symbol mapping, source order, mixed writeback, saved receiver identity,
 all compound operators, dynamic-call arguments, initializer/default captures,
 terminal and partial-fallthrough cleanup, native provenance and exact limits.
-They use parse/analyze/lower, B01 verification, codec and disassembly only.
-Actual receiver binding, setters/metamethods, aliasing, GC and restoration remain
-unverified by execution.
+They use parse/analyze/lower, bytecode verification, codec and disassembly only.
+`tests/classes.rs` checks actual method binding and inheritance, while
+`tests/execution.rs` checks ordinary member calls and mutations with GC.
 
-## Optional value chains (L08)
+## Optional value chains
 
-Issue [#44](https://github.com/jhq223/reel/issues/44) builds on main
-`3ad7354ccb0b0cae0d4f5a973ad24a71f6bdc998`. Existing HIR optional flags mark
+Existing HIR optional flags mark
 explicit null guards; chain flags mark propagation through continuous postfix
-Member/Index/Call segments. Group remains a value boundary. IR v1/B01 and the
+Member/Index/Call segments. Group remains a value boundary. IR v1/bytecode and the
 VM interface are unchanged.
 
 The chain collector walks the receiver/callee spine with charged work, capacity
@@ -281,9 +258,9 @@ Successful segment results update the evolving receiver through separate
 temporaries, not the null-exit result. Only full fallthrough writes the final
 result before joining. A later optional segment therefore also exits with null.
 
-In a?.b[i()](arg()).c, a null a skips every suffix. If a is non-null but b is
+In `a?.b[i()](arg()).c`, a null a skips every suffix. If a is non-null but b is
 null, ordinary later operations are not automatically skipped. In
-(a?.b)[i()] and (a?.b)(arg()), the inner chain first joins; outer ordinary
+`(a?.b)[i()]` and `(a?.b)(arg())`, the inner chain first joins; outer ordinary
 operations still evaluate their index/arguments. An outer optional operator
 creates its own guard. Nested chains have independent joins; null coalescing
 branches on the completed chain result.
@@ -311,10 +288,9 @@ argument windows, rebinding, terminal/cleanup edges, native boundaries, UTF-8
 spans, exact lower/emit limits and temporary reuse. Static structure does not
 establish actual side effects, hook invocation, receiver binding, GC or recovery.
 
-## Call spread and rest (L09)
+## Call spread and rest
 
-Issue #46 / PR #47 builds on main 244bf5c7. No opcode, format, dependency or
-crate is added. Unexpanded calls retain Window. Expanded calls evaluate the
+Unexpanded calls retain Window. Expanded calls evaluate the
 callee once, allocate a private Args builder and append each source-order
 ordinary, named or spread argument via ArgsPush/ArgsNamed/ArgsSpread. The final
 single Call uses Packed; CallDesc.names is empty. Dynamic spread length does
@@ -337,11 +313,11 @@ the annotation applies to this binding, not its elements. Incompatible known
 annotations and named supply of rest reject. Mutable/captured parameters retain
 their required Cell storage, and the body does not recreate binder-owned Cells.
 Defaults retain only their preceding parameter prefix and definition captures.
-ExternalSignature still has no PropertyBagTail projection; ordinary B01 tail
+ExternalSignature still has no PropertyBagTail projection; ordinary bytecode tail
 bag behavior is retained, while a rest-name collision cannot be silently routed
 into it.
 
-Callee and builder remain live across argument side effects. L08 null exits
+Callee and builder remain live across argument side effects. Optional-chain null exits
 skip builder/arguments/Call; terminated argument paths emit no pending append
 or Call and preserve existing cleanup routing. Trusted native direct calls
 retain exact symbol/node identity, version, ABI, capabilities and actual default
@@ -351,22 +327,21 @@ paths. Ordinary call syntax also forwards dynamic names: f(...positional,
 
 The source matrix in tests/lowering/call_arguments.rs verifies instruction
 order, Packed descriptors, parameter/capture identity, optional and cleanup CFG,
-negative boundaries, lower/emit quotas and register reuse through B01
-verify/codec/disassembly. Fresh rest allocation, true shallow alias behavior,
-ConcurrentModification, error timing, default execution and GC/restoration still
-require runtime acceptance.
+negative boundaries, lower/emit quotas and register reuse through bytecode
+verify/codec/disassembly. Source execution and VM collection tests additionally check fresh rest
+allocation, shallow aliases, ConcurrentModification, error timing, defaults and GC.
 
 ## Limits and verification
 
 Work, vector/string capacity, blocks, instructions, tables and register counts
 are charged before traversal, reservation or emission. Source/HIR and caller
 link inputs are borrowed; new retained and scratch storage are accounted
-together. Defaults are 16,777,216 work units, 64 MiB capacity, 1,000,000 records,
-200,000 instructions, 100,000 blocks, 65,536 registers per function and recursive
-depth 128. The depth budget is configurable without a hidden 128 clamp; flat
+together. Defaults use u32 record/instruction/block/register capacities, u64 work
+capacity and isize::MAX addressable bytes; hosts can set explicit quotas. Recursive
+depth defaults to 128. The depth budget is configurable without a hidden 128 clamp; flat
 binary and postfix segments consume work and scratch capacity, not recursive
 depth. Nested operands, parentheses and blocks retain their depth accounting.
-Compiler and bytecode checks use independent limits; B01's verification allocation
+Compiler and bytecode checks use independent limits; bytecode's verification allocation
 limit is capped to the compiler's remaining capacity. `capacity_peak_bytes` is a
 conservative upper bound, not an RSS measurement.
 
@@ -377,8 +352,8 @@ so successful recursive composition does not reserve a full error value for ever
 intermediate operation. Node dispatch and individual operations have separate
 stack frames; flat binary and postfix chains use explicit work lists.
 
-The lowering integration tests compile actual source through L03, inspect IR
-and register liveness/order, verify with B01, encode/decode, disassemble and check
+The lowering integration tests compile actual source through analysis, inspect IR
+and register liveness/order, verify with bytecode, encode/decode, disassemble and check
 all source-map boundaries. They cover Cell/capture identity, trusted native
 defaults and namespace links, cleanup regions, Context preservation, inferred
 types, temporary reuse and located limit failures. They do not dispatch bytecode
@@ -412,11 +387,11 @@ ASIDE_LOWERING_EVIDENCE=target/reel-artifacts/issue40/evidence target/release/ex
 The probe measures parse/analysis/lower/emit+verify/codec separately, checks the
 IR and final-package retained allocation ledgers against `stats_alloc`, and prints work, capacity,
 blocks, instructions and registers. Measurements and rejection cases are recorded
-in `LOWERING_PERFORMANCE.md`; no VM execution measurement belongs to this report.
+in the [fixed lowering measurements](https://github.com/jhq223/reel/blob/f916ffedceb91465633fd549e4db1084c070edf3/crates/aside-compiler/LOWERING_PERFORMANCE.md); no VM execution measurement belongs to this report.
 
 ## Executor integration boundary
 
-Ordinary-function `await value` lowers to the existing B01 Await instruction,
+Ordinary-function `await value` lowers to the existing bytecode Await instruction,
 with the expression's source span and normal register liveness. VM execution
 accepts a trusted host Awaitable binding and enters the existing native frame,
 including completed-result scheduling, pending waits, cancellation and fault
@@ -424,15 +399,15 @@ propagation. `cargo test -p aside-compiler --test host_awaitables` exercises sou
 codec, ordinary/tiny budgets and interleaved GC. Generator yield and async
 function lowering remain unsupported.
 
-PR #49/#54 combines the executor and collection dispatcher with the compiler.
-Native Windows debug/release checks execute fixed collections, Index/Member,
-positional spread and script rest, including host entry. The `execution` test
-independently compiles source, round-trips B01 and checks ordinary/tiny slices
-with interleaved GC. B01 verification alone remains distinct from execution.
-Tuple constants remain subject to a synchronous per-constant limit. Property-bag
-tails, ArgsNamedSpread, delegates/hooks and other unsupported
-forms still reject; registration cannot add missing handlers. These CPU checks
-do not establish snapshot restoration, device behavior or performance bounds.
+The executor and collection dispatcher execute fixed collections, Index/Member,
+positional and named spread, and script rest, including host entry. The `execution` test
+independently compiles source, round-trips bytecode and checks ordinary/tiny slices
+with interleaved GC. Bytecode verification alone remains distinct from execution.
+Tuple constants remain subject to a synchronous per-constant limit. Source named
+spreads lower to ArgsSpread; the separate ArgsNamedSpread opcode, property-bag
+tails and delegates/hooks have no executor implementation. Snapshot restoration
+is checked separately by `tests/host_awaitables.rs` and the VM snapshot tests.
+Device behavior and performance need their respective measurements.
 
 ## Executable children composition
 
@@ -467,5 +442,5 @@ later expressions, then MakeTable consumes a TableSources descriptor containing
 ordered Pair/Spread entries. Explicit key validation remains after all field
 expressions. Later fields overwrite without changing first insertion order.
 Temporary snapshots and builders are rooted registers and are cleared through
-normal expression and frame cleanup. B01 adds descriptor tag 10 and opcode 005f;
+normal expression and frame cleanup. bytecode adds descriptor tag 10 and opcode 005f;
 there is no dependency or host ABI change.

@@ -52,8 +52,12 @@ The controlled OfflineOutput explicitly guarantees submission and permits
 Estimated timing; it is separate from the native CPAL capability.
 
 Declared Surround71 order is FL, FR, Center, LFE, BackLeft, BackRight, SideLeft,
-SideRight. It verifies the converter, not an actual Windows device mask. The
-adapter negotiates known mono/stereo or rejects unknown multichannel-only layouts.
+SideRight. This is the explicit offline converter layout. On Windows, the
+CPAL/WASAPI adapter requests a stereo or mono client stream and uses system PCM
+conversion even when enumeration reports a multichannel default device. It does
+not infer a physical speaker mask from the device channel count. Other platforms
+accept enumerated mono/stereo configurations; unknown multichannel-only layouts
+remain unsupported.
 Windows GNU cargo check is compile coverage only; Linux/macOS devices, Windows/N100
 8ch hardware, hotplug, native startup/suspend/resume and hardware timing remain
 independent target work. No MediaPTS service, decoder, video, DSL executor or full

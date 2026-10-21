@@ -24,7 +24,8 @@ They borrow the same `Arc<OwnedBytes>` compressed input. The probe returns 24
 little-endian bytes: width and height (u32), RGBA length and decoder output length
 (u64). The RGBA operation returns straight-alpha sRGB pixels. Reservations use
 CpuInput, CpuOutput, Temporary and at least 512 Completion bytes. The directory
-adapter accepts full reads and does not advertise range reads or save durability.
+adapter accepts full and range reads; persistence durability belongs to the
+separate storage service.
 
 Drag the shapes/white indicator; scroll to change the root transform. The checker
 image, overlapping transparent group, clip and optional Parley label use the same
@@ -67,8 +68,11 @@ On suspend, cancel active input, suspend presentation/backend and call
 the surface with a strictly newer epoch, configure its backend, then call
 `StoryRuntime::resume`. Activity time excludes the suspended interval, while VM
 deadlines keep using the real host clock. Closing still drains task retirement
-while suspended. Native IME, clipboard and accessibility services are not
-implemented by the current host.
+while suspended. The Winit adapter connects native IME enable/disable, preedit,
+commit and candidate-area placement to the shared editor. Desktop clipboard
+copy/paste uses arboard on Windows, Linux and macOS. Candidate-window placement,
+focus transitions and clipboard behavior still need target-device acceptance;
+system accessibility adapters remain open.
 
 ```sh
 cargo test -p reel-player --no-default-features portable_host_runs_story
@@ -86,14 +90,14 @@ not allocate the renderer diagnostic's checker image. CPU resource residency is
 limited by bytes rather than a separate ticket-count quota.
 
 The shell accepts opaque sRGB surfaces with FIFO presentation. Other surface
-profiles, IME/accessibility platform integration and pen-specific input remain future
+profiles, system accessibility integration and pen-specific input remain future
 adapter work. Unsupported drawing records and quota refusals are logged with their
 record location where applicable and retain the last accepted view.
 
 See [device contract](../reel-render/R02-INTERFACE.md) and
 [verification and remaining scope](../reel-render/R02-REPORT.md).
 
-## Rust session-host window (S01)
+## Rust session-host window
 
 The additional binary exercises reel-engine with real Label/Button controls and
 the existing window/RenderFrame/wgpu path. It sends explicit Rust host requests,
@@ -121,18 +125,19 @@ Dialogue rows, choices and their text have no additional fixed count or length
 ceiling. All choices share one projection owner, while ChoiceId
 preserves each business key. Scrolling invalidates the old input stamp and any
 held gesture; a new accepted frame must establish the new hit geometry.
-Input supports mouse clicks, scrolling, keyboard activation and independent touch contacts. Gamepad navigation uses the D-pad/left stick, south-button confirmation and east-button Back. Escape also routes Back through the focused UI. The independent `gamepad` feature supplies `platform::gamepad::GamepadSource` on Windows/Linux/macOS through pinned Gilrs; other platforms can inject `reel_ui::input::InputEvent` directly. `NavigationInput` exposes its next repeat deadline so idle hosts can sleep. Backend queues are bounded, device disconnect cancels held contributions, and focus loss/suspension retires the native receiver before rebuilding it on resume. Linux builds of Gilrs require the system libudev development package. Native backend initialization can be checked with `cargo test -p reel-player --features gamepad native_gamepad_backend_initializes_and_drops_without_waiting -- --ignored --nocapture`; this does not verify physical button input. `platform::winit::TouchInput` converts native contacts to portable `PointerEvent` values, retaining identity and pressure; buttons share capture, cancellation and presented geometry across devices. Native IME and system accessibility adapters remain future work.
+Input supports mouse clicks, scrolling, keyboard activation and independent touch contacts. Gamepad navigation uses the D-pad/left stick, south-button confirmation and east-button Back. Escape also routes Back through the focused UI. The independent `gamepad` feature supplies `platform::gamepad::GamepadSource` on Windows/Linux/macOS through pinned Gilrs; other platforms can inject `reel_ui::input::InputEvent` directly. `NavigationInput` exposes its next repeat deadline so idle hosts can sleep. Backend queues are bounded, device disconnect cancels held contributions, and focus loss/suspension retires the native receiver before rebuilding it on resume. Linux builds of Gilrs require the system libudev development package. Native backend initialization can be checked with `cargo test -p reel-player --features gamepad native_gamepad_backend_initializes_and_drops_without_waiting -- --ignored --nocapture`; this does not verify physical button input. `platform::winit::TouchInput` converts native contacts to portable `PointerEvent` values, retaining identity and pressure; buttons share capture, cancellation and presented geometry across devices. Native text events use `platform::winit_text`; system accessibility adapters
+remain future work.
 
-Author software-GPU evidence uses Xvfb/Vulkan llvmpipe, not physical hardware.
-Independent checks and remaining limitations are tracked in PR #50. VM wait/root
-adaptation and native Windows source execution are covered by PR #55 library tests.
+The [original author software-GPU report](https://github.com/jhq223/reel/pull/50)
+used Xvfb/Vulkan llvmpipe. It records that environment; current device and platform
+acceptance is tracked in [#93](https://github.com/jhq223/reel/issues/93).
 
 SessionUi dispatches through Session::handle_local_input rather than resetting
 a private input counter. Existing-session handoff and subsequent session_mut
 input preserve the same high-water sequence. Zero-line dialogue is accepted and
 can complete through the normal presented Down/Up path in one advance.
 
-## Aside session library assembly (PR #55)
+## Aside session library assembly
 
 `AsideSessionUi` owns SessionUi and the real SessionVm adapter. `from_source`
 compiles through the shared trusted registry and delegates to `from_compiled`.
@@ -153,7 +158,7 @@ The embedding application must continue cleanup until its obligations retire.
 
 The existing diagnostic/session-host commands remain Rust-only. Production
 `shell::run_story` accepts a compiled story through the same driver and renderer.
-At 110b984, StoryState distinguishes Running, StartingEntry, Finishing,
+StoryState distinguishes Running, StartingEntry, Finishing,
 HostFailed(stage), Faulted(DeliveryId), Finished and Cancelled. Repeated terminal ticks return the same terminal category without
 stepping the VM or calling the clock. Entry is consumed only after successful
 start; a start-capacity error becomes HostFailed(StartEntry), not a script Fault
@@ -187,13 +192,14 @@ relative to the asset root and share the existing text renderer and resource lea
 Each window turn advances bounded VM, GC and retirement slices within one 2 ms
 deadline, then updates the projection once. Synchronous native calls continue
 within that deadline instead of waiting for a separate window frame. A published
-dialogue or choice finishes the active GC cycle, then sleeps until presented UI
-input completes it. VM and GC slices alternate during execution, so discarded
-nodes and loop temporaries are reclaimed throughout a long story; instruction
+dialogue or choice finishes a requested GC cycle, then sleeps until presented UI
+input completes it. Allocation pressure, explicit cleanup or resource blocking
+starts collection; a low-allocation interaction does not start a scan solely
+because its VM slice ended. Active VM and GC work alternate within the deadline; instruction
 budget yields schedule another turn without forcing a redraw. Surface resize,
 suspend/resume and device recovery preserve the same VM. The existing reveal
 timer advances at most one grapheme per wake and freezes while a click is held.
-Natural completion leaves the window open after owner retirement. Close or
+Natural completion leaves the window open after owner retirement.
 Closing the window cancels and continues task/root cleanup before exiting, including while
 the surface is suspended. VM faults report their source path, line, column and
 author-thrown value after
@@ -209,7 +215,7 @@ choice result delivery and close/normal owner retirement:
 `cargo test --locked -p reel-player --features window --lib`.
 Native compilation and these checks do not claim a physical GPU test.
 
-The supplied default font covers every supported script, including Chinese. Font
+Choose font files covering the scripts used by the work, including Chinese. Font
 collections share one resource across face indices. To run the existing author
 scene contract with real Chinese glyphs on Windows:
 
@@ -249,7 +255,7 @@ cargo run --locked -p reel-dev -- deps
 ```
 
 These CPU checks prove portable contracts on the host where they run, not
-device support on every target. Native IME and system accessibility
-integration remain platform-adapter work.
+device support on every target. Native IME candidate windows and clipboard
+operations need device checks; system accessibility integration remains open.
 
 Author action scopes use `input(bindings:, on_action:)` in Aside or `NodeKind::Input` in Rust, with shared `InputBindings` and `NodeAction` events. See [author_input.aside](../../examples/author_input.aside). Raw controls route through `TextEvent::Input` before default navigation; its result identifies action consumption within the current modal scope. Input device IDs distinguish keyboard, pointer contact and gamepad. Held state resets on focus/scope loss, presentation revocation and remapping. After `PresentationBridge::resolve` or `clear`, call the fallible `AsideSessionUi::presented` or `clear_presented` to deliver cancellation callbacks, then wake the story runtime if work became runnable.
