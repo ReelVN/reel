@@ -19,8 +19,8 @@ play(C) performs no implicit old-Sound reclamation. The hook and module declarat
 are `cfg(test)` only. Current commands from the repository root:
 
 ```sh
-cargo run -p reel-dev --locked -- audio-regression
-cargo run -p reel-dev --locked -- audio-regression --release
+cargo run --locked -p reel-dev -- audio-regression
+cargo run --locked -p reel-dev -- audio-regression --release
 cargo test -p reel-media --no-default-features --locked -- --nocapture
 ```
 

@@ -193,7 +193,7 @@ fn subtree_blend_mask_clip_and_backdrop_fit_the_planned_target_budget() {
             let frame = frame(drawing, [400, 300], &pool);
             let expected_targets = if masked || clipped { 4 } else { 3 };
             let planned =
-                super::super::targets::peak_targets(&frame, [400, 300], |_| Ok(())).unwrap();
+                super::super::targets::peak_targets(&frame, [400, 300], false, |_| Ok(())).unwrap();
             assert_eq!(planned, expected_targets);
             // Exactly one-sample RGBA16F storage: an omitted backdrop in planning
             // would choose a quality whose replay does not fit this budget.

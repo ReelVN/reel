@@ -3390,6 +3390,7 @@ dependencies = [
  "tracing-wasm",
  "tracing_android_trace",
  "ui-events",
+ "unicode-segmentation",
  "web-time",
 ]
 

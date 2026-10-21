@@ -42,9 +42,9 @@ no 0.5ms promise. Final explicit host join is a shutdown wait, not a frame task.
 ```sh
 cargo test -p reel-media --locked -- --nocapture
 cargo test -p reel-media --no-default-features --locked -- --nocapture
-cargo run -p reel-dev --locked -- audio-regression
-cargo run -p reel-dev --locked -- audio-regression --release
-cargo run -p reel-dev --locked -- audio-probe
+cargo run --locked -p reel-dev -- audio-regression
+cargo run --locked -p reel-dev -- audio-regression --release
+cargo run --locked -p reel-dev -- audio-probe
 ```
 
 Media regressions retain same-mixer single-ticket/single-PCM A→B, quota 0/1,

@@ -1977,6 +1977,97 @@ mod tests {
         assert_eq!(visible(&ui), "The unseen successor".len());
     }
     #[test]
+    fn auto_condition_preserves_print_clock_and_restarts_only_auto_delay() {
+        let mut session = session();
+        say(&mut session, "Long enough text");
+        session.set_auto_reading(true, Some(std::time::Duration::from_secs(2)));
+        let mut ui = SessionUi::preview(session).unwrap();
+        let (mut bridge, root) = mount(&ui);
+        accept(&mut ui, &mut bridge, root, 1);
+        ui.advance_dialogue(0, 10.).unwrap();
+        ui.session.set_auto_condition(false);
+        ui.advance_dialogue(100_000_000, 10.).unwrap();
+        ui.sync(&mut bridge, root).unwrap();
+        assert_eq!(visible(&ui), 1, "gate must preserve printing clock");
+        accept(&mut ui, &mut bridge, root, 2);
+        ui.advance_dialogue(10_000_000_000, 0.).unwrap();
+        ui.sync(&mut bridge, root).unwrap();
+        accept(&mut ui, &mut bridge, root, 3);
+        assert!(!ui.dialogue_needs_time());
+        ui.session.set_auto_condition(true);
+        ui.advance_dialogue(20_000_000_000, 0.).unwrap();
+        ui.advance_dialogue(21_000_000_000, 0.).unwrap();
+        ui.session.set_auto_condition(false);
+        ui.session.set_auto_condition(true);
+        ui.advance_dialogue(22_000_000_000, 0.).unwrap();
+        ui.advance_dialogue(23_999_999_999, 0.).unwrap();
+        assert!(ui.session.take_completion().is_none());
+        ui.advance_dialogue(24_000_000_000, 0.).unwrap();
+        assert_eq!(
+            ui.session.take_completion().unwrap().outcome(),
+            &CompletionOutcome::Advanced
+        );
+    }
+
+    #[test]
+    fn explicit_next_continues_with_auto_condition_closed() {
+        let mut session = session();
+        let id = session
+            .begin_say(
+                session.root_owner(),
+                &[DialogueLineInput {
+                    history: Default::default(),
+                    speaker_id: None,
+                    speaker_name: "",
+                    content_id: "next",
+                    text: (&reel_core::text::Text::parse("Continue[next]").unwrap()).into(),
+                }],
+                "en",
+                true,
+            )
+            .unwrap();
+        session
+            .reveal_more(session.root_owner(), id, usize::MAX)
+            .unwrap();
+        session.set_auto_condition(false);
+        let mut ui = SessionUi::preview(session).unwrap();
+        let (mut bridge, root) = mount(&ui);
+        accept(&mut ui, &mut bridge, root, 1);
+        assert!(ui.dialogue_needs_time());
+        ui.advance_dialogue(0, 30.).unwrap();
+        assert_eq!(
+            ui.session.take_completion().unwrap().outcome(),
+            &CompletionOutcome::Advanced
+        );
+    }
+
+    #[test]
+    fn closed_auto_condition_allows_manual_reveal_advance_and_skip() {
+        for skip in [false, true] {
+            let mut session = session();
+            say(&mut session, "Gate closed");
+            session.set_auto_condition(false);
+            let mut ui = SessionUi::preview(session).unwrap();
+            let (mut bridge, root) = mount(&ui);
+            accept(&mut ui, &mut bridge, root, 1);
+            if skip {
+                ui.session.set_skip_reading(true, true, false);
+                ui.advance_dialogue(0, 30.).unwrap();
+            } else {
+                click(&mut ui, &mut bridge, (100., 300.));
+                ui.sync(&mut bridge, root).unwrap();
+                assert_eq!(visible(&ui), "Gate closed".len());
+                accept(&mut ui, &mut bridge, root, 2);
+                click(&mut ui, &mut bridge, (100., 300.));
+            }
+            assert_eq!(
+                ui.session.take_completion().unwrap().outcome(),
+                &CompletionOutcome::Advanced
+            );
+        }
+    }
+
+    #[test]
     fn manual_dialogue_input_stops_reading_modes_after_admission() {
         for skip in [false, true] {
             let mut session = session();

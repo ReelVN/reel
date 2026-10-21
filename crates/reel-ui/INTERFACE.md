@@ -1,15 +1,9 @@
 # Stage public interface — U02 §15 and R01 §16
 
-Current recording/render interface: [R01-INTERFACE.md](R01-INTERFACE.md), Issue
-#25, architecture contract `ac004182`, on independently checked U02 `8dc2428`.
-The remaining geometry/input descriptions below continue to apply. Historical
-dependency information describes U02 before this extension.
-
-Scope: `crates/reel-ui`, its renderer/player consumers, workspace/lock and Rust
-maintenance checks. Issue #34 consolidates the accepted UI/stage implementations;
-public APIs now live in `core/app/layout/properties/widgets/theme/bridge/frame/resources`.
-The source is maintained independently by Reel; upstream versions and package
-layout are not contracts. See [origin](ORIGIN.md).
+[R01-INTERFACE.md](R01-INTERFACE.md) defines portable recording and resources.
+The shared widget, geometry and input APIs live in reel-ui; renderer and native
+window integration live in reel-render and reel-player. See [README.md](README.md)
+for module boundaries and [ORIGIN.md](ORIGIN.md) for source attribution.
 
 ## UI runtime and presented geometry
 
@@ -109,16 +103,11 @@ layout are not contracts. See [origin](ORIGIN.md).
   window event dispatch; it does not expose mutable RenderRoot access that could
   bypass acceptance.
 
-StageGraph owns NodeId allocation, generations and author-node mappings (§6).
-D01 identity.rs supplies FrameId/SurfaceEpoch, not an author NodeId type. U02
-uses non-reused Masonry WidgetIds for the private widget tree; it introduces no
-parallel NodeId allocator or StageGraph. R01 adds prepared resource versions,
-bounded frame export and ExternalDraw. Author Slider/DSL remain separate tasks; native GPU/window implementations
-live in reel-render/player. Bridge tickets cover geometry and growing routes/registry;
-R01 independently accounts output/resource/backend ownership and measures opaque
-producer Scene/cache residency.
+Author nodes are allocated by `reel-ui::stage`; the private widget tree uses
+WidgetId. reel-engine projects Aside values and callbacks into the shared Stage.
+reel-player/src/stage_widget.rs constructs the matching widgets and controls. Native GPU/window implementations live in reel-render/player.
+Bridge tickets account for geometry and input routes; the recording contract
+accounts for output, resources and backend ownership.
 
-No author language syntax is added. Both guides now state R01's Rust-only
-implementation scope. Verification and measurements are in README.md,
-R01-REPORT.md (historical evidence links) and `target/reel-artifacts/` for new runs. Historical U02 32-bit checks are separate from
-native-library linking, target execution and real-device acceptance.
+Current validation commands are in [README.md](README.md); original UI/render
+measurements are preserved in [R01-REPORT.md](https://github.com/jhq223/reel/blob/355571b18bd4024914438a7ac6bd94ebf3c7826f/crates/reel-ui/R01-REPORT.md).

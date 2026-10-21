@@ -836,3 +836,42 @@ fn pointer_coordinates_round_trip_accepted_canvas_fit_and_dpi() {
         Some([150., 160.])
     );
 }
+
+#[test]
+fn capture_exclusions_follow_cursor_overlay_and_inherit_its_original_parent() {
+    for exclude_parent in [false, true] {
+        let (mut f, owner, cursor, _, _) = fixture();
+        let initial = f.record();
+        f.accept(&initial);
+        f.ui.handle_pointer(
+            &mut f.bridge,
+            pointer(PointerType::Mouse, (110., 90.), None),
+        )
+        .unwrap();
+        f.edit(if exclude_parent { owner } else { cursor }, |p| {
+            p.capture_included = false
+        });
+        let frame = f.record();
+        let plan = frame.plan();
+        let last = plan.capture_exclusions.last().unwrap();
+        assert!(
+            last.start >= plan.body_commands,
+            "cursor exclusions are rebased to the final overlay stream"
+        );
+        let total = plan
+            .layers
+            .iter()
+            .map(|layer| match &layer.kind {
+                reel_ui::app::VisualLayerKind::Scene(scene) => scene.commands().len(),
+                reel_ui::app::VisualLayerKind::External { .. } => 1,
+            })
+            .sum::<usize>();
+        assert_eq!(last.end, total);
+        assert!(
+            plan.subtrees
+                .iter()
+                .filter(|s| s.commands.start >= plan.body_commands)
+                .all(|s| !s.capture_included)
+        );
+    }
+}

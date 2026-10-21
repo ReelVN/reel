@@ -37,87 +37,6 @@ fn joined(prefix: &Text, suffix: &Text) -> Result<Text, SessionError> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Duration;
-
-    #[test]
-    fn append_preserves_pending_rich_pause_and_cleared_history() {
-        let mut session = Session::new(SessionId(1), Epoch(1)).unwrap();
-        let text = Text::parse("[speed=10]A[pause=1]B[/speed]").unwrap();
-        let owner = session.root_owner();
-        let id = session
-            .begin_open_say(
-                owner,
-                &[DialogueLineInput {
-                    speaker_id: None,
-                    speaker_name: "",
-                    content_id: "first",
-                    text: (&text).into(),
-                    history: HistoryInput::Display,
-                }],
-                "en",
-                false,
-            )
-            .unwrap();
-        session
-            .advance_reveal(owner, id, Duration::from_millis(400), 10.)
-            .unwrap();
-        session
-            .append_dialogue(owner, id, &Text::from("C"), "second", HistoryInput::Display)
-            .unwrap();
-        session
-            .advance_reveal(owner, id, Duration::from_millis(500), 10.)
-            .unwrap();
-        assert_eq!(
-            session.open_dialogue(id).unwrap().lines()[0].visible_text(),
-            "A"
-        );
-        session
-            .advance_reveal(owner, id, Duration::from_millis(300), 10.)
-            .unwrap();
-        assert_eq!(
-            session.open_dialogue(id).unwrap().lines()[0].visible_text(),
-            "AB"
-        );
-        session.clear_history(0);
-        session
-            .append_dialogue(owner, id, &Text::from("D"), "third", HistoryInput::Display)
-            .unwrap();
-        assert!(session.view().history.is_empty());
-        session.wait_dialogue(owner, id).unwrap();
-        assert_eq!(
-            session
-                .handle_local_input(owner, InputAction::Advance(id))
-                .unwrap(),
-            InputOutcome::Pending
-        );
-        session
-            .advance_reveal(owner, id, Duration::from_secs(1), 10.)
-            .unwrap();
-        assert_eq!(
-            session
-                .handle_local_input(owner, InputAction::Advance(id))
-                .unwrap(),
-            InputOutcome::Completed
-        );
-        assert_eq!(session.read_progress.ids.len(), 3);
-        assert!(session.take_completion().is_some());
-        session.cancel();
-        assert_eq!(
-            session.append_dialogue(
-                owner,
-                id,
-                &Text::from("stale"),
-                "fourth",
-                HistoryInput::Display
-            ),
-            Err(SessionError::MainOwnerRequired)
-        );
-    }
-}
-
 impl Session {
     pub fn begin_open_say(
         &mut self,
@@ -269,5 +188,86 @@ impl Session {
         d.text_revision = d.text_revision.wrapping_add(1);
         self.check_skip_boundary();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn append_preserves_pending_rich_pause_and_cleared_history() {
+        let mut session = Session::new(SessionId(1), Epoch(1)).unwrap();
+        let text = Text::parse("[speed=10]A[pause=1]B[/speed]").unwrap();
+        let owner = session.root_owner();
+        let id = session
+            .begin_open_say(
+                owner,
+                &[DialogueLineInput {
+                    speaker_id: None,
+                    speaker_name: "",
+                    content_id: "first",
+                    text: (&text).into(),
+                    history: HistoryInput::Display,
+                }],
+                "en",
+                false,
+            )
+            .unwrap();
+        session
+            .advance_reveal(owner, id, Duration::from_millis(400), 10.)
+            .unwrap();
+        session
+            .append_dialogue(owner, id, &Text::from("C"), "second", HistoryInput::Display)
+            .unwrap();
+        session
+            .advance_reveal(owner, id, Duration::from_millis(500), 10.)
+            .unwrap();
+        assert_eq!(
+            session.open_dialogue(id).unwrap().lines()[0].visible_text(),
+            "A"
+        );
+        session
+            .advance_reveal(owner, id, Duration::from_millis(300), 10.)
+            .unwrap();
+        assert_eq!(
+            session.open_dialogue(id).unwrap().lines()[0].visible_text(),
+            "AB"
+        );
+        session.clear_history(0);
+        session
+            .append_dialogue(owner, id, &Text::from("D"), "third", HistoryInput::Display)
+            .unwrap();
+        assert!(session.view().history.is_empty());
+        session.wait_dialogue(owner, id).unwrap();
+        assert_eq!(
+            session
+                .handle_local_input(owner, InputAction::Advance(id))
+                .unwrap(),
+            InputOutcome::Pending
+        );
+        session
+            .advance_reveal(owner, id, Duration::from_secs(1), 10.)
+            .unwrap();
+        assert_eq!(
+            session
+                .handle_local_input(owner, InputAction::Advance(id))
+                .unwrap(),
+            InputOutcome::Completed
+        );
+        assert_eq!(session.read_progress.ids.len(), 3);
+        assert!(session.take_completion().is_some());
+        session.cancel();
+        assert_eq!(
+            session.append_dialogue(
+                owner,
+                id,
+                &Text::from("stale"),
+                "fourth",
+                HistoryInput::Display
+            ),
+            Err(SessionError::MainOwnerRequired)
+        );
     }
 }

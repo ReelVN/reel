@@ -32,6 +32,8 @@ pub struct FrameTransition {
 #[derive(Clone, Debug)]
 pub struct SceneTransition {
     pub commands: Range<usize>,
+    /// Effective inclusion of the transition target and its ancestors.
+    pub capture_included: bool,
     pub previous: RetainedScene,
     pub progress: f32,
     pub mask: Option<FrameImageMask>,
@@ -80,7 +82,7 @@ pub(super) fn compile_transitions(
         if !transition.progress.is_finite() || !(0. ..=1.).contains(&transition.progress) {
             return Err(error(BuildErrorKind::InvalidRecord));
         }
-        let (commands, order) = match transition.root {
+        let (commands, order, capture_included) = match transition.root {
             Some(widget) => {
                 let (index, subtree) = subtrees
                     .iter()
@@ -90,9 +92,9 @@ pub(super) fn compile_transitions(
                 if subtree.suppressed_by_ancestor {
                     continue;
                 }
-                (subtree.commands.clone(), index)
+                (subtree.commands.clone(), index, subtree.capture_included)
             }
-            None => (0..body_end, 0),
+            None => (0..body_end, 0, true),
         };
         let (parent_to_window, mask_to_window) = transforms(geometry, transition.root)?;
         let mask = transition
@@ -123,6 +125,7 @@ pub(super) fn compile_transitions(
             transition.root,
             SceneTransition {
                 commands,
+                capture_included,
                 previous: transition.previous.clone(),
                 progress: transition.progress,
                 mask,
@@ -149,6 +152,7 @@ pub struct RetainBuild {
     to_parent: Affine,
     next: usize,
     commands: Vec<FrameCommand>,
+    capture_exclusions: Vec<Range<usize>>,
     masks: BTreeMap<u32, Arc<FrameMask>>,
     mask_queue: Vec<u32>,
     mask_next: usize,
@@ -196,13 +200,28 @@ impl RetainBuild {
         let ticket = pool
             .reserve(limits.max_bytes)
             .map_err(|_| error(BuildErrorKind::Bytes))?;
+        let exclusion_count = frame
+            .drawing()
+            .capture_exclusions
+            .iter()
+            .filter(|r| r.start < range.end && r.end > range.start)
+            .count();
         let bytes = size_of::<Self>() as u64
             + size_of::<FrameDrawing>() as u64
             + 2 * size_of::<usize>() as u64
             + (range.len() * size_of::<FrameCommand>()) as u64
-            + frame.inner.transition_roots.len() as u64;
+            + frame.inner.transition_roots.len() as u64
+            + (exclusion_count * size_of::<Range<usize>>()) as u64;
         if bytes > limits.max_bytes {
             return Err(error(BuildErrorKind::Bytes));
+        }
+        let mut capture_exclusions = Vec::with_capacity(exclusion_count);
+        for excluded in &frame.drawing().capture_exclusions {
+            let start = excluded.start.max(range.start);
+            let end = excluded.end.min(range.end);
+            if start < end {
+                capture_exclusions.push(start - range.start..end - range.start);
+            }
         }
         let commands = Vec::with_capacity(range.len());
         // Numeric command ranges cannot distinguish empty siblings at the same gap.
@@ -228,6 +247,7 @@ impl RetainBuild {
             range,
             to_parent,
             commands,
+            capture_exclusions,
             masks: BTreeMap::new(),
             mask_queue: Vec::new(),
             mask_next: 0,
@@ -489,6 +509,7 @@ impl RetainBuild {
             pool: self.pool.clone(),
             drawing: Arc::new(FrameDrawing {
                 commands: self.commands,
+                capture_exclusions: self.capture_exclusions,
                 masks: self.masks,
                 resources,
                 transitions: self.transitions,

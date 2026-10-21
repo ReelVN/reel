@@ -1,5 +1,31 @@
 //! Immutable scalar mask expressions; the VM owns the complete shared graph.
 use super::{AdapterError, stage, text};
+
+aside_host::native_documentation! {
+    pub(super) fn documentation {
+        /// Create an immutable mask expression sampling image alpha. x/y and scale_x/y
+        /// transform sampling; repeat accepts none, x, y or both. Source is a whole PNG or JPEG.
+        "reel::mask::alpha";
+        /// Create an immutable mask expression sampling image grayscale. Sampling
+        /// transform and repetition follow mask.alpha.
+        "reel::mask::gray";
+        /// Read the mask's live progress, softness, x or y parameter inside an immutable
+        /// expression. Bind or animate the corresponding node property to vary it.
+        "reel::mask::param";
+        /// Add two scalar mask expressions or numeric constants.
+        "reel::mask::add";
+        /// Subtract the second mask expression or number from the first.
+        "reel::mask::subtract";
+        /// Multiply two scalar mask expressions or numeric constants.
+        "reel::mask::multiply";
+        /// Raise a scalar mask expression to a finite nonnegative power.
+        "reel::mask::pow";
+        /// Clamp a scalar mask expression to min/max, defaulting to zero and one.
+        "reel::mask::clamp";
+        /// Apply smoothstep between edge0 and edge1 to a scalar mask expression.
+        "reel::mask::smoothstep";
+    }
+}
 use aside_vm::{Heap, HeapError, HeapHandle, ObjectKind, Value};
 use reel_ui::stage::{MaskChannel, MaskOp, MaskProgram};
 use std::{collections::HashMap, sync::Arc};

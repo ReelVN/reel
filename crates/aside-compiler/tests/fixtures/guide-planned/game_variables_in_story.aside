@@ -1,0 +1,4 @@
+let route = state("route", {affection: 0, visited: set()});
+
+route.affection += 1;
+route.visited.add("window");

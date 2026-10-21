@@ -325,6 +325,8 @@ pub struct NodeProps {
     /// Blend the completed subtree with its backdrop.
     pub blend: crate::peniko::BlendMode,
     pub visible: bool,
+    /// Include this subtree in stage captures; ordinary presentation is unchanged.
+    pub capture_included: bool,
     pub enabled: bool,
     /// A visible subtree owns input until hidden, removed, or superseded in paint order.
     pub modal: bool,
@@ -333,6 +335,12 @@ pub struct NodeProps {
     pub decorated: bool,
     /// Visible UTF-8 byte prefix; full text is always used for layout.
     pub reveal: Option<usize>,
+    /// Optional grapheme opacity wavefront; None disables fading.
+    pub reveal_fade: Option<f64>,
+    /// UTF-8 byte origin of the opacity wavefront.
+    pub reveal_fade_from: usize,
+    /// Opacity difference between adjacent logical graphemes.
+    pub reveal_fade_step: f64,
     pub gap: f64,
     pub padding: f64,
     pub font_size: f64,
@@ -347,6 +355,10 @@ pub struct NodeProps {
     pub text_fit: crate::core::TextFit,
     pub text_outline: f64,
     pub text_outline_color: [u8; 4],
+    /// Logical shadow offset. Two zero components disable the shadow.
+    pub text_shadow_x: f64,
+    pub text_shadow_y: f64,
+    pub text_shadow_color: [u8; 4],
     pub color: [u8; 4],
     pub background: Option<[u8; 4]>,
     pub rotation: f64,
@@ -379,11 +391,15 @@ impl Default for NodeProps {
             invert: 0.,
             blend: Default::default(),
             visible: true,
+            capture_included: true,
             enabled: true,
             modal: false,
             clip: false,
             decorated: true,
             reveal: None,
+            reveal_fade: None,
+            reveal_fade_from: 0,
+            reveal_fade_step: 0.,
             gap: 0.,
             padding: 0.,
             font_size: 24.,
@@ -397,6 +413,9 @@ impl Default for NodeProps {
             text_fit: crate::core::TextFit::None,
             text_outline: 0.,
             text_outline_color: [0, 0, 0, 255],
+            text_shadow_x: 0.,
+            text_shadow_y: 0.,
+            text_shadow_color: [0, 0, 0, 255],
             color: [255; 4],
             background: None,
             rotation: 0.,

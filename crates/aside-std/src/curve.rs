@@ -16,8 +16,26 @@ const LINEAR: i64 = 0;
 const STEP: i64 = 1;
 const CUBIC: i64 = 2;
 
+aside_host::native_documentation! {
+    /// Construct an immutable scalar curve from time-ordered keys.
+    /// Each key has `time` and `value`; `mode` selects `linear` (default), `step`,
+    /// or `cubic`. Cubic keys accept `in_tangent` and `out_tangent` slopes.
+    /// Times must strictly increase. Sampling outside the key range returns the
+    /// nearest endpoint. The curve owns its keys and can be shared by tweens.
+    ///
+    /// ```aside
+    /// use std::math::curve;
+    /// fn main() {
+    ///     let fade = curve([{time: 0, value: 0}, {time: 1, value: 1}]);
+    ///     if fade.sample(0.5) != 0.5 { throw "curve sample"; }
+    /// }
+    /// ```
+    const DOCUMENTATION;
+}
+
 pub(super) fn binding() -> NativeBinding<StandardLibrary, NativeError> {
     NativeBinding {
+        documentation: DOCUMENTATION,
         contract: NativeContract {
             symbol: "std::math::curve".into(),
             abi_version: 1,
@@ -254,6 +272,8 @@ pub(super) fn construct(
     Ok(used)
 }
 
+/// Sample this curve at `time`. Endpoints clamp; inner segments use the left
+/// key's interpolation mode. Sampling performs a logarithmic lookup.
 #[native(symbol = "std::math::curve::sample", effects = Effects(0))]
 pub(super) fn sample(
     #[aside(context)] context: &mut CallContext<'_, StandardLibrary>,

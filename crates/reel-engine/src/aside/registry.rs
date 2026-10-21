@@ -470,6 +470,39 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     view_parameters[0].name = "layers".into();
     contracts.push(NativeContract {
         rest: None,
+        symbol: "reel::when".into(),
+        abi_version: 1,
+        parameters: vec![
+            NativeParameter {
+                name: "predicate".into(),
+                ty: BuiltinType::Any,
+                default: None,
+            },
+            NativeParameter {
+                name: "owner".into(),
+                ty: BuiltinType::Any,
+                default: Some(bc::Const::Null),
+            },
+        ],
+        result: BuiltinType::Any,
+        effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
+        required_capabilities: vec!["reel.stage".into()],
+    });
+    contracts.push(NativeContract {
+        rest: None,
+        symbol: "reel::when::evaluate".into(),
+        abi_version: 1,
+        parameters: vec![NativeParameter {
+            name: "predicate".into(),
+            ty: BuiltinType::Any,
+            default: None,
+        }],
+        result: BuiltinType::Bool,
+        effects: Effects(Effects::ALLOCATE),
+        required_capabilities: vec!["reel.stage".into()],
+    });
+    contracts.push(NativeContract {
+        rest: None,
         symbol: "reel::layered_image".into(),
         abi_version: 1,
         parameters: view_parameters,
@@ -777,8 +810,9 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         symbol: "reel::game::set_auto".into(),
         abi_version: 1,
         parameters: vec![
-            parameter("enabled", None),
+            parameter("enabled", Some(bc::Const::Null)),
             parameter("delay", Some(bc::Const::Null)),
+            parameter("condition", Some(bc::Const::Null)),
         ],
         result: BuiltinType::Null,
         effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),

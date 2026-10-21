@@ -89,3 +89,45 @@ fn every_guide_prefix_recovers_without_losing_utf8_bytes() {
         }
     }
 }
+
+#[test]
+fn preserved_planned_examples_keep_syntax_and_prefix_recovery_coverage() {
+    for &(name, source, entry) in scenes::PLANNED_SOURCES {
+        let parsed = parse_with_options(
+            source,
+            ParseOptions {
+                entry,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(parsed.is_ok(), "{name}: {:?}", parsed.diagnostics());
+        assert_eq!(parsed.syntax().text().to_string(), source);
+        for end in 0..=source.len() {
+            if !source.is_char_boundary(end) {
+                continue;
+            }
+            let prefix = &source[..end];
+            let parsed = parse_with_options(
+                prefix,
+                ParseOptions {
+                    entry,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                parsed.syntax().text().to_string(),
+                prefix,
+                "{name} at byte {end}"
+            );
+            for diagnostic in parsed.diagnostics() {
+                assert!(usize::from(diagnostic.range.end()) <= end);
+                assert!(
+                    prefix.is_char_boundary(usize::from(diagnostic.range.start()))
+                        && prefix.is_char_boundary(usize::from(diagnostic.range.end()))
+                );
+            }
+        }
+    }
+}

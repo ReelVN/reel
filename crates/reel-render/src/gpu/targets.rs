@@ -80,6 +80,7 @@ impl Scissor {
 pub(super) fn peak_targets(
     frame: &RenderFrame,
     size: [u32; 2],
+    capture: bool,
     mut reserve: impl FnMut(u64) -> Result<(), GpuError>,
 ) -> Result<u64, GpuError> {
     enum Pending<'a> {
@@ -88,7 +89,7 @@ pub(super) fn peak_targets(
     }
     struct Stream<'a> {
         drawing: &'a FrameDrawing,
-        offset: usize,
+        offset: Option<usize>,
         transition_next: usize,
         transitions_enabled: bool,
         pending: Option<Pending<'a>>,
@@ -102,7 +103,7 @@ pub(super) fn peak_targets(
     fn stream<'a>(
         drawing: &'a FrameDrawing,
         commands: &'a [FrameCommand],
-        offset: usize,
+        offset: Option<usize>,
         transitions_enabled: bool,
         transform: Affine,
     ) -> Stream<'a> {
@@ -113,7 +114,7 @@ pub(super) fn peak_targets(
             pending: None,
             transition_next: drawing
                 .transitions()
-                .partition_point(|t| t.commands.start < offset),
+                .partition_point(|t| t.commands.start < offset.unwrap_or(0)),
             commands,
             next: 0,
             live: 1,
@@ -129,26 +130,41 @@ pub(super) fn peak_targets(
     );
     super::scopes::push_stack(
         &mut stack,
-        stream(frame.drawing(), frame.commands(), 0, true, transform),
+        stream(frame.drawing(), frame.commands(), Some(0), true, transform),
         &mut reserve,
     )?;
     loop {
         let current = stack.last_mut().unwrap();
         if current.transitions_enabled
             && let Some(transition) = current.drawing.transitions().get(current.transition_next)
-            && transition.commands.start == current.offset + current.next
+            && transition.commands.start == current.offset.unwrap() + current.next
         {
             current.transition_next += 1;
-            current.next = transition.commands.end - current.offset;
+            current.next = transition.commands.end - current.offset.unwrap();
+            if capture && !transition.capture_included {
+                continue;
+            }
             current.pending = Some(Pending::Old(transition));
             let child = stream(
                 transition.previous.drawing(),
                 transition.previous.drawing().commands(),
-                0,
+                Some(0),
                 true,
                 current.transform * transition.parent_to_window * transition.previous.to_parent(),
             );
             super::scopes::push_stack(&mut stack, child, &mut reserve)?;
+            continue;
+        }
+        if capture
+            && current.next < current.commands.len()
+            && let Some(offset) = current.offset
+            && let Some(end) = current.drawing.capture_exclusion_end(offset + current.next)
+        {
+            current.next = (end - offset).min(current.commands.len());
+            current.transition_next = current
+                .drawing
+                .transitions()
+                .partition_point(|transition| transition.commands.start < end);
             continue;
         }
         let Some(command) = current.commands.get(current.next) else {
@@ -164,7 +180,7 @@ pub(super) fn peak_targets(
                     let child = stream(
                         parent.drawing,
                         &parent.drawing.commands()[transition.commands.clone()],
-                        transition.commands.start,
+                        Some(transition.commands.start),
                         false,
                         parent.transform,
                     );
@@ -219,7 +235,13 @@ pub(super) fn peak_targets(
                                 record: "missing mask",
                             })?;
                     let transform = current.transform * mask.transform;
-                    let child = stream(current.drawing, &definition.commands, 0, false, transform);
+                    let child = stream(
+                        current.drawing,
+                        &definition.commands,
+                        None,
+                        false,
+                        transform,
+                    );
                     super::scopes::push_stack(&mut stack, child, &mut reserve)?;
                 }
             }

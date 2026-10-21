@@ -46,13 +46,13 @@ Masonry image records for duplicate resource references, paused build retirement
 old/new content versions, owned Blob aliases, accepted upload and frame retention,
 completion, slot generation, refusal and null presentation. See
 [R01-INTERFACE.md](../reel-ui/R01-INTERFACE.md) and
-[R01-REPORT.md](../reel-ui/R01-REPORT.md) for the integrated evidence.
+[R01-REPORT.md](https://github.com/jhq223/reel/blob/355571b18bd4024914438a7ac6bd94ebf3c7826f/crates/reel-ui/R01-REPORT.md) for the integrated evidence.
 
 
 ## R02 optional real device profile
 
 Enable `wgpu` for the two-phase production adapter. It consumes RenderFrame
 without replay-to-Scene and uses Kurbo dashing, Lyon, Swash and wgpu. See
-[R02-INTERFACE](R02-INTERFACE.md), [R02-REPORT](R02-REPORT.md), and the
+[R02-INTERFACE](R02-INTERFACE.md), [R02-REPORT](https://github.com/jhq223/reel/blob/355571b18bd4024914438a7ac6bd94ebf3c7826f/crates/reel-render/R02-REPORT.md), and the
 [winit diagnostic launch command](../reel-player/README.md). Recording/null
 remain feature-off semantic consumers; their simulated results are unchanged.

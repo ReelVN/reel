@@ -16,10 +16,10 @@ cargo clippy -p reel-media --all-targets --locked -- -D warnings
 cargo clippy -p reel-media --no-default-features --all-targets --locked -- -D warnings
 cargo check -p reel-media --all-targets --target x86_64-pc-windows-gnu --locked
 cargo tree -p reel-media --no-default-features --edges normal --locked
-cargo run -p reel-dev --locked -- audio-regression
-cargo run -p reel-dev --locked -- audio-regression --release
-cargo run -p reel-dev --locked -- audio-probe
-cargo run -p reel-media --example device_probe --locked
+cargo run --locked -p reel-dev -- audio-regression
+cargo run --locked -p reel-dev -- audio-regression --release
+cargo run --locked -p reel-dev -- audio-probe
+cargo run --locked -p reel-media --example device_probe
 ```
 
 The [Rust validation tool](../../crates/reel-dev/README.md) runs the workspace

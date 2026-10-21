@@ -21,6 +21,13 @@ use crate::imaging::{Composite, PaintSink, Painter};
 use crate::passes::{enter_span_if, recurse_on_children};
 use crate::util::get_debug_color;
 
+struct CursorPaint {
+    layers: Vec<VisualLayer>,
+    subtrees: Vec<SubtreePaint>,
+    capture_exclusions: Vec<std::ops::Range<usize>>,
+    commands: usize,
+}
+
 struct LayerCollector {
     current_scene: Scene,
     groups: Vec<GroupMetadata>,
@@ -31,6 +38,8 @@ struct LayerCollector {
     current_owner_id: WidgetId,
     transform: Affine,
     suppress_output: bool,
+    capture_included: bool,
+    capture_exclusions: Vec<std::ops::Range<usize>>,
 }
 
 impl LayerCollector {
@@ -45,6 +54,8 @@ impl LayerCollector {
             current_owner_id: root_id,
             transform,
             suppress_output: false,
+            capture_included: true,
+            capture_exclusions: Vec::new(),
         }
     }
 
@@ -55,6 +66,7 @@ impl LayerCollector {
             widget,
             commands: position..position,
             suppressed_by_ancestor,
+            capture_included: self.capture_included,
         });
         index
     }
@@ -234,7 +246,7 @@ fn paint_widget(
     property_arena: &PropertyArena,
     layer_collector: &mut LayerCollector,
     scene_cache: &mut HashMap<WidgetId, (Scene, Scene, Scene)>,
-    cursor_layers: &mut Vec<VisualLayer>,
+    cursor_layers: &mut Vec<CursorPaint>,
     in_cursor: bool,
     border_box_to_layer_transform: Affine,
     parent_viewport: Rect,
@@ -266,7 +278,25 @@ fn paint_widget(
             node,
         );
         if active.is_some() {
-            cursor_layers.extend(collector.into_layers());
+            let commands =
+                collector.commands_before_layer + collector.current_scene.commands().len();
+            if !layer_collector.capture_included {
+                collector.capture_exclusions.clear();
+                if commands != 0 {
+                    collector.capture_exclusions.push(0..commands);
+                }
+                for subtree in &mut collector.subtrees {
+                    subtree.capture_included = false;
+                }
+            }
+            let subtrees = std::mem::take(&mut collector.subtrees);
+            let capture_exclusions = std::mem::take(&mut collector.capture_exclusions);
+            cursor_layers.push(CursorPaint {
+                layers: collector.into_layers(),
+                subtrees,
+                capture_exclusions,
+                commands,
+            });
         }
         return;
     }
@@ -380,6 +410,8 @@ fn paint_widget(
         border_box_to_layer_transform.pre_translate(state.border_box_translation());
     let has_clip = state.clip_path.is_some();
     let paint_as_external = paint_layer_mode == PaintLayerMode::External;
+    let previous_capture = layer_collector.capture_included;
+    layer_collector.capture_included &= widget.capture_included();
     let subtree = layer_collector.begin_subtree(id, previous_suppression);
     let has_composite_group = !suppress_output
         && layer_collector.push_subtree_composite(
@@ -538,6 +570,19 @@ fn paint_widget(
     }
 
     layer_collector.end_subtree(subtree);
+    if previous_capture && !layer_collector.capture_included {
+        let range = layer_collector.subtrees[subtree].commands.clone();
+        if !range.is_empty() {
+            if let Some(last) = layer_collector.capture_exclusions.last_mut()
+                && last.end == range.start
+            {
+                last.end = range.end;
+            } else {
+                layer_collector.capture_exclusions.push(range);
+            }
+        }
+    }
+    layer_collector.capture_included = previous_capture;
 
     if matches!(
         paint_layer_mode,
@@ -565,6 +610,7 @@ pub(crate) fn run_paint_pass(root: &mut RenderRoot) -> VisualLayerPlan {
     let mut layers = Vec::new();
     let mut subtrees = Vec::new();
     let mut body_commands = 0;
+    let mut capture_exclusions: Vec<std::ops::Range<usize>> = Vec::new();
     let mut cursor_layers = Vec::new();
 
     for &layer_widget_id in &layer_root_ids {
@@ -589,9 +635,38 @@ pub(crate) fn run_paint_pass(root: &mut RenderRoot) -> VisualLayerPlan {
             subtree.commands.end += offset;
             subtrees.push(subtree);
         }
+        for range in std::mem::take(&mut collector.capture_exclusions) {
+            let range = range.start + offset..range.end + offset;
+            if let Some(last) = capture_exclusions.last_mut()
+                && last.end == range.start
+            {
+                last.end = range.end;
+            } else {
+                capture_exclusions.push(range);
+            }
+        }
         layers.extend(collector.into_layers());
     }
-    layers.extend(cursor_layers);
+    let mut cursor_offset = body_commands;
+    for cursor in cursor_layers {
+        layers.extend(cursor.layers);
+        subtrees.extend(cursor.subtrees.into_iter().map(|mut subtree| {
+            subtree.commands.start += cursor_offset;
+            subtree.commands.end += cursor_offset;
+            subtree
+        }));
+        for range in cursor.capture_exclusions {
+            let range = range.start + cursor_offset..range.end + cursor_offset;
+            if let Some(last) = capture_exclusions.last_mut()
+                && last.end == range.start
+            {
+                last.end = range.end;
+            } else {
+                capture_exclusions.push(range);
+            }
+        }
+        cursor_offset += cursor.commands;
+    }
 
     root.global_state.scene_cache = scene_cache;
 
@@ -599,6 +674,7 @@ pub(crate) fn run_paint_pass(root: &mut RenderRoot) -> VisualLayerPlan {
         layers,
         subtrees,
         body_commands,
+        capture_exclusions,
     }
 }
 
@@ -610,7 +686,7 @@ fn paint_layer(
     root: &mut RenderRoot,
     layer_collector: &mut LayerCollector,
     scene_cache: &mut HashMap<WidgetId, (Scene, Scene, Scene)>,
-    cursor_layers: &mut Vec<VisualLayer>,
+    cursor_layers: &mut Vec<CursorPaint>,
     root_id: WidgetId,
     layer_widget_id: WidgetId,
 ) {

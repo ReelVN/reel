@@ -294,3 +294,31 @@ impl SessionVm {
         Ok(())
     }
 }
+
+aside_host::native_documentation! {
+    pub(super) fn documentation {
+        /// Return the host's current portable window information immediately.
+        /// Fields include platform, logical width/height, remembered windowed dimensions,
+        /// scale_factor, fullscreen, vsync, supported resolutions, and capabilities for
+        /// resize, fullscreen, vsync and pointer_move. This reads host state without a request.
+        "reel::window::info";
+        /// Request changes to logical window dimensions, fullscreen or vsync.
+        /// Null fields preserve existing settings; dimensions must be positive and finite.
+        /// Unsupported capabilities and a concurrent pending window request are rejected.
+        /// Returns an awaitable result whose value is the actual host window information,
+        /// rather than a prediction of the requested settings. `owner` defaults to the current
+        /// scope owner; retirement cancels the result. Host application of a claimed native
+        /// request is not reversed by cancelling its result.
+        "reel::window::configure";
+        /// Return the last accepted stage-space pointer position as {x, y}, or null when
+        /// the host has no pointer position. This ephemeral input state is not restored
+        /// from a story save and is not a request to move the operating-system pointer.
+        "reel::stage::pointer";
+        /// Request a host pointer move to finite stage-space x/y coordinates.
+        /// `owner` is a required node and must still be permitted to receive input when the
+        /// host applies the request. Returns an awaitable bool: false when pointer movement
+        /// is unsupported or declined, true when applied. Owner retirement cancels the result;
+        /// a concurrent pending window request is rejected.
+        "reel::stage::move_pointer";
+    }
+}

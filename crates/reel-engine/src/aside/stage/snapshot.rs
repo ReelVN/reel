@@ -193,15 +193,7 @@ impl StageBinding {
             ("reel.scroll", Shape::Scroll),
             ("reel.layout", Shape::Stack),
         ] {
-            let version = match shape {
-                Shape::Input => 10,
-                Shape::TextArea => 1,
-                Shape::Video => 7,
-                Shape::Image => 11,
-                Shape::Particles => 10,
-                _ => 9,
-            };
-            registry.register_validator(name, version, shape.validator())?;
+            registry.register_validator(name, 1, shape.validator())?;
         }
         registry.register_validator("reel.override", 1, overrides::validate)?;
         Ok(())

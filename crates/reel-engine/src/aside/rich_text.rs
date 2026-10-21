@@ -1,4 +1,19 @@
 use super::{AdapterError, text};
+
+aside_host::native_documentation! {
+    pub(super) fn documentation {
+        /// Parse immutable rich text. Tags control spans, ruby, links and reveal cues.
+        /// Font spans select configured families, including blank-line metrics and ruby.
+        /// `[weight=400]` accepts finite weights in 1..=1000; `[b]` selects 700.
+        /// `[line_height=46]` sets a finite nonnegative absolute logical line height.
+        /// Closing nested tags restores the enclosing style.
+        /// Use rich_escape for dynamic plain text inside markup. Parse errors report their
+        /// UTF-8 byte offset; plain and parsed text use the same dialogue/layout pipeline.
+        "reel::rich";
+        /// Escape plain text for literal insertion into rich markup.
+        "reel::rich_escape";
+    }
+}
 use aside_vm::{Heap, ObjectKind, Value};
 use reel_core::text::Text;
 const TAG: i64 = -1100;

@@ -1,5 +1,4 @@
-//! Real source/compiler linkage using the same independent ABI v1 descriptions
-//! as runtime admission. These functions compile; they do not execute the VM.
+//! Source compilation and editor metadata share ABI v1 descriptions with runtime admission.
 use super::{AdapterError, registry};
 use aside_compiler::{
     AnalysisOptions, analyze_module,
@@ -9,6 +8,70 @@ use aside_compiler::{
 };
 use aside_vm::bytecode as bc;
 pub use bc::FunctionId as StoryFunction;
+
+/// Read the current registered signatures and English source documentation.
+/// Editor clients use the resolved canonical symbol to select a hover entry.
+pub fn documentation() -> Vec<aside_host::NativeDocumentation> {
+    let mut markdown: std::collections::BTreeMap<_, _> = aside_std::documentation()
+        .into_iter()
+        .map(|entry| (entry.contract.symbol, entry.markdown))
+        .chain(
+            super::stage::bindings()
+                .into_iter()
+                .map(|binding| (binding.contract.symbol, binding.documentation)),
+        )
+        .collect();
+    markdown.insert("reel::when".into(), super::conditions::DOCUMENTATION);
+    registry::contracts()
+        .into_iter()
+        .filter(|contract| contract.symbol != "reel::when::evaluate")
+        .map(|contract| {
+            let documentation = markdown
+                .remove(&contract.symbol)
+                .filter(|text| !text.is_empty())
+                .or_else(|| super::narrative::documentation(&contract.symbol))
+                .or_else(|| super::activity::documentation(&contract.symbol))
+                .or_else(|| super::scopes::documentation(&contract.symbol))
+                .or_else(|| super::results::documentation(&contract.symbol))
+                .or_else(|| super::observable::documentation(&contract.symbol))
+                .or_else(|| super::lists::documentation(&contract.symbol))
+                .or_else(|| super::views::documentation(&contract.symbol))
+                .or_else(|| super::layered_image::documentation(&contract.symbol))
+                .or_else(|| super::localization::documentation(&contract.symbol))
+                .or_else(|| super::rich_text::documentation(&contract.symbol))
+                .or_else(|| super::particles::documentation(&contract.symbol))
+                .or_else(|| super::stage::documentation(&contract.symbol))
+                .or_else(|| super::game::documentation(&contract.symbol))
+                .or_else(|| super::transitions::documentation(&contract.symbol))
+                .or_else(|| super::results::geometry::documentation(&contract.symbol))
+                .or_else(|| super::masks::documentation(&contract.symbol))
+                .or_else(|| super::media::documentation(&contract.symbol))
+                .or_else(|| super::data::documentation(&contract.symbol))
+                .or_else(|| super::saves::documentation(&contract.symbol))
+                .or_else(|| super::window::documentation(&contract.symbol))
+                .or_else(|| super::capture::documentation(&contract.symbol))
+                .or_else(|| super::stage::input::documentation(&contract.symbol))
+                .unwrap_or("");
+            aside_host::NativeDocumentation {
+                contract,
+                markdown: documentation,
+            }
+        })
+        .collect()
+}
+
+/// Query common node properties without constructing a node or a VM session.
+pub fn node_property_documentation()
+-> impl ExactSizeIterator<Item = aside_host::PropertyDocumentation> {
+    use aside_host::PropertySchema;
+    super::stage::NodeProperty::PROPERTIES
+        .iter()
+        .enumerate()
+        .map(|(index, property)| aside_host::PropertyDocumentation {
+            property,
+            markdown: super::stage::NodeProperty::documentation(index),
+        })
+}
 
 pub struct CompiledStory {
     pub program: bc::VerifiedProgram,

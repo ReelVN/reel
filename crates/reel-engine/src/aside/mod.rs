@@ -30,6 +30,7 @@ mod results;
 mod scopes;
 pub mod transitions;
 pub use results::geometry::{GeometryQuery, GeometryReplies, GeometryReply, NodeGeometry};
+mod conditions;
 mod masks;
 mod rich_text;
 pub mod saves;
@@ -664,6 +665,14 @@ impl SessionVm {
             }
             "reel::view" => {
                 self.dispatch_view(ticket)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
+            "reel::when" => {
+                self.dispatch_when(ticket)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
+            "reel::when::evaluate" => {
+                self.evaluate_condition(ticket)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::completion"

@@ -5,6 +5,7 @@ use crate::payload::Payload;
 use crate::root_ranges::{ChargedVec, Reservation};
 use crate::*;
 use std::rc::Rc;
+mod view;
 
 /// Stable built-in registry. Future adapters must explicitly register other registries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -150,6 +151,8 @@ pub(crate) enum FaultData {
         location: Location,
     },
     Error(FaultCode),
+    StackView,
+    CausesView,
 }
 pub(crate) const FAULT_NODE_BYTES: u64 = std::mem::size_of::<FaultPayload>() as u64;
 pub(crate) struct FaultPayload {

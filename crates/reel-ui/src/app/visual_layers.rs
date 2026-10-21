@@ -43,6 +43,8 @@ pub struct SubtreePaint {
     pub widget: WidgetId,
     pub commands: std::ops::Range<usize>,
     pub suppressed_by_ancestor: bool,
+    /// Effective capture inclusion, including every ancestor.
+    pub capture_included: bool,
 }
 
 /// Snapshot of Masonry's current visual layers in painter order.
@@ -55,6 +57,8 @@ pub struct VisualLayerPlan {
     pub layers: Vec<VisualLayer>,
     pub subtrees: Vec<SubtreePaint>,
     pub body_commands: usize,
+    /// Sorted, disjoint balanced command ranges omitted only from captures.
+    pub capture_exclusions: Vec<std::ops::Range<usize>>,
 }
 
 impl VisualLayerPlan {
@@ -158,6 +162,7 @@ mod tests {
             filled_scene(Rect::new(0.0, 0.0, 4.0, 4.0), Color::from_rgb8(0, 0, 255));
 
         let plan = VisualLayerPlan {
+            capture_exclusions: Vec::new(),
             subtrees: Vec::new(),
             body_commands: 3,
             layers: vec![
@@ -210,6 +215,7 @@ mod tests {
             filled_scene(Rect::new(0.0, 0.0, 4.0, 4.0), Color::from_rgb8(0, 0, 255));
 
         let plan = VisualLayerPlan {
+            capture_exclusions: Vec::new(),
             subtrees: Vec::new(),
             body_commands: 3,
             layers: vec![

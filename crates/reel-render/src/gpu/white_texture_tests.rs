@@ -62,7 +62,13 @@ fn frame_with_snapshot(
     snapshot: reel_ui::resources::ResourceSnapshot,
     pool: &BudgetPool,
 ) -> RenderFrame {
-    let mut widget = RecordWidget::new(scene);
+    frame_from_widget(RecordWidget::new(scene), snapshot, pool)
+}
+fn frame_from_widget(
+    mut widget: RecordWidget,
+    snapshot: reel_ui::resources::ResourceSnapshot,
+    pool: &BudgetPool,
+) -> RenderFrame {
     widget.clip = false;
     let mut bridge = widget_bridge(widget, Affine::IDENTITY);
     let mut build = FrameBuild::new(
@@ -647,6 +653,7 @@ fn rectangle_clips_share_targets_and_preserve_group_opacity() {
 
 fn image_restore_fixture(
     size: [u32; 2],
+    capture_included: bool,
 ) -> (
     RenderFrame,
     reel_ui::resources::ResourceRegistry,
@@ -697,15 +704,18 @@ fn image_restore_fixture(
         });
         handles.push(handle);
     }
-    let frame = frame_with_snapshot(scene, registry.freeze(&handles, &pool).unwrap(), &pool);
+    let mut widget = RecordWidget::new(scene);
+    widget.capture_included = capture_included;
+    let frame = frame_from_widget(widget, registry.freeze(&handles, &pool).unwrap(), &pool);
     (frame, registry, handles)
 }
 
 #[test]
 fn image_plan_deduplicates_both_transition_inputs_before_admission() {
-    let (frame, _, handles) = image_restore_fixture([4, 4]);
+    let (frame, _, handles) = image_restore_fixture([4, 4], true);
     let plan =
-        super::super::image_plan::collect([&frame, &frame].into_iter(), 4096, |_| Ok(())).unwrap();
+        super::super::image_plan::collect([&frame, &frame].into_iter(), 4096, false, |_| Ok(()))
+            .unwrap();
     assert_eq!(plan.len(), handles.len());
     for item in &plan {
         assert!(handles.contains(&item.source.handle()));
@@ -713,16 +723,41 @@ fn image_plan_deduplicates_both_transition_inputs_before_admission() {
         assert_eq!(item.staging, 4 * 256);
     }
     assert!(matches!(
-        super::super::image_plan::collect([&frame].into_iter(), 2, |_| Ok(())),
+        super::super::image_plan::collect([&frame].into_iter(), 2, false, |_| Ok(())),
         Err(GpuError::InvalidSize)
     ));
+}
+
+#[test]
+fn capture_plans_omit_excluded_image_uploads_and_isolated_targets() {
+    let (frame, _, handles) = image_restore_fixture([4, 4], false);
+    let normal =
+        super::super::image_plan::collect([&frame].into_iter(), 4096, false, |_| Ok(())).unwrap();
+    let captured =
+        super::super::image_plan::collect([&frame].into_iter(), 4096, true, |_| Ok(())).unwrap();
+    assert_eq!(normal.len(), handles.len());
+    assert!(captured.is_empty());
+    assert!(!frame.commands().is_empty());
+
+    let pool = pool();
+    let mut widget = RecordWidget::new(workload(1, 1, Color::WHITE));
+    widget.opacity = 0.5;
+    widget.capture_included = false;
+    let frame = frame_from_widget(widget, empty_snapshot(&pool), &pool);
+    assert!(
+        super::super::targets::peak_targets(&frame, [400, 300], false, |_| Ok(())).unwrap() > 1
+    );
+    assert_eq!(
+        super::super::targets::peak_targets(&frame, [400, 300], true, |_| Ok(())).unwrap(),
+        1
+    );
 }
 
 #[test]
 #[ignore = "requires actual graphics adapter"]
 fn cold_restore_batches_survive_cancel_and_release_only_completed_staging() {
     let size = [1920, 1080];
-    let (frame, mut registry, handles) = image_restore_fixture(size);
+    let (frame, mut registry, handles) = image_restore_fixture(size, true);
     let resident = u64::from(size[0]) * u64::from(size[1]) * 8;
     let mut renderer = renderer(super::super::GpuLimits {
         resource_bytes: 64 << 20,
@@ -798,7 +833,7 @@ fn cold_restore_batches_survive_cancel_and_release_only_completed_staging() {
 #[test]
 #[ignore = "requires actual graphics adapter"]
 fn cold_upload_progress_with_one_submission_slot() {
-    let (frame, mut registry, handles) = image_restore_fixture([4, 4]);
+    let (frame, mut registry, handles) = image_restore_fixture([4, 4], true);
     // Retirement prevents new registry leases, not rendering with the immutable
     // frame's existing leases. A transition/capture can require exactly this.
     for handle in handles {
@@ -1203,11 +1238,62 @@ fn sprite_batches_share_uploads_and_respect_paint_boundaries() {
 }
 
 #[test]
+fn capture_global_transition_keeps_old_content_when_new_content_is_excluded() {
+    use reel_ui::frame::{FrameTransition, RetainBuild};
+    let pool = pool();
+    let (old, _registry, _handles) = image_restore_fixture([4, 4], true);
+    let mut retain = RetainBuild::new(&old, None, limits(), &pool).unwrap();
+    let mut budget = step_budget();
+    loop {
+        let progress = retain.step(budget).unwrap();
+        if progress.complete {
+            break;
+        }
+        budget.max_units = budget.max_units.max(progress.minimum_units);
+        budget.max_bytes = budget.max_bytes.max(progress.minimum_bytes);
+    }
+    let mut scene = Scene::new();
+    fill(&mut scene, Color::WHITE);
+    let mut widget = RecordWidget::new(scene);
+    widget.capture_included = false;
+    let mut bridge = widget_bridge(widget, Affine::IDENTITY);
+    let mut build = FrameBuild::new(
+        bridge.record(FrameId(1)).unwrap(),
+        empty_snapshot(&pool),
+        FrameInfo {
+            logical_size: [400., 300.],
+            physical_size: [64, 48],
+        },
+        limits(),
+        &pool,
+    )
+    .unwrap();
+    build
+        .set_transitions(vec![FrameTransition {
+            root: None,
+            previous: retain.finish().unwrap(),
+            progress: 0.5,
+            mask: None,
+        }])
+        .unwrap();
+    while !build.step(step_budget()).unwrap().complete {}
+    let frame = build.finish().unwrap();
+    let images =
+        crate::gpu::image_plan::collect(std::iter::once(&frame), 8192, true, |_| Ok(())).unwrap();
+    assert_eq!(
+        images.len(),
+        3,
+        "old accepted drawing remains an input to the blend"
+    );
+    assert!(crate::gpu::targets::peak_targets(&frame, [64, 48], true, |_| Ok(())).unwrap() > 1);
+}
+
+#[test]
 #[ignore = "requires actual graphics adapter"]
 fn retained_transition_reuploads_retired_images_and_releases_them_after_completion() {
     use reel_ui::frame::{FrameTransition, RetainBuild};
     let pool = pool();
-    let (old, mut registry, handles) = image_restore_fixture([4, 4]);
+    let (old, mut registry, handles) = image_restore_fixture([4, 4], true);
     let mut retaining = RetainBuild::new(&old, None, limits(), &pool).unwrap();
     let mut budget = step_budget();
     loop {

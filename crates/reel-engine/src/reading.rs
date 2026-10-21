@@ -48,6 +48,8 @@ pub struct ReadingState {
     paused: bool,
     delay: Duration,
     revision: u64,
+    auto_ready: bool,
+    auto_revision: u64,
 }
 impl Default for ReadingState {
     fn default() -> Self {
@@ -56,10 +58,26 @@ impl Default for ReadingState {
             paused: false,
             delay: Duration::from_secs(2),
             revision: 0,
+            auto_ready: true,
+            auto_revision: 0,
         }
     }
 }
 impl ReadingState {
+    /// Whether the author condition permits the automatic countdown.
+    pub fn auto_ready(self) -> bool {
+        self.auto_ready
+    }
+    /// Condition changes are independent of the printing clock.
+    pub fn auto_revision(self) -> u64 {
+        self.auto_revision
+    }
+    pub(crate) fn set_auto_condition(&mut self, ready: bool) {
+        if self.auto_ready != ready {
+            self.auto_ready = ready;
+            self.auto_revision = self.auto_revision.wrapping_add(1);
+        }
+    }
     pub fn automatic(self) -> bool {
         self.mode == Mode::Auto
     }

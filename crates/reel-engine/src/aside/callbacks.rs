@@ -564,6 +564,7 @@ impl SessionVm {
         }
         self.activities.set_skipping(session.reading().skipping());
         if self.reactive_ready && self.reactive_settled() {
+            self.sync_auto_condition(session)?;
             self.sync_narrative(session)?;
         }
         self.deliver_completion(session)?;

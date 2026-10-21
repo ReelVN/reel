@@ -470,3 +470,33 @@ impl SessionVm {
         Ok(())
     }
 }
+
+aside_host::native_documentation! {
+    pub(super) fn documentation {
+        /// Save the current session to a nonempty slot identifier.
+        /// `title` defaults to an empty string; `thumbnail` is null or PNG Bytes, commonly
+        /// obtained from `stage.capture`. Returns an awaitable operation with reactive
+        /// `status`, `error` and `restored` fields. Awaiting yields null on success and
+        /// throws on storage failure. After loading this saved continuation, `restored`
+        /// identifies the resumed save operation. Host-claimed writes are session operations
+        /// and continue independently of the requesting UI's node lifetime.
+        "reel::saves::save";
+        /// Request restoration of a nonempty save slot and return an awaitable operation.
+        /// A successful load replaces the running session with the saved continuation;
+        /// code after this request does not continue in the old session. Failure rejects
+        /// the operation and remains catchable in the requesting session.
+        "reel::saves::load";
+        /// Delete a nonempty save slot identifier and return a session-owned operation.
+        /// Awaiting yields null after deletion or throws on storage failure.
+        /// This affects story save slots rather than persistent key/value records.
+        "reel::saves::delete";
+        /// Return a session-owned awaitable operation listing available save slots.
+        /// Awaiting yields records with `id`, `title`, `saved_at` (UTC Unix seconds)
+        /// and `has_thumbnail`. Storage failures reject the operation.
+        "reel::saves::list";
+        /// Read a nonempty save slot's thumbnail through a session-owned operation.
+        /// Awaiting yields the PNG Bytes or null when no thumbnail is available.
+        /// The bytes can be used as an image source; storage failures throw.
+        "reel::saves::thumbnail";
+    }
+}

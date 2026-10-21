@@ -29,7 +29,8 @@ impl FromValue for Number {
 }
 
 macro_rules! unary {
-    ($($name:ident, $symbol:tt, $method:ident);* $(;)?) => {$ (
+    ($($(#[doc = $doc:tt])* $name:ident, $symbol:tt, $method:ident);* $(;)?) => {$ (
+        $(#[doc = $doc])*
         #[native(symbol = $symbol, abi = 1, effects = Effects(0))]
         fn $name(
             #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,
@@ -40,25 +41,43 @@ macro_rules! unary {
     )*};
 }
 unary! {
+    /// Return the sine of an angle in radians.
     sin, "std::math::sin", sin;
+    /// Return the cosine of an angle in radians.
     cos, "std::math::cos", cos;
+    /// Return the tangent of an angle in radians.
     tan, "std::math::tan", tan;
+    /// Return the inverse sine in radians, or NaN outside [-1, 1].
     asin, "std::math::asin", asin;
+    /// Return the inverse cosine in radians, or NaN outside [-1, 1].
     acos, "std::math::acos", acos;
+    /// Return the inverse tangent in radians.
     atan, "std::math::atan", atan;
+    /// Return the square root, or NaN for a negative value.
     sqrt, "std::math::sqrt", sqrt;
+    /// Return e raised to this value.
     exp, "std::math::exp", exp;
+    /// Return the natural logarithm.
     ln, "std::math::ln", ln;
+    /// Return the base-two logarithm.
     log2, "std::math::log2", log2;
+    /// Return the base-ten logarithm.
     log10, "std::math::log10", log10;
+    /// Return the absolute value as a float.
     abs, "std::math::abs", abs;
+    /// Round down to the nearest integer, returned as a float.
     floor, "std::math::floor", floor;
+    /// Round up to the nearest integer, returned as a float.
     ceil, "std::math::ceil", ceil;
+    /// Round to the nearest integer, with halfway values rounded away from zero.
     round, "std::math::round", round;
+    /// Convert degrees to radians.
     radians, "std::math::radians", to_radians;
+    /// Convert radians to degrees.
     degrees, "std::math::degrees", to_degrees;
 }
 
+/// Return the signed angle of `(x, y)` in radians, preserving the quadrant.
 #[native(symbol = "std::math::atan2", abi = 1, effects = Effects(0))]
 fn atan2(
     #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,
@@ -68,6 +87,7 @@ fn atan2(
     Ok(y.0.atan2(x.0))
 }
 
+/// Return the Euclidean length of `(x, y)` with scaled intermediate arithmetic.
 #[native(symbol = "std::math::hypot", abi = 1, effects = Effects(0))]
 fn hypot(
     #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,
@@ -77,6 +97,7 @@ fn hypot(
     Ok(x.0.hypot(y.0))
 }
 
+/// Raise `base` to `exponent`, returning a float.
 #[native(symbol = "std::math::pow", abi = 1, effects = Effects(0))]
 fn pow(
     #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,

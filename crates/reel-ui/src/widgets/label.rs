@@ -8,14 +8,15 @@ use accesskit::{Node, Role};
 use reel_core::text::Text;
 use smallvec::SmallVec;
 use tracing::{Span, trace_span};
+use unicode_segmentation::UnicodeSegmentation;
 mod paragraph;
 use paragraph::Paragraph;
 
 use crate::core::{
     AccessCtx, ArcStr, BrushIndex, ChildrenIds, EventCtx, LayoutCtx, MeasureCtx, PaintCtx,
     PointerButton, PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, StyleProperty,
-    StyleSet, TextEvent, TextFit, TextOutline, Update, UpdateCtx, UsesProperty, Widget, WidgetId,
-    WidgetMut, set_accesskit_brush_properties,
+    StyleSet, TextEvent, TextFit, TextOutline, TextShadow, Update, UpdateCtx, UsesProperty, Widget,
+    WidgetId, WidgetMut, set_accesskit_brush_properties,
 };
 use crate::imaging::Painter;
 use crate::kurbo::{Affine, Axis, Point, Rect, Size};
@@ -33,7 +34,7 @@ use crate::{TextAlign, TextAlignOptions, theme};
 /// You can customize the look of this label with the
 /// [`LineBreaking`] and [`ContentColor`] properties.
 ///
-#[doc = include_str!("../doc/widgets/label.md")]
+/// ![Styled text label](data:image/png;base64,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)
 pub struct Label {
     /// Cached layouts.
     layouts: Vec<TextLayout>,
@@ -48,12 +49,15 @@ pub struct Label {
 
     text: Text,
     visible_bytes: Option<std::ops::Range<usize>>,
+    reveal_fade: Option<crate::core::RevealFade>,
+    fade_graphemes: Vec<usize>,
     paint_viewport: Option<Rect>,
     paint_line_range: std::ops::Range<usize>,
     styles: StyleSet,
     text_alignment: TextAlign,
     text_fit: TextFit,
     outline: Option<TextOutline>,
+    shadow: Option<TextShadow>,
     pressed_link: Option<usize>,
     hovered_link: Option<usize>,
     focused_link: usize,
@@ -207,12 +211,15 @@ impl Label {
             active_layout: usize::MAX,
             text: Text::from(text.into()),
             visible_bytes: None,
+            reveal_fade: None,
+            fade_graphemes: Vec::new(),
             paint_viewport: None,
             paint_line_range: 0..0,
             styles,
             text_alignment: TextAlign::Start,
             text_fit: TextFit::None,
             outline: None,
+            shadow: None,
             pressed_link: None,
             hovered_link: None,
             focused_link: 0,
@@ -241,7 +248,38 @@ impl Label {
 
     pub fn with_rich_text(mut self, text: Text) -> Self {
         self.text = text;
+        self.index_fade_graphemes();
         self
+    }
+
+    /// Set a scalar opacity wavefront while preserving the shaped text layout.
+    pub fn with_reveal_fade(mut self, fade: Option<crate::core::RevealFade>) -> Self {
+        self.reveal_fade = fade;
+        self.index_fade_graphemes();
+        self
+    }
+    fn index_fade_graphemes(&mut self) {
+        if self.reveal_fade.is_none() {
+            self.fade_graphemes = Vec::new();
+            return;
+        }
+        self.fade_graphemes.clear();
+        if self.reveal_fade.is_some() {
+            self.fade_graphemes
+                .extend(self.text.grapheme_indices(true).map(|(i, _)| i));
+        }
+    }
+    /// Update only painting and input eligibility; no shaping/layout work.
+    pub fn set_reveal_fade(this: &mut WidgetMut<'_, Self>, fade: Option<crate::core::RevealFade>) {
+        if this.widget.reveal_fade != fade {
+            let was_enabled = this.widget.reveal_fade.is_some();
+            this.widget.reveal_fade = fade;
+            if !was_enabled || fade.is_none() {
+                this.widget.index_fade_graphemes();
+            }
+            this.ctx.request_paint_only();
+            this.ctx.request_accessibility_update();
+        }
     }
 
     /// Sets a style property for the new label.
@@ -277,6 +315,11 @@ impl Label {
 
     pub fn with_text_fit(mut self, fit: TextFit) -> Self {
         self.text_fit = fit;
+        self
+    }
+    /// Paint one local-offset shadow using the same shaped paragraph and glyphs.
+    pub fn with_shadow(mut self, shadow: Option<TextShadow>) -> Self {
+        self.shadow = shadow;
         self
     }
 
@@ -399,6 +442,7 @@ impl Label {
         this.widget.focused_link = 0;
         this.widget.link_button = Default::default();
         this.widget.visible_bytes = None;
+        this.widget.index_fade_graphemes();
 
         this.widget.clear_cache();
         this.ctx.request_layout();
@@ -446,6 +490,17 @@ impl Label {
                 this.ctx.request_paint_only();
             }
             this.widget.outline = outline;
+        }
+    }
+    /// Update shadow color or ink extent while preserving cached text layout.
+    pub fn set_shadow(this: &mut WidgetMut<'_, Self>, shadow: Option<TextShadow>) {
+        if this.widget.shadow != shadow {
+            if this.widget.shadow.map(|s| s.offset) != shadow.map(|s| s.offset) {
+                this.ctx.request_layout();
+            } else {
+                this.ctx.request_paint_only();
+            }
+            this.widget.shadow = shadow;
         }
     }
 
@@ -636,13 +691,19 @@ impl Label {
             .get(self.active_layout)?
             .layout
             .hit(point.x as f32, point.y as f32)?;
-        self.text.links().iter().position(|link| {
-            link.range.contains(&offset)
-                && self
-                    .visible_bytes
-                    .as_ref()
-                    .is_none_or(|r| r.start <= link.range.start && link.range.end <= r.end)
-        })
+        self.text
+            .links()
+            .iter()
+            .enumerate()
+            .find_map(|(index, link)| {
+                (link.range.contains(&offset)
+                    && self.link_visible(index)
+                    && self
+                        .visible_bytes
+                        .as_ref()
+                        .is_none_or(|r| r.start <= link.range.start && link.range.end <= r.end))
+                .then_some(index)
+            })
     }
     fn link_action(&self, index: usize) -> Option<LinkActivated> {
         let link = self.text.links().get(index)?;
@@ -653,6 +714,12 @@ impl Label {
     }
     fn link_visible(&self, index: usize) -> bool {
         self.text.links().get(index).is_some_and(|link| {
+            if self
+                .reveal_fade
+                .is_some_and(|fade| fade.alpha(&self.fade_graphemes, link.range.clone()) <= 0.)
+            {
+                return false;
+            }
             self.visible_bytes
                 .as_ref()
                 .is_none_or(|r| r.start <= link.range.start && link.range.end <= r.end)
@@ -900,7 +967,12 @@ impl Widget for Label {
         let layout = &mut self.layouts[self.active_layout];
 
         layout.align(self.text_alignment, inline_space);
-        ctx.set_paint_insets(self.outline.map_or(0., |outline| outline.width));
+        ctx.set_paint_insets(
+            self.outline.map_or(0., |outline| outline.width)
+                + self
+                    .shadow
+                    .map_or(0., |s| s.offset.x.abs().max(s.offset.y.abs())),
+        );
 
         let line_count = layout.layout.len();
         if line_count > 0 {
@@ -923,11 +995,19 @@ impl Widget for Label {
 
     fn set_paint_viewport(&mut self, viewport: Option<Rect>) -> bool {
         self.paint_viewport = viewport;
-        let range = self.layouts[self.active_layout].layout.visible_lines(
+        let mut range = self.layouts[self.active_layout].layout.visible_lines(
             viewport,
             Affine::IDENTITY,
             self.outline,
         );
+        if let Some(shadow) = self.shadow.filter(|s| s.offset != crate::kurbo::Vec2::ZERO) {
+            let shadow_range = self.layouts[self.active_layout].layout.visible_lines(
+                viewport,
+                Affine::translate(shadow.offset),
+                self.outline,
+            );
+            range = range.start.min(shadow_range.start)..range.end.max(shadow_range.end);
+        }
         let changed = self.paint_line_range != range;
         self.paint_line_range = range;
         changed
@@ -943,7 +1023,26 @@ impl Widget for Label {
         let text_color = props.get::<ContentColor>(cache);
 
         let layout = &mut self.layouts[self.active_layout];
-        layout.layout.paint(
+        if let Some(shadow) = self.shadow.filter(|s| s.offset != crate::kurbo::Vec2::ZERO) {
+            let brush = crate::peniko::Brush::Solid(shadow.color);
+            layout.layout.paint_faded(
+                painter,
+                Affine::translate(shadow.offset),
+                brush.clone(),
+                self.hint,
+                self.visible_bytes.clone().unwrap_or(0..self.text.len()),
+                self.outline.map(|o| TextOutline {
+                    width: o.width,
+                    color: shadow.color,
+                }),
+                self.paint_viewport,
+                self.reveal_fade,
+                &self.fade_graphemes,
+                1.,
+                Some(&brush),
+            );
+        }
+        layout.layout.paint_faded(
             painter,
             Affine::IDENTITY,
             text_color.color.into(),
@@ -951,11 +1050,18 @@ impl Widget for Label {
             self.visible_bytes.clone().unwrap_or(0..self.text.len()),
             self.outline,
             self.paint_viewport,
+            self.reveal_fade,
+            &self.fade_graphemes,
+            1.,
+            None,
         );
         if let Some(index) = self
             .hovered_link
             .or_else(|| ctx.is_focus_target().then_some(self.focused_link))
             && let Some(link) = self.text.links().get(index)
+            && self
+                .reveal_fade
+                .is_none_or(|fade| fade.alpha(&self.fade_graphemes, link.range.clone()) > 0.)
             && self
                 .visible_bytes
                 .as_ref()
@@ -1039,6 +1145,322 @@ mod reveal_tests {
         peniko::Blob,
     };
     use std::sync::Arc;
+
+    #[test]
+    fn reveal_fade_uses_unicode_graphemes_and_preserves_opaque_prefix() {
+        let text = "Aé e\u{301}Z";
+        let starts: Vec<_> = text.grapheme_indices(true).map(|(i, _)| i).collect();
+        let fade = crate::core::RevealFade {
+            from: 1,
+            progress: 0.75,
+            step: 0.25,
+        };
+        assert_eq!(fade.alpha(&starts, 0..1), 1.);
+        assert_eq!(fade.alpha(&starts, 1..3), 0.75);
+        let combined = text.find('e').unwrap();
+        assert_eq!(fade.alpha(&starts, combined..combined + 3), 0.25);
+        assert_eq!(fade.alpha(&starts, text.len() - 1..text.len()), 0.);
+        assert_eq!(fade.alpha(&starts, 1..text.len()), 0.);
+    }
+    #[test]
+    fn rich_text_and_fade_builder_order_share_graphemes_and_disabling_releases_index() {
+        let fade = crate::core::RevealFade {
+            from: 0,
+            progress: 0.75,
+            step: 0.25,
+        };
+        let source = Text::from("Aé e\u{301}Z");
+        let first = Label::new("old")
+            .with_reveal_fade(Some(fade))
+            .with_rich_text(source.clone());
+        let second = Label::new("old")
+            .with_rich_text(source)
+            .with_reveal_fade(Some(fade));
+        assert_eq!(first.fade_graphemes, vec![0, 1, 3, 4, 7]);
+        assert_eq!(first.fade_graphemes, second.fade_graphemes);
+        let disabled = first.with_reveal_fade(None);
+        assert_eq!(disabled.fade_graphemes.capacity(), 0);
+    }
+    #[test]
+    #[ignore = "requires REEL_SESSION_FONT; CPU glyph primitives only"]
+    fn reveal_fade_records_alpha_and_keeps_cached_layout_and_grapheme_index() {
+        let font = Blob::from(
+            std::fs::read(std::env::var_os("REEL_SESSION_FONT").expect("real font")).unwrap(),
+        );
+        let label = Label::new("ABCDE")
+            .with_reveal_fade(Some(crate::core::RevealFade {
+                from: 0,
+                progress: 0.75,
+                step: 0.25,
+            }))
+            .prepare();
+        let id = label.id();
+        let mut root = RenderRoot::new(
+            label,
+            |_| {},
+            RenderRootOptions {
+                default_properties: Arc::new(DefaultProperties::new()),
+                use_system_fonts: false,
+                size_policy: WindowSizePolicy::User,
+                size: PhysicalSize::new(400, 100),
+                scale_factor: 1.,
+                default_font: Some(font),
+            },
+        );
+        let (plan, _) = root.redraw();
+        let mut opacity = Vec::new();
+        for layer in &plan.layers {
+            if let crate::app::VisualLayerKind::Scene(scene) = &layer.kind {
+                for command in scene.commands() {
+                    if let crate::imaging::record::Command::Draw(id) = command
+                        && let crate::imaging::record::Draw::GlyphRun(run) = scene.draw_op(*id)
+                    {
+                        opacity.extend(std::iter::repeat_n(run.composite.alpha, run.glyphs.len()));
+                    }
+                }
+            }
+        }
+        assert_eq!(opacity, [0.75, 0.5, 0.25]);
+        let before = {
+            let label = root.get_widget(id).unwrap().downcast::<Label>().unwrap();
+            (
+                label.cache_time,
+                label.active_layout,
+                label.fade_graphemes.as_ptr(),
+                label.layouts[label.active_layout].layout.width(),
+                label.layouts[label.active_layout].layout.height(),
+            )
+        };
+        for progress in [0., 0.2, 0.5, 1., 2.] {
+            root.edit_widget(id, |mut widget| {
+                Label::set_reveal_fade(
+                    &mut widget.downcast::<Label>(),
+                    Some(crate::core::RevealFade {
+                        from: 0,
+                        progress,
+                        step: 0.25,
+                    }),
+                )
+            });
+            root.redraw();
+            let label = root.get_widget(id).unwrap().downcast::<Label>().unwrap();
+            assert_eq!(
+                (
+                    label.cache_time,
+                    label.active_layout,
+                    label.fade_graphemes.as_ptr(),
+                    label.layouts[label.active_layout].layout.width(),
+                    label.layouts[label.active_layout].layout.height()
+                ),
+                before
+            );
+        }
+        root.edit_widget(id, |mut label| {
+            Label::set_reveal_fade(&mut label.downcast::<Label>(), None)
+        });
+        let label = root.get_widget(id).unwrap().downcast::<Label>().unwrap();
+        assert_eq!(label.fade_graphemes.capacity(), 0);
+    }
+
+    #[test]
+    #[ignore = "requires REEL_SESSION_FONT; CPU shadow and shared glyph layout only"]
+    fn shadow_overrides_rich_color_and_reuses_faded_glyphs_and_layout() {
+        let font = Blob::from(
+            std::fs::read(std::env::var_os("REEL_SESSION_FONT").expect("real font")).unwrap(),
+        );
+        let shadow_color = crate::peniko::Color::from_rgb8(13, 29, 71);
+        let label = Label::new("")
+            .with_rich_text(
+                Text::parse("[color=#ff0000][u][ruby=xy]AB[/ruby]CD[/u][/color]").unwrap(),
+            )
+            .with_shadow(Some(TextShadow {
+                offset: crate::kurbo::Vec2::new(2., 3.),
+                color: shadow_color,
+            }))
+            .with_outline(Some(TextOutline {
+                width: 1.,
+                color: crate::peniko::Color::BLACK,
+            }))
+            .with_reveal_fade(Some(crate::core::RevealFade {
+                from: 0,
+                progress: 0.75,
+                step: 0.25,
+            }))
+            .prepare();
+        let id = label.id();
+        let mut root = RenderRoot::new(
+            label,
+            |_| {},
+            RenderRootOptions {
+                default_properties: Arc::new(DefaultProperties::new()),
+                use_system_fonts: false,
+                size_policy: WindowSizePolicy::User,
+                size: PhysicalSize::new(400, 150),
+                scale_factor: 1.,
+                default_font: Some(font),
+            },
+        );
+        let (plan, _) = root.redraw();
+        let mut shadow = Vec::new();
+        let mut foreground = Vec::new();
+        for layer in &plan.layers {
+            if let crate::app::VisualLayerKind::Scene(scene) = &layer.kind {
+                for command in scene.commands() {
+                    if let crate::imaging::record::Command::Draw(draw) = command
+                        && let crate::imaging::record::Draw::GlyphRun(run) = scene.draw_op(*draw)
+                    {
+                        let key = (
+                            run.glyphs.to_vec(),
+                            run.font_size,
+                            run.composite.alpha,
+                            run.style.clone(),
+                        );
+                        if run.brush == crate::peniko::Brush::Solid(shadow_color) {
+                            shadow.push((key, run.transform));
+                        } else {
+                            foreground.push((key, run.transform));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(!shadow.is_empty());
+        assert_eq!(shadow.len(), foreground.len());
+        for ((a, at), (b, bt)) in shadow.iter().zip(&foreground) {
+            assert_eq!(
+                a, b,
+                "shadow must share glyphs, outline and fade with foreground"
+            );
+            assert_eq!(*at, Affine::translate((2., 3.)) * *bt);
+        }
+        let before = {
+            let label = root.get_widget(id).unwrap().downcast::<Label>().unwrap();
+            (label.cache_time, label.active_layout, label.layouts.len())
+        };
+        root.edit_widget(id, |mut label| {
+            Label::set_shadow(
+                &mut label.downcast::<Label>(),
+                Some(TextShadow {
+                    offset: crate::kurbo::Vec2::new(2., 3.),
+                    color: crate::peniko::Color::WHITE,
+                }),
+            )
+        });
+        root.redraw();
+        let label = root.get_widget(id).unwrap().downcast::<Label>().unwrap();
+        assert_eq!(
+            before,
+            (label.cache_time, label.active_layout, label.layouts.len())
+        );
+    }
+
+    #[test]
+    #[ignore = "requires REEL_SESSION_FONT; CPU rich glyph primitives and hit geometry only"]
+    fn reveal_fade_ruby_outline_decorations_and_link_visibility_share_alpha() {
+        let font = Blob::from(
+            std::fs::read(std::env::var_os("REEL_SESSION_FONT").expect("real font")).unwrap(),
+        );
+        let source =
+            Text::parse("[link=entry][u][s][em][ruby=XY]AB[/ruby]CD[/em][/s][/u][/link]").unwrap();
+        let label = Label::new("")
+            .with_rich_text(source)
+            .with_style(StyleProperty::FontSize(24.))
+            .with_outline(Some(TextOutline {
+                width: 1.,
+                color: crate::peniko::Color::BLACK,
+            }))
+            .with_reveal_fade(Some(crate::core::RevealFade {
+                from: 0,
+                progress: 0.75,
+                step: 0.25,
+            }))
+            .prepare();
+        let id = label.id();
+        let mut root = RenderRoot::new(
+            label,
+            |_| {},
+            RenderRootOptions {
+                default_properties: Arc::new(DefaultProperties::new()),
+                use_system_fonts: false,
+                size_policy: WindowSizePolicy::User,
+                size: PhysicalSize::new(400, 150),
+                scale_factor: 1.,
+                default_font: Some(font),
+            },
+        );
+        let (plan, _) = root.redraw();
+        let mut ruby = 0;
+        let mut outline = 0;
+        let mut decorations = 0;
+        for layer in &plan.layers {
+            if let crate::app::VisualLayerKind::Scene(scene) = &layer.kind {
+                for command in scene.commands() {
+                    if let crate::imaging::record::Command::Draw(draw) = command {
+                        match scene.draw_op(*draw) {
+                            crate::imaging::record::Draw::GlyphRun(run) => {
+                                assert!(run.composite.alpha > 0. && run.composite.alpha <= 0.75);
+                                if run.font_size < 20. {
+                                    assert_eq!(run.composite.alpha, 0.5);
+                                    ruby += run.glyphs.len();
+                                }
+                                if matches!(run.style, crate::peniko::Style::Stroke(_)) {
+                                    outline += run.glyphs.len();
+                                }
+                            }
+                            crate::imaging::record::Draw::Fill { composite, .. } => {
+                                assert!(composite.alpha > 0. && composite.alpha <= 0.75);
+                                decorations += 1;
+                            }
+                            crate::imaging::record::Draw::Stroke { composite, .. } => {
+                                assert!(composite.alpha > 0. && composite.alpha <= 0.75);
+                                decorations += 1;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        assert!(ruby > 0 && outline > 0 && decorations > 0);
+        assert!(
+            !root
+                .get_widget(id)
+                .unwrap()
+                .downcast::<Label>()
+                .unwrap()
+                .link_visible(0)
+        );
+        root.edit_widget(id, |mut widget| {
+            Label::set_reveal_fade(
+                &mut widget.downcast::<Label>(),
+                Some(crate::core::RevealFade {
+                    from: 0,
+                    progress: 1.01,
+                    step: 0.25,
+                }),
+            )
+        });
+        root.redraw();
+        assert!(
+            root.get_widget(id)
+                .unwrap()
+                .downcast::<Label>()
+                .unwrap()
+                .link_visible(0)
+        );
+        root.edit_widget(id, |mut widget| {
+            Label::set_visible_bytes(&mut widget.downcast::<Label>(), 0..3)
+        });
+        root.redraw();
+        assert!(
+            !root
+                .get_widget(id)
+                .unwrap()
+                .downcast::<Label>()
+                .unwrap()
+                .link_visible(0)
+        );
+    }
 
     #[test]
     #[ignore = "requires REEL_SESSION_FONT; CPU scene recording only"]

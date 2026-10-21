@@ -16,6 +16,7 @@ fn datetime(timestamp: i64, timezone: Option<String>) -> Result<Zoned, NativeErr
     Ok(timestamp.to_zoned(timezone))
 }
 
+/// Return the current UTC Unix timestamp in whole seconds.
 #[native(symbol = "std::time::now", effects = Effects(Effects::HOST))]
 pub(super) fn now(
     #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,
@@ -23,6 +24,18 @@ pub(super) fn now(
     Ok(Timestamp::now().as_second())
 }
 
+/// Split a Unix timestamp into civil time fields. `timezone` is an IANA name
+/// such as `Asia/Shanghai`; `null` selects the system timezone. The result has
+/// `year`, `month`, `day`, `hour`, `minute`, `second`, `weekday` (Monday = 1),
+/// and `offset_seconds` east of UTC.
+///
+/// ```aside
+/// use std::time::parts;
+/// fn main() {
+///     let epoch = parts(0, timezone: "UTC");
+///     if epoch.year != 1970 || epoch.month != 1 { throw "civil time"; }
+/// }
+/// ```
 #[native(symbol = "std::time::parts", effects = Effects(Effects::HOST | Effects::ALLOCATE))]
 pub(super) fn parts(
     #[aside(context)] context: &mut CallContext<'_, StandardLibrary>,
@@ -51,6 +64,15 @@ pub(super) fn parts(
     Ok(result)
 }
 
+/// Format a Unix timestamp using strftime directives. The default pattern is
+/// `%Y-%m-%d %H:%M`; `timezone: null` uses the system timezone.
+///
+/// ```aside
+/// use std::time::format;
+/// fn main() {
+///     if format(0, "%Y-%m-%d", "UTC") != "1970-01-01" { throw "date"; }
+/// }
+/// ```
 #[native(symbol = "std::time::format", effects = Effects(Effects::HOST | Effects::ALLOCATE))]
 pub(super) fn format(
     #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,

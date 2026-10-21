@@ -13,6 +13,7 @@ use reel_ui::{
 };
 use std::{collections::HashMap, sync::Arc};
 pub(super) struct Context<'a> {
+    pub(super) capture: bool,
     pub(super) gpu: &'a Gpu,
     pub(super) encoder: wgpu::CommandEncoder,
     pub(super) pipelines: Arc<Pipelines>,
@@ -59,7 +60,8 @@ enum Pending<'a> {
 }
 struct Stream<'a> {
     drawing: &'a FrameDrawing,
-    offset: usize,
+    // Masks have their own command space; frame exclusions apply to drawing ranges.
+    offset: Option<usize>,
     transition_next: usize,
     transitions_enabled: bool,
     commands: &'a [FrameCommand],
@@ -136,7 +138,7 @@ impl Context<'_> {
         let first = self.start_stream(
             frame,
             frame.commands(),
-            0,
+            Some(0),
             true,
             transform,
             Scissor::full(self.size),
@@ -148,15 +150,18 @@ impl Context<'_> {
             // A transition boundary is a gap, including an empty hidden subtree.
             if current.transitions_enabled
                 && let Some(transition) = current.drawing.transitions().get(current.transition_next)
-                && transition.commands.start == current.offset + current.next
+                && transition.commands.start == current.offset.unwrap() + current.next
             {
                 current.transition_next += 1;
-                current.next = transition.commands.end - current.offset;
+                current.next = transition.commands.end - current.offset.unwrap();
+                if self.capture && !transition.capture_included {
+                    continue;
+                }
                 self.scissor = current.scopes.last().scissor;
                 let child = self.start_stream(
                     transition.previous.drawing(),
                     transition.previous.drawing().commands(),
-                    0,
+                    Some(0),
                     true,
                     current.transform
                         * transition.parent_to_window
@@ -176,6 +181,18 @@ impl Context<'_> {
                     previous: None,
                 });
                 push_stack(&mut streams, child, |bytes| self.transient(bytes))?;
+                continue;
+            }
+            if self.capture
+                && current.next < current.commands.len()
+                && let Some(offset) = current.offset
+                && let Some(end) = current.drawing.capture_exclusion_end(offset + current.next)
+            {
+                current.next = (end - offset).min(current.commands.len());
+                current.transition_next = current
+                    .drawing
+                    .transitions()
+                    .partition_point(|transition| transition.commands.start < end);
                 continue;
             }
             let Some(command) = current.commands.get(current.next) else {
@@ -208,7 +225,7 @@ impl Context<'_> {
                         let child = self.start_stream(
                             parent.drawing,
                             &parent.drawing.commands()[definition.commands.clone()],
-                            definition.commands.start,
+                            Some(definition.commands.start),
                             false,
                             parent.transform,
                             self.scissor,
@@ -373,7 +390,7 @@ impl Context<'_> {
                         let child = self.start_stream(
                             current.drawing,
                             &definition.commands,
-                            0,
+                            None,
                             false,
                             transform * mask.transform,
                             self.scissor,
@@ -396,7 +413,7 @@ impl Context<'_> {
                     }
                 }
                 FrameOp::Draw(draw) => {
-                    let batch_end = if current.transitions_enabled {
+                    let mut batch_end = if current.transitions_enabled {
                         current
                             .drawing
                             .transitions()
@@ -404,12 +421,22 @@ impl Context<'_> {
                             .map_or(current.commands.len(), |t| {
                                 t.commands
                                     .start
-                                    .saturating_sub(current.offset)
+                                    .saturating_sub(current.offset.unwrap())
                                     .min(current.commands.len())
                             })
                     } else {
                         current.commands.len()
                     };
+                    if self.capture
+                        && let Some(offset) = current.offset
+                    {
+                        let exclusions = current.drawing.capture_exclusions();
+                        let next =
+                            exclusions.partition_point(|range| range.end < offset + current.next);
+                        if let Some(range) = exclusions.get(next) {
+                            batch_end = batch_end.min(range.start.saturating_sub(offset));
+                        }
+                    }
                     let consumed = self.image_batch(
                         &current.scopes.last().target,
                         &current.commands[current.next - 1..batch_end],
@@ -440,7 +467,7 @@ impl Context<'_> {
         &mut self,
         drawing: &'a FrameDrawing,
         commands: &'a [FrameCommand],
-        offset: usize,
+        offset: Option<usize>,
         transitions_enabled: bool,
         transform: Affine,
         scissor: Scissor,
@@ -451,7 +478,7 @@ impl Context<'_> {
             transitions_enabled,
             transition_next: drawing
                 .transitions()
-                .partition_point(|t| t.commands.start < offset),
+                .partition_point(|t| t.commands.start < offset.unwrap_or(0)),
             commands,
             next: 0,
             transform,

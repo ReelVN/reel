@@ -2945,6 +2945,22 @@ impl Vm {
                 let kind = self.heap.info(object)?.kind;
                 if matches!(
                     kind,
+                    ObjectKind::FaultEnvelope
+                        | ObjectKind::FaultStack
+                        | ObjectKind::FaultCause
+                        | ObjectKind::CoreError
+                ) {
+                    let name = &self.program.package().symbols[c as usize];
+                    return if op == Opcode::MemberSet {
+                        Ok((1, 0))
+                    } else {
+                        self.heap
+                            .fault_member_cost(object, name)
+                            .map_err(Into::into)
+                    };
+                }
+                if matches!(
+                    kind,
                     ObjectKind::Class | ObjectKind::Instance | ObjectKind::Super
                 ) {
                     let extra = if op == Opcode::MemberSet {
@@ -3238,6 +3254,25 @@ impl Vm {
             }
             Opcode::MemberGet | Opcode::MemberSet => {
                 let object = self.read(*s, r(if op == Opcode::MemberGet { b } else { a }))?;
+                if matches!(
+                    self.heap.info(object).map_err(heap_fault)?.kind,
+                    ObjectKind::FaultEnvelope
+                        | ObjectKind::FaultStack
+                        | ObjectKind::FaultCause
+                        | ObjectKind::CoreError
+                ) {
+                    if op == Opcode::MemberSet {
+                        return Err(FaultKind::ReadOnly);
+                    }
+                    let value = self
+                        .heap
+                        .fault_member(object, &self.program.package().symbols[c as usize])
+                        .map_err(heap_fault)?
+                        .ok_or(FaultKind::MissingKey)?;
+                    self.write(*s, r(a), value)?;
+                    s.pc.0 += 1;
+                    return Ok(true);
+                }
                 if matches!(
                     self.heap.info(object).map_err(heap_fault)?.kind,
                     ObjectKind::Class | ObjectKind::Instance | ObjectKind::Super

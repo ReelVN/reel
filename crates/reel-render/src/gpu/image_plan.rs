@@ -18,6 +18,7 @@ pub(super) struct Required<'a> {
 pub(super) fn collect<'a>(
     frames: impl Iterator<Item = &'a RenderFrame>,
     max_dimension: u32,
+    capture: bool,
     mut reserve: impl FnMut(u64) -> Result<(), GpuError>,
 ) -> Result<Vec<Required<'a>>, GpuError> {
     let mut required = Vec::new();
@@ -51,8 +52,11 @@ pub(super) fn collect<'a>(
         let sources: HashMap<_, _> = leases.iter().map(|lease| (lease.handle(), lease)).collect();
         let mut visited = HashSet::new();
         let mut used = HashMap::new();
-        let mut streams = vec![frame.commands()];
+        let mut streams = vec![(frame.commands(), Some(0))];
         for transition in frame.transitions() {
+            if capture && !transition.capture_included {
+                continue;
+            }
             super::scopes::push_stack(
                 &mut drawings,
                 (transition.previous.drawing(), fallback_at),
@@ -68,8 +72,18 @@ pub(super) fn collect<'a>(
                 }
             }
         }
-        while let Some(commands) = streams.pop() {
-            for command in commands {
+        while let Some((commands, offset)) = streams.pop() {
+            let mut index = 0;
+            while index < commands.len() {
+                if capture
+                    && let Some(offset) = offset
+                    && let Some(end) = frame.capture_exclusion_end(offset + index)
+                {
+                    index = (end - offset).min(commands.len());
+                    continue;
+                }
+                let command = &commands[index];
+                index += 1;
                 let at = command.origin.at;
                 let handles: &[ResourceHandle] = match &command.op {
                     FrameOp::Draw(
@@ -95,7 +109,7 @@ pub(super) fn collect<'a>(
                                     at,
                                     record: "missing mask",
                                 })?;
-                            streams.push(&definition.commands);
+                            streams.push((&definition.commands, None));
                         }
                         group.image_mask.as_ref().map_or(&[], |mask| &mask.images)
                     }

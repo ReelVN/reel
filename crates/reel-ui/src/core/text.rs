@@ -31,6 +31,28 @@ pub type StyleProperty = reel_text::StyleProperty<'static, BrushIndex>;
 /// A set of styles specialised for use within Masonry.
 pub type StyleSet = reel_text::StyleSet<BrushIndex>;
 
+/// Scalar opacity wavefront over the text's cached logical grapheme index.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RevealFade {
+    /// UTF-8 byte origin; preceding graphemes remain opaque.
+    pub from: usize,
+    /// Opacity at the origin, before subtracting the per-grapheme step.
+    pub progress: f64,
+    /// Nonnegative opacity difference between adjacent graphemes.
+    pub step: f64,
+}
+impl RevealFade {
+    /// Opacity shared by a complete shaping cluster or source range.
+    pub fn alpha(self, graphemes: &[usize], range: std::ops::Range<usize>) -> f32 {
+        let origin = graphemes.partition_point(|&offset| offset < self.from);
+        let end = graphemes.partition_point(|&offset| offset < range.end);
+        if end <= origin {
+            return 1.;
+        }
+        (self.progress - (end - 1 - origin) as f64 * self.step).clamp(0., 1.) as f32
+    }
+}
+
 /// Width fitting for complete text, independent of its currently revealed prefix.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum TextFit {
@@ -45,6 +67,16 @@ pub enum TextFit {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextOutline {
     pub width: f64,
+    pub color: peniko::Color,
+}
+
+/// A single shadow of the shaped text, painted before its foreground.
+///
+/// Offset uses local logical pixels. Color replaces all inline run colors,
+/// including ruby and text decorations. Layout and glyph data are shared.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextShadow {
+    pub offset: kurbo::Vec2,
     pub color: peniko::Color,
 }
 
@@ -76,9 +108,11 @@ pub fn render_text(
         hint,
         outline,
         0..layout.len(),
+        None,
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_text_lines(
     painter: &mut Painter<'_, impl PaintSink + ?Sized>,
     transform: Affine,
@@ -87,6 +121,7 @@ pub(crate) fn render_text_lines(
     hint: bool,
     outline: Option<TextOutline>,
     lines: std::ops::Range<usize>,
+    brush_override: Option<&Brush>,
 ) {
     for index in lines {
         let line = layout.get(index).unwrap();
@@ -98,7 +133,7 @@ pub(crate) fn render_text_lines(
             // We draw underlines under the text, then the strikethrough on top, following:
             // https://drafts.csswg.org/css-text-decor/#painting-order
             if let Some(underline) = &style.underline {
-                let underline_brush = &brushes[underline.brush.0];
+                let underline_brush = brush_override.unwrap_or(&brushes[underline.brush.0]);
                 let run_metrics = glyph_run.run().metrics();
                 let offset = match underline.offset {
                     Some(offset) => offset,
@@ -141,7 +176,7 @@ pub(crate) fn render_text_lines(
                 .skew()
                 .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
             let coords = run.normalized_coords();
-            let brush = &brushes[style.brush.0];
+            let brush = brush_override.unwrap_or(&brushes[style.brush.0]);
             let glyphs: SmallVec<[Glyph; 16]> = glyph_run
                 .glyphs()
                 .map(|glyph| {
@@ -180,7 +215,7 @@ pub(crate) fn render_text_lines(
                 .draw(&peniko::Style::Fill(Fill::NonZero), &glyphs);
 
             if let Some(strikethrough) = &style.strikethrough {
-                let strikethrough_brush = &brushes[strikethrough.brush.0];
+                let strikethrough_brush = brush_override.unwrap_or(&brushes[strikethrough.brush.0]);
                 let run_metrics = glyph_run.run().metrics();
                 let offset = match strikethrough.offset {
                     Some(offset) => offset,
@@ -249,11 +284,40 @@ pub(crate) fn render_text_revealed_lines(
     outline: Option<TextOutline>,
     lines: std::ops::Range<usize>,
 ) {
+    render_text_faded_lines(
+        painter,
+        transform,
+        layout,
+        brushes,
+        hint,
+        visible_bytes,
+        outline,
+        lines,
+        None,
+        None,
+    );
+}
+#[expect(
+    clippy::too_many_arguments,
+    reason = "shared shaping inputs and optional cluster opacity"
+)]
+pub(crate) fn render_text_faded_lines(
+    painter: &mut Painter<'_, impl PaintSink + ?Sized>,
+    transform: Affine,
+    layout: &Layout<BrushIndex>,
+    brushes: &[Brush],
+    hint: bool,
+    visible_bytes: std::ops::Range<usize>,
+    outline: Option<TextOutline>,
+    lines: std::ops::Range<usize>,
+    alpha: Option<&dyn Fn(std::ops::Range<usize>) -> f32>,
+    brush_override: Option<&Brush>,
+) {
     for index in lines {
         let line = layout.get(index).unwrap();
         let mut last_run = None;
         let mut glyph_start = 0;
-        let mut visibility: SmallVec<[bool; 64]> = SmallVec::new();
+        let mut visibility: SmallVec<[f32; 64]> = SmallVec::new();
         for item in line.items() {
             let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
                 continue;
@@ -276,24 +340,23 @@ pub(crate) fn render_text_revealed_lines(
                 .skew()
                 .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
             let coords = run.normalized_coords();
-            let brush = &brushes[style.brush.0];
+            let brush = brush_override.unwrap_or(&brushes[style.brush.0]);
             let cluster_range = run.cluster_range();
             if last_run.as_ref() != Some(&cluster_range) {
                 glyph_start = 0;
                 last_run = Some(cluster_range);
                 visibility.clear();
-                let clusters = revealed_clusters(run, &visible_bytes);
+                let clusters = faded_clusters(run, &visible_bytes, alpha);
                 visibility.extend(run.visual_clusters().flat_map(|cluster| {
-                    std::iter::repeat_n(
-                        clusters[cluster.path().logical_index()],
-                        cluster.glyphs().count(),
-                    )
+                    let opacity = clusters[cluster.path().logical_index()];
+                    std::iter::repeat_n(opacity, cluster.glyphs().count())
                 }));
             }
-            let mut spans: SmallVec<[(f32, f32); 4]> = SmallVec::new();
+            let mut spans: SmallVec<[(f32, f32, f32); 4]> = SmallVec::new();
             let mut span_start = None;
             let mut glyphs: SmallVec<[Glyph; 16]> = SmallVec::new();
             let mut glyph_count = 0;
+            let mut groups: SmallVec<[(f32, std::ops::Range<usize>); 4]> = SmallVec::new();
             for (glyph, visible) in glyph_run
                 .glyphs()
                 .zip(visibility[glyph_start..].iter().copied())
@@ -301,21 +364,29 @@ pub(crate) fn render_text_revealed_lines(
                 glyph_count += 1;
                 let gx = x + glyph.x;
                 let gy = y + glyph.y;
-                if visible {
-                    span_start.get_or_insert(x);
+                if visible > 0. {
+                    if span_start.is_some_and(|(_, a)| a != visible) {
+                        let (start, a) = span_start.take().unwrap();
+                        spans.push((start, x, a));
+                    }
+                    span_start.get_or_insert((x, visible));
+                    if groups.last().is_none_or(|(a, _)| *a != visible) {
+                        groups.push((visible, glyphs.len()..glyphs.len()));
+                    }
+                    groups.last_mut().unwrap().1.end += 1;
                     glyphs.push(Glyph {
                         id: glyph.id,
                         x: gx,
                         y: gy,
                     });
-                } else if let Some(start) = span_start.take() {
-                    spans.push((start, x));
+                } else if let Some((start, a)) = span_start.take() {
+                    spans.push((start, x, a));
                 }
                 x += glyph.advance;
             }
             glyph_start += glyph_count;
-            if let Some(start) = span_start {
-                spans.push((start, x));
+            if let Some((start, a)) = span_start {
+                spans.push((start, x, a));
             }
             // Decorations cover only visible spans and retain the full layout's positions.
             if let Some(underline) = &style.underline {
@@ -323,7 +394,7 @@ pub(crate) fn render_text_revealed_lines(
                 let offset = underline.offset.unwrap_or(metrics.underline_offset);
                 let width = underline.size.unwrap_or(metrics.underline_size);
                 let y = y - offset + width / 2.;
-                for &(start, end) in &spans {
+                for &(start, end, alpha) in &spans {
                     painter
                         .stroke(
                             Line::new(
@@ -331,16 +402,25 @@ pub(crate) fn render_text_revealed_lines(
                                 (f64::from(end), f64::from(y)),
                             ),
                             &Stroke::new(width.into()),
-                            &brushes[underline.brush.0],
+                            brush_override.unwrap_or(&brushes[underline.brush.0]),
                         )
                         .transform(transform)
+                        .composite(crate::imaging::Composite {
+                            alpha,
+                            ..Default::default()
+                        })
                         .draw();
                 }
             }
-            if !glyphs.is_empty() {
+            for (alpha, range) in groups {
+                let glyphs = &glyphs[range];
                 if let Some(outline) = outline.filter(|outline| outline.width > 0.) {
                     painter
                         .glyphs(font, &Brush::Solid(outline.color))
+                        .composite(crate::imaging::Composite {
+                            alpha,
+                            ..Default::default()
+                        })
                         .hint(hint)
                         .transform(transform)
                         .glyph_transform(glyph_xform)
@@ -349,22 +429,26 @@ pub(crate) fn render_text_revealed_lines(
                         .normalized_coords(coords)
                         .draw(
                             &peniko::Style::Stroke(Stroke::new(outline.width * 2.)),
-                            &glyphs,
+                            glyphs,
                         );
                 }
                 painter
                     .glyphs(font, brush)
+                    .composite(crate::imaging::Composite {
+                        alpha,
+                        ..Default::default()
+                    })
                     .hint(hint)
                     .transform(transform)
                     .glyph_transform(glyph_xform)
                     .font_embolden(font_embolden)
                     .font_size(font_size)
                     .normalized_coords(coords)
-                    .draw(&peniko::Style::Fill(Fill::NonZero), &glyphs);
+                    .draw(&peniko::Style::Fill(Fill::NonZero), glyphs);
             }
 
             if let Some(strikethrough) = &style.strikethrough {
-                let strikethrough_brush = &brushes[strikethrough.brush.0];
+                let strikethrough_brush = brush_override.unwrap_or(&brushes[strikethrough.brush.0]);
                 let run_metrics = glyph_run.run().metrics();
                 let offset = match strikethrough.offset {
                     Some(offset) => offset,
@@ -380,7 +464,7 @@ pub(crate) fn render_text_revealed_lines(
                 // Remember that we are using a y-down coordinate system
                 let y = glyph_run.baseline() - offset + run_metrics.strikethrough_size / 2.;
 
-                for &(start, end) in &spans {
+                for &(start, end, alpha) in &spans {
                     let line = Line::new(
                         (f64::from(start), f64::from(y)),
                         (f64::from(end), f64::from(y)),
@@ -388,6 +472,10 @@ pub(crate) fn render_text_revealed_lines(
                     painter
                         .stroke(line, &Stroke::new(width.into()), strikethrough_brush)
                         .transform(transform)
+                        .composite(crate::imaging::Composite {
+                            alpha,
+                            ..Default::default()
+                        })
                         .draw();
                 }
             }
@@ -399,6 +487,40 @@ pub(crate) fn render_text_revealed_lines(
 /// precedes its continuations in visual order, including RTL runs where those
 /// continuations precede the start in logical order. Group in visual order, then
 /// restore logical indexing; no prefix scan repeats for a ligature or style run.
+fn faded_clusters(
+    run: &reel_text::Run<'_, BrushIndex>,
+    visible: &std::ops::Range<usize>,
+    alpha: Option<&dyn Fn(std::ops::Range<usize>) -> f32>,
+) -> SmallVec<[f32; 64]> {
+    let mut masks = SmallVec::new();
+    let mut clusters = run.visual_clusters().peekable();
+    while let Some(cluster) = clusters.next() {
+        let mut range = cluster.text_range();
+        let mut count = 1;
+        if cluster.is_ligature_start() {
+            while clusters
+                .peek()
+                .is_some_and(|next| next.is_ligature_continuation())
+            {
+                let next = clusters.next().unwrap().text_range();
+                range.start = range.start.min(next.start);
+                range.end = range.end.max(next.end);
+                count += 1;
+            }
+        }
+        let opacity = if visible.start <= range.start && range.end <= visible.end {
+            alpha.map_or(1., |f| f(range))
+        } else {
+            0.
+        };
+        masks.extend(std::iter::repeat_n(opacity, count));
+    }
+    if run.is_rtl() {
+        masks.reverse();
+    }
+    masks
+}
+
 pub(crate) fn revealed_clusters(
     run: &reel_text::Run<'_, BrushIndex>,
     visible: &std::ops::Range<usize>,
@@ -478,6 +600,58 @@ mod reveal_tests {
     use crate::imaging::record::{Command, Draw, Scene};
     use crate::peniko::{Blob, Color};
     use crate::reel_text::{FontContext, LayoutContext};
+
+    #[test]
+    #[ignore = "requires REEL_SESSION_FONT; shaping clusters and CPU draw records only"]
+    fn reveal_fade_keeps_ligatures_atomic_in_logical_rtl_order() {
+        let source = "لا لا office ffi e\u{301}";
+        let layout = layout(source, false);
+        let calls = std::cell::RefCell::new(Vec::new());
+        let opacity = |range: std::ops::Range<usize>| {
+            calls.borrow_mut().push(range.clone());
+            (100 - range.end) as f32 / 100.
+        };
+        let mut ligatures = 0;
+        for line in layout.lines() {
+            for item in line.items() {
+                let PositionedLayoutItem::GlyphRun(glyphs) = item else {
+                    continue;
+                };
+                let run = glyphs.run();
+                let masks = faded_clusters(run, &(0..source.len()), Some(&opacity));
+                assert_eq!(masks.len(), run.visual_clusters().count());
+                let mut clusters = run.visual_clusters().peekable();
+                while let Some(cluster) = clusters.next() {
+                    if !cluster.is_ligature_start() {
+                        continue;
+                    }
+                    let mut bytes = cluster.text_range();
+                    let mut components = vec![cluster.path().logical_index()];
+                    while clusters
+                        .peek()
+                        .is_some_and(|c| c.is_ligature_continuation())
+                    {
+                        let c = clusters.next().unwrap();
+                        let range = c.text_range();
+                        bytes.start = bytes.start.min(range.start);
+                        bytes.end = bytes.end.max(range.end);
+                        components.push(c.path().logical_index());
+                    }
+                    assert!(components.len() > 1);
+                    let expected = (100 - bytes.end) as f32 / 100.;
+                    for component in components {
+                        assert_eq!(masks[component], expected);
+                    }
+                    assert!(calls.borrow().contains(&bytes));
+                    ligatures += 1;
+                }
+            }
+        }
+        assert!(
+            ligatures > 0,
+            "test font must shape at least one mandatory Arabic ligature"
+        );
+    }
 
     fn layout(text: &str, styled: bool) -> Layout<BrushIndex> {
         weighted_layout(text, styled, 400.)

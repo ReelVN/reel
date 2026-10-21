@@ -223,14 +223,14 @@ impl Renderer {
         }
     }
     pub fn prepare(&self, frame: &RenderFrame) -> Result<Prepared, GpuError> {
-        self.prepare_frames(frame, None, frame.info().physical_size)
+        self.prepare_frames(frame, None, frame.info().physical_size, false)
     }
     pub(super) fn prepare_capture(
         &self,
         frame: &RenderFrame,
         size: [u32; 2],
     ) -> Result<Prepared, GpuError> {
-        self.prepare_frames(frame, None, size)
+        self.prepare_frames(frame, None, size, true)
     }
     /// Both immutable input frames stay leased through queue completion. No input acceptance.
     pub fn crossfade(
@@ -246,13 +246,14 @@ impl Renderer {
         {
             return Err(GpuError::InvalidSize);
         }
-        self.prepare_frames(from, Some((to, progress)), from.info().physical_size)
+        self.prepare_frames(from, Some((to, progress)), from.info().physical_size, false)
     }
     fn prepare_frames(
         &self,
         frame: &RenderFrame,
         second: Option<(&RenderFrame, f32)>,
         size: [u32; 2],
+        capture: bool,
     ) -> Result<Prepared, GpuError> {
         self.gpu.check()?;
         self.images.retire(&[]);
@@ -260,7 +261,7 @@ impl Renderer {
         let budget_scope = Budgets::new(self.gpu.limits);
         let mut tickets = Vec::new();
         let mut plan = |frame| {
-            super::targets::peak_targets(frame, size, |bytes| {
+            super::targets::peak_targets(frame, size, capture, |bytes| {
                 tickets.push(reserve(
                     &self.budgets.transient,
                     &budget_scope.transient,
@@ -279,6 +280,7 @@ impl Renderer {
         let required = super::image_plan::collect(
             std::iter::once(frame).chain(second.map(|(frame, _)| frame)),
             self.gpu.device.limits().max_texture_dimension_2d,
+            capture,
             |bytes| {
                 tickets.push(reserve(
                     &self.budgets.transient,
@@ -313,6 +315,7 @@ impl Renderer {
         let admission = self.admission.reserve(0).map_err(|_| GpuError::Busy)?;
         self.targets.configure(size, quality, targets);
         let mut ctx = Context {
+            capture,
             gpu: &self.gpu,
             encoder: self.gpu.device.create_command_encoder(&Default::default()),
             pipelines: self.pipelines.get(&self.gpu, quality)?,

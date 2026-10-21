@@ -1,11 +1,9 @@
 # R01 interface — Issue #25 / architecture §16
 
-Contract: `ac00418231ddc16ec0b90b2181cd77138b3f6e49`; dependency U02:
-`8dc242891be199ef2e6da7bc88a6ffdaf80cc403`. The ordinary `imaging 0.0.1`
-record API is consumed directly. No imaging source fork, shaping, tessellation,
-GPU implementation, window handle, author DSL or second author-node allocator
-is introduced. `reel-ui` owns the widgets, geometry, bridge, frame and resources, and reads reel-core;
-`reel-render` reads `reel-ui/frame`, `reel-ui/resources` and core; native handles remain in renderer/player. Native device verification is described in the R02 report.
+The portable recording contract is implemented by reel-ui's frame, resource and
+presentation modules. reel-render consumes these records, and reel-player owns
+native windows. Native adapter behavior is documented in
+[the device contract](../reel-render/R02-INTERFACE.md).
 
 ## Recording and compilation
 
@@ -42,7 +40,7 @@ accumulate across slices; element copying has a separate byte charge.
 the supplied slice cannot advance it. A caller must permit that minimum.
 Capacity allocation, source cleanup and widget recording are atomic operations;
 work credit does not establish a wall-clock deadline for them. Their real costs
-and overlapping source residency are measured in [R01-REPORT.md](R01-REPORT.md).
+and overlapping source residency are measured in [R01-REPORT.md](https://github.com/jhq223/reel/blob/355571b18bd4024914438a7ac6bd94ebf3c7826f/crates/reel-ui/R01-REPORT.md).
 
 `BuildError { at: RecordLocation, kind }` reports fragment, local command,
 mask depth and owning WidgetId. Missing resources include a Blob ID lookup hint
@@ -161,4 +159,4 @@ failure, clear and epoch replacement still invalidate all notices.
 
 The backend contract, upload ownership and simulated consumers are documented
 in [reel-render/README.md](../reel-render/README.md). Verification and source
-residency evidence are in [R01-REPORT.md](R01-REPORT.md).
+residency evidence are in [R01-REPORT.md](https://github.com/jhq223/reel/blob/355571b18bd4024914438a7ac6bd94ebf3c7826f/crates/reel-ui/R01-REPORT.md).

@@ -12,6 +12,17 @@ pub(super) fn readonly(_: &Heap, _: Value, _: u32, _: Value) -> Result<(), HeapE
     Err(HeapError::ReadOnly)
 }
 
+/// Create an independent random stream. Supplying an integer seed makes its
+/// sequence repeatable; omitting the seed chooses a new sequence. Saving and
+/// restoring the VM preserves each stream's position.
+///
+/// ```aside
+/// fn main() {
+///     let first = random(42);
+///     let second = random(42);
+///     if first.int(0, 100) != second.int(0, 100) { throw "seed"; }
+/// }
+/// ```
 #[native(symbol = "std::random", effects = Effects(Effects::ALLOCATE | Effects::HOST))]
 pub(super) fn random(
     #[aside(context)] context: &mut CallContext<'_, StandardLibrary>,
@@ -60,6 +71,7 @@ fn commit(heap: &mut Heap, receiver: Value, generator: fastrand::Rng) -> Result<
     Ok(())
 }
 
+/// Draw an integer in `[min, max)`. Requires `min < max` and advances this stream.
 #[native(symbol = "std::random::int", effects = Effects(Effects::WRITE))]
 pub(super) fn int(
     #[aside(context)] context: &mut CallContext<'_, StandardLibrary>,
@@ -76,6 +88,7 @@ pub(super) fn int(
     Ok(value)
 }
 
+/// Draw a floating-point number in `[0, 1)` and advance this stream.
 #[native(symbol = "std::random::float", effects = Effects(Effects::WRITE))]
 pub(super) fn float(
     #[aside(context)] context: &mut CallContext<'_, StandardLibrary>,
@@ -87,6 +100,8 @@ pub(super) fn float(
     Ok(value)
 }
 
+/// Select one element from a nonempty array or tuple and advance this stream.
+/// The returned value shares the selected element's identity.
 #[native(symbol = "std::random::pick", effects = Effects(Effects::WRITE))]
 pub(super) fn pick(
     #[aside(context)] context: &mut CallContext<'_, StandardLibrary>,

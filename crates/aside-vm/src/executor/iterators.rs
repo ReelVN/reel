@@ -5,13 +5,16 @@ pub(super) struct Iteration {
     pub done: bool,
     pub value: Value,
     next: Option<i64>,
+    chain_next: Option<Value>,
 }
 
 impl Vm {
     pub(super) fn iterator_new(&mut self, source: Value) -> Result<Value, HeapError> {
         self.heap.observe_read(source, None)?;
         let info = self.heap.info(source)?;
-        let cursor = if info.kind == ObjectKind::Range {
+        let cursor = if matches!(info.kind, ObjectKind::FaultStack | ObjectKind::FaultCause) {
+            self.heap.fault_sequence_head(source)?
+        } else if info.kind == ObjectKind::Range {
             self.heap.get_field(source, 0)?
         } else {
             self.heap.sequence_len(source)?;
@@ -28,6 +31,25 @@ impl Vm {
             return Err(HeapError::WrongKind);
         }
         let source = self.heap.get_field(iterator, 0)?;
+        if source.tag() != ValueTag::Null
+            && matches!(
+                self.heap.info(source)?.kind,
+                ObjectKind::FaultStack | ObjectKind::FaultCause
+            )
+        {
+            let current = self.heap.get_field(iterator, 1)?;
+            let done = current.tag() == ValueTag::Null;
+            return Ok(Iteration {
+                done,
+                value: current,
+                next: None,
+                chain_next: Some(if done {
+                    Value::NULL
+                } else {
+                    self.heap.fault_sequence_next(current)?
+                }),
+            });
+        }
         let cursor = self
             .heap
             .get_field(iterator, 1)?
@@ -80,13 +102,22 @@ impl Vm {
                 )
             }
         };
-        Ok(Iteration { done, value, next })
+        Ok(Iteration {
+            done,
+            value,
+            next,
+            chain_next: None,
+        })
     }
     pub(super) fn iterator_commit(
         &mut self,
         iterator: Value,
         step: Iteration,
     ) -> Result<(), HeapError> {
+        if let Some(next) = step.chain_next {
+            self.heap.set_field(iterator, 1, next)?;
+            return Ok(());
+        }
         match (step.done, step.next) {
             (false, Some(next)) => self.heap.set_field(iterator, 1, Value::int(next))?,
             _ => self.heap.set_field(iterator, 0, Value::NULL)?,

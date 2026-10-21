@@ -874,6 +874,12 @@ fn text_line_breaking(node: &SceneProperties) -> reel_ui::properties::LineBreaki
         reel_ui::properties::LineBreaking::Overflow
     }
 }
+fn text_shadow(props: &reel_ui::stage::NodeProps) -> Option<reel_ui::core::TextShadow> {
+    (props.text_shadow_x != 0. || props.text_shadow_y != 0.).then(|| reel_ui::core::TextShadow {
+        offset: Vec2::new(props.text_shadow_x, props.text_shadow_y),
+        color: color(props.text_shadow_color),
+    })
+}
 impl SceneWidget {
     fn image_widget(view: &SceneNode) -> Option<WidgetPod<Image>> {
         let NodeKind::Image {
@@ -930,6 +936,15 @@ impl SceneWidget {
             NodeKind::Button { .. } | NodeKind::Toggle { .. } | NodeKind::Radio { .. }
         )
     }
+    fn reveal_fade(node: &SceneProperties) -> Option<reel_ui::core::RevealFade> {
+        node.props
+            .reveal_fade
+            .map(|progress| reel_ui::core::RevealFade {
+                from: node.props.reveal_fade_from,
+                progress,
+                step: node.props.reveal_fade_step,
+            })
+    }
     fn reveal_range(node: &SceneProperties) -> std::ops::Range<usize> {
         let text = Self::caption(&node.kind).unwrap_or("");
         let mut end = node.props.reveal.unwrap_or(text.len()).min(text.len());
@@ -962,6 +977,7 @@ impl SceneWidget {
                             kind => Self::caption(kind).unwrap_or("").into(),
                         })
                         .with_visible_bytes(Self::reveal_range(&view.node))
+                        .with_reveal_fade(Self::reveal_fade(&view.node))
                         .with_style(StyleProperty::FontSize(view.node.props.font_size as f32))
                         .with_style(StyleProperty::FontWeight(
                             reel_ui::reel_text::FontWeight::new(view.node.props.font_weight as f32),
@@ -975,6 +991,7 @@ impl SceneWidget {
                         .with_text_alignment(view.node.props.text_align)
                         .with_text_fit(view.node.props.text_fit)
                         .with_outline(text_outline(&view.node.props))
+                        .with_shadow(text_shadow(&view.node.props))
                         .with_style(StyleProperty::LineHeight(
                             reel_ui::reel_text::LineHeight::FontSizeRelative(
                                 view.node.props.line_height as f32,
@@ -1133,6 +1150,9 @@ impl SceneWidget {
                 this.ctx.request_render();
             }
             this.widget.particle_image = view.images.image.clone();
+        }
+        if this.widget.node.props.capture_included != view.node.props.capture_included {
+            this.ctx.request_render();
         }
         let children_changed = this.widget.sync_dirty
             || !Arc::ptr_eq(&this.widget.projection.children, &view.children);
@@ -1344,6 +1364,11 @@ impl SceneWidget {
             if caption_changed || this.widget.node.props.reveal != view.node.props.reveal {
                 Label::set_visible_bytes(&mut label, Self::reveal_range(&view.node));
             }
+            if caption_changed
+                || Self::reveal_fade(&this.widget.node) != Self::reveal_fade(&view.node)
+            {
+                Label::set_reveal_fade(&mut label, Self::reveal_fade(&view.node));
+            }
             if this.widget.node.props.font_size != view.node.props.font_size {
                 Label::insert_style(
                     &mut label,
@@ -1381,6 +1406,7 @@ impl SceneWidget {
             }
             Label::set_text_fit(&mut label, view.node.props.text_fit);
             Label::set_outline(&mut label, text_outline(&view.node.props));
+            Label::set_shadow(&mut label, text_shadow(&view.node.props));
             if this.widget.node.props.line_height != view.node.props.line_height {
                 Label::insert_style(
                     &mut label,
@@ -1598,6 +1624,9 @@ macro_rules! publish_interaction {
 impl AllowRawMut for SceneWidget {}
 impl Widget for SceneWidget {
     type Action = NodeEvent;
+    fn capture_included(&self) -> bool {
+        self.node.props.capture_included
+    }
     fn virtual_children(&self) -> Option<VirtualChildren<'_>> {
         let NodeKind::VirtualList(list) = &self.node.kind else {
             return None;
