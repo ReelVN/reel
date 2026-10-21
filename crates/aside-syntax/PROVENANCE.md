@@ -20,3 +20,6 @@ ownership while allowing long author expressions to be released safely. Existing
 compiler frontend checks cover a 5000-operation chain, retained cursors, and
 concurrent final green-tree clones; compiler execution checks cover source
 semantics and GC independently.
+
+Token cursors traverse empty recovery subtrees iteratively while preserving
+zero-length tokens and the requested subtree boundary.
