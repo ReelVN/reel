@@ -16,6 +16,9 @@ fn done(driver: &AsideSessionUi) -> bool {
         .any(|n| n.kind == NodeKind::Text("done".into()))
 }
 fn run(source: &str) {
+    run_with_font(source, None);
+}
+fn run_with_font(source: &str, font: Option<reel_ui::peniko::Blob<u8>>) {
     let checked = reel_cli::check(source, "geometry.aside").unwrap();
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for compiled in [
@@ -30,7 +33,7 @@ fn run(source: &str) {
         )
         .unwrap();
         settle(&mut driver);
-        let (mut bridge, root) = bridge(&driver);
+        let (mut bridge, root) = bridge_with_font(&driver, font.clone());
         let (first_frame, (rejected, stale)) = (1..30)
             .find_map(|frame| {
                 driver.sync(&mut bridge, root).unwrap();
@@ -68,6 +71,48 @@ fn run(source: &str) {
         assert!(done(&driver));
         driver.cancel().unwrap();
     }
+}
+#[test]
+#[ignore = "requires REEL_SESSION_FONT; CPU layout only"]
+fn text_endpoint_follows_layout_reveal_padding_and_reference_transforms() {
+    let font =
+        std::fs::read(std::env::var_os("REEL_SESSION_FONT").expect("configured font")).unwrap();
+    run_with_font(
+        r#"
+    fn near(a,b){if a-b>0.01 || b-a>0.01 {throw f"endpoint expected {b}, got {a}";}}
+    fn main(){
+        let body=text("MMMM",x:30,y:40,width:200,height:120,padding:10,font_size:20,line_height:1.5,text_wrap:false);
+        let empty=text("");let container=stack();
+        let root=stack(width:640,height:420){body;empty;container;};stage.replace(root);
+        let start=await stage.geometry(body,relative_to:body);
+        if start.text_end.x<=10{throw "missing glyph advance";}
+        near(start.text_end.y,40);
+        body.reveal=0;
+        let unrevealed=await stage.geometry(body,relative_to:body);
+        near(unrevealed.text_end.x,start.text_end.x);near(unrevealed.text_end.y,start.text_end.y);
+        body.value="MMMM\nM";
+        let multiline=await stage.geometry(body,relative_to:body);
+        near(multiline.text_end.x,10+(start.text_end.x-10)/4);near(multiline.text_end.y,70);
+        body.value="MMMM\n";
+        let trailing=await stage.geometry(body,relative_to:body);
+        near(trailing.text_end.x,10);near(trailing.text_end.y,70);
+        body.value="M";body.text_align="end";
+        let aligned=await stage.geometry(body,relative_to:body);near(aligned.text_end.x,190);
+        body.text_align="start";body.value="M M M M M M";body.width=45;body.text_wrap=true;
+        let wrapped=await stage.geometry(body,relative_to:body);
+        if wrapped.text_end.y<=40 || wrapped.text_end.x>35 {throw "endpoint ignores wrapping";}
+        body.width=200;body.value=rich("[ruby=long annotation]M[/ruby]");
+        let ruby=await stage.geometry(body,relative_to:body);
+        if ruby.text_end.x<=10+(start.text_end.x-10)/4 || ruby.text_end.y<=40 {throw "endpoint ignores ruby";}
+        body.rotation=90;body.scale_x=-2;
+        let transformed=await stage.geometry(body);
+        near(transformed.text_end.x,transformed.transform.a*ruby.text_end.x+transformed.transform.c*ruby.text_end.y+transformed.transform.tx);
+        near(transformed.text_end.y,transformed.transform.b*ruby.text_end.x+transformed.transform.d*ruby.text_end.y+transformed.transform.ty);
+        if (await stage.geometry(empty)).text_end!=null || (await stage.geometry(container)).text_end!=null {throw "non-text endpoint";}
+        stage.replace(text("done"));narrator("done");
+    }"#,
+        Some(reel_ui::peniko::Blob::from(font)),
+    );
 }
 #[test]
 fn geometry_source_and_asb_cover_sibling_overlay_camera_scroll_rotation_and_mirroring() {

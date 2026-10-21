@@ -685,7 +685,7 @@ Reel tween 的 `sine_in`、`sine_out`、`sine_in_out`、`quint_in`、`quint_out`
 
 `quart_in/out/in_out` 和 `elastic_in/out/in_out` 也使用同一 easing 参数及动作快照。quart 为四次曲线；elastic 为允许越过起终值的衰减振荡，适合位置、旋转和缩放，端点精确抵达原值与目标值。属性合法范围沿原有规则；stage.transition 将曲线采样夹在 0..1，按 duration 完成过渡。
 
-Reel `stage.geometry(node, relative_to: null, owner: null)` 返回共享呈现请求；await 取得只读的 width/height、bounds 和六系数 transform 数字快照。只接受请求后确切帧的几何；宿主显式传入已挂载根控件 ID 并原子录制候选与回执，不依赖 sync 完成；水位取已发布控件树，未同步模型和旧 source 不能冒充新帧。目标/参考隐藏或未挂载、参考变换不可逆时拒绝值为只读 `{code:"GeometryUnavailable"}`。目标、参考或 owner 退休，以及 cancel，沿现有 Cancelled 故障；catch 读取原拒绝值，取消类别通过 core.error_info().code 查询。构造遵守普通上下文限制，不可在初始化、NoWait 或 derive 内调用。节点守卫与请求在同一 VM 图中保存，未决请求恢复后等待新接受帧，已完成数字不重算。
+Reel `stage.geometry(node, relative_to: null, owner: null)` 返回共享呈现请求；await 取得只读的 width/height、bounds、六系数 transform 和 text_end 快照。text_end 是完整文本末尾插入光标下端在参考空间中的 `{x,y}`，空正文及其他节点为 null。只接受请求后确切帧的几何；宿主显式传入已挂载根控件 ID 并原子录制候选与回执，不依赖 sync 完成；水位取已发布控件树，未同步模型和旧 source 不能冒充新帧。目标/参考隐藏或未挂载、参考变换不可逆时拒绝值为只读 `{code:"GeometryUnavailable"}`。目标、参考或 owner 退休，以及 cancel，沿现有 Cancelled 故障；catch 读取原拒绝值，取消类别通过 core.error_info().code 查询。构造遵守普通上下文限制，不可在初始化、NoWait 或 derive 内调用。节点守卫与请求在同一 VM 图中保存，未决请求恢复后等待新接受帧，已完成数字不重算。
 
 Reel 蒙版表达式：mask.alpha/gray/param 和 add/subtract/multiply/pow/clamp/smoothstep 是普通宿主纯构造，返回不可变被追踪值；共享子表达式和资源路径进入现有 VM 快照。节点 mask 接受该值或字符串，mask_x/mask_y 与已有 mask_progress/mask_softness 使用同一绑定/动画协议。表达式原语与数值边界见引擎架构，不增加语言语法、VM 指令或可执行 shader 字符串。
 

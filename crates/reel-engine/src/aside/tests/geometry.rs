@@ -15,6 +15,7 @@ fn reply(sequence: u64) -> GeometryReply {
             height: 30.,
             bounds: [10., 11., 20., 30.],
             transform: [1., 0., 0., 1., 10., 11.],
+            text_end: Some([25., 41.]),
         }),
     }
 }
@@ -27,10 +28,13 @@ fn geometry_results_wait_for_geometry_and_acceptance_and_are_readonly_and_reusab
             let request=stage.geometry(target);
             let g=await request;
             if g.width!=20 || g.height!=30 || g.bounds.x!=10 || g.transform.tx!=10 {throw "wrong geometry";}
+            if g.text_end.x!=25 || g.text_end.y!=41 {throw "wrong text endpoint";}
             let mut readonly=false;try{g.bounds.x=0;}catch e{readonly=true;}
             if !readonly {throw "mutable geometry";}
+            readonly=false;try{g.text_end.x=0;}catch e{readonly=true;}
+            if !readonly {throw "mutable text endpoint";}
             target.remove();
-            if (await request).bounds.x!=10 || request.cancel(){throw "terminal result lost";}
+            if (await request).bounds.x!=10 || (await request).text_end.y!=41 || request.cancel(){throw "terminal result lost";}
             stage.replace(text("done"));
         }"#,
             encoded,
@@ -111,7 +115,7 @@ fn geometry_pending_snapshot_discards_old_identity_and_waits_for_new_geometry() 
     for encoded in [false, true] {
         let (mut session, mut vm) = prepared(
             r#"fn opening(){let target=stack();stage.replace(target);
-            let g=await stage.geometry(target);if g.width!=20{throw "geometry changed";}stage.replace(text("done"));}"#,
+            let g=await stage.geometry(target);if g.width!=20 || g.text_end.x!=25{throw "geometry changed";}stage.replace(text("done"));}"#,
             encoded,
         );
         drive(&mut vm, &mut session, true);

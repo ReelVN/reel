@@ -503,6 +503,8 @@ props、布局与绘制方式属于节点，交互行为属于控件。作者可
 
 ### 查询已显示的节点位置
 
+文本节点的 `geometry.text_end` 给出完整正文末尾插入光标下端的 `{x,y}`，使用同一参考空间，跟随换行、对齐、富文本和 ruby 排版。可以在打字完成后将对白推进标记放在这里。空正文及其他节点返回 null。
+
 `stage.geometry(node, relative_to: overlay, owner: root)` 等待请求后真正显示的帧，返回一次只读几何快照。查询绑定该帧录制时已发布的布局；尚未呈现的属性修改不会混入旧帧。舞台准备期间保留的旧画面不会完成新查询。width/height 是节点自身尺寸；bounds 给出参考空间中的 x/y/width/height，transform 的 a/b/c/d/tx/ty 将节点局部点映射到参考空间。省略 relative_to 使用逻辑舞台坐标；可指定兄弟浮层或祖先，包含滚动、相机、旋转与镜像，不裁剪。
 
 ```aside
