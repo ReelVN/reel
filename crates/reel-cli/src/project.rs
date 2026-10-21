@@ -6,11 +6,78 @@ use aside_compiler::{
 };
 use std::{
     collections::{BTreeMap, VecDeque},
+    io,
     path::{Path, PathBuf},
 };
 
-pub struct Loaded {
+/// Selected entry and the project directory used for resources and build outputs.
+pub struct Location {
+    /// Canonical project directory containing the entry convention.
     pub root: PathBuf,
+    /// Selected source entry, preserving an explicitly supplied file path.
+    pub input: PathBuf,
+}
+
+fn entry(root: &Path) -> Option<PathBuf> {
+    [root.join("src/main.aside"), root.join("main.aside")]
+        .into_iter()
+        .find(|path| path.is_file())
+}
+
+fn project_root(directory: &Path) -> Option<PathBuf> {
+    for root in directory.ancestors() {
+        if root.join("src/main.aside").is_file() {
+            return Some(root.to_path_buf());
+        }
+        if root.join("main.aside").is_file() {
+            return Some(
+                if root.file_name().is_some_and(|name| name == "src") {
+                    root.parent().unwrap_or(root)
+                } else {
+                    root
+                }
+                .to_path_buf(),
+            );
+        }
+    }
+    None
+}
+
+/// Locate the nearest project without scanning its source or resource trees.
+/// Explicit files remain the entry; directories select `src/main.aside` before
+/// `main.aside`. A standalone file uses its containing directory as the project.
+pub fn locate(input: &Path) -> io::Result<Location> {
+    let directory = if input.is_dir() {
+        input
+    } else {
+        input
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."))
+    };
+    let directory = directory.canonicalize()?;
+    let root = project_root(&directory).unwrap_or_else(|| directory.clone());
+    let selected = if input.is_dir() {
+        let selected = entry(&root).unwrap_or_else(|| root.join("main.aside"));
+        if directory == root {
+            input.join(selected.strip_prefix(&root).unwrap())
+        } else {
+            selected
+        }
+    } else {
+        input.to_path_buf()
+    };
+    Ok(Location {
+        root,
+        input: selected,
+    })
+}
+
+pub struct Loaded {
+    /// Source module root, independent of the project's resource/build directory.
+    pub root: PathBuf,
+    /// Canonical project directory for default outputs and loose resources.
+    pub project_root: PathBuf,
     pub input: PathBuf,
     pub sources: Vec<SourceModule>,
     pub files: Vec<PathBuf>,
@@ -68,6 +135,15 @@ fn module_file(
     Some(file)
 }
 impl Loaded {
+    /// Default loose assets for source development, including standalone files.
+    pub fn assets(&self) -> PathBuf {
+        let resources = self.project_root.join("resources");
+        if resources.is_dir() {
+            resources
+        } else {
+            self.project_root.clone()
+        }
+    }
     pub fn check(&self) -> Result<Checked, Failure> {
         check_sources(&self.sources, &self.aliases)
     }
@@ -93,11 +169,23 @@ pub fn load_with_modules(
     input: &Path,
     modules: &BTreeMap<String, PathBuf>,
 ) -> Result<Loaded, LoadError> {
-    let input = if input.is_dir() {
-        input.join("main.aside")
-    } else {
-        input.to_path_buf()
-    };
+    let location = locate(input).map_err(|error| {
+        let mut result = failure(
+            "input",
+            &input.to_string_lossy(),
+            TextRange::empty(0.into()),
+            error.to_string(),
+            vec![],
+        );
+        result.input_error = Some(Box::new(super::InputError {
+            code: "REEL-INPUT-IO",
+            message: format!("cannot locate source: {error}"),
+            byte_range: None,
+            exit_code: 2,
+        }));
+        result
+    })?;
+    let input = location.input;
     let text = read_source(&input).map_err(|error| {
         let mut result = failure(
             "input",
@@ -305,6 +393,7 @@ pub fn load_with_modules(
     }
     Ok(Loaded {
         root,
+        project_root: location.root,
         input,
         sources,
         files,

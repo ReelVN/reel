@@ -16,13 +16,16 @@ Reel 的目标是让你用 Aside 表达想象中的画面和交互，组合自�
 
 下载适合当前系统的 Reel 工具包，解压后将其中的 `bin` 目录加入 `PATH`，再打开终端。Windows 包包含 `reel.exe`、`reel-lsp.exe` 和 `reel-game.exe`：命令行负责检查、运行和打包作品，语言服务提供编辑提示，发布导出会复制同级播放器。作者使用工具包即可创作；从源码构建引擎时才需要 Rust 和 Cargo。
 
-多个游戏目录共用这套工具。在包含 `main.aside` 的目录中运行：
+多个游戏目录共用这套工具。项目将脚本放在 `src/`，入口为 `src/main.aside`；资源放在 `resources/`，其中的相对路径就是脚本使用的资源路径。小项目也可直接使用根目录的 `main.aside`。在项目根目录运行：
 
 ```powershell
-reel check .
-reel dev .
-reel build . --output game.asb
+reel check
+reel dev
+reel build
+reel export --release
 ```
+
+`build` 默认生成 `build/debug/game.asb`，`--release` 改用 `build/release/game.asb`；`export` 默认生成 `build/export/debug/`，`--release` 改用 `build/export/release/`。重复执行会更新默认产物。显式 `--output` 可另选位置，已有目标通过 `--overwrite` 替换。`resources/` 自动用于开发运行与导出，原脚本和资源保留在项目中。
 
 ### 在 VS Code 中编写
 
@@ -82,24 +85,23 @@ let 固定变量绑定，节点属性仍可修改；需要把变量改绑到另�
 New-Item -ItemType Directory -Force target/reel-artifacts/author-assets/fonts | Out-Null
 Copy-Item C:/Windows/Fonts/msyh.ttc target/reel-artifacts/author-assets/fonts/body.ttf
 Copy-Item -Recurse -Force examples/assets target/reel-artifacts/author-assets/
-cargo build --locked -p reel-cli --features window
-./target/debug/reel.exe check examples/author_stage.aside
-./target/debug/reel.exe dev examples/author_stage.aside --assets target/reel-artifacts/author-assets
-./target/debug/reel.exe build examples/author_stage.aside --output target/reel-artifacts/author-stage.asb --entry main::main --overwrite
-./target/debug/reel.exe run target/reel-artifacts/author-stage.asb --assets target/reel-artifacts/author-assets
+reel check examples/author_stage.aside
+reel dev examples/author_stage.aside --assets target/reel-artifacts/author-assets
+reel build examples/author_stage.aside --output target/reel-artifacts/author-stage.asb --entry main::main --overwrite
+reel run target/reel-artifacts/author-stage.asb --assets target/reel-artifacts/author-assets
 ```
 
 check 编译并报告源码错误，不运行剧情；加 `--format json` 可取得带 UTF-8 范围与行列位置的诊断。build 生成单个 .asb，包含字节码、模块初始化与选定入口。两者提供与播放器相同的默认 Reel 名称、已注册 native 与宿主默认参数。
 
 dev 与 build 默认选择 main::main，可用 `--entry main::name` 选择其他函数。缺少入口或入口无效会在构建时报告；入口可以私有，但不能要求参数或捕获外层环境。run 直接加载包中的初始化函数和入口，不重新编译源码。已有输出只在指定 --overwrite 时替换。
 
-build 默认使用 Debug，完整源码与映射保存在包内，运行错误能指向原来的 .aside 文件。发布时加 `--release`，只生成去除源码、指令映射和声明位置的 ASB，减少文件体积及加载后驻留的调试数据。两种模式的语言行为和运行检查相同；Release 仍报告错误类型、函数和指令位置，保留执行需要的符号与文本常量。这个开关与编译 Rust 播放器的 `cargo build --release` 分开；不会把剧情文本移到外部文件。现有执行存档对应实际 ASB，同一源码的 Debug 与 Release 存档不互换。
+build 默认使用 Debug，完整源码与映射保存在包内，运行错误能指向原来的 .aside 文件。发布时加 `--release`，只生成去除源码、指令映射和声明位置的 ASB，减少文件体积及加载后驻留的调试数据。两种模式的语言行为和运行检查相同；Release 仍报告错误类型、函数和指令位置，保留执行需要的符号与文本常量。单独 build 的剧情文本保留在 ASB 内。现有执行存档对应实际 ASB，同一源码的 Debug 与 Release 存档不互换。
 
 ```powershell
-./target/debug/reel.exe build examples/author_stage.aside --release --output target/reel-artifacts/author-stage-release.asb --overwrite
+reel build examples/author_stage.aside --release --output target/reel-artifacts/author-stage-release.asb --overwrite
 ```
 
-启用 window 后，源码与构建产物都使用真实窗口、文字布局和呈现输入路径。同步构造组件在同一运行时间片内连续推进，到等待或时间片结束才更新画面，不会每创建一个节点就单独显示一帧。对白或选择等待时会先完成当前 GC，再休眠等待输入；自然结束后窗口保留最后画面，关闭窗口退出并完成清理；Escape 作为返回输入交给当前 UI。
+工具包中的播放器为源码与构建产物提供真实窗口、文字布局和呈现输入路径。同步构造组件在同一运行时间片内连续推进，到等待或时间片结束才更新画面，不会每创建一个节点就单独显示一帧。对白或选择等待时会先完成当前 GC，再休眠等待输入；自然结束后窗口保留最后画面，关闭窗口退出并完成清理；Escape 作为返回输入交给当前 UI。
 
 工程只读取入口实际导入的源码。game::ui::scene 对应入口目录下的 ui/scene.aside；--module first=../library 可提供外部源码根，同一目录的别名共享环境。函数循环引用允许链接，顶层读取未初始化绑定在实际读取处报 ModuleInitializationCycle。build 把完整模块图和入口放入同一 .asb，移动后无需原源码，初始化设置仍由同一段 main 执行。资源根默认为源码或 ASB 所在目录，也可用 --assets 指定；export 另外生成资源包，并将可搬移的清单嵌入 ASB。
 
@@ -109,18 +111,18 @@ build 默认使用 Debug，完整源码与映射保存在包内，运行错误�
 
 ### 导出开发工程和发布目录
 
-`reel export` 在同一次构建中组织代码和资源；默认导出开发工程，`--release` 导出发布目录。先按前面的示例准备字体，并用 `cargo build -p reel-cli --features window` 构建工具与独立播放器，再执行：
+`reel export` 在同一次构建中组织代码和资源；默认导出开发工程，`--release` 导出发布目录。先按前面的示例准备字体，再执行：
 
 ```powershell
-./target/debug/reel.exe export examples/author_stage.aside --output target/reel-artifacts/development --resource assets=examples/assets --resource fonts=target/reel-artifacts/author-assets/fonts
-./target/debug/reel.exe export examples/author_stage.aside --release --output target/reel-artifacts/release --resource assets=examples/assets --resource fonts=target/reel-artifacts/author-assets/fonts
-./target/debug/reel.exe run target/reel-artifacts/release/game.asb
-./target/debug/reel.exe dev target/reel-artifacts/development/game.asb
+reel export examples/author_stage.aside --output target/reel-artifacts/development --resource assets=examples/assets --resource fonts=target/reel-artifacts/author-assets/fonts
+reel export examples/author_stage.aside --release --output target/reel-artifacts/release --resource assets=examples/assets --resource fonts=target/reel-artifacts/author-assets/fonts
+reel run target/reel-artifacts/release/game.asb
+reel dev target/reel-artifacts/development/game.asb
 ```
 
 开发目录包含可修改的 `script/`、散资源和带源码诊断的 `game.asb`；可以直接 run，也可以 dev 按内嵌源码配置重新编译。发布目录包含 `game.exe`、`game.asb`、`game.rtp` 和 `resources.rpk`（资源较多时还有后续卷）。将整个目录交给玩家，双击 `game.exe` 即可开始；其他平台使用对应可执行文件。清单内嵌于 `game.asb`，所有资源路径相对主包目录。
 
-发布播放器从自身目录寻找 `game.asb`，存档默认写入同级 `saves/`；`--save-directory <directory>` 可另选位置。更新游戏时保留 saves。发布导出使用 reel 工具同级的 reel-game 播放器；发行构建可用 `cargo build --release -p reel-cli --features window`。ASB 使用 v1 格式。
+发布播放器从自身目录寻找 `game.asb`，存档默认写入同级 `saves/`；`--save-directory <directory>` 可另选位置。更新游戏时保留 saves。发布导出使用 reel 工具同级的 reel-game 播放器。工具包将播放器与 CLI 放在同一目录。ASB 使用 v1 格式。
 
 `--resource prefix=directory` 把一个目录映射到脚本中的逻辑路径；可重复声明。`--text locales=build/locales` 将已合并的翻译目录放入文本包，脚本仍使用 `localization.load("en", "locales/en.ftl")`。开发导出复制这些文件，发布导出将它们打包。翻译源文件可继续按剧情和 UI 模块组织，先用 `reel loc bundle` 生成运行目录。
 
@@ -1653,8 +1655,8 @@ cargo test -p reel-cli --test project_scenarios external_project_scenario -- --i
 ```
 
 ```powershell
-./target/debug/reel.exe check examples/author_audio.aside
-./target/debug/reel.exe dev examples/author_audio.aside --assets target/reel-artifacts/author-assets
+reel check examples/author_audio.aside
+reel dev examples/author_audio.aside --assets target/reel-artifacts/author-assets
 ```
 
 ### 规划接口

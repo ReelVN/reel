@@ -83,8 +83,8 @@ impl Format {
 
 #[derive(Args)]
 pub struct Project {
-    /// Source file or directory containing main.aside (dev also accepts an exported ASB).
-    #[arg(value_name = "SOURCE")]
+    /// Project directory or source file; defaults to the current project (dev also accepts an exported ASB).
+    #[arg(value_name = "SOURCE", default_value = ".")]
     pub source: PathBuf,
     /// Add an external source root; repeat for multiple aliases.
     #[arg(long = "module", value_name = "ALIAS=DIRECTORY", value_parser = module_root)]
@@ -134,7 +134,7 @@ pub struct BuildSettings {
     /// Omit source and debug mappings from the compiled program.
     #[arg(long)]
     pub release: bool,
-    /// Replace an existing output after successful compilation.
+    /// Replace an existing --output destination after successful compilation.
     #[arg(long)]
     pub overwrite: bool,
 }
@@ -153,9 +153,9 @@ pub struct Build {
     pub project: Project,
     #[command(flatten)]
     pub settings: BuildSettings,
-    /// Destination ASB file.
+    /// Destination ASB file; defaults to build/debug/game.asb (build/release with --release).
     #[arg(long, value_name = "FILE.asb", value_parser = asb_output)]
-    pub output: PathBuf,
+    pub output: Option<PathBuf>,
     #[arg(long, value_enum, default_value = "human")]
     pub format: Format,
 }
@@ -173,10 +173,10 @@ pub struct Export {
     pub project: Project,
     #[command(flatten)]
     pub settings: BuildSettings,
-    /// Destination directory outside the source/resource trees.
+    /// Destination directory; defaults to build/export/debug (release with --release).
     #[arg(long, value_name = "DIRECTORY")]
-    pub output: PathBuf,
-    /// Package a resource directory under its logical prefix; repeat as needed.
+    pub output: Option<PathBuf>,
+    /// Package a resource directory under its logical prefix; use . for the resource root.
     #[arg(long = "resource", value_name = "PREFIX=DIRECTORY", value_parser = Mount::parse)]
     pub resources: Vec<Mount>,
     /// Package translation catalogs under their logical prefix; repeat as needed.
@@ -198,7 +198,9 @@ pub struct Playback {
     pub save_directory: Option<PathBuf>,
 }
 #[derive(Args)]
-#[command(after_help = "Requires: cargo build -p reel-cli --features window")]
+#[command(
+    after_help = "Playback requires the complete Reel tool package, including its platform player."
+)]
 pub struct Dev {
     #[command(flatten)]
     pub project: Project,
@@ -209,10 +211,16 @@ pub struct Dev {
     pub playback: Playback,
 }
 #[derive(Args)]
-#[command(after_help = "Requires: cargo build -p reel-cli --features window")]
+#[command(
+    after_help = "Playback requires the complete Reel tool package, including its platform player."
+)]
 pub struct Run {
+    /// ASB path; defaults to the current project's build/debug/game.asb.
     #[arg(value_name = "ASB")]
-    pub source: PathBuf,
+    pub source: Option<PathBuf>,
+    /// Run the current project's build/release/game.asb instead of build/debug/game.asb.
+    #[arg(long, conflicts_with = "source")]
+    pub release: bool,
     #[command(flatten)]
     pub playback: Playback,
 }

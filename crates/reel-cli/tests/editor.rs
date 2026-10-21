@@ -1,5 +1,9 @@
 //! The public editor adapter serves the actual registered engine API.
-use std::time::{Duration, Instant};
+use std::{
+    fmt::Write as _,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 use lsp_server::{Connection, Message, Notification, Request};
 use serde_json::{Value, json};
@@ -147,6 +151,121 @@ fn at(source: &str, needle: &str, end: bool) -> Value {
         "line":prefix.bytes().filter(|&byte|byte == b'\n').count(),
         "character":prefix.rsplit('\n').next().unwrap().encode_utf16().count()
     }})
+}
+
+fn file_uri(path: &Path) -> String {
+    let path = path.to_str().unwrap().replace('\\', "/");
+    let mut uri = String::from(if path.starts_with('/') {
+        "file://"
+    } else {
+        "file:///"
+    });
+    for byte in path.bytes() {
+        if byte.is_ascii_alphanumeric() || b"/:-._~".contains(&byte) {
+            uri.push(char::from(byte));
+        } else {
+            write!(uri, "%{byte:02X}").unwrap();
+        }
+    }
+    uri
+}
+
+#[test]
+fn nested_src_document_uses_the_project_source_root() {
+    let fixture = tempfile::tempdir().unwrap();
+    let root = fixture.path().join("作品 with spaces");
+    for directory in ["src/ui", "src/story", "story", "resources", "build"] {
+        std::fs::create_dir_all(root.join(directory)).unwrap();
+    }
+    // Both entry layouts exist, so resolving from the workspace root is incorrect.
+    std::fs::write(root.join("main.aside"), "fn main() {}\n").unwrap();
+    std::fs::write(root.join("src/main.aside"), "fn main() {}\n").unwrap();
+    std::fs::write(
+        root.join("story/opening.aside"),
+        "pub fn opening() -> int { 42 }\n",
+    )
+    .unwrap();
+    let opening = root.join("src/story/opening.aside");
+    std::fs::write(
+        &opening,
+        "/// The source project's opening.\npub fn opening() -> string { \"Hello\" }\n",
+    )
+    .unwrap();
+    let source = "use game::story::opening::opening;\nfn scene() -> string { opening() }\n";
+    let path = root.join("src/ui/scene.aside");
+    std::fs::write(&path, source).unwrap();
+    let uri = file_uri(&path);
+    let opening_uri = file_uri(&opening);
+
+    let options = reel_cli::editor::options();
+    let (server, client) = Connection::memory();
+    let thread = std::thread::spawn(move || aside_lsp::run_connection(server, options).unwrap());
+    request(
+        &client,
+        1,
+        "initialize",
+        json!({"capabilities":{},"workspaceFolders":[{
+            "uri":file_uri(fixture.path()),"name":"repository"
+        }]}),
+    );
+    client
+        .sender
+        .send(Notification::new("initialized".into(), json!({})).into())
+        .unwrap();
+    client
+        .sender
+        .send(
+            Notification::new(
+                "textDocument/didOpen".into(),
+                json!({"textDocument":{
+                    "uri":uri,"languageId":"aside","version":1,"text":source
+                }}),
+            )
+            .into(),
+        )
+        .unwrap();
+    let mut query = at(source, "opening()", false);
+    query["textDocument"]["uri"] = json!(uri);
+    client
+        .sender
+        .send(Request::new(2.into(), "textDocument/hover".into(), query.clone()).into())
+        .unwrap();
+    let mut published = Vec::new();
+    let hover = loop {
+        match client
+            .receiver
+            .recv_timeout(Duration::from_secs(15))
+            .unwrap()
+        {
+            Message::Notification(notification)
+                if notification.method == "textDocument/publishDiagnostics" =>
+            {
+                assert_eq!(notification.params["diagnostics"], json!([]));
+                published.push(notification.params["uri"].clone());
+            }
+            Message::Response(response) if response.id == 2.into() => {
+                assert!(response.error.is_none(), "{:?}", response.error);
+                break response.result.unwrap();
+            }
+            _ => {}
+        }
+    };
+    assert!(published.contains(&json!(uri)), "{published:?}");
+    assert!(published.contains(&json!(opening_uri)), "{published:?}");
+    assert!(
+        hover.to_string().contains("source project's opening"),
+        "{hover}"
+    );
+    assert!(hover.to_string().contains("string"), "{hover}");
+    let definition = request(&client, 3, "textDocument/definition", query);
+    assert_eq!(definition["uri"], opening_uri);
+    assert_eq!(definition["range"]["start"]["line"], 1);
+    request(&client, 4, "shutdown", Value::Null);
+    client
+        .sender
+        .send(Notification::new("exit".into(), Value::Null).into())
+        .unwrap();
+    thread.join().unwrap();
 }
 
 #[test]

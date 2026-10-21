@@ -822,11 +822,23 @@ UI 交互：按钮、图片按钮、滑条、输入框、滚动、虚拟列表/�
 
 ### 构建与导出
 
+作者工具以平台二进制包分发，`bin` 包含 `reel`、`reel-lsp` 和 `reel-game`，多个项目通过 PATH 共用。项目默认布局为 `src/main.aside`、`resources/` 和 `build/`；单文件及根目录 `main.aside` 工程沿用同一编译入口。省略源码参数时从当前目录确定项目，显式源码路径仍可使用。`resources/` 存在时作为开发资源根和默认导出挂载，内部相对路径就是脚本使用的资源路径。
+
+`reel check` 检查项目，`reel dev` 编译并运行源码。`reel build` 默认写入项目的 `build/debug/game.asb`，`--release` 写入 `build/release/game.asb`。`reel export` 默认写入 `build/export/debug/`，`--release` 写入 `build/export/release/`。默认产物可重复构建替换；显式 `--output` 保留覆写选择。目录参数定位项目根，显式文件按最近的 `src/main.aside` 或 `main.aside` 定位项目，无法归属时以文件所在目录作为根。入口仍默认 `main::main`，模块根仍按源码入口所在目录解析。
+
+默认导出通过资源根挂载保留逻辑路径；显式 `--resource` 或 `--text` 使用作者给出的挂载集。`--resource .=directory` 将目录内容直接映射到资源根。导出只复制已解析模块和声明资源，允许产物位于项目的 `build/`，检查输出是否包含实际输入文件或与资源目录重叠。源码与原资源始终保留在项目目录。
+
+`reel run` 省略路径时读取当前项目的 `build/debug/game.asb`，`--release` 选择 `build/release/game.asb`；显式 ASB 路径与该 profile 选择互斥。无分发清单的 ASB 沿所在项目定位 `resources/`；带分发清单的包继续使用清单自己的资源位置。显式 `--assets` 优先。
+
+项目翻译源保持 UTF-8 Fluent，按 `translations/<locale>/**/*.ftl` 维护。共同项目准备复用已有 bundle 验证与合并，check 验证而不发布文件，dev/build/export 自动生成同形语言索引和文本包。Distribution 保存语言到包内逻辑键的索引；加载入口将索引随资源上下文交给现有 CatalogLoader。开发运行和发行运行都通过 AssetIo 按条目读取，作者无需指定语言包文件路径或手动合并。语言内容随现有文本 archive 分发，不写入常驻代码元数据；build 的语言包与 ASB 相邻，发布更新保持旧 ASB 所引用的内容可用。
+
+`localization.set_locale(locale)` 按需准备目标语言及其可用的基础语言，成功后统一提交目录、当前语言和响应式通知；缺少对应译文时保留原文回退。读取失败或调用任务取消保留旧状态，较早的切换请求不能覆盖更新的选择。`localization.load(locale, source: null)` 为显式预热，省略 source 时按语言索引定位；显式 source 继续支持作者选择的资源。自动选择的目录只保留当前及基础语言，显式预热的目录保留供 `tr(locale: ...)` 等同时使用多语言的场景。旧语言的模板缓存随自动目录释放；切换提交期间允许旧目录和候选目录同时存在。单语言作品沿用原文，无需翻译目录或加载调用。
+
 `reel build <project> --output <file.asb>` 生成可独立加载的代码包。默认 Debug 保留完整源码、指令源码映射和声明位置；`--release` 剥离这些调试数据，保留运行时符号、结构与实际使用的常量。两者共用编译、验证与执行语义。Release 故障报告错误类型、函数与指令位置，不伪造源码行列。执行快照核对实际代码身份，不跨不同产物迁移。
 
 `reel export <project> --output <directory> [--release] [--resource prefix=directory] [--text prefix=directory]` 使用同一编译器与入口选择，额外组织可搬移的工程或发行目录。开发导出包含 Debug `game.asb`、已导入的源码模块和散资源；内嵌 source 配置保存入口、模块根与函数名，`reel dev <game.asb>` 按此配置重新编译。发布导出包含 `game.exe`（其他平台为对应可执行文件）、`game.asb`、`game.rtp` 和资源卷。两者均可 `reel run <game.asb>`。模块与入口参数沿用 build，文本和资源挂载前缀保持脚本逻辑路径。
 
-发布播放器为 reel-cli 包内启用 window feature 的 `reel-game` 薄入口，与 CLI 共用 ASB 加载及窗口启动路径。export 从当前 CLI 同级复制该平台播放器为 game；Windows 入口使用 GUI subsystem。无参启动从播放器所在目录定位 `game.asb`，默认存档为同级 `saves/`，显式 `--save-directory` 可覆盖；工作目录不影响主包定位。普通 CLI run 保留原有存档目录策略。`cargo build --release -p reel-cli --features window` 同时构建工具和播放器，缺失播放器时发布导出给出此命令。
+发布播放器为 reel-cli 包内启用 window feature 的 `reel-game` 薄入口，与 CLI 共用 ASB 加载及窗口启动路径。export 从当前 CLI 同级复制该平台播放器为 game；Windows 入口使用 GUI subsystem。无参启动从播放器所在目录定位 `game.asb`，默认存档为同级 `saves/`，显式 `--save-directory` 可覆盖；工作目录不影响主包定位。普通 CLI run 保留原有存档目录策略。`cargo build --release -p reel-cli --features window` 同时构建工具和播放器，缺失播放器时发布导出提示安装包含播放器的完整工具包。
 
 资源按逻辑路径排序，以完整资源为边界分卷；默认目标为 2 GiB（含包头和索引），发布参数 `--pack-bytes <非零字节数>` 可调整。第一卷为 `resources.rpk`，后续为 `resources-002.rpk` 等，由内嵌清单按顺序挂载。单个资源超过目标时独占一卷。
 

@@ -8,7 +8,7 @@ use reel_package::{
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File},
-    io::{self, Read, Seek, SeekFrom},
+    io::{self, Read, Seek, SeekFrom, Write},
     num::NonZeroU64,
     path::{Path, PathBuf},
     sync::Arc,
@@ -33,9 +33,11 @@ pub struct Mount {
 impl Mount {
     pub fn parse(value: &str) -> Result<Self, String> {
         let (prefix, directory) = value.split_once('=').ok_or("expected prefix=directory")?;
-        relative_path(prefix).map_err(|e| e.to_string())?;
-        if prefix == "." || prefix.starts_with("__reel") || directory.is_empty() {
-            return Err("use a nonempty resource prefix outside __reel".into());
+        if prefix != "." {
+            relative_path(prefix).map_err(|e| e.to_string())?;
+        }
+        if prefix.starts_with("__reel") || directory.is_empty() {
+            return Err("use a resource prefix outside __reel and a nonempty directory".into());
         }
         Ok(Self {
             prefix: prefix.into(),
@@ -107,7 +109,11 @@ fn collect(root: &Path, prefix: &str, out: &mut BTreeMap<String, PathBuf>) -> io
                     .to_str()
                     .ok_or_else(|| io::Error::other("resource path must be UTF-8"))?
                     .replace('\\', "/");
-                let name = format!("{prefix}/{suffix}");
+                let name = if prefix == "." {
+                    suffix
+                } else {
+                    format!("{prefix}/{suffix}")
+                };
                 relative_path(&name)?;
                 if out.insert(name.clone(), file).is_some() {
                     return Err(io::Error::other(format!(
@@ -236,11 +242,12 @@ pub fn export(
         .file_name()
         .ok_or_else(|| io::Error::other("export output needs a directory name"))?;
     let output = parent.join(name);
-    let source_root = loaded.root.canonicalize()?;
-    if output.starts_with(&source_root) || source_root.starts_with(&output) {
-        return Err(io::Error::other(
-            "export output must be outside the source tree",
-        ));
+    for file in &loaded.files {
+        if file.canonicalize()?.starts_with(&output) {
+            return Err(io::Error::other(
+                "export output contains an input source file",
+            ));
+        }
     }
     if output.exists() {
         if !options.overwrite {
@@ -327,7 +334,7 @@ pub fn export(
             .map_err(io::Error::other)?;
         let encoded = reel_package::encode(&bytecode, package.metadata(), Some(&manifest), limits)
             .map_err(io::Error::other)?;
-        fs::write(staging.join(MAIN_PACKAGE), &encoded)?;
+        File::create_new(staging.join(MAIN_PACKAGE))?.write_all(&encoded)?;
         let player_bytes = if let Some(player) = player {
             fs::copy(player, staging.join(exported_player_name()))?
         } else {

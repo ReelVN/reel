@@ -16,13 +16,16 @@ Interface parameters, properties and examples live in English documentation besi
 
 Download the Reel tool package for your system, extract it, add its `bin` directory to PATH, and open a new terminal. The Windows package contains `reel.exe`, `reel-lsp.exe` and `reel-game.exe`: the CLI checks, runs and packages projects, the language server supplies editor queries, and release exports copy the adjacent player. Authors use this package directly; building the engine from source requires Rust and Cargo.
 
-Multiple game directories share this installation. From a directory containing `main.aside`, run:
+Multiple game directories share this installation. Put scripts in `src/`, with `src/main.aside` as the entry, and resources in `resources/`; paths inside that directory are the logical resource paths used by scripts. Small projects can also use `main.aside` at the project root. From the project root, run:
 
 ```powershell
-reel check .
-reel dev .
-reel build . --output game.asb
+reel check
+reel dev
+reel build
+reel export --release
 ```
+
+`build` writes `build/debug/game.asb`, or `build/release/game.asb` with `--release`; `export` writes `build/export/debug/`, or `build/export/release/` with `--release`. Repeating a command updates its default output. Use `--output` to select another destination and `--overwrite` to replace an existing explicit destination. Development and export automatically use `resources/`, preserving the original scripts and resources in the project.
 
 ### Writing in VS Code
 
@@ -80,24 +83,23 @@ The examples configure fonts/body.ttf in main. Run these Windows commands from t
 New-Item -ItemType Directory -Force target/reel-artifacts/author-assets/fonts | Out-Null
 Copy-Item C:/Windows/Fonts/msyh.ttc target/reel-artifacts/author-assets/fonts/body.ttf
 Copy-Item -Recurse -Force examples/assets target/reel-artifacts/author-assets/
-cargo build --locked -p reel-cli --features window
-./target/debug/reel.exe check examples/author_stage.aside
-./target/debug/reel.exe dev examples/author_stage.aside --assets target/reel-artifacts/author-assets
-./target/debug/reel.exe build examples/author_stage.aside --output target/reel-artifacts/author-stage.asb --entry main::main --overwrite
-./target/debug/reel.exe run target/reel-artifacts/author-stage.asb --assets target/reel-artifacts/author-assets
+reel check examples/author_stage.aside
+reel dev examples/author_stage.aside --assets target/reel-artifacts/author-assets
+reel build examples/author_stage.aside --output target/reel-artifacts/author-stage.asb --entry main::main --overwrite
+reel run target/reel-artifacts/author-stage.asb --assets target/reel-artifacts/author-assets
 ```
 
 Check compiles the source and reports errors without running the story. Add `--format json` for diagnostics with UTF-8 ranges and line/column positions. Build produces one .asb containing bytecode, module initialization and the selected entry. Both commands provide the same default Reel names, registered native functions and host default arguments as the player.
 
 Dev and build select main::main by default; `--entry main::name` selects another function. A missing or invalid entry is reported during the build. The entry may be private but cannot require parameters or capture an enclosing environment. Run loads the package initializer and entry directly without recompiling source. Existing output is replaced only with --overwrite.
 
-Build defaults to Debug, retaining complete source and mappings so runtime errors can point to the original .aside file. Add `--release` for publication: the ASB omits source, instruction mappings and declaration locations, reducing its size and resident debug data. Both modes use the same language behavior and runtime checks. Release still reports the error kind, function and instruction position, and retains runtime symbols and text constants. This option is separate from `cargo build --release`, which compiles the Rust player; it does not move story text into an external file. Execution saves belong to the actual ASB, so Debug and Release builds of the same source do not exchange saves.
+Build defaults to Debug, retaining complete source and mappings so runtime errors can point to the original .aside file. Add `--release` for publication: the ASB omits source, instruction mappings and declaration locations, reducing its size and resident debug data. Both modes use the same language behavior and runtime checks. Release still reports the error kind, function and instruction position, and retains runtime symbols and text constants. A standalone build retains story text inside the ASB. Execution saves belong to the actual ASB, so Debug and Release builds of the same source do not exchange saves.
 
 ```powershell
-./target/debug/reel.exe build examples/author_stage.aside --release --output target/reel-artifacts/author-stage-release.asb --overwrite
+reel build examples/author_stage.aside --release --output target/reel-artifacts/author-stage-release.asb --overwrite
 ```
 
-With window enabled, source and built packages use the real window, text layout and presented-input path. Synchronous component construction continues within one execution time slice, updating the scene when it waits or the slice ends, without displaying a separate frame for every node. When waiting for dialogue or a choice, the player completes the current GC cycle and then sleeps until input arrives. Natural completion keeps the final scene in the window. Close the window to exit and finish cleanup; Escape sends Back to the current UI.
+The bundled player runs source and built packages with the real window, text layout and presented-input path. Synchronous component construction continues within one execution time slice, updating the scene when it waits or the slice ends, without displaying a separate frame for every node. When waiting for dialogue or a choice, the player completes the current GC cycle and then sleeps until input arrives. Natural completion keeps the final scene in the window. Close the window to exit and finish cleanup; Escape sends Back to the current UI.
 
 Projects read only modules imported by the entry. game::ui::scene resolves to ui/scene.aside beside the entry file; --module first=../library supplies an external source root. Aliases for the same directory share one environment. Function cycles can link; top-level reads of uninitialized bindings report ModuleInitializationCycle at the read. build stores the complete graph and entry in one movable .asb. The same main executes its initialization settings in source and ASB runs. Assets default to the source or ASB directory and can be selected with --assets; export additionally creates resource packages and embeds a relocatable manifest in the ASB.
 
@@ -109,18 +111,18 @@ Left-associated operations and member or call chains compile in source order wit
 
 ### Exporting Development and Release Directories
 
-`reel export` builds code and organizes its resources together. It exports a development project by default; `--release` creates a release directory. Prepare the font as shown above and build the tool and standalone player with `cargo build -p reel-cli --features window`, then run:
+`reel export` builds code and organizes its resources together. It exports a development project by default; `--release` creates a release directory. Prepare the font as shown above, then run:
 
 ```powershell
-./target/debug/reel.exe export examples/author_stage.aside --output target/reel-artifacts/development --resource assets=examples/assets --resource fonts=target/reel-artifacts/author-assets/fonts
-./target/debug/reel.exe export examples/author_stage.aside --release --output target/reel-artifacts/release --resource assets=examples/assets --resource fonts=target/reel-artifacts/author-assets/fonts
-./target/debug/reel.exe run target/reel-artifacts/release/game.asb
-./target/debug/reel.exe dev target/reel-artifacts/development/game.asb
+reel export examples/author_stage.aside --output target/reel-artifacts/development --resource assets=examples/assets --resource fonts=target/reel-artifacts/author-assets/fonts
+reel export examples/author_stage.aside --release --output target/reel-artifacts/release --resource assets=examples/assets --resource fonts=target/reel-artifacts/author-assets/fonts
+reel run target/reel-artifacts/release/game.asb
+reel dev target/reel-artifacts/development/game.asb
 ```
 
 Development output contains editable `script/` files, loose resources, and `game.asb` with source diagnostics. Use run directly or dev to recompile through the embedded source configuration. Release output contains `game.exe`, `game.asb`, `game.rtp`, and `resources.rpk`, plus further volumes when needed. Distribute the complete directory; players double-click `game.exe` to start, or use the equivalent executable on other platforms. The manifest lives inside `game.asb`, with resource paths relative to that file.
 
-The standalone player locates `game.asb` beside its executable and writes saves to the adjacent `saves/` directory by default. Use `--save-directory <directory>` to choose another location, and preserve saves when updating the game. Release export copies the reel-game player beside the reel tool; build release executables with `cargo build --release -p reel-cli --features window`. Rebuild packages with the player version you distribute.
+The standalone player locates `game.asb` beside its executable and writes saves to the adjacent `saves/` directory by default. Use `--save-directory <directory>` to choose another location, and preserve saves when updating the game. Release export copies the reel-game player beside the reel tool. The tool package keeps the CLI and player together. Rebuild packages with the player version you distribute.
 
 Each `--resource prefix=directory` maps a directory to its logical script path. Use `--text locales=build/locales` to put bundled translation catalogs in the text package; scripts still call `localization.load("en", "locales/en.ftl")`. Development copies these files; release packages them. Translators can maintain source catalogs beside their story and UI modules and use `reel loc bundle` to produce runtime catalogs first.
 
@@ -128,7 +130,7 @@ Resource packages split automatically at a target of 2 GiB including headers and
 
 Release export moves original string constants into `game.rtp` and excludes complete source from the ASB. The pool currently remains resident, with strings sharing its bytes when used; startup does not copy every passage into permanent VM objects. Translations can change without recompiling code, while the original text pool must match its ASB. Images, audio and video use indexed resource reads without extracting the entire archive.
 
-Release disables loose-file overrides by default. Explicitly enable a mod or development overlay with `reel run game.asb --assets overrides`. Later packages in the manifest override earlier ones, and loose files take precedence. `--overwrite` replaces the whole previous export; saves and additional files are not copied into it. Store runtime data separately. Output must be outside the input source and resource directories.
+Release disables loose-file overrides by default. Explicitly enable a mod or development overlay with `reel run game.asb --assets overrides`. Later packages in the manifest override earlier ones, and loose files take precedence. `--overwrite` replaces the whole previous export; saves and additional files are not copied into it. Store runtime data separately. Output can live in the project's `build/` directory and must avoid actual source files and resource directories.
 
 ### Available Ranges, Collections and Interpolation
 Inside a function, use ranges to build content and interpolation to display results. Ranges do not create an array first; `..` excludes the endpoint and `..=` includes it. Arrays support `append`, `pop` and `len`; tables support `has_own`, `get`, `remove` and `len`. Interpolation currently accepts strings, numbers, booleans and null.
@@ -1651,8 +1653,8 @@ WAV/PCM, Ogg/Vorbis, FLAC and MP3 are supported. Automatic audio preparation: or
 Runnable example: [author_audio.aside](../../examples/author_audio.aside), using examples as the asset root and the same font configuration as other author examples. Its chime.wav is an original short sine tone supplied by this repository.
 
 ```powershell
-./target/debug/reel.exe check examples/author_audio.aside
-./target/debug/reel.exe dev examples/author_audio.aside --assets target/reel-artifacts/author-assets
+reel check examples/author_audio.aside
+reel dev examples/author_audio.aside --assets target/reel-artifacts/author-assets
 ```
 
 ### Planned interfaces
