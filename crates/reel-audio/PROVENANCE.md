@@ -33,3 +33,6 @@ cursor across source boundaries, including sample-rate changes. A finite startup
 fence prepares same-turn segments before consumption. Up to three source segments
 are retained for interpolation lookahead so seek still targets the current source;
 ownership returns through the media adapter's existing background reclaimer.
+Announcements after the terminal tail return `QueueClosed`. A full incoming ring
+returns the original PCM and residency owner directly, so rejection requires no
+additional allocation or ownership transfer to the audio callback.

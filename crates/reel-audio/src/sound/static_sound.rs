@@ -33,7 +33,7 @@ mod sound;
 
 pub use data::*;
 pub use handle::*;
-pub use queue::{QueuedStaticSound, StaticSoundQueue};
+pub use queue::{QueueClosed, QueuedStaticSound, StaticSoundQueue};
 pub use settings::*;
 
 use crate::{
