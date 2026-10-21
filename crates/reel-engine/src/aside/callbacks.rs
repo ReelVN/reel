@@ -338,16 +338,6 @@ impl SessionVm {
         Ok(true)
     }
 
-    fn start_callback(
-        &mut self,
-        session: &mut Session,
-        node: NodeId,
-        closure: Value,
-        event: Value,
-    ) -> Result<bool, AdapterError> {
-        self.start_callback_with_event(session, node, closure, |_| Ok(event))
-    }
-
     // Build the input payload only when the callable accepts an argument.
     // Task creation and node ownership follow the same path for every handler.
     fn start_callback_with_event(
