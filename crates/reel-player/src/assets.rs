@@ -34,6 +34,8 @@ pub struct AssetOptions {
     pub root: PathBuf,
     pub resident_bytes: u64,
     pub input_bytes: u64,
+    /// Temporary allowance for the active image decoder, including metadata and
+    /// codec workspace. Reserving the allowance does not allocate a byte buffer.
     pub decode_bytes: u64,
 }
 impl Default for AssetOptions {
@@ -632,12 +634,7 @@ impl Service {
             }
             Phase::Probe | Phase::Decode => {
                 let probe = matches!(load.phase, Phase::Probe);
-                let temporary_bytes = if probe {
-                    self.options.decode_bytes
-                } else {
-                    load.temporary
-                };
-                if temporary_bytes > self.options.decode_bytes {
+                if !probe && load.temporary > self.options.decode_bytes {
                     return Err("image decode limit exceeded".into());
                 }
                 if self.temporary.usage().bytes != 0 {
@@ -649,7 +646,7 @@ impl Service {
                     .map_err(|e| format!("image resident budget: {}", e.message))?;
                 let temporary = self
                     .temporary
-                    .reserve(temporary_bytes)
+                    .reserve(self.options.decode_bytes)
                     .map_err(|e| format!("image decode limit: {}", e.message))?;
                 let request = WorkRequest {
                     kind: if probe {

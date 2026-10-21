@@ -12,6 +12,50 @@ const PNG: &[u8] = include_bytes!("../../../../examples/assets/panels.png");
 const JPEG: &[u8] = include_bytes!("../../../../examples/assets/sun.jpg");
 mod packed;
 
+#[test]
+fn small_png_metadata_uses_the_configured_decoder_budget() {
+    use image::ImageEncoder;
+    let pixels = vec![128; 19 * 5 * 4];
+    let mut encoded = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut encoded)
+        .write_image(&pixels, 19, 5, image::ExtendedColorType::Rgba8)
+        .unwrap();
+    let mut comment = b"tEXtComment\0".to_vec();
+    comment.resize(16 << 10, b'x');
+    let mut crc = flate2::Crc::new();
+    crc.update(&comment);
+    let mut chunk = ((comment.len() - 4) as u32).to_be_bytes().to_vec();
+    chunk.extend(comment);
+    chunk.extend(crc.sum().to_be_bytes());
+    encoded.splice(33..33, chunk);
+    for (limit, succeeds) in [(64 << 10, true), (1024, false)] {
+        let assets = Assets::directory(AssetOptions {
+            decode_bytes: limit,
+            ..Default::default()
+        });
+        let id = assets.request_encoded("tiny.png".into(), &encoded).unwrap();
+        let result = load_until_done(&assets, id);
+        if succeeds {
+            let lease = result.unwrap();
+            let ResourceData::Image { image, .. } = lease.data() else {
+                panic!("image resource");
+            };
+            assert_eq!([image.width, image.height], [19, 5]);
+            assert_eq!(image.data.as_ref(), pixels);
+            drop(lease);
+        } else {
+            assert!(
+                result.is_err(),
+                "metadata must remain within the configured budget"
+            );
+        }
+        assets.cancel(id);
+        assert_eq!(assets.temporary_pool().usage().bytes, 0);
+        assert_eq!(assets.0.borrow().input.usage().bytes, 0);
+        assert_eq!(assets.0.borrow().output.usage().bytes, 0);
+    }
+}
+
 fn load_until_done(assets: &Assets, id: LoadId) -> Result<ResourceLease, String> {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
