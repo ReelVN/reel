@@ -119,6 +119,8 @@ owner 缺省继承当前作用域/任务。owner 或局部 target 退休、任�
 
 共享舞台文字属性 `text_fit` 默认 `none`；`shrink` 按完整、不自动折行的文本与可用宽度等比缩小，保留显式换行，最高为作者字号，最低为 `min_font_size`（默认 0）。富文本字号和 ruby 一起缩放，打字机揭示不改变适配结果；最低字号仍不足时允许溢出，裁剪由节点 clip 决定。布局缓存区分字体缩放与换行宽度，输入链接和无障碍几何使用同一布局。`text_outline` 默认 0，表示字形向外描边的逻辑宽度；`text_outline_color` 默认黑色。描边复用字形 stroke，先描边再填色，并服从完整 cluster 揭示；不复制文字节点或引入专用光栅器。文字属性应用于 text 与控件标签，现有输入编辑器保持自己的布局语义。
 
+字体匹配请求合成粗体时，共同文字绘制将每个字形 run 的 synthesis.embolden 传入已有 font_embolden 绘制字段；横纵扩张均为该 run 字号的 1/24，随既有变换和 GPU 栅格密度缩放。真实粗体字面或变量字体轴由字体匹配优先选择，未请求合成的 run 保持零扩张。完整文字、逐字揭示、描边与填色使用同一扩张量，保留整形的字形 ID、推进宽度、位置和可见 cluster；字形缓存沿既有 embolden 键区分。范围为 reel-ui 文字绘制及真实字体检查，无新增依赖、作者字段、native ABI、VM/ASB 或快照变化。
+
 共同布尔属性 `text_wrap` 默认 true，只控制 text 节点的自动折行；false 保留显式换行，并允许各行超出可用宽度，裁剪仍由 clip 决定。控件标签原有的不自动折行行为和文本编辑器保持不变。构造、直接赋值及 bind/derive 共用节点属性 schema；切换只更新同一 Label 的 LineBreaking 属性并使布局失效，不复制文本或控件。`text_fit:"shrink"` 继续按不自动折行的完整文本适配，不受 text_wrap 开关影响；outline/reveal 沿已有绘制及字形缓存路径。范围为 reel-ui NodeProps、reel-engine 属性/快照、reel-player、测试、[author_text_wrap.aside](../examples/author_text_wrap.aside) 及双语指南；无新增依赖，Aside 字节码/ASB 与 SessionSnapshot 版本不变。共同节点构造（含 list/view/layered_image）native ABI 各加 1，节点宿主验证器版本为普通 4、image 6、video 2。检查直接写入、响应式更新、同包恢复、长文本高度变化、显式换行，以及逐字显示不重排、描边复用字形布局；描边宽度变化仍更新墨迹边界。
 
 `spawn(work, owner: null)` 在普通剧情或回调中启动独立的零参数脚本任务，复用同一 VM、协作调度和执行片。返回对象可 await 并用 `.cancel()` 取消实际生产者；返回值保持身份，多次等待共享终态，错误保留原始故障和源码因果链。省略 owner 时沿用当前回调/任务的节点，主剧情中归会话；节点退休取消所属任务，隐藏不取消。等待者取消不影响生产者。取消请求立即阻止后续脚本执行，清理完成后 await 才得到 Cancelled；取消不执行脚本 finally，与既有 owner 撤销一致。任务启动后先返回句柄，正文在调用者等待或返回后调度；不能通过 spawn 绕过初始化/纯派生/NoWait 边界。任务无主剧情对白/选项权限。任务结果复用 completion 的订阅与终态存储，活动仍用现有计时器，没有空闲轮询或 OS 线程。范围为 reel-engine、示例及双语指南，新增 native ABI 1，Aside 字节码/ASB 不变，无新增依赖。
