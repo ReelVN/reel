@@ -583,7 +583,7 @@ game.dialogue().lines 是统一的可观察对白行列表。每行提供只读 
 let eri = character("Eri");
 say([mio.line("你听见了吗？"), eri.line("在窗外。")]);
 ```
-`game.dialogue()` 返回会话的稳定模型。NVL 用上面的 nvl_view 组合累积行，`model.clear()` 清除当前显示页，历史保留；ADV 使用第一行快捷字段。`current_line_ids` 标识当前发言组。逐字显现只更新 reveal，不重建 NVL 页；追加行或清页才重建 view 内容。位置、背景、行间距和气泡形状由普通布局决定。自定义对白中，未被控件消费的轻点推进当前句；触摸拖动只滚页。长菜单示例见 [author_scroll.aside](../../examples/author_scroll.aside)。
+`game.dialogue()` 返回会话的稳定模型。NVL 用上面的 nvl_view 组合累积行，`model.clear()` 同时清空 NVL 行和 ADV 的文字与姓名，历史及当前发言的等待保留。继续追加会显示当前发言更新后的全文；开始新对白会建立新页。ADV 使用第一行快捷字段。`current_line_ids` 标识当前发言组。逐字显现只更新 reveal，不重建 NVL 页；追加行或清页才重建 view 内容。位置、背景、行间距和气泡形状由普通布局决定。自定义对白中，未被控件消费的轻点推进当前句；触摸拖动只滚页。长菜单示例见 [author_scroll.aside](../../examples/author_scroll.aside)。
 换句时的上滚可封装在普通对白函数中：先等待角色对白，再 `await run(tween(...))` 移出旧文本，之后调用下一句。完整组件见 [author_dialogue_transition.aside](../../examples/author_dialogue_transition.aside)，包含裁剪、角色配色与已读配色；运行前提供 fonts/body.ttf。打字速度用 game.configure(text_speed:) 调整；逐字透明度使用 `reveal_fade`，逐字位移等效果仍属规划。
 
 句内样式用显式 `rich(markup)`：例如 `narrator(rich("仰望 [ruby=ほしぞら]星空[/ruby]，[color=#ffd580][b]记住这一刻[/b][/color]。"));`。text、角色调用、character.line 和 narrator 都接收普通字符串或富文本；对白模型和历史保留完整样式。普通字符串不解析标记；富文本的只读 `.plain` 取得不含标记的正文，`.markup` 取得原标记字符串，读取均不复制文字。组合历史条目时可用 `rich("[b]姓名：[/b] " + line.text.markup)` 保留样式；普通字符串使用 `rich_escape`。`model({text: rich("[b]初始内容[/b]")})` 可直接作为可观察状态；复制模型默认值时共享不可变富文本。可运行示例：[author_rich_text.aside](../../examples/author_rich_text.aside)。
