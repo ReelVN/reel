@@ -645,6 +645,7 @@ fn source_and_asb_input_scope_remaps_and_retires_multitouch_ownership() {
 fn main() {
     let marker = text("marker", y: 220, width: 100, height: 30);
     let status = text("ready", y: 260, width: 200, height: 30);
+    let counts = model({back: 0, pick: 0, other: 0});
     let popup = stack(x: 200, width: 200, height: 100, modal: true, visible: false);
     popup.add(button("Close", width: 180, height: 80, on_click: |e| { popup.visible = false; }));
     let pad = input(modal: true, width: 640, height: 300,
@@ -658,13 +659,21 @@ fn main() {
             if e.action == "move_x" { marker.x = e.target.value("move_x") * 100; }
             if e.action == "fire" { status.value = e.phase; }
             if e.action == "menu" && e.phase == "pressed" { popup.visible = true; }
+            if e.action == "back" && e.phase == "pressed" { counts.back += 1; }
+            if e.action == "pick" && e.phase == "pressed" { counts.pick += 1; }
+            if e.action == "other" && e.phase == "pressed" { counts.other += 1; }
             if e.action == "remap" && e.phase == "pressed" {
-                e.target.bindings = {move_x: [binding("KeyJ")], fire: [binding("PointerPrimary"), binding("PointerSecondary"), binding("South"), binding("Space")]};
+                e.target.bindings = {
+                    move_x: [binding("KeyJ")],
+                    fire: [binding("PointerPrimary"), binding("PointerSecondary"), binding("South"), binding("Space")],
+                    back: [binding("East")], pick: [binding("DpadDown")], other: [binding("West")]
+                };
                 marker.x = e.target.value("move_x") * 100;
             }
         }
     ) {
         marker; status; popup;
+        text(value: derive(|| f"{counts.back}:{counts.pick}:{counts.other}"), y: 300);
         button("UI", x: 420, width: 100, height: 80,
             on_click: |e| { marker.y += 1; });
     };
@@ -704,6 +713,13 @@ fn main() {
             .find(|n| n.kind == NodeKind::Text("ready".into()))
             .unwrap()
             .id;
+        let counts = driver
+            .adapter()
+            .stage()
+            .nodes()
+            .find(|n| n.kind == NodeKind::Text("0:0:0".into()))
+            .unwrap()
+            .id;
         let (mut bridge, root) = bridge(&driver);
         let mut frame = 0;
         let flush =
@@ -728,6 +744,35 @@ fn main() {
                     )
                     .unwrap()
             };
+        let mut navigation = NavigationInput::default();
+        let route = |driver: &mut AsideSessionUi,
+                     bridge: &mut PresentationBridge,
+                     navigation: &mut NavigationInput,
+                     control,
+                     value| {
+            let raw = InputEvent::Value {
+                device: InputDeviceId::Gamepad(1),
+                control,
+                value,
+            };
+            let handled = driver
+                .handle_text(bridge, TextEvent::Input(raw.clone()))
+                .unwrap();
+            let mut events = Vec::new();
+            if handled.is_handled() {
+                navigation.cancel(|event| events.push(event));
+            } else {
+                navigation
+                    .update(&raw, std::time::Duration::ZERO, |event| events.push(event))
+                    .unwrap();
+            }
+            for event in events {
+                driver
+                    .handle_text(bridge, TextEvent::Navigation(event))
+                    .unwrap();
+            }
+            handled
+        };
         send(
             &mut driver,
             &mut bridge,
@@ -798,6 +843,22 @@ fn main() {
         );
         flush(&mut driver, &mut bridge, &mut frame);
         assert_eq!(driver.adapter().stage().node(marker).unwrap().props.x, 100.);
+        assert_eq!(
+            route(
+                &mut driver,
+                &mut bridge,
+                &mut navigation,
+                Control::Button(GamepadButton::South),
+                1.
+            ),
+            Handled::Yes,
+            "input owns South before child focus"
+        );
+        flush(&mut driver, &mut bridge, &mut frame);
+        assert_eq!(
+            driver.adapter().stage().node(status).unwrap().kind,
+            NodeKind::Text("pressed".into())
+        );
         driver
             .handle_text(
                 &mut bridge,
@@ -811,17 +872,69 @@ fn main() {
             "child focus cancels the parent game action"
         );
         assert_eq!(
-            send(
+            driver.adapter().stage().node(status).unwrap().kind,
+            NodeKind::Text("cancelled".into()),
+            "focus transfer cancels the parent's held South action"
+        );
+        assert_eq!(
+            route(
                 &mut driver,
                 &mut bridge,
+                &mut navigation,
                 Control::Button(GamepadButton::South),
-                1.
+                0.
             ),
-            Handled::No,
-            "parent mapping must not steal a focused child button's confirmation"
+            Handled::No
         );
-        gamepad_press(&mut driver, &mut bridge, GamepadButton::South);
         flush(&mut driver, &mut bridge, &mut frame);
+        assert_eq!(
+            driver.adapter().stage().node(marker).unwrap().props.y,
+            220.,
+            "release from the previous owner cannot activate a newly focused button"
+        );
+        for value in [1., 0.] {
+            assert_eq!(
+                route(
+                    &mut driver,
+                    &mut bridge,
+                    &mut navigation,
+                    Control::Button(GamepadButton::South),
+                    value
+                ),
+                Handled::No,
+                "parent mapping must not steal a focused child button's confirmation"
+            );
+        }
+        flush(&mut driver, &mut bridge, &mut frame);
+        assert_eq!(
+            driver.adapter().stage().node(status).unwrap().kind,
+            NodeKind::Text("cancelled".into()),
+            "button confirmation does not restart the parent action"
+        );
+        for button in [
+            GamepadButton::East,
+            GamepadButton::DpadDown,
+            GamepadButton::West,
+        ] {
+            for value in [1., 0.] {
+                assert_eq!(
+                    route(
+                        &mut driver,
+                        &mut bridge,
+                        &mut navigation,
+                        Control::Button(button),
+                        value
+                    ),
+                    Handled::Yes
+                );
+            }
+        }
+        flush(&mut driver, &mut bridge, &mut frame);
+        assert_eq!(
+            driver.adapter().stage().node(counts).unwrap().kind,
+            NodeKind::Text("1:1:1".into()),
+            "unclaimed back, direction and other controls reach the ancestor once"
+        );
         assert_eq!(driver.adapter().stage().node(marker).unwrap().props.y, 221.);
         for state in [keyboard::KeyState::Down, keyboard::KeyState::Up] {
             driver
@@ -842,13 +955,39 @@ fn main() {
             222.,
             "keyboard and controller activate the same child control"
         );
-        driver
-            .handle_text(
-                &mut bridge,
-                TextEvent::key_down(keyboard::Key::Named(keyboard::NamedKey::Tab)),
-            )
-            .unwrap();
+        for value in [1., 0.] {
+            assert_eq!(
+                route(
+                    &mut driver,
+                    &mut bridge,
+                    &mut navigation,
+                    Control::Button(GamepadButton::DpadLeft),
+                    value
+                ),
+                Handled::No,
+                "unbound direction remains available to spatial navigation"
+            );
+        }
         flush(&mut driver, &mut bridge, &mut frame);
+        for value in [1., 0.] {
+            assert_eq!(
+                route(
+                    &mut driver,
+                    &mut bridge,
+                    &mut navigation,
+                    Control::Button(GamepadButton::South),
+                    value
+                ),
+                Handled::Yes,
+                "South returns to the game mapping after focus returns to input"
+            );
+        }
+        flush(&mut driver, &mut bridge, &mut frame);
+        assert_eq!(
+            driver.adapter().stage().node(status).unwrap().kind,
+            NodeKind::Text("released".into())
+        );
+        assert_eq!(driver.adapter().stage().node(marker).unwrap().props.y, 222.);
         send(
             &mut driver,
             &mut bridge,
@@ -1177,7 +1316,7 @@ fn dialogue_validation_is_atomic_and_callable_characters_keep_native_boundaries(
             try { speaker.name = "changed"; } catch e { failures += 1; }
             try { say([]); } catch e { failures += 1; }
             try { say([speaker.line("valid"), text("wrong")]); } catch e { failures += 1; }
-            try { column() { speaker("cannot wait in children"); } } catch e { failures += 1; }
+            try { let _ = column() { speaker("cannot wait in children"); }; } catch e { failures += 1; }
             try { game.configure(text_speed: -1); } catch e { failures += 1; }
             if failures != 6 { throw failures; }
             if speaker.name != "Same name" || speaker.id != "one" { throw "changed character"; }

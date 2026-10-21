@@ -254,6 +254,8 @@ UI 的语义 Navigation 事件沿焦点、已呈现几何和 modal 作用域分�
 Windows/Linux/macOS 手柄后端复用锁定 Gilrs 0.11.2，独立 gamepad feature 不拉入 Winit/WGPU；内置 window 组合启用它。桌面后台阻塞等待事件，经有界队列和唤醒通知交付，关闭取消接收端且不等待设备线程。平台不支持该后端时仍可注入公共输入，不能把桌面编译或注入事件当成各平台实体设备验证。
 
 作者输入使用共同 `input(bindings: {...}, on_action: callback) { children }` 节点，按 stack 布局。bindings 的键是动作名，值为 binding 描述的数组；`binding(control, scale: 1, dead_zone: 0)` 使用物理键名（KeyA、Space 等）、标准手柄按钮（South、DpadLeft 等）、轴（LeftX 等）或指针按钮（PointerPrimary 等）。同一节点复用 ActionMap 聚合多个绑定和设备。`node.value(action)` 返回当前保持值；回调事件为 target/action/value/phase，phase 为 pressed/changed/released/cancelled。输入节点自身获得焦点后接收键盘和手柄动作；子控件取得焦点会接管输入并取消父输入节点的保持，键盘和手柄保持一致。声明为 modal 的输入子树自动接管焦点。消费发生于同步路由，业务回调仍是可暂停的节点任务。
+
+按钮取得焦点后，原始 South 按下与释放停止向祖先动作映射冒泡，交由宿主 NavigationInput 生成统一确认事件；按钮按配对释放激活。East、方向及其他未消费的控制仍可交给祖先映射；未被映射消费的方向继续空间导航。父 input 已保持的动作在焦点转移时取消，后续释放不会留下保持值。此修复复用既有确认、焦点取消和设备状态，不改变 Aside ABI、快照或作者参数。 回调任务退休后，调度游标保持原本的下一存活任务，游标越过末项时回到主任务位置；空闲后的新批次从首项开始。暂停任务继续按既有轮转与 await 边界让出执行，快照保存同一调度位置。
 输入节点的 bindings 替换时原子撤销旧保持值，后续事件使用新描述；绑定对象按赋值更新，不隐式观察嵌套表修改。失焦、清除已呈现画面、模态切换、隐藏或禁用撤销动作并发出 cancelled；退休则撤销节点任务并释放状态。取消只清理旧所有权，不产生点击或剧情推进。原生控制事件先路由作者输入；已消费的控制不再变为默认菜单导航，设备断连仍清理双方状态。Rust 宿主通过相同 NodeKind、NodeAction 和公共输入事件使用这一能力。设备身份以 Keyboard、Pointer(PointerInfo)、Gamepad(id) 枚举区分，数字不会跨来源碰撞。原始 Input 事件返回作用域内实际动作消费结果，未绑定控制再经过同一模态内的语义导航。AsideSessionUi 的 presented/clear_presented 返回 Result，交付呈现切换引发的取消；宿主据此唤醒新任务。
 
 

@@ -145,6 +145,14 @@ impl ButtonBehavior {
             self.cancel();
             return None;
         }
+        if matches!(event, TextEvent::Input(crate::input::InputEvent::Value { control, .. })
+            if *control == crate::input::DEFAULT_CONFIRM_CONTROL)
+        {
+            // The host converts this physical control to paired navigation
+            // events; an ancestor action map must not claim it first.
+            ctx.stop_propagation();
+            return None;
+        }
         if let TextEvent::Navigation(event) = event
             && event.action == crate::input::NavigationAction::Confirm
         {

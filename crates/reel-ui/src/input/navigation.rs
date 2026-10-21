@@ -4,6 +4,8 @@
 use super::*;
 use std::time::Duration;
 
+pub(crate) const DEFAULT_CONFIRM_CONTROL: Control = Control::Button(GamepadButton::South);
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NavigationAction {
     Left,
@@ -85,7 +87,7 @@ impl Default for NavigationInput {
                     axis(GamepadAxis::LeftY, 1.),
                 ],
             ),
-            (Confirm, vec![button(GamepadButton::South)]),
+            (Confirm, vec![Binding::new(DEFAULT_CONFIRM_CONTROL)]),
             (Back, vec![button(GamepadButton::East)]),
         ])
         .expect("default navigation bindings");

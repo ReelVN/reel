@@ -5,6 +5,93 @@ use super::{
 use reel_ui::stage::NodeKind;
 
 #[test]
+fn callback_retirement_preserves_next_task_and_restored_wait_order() {
+    let code = r#"fn opening() {
+        let log=text("");
+        let gate=completion();
+        stage.replace(column {
+            log;
+            button("A", on_click: || { log.value += "A"; });
+            button("B", on_click: || { log.value += "B"; await gate; log.value += "b"; });
+            button("C", on_click: || { log.value += "C"; });
+            button("resume", on_click: || { gate.resolve(); log.value += "R"; });
+        });
+    }"#;
+    let click = |vm: &mut SessionVm, session: &mut Session, label: &str| {
+        let id = vm
+            .stage()
+            .nodes()
+            .find_map(|node| match &node.kind {
+                NodeKind::Button {
+                    label: Some(name), ..
+                } if name == label => Some(node.id),
+                _ => None,
+            })
+            .unwrap();
+        assert!(vm.click(session, id).unwrap());
+    };
+    let log = |vm: &SessionVm| {
+        vm.stage()
+            .nodes()
+            .find_map(|node| match &node.kind {
+                NodeKind::Text(text) => Some(text.to_string()),
+                _ => None,
+            })
+            .unwrap()
+    };
+    for encoded in [false, true] {
+        for restore in [false, true] {
+            let (mut session, mut vm) = prepared(code, encoded);
+            drive(&mut vm, &mut session, false);
+            for label in ["A", "B", "C"] {
+                click(&mut vm, &mut session, label);
+            }
+            drive(&mut vm, &mut session, false);
+            assert_eq!(
+                log(&vm),
+                "ABC",
+                "retiring A must leave B next, then C can run while B awaits"
+            );
+            assert_eq!(vm.tasks.len(), 1);
+            assert!(
+                vm.tasks[0]
+                    .wait
+                    .is_some_and(|wait| vm.vm.wait_is_pending(wait))
+            );
+            if restore {
+                (session, vm) = super::scopes::restored(&mut vm, &session);
+            }
+            for label in ["A", "C"] {
+                click(&mut vm, &mut session, label);
+            }
+            drive(&mut vm, &mut session, false);
+            assert_eq!(
+                log(&vm),
+                "ABCAC",
+                "new callbacks retain order beside a suspended task"
+            );
+            click(&mut vm, &mut session, "resume");
+            drive(&mut vm, &mut session, false);
+            assert_eq!(
+                log(&vm),
+                "ABCACRb",
+                "the resumed task follows the resolver's synchronous segment"
+            );
+            assert!(vm.tasks.is_empty());
+            for label in ["A", "C"] {
+                click(&mut vm, &mut session, label);
+            }
+            drive(&mut vm, &mut session, false);
+            assert_eq!(
+                log(&vm),
+                "ABCACRbAC",
+                "an idle scheduler starts the next batch in arrival order"
+            );
+        }
+    }
+}
+
+#[test]
 fn owned_script_tasks_share_results_faults_and_cancellation_from_source_and_asb() {
     let code = r#"
     class Worker {

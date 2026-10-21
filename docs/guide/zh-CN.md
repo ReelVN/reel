@@ -1056,7 +1056,7 @@ game.clear_history(keep_last: 37);
 
 可以等待自己的保存请求。这份存档恢复时，该请求为已成功且只读 `restored` 为 true（正常写盘完成为 false），可据此关闭存档菜单；调用者继续执行 await 后的语句；保存调用不会重复执行。其他未完成的外部请求以 OperationInterrupted 结算。成功读档会替换会话，原来的读档调用不会在旧会话中继续。
 
-执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 8，会话快照格式为 25；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
+执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 8，会话快照格式为 26；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
 
 可运行示例：[author_saves.aside](../../examples/author_saves.aside)。
 
@@ -1308,6 +1308,8 @@ fn main() {
 ## 命名动作与输入节点
 
 `input` 是按 stack 布局的共同节点，绑定键盘、手柄与指针到自定义动作。根 input 在控件尚未获得焦点时即可接收键盘/手柄输入；已聚焦的子控件保持优先权，未消费的输入交给最近的祖先映射。因此菜单可统一绑定 Escape/手柄返回，场景可统一绑定快进，点击子按钮不会使这些映射失效。焦点改变取消保持中的动作；输入不跨越模态范围，文本框保留键盘与 IME。下面与 [author_input.aside](../../examples/author_input.aside) 相同，可用第一节的 dev/build/run 命令运行。将字体文件放在 `fonts/body.ttf`，或修改 main 中的路径。
+
+聚焦按钮的手柄 South 确认由按钮接收，父 input 即使绑定 South 也不会同时触发动作。East 返回键和其他未消费的控制继续交给祖先映射；未绑定的方向用于移动焦点。焦点回到 input 后，South 恢复为游戏动作。
 
 ```aside
 fn main() {
