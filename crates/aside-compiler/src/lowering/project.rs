@@ -431,7 +431,11 @@ fn links(
         exports: b.filled(m.symbols().len(), None)?,
         namespaces: b.filled(m.symbols().len(), false)?,
     };
-    for binding in m.external_bindings() {
+    for binding in m
+        .external_bindings()
+        .iter()
+        .filter(|binding| binding.kind == h::ExternalBindingKind::Reference)
+    {
         let Some(reference) = binding.descriptor.reference.as_deref() else {
             continue;
         };

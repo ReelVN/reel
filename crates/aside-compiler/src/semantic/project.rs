@@ -144,7 +144,7 @@ fn project_inner(parsed: &Parse, limits: AnalysisLimits, recover: bool) -> Resul
             parent.edges.push(HirElement::Node(id));
         }
     }
-    super::forms::forms(&mut hir,recover);
+    super::forms::forms(&mut hir, recover);
     Ok(hir)
 }
 fn kind(k: K) -> Option<HirKind> {

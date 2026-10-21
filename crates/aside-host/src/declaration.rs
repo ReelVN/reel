@@ -1,7 +1,7 @@
-pub use aside_vm::HostTypeSupport;
 use aside_compiler::semantic::{
     CallEffect, ExternalParameter, ExternalSignature, ExternalSymbol, SymbolReference, TypeHint,
 };
+pub use aside_vm::HostTypeSupport;
 use aside_vm::bytecode::{
     self as bc, BuiltinType, Effects, NativeSupport, Parameter, RuntimeSupport, Signature,
     SymbolId, TypeDef, TypeId,
@@ -65,6 +65,8 @@ impl NativeContract {
                     }))
                     .collect(),
                 result: hint(&self.result),
+                result_cases: Vec::new(),
+                result_parameter: None,
                 effect: if self.effects.0 & Effects::WAIT == 0 {
                     CallEffect::NoWait
                 } else {
@@ -94,6 +96,8 @@ impl std::fmt::Display for BuildError {
 }
 impl std::error::Error for BuildError {}
 
+/// Lower one analyzed module using independently registered native source types,
+/// runtime ABI contracts and host nominal declarations.
 pub fn lower(
     module: &aside_compiler::hir::AnalyzedModule,
     contracts: &[NativeContract],
@@ -103,14 +107,18 @@ pub fn lower(
     options: aside_compiler::lowering::Options,
 ) -> Result<aside_compiler::lowering::Compilation, BuildError> {
     use aside_compiler::lowering::{self, ExternalTarget, Linkage, NativeLink};
-    let seed =
-        seed(contracts, types, capabilities, options.content_version).map_err(BuildError::Format)?;
+    let seed = seed(contracts, types, capabilities, options.content_version)
+        .map_err(BuildError::Format)?;
     let references = contracts
         .iter()
         .map(NativeContract::reference)
         .collect::<Vec<_>>();
     let mut links = Vec::new();
-    for binding in module.external_bindings() {
+    for binding in module
+        .external_bindings()
+        .iter()
+        .filter(|binding| binding.kind == aside_compiler::hir::ExternalBindingKind::Reference)
+    {
         let Some(reference) = binding.descriptor.reference.as_deref() else {
             continue;
         };
@@ -128,7 +136,12 @@ pub fn lower(
             target,
             native: bc::NativeId(index as u32),
             reference: &references[index],
-            source_signature: source_declarations.iter().find(|declaration| declaration.symbol.reference.as_deref() == Some(&references[index])).and_then(|declaration|declaration.symbol.signature.as_ref()),
+            source_signature: source_declarations
+                .iter()
+                .find(|declaration| {
+                    declaration.symbol.reference.as_deref() == Some(&references[index])
+                })
+                .and_then(|declaration| declaration.symbol.signature.as_ref()),
         });
     }
     lowering::compile(
@@ -142,7 +155,8 @@ pub fn lower(
     .map_err(BuildError::Lowering)
 }
 
-/// Lower a source graph using one trusted seed and one final B01 verification.
+/// Lower a source graph using one trusted source/ABI registration, nominal seed
+/// and final B01 verification.
 pub fn lower_project(
     modules: &[aside_compiler::hir::AnalyzedModule],
     plan: &aside_compiler::semantic::ModulePlan,
@@ -174,6 +188,9 @@ pub fn lower_project(
             module
                 .external_bindings()
                 .iter()
+                .filter(|binding| {
+                    binding.kind == aside_compiler::hir::ExternalBindingKind::Reference
+                })
                 .filter_map(|binding| {
                     let reference = binding.descriptor.reference.as_deref()?;
                     let index = references.iter().position(|r| r == reference)?;
@@ -185,7 +202,12 @@ pub fn lower_project(
                         target,
                         native: bc::NativeId(index as u32),
                         reference: &references[index],
-                        source_signature: source_declarations.iter().find(|declaration| declaration.symbol.reference.as_deref() == Some(&references[index])).and_then(|declaration|declaration.symbol.signature.as_ref()),
+                        source_signature: source_declarations
+                            .iter()
+                            .find(|declaration| {
+                                declaration.symbol.reference.as_deref() == Some(&references[index])
+                            })
+                            .and_then(|declaration| declaration.symbol.signature.as_ref()),
                     })
                 })
                 .collect::<Vec<_>>()
@@ -340,6 +362,7 @@ pub fn hint(ty: &bc::BuiltinType) -> TypeHint {
         bc::BuiltinType::Closure => TypeHint::Closure,
         bc::BuiltinType::Future => TypeHint::Future,
         bc::BuiltinType::Generator => TypeHint::Generator,
+        bc::BuiltinType::PropertyRef => TypeHint::Named("Binding".into()),
         _ => TypeHint::Any,
     }
 }
@@ -352,6 +375,8 @@ pub fn reference(contract: &NativeContract) -> SymbolReference {
     }
 }
 
+/// Build verified native defaults and canonical nominal types from trusted Rust
+/// declarations. Runtime loading validates nominal registration relationships.
 pub fn seed(
     contracts: &[NativeContract],
     types: &[HostTypeSupport],
@@ -386,14 +411,38 @@ pub fn seed(
         initializer: None,
     });
     for declaration in types {
-        let (path,name)=declaration.name.rsplit_once("::").ok_or_else(||bc::Error {kind:bc::ErrorKind::Signature,offset:None,function:None,pc:None,source:None,detail:"host type requires canonical module identity".into()})?;
-        let path_symbol=symbol(&mut package,path);
-        let module=package.modules.iter().position(|module|module.path == path_symbol).unwrap_or_else(|| {
-            package.modules.push(bc::ModuleDef {path:path_symbol,imports:vec![],exports:vec![],globals:vec![],initializer:None});
-            package.modules.len()-1
+        let (path, name) = declaration
+            .name
+            .rsplit_once("::")
+            .ok_or_else(|| bc::Error {
+                kind: bc::ErrorKind::Signature,
+                offset: None,
+                function: None,
+                pc: None,
+                source: None,
+                detail: "host type requires canonical module identity".into(),
+            })?;
+        let path_symbol = symbol(&mut package, path);
+        let module = package
+            .modules
+            .iter()
+            .position(|module| module.path == path_symbol)
+            .unwrap_or_else(|| {
+                package.modules.push(bc::ModuleDef {
+                    path: path_symbol,
+                    imports: vec![],
+                    exports: vec![],
+                    globals: vec![],
+                    initializer: None,
+                });
+                package.modules.len() - 1
+            });
+        let name = symbol(&mut package, name);
+        package.types.push(TypeDef::Named {
+            module: bc::ModuleId(module as u32),
+            name,
+            version: content_version,
         });
-        let name=symbol(&mut package,name);
-        package.types.push(TypeDef::Named {module:bc::ModuleId(module as u32),name,version:content_version});
     }
     for contract in contracts {
         let mut parameters: Vec<bc::Parameter> = Vec::new();

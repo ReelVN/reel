@@ -99,7 +99,8 @@ fn error_info_retains_shared_readonly_graph_with_repeatable_for_views() {
         .into_module()
         .unwrap();
     for encoded in [false, true] {
-        let compiled = aside_host::lower(&module, &contracts, &[], &[], &[], Default::default()).unwrap();
+        let compiled =
+            aside_host::lower(&module, &contracts, &[], &[], &[], Default::default()).unwrap();
         let initializer = compiled.entry;
         let program = if encoded {
             bc::VerifiedProgram::decode(

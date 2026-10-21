@@ -515,6 +515,7 @@ fn resolved_native_members_keep_trusted_linkage_for_calls_and_values() {
             ExternalSymbol::function(
                 "run",
                 ExternalSignature {
+                    result_parameter: None,
                     result_cases: Vec::new(),
                     parameters: vec![ExternalParameter {
                         name: "a".into(),

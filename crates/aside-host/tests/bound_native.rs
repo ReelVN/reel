@@ -124,7 +124,8 @@ fn exercise_callable(callable: bool) {
     .unwrap()
     .into_module()
     .unwrap();
-    let compiled = aside_host::lower(&module, &contracts, &[], &[], &[], Default::default()).unwrap();
+    let compiled =
+        aside_host::lower(&module, &contracts, &[], &[], &[], Default::default()).unwrap();
     let bytes = bc::encode(compiled.program.package(), bc::Limits::default()).unwrap();
     let program = bc::VerifiedProgram::decode(&bytes, bc::Limits::default()).unwrap();
     let function = |name: &str| {

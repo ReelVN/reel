@@ -1,6 +1,35 @@
 //! Immutable scalar mask expressions; the VM owns the complete shared graph.
 use super::{AdapterError, stage, text};
 
+pub(super) fn describe(api: &mut aside_host::source::Api) {
+    use aside_compiler::semantic::TypeHint;
+    use aside_host::source::{NamedType, named, number};
+    let mask = named("reel::types::Mask");
+    let scalar = TypeHint::Union(vec![mask.clone(), number()]);
+    for contract in contracts() {
+        let hints = contract
+            .parameters
+            .iter()
+            .map(|parameter| {
+                (
+                    parameter.name.as_str(),
+                    match parameter.name.as_str() {
+                        "source" | "repeat" | "name" => TypeHint::String,
+                        "power" => number(),
+                        _ => scalar.clone(),
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+        api.refine(&contract.symbol, mask.clone(), &hints);
+    }
+    api.types.push(NamedType::new(
+        "reel::types::Mask",
+        "An immutable scalar mask expression sampled by stage appearance and transitions.",
+        Vec::new(),
+    ));
+}
+
 aside_host::native_documentation! {
     pub(super) fn documentation {
         /// Create an immutable mask expression sampling image alpha. x/y and scale_x/y

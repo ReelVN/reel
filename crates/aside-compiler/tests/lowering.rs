@@ -837,6 +837,7 @@ fn direct_native_uses_trusted_identity_abi_capabilities_and_real_default() {
     let host = ExternalSymbol::function(
         "host",
         ExternalSignature {
+            result_parameter: None,
             result_cases: Vec::new(),
             parameters: vec![ExternalParameter {
                 name: "a".into(),
@@ -1256,6 +1257,7 @@ fn native_default_prefix_cells_and_fast_value_slots_come_from_shared_verifier() 
     let host = ExternalSymbol::function(
         "host",
         ExternalSignature {
+            result_parameter: None,
             result_cases: Vec::new(),
             parameters: vec![
                 parameter("x", true, false, false),
@@ -1375,6 +1377,7 @@ fn qualified_native_import_retains_namespace_and_registration_identity() {
     let native = ExternalSymbol::function(
         "run",
         ExternalSignature {
+            result_parameter: None,
             result_cases: Vec::new(),
             parameters: vec![ExternalParameter {
                 name: "a".into(),

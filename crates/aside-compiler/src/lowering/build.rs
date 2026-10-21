@@ -546,6 +546,7 @@ impl Lowerer<'_> {
             h::Type::Table => Some(B::Table),
             h::Type::Future => Some(B::Future),
             h::Type::Generator => Some(B::Generator),
+            h::Type::Named(name) if self.m.hir().name(*name) == "Binding" => Some(B::PropertyRef),
             h::Type::Class(_) => Some(B::Class),
             h::Type::Closure | h::Type::Function(_) | h::Type::BoundMethod(_) => Some(B::Closure),
             _ => None,
@@ -802,22 +803,21 @@ impl Lowerer<'_> {
                 ));
             }
             self.b.work(self.m.external_bindings().len() as u64)?;
-            let valid = match link.target {
-                ExternalTarget::Symbol(id) => self
-                    .m
-                    .external_bindings()
-                    .iter()
-                    .any(|e| e.symbol == Some(id)),
-                ExternalTarget::Node(id) => self
-                    .m
-                    .external_bindings()
-                    .iter()
-                    .any(|e| e.node == Some(id)),
-            };
+            let valid =
+                match link.target {
+                    ExternalTarget::Symbol(id) => self.m.external_bindings().iter().any(|e| {
+                        e.kind == h::ExternalBindingKind::Reference && e.symbol == Some(id)
+                    }),
+                    ExternalTarget::Node(id) => {
+                        self.m.external_bindings().iter().any(|e| {
+                            e.kind == h::ExternalBindingKind::Reference && e.node == Some(id)
+                        })
+                    }
+                };
             if !valid {
                 return Err(self.b.error(
                     ErrorKind::LinkContract,
-                    "native link does not identify an analyzed external binding",
+                    "native link does not identify an analyzed executable reference",
                 ));
             }
             self.b.work(self.m.external_bindings().len() as u64)?;
@@ -825,9 +825,12 @@ impl Lowerer<'_> {
                 .m
                 .external_bindings()
                 .iter()
-                .find(|e| match link.target {
-                    ExternalTarget::Symbol(id) => e.symbol == Some(id),
-                    ExternalTarget::Node(id) => e.node == Some(id),
+                .find(|e| {
+                    e.kind == h::ExternalBindingKind::Reference
+                        && match link.target {
+                            ExternalTarget::Symbol(id) => e.symbol == Some(id),
+                            ExternalTarget::Node(id) => e.node == Some(id),
+                        }
                 })
                 .expect("checked identity");
             let reference = external.descriptor.reference.as_deref().ok_or_else(|| {
@@ -861,11 +864,26 @@ impl Lowerer<'_> {
                     "compiler intrinsic cannot be replaced with a native registration",
                 ));
             }
+            if link.source_signature.is_some() && external.descriptor.signature.is_none() {
+                return Err(self.b.error(
+                    ErrorKind::LinkContract,
+                    "analysis omitted the trusted native source signature",
+                ));
+            }
             if let Some(signature) = &external.descriptor.signature {
-                if let Some(source)=link.source_signature {
-                    if !source_signature_matches(signature,source,&mut self.b)? {
-                        return Err(self.b.error(ErrorKind::LinkContract,"analysis differs from trusted native source signature"));
-                    }
+                if link.source_signature.is_none() && !signature.result_cases.is_empty() {
+                    return Err(self.b.error(
+                        ErrorKind::LinkContract,
+                        "conditional native source results require a trusted source declaration",
+                    ));
+                }
+                if let Some(source) = link.source_signature
+                    && !source_signature_matches(signature, source, &mut self.b)?
+                {
+                    return Err(self.b.error(
+                        ErrorKind::LinkContract,
+                        "analysis differs from trusted native source signature",
+                    ));
                 }
                 let native = &self.package.natives[link.native.index()];
                 let trusted = &self.package.signatures[native.signature.index()];
@@ -893,8 +911,16 @@ impl Lowerer<'_> {
                         || parameter.mutable != actual.mutable
                         || parameter.default != actual.default.is_some()
                         || parameter.rest != (i == trusted.parameters.len())
-                        || !(link.source_signature.is_some() && self.package.types[actual.ty.index()] == bc::TypeDef::Builtin(bc::BuiltinType::Any)
-                            || hint_matches(&parameter.ty, actual.ty, &self.package, &mut self.b, 0)?)
+                        || !(link.source_signature.is_some()
+                            && self.package.types[actual.ty.index()]
+                                == bc::TypeDef::Builtin(bc::BuiltinType::Any)
+                            || hint_matches(
+                                &parameter.ty,
+                                actual.ty,
+                                &self.package,
+                                &mut self.b,
+                                0,
+                            )?)
                     {
                         return Err(self.b.error(
                             ErrorKind::LinkContract,
@@ -902,15 +928,18 @@ impl Lowerer<'_> {
                         ));
                     }
                 }
-                if !(link.source_signature.is_some() && self.package.types[trusted.return_type.index()] == bc::TypeDef::Builtin(bc::BuiltinType::Any)
+                if !(link.source_signature.is_some()
+                    && self.package.types[trusted.return_type.index()]
+                        == bc::TypeDef::Builtin(bc::BuiltinType::Any)
                     || hint_matches(
-                    &signature.result,
-                    trusted.return_type,
-                    &self.package,
-                    &mut self.b,
-                    0,
-                )?) || signature.effect == crate::semantic::CallEffect::NoWait
-                    && trusted.effects.0 & bc::Effects::WAIT != 0
+                        &signature.result,
+                        trusted.return_type,
+                        &self.package,
+                        &mut self.b,
+                        0,
+                    )?)
+                    || signature.effect == crate::semantic::CallEffect::NoWait
+                        && trusted.effects.0 & bc::Effects::WAIT != 0
                 {
                     return Err(self.b.error(
                         ErrorKind::LinkContract,
@@ -1008,9 +1037,10 @@ impl Lowerer<'_> {
                             "import lacks retained external identity",
                         )
                     })?;
-                // A namespace is compile-time name resolution, not a runtime value.
-                // Its used members retain their own trusted native links.
-                if external.descriptor.namespace.is_some()
+                // Type declarations and namespaces name compile-time entities.
+                // Used native/source values retain their own executable links.
+                if external.kind == h::ExternalBindingKind::Type
+                    || external.descriptor.namespace.is_some()
                     || external.descriptor.intrinsic.is_some()
                 {
                     continue;
@@ -1600,34 +1630,110 @@ fn binary(operator: K) -> Option<bc::Opcode> {
     })
 }
 
-fn source_hint_matches(a:&crate::semantic::TypeHint,b:&crate::semantic::TypeHint,budget:&mut Budget,depth:usize)->Result<bool,Box<Error>> {
+fn source_hint_matches(
+    a: &crate::semantic::TypeHint,
+    b: &crate::semantic::TypeHint,
+    budget: &mut Budget,
+    depth: usize,
+) -> Result<bool, Box<Error>> {
     use crate::semantic::TypeHint as T;
     budget.work(1)?;
-    if depth>=budget.limits.max_depth {return Err(budget.error(ErrorKind::Limit,"trusted source type comparison depth exceeded"));}
-    match (a,b) {
-        (T::Named(a),T::Named(b))=>Ok(budget.compare(a,b)?.is_eq()),
-        (T::Tuple(a),T::Tuple(b))|(T::Union(a),T::Union(b))=>{
-            if a.len()!=b.len(){return Ok(false);}
-            for (a,b) in a.iter().zip(b) {if !source_hint_matches(a,b,budget,depth+1)?{return Ok(false);}}
+    if depth >= budget.limits.max_depth {
+        return Err(budget.error(
+            ErrorKind::Limit,
+            "trusted source type comparison depth exceeded",
+        ));
+    }
+    match (a, b) {
+        (T::Named(a), T::Named(b)) => Ok(budget.compare(a, b)?.is_eq()),
+        (T::Tuple(a), T::Tuple(b)) | (T::Union(a), T::Union(b)) => {
+            if a.len() != b.len() {
+                return Ok(false);
+            }
+            for (a, b) in a.iter().zip(b) {
+                if !source_hint_matches(a, b, budget, depth + 1)? {
+                    return Ok(false);
+                }
+            }
             Ok(true)
-        },
-        (T::Callable(a,result_a),T::Callable(b,result_b))=>{
-            if a.len()!=b.len(){return Ok(false);}
-            for (a,b) in a.iter().zip(b) {if !source_hint_matches(a,b,budget,depth+1)?{return Ok(false);}}
-            source_hint_matches(result_a,result_b,budget,depth+1)
-        },
-        (T::Tuple(_)|T::Union(_)|T::Callable(..)|T::Named(_),_)|(_,T::Tuple(_)|T::Union(_)|T::Callable(..)|T::Named(_))=>Ok(false),
-        _=>Ok(a==b),
+        }
+        (T::Callable(a, result_a), T::Callable(b, result_b)) => {
+            if a.len() != b.len() {
+                return Ok(false);
+            }
+            for (a, b) in a.iter().zip(b) {
+                if !source_hint_matches(a, b, budget, depth + 1)? {
+                    return Ok(false);
+                }
+            }
+            source_hint_matches(result_a, result_b, budget, depth + 1)
+        }
+        (T::Tuple(_) | T::Union(_) | T::Callable(..) | T::Named(_), _)
+        | (_, T::Tuple(_) | T::Union(_) | T::Callable(..) | T::Named(_)) => Ok(false),
+        _ => Ok(a == b),
     }
 }
-fn source_signature_matches(a:&crate::semantic::ExternalSignature,b:&crate::semantic::ExternalSignature,budget:&mut Budget)->Result<bool,Box<Error>> {
+fn source_signature_matches(
+    a: &crate::semantic::ExternalSignature,
+    b: &crate::semantic::ExternalSignature,
+    budget: &mut Budget,
+) -> Result<bool, Box<Error>> {
     budget.work(1)?;
-    if a.parameters.len()!=b.parameters.len() || a.effect!=b.effect || a.init_safe!=b.init_safe || a.derived_safe!=b.derived_safe {return Ok(false);}
-    for (a,b) in a.parameters.iter().zip(&b.parameters) {
-        if !budget.compare(&a.name,&b.name)?.is_eq() || a.mutable!=b.mutable || a.default!=b.default || a.rest!=b.rest
-            || !source_hint_matches(&a.ty,&b.ty,budget,0)? {return Ok(false);}
+    if a.parameters.len() != b.parameters.len()
+        || a.result_cases.len() != b.result_cases.len()
+        || a.effect != b.effect
+        || a.init_safe != b.init_safe
+        || a.derived_safe != b.derived_safe
+    {
+        return Ok(false);
     }
-    source_hint_matches(&a.result,&b.result,budget,0)
+    if !match (&a.result_parameter, &b.result_parameter) {
+        (Some(a), Some(b)) => budget.compare(a, b)?.is_eq(),
+        (None, None) => true,
+        _ => false,
+    } {
+        return Ok(false);
+    }
+    for (a, b) in a.parameters.iter().zip(&b.parameters) {
+        if !budget.compare(&a.name, &b.name)?.is_eq()
+            || a.mutable != b.mutable
+            || a.default != b.default
+            || a.rest != b.rest
+            || !source_hint_matches(&a.ty, &b.ty, budget, 0)?
+        {
+            return Ok(false);
+        }
+    }
+    for (a, b) in a.result_cases.iter().zip(&b.result_cases) {
+        if !budget.compare(&a.parameter, &b.parameter)?.is_eq()
+            || a.when_omitted != b.when_omitted
+            || !source_constant_matches(&a.equals, &b.equals, budget)?
+            || !source_hint_matches(&a.result, &b.result, budget, 0)?
+        {
+            return Ok(false);
+        }
+    }
+    source_hint_matches(&a.result, &b.result, budget, 0)
+}
+
+fn source_constant_matches(
+    a: &bc::Const,
+    b: &bc::Const,
+    budget: &mut Budget,
+) -> Result<bool, Box<Error>> {
+    budget.work(1)?;
+    match (a, b) {
+        (bc::Const::Utf8(a), bc::Const::Utf8(b)) => Ok(budget.compare(a, b)?.is_eq()),
+        (bc::Const::Bytes(a), bc::Const::Bytes(b)) => {
+            budget.work(a.len().min(b.len()) as u64)?;
+            Ok(a == b)
+        }
+        (bc::Const::Tuple(a), bc::Const::Tuple(b)) => {
+            budget.work(a.len().min(b.len()) as u64)?;
+            Ok(a == b)
+        }
+        _ => Ok(a == b),
+    }
 }
 
 fn hint_matches(
@@ -1658,6 +1764,7 @@ fn hint_matches(
         T::Table => Some(B::Table),
         T::Future => Some(B::Future),
         T::Generator => Some(B::Generator),
+        T::Named(name) if name == "Binding" => Some(B::PropertyRef),
         _ => None,
     };
     let actual = &p.types[id.index()];
@@ -1679,9 +1786,14 @@ fn hint_matches(
             Ok(true)
         }
         (T::Named(expected), bc::TypeDef::Named { module, name, .. }) => {
-            let Some((path,expected_name))=expected.rsplit_once("::") else {return Ok(false);};
-            Ok(b.compare(path, &p.symbols[p.modules[module.index()].path.index()])?.is_eq()
-                && b.compare(expected_name, &p.symbols[name.index()])?.is_eq())
+            let Some((path, expected_name)) = expected.rsplit_once("::") else {
+                return Ok(false);
+            };
+            Ok(
+                b.compare(path, &p.symbols[p.modules[module.index()].path.index()])?
+                    .is_eq()
+                    && b.compare(expected_name, &p.symbols[name.index()])?.is_eq(),
+            )
         }
         _ => Ok(false),
     }
@@ -1810,10 +1922,11 @@ fn preflight(
         }
         if node.kind == H::Member {
             b.work(m.external_bindings().len() as u64)?;
-            if m.external_bindings()
-                .iter()
-                .any(|e| e.node == Some(h::NodeId(i as u32)) && e.descriptor.reference.is_some())
-            {
+            if m.external_bindings().iter().any(|e| {
+                e.kind == h::ExternalBindingKind::Reference
+                    && e.node == Some(h::NodeId(i as u32))
+                    && e.descriptor.reference.is_some()
+            }) {
                 b.work(links.natives.len() as u64)?;
                 if project.is_none_or(|p| p.node(h::NodeId(i as u32)).is_none())
                     && !links

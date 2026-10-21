@@ -70,6 +70,7 @@ impl Heap {
                         | (Thread, ObjectKind::Thread)
                         | (Future, ObjectKind::Future)
                         | (WeakRef, ObjectKind::WeakRef)
+                        | (PropertyRef, ObjectKind::PropertyRef)
                 )
             }
         })

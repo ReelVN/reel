@@ -322,3 +322,28 @@ aside_host::native_documentation! {
         "reel::stage::move_pointer";
     }
 }
+pub(super) fn describe(api: &mut aside_host::source::Api) {
+    use aside_compiler::semantic::TypeHint;
+    use aside_host::source::{named, nullable, number};
+    api.refine("reel::window::info", TypeHint::Table, &[]);
+    api.refine(
+        "reel::window::configure",
+        named("reel::types::WindowOperation"),
+        &[
+            ("width", nullable(number())),
+            ("height", nullable(number())),
+            ("fullscreen", nullable(TypeHint::Bool)),
+            ("vsync", nullable(TypeHint::Bool)),
+        ],
+    );
+    api.refine("reel::stage::pointer", nullable(TypeHint::Table), &[]);
+    api.refine(
+        "reel::stage::move_pointer",
+        named("reel::types::WindowOperation"),
+        &[
+            ("x", number()),
+            ("y", number()),
+            ("owner", named("reel::types::Node")),
+        ],
+    );
+}

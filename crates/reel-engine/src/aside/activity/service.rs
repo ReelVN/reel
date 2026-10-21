@@ -94,6 +94,15 @@ impl Activities {
             slots[RootSlot::Forcing as usize] = Value::bool(false);
             let activity =
                 heap.alloc_host(fields, &slots, if clock { None } else { Some(readonly) })?;
+            stage.types.mark(
+                heap,
+                activity,
+                if clock {
+                    "reel::types::Clock"
+                } else {
+                    "reel::types::Activity"
+                },
+            )?;
             if clock {
                 heap.observe_host_properties(activity, 0, 2)?;
             }

@@ -60,7 +60,8 @@ fn math_accepts_int_and_float_at_native_boundary_with_float_results_and_source_e
         .into_module()
         .unwrap();
     for encoded in [false, true] {
-        let compiled = aside_host::lower(&module, &contracts, &[], &[], &[], Default::default()).unwrap();
+        let compiled =
+            aside_host::lower(&module, &contracts, &[], &[], &[], Default::default()).unwrap();
         let initializer = compiled.entry;
         let program = if encoded {
             bc::VerifiedProgram::decode(

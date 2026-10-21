@@ -317,7 +317,8 @@ impl SessionVm {
     ) -> Result<SessionRestore<'a>, AdapterError> {
         let support = aside_host::runtime_support(
             &program,
-            &registry::contracts(),
+            super::source::contracts(),
+            super::source::types(),
             &registry::capabilities(),
         )?;
         let vm = Vm::restore_begin(

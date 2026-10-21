@@ -80,7 +80,7 @@ impl SnapshotMap {
 
 #[derive(Serialize, Deserialize)]
 struct Header {
-    host_types: [u8;32],
+    host_types: [u8; 32],
     active_slot: Option<usize>,
     tasks: usize,
     globals: RootRangeToken,
@@ -473,7 +473,9 @@ impl VmRestore<'_> {
                 }
                 let header: Header = record.read()?;
                 if header.host_types != self.vm.program.checks.host_types.fingerprint {
-                    return Err(SnapshotError::Invalid("trusted host type registry changed".into()));
+                    return Err(SnapshotError::Invalid(
+                        "trusted host type registry changed".into(),
+                    ));
                 }
                 if header.tasks > self.vm.limits.max_tasks as usize
                     || header.tasks >= self.image.records.len()

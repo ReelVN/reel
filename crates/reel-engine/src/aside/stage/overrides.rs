@@ -333,6 +333,7 @@ impl StageBinding {
             ],
             Some(validate),
         )?;
+        self.types.mark(heap, token, "reel::types::Override")?;
         heap.observe_host_properties(token, count, 0)?;
         for field in 0..count {
             let raw = properties.raw(heap, field)?;

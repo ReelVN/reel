@@ -149,6 +149,104 @@ fn source_schema_preserves_precise_types_defaults_and_definition_ranges() {
 }
 
 #[test]
+fn declaration_documents_preserve_bound_and_inherited_identities() {
+    use aside_compiler::semantic::TypeHint;
+    use aside_host::source::{Api, Declaration, Member, NamedType, named, type_name};
+    assert_eq!(
+        type_name(&TypeHint::Callable(
+            vec![TypeHint::Int],
+            Box::new(TypeHint::Bool)
+        )),
+        "fn(int) -> bool"
+    );
+    assert_eq!(type_name(&TypeHint::Tuple(vec![TypeHint::Int])), "(int,)");
+    assert_eq!(
+        type_name(&TypeHint::Union(vec![
+            TypeHint::Callable(vec![], Box::new(TypeHint::Int)),
+            TypeHint::Null
+        ])),
+        "(fn() -> int) | null"
+    );
+    let native = Declaration::native(&add::binding().contract, add::DOCUMENTATION);
+    let base = NamedType::new(
+        "sample::types::Node",
+        "Base node.",
+        vec![Member::field(
+            "sample::types::Node",
+            "x",
+            TypeHint::Float,
+            Some(TypeHint::Float),
+            "Position.",
+            None,
+        )],
+    );
+    let derived = NamedType::new(
+        "sample::types::Speech",
+        "Speech.",
+        vec![Member::method(native.clone().bound("append"))],
+    )
+    .extends(&base);
+    let api = Api {
+        types: vec![
+            base,
+            derived,
+            NamedType::new("other::types::Node", "Other node.", Vec::new()),
+        ],
+        functions: vec![native],
+        ..Default::default()
+    };
+    let documents = api.documents("sample");
+    let speech = documents
+        .documents
+        .iter()
+        .find(|document| document.uri.ends_with("sample/types/Speech.aside"))
+        .unwrap();
+    assert!(speech.text.contains("class Speech: Node"));
+    assert!(speech.text.contains("fn append(right: int = 2) -> int;"));
+    assert!(!speech.text.contains("let mut x"));
+    let bound = documents
+        .locations
+        .iter()
+        .find(|location| location.declaration.symbol.name == "append")
+        .unwrap();
+    assert_eq!(bound.uri, speech.uri);
+    assert_eq!(
+        documents
+            .locations
+            .iter()
+            .filter(|location| location.declaration.symbol.reference
+                == bound.declaration.symbol.reference)
+            .count(),
+        1
+    );
+    let inherited = documents
+        .locations
+        .iter()
+        .find(|location| location.declaration.symbol.name == "x")
+        .unwrap();
+    assert!(inherited.uri.ends_with("sample/types/Node.aside"));
+    assert!(
+        documents
+            .documents
+            .iter()
+            .any(|document| document.uri.ends_with("other/types/Node.aside"))
+    );
+    assert_eq!(
+        api.is_subtype("sample::types::Speech", "sample::types::Node"),
+        Some(true)
+    );
+    assert_eq!(
+        api.is_subtype("sample::types::Speech", "other::types::Node"),
+        Some(false)
+    );
+    assert_eq!(
+        api.member("sample::types::Speech", "x").unwrap().symbol.ty,
+        TypeHint::Float
+    );
+    assert_eq!(named("sample::types::Speech"), api.types[1].symbol().ty);
+}
+
+#[test]
 fn standalone_macro_host_compiles_encodes_admits_and_calls_rust() {
     let add = add::binding();
     assert!(add.documentation.contains("Add two integers"));
@@ -168,7 +266,7 @@ fn standalone_macro_host_compiles_encodes_admits_and_calls_rust() {
         collect.contract.clone(),
     ];
     let capabilities = ["sample.text".to_string()];
-    let module = aside_compiler::analyze_module(r#"fn main() {
+    let module = aside_compiler::analyze_module(r#"fn dynamic(value) { value } fn main() {
         let f = add;
         if f(right: 8, left: 4) != 12 || add(3) != 5 { throw "binding"; }
         if f(...{right: 8, left: 4}) != 12 || add(...{left: 3}) != 5 { throw "named forwarding"; }
@@ -192,7 +290,7 @@ fn standalone_macro_host_compiles_encodes_admits_and_calls_rust() {
         let b = collect();
         a.append(4);
         if b.len() != 0 { throw "shared empty rest"; }
-        let gather = collect;
+        let gather = dynamic(collect);
         if gather(5, ...[6, 7]).len() != 3 { throw "dynamic native rest"; }
         let mut bad_rest = false;
         try { gather(items: [1]); } catch error { bad_rest = true; }
@@ -201,14 +299,22 @@ fn standalone_macro_host_compiles_encodes_admits_and_calls_rust() {
     }"#, &aside_compiler::AnalysisOptions {
         hosts: contracts.iter().map(NativeContract::external).collect(), ..Default::default()
     }, &mut aside_compiler::semantic::NoModules).unwrap().into_module().unwrap();
-    let compiled =
-        aside_host::lower(&module, &contracts, &[], &[], &capabilities, Default::default()).unwrap();
+    let compiled = aside_host::lower(
+        &module,
+        &contracts,
+        &[],
+        &[],
+        &capabilities,
+        Default::default(),
+    )
+    .unwrap();
     let encoded = bc::encode(compiled.program.package(), bc::Limits::default()).unwrap();
     let program = bc::VerifiedProgram::decode(&encoded, bc::Limits::default()).unwrap();
     let support = aside_host::runtime_support(&program, &contracts, &[], &capabilities).unwrap();
     let mut wrong_rest = contracts.to_vec();
     wrong_rest[3].rest = None;
-    let wrong_support = aside_host::runtime_support(&program, &wrong_rest, &[], &capabilities).unwrap();
+    let wrong_support =
+        aside_host::runtime_support(&program, &wrong_rest, &[], &capabilities).unwrap();
     assert!(
         Vm::load(
             bc::VerifiedProgram::decode(&encoded, bc::Limits::default()).unwrap(),

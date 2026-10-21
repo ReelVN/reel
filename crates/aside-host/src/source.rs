@@ -26,7 +26,7 @@ impl Declaration {
                 .filter_map(|p| {
                     p.default
                         .as_ref()
-                    .map(|value| (p.name.clone(), value.clone()))
+                        .map(|value| (p.name.clone(), value.clone()))
                 })
                 .collect(),
             property_default: None,
@@ -55,19 +55,49 @@ impl Declaration {
             .expect("bound native signature");
         assert!(!signature.parameters.is_empty(), "bound native receiver");
         let receiver = signature.parameters.remove(0);
+        if signature.result_parameter.as_deref() == Some(&receiver.name) {
+            signature.result = receiver.ty;
+            signature.result_parameter = None;
+        }
         self.parameter_defaults.remove(&receiver.name);
         self.symbol.name = name.into();
         self
     }
 
+    /// Retain the actual argument's type when this native returns that same value.
+    pub fn returns_parameter(&mut self, name: &str) {
+        let signature = self.symbol.signature.as_mut().expect("native signature");
+        assert!(
+            signature
+                .parameters
+                .iter()
+                .any(|parameter| parameter.name == name),
+            "result parameter names an actual parameter"
+        );
+        signature.result_parameter = Some(name.into());
+    }
+
     /// Refine constant-dependent results using the native's original defaults.
-    pub fn result_cases(&mut self,cases:&[(&str,aside_vm::bytecode::Const,TypeHint)]) {
-        let signature=self.symbol.signature.as_mut().expect("native signature");
-        signature.result_cases=cases.iter().map(|(parameter,equals,result)| {
-            assert!(signature.parameters.iter().any(|p|p.name==*parameter),"result case names an actual parameter");
-            aside_compiler::semantic::ExternalResultCase {parameter:(*parameter).into(),equals:equals.clone(),result:result.clone(),
-                when_omitted:self.parameter_defaults.get(*parameter).is_some_and(|value|value==equals)}
-        }).collect();
+    pub fn result_cases(&mut self, cases: &[(&str, aside_vm::bytecode::Const, TypeHint)]) {
+        let signature = self.symbol.signature.as_mut().expect("native signature");
+        signature.result_cases = cases
+            .iter()
+            .map(|(parameter, equals, result)| {
+                assert!(
+                    signature.parameters.iter().any(|p| p.name == *parameter),
+                    "result case names an actual parameter"
+                );
+                aside_compiler::semantic::ExternalResultCase {
+                    parameter: (*parameter).into(),
+                    equals: equals.clone(),
+                    result: result.clone(),
+                    when_omitted: self
+                        .parameter_defaults
+                        .get(*parameter)
+                        .is_some_and(|value| value == equals),
+                }
+            })
+            .collect();
     }
 }
 
@@ -141,33 +171,68 @@ pub struct NamedType {
     pub members: Vec<Member>,
     pub version: u64,
     pub bases: Vec<String>,
+    /// Signature of the host value's real call adapter, with the receiver bound.
+    pub call: Option<Declaration>,
+    /// Result produced by the host value's real await adapter.
+    pub await_result: Option<TypeHint>,
 }
 impl NamedType {
+    /// The type name can be imported and used in source annotations.
+    pub fn symbol(&self) -> ExternalSymbol {
+        let (module, name) = self.name.rsplit_once("::").expect("canonical host type");
+        let mut symbol = ExternalSymbol::dynamic(name).with_reference(SymbolReference {
+            module: module.into(),
+            version: self.version.to_string(),
+            export: Some(name.into()),
+        });
+        symbol.ty = named(&self.name);
+        symbol.type_only = true;
+        symbol
+    }
     /// Use the canonical module/export identity as the type name.
     pub fn new(name: &str, documentation: &str, members: Vec<Member>) -> Self {
         Self {
             name: name.into(),
             documentation: documentation.into(),
             members,
-            version:1,
-            bases:Vec::new(),
+            version: 1,
+            bases: Vec::new(),
+            call: None,
+            await_result: None,
         }
     }
 
     /// Inherit the real host base while preserving each member's declaration identity.
-    pub fn extends(mut self, base:&NamedType)->Self {
+    pub fn extends(mut self, base: &NamedType) -> Self {
         self.bases.push(base.name.clone());
-        let mut members=base.members.clone();
-        for member in self.members {
-            if let Some(existing)=members.iter_mut().find(|existing|existing.declaration.symbol.name==member.declaration.symbol.name) {*existing=member;}
-            else {members.push(member);}
+        if self.call.is_none() {
+            self.call = base.call.clone();
         }
-        self.members=members;self
+        if self.await_result.is_none() {
+            self.await_result = base.await_result.clone();
+        }
+        let mut members = base.members.clone();
+        for member in self.members {
+            if let Some(existing) = members
+                .iter_mut()
+                .find(|existing| existing.declaration.symbol.name == member.declaration.symbol.name)
+            {
+                *existing = member;
+            } else {
+                members.push(member);
+            }
+        }
+        self.members = members;
+        self
     }
 
     /// Produce the trusted runtime registration from the same source declaration.
-    pub fn registration(&self)->aside_vm::bytecode::HostTypeSupport {
-        aside_vm::bytecode::HostTypeSupport{name:self.name.clone(),version:self.version,bases:self.bases.clone()}
+    pub fn registration(&self) -> aside_vm::bytecode::HostTypeSupport {
+        aside_vm::bytecode::HostTypeSupport {
+            name: self.name.clone(),
+            version: self.version,
+            bases: self.bases.clone(),
+        }
     }
 }
 
@@ -200,38 +265,100 @@ pub struct Documents {
 }
 
 impl Api {
+    /// Resolve a member from the same complete schema used by editor clients.
+    pub fn member(&self, type_name: &str, member: &str) -> Option<ExternalMember> {
+        self.types
+            .iter()
+            .find(|ty| ty.name == type_name)?
+            .members
+            .iter()
+            .find(|candidate| candidate.declaration.symbol.name == member)
+            .map(Member::external)
+    }
+    /// Query registered nominal ancestry, leaving unknown types to the caller.
+    pub fn is_subtype(&self, actual: &str, expected: &str) -> Option<bool> {
+        if !self.types.iter().any(|ty| ty.name == actual)
+            || !self.types.iter().any(|ty| ty.name == expected)
+        {
+            return None;
+        }
+        let mut pending = vec![actual];
+        let mut seen = std::collections::BTreeSet::new();
+        while let Some(name) = pending.pop() {
+            if name == expected {
+                return Some(true);
+            }
+            if seen.insert(name) {
+                pending.extend(
+                    self.types
+                        .iter()
+                        .find(|ty| ty.name == name)
+                        .expect("registered base type")
+                        .bases
+                        .iter()
+                        .map(String::as_str),
+                );
+            }
+        }
+        Some(false)
+    }
     /// Access one actual registered native by its canonical identity.
-    pub fn native(&self,symbol:&str)->&Declaration {
-        self.functions.iter().find(|declaration|canonical(&declaration.symbol)==symbol)
+    pub fn native(&self, symbol: &str) -> &Declaration {
+        self.functions
+            .iter()
+            .find(|declaration| canonical(&declaration.symbol) == symbol)
             .expect("source schema names an actual registered native")
     }
     /// Mutate source metadata for one registered native without replacing its identity.
-    pub fn native_mut(&mut self,symbol:&str)->&mut Declaration {
-        self.functions.iter_mut().find(|declaration|canonical(&declaration.symbol)==symbol)
+    pub fn native_mut(&mut self, symbol: &str) -> &mut Declaration {
+        self.functions
+            .iter_mut()
+            .find(|declaration| canonical(&declaration.symbol) == symbol)
             .expect("source schema names an actual registered native")
     }
     /// Refine an existing native's source types while preserving its parameter contract.
-    pub fn refine(&mut self,symbol:&str,result:TypeHint,parameters:&[(&str,TypeHint)]) {
-        let declaration=self.functions.iter_mut().find(|declaration|canonical(&declaration.symbol)==symbol)
+    pub fn refine(&mut self, symbol: &str, result: TypeHint, parameters: &[(&str, TypeHint)]) {
+        let declaration = self
+            .functions
+            .iter_mut()
+            .find(|declaration| canonical(&declaration.symbol) == symbol)
             .expect("source schema names an actual registered native");
-        let signature=declaration.symbol.signature.as_mut().expect("native signature");
-        signature.result=result;
-        for (name,ty) in parameters {signature.parameters.iter_mut().find(|p|p.name==*name)
-            .expect("source metadata names an actual parameter").ty=ty.clone();}
+        let signature = declaration
+            .symbol
+            .signature
+            .as_mut()
+            .expect("native signature");
+        signature.result = result;
+        for (name, ty) in parameters {
+            signature
+                .parameters
+                .iter_mut()
+                .find(|p| p.name == *name)
+                .expect("source metadata names an actual parameter")
+                .ty = ty.clone();
+        }
     }
     /// Read the host's nominal types without keeping a second registration table.
-    pub fn registrations(&self)->Vec<aside_vm::bytecode::HostTypeSupport> {self.types.iter().map(NamedType::registration).collect()}
+    pub fn registrations(&self) -> Vec<aside_vm::bytecode::HostTypeSupport> {
+        self.types.iter().map(NamedType::registration).collect()
+    }
     /// Generate complete classes and declaration-only signatures from the same schemas.
     pub fn documents(&self, authority: &str) -> Documents {
         let mut result = Documents::default();
         for ty in &self.types {
             let (module, name) = ty.name.rsplit_once("::").expect("canonical host type");
-            let uri = format!("aside-native://{authority}/types/{}.aside",ty.name.replace("::","/"));
+            let uri = format!(
+                "aside-native://{authority}/types/{}.aside",
+                ty.name.replace("::", "/")
+            );
             let mut text = String::new();
             append_docs(&mut text, "", &ty.documentation);
             let start = text.len();
             text.push_str(&format!("pub class {name}"));
-            if let Some(base)=ty.bases.first() {text.push_str(": ");text.push_str(base.rsplit("::").next().unwrap());}
+            if let Some(base) = ty.bases.first() {
+                text.push_str(": ");
+                text.push_str(base.rsplit("::").next().unwrap());
+            }
             text.push_str(" {\n");
             let symbol = ExternalSymbol::dynamic(name).with_reference(SymbolReference {
                 module: module.into(),
@@ -249,10 +376,21 @@ impl Api {
                 range: range(start + 10, name.len()),
             });
             for member in &ty.members {
-                let inherited=ty.bases.iter().any(|base|self.types.iter().find(|candidate|candidate.name==*base)
-                    .expect("registered base type").members.iter().any(|base_member|
-                        base_member.declaration.symbol.reference==member.declaration.symbol.reference));
-                if inherited {continue;}
+                let inherited = ty.bases.iter().any(|base| {
+                    self.types
+                        .iter()
+                        .find(|candidate| candidate.name == *base)
+                        .expect("registered base type")
+                        .members
+                        .iter()
+                        .any(|base_member| {
+                            base_member.declaration.symbol.reference
+                                == member.declaration.symbol.reference
+                        })
+                });
+                if inherited {
+                    continue;
+                }
                 append_declaration(
                     &mut text,
                     "    ",
@@ -295,18 +433,30 @@ impl Api {
             }
             result.documents.push(Document { uri, text });
         }
-        let mut seen=std::collections::BTreeSet::new();
+        let mut seen = std::collections::BTreeSet::new();
         result.locations.retain(|location| {
-            let reference=location.declaration.symbol.reference.as_ref().expect("registered identity");
-            seen.insert((reference.module.clone(),reference.version.clone(),reference.export.clone()))
+            let reference = location
+                .declaration
+                .symbol
+                .reference
+                .as_ref()
+                .expect("registered identity");
+            seen.insert((
+                reference.module.clone(),
+                reference.version.clone(),
+                reference.export.clone(),
+            ))
         });
         result
     }
 }
 /// Read a declaration's original canonical module/export identity.
-pub fn canonical(symbol:&ExternalSymbol)->String {
-    let reference=symbol.reference.as_ref().expect("registered identity");
-    match &reference.export {Some(export)=>format!("{}::{export}",reference.module),None=>reference.module.clone()}
+pub fn canonical(symbol: &ExternalSymbol) -> String {
+    let reference = symbol.reference.as_ref().expect("registered identity");
+    match &reference.export {
+        Some(export) => format!("{}::{export}", reference.module),
+        None => reference.module.clone(),
+    }
 }
 fn range(start: usize, len: usize) -> TextRange {
     TextRange::new(
@@ -384,34 +534,7 @@ fn append_declaration(
 }
 /// Display semantic types with Aside's declaration syntax.
 pub fn type_name(ty: &TypeHint) -> String {
-    match ty {
-        TypeHint::Any => "any".into(),
-        TypeHint::Closure => "closure".into(),
-        TypeHint::Null => "null".into(),
-        TypeHint::Bool => "bool".into(),
-        TypeHint::Int => "int".into(),
-        TypeHint::Float => "float".into(),
-        TypeHint::String => "string".into(),
-        TypeHint::Array => "array".into(),
-        TypeHint::Table => "table".into(),
-        TypeHint::Future => "Future".into(),
-        TypeHint::Generator => "generator".into(),
-        TypeHint::Named(name) => name.rsplit("::").next().unwrap().into(),
-        TypeHint::Union(types) => types.iter().map(|ty|if matches!(ty,TypeHint::Callable(..)) {format!("({})",type_name(ty))}else{type_name(ty)}).collect::<Vec<_>>().join(" | "),
-        TypeHint::Tuple(types) => format!(
-            "({})",
-            if types.len()==1 {format!("{},",type_name(&types[0]))}else{types.iter().map(type_name).collect::<Vec<_>>().join(", ")}
-        ),
-        TypeHint::Callable(parameters, result) => format!(
-            "fn({}) -> {}",
-            parameters
-                .iter()
-                .map(type_name)
-                .collect::<Vec<_>>()
-                .join(", "),
-            type_name(result)
-        ),
-    }
+    ty.to_string()
 }
 /// Preserve literal defaults from the registered contract.
 pub fn constant(value: &aside_vm::bytecode::Const) -> String {

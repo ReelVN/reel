@@ -21,8 +21,12 @@ pub(crate) struct TypeChecks {
 }
 
 impl TypeChecks {
-    pub(super) fn new(p: &BytecodePackage, usage: &HeapBudgetUsage, registrations: &[crate::HostTypeSupport]) -> Result<Self, VmError> {
-        let host_types=crate::host_types::HostTypes::new(p,registrations,usage)?;
+    pub(super) fn new(
+        p: &BytecodePackage,
+        usage: &HeapBudgetUsage,
+        registrations: &[crate::HostTypeSupport],
+    ) -> Result<Self, VmError> {
+        let host_types = crate::host_types::HostTypes::new(p, registrations, usage)?;
         let mut work = ChargedVec::new(usage, p.types.len())?;
         let mut depths = ChargedVec::new(usage, p.types.len())?;
         for ty in &p.types {

@@ -103,10 +103,43 @@ struct Overlay<'a> {
 }
 impl ModuleResolver for Overlay<'_> {
     fn resolve_type_member(&mut self, type_name: &str, member: &str) -> Option<ExternalMember> {
-        self.fallback.resolve_type_member(type_name, member)
+        let mut pending = VecDeque::from([type_name.to_owned()]);
+        let mut visited = BTreeSet::new();
+        while let Some(name) = pending.pop_front() {
+            if !visited.insert(name.clone()) {
+                continue;
+            }
+            let class =
+                name.rsplit_once("::")
+                    .and_then(|(module, name)| {
+                        self.memory.modules.get(module).and_then(|module| {
+                            module.exports.iter().find(|symbol| symbol.name == name)
+                        })
+                    })
+                    .and_then(|symbol| symbol.class.as_ref());
+            if let Some(class) = class {
+                if let Some(found) = class
+                    .members
+                    .iter()
+                    .find(|entry| entry.symbol.name == member)
+                {
+                    return Some(found.clone());
+                }
+                pending.extend(class.bases.iter().cloned());
+            } else if let Some(member) = self.fallback.resolve_type_member(&name, member) {
+                return Some(member);
+            }
+        }
+        None
     }
     fn is_named_subtype(&self, actual: &str, expected: &str) -> Option<bool> {
         self.fallback.is_named_subtype(actual, expected)
+    }
+    fn resolve_type_call(&mut self, name: &str) -> Option<ExternalSymbol> {
+        self.fallback.resolve_type_call(name)
+    }
+    fn resolve_type_await(&mut self, name: &str) -> Option<TypeHint> {
+        self.fallback.resolve_type_await(name)
     }
     fn resolve(&mut self, r: &ImportRequest) -> Result<ResolvedImport, ResolveError> {
         let r = self.fallback.canonical_request(r);
@@ -132,7 +165,11 @@ pub fn analyze_project(
 ) -> Result<ProjectAnalysis, SourceTooLarge> {
     let result = analyze_project_inner(inputs, options, resolver, None, false)?;
     Ok(ProjectAnalysis {
-        modules: if result.diagnostics.is_empty() && !result.exhausted {Some(result.modules)} else {None},
+        modules: if result.diagnostics.is_empty() && !result.exhausted {
+            Some(result.modules)
+        } else {
+            None
+        },
         diagnostics: result.diagnostics,
         plan: result.plan,
         exhausted: result.exhausted,
@@ -145,15 +182,18 @@ pub(crate) fn analyze_editor_project(
     resolver: &mut dyn ModuleResolver,
 ) -> Result<crate::editor::EditorProjectAnalysis, SourceTooLarge> {
     let sources: Vec<_> = inputs.iter().map(|input| input.source.clone()).collect();
-    let parsed: BTreeMap<_,_> = inputs.iter().map(|input|(input.source.canonical_path.as_str(),&input.parsed)).collect();
-    analyze_project_inner(&sources,options,resolver,Some(&parsed),true)
+    let parsed: BTreeMap<_, _> = inputs
+        .iter()
+        .map(|input| (input.source.canonical_path.as_str(), &input.parsed))
+        .collect();
+    analyze_project_inner(&sources, options, resolver, Some(&parsed), true)
 }
 
 fn analyze_project_inner(
     inputs: &[SourceModule],
     options: &AnalysisOptions,
     resolver: &mut dyn ModuleResolver,
-    parsed_inputs: Option<&BTreeMap<&str,&Parse>>,
+    parsed_inputs: Option<&BTreeMap<&str, &Parse>>,
     recover: bool,
 ) -> Result<crate::editor::EditorProjectAnalysis, SourceTooLarge> {
     let mut diagnostics = Vec::new();
@@ -200,10 +240,11 @@ fn analyze_project_inner(
             diagnostics.truncate(diagnostic_limit);
             continue;
         }
-        let parsed = match parsed_inputs.and_then(|inputs|inputs.get(input.canonical_path.as_str())) {
-            Some(parsed)=>(*parsed).clone(),
-            None=>crate::parse(&input.source)?,
-        };
+        let parsed =
+            match parsed_inputs.and_then(|inputs| inputs.get(input.canonical_path.as_str())) {
+                Some(parsed) => (*parsed).clone(),
+                None => crate::parse(&input.source)?,
+            };
         if !parsed.is_ok() {
             exhausted |= parsed.exhausted();
             diagnostics.extend(parsed.diagnostics().iter().cloned().map(|diagnostic| {
@@ -213,9 +254,15 @@ fn analyze_project_inner(
                 }
             }));
             diagnostics.truncate(diagnostic_limit);
-            if !recover {continue;}
+            if !recover {
+                continue;
+            }
         }
-        let project = if recover {super::project::project_editor} else {super::project::project};
+        let project = if recover {
+            super::project::project_editor
+        } else {
+            super::project::project
+        };
         match project(
             &parsed,
             AnalysisLimits {
@@ -235,7 +282,7 @@ fn analyze_project_inner(
                 memory.insert(ModuleInterface {
                     canonical_path: input.canonical_path.clone(),
                     version: input.version.clone(),
-                    exports: declarations(&hir),
+                    exports: declarations(&hir, &input.canonical_path, &input.version),
                 });
                 projected.insert(input.canonical_path.clone(), hir);
             }
@@ -341,6 +388,120 @@ fn analyze_project_inner(
             ),
         });
     }
+    // Resolve annotations in the defining module, before consumers see aliases
+    // or reexports. The same canonical names feed compiler and editor queries.
+    let mut type_names = BTreeMap::new();
+    for (path, hir) in &projected {
+        let mut names = BTreeMap::new();
+        for node in hir.children(NodeId(0)) {
+            let declaration = match hir.node(node).form {
+                Form::Modified { declaration, .. } => declaration,
+                _ => node,
+            };
+            if let Form::Class {
+                name: Some(name), ..
+            } = hir.node(declaration).form
+            {
+                names.insert(
+                    hir.text(name.span).to_owned(),
+                    format!("{path}::{}", hir.text(name.span)),
+                );
+            }
+        }
+        for (index, _) in hir
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| node.kind == H::Import)
+        {
+            let Some(import) = hir.children(NodeId(index as u32)).next() else {
+                continue;
+            };
+            let mut imports = Vec::new();
+            import_requests(hir, import, &[], false, path, &mut imports);
+            for (request, alias) in imports {
+                if let Ok(resolved) = (Overlay {
+                    memory: &mut memory,
+                    fallback: resolver,
+                })
+                .resolve(&request)
+                {
+                    for symbol in resolved.bindings {
+                        let name = alias.clone().unwrap_or_else(|| symbol.name.clone());
+                        if let Some(namespace) = symbol.namespace {
+                            names.insert(name, namespace.module);
+                        } else if matches!(symbol.ty, TypeHint::Named(_))
+                            && let Some(reference) = symbol.reference
+                            && let Some(export) = &reference.export
+                        {
+                            names.insert(name, format!("{}::{export}", reference.module));
+                        }
+                    }
+                }
+            }
+        }
+        type_names.insert(path.clone(), names);
+    }
+    for module in memory.modules.values_mut() {
+        for symbol in &mut module.exports {
+            let origin = symbol
+                .reference
+                .as_ref()
+                .map_or(module.canonical_path.as_str(), |reference| {
+                    reference.module.as_str()
+                });
+            if let Some(names) = type_names.get(origin) {
+                canonical_symbol(symbol, names);
+            }
+        }
+    }
+    let mut constructors = Vec::new();
+    for (path, module) in &memory.modules {
+        for (index, symbol) in module.exports.iter().enumerate() {
+            let Some(class) = &symbol.class else {
+                continue;
+            };
+            if class
+                .members
+                .iter()
+                .any(|member| member.symbol.name == "init")
+            {
+                continue;
+            }
+            let mut pending: VecDeque<_> = class.bases.iter().cloned().collect();
+            let mut visited = BTreeSet::new();
+            while let Some(base) = pending.pop_front() {
+                if !visited.insert(base.clone()) {
+                    continue;
+                }
+                let Some(class) = base
+                    .rsplit_once("::")
+                    .and_then(|(path, name)| {
+                        memory.modules.get(path).and_then(|module| {
+                            module.exports.iter().find(|symbol| symbol.name == name)
+                        })
+                    })
+                    .and_then(|symbol| symbol.class.as_ref())
+                else {
+                    continue;
+                };
+                if let Some(mut signature) = class
+                    .members
+                    .iter()
+                    .find(|member| member.symbol.name == "init")
+                    .and_then(|member| member.symbol.signature.clone())
+                {
+                    signature.result = symbol.ty.clone();
+                    constructors.push((path.clone(), index, signature));
+                    break;
+                }
+                pending.extend(class.bases.iter().cloned());
+            }
+        }
+    }
+    for (path, index, signature) in constructors {
+        memory.modules.get_mut(&path).unwrap().exports[index].signature = Some(signature);
+    }
     let mut modules = Vec::new();
     let mut dependencies = BTreeMap::new();
     if !exhausted {
@@ -388,7 +549,7 @@ fn analyze_project_inner(
                     }),
             );
             diagnostics.truncate(diagnostic_limit);
-            if let Some(module) = result.module.filter(|_|recover || valid) {
+            if let Some(module) = result.module.filter(|_| recover || valid) {
                 dependencies.insert(
                     path,
                     module
@@ -409,7 +570,7 @@ fn analyze_project_inner(
         exhausted,
     })
 }
-pub(super) fn declarations(hir: &Hir) -> Vec<ExternalSymbol> {
+pub(super) fn declarations(hir: &Hir, module: &str, version: &str) -> Vec<ExternalSymbol> {
     let mut result = Vec::new();
     let mut exported = BTreeSet::new();
     for n in hir.children(NodeId(0)) {
@@ -436,10 +597,112 @@ pub(super) fn declarations(hir: &Hir) -> Vec<ExternalSymbol> {
                     .find(|t| t.kind == K::Ident)
                     .and_then(|t| t.name)
                 {
-                    result.push(ExternalSymbol::value(
-                        hir.name(name),
-                        TypeHint::Named(hir.name(name).into()),
-                    ));
+                    let name = hir.name(name);
+                    let canonical = format!("{module}::{name}");
+                    let mut class = ExternalClass {
+                        bases: Vec::new(),
+                        members: Vec::new(),
+                        static_members: Vec::new(),
+                    };
+                    if let Form::Class {
+                        base: Some(base), ..
+                    } = hir.node(d).form
+                    {
+                        class
+                            .bases
+                            .push(hir.text(hir.node(base).span).replace('.', "::"));
+                    }
+                    let mut constructor = None;
+                    for item in hir.children(d) {
+                        let (member, is_static) = match hir.node(item).form {
+                            Form::Modified {
+                                declaration,
+                                static_member,
+                                ..
+                            } => (declaration, static_member),
+                            _ => (item, false),
+                        };
+                        let mut symbol = match hir.node(member).form {
+                            Form::Function {
+                                name: Some(member_name),
+                                ..
+                            } => {
+                                let Some(mut signature) = super::types::signature_hint(hir, member)
+                                else {
+                                    continue;
+                                };
+                                if !is_static && !signature.parameters.is_empty() {
+                                    signature.parameters.remove(0);
+                                }
+                                if hir.text(member_name.span) == "init" && !is_static {
+                                    constructor = Some(signature.clone());
+                                }
+                                ExternalSymbol::function(hir.text(member_name.span), signature)
+                            }
+                            Form::Binding {
+                                pattern,
+                                annotation,
+                                initializer,
+                                mutable,
+                                ..
+                            } => {
+                                let Some(member_name) =
+                                    hir.tokens(pattern).find(|token| token.name.is_some())
+                                else {
+                                    continue;
+                                };
+                                let ty = annotation
+                                    .map(|node| type_hint(hir, node))
+                                    .unwrap_or_else(|| {
+                                        if mutable {
+                                            TypeHint::Any
+                                        } else {
+                                            initializer.map_or(TypeHint::Any, |node| {
+                                                initializer_hint(hir, node)
+                                            })
+                                        }
+                                    });
+                                ExternalSymbol::value(hir.text(member_name.span), ty)
+                            }
+                            _ => continue,
+                        };
+                        symbol.reference = Some(Arc::new(SymbolReference {
+                            module: module.into(),
+                            version: version.into(),
+                            export: Some(format!(
+                                "{name}::{}::{}",
+                                if is_static { "static" } else { "instance" },
+                                symbol.name
+                            )),
+                        }));
+                        let writable = match hir.node(member).form {
+                            Form::Binding { mutable, .. } => mutable,
+                            _ => false,
+                        };
+                        let member = ExternalMember {
+                            write_type: writable.then(|| symbol.ty.clone()),
+                            symbol,
+                        };
+                        if is_static {
+                            class.static_members.push(member);
+                        } else {
+                            class.members.push(member);
+                        }
+                    }
+                    let mut signature = constructor.unwrap_or(ExternalSignature {
+                        result_parameter: None,
+                        parameters: Vec::new(),
+                        result: TypeHint::Any,
+                        result_cases: Vec::new(),
+                        effect: CallEffect::Unknown,
+                        init_safe: None,
+                        derived_safe: None,
+                    });
+                    signature.result = TypeHint::Named(canonical.clone());
+                    let mut symbol = ExternalSymbol::value(name, TypeHint::Named(canonical));
+                    symbol.signature = Some(signature);
+                    symbol.class = Some(Arc::new(class));
+                    result.push(symbol);
                 }
             }
             H::Let => {
@@ -489,6 +752,89 @@ pub(super) fn declarations(hir: &Hir) -> Vec<ExternalSymbol> {
         }
     }
     result
+}
+fn canonical_name(name: &str, names: &BTreeMap<String, String>) -> String {
+    let (head, suffix) = name
+        .split_once("::")
+        .map_or((name, None), |(head, suffix)| (head, Some(suffix)));
+    names.get(head).map_or_else(
+        || name.into(),
+        |canonical| {
+            suffix.map_or_else(
+                || canonical.clone(),
+                |suffix| format!("{canonical}::{suffix}"),
+            )
+        },
+    )
+}
+fn canonical_hint(hint: &mut TypeHint, names: &BTreeMap<String, String>) {
+    match hint {
+        TypeHint::Named(name) => *name = canonical_name(name, names),
+        TypeHint::Tuple(types) | TypeHint::Union(types) => {
+            for hint in types {
+                canonical_hint(hint, names);
+            }
+        }
+        TypeHint::Callable(parameters, result) => {
+            for hint in parameters {
+                canonical_hint(hint, names);
+            }
+            canonical_hint(result, names);
+        }
+        _ => {}
+    }
+}
+fn canonical_symbol(symbol: &mut ExternalSymbol, names: &BTreeMap<String, String>) {
+    canonical_hint(&mut symbol.ty, names);
+    if let Some(signature) = &mut symbol.signature {
+        canonical_hint(&mut signature.result, names);
+        for parameter in &mut signature.parameters {
+            canonical_hint(&mut parameter.ty, names);
+        }
+        for case in &mut signature.result_cases {
+            canonical_hint(&mut case.result, names);
+        }
+    }
+    if let Some(class) = &mut symbol.class {
+        let class = Arc::make_mut(class);
+        for base in &mut class.bases {
+            *base = canonical_name(base, names);
+        }
+        for member in class.members.iter_mut().chain(&mut class.static_members) {
+            canonical_symbol(&mut member.symbol, names);
+            if let Some(write) = &mut member.write_type {
+                canonical_hint(write, names);
+            }
+        }
+    }
+}
+fn initializer_hint(hir: &Hir, node: NodeId) -> TypeHint {
+    match hir.node(node).form {
+        Form::Single { child } => initializer_hint(hir, child),
+        Form::Literal { token } => match token.kind {
+            K::Null => TypeHint::Null,
+            K::True | K::False => TypeHint::Bool,
+            K::Number => {
+                let text = hir.text(token.span).to_ascii_lowercase();
+                if !text.starts_with("0x")
+                    && !text.starts_with("0o")
+                    && !text.starts_with("0b")
+                    && text.contains(['.', 'e'])
+                {
+                    TypeHint::Float
+                } else {
+                    TypeHint::Int
+                }
+            }
+            _ => TypeHint::Any,
+        },
+        _ => match hir.node(node).kind {
+            H::String => TypeHint::String,
+            H::Array => TypeHint::Array,
+            H::Object => TypeHint::Table,
+            _ => TypeHint::Any,
+        },
+    }
 }
 struct ExportPatternTypes<'a>(&'a Hir);
 impl super::patterns::PatternTypes for ExportPatternTypes<'_> {

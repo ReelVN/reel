@@ -53,7 +53,6 @@ impl MediaBackend for Host {
     }
 }
 
-#[test]
 fn initially_paused_activities_have_no_per_sample_allocation() {
     let source = r#"fn opening() {
         let node=stack();stage.replace(node);
@@ -89,6 +88,8 @@ fn initially_paused_activities_have_no_per_sample_allocation() {
 
 #[test]
 fn media_position_sampling_and_observer_cost() {
+    // One test owns the process-wide allocator while all scenarios are measured.
+    initially_paused_activities_have_no_per_sample_allocation();
     let mut baseline = [(0, 0, 0, 0); 3];
     for kind in ["clock", "media"] {
         for (index, consumers) in [0, 1, 64].into_iter().enumerate() {

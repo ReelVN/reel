@@ -102,6 +102,34 @@ impl MediaBackend for Host {
 }
 
 #[test]
+fn source_types_playback_and_position_cues_use_real_audio_and_video_handles() {
+    for encoded in [false, true] {
+        for video in [false, true] {
+            let start = if video {
+                r#"let movie:VideoNode=video("track");root.add(movie);let media:Playback=movie.play();"#
+            } else {
+                r#"let media:Playback=audio.play("track");"#
+            };
+            let api = if video { "video" } else { "audio" };
+            let code = format!(
+                r#"fn opening() {{
+                let root:Node=stack();stage.replace(root);{start}
+                let cue:MediaCue={api}.at(media,0);
+                if !await cue {{throw "cue result";}}
+                if pause(media)!=media || resume(media)!=media || stop(media)!=media {{throw "control identity";}}
+                if await media!="Stopped" {{throw "playback result";}}
+                true
+            }}"#
+            );
+            let (mut session, mut vm) = models::prepared(&code, encoded);
+            vm.set_media(Box::new(Host::default())).unwrap();
+            flush(&mut vm, &mut session, 0.);
+            assert!(vm.task().is_none());
+        }
+    }
+}
+
+#[test]
 fn initially_paused_media_seeks_restores_and_resumes_shared_activity() {
     for encoded in [false, true] {
         for video in [false, true] {

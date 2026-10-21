@@ -708,6 +708,7 @@ fn trusted_native_values_calls_and_optional_chains_share_the_registry() {
     let external = ExternalSymbol::function(
         "run",
         ExternalSignature {
+            result_parameter: None,
             result_cases: Vec::new(),
             parameters: vec![ExternalParameter {
                 name: "a".into(),

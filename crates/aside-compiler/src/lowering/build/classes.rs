@@ -25,9 +25,6 @@ impl Lowerer<'_> {
                     .error(ErrorKind::MissingLink, "named type module is not linked")
             })?;
         let name = self.name(name)?;
-        if let Some(index)=self.package.types.iter().position(|ty| matches!(ty,bc::TypeDef::Named {module:actual,name:actual_name,..} if actual.index()==module && *actual_name==name)) {
-            return Ok(bc::TypeId(index as u32));
-        }
         let def = bc::TypeDef::Named {
             module: bc::ModuleId(module as u32),
             name,

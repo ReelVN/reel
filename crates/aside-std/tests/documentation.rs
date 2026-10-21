@@ -31,7 +31,8 @@ fn source_documentation_examples_execute_against_registered_signatures() {
             let module = analyzed
                 .into_module()
                 .unwrap_or_else(|error| panic!("{context}: {error:?}"));
-            let compiled = aside_host::lower(&module, &contracts, &[], &[], &[], Default::default()).unwrap();
+            let compiled =
+                aside_host::lower(&module, &contracts, &[], &[], &[], Default::default()).unwrap();
             let initializer = compiled.entry;
             let bytes = bc::encode(compiled.program.package(), bc::Limits::default()).unwrap();
             let program = bc::VerifiedProgram::decode(&bytes, bc::Limits::default()).unwrap();

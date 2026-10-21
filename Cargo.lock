@@ -3296,12 +3296,15 @@ name = "reel-cli"
 version = "1.0.0"
 dependencies = [
  "aside-compiler",
+ "aside-host",
+ "aside-lsp",
  "aside-vm",
  "clap",
  "codespan-reporting",
  "fluent-syntax",
  "image",
  "libc",
+ "lsp-server",
  "pollster",
  "reel-core",
  "reel-engine",

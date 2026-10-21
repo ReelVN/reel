@@ -102,7 +102,8 @@ fn independent_library_preserves_streams_methods_and_faults_across_bytecode_and_
     .into_module()
     .unwrap();
     for encoded in [false, true] {
-        let compiled = aside_host::lower(&module, &contracts, &[], &[], &[], Default::default()).unwrap();
+        let compiled =
+            aside_host::lower(&module, &contracts, &[], &[], &[], Default::default()).unwrap();
         let initializer = compiled.entry;
         let program = if encoded {
             let bytes = bc::encode(compiled.program.package(), bc::Limits::default()).unwrap();

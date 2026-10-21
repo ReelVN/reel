@@ -16,7 +16,7 @@ pub(super) fn builtin_type(name: &str) -> Option<TypeHint> {
         "Future" => TypeHint::Future,
         "generator" => TypeHint::Generator,
         "Bytes" | "TextBuffer" | "ByteBuffer" | "Set" | "Range" | "Iterator" | "AsyncIterator"
-        | "thread" | "weakref" | "class" | "instance" => TypeHint::Named(name.into()),
+        | "thread" | "weakref" | "class" | "instance" | "Binding" => TypeHint::Named(name.into()),
         _ => return None,
     })
 }
@@ -55,6 +55,7 @@ pub(super) fn signature_hint(hir: &Hir, node: NodeId) -> Option<ExternalSignatur
         })
         .collect();
     Some(ExternalSignature {
+        result_parameter: None,
         result_cases: Vec::new(),
         parameters,
         result: match kind {

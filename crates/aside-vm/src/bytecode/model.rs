@@ -107,6 +107,8 @@ pub enum BuiltinType {
     Thread,
     Future,
     WeakRef,
+    /// A bind/derive property reference; access permissions belong to the value.
+    PropertyRef,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypeDef {

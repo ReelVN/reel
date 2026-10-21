@@ -23,12 +23,16 @@ use reel_ui::stage::{
 use std::collections::VecDeque;
 
 #[derive(aside_host::Properties)]
+#[expect(
+    dead_code,
+    reason = "The enum variants declare the generated ordered constructor schema."
+)]
 pub(super) enum ParticleField {
     /// Image asset used for each emitted sprite.
-    #[aside(name="source",ty=String)]
+    #[aside(name="source",ty=String,readonly)]
     Source,
     /// Deterministic random seed for this node's emissions.
-    #[aside(name="seed",ty=Int,default=0)]
+    #[aside(name="seed",ty=Int,default=0,readonly)]
     Seed,
 }
 pub(super) const PREFIX: &[&str] = <ParticleField as aside_host::PropertySchema>::NAMES;
@@ -37,8 +41,11 @@ pub(super) const PREFIX: &[&str] = <ParticleField as aside_host::PropertySchema>
 const SEQUENCE: u32 = 4;
 pub(super) fn parameters() -> Vec<aside_host::NativeParameter> {
     use aside_host::PropertySchema;
-    let mut parameters=ParticleField::PROPERTIES.iter().map(|property|property.parameter()).collect::<Vec<_>>();
-    parameters[0].default=None;
+    let mut parameters = ParticleField::PROPERTIES
+        .iter()
+        .map(|property| property.parameter())
+        .collect::<Vec<_>>();
+    parameters[0].default = None;
     parameters
 }
 pub(super) fn emission_parameters() -> Vec<aside_host::NativeParameter> {
@@ -75,6 +82,27 @@ pub(super) fn emission_parameters() -> Vec<aside_host::NativeParameter> {
         default,
     })
     .collect()
+}
+pub(super) fn describe(api: &mut aside_host::source::Api) {
+    use aside_compiler::semantic::TypeHint;
+    use aside_host::source::{named, nullable, number};
+    let parameters = emission_parameters();
+    let hints = parameters
+        .iter()
+        .filter(|parameter| parameter.name != "owner")
+        .map(|parameter| {
+            (
+                parameter.name.as_str(),
+                match parameter.name.as_str() {
+                    "node" => named("reel::types::ParticlesNode"),
+                    "burst" => TypeHint::Int,
+                    "duration" | "size_end" => nullable(number()),
+                    _ => number(),
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    api.refine("reel::emit", named("reel::types::ParticleActivity"), &hints);
 }
 pub(super) fn kind(
     heap: &Heap,

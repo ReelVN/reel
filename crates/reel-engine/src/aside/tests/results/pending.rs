@@ -58,7 +58,7 @@ fn result_pending_registration_visits_existing_results_only_after_lifecycle_chan
 
 #[test]
 fn result_pending_publishes_terminals_and_owner_exit_without_await() {
-    let code = r#"fn opening() {
+    let code = r#"fn dynamic(value) {value} fn opening() {
         let root=column(); stage.replace(root);
         let owner=root.add(stack());
         let result=completion(owner:owner);
@@ -71,7 +71,7 @@ fn result_pending_publishes_terminals_and_owner_exit_without_await() {
         root.add(button("remove",on_click:owner.remove));
         root.add(button("readonly",on_click: || {
             let mut rejected=false;
-            try {result.pending=false;} catch error {rejected=true;}
+            try {dynamic(result).pending=false;} catch error {rejected=true;}
             if !rejected {throw "pending is writable";}
         }));
     }"#;

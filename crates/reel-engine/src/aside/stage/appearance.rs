@@ -1,14 +1,38 @@
 //! Image, text and button fields share constructor and source-type declarations.
 use aside_compiler::semantic::TypeHint;
-use aside_host::{Properties, source::{named, nullable, number}};
+use aside_host::{
+    Properties,
+    source::{named, nullable, number},
+};
 
-fn image_source()->TypeHint {TypeHint::Union(vec![TypeHint::String,named("Bytes")])}
-fn text_source()->TypeHint {TypeHint::Union(vec![TypeHint::String,named("reel::types::RichText")])}
-fn callback()->TypeHint {nullable(TypeHint::Closure)}
-fn slice()->TypeHint {nullable(TypeHint::Union(vec![number(),TypeHint::Array,TypeHint::Tuple(vec![number();4])]))}
-fn colors()->TypeHint {nullable(TypeHint::Union(vec![TypeHint::Array,TypeHint::Tuple(vec![TypeHint::String;4])]))}
+fn image_source() -> TypeHint {
+    TypeHint::Union(vec![TypeHint::String, named("Bytes")])
+}
+fn text_source() -> TypeHint {
+    TypeHint::Union(vec![TypeHint::String, named("reel::types::RichText")])
+}
+fn callback() -> TypeHint {
+    nullable(TypeHint::Closure)
+}
+fn slice() -> TypeHint {
+    nullable(TypeHint::Union(vec![
+        number(),
+        TypeHint::Array,
+        TypeHint::Tuple(vec![number(); 4]),
+    ]))
+}
+fn colors() -> TypeHint {
+    nullable(TypeHint::Union(vec![
+        TypeHint::Array,
+        TypeHint::Tuple(vec![TypeHint::String; 4]),
+    ]))
+}
 
 #[derive(Properties)]
+#[expect(
+    dead_code,
+    reason = "The enum variants declare the generated ordered property schema."
+)]
 pub(in crate::aside) enum ImageField {
     /// An asset path or encoded image bytes.
     #[aside(name="source",ty=Any,doc_type=image_source())]
@@ -36,6 +60,10 @@ pub(in crate::aside) enum ImageField {
     SliceCenter,
 }
 #[derive(Properties)]
+#[expect(
+    dead_code,
+    reason = "The enum variants declare the generated ordered property schema."
+)]
 pub(in crate::aside) enum TextField {
     /// The plain or rich text displayed by this node.
     #[aside(name="value",ty=Any,doc_type=text_source())]
@@ -45,6 +73,10 @@ pub(in crate::aside) enum TextField {
     OnLink,
 }
 #[derive(Properties)]
+#[expect(
+    dead_code,
+    reason = "The enum variants declare the generated ordered property schema."
+)]
 pub(in crate::aside) enum ButtonField {
     /// Optional built-in label; children provide an authored appearance.
     #[aside(name="label",ty=Any,doc_type=nullable(TypeHint::String),default=null)]

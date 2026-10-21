@@ -46,6 +46,7 @@ fn registry() -> (bc::VerifiedProgram, AnalysisOptions, bc::RuntimeSupport) {
                 ExternalSymbol::function(
                     *name,
                     ExternalSignature {
+                        result_parameter: None,
                         result_cases: Vec::new(),
                         parameters: vec![ExternalParameter {
                             name: "values".into(),
@@ -120,6 +121,7 @@ fn execute(source: &str, tiny: bool) -> Result<(String, usize), String> {
     let links: Vec<_> = module
         .external_bindings()
         .iter()
+        .filter(|external| external.kind == hir::ExternalBindingKind::Reference)
         .filter_map(|external| {
             let symbol = external.symbol?;
             let reference = external.descriptor.reference.as_deref()?;

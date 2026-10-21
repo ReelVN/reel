@@ -1,12 +1,12 @@
 //! Optional host metadata. All semantic signatures come from the compiler contract.
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
+pub use aside_compiler::semantic::ExternalMember as HostMember;
 use aside_compiler::{
     TextRange,
     semantic::{ExternalSymbol, ModuleInterface, SymbolReference},
 };
 use lsp_types::Uri;
-pub use aside_compiler::semantic::ExternalMember as HostMember;
 
 /// A byte range in a generated, read-only declaration document.
 #[derive(Debug, Clone)]
@@ -42,6 +42,10 @@ pub struct NamedType {
     pub name: String,
     /// Canonical supertypes from the same trusted host registration.
     pub bases: Vec<String>,
+    /// A named value's real callable contract, including its declaration identity.
+    pub call: Option<ExternalSymbol>,
+    /// Result of its registered await protocol; absent when no result is known.
+    pub await_result: Option<aside_compiler::semantic::TypeHint>,
     pub members: Vec<HostMember>,
 }
 

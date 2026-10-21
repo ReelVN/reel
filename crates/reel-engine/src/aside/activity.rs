@@ -2,6 +2,93 @@
 //! Rust keeps only scheduling indexes and bounded traversal cursors.
 pub(super) mod action;
 
+pub(super) fn describe(api: &mut aside_host::source::Api) {
+    use aside_compiler::semantic::TypeHint;
+    use aside_host::source::{Member, NamedType, named, number};
+    let action = named("reel::types::Action");
+    let activity = named("reel::types::Activity");
+    for symbol in ["tween", "delay", "sequence", "parallel", "repeat"] {
+        api.refine(&format!("reel::{symbol}"), action.clone(), &[]);
+    }
+    api.refine(
+        "reel::tween",
+        action.clone(),
+        &[
+            (
+                "target",
+                TypeHint::Union(vec![
+                    named("reel::types::Node"),
+                    named("reel::types::Override"),
+                ]),
+            ),
+            ("duration", number()),
+        ],
+    );
+    api.refine("reel::delay", action.clone(), &[("seconds", number())]);
+    api.refine(
+        "reel::repeat",
+        action.clone(),
+        &[("action", action.clone())],
+    );
+    api.refine("reel::run", activity.clone(), &[("action", action)]);
+    api.refine(
+        "reel::clock",
+        named("reel::types::Clock"),
+        &[("interval", number())],
+    );
+    let producer = TypeHint::Union(vec![
+        activity.clone(),
+        named("reel::types::Playback"),
+        named("reel::types::ParticleActivity"),
+    ]);
+    for symbol in ["pause", "resume", "stop", "finish"] {
+        api.refine(
+            &format!("reel::{symbol}"),
+            producer.clone(),
+            &[("activity", producer.clone())],
+        );
+        api.native_mut(&format!("reel::{symbol}"))
+            .returns_parameter("activity");
+    }
+    api.types.push(NamedType::new(
+        "reel::types::Action",
+        "An immutable action description reusable by run.",
+        Vec::new(),
+    ));
+    let mut base = NamedType::new(
+        "reel::types::Activity",
+        "An awaitable execution of an action. Control it with pause, resume, stop and finish.",
+        Vec::new(),
+    );
+    base.await_result = Some(TypeHint::String);
+    api.types.push(base.clone());
+    api.types.push(
+        NamedType::new(
+            "reel::types::Clock",
+            "A periodic activity with observable accepted ticks and elapsed seconds.",
+            vec![
+                Member::field(
+                    "reel::types::Clock",
+                    "ticks",
+                    TypeHint::Int,
+                    None,
+                    "Complete intervals elapsed while running.",
+                    Some(aside_vm::bytecode::Const::Int(0)),
+                ),
+                Member::field(
+                    "reel::types::Clock",
+                    "elapsed",
+                    TypeHint::Float,
+                    None,
+                    "Elapsed activity time in seconds.",
+                    Some(aside_vm::bytecode::Const::FloatBits(0f64.to_bits())),
+                ),
+            ],
+        )
+        .extends(&base),
+    );
+}
+
 aside_host::native_documentation! {
     pub(super) fn documentation {
         /// Describe numeric changes on a stage node. `duration` is nonnegative seconds;

@@ -1,6 +1,86 @@
 //! One-shot component results. Pending native frames own all subscription values.
 use super::{AdapterError, FaultKind, HostTicket, Session, SessionVm};
 
+pub(super) fn describe(api: &mut aside_host::source::Api) {
+    use aside_compiler::semantic::TypeHint;
+    use aside_host::source::{Member, NamedType, named};
+    api.refine("reel::completion", named("reel::types::Completion"), &[]);
+    api.refine(
+        "reel::spawn",
+        named("reel::types::Task"),
+        &[("work", TypeHint::Closure)],
+    );
+    api.refine(
+        "reel::stage::presented",
+        named("reel::types::Presentation"),
+        &[],
+    );
+    for name in ["resolve", "reject", "cancel"] {
+        api.refine(&format!("reel::completion::{name}"), TypeHint::Bool, &[]);
+    }
+    api.refine(
+        "reel::task::cancel",
+        TypeHint::Bool,
+        &[("task", named("reel::types::Task"))],
+    );
+    for (name, observable, methods) in [
+        ("Completion", true, &["resolve", "reject", "cancel"][..]),
+        ("Task", true, &["cancel"][..]),
+        ("Presentation", false, &["cancel"][..]),
+        ("Capture", false, &["cancel"][..]),
+        ("WindowOperation", false, &["cancel"][..]),
+        ("Condition", true, &["cancel"][..]),
+        ("ParticleActivity", false, &[][..]),
+        ("Operation", false, &[][..]),
+    ] {
+        let ty = format!("reel::types::{name}");
+        let mut members = Vec::new();
+        if observable {
+            members.push(Member::field(
+                &ty,
+                "pending",
+                TypeHint::Bool,
+                None,
+                "Whether this result has not reached a terminal outcome.",
+                Some(aside_vm::bytecode::Const::Bool(true)),
+            ));
+        }
+        for method in methods {
+            let native = if name == "Task" {
+                "reel::task::cancel".into()
+            } else {
+                format!("reel::completion::{method}")
+            };
+            members.push(Member::method(api.native(&native).clone().bound(method)));
+        }
+        let mut descriptor = NamedType::new(
+            &ty,
+            "An awaitable owned operation with a shared terminal result.",
+            members,
+        );
+        descriptor.await_result = Some(match name {
+            "Capture" => named("Bytes"),
+            "WindowOperation" => TypeHint::Union(vec![TypeHint::Table, TypeHint::Bool]),
+            "Condition" => TypeHint::Bool,
+            "ParticleActivity" => TypeHint::String,
+            _ => TypeHint::Any,
+        });
+        api.types.push(descriptor);
+    }
+    api.refine("reel::when", named("reel::types::Condition"), &[]);
+    api.refine(
+        "reel::stage::geometry",
+        named("reel::types::Presentation"),
+        &[
+            ("node", named("reel::types::Node")),
+            (
+                "relative_to",
+                aside_host::source::nullable(named("reel::types::Node")),
+            ),
+        ],
+    );
+}
+
 aside_host::native_documentation! {
     pub(super) fn documentation {
         /// Wait until an accepted frame includes current stage changes and prepared assets.
@@ -111,6 +191,8 @@ pub(super) fn reserve_queue<T>(
 }
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct Results {
+    #[serde(skip)]
+    type_ids: [Option<aside_vm::HostTypeId>; 8],
     methods: Option<Methods>,
     #[serde(skip)]
     waits: VecDeque<(WaitId, Value)>,
@@ -487,6 +569,25 @@ impl Results {
                 Some(readonly)
             },
         )?;
+        let type_index = (-(kind as i64) - 1101) as usize;
+        let type_id = if let Some(id) = self.type_ids[type_index] {
+            id
+        } else {
+            let name = match kind {
+                Kind::Completion => "Completion",
+                Kind::Task => "Task",
+                Kind::Presentation => "Presentation",
+                Kind::Particle => "ParticleActivity",
+                Kind::Operation => "Operation",
+                Kind::Capture => "Capture",
+                Kind::Window => "WindowOperation",
+                Kind::Condition => "Condition",
+            };
+            let id = heap.host_type(&format!("reel::types::{name}"))?;
+            self.type_ids[type_index] = Some(id);
+            id
+        };
+        heap.set_host_type(object, type_id)?;
         let observable = matches!(kind, Kind::Completion | Kind::Task | Kind::Condition);
         if observable {
             let key = heap.alloc_string("pending")?;

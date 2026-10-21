@@ -510,6 +510,7 @@ fn native_packed_calls_preserve_trusted_rest_defaults_abi_and_identity() {
     let host = ExternalSymbol::function(
         "host",
         ExternalSignature {
+            result_parameter: None,
             result_cases: Vec::new(),
             parameters: vec![
                 ExternalParameter {

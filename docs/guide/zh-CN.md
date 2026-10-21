@@ -12,11 +12,25 @@ Reel 的目标是让你用 Aside 表达想象中的画面和交互，组合自�
 
 ## 一 最小项目与共同写法
 
+### 安装工具
+
+下载适合当前系统的 Reel 工具包，解压后将其中的 `bin` 目录加入 `PATH`，再打开终端。Windows 包包含 `reel.exe`、`reel-lsp.exe` 和 `reel-game.exe`：命令行负责检查、运行和打包作品，语言服务提供编辑提示，发布导出会复制同级播放器。作者使用工具包即可创作；从源码构建引擎时才需要 Rust 和 Cargo。
+
+多个游戏目录共用这套工具。在包含 `main.aside` 的目录中运行：
+
+```powershell
+reel check .
+reel dev .
+reel build . --output game.asb
+```
+
 ### 在 VS Code 中编写
 
-正在接入的 Aside 扩展提供诊断、补全、参数提示、悬停说明和定义跳转。安装 VSIX 后打开 `.aside` 文件，或运行 **Aside: New File**。函数调用中按 Ctrl+Shift+Space 查看具名参数、类型和默认值；F12 跳转到作者源码，内置接口则打开由 Rust 声明生成的只读 Aside 定义。
+Aside 扩展提供诊断、补全、参数提示、悬停说明和定义跳转。安装 VSIX 后打开 `.aside` 文件，或运行 **Aside: New File**。函数调用中按 Ctrl+Shift+Space 查看具名参数、类型和默认值；F12 跳转到作者源码，内置接口则打开由 Rust 声明生成的只读 Aside 定义。
 
-Windows 扩展包内含 `reel-lsp`。使用自己构建的服务端时，将 `aside.server.path` 设为可执行文件完整路径；独立语言工程使用 `aside-lsp`。**Aside: Run Current File** 保存当前文件并调用 Reel CLI，`aside.reel.path` 指定 CLI 路径，`aside.reel.assets` 指定资源目录。编辑检查直接使用未保存内容。
+扩展优先使用 PATH 中的 `reel-lsp`，Windows 扩展包也内含语言服务。`aside.server.path` 可指定其他服务端的完整路径；独立语言工程使用 `aside-lsp`。**Aside: Run Current File** 保存当前文件并调用 PATH 中的 `reel`，`aside.reel.path` 可另选 CLI，`aside.reel.assets` 指定资源目录。修改 PATH 后重新打开 VS Code。编辑检查直接使用未保存内容。
+
+内置节点的共同类型是 `Node`，具体节点保留自己的成员提示。`bind` 和 `derive` 返回 `Binding`；属性提示分别显示读取的值类型和允许赋入的类型。
 
 从 main.aside 的 main 启动工程。check/build/dev 接受源码文件或工程目录，run 执行已经构建的 .asb。可运行多文件工程见 [author_project](../../examples/author_project/main.aside)。标题页可用 game.start 切换到全新剧情会话。
 

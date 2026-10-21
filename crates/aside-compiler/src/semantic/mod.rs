@@ -166,13 +166,20 @@ pub(crate) fn editor_analysis(
     match project::project_editor(parsed, options.limits) {
         Ok(hir) => {
             let mut result = bind::analyze_editor(hir, options, resolver);
-            result.diagnostics.splice(0..0, parsed.diagnostics().iter().cloned());
+            result
+                .diagnostics
+                .splice(0..0, parsed.diagnostics().iter().cloned());
             result.exhausted |= parsed.exhausted();
             result
         }
         Err(diagnostic) => crate::editor::EditorAnalysis {
             module: None,
-            diagnostics: parsed.diagnostics().iter().cloned().chain([diagnostic]).collect(),
+            diagnostics: parsed
+                .diagnostics()
+                .iter()
+                .cloned()
+                .chain([diagnostic])
+                .collect(),
             exhausted: true,
             stats: Default::default(),
         },
@@ -186,18 +193,32 @@ pub(crate) fn editor_interface(
     limits: AnalysisLimits,
 ) -> Result<ModuleInterface, Diagnostic> {
     let hir = project::project_editor(parsed, limits)?;
-    Ok(ModuleInterface {canonical_path:module,version,exports:link::declarations(&hir)})
+    let exports = link::declarations(&hir, &module, &version);
+    Ok(ModuleInterface {
+        canonical_path: module,
+        version,
+        exports,
+    })
 }
 
-pub(crate) fn editor_imports(parsed:&Parse,module:&str,limits:AnalysisLimits)->Result<Vec<(ImportRequest,crate::TextRange)>,Diagnostic> {
-    use crate::hir::{HirKind,NodeId};
-    let hir=project::project_editor(parsed,limits)?;
-    let mut requests=Vec::new();
-    for (index,node) in hir.nodes.iter().enumerate().filter(|(_,node)|node.kind==HirKind::Import) {
-        if let Some(path)=hir.children(NodeId(index as u32)).next() {
-            let mut imports=Vec::new();
-            link::import_requests(&hir,path,&[],false,module,&mut imports);
-            requests.extend(imports.into_iter().map(|(request,_)|(request,node.span)));
+pub(crate) fn editor_imports(
+    parsed: &Parse,
+    module: &str,
+    limits: AnalysisLimits,
+) -> Result<Vec<(ImportRequest, crate::TextRange)>, Diagnostic> {
+    use crate::hir::{HirKind, NodeId};
+    let hir = project::project_editor(parsed, limits)?;
+    let mut requests = Vec::new();
+    for (index, node) in hir
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| node.kind == HirKind::Import)
+    {
+        if let Some(path) = hir.children(NodeId(index as u32)).next() {
+            let mut imports = Vec::new();
+            link::import_requests(&hir, path, &[], false, module, &mut imports);
+            requests.extend(imports.into_iter().map(|(request, _)| (request, node.span)));
         }
     }
     Ok(requests)

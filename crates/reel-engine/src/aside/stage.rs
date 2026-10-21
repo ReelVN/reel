@@ -66,8 +66,8 @@ aside_host::native_documentation! {
     }
 }
 use std::sync::Arc;
-pub(super) mod camera;
 pub(super) mod appearance;
+pub(super) mod camera;
 pub(super) mod controls;
 pub(super) mod input;
 mod interaction;
@@ -196,7 +196,7 @@ pub(super) enum NodeProperty {
     #[aside(name = "text_outline_color", ty = String, default = "#000000", validate = validate_color)]
     TextOutlineColor,
     /// Image or composed mask applied to this subtree; null disables masking.
-    #[aside(name = "mask", ty = Any, default = null, validate = validate_mask)]
+    #[aside(name = "mask", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Union(vec![aside_compiler::semantic::TypeHint::String,aside_host::source::number(),aside_host::source::named("reel::types::Mask")])), default = null, validate = validate_mask)]
     Mask,
     /// Reveal threshold for the subtree mask.
     #[aside(name = "mask_progress", ty = Any, doc_type = aside_host::source::number(), default = 1, validate = validate_mask_progress, animatable)]
@@ -208,10 +208,10 @@ pub(super) enum NodeProperty {
     #[aside(name = "mask_invert", ty = Bool, default = false)]
     MaskInvert,
     /// Horizontal mask sampling offset in local coordinates.
-    #[aside(name = "mask_x", ty = Any, default = 0, validate = validate_mask_offset, animatable)]
+    #[aside(name = "mask_x", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_mask_offset, animatable)]
     MaskX,
     /// Vertical mask sampling offset in local coordinates.
-    #[aside(name = "mask_y", ty = Any, default = 0, validate = validate_mask_offset, animatable)]
+    #[aside(name = "mask_y", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_mask_offset, animatable)]
     MaskY,
     /// Fill available layout space along none, x, y or both axes.
     #[aside(name = "stretch", ty = String, default = "none", validate = validate_stretch)]
@@ -232,7 +232,7 @@ pub(super) enum NodeProperty {
     #[aside(name = "on_interaction", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnInteraction,
     /// Requested font weight; 400 selects normal text.
-    #[aside(name = "font_weight", ty = Any, doc_type = aside_compiler::semantic::TypeHint::Int, default = 400, validate = validate_font_weight)]
+    #[aside(name = "font_weight", ty = Any, doc_type = aside_host::source::number(), default = 400, validate = validate_font_weight)]
     FontWeight,
     /// Extra spacing between text glyphs in logical pixels.
     #[aside(name = "letter_spacing", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_text_spacing)]
@@ -255,6 +255,7 @@ pub(super) enum NodeProperty {
 }
 
 pub(super) struct StageBinding {
+    pub(super) types: super::source::HostTypes,
     pub scene: Stage,
     pub retirement_revision: u64,
     handles: BTreeMap<NodeId, NodeBinding>,
@@ -319,7 +320,7 @@ impl StageBinding {
         )?;
         Ok(())
     }
-    pub fn new(program: &VerifiedProgram) -> Result<Self, AdapterError> {
+    pub fn new(program: &VerifiedProgram, heap: &Heap) -> Result<Self, AdapterError> {
         let p = program.package();
         let mut methods = [FunctionId(0); 5];
         for (slot, symbol) in methods.iter_mut().zip([
@@ -344,6 +345,7 @@ impl StageBinding {
                 .ok_or(AdapterError::Input("node method callable missing"))?;
         }
         Ok(Self {
+            types: super::source::HostTypes::new(heap)?,
             scene: Stage::default(),
             retirement_revision: 0,
             handles: BTreeMap::new(),
@@ -578,6 +580,11 @@ impl StageBinding {
             Value::NULL,
         ];
         let value = heap.alloc_composable_host(fields, &payload, Some(shape.validator()))?;
+        self.types.mark(
+            heap,
+            value,
+            registry::node_type(symbol).expect("node constructor type"),
+        )?;
         for (offset, name) in interaction::FIELDS.into_iter().enumerate() {
             let key = self.property_key(heap, name)?;
             let state = name == "disabled" && !props.enabled;

@@ -25,6 +25,7 @@ mod results;
 mod rich_text;
 mod scopes;
 mod snapshots;
+mod source_types;
 mod tasks;
 mod text_fade;
 mod transitions;
@@ -146,16 +147,16 @@ fn default_reel_environment_respects_author_scopes_and_explicit_aliases() {
 #[test]
 fn image_nodes_validate_before_writing_and_preserve_identity_and_origin() {
     use reel_ui::{properties::ObjectFit, stage::NodeKind};
-    let code = r#"use reel::prelude::*;
+    let code = r#"use reel::prelude::*; fn dynamic(value) {value}
         fn opening() {
             let p = image("original.png", width: 200, opacity: 0.5, rotation: 450, scale_x: -2, scale_y: 0, anchor_x: 1.5, anchor_y: -1);
             let mut errors = 0;
             try { p.source = ""; } catch e { errors += 1; }
             try { p.fit = "unknown"; } catch e { errors += 1; }
-            try { p.source = 42; } catch e { errors += 1; }
-            try { p.rotation = "invalid"; } catch e { errors += 1; }
-            try { p.scale_x = null; } catch e { errors += 1; }
-            try { p.anchor_y = false; } catch e { errors += 1; }
+            try { p.source = dynamic(42); } catch e { errors += 1; }
+            try { p.rotation = dynamic("invalid"); } catch e { errors += 1; }
+            try { p.scale_x = dynamic(null); } catch e { errors += 1; }
+            try { p.anchor_y = dynamic(false); } catch e { errors += 1; }
             if errors != 6 || p.source != "original.png" || p.fit != "contain" { throw "bad validation"; }
             stage.replace(stack() { p; });
             narrator("first");
@@ -250,6 +251,61 @@ fn image_nodes_validate_before_writing_and_preserve_identity_and_origin() {
     assert_eq!(waits, 2);
     assert_eq!(vm.retain_return(&session).unwrap().as_bool(), Some(true));
     vm.finish(&mut session).unwrap();
+}
+
+#[test]
+fn known_host_contract_errors_are_rejected_at_the_author_expression() {
+    use aside_compiler::DiagnosticCode as D;
+    for (body, expected, location) in [
+        (
+            "let timer=clock(); timer.ticks=5;",
+            D::ImmutableBinding,
+            "timer.ticks",
+        ),
+        (
+            "let result=completion(); result.pending=false;",
+            D::ImmutableBinding,
+            "result.pending",
+        ),
+        (
+            "let node=image(\"x.png\"); node.source=42;",
+            D::TypeMismatch,
+            "42",
+        ),
+        (
+            "let node=text(\"x\"); node.text_wrap=0;",
+            D::TypeMismatch,
+            "0",
+        ),
+        (
+            "let value=rich(\"x\"); value.plain=\"changed\";",
+            D::ImmutableBinding,
+            "value.plain",
+        ),
+        ("narrator(\"x\",history:[]);", D::TypeMismatch, "history"),
+        ("mask.alpha(\"x.png\",x:{});", D::TypeMismatch, "x:"),
+        (
+            "let root=column(); let add=root.add; add(receiver:root,child:stack());",
+            D::InvalidCall,
+            "receiver",
+        ),
+    ] {
+        let code = format!("fn opening() {{{body}}}");
+        let Err(source::SourceError::Analysis(error)) =
+            source::compile_module(&code, "invalid", "invalid.aside", 1)
+        else {
+            panic!("expected a source contract diagnostic for {body}");
+        };
+        assert!(
+            error
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == expected
+                    && code[aside_compiler::byte_range(diagnostic.range)].contains(location)),
+            "{body}: {:?}",
+            error.diagnostics
+        );
+    }
 }
 
 #[test]
@@ -708,6 +764,7 @@ fn authored_components_keep_node_identity_across_gc_updates_and_replacement() {
     use reel_ui::stage::NodeKind;
     let code = r##"
         use reel::prelude::*;
+        fn dynamic(value) {value}
         fn card(children = []) {
             column(gap: 8, padding: 12, background: "#203040") {
                 for child in children { child; }
@@ -736,7 +793,7 @@ fn authored_components_keep_node_identity_across_gc_updates_and_replacement() {
             let heading = mount();
             narrator("First");
             let mut caught = 0;
-            try { heading.opacity = "wrong"; } catch error { caught += 1; }
+            try { heading.opacity = dynamic("wrong"); } catch error { caught += 1; }
             try { heading["color"] = "#gggggg"; } catch error { caught += 1; }
             try { heading.width = -1; } catch error { caught += 1; }
             let unchanged = heading.opacity == 1 && heading.color == "#ff8040" && heading.width == null;
@@ -880,7 +937,7 @@ fn authored_components_keep_node_identity_across_gc_updates_and_replacement() {
     // behavior for a not-yet-mounted node and a one-instruction VM budget.
     for property in ["opacity", "rotation"] {
         let code = format!(
-            "fn opening() {{ let node = text(\"Fault\"); node.{property} = \"invalid\"; }}"
+            "fn invalid(node) {{ node.{property} = \"invalid\"; }} fn opening() {{ invalid(text(\"Fault\")); }}"
         );
         let (mut session, mut vm) = setup(&code, Context::Ordinary);
         loop {

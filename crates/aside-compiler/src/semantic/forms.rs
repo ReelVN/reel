@@ -2,13 +2,16 @@
 //! packed sequence edges rather than rediscovering operators/roles from tokens.
 use crate::{SyntaxKind as K, hir::*};
 use smallvec::SmallVec;
-pub(super) fn forms(hir: &mut Hir,recover:bool) {
+pub(super) fn forms(hir: &mut Hir, recover: bool) {
     for index in (0..hir.nodes.len()).rev() {
         let n = NodeId(index as u32);
-        hir.nodes[index].form = match form(hir,n) {
-            Some(form)=>form,
-            None if recover=>{hir.nodes[index].kind=HirKind::Error;Form::Sequence}
-            None=>panic!("valid syntax projects a complete grammar form"),
+        hir.nodes[index].form = match form(hir, n) {
+            Some(form) => form,
+            None if recover => {
+                hir.nodes[index].kind = HirKind::Error;
+                Form::Sequence
+            }
+            None => panic!("valid syntax projects a complete grammar form"),
         };
     }
 }
@@ -129,9 +132,7 @@ fn form(hir: &Hir, n: NodeId) -> Option<Form> {
             value: None,
             label: name(),
         },
-        H::Name | H::NamePattern | H::RestPattern => Form::Name {
-            name: name()?,
-        },
+        H::Name | H::NamePattern | H::RestPattern => Form::Name { name: name()? },
         H::WildcardPattern => Form::Wildcard,
         H::Literal => Form::Literal {
             token: tokens.first().copied()?,
@@ -233,7 +234,9 @@ fn form(hir: &Hir, n: NodeId) -> Option<Form> {
             name: name()?,
             body: body()?,
         },
-        H::Match => Form::Match { value: *children.first()? },
+        H::Match => Form::Match {
+            value: *children.first()?,
+        },
         H::MatchArm => Form::MatchArm {
             pattern: *children.first()?,
             guard: if has(K::If) {

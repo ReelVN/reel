@@ -703,7 +703,12 @@ impl Heap {
     ) -> Result<Value, HeapError> {
         self.table_len(fields)?;
         let mut values = Vec::with_capacity(payload.len() + 4);
-        values.extend([fields, Value::int(i64::from(composable)), Value::NULL, Value::NULL]);
+        values.extend([
+            fields,
+            Value::int(i64::from(composable)),
+            Value::NULL,
+            Value::NULL,
+        ]);
         values.extend_from_slice(payload);
         let host = self.allocate_values(ObjectKind::Host, &values)?;
         let key = self.key(host)?;
@@ -821,14 +826,19 @@ impl Heap {
             return Ok(false);
         }
         self.host_fields(host)?;
-        Ok(self.get_field(host, 1)?.as_int().is_some_and(|flags|flags & 1 != 0))
+        Ok(self
+            .get_field(host, 1)?
+            .as_int()
+            .is_some_and(|flags| flags & 1 != 0))
     }
     pub fn retire_host(&mut self, host: Value) -> Result<(), HeapError> {
         self.disconnect_reactive_source(host)?;
         self.disconnect_host_properties(host)?;
         let slots = self.host_payload_len(host)? + 4;
         for index in 0..slots {
-            if index != 1 { self.set_field(host, index, Value::NULL)?; }
+            if index != 1 {
+                self.set_field(host, index, Value::NULL)?;
+            }
         }
         Ok(())
     }

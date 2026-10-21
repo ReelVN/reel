@@ -410,6 +410,10 @@ pub struct LocalSymbolRef<'a> {
     pub slot: SymbolId,
 }
 impl AnalyzedModule {
+    /// Render a semantic type using Aside names and unambiguous type syntax.
+    pub fn display_type(&self, ty: TypeId) -> impl std::fmt::Display + '_ {
+        TypeDisplay { module: self, ty }
+    }
     pub fn entry_context(&self) -> crate::semantic::AnalysisContext {
         self.entry_context
     }
@@ -462,10 +466,129 @@ impl AnalyzedModule {
         &self.external
     }
 }
+struct TypeDisplay<'a> {
+    module: &'a AnalyzedModule,
+    ty: TypeId,
+}
+impl std::fmt::Display for TypeDisplay<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let display = |ty| TypeDisplay {
+            module: self.module,
+            ty,
+        };
+        match &self.module.types[self.ty.0 as usize] {
+            Type::Any => f.write_str("any"),
+            Type::Closure => f.write_str("closure"),
+            Type::Null => f.write_str("null"),
+            Type::Bool => f.write_str("bool"),
+            Type::Int => f.write_str("int"),
+            Type::Float => f.write_str("float"),
+            Type::String => f.write_str("string"),
+            Type::Array => f.write_str("array"),
+            Type::Table => f.write_str("table"),
+            Type::Future => f.write_str("Future"),
+            Type::Generator => f.write_str("generator"),
+            Type::Named(name) => f.write_str(self.module.hir.name(*name)),
+            Type::Tuple(types) => {
+                f.write_str("(")?;
+                for (i, &ty) in types.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{}", display(ty))?;
+                }
+                if types.len() == 1 {
+                    f.write_str(",")?;
+                }
+                f.write_str(")")
+            }
+            Type::Union(types) => {
+                for (i, &ty) in types.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(" | ")?;
+                    }
+                    if matches!(
+                        self.module.types[ty.0 as usize],
+                        Type::Callable(..) | Type::Function(_) | Type::BoundMethod(_)
+                    ) {
+                        write!(f, "({})", display(ty))?;
+                    } else {
+                        write!(f, "{}", display(ty))?;
+                    }
+                }
+                Ok(())
+            }
+            Type::Callable(parameters, result) => {
+                f.write_str("fn(")?;
+                for (i, &ty) in parameters.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{}", display(ty))?;
+                }
+                f.write_str(") -> ")?;
+                if matches!(self.module.types[result.0 as usize], Type::Union(_)) {
+                    write!(f, "({})", display(*result))
+                } else {
+                    write!(f, "{}", display(*result))
+                }
+            }
+            Type::Function(id) | Type::BoundMethod(id) => {
+                let function = &self.module.functions[id.0 as usize];
+                let bound = matches!(self.module.types[self.ty.0 as usize], Type::BoundMethod(_));
+                f.write_str("fn(")?;
+                for (i, parameter) in function
+                    .parameters
+                    .iter()
+                    .skip(usize::from(bound))
+                    .enumerate()
+                {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    if parameter.rest {
+                        f.write_str("...")?;
+                    }
+                    write!(
+                        f,
+                        "{}",
+                        display(self.module.symbols[parameter.symbol.0 as usize].ty)
+                    )?;
+                }
+                f.write_str(") -> ")?;
+                if matches!(
+                    self.module.types[function.return_type.0 as usize],
+                    Type::Union(_)
+                ) {
+                    write!(f, "({})", display(function.return_type))
+                } else {
+                    write!(f, "{}", display(function.return_type))
+                }
+            }
+            Type::Class(node) | Type::Instance(node) => match self.module.hir.node(*node).form {
+                Form::Class {
+                    name: Some(name), ..
+                } => f.write_str(self.module.hir.text(name.span)),
+                _ => f.write_str("class"),
+            },
+        }
+    }
+}
 
 /// Full resolver signature survives analysis, including named-call semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternalBindingKind {
+    /// An executable module cell or registered native reference.
+    Reference,
+    /// A declared type used only by source annotations and runtime type checks.
+    Type,
+    /// An ordinary value or object's member contract. Execution retains its
+    /// source binding or receiver instead of substituting a linked reference.
+    Metadata,
+}
 #[derive(Debug, Clone)]
 pub struct ExternalBinding {
+    pub kind: ExternalBindingKind,
     pub symbol: Option<SymbolId>,
     pub node: Option<NodeId>,
     pub descriptor: Arc<crate::semantic::ExternalSymbol>,

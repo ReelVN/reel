@@ -12,11 +12,25 @@ Interface parameters, properties and examples live in English documentation besi
 
 ## 1 A Minimal Project and Shared Conventions
 
+### Installing the Tools
+
+Download the Reel tool package for your system, extract it, add its `bin` directory to PATH, and open a new terminal. The Windows package contains `reel.exe`, `reel-lsp.exe` and `reel-game.exe`: the CLI checks, runs and packages projects, the language server supplies editor queries, and release exports copy the adjacent player. Authors use this package directly; building the engine from source requires Rust and Cargo.
+
+Multiple game directories share this installation. From a directory containing `main.aside`, run:
+
+```powershell
+reel check .
+reel dev .
+reel build . --output game.asb
+```
+
 ### Writing in VS Code
 
-The Aside extension being integrated provides diagnostics, completion, signature help, hover documentation and definition navigation. Install the VSIX and open an `.aside` file, or run **Aside: New File**. Press Ctrl+Shift+Space inside a call to see named parameters, types and defaults. F12 opens author source or a read-only Aside definition generated from the built-in interface's Rust declaration.
+The Aside extension provides diagnostics, completion, signature help, hover documentation and definition navigation. Install the VSIX and open an `.aside` file, or run **Aside: New File**. Press Ctrl+Shift+Space inside a call to see named parameters, types and defaults. F12 opens author source or a read-only Aside definition generated from the built-in interface's Rust declaration.
 
-The Windows extension package includes `reel-lsp`. To use your own server build, set `aside.server.path` to its full executable path; use `aside-lsp` for standalone language projects. **Aside: Run Current File** saves the current file and invokes the Reel CLI. Set `aside.reel.path` to the CLI executable and `aside.reel.assets` to the asset directory. Editor checks use unsaved document contents.
+The extension prefers `reel-lsp` on PATH; the Windows extension package also includes a server. Set `aside.server.path` to select another server's full executable path, or use `aside-lsp` for standalone language projects. **Aside: Run Current File** saves the current file and invokes `reel` on PATH. `aside.reel.path` selects another CLI, and `aside.reel.assets` selects the asset directory. Restart VS Code after changing PATH. Editor checks use unsaved document contents.
+
+Built-in nodes share the `Node` type, and concrete nodes retain their own member suggestions. `bind` and `derive` return `Binding`; property hints distinguish the value read from a property from the types it accepts on assignment.
 
 Start the project from main in main.aside. check/build/dev accept a source file or project directory; run executes the built .asb. See the runnable multi-file [author_project](../../examples/author_project/main.aside). The title screen can use game.start to enter a fresh story session.
 

@@ -1,5 +1,42 @@
 use super::{AdapterError, text};
 
+pub(super) fn describe(api: &mut aside_host::source::Api) {
+    use aside_compiler::semantic::TypeHint;
+    use aside_host::source::{Member, NamedType, named};
+    api.refine(
+        "reel::rich",
+        named("reel::types::RichText"),
+        &[("markup", TypeHint::String)],
+    );
+    api.refine(
+        "reel::rich_escape",
+        TypeHint::String,
+        &[("text", TypeHint::String)],
+    );
+    api.types.push(NamedType::new(
+        "reel::types::RichText",
+        "Immutable parsed text with styled spans and reveal cues.",
+        vec![
+            Member::field(
+                "reel::types::RichText",
+                "plain",
+                TypeHint::String,
+                None,
+                "Plain text with markup removed.",
+                None,
+            ),
+            Member::field(
+                "reel::types::RichText",
+                "markup",
+                TypeHint::String,
+                None,
+                "The original parsed markup.",
+                None,
+            ),
+        ],
+    ));
+}
+
 aside_host::native_documentation! {
     pub(super) fn documentation {
         /// Parse immutable rich text. Tags control spans, ruby, links and reveal cues.
@@ -55,7 +92,10 @@ pub(super) fn create(heap: &mut Heap, source: Value, chunk: usize) -> Result<Val
     heap.table_store(fields, 0, key, plain)?;
     let key = heap.alloc_string("markup")?;
     heap.table_store(fields, 1, key, source)?;
-    Ok(heap.alloc_immutable_host(fields, &[Value::int(TAG), source, plain])?)
+    let value = heap.alloc_immutable_host(fields, &[Value::int(TAG), source, plain])?;
+    let ty = heap.host_type("reel::types::RichText")?;
+    heap.set_host_type(value, ty)?;
+    Ok(value)
 }
 pub(super) fn alloc(heap: &mut Heap, value: &Text, chunk: usize) -> Result<Value, AdapterError> {
     if let Some(markup) = value.markup() {

@@ -46,7 +46,8 @@ fn independent_curves_construct_and_sample_without_native_allocations() {
             .unwrap()
             .into_module()
             .unwrap();
-        let compiled = aside_host::lower(&module, &contracts, &[], &[], &[], Default::default()).unwrap();
+        let compiled =
+            aside_host::lower(&module, &contracts, &[], &[], &[], Default::default()).unwrap();
         let initializer = compiled.entry;
         let bytes = bc::encode(compiled.program.package(), bc::Limits::default()).unwrap();
         let program = bc::VerifiedProgram::decode(&bytes, bc::Limits::default()).unwrap();

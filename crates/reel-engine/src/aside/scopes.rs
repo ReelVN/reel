@@ -1,6 +1,80 @@
 //! Native callback lifetimes share the ordinary host-owner and task protocols.
 use super::*;
 
+pub(super) fn describe(api: &mut aside_host::source::Api) {
+    use aside_compiler::semantic::TypeHint;
+    use aside_host::source::{Member, NamedType, named, nullable};
+    let scope = named("reel::types::Scope");
+    let node = named("reel::types::Node");
+    api.refine(
+        "reel::scope",
+        TypeHint::Any,
+        &[
+            ("body", TypeHint::Closure),
+            ("owner", nullable(node.clone())),
+        ],
+    );
+    for (method, result, parameters) in [
+        (
+            "run",
+            named("reel::types::Activity"),
+            vec![("action", named("reel::types::Action"))],
+        ),
+        (
+            "spawn",
+            named("reel::types::Task"),
+            vec![("work", TypeHint::Closure)],
+        ),
+        (
+            "add",
+            node.clone(),
+            vec![("parent", node.clone()), ("node", node.clone())],
+        ),
+        (
+            "override",
+            named("reel::types::Override"),
+            vec![("node", node.clone()), ("properties", TypeHint::Table)],
+        ),
+        (
+            "offset",
+            named("reel::types::Override"),
+            vec![("node", node)],
+        ),
+        ("cancel", TypeHint::Bool, Vec::new()),
+    ] {
+        let mut parameters = parameters;
+        parameters.push(("scope", scope.clone()));
+        api.refine(&format!("reel::scope::{method}"), result, &parameters);
+    }
+    api.native_mut("reel::scope::add").returns_parameter("node");
+    api.refine(
+        "reel::override::remove",
+        TypeHint::Null,
+        &[("token", named("reel::types::Override"))],
+    );
+    api.types.push(NamedType::new(
+        "reel::types::Scope",
+        "A callback lifetime that owns tasks, activities, nodes and property overrides.",
+        ["run", "spawn", "add", "override", "offset", "cancel"]
+            .into_iter()
+            .map(|method| {
+                Member::method(
+                    api.native(&format!("reel::scope::{method}"))
+                        .clone()
+                        .bound(method),
+                )
+            })
+            .collect(),
+    ));
+    api.types.push(NamedType::new(
+        "reel::types::Override",
+        "A temporary property layer owned by a scope.",
+        vec![Member::method(
+            api.native("reel::override::remove").clone().bound("remove"),
+        )],
+    ));
+}
+
 aside_host::native_documentation! {
     pub(super) fn documentation {
         /// Run `body(scope)` in the current task and return its result. Work created
@@ -305,6 +379,7 @@ impl SessionVm {
                 &[Value::int(TAG), owner, Value::NULL, Value::NULL],
                 Some(results::readonly),
             )?;
+            self.stage.types.mark(heap, object, "reel::types::Scope")?;
             for (i, (name, function)) in ["run", "spawn", "add", "override", "offset", "cancel"]
                 .into_iter()
                 .zip([0, 1, 2, 3, 4, 6].map(|index| self.scopes.methods.unwrap()[index]))

@@ -27,9 +27,15 @@ pub(super) const NODE_CONSTRUCTORS: &[(&str, &str)] = &[
 ];
 
 pub(super) fn node_type(symbol: &str) -> Option<&'static str> {
-    let name=symbol.strip_prefix("reel::")?;
-    NODE_CONSTRUCTORS.iter().find(|(constructor,_)|*constructor==name).map(|(_,ty)|*ty)
-        .or_else(||match name {"list"|"view"=>Some("reel::types::Node"),"layered_image"=>Some("reel::types::ImageNode"),_=>None})
+    let name = symbol.strip_prefix("reel::")?;
+    NODE_CONSTRUCTORS
+        .iter()
+        .find(|(constructor, _)| *constructor == name)
+        .map(|(_, ty)| *ty)
+        .or_else(|| match name {
+            "list" | "view" | "layered_image" => Some("reel::types::Node"),
+            _ => None,
+        })
 }
 
 pub(super) fn is_node_constructor(symbol: &str) -> bool {
@@ -286,7 +292,9 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             _ => None,
         } {
             parameters.extend(properties.iter().map(|p| p.parameter()));
-            if matches!(name,"text"|"image"|"video") {parameters[0].default=None;}
+            if matches!(name, "text" | "image" | "video") {
+                parameters[0].default = None;
+            }
         }
         parameters.extend(NodeProperty::PROPERTIES.iter().map(|p| p.parameter()));
         if name == "camera" {

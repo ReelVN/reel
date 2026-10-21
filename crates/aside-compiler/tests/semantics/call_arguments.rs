@@ -114,6 +114,7 @@ fn external_rest_names_follow_the_same_positional_only_rule() {
     let host = ExternalSymbol::function(
         "host",
         ExternalSignature {
+            result_parameter: None,
             result_cases: Vec::new(),
             parameters: vec![ExternalParameter {
                 name: "r".into(),

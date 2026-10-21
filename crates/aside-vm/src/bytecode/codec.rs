@@ -361,7 +361,7 @@ macro_rules! tuple_enum {
     };
     (@get $r:ident $x:ident) => {Wire::get($r)?};
 }
-unit_enum!(BuiltinType {0=>Any,1=>Null,2=>Bool,3=>Int,4=>Float,5=>String,6=>Bytes,7=>Array,8=>Table,9=>Tuple,10=>Class,11=>Instance,12=>Closure,13=>Generator,14=>Thread,15=>Future,16=>WeakRef});
+unit_enum!(BuiltinType {0=>Any,1=>Null,2=>Bool,3=>Int,4=>Float,5=>String,6=>Bytes,7=>Array,8=>Table,9=>Tuple,10=>Class,11=>Instance,12=>Closure,13=>Generator,14=>Thread,15=>Future,16=>WeakRef,17=>PropertyRef});
 impl Wire for FunctionKind {
     fn put(&self, w: &mut Writer) -> Result<(), Error> {
         match self {
