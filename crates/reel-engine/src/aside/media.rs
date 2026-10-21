@@ -925,6 +925,9 @@ impl SessionVm {
             ],
             Some(readonly),
         )?;
+        self.stage
+            .types
+            .mark(heap, value, "reel::types::MediaCue")?;
         let root = heap.add_root(self.root_owner, RootKind::Host, value)?;
         if let Err(error) = self
             .vm
@@ -987,6 +990,9 @@ impl SessionVm {
             ],
             Some(readonly),
         )?;
+        self.stage
+            .types
+            .mark(heap, value, "reel::types::Playback")?;
         let root = heap.add_root(self.root_owner, RootKind::Host, value)?;
         if let Err(error) = self
             .vm
@@ -1185,4 +1191,63 @@ aside_host::native_documentation! {
         /// "Stopped", while failure and cancellation throw. Completion keeps the last frame.
         "reel::video::play";
     }
+}
+pub(super) fn describe(api: &mut aside_host::source::Api) {
+    use aside_compiler::semantic::TypeHint;
+    use aside_host::source::{NamedType, named, nullable, number};
+    for symbol in ["reel::audio::play", "reel::video::play"] {
+        api.refine(symbol, named("reel::types::Playback"), &[]);
+    }
+    for symbol in ["reel::audio::position", "reel::video::position"] {
+        api.refine(
+            symbol,
+            TypeHint::Float,
+            &[("activity", named("reel::types::Playback"))],
+        );
+    }
+    let mut playback = NamedType::new(
+        "reel::types::Playback",
+        "An awaitable audio or video playback controlled through audio and video functions.",
+        Vec::new(),
+    );
+    playback.await_result = Some(TypeHint::String);
+    api.types.push(playback);
+    for prefix in ["reel::audio::", "reel::video::"] {
+        let symbols = api
+            .functions
+            .iter()
+            .filter(|declaration| {
+                aside_host::source::canonical(&declaration.symbol).starts_with(prefix)
+            })
+            .map(|declaration| aside_host::source::canonical(&declaration.symbol))
+            .collect::<Vec<_>>();
+        for symbol in symbols {
+            let signature = api.native_mut(&symbol).symbol.signature.as_mut().unwrap();
+            for parameter in &mut signature.parameters {
+                parameter.ty = match parameter.name.as_str() {
+                    "activity" => named("reel::types::Playback"),
+                    "source" | "group" => TypeHint::String,
+                    "looping" | "paused" => TypeHint::Bool,
+                    "end" | "loop_end" => nullable(number()),
+                    "volume" | "pan" | "fade_in" | "start" | "loop_start" | "value"
+                    | "duration" | "fade" | "seconds" => number(),
+                    _ => parameter.ty.clone(),
+                };
+            }
+            let function = symbol.rsplit("::").next().unwrap();
+            signature.result = match function {
+                "volume" | "pan" | "stop" => named("reel::types::Playback"),
+                "queue" | "seek" | "group_volume" => TypeHint::Null,
+                "at" => named("reel::types::MediaCue"),
+                _ => signature.result.clone(),
+            };
+        }
+    }
+    let mut cue = NamedType::new(
+        "reel::types::MediaCue",
+        "An awaitable playback-position cue. Producer retirement and transport changes settle its wait.",
+        Vec::new(),
+    );
+    cue.await_result = Some(TypeHint::Bool);
+    api.types.push(cue);
 }

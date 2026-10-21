@@ -120,14 +120,14 @@ fn restored_paused_particle_owner_retires_without_advancing_time() {
 
 #[test]
 fn particles_source_asb_seed_pause_overlap_and_retirement() {
-    let code = r#"fn opening() {
+    let code = r#"fn dynamic(value) {value} fn opening() {
         let snow = particles("snow.png", seed: 42, width: 100, height: 20);
         stage.replace(snow);
         let mut errors = 0;
         try { emit(snow, rate: -1); } catch e { errors += 1; }
         try { emit(snow, size: 1, size_spread: 2); } catch e { errors += 1; }
-        try { snow.seed = 2; } catch e { errors += 1; }
-        try { emit(snow, x:"invalid"); } catch e { errors += 1; }
+        try { dynamic(snow).seed = 2; } catch e { errors += 1; }
+        try { emit(snow, x:dynamic("invalid")); } catch e { errors += 1; }
         if errors != 4 { throw "configuration"; }
         let first = emit(snow, burst:0, rate:40, lifetime:5);
         let consumer = spawn(|| await first); consumer.cancel();

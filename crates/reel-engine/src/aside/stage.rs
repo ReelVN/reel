@@ -66,6 +66,7 @@ aside_host::native_documentation! {
     }
 }
 use std::sync::Arc;
+pub(super) mod appearance;
 pub(super) mod camera;
 pub(super) mod controls;
 pub(super) mod input;
@@ -73,6 +74,7 @@ mod interaction;
 pub(super) mod overrides;
 pub(super) mod scroll;
 pub(super) mod snapshot;
+pub(super) mod source;
 pub(super) mod text_input;
 
 use aside_vm::{
@@ -91,22 +93,22 @@ use aside_vm::executor::Vm;
 #[derive(aside_host::Properties)]
 pub(super) enum NodeProperty {
     /// Horizontal position in the parent's logical coordinate space.
-    #[aside(name = "x", ty = Any, default = 0, validate = validate_number, animatable)]
+    #[aside(name = "x", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number, animatable)]
     X,
     /// Vertical position in the parent's logical coordinate space.
-    #[aside(name = "y", ty = Any, default = 0, validate = validate_number, animatable)]
+    #[aside(name = "y", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number, animatable)]
     Y,
     /// Explicit logical width; null uses the node's measured width.
-    #[aside(name = "width", ty = Any, default = null, validate = validate_dimension, animatable)]
+    #[aside(name = "width", ty = Any, doc_type = aside_host::source::nullable(aside_host::source::number()), default = null, validate = validate_dimension, animatable)]
     Width,
     /// Explicit logical height; null uses the node's measured height.
-    #[aside(name = "height", ty = Any, default = null, validate = validate_dimension, animatable)]
+    #[aside(name = "height", ty = Any, doc_type = aside_host::source::nullable(aside_host::source::number()), default = null, validate = validate_dimension, animatable)]
     Height,
     /// Opacity of the node and its subtree, from 0 (transparent) to 1 (opaque).
-    #[aside(name = "opacity", ty = Any, default = 1, validate = validate_opacity, animatable)]
+    #[aside(name = "opacity", ty = Any, doc_type = aside_host::source::number(), default = 1, validate = validate_opacity, animatable)]
     Opacity,
     /// Color inversion strength, from 0 to 1.
-    #[aside(name = "invert", ty = Any, default = 0, validate = validate_invert, animatable)]
+    #[aside(name = "invert", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_invert, animatable)]
     Invert,
     /// Blend mode for compositing this subtree with the scene behind it.
     #[aside(name = "blend", ty = String, default = "normal", validate = validate_blend)]
@@ -124,13 +126,13 @@ pub(super) enum NodeProperty {
     #[aside(name = "clip", ty = Bool, default = false)]
     Clip,
     /// Space between adjacent children in row and column layouts.
-    #[aside(name = "gap", ty = Any, default = 0, validate = validate_nonnegative, animatable)]
+    #[aside(name = "gap", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_nonnegative, animatable)]
     Gap,
     /// Inset between this node's bounds and its content.
-    #[aside(name = "padding", ty = Any, default = 0, validate = validate_nonnegative, animatable)]
+    #[aside(name = "padding", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_nonnegative, animatable)]
     Padding,
     /// Text size in logical pixels.
-    #[aside(name = "font_size", ty = Any, default = 24, validate = validate_nonnegative, animatable)]
+    #[aside(name = "font_size", ty = Any, doc_type = aside_host::source::number(), default = 24, validate = validate_nonnegative, animatable)]
     FontSize,
     /// Family name registered through game.configure fonts.
     #[aside(name = "font", ty = String, default = "system-ui")]
@@ -139,38 +141,38 @@ pub(super) enum NodeProperty {
     #[aside(name = "color", ty = String, default = "#ffffff", validate = validate_color)]
     Color,
     /// Node background color; null leaves the background transparent.
-    #[aside(name = "background", ty = Any, default = null, validate = validate_background)]
+    #[aside(name = "background", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::String), default = null, validate = validate_background)]
     Background,
     /// Rotation in degrees around the node's anchor.
-    #[aside(name = "rotation", ty = Any, default = 0, validate = validate_number, animatable)]
+    #[aside(name = "rotation", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number, animatable)]
     Rotation,
     /// Horizontal scale around the node's anchor.
-    #[aside(name = "scale_x", ty = Any, default = 1, validate = validate_number, animatable)]
+    #[aside(name = "scale_x", ty = Any, doc_type = aside_host::source::number(), default = 1, validate = validate_number, animatable)]
     ScaleX,
     /// Vertical scale around the node's anchor.
-    #[aside(name = "scale_y", ty = Any, default = 1, validate = validate_number, animatable)]
+    #[aside(name = "scale_y", ty = Any, doc_type = aside_host::source::number(), default = 1, validate = validate_number, animatable)]
     ScaleY,
     /// Horizontal transform anchor as a fraction of the node width.
-    #[aside(name = "anchor_x", ty = Any, default = 0, validate = validate_number, animatable)]
+    #[aside(name = "anchor_x", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number, animatable)]
     AnchorX,
     /// Vertical transform anchor as a fraction of the node height.
-    #[aside(name = "anchor_y", ty = Any, default = 0, validate = validate_number, animatable)]
+    #[aside(name = "anchor_y", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number, animatable)]
     AnchorY,
     /// Draw the control's built-in decoration. Input and bindings stay active.
     #[aside(name = "decorated", ty = Bool, default = true)]
     Decorated,
     /// Visible UTF-8 byte prefix of a text node; null reveals the whole text.
-    #[aside(name = "reveal", ty = Any, default = null, validate = validate_reveal)]
+    #[aside(name = "reveal", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Int), default = null, validate = validate_reveal)]
     Reveal,
     /// Soft reveal progress. Grapheme k uses clamp(progress - k * step, 0, 1).
     /// Null disables soft reveal; the hard reveal prefix still applies.
-    #[aside(name = "reveal_fade", ty = Any, default = null, validate = validate_optional_number, animatable)]
+    #[aside(name = "reveal_fade", ty = Any, doc_type = aside_host::source::nullable(aside_host::source::number()), default = null, validate = validate_optional_number, animatable)]
     RevealFade,
     /// UTF-8 byte offset where soft reveal begins. Earlier text stays opaque.
-    #[aside(name = "reveal_fade_from", ty = Any, default = 0, validate = validate_byte_index)]
+    #[aside(name = "reveal_fade_from", ty = Any, doc_type = aside_compiler::semantic::TypeHint::Int, default = 0, validate = validate_byte_index)]
     RevealFadeFrom,
     /// Nonnegative delay between successive graphemes in soft reveal progress units.
-    #[aside(name = "reveal_fade_step", ty = Any, default = 0, validate = validate_nonnegative, animatable)]
+    #[aside(name = "reveal_fade_step", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_nonnegative, animatable)]
     RevealFadeStep,
     /// Horizontal text alignment: start, end, left, right, center or justify.
     #[aside(name = "text_align", ty = String, default = "start", validate = validate_text_align)]
@@ -179,73 +181,73 @@ pub(super) enum NodeProperty {
     #[aside(name = "text_wrap", ty = Bool, default = true)]
     TextWrap,
     /// Line-height multiplier relative to the font size.
-    #[aside(name = "line_height", ty = Any, default = 1.2, validate = validate_nonnegative, animatable)]
+    #[aside(name = "line_height", ty = Any, doc_type = aside_host::source::number(), default = 1.2, validate = validate_nonnegative, animatable)]
     LineHeight,
     /// Use shrink to fit text into fixed bounds, or none for the declared size.
     #[aside(name = "text_fit", ty = String, default = "none", validate = validate_text_fit)]
     TextFit,
     /// Smallest font size allowed by text_fit: shrink.
-    #[aside(name = "min_font_size", ty = Any, default = 0, validate = validate_nonnegative)]
+    #[aside(name = "min_font_size", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_nonnegative)]
     MinFontSize,
     /// Text outline width in logical pixels.
-    #[aside(name = "text_outline", ty = Any, default = 0, validate = validate_nonnegative, animatable)]
+    #[aside(name = "text_outline", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_nonnegative, animatable)]
     TextOutline,
     /// Color of the text outline.
     #[aside(name = "text_outline_color", ty = String, default = "#000000", validate = validate_color)]
     TextOutlineColor,
     /// Image or composed mask applied to this subtree; null disables masking.
-    #[aside(name = "mask", ty = Any, default = null, validate = validate_mask)]
+    #[aside(name = "mask", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Union(vec![aside_compiler::semantic::TypeHint::String,aside_host::source::number(),aside_host::source::named("reel::types::Mask")])), default = null, validate = validate_mask)]
     Mask,
     /// Reveal threshold for the subtree mask.
-    #[aside(name = "mask_progress", ty = Any, default = 1, validate = validate_mask_progress, animatable)]
+    #[aside(name = "mask_progress", ty = Any, doc_type = aside_host::source::number(), default = 1, validate = validate_mask_progress, animatable)]
     MaskProgress,
     /// Softness of the mask threshold transition.
-    #[aside(name = "mask_softness", ty = Any, default = 0.06, validate = validate_nonnegative, animatable)]
+    #[aside(name = "mask_softness", ty = Any, doc_type = aside_host::source::number(), default = 0.06, validate = validate_nonnegative, animatable)]
     MaskSoftness,
     /// Reverse the mask's coverage.
     #[aside(name = "mask_invert", ty = Bool, default = false)]
     MaskInvert,
     /// Horizontal mask sampling offset in local coordinates.
-    #[aside(name = "mask_x", ty = Any, default = 0, validate = validate_mask_offset, animatable)]
+    #[aside(name = "mask_x", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_mask_offset, animatable)]
     MaskX,
     /// Vertical mask sampling offset in local coordinates.
-    #[aside(name = "mask_y", ty = Any, default = 0, validate = validate_mask_offset, animatable)]
+    #[aside(name = "mask_y", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_mask_offset, animatable)]
     MaskY,
     /// Fill available layout space along none, x, y or both axes.
     #[aside(name = "stretch", ty = String, default = "none", validate = validate_stretch)]
     Stretch,
     /// Upper bound on measured logical width; null leaves it unconstrained.
-    #[aside(name = "max_width", ty = Any, default = null, validate = validate_dimension, animatable)]
+    #[aside(name = "max_width", ty = Any, doc_type = aside_host::source::nullable(aside_host::source::number()), default = null, validate = validate_dimension, animatable)]
     MaxWidth,
     /// Upper bound on measured logical height; null leaves it unconstrained.
-    #[aside(name = "max_height", ty = Any, default = null, validate = validate_dimension, animatable)]
+    #[aside(name = "max_height", ty = Any, doc_type = aside_host::source::nullable(aside_host::source::number()), default = null, validate = validate_dimension, animatable)]
     MaxHeight,
     /// Horizontal alignment within available space: 0 starts, 1 ends.
-    #[aside(name = "align_x", ty = Any, default = 0, validate = validate_opacity, animatable)]
+    #[aside(name = "align_x", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_opacity, animatable)]
     AlignX,
     /// Vertical alignment within available space: 0 starts, 1 ends.
-    #[aside(name = "align_y", ty = Any, default = 0, validate = validate_opacity, animatable)]
+    #[aside(name = "align_y", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_opacity, animatable)]
     AlignY,
     /// Callback for hover, press and focus interaction changes.
-    #[aside(name = "on_interaction", ty = Any, default = null, validate = validate_callback)]
+    #[aside(name = "on_interaction", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnInteraction,
     /// Requested font weight; 400 selects normal text.
-    #[aside(name = "font_weight", ty = Any, default = 400, validate = validate_font_weight)]
+    #[aside(name = "font_weight", ty = Any, doc_type = aside_host::source::number(), default = 400, validate = validate_font_weight)]
     FontWeight,
     /// Extra spacing between text glyphs in logical pixels.
-    #[aside(name = "letter_spacing", ty = Any, default = 0, validate = validate_text_spacing)]
+    #[aside(name = "letter_spacing", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_text_spacing)]
     LetterSpacing,
     /// Extra spacing at word boundaries in logical pixels.
-    #[aside(name = "word_spacing", ty = Any, default = 0, validate = validate_text_spacing)]
+    #[aside(name = "word_spacing", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_text_spacing)]
     WordSpacing,
     /// Include this subtree in stage.capture images. Normal presentation is unchanged.
     #[aside(name = "capture_included", ty = Bool, default = true)]
     CaptureIncluded,
     /// Horizontal shadow offset in logical pixels. Two zero offsets disable the shadow.
-    #[aside(name = "text_shadow_x", ty = Any, default = 0, validate = validate_number, animatable)]
+    #[aside(name = "text_shadow_x", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number, animatable)]
     TextShadowX,
     /// Vertical shadow offset in logical pixels. Reuses the text's shaped layout.
-    #[aside(name = "text_shadow_y", ty = Any, default = 0, validate = validate_number, animatable)]
+    #[aside(name = "text_shadow_y", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number, animatable)]
     TextShadowY,
     /// Uniform shadow color, independent of rich span colors and subject to text reveal.
     #[aside(name = "text_shadow_color", ty = String, default = "#000000", validate = validate_color)]
@@ -253,6 +255,7 @@ pub(super) enum NodeProperty {
 }
 
 pub(super) struct StageBinding {
+    pub(super) types: super::source::HostTypes,
     pub scene: Stage,
     pub retirement_revision: u64,
     handles: BTreeMap<NodeId, NodeBinding>,
@@ -317,7 +320,7 @@ impl StageBinding {
         )?;
         Ok(())
     }
-    pub fn new(program: &VerifiedProgram) -> Result<Self, AdapterError> {
+    pub fn new(program: &VerifiedProgram, heap: &Heap) -> Result<Self, AdapterError> {
         let p = program.package();
         let mut methods = [FunctionId(0); 5];
         for (slot, symbol) in methods.iter_mut().zip([
@@ -342,6 +345,7 @@ impl StageBinding {
                 .ok_or(AdapterError::Input("node method callable missing"))?;
         }
         Ok(Self {
+            types: super::source::HostTypes::new(heap)?,
             scene: Stage::default(),
             retirement_revision: 0,
             handles: BTreeMap::new(),
@@ -576,6 +580,11 @@ impl StageBinding {
             Value::NULL,
         ];
         let value = heap.alloc_composable_host(fields, &payload, Some(shape.validator()))?;
+        self.types.mark(
+            heap,
+            value,
+            registry::node_type(symbol).expect("node constructor type"),
+        )?;
         for (offset, name) in interaction::FIELDS.into_iter().enumerate() {
             let key = self.property_key(heap, name)?;
             let state = name == "disabled" && !props.enabled;

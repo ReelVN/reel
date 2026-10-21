@@ -67,6 +67,8 @@ fn migrated_sources_preserve_original_assertions_and_analyze() {
             ExternalSymbol::function(
                 "assert",
                 ExternalSignature {
+                    result_parameter: None,
+                    result_cases: Vec::new(),
                     parameters: vec![
                         ExternalParameter {
                             name: "condition".into(),

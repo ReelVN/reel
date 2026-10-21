@@ -1,0 +1,21 @@
+[package]
+name = "aside-lsp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+description = "Aside v1 language server using the shared compiler frontend"
+
+[dependencies]
+aside-compiler = { path = "../aside-compiler" }
+lsp-server = "=0.7.9"
+lsp-types = "=0.97.0"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+url = "=2.5.8"
+
+[dev-dependencies]
+tempfile = "=3.27.0"
+
+[lints]
+workspace = true

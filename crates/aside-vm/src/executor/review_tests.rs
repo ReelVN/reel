@@ -6,6 +6,7 @@ const OWNER: RootOwner = RootOwner(17);
 
 pub(super) fn echo_registry() -> RuntimeSupport {
     RuntimeSupport {
+        host_types: Vec::new(),
         opcodes: vec![],
         capabilities: vec!["host.echo".into()],
         natives: vec![NativeSupport {
@@ -37,6 +38,7 @@ fn default_registry() -> RuntimeSupport {
         default,
     };
     RuntimeSupport {
+        host_types: Vec::new(),
         opcodes: vec![],
         capabilities: vec!["host.parameter_defaults".into()],
         natives: vec![NativeSupport {

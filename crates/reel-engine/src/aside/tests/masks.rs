@@ -97,12 +97,12 @@ fn composed_mask_source_asb_snapshot_and_parameter_identity() {
 }
 #[test]
 fn mask_construction_rejects_invalid_values_at_author_calls() {
-    let code = r#"fn opening() {
+    let code = r#"fn dynamic(value) {value} fn opening() {
         let mut rejected = 0;
         try { mask.alpha(""); } catch e { rejected += 1; }
         try { mask.alpha("big.reel-image"); } catch e { rejected += 1; }
         try { mask.alpha("a.png", repeat: "invalid"); } catch e { rejected += 1; }
-        try { mask.alpha("a.png", x: {}); } catch e { rejected += 1; }
+        try { mask.alpha("a.png", x: dynamic({})); } catch e { rejected += 1; }
         try { mask.param("unknown"); } catch e { rejected += 1; }
         try { mask.pow(1, -1); } catch e { rejected += 1; }
         try { mask.clamp(1, min: 2, max: 1); } catch e { rejected += 1; }

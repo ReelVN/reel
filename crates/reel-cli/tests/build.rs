@@ -150,9 +150,17 @@ fn release_flag_strips_debug_data_and_is_build_only() {
 
 #[test]
 fn function_value_example_builds_and_runs_with_stage_coordinates_and_real_wait() {
-    author_example(
+    let text = author_example(
         include_str!("../../../examples/function_values.aside"),
-        &[(32., 48.), (32., 90.)],
+        &[(32., 48.), (32., 90.), (32., 150.)],
+    );
+    assert_eq!(
+        text,
+        [
+            "函数可以保存、传递，也可以作为缺省参数。",
+            "坐标使用 (int,int)，省略时采用缺省位置。",
+            "通过函数变量调用旁白，照常等待点击后继续。",
+        ]
     );
     author_example(
         include_str!("../../../examples/collections.aside"),
@@ -198,6 +206,7 @@ fn author_example(source: &str, coordinates: &[(f64, f64)]) -> Vec<String> {
     let mut session = Session::new(SessionId(1), Epoch(1)).unwrap();
     let mut vm = SessionVm::load(&session, story.program, VmLimits::default()).unwrap();
     let mut publications = 0;
+    let mut published = None;
     let mut text = Vec::new();
     for entry in [story.initializer, story.entry] {
         vm.start(&session, entry).unwrap();
@@ -213,8 +222,10 @@ fn author_example(source: &str, coordinates: &[(f64, f64)]) -> Vec<String> {
                     || 0,
                 )
                 .unwrap();
-            let reel_engine::aside::SessionStep::Vm(outcome) = outcome else {
-                panic!("expected main task progress");
+            let outcome = match outcome {
+                reel_engine::aside::SessionStep::Vm(outcome) => outcome,
+                reel_engine::aside::SessionStep::Progress => continue,
+                other => panic!("expected main task progress: {other:?}"),
             };
             match outcome {
                 RunOutcome::BudgetYield(_) => {}
@@ -223,34 +234,41 @@ fn author_example(source: &str, coordinates: &[(f64, f64)]) -> Vec<String> {
                         vm.dispatch(&mut session, ticket, "zh-CN", 256).unwrap()
                     {
                         publications += 1;
-                        vm.sync_stage(&session).unwrap();
-                        let stage = vm.stage();
-                        let children = &stage.node(stage.root().unwrap()).unwrap().children;
-                        assert_eq!(children.len(), coordinates.len());
-                        for (id, expected) in children.iter().zip(coordinates) {
-                            let node = stage.node(*id).unwrap();
-                            let props = &node.props;
-                            assert_eq!((props.x, props.y), *expected);
-                            if let reel_ui::stage::NodeKind::Text(value) = &node.kind {
-                                text.push(value.plain().to_string());
-                            }
-                        }
-                        vm.begin_collection().unwrap();
-                        while vm.vm().heap().phase() != aside_vm::GcPhase::Idle {
-                            vm.gc_step(GcBudget {
-                                units: 1,
-                                ..Default::default()
-                            })
-                            .unwrap();
-                        }
-                        let owner = session.root_owner();
-                        session
-                            .handle_local_input(owner, InputAction::Advance(interaction))
-                            .unwrap();
-                        session
-                            .handle_local_input(owner, InputAction::Advance(interaction))
-                            .unwrap();
+                        published = Some(interaction);
                     }
+                }
+                RunOutcome::Waiting(_) => {
+                    if !vm.stage_ready() {
+                        continue;
+                    }
+                    let interaction = published.take().expect("published dialogue wait");
+                    vm.sync_stage(&session).unwrap();
+                    let stage = vm.stage();
+                    let children = &stage.node(stage.root().unwrap()).unwrap().children;
+                    assert_eq!(children.len(), coordinates.len());
+                    for (id, expected) in children.iter().zip(coordinates) {
+                        let node = stage.node(*id).unwrap();
+                        let props = &node.props;
+                        assert_eq!((props.x, props.y), *expected);
+                        if let reel_ui::stage::NodeKind::Text(value) = &node.kind {
+                            text.push(value.plain().to_string());
+                        }
+                    }
+                    vm.begin_collection().unwrap();
+                    while vm.vm().heap().phase() != aside_vm::GcPhase::Idle {
+                        vm.gc_step(GcBudget {
+                            units: 1,
+                            ..Default::default()
+                        })
+                        .unwrap();
+                    }
+                    let owner = session.root_owner();
+                    session
+                        .handle_local_input(owner, InputAction::Advance(interaction))
+                        .unwrap();
+                    session
+                        .handle_local_input(owner, InputAction::Advance(interaction))
+                        .unwrap();
                 }
                 RunOutcome::Returned(_) => {
                     vm.discard_delivery(&mut session).unwrap();

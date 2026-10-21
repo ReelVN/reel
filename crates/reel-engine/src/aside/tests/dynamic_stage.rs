@@ -65,7 +65,7 @@ fn drive(vm: &mut SessionVm, session: &mut Session) -> RunOutcome {
 
 #[test]
 fn bound_node_methods_edit_the_same_tree_and_retire_owned_activities() {
-    let code = r#"fn opening() {
+    let code = r#"fn dynamic(value) {value} fn opening() {
         let first = text("first");
         let root = column() { first; };
         stage.replace(root);
@@ -79,8 +79,8 @@ fn bound_node_methods_edit_the_same_tree_and_retire_owned_activities() {
         try { last.add(text("leaf child")); } catch error { rejected += 1; }
         try { root.add(text("bad index"), index: -1); } catch error { rejected += 1; }
         try { root.add(text("far index"), index: 99); } catch error { rejected += 1; }
-        try { root.add = null; } catch error { rejected += 1; }
-        try { insert(receiver: last, child: text("override")); } catch error { rejected += 1; }
+        try { dynamic(root).add = null; } catch error { rejected += 1; }
+        try { dynamic(insert)(receiver: last, child: text("override")); } catch error { rejected += 1; }
         if rejected != 6 { throw "invalid edit accepted"; }
         let remove_part = part.remove;
         narrator("inserted");

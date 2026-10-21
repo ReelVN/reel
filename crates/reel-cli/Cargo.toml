@@ -20,10 +20,16 @@ name = "reel-game"
 path = "src/bin/reel-game.rs"
 required-features = ["window"]
 
+[[bin]]
+name = "reel-lsp"
+path = "src/bin/reel-lsp.rs"
+
 [dependencies]
 clap = { version = "=4.6.7", features = ["derive"] }
 tempfile = "=3.27.0"
 aside-compiler = { path = "../aside-compiler" }
+aside-host = { path = "../aside-host" }
+aside-lsp = { path = "../aside-lsp" }
 aside-vm = { path = "../aside-vm" }
 codespan-reporting = "=0.13.1"
 fluent-syntax = "=0.12.0"
@@ -39,6 +45,7 @@ reel-storage = { path = "../reel-storage" }
 libc = "=0.2.190"
 
 [dev-dependencies]
+lsp-server = "=0.7.9"
 reel-media = { path = "../reel-media", default-features = false }
 reel-player = { path = "../reel-player" }
 reel-core = { path = "../reel-core" }

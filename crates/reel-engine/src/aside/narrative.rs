@@ -85,6 +85,111 @@ use super::*;
 use crate::{ChoiceId, InputAction, InteractionView};
 use aside_vm::{Heap, HeapHandle, PropertyId, ValueTag, bytecode::FunctionKind};
 
+pub(super) fn describe(api: &mut aside_host::source::Api) {
+    use aside_compiler::semantic::TypeHint;
+    use aside_host::source::{Member, NamedType, named, nullable};
+    let text = TypeHint::Union(vec![TypeHint::String, named("reel::types::RichText")]);
+    let mut dialogue = Vec::new();
+    for (name, ty) in [
+        ("lines", TypeHint::Array),
+        ("current_line_ids", TypeHint::Array),
+        ("speaker_name", TypeHint::String),
+        ("text", text),
+        ("reveal", TypeHint::Int),
+        ("active", TypeHint::Bool),
+        ("read", TypeHint::Bool),
+        ("speaker_id", nullable(TypeHint::String)),
+        ("content_id", nullable(TypeHint::String)),
+        ("ready", TypeHint::Bool),
+        ("advance_requested", TypeHint::Bool),
+    ] {
+        dialogue.push(Member::field(
+            "reel::types::Dialogue",
+            name,
+            ty,
+            None,
+            "The current observable dialogue state.",
+            None,
+        ));
+    }
+    dialogue.push(Member::method(
+        api.native("reel::dialogue::clear").clone().bound("clear"),
+    ));
+    api.types.push(NamedType::new(
+        "reel::types::Dialogue",
+        "The session's current observable dialogue lines and advancement state.",
+        dialogue,
+    ));
+    let mut choice = vec![
+        Member::field(
+            "reel::types::Choice",
+            "options",
+            TypeHint::Array,
+            None,
+            "Currently available choice options.",
+            None,
+        ),
+        Member::field(
+            "reel::types::Choice",
+            "active",
+            TypeHint::Bool,
+            None,
+            "Whether a choice is accepting input.",
+            None,
+        ),
+    ];
+    choice.push(Member::method(
+        api.native("reel::choice::select").clone().bound("select"),
+    ));
+    api.types.push(NamedType::new(
+        "reel::types::Choice",
+        "The current observable choice and its selection method.",
+        choice,
+    ));
+    let reading = [
+        "auto",
+        "paused",
+        "delay",
+        "skipping",
+        "skip_unread",
+        "skip_after_choices",
+        "auto_ready",
+    ]
+    .into_iter()
+    .map(|name| {
+        Member::field(
+            "reel::types::Reading",
+            name,
+            if name == "delay" {
+                TypeHint::Float
+            } else {
+                TypeHint::Bool
+            },
+            None,
+            "The session's current reading policy. Change it with game reading commands.",
+            None,
+        )
+    })
+    .collect();
+    api.types.push(NamedType::new(
+        "reel::types::Reading",
+        "Observable automatic advancement, pause and skip policy.",
+        reading,
+    ));
+    for (function, ty) in [
+        ("dialogue", "Dialogue"),
+        ("choice", "Choice"),
+        ("reading", "Reading"),
+    ] {
+        api.refine(
+            &format!("reel::game::{function}"),
+            named(&format!("reel::types::{ty}")),
+            &[],
+        );
+    }
+    api.refine("reel::game::history", TypeHint::Array, &[]);
+}
+
 #[derive(Clone, Copy)]
 #[repr(u32)]
 enum DialogueField {
@@ -209,7 +314,11 @@ impl Narrative {
         }
         Ok(())
     }
-    fn new(vm: &mut Vm, owner: RootOwner) -> Result<Self, AdapterError> {
+    fn new(
+        vm: &mut Vm,
+        owner: RootOwner,
+        types: &super::source::HostTypes,
+    ) -> Result<Self, AdapterError> {
         let method = |name: &str| {
             vm.program()
                 .package()
@@ -277,6 +386,13 @@ impl Narrative {
         let auto_condition = heap.alloc_host(fields, &[], Some(auto_condition_validator))?;
         heap.observe_host_properties(auto_condition, 1, 0)?;
         let roots = heap.alloc_array(&[dialogue, choice, reading, auto_condition])?;
+        for (value, ty) in [
+            (dialogue, "reel::types::Dialogue"),
+            (choice, "reel::types::Choice"),
+            (reading, "reel::types::Reading"),
+        ] {
+            types.mark(heap, value, ty)?;
+        }
         for (object, name, function) in [(dialogue, "clear", clear), (choice, "select", select)] {
             let method = vm.bind_native(object, function)?;
             let heap = vm.heap_mut();
@@ -683,7 +799,11 @@ impl SessionVm {
     ) -> Result<(), AdapterError> {
         let initialize = self.narrative.is_none();
         if initialize {
-            self.narrative = Some(Narrative::new(&mut self.vm, self.root_owner)?);
+            self.narrative = Some(Narrative::new(
+                &mut self.vm,
+                self.root_owner,
+                &self.stage.types,
+            )?);
         }
         // Getter calls inside a derived computation read its current batch.
         // Author commands outside that capture still publish immediately.

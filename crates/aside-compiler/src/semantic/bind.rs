@@ -83,6 +83,7 @@ struct CallSite {
     bound: bool,
     effect: CallEffect,
     no_wait: bool,
+    named_callee: Option<NameId>,
 }
 #[derive(Clone)]
 struct PatternName {
@@ -129,6 +130,36 @@ struct CheckedSignature {
     rest: Option<usize>,
     required: Vec<usize>,
 }
+#[derive(Clone)]
+struct ExternalDescriptor {
+    symbol: Arc<ExternalSymbol>,
+    kind: ExternalBindingKind,
+}
+impl ExternalDescriptor {
+    fn reference(symbol: ExternalSymbol) -> Self {
+        let kind = if symbol.type_only {
+            ExternalBindingKind::Type
+        } else {
+            ExternalBindingKind::Reference
+        };
+        Self {
+            symbol: Arc::new(symbol),
+            kind,
+        }
+    }
+    fn metadata(symbol: ExternalSymbol) -> Self {
+        Self {
+            symbol: Arc::new(symbol),
+            kind: ExternalBindingKind::Metadata,
+        }
+    }
+}
+impl std::ops::Deref for ExternalDescriptor {
+    type Target = ExternalSymbol;
+    fn deref(&self) -> &ExternalSymbol {
+        &self.symbol
+    }
+}
 struct Binder<'a> {
     out: AnalyzedModule,
     options: &'a AnalysisOptions,
@@ -145,8 +176,9 @@ struct Binder<'a> {
     fn_nodes: HashMap<NodeId, FunctionId>,
     capture_maps: Vec<HashMap<SymbolId, usize>>,
     capture_users: Vec<Vec<(FunctionId, usize)>>,
-    external: HashMap<SymbolId, Arc<ExternalSymbol>>,
-    external_nodes: HashMap<NodeId, Arc<ExternalSymbol>>,
+    external: HashMap<SymbolId, ExternalDescriptor>,
+    external_nodes: HashMap<NodeId, ExternalDescriptor>,
+    member_write_types: HashMap<NodeId, Option<TypeId>>,
     calls: Vec<CallSite>,
     analyzed_functions: HashSet<FunctionId>,
     signature_ready: HashSet<FunctionId>,
@@ -154,8 +186,11 @@ struct Binder<'a> {
     pending_requirements: Vec<PendingRequirement>,
     signatures: HashMap<SignatureKey, Arc<CheckedSignature>>,
     empty_signature: Option<Arc<CheckedSignature>>,
+    callable_types: HashMap<NameId, Option<ExternalDescriptor>>,
+    await_types: HashMap<NameId, Option<TypeId>>,
     class: Option<(NodeId, bool)>,
     class_members: HashMap<NodeId, HashMap<(NameId, bool), NodeId>>,
+    prepared_classes: HashSet<NodeId>,
     class_bases: HashMap<NodeId, NodeId>,
     derived_functions: HashSet<NodeId>,
     fresh: HashSet<SymbolId>,
@@ -167,10 +202,28 @@ pub(super) fn analyze(
     options: &AnalysisOptions,
     resolver: &mut dyn ModuleResolver,
 ) -> Analysis {
+    let result = analyze_editor(hir, options, resolver);
+    Analysis {
+        module: if result.diagnostics.is_empty() && !result.exhausted {
+            result.module
+        } else {
+            None
+        },
+        diagnostics: result.diagnostics,
+        exhausted: result.exhausted,
+        stats: result.stats,
+    }
+}
+
+pub(super) fn analyze_editor(
+    hir: Hir,
+    options: &AnalysisOptions,
+    resolver: &mut dyn ModuleResolver,
+) -> crate::editor::EditorAnalysis {
     // Admit the seeded name index before cloning/allocating any binding metadata.
     let admitted = hir.names.len().saturating_add(1);
     if admitted > options.limits.max_work {
-        return Analysis {
+        return crate::editor::EditorAnalysis {
             module: None,
             diagnostics: vec![Diagnostic::error(
                 D::BudgetExceeded,
@@ -259,6 +312,7 @@ pub(super) fn analyze(
         capture_users: Vec::new(),
         external: HashMap::new(),
         external_nodes: HashMap::new(),
+        member_write_types: HashMap::new(),
         calls: Vec::new(),
         analyzed_functions: HashSet::new(),
         signature_ready: HashSet::new(),
@@ -266,8 +320,11 @@ pub(super) fn analyze(
         pending_requirements: Vec::new(),
         signatures: HashMap::new(),
         empty_signature: None,
+        callable_types: HashMap::new(),
+        await_types: HashMap::new(),
         class: None,
         class_members: HashMap::new(),
+        prepared_classes: HashSet::new(),
         class_bases: HashMap::new(),
         derived_functions: HashSet::new(),
         fresh: HashSet::new(),
@@ -291,7 +348,8 @@ pub(super) fn analyze(
             iteration: false,
         }) {
             b.initialized[symbol.0 as usize] = true;
-            b.external.insert(symbol, Arc::new(host.clone()));
+            b.external
+                .insert(symbol, ExternalDescriptor::reference(host.clone()));
         }
     }
     let mut ctx = Context {
@@ -340,7 +398,10 @@ pub(super) fn analyze(
             Initialization::External,
         ) {
             b.initialized[symbol.0 as usize] = true;
-            b.external.insert(symbol, Arc::new(binding.symbol.clone()));
+            b.external.insert(
+                symbol,
+                ExternalDescriptor::reference(binding.symbol.clone()),
+            );
         }
     }
     b.block(NodeId(0), &ctx, false);
@@ -356,13 +417,9 @@ pub(super) fn analyze(
     b.check_results();
     b.account();
     let stats = b.out.stats.clone();
-    Analysis {
+    crate::editor::EditorAnalysis {
         stats,
-        module: if b.diagnostics.is_empty() && !b.exhausted {
-            Some(b.out)
-        } else {
-            None
-        },
+        module: Some(b.out),
         diagnostics: b.diagnostics,
         exhausted: b.exhausted,
     }
@@ -735,6 +792,14 @@ impl Binder<'_> {
                 self.import(d, self.modifier(child, K::Pub), ctx);
             }
         }
+        // Class shape is needed when a forward function body uses an instance.
+        // Method and field initializer bodies are still analyzed at the declaration.
+        for &child in &children {
+            let declaration = self.unwrap(child);
+            if self.kind(declaration) == HirKind::Class {
+                self.prepare_class(declaration, ctx);
+            }
+        }
         // Prepare every declared contract before visiting any consumer default/body.
         for &child in &children {
             if self.exhausted {
@@ -1048,6 +1113,21 @@ impl Binder<'_> {
             return self.set_ty(n, ANY);
         };
         self.out.facts[n.0 as usize].symbol = Some(s);
+        if self
+            .external
+            .get(&s)
+            .is_some_and(|descriptor| descriptor.type_only)
+        {
+            self.error(
+                D::InvalidType,
+                token.span,
+                "a type declaration cannot be read as a value",
+            );
+            if let Some(descriptor) = self.external.get(&s) {
+                self.external_nodes.insert(n, descriptor.clone());
+            }
+            return self.set_ty(n, ANY);
+        }
         let symbol = self.out.symbols[s.0 as usize].clone();
         if symbol.kind == SymbolKind::Import {
             self.check(n, RuntimeChecks::INITIALIZED);
@@ -1274,7 +1354,7 @@ impl Binder<'_> {
                 kind: ImportKind::Symbol,
             }) {
                 Ok(mut result) if result.version == namespace.version => {
-                    descriptor = result.bindings.pop().map(Arc::new)
+                    descriptor = result.bindings.pop().map(ExternalDescriptor::reference)
                 }
                 Ok(_) => {
                     self.error(
@@ -1337,6 +1417,10 @@ impl Binder<'_> {
             }
             (Type::Function(_) | Type::BoundMethod(_), Type::Closure) => true,
             (Type::Class(_), Type::Named(name)) if self.out.hir.name(*name) == "class" => true,
+            (Type::Named(actual), Type::Named(expected)) => self
+                .resolver
+                .is_named_subtype(self.out.hir.name(*actual), self.out.hir.name(*expected))
+                .unwrap_or(true),
             (Type::Named(_) | Type::Instance(_), Type::Named(_) | Type::Instance(_)) => true,
             _ => false,
         }
@@ -1360,8 +1444,9 @@ impl Binder<'_> {
                 D::TypeMismatch,
                 self.span(n),
                 format!(
-                    "{label}: {:?} cannot satisfy {:?}",
-                    self.out.types[actual.0 as usize], self.out.types[expected.0 as usize]
+                    "{label}: {} cannot satisfy {}",
+                    self.out.display_type(actual),
+                    self.out.display_type(expected)
                 ),
             );
         } else if actual == ANY || actual != expected {
@@ -1608,6 +1693,22 @@ impl Binder<'_> {
                         PatternUse::Existing,
                         self.modifier(n, K::Mut),
                     );
+                    if !self.modifier(n, K::Mut)
+                        && self.kind(p) == HirKind::NamePattern
+                        && let Some(initializer) = init
+                        && let Some(descriptor) = self.external_nodes.get(&initializer).cloned()
+                        && let Some(symbol) = self.out.facts[p.0 as usize].symbol
+                    {
+                        // Keep typing and navigation while execution retains the
+                        // alias's own binding, module slot and initialized state.
+                        self.external.insert(
+                            symbol,
+                            ExternalDescriptor {
+                                kind: ExternalBindingKind::Metadata,
+                                ..descriptor
+                            },
+                        );
+                    }
                     if let Some(init) = init
                         && self.is_fresh(init)
                     {
@@ -1868,6 +1969,16 @@ impl Binder<'_> {
                     );
                 }
                 self.check(n, RuntimeChecks::TYPE);
+                if let Some(name) = self.nullable_named_type(t) {
+                    if !self.await_types.contains_key(&name) {
+                        let hint = self.resolver.resolve_type_await(self.out.hir.name(name));
+                        let result = hint.as_ref().map(|hint| self.hint(hint));
+                        self.await_types.insert(name, result);
+                    }
+                    if let Some(result) = self.await_types[&name] {
+                        return result;
+                    }
+                }
                 ANY
             }
             Some(K::Bang) => {
@@ -1995,6 +2106,11 @@ impl Binder<'_> {
             self.check(target, RuntimeChecks::PATTERN);
         }
         self.pattern_type(target, value, PatternUse::Assignment);
+        if let Some(Some(expected)) = self.member_write_types.get(&target).copied()
+            && let Some(rhs) = rhs
+        {
+            self.require(rhs, value, expected, "host property assignment");
+        }
         value
     }
     fn location(&mut self, n: NodeId, ctx: &Context) {
@@ -2020,6 +2136,13 @@ impl Binder<'_> {
             }
             HirKind::Member | HirKind::Index => {
                 self.visit(n, ctx);
+                if matches!(self.member_write_types.get(&n), Some(None)) {
+                    self.error(
+                        D::ImmutableBinding,
+                        self.span(n),
+                        "host property is read-only",
+                    );
+                }
                 self.check(n, RuntimeChecks::MUTABILITY);
                 if let Form::Index { object, .. } = self.out.hir.node(n).form
                     && matches!(self.out.types[self.ty(object).0 as usize], Type::Tuple(_))
@@ -2083,6 +2206,49 @@ impl Binder<'_> {
             .name(n)
             .map(|t| self.out.hir.name(t.name.unwrap()).to_owned());
         if let (Some(&base), Some(key)) = (children.first(), key) {
+            if let Some(class) = self
+                .external_nodes
+                .get(&base)
+                .and_then(|symbol| symbol.class.clone())
+            {
+                if let Some(member) = class
+                    .static_members
+                    .iter()
+                    .find(|member| member.symbol.name == key)
+                    .cloned()
+                {
+                    let ty = self.hint(&member.symbol.ty);
+                    let write = member.write_type.as_ref().map(|ty| self.hint(ty));
+                    self.member_write_types.insert(n, write);
+                    self.external_nodes
+                        .insert(n, ExternalDescriptor::metadata(member.symbol));
+                    return ty;
+                }
+                self.check(n, RuntimeChecks::TYPE);
+                return ANY;
+            }
+            let named = self.nullable_named_type(object);
+            if let Some(name) = named
+                && let Some(member) = self
+                    .resolver
+                    .resolve_type_member(self.out.hir.name(name), &key)
+            {
+                let ty = self.hint(&member.symbol.ty);
+                let write = member.write_type.as_ref().map(|ty| self.hint(ty));
+                self.member_write_types.insert(n, write);
+                self.external_nodes
+                    .insert(n, ExternalDescriptor::metadata(member.symbol));
+                if matches!(self.out.types[object.0 as usize], Type::Union(_)) {
+                    self.check(n, RuntimeChecks::TYPE);
+                    if matches!(
+                        self.out.hir.node(n).form,
+                        Form::Member { optional: true, .. } | Form::Member { chain: true, .. }
+                    ) {
+                        return self.nullable_type(ty);
+                    }
+                }
+                return ty;
+            }
             if let Some(namespace) = self
                 .external_nodes
                 .get(&base)
@@ -2102,8 +2268,19 @@ impl Binder<'_> {
                 match self.resolve(&request) {
                     Ok(mut result) if result.version == namespace.version => {
                         if let Some(symbol) = result.bindings.pop() {
+                            if symbol.type_only {
+                                self.error(
+                                    D::InvalidType,
+                                    self.span(n),
+                                    "a type declaration cannot be read as a value",
+                                );
+                                self.external_nodes
+                                    .insert(n, ExternalDescriptor::reference(symbol));
+                                return ANY;
+                            }
                             let ty = self.external_type(&symbol);
-                            self.external_nodes.insert(n, Arc::new(symbol));
+                            self.external_nodes
+                                .insert(n, ExternalDescriptor::reference(symbol));
                             return ty;
                         }
                     }
@@ -2120,16 +2297,19 @@ impl Binder<'_> {
             {
                 let instance = matches!(self.out.types[object.0 as usize], Type::Instance(_));
                 let name = self.intern_name(&key);
-                if let Some(d) = self.find_class_member(class, name, !instance)
-                    && let Some(f) = self.fn_nodes.get(&d).copied()
-                {
-                    self.check(n, RuntimeChecks::RECEIVER);
-                    self.out.facts[n.0 as usize].function = Some(f);
-                    return self.intern_type(if instance {
-                        Type::BoundMethod(f)
-                    } else {
-                        Type::Function(f)
-                    });
+                if let Some(d) = self.find_class_member(class, name, !instance) {
+                    if self.kind(d) == HirKind::Function
+                        && let Some(f) = self.fn_nodes.get(&d).copied()
+                    {
+                        self.check(n, RuntimeChecks::RECEIVER);
+                        self.out.facts[n.0 as usize].function = Some(f);
+                        return self.intern_type(if instance {
+                            Type::BoundMethod(f)
+                        } else {
+                            Type::Function(f)
+                        });
+                    }
+                    return self.ty(d);
                 }
             }
         }
@@ -2154,6 +2334,32 @@ impl Binder<'_> {
         }
         None
     }
+    fn nullable_named_type(&self, ty: TypeId) -> Option<NameId> {
+        match &self.out.types[ty.0 as usize] {
+            Type::Named(name) => Some(*name),
+            Type::Union(types) => {
+                let mut name = None;
+                for ty in types {
+                    match self.out.types[ty.0 as usize] {
+                        Type::Null => {}
+                        Type::Named(candidate) if name.is_none_or(|name| name == candidate) => {
+                            name = Some(candidate)
+                        }
+                        _ => return None,
+                    }
+                }
+                name
+            }
+            _ => None,
+        }
+    }
+    fn nullable_type(&mut self, ty: TypeId) -> TypeId {
+        match &self.out.types[ty.0 as usize] {
+            Type::Null => ty,
+            Type::Union(types) if types.contains(&NULL) => ty,
+            _ => self.intern_type(Type::Union(vec![ty, NULL])),
+        }
+    }
     fn call(&mut self, n: NodeId, ty: TypeId, ctx: &Context) -> TypeId {
         let Form::Call {
             callee: target,
@@ -2165,7 +2371,25 @@ impl Binder<'_> {
         else {
             return ANY;
         };
-        let descriptor = self.external_nodes.get(&target).cloned();
+        let mut descriptor = self.external_nodes.get(&target).cloned();
+        let mut named_callee = None;
+        if descriptor
+            .as_ref()
+            .is_none_or(|descriptor| descriptor.signature.is_none())
+            && let Some(name) = self.nullable_named_type(ty)
+        {
+            if !self.callable_types.contains_key(&name) {
+                let callable = self
+                    .resolver
+                    .resolve_type_call(self.out.hir.name(name))
+                    .map(ExternalDescriptor::metadata);
+                self.callable_types.insert(name, callable);
+            }
+            if let Some(callable) = &self.callable_types[&name] {
+                descriptor = Some(callable.clone());
+                named_callee = Some(name);
+            }
+        }
         if let Some(Intrinsic::Derive) = descriptor.as_ref().and_then(|d| d.intrinsic)
             && let Some(args) = arguments
         {
@@ -2256,27 +2480,51 @@ impl Binder<'_> {
             Type::Function(f) | Type::BoundMethod(f) => Some(f),
             _ => constructor,
         };
-        let external = self.external_nodes.get(&target).cloned();
+        let external = descriptor.clone();
         let effect = external
             .as_ref()
             .and_then(|e| e.signature.as_ref())
             .map_or(CallEffect::Unknown, |s| s.effect);
-        self.calls.push(CallSite {
+        let call = CallSite {
             node: n,
             caller: ctx.function,
             callee: function,
             bound,
             effect,
             no_wait: ctx.no_wait,
-        });
+            named_callee,
+        };
+        self.calls.push(call.clone());
         self.check(n, RuntimeChecks::CALL);
         if ctx.no_wait {
             self.check(n, RuntimeChecks::NO_WAIT);
         }
+        if matches!(
+            descriptor.as_ref().and_then(|symbol| symbol.intrinsic),
+            Some(Intrinsic::Bind | Intrinsic::Derive)
+        ) {
+            let name = self.intern_name("Binding");
+            return self.intern_type(Type::Named(name));
+        }
         if let Some(external) = external
             && let Some(signature) = &external.signature
         {
-            return self.hint(&signature.result);
+            if (!signature.result_cases.is_empty() || signature.result_parameter.is_some())
+                && let Some(result) =
+                    self.specialized_call_result(&call, target, arguments, trailing, signature)
+            {
+                return if (optional || chain) && !self.definitely_nonnull(ty) {
+                    self.nullable_type(result)
+                } else {
+                    result
+                };
+            }
+            let result = self.hint(&signature.result);
+            return if (optional || chain) && !self.definitely_nonnull(ty) {
+                self.nullable_type(result)
+            } else {
+                result
+            };
         }
         if let Type::Class(class) = self.out.types[ty.0 as usize] {
             self.check(n, RuntimeChecks::NO_WAIT);
@@ -2743,32 +2991,27 @@ impl Binder<'_> {
         }
         false
     }
-    fn class_node(&mut self, n: NodeId, children: &[NodeId], ctx: &Context) -> TypeId {
+    fn prepare_class(&mut self, n: NodeId, ctx: &Context) {
+        if !self.prepared_classes.insert(n) {
+            return;
+        }
+        let children = self.children(n);
         let base = children
             .iter()
             .copied()
             .find(|&c| !matches!(self.kind(self.unwrap(c)), HirKind::Let | HirKind::Function));
-        if let Some(base) = base {
-            let value = self.visit(base, ctx);
-            if let Type::Class(parent) = self.out.types[value.0 as usize] {
-                self.class_bases.insert(n, parent);
-            }
-
-            if matches!(self.out.types[value.0 as usize],Type::Class(c)if c==n) {
-                self.error(
-                    D::TypeMismatch,
-                    self.span(base),
-                    "class cannot inherit itself",
-                );
-            }
-            if is_primitive(&self.out.types[value.0 as usize]) {
-                self.error(D::TypeMismatch, self.span(base), "base must be a class");
-            }
+        if let Some(base) = base
+            && let Form::Name { name } = self.out.hir.node(base).form
+            && let Some(symbol) = name.name.and_then(|name| self.lookup(name))
+            && let Type::Class(parent) =
+                self.out.types[self.out.symbols[symbol.0 as usize].ty.0 as usize]
+        {
+            self.class_bases.insert(n, parent);
         }
         let old_class = self.class;
         self.class = Some((n, base.is_some()));
         let mut seen = HashSet::new();
-        for &member in children {
+        for &member in &children {
             if !self.budget(member) {
                 break;
             }
@@ -2806,9 +3049,17 @@ impl Binder<'_> {
                         Receiver::ExplicitSelf
                     },
                 );
+            } else if let Form::Binding {
+                annotation: Some(annotation),
+                ..
+            } = self.out.hir.node(d).form
+            {
+                // Fields are visible to methods regardless of declaration order.
+                let ty = self.annotation(annotation, ctx);
+                self.set_ty(d, ty);
             }
         }
-        for &member in children {
+        for &member in &children {
             if self.exhausted {
                 break;
             }
@@ -2825,6 +3076,33 @@ impl Binder<'_> {
                 );
             }
         }
+        self.class = old_class;
+    }
+    fn class_node(&mut self, n: NodeId, children: &[NodeId], ctx: &Context) -> TypeId {
+        self.prepare_class(n, ctx);
+        if let Form::Class {
+            base: Some(base), ..
+        } = self.out.hir.node(n).form
+        {
+            // Declaration execution, rather than signature preparation, owns
+            // initialization and base-value diagnostics.
+            let value = self.visit(base, ctx);
+            if let Type::Class(parent) = self.out.types[value.0 as usize] {
+                self.class_bases.insert(n, parent);
+            }
+            if matches!(self.out.types[value.0 as usize],Type::Class(class) if class==n) {
+                self.error(
+                    D::TypeMismatch,
+                    self.span(base),
+                    "class cannot inherit itself",
+                );
+            }
+            if is_primitive(&self.out.types[value.0 as usize]) {
+                self.error(D::TypeMismatch, self.span(base), "base must be a class");
+            }
+        }
+        let old_class = self.class;
+        self.class = Some((n, self.class_bases.contains_key(&n)));
         for &member in children {
             if !self.budget(member) {
                 break;
@@ -2846,6 +3124,7 @@ impl Binder<'_> {
                     let Form::Binding {
                         initializer,
                         annotation,
+                        mutable,
                         ..
                     } = self.out.hir.node(d).form
                     else {
@@ -2891,6 +3170,7 @@ impl Binder<'_> {
                         if let Some(expected) = annotation {
                             self.require(init, t, expected, "field initializer");
                         }
+                        self.set_ty(d, annotation.unwrap_or(if mutable { ANY } else { t }));
                         self.scope = previous;
                     } else if let Some(a) = annotation {
                         self.annotation(a, ctx);
@@ -2985,7 +3265,7 @@ impl Binder<'_> {
                         iteration: false,
                     }) {
                         self.initialized[s.0 as usize] = true;
-                        self.external.insert(s, Arc::new(ext));
+                        self.external.insert(s, ExternalDescriptor::reference(ext));
                         names.push((name, s));
                         if public {
                             self.out.exports.push(s);
@@ -3057,11 +3337,14 @@ impl Binder<'_> {
         call: &CallSite,
         callee: NodeId,
     ) -> Option<Arc<CheckedSignature>> {
-        let descriptor = self.external_nodes.get(&callee).cloned();
+        let descriptor = call
+            .named_callee
+            .and_then(|name| self.callable_types.get(&name).cloned().flatten())
+            .or_else(|| self.external_nodes.get(&callee).cloned());
         let key = if let Some(function) = call.callee {
             SignatureKey::Function(function, call.bound)
         } else {
-            SignatureKey::External(Arc::as_ptr(descriptor.as_ref()?) as usize)
+            SignatureKey::External(Arc::as_ptr(&descriptor.as_ref()?.symbol) as usize)
         };
         if let Some(signature) = self.signatures.get(&key) {
             return Some(signature.clone());
@@ -3310,7 +3593,8 @@ impl Binder<'_> {
             .map(|(&symbol, descriptor)| ExternalBinding {
                 symbol: Some(symbol),
                 node: None,
-                descriptor: descriptor.clone(),
+                descriptor: descriptor.symbol.clone(),
+                kind: descriptor.kind,
             })
             .chain(
                 self.external_nodes
@@ -3318,7 +3602,8 @@ impl Binder<'_> {
                     .map(|(&node, descriptor)| ExternalBinding {
                         symbol: None,
                         node: Some(node),
-                        descriptor: descriptor.clone(),
+                        descriptor: descriptor.symbol.clone(),
+                        kind: descriptor.kind,
                     }),
             )
             .collect();

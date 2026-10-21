@@ -3,63 +3,58 @@ use aside_host::PropertySchema;
 pub(super) use aside_host::{NativeContract, NativeParameter};
 use aside_vm::bytecode::{self as bc, BuiltinType, Effects};
 
-pub(super) const IMAGE_PREFIX: &[&str] = &[
-    "source",
-    "fit",
-    "slice",
-    "slice_scale",
-    "repeat",
-    "tile_scale",
-    "corner_colors",
-    "slice_center",
+pub(super) const IMAGE_PREFIX: &[&str] = super::stage::appearance::ImageField::NAMES;
+
+pub(super) const NODE_CONSTRUCTORS: &[(&str, &str)] = &[
+    ("text", "reel::types::TextNode"),
+    ("text_input", "reel::types::TextInputNode"),
+    ("text_area", "reel::types::TextInputNode"),
+    ("image", "reel::types::ImageNode"),
+    ("video", "reel::types::VideoNode"),
+    ("particles", "reel::types::ParticlesNode"),
+    ("row", "reel::types::Node"),
+    ("column", "reel::types::Node"),
+    ("stack", "reel::types::Node"),
+    ("cursor", "reel::types::Node"),
+    ("button", "reel::types::ButtonNode"),
+    ("input", "reel::types::InputNode"),
+    ("slider", "reel::types::SliderNode"),
+    ("toggle", "reel::types::ToggleNode"),
+    ("checkbox", "reel::types::ToggleNode"),
+    ("radio", "reel::types::RadioNode"),
+    ("scroll", "reel::types::ScrollNode"),
+    ("camera", "reel::types::CameraNode"),
 ];
 
-const BASIC_NODE_CONSTRUCTORS: &[&str] = &[
-    "text",
-    "text_input",
-    "text_area",
-    "image",
-    "video",
-    "particles",
-    "row",
-    "column",
-    "stack",
-    "cursor",
-    "button",
-    "input",
-    "slider",
-    "toggle",
-    "checkbox",
-    "radio",
-    "scroll",
-    "camera",
-];
+pub(super) fn node_type(symbol: &str) -> Option<&'static str> {
+    let name = symbol.strip_prefix("reel::")?;
+    NODE_CONSTRUCTORS
+        .iter()
+        .find(|(constructor, _)| *constructor == name)
+        .map(|(_, ty)| *ty)
+        .or(match name {
+            "list" | "view" | "layered_image" => Some("reel::types::Node"),
+            _ => None,
+        })
+}
 
 pub(super) fn is_node_constructor(symbol: &str) -> bool {
-    symbol.strip_prefix("reel::").is_some_and(|name| {
-        BASIC_NODE_CONSTRUCTORS.contains(&name) || matches!(name, "list" | "view" | "layered_image")
-    })
+    node_type(symbol).is_some()
 }
 
 pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
     match symbol {
-        "reel::camera" => &["camera_x", "camera_y", "zoom", "camera_rotation"],
-        "reel::scroll" => &[
-            "axis",
-            "follow_end",
-            "content_align",
-            "scroll_x",
-            "scroll_y",
-        ],
-        "reel::text" => &["value", "on_link"],
-        "reel::text_input" | "reel::text_area" => &["value", "on_change", "on_submit"],
+        "reel::camera" => super::stage::camera::CameraField::NAMES,
+        "reel::scroll" => super::stage::scroll::ScrollField::NAMES,
+        "reel::text" => super::stage::appearance::TextField::NAMES,
+        "reel::text_input" | "reel::text_area" => super::stage::text_input::TextInputField::NAMES,
         "reel::particles" => super::particles::PREFIX,
         "reel::image" | "reel::video" => IMAGE_PREFIX,
-        "reel::button" => &["label", "on_click"],
-        "reel::slider" => &["value", "min", "max", "step", "on_change"],
-        "reel::toggle" | "reel::checkbox" => &["label", "value", "on_change"],
-        "reel::radio" => &["option", "label", "value", "on_change"],
-        "reel::input" => &["actions", "on_key", "on_pointer", "on_wheel"],
+        "reel::button" => super::stage::appearance::ButtonField::NAMES,
+        "reel::slider" => super::stage::controls::SliderField::NAMES,
+        "reel::toggle" | "reel::checkbox" => super::stage::controls::ToggleField::NAMES,
+        "reel::radio" => super::stage::controls::RadioField::NAMES,
+        "reel::input" => super::stage::input::InputField::NAMES,
         _ => &[],
     }
 }
@@ -244,7 +239,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             required_capabilities: capabilities(),
         });
     }
-    for &name in BASIC_NODE_CONSTRUCTORS {
+    for &(name, _) in NODE_CONSTRUCTORS {
         let mut parameters = Vec::new();
         if name == "camera" {
             parameters.extend(
@@ -290,29 +285,15 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                     .iter()
                     .map(|p| p.parameter()),
             );
-        } else {
-            for &field in node_prefix(&format!("reel::{name}")) {
-                parameters.push(NativeParameter {
-                    name: field.into(),
-                    ty: if matches!(name, "button" | "input") {
-                        BuiltinType::Any
-                    } else {
-                        BuiltinType::String
-                    },
-                    default: if matches!(name, "button" | "input")
-                        || matches!(field, "on_link" | "slice" | "corner_colors")
-                    {
-                        Some(bc::Const::Null)
-                    } else if matches!(field, "slice_scale" | "tile_scale") {
-                        Some(bc::Const::Int(1))
-                    } else if field == "repeat" {
-                        Some(bc::Const::Utf8("none".into()))
-                    } else if field == "slice_center" {
-                        Some(bc::Const::Bool(true))
-                    } else {
-                        (field == "fit").then(|| bc::Const::Utf8("contain".into()))
-                    },
-                });
+        } else if let Some(properties) = match name {
+            "text" => Some(super::stage::appearance::TextField::PROPERTIES),
+            "button" => Some(super::stage::appearance::ButtonField::PROPERTIES),
+            "image" | "video" => Some(super::stage::appearance::ImageField::PROPERTIES),
+            _ => None,
+        } {
+            parameters.extend(properties.iter().map(|p| p.parameter()));
+            if matches!(name, "text" | "image" | "video") {
+                parameters[0].default = None;
             }
         }
         parameters.extend(NodeProperty::PROPERTIES.iter().map(|p| p.parameter()));

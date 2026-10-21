@@ -315,6 +315,7 @@ fn successive_retention_within_the_same_group_preserves_its_projection() {
 #[test]
 fn independent_history_keeps_display_identity_callbacks_and_snapshot_continuations() {
     let code = r#"
+    fn dynamic(value) {value}
     fn opening() {
         let mio = character("Mio", id: "mio");
         let later = mio.line("later display", history: rich("[b]later history[/b]"));
@@ -334,10 +335,10 @@ fn independent_history_keeps_display_identity_callbacks_and_snapshot_continuatio
             throw "group history alias or wrong line index";
         }
         let mut rejected = 0;
-        try { mio("bad", history: 42); } catch e { rejected += 1; }
-        try { narrator("bad", history: []); } catch e { rejected += 1; }
-        try { mio.line("bad", history: null); } catch e { rejected += 1; }
-        try { game.record("bad", speaker: {}); } catch e { rejected += 1; }
+        try { mio("bad", history: dynamic(42)); } catch e { rejected += 1; }
+        try { narrator("bad", history: dynamic([])); } catch e { rejected += 1; }
+        try { mio.line("bad", history: dynamic(null)); } catch e { rejected += 1; }
+        try { game.record("bad", speaker: dynamic({})); } catch e { rejected += 1; }
         if rejected != 4 || h.len() != 2 { throw "invalid input published history"; }
         stage.replace(button("voice", on_click: |event| {
             game.record(rich("[i]background voice[/i]"), speaker: mio);

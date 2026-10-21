@@ -17,16 +17,22 @@ pub(crate) struct TypeChecks {
     signature_work: ChargedVec<u64>,
     stack: RefCell<ChargedVec<Cursor>>,
     symbols: ChargedVec<SymbolId>,
+    pub(crate) host_types: crate::host_types::HostTypes,
 }
 
 impl TypeChecks {
-    pub(super) fn new(p: &BytecodePackage, usage: &HeapBudgetUsage) -> Result<Self, VmError> {
+    pub(super) fn new(
+        p: &BytecodePackage,
+        usage: &HeapBudgetUsage,
+        registrations: &[crate::HostTypeSupport],
+    ) -> Result<Self, VmError> {
+        let host_types = crate::host_types::HostTypes::new(p, registrations, usage)?;
         let mut work = ChargedVec::new(usage, p.types.len())?;
         let mut depths = ChargedVec::new(usage, p.types.len())?;
         for ty in &p.types {
             let (cost, depth) = match ty {
                 TypeDef::Builtin(_) => (1, 0usize),
-                TypeDef::Named { .. } => (3, 0usize),
+                TypeDef::Named { .. } => (3 + host_types.work, 0usize),
                 TypeDef::Tuple(items) | TypeDef::Union(items) => {
                     let mut cost = 3u64;
                     let mut depth = 0;
@@ -72,6 +78,7 @@ impl TypeChecks {
             signature_work,
             stack: RefCell::new(stack),
             symbols,
+            host_types,
         })
     }
 
@@ -223,7 +230,7 @@ mod tests {
             value = heap.alloc_tuple(&[value]).unwrap();
         }
         let checked = crate::bytecode::verify(p, crate::bytecode::Limits::default()).unwrap();
-        let checks = TypeChecks::new(checked.package(), &heap.budget_usage()).unwrap();
+        let checks = TypeChecks::new(checked.package(), &heap.budget_usage(), &[]).unwrap();
         let measured = allocation_counter::measure(|| {
             for _ in 0..10_000 {
                 assert!(checks.accepts(checked.package(), &heap, ty, value).unwrap());

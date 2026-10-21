@@ -523,7 +523,7 @@ impl Vm {
         }
         let mut heap = Heap::new(epoch, limits.heap)?;
         let usage = heap.budget_usage();
-        let type_checks = types::TypeChecks::new(p, &usage)?;
+        let type_checks = types::TypeChecks::new(p, &usage, &support.host_types)?;
         let program_charge = Reservation::new(
             &usage,
             program.stats().owned_capacity_bytes as u64

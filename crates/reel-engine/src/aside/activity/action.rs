@@ -72,6 +72,7 @@ fn description(
 /// NativeFrame and then in the immutable description, without a second copy.
 pub(in crate::aside) fn compose(
     vm: &mut Vm,
+    types: &super::super::source::HostTypes,
     ticket: HostTicket,
     kind: Kind,
     budget: u32,
@@ -121,6 +122,7 @@ pub(in crate::aside) fn compose(
         )?;
     } else {
         let value = description(vm.heap_mut(), kind, children, seconds, Value::NULL)?;
+        types.mark(vm.heap_mut(), value, "reel::types::Action")?;
         vm.respond(ticket, HostResponse::Ready(value))?;
     }
     Ok(work)

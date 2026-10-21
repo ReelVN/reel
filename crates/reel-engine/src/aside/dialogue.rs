@@ -5,6 +5,103 @@ use aside_vm::bytecode::{FunctionId, FunctionKind};
 use aside_vm::executor::{HostResponse, HostTicket};
 use aside_vm::{Heap, HeapError, ObjectKind, RootKind, RootOwner, RootToken, Value, ValueTag};
 
+pub(super) fn describe(api: &mut aside_host::source::Api) {
+    use aside_compiler::semantic::TypeHint;
+    use aside_host::source::{Member, NamedType, named, nullable};
+    use aside_vm::bytecode::Const;
+    let speech = named("reel::types::Speech");
+    let character = named("reel::types::Character");
+    let line = named("reel::types::CharacterLine");
+    let text = TypeHint::Union(vec![TypeHint::String, named("reel::types::RichText")]);
+    let history = TypeHint::Union(vec![TypeHint::Bool, text.clone()]);
+    api.refine(
+        "reel::character",
+        character.clone(),
+        &[("id", nullable(TypeHint::String))],
+    );
+    api.refine(
+        "reel::character::line",
+        line.clone(),
+        &[
+            ("character", character.clone()),
+            ("text", text.clone()),
+            ("history", history.clone()),
+        ],
+    );
+    for symbol in ["reel::narrator", "reel::character::speak", "reel::say"] {
+        let parameters = if symbol == "reel::say" {
+            vec![("lines", TypeHint::Array)]
+        } else {
+            vec![("text", text.clone()), ("history", history.clone())]
+        };
+        api.refine(symbol, nullable(speech.clone()), &parameters);
+        api.native_mut(symbol).result_cases(&[
+            ("wait", Const::Bool(false), speech.clone()),
+            ("wait", Const::Bool(true), TypeHint::Null),
+        ]);
+    }
+    api.refine(
+        "reel::character::speak",
+        nullable(speech.clone()),
+        &[("character", character.clone())],
+    );
+    api.refine(
+        "reel::speech::append",
+        TypeHint::Null,
+        &[
+            ("speech", speech.clone()),
+            ("text", text),
+            ("history", history),
+        ],
+    );
+    api.refine("reel::speech::wait", TypeHint::Null, &[("speech", speech)]);
+    api.types.push(NamedType::new(
+        "reel::types::Speech",
+        "A submitted dialogue interaction. Append text or wait for its shared advancement.",
+        ["append", "wait"]
+            .into_iter()
+            .map(|method| {
+                Member::method(
+                    api.native(&format!("reel::speech::{method}"))
+                        .clone()
+                        .bound(method),
+                )
+            })
+            .collect(),
+    ));
+    let members = vec![
+        Member::field(
+            "reel::types::Character",
+            "id",
+            TypeHint::String,
+            None,
+            "Stable character identity.",
+            None,
+        ),
+        Member::field(
+            "reel::types::Character",
+            "name",
+            TypeHint::String,
+            None,
+            "Displayed speaker name.",
+            None,
+        ),
+        Member::method(api.native("reel::character::line").clone().bound("line")),
+    ];
+    let mut character = NamedType::new(
+        "reel::types::Character",
+        "A named dialogue speaker. Call it to submit speech, or compose a line for say.",
+        members,
+    );
+    character.call = Some(api.native("reel::character::speak").clone().bound("speak"));
+    api.types.push(character);
+    api.types.push(NamedType::new(
+        "reel::types::CharacterLine",
+        "One immutable character line composed for say.",
+        Vec::new(),
+    ));
+}
+
 pub(super) fn immutable(_: &Heap, _: Value, _: u32, _: Value) -> Result<(), HeapError> {
     Err(HeapError::ReadOnly)
 }
@@ -75,6 +172,9 @@ impl SessionVm {
             &[Value::int(id.generation() as i64)],
             Some(immutable),
         )?;
+        self.stage
+            .types
+            .mark(self.vm.heap_mut(), value, "reel::types::Speech")?;
         for (name, function) in ["append", "wait"].into_iter().zip(methods) {
             let method = self.vm.bind_native(value, function)?;
             let heap = self.vm.heap_mut();
@@ -224,6 +324,9 @@ impl SessionVm {
             heap.table_store(fields, i as u32, key, value)?;
         }
         let value = heap.alloc_host(fields, &[id, name], Some(immutable))?;
+        self.stage
+            .types
+            .mark(heap, value, "reel::types::Character")?;
         self.vm.bind_callable(value, call)?;
         let method = self.vm.bind_native(value, line)?;
         let key = self.vm.heap_mut().alloc_string("line")?;
@@ -245,6 +348,9 @@ impl SessionVm {
         let heap = self.vm.heap_mut();
         let fields = heap.alloc_table()?;
         let value = heap.alloc_host(fields, &[id, name, text, history], Some(immutable))?;
+        self.stage
+            .types
+            .mark(heap, value, "reel::types::CharacterLine")?;
         self.vm.respond(ticket, HostResponse::Ready(value))?;
         self.issued = None;
         Ok(())

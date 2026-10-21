@@ -2,6 +2,7 @@
 //! Source analysis and bounded lowering to the shared bytecode format.
 mod diagnostic;
 pub mod documentation;
+pub mod editor;
 pub mod hir;
 pub mod lowering;
 pub mod semantic;

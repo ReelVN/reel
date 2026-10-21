@@ -109,7 +109,19 @@ fn type_arguments<'a>(ty: &'a Type, name: &str) -> Option<Vec<&'a Type>> {
     )
 }
 
+fn source_type(ty: &Type, conversion: TokenStream) -> TokenStream {
+    if let Some(types) = type_arguments(ty, "Option") {
+        let inner = source_type(types[0], conversion);
+        moxy::template! { ::aside_host::source::nullable({{ inner }}) }
+    } else {
+        moxy::template! { ::aside_host::hint(&<{{ ty }} as {{ conversion }}>::TYPE) }
+    }
+}
+
 /// Export a monomorphic Rust function and generate a matching native binding.
+/// `doc_result` and a parameter's `#[aside(doc_type = ...)]` accept compiler
+/// `TypeHint` expressions for validator-backed types. They refine source metadata;
+/// the Rust conversion and registered runtime contract remain authoritative.
 #[proc_macro_attribute]
 pub fn native(
     meta: proc_macro::TokenStream,
@@ -145,7 +157,10 @@ fn native_impl(
     meta: TokenStream,
     item: TokenStream,
 ) -> Result<(TokenStream, TokenStream), ParseError> {
-    let opts = options(meta, &["symbol", "abi", "effects", "capabilities"])?;
+    let opts = options(
+        meta,
+        &["symbol", "abi", "effects", "capabilities", "doc_result"],
+    )?;
     let mut function: ItemFn = moxy::parse!(item)?;
     if function.sig.asyncness.is_some()
         || function.sig.safety.is_some()
@@ -187,6 +202,7 @@ fn native_impl(
     let mut host = moxy::template! { () };
     let mut context_seen = false;
     let mut params = Vec::new();
+    let mut source_params = Vec::new();
     let mut rest = None;
     let mut reads = Vec::new();
     let mut arguments = Vec::new();
@@ -205,7 +221,10 @@ fn native_impl(
             ));
         };
         let ident = pattern.ident.clone();
-        let opts = helper(&param.attrs, &["name", "default", "context", "rest"])?;
+        let opts = helper(
+            &param.attrs,
+            &["name", "default", "context", "rest", "doc_type"],
+        )?;
         param.attrs.retain(|a| !a.path.is_ident("aside"));
         if flag(&opts, "context")? {
             let Type::Reference(reference) = param.ty.as_ref() else {
@@ -265,6 +284,13 @@ fn native_impl(
         if is_rest {
             rest = Some(name);
         } else {
+            let source_type = find(&opts, "doc_type")
+                .map(expression)
+                .transpose()?
+                .unwrap_or_else(|| source_type(ty, moxy::template! { ::aside_host::FromValue }));
+            source_params.push(
+                moxy::template! { signature.parameters[{{ &index }}].ty = {{ source_type }}; },
+            );
             params.push(moxy::template! {
                 ::aside_host::NativeParameter { name: {{ name }}.into(),
                     ty: <{{ ty }} as ::aside_host::FromValue>::TYPE, default: {{ default }} }
@@ -300,6 +326,14 @@ fn native_impl(
             }
         }
     };
+    let source_result = find(&opts, "doc_result")
+        .map(expression)
+        .transpose()?
+        .unwrap_or_else(|| {
+            let result_type = result.clone();
+            let ty: Type = moxy::parse!(result_type).expect("parsed Rust return type");
+            source_type(&ty, moxy::template! { ::aside_host::IntoValue })
+        });
     let name = &function.sig.ident;
     let vis = &function.vis;
     let count = literal(params.len() + usize::from(rest.is_some()));
@@ -338,7 +372,15 @@ fn native_impl(
                     },
                     invoke,
                     documentation: DOCUMENTATION,
+                    source_signature,
                 }
+            }
+            /// Project exact author types without altering the trusted runtime contract.
+            pub fn source_signature(contract: &::aside_host::NativeContract) -> ::aside_host::aside_compiler::semantic::ExternalSignature {
+                let mut signature = contract.external().signature.expect("native signature");
+                @for parameter in &source_params { {{ parameter }} }
+                signature.result = {{ source_result }};
+                signature
             }
             pub fn invoke(__aside_host: &mut {{ host }}, __aside_vm: &mut ::aside_host::aside_vm::executor::Vm,
                 __aside_ticket: ::aside_host::aside_vm::executor::HostTicket) -> Result<(), {{ error }}> {
@@ -362,6 +404,8 @@ fn native_impl(
 }
 
 /// Describe a stable, fieldless property identity enum without duplicating UI data.
+/// `doc_type` supplies an exact `TypeHint` expression when `ty` and `validate`
+/// jointly define a more specific author type than the runtime builtin can express.
 #[proc_macro_derive(Properties, attributes(aside))]
 pub fn properties(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input: TokenStream = item.into();
@@ -381,6 +425,7 @@ fn properties_impl(item: ItemEnum) -> Result<TokenStream, ParseError> {
     let mut entries = Vec::new();
     let mut identities = Vec::new();
     let mut documents = Vec::new();
+    let mut property_names = Vec::new();
     let mut names = std::collections::BTreeSet::new();
     for (index, variant) in item.variants.iter().enumerate() {
         if !matches!(variant.fields, Fields::Unit) || variant.discriminant.is_some() {
@@ -398,6 +443,7 @@ fn properties_impl(item: ItemEnum) -> Result<TokenStream, ParseError> {
                 "animatable",
                 "readonly",
                 "validate",
+                "doc_type",
             ],
         )?;
         let ident = &variant.ident;
@@ -409,6 +455,7 @@ fn properties_impl(item: ItemEnum) -> Result<TokenStream, ParseError> {
             return Err(ParseError::new(variant.span(), "duplicate property name"));
         }
         let name = LitStr::new(&name, ident.span());
+        property_names.push(name.clone());
         let ty = find(&opts, "ty")
             .map(expression)
             .transpose()?
@@ -433,18 +480,27 @@ fn properties_impl(item: ItemEnum) -> Result<TokenStream, ParseError> {
         };
         let writable = moxy::token::LitBool::new(writable, Span::call_site());
         let animated = moxy::token::LitBool::new(animated, Span::call_site());
+        let doc_type = find(&opts, "doc_type")
+            .map(expression)
+            .transpose()?
+            .map_or_else(
+                || moxy::template! { None },
+                |ty| moxy::template! { Some(|| {{ ty }}) },
+            );
         let index = literal(index);
         let documentation = documentation(&variant.attrs);
         documents.push(moxy::template! { {{ &index }} => {{ documentation }}, });
         entries.push(moxy::template! { ::aside_host::Property { name: {{ name }},
         ty: ::aside_host::aside_vm::bytecode::BuiltinType::{{ ty }}, default: || {{ default }},
-        writable: {{ writable }}, animatable: {{ animated }}, validator: {{ validator }} } });
+        writable: {{ writable }}, animatable: {{ animated }}, validator: {{ validator }},
+        doc_type: {{ doc_type }} } });
         identities.push(moxy::template! { Self::{{ ident }} => {{ index }}, });
     }
     let ident = &item.ident;
     Ok(moxy::template! {
         impl ::aside_host::PropertySchema for {{ ident }} {
             const PROPERTIES: &'static [::aside_host::Property] = &[ @for entry in &entries { {{ entry }}, } ];
+            const NAMES: &'static [&'static str] = &[ @for name in &property_names { {{ name }}, } ];
             fn documentation(index: usize) -> &'static str {
                 match index { @for document in &documents { {{ document }} } _ => "" }
             }
@@ -458,6 +514,22 @@ fn properties_impl(item: ItemEnum) -> Result<TokenStream, ParseError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_types_are_emitted_beside_runtime_declarations() {
+        let (_, generated) = native_impl(
+            moxy::template! { symbol = "sample::typed" },
+            moxy::template! { fn typed(value: Option<String>) -> Option<String> {} },
+        )
+        .unwrap();
+        let generated = generated.to_string();
+        assert!(generated.contains("source_signature"), "{generated}");
+        assert!(generated.contains("source :: nullable"), "{generated}");
+        let item = moxy::template! { enum Field { #[aside(ty = Any, doc_type = number())] X } };
+        let item: ItemEnum = moxy::parse!(item).unwrap();
+        let generated = properties_impl(item).unwrap().to_string();
+        assert!(generated.contains("doc_type"), "{generated}");
+    }
 
     #[test]
     fn declaration_errors_point_to_invalid_options_before_codegen() {

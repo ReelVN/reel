@@ -108,14 +108,14 @@ fn initially_paused_actions_defer_zero_duration_and_preserve_controls() {
 #[test]
 fn observable_clock_coalesces_deadlines_and_keeps_activity_ownership() {
     use std::time::Duration;
-    let source = r#"fn opening() {
+    let source = r#"fn dynamic(value) {value} fn opening() {
         let owner = stack(); stage.replace(owner);
         let timer = clock(interval: 60, owner: owner);
         let output = text("clock", x: bind(timer.ticks), y: bind(timer.elapsed));
         owner.add(output);
         let mut rejected = 0;
         try { clock(interval: 0); } catch e { rejected += 1; }
-        try { timer.ticks = 5; } catch e { rejected += 1; }
+        try { dynamic(timer).ticks = 5; } catch e { rejected += 1; }
         try { finish(timer); } catch e { rejected += 1; }
         if rejected != 3 { throw "clock contract"; }
         narrator("running");

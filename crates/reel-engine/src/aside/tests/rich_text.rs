@@ -191,6 +191,7 @@ fn text_wrap_validates_reacts_and_restores_from_source_and_asb() {
     use aside_vm::snapshot::SnapshotBudget;
 
     let code = r#"
+    fn dynamic(value) {value}
     fn opening() {
         let state = model({wrap: false});
         let defaulted = text("default");
@@ -201,7 +202,7 @@ fn text_wrap_validates_reacts_and_restores_from_source_and_asb() {
         let derived = text("derived", text_wrap: derive(|| state.wrap));
         let explicit = text("explicit\nline", text_wrap: false);
         let mut rejected = 0;
-        try { direct.text_wrap = 0; } catch e { rejected += 1; }
+        try { direct.text_wrap = dynamic(0); } catch e { rejected += 1; }
         try { state.wrap = "bad"; } catch e { rejected += 1; }
         if rejected != 2 || direct.text_wrap || state.wrap { throw "boolean validation"; }
         stage.replace(column() {
@@ -357,6 +358,7 @@ fn published_rich_nvl_example_retains_styled_lines_and_activates_the_glossary() 
 #[test]
 fn styled_dialogue_history_reveal_and_owned_links_from_source_and_asb() {
     let code = r##"
+    fn dynamic(value) {value}
     let d = game.dialogue(); let h = game.history();
     let state = model({clicked: "", value: rich("[b]initial[/b]")});
     fn opening() {
@@ -369,10 +371,10 @@ fn styled_dialogue_history_reveal_and_owned_links_from_source_and_asb() {
         try { rich("星[b]x[/i]"); } catch e { error = true; }
         if !error { throw "invalid markup accepted"; }
         let mut readonly = false;
-        try { original.plain = "changed"; } catch e { readonly = true; }
+        try { dynamic(original).plain = "changed"; } catch e { readonly = true; }
         if !readonly { throw "mutable rich text"; }
         readonly = false;
-        try { original.markup = "changed"; } catch e { readonly = true; }
+        try { dynamic(original).markup = "changed"; } catch e { readonly = true; }
         if !readonly || rich(original.markup).plain != original.plain {
             throw "rich markup roundtrip or mutability";
         }

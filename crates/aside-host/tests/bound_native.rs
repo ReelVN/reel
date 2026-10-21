@@ -124,7 +124,8 @@ fn exercise_callable(callable: bool) {
     .unwrap()
     .into_module()
     .unwrap();
-    let compiled = aside_host::lower(&module, &contracts, &[], Default::default()).unwrap();
+    let compiled =
+        aside_host::lower(&module, &contracts, &[], &[], &[], Default::default()).unwrap();
     let bytes = bc::encode(compiled.program.package(), bc::Limits::default()).unwrap();
     let program = bc::VerifiedProgram::decode(&bytes, bc::Limits::default()).unwrap();
     let function = |name: &str| {
@@ -143,7 +144,7 @@ fn exercise_callable(callable: bool) {
         decorate: function("sample::decorate"),
         callable,
     };
-    let support = aside_host::runtime_support(&program, &contracts, &[]).unwrap();
+    let support = aside_host::runtime_support(&program, &contracts, &[], &[]).unwrap();
     let mut vm = Vm::load(program, support, VmLimits::default(), SessionEpoch(1)).unwrap();
     let receiver = vm.heap_mut().alloc_string("entry").unwrap();
     let entry_method = make_callable(&mut vm, receiver, host.decorate, callable).unwrap();

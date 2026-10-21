@@ -42,6 +42,7 @@ fn load_with_limits(p: BytecodePackage, limits: VmLimits) -> Vm {
     Vm::load(
         verify(p, Limits::default()).unwrap(),
         RuntimeSupport {
+            host_types: Vec::new(),
             opcodes: vec![],
             capabilities: vec![],
             natives: vec![],
@@ -1305,6 +1306,7 @@ fn check_point_lookup_value_and_structure_changes(restore: bool) {
                                 &image,
                                 vm.program().clone(),
                                 RuntimeSupport {
+                                    host_types: Vec::new(),
                                     opcodes: vec![],
                                     capabilities: vec![],
                                     natives: vec![],
@@ -1326,6 +1328,7 @@ fn check_point_lookup_value_and_structure_changes(restore: bool) {
                         &image,
                         vm.program().clone(),
                         RuntimeSupport {
+                            host_types: Vec::new(),
                             opcodes: vec![],
                             capabilities: vec![],
                             natives: vec![],
@@ -1557,6 +1560,7 @@ fn table_remove_cancel_and_concurrent_write_preserve_the_original_until_commit()
                     &image,
                     vm.program().clone(),
                     RuntimeSupport {
+                        host_types: Vec::new(),
                         opcodes: vec![],
                         capabilities: vec![],
                         natives: vec![],

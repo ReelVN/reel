@@ -586,6 +586,7 @@ fn runtime_must_explicitly_support_all_opcodes_natives_and_capabilities() {
         ErrorKind::Capability
     );
     let mut runtime = RuntimeSupport {
+        host_types: Vec::new(),
         opcodes: vec![Opcode::LoadConst, Opcode::Call, Opcode::Return],
         capabilities: vec!["host.echo".into()],
         natives: vec![NativeSupport {
@@ -1318,6 +1319,7 @@ fn native_requirements_cannot_be_erased_from_untrusted_package_metadata() {
     package.natives[0].capabilities.clear();
     let program = verify(package, limits()).unwrap();
     let mut trusted = RuntimeSupport {
+        host_types: Vec::new(),
         opcodes: vec![Opcode::LoadConst, Opcode::Call, Opcode::Return],
         capabilities: vec![],
         natives: vec![NativeSupport {
@@ -1582,6 +1584,7 @@ fn runtime_admission_uses_the_saved_work_limit_for_registry_scans() {
     )
     .unwrap();
     let mut support = RuntimeSupport {
+        host_types: Vec::new(),
         opcodes: vec![Opcode::LoadConst, Opcode::Call, Opcode::Return],
         capabilities: vec!["host.echo".into()],
         natives: vec![NativeSupport {
@@ -1623,6 +1626,7 @@ fn ordinary_large_package(functions: u32) -> BytecodePackage {
 #[test]
 fn ordinary_project_loading_scales_under_default_limits() {
     let support = RuntimeSupport {
+        host_types: Vec::new(),
         opcodes: INSTRUCTION_SPECS.iter().map(|s| s.opcode).collect(),
         natives: vec![],
         capabilities: vec![],
@@ -1646,6 +1650,7 @@ fn ordinary_project_loading_scales_under_default_limits() {
         // A host registry containing repeated entries is normalized once as well.
         loaded
             .require_runtime(&RuntimeSupport {
+                host_types: Vec::new(),
                 opcodes: [Opcode::LoadConst, Opcode::Return].repeat(5000),
                 natives: vec![],
                 capabilities: vec![],

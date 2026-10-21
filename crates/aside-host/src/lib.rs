@@ -5,6 +5,7 @@ extern crate self as aside_host;
 mod binding;
 mod declaration;
 mod property;
+pub mod source;
 pub use aside_compiler;
 pub use aside_host_macros::*;
 pub use aside_vm;

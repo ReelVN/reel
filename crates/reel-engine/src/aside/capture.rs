@@ -3,6 +3,19 @@ use super::{AdapterError, HostResponse, HostTicket, SessionVm, data, results, te
 use aside_vm::{HeapReservation, RootKind, RootToken, Value, ValueTag};
 use std::{collections::VecDeque, sync::Arc};
 
+pub(super) fn describe(api: &mut aside_host::source::Api) {
+    use aside_compiler::semantic::TypeHint;
+    use aside_host::source::{named, nullable};
+    api.refine(
+        "reel::stage::capture",
+        named("reel::types::Capture"),
+        &[
+            ("width", nullable(TypeHint::Int)),
+            ("height", nullable(TypeHint::Int)),
+        ],
+    );
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CaptureId {
     pub session: crate::SessionIdentity,

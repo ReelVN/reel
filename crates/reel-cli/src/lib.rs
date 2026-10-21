@@ -11,6 +11,7 @@ pub use artifact::{
     Artifact, BuildProfile, build, build_export, build_with_profile, package_limits_json,
 };
 pub mod distribution;
+pub mod editor;
 pub mod localization;
 pub mod playback;
 pub mod prepare_image;

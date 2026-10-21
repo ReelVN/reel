@@ -46,6 +46,8 @@ fn registry() -> (bc::VerifiedProgram, AnalysisOptions, bc::RuntimeSupport) {
                 ExternalSymbol::function(
                     *name,
                     ExternalSignature {
+                        result_parameter: None,
+                        result_cases: Vec::new(),
                         parameters: vec![ExternalParameter {
                             name: "values".into(),
                             ty: TypeHint::Any,
@@ -69,6 +71,7 @@ fn registry() -> (bc::VerifiedProgram, AnalysisOptions, bc::RuntimeSupport) {
         ..Default::default()
     };
     let support = bc::RuntimeSupport {
+        host_types: Vec::new(),
         opcodes: vec![],
         capabilities: vec![],
         natives: HOSTS
@@ -118,6 +121,7 @@ fn execute(source: &str, tiny: bool) -> Result<(String, usize), String> {
     let links: Vec<_> = module
         .external_bindings()
         .iter()
+        .filter(|external| external.kind == hir::ExternalBindingKind::Reference)
         .filter_map(|external| {
             let symbol = external.symbol?;
             let reference = external.descriptor.reference.as_deref()?;
@@ -125,6 +129,7 @@ fn execute(source: &str, tiny: bool) -> Result<(String, usize), String> {
                 .iter()
                 .position(|name| Some(*name) == reference.export.as_deref())?;
             Some(lowering::NativeLink {
+                source_signature: None,
                 target: lowering::ExternalTarget::Symbol(hir::SymbolId(symbol.0)),
                 native: bc::NativeId(native as u32),
                 reference,

@@ -24,6 +24,7 @@ fn package(constants: Vec<Const>, selected: usize) -> BytecodePackage {
 
 fn support() -> RuntimeSupport {
     RuntimeSupport {
+        host_types: Vec::new(),
         opcodes: vec![],
         capabilities: vec![],
         natives: vec![],

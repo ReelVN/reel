@@ -708,6 +708,8 @@ fn trusted_native_values_calls_and_optional_chains_share_the_registry() {
     let external = ExternalSymbol::function(
         "run",
         ExternalSignature {
+            result_parameter: None,
+            result_cases: Vec::new(),
             parameters: vec![ExternalParameter {
                 name: "a".into(),
                 ty: TypeHint::Int,
@@ -756,6 +758,7 @@ fn trusted_native_values_calls_and_optional_chains_share_the_registry() {
                 })
                 .unwrap();
             let link = lowering::NativeLink {
+                source_signature: None,
                 target: lowering::ExternalTarget::Node(node),
                 native: bc::NativeId(0),
                 reference: &reference,
@@ -796,6 +799,7 @@ fn trusted_native_values_calls_and_optional_chains_share_the_registry() {
                 &Linkage {
                     package: Some(&seed),
                     natives: &[lowering::NativeLink {
+                        source_signature: None,
                         reference: &wrong,
                         ..link
                     }],
@@ -832,6 +836,7 @@ fn trusted_native_values_calls_and_optional_chains_share_the_registry() {
             &Linkage {
                 package: Some(&seed),
                 natives: &[lowering::NativeLink {
+                    source_signature: None,
                     target: lowering::ExternalTarget::Node(node),
                     native: bc::NativeId(0),
                     reference: &reference,
@@ -860,6 +865,7 @@ fn trusted_native_values_calls_and_optional_chains_share_the_registry() {
             &Linkage {
                 package: Some(&seed),
                 natives: &[lowering::NativeLink {
+                    source_signature: None,
                     target: lowering::ExternalTarget::Symbol(symbol),
                     native: bc::NativeId(0),
                     reference: &reference,

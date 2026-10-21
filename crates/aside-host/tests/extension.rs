@@ -76,6 +76,176 @@ fn collect(#[aside(rest)] items: Value) -> Value {
     items
 }
 
+#[native(symbol = "sample::nullable")]
+fn nullable(value: Option<String>) -> Option<String> {
+    value
+}
+
+#[derive(Properties)]
+enum PreciseField {
+    /// A finite nonnegative floating-point value.
+    #[aside(ty = Any, doc_type = aside_host::aside_compiler::semantic::TypeHint::Float,
+        default = 0.0, validate = nonnegative)]
+    Value,
+}
+
+#[test]
+fn source_schema_preserves_precise_types_defaults_and_definition_ranges() {
+    use aside_host::aside_compiler::semantic::TypeHint;
+    use aside_host::source::{Api, Declaration, Member, NamedType};
+    let binding = nullable::binding();
+    let docs = binding.into_documentation();
+    assert_eq!(docs.contract.parameters[0].ty, bc::BuiltinType::Any);
+    assert_eq!(
+        docs.signature.parameters[0].ty,
+        TypeHint::Union(vec![TypeHint::String, TypeHint::Null])
+    );
+    assert_eq!(docs.signature.result, docs.signature.parameters[0].ty);
+    let property = &PreciseField::PROPERTIES[PreciseField::Value.index()];
+    assert_eq!(property.ty, bc::BuiltinType::Any);
+    assert_eq!(property.source_type(), TypeHint::Float);
+    let ty = NamedType::new(
+        "sample::types::Gauge",
+        "A real host value.",
+        vec![Member::property(
+            "sample::types::Gauge",
+            aside_host::PropertyDocumentation {
+                property,
+                markdown: PreciseField::documentation(0),
+            },
+        )],
+    );
+    let api = Api {
+        types: vec![ty],
+        functions: vec![Declaration::native(
+            &add::binding().contract,
+            add::DOCUMENTATION,
+        )],
+        ..Default::default()
+    };
+    let generated = api.documents("sample");
+    assert_eq!(generated.documents.len(), 2);
+    assert!(
+        generated.documents[0]
+            .text
+            .contains("let mut value: float = 0.0;")
+    );
+    assert!(
+        generated.documents[1]
+            .text
+            .contains("fn add(left: int, right: int = 2) -> int;")
+    );
+    for location in &generated.locations {
+        let doc = generated
+            .documents
+            .iter()
+            .find(|doc| doc.uri == location.uri)
+            .unwrap();
+        assert_eq!(
+            &doc.text[usize::from(location.range.start())..usize::from(location.range.end())],
+            location.declaration.symbol.name
+        );
+    }
+}
+
+#[test]
+fn declaration_documents_preserve_bound_and_inherited_identities() {
+    use aside_compiler::semantic::TypeHint;
+    use aside_host::source::{Api, Declaration, Member, NamedType, named, type_name};
+    assert_eq!(
+        type_name(&TypeHint::Callable(
+            vec![TypeHint::Int],
+            Box::new(TypeHint::Bool)
+        )),
+        "fn(int) -> bool"
+    );
+    assert_eq!(type_name(&TypeHint::Tuple(vec![TypeHint::Int])), "(int,)");
+    assert_eq!(
+        type_name(&TypeHint::Union(vec![
+            TypeHint::Callable(vec![], Box::new(TypeHint::Int)),
+            TypeHint::Null
+        ])),
+        "(fn() -> int) | null"
+    );
+    let native = Declaration::native(&add::binding().contract, add::DOCUMENTATION);
+    let base = NamedType::new(
+        "sample::types::Node",
+        "Base node.",
+        vec![Member::field(
+            "sample::types::Node",
+            "x",
+            TypeHint::Float,
+            Some(TypeHint::Float),
+            "Position.",
+            None,
+        )],
+    );
+    let derived = NamedType::new(
+        "sample::types::Speech",
+        "Speech.",
+        vec![Member::method(native.clone().bound("append"))],
+    )
+    .extends(&base);
+    let api = Api {
+        types: vec![
+            base,
+            derived,
+            NamedType::new("other::types::Node", "Other node.", Vec::new()),
+        ],
+        functions: vec![native],
+        ..Default::default()
+    };
+    let documents = api.documents("sample");
+    let speech = documents
+        .documents
+        .iter()
+        .find(|document| document.uri.ends_with("sample/types/Speech.aside"))
+        .unwrap();
+    assert!(speech.text.contains("class Speech: Node"));
+    assert!(speech.text.contains("fn append(right: int = 2) -> int;"));
+    assert!(!speech.text.contains("let mut x"));
+    let bound = documents
+        .locations
+        .iter()
+        .find(|location| location.declaration.symbol.name == "append")
+        .unwrap();
+    assert_eq!(bound.uri, speech.uri);
+    assert_eq!(
+        documents
+            .locations
+            .iter()
+            .filter(|location| location.declaration.symbol.reference
+                == bound.declaration.symbol.reference)
+            .count(),
+        1
+    );
+    let inherited = documents
+        .locations
+        .iter()
+        .find(|location| location.declaration.symbol.name == "x")
+        .unwrap();
+    assert!(inherited.uri.ends_with("sample/types/Node.aside"));
+    assert!(
+        documents
+            .documents
+            .iter()
+            .any(|document| document.uri.ends_with("other/types/Node.aside"))
+    );
+    assert_eq!(
+        api.is_subtype("sample::types::Speech", "sample::types::Node"),
+        Some(true)
+    );
+    assert_eq!(
+        api.is_subtype("sample::types::Speech", "other::types::Node"),
+        Some(false)
+    );
+    assert_eq!(
+        api.member("sample::types::Speech", "x").unwrap().symbol.ty,
+        TypeHint::Float
+    );
+    assert_eq!(named("sample::types::Speech"), api.types[1].symbol().ty);
+}
+
 #[test]
 fn standalone_macro_host_compiles_encodes_admits_and_calls_rust() {
     let add = add::binding();
@@ -96,7 +266,7 @@ fn standalone_macro_host_compiles_encodes_admits_and_calls_rust() {
         collect.contract.clone(),
     ];
     let capabilities = ["sample.text".to_string()];
-    let module = aside_compiler::analyze_module(r#"fn main() {
+    let module = aside_compiler::analyze_module(r#"fn dynamic(value) { value } fn main() {
         let f = add;
         if f(right: 8, left: 4) != 12 || add(3) != 5 { throw "binding"; }
         if f(...{right: 8, left: 4}) != 12 || add(...{left: 3}) != 5 { throw "named forwarding"; }
@@ -120,7 +290,7 @@ fn standalone_macro_host_compiles_encodes_admits_and_calls_rust() {
         let b = collect();
         a.append(4);
         if b.len() != 0 { throw "shared empty rest"; }
-        let gather = collect;
+        let gather = dynamic(collect);
         if gather(5, ...[6, 7]).len() != 3 { throw "dynamic native rest"; }
         let mut bad_rest = false;
         try { gather(items: [1]); } catch error { bad_rest = true; }
@@ -129,14 +299,22 @@ fn standalone_macro_host_compiles_encodes_admits_and_calls_rust() {
     }"#, &aside_compiler::AnalysisOptions {
         hosts: contracts.iter().map(NativeContract::external).collect(), ..Default::default()
     }, &mut aside_compiler::semantic::NoModules).unwrap().into_module().unwrap();
-    let compiled =
-        aside_host::lower(&module, &contracts, &capabilities, Default::default()).unwrap();
+    let compiled = aside_host::lower(
+        &module,
+        &contracts,
+        &[],
+        &[],
+        &capabilities,
+        Default::default(),
+    )
+    .unwrap();
     let encoded = bc::encode(compiled.program.package(), bc::Limits::default()).unwrap();
     let program = bc::VerifiedProgram::decode(&encoded, bc::Limits::default()).unwrap();
-    let support = aside_host::runtime_support(&program, &contracts, &capabilities).unwrap();
+    let support = aside_host::runtime_support(&program, &contracts, &[], &capabilities).unwrap();
     let mut wrong_rest = contracts.to_vec();
     wrong_rest[3].rest = None;
-    let wrong_support = aside_host::runtime_support(&program, &wrong_rest, &capabilities).unwrap();
+    let wrong_support =
+        aside_host::runtime_support(&program, &wrong_rest, &[], &capabilities).unwrap();
     assert!(
         Vm::load(
             bc::VerifiedProgram::decode(&encoded, bc::Limits::default()).unwrap(),
@@ -207,5 +385,5 @@ fn standalone_macro_host_compiles_encodes_admits_and_calls_rust() {
     assert!(Field::validate(vm.heap(), 2, id).is_err());
     let mut changed = contracts.to_vec();
     changed[0].parameters[1].default = Some(bc::Const::Int(99));
-    assert!(aside_host::runtime_support(vm.program(), &changed, &capabilities).is_err());
+    assert!(aside_host::runtime_support(vm.program(), &changed, &[], &capabilities).is_err());
 }

@@ -1,8 +1,5 @@
 //! One traced layout shared by execution, model copying and property access.
-use crate::{
-    Heap, HeapError, ObjectKind, Value,
-    bytecode::{BuiltinType, TypeId},
-};
+use crate::{Heap, HeapError, ObjectKind, Value, bytecode::TypeId};
 
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -56,7 +53,19 @@ impl Heap {
 }
 
 pub(crate) fn accepts_nominal(heap: &Heap, value: Value, ty: TypeId) -> Result<bool, HeapError> {
-    if !heap.accepts_builtin(BuiltinType::Instance, value)? {
+    if value.tag() != crate::ValueTag::Object {
+        return Ok(false);
+    }
+    match heap.info(value)?.kind {
+        ObjectKind::Host => return heap.accepts_host_nominal(value, ty),
+        ObjectKind::Instance => {}
+        _ => return Ok(false),
+    }
+    if heap
+        .code
+        .as_ref()
+        .is_some_and(|code| code.checks.host_types.contains(ty))
+    {
         return Ok(false);
     }
     let class = heap.get_field(value, InstanceSlot::Class as u32)?;

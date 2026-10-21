@@ -6,25 +6,81 @@ use aside_compiler::{
     lowering,
     semantic::{ExternalSymbol, MemoryResolver, ModuleInterface, NamespaceRef},
 };
+use aside_host::source::{Api, Declaration};
 use aside_vm::bytecode as bc;
 pub use bc::FunctionId as StoryFunction;
+use std::sync::OnceLock;
+
+static SOURCE_API: OnceLock<Api> = OnceLock::new();
+
+/// Trusted native ABI declarations, shared by compilation and VM admission.
+pub fn contracts() -> &'static [aside_host::NativeContract] {
+    static CONTRACTS: OnceLock<Vec<aside_host::NativeContract>> = OnceLock::new();
+    CONTRACTS.get_or_init(registry::contracts)
+}
+
+/// Precise source types and English declarations shared by compilation and editors.
+/// The immutable registry is constructed once for the process.
+pub fn api() -> &'static Api {
+    SOURCE_API.get_or_init(build_api)
+}
+
+/// Trusted nominal registrations derived from the same source type declarations.
+/// ASB-only playback retains the registration projection and releases the
+/// temporary source schema. Compilation and editors reuse their existing cache.
+pub fn types() -> &'static [bc::HostTypeSupport] {
+    static TYPES: OnceLock<Vec<bc::HostTypeSupport>> = OnceLock::new();
+    TYPES.get_or_init(|| match SOURCE_API.get() {
+        Some(api) => api.registrations(),
+        None => build_api().registrations(),
+    })
+}
+
+/// Heap-local credentials are shared by the session's real host constructors.
+pub(super) struct HostTypes(std::collections::BTreeMap<&'static str, aside_vm::HostTypeId>);
+impl HostTypes {
+    pub(super) fn new(heap: &aside_vm::Heap) -> Result<Self, aside_vm::HeapError> {
+        Ok(Self(
+            types()
+                .iter()
+                .map(|ty| Ok((ty.name.as_str(), heap.host_type(&ty.name)?)))
+                .collect::<Result<_, aside_vm::HeapError>>()?,
+        ))
+    }
+    pub(super) fn mark(
+        &self,
+        heap: &mut aside_vm::Heap,
+        value: aside_vm::Value,
+        name: &str,
+    ) -> Result<(), aside_vm::HeapError> {
+        heap.set_host_type(value, self.0[name])
+    }
+}
 
 /// Read the current registered signatures and English source documentation.
 /// Editor clients use the resolved canonical symbol to select a hover entry.
 pub fn documentation() -> Vec<aside_host::NativeDocumentation> {
-    let mut markdown: std::collections::BTreeMap<_, _> = aside_std::documentation()
+    let declared = aside_std::documentation()
         .into_iter()
-        .map(|entry| (entry.contract.symbol, entry.markdown))
         .chain(
             super::stage::bindings()
                 .into_iter()
-                .map(|binding| (binding.contract.symbol, binding.documentation)),
+                .map(aside_host::NativeBinding::into_documentation),
         )
+        .collect::<Vec<_>>();
+    let mut signatures = declared
+        .iter()
+        .map(|entry| (entry.contract.symbol.clone(), entry.signature.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut markdown: std::collections::BTreeMap<_, _> = declared
+        .into_iter()
+        .map(|entry| (entry.contract.symbol, entry.markdown))
         .collect();
     markdown.insert("reel::when".into(), super::conditions::DOCUMENTATION);
-    registry::contracts()
-        .into_iter()
+    contracts()
+        .iter()
         .filter(|contract| contract.symbol != "reel::when::evaluate")
+        .cloned()
         .map(|contract| {
             let documentation = markdown
                 .remove(&contract.symbol)
@@ -53,6 +109,9 @@ pub fn documentation() -> Vec<aside_host::NativeDocumentation> {
                 .or_else(|| super::stage::input::documentation(&contract.symbol))
                 .unwrap_or("");
             aside_host::NativeDocumentation {
+                signature: signatures
+                    .remove(&contract.symbol)
+                    .unwrap_or_else(|| contract.external().signature.unwrap()),
                 contract,
                 markdown: documentation,
             }
@@ -154,12 +213,52 @@ pub struct ProjectSourceCompilation {
 
 /// The author CLI and runtime share this resolver and trusted native registry.
 /// `content_version` is supplied by the asset/module resolver, not a save ID.
-fn environment() -> (
-    Vec<registry::NativeContract>,
-    MemoryResolver,
-    Vec<ExternalSymbol>,
-) {
-    let contracts = registry::contracts();
+fn build_api() -> Api {
+    let contracts = contracts();
+    let mut api = Api {
+        functions: documentation()
+            .into_iter()
+            .map(|doc| {
+                let mut declaration = Declaration::native(&doc.contract, doc.markdown);
+                declaration.symbol.signature = Some(doc.signature);
+                declaration
+            })
+            .collect(),
+        ..Default::default()
+    };
+    super::stage::source::describe(&mut api);
+    super::dialogue::describe(&mut api);
+    super::results::describe(&mut api);
+    super::scopes::describe(&mut api);
+    super::activity::describe(&mut api);
+    super::media::describe(&mut api);
+    super::rich_text::describe(&mut api);
+    super::narrative::describe(&mut api);
+    super::masks::describe(&mut api);
+    super::capture::describe(&mut api);
+    super::window::describe(&mut api);
+    super::particles::describe(&mut api);
+    api.refine(
+        "reel::derive",
+        aside_host::source::named("Binding"),
+        &[("compute", aside_compiler::semantic::TypeHint::Closure)],
+    );
+    let owner = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Union(vec![
+        aside_host::source::named("reel::types::Node"),
+        aside_host::source::named("reel::types::Scope"),
+    ]));
+    for declaration in &mut api.functions {
+        let symbol = aside_host::source::canonical(&declaration.symbol);
+        if !matches!(symbol.as_str(), "reel::scope" | "reel::stage::move_pointer")
+            && let Some(signature) = &mut declaration.symbol.signature
+        {
+            for parameter in &mut signature.parameters {
+                if parameter.name == "owner" {
+                    parameter.ty = owner.clone();
+                }
+            }
+        }
+    }
     let references = contracts
         .iter()
         .map(registry::NativeContract::reference)
@@ -167,7 +266,14 @@ fn environment() -> (
     let exports = contracts
         .iter()
         .map(|contract| {
-            let mut external = contract.external();
+            let mut external = api
+                .functions
+                .iter()
+                .find(|declaration| {
+                    declaration.symbol.reference.as_deref() == Some(&contract.reference())
+                })
+                .map(|declaration| declaration.symbol.clone())
+                .unwrap_or_else(|| contract.external());
             external.must_use_result = registry::is_node_constructor(&contract.symbol);
             if contract.symbol == "reel::derive" {
                 external.intrinsic = Some(aside_compiler::semantic::Intrinsic::Derive);
@@ -272,6 +378,7 @@ fn environment() -> (
             .collect(),
     });
 
+    prelude.extend(api.types.iter().map(aside_host::source::NamedType::symbol));
     for path in ["reel", "reel::prelude"] {
         resolver.insert(ModuleInterface {
             canonical_path: path.into(),
@@ -299,7 +406,90 @@ fn environment() -> (
             .map(|(e, _)| e.clone())
             .collect(),
     });
-    (contracts, resolver, prelude)
+    let mut type_modules: std::collections::BTreeMap<String, Vec<ExternalSymbol>> =
+        Default::default();
+    for ty in &api.types {
+        let symbol = ty.symbol();
+        type_modules
+            .entry(symbol.reference.as_ref().unwrap().module.clone())
+            .or_default()
+            .push(symbol);
+    }
+    for (canonical_path, exports) in type_modules {
+        resolver.insert(ModuleInterface {
+            canonical_path,
+            version: "1".into(),
+            exports,
+        });
+    }
+    for symbol in prelude.iter_mut().chain(
+        resolver
+            .modules
+            .values_mut()
+            .flat_map(|module| module.exports.iter_mut()),
+    ) {
+        if let Some(declaration) = api
+            .functions
+            .iter()
+            .find(|declaration| declaration.symbol.reference == symbol.reference)
+        {
+            symbol.signature = declaration.symbol.signature.clone();
+        }
+    }
+    api.globals = prelude;
+    api.modules = resolver.modules.into_values().collect();
+    api
+}
+
+struct SourceEnvironment(MemoryResolver);
+impl aside_compiler::semantic::ModuleResolver for SourceEnvironment {
+    fn resolve_type_call(&mut self, ty: &str) -> Option<ExternalSymbol> {
+        api()
+            .types
+            .iter()
+            .find(|named| named.name == ty)?
+            .call
+            .as_ref()
+            .map(|declaration| declaration.symbol.clone())
+    }
+    fn resolve_type_await(&mut self, ty: &str) -> Option<aside_compiler::semantic::TypeHint> {
+        api()
+            .types
+            .iter()
+            .find(|named| named.name == ty)?
+            .await_result
+            .clone()
+    }
+    fn resolve_type_member(
+        &mut self,
+        ty: &str,
+        member: &str,
+    ) -> Option<aside_compiler::semantic::ExternalMember> {
+        api().member(ty, member)
+    }
+    fn is_named_subtype(&self, actual: &str, expected: &str) -> Option<bool> {
+        api().is_subtype(actual, expected)
+    }
+    fn canonical_request<'a>(
+        &self,
+        request: &'a aside_compiler::semantic::ImportRequest,
+    ) -> std::borrow::Cow<'a, aside_compiler::semantic::ImportRequest> {
+        aside_compiler::semantic::ModuleResolver::canonical_request(&self.0, request)
+    }
+    fn resolve(
+        &mut self,
+        request: &aside_compiler::semantic::ImportRequest,
+    ) -> Result<aside_compiler::semantic::ResolvedImport, aside_compiler::semantic::ResolveError>
+    {
+        aside_compiler::semantic::ModuleResolver::resolve(&mut self.0, request)
+    }
+}
+fn environment() -> (SourceEnvironment, Vec<ExternalSymbol>) {
+    let mut resolver = MemoryResolver::default();
+    for module in &api().modules {
+        resolver.insert(module.clone());
+    }
+    (SourceEnvironment(resolver), api().globals.clone())
 }
 
 pub fn compile_module(
@@ -308,7 +498,7 @@ pub fn compile_module(
     source_path: &str,
     content_version: u64,
 ) -> Result<SourceCompilation, SourceError> {
-    let (contracts, mut resolver, prelude) = environment();
+    let (mut resolver, prelude) = environment();
     let options = AnalysisOptions {
         module: module_path.into(),
         source_path: Some(source_path.into()),
@@ -322,7 +512,9 @@ pub fn compile_module(
         .map_err(SourceError::Analysis)?;
     let compiled = aside_host::lower(
         &module,
-        &contracts,
+        contracts(),
+        &api().functions,
+        types(),
         &registry::capabilities(),
         lowering::Options {
             content_version,
@@ -383,8 +575,8 @@ pub fn compile_project(
     aliases: &std::collections::BTreeMap<String, String>,
     content_version: u64,
 ) -> Result<ProjectSourceCompilation, SourceError> {
-    let (contracts, mut resolver, prelude) = environment();
-    resolver.aliases = aliases.clone();
+    let (mut resolver, prelude) = environment();
+    resolver.0.aliases = aliases.clone();
     let options = AnalysisOptions {
         version: content_version.to_string(),
         hosts: prelude,
@@ -402,7 +594,9 @@ pub fn compile_project(
     let compilation = aside_host::lower_project(
         &modules,
         &plan,
-        &contracts,
+        contracts(),
+        &api().functions,
+        types(),
         &registry::capabilities(),
         lowering::Options {
             content_version,

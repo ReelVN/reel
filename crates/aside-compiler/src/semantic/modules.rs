@@ -1,4 +1,5 @@
 //! Versioned, injectable module interfaces. No IO or path policy lives here.
+pub use aside_vm::bytecode::Const;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -20,6 +21,65 @@ pub enum TypeHint {
     Callable(Vec<TypeHint>, Box<TypeHint>),
     Named(String),
 }
+impl std::fmt::Display for TypeHint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Any => f.write_str("any"),
+            Self::Closure => f.write_str("closure"),
+            Self::Null => f.write_str("null"),
+            Self::Bool => f.write_str("bool"),
+            Self::Int => f.write_str("int"),
+            Self::Float => f.write_str("float"),
+            Self::String => f.write_str("string"),
+            Self::Array => f.write_str("array"),
+            Self::Table => f.write_str("table"),
+            Self::Future => f.write_str("Future"),
+            Self::Generator => f.write_str("generator"),
+            Self::Named(name) => f.write_str(name),
+            Self::Tuple(types) => {
+                f.write_str("(")?;
+                for (i, ty) in types.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{ty}")?;
+                }
+                if types.len() == 1 {
+                    f.write_str(",")?;
+                }
+                f.write_str(")")
+            }
+            Self::Union(types) => {
+                for (i, ty) in types.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(" | ")?;
+                    }
+                    if matches!(ty, Self::Callable(..)) {
+                        write!(f, "({ty})")?;
+                    } else {
+                        write!(f, "{ty}")?;
+                    }
+                }
+                Ok(())
+            }
+            Self::Callable(parameters, result) => {
+                f.write_str("fn(")?;
+                for (i, ty) in parameters.iter().enumerate() {
+                    if i > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(f, "{ty}")?;
+                }
+                f.write_str(") -> ")?;
+                if matches!(result.as_ref(), Self::Union(_)) {
+                    write!(f, "({result})")
+                } else {
+                    write!(f, "{result}")
+                }
+            }
+        }
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallEffect {
     NoWait,
@@ -38,9 +98,24 @@ pub struct ExternalParameter {
 pub struct ExternalSignature {
     pub parameters: Vec<ExternalParameter>,
     pub result: TypeHint,
+    /// Refine a call result only when the referenced argument is a known source
+    /// constant. Dynamic values and spreads retain `result` unchanged.
+    pub result_cases: Vec<ExternalResultCase>,
+    /// The result has the supplied argument's actual type. An omitted argument
+    /// or an unknown spread retains the declared `result` type.
+    pub result_parameter: Option<String>,
     pub effect: CallEffect,
     pub init_safe: Option<bool>,
     pub derived_safe: Option<bool>,
+}
+/// Source typing metadata; this does not change the native calling ABI.
+#[derive(Debug, Clone)]
+pub struct ExternalResultCase {
+    pub parameter: String,
+    pub equals: Const,
+    pub result: TypeHint,
+    /// Derived by the host declaration from the actual parameter default.
+    pub when_omitted: bool,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Intrinsic {
@@ -88,11 +163,33 @@ pub struct ExternalSymbol {
     pub resolved_from: Option<Arc<ResolutionSource>>,
     pub ty: TypeHint,
     pub signature: Option<ExternalSignature>,
+    /// Source class shape. The class value exposes static members; constructed
+    /// values use the canonical named instance type and its instance members.
+    pub class: Option<Arc<ExternalClass>>,
+    /// A type declaration supplies annotations and has no source value. Ordinary
+    /// objects with a named type keep this false and retain normal value links.
+    pub type_only: bool,
     pub namespace: Option<NamespaceRef>,
     pub intrinsic: Option<Intrinsic>,
     /// A discarded call result is a source error; explicit wildcard bindings
     /// and lexical children collection consume the result.
     pub must_use_result: bool,
+}
+
+/// A registered named type's property or bound method. `symbol.ty` is the read
+/// type; `write_type: None` makes the member read-only. Method signatures exclude
+/// the already bound receiver and preserve real parameter names and defaults.
+#[derive(Debug, Clone)]
+pub struct ExternalMember {
+    pub symbol: ExternalSymbol,
+    pub write_type: Option<TypeHint>,
+}
+/// A source class's declaration contracts, shared through import aliases.
+#[derive(Debug, Clone)]
+pub struct ExternalClass {
+    pub bases: Vec<String>,
+    pub members: Vec<ExternalMember>,
+    pub static_members: Vec<ExternalMember>,
 }
 impl ExternalSymbol {
     /// Use the exact registration identity; no ABI/capability/default registry
@@ -141,6 +238,8 @@ impl ExternalSymbol {
             resolved_from: None,
             ty: TypeHint::Any,
             signature: None,
+            class: None,
+            type_only: false,
             namespace: None,
             intrinsic: None,
             must_use_result: false,
@@ -153,6 +252,8 @@ impl ExternalSymbol {
             resolved_from: None,
             ty,
             signature: None,
+            class: None,
+            type_only: false,
             namespace: None,
             intrinsic: None,
             must_use_result: false,
@@ -165,6 +266,8 @@ impl ExternalSymbol {
             resolved_from: None,
             ty: TypeHint::Any,
             signature: Some(signature),
+            class: None,
+            type_only: false,
             namespace: None,
             intrinsic: None,
             must_use_result: false,
@@ -227,6 +330,24 @@ impl std::fmt::Display for ResolveError {
 }
 impl std::error::Error for ResolveError {}
 pub trait ModuleResolver {
+    /// Resolve a real host type member without synthesizing a dynamic fallback.
+    /// Source-only resolvers keep their existing module behavior by default.
+    fn resolve_type_member(&mut self, _type_name: &str, _member: &str) -> Option<ExternalMember> {
+        None
+    }
+    /// Return a trusted nominal relationship, or `None` when either type is not
+    /// registered here and the existing runtime type check remains authoritative.
+    fn is_named_subtype(&self, _actual: &str, _expected: &str) -> Option<bool> {
+        None
+    }
+    /// The real callable contract of a named value, without inventing a member.
+    fn resolve_type_call(&mut self, _name: &str) -> Option<ExternalSymbol> {
+        None
+    }
+    /// The completed value produced by awaiting this registered named value.
+    fn resolve_type_await(&mut self, _name: &str) -> Option<TypeHint> {
+        None
+    }
     fn canonical_request<'a>(
         &self,
         request: &'a ImportRequest,
@@ -325,6 +446,13 @@ impl ModuleResolver for MemoryResolver {
         canonical_import(request, &self.aliases)
     }
     fn resolve(&mut self, r: &ImportRequest) -> Result<ResolvedImport, ResolveError> {
+        self.resolve_import(r)
+    }
+}
+impl MemoryResolver {
+    /// Resolve against immutable module registrations using the same import and
+    /// alias rules as `ModuleResolver`, without copying the registered interfaces.
+    pub fn resolve_import(&self, r: &ImportRequest) -> Result<ResolvedImport, ResolveError> {
         let r = self.canonical_request(r);
         let full = r.path.join("::");
         let (namespace, symbol_module) = self.candidates(&r);
@@ -362,6 +490,8 @@ impl ModuleResolver for MemoryResolver {
                         resolved_from: None,
                         ty: TypeHint::Table,
                         signature: None,
+                        class: None,
+                        type_only: false,
                         intrinsic: None,
                         must_use_result: false,
                         namespace: Some(NamespaceRef {

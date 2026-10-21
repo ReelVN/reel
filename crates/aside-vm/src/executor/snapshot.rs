@@ -80,6 +80,7 @@ impl SnapshotMap {
 
 #[derive(Serialize, Deserialize)]
 struct Header {
+    host_types: [u8; 32],
     active_slot: Option<usize>,
     tasks: usize,
     globals: RootRangeToken,
@@ -271,6 +272,7 @@ impl VmCapture<'_> {
                     0,
                     0,
                     &Header {
+                        host_types: vm.program.checks.host_types.fingerprint,
                         active_slot: vm.active_slot,
                         tasks: vm.tasks.data.len(),
                         globals: vm.globals,
@@ -470,6 +472,11 @@ impl VmRestore<'_> {
                     return Err(SnapshotError::Invalid("duplicate VM record".into()));
                 }
                 let header: Header = record.read()?;
+                if header.host_types != self.vm.program.checks.host_types.fingerprint {
+                    return Err(SnapshotError::Invalid(
+                        "trusted host type registry changed".into(),
+                    ));
+                }
                 if header.tasks > self.vm.limits.max_tasks as usize
                     || header.tasks >= self.image.records.len()
                     || header.active_slot.is_some_and(|i| i >= header.tasks)

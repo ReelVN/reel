@@ -3,6 +3,7 @@ use aside_vm::{bytecode::*, executor::*, *};
 use std::time::Instant;
 fn vm(p: BytecodePackage) -> Vm {
     let support = RuntimeSupport {
+        host_types: Vec::new(),
         opcodes: vec![],
         capabilities: vec!["host.echo".into()],
         natives: vec![NativeSupport {

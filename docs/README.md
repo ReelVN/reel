@@ -21,6 +21,7 @@ Reel 用于创作自定义对白、UI、演出和嵌入的 2D 游戏。下表列
 | 演出 | tween、组合动作、可观察时钟、scope 临时子树/属性覆盖/加性偏移、owner 退休和同包恢复。[组合动作](../examples/author_activities.aside) · [作用域](../examples/author_scope.aside) · [偏移](../examples/author_offsets.aside) | 冷资源首次显示的演出起点、更多对白/弹层/2D 取消恢复消费者。[#63](https://github.com/jhq223/reel/issues/63) |
 | 渲染 / 效果 | 共同舞台、分层图像、2D 相机、大图分块、独立粒子批次、共享遮罩、场景转场、子树滤镜/混合与 WGPU 绘制；输入使用已呈现几何。[转场](../examples/author_transition.aside) · [遮罩](../examples/author_composed_mask.aside) | 更多滤镜、转场、自定义效果和完整 2D 创作 API。[#92](https://github.com/jhq223/reel/issues/92) |
 | 工程 / 资源 | check/build/dev/run/export；开发与发布分离、外部文本池、资源分卷、后台读取与资源计账。[发布命令](guide/zh-CN.md#当前可用的检查构建与运行) | 长内容加载成本、编辑工具与跨平台发行验收。 |
+| 编辑器 | Rust LSP 的诊断、补全、参数提示、悬停和跨模块定义跳转；未保存内容与依赖失效；Rust 声明生成只读内置定义，VS Code 客户端提供编辑入口。[编写流程](guide/zh-CN.md#在-vs-code-中编写) | 格式化、重命名、请求取消与更细粒度的增量分析。[#142](https://github.com/jhq223/reel/issues/142) |
 | 音频 / 视频 | 短音效预解码、长音轨流式读取、片段队列、分组、循环区间、定位、音量/声像与淡变；H.264/AAC 视频节点使用共同舞台。[音频](../examples/author_audio.aside) · [音频队列](../examples/author_audio_queue.aside) | 解码器内部工作空间的完整预算、资源复用、设备恢复和实机音画同步。[#67](https://github.com/jhq223/reel/issues/67) |
 | 保存 / 恢复 | VM 执行、剧情、节点和活动快照；独立系统数据、缩略图、分片捕获与后台写盘。[存档](../examples/author_saves.aside) · [系统数据](../examples/author_persistent.aside) | 复杂同包恢复可靠性、暂停与峰值内存。要求匹配代码和格式，不提供旧包/旧档兼容。[#91](https://github.com/jhq223/reel/issues/91) |
 | 输入 / 嵌入游戏 | 键鼠、触摸和手柄公共输入；命名动作、模拟值、重映射、焦点导航；小游戏与对白共用节点、结果、时钟和存档。[开关谜题](../examples/author_embedded_puzzle.aside) | 连续 2D 游戏所需能力仍需补齐；示例不代表已有完整物理、碰撞或固定步进 API。[#101](https://github.com/jhq223/reel/issues/101) |

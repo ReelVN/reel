@@ -539,7 +539,7 @@ mod tests {
         let mut heap = Heap::new(SessionEpoch(7), HeapLimits::default()).unwrap();
         let lease = Rc::new(CodeLease {
             checks: Rc::new(
-                crate::type_checks::TypeChecks::new(program.package(), &heap.budget_usage())
+                crate::type_checks::TypeChecks::new(program.package(), &heap.budget_usage(), &[])
                     .unwrap(),
             ),
             charge: Reservation::new(

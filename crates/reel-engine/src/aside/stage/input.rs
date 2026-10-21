@@ -16,13 +16,13 @@ pub(in crate::aside) enum InputField {
     /// Once installed, internal edits do not update the map: assign a new table.
     /// Unhandled phases
     /// update held values without creating callback tasks or event objects.
-    #[aside(name = "actions", ty = Any, default = null, validate = validate_actions)]
+    #[aside(name = "actions", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Table), default = null, validate = validate_actions)]
     Actions,
-    #[aside(name = "on_key", ty = Any, default = null, validate = validate_callback)]
+    #[aside(name = "on_key", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnKey,
-    #[aside(name = "on_pointer", ty = Any, default = null, validate = validate_callback)]
+    #[aside(name = "on_pointer", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnPointer,
-    #[aside(name = "on_wheel", ty = Any, default = null, validate = validate_callback)]
+    #[aside(name = "on_wheel", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnWheel,
 }
 fn validate_actions(heap: &Heap, value: Value) -> Result<(), HeapError> {

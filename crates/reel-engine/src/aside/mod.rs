@@ -261,7 +261,8 @@ impl SessionVm {
     ) -> Result<Self, AdapterError> {
         let support = aside_host::runtime_support(
             &program,
-            &registry::contracts(),
+            source::contracts(),
+            source::types(),
             &registry::capabilities(),
         )?;
         let identity = session.identity();
@@ -275,7 +276,7 @@ impl SessionVm {
     fn from_vm(session: &Session, vm: Vm, limits: VmLimits) -> Result<Self, AdapterError> {
         let identity = session.identity();
         let owner = session.root_owner();
-        let stage = stage::StageBinding::new(vm.program())?;
+        let stage = stage::StageBinding::new(vm.program(), vm.heap())?;
         let standard = aside_std::StandardLibrary::new(vm.program());
         Ok(Self {
             vm,
@@ -587,6 +588,9 @@ impl SessionVm {
             name if name.starts_with("reel::mask::") => {
                 let args = self.vm.host_arguments(ticket)?.to_vec();
                 let value = masks::create(self.vm.heap_mut(), &name[12..], &args, self.read_limit)?;
+                self.stage
+                    .types
+                    .mark(self.vm.heap_mut(), value, "reel::types::Mask")?;
                 self.vm.respond(ticket, HostResponse::Ready(value))?;
                 self.issued = None;
                 Ok(NativeDispatch::Ready { work: 1 })
@@ -733,7 +737,8 @@ impl SessionVm {
                 } else {
                     activity::action::Kind::Parallel
                 };
-                let work = activity::action::compose(&mut self.vm, ticket, kind, work)?;
+                let work =
+                    activity::action::compose(&mut self.vm, &self.stage.types, ticket, kind, work)?;
                 self.issued = None;
                 Ok(NativeDispatch::Ready { work })
             }
@@ -809,6 +814,9 @@ impl SessionVm {
                     }
                     _ => unreachable!("registered activity constructor"),
                 };
+                self.stage
+                    .types
+                    .mark(self.vm.heap_mut(), value, "reel::types::Action")?;
                 self.vm.respond(ticket, HostResponse::Ready(value))?;
                 self.issued = None;
                 Ok(NativeDispatch::Ready { work: 1 })

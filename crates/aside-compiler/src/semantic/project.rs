@@ -5,6 +5,14 @@ use smallvec::SmallVec;
 use std::collections::HashMap;
 
 pub(super) fn project(parsed: &Parse, limits: AnalysisLimits) -> Result<Hir, Diagnostic> {
+    project_inner(parsed, limits, false)
+}
+
+pub(super) fn project_editor(parsed: &Parse, limits: AnalysisLimits) -> Result<Hir, Diagnostic> {
+    project_inner(parsed, limits, true)
+}
+
+fn project_inner(parsed: &Parse, limits: AnalysisLimits, recover: bool) -> Result<Hir, Diagnostic> {
     let syntax = parsed.syntax();
     let mut hir = Hir {
         source: syntax.text().to_string().into(),
@@ -66,6 +74,9 @@ pub(super) fn project(parsed: &Parse, limits: AnalysisLimits) -> Result<Hir, Dia
         if let Some(element) = frame.children.next() {
             match element {
                 aside_syntax::NodeOrToken::Node(node) => {
+                    if recover && node.kind() == K::Error {
+                        continue;
+                    }
                     let flat_receiver =
                         !frame.edges.iter().any(|e| matches!(e, HirElement::Node(_)))
                             && matches!(
@@ -133,7 +144,7 @@ pub(super) fn project(parsed: &Parse, limits: AnalysisLimits) -> Result<Hir, Dia
             parent.edges.push(HirElement::Node(id));
         }
     }
-    super::forms::forms(&mut hir);
+    super::forms::forms(&mut hir, recover);
     Ok(hir)
 }
 fn kind(k: K) -> Option<HirKind> {

@@ -38,13 +38,13 @@ fn advance(vm: &mut SessionVm, session: &mut Session) {
 }
 #[test]
 fn text_fade_scalar_source_asb_binding_tween_cancel_and_snapshot() {
-    let code = r##"fn opening() {
+    let code = r##"fn dynamic(value) {value} fn opening() {
         let state=model({step:0.25});
         let node=text("雪AB",reveal_fade:0,reveal_fade_from:3,reveal_fade_step:bind(state.step),
             text_shadow_x:-1,text_shadow_y:2,text_shadow_color:"#123456");
         stage.replace(node);
         let mut rejected=0;
-        try {node.reveal_fade="bad";}catch error{rejected+=1;}
+        try {node.reveal_fade=dynamic("bad");}catch error{rejected+=1;}
         try {node.reveal_fade_step=-1;}catch error{rejected+=1;}
         try {node.reveal_fade_from=-1;}catch error{rejected+=1;}
         try {let _ = text("雪",reveal_fade_from:1);}catch error{rejected+=1;}

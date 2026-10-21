@@ -7,35 +7,35 @@ use reel_ui::{
 
 #[derive(aside_host::Properties)]
 pub(in crate::aside) enum SliderField {
-    #[aside(name = "value", ty = Any, default = 0, validate = validate_number)]
+    #[aside(name = "value", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number)]
     Value,
-    #[aside(name = "min", ty = Any, default = 0, validate = validate_number)]
+    #[aside(name = "min", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number)]
     Min,
-    #[aside(name = "max", ty = Any, default = 1, validate = validate_number)]
+    #[aside(name = "max", ty = Any, doc_type = aside_host::source::number(), default = 1, validate = validate_number)]
     Max,
-    #[aside(name = "step", ty = Any, default = null, validate = validate_step)]
+    #[aside(name = "step", ty = Any, doc_type = aside_host::source::nullable(aside_host::source::number()), default = null, validate = validate_step)]
     Step,
-    #[aside(name = "on_change", ty = Any, default = null, validate = validate_callback)]
+    #[aside(name = "on_change", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnChange,
 }
 #[derive(aside_host::Properties)]
 pub(in crate::aside) enum ToggleField {
-    #[aside(name = "label", ty = Any, default = null, validate = validate_label)]
+    #[aside(name = "label", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::String), default = null, validate = validate_label)]
     Label,
     #[aside(name = "value", ty = Bool, default = false)]
     Value,
-    #[aside(name = "on_change", ty = Any, default = null, validate = validate_callback)]
+    #[aside(name = "on_change", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnChange,
 }
 #[derive(aside_host::Properties)]
 pub(in crate::aside) enum RadioField {
     #[aside(name = "option", ty = Any)]
     Option,
-    #[aside(name = "label", ty = Any, default = null, validate = validate_label)]
+    #[aside(name = "label", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::String), default = null, validate = validate_label)]
     Label,
     #[aside(name = "value", ty = Any, default = null)]
     Value,
-    #[aside(name = "on_change", ty = Any, default = null, validate = validate_callback)]
+    #[aside(name = "on_change", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnChange,
 }
 
