@@ -428,6 +428,44 @@ impl Vm {
             0
         };
         let mut cost = (1, extra);
+        let mut host_method = None;
+        let mut host_lookup_work = 0;
+        if scan
+            && !work.matched
+            && work.entry == len
+            && let TableAction::GetHost { object, .. } | TableAction::SetHost { object, .. } =
+                work.action
+        {
+            let host = self.value(s.regs, object.0)?;
+            let key = self.value(s.env, 2)?;
+            let bytes = if key.tag() == ValueTag::Object {
+                self.heap.info(key)?.len
+            } else {
+                0
+            };
+            cost.0 += self.type_checks.symbol_work(bytes) + self.heap.host_method_work(host)?;
+            if !meter.admits(0, cost.0, 0) {
+                return Ok(false);
+            }
+            host_lookup_work = cost.0;
+            host_method = match self.shared_host_method(host, key) {
+                Ok(method) => method,
+                Err(error) => {
+                    assert!(meter.take(0, cost.0, 0));
+                    self.collection_fault(s, heap_fault(error))?;
+                    return Ok(true);
+                }
+            };
+            if matches!(work.action, TableAction::GetHost { .. })
+                && let Some(function) = host_method
+            {
+                cost.1 += Values::allocation_bytes(4);
+                let signature = self.program.package().functions[function.index()].signature;
+                let receiver =
+                    self.program.package().signatures[signature.index()].parameters[0].ty;
+                cost.0 += 4 + self.type_checks.extra(receiver);
+            }
+        }
         let property = if scan && work.matched {
             match work.action {
                 TableAction::GetHost { object, .. } => Some(crate::PropertyId {
@@ -461,6 +499,9 @@ impl Vm {
             None
         };
         if !meter.take(0, cost.0, cost.1) {
+            // The lookup already ran under its own admission check. Preserve
+            // the full retry requirement while accounting for that work.
+            meter.usage.work += host_lookup_work;
             return Ok(false);
         }
         if let Some(read) = refresh {
@@ -482,7 +523,7 @@ impl Vm {
         if !scan {
             self.validate_key_step(s)?;
         } else if store || work.matched || work.entry == scan_len {
-            self.table_commit(s)?;
+            self.table_commit(s, host_method)?;
         } else {
             let key = self.value(s.env, 2)?;
             let (candidate, _) = self.heap.table_entry(table, work.entry)?;
@@ -575,7 +616,11 @@ impl Vm {
         s.phase = ScriptPhase::TableScan;
         Ok(())
     }
-    fn table_commit(&mut self, s: &mut ScriptFrame) -> Result<(), VmError> {
+    fn table_commit(
+        &mut self,
+        s: &mut ScriptFrame,
+        host_method: Option<FunctionId>,
+    ) -> Result<(), VmError> {
         let work = s.table_work.unwrap();
         let table = self.value(s.env, 1)?;
         let key = self.value(s.env, 2)?;
@@ -633,10 +678,26 @@ impl Vm {
                 self.put(s.regs, dest.0, Value::bool(work.matched))?;
             }
             TableAction::GetHost { object, dest } => {
-                if !work.matched {
-                    return self.collection_fault(s, FaultKind::MissingKey);
-                }
                 let host = self.value(s.regs, object.0)?;
+                if !work.matched {
+                    let Some(function) = host_method else {
+                        return self.collection_fault(s, FaultKind::MissingKey);
+                    };
+                    if s.effects.0 & Effects::ALLOCATE == 0 {
+                        return self.collection_fault(s, FaultKind::Effect);
+                    }
+                    let value = match self.bind_native(host, function) {
+                        Ok(value) => value,
+                        Err(error) => return self.collection_fault(s, vm_fault(error)),
+                    };
+                    self.put(s.regs, dest.0, value)?;
+                    s.table_work = None;
+                    self.clear(s.env, 1)?;
+                    self.clear(s.env, 2)?;
+                    s.pc.0 += 1;
+                    s.phase = ScriptPhase::Body;
+                    return Ok(());
+                }
                 let property = crate::PropertyId {
                     host,
                     field: work.entry,
@@ -696,8 +757,15 @@ impl Vm {
                 self.put(s.regs, dest.0, value)?;
             }
             TableAction::Set(reg) | TableAction::SetHost { value: reg, .. } => {
-                if matches!(work.action, TableAction::SetHost { .. }) && !work.matched {
-                    return self.collection_fault(s, FaultKind::MissingKey);
+                if let TableAction::SetHost { .. } = work.action
+                    && !work.matched
+                {
+                    let kind = if host_method.is_some() {
+                        FaultKind::ReadOnly
+                    } else {
+                        FaultKind::MissingKey
+                    };
+                    return self.collection_fault(s, kind);
                 }
                 let value = match self.read(*s, reg) {
                     Ok(value) => value,

@@ -1,7 +1,7 @@
 use aside_compiler::semantic::{
     CallEffect, ExternalParameter, ExternalSignature, ExternalSymbol, SymbolReference, TypeHint,
 };
-pub use aside_vm::HostTypeSupport;
+pub use aside_vm::{HostMethodSupport, HostTypeSupport};
 use aside_vm::bytecode::{
     self as bc, BuiltinType, Effects, NativeSupport, Parameter, RuntimeSupport, Signature,
     SymbolId, TypeDef, TypeId,
@@ -411,6 +411,9 @@ pub fn seed(
         initializer: None,
     });
     for declaration in types {
+        for method in &declaration.methods {
+            symbol(&mut package, &method.name);
+        }
         let (path, name) = declaration
             .name
             .rsplit_once("::")

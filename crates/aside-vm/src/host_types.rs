@@ -1,7 +1,7 @@
 //! Trusted nominal host identities, shared by all objects using one code lease.
 use crate::{
     Heap, HeapBudgetUsage, HeapError, HeapId, Value,
-    bytecode::{BytecodePackage, TypeDef, TypeId},
+    bytecode::{BytecodePackage, FunctionId, FunctionKind, SymbolId, TypeDef, TypeId},
     executor::VmError,
     root_ranges::{ChargedVec, Reservation},
 };
@@ -16,6 +16,18 @@ pub struct HostTypeSupport {
     pub name: String,
     pub version: u64,
     pub bases: Vec<String>,
+    /// Complete visible native methods, including inherited declarations.
+    /// Own host fields take precedence over these shared methods.
+    pub methods: Vec<HostMethodSupport>,
+}
+
+/// A shared method names its independently admitted native declaration.
+/// Its required first parameter receives the original host object.
+#[derive(Clone, Debug)]
+pub struct HostMethodSupport {
+    pub name: String,
+    pub native: String,
+    pub abi_version: u32,
 }
 
 /// A heap-local credential issued from its trusted nominal type registry.
@@ -30,6 +42,7 @@ pub struct HostTypeId {
 struct Entry {
     name: String,
     accepts: ChargedVec<TypeId>,
+    methods: ChargedVec<(SymbolId, FunctionId)>,
 }
 pub(crate) struct HostTypes {
     entries: ChargedVec<Entry>,
@@ -96,6 +109,14 @@ impl HostTypes {
                 fingerprint.update(&(base.len() as u64).to_le_bytes());
                 fingerprint.update(base.as_bytes());
             }
+            fingerprint.update(&(declaration.methods.len() as u64).to_le_bytes());
+            for method in &declaration.methods {
+                fingerprint.update(&(method.name.len() as u64).to_le_bytes());
+                fingerprint.update(method.name.as_bytes());
+                fingerprint.update(&(method.native.len() as u64).to_le_bytes());
+                fingerprint.update(method.native.as_bytes());
+                fingerprint.update(&method.abi_version.to_le_bytes());
+            }
         }
         let names = Reservation::new(usage, names_bytes)?;
         let mut owners = ChargedVec::new(usage, package.types.len())?;
@@ -131,6 +152,7 @@ impl HostTypes {
         let mut visited = ChargedVec::new(usage, registrations.len())?;
         visited.data.resize(registrations.len(), false);
         let mut pending = ChargedVec::new(usage, registrations.len())?;
+        let mut receiver_types = ChargedVec::new(usage, package.types.len())?;
         let mut entries = ChargedVec::new(usage, registrations.len())?;
         let mut max_accepts = 0usize;
         for start in 0..order.data.len() {
@@ -162,9 +184,87 @@ impl HostTypes {
                     (owner != u32::MAX && visited.data[owner as usize]).then_some(TypeId(i as u32))
                 }));
             max_accepts = max_accepts.max(count);
+            receiver_types.data.clear();
+            for ty in &package.types {
+                receiver_types.data.push(match ty {
+                    TypeDef::Builtin(crate::bytecode::BuiltinType::Any) => true,
+                    TypeDef::Named { .. } => accepts
+                        .data
+                        .binary_search(&TypeId(receiver_types.data.len() as u32))
+                        .is_ok(),
+                    TypeDef::Union(items) => items.iter().any(|ty| receiver_types.data[ty.index()]),
+                    _ => false,
+                });
+            }
+            let declaration = &registrations[order.data[start]];
+            let linked_methods = declaration
+                .methods
+                .iter()
+                .filter(|method| {
+                    package
+                        .natives
+                        .iter()
+                        .any(|native| package.symbols[native.symbol.index()] == method.native)
+                })
+                .count();
+            let mut methods = ChargedVec::new(usage, linked_methods)?;
+            for (index, method) in declaration.methods.iter().enumerate() {
+                if method.name.is_empty()
+                    || method.abi_version == 0
+                    || declaration.methods[..index]
+                        .iter()
+                        .any(|other| other.name == method.name)
+                {
+                    return Err(VmError::Contract(
+                        "invalid or duplicate trusted host method",
+                    ));
+                }
+                let Some((native_index, native)) =
+                    package.natives.iter().enumerate().find(|(_, native)| {
+                        package.symbols[native.symbol.index()] == method.native
+                    })
+                else {
+                    // A smaller package may omit this native altogether. Its
+                    // registry does not add executable code to the package.
+                    continue;
+                };
+                if native.abi_version != method.abi_version
+                    || package.signatures[native.signature.index()]
+                        .parameters
+                        .first()
+                        .is_none_or(|parameter| {
+                            parameter.default.is_some()
+                                || !receiver_types.data[parameter.ty.index()]
+                        })
+                {
+                    return Err(VmError::Contract(
+                        "host method requires an admitted native receiver",
+                    ));
+                }
+                let name = package
+                    .symbols
+                    .iter()
+                    .position(|name| name == &method.name)
+                    .ok_or(VmError::Contract(
+                        "host method name is missing from the package",
+                    ))?;
+                let function = package
+                    .functions
+                    .iter()
+                    .position(|function| {
+                        function.kind
+                            == FunctionKind::Native(crate::bytecode::NativeId(native_index as u32))
+                    })
+                    .ok_or(VmError::Contract("host method native callable is missing"))?;
+                methods
+                    .data
+                    .push((SymbolId(name as u32), FunctionId(function as u32)));
+            }
+            methods.data.sort_unstable_by_key(|method| method.0);
             entries.data.push(Entry {
-                name: registrations[order.data[start]].name.clone(),
+                name: declaration.name.clone(),
                 accepts,
+                methods,
             });
         }
         let work = max_accepts
@@ -196,6 +296,53 @@ impl HostTypes {
 }
 
 impl Heap {
+    pub(crate) fn host_method_work(&self, host: Value) -> Result<u64, HeapError> {
+        let index = self.host_type_index(host)?;
+        let Some(index) = index else {
+            return Ok(1);
+        };
+        let entry = &self
+            .code
+            .as_ref()
+            .ok_or(HeapError::TypeMismatch)?
+            .checks
+            .host_types
+            .entries
+            .data[index.get() as usize - 1];
+        Ok(2 + u64::from(entry.methods.data.len().checked_ilog2().unwrap_or(0) + 1))
+    }
+    pub(crate) fn shared_host_method(
+        &self,
+        host: Value,
+        name: SymbolId,
+    ) -> Result<Option<FunctionId>, HeapError> {
+        self.host_fields(host)?;
+        let Some(index) = self.host_type_index(host)? else {
+            return Ok(None);
+        };
+        let entry = &self
+            .code
+            .as_ref()
+            .ok_or(HeapError::TypeMismatch)?
+            .checks
+            .host_types
+            .entries
+            .data[index.get() as usize - 1];
+        Ok(entry
+            .methods
+            .data
+            .binary_search_by_key(&name, |method| method.0)
+            .ok()
+            .map(|index| entry.methods.data[index].1))
+    }
+    fn host_type_index(&self, host: Value) -> Result<Option<NonZeroU32>, HeapError> {
+        let flags = self
+            .get_field(host, 1)?
+            .as_int()
+            .ok_or(HeapError::WrongKind)?;
+        let index = u32::try_from(flags >> 1).map_err(|_| HeapError::TypeMismatch)?;
+        Ok(NonZeroU32::new(index))
+    }
     /// Resolve a canonical registered host type once for this heap.
     pub fn host_type(&self, name: &str) -> Result<HostTypeId, HeapError> {
         let code = self.code.as_ref().ok_or(HeapError::TypeMismatch)?;
@@ -312,16 +459,19 @@ mod tests {
                 name: "sample::Text".into(),
                 version: 1,
                 bases: vec!["sample::Node".into()],
+                methods: vec![],
             },
             HostTypeSupport {
                 name: "sample::Node".into(),
                 version: 1,
                 bases: vec![],
+                methods: vec![],
             },
             HostTypeSupport {
                 name: "sample::Image".into(),
                 version: 1,
                 bases: vec!["sample::Node".into()],
+                methods: vec![],
             },
         ]
     }

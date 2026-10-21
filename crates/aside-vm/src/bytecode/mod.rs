@@ -11,7 +11,7 @@ mod tests;
 mod text_pool;
 mod verify;
 
-pub use crate::HostTypeSupport;
+pub use crate::{HostMethodSupport, HostTypeSupport};
 pub use codec::{decode, encode};
 pub use model::*;
 pub use spec::*;

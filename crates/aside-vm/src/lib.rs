@@ -33,7 +33,7 @@ pub use heap::{
     PropertyId, RootKind, RootOwner, RootToken, TableLookupProgress, TableLookupStatus,
     TableStringLookup,
 };
-pub use host_types::{HostTypeId, HostTypeSupport};
+pub use host_types::{HostMethodSupport, HostTypeId, HostTypeSupport};
 pub use payload::{
     BYTE_CHUNK_BYTES, BYTE_CHUNK_LEN, CHUNK_METADATA_BYTES, VALUE_CHUNK_BYTES, VALUE_CHUNK_LEN,
 };
