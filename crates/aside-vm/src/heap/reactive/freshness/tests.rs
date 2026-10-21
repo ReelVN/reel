@@ -27,6 +27,43 @@ fn inputs(heap: &Heap, output: Value) -> &crate::dependencies::Dependencies {
 }
 
 #[test]
+fn semantic_read_accounts_first_dependency_scan_and_reuses_the_stable_index() {
+    for count in [1, 128] {
+        let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+        let source = heap.alloc_table().unwrap();
+        for field in 0..count {
+            heap.table_store(source, field, Value::int(field.into()), Value::int(0))
+                .unwrap();
+        }
+        heap.observe_model_object(source).unwrap();
+        let upstream = heap.alloc_derived(Value::NULL).unwrap();
+        heap.begin_derived(upstream).unwrap();
+        for field in 0..count {
+            heap.observe_read(source, Some(field)).unwrap();
+        }
+        heap.commit_derived(upstream, Value::int(0)).unwrap();
+        let consumer = heap.alloc_derived(Value::NULL).unwrap();
+        heap.begin_derived(consumer).unwrap();
+        let property = PropertyId {
+            host: upstream,
+            field: 0,
+        };
+        let (refresh, first_work) = heap.reactive_read_source(property).unwrap();
+        assert!(refresh.is_none());
+        let before = heap.stats().charged_bytes;
+        let (refresh, stable_work) = heap.reactive_read_source(property).unwrap();
+        assert!(refresh.is_none());
+        assert_eq!(first_work - stable_work, u64::from(count));
+        assert_eq!(stable_work, 4);
+        assert_eq!(heap.stats().charged_bytes, before);
+        println!(
+            "semantic-read model-fields={count} first-work={first_work} stable-work={stable_work} stable-allocation=0"
+        );
+        heap.end_derived(consumer).unwrap();
+    }
+}
+
+#[test]
 fn freshness_equal_value_binding_and_alias_rebinding_invalidate_cached_plain_endpoints() {
     let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
     let source = model(&mut heap);

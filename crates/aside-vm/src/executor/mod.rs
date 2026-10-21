@@ -94,6 +94,10 @@ enum ReturnTo {
         frame: FrameId,
         parameter: u32,
     },
+    ReactiveRead {
+        frame: FrameId,
+        call: Pc,
+    },
 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum ArgSource {
@@ -852,7 +856,8 @@ impl Vm {
                 }
                 ReturnTo::Register { frame, call, .. }
                 | ReturnTo::Class { frame, call }
-                | ReturnTo::Sort { frame, call } => {
+                | ReturnTo::Sort { frame, call }
+                | ReturnTo::ReactiveRead { frame, call } => {
                     return match index.checked_sub(1).map(|i| self.active.frames.data[i]) {
                         Some(Frame::Script(parent)) if parent.id == frame => self.loc(parent, call),
                         _ => self.loc(current, current.pc),
@@ -2481,8 +2486,57 @@ impl Vm {
                         return Ok(true);
                     }
                 };
-                if !m.take(1, work, allocation) {
+                let mut cost = (work, allocation);
+                let refresh = if op == Opcode::MemberGet {
+                    let object = self.slots.read(at(s.regs, b))?;
+                    let property = if self.heap.is_property_ref(object)
+                        && self.program.package().symbols[c as usize] == "value"
+                    {
+                        let (property, _) = self.heap.property_ref(object)?;
+                        Some(property)
+                    } else if self.heap.reactive_evaluating()
+                        && matches!(
+                            self.heap.info(object)?.kind,
+                            ObjectKind::Class | ObjectKind::Instance | ObjectKind::Super
+                        )
+                    {
+                        cost.0 += self.class_member_cost(object)?;
+                        match self.class_read_property(object, SymbolId(c)) {
+                            Ok(property) => property,
+                            Err(kind) => {
+                                self.collection_fault(&mut s, kind)?;
+                                self.active.frames.data[top] = Frame::Script(s);
+                                return Ok(true);
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(property) = property {
+                        match self.reactive_read_plan(property, &mut cost) {
+                            Ok(read) => read,
+                            Err(error) => {
+                                self.collection_fault(&mut s, vm_fault(error))?;
+                                self.active.frames.data[top] = Frame::Script(s);
+                                return Ok(true);
+                            }
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                if !m.take(1, cost.0, cost.1) {
                     return Ok(false);
+                }
+                if let Some(read) = refresh {
+                    self.active.frames.data[top] = Frame::Script(s);
+                    if let Err(error) = self.push_reactive_read(s, read) {
+                        self.collection_fault(&mut s, vm_fault(error))?;
+                        self.active.frames.data[top] = Frame::Script(s);
+                    }
+                    return Ok(true);
                 }
                 let step = self.execute(&mut s, op, a, b, c);
                 match step {
@@ -4231,7 +4285,8 @@ impl Vm {
             ReturnTo::Register { frame, call, .. }
             | ReturnTo::Default { frame, call, .. }
             | ReturnTo::Class { frame, call }
-            | ReturnTo::Sort { frame, call } => {
+            | ReturnTo::Sort { frame, call }
+            | ReturnTo::ReactiveRead { frame, call } => {
                 let i = self.index(frame)?;
                 let Frame::Script(mut parent) = self.active.frames.data[i] else {
                     return Err(VmError::Contract("return target"));
@@ -4259,6 +4314,7 @@ impl Vm {
                         ReturnTo::Register { reg, .. } => self.put(parent.regs, reg.0, value)?,
                         ReturnTo::Class { .. } => self.put(parent.env, 2, value)?,
                         ReturnTo::Sort { .. } => self.put(parent.env, 3, value)?,
+                        ReturnTo::ReactiveRead { .. } => {}
                         ReturnTo::Default { parameter, .. } => {
                             self.put(parent.bound, parameter, value)?;
                             parent.phase = ScriptPhase::Defaults { parameter };
