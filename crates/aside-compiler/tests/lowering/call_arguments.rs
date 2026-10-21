@@ -510,6 +510,7 @@ fn native_packed_calls_preserve_trusted_rest_defaults_abi_and_identity() {
     let host = ExternalSymbol::function(
         "host",
         ExternalSignature {
+            result_cases: Vec::new(),
             parameters: vec![
                 ExternalParameter {
                     name: "a".into(),
@@ -560,6 +561,7 @@ fn native_packed_calls_preserve_trusted_rest_defaults_abi_and_identity() {
         m.external_bindings().iter().find_map(|e| e.symbol).unwrap(),
     );
     let links = [lowering::NativeLink {
+        source_signature: None,
         target,
         native: bc::NativeId(0),
         reference: &reference,
@@ -622,6 +624,7 @@ fn native_packed_calls_preserve_trusted_rest_defaults_abi_and_identity() {
         },
     ] {
         let links = [lowering::NativeLink {
+            source_signature: None,
             reference: &changed,
             ..links[0]
         }];
@@ -662,6 +665,7 @@ fn native_packed_calls_preserve_trusted_rest_defaults_abi_and_identity() {
         .into_module()
         .unwrap();
     let links = [lowering::NativeLink {
+        source_signature: None,
         target: lowering::ExternalTarget::Symbol(
             optional
                 .external_bindings()
@@ -709,6 +713,7 @@ fn native_packed_calls_preserve_trusted_rest_defaults_abi_and_identity() {
             })
             .unwrap();
         let links = [lowering::NativeLink {
+            source_signature: None,
             target: lowering::ExternalTarget::Node(node),
             native: bc::NativeId(0),
             reference: &reference,

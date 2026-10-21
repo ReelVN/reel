@@ -147,6 +147,7 @@ struct Binder<'a> {
     capture_users: Vec<Vec<(FunctionId, usize)>>,
     external: HashMap<SymbolId, Arc<ExternalSymbol>>,
     external_nodes: HashMap<NodeId, Arc<ExternalSymbol>>,
+    member_write_types: HashMap<NodeId, Option<TypeId>>,
     calls: Vec<CallSite>,
     analyzed_functions: HashSet<FunctionId>,
     signature_ready: HashSet<FunctionId>,
@@ -156,6 +157,7 @@ struct Binder<'a> {
     empty_signature: Option<Arc<CheckedSignature>>,
     class: Option<(NodeId, bool)>,
     class_members: HashMap<NodeId, HashMap<(NameId, bool), NodeId>>,
+    prepared_classes: HashSet<NodeId>,
     class_bases: HashMap<NodeId, NodeId>,
     derived_functions: HashSet<NodeId>,
     fresh: HashSet<SymbolId>,
@@ -167,10 +169,28 @@ pub(super) fn analyze(
     options: &AnalysisOptions,
     resolver: &mut dyn ModuleResolver,
 ) -> Analysis {
+    let result = analyze_editor(hir, options, resolver);
+    Analysis {
+        module: if result.diagnostics.is_empty() && !result.exhausted {
+            result.module
+        } else {
+            None
+        },
+        diagnostics: result.diagnostics,
+        exhausted: result.exhausted,
+        stats: result.stats,
+    }
+}
+
+pub(super) fn analyze_editor(
+    hir: Hir,
+    options: &AnalysisOptions,
+    resolver: &mut dyn ModuleResolver,
+) -> crate::editor::EditorAnalysis {
     // Admit the seeded name index before cloning/allocating any binding metadata.
     let admitted = hir.names.len().saturating_add(1);
     if admitted > options.limits.max_work {
-        return Analysis {
+        return crate::editor::EditorAnalysis {
             module: None,
             diagnostics: vec![Diagnostic::error(
                 D::BudgetExceeded,
@@ -259,6 +279,7 @@ pub(super) fn analyze(
         capture_users: Vec::new(),
         external: HashMap::new(),
         external_nodes: HashMap::new(),
+        member_write_types: HashMap::new(),
         calls: Vec::new(),
         analyzed_functions: HashSet::new(),
         signature_ready: HashSet::new(),
@@ -268,6 +289,7 @@ pub(super) fn analyze(
         empty_signature: None,
         class: None,
         class_members: HashMap::new(),
+        prepared_classes: HashSet::new(),
         class_bases: HashMap::new(),
         derived_functions: HashSet::new(),
         fresh: HashSet::new(),
@@ -356,13 +378,9 @@ pub(super) fn analyze(
     b.check_results();
     b.account();
     let stats = b.out.stats.clone();
-    Analysis {
+    crate::editor::EditorAnalysis {
         stats,
-        module: if b.diagnostics.is_empty() && !b.exhausted {
-            Some(b.out)
-        } else {
-            None
-        },
+        module: Some(b.out),
         diagnostics: b.diagnostics,
         exhausted: b.exhausted,
     }
@@ -733,6 +751,14 @@ impl Binder<'_> {
             let d = self.unwrap(child);
             if self.kind(d) == HirKind::Import {
                 self.import(d, self.modifier(child, K::Pub), ctx);
+            }
+        }
+        // Class shape is needed when a forward function body uses an instance.
+        // Method and field initializer bodies are still analyzed at the declaration.
+        for &child in &children {
+            let declaration = self.unwrap(child);
+            if self.kind(declaration) == HirKind::Class {
+                self.prepare_class(declaration, ctx);
             }
         }
         // Prepare every declared contract before visiting any consumer default/body.
@@ -1337,6 +1363,7 @@ impl Binder<'_> {
             }
             (Type::Function(_) | Type::BoundMethod(_), Type::Closure) => true,
             (Type::Class(_), Type::Named(name)) if self.out.hir.name(*name) == "class" => true,
+            (Type::Named(actual), Type::Named(expected)) => self.resolver.is_named_subtype(self.out.hir.name(*actual), self.out.hir.name(*expected)).unwrap_or(true),
             (Type::Named(_) | Type::Instance(_), Type::Named(_) | Type::Instance(_)) => true,
             _ => false,
         }
@@ -1995,6 +2022,11 @@ impl Binder<'_> {
             self.check(target, RuntimeChecks::PATTERN);
         }
         self.pattern_type(target, value, PatternUse::Assignment);
+        if let Some(Some(expected)) = self.member_write_types.get(&target).copied()
+            && let Some(rhs) = rhs
+        {
+            self.require(rhs, value, expected, "host property assignment");
+        }
         value
     }
     fn location(&mut self, n: NodeId, ctx: &Context) {
@@ -2020,6 +2052,9 @@ impl Binder<'_> {
             }
             HirKind::Member | HirKind::Index => {
                 self.visit(n, ctx);
+                if matches!(self.member_write_types.get(&n), Some(None)) {
+                    self.error(D::ImmutableBinding, self.span(n), "host property is read-only");
+                }
                 self.check(n, RuntimeChecks::MUTABILITY);
                 if let Form::Index { object, .. } = self.out.hir.node(n).form
                     && matches!(self.out.types[self.ty(object).0 as usize], Type::Tuple(_))
@@ -2083,6 +2118,15 @@ impl Binder<'_> {
             .name(n)
             .map(|t| self.out.hir.name(t.name.unwrap()).to_owned());
         if let (Some(&base), Some(key)) = (children.first(), key) {
+            if let Type::Named(name) = self.out.types[object.0 as usize]
+                && let Some(member) = self.resolver.resolve_type_member(self.out.hir.name(name), &key)
+            {
+                let ty = self.hint(&member.symbol.ty);
+                let write = member.write_type.as_ref().map(|ty| self.hint(ty));
+                self.member_write_types.insert(n, write);
+                self.external_nodes.insert(n, Arc::new(member.symbol));
+                return ty;
+            }
             if let Some(namespace) = self
                 .external_nodes
                 .get(&base)
@@ -2120,16 +2164,19 @@ impl Binder<'_> {
             {
                 let instance = matches!(self.out.types[object.0 as usize], Type::Instance(_));
                 let name = self.intern_name(&key);
-                if let Some(d) = self.find_class_member(class, name, !instance)
-                    && let Some(f) = self.fn_nodes.get(&d).copied()
-                {
-                    self.check(n, RuntimeChecks::RECEIVER);
-                    self.out.facts[n.0 as usize].function = Some(f);
-                    return self.intern_type(if instance {
-                        Type::BoundMethod(f)
-                    } else {
-                        Type::Function(f)
-                    });
+                if let Some(d) = self.find_class_member(class, name, !instance) {
+                    if self.kind(d) == HirKind::Function
+                        && let Some(f) = self.fn_nodes.get(&d).copied()
+                    {
+                        self.check(n, RuntimeChecks::RECEIVER);
+                        self.out.facts[n.0 as usize].function = Some(f);
+                        return self.intern_type(if instance {
+                            Type::BoundMethod(f)
+                        } else {
+                            Type::Function(f)
+                        });
+                    }
+                    return self.ty(d);
                 }
             }
         }
@@ -2743,7 +2790,9 @@ impl Binder<'_> {
         }
         false
     }
-    fn class_node(&mut self, n: NodeId, children: &[NodeId], ctx: &Context) -> TypeId {
+    fn prepare_class(&mut self, n: NodeId, ctx: &Context) {
+        if !self.prepared_classes.insert(n) { return; }
+        let children = self.children(n);
         let base = children
             .iter()
             .copied()
@@ -2768,7 +2817,7 @@ impl Binder<'_> {
         let old_class = self.class;
         self.class = Some((n, base.is_some()));
         let mut seen = HashSet::new();
-        for &member in children {
+        for &member in &children {
             if !self.budget(member) {
                 break;
             }
@@ -2806,9 +2855,13 @@ impl Binder<'_> {
                         Receiver::ExplicitSelf
                     },
                 );
+            } else if let Form::Binding { annotation: Some(annotation), .. } = self.out.hir.node(d).form {
+                // Fields are visible to methods regardless of declaration order.
+                let ty = self.annotation(annotation, ctx);
+                self.set_ty(d, ty);
             }
         }
-        for &member in children {
+        for &member in &children {
             if self.exhausted {
                 break;
             }
@@ -2825,6 +2878,12 @@ impl Binder<'_> {
                 );
             }
         }
+        self.class = old_class;
+    }
+    fn class_node(&mut self, n: NodeId, children: &[NodeId], ctx: &Context) -> TypeId {
+        self.prepare_class(n, ctx);
+        let old_class = self.class;
+        self.class = Some((n, self.class_bases.contains_key(&n)));
         for &member in children {
             if !self.budget(member) {
                 break;
@@ -2891,6 +2950,7 @@ impl Binder<'_> {
                         if let Some(expected) = annotation {
                             self.require(init, t, expected, "field initializer");
                         }
+                        self.set_ty(d, annotation.unwrap_or(t));
                         self.scope = previous;
                     } else if let Some(a) = annotation {
                         self.annotation(a, ctx);

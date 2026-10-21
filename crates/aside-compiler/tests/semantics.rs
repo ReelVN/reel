@@ -176,6 +176,7 @@ fn short_circuit_effects_inherit_conditional_execution() {
         hosts: vec![ExternalSymbol::function(
             "effect",
             ExternalSignature {
+                result_cases: Vec::new(),
                 parameters: vec![],
                 result: TypeHint::Bool,
                 effect: CallEffect::NoWait,
@@ -257,6 +258,7 @@ fn shared_large_signatures_are_built_once_and_charge_parameter_work() {
         hosts: vec![ExternalSymbol::function(
             "native",
             ExternalSignature {
+                result_cases: Vec::new(),
                 parameters: (0..100)
                     .map(|i| ExternalParameter {
                         name: format!("p{i}"),

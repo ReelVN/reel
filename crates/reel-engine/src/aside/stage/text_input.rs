@@ -6,9 +6,9 @@ use reel_ui::{stage::NodeText, widgets::TextInputEvent};
 pub(in crate::aside) enum TextInputField {
     #[aside(name = "value", ty = String, default = "", validate = validate_value)]
     Value,
-    #[aside(name = "on_change", ty = Any, default = null, validate = validate_callback)]
+    #[aside(name = "on_change", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnChange,
-    #[aside(name = "on_submit", ty = Any, default = null, validate = validate_callback)]
+    #[aside(name = "on_submit", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnSubmit,
 }
 

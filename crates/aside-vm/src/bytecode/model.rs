@@ -501,6 +501,8 @@ pub struct RuntimeSupport {
     pub opcodes: Vec<super::Opcode>,
     pub capabilities: Vec<String>,
     pub natives: Vec<NativeSupport>,
+    /// Trusted nominal host declarations, supplied independently of the package.
+    pub host_types: Vec<crate::HostTypeSupport>,
 }
 #[derive(Clone, Debug)]
 pub struct NativeSupport {

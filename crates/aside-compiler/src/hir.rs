@@ -15,6 +15,8 @@ id!(NodeId, NameId, ScopeId, SymbolId, FunctionId, TypeId);
 /// remain ordered with nodes, preserving operators, field names and punctuation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HirKind {
+    /// An incomplete editor production. Strict compilation never projects it.
+    Error,
     Module,
     Block,
     Let,

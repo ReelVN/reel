@@ -4,13 +4,13 @@ use reel_ui::stage::CameraView;
 
 #[derive(aside_host::Properties)]
 pub(in crate::aside) enum CameraField {
-    #[aside(name = "camera_x", ty = Any, default = 0, validate = validate_number, animatable)]
+    #[aside(name = "camera_x", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number, animatable)]
     X,
-    #[aside(name = "camera_y", ty = Any, default = 0, validate = validate_number, animatable)]
+    #[aside(name = "camera_y", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number, animatable)]
     Y,
-    #[aside(name = "zoom", ty = Any, default = 1, validate = validate_zoom, animatable)]
+    #[aside(name = "zoom", ty = Any, doc_type = aside_host::source::number(), default = 1, validate = validate_zoom, animatable)]
     Zoom,
-    #[aside(name = "camera_rotation", ty = Any, default = 0, validate = validate_number, animatable)]
+    #[aside(name = "camera_rotation", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number, animatable)]
     Rotation,
 }
 fn zoom(value: Value) -> Result<f64, HeapError> {

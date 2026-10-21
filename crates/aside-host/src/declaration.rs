@@ -1,3 +1,4 @@
+pub use aside_vm::HostTypeSupport;
 use aside_compiler::semantic::{
     CallEffect, ExternalParameter, ExternalSignature, ExternalSymbol, SymbolReference, TypeHint,
 };
@@ -96,12 +97,14 @@ impl std::error::Error for BuildError {}
 pub fn lower(
     module: &aside_compiler::hir::AnalyzedModule,
     contracts: &[NativeContract],
+    source_declarations: &[crate::source::Declaration],
+    types: &[HostTypeSupport],
     capabilities: &[String],
     options: aside_compiler::lowering::Options,
 ) -> Result<aside_compiler::lowering::Compilation, BuildError> {
     use aside_compiler::lowering::{self, ExternalTarget, Linkage, NativeLink};
     let seed =
-        seed(contracts, capabilities, options.content_version).map_err(BuildError::Format)?;
+        seed(contracts, types, capabilities, options.content_version).map_err(BuildError::Format)?;
     let references = contracts
         .iter()
         .map(NativeContract::reference)
@@ -125,6 +128,7 @@ pub fn lower(
             target,
             native: bc::NativeId(index as u32),
             reference: &references[index],
+            source_signature: source_declarations.iter().find(|declaration| declaration.symbol.reference.as_deref() == Some(&references[index])).and_then(|declaration|declaration.symbol.signature.as_ref()),
         });
     }
     lowering::compile(
@@ -143,11 +147,13 @@ pub fn lower_project(
     modules: &[aside_compiler::hir::AnalyzedModule],
     plan: &aside_compiler::semantic::ModulePlan,
     contracts: &[NativeContract],
+    source_declarations: &[crate::source::Declaration],
+    types: &[HostTypeSupport],
     capabilities: &[String],
     options: aside_compiler::lowering::Options,
 ) -> Result<aside_compiler::lowering::ProjectCompilation, aside_compiler::lowering::ProjectError> {
     use aside_compiler::lowering::{self, ExternalTarget, NativeLink};
-    let seed = seed(contracts, capabilities, options.content_version).map_err(|error| {
+    let seed = seed(contracts, types, capabilities, options.content_version).map_err(|error| {
         lowering::ProjectError {
             module: "<host>".into(),
             error: Box::new(lowering::Error {
@@ -179,6 +185,7 @@ pub fn lower_project(
                         target,
                         native: bc::NativeId(index as u32),
                         reference: &references[index],
+                        source_signature: source_declarations.iter().find(|declaration| declaration.symbol.reference.as_deref() == Some(&references[index])).and_then(|declaration|declaration.symbol.signature.as_ref()),
                     })
                 })
                 .collect::<Vec<_>>()
@@ -193,6 +200,7 @@ pub fn lower_project(
 pub fn runtime_support(
     program: &bc::VerifiedProgram,
     contracts: &[NativeContract],
+    types: &[HostTypeSupport],
     capabilities: &[String],
 ) -> Result<RuntimeSupport, DeclarationError> {
     program
@@ -276,6 +284,7 @@ pub fn runtime_support(
         opcodes: Vec::new(),
         capabilities: capabilities.to_vec(),
         natives,
+        host_types: types.to_vec(),
     })
 }
 
@@ -345,6 +354,7 @@ pub fn reference(contract: &NativeContract) -> SymbolReference {
 
 pub fn seed(
     contracts: &[NativeContract],
+    types: &[HostTypeSupport],
     capabilities: &[String],
     content_version: u64,
 ) -> Result<bc::VerifiedProgram, bc::Error> {
@@ -375,6 +385,16 @@ pub fn seed(
         globals: vec![],
         initializer: None,
     });
+    for declaration in types {
+        let (path,name)=declaration.name.rsplit_once("::").ok_or_else(||bc::Error {kind:bc::ErrorKind::Signature,offset:None,function:None,pc:None,source:None,detail:"host type requires canonical module identity".into()})?;
+        let path_symbol=symbol(&mut package,path);
+        let module=package.modules.iter().position(|module|module.path == path_symbol).unwrap_or_else(|| {
+            package.modules.push(bc::ModuleDef {path:path_symbol,imports:vec![],exports:vec![],globals:vec![],initializer:None});
+            package.modules.len()-1
+        });
+        let name=symbol(&mut package,name);
+        package.types.push(TypeDef::Named {module:bc::ModuleId(module as u32),name,version:content_version});
+    }
     for contract in contracts {
         let mut parameters: Vec<bc::Parameter> = Vec::new();
         for (index, parameter) in contract.parameters.iter().enumerate() {

@@ -1,0 +1,97 @@
+//! Read-only semantic queries over recoverable source. These views cannot be lowered.
+use crate::{Diagnostic, Parse, hir::*, semantic::*};
+
+/// Cached source and its original lossless parse, supplied together by an editor.
+#[derive(Debug,Clone)]
+pub struct EditorSource {
+    pub source: SourceModule,
+    pub parsed: Parse,
+}
+
+/// Project facts use the existing linker, including public reexports and cycles.
+#[derive(Debug,Clone)]
+pub struct EditorProjectAnalysis {
+    pub(crate) modules: Vec<AnalyzedModule>,
+    pub diagnostics: Vec<ModuleDiagnostic>,
+    pub plan: ModulePlan,
+    pub exhausted: bool,
+}
+impl EditorProjectAnalysis {
+    pub fn modules(&self)->impl Iterator<Item=EditorModule<'_>> {self.modules.iter().map(EditorModule)}
+}
+
+/// Partial facts retained for editor queries, including after source errors.
+/// Its private module is deliberately never exposed as a runnable `AnalyzedModule`.
+#[derive(Debug, Clone)]
+pub struct EditorAnalysis {
+    pub(crate) module: Option<AnalyzedModule>,
+    pub diagnostics: Vec<Diagnostic>,
+    pub exhausted: bool,
+    pub stats: AnalysisStats,
+}
+
+/// A borrowed editor view. Unlike `AnalyzedModule`, this is not a lowering input.
+#[derive(Debug, Clone, Copy)]
+pub struct EditorModule<'a>(&'a AnalyzedModule);
+
+impl EditorAnalysis {
+    pub fn module(&self) -> Option<EditorModule<'_>> {
+        self.module.as_ref().map(EditorModule)
+    }
+}
+
+impl<'a> EditorModule<'a> {
+    pub fn canonical_path(self) -> &'a str {self.0.canonical_path()}
+    pub fn source_path(self) -> &'a str {self.0.source_path()}
+    pub fn hir(self) -> &'a Hir { self.0.hir() }
+    pub fn facts(self) -> &'a [NodeFacts] { self.0.facts() }
+    pub fn types(self) -> &'a [Type] { self.0.types() }
+    pub fn scopes(self) -> &'a [Scope] { self.0.scopes() }
+    pub fn symbols(self) -> &'a [Symbol] { self.0.symbols() }
+    pub fn functions(self) -> &'a [Function] { self.0.functions() }
+    pub fn imports(self) -> &'a [Import] { self.0.imports() }
+    pub fn exports(self) -> &'a [SymbolId] { self.0.exports() }
+    pub fn external_bindings(self) -> &'a [ExternalBinding] { self.0.external_bindings() }
+}
+
+/// Analyze the original lossless tree while retaining useful facts after errors.
+/// Ordinary compilation continues to require successful strict analysis.
+pub fn analyze(parsed: &Parse, options: &AnalysisOptions, resolver: &mut dyn ModuleResolver) -> EditorAnalysis {
+    crate::semantic::editor_analysis(parsed,options,resolver)
+}
+
+/// Project public declarations using the same module-linker interface rules.
+pub fn module_interface(parsed: &Parse, module: String, version: String, limits: AnalysisLimits) -> Result<ModuleInterface,Diagnostic> {
+    crate::semantic::editor_interface(parsed,module,version,limits)
+}
+
+/// Analyze cached project trees with editor recovery while retaining strict
+/// compiler admission for normal `analyze_project` callers.
+pub fn analyze_project(inputs:&[EditorSource],options:&AnalysisOptions,resolver:&mut dyn ModuleResolver)->Result<EditorProjectAnalysis,crate::SourceTooLarge> {
+    crate::semantic::analyze_editor_project(inputs,options,resolver)
+}
+
+/// Discover imports from an already parsed, possibly incomplete editor tree.
+pub fn imports(parsed:&Parse,module:&str,limits:AnalysisLimits)->Result<Vec<(ImportRequest,crate::TextRange)>,Diagnostic> {
+    crate::semantic::editor_imports(parsed,module,limits)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn partial_editor_facts_do_not_admit_invalid_executable_modules() {
+        for source in ["fn main(){let local=1; missing; local}","fn main(){let local=1; local. }"] {
+            let parsed=crate::parse(source).unwrap();let options=AnalysisOptions::default();
+            assert!(crate::analyze(&parsed,&options,&mut NoModules).into_module().is_err());
+            let editor=analyze(&parsed,&options,&mut NoModules);
+            assert!(!editor.diagnostics.is_empty());
+            let module=editor.module().expect("unaffected declarations remain queryable");
+            assert!(module.symbols().iter().any(|symbol|module.hir().name(symbol.name)=="local"));
+            let project=analyze_project(&[EditorSource{source:SourceModule{canonical_path:"main".into(),source_path:None,version:"1".into(),source:source.into()},parsed}],&options,&mut NoModules).unwrap();
+            assert!(!project.diagnostics.is_empty());
+            assert_eq!(project.modules().count(),1);
+        }
+        assert!(crate::analyze_module("fn main(){let local=1; local}",&AnalysisOptions::default(),&mut NoModules).unwrap().is_ok());
+    }
+}

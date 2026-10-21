@@ -549,6 +549,9 @@ pub(crate) fn connect(
                         .offset
                         .checked_add(i as u32)
                         .ok_or(SnapshotError::Limit)?;
+                    if heap.object(key)?.kind == ObjectKind::Host && offset == 1 {
+                        heap.validate_host_flags(value)?;
+                    }
                     let extra = match &heap.object(key)?.payload {
                         Payload::Values(v) | Payload::Table(v) if v.len == offset => {
                             u64::from(v.needs_chunk()) * VALUE_CHUNK_BYTES

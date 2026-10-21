@@ -12,14 +12,21 @@ pub use bc::FunctionId as StoryFunction;
 /// Read the current registered signatures and English source documentation.
 /// Editor clients use the resolved canonical symbol to select a hover entry.
 pub fn documentation() -> Vec<aside_host::NativeDocumentation> {
-    let mut markdown: std::collections::BTreeMap<_, _> = aside_std::documentation()
+    let declared = aside_std::documentation()
         .into_iter()
-        .map(|entry| (entry.contract.symbol, entry.markdown))
         .chain(
             super::stage::bindings()
                 .into_iter()
-                .map(|binding| (binding.contract.symbol, binding.documentation)),
+                .map(aside_host::NativeBinding::into_documentation),
         )
+        .collect::<Vec<_>>();
+    let mut signatures = declared
+        .iter()
+        .map(|entry| (entry.contract.symbol.clone(), entry.signature.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut markdown: std::collections::BTreeMap<_, _> = declared
+        .into_iter()
+        .map(|entry| (entry.contract.symbol, entry.markdown))
         .collect();
     markdown.insert("reel::when".into(), super::conditions::DOCUMENTATION);
     registry::contracts()
@@ -53,6 +60,9 @@ pub fn documentation() -> Vec<aside_host::NativeDocumentation> {
                 .or_else(|| super::stage::input::documentation(&contract.symbol))
                 .unwrap_or("");
             aside_host::NativeDocumentation {
+                signature: signatures
+                    .remove(&contract.symbol)
+                    .unwrap_or_else(|| contract.external().signature.unwrap()),
                 contract,
                 markdown: documentation,
             }

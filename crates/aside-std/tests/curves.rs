@@ -46,7 +46,7 @@ fn independent_curves_construct_and_sample_without_native_allocations() {
             .unwrap()
             .into_module()
             .unwrap();
-        let compiled = aside_host::lower(&module, &contracts, &[], Default::default()).unwrap();
+        let compiled = aside_host::lower(&module, &contracts, &[], &[], &[], Default::default()).unwrap();
         let initializer = compiled.entry;
         let bytes = bc::encode(compiled.program.package(), bc::Limits::default()).unwrap();
         let program = bc::VerifiedProgram::decode(&bytes, bc::Limits::default()).unwrap();
@@ -62,7 +62,7 @@ fn independent_curves_construct_and_sample_without_native_allocations() {
         };
         let main = function("main");
         let samples = function("samples");
-        let support = aside_host::runtime_support(&program, &contracts, &[]).unwrap();
+        let support = aside_host::runtime_support(&program, &contracts, &[], &[]).unwrap();
         let mut library = aside_std::StandardLibrary::new(&program);
         let mut vm = Vm::load(program, support, VmLimits::default(), SessionEpoch(1)).unwrap();
         let init = vm

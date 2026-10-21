@@ -9,6 +9,7 @@ mod fault;
 mod frame_slots;
 mod gc;
 mod heap;
+mod host_types;
 mod payload;
 mod root_ranges;
 mod slots;
@@ -27,6 +28,7 @@ pub use frame_slots::{
     RangeReleaseProgress, RelocationCost, RootRanges,
 };
 pub use gc::{GcBudget, GcPhase, GcProgress};
+pub use host_types::{HostTypeId, HostTypeSupport};
 pub use heap::{
     Heap, HeapError, HeapLimits, HeapStats, HostPropertyValidator, ObjectInfo, ObjectKind,
     PropertyId, RootKind, RootOwner, RootToken, TableLookupProgress, TableLookupStatus,

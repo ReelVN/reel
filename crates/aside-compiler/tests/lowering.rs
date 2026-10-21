@@ -837,6 +837,7 @@ fn direct_native_uses_trusted_identity_abi_capabilities_and_real_default() {
     let host = ExternalSymbol::function(
         "host",
         ExternalSignature {
+            result_cases: Vec::new(),
             parameters: vec![ExternalParameter {
                 name: "a".into(),
                 ty: TypeHint::Int,
@@ -866,6 +867,7 @@ fn direct_native_uses_trusted_identity_abi_capabilities_and_real_default() {
         .unwrap();
     let seed = native_seed();
     let native_links = [lowering::NativeLink {
+        source_signature: None,
         target: lowering::ExternalTarget::Symbol(symbol),
         native: bc::NativeId(0),
         reference: &reference,
@@ -914,6 +916,7 @@ fn direct_native_uses_trusted_identity_abi_capabilities_and_real_default() {
             .chain(external.node.map(lowering::ExternalTarget::Node))
         {
             aliases.push(lowering::NativeLink {
+                source_signature: None,
                 target,
                 ..native_links[0]
             });
@@ -960,6 +963,7 @@ fn direct_native_uses_trusted_identity_abi_capabilities_and_real_default() {
         ..reference.clone()
     };
     let wrong_links = [lowering::NativeLink {
+        source_signature: None,
         reference: &changed,
         ..native_links[0]
     }];
@@ -1001,6 +1005,7 @@ fn direct_native_uses_trusted_identity_abi_capabilities_and_real_default() {
         .find_map(|e| e.symbol)
         .unwrap();
     let value_links = [lowering::NativeLink {
+        source_signature: None,
         target: lowering::ExternalTarget::Symbol(value_symbol),
         ..native_links[0]
     }];
@@ -1251,6 +1256,7 @@ fn native_default_prefix_cells_and_fast_value_slots_come_from_shared_verifier() 
     let host = ExternalSymbol::function(
         "host",
         ExternalSignature {
+            result_cases: Vec::new(),
             parameters: vec![
                 parameter("x", true, false, false),
                 parameter("y", false, true, false),
@@ -1286,6 +1292,7 @@ fn native_default_prefix_cells_and_fast_value_slots_come_from_shared_verifier() 
     )
     .unwrap();
     let links = [lowering::NativeLink {
+        source_signature: None,
         target: lowering::ExternalTarget::Symbol(symbol),
         native: bc::NativeId(0),
         reference: &reference,
@@ -1368,6 +1375,7 @@ fn qualified_native_import_retains_namespace_and_registration_identity() {
     let native = ExternalSymbol::function(
         "run",
         ExternalSignature {
+            result_cases: Vec::new(),
             parameters: vec![ExternalParameter {
                 name: "a".into(),
                 ty: TypeHint::Int,
@@ -1401,6 +1409,7 @@ fn qualified_native_import_retains_namespace_and_registration_identity() {
         })
         .unwrap();
     let links = [lowering::NativeLink {
+        source_signature: None,
         target: lowering::ExternalTarget::Node(node),
         native: bc::NativeId(0),
         reference: &reference,

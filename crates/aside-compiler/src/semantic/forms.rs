@@ -2,13 +2,17 @@
 //! packed sequence edges rather than rediscovering operators/roles from tokens.
 use crate::{SyntaxKind as K, hir::*};
 use smallvec::SmallVec;
-pub(super) fn forms(hir: &mut Hir) {
+pub(super) fn forms(hir: &mut Hir,recover:bool) {
     for index in (0..hir.nodes.len()).rev() {
         let n = NodeId(index as u32);
-        hir.nodes[index].form = form(hir, n);
+        hir.nodes[index].form = match form(hir,n) {
+            Some(form)=>form,
+            None if recover=>{hir.nodes[index].kind=HirKind::Error;Form::Sequence}
+            None=>panic!("valid syntax projects a complete grammar form"),
+        };
     }
 }
-fn form(hir: &Hir, n: NodeId) -> Form {
+fn form(hir: &Hir, n: NodeId) -> Option<Form> {
     let children = hir.children(n).collect::<SmallVec<[_; 4]>>();
     let tokens = hir.tokens(n).collect::<SmallVec<[_; 4]>>();
     let token = |kind| tokens.iter().find(|t| t.kind == kind).copied();
@@ -26,10 +30,11 @@ fn form(hir: &Hir, n: NodeId) -> Form {
             .copied()
             .find(|&c| is_type(hir.node(c).kind))
     };
-    let body = || children.last().copied().unwrap_or(n);
+    let body = || children.last().copied();
     use HirKind as H;
-    match hir.node(n).kind {
-        H::Module
+    Some(match hir.node(n).kind {
+        H::Error
+        | H::Module
         | H::Array
         | H::Tuple
         | H::Object
@@ -55,7 +60,7 @@ fn form(hir: &Hir, n: NodeId) -> Form {
             }),
         },
         H::Let => Form::Binding {
-            pattern: pattern().unwrap_or(n),
+            pattern: pattern()?,
             annotation: annotation(),
             initializer: children
                 .iter()
@@ -70,7 +75,7 @@ fn form(hir: &Hir, n: NodeId) -> Form {
                 .copied()
                 .find(|&c| hir.node(c).kind == H::Parameters),
             result: annotation(),
-            body: body(),
+            body: body()?,
             kind: if has(K::Async) {
                 FunctionKind::Async
             } else if has(K::Gen) {
@@ -89,7 +94,7 @@ fn form(hir: &Hir, n: NodeId) -> Form {
             }),
         },
         H::Parameter => Form::Parameter {
-            name: name().unwrap(),
+            name: name()?,
             annotation: annotation(),
             default: children
                 .iter()
@@ -98,7 +103,7 @@ fn form(hir: &Hir, n: NodeId) -> Form {
             mutable: has(K::Mut),
             rest: has(K::Ellipsis),
         },
-        H::Import => Form::Import { path: body() },
+        H::Import => Form::Import { path: body()? },
         H::ImportPath => Form::ImportPath {
             alias: tokens
                 .iter()
@@ -108,12 +113,12 @@ fn form(hir: &Hir, n: NodeId) -> Form {
             wildcard: has(K::Star),
         },
         H::NamedType => Form::TypeName,
-        H::FunctionType => Form::FunctionType { result: body() },
+        H::FunctionType => Form::FunctionType { result: body()? },
         H::GroupType | H::Group | H::GroupPattern | H::Interpolation => {
-            Form::Single { child: body() }
+            Form::Single { child: body()? }
         }
         H::ExpressionStatement => Form::Statement {
-            expression: body(),
+            expression: body()?,
             terminated: has(K::Semi),
         },
         H::Return | H::Throw | H::Yield => Form::Transfer {
@@ -125,43 +130,43 @@ fn form(hir: &Hir, n: NodeId) -> Form {
             label: name(),
         },
         H::Name | H::NamePattern | H::RestPattern => Form::Name {
-            name: name().unwrap(),
+            name: name()?,
         },
         H::WildcardPattern => Form::Wildcard,
         H::Literal => Form::Literal {
-            token: tokens.first().copied().unwrap(),
+            token: tokens.first().copied()?,
         },
         H::LiteralPattern => Form::LiteralPattern {
-            value: body(),
+            value: body()?,
             negative: has(K::Minus),
         },
         H::ObjectField => Form::Field {
             key: if let Some(name) = name() {
                 FieldKey::Name(name)
             } else {
-                FieldKey::Expression(children[0])
+                FieldKey::Expression(*children.first()?)
             },
-            value: body(),
+            value: body()?,
         },
-        H::Spread => Form::Spread { value: body() },
+        H::Spread => Form::Spread { value: body()? },
         H::Prefix => Form::Unary {
-            operator: tokens.first().copied().unwrap(),
-            value: body(),
+            operator: tokens.first().copied()?,
+            value: body()?,
         },
         H::Binary | H::Range | H::Assignment => Form::Binary {
-            left: children[0],
-            operator: tokens.first().copied().unwrap(),
-            right: children[1],
+            left: *children.first()?,
+            operator: tokens.first().copied()?,
+            right: *children.get(1)?,
         },
         H::Member => Form::Member {
-            object: children[0],
-            key: name().unwrap(),
+            object: *children.first()?,
+            key: name()?,
             optional: has(K::QuestionDot),
             chain: has(K::QuestionDot) || chain(hir, children[0]),
         },
         H::Index => Form::Index {
-            object: children[0],
-            index: children[1],
+            object: *children.first()?,
+            index: *children.get(1)?,
             optional: has(K::QuestionBracket),
             chain: has(K::QuestionBracket) || chain(hir, children[0]),
         },
@@ -177,18 +182,18 @@ fn form(hir: &Hir, n: NodeId) -> Form {
                     optional,
                     chain,
                     ..
-                } = hir.node(children[0]).form
+                } = hir.node(*children.first()?).form
             {
-                return Form::Call {
+                return Some(Form::Call {
                     callee,
                     arguments,
                     children: trailing,
                     optional,
                     chain,
-                };
+                });
             }
             Form::Call {
-                callee: children[0],
+                callee: *children.first()?,
                 arguments: children
                     .iter()
                     .copied()
@@ -204,7 +209,7 @@ fn form(hir: &Hir, n: NodeId) -> Form {
             } else {
                 None
             },
-            value: body(),
+            value: body()?,
         },
         H::If | H::While => {
             // Grammar order is [pattern?], condition, then, [else]. An If or
@@ -212,34 +217,34 @@ fn form(hir: &Hir, n: NodeId) -> Form {
             let first = usize::from(pattern().is_some());
             Form::Condition {
                 pattern: pattern(),
-                condition: children[first],
-                body: children[first + 1],
+                condition: *children.get(first)?,
+                body: *children.get(first + 1)?,
                 otherwise: children.get(first + 2).copied(),
             }
         }
         H::For => Form::For {
-            pattern: children[0],
-            source: children[1],
-            body: children[2],
+            pattern: *children.first()?,
+            source: *children.get(1)?,
+            body: *children.get(2)?,
             asynchronous: has(K::Await),
         },
-        H::Loop => Form::Single { child: body() },
+        H::Loop => Form::Single { child: body()? },
         H::Label => Form::Label {
-            name: name().unwrap(),
-            body: body(),
+            name: name()?,
+            body: body()?,
         },
-        H::Match => Form::Match { value: children[0] },
+        H::Match => Form::Match { value: *children.first()? },
         H::MatchArm => Form::MatchArm {
-            pattern: children[0],
+            pattern: *children.first()?,
             guard: if has(K::If) {
                 children.get(1).copied()
             } else {
                 None
             },
-            body: body(),
+            body: body()?,
         },
         H::Try => Form::Try {
-            body: children[0],
+            body: *children.first()?,
             catch: children
                 .iter()
                 .copied()
@@ -250,12 +255,12 @@ fn form(hir: &Hir, n: NodeId) -> Form {
                 .find(|&c| hir.node(c).kind == H::Finally),
         },
         H::Catch => Form::Catch {
-            name: name().unwrap(),
-            body: body(),
+            name: name()?,
+            body: body()?,
         },
-        H::Finally => Form::Single { child: body() },
+        H::Finally => Form::Single { child: body()? },
         H::PatternField => Form::PatternField {
-            key: name().unwrap(),
+            key: name()?,
             pattern: pattern(),
             default: children
                 .iter()
@@ -263,19 +268,19 @@ fn form(hir: &Hir, n: NodeId) -> Form {
                 .find(|&c| !is_pattern(hir.node(c).kind)),
         },
         H::OrPattern => Form::Or {
-            left: children[0],
-            right: children[1],
+            left: *children.first()?,
+            right: *children.get(1)?,
         },
         H::TypePattern => Form::TypePattern {
-            pattern: children[0],
-            annotation: children[1],
+            pattern: *children.first()?,
+            annotation: *children.get(1)?,
         },
         H::ModifiedDeclaration => Form::Modified {
-            declaration: body(),
+            declaration: body()?,
             public: has(K::Pub),
             static_member: has(K::Static),
         },
-    }
+    })
 }
 fn chain(hir: &Hir, n: NodeId) -> bool {
     match hir.node(n).form {

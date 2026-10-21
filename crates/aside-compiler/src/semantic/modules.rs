@@ -38,9 +38,21 @@ pub struct ExternalParameter {
 pub struct ExternalSignature {
     pub parameters: Vec<ExternalParameter>,
     pub result: TypeHint,
+    /// Refine a call result only when the referenced argument is a known source
+    /// constant. Dynamic values and spreads retain `result` unchanged.
+    pub result_cases: Vec<ExternalResultCase>,
     pub effect: CallEffect,
     pub init_safe: Option<bool>,
     pub derived_safe: Option<bool>,
+}
+/// Source typing metadata; this does not change the native calling ABI.
+#[derive(Debug, Clone)]
+pub struct ExternalResultCase {
+    pub parameter: String,
+    pub equals: aside_vm::bytecode::Const,
+    pub result: TypeHint,
+    /// Derived by the host declaration from the actual parameter default.
+    pub when_omitted: bool,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Intrinsic {
@@ -93,6 +105,15 @@ pub struct ExternalSymbol {
     /// A discarded call result is a source error; explicit wildcard bindings
     /// and lexical children collection consume the result.
     pub must_use_result: bool,
+}
+
+/// A registered named type's property or bound method. `symbol.ty` is the read
+/// type; `write_type: None` makes the member read-only. Method signatures exclude
+/// the already bound receiver and preserve real parameter names and defaults.
+#[derive(Debug, Clone)]
+pub struct ExternalMember {
+    pub symbol: ExternalSymbol,
+    pub write_type: Option<TypeHint>,
 }
 impl ExternalSymbol {
     /// Use the exact registration identity; no ABI/capability/default registry
@@ -227,6 +248,16 @@ impl std::fmt::Display for ResolveError {
 }
 impl std::error::Error for ResolveError {}
 pub trait ModuleResolver {
+    /// Resolve a real host type member without synthesizing a dynamic fallback.
+    /// Source-only resolvers keep their existing module behavior by default.
+    fn resolve_type_member(&mut self, _type_name: &str, _member: &str) -> Option<ExternalMember> {
+        None
+    }
+    /// Return a trusted nominal relationship, or `None` when either type is not
+    /// registered here and the existing runtime type check remains authoritative.
+    fn is_named_subtype(&self, _actual: &str, _expected: &str) -> Option<bool> {
+        None
+    }
     fn canonical_request<'a>(
         &self,
         request: &'a ImportRequest,

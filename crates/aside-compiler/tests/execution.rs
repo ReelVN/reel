@@ -92,6 +92,7 @@ fn table_remove_preserves_order_results_and_key_contracts_with_gc() {
         let mut vm = Vm::load(
             program,
             bc::RuntimeSupport {
+                host_types: Vec::new(),
                 opcodes: vec![],
                 natives: vec![],
                 capabilities: vec![],
@@ -638,6 +639,7 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
             let mut vm = Vm::load(
                 program,
                 bc::RuntimeSupport {
+                    host_types: Vec::new(),
                     opcodes: vec![],
                     natives: vec![],
                     capabilities: vec![],

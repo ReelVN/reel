@@ -82,6 +82,10 @@ pub struct NativeLink<'a> {
     pub native: bc::NativeId,
     /// Canonical registration identity supplied independently by the trusted linker.
     pub reference: &'a crate::semantic::SymbolReference,
+    /// Independently registered source precision for this native. Runtime ABI
+    /// admission remains exact; refined source types are checked against this
+    /// declaration instead of being inferred from a coarse ABI `any`.
+    pub source_signature: Option<&'a crate::semantic::ExternalSignature>,
 }
 /// The embedder supplies a trusted package with real native signatures,
 /// capabilities, ABI and default function implementations. B01 verification

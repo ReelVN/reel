@@ -8,15 +8,15 @@ use std::sync::Arc;
 
 #[derive(aside_host::Properties)]
 pub(in crate::aside) enum InputField {
-    #[aside(name = "bindings", ty = Any, default = null, validate = validate_bindings)]
+    #[aside(name = "bindings", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Table), default = null, validate = validate_bindings)]
     Bindings,
-    #[aside(name = "on_action", ty = Any, default = null, validate = validate_callback)]
+    #[aside(name = "on_action", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnAction,
-    #[aside(name = "on_key", ty = Any, default = null, validate = validate_callback)]
+    #[aside(name = "on_key", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnKey,
-    #[aside(name = "on_pointer", ty = Any, default = null, validate = validate_callback)]
+    #[aside(name = "on_pointer", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnPointer,
-    #[aside(name = "on_wheel", ty = Any, default = null, validate = validate_callback)]
+    #[aside(name = "on_wheel", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnWheel,
 }
 fn validate_bindings(heap: &Heap, value: Value) -> Result<(), HeapError> {

@@ -515,6 +515,7 @@ fn resolved_native_members_keep_trusted_linkage_for_calls_and_values() {
             ExternalSymbol::function(
                 "run",
                 ExternalSignature {
+                    result_cases: Vec::new(),
                     parameters: vec![ExternalParameter {
                         name: "a".into(),
                         ty: TypeHint::Int,
@@ -555,6 +556,7 @@ fn resolved_native_members_keep_trusted_linkage_for_calls_and_values() {
             })
             .unwrap();
         let link = lowering::NativeLink {
+            source_signature: None,
             target: lowering::ExternalTarget::Node(node),
             native: bc::NativeId(0),
             reference: &reference,
@@ -605,6 +607,7 @@ fn resolved_native_members_keep_trusted_linkage_for_calls_and_values() {
             &Linkage {
                 package: Some(&seed),
                 natives: &[lowering::NativeLink {
+                    source_signature: None,
                     reference: &wrong_reference,
                     ..link
                 }],
@@ -623,6 +626,7 @@ fn resolved_native_members_keep_trusted_linkage_for_calls_and_values() {
                 &Linkage {
                     package: Some(&seed),
                     natives: &[lowering::NativeLink {
+                        source_signature: None,
                         target: lowering::ExternalTarget::Node(group),
                         ..link
                     }],
@@ -731,6 +735,7 @@ fn resolved_native_members_keep_trusted_linkage_for_calls_and_values() {
             })
             .unwrap();
         let link = lowering::NativeLink {
+            source_signature: None,
             target: lowering::ExternalTarget::Node(node),
             native: bc::NativeId(0),
             reference: &reference,

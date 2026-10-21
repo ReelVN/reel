@@ -50,6 +50,14 @@ pub(super) fn binding() -> NativeBinding<StandardLibrary, NativeError> {
             required_capabilities: vec![],
         },
         invoke: |host, vm, ticket| construct(host, vm, ticket, 1).map(|_| ()),
+        source_signature: |contract| {
+            let mut signature = contract.external().signature.expect("curve signature");
+            signature.result = aside_host::aside_compiler::semantic::TypeHint::Callable(
+                vec![aside_host::source::number()],
+                Box::new(aside_host::aside_compiler::semantic::TypeHint::Float),
+            );
+            signature
+        },
     }
 }
 

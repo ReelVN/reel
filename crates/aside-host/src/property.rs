@@ -12,6 +12,9 @@ pub struct Property {
     pub writable: bool,
     pub animatable: bool,
     pub validator: Option<PropertyValidator>,
+    /// Precise author type when the runtime boundary uses a broader builtin type.
+    /// This metadata shares the property's declaration and never changes admission.
+    pub doc_type: Option<fn() -> aside_compiler::semantic::TypeHint>,
 }
 
 /// A property's registered type/default and its declaration documentation.
@@ -20,6 +23,11 @@ pub struct PropertyDocumentation {
     pub markdown: &'static str,
 }
 impl Property {
+    /// Read the source type, retaining the independently registered runtime validator.
+    pub fn source_type(&self) -> aside_compiler::semantic::TypeHint {
+        self.doc_type
+            .map_or_else(|| crate::hint(&self.ty), |ty| ty())
+    }
     pub fn parameter(&self) -> NativeParameter {
         NativeParameter {
             name: self.name.into(),
@@ -43,6 +51,8 @@ impl Property {
 }
 pub trait PropertySchema {
     const PROPERTIES: &'static [Property];
+    /// Property names in the same stable order as `PROPERTIES`.
+    const NAMES: &'static [&'static str];
     /// Return the declaration's Markdown for hover and completion documentation.
     fn documentation(index: usize) -> &'static str;
     /// Host write entry point. Override to validate relationships between fields.

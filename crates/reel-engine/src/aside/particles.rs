@@ -22,24 +22,24 @@ use reel_ui::stage::{
 };
 use std::collections::VecDeque;
 
-pub(super) const PREFIX: &[&str] = &["source", "seed"];
+#[derive(aside_host::Properties)]
+pub(super) enum ParticleField {
+    /// Image asset used for each emitted sprite.
+    #[aside(name="source",ty=String)]
+    Source,
+    /// Deterministic random seed for this node's emissions.
+    #[aside(name="seed",ty=Int,default=0)]
+    Seed,
+}
+pub(super) const PREFIX: &[&str] = <ParticleField as aside_host::PropertySchema>::NAMES;
 /// Shared node payload: 0 identity, 1 children, 2 parent, 3 derived view;
 /// particles alone add 4, the next deterministic emission sequence.
 const SEQUENCE: u32 = 4;
 pub(super) fn parameters() -> Vec<aside_host::NativeParameter> {
-    use aside_vm::bytecode::{BuiltinType, Const};
-    vec![
-        aside_host::NativeParameter {
-            name: "source".into(),
-            ty: BuiltinType::Any,
-            default: None,
-        },
-        aside_host::NativeParameter {
-            name: "seed".into(),
-            ty: BuiltinType::Any,
-            default: Some(Const::Int(0)),
-        },
-    ]
+    use aside_host::PropertySchema;
+    let mut parameters=ParticleField::PROPERTIES.iter().map(|property|property.parameter()).collect::<Vec<_>>();
+    parameters[0].default=None;
+    parameters
 }
 pub(super) fn emission_parameters() -> Vec<aside_host::NativeParameter> {
     use aside_vm::bytecode::{BuiltinType, Const};

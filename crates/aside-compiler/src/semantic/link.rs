@@ -102,6 +102,12 @@ struct Overlay<'a> {
     fallback: &'a mut dyn ModuleResolver,
 }
 impl ModuleResolver for Overlay<'_> {
+    fn resolve_type_member(&mut self, type_name: &str, member: &str) -> Option<ExternalMember> {
+        self.fallback.resolve_type_member(type_name, member)
+    }
+    fn is_named_subtype(&self, actual: &str, expected: &str) -> Option<bool> {
+        self.fallback.is_named_subtype(actual, expected)
+    }
     fn resolve(&mut self, r: &ImportRequest) -> Result<ResolvedImport, ResolveError> {
         let r = self.fallback.canonical_request(r);
         // A private/missing export in a known source module cannot be bypassed
@@ -124,6 +130,32 @@ pub fn analyze_project(
     options: &AnalysisOptions,
     resolver: &mut dyn ModuleResolver,
 ) -> Result<ProjectAnalysis, SourceTooLarge> {
+    let result = analyze_project_inner(inputs, options, resolver, None, false)?;
+    Ok(ProjectAnalysis {
+        modules: if result.diagnostics.is_empty() && !result.exhausted {Some(result.modules)} else {None},
+        diagnostics: result.diagnostics,
+        plan: result.plan,
+        exhausted: result.exhausted,
+    })
+}
+
+pub(crate) fn analyze_editor_project(
+    inputs: &[crate::editor::EditorSource],
+    options: &AnalysisOptions,
+    resolver: &mut dyn ModuleResolver,
+) -> Result<crate::editor::EditorProjectAnalysis, SourceTooLarge> {
+    let sources: Vec<_> = inputs.iter().map(|input| input.source.clone()).collect();
+    let parsed: BTreeMap<_,_> = inputs.iter().map(|input|(input.source.canonical_path.as_str(),&input.parsed)).collect();
+    analyze_project_inner(&sources,options,resolver,Some(&parsed),true)
+}
+
+fn analyze_project_inner(
+    inputs: &[SourceModule],
+    options: &AnalysisOptions,
+    resolver: &mut dyn ModuleResolver,
+    parsed_inputs: Option<&BTreeMap<&str,&Parse>>,
+    recover: bool,
+) -> Result<crate::editor::EditorProjectAnalysis, SourceTooLarge> {
     let mut diagnostics = Vec::new();
     let mut projected = BTreeMap::new();
     let mut memory = MemoryResolver::default();
@@ -143,8 +175,8 @@ pub fn analyze_project(
                 "project module budget exceeded",
             ),
         });
-        return Ok(ProjectAnalysis {
-            modules: None,
+        return Ok(crate::editor::EditorProjectAnalysis {
+            modules: Vec::new(),
             diagnostics,
             plan: ModulePlan::default(),
             exhausted: true,
@@ -168,7 +200,10 @@ pub fn analyze_project(
             diagnostics.truncate(diagnostic_limit);
             continue;
         }
-        let parsed = crate::parse(&input.source)?;
+        let parsed = match parsed_inputs.and_then(|inputs|inputs.get(input.canonical_path.as_str())) {
+            Some(parsed)=>(*parsed).clone(),
+            None=>crate::parse(&input.source)?,
+        };
         if !parsed.is_ok() {
             exhausted |= parsed.exhausted();
             diagnostics.extend(parsed.diagnostics().iter().cloned().map(|diagnostic| {
@@ -178,9 +213,10 @@ pub fn analyze_project(
                 }
             }));
             diagnostics.truncate(diagnostic_limit);
-            continue;
+            if !recover {continue;}
         }
-        match super::project::project(
+        let project = if recover {super::project::project_editor} else {super::project::project};
+        match project(
             &parsed,
             AnalysisLimits {
                 max_nodes: options.limits.max_nodes.saturating_sub(total_nodes),
@@ -328,7 +364,7 @@ pub fn analyze_project(
                 },
                 ..options.clone()
             };
-            let result = super::bind::analyze(
+            let result = super::bind::analyze_editor(
                 hir,
                 &local,
                 &mut Overlay {
@@ -341,6 +377,7 @@ pub fn analyze_project(
             captures += result.stats.captures;
             imports += result.stats.imports;
             exhausted |= result.exhausted;
+            let valid = result.diagnostics.is_empty() && !result.exhausted;
             diagnostics.extend(
                 result
                     .diagnostics
@@ -351,7 +388,7 @@ pub fn analyze_project(
                     }),
             );
             diagnostics.truncate(diagnostic_limit);
-            if let Some(module) = result.module {
+            if let Some(module) = result.module.filter(|_|recover || valid) {
                 dependencies.insert(
                     path,
                     module
@@ -365,18 +402,14 @@ pub fn analyze_project(
         }
     }
     let plan = plan(&dependencies);
-    Ok(ProjectAnalysis {
-        modules: if diagnostics.is_empty() && !exhausted {
-            Some(modules)
-        } else {
-            None
-        },
+    Ok(crate::editor::EditorProjectAnalysis {
+        modules,
         diagnostics,
         plan,
         exhausted,
     })
 }
-fn declarations(hir: &Hir) -> Vec<ExternalSymbol> {
+pub(super) fn declarations(hir: &Hir) -> Vec<ExternalSymbol> {
     let mut result = Vec::new();
     let mut exported = BTreeSet::new();
     for n in hir.children(NodeId(0)) {
@@ -497,7 +530,7 @@ impl super::patterns::PatternTypes for ExportPatternTypes<'_> {
         true
     }
 }
-fn import_requests(
+pub(super) fn import_requests(
     hir: &Hir,
     n: NodeId,
     prefix: &[String],

@@ -56,7 +56,11 @@ impl Heap {
 }
 
 pub(crate) fn accepts_nominal(heap: &Heap, value: Value, ty: TypeId) -> Result<bool, HeapError> {
-    if !heap.accepts_builtin(BuiltinType::Instance, value)? {
+    if value.tag() == crate::ValueTag::Object && heap.info(value)?.kind == ObjectKind::Host {
+        return heap.accepts_host_nominal(value,ty);
+    }
+    if !heap.accepts_builtin(BuiltinType::Instance, value)?
+        || heap.code.as_ref().is_some_and(|code|code.checks.host_types.contains(ty)) {
         return Ok(false);
     }
     let class = heap.get_field(value, InstanceSlot::Class as u32)?;

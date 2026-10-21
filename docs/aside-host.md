@@ -21,6 +21,10 @@ The macro preserves the Rust function and generates a same-named module with `SY
 
 The editor integration being implemented generates signatures and read-only Aside declarations from this metadata. Parameters retain their registered names and literal defaults. Rust declarations can refine a dynamic runtime value with a source type, such as a named host object or a union; property declarations also supply their read and write types. This information feeds semantic member lookup, completion, hover and definition navigation. The generated declarations share the English source documentation and remain views of the host implementation.
 
+Named host types share one trusted registration between source analysis, bytecode lowering and VM loading. Each registration identifies the canonical name, version and base types. Rust assigns the registered identity to a host value through a heap-bound type handle; Aside annotations and `is` check that identity and its declared bases. Each registered type shares its ancestor descriptor across values. VM snapshots retain the host identity and verify the registration fingerprint on restore.
+
+A declaration may refine its result for a constant argument. Source analysis applies the matching case after positional and named argument binding; omitted arguments use the registered default. Dynamic arguments retain the declaration's complete result type. Native admission verifies the source signature and runtime ABI at their respective boundaries.
+
 Once the host includes this declaration in its analysis environment, Aside can use positional, named and default arguments, including through a function value:
 
 ```aside

@@ -55,6 +55,7 @@ pub(super) fn signature_hint(hir: &Hir, node: NodeId) -> Option<ExternalSignatur
         })
         .collect();
     Some(ExternalSignature {
+        result_cases: Vec::new(),
         parameters,
         result: match kind {
             FunctionKind::Async => TypeHint::Future,

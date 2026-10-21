@@ -4,6 +4,7 @@ fn support(_p: &BytecodePackage) -> RuntimeSupport {
     // This fixture adapter is declared independently of package native metadata.
     // Its fixed fixture symbol/type table is Any=0, Int=1, x=4.
     RuntimeSupport {
+        host_types: Vec::new(),
         opcodes: vec![],
         capabilities: vec!["host.echo".into()],
         natives: vec![NativeSupport {
@@ -4076,6 +4077,7 @@ fn exact_b01_parameter_cell_fixture_shares_default_closure_and_body_but_ordinary
 fn native_default_registry(closures: bool) -> RuntimeSupport {
     // Independent fixture adapter declaration; never copied from the package.
     RuntimeSupport {
+        host_types: Vec::new(),
         opcodes: vec![],
         capabilities: vec!["host.parameter_defaults".into()],
         natives: vec![NativeSupport {

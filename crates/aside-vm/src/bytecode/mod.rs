@@ -13,6 +13,7 @@ mod verify;
 
 pub use codec::{decode, encode};
 pub use model::*;
+pub use crate::HostTypeSupport;
 pub use spec::*;
 pub use text_pool::{TextPool, externalize_text};
 pub use verify::{

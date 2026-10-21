@@ -43,19 +43,24 @@ pub struct NativeBinding<H = (), E = Error> {
     /// Markdown extracted from the exported function's Rust documentation.
     /// Tooling reads this static text by canonical symbol; VM linkage stores only the contract.
     pub documentation: &'static str,
+    /// Exact author types beside the native declaration; runtime admission uses `contract`.
+    pub source_signature: fn(&NativeContract) -> aside_compiler::semantic::ExternalSignature,
 }
 
 /// The registered signature and its source-authored Markdown, for editor tooling.
 pub struct NativeDocumentation {
     pub contract: NativeContract,
     pub markdown: &'static str,
+    pub signature: aside_compiler::semantic::ExternalSignature,
 }
 
 impl<H, E> NativeBinding<H, E> {
     pub fn into_documentation(self) -> NativeDocumentation {
+        let signature = (self.source_signature)(&self.contract);
         NativeDocumentation {
             contract: self.contract,
             markdown: self.documentation,
+            signature,
         }
     }
 }

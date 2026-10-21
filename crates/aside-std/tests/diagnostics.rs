@@ -99,7 +99,7 @@ fn error_info_retains_shared_readonly_graph_with_repeatable_for_views() {
         .into_module()
         .unwrap();
     for encoded in [false, true] {
-        let compiled = aside_host::lower(&module, &contracts, &[], Default::default()).unwrap();
+        let compiled = aside_host::lower(&module, &contracts, &[], &[], &[], Default::default()).unwrap();
         let initializer = compiled.entry;
         let program = if encoded {
             bc::VerifiedProgram::decode(
@@ -134,7 +134,7 @@ fn error_info_retains_shared_readonly_graph_with_repeatable_for_views() {
                 .position(|f| program.package().symbols[f.name.index()] == "restricted")
                 .unwrap() as u32,
         );
-        let support = aside_host::runtime_support(&program, &contracts, &[]).unwrap();
+        let support = aside_host::runtime_support(&program, &contracts, &[], &[]).unwrap();
         let mut library = aside_std::StandardLibrary::new(&program);
         let mut vm = Vm::load(program, support, VmLimits::default(), SessionEpoch(1)).unwrap();
         let task = vm
@@ -176,7 +176,7 @@ fn error_info_retains_shared_readonly_graph_with_repeatable_for_views() {
         let image =
             aside_vm::snapshot::VmSnapshot::decode(&capture.finish().unwrap().encode().unwrap())
                 .unwrap();
-        let support = aside_host::runtime_support(vm.program(), &contracts, &[]).unwrap();
+        let support = aside_host::runtime_support(vm.program(), &contracts, &[], &[]).unwrap();
         let mut restore = Vm::restore_begin(
             &image,
             vm.program().clone(),

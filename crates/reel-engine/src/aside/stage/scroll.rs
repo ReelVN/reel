@@ -14,9 +14,9 @@ pub(in crate::aside) enum ScrollField {
     FollowEnd,
     #[aside(name = "content_align", ty = String, default = "start", validate = validate_align)]
     ContentAlign,
-    #[aside(name = "scroll_x", ty = Any, default = 0, validate = validate_number, animatable)]
+    #[aside(name = "scroll_x", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number, animatable)]
     X,
-    #[aside(name = "scroll_y", ty = Any, default = 0, validate = validate_number, animatable)]
+    #[aside(name = "scroll_y", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number, animatable)]
     Y,
 }
 pub(super) const METRICS: [&str; 4] = [

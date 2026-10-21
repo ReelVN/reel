@@ -76,6 +76,78 @@ fn collect(#[aside(rest)] items: Value) -> Value {
     items
 }
 
+#[native(symbol = "sample::nullable")]
+fn nullable(value: Option<String>) -> Option<String> {
+    value
+}
+
+#[derive(Properties)]
+enum PreciseField {
+    /// A finite nonnegative floating-point value.
+    #[aside(ty = Any, doc_type = aside_host::aside_compiler::semantic::TypeHint::Float,
+        default = 0.0, validate = nonnegative)]
+    Value,
+}
+
+#[test]
+fn source_schema_preserves_precise_types_defaults_and_definition_ranges() {
+    use aside_host::aside_compiler::semantic::TypeHint;
+    use aside_host::source::{Api, Declaration, Member, NamedType};
+    let binding = nullable::binding();
+    let docs = binding.into_documentation();
+    assert_eq!(docs.contract.parameters[0].ty, bc::BuiltinType::Any);
+    assert_eq!(
+        docs.signature.parameters[0].ty,
+        TypeHint::Union(vec![TypeHint::String, TypeHint::Null])
+    );
+    assert_eq!(docs.signature.result, docs.signature.parameters[0].ty);
+    let property = &PreciseField::PROPERTIES[PreciseField::Value.index()];
+    assert_eq!(property.ty, bc::BuiltinType::Any);
+    assert_eq!(property.source_type(), TypeHint::Float);
+    let ty = NamedType::new(
+        "sample::types::Gauge",
+        "A real host value.",
+        vec![Member::property(
+            "sample::types::Gauge",
+            aside_host::PropertyDocumentation {
+                property,
+                markdown: PreciseField::documentation(0),
+            },
+        )],
+    );
+    let api = Api {
+        types: vec![ty],
+        functions: vec![Declaration::native(
+            &add::binding().contract,
+            add::DOCUMENTATION,
+        )],
+        ..Default::default()
+    };
+    let generated = api.documents("sample");
+    assert_eq!(generated.documents.len(), 2);
+    assert!(
+        generated.documents[0]
+            .text
+            .contains("let mut value: float = 0.0;")
+    );
+    assert!(
+        generated.documents[1]
+            .text
+            .contains("fn add(left: int, right: int = 2) -> int;")
+    );
+    for location in &generated.locations {
+        let doc = generated
+            .documents
+            .iter()
+            .find(|doc| doc.uri == location.uri)
+            .unwrap();
+        assert_eq!(
+            &doc.text[usize::from(location.range.start())..usize::from(location.range.end())],
+            location.declaration.symbol.name
+        );
+    }
+}
+
 #[test]
 fn standalone_macro_host_compiles_encodes_admits_and_calls_rust() {
     let add = add::binding();
@@ -130,13 +202,13 @@ fn standalone_macro_host_compiles_encodes_admits_and_calls_rust() {
         hosts: contracts.iter().map(NativeContract::external).collect(), ..Default::default()
     }, &mut aside_compiler::semantic::NoModules).unwrap().into_module().unwrap();
     let compiled =
-        aside_host::lower(&module, &contracts, &capabilities, Default::default()).unwrap();
+        aside_host::lower(&module, &contracts, &[], &[], &capabilities, Default::default()).unwrap();
     let encoded = bc::encode(compiled.program.package(), bc::Limits::default()).unwrap();
     let program = bc::VerifiedProgram::decode(&encoded, bc::Limits::default()).unwrap();
-    let support = aside_host::runtime_support(&program, &contracts, &capabilities).unwrap();
+    let support = aside_host::runtime_support(&program, &contracts, &[], &capabilities).unwrap();
     let mut wrong_rest = contracts.to_vec();
     wrong_rest[3].rest = None;
-    let wrong_support = aside_host::runtime_support(&program, &wrong_rest, &capabilities).unwrap();
+    let wrong_support = aside_host::runtime_support(&program, &wrong_rest, &[], &capabilities).unwrap();
     assert!(
         Vm::load(
             bc::VerifiedProgram::decode(&encoded, bc::Limits::default()).unwrap(),
@@ -207,5 +279,5 @@ fn standalone_macro_host_compiles_encodes_admits_and_calls_rust() {
     assert!(Field::validate(vm.heap(), 2, id).is_err());
     let mut changed = contracts.to_vec();
     changed[0].parameters[1].default = Some(bc::Const::Int(99));
-    assert!(aside_host::runtime_support(vm.program(), &changed, &capabilities).is_err());
+    assert!(aside_host::runtime_support(vm.program(), &changed, &[], &capabilities).is_err());
 }

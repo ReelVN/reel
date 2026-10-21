@@ -862,6 +862,11 @@ impl Lowerer<'_> {
                 ));
             }
             if let Some(signature) = &external.descriptor.signature {
+                if let Some(source)=link.source_signature {
+                    if !source_signature_matches(signature,source,&mut self.b)? {
+                        return Err(self.b.error(ErrorKind::LinkContract,"analysis differs from trusted native source signature"));
+                    }
+                }
                 let native = &self.package.natives[link.native.index()];
                 let trusted = &self.package.signatures[native.signature.index()];
                 self.b.work(
@@ -888,7 +893,8 @@ impl Lowerer<'_> {
                         || parameter.mutable != actual.mutable
                         || parameter.default != actual.default.is_some()
                         || parameter.rest != (i == trusted.parameters.len())
-                        || !hint_matches(&parameter.ty, actual.ty, &self.package, &mut self.b, 0)?
+                        || !(link.source_signature.is_some() && self.package.types[actual.ty.index()] == bc::TypeDef::Builtin(bc::BuiltinType::Any)
+                            || hint_matches(&parameter.ty, actual.ty, &self.package, &mut self.b, 0)?)
                     {
                         return Err(self.b.error(
                             ErrorKind::LinkContract,
@@ -896,13 +902,14 @@ impl Lowerer<'_> {
                         ));
                     }
                 }
-                if !hint_matches(
+                if !(link.source_signature.is_some() && self.package.types[trusted.return_type.index()] == bc::TypeDef::Builtin(bc::BuiltinType::Any)
+                    || hint_matches(
                     &signature.result,
                     trusted.return_type,
                     &self.package,
                     &mut self.b,
                     0,
-                )? || signature.effect == crate::semantic::CallEffect::NoWait
+                )?) || signature.effect == crate::semantic::CallEffect::NoWait
                     && trusted.effects.0 & bc::Effects::WAIT != 0
                 {
                     return Err(self.b.error(
@@ -1593,6 +1600,36 @@ fn binary(operator: K) -> Option<bc::Opcode> {
     })
 }
 
+fn source_hint_matches(a:&crate::semantic::TypeHint,b:&crate::semantic::TypeHint,budget:&mut Budget,depth:usize)->Result<bool,Box<Error>> {
+    use crate::semantic::TypeHint as T;
+    budget.work(1)?;
+    if depth>=budget.limits.max_depth {return Err(budget.error(ErrorKind::Limit,"trusted source type comparison depth exceeded"));}
+    match (a,b) {
+        (T::Named(a),T::Named(b))=>Ok(budget.compare(a,b)?.is_eq()),
+        (T::Tuple(a),T::Tuple(b))|(T::Union(a),T::Union(b))=>{
+            if a.len()!=b.len(){return Ok(false);}
+            for (a,b) in a.iter().zip(b) {if !source_hint_matches(a,b,budget,depth+1)?{return Ok(false);}}
+            Ok(true)
+        },
+        (T::Callable(a,result_a),T::Callable(b,result_b))=>{
+            if a.len()!=b.len(){return Ok(false);}
+            for (a,b) in a.iter().zip(b) {if !source_hint_matches(a,b,budget,depth+1)?{return Ok(false);}}
+            source_hint_matches(result_a,result_b,budget,depth+1)
+        },
+        (T::Tuple(_)|T::Union(_)|T::Callable(..)|T::Named(_),_)|(_,T::Tuple(_)|T::Union(_)|T::Callable(..)|T::Named(_))=>Ok(false),
+        _=>Ok(a==b),
+    }
+}
+fn source_signature_matches(a:&crate::semantic::ExternalSignature,b:&crate::semantic::ExternalSignature,budget:&mut Budget)->Result<bool,Box<Error>> {
+    budget.work(1)?;
+    if a.parameters.len()!=b.parameters.len() || a.effect!=b.effect || a.init_safe!=b.init_safe || a.derived_safe!=b.derived_safe {return Ok(false);}
+    for (a,b) in a.parameters.iter().zip(&b.parameters) {
+        if !budget.compare(&a.name,&b.name)?.is_eq() || a.mutable!=b.mutable || a.default!=b.default || a.rest!=b.rest
+            || !source_hint_matches(&a.ty,&b.ty,budget,0)? {return Ok(false);}
+    }
+    source_hint_matches(&a.result,&b.result,budget,0)
+}
+
 fn hint_matches(
     hint: &crate::semantic::TypeHint,
     id: bc::TypeId,
@@ -1641,8 +1678,10 @@ fn hint_matches(
             }
             Ok(true)
         }
-        (T::Named(expected), bc::TypeDef::Named { name, .. }) => {
-            Ok(b.compare(expected, &p.symbols[name.index()])?.is_eq())
+        (T::Named(expected), bc::TypeDef::Named { module, name, .. }) => {
+            let Some((path,expected_name))=expected.rsplit_once("::") else {return Ok(false);};
+            Ok(b.compare(path, &p.symbols[p.modules[module.index()].path.index()])?.is_eq()
+                && b.compare(expected_name, &p.symbols[name.index()])?.is_eq())
         }
         _ => Ok(false),
     }

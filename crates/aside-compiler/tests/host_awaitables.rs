@@ -78,6 +78,7 @@ fn fixture() -> Vm {
     let mut vm = Vm::load(
         program,
         bc::RuntimeSupport {
+            host_types: Vec::new(),
             natives: vec![bc::NativeSupport {
                 symbol: "host::await_request".into(),
                 abi_version: 1,
@@ -473,6 +474,7 @@ fn snapshot_restores_shared_graph_cells_classes_faults_waits_and_rejects_stale_c
     let image = VmSnapshot::decode(&encoded).unwrap();
     let p = vm.program().package().clone();
     let support = bc::RuntimeSupport {
+        host_types: Vec::new(),
         natives: vec![bc::NativeSupport {
             symbol: "host::await_request".into(),
             abi_version: 1,

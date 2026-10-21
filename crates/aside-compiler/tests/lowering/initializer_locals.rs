@@ -534,6 +534,7 @@ fn enclosing_lexical_symbols_require_real_value_or_cell_links_before_allocation(
             3
         );
         let native_links = [lowering::NativeLink {
+            source_signature: None,
             target: lowering::ExternalTarget::Symbol(external),
             native: bc::NativeId(0),
             reference: &reference,
