@@ -674,6 +674,21 @@ impl StageWidget {
     pub(crate) fn node_widget(&self, node: NodeId) -> Option<WidgetId> {
         self.nodes.get(&node).copied()
     }
+    pub(crate) fn text_end(
+        &self,
+        root: &reel_ui::app::RenderRoot,
+        node: NodeId,
+    ) -> Option<(WidgetId, Point)> {
+        let widget = root
+            .get_widget(self.node_widget(node)?)?
+            .downcast::<SceneWidget>()?;
+        if !matches!(widget.node.kind, NodeKind::Text(_)) {
+            return None;
+        }
+        let label_id = widget.label.as_ref()?.id();
+        let label = root.get_widget(label_id)?.downcast::<Label>()?;
+        Some((label_id, label.text_end()?))
+    }
     pub fn input_fallback(&self, root: &reel_ui::app::RenderRoot) -> Option<WidgetId> {
         fn visit(root: &reel_ui::app::RenderRoot, id: WidgetId) -> Option<WidgetId> {
             let node = root.get_widget(id)?.downcast::<SceneWidget>()?;

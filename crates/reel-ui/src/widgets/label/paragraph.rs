@@ -5,7 +5,7 @@ use crate::{
         render_text_lines,
     },
     imaging::Painter,
-    kurbo::{Affine, Rect},
+    kurbo::{Affine, Point, Rect},
     peniko::{Brush, Color},
     reel_text::{self, FontContext, Layout, LayoutContext, PositionedLayoutItem},
 };
@@ -56,6 +56,39 @@ impl std::ops::DerefMut for Paragraph {
     }
 }
 impl Paragraph {
+    pub fn text_end(&self) -> Option<Point> {
+        if self.plain.is_empty() {
+            return None;
+        }
+        if let Some(annotation) = self
+            .boxes
+            .last()
+            .filter(|item| item.range.end == self.plain.end)
+        {
+            let line = self.layout.get(self.layout.len().checked_sub(1)?)?;
+            let id = (self.boxes.len() - 1) as u64;
+            for item in line.items() {
+                if let PositionedLayoutItem::InlineBox(position) = item
+                    && position.id == id
+                {
+                    let x = if annotation.base.is_rtl() {
+                        position.x
+                    } else {
+                        position.x + position.width
+                    };
+                    return Some(Point::new(x as f64, line.metrics().max_coord as f64));
+                }
+            }
+        }
+        let caret = reel_text::Cursor::from_byte_index(
+            &self.layout,
+            self.text.len(),
+            reel_text::Affinity::Upstream,
+        )
+        .geometry(&self.layout, 0.);
+        Some(Point::new(caret.x0, caret.y1))
+    }
+
     pub fn build(
         fonts: &mut FontContext,
         context: &mut LayoutContext<BrushIndex>,

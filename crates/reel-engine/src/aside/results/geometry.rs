@@ -5,6 +5,10 @@ aside_host::native_documentation! {
     pub(in crate::aside) fn documentation {
         /// Request geometry from a newly accepted frame. Await returns immutable width,
         /// height, bounds and affine transform, optionally relative to another node.
+        /// text_end is the lower endpoint of the caret after the complete text, as
+        /// {x,y} in the same reference space. It follows wrapping, alignment, rich text
+        /// and ruby, independently of reveal progress. Empty text and non-text nodes
+        /// return null.
         /// Unavailable geometry rejects with {code: GeometryUnavailable}; retirement cancels
         /// it. Saved pending requests wait for a fresh presentation after restore.
         "reel::stage::geometry";
@@ -27,6 +31,8 @@ pub struct NodeGeometry {
     pub bounds: [f64; 4],
     /// a, b, c, d, tx, ty; maps target-local points to reference-local points.
     pub transform: [f64; 6],
+    /// Lower endpoint of the complete text's final caret, in reference coordinates.
+    pub text_end: Option<[f64; 2]>,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GeometryReply {
@@ -99,6 +105,10 @@ fn value(heap: &mut Heap, geometry: NodeGeometry) -> Result<Value, AdapterError>
             ("ty", ty),
         ],
     )?;
+    let text_end = match geometry.text_end {
+        Some([x, y]) => record(heap, [("x", x), ("y", y)])?,
+        None => Value::NULL,
+    };
     observable::record(
         heap,
         &[
@@ -106,6 +116,7 @@ fn value(heap: &mut Heap, geometry: NodeGeometry) -> Result<Value, AdapterError>
             ("height", Value::float(geometry.height)),
             ("bounds", bounds),
             ("transform", transform),
+            ("text_end", text_end),
         ],
         &[],
     )

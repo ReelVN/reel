@@ -375,6 +375,12 @@ impl Label {
     pub fn text(&self) -> &ArcStr {
         self.text.plain()
     }
+
+    /// Returns the lower endpoint of the complete text's final insertion caret
+    /// in label coordinates, using the active layout. Empty or unlaid text has no endpoint.
+    pub fn text_end(&self) -> Option<Point> {
+        self.layouts.get(self.active_layout)?.layout.text_end()
+    }
 }
 
 // --- MARK: WIDGETMUT

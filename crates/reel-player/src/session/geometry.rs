@@ -66,6 +66,7 @@ fn geometry(
         height: target.size.height,
         bounds: [bounds.x0, bounds.y0, bounds.width(), bounds.height()],
         transform: coefficients,
+        text_end: None,
     })
 }
 impl SessionUi {
@@ -201,7 +202,15 @@ impl SessionUi {
             Some(node) => stage.node_widget(node)?,
             None => stage_widget,
         };
-        geometry(source.geometry(), node, relative)
+        let view = source.geometry();
+        let mut result = geometry(view, node, relative)?;
+        if let Some((label, end)) = stage.text_end(bridge.root(), query.node) {
+            let label = visible(view, label)?;
+            let reference = visible(view, relative)?;
+            let point = reference.window_transform.inverse() * label.window_transform * end;
+            result.text_end = Some([point.x, point.y]);
+        }
+        Some(result)
     }
     /// Accept only the exact frame currently accepted by the bridge. Old epochs and
     /// stage instances cannot supply input confirmation or presentation results.
