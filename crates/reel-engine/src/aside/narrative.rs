@@ -26,8 +26,13 @@ aside_host::native_documentation! {
         /// after an append. The handle belongs to the main story task and survives saves.
         "reel::speech::wait";
         /// Return the observable dialogue view: lines, text, reveal, active, ready,
-        /// speaker_name, speaker_id, content_id and read. Bind these values to ordinary
+        /// speaker_name, speaker_id, content_id, read and advance_requested. Bind these values to ordinary
         /// text nodes. `ready` means printing and inline pauses have completed.
+        /// `advance_requested` records an accepted manual advance for the active segment,
+        /// including ready text. Protected incomplete reveal and playback do not set it.
+        /// Append/new dialogue/clear reset it; snapshots retain it. The root field is
+        /// false after the interaction ends. Older displayed rows retain their last
+        /// projected value; current_line_ids identifies the active segment's lines.
         "reel::game::dialogue";
         /// Clear displayed dialogue and retire its current interaction. History entries
         /// are retained; use `game.clear_history` to change history separately.
@@ -90,6 +95,7 @@ enum DialogueField {
     SpeakerId,
     ContentId,
     Ready,
+    AdvanceRequested,
 }
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -102,6 +108,7 @@ enum LineField {
     ContentId,
     Ready,
     Read,
+    AdvanceRequested,
 }
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -238,6 +245,7 @@ impl Narrative {
                 ("speaker_id", Value::NULL),
                 ("content_id", Value::NULL),
                 ("ready", Value::bool(false)),
+                ("advance_requested", Value::bool(false)),
             ],
             &[active],
         )?;
@@ -379,6 +387,7 @@ impl Narrative {
                                 ("content_id", content),
                                 ("ready", Value::bool(line.playback_complete())),
                                 ("read", Value::bool(line.previously_read())),
+                                ("advance_requested", Value::bool(line.advance_requested())),
                             ],
                             &[],
                         )?;
@@ -490,6 +499,12 @@ impl Narrative {
                 publish(
                     heap,
                     row,
+                    LineField::AdvanceRequested as u32,
+                    Value::bool(line.advance_requested()),
+                )?;
+                publish(
+                    heap,
+                    row,
                     LineField::Read as u32,
                     Value::bool(line.previously_read()),
                 )?;
@@ -518,6 +533,14 @@ impl Narrative {
             self.dialogue,
             DialogueField::Ready as u32,
             Value::bool(ready),
+        )?;
+        publish(
+            heap,
+            self.dialogue,
+            DialogueField::AdvanceRequested as u32,
+            Value::bool(
+                matches!(active, Some(InteractionView::Dialogue(d)) if d.advance_requested()),
+            ),
         )?;
         self.sync_reading(heap, session)?;
         if let Some(history) = &mut self.history {
@@ -557,14 +580,11 @@ impl SessionVm {
         Ok(())
     }
 
-    /// Publish host reading controls at the same safe boundary as other input state.
+    /// Publish reading controls and accepted narrative input at the stable input boundary.
     pub fn sync_reading(&mut self, session: &Session) -> Result<(), AdapterError> {
         self.same_session(session)?;
-        if self.reactive_ready
-            && self.derived_task.is_none()
-            && let Some(model) = &self.narrative
-        {
-            model.sync_reading(self.vm.heap_mut(), session)?;
+        if self.reactive_ready && self.derived_task.is_none() && self.narrative.is_some() {
+            self.sync_narrative(session)?;
         }
         Ok(())
     }

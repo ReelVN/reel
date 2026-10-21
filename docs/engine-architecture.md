@@ -520,6 +520,8 @@ StageGraph 唯一拥有作者可见节点、稳定 NodeId、父子结构、声�
 scope 管理任务、活动、等待、临时节点、属性覆盖和加性偏移。独立 Aside 只认识 TaskId 与原生 FrameId：宿主可撤销指定原生回调区域，旧 ticket/wait 立即失效，按现有切片预算清理内层帧，保留外层 catch/finally，再以 CallbackCancelled 恢复该原生续体；整个任务撤销仍优先。清理期间的边界进入 VM 快照。VM 帧释放计入现有切片预算，宿主寿命检查线性访问当前活动作用域；登记容量计入 VM 堆预算，空闲不重建资源。
 
 `scope(body:, owner:null)` 通过 VM 的 CallScript/native continuation 在原 Task 中执行 body，返回 body 的结果，故障保留原身份。body 可接受零参数或一个作用域对象。作用域用普通宿主 owner 对象和 TaskId/FrameId 关联；`s.run(action)` 与 `s.spawn(work)` 显式归该作用域。run、spawn、clock、音视频、粒子、completion 与呈现请求默认继承当前作用域；子任务继续继承其资源 owner，显式 owner 转交生存范围。正常返回/异常退休 owner，后台资源沿现有账本清理，退场动画由 body 显式等待。附加 owner 撤销时，VM 只释放到指定 native 屏障，宿主退休资源后在原 scope 调用点交付 ScopeCancelled；外层主剧情仍可处理。硬撤销跳过区域内脚本 catch/finally，普通 return/throw 按语言规则展开。活动停止保留当前属性值。可运行示例为 [author_scope.aside](../examples/author_scope.aside)。
+`s.cancel()` 首次请求退休该作用域并返回 true，重复请求返回 false。请求保存在同一作用域维护索引及执行快照中；维护阶段沿 owner 退休路径撤销 native region、嵌套作用域、所属任务与活动，在 scope 外交付 ScopeCancelled。自身取消先完成当前 native 响应，再撤销其区域。handle 仍在结束时退休；提前提取的绑定 cancel 方法在结束后幂等返回 false。
+
 `s.add(parent, node, index:null)` 挂载临时子树：要求与 node.add 相同的未挂载节点，返回原 node，index 省略时追加。普通 node.add 保持父节点寿命。注册发生在同一挂载边界，挂载失败不转交所有权；作用域退出按登记逆序移除仍存活的子树，提前 remove、clear、stage.replace 和嵌套作用域不会重复退休。节点拥有的输入任务、活动与呈现等待沿原退休路径结束，已接受输入几何仍由呈现协议更新。登记数组进入现有 VM 对象图，恢复后只继续等待和清理，不重跑构造。登记与退休按实际节点规模处理；子树移除仍使用舞台同步退休，当前不承诺大型临时树单帧完成。
 属性覆盖：`let effect = s.override(node, {opacity: 0.4, width: null})` 创建独立可观察 token，记录参数保留显式 null。允许共同节点布局和外观属性，不包含 on_interaction、控件业务值、只读交互状态或 camera/scroll 专属字段；未知名与类型错误在调用处诊断。token 只公开本次提供的属性和 remove 方法，可直接赋值、bind/derive 或作为 tween 的目标。`node.x` 始终读写基础值，`effect.x` 读写本层值；几何、绘制和输入读取有效值。同字段取最后建立且仍存活的层，修改或重绑不提升优先序。基础绑定在遮挡期间继续更新。`effect.remove()`、scope 正常返回/错误/取消以及目标退休移除覆盖，不把旧值写回基础字段；嵌套与非顶层移除沿同一规则。
 
@@ -553,6 +555,8 @@ model table 的 `remove(key)` 保留其余字段的稳定 PropertyId；首次结
 滑条与按钮共享可组合子节点：`slider(..., children: [])` 的子节点按 stack 布局，`decorated: false` 关闭内置轨道、滑块和焦点描边，保留输入、绑定及无障碍行为。无装饰时数值轨道覆盖内容区完整宽度，作者以归一化 value 放置滑块并自行绘制悬停/焦点外观；padding 仍定义内容区。子节点沿共同舞台的所有权、裁剪和快照路径，不引入第二套滑条输入处理。
 
 `game.dialogue().ready` 与 `lines` 中每行的 `ready` 是只读可观察字段，表示正文和包括尾部停顿在内的时序已完成。组字段仅在当前对白有效且所有行均完成时为 true；行在对白结束后保留 true，清页删除对应行。它不包含自动、快进、暂停或窗口焦点策略，作者与 `game.reading()` 组合决定推进光标的显隐和样式。沿已有叙事投影循环更新，不扫描正文、不创建逐帧任务。
+
+`game.dialogue().advance_requested` 与当前活动行的同名字段是只读可观察的逐段手动推进请求。有效手动 Advance 在允许跳过显现或正文已经 ready 时置 true；尚未完成且禁止跳显时保持 false。自动阅读与快进驱动不会设置它。新对白、append 新段和清页重置；快照保留当前值。互动结束后根字段为 false，仍展示的旧行保留最后一次投影值；用 `current_line_ids` 确定描述当前段的行。作者可用它结束自定义文字演出，输入仍由共同对白服务接受和推进。
 
 ### 角色对白与公共播放时钟
 

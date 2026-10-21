@@ -921,6 +921,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             ],
             false,
         ),
+        ("scope::cancel", vec![parameter("scope", None)], false),
         ("override::remove", vec![parameter("token", None)], false),
         (
             "scope::offset",

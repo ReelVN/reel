@@ -115,11 +115,11 @@ impl SessionUi {
             let owner = self.session.root_owner();
             if self
                 .session
-                .handle_local_input(owner, InputAction::Advance(id))?
+                .handle_playback_input(owner, InputAction::Advance(id))?
                 == reel_engine::InputOutcome::Revealed
             {
                 self.session
-                    .handle_local_input(owner, InputAction::Advance(id))?;
+                    .handle_playback_input(owner, InputAction::Advance(id))?;
             }
             self.pause_dialogue();
             return Ok(true);
@@ -127,7 +127,7 @@ impl SessionUi {
         if dialogue_complete(&self.session) {
             if continues(&self.session) {
                 self.session
-                    .handle_local_input(self.session.root_owner(), InputAction::Advance(id))?;
+                    .handle_playback_input(self.session.root_owner(), InputAction::Advance(id))?;
                 self.pause_dialogue();
                 return Ok(true);
             }
@@ -138,7 +138,7 @@ impl SessionUi {
                 .saturating_sub(Duration::from_nanos(now_ns.saturating_sub(last)));
             if self.playback.remaining.is_zero() {
                 self.session
-                    .handle_local_input(self.session.root_owner(), InputAction::Advance(id))?;
+                    .handle_playback_input(self.session.root_owner(), InputAction::Advance(id))?;
                 self.pause_dialogue();
                 return Ok(true);
             }

@@ -89,3 +89,104 @@ fn text_fade_origin_is_not_an_animation_target() {
         .is_err()
     );
 }
+
+#[test]
+fn manual_advance_request_source_asb_append_playback_and_snapshot() {
+    let code = r#"fn opening() {
+        let d=game.dialogue();
+        let speech=narrator("Initial text",wait:false);
+        await when(||d.advance_requested);
+        if !d.lines[0].advance_requested {throw "line request missing";}
+        speech.append(" continuation");
+        if d.advance_requested || d.lines[0].advance_requested {throw "append retained request";}
+        await when(||d.advance_requested);
+        narrator("New group",wait:false);
+        if d.advance_requested {throw "new group root retained request";}
+        if d.lines[d.lines.len()-1].advance_requested {throw "new group line retained request";}
+        stage.replace(stack(x:123));
+        await completion();
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, false);
+        let id = session.view().interaction.unwrap().id();
+        assert_eq!(
+            session
+                .handle_local_input(session.root_owner(), InputAction::Advance(id))
+                .unwrap(),
+            crate::InputOutcome::Revealed
+        );
+        assert!(
+            matches!(session.view().interaction,Some(crate::InteractionView::Dialogue(d)) if d.advance_requested())
+        );
+        (session, vm) = restore(&session, &mut vm);
+        models::drive(&mut vm, &mut session, false);
+        let id = session.view().interaction.unwrap().id();
+        assert!(
+            matches!(session.view().interaction,Some(crate::InteractionView::Dialogue(d)) if !d.advance_requested())
+        );
+        assert_eq!(
+            session
+                .handle_playback_input(session.root_owner(), InputAction::Advance(id))
+                .unwrap(),
+            crate::InputOutcome::Revealed
+        );
+        models::drive(&mut vm, &mut session, false);
+        assert!(
+            matches!(session.view().interaction,Some(crate::InteractionView::Dialogue(d)) if !d.advance_requested())
+        );
+        assert_eq!(
+            session
+                .handle_local_input(session.root_owner(), InputAction::Advance(id))
+                .unwrap(),
+            crate::InputOutcome::Pending
+        );
+        models::drive(&mut vm, &mut session, false);
+        vm.sync_stage(&session).unwrap();
+        assert_eq!(
+            vm.stage().node(vm.stage().root().unwrap()).unwrap().props.x,
+            123.
+        );
+    }
+}
+
+#[test]
+fn manual_advance_request_protected_reveal_waits_for_ready() {
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(
+            r#"fn opening(){narrator("Protected",wait:false,reveal_skippable:false);await completion();}"#,
+            encoded,
+        );
+        models::drive(&mut vm, &mut session, false);
+        let id = session.view().interaction.unwrap().id();
+        assert_eq!(
+            session
+                .handle_local_input(session.root_owner(), InputAction::Advance(id))
+                .unwrap(),
+            crate::InputOutcome::Pending
+        );
+        assert!(
+            matches!(session.view().interaction,Some(crate::InteractionView::Dialogue(d)) if !d.advance_requested())
+        );
+        session
+            .advance_reveal(
+                session.root_owner(),
+                id,
+                std::time::Duration::from_secs(10),
+                30.,
+            )
+            .unwrap();
+        assert!(
+            matches!(session.view().interaction,Some(crate::InteractionView::Dialogue(d)) if !d.advance_requested())
+        );
+        assert_eq!(
+            session
+                .handle_local_input(session.root_owner(), InputAction::Advance(id))
+                .unwrap(),
+            crate::InputOutcome::Pending
+        );
+        assert!(
+            matches!(session.view().interaction,Some(crate::InteractionView::Dialogue(d)) if d.advance_requested())
+        );
+    }
+}

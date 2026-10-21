@@ -41,6 +41,7 @@ pub const SCENES: &[(&str, E)] = &[
     ("show_cg helper", E::Module),
     ("scoped property override", E::Block),
     ("scoped additive offset", E::Block),
+    ("cancellable scene module", E::Module),
     ("video startup", E::Block),
     ("temporary hint in story", E::Block),
     ("runnable button module", E::Module),

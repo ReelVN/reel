@@ -9,7 +9,7 @@ mod support;
 
 use reel_core::{budget::QueueLimits, wake::WakeSignal};
 use reel_engine::{
-    Epoch, Session, SessionId,
+    Epoch, InteractionView, Session, SessionId,
     aside::{SliceBudget, VmLimits},
 };
 use reel_player::{
@@ -62,6 +62,22 @@ fn scenario_clicks() -> Vec<(u64, [f64; 2])> {
     clicks
 }
 
+// CPU-only interaction requests from self-checking author projects. A marker
+// consumes one accepted manual Advance; unrelated titles never inject input.
+fn scenario_advances() -> Vec<String> {
+    let Some(value) = std::env::var_os("REEL_SCENARIO_ADVANCES") else {
+        return Vec::new();
+    };
+    let titles: Vec<String> =
+        serde_json::from_str(value.to_str().expect("advance titles must be UTF-8"))
+            .expect("REEL_SCENARIO_ADVANCES expects a JSON array of title strings");
+    assert!(
+        titles.iter().all(|title| !title.is_empty()),
+        "advance title markers must be nonempty"
+    );
+    titles
+}
+
 fn execute_project_with_capture(
     path: &Path,
     timeout: Duration,
@@ -79,6 +95,11 @@ fn execute_project_with_capture(
     assert!(
         gpu_capture || clicks.is_empty(),
         "scenario clicks require GPU captures"
+    );
+    let advance_titles = scenario_advances();
+    assert!(
+        !gpu_capture || advance_titles.is_empty(),
+        "manual Advance markers use CPU presentation"
     );
     let loaded =
         reel_cli::project::load(path).unwrap_or_else(|error| panic!("{:?}", error.failure));
@@ -128,6 +149,8 @@ fn execute_project_with_capture(
         let mut identity = runtime.driver().ui().session().identity();
         let mut replacements = 0;
         let mut clicks = clicks.iter().peekable();
+        let mut advances = advance_titles.iter().peekable();
+        let mut advance_phase = 0_u8;
         let mut pointer_events = VecDeque::new();
         let started = Instant::now();
         let logical_elapsed = || started.elapsed().mul_f64(time_scale);
@@ -221,6 +244,48 @@ fn execute_project_with_capture(
                 let driver = runtime.driver_mut().unwrap();
                 captures.drive(driver);
                 captures.present(driver, &mut bridge, root, frame);
+                // Enter press/release each use a newly accepted CPU frame, just
+                // like pointer input. Consume a marker only after the Session
+                // reports the actual manual advance on its current dialogue.
+                if advance_phase == 2 {
+                    if matches!(driver.ui().session().view().interaction,
+                        Some(InteractionView::Dialogue(dialogue)) if dialogue.advance_requested())
+                    {
+                        eprintln!(
+                            "{kind}: manual Enter accepted {:?}",
+                            advances.next().unwrap()
+                        );
+                        advance_phase = 0;
+                    }
+                } else if advance_phase == 1
+                    || advances.peek().is_some_and(|title| {
+                        title.as_str() == driver.adapter().game_settings().title
+                    })
+                {
+                    use reel_ui::core::{TextEvent, keyboard};
+                    let released = advance_phase == 1;
+                    let outcome = driver
+                        .handle_text(
+                            &mut bridge,
+                            TextEvent::Keyboard(keyboard::KeyboardEvent {
+                                state: if released {
+                                    keyboard::KeyState::Up
+                                } else {
+                                    keyboard::KeyState::Down
+                                },
+                                key: keyboard::Key::Named(keyboard::NamedKey::Enter),
+                                code: keyboard::Code::Enter,
+                                location: keyboard::Location::Standard,
+                                modifiers: Default::default(),
+                                repeat: false,
+                                is_composing: false,
+                            }),
+                        )
+                        .unwrap();
+                    eprintln!("{kind}: manual Enter released={released}: {outcome:?}");
+                    advance_phase = if released { 2 } else { 1 };
+                }
+
                 if pointer_events.is_empty()
                     && let Some(&&(capture, [x, y])) = clicks.peek()
                     && captures.stats().count >= capture
@@ -256,6 +321,10 @@ fn execute_project_with_capture(
         assert!(
             clicks.next().is_none() && pointer_events.is_empty(),
             "scenario ended before its configured clicks"
+        );
+        assert!(
+            advances.next().is_none() && advance_phase == 0,
+            "scenario ended before all manual Advance markers were consumed"
         );
         audio_stats.push(audio.stats());
         if gpu_capture {

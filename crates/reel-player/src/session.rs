@@ -460,18 +460,32 @@ impl Widget for SessionWidget {
             self.scrolling.cancel();
         }
         use reel_ui::input::{ActionPhase, NavigationAction};
-        let TextEvent::Navigation(event) = event else {
-            return;
-        };
-        if event.action != NavigationAction::Confirm || !self.dialogue_active {
+        if ctx.is_handled() || !self.dialogue_active {
             return;
         }
+        let phase = match event {
+            TextEvent::Navigation(event) if event.action == NavigationAction::Confirm => {
+                event.phase
+            }
+            TextEvent::Keyboard(key)
+                if key.key == keyboard::Key::Named(keyboard::NamedKey::Enter) =>
+            {
+                if key.state.is_up() {
+                    ActionPhase::Released
+                } else if key.repeat {
+                    ActionPhase::Repeated
+                } else {
+                    ActionPhase::Pressed
+                }
+            }
+            _ => return,
+        };
         let Some(interaction) = self.projection.interaction else {
             return;
         };
         let current = self.current_stamp();
         let mut binding = self.binding.borrow_mut();
-        match event.phase {
+        match phase {
             ActionPhase::Pressed => binding.navigation_down = binding.accepted,
             ActionPhase::Cancelled => binding.navigation_down = None,
             ActionPhase::Released
