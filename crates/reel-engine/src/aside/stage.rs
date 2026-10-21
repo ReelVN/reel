@@ -295,6 +295,33 @@ impl StageBinding {
         Ok(id)
     }
 
+    pub(super) fn mounted_properties_current(&self, heap: &Heap) -> Result<bool, AdapterError> {
+        fn visit(stage: &StageBinding, heap: &Heap, id: NodeId) -> Result<bool, AdapterError> {
+            let binding = &stage.handles[&id];
+            let value = heap.import_handle(binding.handle)?;
+            if heap.info(heap.host_fields(value)?)?.content_version != binding.fields_version
+                || binding.projection_dirty
+                || binding
+                    .overrides
+                    .as_ref()
+                    .map(|c| c.changed(heap, value))
+                    .transpose()?
+                    .unwrap_or(false)
+            {
+                return Ok(false);
+            }
+            for child in &stage.scene.node(id).unwrap().children {
+                if !visit(stage, heap, *child)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        self.scene
+            .root()
+            .map_or(Ok(false), |root| visit(self, heap, root))
+    }
+
     pub(super) fn property_offset(&self, heap: &Heap, value: Value) -> Result<u32, AdapterError> {
         let id = self.id(heap, value)?;
         Ok(match self.scene.node(id).unwrap().kind {

@@ -832,6 +832,8 @@ pub struct SessionUi {
     stage: Option<StageView>,
     stage_dirty: bool,
     pending_stage: Option<StageView>,
+    virtual_images_ready: bool,
+    pub(crate) images_waiting_presentation: bool,
     images: crate::images::Images,
     playback: playback::Playback,
     preview: bool,
@@ -876,6 +878,8 @@ impl SessionUi {
             stage: None,
             stage_dirty: false,
             pending_stage: None,
+            virtual_images_ready: false,
+            images_waiting_presentation: false,
             playback: Default::default(),
             preview,
             reading_modal: false,
@@ -905,7 +909,43 @@ impl SessionUi {
     pub(crate) fn set_feedback_stage(&mut self, stage: &reel_ui::stage::Stage) {
         self.update_stage(stage, true);
     }
+    pub(crate) fn permits_virtual_feedback(&self, stage: &reel_ui::stage::Stage) -> bool {
+        self.pending_stage
+            .as_ref()
+            .is_none_or(|pending| pending.permits_feedback(stage))
+            && self
+                .stage
+                .as_ref()
+                .is_some_and(|view| view.permits_feedback(stage))
+    }
+    pub(crate) fn virtual_feedback_visible(
+        &self,
+        bridge: &mut PresentationBridge,
+        root: WidgetId,
+    ) -> Result<bool, Error> {
+        let geometry = bridge
+            .layout_geometry()
+            .map_err(|error| format!("scroll layout geometry: {error:?}"))?;
+        Ok(Self::stage_widget(bridge, root)
+            .and_then(|id| bridge.root().get_widget(id))
+            .and_then(|widget| widget.downcast::<StageWidget>())
+            .zip(self.stage.as_ref())
+            .is_some_and(|(widget, view)| {
+                widget.virtual_images_visible_ready(
+                    bridge.root(),
+                    view,
+                    &geometry,
+                    &self.images.loaded,
+                )
+            }))
+    }
+    pub(crate) fn current_presentation_ready(&self) -> bool {
+        !self.images_pending()
+            && !self.images_waiting_presentation
+            && self.binding.borrow().accepted == Some(self.projection_stamp())
+    }
     fn update_stage(&mut self, stage: &reel_ui::stage::Stage, feedback: bool) {
+        self.virtual_images_ready = false;
         if self
             .pending_stage
             .as_ref()
@@ -967,6 +1007,7 @@ impl SessionUi {
                 })
                 .collect();
             self.pending_stage = Some(view);
+            self.images_waiting_presentation = true;
             // Stable control identities retain gestures across value/layout changes.
             // Scene retirement, configuration and modal changes are checked by routing.
         }
@@ -1003,6 +1044,9 @@ impl SessionUi {
     pub fn images_pending(&self) -> bool {
         self.pending_stage.is_some()
     }
+    pub(crate) fn images_block_presentation(&self) -> bool {
+        self.images_pending() && !self.virtual_images_ready
+    }
     /// Bind the request to the candidate carrying the stable authored state.
     /// Pending image work must not attach it to the retained previous frame.
     pub(crate) fn request_presentation(&mut self, request: u64) {
@@ -1029,6 +1073,8 @@ impl SessionUi {
     }
     pub(crate) fn close_resources(&mut self) {
         self.pending_stage = None;
+        self.virtual_images_ready = false;
+        self.images_waiting_presentation = false;
         self.images.close();
         self.stage = None;
         self.stage_dirty = true;
@@ -1068,6 +1114,7 @@ impl SessionUi {
         root_id: WidgetId,
     ) -> Result<(), Error> {
         bridge.set_focus_fallback(Some(self.input_fallback.unwrap_or(root_id)));
+        self.virtual_images_ready = false;
         let images_ready = self.images.poll()?;
         if self.images.metadata_ready() && !self.images.manifests.is_empty() {
             if !self.prepare_tiles(bridge, root_id)? {
@@ -1083,9 +1130,45 @@ impl SessionUi {
                 self.images.commit();
             }
         } else if self.images_pending() {
+            self.images_waiting_presentation = true;
+            if let Some(candidate) = self.pending_stage.as_ref()
+                && self.stage.as_ref().is_some_and(|current| {
+                    candidate.same_stage(current)
+                        && candidate.input_scope() == current.input_scope()
+                })
+                && self.images.manifests.is_empty()
+                && candidate.can_layout_virtual_images(&self.images.loaded)
+            {
+                let mut view = candidate.clone();
+                view.resolve_metadata(&self.images);
+                bridge.edit_widget(root_id, |mut widget| {
+                    let mut widget = widget.downcast::<SessionWidget>();
+                    let this = &mut widget;
+                    let mut stage = this.ctx.get_mut(&mut this.widget.stage).unwrap();
+                    StageWidget::sync(&mut stage, &view);
+                });
+                self.stage = Some(view);
+                self.stage_dirty = true;
+                let geometry = bridge
+                    .layout_geometry()
+                    .map_err(|error| format!("scroll layout geometry: {error:?}"))?;
+                self.virtual_images_ready = Self::stage_widget(bridge, root_id)
+                    .and_then(|id| bridge.root().get_widget(id))
+                    .and_then(|widget| widget.downcast::<StageWidget>())
+                    .is_some_and(|widget| {
+                        widget.virtual_images_visible_ready(
+                            bridge.root(),
+                            self.pending_stage.as_ref().unwrap(),
+                            &geometry,
+                            &self.images.loaded,
+                        )
+                    });
+            }
             self.pause_dialogue();
             self.binding.borrow_mut().accepted = None;
-            return Ok(());
+            if !self.virtual_images_ready {
+                return Ok(());
+            }
         }
         let view = self.session.view();
         let interaction = view.interaction.map(|i| i.id());
@@ -1199,10 +1282,12 @@ impl SessionUi {
         }
         if !self.images.poll()? {
             self.pending_stage = candidate;
+            self.images_waiting_presentation = true;
             return Ok(false);
         }
         if let Some(mut view) = candidate {
             // Rebuild leases from this demand; previous accepted frames retain their own.
+            self.images_waiting_presentation = true;
             view.resolve_metadata(&self.images);
             view.resolve_tiles(&self.images, &regions);
             self.stage = Some(view);
@@ -1216,6 +1301,7 @@ impl SessionUi {
         bridge: &mut PresentationBridge,
         event: PointerEvent,
     ) -> Result<UiDispatch, Error> {
+        self.virtual_images_ready = false;
         if matches!(
             event,
             PointerEvent::Down(_) | PointerEvent::Up(_) | PointerEvent::Cancel(_)
@@ -1514,6 +1600,36 @@ mod tests {
             NoticeResult::Accepted
         );
         ui.presented(bridge, &stamp);
+    }
+    #[test]
+    fn feedback_receipt_does_not_authorize_capture_but_scrolled_complete_receipt_does() {
+        let mut ui = SessionUi::new(session()).unwrap();
+        let mut stage = reel_ui::stage::Stage::default();
+        let node = stage
+            .create(reel_ui::stage::NodeKind::Stack, Default::default(), vec![])
+            .unwrap();
+        stage.replace(node).unwrap();
+        ui.set_stage(&stage);
+        let (mut bridge, root) = mount(&ui);
+        ui.sync(&mut bridge, root).unwrap();
+        // The dialogue/history scroll Rc participates in the actual widget stamp.
+        ui.scroll.set(125.);
+        let (source, mut receipt) = ui.record(&mut bridge, root, FrameId(1)).unwrap();
+        assert_eq!(receipt.stamp.scroll_bits, 125f64.to_bits());
+        receipt.current = false;
+        assert_eq!(
+            bridge.resolve(PresentationNotice::new(
+                source.key(),
+                SurfaceEpoch(1),
+                PresentationOutcome::Accepted(FrameId(1))
+            )),
+            NoticeResult::Accepted
+        );
+        assert!(ui.presented(&bridge, &receipt));
+        assert!(!ui.current_presentation_ready());
+        assert!(ui.binding.borrow().control_accepted.is_some());
+        accept(&mut ui, &mut bridge, root, 2);
+        assert!(ui.current_presentation_ready());
     }
     #[test]
     fn initial_record_waits_for_preparation_then_uses_explicit_root() {

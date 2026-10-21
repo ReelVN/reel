@@ -311,6 +311,9 @@ impl StoryRuntime {
                 return Ok(());
             }
             self.step(budget, &mut now)?;
+            if self.driver().adapter().virtual_feedback_boundary() {
+                return Ok(());
+            }
             if self.starting.is_some() || budget.deadline_ns.is_none() || !self.needs_work() {
                 return Ok(());
             }

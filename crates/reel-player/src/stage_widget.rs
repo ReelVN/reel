@@ -31,6 +31,7 @@ mod projection_tests;
 mod selection;
 #[cfg(test)]
 mod tests;
+mod virtual_images;
 use input::NodeInput;
 
 #[derive(Clone, Default)]
@@ -127,6 +128,49 @@ impl StageView {
     }
     pub fn matches(&self, stage: &Stage) -> bool {
         self.identity.as_ref() == Some(stage.identity()) && self.revision == stage.revision()
+    }
+    /// Local feedback may change completed layout/appearance properties, while
+    /// topology, control content and input ownership remain the committed ones.
+    pub(crate) fn permits_feedback(&self, stage: &Stage) -> bool {
+        fn visit(old: &SceneNode, stage: &Stage, id: NodeId) -> bool {
+            let Some(node) = stage.node(id) else {
+                return false;
+            };
+            let same_kind = match (&old.node.kind, &node.kind) {
+                (
+                    NodeKind::Scroll {
+                        axis: a,
+                        follow_end: b,
+                        align: c,
+                        ..
+                    },
+                    NodeKind::Scroll {
+                        axis: x,
+                        follow_end: y,
+                        align: z,
+                        ..
+                    },
+                ) => a == x && b == y && c == z,
+                (a, b) => a == b,
+            };
+            old.node.id == id
+                && same_kind
+                && old.node.props.visible == node.props.visible
+                && old.node.props.enabled == node.props.enabled
+                && old.node.props.modal == node.props.modal
+                && old.children.len() == node.children.len()
+                && old
+                    .children
+                    .iter()
+                    .zip(&node.children)
+                    .all(|(old, id)| visit(old, stage, *id))
+        }
+        self.identity.as_ref() == Some(stage.identity())
+            && self
+                .root
+                .as_ref()
+                .zip(stage.root())
+                .is_some_and(|(old, id)| visit(old, stage, id))
     }
     pub fn update(stage: &Stage, previous: Option<&Self>) -> Self {
         fn capture_node(stage: &Stage, id: NodeId, old: Option<&Arc<SceneNode>>) -> Arc<SceneNode> {
@@ -310,10 +354,13 @@ impl StageView {
             .collect()
     }
     pub fn image_requests(&self) -> Result<ImageRequests, String> {
+        Self::image_requests_for(self.root.as_ref())
+    }
+    fn image_requests_for(root: Option<&Arc<SceneNode>>) -> Result<ImageRequests, String> {
         let mut requests = BTreeMap::new();
         let mut mounted = std::collections::BTreeSet::new();
         let mut encoded = BTreeMap::new();
-        let mut pending: Vec<_> = self.root.iter().map(|node| (node, true)).collect();
+        let mut pending: Vec<_> = root.into_iter().map(|node| (node, true)).collect();
         while let Some((node, parent_visible)) = pending.pop() {
             if !node.image_branch {
                 continue;

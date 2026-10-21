@@ -44,8 +44,10 @@ enum S {
     MeasuredRevision,
     LastNavigation,
     Fault,
+    Candidate,
+    SourceRevision,
 }
-const STATE_LEN: usize = S::Fault as usize + 1;
+const STATE_LEN: usize = S::SourceRevision as usize + 1;
 const HEIGHT: u32 = 4;
 const INDEX: u32 = 5;
 const EPOCH: u32 = 6;
@@ -82,7 +84,7 @@ pub(in crate::aside) fn project(h: &Heap, host: Value) -> Result<VirtualListView
     let s = state(h, host)?;
     let projection = get(h, s, S::Projection)?;
     let mut rows = Vec::new();
-    for i in (4..h.sequence_len(projection)?).step_by(3) {
+    for i in (5..h.sequence_len(projection)?).step_by(3) {
         let child = h.sequence_get(projection, i)?;
         rows.push(VirtualRow {
             node: NodeId(h.host_payload(child, 0)?.as_int().unwrap() as u64),
@@ -120,6 +122,7 @@ fn commit_projection(h: &mut Heap, s: Value) -> Result<(), AdapterError> {
         Value::float(total(h, s)?),
         Value::int(i64::from(count(h, s)?)),
         get(h, s, S::Navigation)?,
+        get(h, s, S::SourceRevision)?,
     ];
     let projection = h.alloc_array(&header)?;
     let mounted = get(h, s, S::Mounted)?;
@@ -228,6 +231,16 @@ impl SessionVm {
                     self.issued = None;
                     return Ok(());
                 }
+                // A new source must not adopt detached rows from an obsolete
+                // window. Retire that candidate before copying keyed entries.
+                let candidate = get(self.vm.heap(), s, S::Candidate)?;
+                if candidate.tag() != ValueTag::Null {
+                    let mut values = [Value::NULL; 8];
+                    for (i, value) in values.iter_mut().enumerate() {
+                        *value = self.vm.heap().sequence_get(candidate, i as u32)?;
+                    }
+                    self.virtual_discard_candidate(&Work::load(&values))?;
+                }
                 (output, s)
             } else {
                 let mut layout = args[4..].to_vec();
@@ -256,6 +269,7 @@ impl SessionVm {
                     Value::float(0.),
                     Value::int(0),
                     Value::NULL,
+                    Value::int(0),
                 ])?;
                 let mut values = [Value::NULL; STATE_LEN];
                 for (f, v) in [
@@ -273,7 +287,13 @@ impl SessionVm {
                 ] {
                     values[f as usize] = v;
                 }
-                for f in [S::Revision, S::Epoch, S::Request, S::LastNavigation] {
+                for f in [
+                    S::Revision,
+                    S::Epoch,
+                    S::Request,
+                    S::LastNavigation,
+                    S::SourceRevision,
+                ] {
                     values[f as usize] = Value::int(0);
                 }
                 for f in [S::Width, S::Start, S::End, S::Offset, S::AnchorOffset] {
@@ -394,6 +414,13 @@ impl SessionVm {
                         w.index += 1;
                         self.virtual_continue(t, &w, INDEX_HEIGHTS)?;
                     } else {
+                        let source_revision = int(self.vm.heap(), w.state, S::SourceRevision)? + 1;
+                        put(
+                            self.vm.heap_mut(),
+                            w.state,
+                            S::SourceRevision,
+                            Value::int(source_revision),
+                        )?;
                         put(self.vm.heap_mut(), w.state, S::Sorted, w.sorted)?;
                         put(self.vm.heap_mut(), w.state, S::Order, w.entries)?;
                         put(self.vm.heap_mut(), w.state, S::Tree, w.children)?;

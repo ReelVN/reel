@@ -141,6 +141,230 @@ fn click(vm: &mut SessionVm, session: &mut Session, label: &str) {
     drive(vm, session);
 }
 
+fn request_feedback(vm: &mut SessionVm, session: &mut Session, y: f64, retained: &[NodeId]) {
+    let request = event(vm, y, 320., retained);
+    let NodeKind::VirtualList(view) = &vm.stage().node(request.node).unwrap().kind else {
+        unreachable!()
+    };
+    let scroll = NodeScroll {
+        input: false,
+        node: request.scroll,
+        requested: request.requested,
+        offset: request.offset,
+        viewport: request.viewport,
+        content: Size::new(320., view.total_height),
+    };
+    vm.interactions(
+        session,
+        &[NodeEvent::Scroll(scroll), NodeEvent::VirtualList(request)],
+    )
+    .unwrap();
+}
+fn next_row_boundary(vm: &mut SessionVm, session: &mut Session) {
+    let nodes = vm.stage().nodes().count();
+    for _ in 0..100_000 {
+        match vm
+            .step(
+                session,
+                SessionBudget::Exact(SliceBudget {
+                    instructions: 100,
+                    ..Default::default()
+                }),
+                || 0,
+            )
+            .unwrap()
+        {
+            SessionStep::Vm(RunOutcome::HostCall(t)) => {
+                vm.dispatch(session, t, "en", 32).unwrap();
+            }
+            SessionStep::Vm(RunOutcome::Fault(id)) => {
+                panic!("{:?}", vm.vm.delivery_fault(id).unwrap())
+            }
+            _ => {}
+        }
+        if vm.reactive_ready
+            && vm.derived_task.is_none()
+            && vm.vm.heap().derived_pending()
+            && vm.stage().nodes().count() > nodes
+        {
+            return;
+        }
+    }
+    panic!("no complete row boundary");
+}
+
+#[test]
+fn virtual_list_continuous_small_moves_keep_candidate_progress_and_new_pins() {
+    let (mut session, mut vm) = prepared(1000);
+    for _ in 0..3 {
+        feedback(&mut vm, &mut session, 0., 320., &[]);
+    }
+    let (list, _) = ids(&vm);
+    let pin = vm.stage().node(list).unwrap().children[0];
+    request_feedback(&mut vm, &mut session, 15_000., &[]);
+    next_row_boundary(&mut vm, &mut session);
+    assert!(vm.virtual_feedback_ready());
+    assert!(!vm.stage_ready());
+    // A pin added after preparation must restart the distant candidate.
+    request_feedback(&mut vm, &mut session, 15_000.25, &[pin]);
+    next_row_boundary(&mut vm, &mut session);
+    let candidates = vm
+        .stage()
+        .nodes()
+        .filter(|n| n.parent.is_none() && Some(n.id) != vm.stage().root())
+        .map(|n| n.id)
+        .collect::<Vec<_>>();
+    for i in 1..5 {
+        request_feedback(
+            &mut vm,
+            &mut session,
+            15_000.25 + f64::from(i) * 0.25,
+            &[pin],
+        );
+        next_row_boundary(&mut vm, &mut session);
+        assert!(
+            candidates.iter().all(|id| vm.stage().node(*id).is_some()),
+            "small moves retired completed candidates"
+        );
+    }
+    drive(&mut vm, &mut session);
+    assert!(vm.stage().node(list).unwrap().children.contains(&pin));
+}
+
+#[test]
+fn virtual_list_source_reorder_after_row_boundary_cannot_reuse_retired_candidates() {
+    use aside_vm::snapshot::SnapshotBudget;
+    let code = r#"fn opening(){
+        let values=[];for i in 0..1000 {values.append(i);}
+        let viewport=scroll(width:320,height:120);
+        let mut reversed=false;
+        let rows=list(||{
+            let position=viewport.scroll_y;
+            if position>15000.5 && !reversed {values.reverse();reversed=true;}
+            values
+        },key:|x|x,virtual:true,build:|row|column(height:40){button(f"row {row.value}");});
+        viewport.add(rows); stage.replace(viewport); narrator("ready");
+    }"#;
+    let (mut session, mut vm) = models::prepared(code, true);
+    drive(&mut vm, &mut session);
+    for _ in 0..3 {
+        feedback(&mut vm, &mut session, 0., 320., &[]);
+    }
+    request_feedback(&mut vm, &mut session, 15_000., &[]);
+    next_row_boundary(&mut vm, &mut session);
+    let mut capture = vm.snapshot_begin(&session).unwrap();
+    while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+    let mut saved = capture.finish().unwrap();
+    let mut restore = SessionVm::restore_begin(
+        &mut saved,
+        vm.vm.program().clone(),
+        VmLimits::default(),
+        SessionIdentity {
+            session_id: SessionId(73),
+            epoch: Epoch(2),
+        },
+        Default::default(),
+        None,
+        None,
+    )
+    .unwrap();
+    while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+    let (restored_session, restored) = restore.finish().unwrap();
+    session = restored_session;
+    vm = restored;
+    assert!(
+        vm.derived_task.is_none(),
+        "snapshot is between whole row factories"
+    );
+    let detached = vm
+        .stage()
+        .nodes()
+        .find(|n| n.parent.is_none() && Some(n.id) != vm.stage().root())
+        .expect("a detached row must still be in flight")
+        .id;
+    // Deliver the source-changing scroll after another factory returns but
+    // before its native BUILT continuation requeues Window at the FIFO tail.
+    let mut delivered = false;
+    for _ in 0..100_000 {
+        if let SessionStep::Vm(RunOutcome::HostCall(t)) = vm
+            .step(
+                &mut session,
+                SessionBudget::Exact(SliceBudget {
+                    instructions: 100,
+                    ..Default::default()
+                }),
+                || 0,
+            )
+            .unwrap()
+        {
+            let p = vm.vm.program().package();
+            let built = t.input == NativeInput::CallbackReturned
+                && p.symbols[p.natives[t.native.index()].symbol.index()] == "reel::list";
+            if built {
+                request_feedback(&mut vm, &mut session, 15_001., &[]);
+            }
+            vm.dispatch(&mut session, t, "en", 32).unwrap();
+            if built {
+                delivered = true;
+                break;
+            }
+        }
+    }
+    assert!(delivered);
+    assert!(
+        !vm.virtual_feedback_boundary(),
+        "scroll dependency queues Source before the candidate can complete"
+    );
+    let mut hit_source = false;
+    for _ in 0..100_000 {
+        if let SessionStep::Vm(RunOutcome::HostCall(t)) = vm
+            .step(
+                &mut session,
+                SessionBudget::Exact(SliceBudget {
+                    instructions: 100,
+                    ..Default::default()
+                }),
+                || 0,
+            )
+            .unwrap()
+        {
+            let p = vm.vm.program().package();
+            if t.input == NativeInput::Entry
+                && p.symbols[p.natives[t.native.index()].symbol.index()] == "reel::list"
+            {
+                assert!(
+                    vm.stage().node(detached).is_some(),
+                    "source must start before the old window commits"
+                );
+                vm.dispatch(&mut session, t, "en", 32).unwrap();
+                assert!(
+                    vm.stage().node(detached).is_none(),
+                    "source clears detached rows before copying entries"
+                );
+                hit_source = true;
+                break;
+            }
+            vm.dispatch(&mut session, t, "en", 32).unwrap();
+        }
+    }
+    assert!(hit_source);
+    drive(&mut vm, &mut session);
+    let (list, _) = ids(&vm);
+    let NodeKind::VirtualList(view) = &vm.stage().node(list).unwrap().kind else {
+        unreachable!()
+    };
+    for row in view.rows.iter() {
+        let child = vm
+            .stage()
+            .node(row.node)
+            .expect("committed child remains live");
+        let label = vm.stage().node(child.children[0]).unwrap();
+        assert!(
+            matches!(&label.kind,NodeKind::Button{label:Some(s),..} if s==&format!("row {}",999-row.index))
+        );
+    }
+}
+
 #[test]
 fn virtual_list_materialization_depends_on_viewport_not_total_rows() {
     let mut counts = Vec::new();

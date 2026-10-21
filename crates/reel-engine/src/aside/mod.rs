@@ -390,10 +390,34 @@ impl SessionVm {
         self.derived_task.is_none() && !self.vm.heap().derived_pending()
     }
 
+    /// A whole virtual row has returned and ordinary observers have settled.
+    /// The host may now synchronize mounted properties before recording feedback.
+    pub fn virtual_feedback_boundary(&self) -> bool {
+        if !self.reactive_ready
+            || self.derived_task.is_some()
+            || self.activities.pending()
+            || self.transitions.pending(self.activities.time())
+            || self.particles.needs_work(self.stage.retirement_revision)
+        {
+            return false;
+        }
+        let mut outputs = self.vm.heap().pending_derived_outputs().peekable();
+        outputs.peek().is_some() && outputs.all(|output| self.virtual_feedback_output(output))
+    }
+
+    /// Only a committed mounted tree may paint while detached virtual rows wait.
+    pub fn virtual_feedback_ready(&self) -> bool {
+        self.virtual_feedback_boundary()
+            && self
+                .stage
+                .mounted_properties_current(self.vm.heap())
+                .unwrap_or(false)
+    }
+
     /// Publish the properties of the same mounted objects after script work.
     pub fn sync_stage(&mut self, session: &Session) -> Result<(), AdapterError> {
         self.same_session(session)?;
-        if !self.reactive_settled() {
+        if !self.reactive_settled() && !self.virtual_feedback_boundary() {
             return Ok(());
         }
         self.stage.sync(self.vm.heap_mut(), self.read_limit)
