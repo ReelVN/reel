@@ -43,6 +43,7 @@ pub fn run_connection(connection: Connection, options: ServerOptions) -> Result<
         }),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(OneOf::Left(true)),
+        semantic_tokens_provider: Some(crate::semantic_tokens::options().into()),
         document_formatting_provider: Some(OneOf::Left(true)),
         signature_help_provider: Some(SignatureHelpOptions {
             trigger_characters: Some(vec!["(".into(), ",".into(), ":".into()]),
@@ -242,6 +243,12 @@ fn dispatch(workspace: &mut Workspace, request: Request, encoding: Encoding) -> 
         serde_json::from_value(value).map_err(|error| (ErrorCode::InvalidParams, error.to_string()))
     }
     let result = match request.method.as_str() {
+        "textDocument/semanticTokens/full" => {
+            let params: SemanticTokensParams = params(request.params)?;
+            workspace
+                .semantic_tokens(&params.text_document.uri, encoding)
+                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
+        }
         "textDocument/formatting" => {
             let params: DocumentFormattingParams = params(request.params)?;
             workspace

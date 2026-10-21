@@ -212,7 +212,7 @@ impl Scanner<'_> {
                 self.pos += c.len_utf8();
             }
             let text = &self.source[start..self.pos];
-            kind = keyword(text);
+            kind = K::keyword(text);
             if kind == K::Ident && !valid_identifier(text) {
                 self.error(
                     D::InvalidIdentifier,
@@ -438,39 +438,4 @@ fn valid_identifier(text: &str) -> bool {
         .next()
         .is_some_and(|c| c == '_' || unicode_ident::is_xid_start(c))
         && chars.all(|c| c == '_' || unicode_ident::is_xid_continue(c))
-}
-fn keyword(text: &str) -> K {
-    match text {
-        "let" => K::Let,
-        "mut" => K::Mut,
-        "fn" => K::Fn,
-        "async" => K::Async,
-        "gen" => K::Gen,
-        "class" => K::Class,
-        "static" => K::Static,
-        "pub" => K::Pub,
-        "use" => K::Use,
-        "as" => K::As,
-        "if" => K::If,
-        "else" => K::Else,
-        "while" => K::While,
-        "for" => K::For,
-        "in" => K::In,
-        "loop" => K::Loop,
-        "match" => K::Match,
-        "is" => K::Is,
-        "await" => K::Await,
-        "return" => K::Return,
-        "break" => K::Break,
-        "continue" => K::Continue,
-        "throw" => K::Throw,
-        "yield" => K::Yield,
-        "try" => K::Try,
-        "catch" => K::Catch,
-        "finally" => K::Finally,
-        "true" => K::True,
-        "false" => K::False,
-        "null" => K::Null,
-        _ => K::Ident,
-    }
 }

@@ -87,8 +87,47 @@ use aside_vm::{Heap, HeapHandle, PropertyId, ValueTag, bytecode::FunctionKind};
 
 pub(super) fn describe(api: &mut aside_host::source::Api) {
     use aside_compiler::semantic::TypeHint;
-    use aside_host::source::{Member, NamedType, named, nullable};
+    use aside_host::source::{Member, NamedType, named, nullable, number};
     let text = TypeHint::Union(vec![TypeHint::String, named("reel::types::RichText")]);
+    api.refine(
+        "reel::game::record",
+        TypeHint::Null,
+        &[
+            ("text", text.clone()),
+            ("speaker", nullable(named("reel::types::Character"))),
+        ],
+    );
+    api.refine(
+        "reel::game::clear_history",
+        TypeHint::Null,
+        &[("keep_last", TypeHint::Int)],
+    );
+    api.refine(
+        "reel::game::pause_reading",
+        TypeHint::Null,
+        &[("paused", TypeHint::Bool)],
+    );
+    api.refine(
+        "reel::game::set_auto",
+        TypeHint::Null,
+        &[
+            ("enabled", nullable(TypeHint::Bool)),
+            ("delay", nullable(number())),
+            (
+                "condition",
+                nullable(TypeHint::Union(vec![TypeHint::Bool, named("Binding")])),
+            ),
+        ],
+    );
+    api.refine(
+        "reel::game::set_skip",
+        TypeHint::Null,
+        &[
+            ("enabled", TypeHint::Bool),
+            ("unread", TypeHint::Bool),
+            ("after_choices", TypeHint::Bool),
+        ],
+    );
     let mut dialogue = Vec::new();
     for (name, ty) in [
         ("lines", TypeHint::Array),

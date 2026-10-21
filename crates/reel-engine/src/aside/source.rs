@@ -229,6 +229,8 @@ fn build_api() -> Api {
     super::stage::source::describe(&mut api);
     super::dialogue::describe(&mut api);
     super::results::describe(&mut api);
+    super::saves::describe(&mut api);
+    super::game::describe(&mut api);
     super::scopes::describe(&mut api);
     super::activity::describe(&mut api);
     super::media::describe(&mut api);
@@ -239,6 +241,7 @@ fn build_api() -> Api {
     super::window::describe(&mut api);
     super::particles::describe(&mut api);
     super::localization::describe(&mut api);
+    super::transitions::describe(&mut api);
     api.refine(
         "reel::derive",
         aside_host::source::named("Binding"),
@@ -310,74 +313,63 @@ fn build_api() -> Api {
             .map(|(e, _)| e.clone())
             .collect(),
     });
-    let mut stage = ExternalSymbol::dynamic("stage");
     prelude.extend(aside_std::prelude());
-    stage.namespace = Some(NamespaceRef {
-        module: "reel::stage".into(),
-        version: "1".into(),
-    });
-    prelude.push(stage);
     prelude.push(ExternalSymbol::intrinsic(
         "bind",
         aside_compiler::semantic::Intrinsic::Bind,
     ));
-    let mut game = ExternalSymbol::dynamic("game");
-    game.namespace = Some(NamespaceRef {
-        module: "reel::game".into(),
-        version: "1".into(),
-    });
-    prelude.push(game);
-    let mut audio = ExternalSymbol::dynamic("audio");
-    audio.namespace = Some(NamespaceRef {
-        module: "reel::audio".into(),
-        version: "1".into(),
-    });
-    prelude.push(audio);
-    let mut localization = ExternalSymbol::dynamic("localization");
-    localization.namespace = Some(NamespaceRef {
-        module: "reel::localization".into(),
-        version: "1".into(),
-    });
-    prelude.push(localization);
-    for name in ["saves", "persistent", "window", "mask"] {
-        let module = format!("reel::{name}");
-        let mut namespace = ExternalSymbol::dynamic(name);
-        namespace.namespace = Some(NamespaceRef {
-            module: module.clone(),
-            version: "1".into(),
-        });
-        prelude.push(namespace);
+    for (module, documentation) in [
+        (
+            "reel::stage",
+            "Mount, inspect and capture the common stage, and query or request pointer movement.",
+        ),
+        (
+            "reel::game",
+            "Configure the game session, start a fresh story, and access dialogue, choices, reading state and history.",
+        ),
+        (
+            "reel::audio",
+            "Play and control audio activities, queue sources, and await playback positions.",
+        ),
+        (
+            "reel::localization",
+            "Load translation catalogs and select or read the current observable locale.",
+        ),
+        (
+            "reel::saves",
+            "Save, load, list and delete story slots, and retrieve their captured thumbnails.",
+        ),
+        (
+            "reel::persistent",
+            "Read, write and delete persistent data shared across story sessions.",
+        ),
+        (
+            "reel::window",
+            "Read portable window information and request supported window configuration changes.",
+        ),
+        (
+            "reel::mask",
+            "Build immutable scalar mask expressions from image alpha, grayscale and arithmetic.",
+        ),
+    ] {
+        let declaration = Declaration::namespace(module, "1", documentation);
+        prelude.push(declaration.symbol.clone());
+        api.namespaces.push(declaration);
         resolver.insert(ModuleInterface {
-            canonical_path: module.clone(),
+            canonical_path: module.into(),
             version: "1".into(),
             exports: exports
                 .iter()
                 .zip(&references)
-                .filter(|(_, r)| r.module == module)
+                .filter(|(_, reference)| {
+                    reference.module == module
+                        && !(module == "reel::audio"
+                            && reference.export.as_deref() == Some("await"))
+                })
                 .map(|(e, _)| e.clone())
                 .collect(),
         });
     }
-    resolver.insert(ModuleInterface {
-        canonical_path: "reel::localization".into(),
-        version: "1".into(),
-        exports: exports
-            .iter()
-            .zip(&references)
-            .filter(|(_, r)| r.module == "reel::localization")
-            .map(|(e, _)| e.clone())
-            .collect(),
-    });
-    resolver.insert(ModuleInterface {
-        canonical_path: "reel::audio".into(),
-        version: "1".into(),
-        exports: exports
-            .iter()
-            .zip(&references)
-            .filter(|(_, r)| r.module == "reel::audio" && r.export.as_deref() != Some("await"))
-            .map(|(e, _)| e.clone())
-            .collect(),
-    });
 
     prelude.extend(api.types.iter().map(aside_host::source::NamedType::symbol));
     for path in ["reel", "reel::prelude"] {
@@ -387,26 +379,6 @@ fn build_api() -> Api {
             exports: prelude.clone(),
         });
     }
-    resolver.insert(ModuleInterface {
-        canonical_path: "reel::stage".into(),
-        version: "1".into(),
-        exports: exports
-            .iter()
-            .zip(&references)
-            .filter(|(_, reference)| reference.module == "reel::stage")
-            .map(|(export, _)| export.clone())
-            .collect(),
-    });
-    resolver.insert(ModuleInterface {
-        canonical_path: "reel::game".into(),
-        version: "1".into(),
-        exports: exports
-            .iter()
-            .zip(&references)
-            .filter(|(_, r)| r.module == "reel::game")
-            .map(|(e, _)| e.clone())
-            .collect(),
-    });
     let mut type_modules: std::collections::BTreeMap<String, Vec<ExternalSymbol>> =
         Default::default();
     for ty in &api.types {

@@ -2,8 +2,22 @@
 use super::{CallEffect, ExternalParameter, ExternalSignature, TypeHint};
 use crate::hir::{Form, FunctionKind, Hir, HirKind as H, NodeId};
 
-pub(super) fn builtin_type(name: &str) -> Option<TypeHint> {
-    Some(match name {
+macro_rules! builtin_types {
+    ($name:ident; $($($spelling:literal)|+ => $ty:expr),+ $(,)?) => {
+        /// Accepted built-in annotation names, including their source aliases.
+        /// Editor completion and semantic lookup share these exact spellings.
+        pub const BUILTIN_TYPE_NAMES: &[&str] = &[$($($spelling),+),+];
+
+        pub(super) fn builtin_type($name: &str) -> Option<TypeHint> {
+            Some(match $name {
+                $($($spelling)|+ => $ty,)+
+                _ => return None,
+            })
+        }
+    };
+}
+builtin_types! {
+    name;
         "any" => TypeHint::Any,
         "closure" => TypeHint::Closure,
         "null" => TypeHint::Null,
@@ -17,8 +31,6 @@ pub(super) fn builtin_type(name: &str) -> Option<TypeHint> {
         "generator" => TypeHint::Generator,
         "Bytes" | "TextBuffer" | "ByteBuffer" | "Set" | "Range" | "Iterator" | "AsyncIterator"
         | "thread" | "weakref" | "class" | "instance" | "Binding" => TypeHint::Named(name.into()),
-        _ => return None,
-    })
 }
 
 pub(super) fn signature_hint(hir: &Hir, node: NodeId) -> Option<ExternalSignature> {

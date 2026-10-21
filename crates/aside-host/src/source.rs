@@ -2,7 +2,9 @@
 use crate::{NativeContract, PropertyDocumentation};
 use aside_compiler::{
     TextRange, TextSize,
-    semantic::{ExternalMember, ExternalSymbol, ModuleInterface, SymbolReference, TypeHint},
+    semantic::{
+        ExternalMember, ExternalSymbol, ModuleInterface, NamespaceRef, SymbolReference, TypeHint,
+    },
 };
 use std::collections::BTreeMap;
 
@@ -13,8 +15,32 @@ pub struct Declaration {
     pub documentation: String,
     pub parameter_defaults: BTreeMap<String, aside_vm::bytecode::Const>,
     pub property_default: Option<aside_vm::bytecode::Const>,
+    /// Parameter names expanded from the implementation's registered property schema.
+    pub property_parameters: Vec<String>,
 }
 impl Declaration {
+    /// Describe a registered module using the compiler's namespace table semantics.
+    pub fn namespace(module: &str, version: &str, documentation: &str) -> Self {
+        let mut symbol =
+            ExternalSymbol::value(module.rsplit("::").next().unwrap(), TypeHint::Table)
+                .with_reference(SymbolReference {
+                    module: module.into(),
+                    version: version.into(),
+                    export: None,
+                });
+        symbol.namespace = Some(NamespaceRef {
+            module: module.into(),
+            version: version.into(),
+        });
+        Self {
+            symbol,
+            documentation: documentation.into(),
+            parameter_defaults: BTreeMap::new(),
+            property_default: None,
+            property_parameters: Vec::new(),
+        }
+    }
+
     /// Describe a native without copying its parameter names, defaults or rest policy.
     pub fn native(contract: &NativeContract, documentation: &str) -> Self {
         Self {
@@ -30,6 +56,7 @@ impl Declaration {
                 })
                 .collect(),
             property_default: None,
+            property_parameters: Vec::new(),
         }
     }
     /// Override only known source types on the existing registered signature.
@@ -143,6 +170,7 @@ impl Member {
                 documentation: documentation.into(),
                 parameter_defaults: BTreeMap::new(),
                 property_default: default,
+                property_parameters: Vec::new(),
             },
             write_type,
         }
@@ -243,6 +271,8 @@ pub struct Api {
     pub modules: Vec<ModuleInterface>,
     pub types: Vec<NamedType>,
     pub functions: Vec<Declaration>,
+    /// Module descriptions retain canonical namespace identities and English docs.
+    pub namespaces: Vec<Declaration>,
 }
 /// One generated Aside declaration document, intended for display rather than execution.
 #[derive(Clone, Debug)]
@@ -342,7 +372,7 @@ impl Api {
     pub fn registrations(&self) -> Vec<aside_vm::bytecode::HostTypeSupport> {
         self.types.iter().map(NamedType::registration).collect()
     }
-    /// Generate complete classes and declaration-only signatures from the same schemas.
+    /// Generate module roots, complete classes and native signatures from the same schemas.
     pub fn documents(&self, authority: &str) -> Documents {
         let mut result = Documents::default();
         for ty in &self.types {
@@ -371,6 +401,7 @@ impl Api {
                     documentation: ty.documentation.clone(),
                     parameter_defaults: BTreeMap::new(),
                     property_default: None,
+                    property_parameters: Vec::new(),
                 },
                 uri: uri.clone(),
                 range: range(start + 10, name.len()),
@@ -415,12 +446,65 @@ impl Api {
                 .or_default()
                 .push(declaration);
         }
+        for module in &self.modules {
+            modules.entry(&module.canonical_path).or_default();
+        }
         for (module, declarations) in modules {
             let uri = format!(
                 "aside-native://{authority}/modules/{}.aside",
                 module.replace("::", "/")
             );
             let mut text = String::new();
+            let registered = self
+                .modules
+                .iter()
+                .find(|entry| entry.canonical_path == module);
+            let mut declaration = self
+                .namespaces
+                .iter()
+                .find(|declaration| {
+                    declaration
+                        .symbol
+                        .namespace
+                        .as_ref()
+                        .is_some_and(|namespace| namespace.module == module)
+                })
+                .cloned()
+                .unwrap_or_else(|| {
+                    Declaration::namespace(
+                        module,
+                        registered.map_or("1", |module| module.version.as_str()),
+                        "",
+                    )
+                });
+            if let Some(registered) = registered {
+                let names = registered
+                    .exports
+                    .iter()
+                    .map(|symbol| symbol.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if !names.is_empty() {
+                    if !declaration.documentation.is_empty() {
+                        declaration.documentation.push_str("\n\n");
+                    }
+                    declaration
+                        .documentation
+                        .push_str(&format!("Exports: {names}."));
+                }
+            }
+            append_docs(&mut text, "", &declaration.documentation);
+            text.push_str("use ");
+            let namespace_start = text.len();
+            text.push_str(module);
+            let name = &declaration.symbol.name;
+            let start = namespace_start + module.len() - name.len();
+            text.push_str(";\n\n");
+            result.locations.push(Location {
+                range: range(start, name.len()),
+                declaration,
+                uri: uri.clone(),
+            });
             for declaration in declarations {
                 append_declaration(
                     &mut text,

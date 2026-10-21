@@ -10,6 +10,8 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 use std::{str::FromStr, time::Duration};
 
+mod editor_feedback;
+
 fn project_options() -> ServerOptions {
     ServerOptions {
         source_root: Some(|directory, exists| {
@@ -686,6 +688,7 @@ fn native_types_keep_nominal_members_readonly_defaults_and_definition_documents(
                 range: aside_compiler::TextRange::new(start.into(), (start + 5).into()),
             }),
             parameter_defaults: BTreeMap::new(),
+            property_parameters: Vec::new(),
             property_default: Some("12".into()),
         }],
         documents: vec![HostDocument {

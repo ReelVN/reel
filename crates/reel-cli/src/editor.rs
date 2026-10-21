@@ -45,6 +45,7 @@ pub fn host_context(api: &Api) -> HostContext {
                     .map(|(name, value)| (name, constant(&value)))
                     .collect(),
                 property_default: declaration.property_default.as_ref().map(constant),
+                property_parameters: declaration.property_parameters,
             }
         })
         .collect();
