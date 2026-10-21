@@ -24,7 +24,7 @@ button 与可等待的 on_click 回调已接通，见文末可运行示例。mod
 `game.exit()` 请求关闭作品；接收后不再执行脚本，播放器完成任务和资源清理后退出窗口。可先等待淡出动画再调用。嵌入宿主接收同一请求并决定外层应用的行为。完整按钮示例见 [author_exit.aside](../../examples/author_exit.aside)，运行前提供 fonts/body.ttf。
 
 从 main.aside 的 main 启动工程。check/build/dev 接受源码文件或工程目录，run 执行已经构建的 .asb。可运行多文件工程见 [author_project](../../examples/author_project/main.aside)。标题页可用 game.start 切换到全新剧情会话。
-在 main 中调用 game.configure(title: "窗边", width: 960, height: 540) 设置标题与逻辑画布，参数可以使用普通表达式。省略项保留原值；未设置画布时沿用窗口空间，设置后按 contain 等比缩放并留边，绘制与输入使用同一换算。首设一个维度时，另一个维度采用 1920×1080 的对应值。桌面窗口默认匹配首次配置的画布尺寸；未配置画布时为 1280×720。Rust 宿主可用 StoryWindowOptions.logical_size 显式指定其他初始尺寸。首次应用画布后不再自动调整窗口，玩家改变窗口尺寸时仍按 contain 缩放。fonts 接受字体文件字符串或按优先顺序排列的数组，例如 game.configure(fonts: ["fonts/body.ttf", "fonts/cjk.ttf"])；路径相对资源根，作品须在首次呈现前提供至少一个字体文件。text 和 button 的 font 属性选择字体族或逗号分隔的回退列表，例如 text("标题", font: "Noto Serif SC, system-ui")，font_size 控制大小。`font_weight` 选择字重，默认为 400，接受 1 到 1000 的有限数值；例如 `text("标题", font: "HK Grotesk", font_weight: 600)` 从已配置的该字体族中选择合适字重。作品应同时提供所需字重的字体文件。text、控件标签和 text_input 共用该属性，可以直接赋值、bind 或 derive；更改后重新排版。富文本 `[b]` 将对应文字局部设为 700。字体文件共享加载；system-ui 表示配置的默认列表。播放器只使用作品提供的字体，不读取系统字体；未配置字体会报错。
+在 main 中调用 game.configure(title: "窗边", width: 960, height: 540) 设置标题与逻辑画布，参数可以使用普通表达式。省略项保留原值；未设置画布时沿用窗口空间，设置后按 contain 等比缩放并留边，绘制与输入使用同一换算。首设一个维度时，另一个维度采用 1920×1080 的对应值。桌面窗口默认匹配首次配置的画布尺寸；未配置画布时为 1280×720。Rust 宿主可用 StoryWindowOptions.logical_size 显式指定其他初始尺寸。首次应用画布后不再自动调整窗口，玩家改变窗口尺寸时仍按 contain 缩放。fonts 接受字体文件字符串或按优先顺序排列的数组，例如 game.configure(fonts: ["fonts/body.ttf", "fonts/cjk.ttf"])；路径相对资源根，作品须在首次呈现前提供至少一个字体文件。text 和 button 的 font 属性选择字体族或逗号分隔的回退列表，例如 text("标题", font: "Noto Serif SC, system-ui")，font_size 控制大小。`font_weight` 选择字重，默认为 400，接受 1 到 1000 的有限数值；例如 `text("标题", font: "HK Grotesk", font_weight: 600)` 从已配置的该字体族中选择合适字重。优先使用作品提供的对应字重；只有 Regular 字体时，请求粗体会使用合成加粗，普通文本、逐字显示及描边沿同一字形路径。text、控件标签和 text_input 共用该属性，可以直接赋值、bind 或 derive；更改后重新排版。富文本 `[b]` 将对应文字局部设为 700。字体文件共享加载；system-ui 表示配置的默认列表。播放器只使用作品提供的字体，不读取系统字体；未配置字体会报错。
 
 `letter_spacing` 和 `word_spacing` 分别调整字簇间距和空格宽度，默认 0，单位为逻辑舞台像素。正值拉开、负值收紧；词距作用于普通空格和不换行空格，与字距叠加。字距按整形后的字簇增加 advance，包含末字簇，组合字符和连字保留字体整形。text、控件标签和 text_input 共用这两个属性，支持直接赋值、bind/derive；实际变化时更新换行、光标和命中位置。富文本和 ruby 注音继承间距，text_fit: "shrink" 将间距与字号一起缩放。示例：[author_text_spacing.aside](../../examples/author_text_spacing.aside)。
 
@@ -87,7 +87,7 @@ build 默认使用 Debug，完整源码与映射保存在包内，运行错误�
 
 启用 window 后，源码与构建产物都使用真实窗口、文字布局和呈现输入路径。同步构造组件在同一运行时间片内连续推进，到等待或时间片结束才更新画面，不会每创建一个节点就单独显示一帧。对白或选择等待时会先完成当前 GC，再休眠等待输入；自然结束后窗口保留最后画面，关闭窗口退出并完成清理；Escape 作为返回输入交给当前 UI。
 
-工程只读取入口实际导入的源码。game::ui::scene 对应入口目录下的 ui/scene.aside；--module first=../library 可提供外部源码根，同一目录的别名共享环境。函数循环引用允许链接，顶层读取未初始化绑定在实际读取处报 ModuleInitializationCycle。build 把完整模块图和入口放入同一 .asb，移动后无需原源码，初始化设置仍由同一段 main 执行。资源根默认为源码或 ASB 所在目录，也可用 --assets 指定；export 另外生成资源包与可搬移的 release.json 清单。
+工程只读取入口实际导入的源码。game::ui::scene 对应入口目录下的 ui/scene.aside；--module first=../library 可提供外部源码根，同一目录的别名共享环境。函数循环引用允许链接，顶层读取未初始化绑定在实际读取处报 ModuleInitializationCycle。build 把完整模块图和入口放入同一 .asb，移动后无需原源码，初始化设置仍由同一段 main 执行。资源根默认为源码或 ASB 所在目录，也可用 --assets 指定；export 另外生成资源包，并将可搬移的清单嵌入 ASB。
 
 源码、完整源码定位文本和文字常量统一使用实际包预算。长文本和拼接按执行片推进，分片不会截断文字，也不规定台词长度。
 
@@ -95,16 +95,18 @@ build 默认使用 Debug，完整源码与映射保存在包内，运行错误�
 
 ### 导出开发工程和发布目录
 
-`reel export` 在同一次构建中组织代码和资源；默认导出开发工程，`--release` 导出发布目录。先按前面的示例准备字体，再执行：
+`reel export` 在同一次构建中组织代码和资源；默认导出开发工程，`--release` 导出发布目录。先按前面的示例准备字体，并用 `cargo build -p reel-cli --features window` 构建工具与独立播放器，再执行：
 
 ```powershell
 ./target/debug/reel.exe export examples/author_stage.aside --output target/reel-artifacts/development --resource assets=examples/assets --resource fonts=target/reel-artifacts/author-assets/fonts
 ./target/debug/reel.exe export examples/author_stage.aside --release --output target/reel-artifacts/release --resource assets=examples/assets --resource fonts=target/reel-artifacts/author-assets/fonts
-./target/debug/reel.exe run target/reel-artifacts/release/release.json
-./target/debug/reel.exe dev target/reel-artifacts/development/release.json
+./target/debug/reel.exe run target/reel-artifacts/release/game.asb
+./target/debug/reel.exe dev target/reel-artifacts/development/game.asb
 ```
 
-开发目录包含可修改的 `script/`、散资源、带源码诊断的 `game.asb` 和 `release.json`；可以直接 run，也可以 dev 重新编译。发布目录包含 `game.asb`、`game.rtp`、`resources.rpk` 和 `release.json`，另外携带对应平台播放器即可分发。复制整个目录后仍使用相同命令，不依赖构建机绝对路径。
+开发目录包含可修改的 `script/`、散资源和带源码诊断的 `game.asb`；可以直接 run，也可以 dev 按内嵌源码配置重新编译。发布目录包含 `game.exe`、`game.asb`、`game.rtp` 和 `resources.rpk`（资源较多时还有后续卷）。将整个目录交给玩家，双击 `game.exe` 即可开始；其他平台使用对应可执行文件。清单内嵌于 `game.asb`，所有资源路径相对主包目录。
+
+发布播放器从自身目录寻找 `game.asb`，存档默认写入同级 `saves/`；`--save-directory <directory>` 可另选位置。更新游戏时保留 saves。发布导出使用 reel 工具同级的 reel-game 播放器；发行构建可用 `cargo build --release -p reel-cli --features window`。当前 ASB 为 2.0，旧产物需重新构建。
 
 `--resource prefix=directory` 把一个目录映射到脚本中的逻辑路径；可重复声明。`--text locales=build/locales` 将已合并的翻译目录放入文本包，脚本仍使用 `localization.load("en", "locales/en.ftl")`。开发导出复制这些文件，发布导出将它们打包。翻译源文件可继续按剧情和 UI 模块组织，先用 `reel loc bundle` 生成运行目录。
 
@@ -112,7 +114,7 @@ build 默认使用 Debug，完整源码与映射保存在包内，运行错误�
 
 发布时原文常量移入 `game.rtp`，ASB 不携带完整源码。池目前整体驻留，字符串按使用共享引用；不是启动就把所有正文复制成永久 VM 对象。修改译文无需重编代码，但原文池必须与 ASB 对应。图片、音频和视频按资源包索引读取，不整体解包。
 
-发布默认关闭散文件覆盖；需要模组或调试覆盖时显式 `reel run release.json --assets overrides`。清单里的包按顺序后者覆盖前者，散文件优先。`--overwrite` 会替换整个既有导出目录，旧存档与额外文件不复制到新导出；运行数据应单独保存。导出目录不能放在输入源码或资源目录里面。
+发布默认关闭散文件覆盖；需要模组或调试覆盖时显式 `reel run game.asb --assets overrides`。清单里的包按顺序后者覆盖前者，散文件优先。`--overwrite` 会替换整个既有导出目录，旧存档与额外文件不复制到新导出；运行数据应单独保存。导出目录不能放在输入源码或资源目录里面。
 
 ### 已接通的范围、容器与插值
 在函数里可以用范围循环生成内容，再用插值展示结果。范围不会先创建一个大数组；`..` 不含终点，`..=` 包含终点。数组支持 `append`、`pop` 和 `len`，表支持 `has_own`、`get`、`remove` 和 `len`。插值当前支持字符串、数字、布尔值和 null。
@@ -160,6 +162,8 @@ stage.replace(stack {
 
 ## 二 让代码表达整幅画面
 ### 组织组件数据
+
+读取或写入表的单个字段时，其他任务或控件可继续更新已有字段值；查找完成时使用当前槽。普通 table 和 model 遵循同一规则。增删字段会中断尚未完成的查找并报告 ConcurrentModification。复制、展开和删除等批量操作仍要求来源内容在操作期间保持一致。
 
 剧本 VM 默认不设固定的内存字节总额，对象和根存储按实际需求增长，不再设 16,384 个对象或 1,024 个根的默认门槛；嵌入引擎的宿主可按运行环境显式设置预算。增量 GC 会释放空对象存储页，不再保留峰值数量的完整对象槽；较小的身份索引和工作队列仍可复用。长操作会按执行切片让出，避免阻塞画面。
 
@@ -391,7 +395,7 @@ fn main() {
 
 用 `image(source, fit: "contain", ...)` 将 PNG/JPEG 文件放到舞台。省略 width/height 时，图片的像素尺寸作为逻辑尺寸；只指定一边时保持宽高比。指定两边后，contain 完整显示并留空，cover 填满并裁剪，stretch 拉伸填满。图片也支持共同的位置、可见性、透明度和 padding 属性。可以直接修改原节点的 source 和 fit。
 
-面板、按钮底图等可用 `slice: 24` 开启九宫格，或用 `slice: [24, 16, 24, 16]` 分别指定左、上、右、下边距。边距以源图像像素计，`slice_scale` 默认 1，用于调整目标边宽；数值均须有限且非负。九宫格填满内容框，角保持比例，边和中心拉伸；框过小或源边距超出图片时四边统一按比例收缩，零面积切片不绘制。`slice: null` 恢复普通 fit。两项属性可直接赋值或绑定，也可写入 layered_image 的图层描述。使用完整 PNG/JPEG 或图片 Bytes，分块 .reel-image 不适用于九宫格；多个切片共享图片，不生成或上传额外像素。
+面板、按钮底图等可用 `slice: 24` 开启九宫格，或用 `slice: [24, 16, 24, 16]` 分别指定左、上、右、下边距。边距以源图像像素计，`slice_scale` 默认 1，用于调整目标边宽；数值均须有限且非负。九宫格填满内容框，角保持比例，边和中心拉伸；框过小或源边距超出图片时四边统一按比例收缩，源中间跨度为零时，重合边界的颜色延展到目标中间；两个轴都重合时使用交点颜色。目标面积为零的切片不绘制。`slice: null` 恢复普通 fit。两项属性可直接赋值或绑定，也可写入 layered_image 的图层描述。使用完整 PNG/JPEG 或图片 Bytes，分块 .reel-image 不适用于九宫格；多个切片共享图片，不生成或上传额外像素。
 
 `slice_center: false` 让九宫格只绘边框，中心保持透明；默认 true。例如 `image("assets/frame.png", width: 320, height: 180, slice: 10, slice_center: false)`。
 
@@ -562,7 +566,7 @@ say([mio.line("你听见了吗？"), eri.line("在窗外。")]);
 
 句内节奏也写在 rich 中：`[speed=15]慢慢说[/speed]` 按每秒 15 个字素显示，`[speed=2x]快一些[/speed]` 使用玩家速度的两倍，`[speed=0]立即出现[/speed]` 显示即时段，`[pause=0.5]` 在当前位置停半秒。speed 可以嵌套，关闭时恢复外层速度。`[next]` 使本句播完并呈现后自动续句，不改变全局自动阅读；同时对白要求每行都有该标记。末尾停顿会先执行。手动补全、快进或全局 text_speed: 0 越过剩余节奏；打开菜单或挂起保留剩余停顿。标记不进入正文、历史或字数，普通 text 显示完整内容。完整示例见 [author_dialogue_timing.aside](../../examples/author_dialogue_timing.aside)。
 
-支持成对嵌套的 `[b]`、`[i]`、`[u]`、`[s]`（粗体、斜体、下划线、删除线）、`[size=36]`、`[color=#RRGGBB]` / `[color=#RRGGBBAA]`、`[em]`（着重号）、`[ruby=注音]基文[/ruby]`、`[link=词条ID]正文[/link]`。`[[` 表示字面左方括号；把任意玩家输入插入富文本前用 rich_escape 转义。错误标记在 rich 调用位置报错，错误值包含标记的 UTF-8 字节位置。ruby 不嵌套；基文和半字号注音一起换行，基文逐字显示，基文全部显示后出现注音。字体仍由游戏提供，粗体、斜体的字形效果取决于字体。
+支持成对嵌套的 `[b]`、`[i]`、`[u]`、`[s]`（粗体、斜体、下划线、删除线）、`[size=36]`、`[color=#RRGGBB]` / `[color=#RRGGBBAA]`、`[em]`（着重号）、`[ruby=注音]基文[/ruby]`、`[link=词条ID]正文[/link]`。`[[` 表示字面左方括号；把任意玩家输入插入富文本前用 rich_escape 转义。错误标记在 rich 调用位置报错，错误值包含标记的 UTF-8 字节位置。ruby 不嵌套；基文和半字号注音一起换行，基文逐字显示，基文全部显示后出现注音。字体由游戏提供；粗体优先选择对应字重，只有 Regular 时使用合成加粗，斜体沿字体匹配和合成倾斜。
 
 text 默认按可用宽度自然换行；width、x/y、padding、scroll 决定 NVL 页面的位置与边界，列表 gap 决定段落间距。`text_align` 支持 start/end/left/right/center/justify，默认 start；`line_height` 是字号倍率，默认 1.2。不同字号、ruby 与着重号共同决定行高，逐字显示只改变绘制范围。节点 color 是基础颜色，显式句内颜色覆盖对应片段；省略句内颜色即可沿用角色或已读配色。
 
@@ -1056,7 +1060,7 @@ game.clear_history(keep_last: 37);
 
 可以等待自己的保存请求。这份存档恢复时，该请求为已成功且只读 `restored` 为 true（正常写盘完成为 false），可据此关闭存档菜单；调用者继续执行 await 后的语句；保存调用不会重复执行。其他未完成的外部请求以 OperationInterrupted 结算。成功读档会替换会话，原来的读档调用不会在旧会话中继续。
 
-执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 8，会话快照格式为 26；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
+执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 9，会话快照格式为 27；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
 
 可运行示例：[author_saves.aside](../../examples/author_saves.aside)。
 
@@ -1542,6 +1546,8 @@ if display.capabilities.fullscreen {
 configure 省略的项保持原值，返回活动，await 得到平台应用后的实际状态。fullscreen 是无边框全屏；全屏期间设置的尺寸用于退出后的窗口，不改变显示器模式。游戏可在全屏时禁用窗口尺寸选项。关闭垂直同步使用 `await window.configure(vsync: false)`，只改变呈现同步，空闲仍按需重绘。窗口状态不随剧情存档恢复，偏好可由 persistent 保存。另一项窗口更改尚未完成时会报 Busy；禁用正在执行的设置按钮即可。画布仍由 game.configure 独立配置。
 
 ### 图片粒子
+
+粒子可以与节点的透明度、变换等 tween 同时播放；`stage.presented` 可在演出中间帧完成。普通属性更新沿共同舞台合成，目标、owner 或作用域退休仍会取消对应批次。
 
 `particles(source, seed:0, ...节点属性)` 创建一个共享精灵与坐标空间的舞台节点。source 必须是完整 PNG/JPEG 精灵；预处理的 `.reel-image` 只供 image 使用。每次 `emit` 追加一个批次并返回独立活动。示例需要自行提供 `assets/petal.png` 和 `fonts/body.ttf`，完整示例见 [author_particles.aside](../../examples/author_particles.aside)。
 

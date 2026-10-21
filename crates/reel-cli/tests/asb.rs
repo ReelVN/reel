@@ -48,7 +48,7 @@ fn assemble(b01: &[u8], json: &[u8]) -> Vec<u8> {
     }
     let total = out.len() as u64;
     out[..8].copy_from_slice(rp::MAGIC);
-    out[8..10].copy_from_slice(&1u16.to_le_bytes());
+    out[8..10].copy_from_slice(&rp::VERSION.to_le_bytes());
     out[16..24].copy_from_slice(&total.to_le_bytes());
     out[24..32].copy_from_slice(&(index as u64).to_le_bytes());
     out[32..40].copy_from_slice(&(2u64 * rp::INDEX_ENTRY_LEN as u64).to_le_bytes());
@@ -236,7 +236,7 @@ fn private_entry_uses_the_linked_module_declaration_and_project_initializer() {
     }));
     assert_eq!(a.blake3, rp::digest(&a.bytes));
     assert_eq!(
-        rp::encode(section(&a.bytes, 0), m, Limits::default()).unwrap(),
+        rp::encode(section(&a.bytes, 0), m, None, Limits::default()).unwrap(),
         a.bytes
     );
 }
@@ -288,7 +288,7 @@ fn index_rejects_overflow_overlap_duplicates_versions_and_required_extensions() 
     let original = artifact("fn main() { 1 }", None).bytes;
     let index = u64_at(&original, 24);
     let mutations = [
-        (8, vec![2]),
+        (8, vec![1]),
         (10, vec![1]),
         (12, 1u32.to_le_bytes().to_vec()),
         (32, 111u64.to_le_bytes().to_vec()),
@@ -486,6 +486,156 @@ fn optional_sections_are_ignored_but_verified_and_required_unknowns_fail() {
         rp::decode(&extended, Limits::default()).unwrap_err().kind,
         ErrorKind::Version
     );
+}
+
+#[test]
+fn embedded_distribution_roundtrips_and_seek_reader_skips_code_payloads() {
+    use reel_package::distribution::{Distribution, SourceProject};
+    use std::{
+        collections::BTreeMap,
+        io::{self, Cursor, Read, Seek, SeekFrom},
+    };
+    let original = artifact("fn main() { 1 }", Some("main::main")).bytes;
+    let package = rp::decode(&original, Limits::default()).unwrap();
+    assert!(package.distribution().is_none());
+    assert!(
+        rp::read_distribution(&mut Cursor::new(&original), Limits::default())
+            .unwrap()
+            .is_none()
+    );
+    let manifest = Distribution {
+        text: Some("game.rtp".into()),
+        resources: vec!["resources.rpk".into(), "resources-002.rpk".into()],
+        loose: None,
+        source: Some(SourceProject {
+            entry: "script/序章.aside".into(),
+            modules: BTreeMap::from([("shared".into(), "modules/shared".into())]),
+            function: "main::main".into(),
+        }),
+    };
+    let bytes = rp::encode(
+        section(&original, 0),
+        package.metadata(),
+        Some(&manifest),
+        Limits::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        rp::decode(&bytes, Limits::default())
+            .unwrap()
+            .distribution(),
+        Some(&manifest)
+    );
+    let index = u64_at(&bytes, 24);
+    let entry = index + 2 * rp::INDEX_ENTRY_LEN;
+    let start = u64_at(&bytes, entry + 8);
+    let len = u64_at(&bytes, entry + 16);
+    struct RestrictedReader<'a> {
+        cursor: Cursor<&'a [u8]>,
+        allowed: [std::ops::Range<usize>; 3],
+        read: usize,
+    }
+    impl Read for RestrictedReader<'_> {
+        fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+            let start = self.cursor.position() as usize;
+            assert!(
+                self.allowed
+                    .iter()
+                    .any(|range| start >= range.start && start + out.len() <= range.end),
+                "read code or metadata payload at {start}"
+            );
+            let count = self.cursor.read(out)?;
+            self.read += count;
+            Ok(count)
+        }
+    }
+    impl Seek for RestrictedReader<'_> {
+        fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+            self.cursor.seek(position)
+        }
+    }
+    let mut reader = RestrictedReader {
+        cursor: Cursor::new(&bytes),
+        allowed: [0..rp::HEADER_LEN, index..bytes.len(), start..start + len],
+        read: 0,
+    };
+    assert_eq!(
+        rp::read_distribution(&mut reader, Limits::default()).unwrap(),
+        Some(manifest)
+    );
+    assert_eq!(reader.read, rp::HEADER_LEN + 3 * rp::INDEX_ENTRY_LEN + len);
+    let limited = Limits {
+        max_work: (rp::HEADER_LEN + 3 * rp::INDEX_ENTRY_LEN + 3 * len - 1) as u64,
+        ..Limits::default()
+    };
+    assert!(
+        rp::read_distribution(&mut Cursor::new(&bytes), limited)
+            .unwrap_err()
+            .to_string()
+            .contains("budget")
+    );
+    let mut corrupted = bytes.clone();
+    corrupted[start] ^= 1;
+    assert!(
+        rp::read_distribution(&mut Cursor::new(&corrupted), Limits::default())
+            .unwrap_err()
+            .to_string()
+            .contains("digest")
+    );
+    assert_eq!(
+        rp::decode(&corrupted, Limits::default()).unwrap_err().kind,
+        ErrorKind::Integrity
+    );
+    let mut legacy = bytes;
+    legacy[8..10].copy_from_slice(&1u16.to_le_bytes());
+    assert_eq!(
+        rp::decode(&legacy, Limits::default()).unwrap_err().kind,
+        ErrorKind::Version
+    );
+    assert!(
+        rp::read_distribution(&mut Cursor::new(&legacy), Limits::default())
+            .unwrap_err()
+            .to_string()
+            .contains("version")
+    );
+}
+
+#[test]
+fn embedded_distribution_rejects_paths_duplicates_and_unknown_fields_at_both_boundaries() {
+    use std::io::Cursor;
+    let original = artifact("fn main() { 1 }", None).bytes;
+    let original_index = u64_at(&original, 24);
+    for json in [
+        r#"{"text":"../secret.rtp","resources":[],"loose":null,"source":null}"#,
+        r#"{"text":null,"resources":["/absolute.rpk"],"loose":null,"source":null}"#,
+        r#"{"text":null,"resources":[],"loose":null,"source":{"entry":"main.aside","modules":{"shared":"../outside"},"function":"main::main"}}"#,
+        r#"{"text":null,"text":null,"resources":[],"loose":null,"source":null}"#,
+        r#"{"code":"game.asb","text":null,"resources":[],"loose":null,"source":null}"#,
+    ] {
+        let mut bytes = original[..original_index].to_vec();
+        bytes.extend_from_slice(json.as_bytes());
+        let index = bytes.len();
+        bytes.extend_from_slice(&original[original_index..]);
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&(original_index as u64).to_le_bytes());
+        bytes.extend_from_slice(&(json.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&hash(json.as_bytes()));
+        let total = bytes.len() as u64;
+        bytes[16..24].copy_from_slice(&total.to_le_bytes());
+        bytes[24..32].copy_from_slice(&(index as u64).to_le_bytes());
+        bytes[32..40].copy_from_slice(&(3 * rp::INDEX_ENTRY_LEN as u64).to_le_bytes());
+        repair_index(&mut bytes);
+        assert_eq!(
+            rp::decode(&bytes, Limits::default()).unwrap_err().kind,
+            ErrorKind::Metadata,
+            "{json}"
+        );
+        assert!(
+            rp::read_distribution(&mut Cursor::new(&bytes), Limits::default()).is_err(),
+            "{json}"
+        );
+    }
 }
 
 #[test]

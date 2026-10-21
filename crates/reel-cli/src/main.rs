@@ -61,52 +61,12 @@ fn run_package(args: commands::Run) -> io::Result<u8> {
         )?;
         return Ok(2);
     };
-    if args
-        .source
-        .extension()
-        .is_some_and(|extension| extension == "json")
-    {
-        let loaded = match reel_cli::distribution::load(&args.source) {
-            Ok(loaded) => loaded,
-            Err(error) => {
-                failure(false, "package", Some(path), &error.to_string())?;
-                return Ok(1);
-            }
-        };
-        return match reel_cli::story_from_package(loaded.package) {
-            Ok(story) => launch(
-                story,
-                Some(loaded.root),
-                Some((loaded.packages, args.playback.assets.or(loaded.loose))),
-                args.playback.save_directory,
-                path,
-            ),
-            Err(error) => {
-                failure(false, "package", Some(path), &error.to_string())?;
-                Ok(1)
-            }
-        };
-    }
-    let bytes = match std::fs::read(&args.source) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            failure(false, "input", Some(path), &error.to_string())?;
-            return Ok(2);
-        }
-    };
-    let story = reel_package::decode(&bytes, reel_package::Limits::default())
-        .map_err(|error| error.to_string())
-        .and_then(|package| {
-            reel_cli::story_from_package(package).map_err(|error| error.to_string())
-        });
-    match story {
-        Ok(story) => launch(
-            story,
-            args.playback.assets,
-            None,
-            args.playback.save_directory,
-            path,
-        ),
+    match reel_cli::playback::run(
+        &args.source,
+        args.playback.assets,
+        args.playback.save_directory,
+    ) {
+        Ok(()) => Ok(0),
         Err(error) => {
             failure(false, "package", Some(path), &error)?;
             Ok(1)
@@ -140,7 +100,7 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
         asset_root = args.playback.assets.clone();
         if source
             .extension()
-            .is_some_and(|extension| extension == "json")
+            .is_some_and(|extension| extension == "asb")
         {
             let manifest = match reel_cli::distribution::read_manifest(&source) {
                 Ok(manifest) => manifest,
@@ -234,6 +194,21 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
         }
         SourceCommand::Export(args) => {
             let profile = args.settings.profile();
+            let player = if profile == BuildProfile::Release {
+                let player = reel_cli::distribution::player_path(&std::env::current_exe()?);
+                if !player.is_file() {
+                    failure(
+                        json_format,
+                        "export",
+                        player.to_str(),
+                        "platform player is missing; build with: cargo build --release -p reel-cli --features window",
+                    )?;
+                    return Ok(1);
+                }
+                Some(player)
+            } else {
+                None
+            };
             let artifact = match reel_cli::build_export(&checked, &entry, profile) {
                 Ok(artifact) => artifact,
                 Err(error) => return source_error(json_format, path, inputs, error),
@@ -248,6 +223,7 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
                 pack_bytes: args
                     .pack_bytes
                     .unwrap_or(std::num::NonZeroU64::new(2 << 30).unwrap()),
+                player,
             };
             match reel_cli::distribution::export(&loaded, &artifact, &options) {
                 Ok(result) => {
@@ -309,7 +285,7 @@ fn compilation_report(
             "entry": {"kind": "project-initializer", "function_id": checked.compilation.initializer.0},
             "modules": checked.modules.iter().map(|m| json!({"module": m.canonical_path, "source_version": m.source_version})).collect::<Vec<_>>(),
             "limits": package_limits_json(),
-            "artifact": built.map(|(a, output)| json!({"path": output.to_str(), "format": "ASB", "major": 1, "minor": 0,
+            "artifact": built.map(|(a, output)| json!({"path": output.to_str(), "format": "ASB", "major": reel_package::VERSION, "minor": 0,
                 "bytes": a.bytes.len(), "blake3": a.blake3, "game_entry": a.game_entry, "module_only": a.game_entry.is_none(),
                 "profile": a.profile.name(), "source_included": a.profile == BuildProfile::Debug,
                 "atomic_visibility": true, "power_loss_durability": "not_promised", "cleanup_warning": cleanup_warning}))}),
@@ -494,23 +470,8 @@ fn launch(
     save_directory: Option<PathBuf>,
     path: &str,
 ) -> io::Result<u8> {
-    #[cfg(feature = "window")]
-    let result = {
-        let mut options = reel_player::shell::StoryWindowOptions::default();
-        options.assets.root =
-            assets.unwrap_or_else(|| std::path::Path::new(path).parent().unwrap().to_path_buf());
-        if let Some((packages, overlay)) = packages {
-            options.asset_packages = Some(packages);
-            options.asset_overlay = overlay;
-        }
-        options.save_directory = save_directory;
-        reel_player::shell::run_story(story, options).map_err(|error| error.to_string())
-    };
-    #[cfg(not(feature = "window"))]
-    let result: Result<(), String> = {
-        let _ = (story, assets, packages, save_directory);
-        Err("build the window player with: cargo build -p reel-cli --features window".into())
-    };
+    let root = assets.unwrap_or_else(|| Path::new(path).parent().unwrap().to_path_buf());
+    let result = reel_cli::playback::launch(story, root, packages, save_directory);
     match result {
         Ok(()) => Ok(0),
         Err(message) => {

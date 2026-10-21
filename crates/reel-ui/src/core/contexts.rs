@@ -2398,6 +2398,12 @@ impl Drop for RawCtx<'_> {
 
 // --- MARK: DEBUG PAINT
 impl PaintCtx<'_> {
+    /// Mark this widget's image brush matrices as local-to-source sampling maps.
+    /// Unlike ordinary Painter matrices, these may collapse a source axis.
+    pub(crate) fn set_image_sampling_transform(&mut self, sampling: bool) {
+        self.widget_state.image_sampling_transform = sampling;
+    }
+
     /// Bind this widget's filled image geometry to a decoded resource. The
     /// recording retains its identity, sampler, transform and tint; the frame
     /// resource snapshot must retain its lease. Children and masks are separate.

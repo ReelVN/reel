@@ -25,7 +25,7 @@ Reel 的目标是让创作者直观地表达想象中的画面和交互，包括
 
 共享资源读取区分单资源过大与瞬时容量争用：文件超过宿主 input_bytes 容量时报告资源路径和所需/配置字节；并发读取暂时占满输入容量时保留尚未提交的读取，随既有资源维护继续准入，不结算为加载失败。取消可直接撤销未提交读取，无额外文件缓存或同步等待。范围为 reel-player 资源服务；作者接口、ABI、ASB 与依赖保持不变。
 
-模型来源的依赖捕获使用 Aside 的私有有序强边载荷与平衡树索引，去重和捕获期间的写冲突查询不再逐项扫描所有已捕获依赖；作者接口、list native ABI 及 ASB 不变。索引按堆预算准入、分片回收，捕获嵌套、取消与失败保留同一提交语义；VM 快照 7 恢复每个值块时重建已映射身份的索引，当前 SessionSnapshot 为 26。范围为 aside-vm 响应式载荷、快照/GC、reel-engine 的定向行为与成本检查，无新依赖。来源生成、捕获、订阅、列表索引、首窗、定位有效性和远跳分别测量；依赖有效性查询仍与登记依赖图有关，虚拟窗口不意味着数据与来源索引按需加载。
+模型来源的依赖捕获使用 Aside 的私有有序强边载荷与平衡树索引，去重和捕获期间的写冲突查询不再逐项扫描所有已捕获依赖；作者接口、list native ABI 及 ASB 不变。索引按堆预算准入、分片回收，捕获嵌套、取消与失败保留同一提交语义；VM 快照 7 恢复每个值块时重建已映射身份的索引，当前 SessionSnapshot 为 27。范围为 aside-vm 响应式载荷、快照/GC、reel-engine 的定向行为与成本检查，无新依赖。来源生成、捕获、订阅、列表索引、首窗、定位有效性和远跳分别测量；依赖有效性查询仍与登记依赖图有关，虚拟窗口不意味着数据与来源索引按需加载。
 
 冷查询和订阅提交沿私有 Dependencies 的既有 64 值块读取，每块复制到固定栈空间后按原顺序处理依赖，省去逐值重复容器验证与块查找。逐来源绑定解析、环检查、反向订阅准入/释放、弱边与失败发布语义保留；不增加常驻图副本或跨让出缓存。现有同步步骤仍处理全部实际条目，不能按块数缩小预算或声称恒定帧成本。每来源反向订阅数组的初次分配保持原样，仍单列 CPU 与分配成本。范围仅为 Aside 内部遍历和现有实际 model 成本检查，无作者 API、native ABI、VM/Session 快照格式或依赖变更。
 
@@ -45,7 +45,7 @@ Reel 的目标是让创作者直观地表达想象中的画面和交互，包括
 
 `std::math::curve(keys)` 是由 VM 堆拥有的不可变标量曲线；`.sample(time)` 沿普通 native 调用返回 float64。关键帧记录含 time/value、可选 mode（linear/step/cubic）与 in_tangent/out_tangent；切线以值/秒表示，cubic 为 Hermite 插值。构造接受有序非空 array/tuple，复制有限数值并预计算区间；重复时刻按输入次序保留跳变，采样取该时刻最后一帧，外部时间保持端值。构造捕获与验证分片计入既有堆/工作额度，外层数组变化报 ConcurrentModification；每个关键帧记录在单步内读取并复制。未完成对象仅由原生续体持有，取消后沿 GC 回收。只读对象、数值载荷、绑定 sample 方法和续体使用共同快照，不持有平行 Rust 数据图。
 
-采样沿平衡树定位区间，再做固定标量计算，复杂度 O(log n)；每个关键帧使用现有八值内联载荷，读取无需外部索引。构造的临时关键帧数组沿 VM 分块索引寻址，建立树的总成本为 O(n log n)，结束后释放工作区引用。稳态采样不创建曲线存储或脚本轮询任务。构造允许初始化和纯派生，捕获模型字段沿同一依赖机制；在条件 derive 的隐藏分支省略 sample/time 读取即可撤销该来源订阅。曲线由引用决定生存期，调用者选择 clock、audio.position、滚动位置或任意有限标量作为采样时间。范围为 aside-std、通用测试、[author_curves.aside](../examples/author_curves.aside) 与规范/双语指南；curve/sample ABI 1，当前 VM8/Session26，ASB 格式保持，无新依赖。验证真实源码/ASB、关键帧边界与跳变、反向采样、构造来源更改/取消、派生门控与快照，并分列构造和稳定采样的分配/工作成本。
+采样沿平衡树定位区间，再做固定标量计算，复杂度 O(log n)；每个关键帧使用现有八值内联载荷，读取无需外部索引。构造的临时关键帧数组沿 VM 分块索引寻址，建立树的总成本为 O(n log n)，结束后释放工作区引用。稳态采样不创建曲线存储或脚本轮询任务。构造允许初始化和纯派生，捕获模型字段沿同一依赖机制；在条件 derive 的隐藏分支省略 sample/time 读取即可撤销该来源订阅。曲线由引用决定生存期，调用者选择 clock、audio.position、滚动位置或任意有限标量作为采样时间。范围为 aside-std、通用测试、[author_curves.aside](../examples/author_curves.aside) 与规范/双语指南；curve/sample ABI 1，当前 VM9/Session27，ASB 格式保持，无新依赖。验证真实源码/ASB、关键帧边界与跳变、反向采样、构造来源更改/取消、派生门控与快照，并分列构造和稳定采样的分配/工作成本。
 
 Reel 的脚本服务通过独立 [Aside host SDK](aside-host.md) 接入。节点、会话和活动业务留在 Reel；可复用的 Rust native 声明、编译链接、运行时准入和属性 schema 生成归 Aside 扩展层。绑定宏从同一声明产生元数据与调用包装，不复制舞台类型或引入第二套语言实现。
 
@@ -78,6 +78,8 @@ VM 对象的代际身份与实体存储分离：slotmap 保存小型位置记录
 速度单位为逻辑像素/秒，加速度为像素/秒²，spin 为度/秒；spread 是围绕基值的均匀半幅，size_spread 不超过 size，lifetime_spread 不超过 lifetime。lifetime 为正有限秒数；rate、size、显式 size_end 与各 spread 为非负有限数，burst 为非负整数，透明度在 [0,1]。每粒寿命在 lifetime±lifetime_spread 内确定性取样，零寿命立即结束；size_end:null 保留每粒随机出生宽度，显式终值使宽度在该粒寿命内线性变化，保留图片宽高比。每次调用在入口完整验证本批参数；失败保留已有批次及节点的下一发射序号。参数已从 particles 移到 emit，不保留旧构造参数；默认从 rate:60/burst:0 改为 rate:0/burst:1，即默认发射一粒。
 
 每批配置和累计逻辑时间形成不可变投影，按出生序号解析位置、匀加速运动、旋转及寿命内线性尺寸与透明度。节点 seed、成功发射序号、批内出生序号与取样通道共同确定 SplitMix64 取样；同种子、调用顺序和时间得到同一效果，与分帧无关，追加的一滴不会反复使用第一滴的随机样本。出生 x/y、速度 x/y、尺寸、角速度使用六个通道，寿命使用第七通道。瞬发序号从 1 到 burst，后续定时出生沿其后递增。每批仅保存解析配置与时钟，不创建逐粒节点、任务、回调或逐粒状态数组。绘制按追加顺序枚举各批最大寿命窗口内的候选，再按实际寿命过滤；大时间跳跃直接跳过必然已死序号。有限活动逆序计算实际最大死亡时间，较早出生的最大可能死亡时间不超过已知终点时停止；这项一次性工作按候选纳入维护切片预算，固定寿命终点为常数工作。
+
+粒子维护按已采样时钟、节点退休版本及显式作用域退休推进；普通文字、布局或透明度属性发布不触发所有权重扫。粒子节点与其他节点可以同时 tween，完成本轮时钟与属性投影后即可接受中间帧并结算 stage.presented，无须等动画终点。目标或 owner 退休仍取消其批次，包括暂停批次；停止和恢复沿同一活动与退休检查路径。维护缓存以恢复后实际退休版本初始化。沿用现有字段和分片预算，无作者 API、native ABI、VM/ASB 或快照结构变化。
 
 活动根、活批队列及完成扫描状态按实际容量计入 VM HeapReservation；不可变批次投影按实际容量及共享所有权开销计入独立的 CPU 输出驻留 BudgetPool，字节额度沿 VM 字节额度派生，不新增作者参数。这是两个独立额度，不把投影驻留计为 VM 总堆，也不把两者当作进程 RSS。投影更换时新旧并存均计费；旧帧及跨线程消费者持有 Arc 与 BudgetTicket，SessionVm 结束不提前退账，最后引用释放后才退款。时钟推进只更新节点时间，不复制批次配置；追加、控制或死亡时才更新批次集合，每次复制与该节点当前活批数成正比，恢复逐批重建同一集合。准入失败保留旧集合，有限活动终点维护沿既有分片预算。绘制仍按实际可见候选工作，不以粒子数固定截断，也不声称同步绘制录制为硬实时。
 
@@ -113,11 +115,13 @@ owner 缺省继承当前作用域/任务。owner 或局部 target 退休、任�
 
 运行时命令存储（已实现）：普通帧与遮罩使用连续 `Vec<FrameCommand>`，后端读取 `&[FrameCommand]`，不为每条命令创建 Arc。只有实际 RetainBuild 提取目标时，复制目标范围及可达遮罩的命令载荷；图片、字体与视频像素继续共享资源租约。整份独立 FrameDrawing、嵌套旧图和保存描述仍共享不可变所有权，提取完成即释放来源整帧，未选中兄弟的命令与资源不继续存活。复制按命令预付载荷字节与工作量；大型单条路径/字形命令通过 minimum_bytes/minimum_units 请求足够的单步额度，额度不足时尚不复制，不能把该最小额度误称为固定时间上限。取消释放已复制部分；恢复沿同一连续表示和现有资源重映射。序列化命令顺序/字段、作者接口、native ABI 与快照版本不变。范围仅 UI frame/retained/archive、共同 renderer 消费和相应测试文档；无新依赖。用既有 r01_measurements 的矩形/长路径负载比较普通帧运行时分配、录制/编译，并单列 retain 的复制耗时、源与目标重叠峰值和完成后存活量。复跑：`cargo test --release --locked -p reel-ui --test r01_measurements -- --ignored --nocapture --test-threads=1`；行为检查沿 `reel-ui --test r01`、`reel-ui --lib frame::archive`、`reel-render --features wgpu --test gpu_pixels retained_transition -- --ignored` 及原作者转场源码/ASB 检查。
 
-范围为 reel-ui/frame/resources、reel-render、reel-engine、reel-player、reel-cli 验证、公开示例和四份规范/指南；Aside VM 保持独立。启用现有锁定依赖 peniko 的 serde 功能及 serde 的 rc 功能，锁文件增加其传递依赖 serde_bytes 0.11.19。native ABI 1，当前 SessionSnapshot 20、VM8，ASB 格式保持不变。绘制提取和恢复按 StepBudget 推进；旧命令、资源引用、动态资源、两侧合成目标及保存暂存均纳入现有预算，最后租约与 GPU 使用结束后退款。普通帧使用连续命令，独立保留画面以 FrameDrawing 共享不可变内容；无转场帧沿原绘制路径，转场进度变化复用旧绘制、图片上传和遮罩程序，不重排旧文字或复制旧像素。检查覆盖源码/ASB、透明子树/祖先裁剪、粒子/文字/图像/视频、独立并行、冷资源、零时长、异常/取消/退休、播放中保存恢复、资源版本不符及真实 GPU 像素和计账。设备丢失后的恢复仍需实机验收。可运行示例为 [author_transition.aside](../examples/author_transition.aside)。
+范围为 reel-ui/frame/resources、reel-render、reel-engine、reel-player、reel-cli 验证、公开示例和四份规范/指南；Aside VM 保持独立。启用现有锁定依赖 peniko 的 serde 功能及 serde 的 rc 功能，锁文件增加其传递依赖 serde_bytes 0.11.19。native ABI 1，当前 SessionSnapshot 27、VM9，ASB 格式保持不变。绘制提取和恢复按 StepBudget 推进；旧命令、资源引用、动态资源、两侧合成目标及保存暂存均纳入现有预算，最后租约与 GPU 使用结束后退款。普通帧使用连续命令，独立保留画面以 FrameDrawing 共享不可变内容；无转场帧沿原绘制路径，转场进度变化复用旧绘制、图片上传和遮罩程序，不重排旧文字或复制旧像素。检查覆盖源码/ASB、透明子树/祖先裁剪、粒子/文字/图像/视频、独立并行、冷资源、零时长、异常/取消/退休、播放中保存恢复、资源版本不符及真实 GPU 像素和计账。设备丢失后的恢复仍需实机验收。可运行示例为 [author_transition.aside](../examples/author_transition.aside)。
 
 作者窗口在首个已挂载舞台投影及其字体、图片准备好后才提交首帧；作品直接正常结束时也允许呈现其最终空舞台。支持隐藏窗口的平台在首帧实际接受后显示窗口，Wayland 沿首次提交映射窗口的原生规则；不以窗口可见性查询驱动渲染。启动仍由有界 VM 执行片和资源完成通知推进，隐藏窗口不能依赖原生重绘事件才能完成首帧。显示后沿既有按需呈现、旧帧保留、输入验收与设备恢复路径。范围为 reel-player，语言、ASB/native ABI 和依赖不变；验收覆盖实际 Windows 首帧、字体/图片等待、拒帧及退出，其他平台分别验证。
 
 共享舞台文字属性 `text_fit` 默认 `none`；`shrink` 按完整、不自动折行的文本与可用宽度等比缩小，保留显式换行，最高为作者字号，最低为 `min_font_size`（默认 0）。富文本字号和 ruby 一起缩放，打字机揭示不改变适配结果；最低字号仍不足时允许溢出，裁剪由节点 clip 决定。布局缓存区分字体缩放与换行宽度，输入链接和无障碍几何使用同一布局。`text_outline` 默认 0，表示字形向外描边的逻辑宽度；`text_outline_color` 默认黑色。描边复用字形 stroke，先描边再填色，并服从完整 cluster 揭示；不复制文字节点或引入专用光栅器。文字属性应用于 text 与控件标签，现有输入编辑器保持自己的布局语义。
+
+字体匹配请求合成粗体时，共同文字绘制将每个字形 run 的 synthesis.embolden 传入已有 font_embolden 绘制字段；横纵扩张均为该 run 字号的 1/24，随既有变换和 GPU 栅格密度缩放。真实粗体字面或变量字体轴由字体匹配优先选择，未请求合成的 run 保持零扩张。完整文字、逐字揭示、描边与填色使用同一扩张量，保留整形的字形 ID、推进宽度、位置和可见 cluster；字形缓存沿既有 embolden 键区分。范围为 reel-ui 文字绘制及真实字体检查，无新增依赖、作者字段、native ABI、VM/ASB 或快照变化。
 
 共同布尔属性 `text_wrap` 默认 true，只控制 text 节点的自动折行；false 保留显式换行，并允许各行超出可用宽度，裁剪仍由 clip 决定。控件标签原有的不自动折行行为和文本编辑器保持不变。构造、直接赋值及 bind/derive 共用节点属性 schema；切换只更新同一 Label 的 LineBreaking 属性并使布局失效，不复制文本或控件。`text_fit:"shrink"` 继续按不自动折行的完整文本适配，不受 text_wrap 开关影响；outline/reveal 沿已有绘制及字形缓存路径。范围为 reel-ui NodeProps、reel-engine 属性/快照、reel-player、测试、[author_text_wrap.aside](../examples/author_text_wrap.aside) 及双语指南；无新增依赖，Aside 字节码/ASB 与 SessionSnapshot 版本不变。共同节点构造（含 list/view/layered_image）native ABI 各加 1，节点宿主验证器版本为普通 4、image 6、video 2。检查直接写入、响应式更新、同包恢复、长文本高度变化、显式换行，以及逐字显示不重排、描边复用字形布局；描边宽度变化仍更新墨迹边界。
 
@@ -305,7 +309,7 @@ Reel 源码编译入口将当前注册的 reel::prelude 接口放入外围宿主
 
 图片节点合同：`image(source, fit: "contain", ...)` 使用共同节点属性，source 为非空文件路径，fit 为 contain/cover/stretch。source、fit 可直接修改；省略宽高时使用图片固有逻辑尺寸，只指定一边时保持固有宽高比，指定两边时由 fit 决定缩放与裁剪。构造及赋值只更新舞台描述，不执行文件 IO；仅挂载子树请求资源。
 
-`image(..., slice: null, slice_scale: 1)` 可将同一图片作为九宫格面板。slice 为统一边距数值，或按左、上、右、下排列的四项数组/tuple；边距使用源图像像素，slice_scale 将其换算为目标逻辑边宽，两者均为有限非负数。null 使用普通 fit；启用后填满节点内容框，角保持比例，边沿单轴拉伸，中心拉伸。`slice_center: false` 跳过中心片，只画八块边框；默认 true，支持直接赋值、绑定、分层图片描述与快照。源边距超过图像尺寸时四边统一按比例收缩；目标框不足以容纳边框时再次统一缩小目标边宽，避免重叠，零面积切片跳过。slice、slice_scale 支持直接赋值、bind/derive、layered_image 描述与执行快照。源必须为完整 PNG/JPEG 文件或编码 Bytes，分块 .reel-image 在资源边界带源码位置拒绝。共同舞台保留 Insets 与比例；UI 对同一个 ImageBrush 绘制至多九个矩形，不生成像素、不增加上传或每片离屏裁剪。image native ABI 11、reel.image 宿主属性快照版本 4；Aside/Aside 字节码 与资源格式不变，无新依赖。
+`image(..., slice: null, slice_scale: 1)` 可将同一图片作为九宫格面板。slice 为统一边距数值，或按左、上、右、下排列的四项数组/tuple；边距使用源图像像素，slice_scale 将其换算为目标逻辑边宽，两者均为有限非负数。null 使用普通 fit；启用后填满节点内容框，角保持比例，边沿单轴拉伸，中心拉伸。`slice_center: false` 跳过中心片，只画八块边框；默认 true，支持直接赋值、绑定、分层图片描述与快照。源边距超过图像尺寸时四边统一按比例收缩；目标框不足以容纳边框时再次统一缩小目标边宽，避免重叠；目标面积为零的切片跳过。源中间跨度为零而目标面积非零时，沿重合边界的源像素坐标恒定采样；两个轴同时重合时采样交点。slice、slice_scale 支持直接赋值、bind/derive、layered_image 描述与执行快照。源必须为完整 PNG/JPEG 文件或编码 Bytes，分块 .reel-image 在资源边界带源码位置拒绝。共同舞台保留 Insets 与比例；UI 对同一个 ImageBrush 绘制至多九个矩形，不生成像素、不增加上传或每片离屏裁剪。image native ABI 11、reel.image 宿主属性快照版本 4；编译帧中的图片 brush_transform 统一为目标局部坐标到源像素的采样映射，允许零缩放。普通 Painter 正向矩阵在 FrameBuild 转换；切片绘制通过显式 paint provenance 提供采样映射。SessionSnapshot 27 的 pictures 保存采用新矩阵语义的 FrameDraw，旧格式明确拒绝；逻辑 image 属性、Aside 字节码与资源格式保持，无新依赖。
 
 image 的既有 color 属性是像素乘色，默认白色；sRGB 颜色先转为线性预乘值，再与图像的线性预乘 RGBA 相乘，color 的 alpha 和节点 opacity 各应用一次。普通图片、分块图片和 layered_image 的各图层描述使用同一规则；容器 color 不继承到子节点。变更 color 只更新绘制颜色，不重新解码、上传或复制纹理，也不增加离屏合成。Image 控件通过 typed PaintCtx 记录每个绘制范围的图像颜色，FrameImage 保留资源句柄和乘数；GPU 通用与矩形批量路径共用已有顶点颜色，同资源不同颜色仍可批量。遮罩定义的采样不受被遮罩内容颜色影响。既有 source/ASB native ABI、NodeProps 与执行快照格式不变，无新依赖；范围为 UI 绘制元数据、帧编译、播放器图片同步和渲染器。
 
@@ -352,7 +356,7 @@ GPU 回放在一次帧准备内复用已经完成合成的离屏目标；复用�
 
 窗口入口为 `reel_player::shell::run_story(CompiledStory, StoryWindowOptions)`。选项包含标题、资源来源、locale、可选的原生窗口 logical_size 和逻辑 canvas_size；字体由作品的 game.configure 提供。窗口复用 SessionUi、PresentationBridge 和现有渲染路径，交替推进 VM 与增量 GC 工作片；等待玩家输入时完成当前回收周期后休眠，输入完成后继续。正常剧情结束保留画面；关闭执行任务取消及清理后退出。ResourceBlocked 保留执行状态，允许 GC 后重试，持续阻塞时停止忙等。源码和 ASB 入口共用编译/注册描述及运行宿主。新能力使用已有资源所有权和预算，不再叠加仅为演示设定的行数、选项或节点上限。
 
-作者命令 `reel check`、`reel build` 和 `reel dev` 共用 engine 的宿主注册与源码编译入口。check/build 保持不执行脚本，允许已解析的 Reel 原生接口；ASB v1 保存既有 Aside 字节码 原生声明，运行时仍由 SessionVm 的宿主注册提供能力。`reel dev <source.aside>` 运行源码，`reel run <file.asb>` 直接解码并运行构建产物，不重编译内嵌源码。window feature 提供窗口命令，未编入时说明所需构建命令。默认源码入口为 main::main；源码文件或工程目录按 main/--entry 加载实际多源码模块。模块共用一个字节码程序、固定导入和独立的会话全局环境，函数先链接，顶层表达式按依赖/SCC 顺序初始化。配置标题与 contain 画布沿共同 UI 变换处理绘制和输入。资源包与 release.json 仍由发布链路交付。
+作者命令 `reel check`、`reel build` 和 `reel dev` 共用 engine 的宿主注册与源码编译入口。check/build 保持不执行脚本，允许已解析的 Reel 原生接口；ASB v2 保存既有 Aside 字节码原生声明，运行时仍由 SessionVm 的宿主注册提供能力。`reel dev <source.aside>` 运行源码，`reel run <file.asb>` 直接解码并运行构建产物，不重编译内嵌源码。window feature 提供窗口命令，未编入时说明所需构建命令。默认源码入口为 main::main；源码文件或工程目录按 main/--entry 加载实际多源码模块。模块共用一个字节码程序、固定导入和独立的会话全局环境，函数先链接，顶层表达式按依赖/SCC 顺序初始化。配置标题与 contain 画布沿共同 UI 变换处理绘制和输入。发布链路将清单嵌入 ASB，并交付文本包、资源卷及独立播放器。
 
 一次窗口推进在既有 2 ms deadline 内连续处理同步调用与 VM/GC 工作，直到真实等待、终态或时间片耗尽，再同步画面。创建多个组件或同步替换场景不会被拆成每个 native 一次重绘；时间片包含宿主调用耗时。没有 deadline 的库级 tick 保留单片推进语义。
 
@@ -557,7 +561,7 @@ scope 已接通任务、活动、等待、临时节点和属性覆盖；加性�
 基础字段与各层使用真实独立 PropertyId，动画只在实际写同一层或同一绑定源时冲突；隐藏层的动画照常计时。目标退休也退休其全部 token，未完成活动沿原退休路径取消。节点 VM payload 保存有序层与预分配的按字段选择槽，创建/移除才维护优先序；清理不创建引用或订阅，不依赖新分配。token 的绑定、目标、选择引用及 scope 登记都在既有 VM 对象图内，强边保活和退休断开遵循原属性协议；无另一调度器。未覆盖节点保留原版本快路径；有覆盖节点同步检查固定共同属性数的选中层字段版本，成本不随隐藏层数量增长。创建/移除按提供字段与现存层数处理，VM 图和宿主版本缓存计入堆预算。恢复重建投影缓存，保留层序、绑定、活动时间和原 scope 续体，不重跑正文。范围为 reel-engine scopes/stage/activity/registry/snapshot、源码与 ASB 行为检查、示例及双语指南；无新依赖或 VM 改动，scope ABI 4、tween ABI 9、新 override/remove ABI 1、SessionSnapshot 20，VM/ASB 不变。检查基础 derive 更新、显式 null、嵌套和同 scope 多层、非顶层提前移除、独立动画/真实源冲突、节点先退休、取消/故障/恢复及取消无新增分配。可运行示例为 [author_scope.aside](../examples/author_scope.aside)，Start 覆盖只读透明度、Stop 恢复持续变化的基础绑定。验证命令：`cargo test --locked -p reel-engine scope_override`、`cargo test --locked -p reel-cli --test author_scopes`；release 成本命令为 `cargo test --release --locked -p reel-engine --lib scope_override_cancellation_uses_existing_storage_and_idle_cost_ignores_layer_count -- --nocapture`。
 加性偏移（已实现）：`let shake = s.offset(node, x: 0, y: 0)` 创建固定含 x/y 和 remove 的可观察属性层；初始化参数接受有限数值或既有 bind/derive，并在发布前验证。token 与 override 共用构建、属性验证、动画目标、scope 登记和退休路径。每个轴取当前基础值或最后存活的 override 值，再按建立次序加上全部 offset；偏移在父坐标系中，node.x/y 仍读写基础值，token.x/y 读写本层。普通 run 在作用域内继承 scope，基础动画可在外层继续；独立层可同时运动，实际同 PropertyId 或最终绑定源的写入仍按原冲突规则处理。remove、正常退出、故障、取消及目标退休撤销本层，不保存或回写旧坐标。最终偏移进入现有 NodeProps 变换，绘制、geometry 与命中共用矩阵，行列测量和原布局尺寸保持不变。旋转和缩放继续通过有序变换及组节点表达。
 
-节点 VM payload 分别保存 override 与 offset 层，仍复用同一 scope 拥有列表。覆盖选择槽与全部偏移 token 都由 VM 图保活，宿主只缓存字段版本；无 offset 的节点保持现有路径。稳定同步对 offset 数量线性检查，变化时线性求和，覆盖检查仍为固定共同字段数；创建预留缓存容量，稳定赋值/动画推进及移除不新增逐帧层存储或 VM 分配。缓存和创建期间新旧存储重叠计入 HeapReservation。快照保存全部 token、绑定、活动和作用域续体，恢复重建同一投影缓存。接口为 scope ABI 4、scope::offset ABI 1、tween ABI 9、override/remove ABI 1；当前 SessionSnapshot 26、VM8，ASB不变。范围限 engine 共享层/活动/快照、必要 UI/player 消费者、公开示例和双语指南，无新依赖；检查源码/ASB、基础运动与摇晃并行、重叠/嵌套/提前移除、绑定与真实写冲突、取消/目标退休/同包恢复，以及实际呈现 geometry/命中。成本检查覆盖 0、1、64、256 层的稳定/变化同步和撤销。复跑 `cargo test --locked -p reel-engine --lib scope_`、`cargo test --locked -p reel-cli --test author_scopes`，成本命令为 `cargo test --locked --release -p reel-engine --test scope_offsets_allocations -- --nocapture`；检查包含既有遍历/原生分发分配的同负载基线，不将零新增层分配写成整个同步零分配。示例：[author_offsets.aside](../examples/author_offsets.aside)。
+节点 VM payload 分别保存 override 与 offset 层，仍复用同一 scope 拥有列表。覆盖选择槽与全部偏移 token 都由 VM 图保活，宿主只缓存字段版本；无 offset 的节点保持现有路径。稳定同步对 offset 数量线性检查，变化时线性求和，覆盖检查仍为固定共同字段数；创建预留缓存容量，稳定赋值/动画推进及移除不新增逐帧层存储或 VM 分配。缓存和创建期间新旧存储重叠计入 HeapReservation。快照保存全部 token、绑定、活动和作用域续体，恢复重建同一投影缓存。接口为 scope ABI 4、scope::offset ABI 1、tween ABI 9、override/remove ABI 1；当前 SessionSnapshot 27、VM9，ASB不变。范围限 engine 共享层/活动/快照、必要 UI/player 消费者、公开示例和双语指南，无新依赖；检查源码/ASB、基础运动与摇晃并行、重叠/嵌套/提前移除、绑定与真实写冲突、取消/目标退休/同包恢复，以及实际呈现 geometry/命中。成本检查覆盖 0、1、64、256 层的稳定/变化同步和撤销。复跑 `cargo test --locked -p reel-engine --lib scope_`、`cargo test --locked -p reel-cli --test author_scopes`，成本命令为 `cargo test --locked --release -p reel-engine --test scope_offsets_allocations -- --nocapture`；检查包含既有遍历/原生分发分配的同负载基线，不将零新增层分配写成整个同步零分配。示例：[author_offsets.aside](../examples/author_offsets.aside)。
 样式复用由普通组件函数、记录与参数完成。组件默认值、变体、显式参数按序合并；显式缺失与 null/false/0 区分，scope 覆盖最高。运行期样式通过可观察属性绑定，布局/绘制失效分类保持一致。引擎提供通用属性和控件槽位，作者决定视觉风格。
 model(defaults) 复制默认图并保持其中的别名/环，所有可变内嵌数据对象使用观察变更钩子，读取与结构操作记录对应依赖；后续会话对象赋值保留共享身份并纳入观察，别名修改同样通知。原输入默认图保持独立。对象按可达性保活。state(id,defaults) 是会话内的具名状态根，随保存/回滚恢复，新游戏初始化。node.state(key,defaults) 属于具体节点实例的状态槽，在节点 key 与槽 key 同时匹配时重载复用；同名不同实例互相独立。组件销毁后保留的普通脚本引用按正常 GC 规则决定对象是否继续存活。
 `model` 的数据图复制由原生 continuation 分片执行，工作对象随 NativeFrame 取消释放，不把复制循环塞进单帧。当前数据范围为已完成构造的类实例、table、array、tuple、字符串、字节串及可变缓冲；可执行对象与宿主资源不属于可复制数据。model table 复用普通 table 身份、方法与属性连接图，新字段可以追加；clear 断开旧字段连接并冻结消费者，旧 PropertyRef 不得指向后来同位置的新字段。后续赋入的数据保持共享身份，嵌套 table 同样可 bind。Reel 在这些同步 continuation 之间保持当前任务，复制不会与其它脚本任务交错。新增 `reel::model` native ABI 1，Aside 字节码/ASB 不变。
@@ -570,6 +574,8 @@ model table 的 `remove(key)` 保留其余字段的稳定 PropertyId；首次结
 系统数据通过 `persistent.read(key, default: null)`、`persistent.write(key, value)`、`persistent.delete(key)` 独立读写（native ABI 1）。它们返回与 saves 相同的可等待请求；缺失记录返回 default，已存的 null/false/0 不视为缺失。write 在调用返回前按预算捕获纯数据，后台发布完成才结算；read 按预算重建独立数据副本。支持 null/bool/int/float、string/Bytes、array/table/tuple，保留图内别名与环；table 只保存自有字段，不保存委托、模型绑定或类方法。实例、可执行闭包、节点和任务须由作者转换为上述数据。文件不含 ASB 身份，业务版本迁移由游戏处理。
 系统记录与剧情槽共用有序存储服务，使用独立文件命名空间，存于宿主指定的 save-directory；不出现在 saves.list 中。会话退出前已交给存储服务的写入继续提交；未交付请求取消。读档不重放系统写入，也不覆盖系统文件。read 返回的副本是普通会话数据，会随剧情快照恢复；作者在恢复分支重新读取当前系统设置后应用，不能把副本当作跨会话共享代理。数据捕获、重建和队列均使用现有内存/工作预算，文件 IO 在后台线程执行。
 普通运行期 state/node.state 调用原子补充缺失默认字段，下一语句可见。InitSafe 的 story.register、state 及组件状态默认补充先登记候选变更，候选读视图可见拟加入字段而活会话不可见，ModuleSet 提交时才一起生效；失败不修改旧注册表。
+
+舞台控件通过 bind 写回模型时，可与 VM 的分片字段查找交错。单键读取、写入、has_own 和属性引用按键结构校验，在完成时操作当前槽；普通 table、model 与宿主字段共用此规则。覆盖字段值保持进行中的查找，增删或重排键报告 ConcurrentModification；复制、展开、删除仍保留完整内容校验。实际读取时登记派生依赖，更新结果沿现有反应批次提交。VM 快照 9 保存查找续体的结构版本，旧格式因版本语义不同而明确拒绝；SessionSnapshot 外层为 27，并校验嵌入的 VM 版本。独立 persistent 系统数据沿原格式保存。范围为 aside-vm 集合查找、快照版本与检查，无新依赖、native ABI 或 ASB 变化。
 
 ## 七 VM 与会话接口
 
@@ -680,17 +686,21 @@ UI 交互：按钮、图片按钮、滑条、输入框、滚动、虚拟列表/�
 
 `reel build <project> --output <file.asb>` 生成可独立加载的代码包。默认 Debug 保留完整源码、指令源码映射和声明位置；`--release` 剥离这些调试数据，保留运行时符号、结构与实际使用的常量。两者共用编译、验证与执行语义。Release 故障报告错误类型、函数与指令位置，不伪造源码行列。执行快照核对实际代码身份，不跨不同产物迁移。
 
-`reel export <project> --output <directory> [--release] [--resource prefix=directory] [--text prefix=directory]` 使用同一编译器与入口选择，额外组织可搬移的工程或发行目录。开发导出包含 Debug ASB、已导入的源码模块、散资源和相对路径的源码配置；`reel dev <release.json>` 可继续编译源码。发布导出包含 `game.asb`、`game.rtp`、`resources.rpk` 和 `release.json`，不复制源码或散资源。资源按逻辑路径排序，以完整资源为边界分卷；默认目标为 2 GiB（含包头和索引），发布参数 `--pack-bytes <非零字节数>` 可调整。第一卷为 `resources.rpk`，后续为 `resources-002.rpk` 等，由清单按顺序挂载。单个资源超过目标时独占一卷，不切断图片或媒体范围、不限制资源总量。两者均可 `reel run <release.json>`。模块与入口参数沿用 build，文本和资源挂载前缀保持脚本逻辑路径。
+`reel export <project> --output <directory> [--release] [--resource prefix=directory] [--text prefix=directory]` 使用同一编译器与入口选择，额外组织可搬移的工程或发行目录。开发导出包含 Debug `game.asb`、已导入的源码模块和散资源；内嵌 source 配置保存入口、模块根与函数名，`reel dev <game.asb>` 按此配置重新编译。发布导出包含 `game.exe`（其他平台为对应可执行文件）、`game.asb`、`game.rtp` 和资源卷。两者均可 `reel run <game.asb>`。模块与入口参数沿用 build，文本和资源挂载前缀保持脚本逻辑路径。
 
-发布清单只保存相对路径：code、可空 text、按覆盖顺序排列的 resources、可空 loose、可空 source。source 保存入口源码、模块根与函数名。加载先验证清单路径与代码，再绑定文本池；图片、字体、翻译和媒体统一交给 AssetIo。发布默认 loose 为 null，不探测附近散文件；显式 `run --assets <directory>` 开启覆盖。散文件只在 NotFound 时回退包，包按声明顺序后者覆盖前者。资源内容版本由实际选中的条目决定。
+发布播放器为 reel-cli 包内启用 window feature 的 `reel-game` 薄入口，与 CLI 共用 ASB 加载及窗口启动路径。export 从当前 CLI 同级复制该平台播放器为 game；Windows 入口使用 GUI subsystem。无参启动从播放器所在目录定位 `game.asb`，默认存档为同级 `saves/`，显式 `--save-directory` 可覆盖；工作目录不影响主包定位。普通 CLI run 保留原有存档目录策略。`cargo build --release -p reel-cli --features window` 同时构建工具和播放器，缺失播放器时发布导出给出此命令。
 
-导出在输出目录同级创建候选目录，全部文件成功后发布，失败保留原导出。`--overwrite` 仅替换带有效 Reel 清单的目录，替换的是整个导出，不复制旧存档或其他附加文件。输出必须位于输入源码和资源树之外。目录切换失败时恢复旧目录；不提供并发运行中的热更新或断电恢复协议。普通 build 的单文件发布仍复用 reel-storage；CLI 参数解析用 clap，候选目录生命周期用 tempfile。
+资源按逻辑路径排序，以完整资源为边界分卷；默认目标为 2 GiB（含包头和索引），发布参数 `--pack-bytes <非零字节数>` 可调整。第一卷为 `resources.rpk`，后续为 `resources-002.rpk` 等，由内嵌清单按顺序挂载。单个资源超过目标时独占一卷。
+
+清单位于 ASB 的 Distribution 区段，只保存相对主 ASB 目录的可空 text、按覆盖顺序排列的 resources、可空 loose 和可空 source。加载在同次容器解码取得代码与清单，验证路径后绑定文本池；图片、字体、翻译和媒体统一交给 AssetIo。开发启动与导出覆盖检查通过 Read+Seek 只读取头、索引及受 Limits 约束并校验摘要的清单。发布默认 loose 为 null；显式 `run --assets <directory>` 开启覆盖。散文件只在 NotFound 时回退包，包按声明顺序后者覆盖前者。普通 build 的 ASB 可省略清单，资源根仍为主包目录。
+
+导出在输出目录同级创建候选目录，全部文件成功后发布，失败保留原导出。`--overwrite` 仅替换 game.asb 内含有效 Reel 清单的目录，替换的是整个导出，不复制旧存档或其他附加文件。输出必须位于输入源码和资源树之外。目录切换失败时恢复旧目录；不提供并发运行中的热更新或断电恢复协议。普通 build 的单文件发布仍复用 reel-storage；CLI 参数解析用 clap，候选目录生命周期用 tempfile。
 
 ### 代码容器与文本池
 
 ASB 保存已经链接的完整模块图、初始化顺序与实际入口。Aside 字节码是代码、常量、函数、导入导出、类型与 native 合同的唯一来源；容器元数据不复制另一套执行模型。容器由 reel-package 定义，编译器 HIR 到便携元数据的转换由 reel-cli 完成。模块/函数索引在验证时准备，运行时不扫描模块表。
 
-容器头固定 72 字节：magic[8]=REELASB 加零字节、major:u16、minor:u16、flags:u32、total_len:u64、index_offset:u64、index_len:u64、index_blake3[32]。整数小端，偏移为文件绝对位置。索引项为 kind:u32、flags:u32、offset:u64、len:u64、blake3[32]；必需且唯一的区段为字节码与 UTF-8 JSON 元数据。读取检查范围、重叠、摘要与结构，未知必需语义拒绝。只读写当前格式，不保留旧格式解码分支。摘要用于完整性与身份，不授予宿主权限。
+ASB 当前格式为 2.0，旧版本按 Version 拒绝；Aside 字节码、VM 快照与会话快照版本保持。容器头固定 72 字节：magic[8]=REELASB 加零字节、major:u16、minor:u16、flags:u32、total_len:u64、index_offset:u64、index_len:u64、index_blake3[32]。整数小端，偏移为文件绝对位置。索引项为 kind:u32、flags:u32、offset:u64、len:u64、blake3[32]；必需且唯一的区段为字节码与 UTF-8 JSON 元数据；导出另含唯一的 kind=3 UTF-8 JSON Distribution 区段，该区段存在时标记 required。读取检查范围、重叠、摘要与结构，未知必需语义拒绝。只读写当前格式，不保留旧格式解码分支。摘要用于完整性与身份，不授予宿主权限。
 
 元数据保存规范模块路径、源码版本、声明/绑定/global 映射、初始化顺序、initializer 与可空 game_entry。可空 debug 记录保存源码描述与声明位置；Release 中为 null，字节码 sources/source_map 为空。读取端交叉验证模块归属、索引唯一性、实际入口及精确字节码摘要。build/export/dev 默认 `main::main`；`--entry` 可选择普通模块级、无捕获、无必需参数的函数。消费者完成工程初始化后启动入口。
 

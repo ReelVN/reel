@@ -18,6 +18,8 @@ pub struct CommandOwnerRange {
     pub image_color: [f32; 4],
     pub image_gradient: Option<crate::frame::ImageColorGradient>,
     pub image_resource: Option<crate::resources::ResourceImageBrush>,
+    /// Image brush matrices already map local coordinates to source pixels.
+    pub image_sampling_transform: bool,
 }
 
 /// Reliable provenance captured when a widget's cached paint is appended.
