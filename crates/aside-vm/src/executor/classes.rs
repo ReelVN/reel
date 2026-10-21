@@ -263,6 +263,31 @@ impl Vm {
         };
         self.heap.get_field(fields, index)
     }
+    pub(super) fn class_read_property(
+        &self,
+        object: Value,
+        name: SymbolId,
+    ) -> Result<Option<crate::PropertyId>, FaultKind> {
+        let (receiver, member) = self.member_target(object, name)?;
+        if self
+            .heap
+            .get_field(member, MemberSlot::Method as u32)
+            .map_err(heap_fault)?
+            .as_bool()
+            == Some(true)
+        {
+            return Ok(None);
+        }
+        let cell = self.member_cell(receiver, member).map_err(heap_fault)?;
+        Ok(self
+            .heap
+            .is_model_cell(cell)
+            .map_err(heap_fault)?
+            .then_some(crate::PropertyId {
+                host: cell,
+                field: 0,
+            }))
+    }
     pub(super) fn class_member(
         &mut self,
         object: Value,

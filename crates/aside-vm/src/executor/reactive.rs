@@ -2,7 +2,111 @@
 use super::*;
 use crate::heap::DerivedSlot;
 
+pub(super) struct ReactiveRead {
+    output: Value,
+    native: NativeId,
+    count: u32,
+    location: Location,
+}
+
 impl Vm {
+    pub(super) fn reactive_read_plan(
+        &mut self,
+        property: crate::PropertyId,
+        cost: &mut (u64, u64),
+    ) -> Result<Option<ReactiveRead>, VmError> {
+        let (output, work) = self.heap.reactive_read_source(property)?;
+        cost.0 += work;
+        let Some(output) = output else {
+            return Ok(None);
+        };
+        let arguments = self
+            .heap
+            .host_payload(output, DerivedSlot::Arguments as u32)?;
+        let count = self.heap.sequence_len(arguments)?;
+        let function = FunctionId(
+            self.heap
+                .host_payload(output, DerivedSlot::Function as u32)?
+                .as_int()
+                .unwrap() as u32,
+        );
+        let FunctionKind::Native(native) = self.program.package().functions[function.index()].kind
+        else {
+            unreachable!("observer entry is native")
+        };
+        let origin = FunctionId(
+            self.heap
+                .host_payload(output, DerivedSlot::Origin as u32)?
+                .as_int()
+                .unwrap() as u32,
+        );
+        let pc = Pc(self
+            .heap
+            .host_payload(output, DerivedSlot::CallPc as u32)?
+            .as_int()
+            .unwrap() as u32);
+        let push = self.native_push_cost(native, count);
+        cost.0 += push.0 + u64::from(count) + self.heap.derived_claim_work() + 2;
+        cost.1 += push.1;
+        Ok(Some(ReactiveRead {
+            output,
+            native,
+            count,
+            location: Location {
+                code: CodeRef {
+                    function: origin,
+                    version: self.program.package().content_version,
+                },
+                pc,
+                source: self.program.source_at(origin, pc),
+            },
+        }))
+    }
+
+    pub(super) fn push_reactive_read(
+        &mut self,
+        s: ScriptFrame,
+        read: ReactiveRead,
+    ) -> Result<(), VmError> {
+        let site = NativeSite {
+            owner: s.owner,
+            module: s.module,
+            context: s.context,
+            effects: s.effects,
+            location: read.location,
+            ret: ReturnTo::ReactiveRead {
+                frame: s.id,
+                call: s.pc,
+            },
+        };
+        // Reuse the native frame's existing callback-argument root region as its
+        // copy source. No temporary argument graph or separate task is needed.
+        self.push_native(read.native, ArgSource::None, read.count, site)?;
+        let index = self.active.frames.data.len() - 1;
+        let Frame::Native(mut frame) = self.active.frames.data[index] else {
+            unreachable!()
+        };
+        self.put(frame.roots, 2, read.output)?;
+        let arguments = self
+            .heap
+            .host_payload(read.output, DerivedSlot::Arguments as u32)?;
+        for i in 0..read.count {
+            self.put(
+                frame.roots,
+                2 + self.limits.max_continuation_values + i,
+                self.heap.sequence_get(arguments, i)?,
+            )?;
+        }
+        frame.derived_output = Some(read.output);
+        frame.continuation_len = 1;
+        frame.phase = NativePhase::Copy {
+            source: ArgSource::Native { frame: frame.id },
+            index: 0,
+        };
+        self.active.frames.data[index] = Frame::Native(frame);
+        self.heap.claim_derived(read.output)?;
+        Ok(())
+    }
     pub fn respond_derive(&mut self, ticket: HostTicket) -> Result<(), VmError> {
         self.select_task(ticket.task)?;
         let native = self.ticket(ticket)?;

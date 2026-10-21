@@ -2,6 +2,252 @@ use super::*;
 use reel_ui::stage::NodeKind;
 
 #[test]
+fn nested_derived_guard_and_index_share_the_same_model_update() {
+    let code = r#"
+    fn opening(){
+        let state=model({index:0,other:0});
+        let items=["first","second","third"];
+        let visible=derive(||state.index>0);
+        stage.replace(column(){
+            text(value:derive(||if state.other>=0 && visible.value {items[state.index-1]} else {"hidden"}));
+            button("one",on_click:||{state.other+=1;state.index=1;});
+            button("two",on_click:||{state.other+=1;state.index=2;});
+            button("zero",on_click:||{state.other+=1;state.index=0;});
+        });
+        narrator("ready");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, false);
+        for (action, expected) in [
+            ("one", "first"),
+            ("two", "second"),
+            ("one", "first"),
+            ("zero", "hidden"),
+            ("two", "second"),
+            ("zero", "hidden"),
+        ] {
+            let id = vm
+                .stage()
+                .nodes()
+                .find(|n| matches!(&n.kind,NodeKind::Button{label:Some(s),..}if s==action))
+                .unwrap()
+                .id;
+            vm.click(&mut session, id).unwrap();
+            models::drive(&mut vm, &mut session, false);
+            assert!(
+                vm.stage()
+                    .nodes()
+                    .any(|n| n.kind == NodeKind::Text(expected.into()))
+            );
+        }
+    }
+}
+
+#[test]
+fn nested_derived_strip_uses_current_guard_after_hidden_preview_reopens() {
+    let code = r#"fn opening(){
+        let state=model({index:5,strip:5,busy:false,fullscreen:false,view:"preview"});
+        let items=["0","1","2","3","4","5","6","7","8","9","10","11"];
+        let strip=stack(){for offset in -3..4 {
+            let visible=derive(||state.strip+offset>=0 && state.strip+offset<items.len());
+            stack(visible:visible){text(value:derive(||if visible.value {items[state.strip+offset]} else {"hidden"}));};
+        }};
+        let current=derive(||items[state.index]);
+        stage.replace(column(){
+            stack(visible:derive(||state.view!="grid"),enabled:derive(||!state.busy && !state.fullscreen)){
+                strip;text(value:current);text(value:derive(||if state.busy {"busy"} else {current.value}));
+            };
+            button("first",on_click:||{state.busy=true;state.index=0;state.strip=0;state.busy=false;});
+            button("back",on_click:||{state.view="grid";});
+            button("last",on_click:||{state.busy=true;state.index=11;state.strip=11;state.view="preview";state.busy=false;});
+        });narrator("ready");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, false);
+        for action in ["first", "back", "last"] {
+            let id = vm
+                .stage()
+                .nodes()
+                .find(|n| matches!(&n.kind,NodeKind::Button{label:Some(s),..}if s==action))
+                .unwrap()
+                .id;
+            vm.click(&mut session, id).unwrap();
+            models::drive(&mut vm, &mut session, false);
+        }
+    }
+}
+
+#[test]
+fn nested_derived_new_branch_refreshes_clean_ancestors_and_bound_fields() {
+    let code = r#"class Flags {let mut enabled:bool=false;}
+    fn opening(){
+        let state=model({open:false,index:1});
+        let items=["first"];
+        let base=derive(||state.index);
+        let allowed=derive(||base.value>0);
+        let position=derive(||base.value-1);
+        FORWARDING
+        let consumer=derive(||if state.open && forwarding.enabled {items[position.value]} else {"hidden"});
+        stage.replace(column(){text(value:consumer);
+            button("open",on_click:||{
+                state.open=true;state.index=0;
+                if allowed.value!=true {throw "ordinary segment eagerly recomputed";}
+            });
+            button("show",on_click:||{state.open=false;state.index=1;state.open=true;});
+        });narrator("ready");
+    }"#;
+    for forwarding in [
+        "let forwarding=stack(enabled:allowed);",
+        "let forwarding=model({enabled:false});forwarding.enabled=allowed;",
+        "let forwarding=model(Flags());forwarding.enabled=allowed;",
+    ] {
+        let code = code.replace("FORWARDING", forwarding);
+        for encoded in [false, true] {
+            let (mut session, mut vm) = models::prepared(&code, encoded);
+            models::drive(&mut vm, &mut session, false);
+            let id = vm
+                .stage()
+                .nodes()
+                .find(|n| matches!(&n.kind,NodeKind::Button{label:Some(s),..}if s=="open"))
+                .unwrap()
+                .id;
+            vm.click(&mut session, id).unwrap();
+            models::drive(&mut vm, &mut session, false);
+            assert!(
+                vm.stage()
+                    .nodes()
+                    .any(|n| n.kind == NodeKind::Text("hidden".into()))
+            );
+            let id = vm
+                .stage()
+                .nodes()
+                .find(|n| matches!(&n.kind,NodeKind::Button{label:Some(s),..}if s=="show"))
+                .unwrap()
+                .id;
+            vm.click(&mut session, id).unwrap();
+            models::drive(&mut vm, &mut session, false);
+            assert!(
+                vm.stage()
+                    .nodes()
+                    .any(|n| n.kind == NodeKind::Text("first".into()))
+            );
+        }
+    }
+}
+
+#[test]
+fn nested_derived_fault_keeps_the_producer_source_and_releases_capture() {
+    let code = r#"fn opening(){
+        let state=model({index:1,other:0});
+        let source=derive(||if state.index>0 {"first"} else {throw "upstream failed";});
+        let consumer=derive(||if state.other>=0 {source.value} else {"hidden"});
+        stage.replace(column(){text(value:consumer);
+            button("fail",on_click:||{state.other+=1;state.index=0;});
+        });narrator("ready");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, false);
+        let id = vm
+            .stage()
+            .nodes()
+            .find(|n| matches!(&n.kind,NodeKind::Button{label:Some(s),..}if s=="fail"))
+            .unwrap()
+            .id;
+        vm.click(&mut session, id).unwrap();
+        for attempt in 0..100_000 {
+            assert!(attempt < 99_999, "upstream fault did not finish");
+            match vm
+                .step(
+                    &mut session,
+                    SessionBudget::Exact(SliceBudget {
+                        instructions: 1,
+                        ..Default::default()
+                    }),
+                    || 0,
+                )
+                .unwrap()
+            {
+                SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
+                    vm.dispatch(&mut session, ticket, "en", 1).unwrap();
+                }
+                SessionStep::Vm(RunOutcome::Returned(_)) => {
+                    vm.discard_delivery(&mut session).unwrap()
+                }
+                SessionStep::Vm(RunOutcome::Fault(id)) => {
+                    let fault = vm.vm.delivery_fault(id).unwrap().unwrap();
+                    assert_eq!(fault.kind, FaultKind::Thrown);
+                    let span = fault.location.source.unwrap();
+                    assert_eq!(
+                        &code[span.start as usize..span.end as usize],
+                        "throw \"upstream failed\";"
+                    );
+                    assert!(!vm.vm.heap().reactive_evaluating());
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+#[test]
+fn nested_derived_cycle_reports_the_author_read() {
+    let code = r#"fn opening(){
+        let state=model({cycle:false});
+        let mut first=null;let mut second=null;
+        first=derive(||if state.cycle {second.value} else {1});
+        second=derive(||first.value);
+        stage.replace(column(){text(value:derive(||f"{second.value}"));
+            button("cycle",on_click:||{state.cycle=true;});
+        });narrator("ready");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, false);
+        let id = vm
+            .stage()
+            .nodes()
+            .find(|n| matches!(&n.kind,NodeKind::Button{label:Some(s),..}if s=="cycle"))
+            .unwrap()
+            .id;
+        vm.click(&mut session, id).unwrap();
+        for attempt in 0..100_000 {
+            assert!(attempt < 99_999, "cycle was not diagnosed");
+            match vm
+                .step(
+                    &mut session,
+                    SessionBudget::Exact(SliceBudget {
+                        instructions: 1,
+                        ..Default::default()
+                    }),
+                    || 0,
+                )
+                .unwrap()
+            {
+                SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
+                    vm.dispatch(&mut session, ticket, "en", 1).unwrap();
+                }
+                SessionStep::Vm(RunOutcome::Returned(_)) => {
+                    vm.discard_delivery(&mut session).unwrap()
+                }
+                SessionStep::Vm(RunOutcome::Fault(id)) => {
+                    let fault = vm.vm.delivery_fault(id).unwrap().unwrap();
+                    assert_eq!(fault.kind, FaultKind::InvalidState);
+                    let span = fault.location.source.unwrap();
+                    assert_eq!(&code[span.start as usize..span.end as usize], "first.value");
+                    assert!(!vm.vm.heap().reactive_evaluating());
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+#[test]
 fn dialogue_identity_and_read_styling_survive_completion_choice_and_nvl_retention() {
     let code = r##"
     let d = game.dialogue();
