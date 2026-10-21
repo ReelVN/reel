@@ -1040,6 +1040,8 @@ let actions = if flag {
 按 key 定位：`let row = await items.scroll_to(key, align: "nearest")` 先构造和测量目标附近的行，在实际呈现后返回该行节点。align 可选 start、center、end、nearest，默认只做必要滚动。重排仍跟随同一 key；过滤掉目标、移除列表或新的滚动/定位会取消旧请求，可用 try/catch 处理。返回节点仍遵循普通离屏退休规则，持久状态保存在 model。
 等待期间改变视口尺寸会重新校准目标；自动夹取滚动范围不会取消请求。来源重算后，会等待新位置的实际呈现再返回。
 
+虚拟列表补充屏外行时，已有行仍覆盖画面就继续响应滚轮和拖动。每个新行完成后，滚动条和悬停外观的派生先结算，再继续构造；补窗的小位移保留构造进度。来源、布局宽度或定位目标改变时重新准备。stage.presented、stage.geometry、list.scroll_to 和截图继续等待完整提交的画面；行工厂与普通组件使用相同的取消和保存规则。
+
 ## 十一 存档 历史 路线与跳过
 
 历史、自动阅读和存读档接口已实现；路线切换与按章节跳转仍为设计目标。界面由作者组合，服务不生成固定页面。
@@ -1060,7 +1062,7 @@ game.clear_history(keep_last: 37);
 
 可以等待自己的保存请求。这份存档恢复时，该请求为已成功且只读 `restored` 为 true（正常写盘完成为 false），可据此关闭存档菜单；调用者继续执行 await 后的语句；保存调用不会重复执行。其他未完成的外部请求以 OperationInterrupted 结算。成功读档会替换会话，原来的读档调用不会在旧会话中继续。
 
-执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 9，会话快照格式为 27；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
+执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 9，会话快照格式为 28；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
 
 可运行示例：[author_saves.aside](../../examples/author_saves.aside)。
 

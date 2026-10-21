@@ -128,8 +128,8 @@ impl<C> CaptureService<C> {
         driver: &mut AsideSessionUi,
         frame: Option<&RenderFrame>,
     ) -> Result<bool, AdapterError> {
-        let images_pending =
-            driver.ui().images_pending() || driver.ui().images_waiting_presentation;
+        let presentation_ready =
+            driver.adapter().stage_ready() && driver.ui().current_presentation_ready();
         let adapter = driver.adapter_mut();
         self.wake.acknowledge();
         let mut changed = false;
@@ -158,7 +158,7 @@ impl<C> CaptureService<C> {
         }
         if self.active.is_none()
             && self.worker.is_idle()
-            && !images_pending
+            && presentation_ready
             && let Some(request) = adapter.take_capture_request()?
         {
             if let Some(frame) = frame {

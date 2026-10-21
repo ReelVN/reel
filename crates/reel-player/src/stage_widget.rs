@@ -129,6 +129,49 @@ impl StageView {
     pub fn matches(&self, stage: &Stage) -> bool {
         self.identity.as_ref() == Some(stage.identity()) && self.revision == stage.revision()
     }
+    /// Local feedback may change completed layout/appearance properties, while
+    /// topology, control content and input ownership remain the committed ones.
+    pub(crate) fn permits_feedback(&self, stage: &Stage) -> bool {
+        fn visit(old: &SceneNode, stage: &Stage, id: NodeId) -> bool {
+            let Some(node) = stage.node(id) else {
+                return false;
+            };
+            let same_kind = match (&old.node.kind, &node.kind) {
+                (
+                    NodeKind::Scroll {
+                        axis: a,
+                        follow_end: b,
+                        align: c,
+                        ..
+                    },
+                    NodeKind::Scroll {
+                        axis: x,
+                        follow_end: y,
+                        align: z,
+                        ..
+                    },
+                ) => a == x && b == y && c == z,
+                (a, b) => a == b,
+            };
+            old.node.id == id
+                && same_kind
+                && old.node.props.visible == node.props.visible
+                && old.node.props.enabled == node.props.enabled
+                && old.node.props.modal == node.props.modal
+                && old.children.len() == node.children.len()
+                && old
+                    .children
+                    .iter()
+                    .zip(&node.children)
+                    .all(|(old, id)| visit(old, stage, *id))
+        }
+        self.identity.as_ref() == Some(stage.identity())
+            && self
+                .root
+                .as_ref()
+                .zip(stage.root())
+                .is_some_and(|(old, id)| visit(old, stage, id))
+    }
     pub fn update(stage: &Stage, previous: Option<&Self>) -> Self {
         fn capture_node(stage: &Stage, id: NodeId, old: Option<&Arc<SceneNode>>) -> Arc<SceneNode> {
             let revision = stage.node_revision(id).expect("mounted stage node");

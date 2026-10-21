@@ -202,6 +202,146 @@ fn settle(d: &mut AsideSessionUi) {
     }
     panic!("list failed to settle");
 }
+
+#[test]
+fn virtual_list_feedback_waits_for_ordinary_properties_then_records_same_committed_rows() {
+    for encoded in [false, true] {
+        let code = r#"fn main(){
+            let values=[];for i in 0..80 {values.append(i);}
+            let viewport=scroll(width:320,height:120);
+            let rows=list(||values,key:|x|x,virtual:true,build:|row|column(height:40){stack(height:20);});
+            viewport.add(rows);
+            stage.replace(stack(){viewport;stack(x:400,y:derive(||viewport.scroll_y),width:20,height:20);});
+            narrator("ready");
+        }"#;
+        let mut story =
+            reel_engine::aside::source::compile_story(code, "feedback", 1, "main").unwrap();
+        if encoded {
+            use aside_vm::bytecode as bc;
+            story.program = bc::verify(
+                bc::decode(
+                    &bc::encode(story.program.package(), bc::Limits::default()).unwrap(),
+                    bc::Limits::default(),
+                )
+                .unwrap(),
+                bc::Limits::default(),
+            )
+            .unwrap();
+        }
+        let mut d = AsideSessionUi::from_compiled(
+            Session::new(SessionId(1), Epoch(1)).unwrap(),
+            story,
+            "en",
+            VmLimits::default(),
+        )
+        .unwrap();
+        settle(&mut d);
+        let widget = d.widget().prepare();
+        let root = widget.id();
+        let render = RenderRoot::new(
+            widget,
+            |_| {},
+            RenderRootOptions {
+                default_properties: Arc::new(DefaultProperties::new()),
+                use_system_fonts: false,
+                size_policy: WindowSizePolicy::User,
+                size: PhysicalSize::new(640, 420),
+                scale_factor: 1.,
+                default_font: None,
+            },
+        );
+        let mut bridge = PresentationBridge::new(
+            render,
+            SurfaceEpoch(1),
+            BridgeLimits {
+                geometry: GeometryLimits { max_bytes: 1 << 20 },
+                max_candidates: 4,
+                max_bridge_bytes: 64 << 10,
+                max_snapshot_bytes: 8 << 20,
+            },
+        )
+        .unwrap();
+        let mut frame = 0;
+        for _ in 0..10 {
+            d.sync(&mut bridge, root).unwrap();
+            frame += 1;
+            if let Some((source, receipt)) = d.record(&mut bridge, root, FrameId(frame)).unwrap() {
+                bridge.resolve(PresentationNotice::new(
+                    source.key(),
+                    SurfaceEpoch(1),
+                    PresentationOutcome::Accepted(FrameId(frame)),
+                ));
+                d.presented(&bridge, &receipt).unwrap();
+            }
+            settle(&mut d);
+        }
+        let list = d
+            .adapter()
+            .stage()
+            .nodes()
+            .find(|n| matches!(n.kind, NodeKind::VirtualList(_)))
+            .unwrap()
+            .id;
+        let committed = d.adapter().stage().node(list).unwrap().children.clone();
+        d.handle_pointer(
+            &mut bridge,
+            PointerEvent::Scroll(PointerScrollEvent {
+                pointer: PointerInfo {
+                    pointer_id: Some(PointerId::PRIMARY),
+                    persistent_device_id: None,
+                    pointer_type: PointerType::Mouse,
+                },
+                state: PointerState {
+                    position: PhysicalPosition::new(20., 20.),
+                    ..Default::default()
+                },
+                delta: ScrollDelta::PixelDelta(PhysicalPosition::new(0., 100.)),
+            }),
+        )
+        .unwrap();
+        d.sync_input(&mut bridge, root).unwrap();
+        assert!(!d.adapter().stage_ready());
+        assert!(
+            d.record(&mut bridge, root, FrameId(100)).unwrap().is_none(),
+            "queued scrollbar derive cannot paint stale props"
+        );
+        let mut feedback = false;
+        for _ in 0..100_000 {
+            d.tick(
+                SliceBudget {
+                    instructions: 10,
+                    ..Default::default()
+                },
+                32,
+                || 0,
+            )
+            .unwrap();
+            if d.adapter().virtual_feedback_boundary() {
+                d.sync(&mut bridge, root).unwrap();
+                if let Some((source, receipt)) = d.record(&mut bridge, root, FrameId(101)).unwrap()
+                {
+                    assert!(!receipt.current);
+                    assert!(receipt.geometry.is_none());
+                    assert_eq!(d.adapter().stage().node(list).unwrap().children, committed);
+                    bridge.resolve(PresentationNotice::new(
+                        source.key(),
+                        SurfaceEpoch(1),
+                        PresentationOutcome::Accepted(FrameId(101)),
+                    ));
+                    d.presented(&bridge, &receipt).unwrap();
+                    assert!(!d.ui().current_presentation_ready());
+                    feedback = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            feedback,
+            "whole-row boundary must resume drawing without another input"
+        );
+        settle(&mut d);
+    }
+}
 fn actual_rows(
     d: &AsideSessionUi,
     b: &PresentationBridge,
@@ -262,6 +402,62 @@ fn virtual_list_natural_external_wheel_frames() {
 #[ignore = "requires REEL_SCROLL_ASB, REEL_SCROLL_ASSETS and REEL_SESSION_FONT"]
 fn virtual_list_natural_external_drag_frames() {
     natural_scroll_motion(false, true);
+}
+
+#[derive(Default)]
+struct MotionCosts {
+    count: [usize; 8],
+    total: [std::time::Duration; 8],
+    max: [std::time::Duration; 8],
+    at: [String; 8],
+    slow: Vec<(usize, std::time::Duration, String)>,
+}
+impl MotionCosts {
+    fn add(&mut self, phase: usize, elapsed: std::time::Duration, at: &str) {
+        if at != "warm" && elapsed.as_millis() >= 2 {
+            self.slow.push((phase, elapsed, at.to_owned()));
+        }
+        self.count[phase] += 1;
+        self.total[phase] += elapsed;
+        if elapsed > self.max[phase] {
+            self.max[phase] = elapsed;
+            self.at[phase] = at.to_owned();
+        }
+    }
+    fn report(&self) {
+        for (phase, time, at) in &self.slow {
+            eprintln!("slow phase={phase} elapsed={time:?} at={at}");
+        }
+        for (phase, name) in [
+            "input",
+            "settle",
+            "sync",
+            "record",
+            "geometry_assert",
+            "resolve",
+            "presented",
+            "sleep",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            eprintln!(
+                "phase={name} count={} total={:?} max={:?} at={}",
+                self.count[phase], self.total[phase], self.max[phase], self.at[phase]
+            );
+        }
+    }
+}
+fn measured<R>(
+    costs: &std::cell::RefCell<MotionCosts>,
+    phase: usize,
+    at: &str,
+    body: impl FnOnce() -> R,
+) -> R {
+    let start = std::time::Instant::now();
+    let value = body();
+    costs.borrow_mut().add(phase, start.elapsed(), at);
+    value
 }
 
 fn natural_scroll_motion(wheel: bool, external: bool) {
@@ -351,6 +547,7 @@ fn natural_scroll_motion(wheel: bool, external: bool) {
             },
         )
         .unwrap();
+        let costs = std::cell::RefCell::new(MotionCosts::default());
         let mut frame = 0;
         let mut resource_wait: Option<(std::time::Instant, String, usize, std::time::Duration)> =
             None;
@@ -366,7 +563,7 @@ fn natural_scroll_motion(wheel: bool, external: bool) {
         let mut blocked = false;
         let mut render = |d: &mut AsideSessionUi, bridge: &mut PresentationBridge, step: &str| {
             loop {
-                d.sync(bridge, root).unwrap();
+                measured(&costs, 2, step, || d.sync(bridge, root).unwrap());
                 if external && d.ui().images_pending() && resource_wait.is_none() {
                     resource_wait = Some((
                         std::time::Instant::now(),
@@ -380,7 +577,7 @@ fn natural_scroll_motion(wheel: bool, external: bool) {
                 }
                 // Resource completions and VM feedback keep progressing between
                 // display deadlines, as they do on the window host's wake path.
-                settle(d);
+                measured(&costs, 1, step, || settle(d));
                 std::thread::sleep(
                     std::time::Duration::from_millis(1)
                         .min(next_frame.saturating_duration_since(std::time::Instant::now())),
@@ -389,7 +586,9 @@ fn natural_scroll_motion(wheel: bool, external: bool) {
             let accepted = bridge.accepted_key().map(|key| key.frame_id());
             let pending = bridge.pending_count();
             frame += 1;
-            let Some((source, receipt)) = d.record(bridge, root, FrameId(frame)).unwrap() else {
+            let Some((source, receipt)) = measured(&costs, 3, step, || {
+                d.record(bridge, root, FrameId(frame)).unwrap()
+            }) else {
                 assert!(d.has_runnable_tasks() || d.ui().images_pending());
                 assert_eq!(bridge.pending_count(), pending);
                 assert_eq!(bridge.accepted_key().map(|key| key.frame_id()), accepted);
@@ -402,13 +601,13 @@ fn natural_scroll_motion(wheel: bool, external: bool) {
                     );
                     blocked = true;
                 }
-                settle(d);
+                measured(&costs, 1, step, || settle(d));
                 if external {
                     std::thread::sleep(std::time::Duration::from_millis(1));
                 }
                 return None;
             };
-            let rows = actual_rows(d, bridge, root, &source);
+            let rows = measured(&costs, 4, step, || actual_rows(d, bridge, root, &source));
             assert_eq!(
                 bridge.resolve(PresentationNotice::new(
                     source.key(),
@@ -435,8 +634,8 @@ fn natural_scroll_motion(wheel: bool, external: bool) {
             last_accepted = now;
             next_frame = now + cadence;
             blocked = false;
-            d.presented(bridge, &receipt).unwrap();
-            settle(d);
+            measured(&costs, 6, step, || d.presented(bridge, &receipt).unwrap());
+            measured(&costs, 1, step, || settle(d));
             Some(rows)
         };
         let mut previous_rows = BTreeMap::new();
@@ -465,6 +664,7 @@ fn natural_scroll_motion(wheel: bool, external: bool) {
         }
         let motion_started = std::time::Instant::now();
         for jump in 0..if wheel || external { 180 } else { 6 } {
+            let input_started = std::time::Instant::now();
             if wheel {
                 d.handle_pointer(
                     &mut bridge,
@@ -521,7 +721,10 @@ fn natural_scroll_motion(wheel: bool, external: bool) {
                     .unwrap();
                 }
             }
-            settle(&mut d);
+            costs
+                .borrow_mut()
+                .add(0, input_started.elapsed(), &format!("input:{jump}"));
+            measured(&costs, 1, &format!("input:{jump}"), || settle(&mut d));
             let mut before: BTreeMap<usize, (f64, f64)> = BTreeMap::new();
             let mut accepted = 0;
             let started = std::time::Instant::now();
@@ -619,6 +822,7 @@ fn natural_scroll_motion(wheel: bool, external: bool) {
                 }
             }
             assert!(!d.ui().images_pending());
+            costs.borrow().report();
         }
     }
 }

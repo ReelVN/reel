@@ -909,6 +909,41 @@ impl SessionUi {
     pub(crate) fn set_feedback_stage(&mut self, stage: &reel_ui::stage::Stage) {
         self.update_stage(stage, true);
     }
+    pub(crate) fn permits_virtual_feedback(&self, stage: &reel_ui::stage::Stage) -> bool {
+        self.pending_stage
+            .as_ref()
+            .is_none_or(|pending| pending.permits_feedback(stage))
+            && self
+                .stage
+                .as_ref()
+                .is_some_and(|view| view.permits_feedback(stage))
+    }
+    pub(crate) fn virtual_feedback_visible(
+        &self,
+        bridge: &mut PresentationBridge,
+        root: WidgetId,
+    ) -> Result<bool, Error> {
+        let geometry = bridge
+            .layout_geometry()
+            .map_err(|error| format!("scroll layout geometry: {error:?}"))?;
+        Ok(Self::stage_widget(bridge, root)
+            .and_then(|id| bridge.root().get_widget(id))
+            .and_then(|widget| widget.downcast::<StageWidget>())
+            .zip(self.stage.as_ref())
+            .is_some_and(|(widget, view)| {
+                widget.virtual_images_visible_ready(
+                    bridge.root(),
+                    view,
+                    &geometry,
+                    &self.images.loaded,
+                )
+            }))
+    }
+    pub(crate) fn current_presentation_ready(&self) -> bool {
+        !self.images_pending()
+            && !self.images_waiting_presentation
+            && self.binding.borrow().accepted == Some(self.projection_stamp())
+    }
     fn update_stage(&mut self, stage: &reel_ui::stage::Stage, feedback: bool) {
         self.virtual_images_ready = false;
         if self
@@ -1565,6 +1600,36 @@ mod tests {
             NoticeResult::Accepted
         );
         ui.presented(bridge, &stamp);
+    }
+    #[test]
+    fn feedback_receipt_does_not_authorize_capture_but_scrolled_complete_receipt_does() {
+        let mut ui = SessionUi::new(session()).unwrap();
+        let mut stage = reel_ui::stage::Stage::default();
+        let node = stage
+            .create(reel_ui::stage::NodeKind::Stack, Default::default(), vec![])
+            .unwrap();
+        stage.replace(node).unwrap();
+        ui.set_stage(&stage);
+        let (mut bridge, root) = mount(&ui);
+        ui.sync(&mut bridge, root).unwrap();
+        // The dialogue/history scroll Rc participates in the actual widget stamp.
+        ui.scroll.set(125.);
+        let (source, mut receipt) = ui.record(&mut bridge, root, FrameId(1)).unwrap();
+        assert_eq!(receipt.stamp.scroll_bits, 125f64.to_bits());
+        receipt.current = false;
+        assert_eq!(
+            bridge.resolve(PresentationNotice::new(
+                source.key(),
+                SurfaceEpoch(1),
+                PresentationOutcome::Accepted(FrameId(1))
+            )),
+            NoticeResult::Accepted
+        );
+        assert!(ui.presented(&bridge, &receipt));
+        assert!(!ui.current_presentation_ready());
+        assert!(ui.binding.borrow().control_accepted.is_some());
+        accept(&mut ui, &mut bridge, root, 2);
+        assert!(ui.current_presentation_ready());
     }
     #[test]
     fn initial_record_waits_for_preparation_then_uses_explicit_root() {

@@ -7,6 +7,16 @@ impl SessionVm {
                 "virtual list rows must have positive natural height",
             ));
         }
+        let candidate = get(self.vm.heap(), s, S::Candidate)?;
+        if candidate.tag() != ValueTag::Null {
+            let mut values = [Value::NULL; 8];
+            for (i, value) in values.iter_mut().enumerate() {
+                *value = self.vm.heap().sequence_get(candidate, i as u32)?;
+            }
+            let w = Work::load(&values);
+            self.vm.heap_mut().begin_untracked(w.output)?;
+            return self.virtual_continue(t, &w, WINDOW);
+        }
         let output = get(self.vm.heap(), s, S::Window)?;
         let w = Work {
             output,
@@ -100,16 +110,28 @@ impl SessionVm {
             self.vm.heap_mut().array_push(candidates, e)?;
         }
         let children = self.vm.heap_mut().alloc_array(&[])?;
+        let constraints = [
+            get(self.vm.heap(), s, S::Width)?,
+            get(self.vm.heap(), s, S::Target)?,
+            Value::int(i64::from(first)),
+            Value::int(i64::from(last.min(n.saturating_sub(1)))),
+            nav,
+        ];
+        let constraints = self.vm.heap_mut().alloc_tuple(&constraints)?;
         let w = Work {
             output,
             state: s,
             source: candidates,
-            entries: Value::NULL,
-            sorted: Value::NULL,
+            // Advance only on successful source publication, independently of
+            // viewport requests, including edits to the same input array.
+            entries: get(self.vm.heap(), s, S::SourceRevision)?,
+            sorted: constraints,
             children,
             index: 0,
             version: int(self.vm.heap(), s, S::Request)? as u64,
         };
+        let saved = self.vm.heap_mut().alloc_array(&w.values())?;
+        put(self.vm.heap_mut(), s, S::Candidate, saved)?;
         self.virtual_continue(t, &w, WINDOW)
     }
     pub(super) fn virtual_discard_candidate(&mut self, w: &Work) -> Result<(), AdapterError> {
@@ -127,7 +149,62 @@ impl SessionVm {
                     .set_field(e, Entry::Node as u32, Value::NULL)?;
             }
         }
+        put(self.vm.heap_mut(), w.state, S::Candidate, Value::NULL)?;
         Ok(())
+    }
+    fn virtual_candidate_covers(&self, w: &Work) -> Result<bool, AdapterError> {
+        let h = self.vm.heap();
+        let s = w.state;
+        if !w.entries.same_bits(get(h, s, S::SourceRevision)?)
+            || h.derived_is_queued(get(h, s, S::Source)?)?
+            || !h.sequence_get(w.sorted, 0)?.same_bits(get(h, s, S::Width)?)
+            || !h
+                .sequence_get(w.sorted, 1)?
+                .same_bits(get(h, s, S::Target)?)
+            || !h
+                .sequence_get(w.sorted, 4)?
+                .same_bits(get(h, s, S::Navigation)?)
+        {
+            return Ok(false);
+        }
+        if w.version == int(h, s, S::Request)? as u64 {
+            return Ok(true);
+        }
+        let includes = |index: u32| -> Result<bool, AdapterError> {
+            let mut lo = 0;
+            let mut hi = h.sequence_len(w.source)?;
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2;
+                let entry = h.sequence_get(w.source, mid)?;
+                let found = h.sequence_get(entry, INDEX)?.as_int().unwrap() as u32;
+                match found.cmp(&index) {
+                    std::cmp::Ordering::Less => lo = mid + 1,
+                    std::cmp::Ordering::Greater => hi = mid,
+                    std::cmp::Ordering::Equal => return Ok(true),
+                }
+            }
+            Ok(false)
+        };
+        if count(h, s)? > 0 {
+            let first = locate(h, s, num(h, s, S::Start)?.max(0.))?;
+            let last = locate(h, s, num(h, s, S::End)?.max(0.))?;
+            if i64::from(first) < h.sequence_get(w.sorted, 2)?.as_int().unwrap()
+                || i64::from(last) > h.sequence_get(w.sorted, 3)?.as_int().unwrap()
+            {
+                return Ok(false);
+            }
+        }
+        for i in 0..h.sequence_len(get(h, s, S::Pinned)?)? {
+            let key = h.sequence_get(get(h, s, S::Pinned)?, i)?;
+            if let Some(entry) = find(h, get(h, s, S::Sorted)?, key, self.read_limit)? {
+                if !includes(h.sequence_get(entry, INDEX)?.as_int().unwrap() as u32)? {
+                    return Ok(false);
+                }
+            }
+        }
+        // The unchanged target was included at preparation. A replacement or
+        // cancellation fails the identity constraint above.
+        Ok(true)
     }
     pub(super) fn virtual_build_window(
         &mut self,
@@ -137,11 +214,21 @@ impl SessionVm {
     ) -> Result<(), AdapterError> {
         match phase {
             WINDOW => {
-                if w.version != int(self.vm.heap(), w.state, S::Request)? as u64 {
+                if !self.virtual_candidate_covers(&w)? {
                     self.virtual_discard_candidate(&w)?;
                     self.vm.heap_mut().end_derived(w.output)?;
-                    self.virtual_window(t, w.state)?;
+                    if self
+                        .vm
+                        .heap()
+                        .derived_is_queued(get(self.vm.heap(), w.state, S::Source)?)?
+                    {
+                        self.vm
+                            .respond(t, HostResponse::Ready(node(self.vm.heap(), w.state)?))?;
+                    } else {
+                        self.virtual_window(t, w.state)?;
+                    }
                 } else if w.index < self.vm.heap().sequence_len(w.source)? {
+                    w.version = int(self.vm.heap(), w.state, S::Request)? as u64;
                     let e = self.vm.heap().sequence_get(w.source, w.index)?;
                     let child = entry(self.vm.heap(), e, Entry::Node)?;
                     if child.tag() != ValueTag::Null {
@@ -232,6 +319,7 @@ impl SessionVm {
                     )?;
                     commit_projection(self.vm.heap_mut(), w.state)?;
                     self.stage.publish_virtual(self.vm.heap(), host)?;
+                    put(self.vm.heap_mut(), w.state, S::Candidate, Value::NULL)?;
                     self.virtual_target_arm(w.state)?;
                     self.vm.respond(t, HostResponse::Ready(host))?;
                 }
@@ -246,10 +334,48 @@ impl SessionVm {
                 self.vm.heap_mut().set_field(e, Entry::Node as u32, child)?;
                 self.vm.heap_mut().array_push(w.children, child)?;
                 w.index += 1;
-                self.virtual_continue(t, &w, WINDOW)?;
+                if int(self.vm.heap(), w.state, S::Revision)? == 0 {
+                    return self.virtual_continue(t, &w, WINDOW);
+                }
+                let saved = get(self.vm.heap(), w.state, S::Candidate)?;
+                for (i, value) in w.values().into_iter().enumerate() {
+                    self.vm.heap_mut().set_field(saved, i as u32, value)?;
+                }
+                // A whole row factory has returned. Drain ordinary observers
+                // before continuing, without publishing detached candidate rows.
+                self.vm.heap_mut().end_derived(w.output)?;
+                self.vm.heap_mut().schedule_derived(w.output)?;
+                self.vm
+                    .respond(t, HostResponse::Ready(node(self.vm.heap(), w.state)?))?;
             }
             _ => unreachable!("window continuation phase"),
         }
         Ok(())
+    }
+
+    pub(in crate::aside) fn virtual_feedback_output(&self, output: Value) -> bool {
+        let check = || -> Result<bool, AdapterError> {
+            let h = self.vm.heap();
+            let s = h.derived_state(output)?;
+            if s.tag() == ValueTag::Null || !output.same_bits(get(h, s, S::Window)?) {
+                return Ok(false);
+            }
+            let host = node(h, s)?;
+            let id = self.stage.id(h, host)?;
+            if !matches!(
+                self.stage.scene.node(id).map(|n| &n.kind),
+                Some(NodeKind::VirtualList(_))
+            ) || get(h, s, S::Target)?.tag() != ValueTag::Null
+                || get(h, s, S::Navigation)?.tag() != ValueTag::Null
+                || h.derived_is_queued(get(h, s, S::Source)?)?
+            {
+                return Ok(false);
+            }
+            let projection = get(h, s, S::Projection)?;
+            Ok(h.sequence_get(projection, 4)?
+                .same_bits(get(h, s, S::SourceRevision)?)
+                && int(h, s, S::Revision)? > 0)
+        };
+        check().unwrap_or(false)
     }
 }

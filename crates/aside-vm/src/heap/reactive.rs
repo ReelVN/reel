@@ -537,6 +537,32 @@ impl Heap {
         !self.reactive_queue.is_empty() || self.reactive_capture.is_some()
     }
 
+    /// Queue a host-owned observer at an explicit cooperative boundary.
+    pub fn schedule_derived(&mut self, output: Value) -> Result<(), HeapError> {
+        let key = self.key(output)?;
+        if self.object(key)?.derived_dirty {
+            self.reactive_queue.retain(|queued| *queued != key);
+            self.objects.get_mut(key).unwrap().derived_dirty = false;
+        }
+        self.enqueue_derived(key);
+        Ok(())
+    }
+
+    pub fn derived_is_queued(&self, output: Value) -> Result<bool, HeapError> {
+        Ok(self.object(self.key(output)?)?.derived_dirty)
+    }
+
+    /// Read existing queued identities without copying or rooting another graph.
+    pub fn pending_derived_outputs(&self) -> impl Iterator<Item = Value> + '_ {
+        self.reactive_queue.iter().filter_map(|key| {
+            let object = self.objects.get(*key)?;
+            (object.derived_dirty
+                && !object.dying
+                && !(self.gc.cutoff() && object.mark != self.gc.cycle))
+                .then(|| Value::object(self.id, key.data().as_ffi()))
+        })
+    }
+
     pub fn next_derived(&mut self) -> Result<Option<Value>, HeapError> {
         while let Some(key) = self.reactive_queue.pop_front() {
             let Some(object) = self.objects.get_mut(key) else {

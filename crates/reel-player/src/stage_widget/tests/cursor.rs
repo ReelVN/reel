@@ -635,6 +635,38 @@ fn cursor_deepest_owner_wins_and_disabled_owner_yields_to_ancestor() {
 }
 
 #[test]
+fn pointer_queries_keep_accepted_feedback_geometry_without_authorizing_capture() {
+    let (mut f, owner, _, _, _) = fixture();
+    let initial = f.record();
+    f.accept(&initial);
+    f.ui.handle_pointer(
+        &mut f.bridge,
+        pointer(PointerType::Mouse, (110., 90.), None),
+    )
+    .unwrap();
+
+    let mut feedback = f.record();
+    feedback.receipt.current = false;
+    f.accept(&feedback);
+    assert!(!f.ui.current_presentation_ready());
+    assert_eq!(
+        f.ui.pointer_position(&f.bridge, f.widget),
+        Some([110., 90.])
+    );
+    assert_eq!(
+        f.ui.pointer_destination(&f.bridge, f.widget, owner, [200., 150.]),
+        Some([200., 150.])
+    );
+
+    f.ui.clear_presented();
+    assert_eq!(f.ui.pointer_position(&f.bridge, f.widget), None);
+    assert_eq!(
+        f.ui.pointer_destination(&f.bridge, f.widget, owner, [200., 150.]),
+        None
+    );
+}
+
+#[test]
 fn pointer_queries_require_accepted_mouse_and_current_input_ownership() {
     let (mut f, owner, _, _, _) = fixture();
     assert_eq!(f.ui.pointer_position(&f.bridge, f.widget), None);

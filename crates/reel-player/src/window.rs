@@ -32,6 +32,8 @@ use std::{sync::Arc, time::Instant};
 use winit::{event_loop::ActiveEventLoop, window::Window};
 
 type Error = Box<dyn std::error::Error>;
+#[cfg(all(test, any(target_os = "linux", target_os = "windows")))]
+mod scroll_cost;
 // Surface is declared first and explicitly dropped before Window on shutdown/suspend.
 pub(crate) struct State {
     pub(crate) backend: WgpuBackend,
