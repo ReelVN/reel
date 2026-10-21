@@ -530,7 +530,8 @@ pub trait Widget: AsDynWidget + Any {
     /// If false, the widget will be treated as "transparent" for the pointer, meaning
     /// that the pointer will be considered as hovering whatever is under this widget.
     ///
-    /// **Note:** The value returned by this method is cached at widget creation and can't be changed.
+    /// The value is cached at widget creation. Dynamic widgets update the cached
+    /// capability with their context's `set_interactive` method.
     ///
     /// [hovered]: crate::doc::concepts#hovered
     fn accepts_pointer_interaction(&self) -> bool {
@@ -563,6 +564,10 @@ pub trait Widget: AsDynWidget + Any {
     /// Whether this widget gets [text focus]. False by default.
     ///
     /// If true, pressing Tab can focus this widget.
+    /// Unconsumed directional navigation from a focused container enters its
+    /// available focusable descendants in tree order: first for down/right,
+    /// last for up/left. Subsequent navigation uses accepted screen positions
+    /// and skips ancestors of the current focus.
     ///
     /// **Note:** The value returned by this method is cached at widget creation and can't be changed.
     ///

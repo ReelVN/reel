@@ -610,18 +610,25 @@ fn directional_focus(
     view: GeometryView<'_>,
 ) -> Option<WidgetId> {
     let scope = root.input_scope(view).unwrap_or(root.root_id());
-    let Some(focus) = root.global_state.focused_widget else {
-        return find_first_focusable(root, &[], scope, true)
-            .map(|id| super::selection::entry(root, id));
-    };
+    let initial = root.global_state.focused_widget.is_none();
+    let focus = root
+        .global_state
+        .focused_widget
+        .or_else(|| find_first_focusable(root, &[], scope, true))?;
     let center = |root: &RenderRoot, id| {
         let state = &root.widget_arena.nodes.find(id)?.item.state;
         let geometry = view.bind_visible(id)?.resolve(state);
         Some(geometry.window_transform() * geometry.border_box().center())
     };
     let origin = center(root, focus)?;
+    let contains = |root: &RenderRoot, ancestor, id| match view {
+        GeometryView::Presented(Some(view)) => view.contains_in_scope(id, ancestor),
+        _ => root.is_descendant(id, ancestor),
+    };
+    let forward = matches!(direction, NavigationAction::Right | NavigationAction::Down);
     let mut walk = std::mem::take(&mut root.global_state.navigation_walk);
     let mut best: Option<(f64, WidgetId)> = None;
+    let mut descendant = None;
     let mut consider = |id| {
         let Some(node) = root.widget_arena.nodes.find(id) else {
             return;
@@ -632,6 +639,17 @@ fn directional_focus(
         let Some(position) = center(root, id) else {
             return;
         };
+        // A focused input container enters its controls independently of its
+        // own rectangle. Ancestors do not become spatial destinations again.
+        if contains(root, id, focus) {
+            return;
+        }
+        if contains(root, focus, id) {
+            if descendant.is_none() || !forward {
+                descendant = Some(id);
+            }
+            return;
+        }
         let delta = position - origin;
         let (ahead, across) = match direction {
             NavigationAction::Left => (-delta.x, delta.y),
@@ -672,5 +690,8 @@ fn directional_focus(
         }
     }
     root.global_state.navigation_walk = walk;
-    best.map(|(_, id)| id)
+    descendant
+        .map(|id| super::selection::entry(root, id))
+        .or_else(|| initial.then(|| super::selection::entry(root, focus)))
+        .or_else(|| best.map(|(_, id)| id))
 }

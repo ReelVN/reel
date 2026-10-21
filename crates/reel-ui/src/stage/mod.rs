@@ -266,6 +266,9 @@ pub enum NodeKind {
         /// Author constructor location, retained through later source changes.
         origin: Option<String>,
     },
+    /// Author input scope with ordinary children. Keyboard callbacks or
+    /// keyboard/gamepad bindings make the scope focusable and eligible as the
+    /// unfocused input fallback. Pointer-only scopes preserve keyboard focus.
     Input {
         bindings: InputBindings,
         listening: bool,

@@ -730,6 +730,8 @@ Reel 舞台文字支持 `text_fit: "none" | "shrink"`、`min_font_size`、`text_
 
 节点只读可观察 `focus_visible` 表示应显示导航焦点的节点或祖先，`focused` 仍表示实际接收焦点。使用 `derive(|| control.hover || control.focus_visible)` 组合指针与键盘/手柄外观；指针操作隐藏导航焦点外观但不移除键盘接收目标。
 
+input 的 on_key 或键盘/手柄 bindings 使节点参与焦点导航及无焦点输入路由；纯指针与滚轮处理保留当前键盘焦点。聚焦容器收到未消费的方向时，下/右进入可用焦点后代的树序首项，上/左进入末项；后续导航使用已呈现位置并跳过焦点祖先，Tab 保留父容器的停靠点。
+
 Reel 的 completion 与 spawn 结果含只读可观察 `pending: bool`；开始为 true，实际终态为 false，任务取消清理期间仍为 true。普通读取、bind/derive 使用共同宿主属性通路；所有者取消在宿主维护与响应式稳定阶段发布，无须等待者调用 await。scope 内省略 owner 的 completion 随 scope 结束，绑定可直接表达请求是否仍进行中。状态与弱所有者登记进入快照。
 
 ### 音频宿主绑定

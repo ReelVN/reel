@@ -10,6 +10,8 @@ aside_host::native_documentation! {
         /// Create an input scope with named bindings and action, key, pointer or wheel
         /// callbacks. Events not consumed by a focused child reach this scope. Input
         /// ownership, cancellation and callbacks follow the node's lifetime.
+        /// on_key or keyboard/gamepad bindings enable focus and unfocused routing.
+        /// Pointer-only scopes preserve the current keyboard focus.
         "reel::input";
         /// Create a text node from plain or rich text. Common font, reveal, outline,
         /// shadow and layout properties apply to the same paragraph. `on_link` receives
