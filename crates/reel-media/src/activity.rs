@@ -449,13 +449,20 @@ impl AudioActivityService {
             volume_db: e.volume_db,
             position_seconds,
             item,
-            terminal: e.terminal.or_else(|| {
-                stopped.then_some(if e.stopping {
-                    AudioActivityTerminal::Stopped { position_seconds }
-                } else {
-                    AudioActivityTerminal::Completed { position_seconds }
+            terminal: e
+                .terminal
+                .or_else(|| {
+                    e.playback
+                        .error()
+                        .map(|_| AudioActivityTerminal::Failed(AudioErrorKind::DecodeFailure))
                 })
-            }),
+                .or_else(|| {
+                    stopped.then_some(if e.stopping {
+                        AudioActivityTerminal::Stopped { position_seconds }
+                    } else {
+                        AudioActivityTerminal::Completed { position_seconds }
+                    })
+                }),
         })
     }
     pub fn announce(&mut self, id: MediaId, index: u64) -> Result<(), AudioError> {
@@ -673,6 +680,9 @@ impl AudioActivityService {
             {
                 let terminal = if let Some(reason) = self.failed {
                     Some(AudioActivityTerminal::Failed(reason))
+                } else if e.playback.error().is_some() {
+                    e.playback.stop();
+                    Some(AudioActivityTerminal::Failed(AudioErrorKind::DecodeFailure))
                 } else if e.playback.is_stopped() {
                     Some(if e.stopping {
                         AudioActivityTerminal::Stopped {

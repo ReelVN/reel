@@ -36,3 +36,9 @@ ownership returns through the media adapter's existing background reclaimer.
 Announcements after the terminal tail return `QueueClosed`. A full incoming ring
 returns the original PCM and residency owner directly, so rejection requires no
 additional allocation or ownership transfer to the audio callback.
+
+Prepared frame storage now admits bounded worker-backed PCM windows through the
+existing static/queued transport. Missing frames freeze its content cursor; seeks
+clear interpolation and request source preparation without callback IO. The shared
+Symphonia packet decoder accepts host readers and publishes unknown length at EOF.
+Both storage forms preserve queue, resampling and background retirement behavior.

@@ -25,6 +25,95 @@ fn queue_data(rate: u32, samples: &[f32]) -> StaticSoundData {
 }
 
 #[test]
+fn mixed_frame_storage_keeps_cross_rate_queue_samples_and_freezes_missing_seek() {
+	use crate::sound::static_sound::{FrameSource, FrameStorage, QueuedStaticSound};
+	use std::sync::atomic::{AtomicBool, Ordering};
+	struct Window {
+		frames: Arc<[Frame]>,
+		ready: AtomicBool,
+	}
+	impl FrameSource for Window {
+		fn len(&self) -> usize {
+			self.frames.len()
+		}
+		fn frame(&self, index: usize) -> Option<Frame> {
+			self.ready
+				.load(Ordering::Acquire)
+				.then(|| self.frames.get(index).copied())
+				.flatten()
+		}
+	}
+	fn render(stream: bool) -> Vec<Frame> {
+		let (mut sound, _, mut queue) =
+			queue_data(4, &[1., 2., 3.]).into_sound_with_queue(2, Arc::new(()));
+		let mut next = queue_data(8, &[4., 5., 6., 7., 8.]);
+		if stream {
+			next.frames = FrameStorage::Stream(Arc::new(Window {
+				frames: next.frames.static_frames().unwrap().clone(),
+				ready: AtomicBool::new(true),
+			}));
+		}
+		queue.announce(1).unwrap();
+		assert!(
+			queue
+				.push(QueuedStaticSound {
+					index: 1,
+					data: next,
+					retention: None
+				})
+				.is_ok()
+		);
+		queue.start();
+		let info = MockInfoBuilder::new().build();
+		(0..50)
+			.map(|_| {
+				sound.on_start_processing();
+				sound.process_one(0.125, &info)
+			})
+			.collect()
+	}
+	assert_eq!(
+		render(true),
+		render(false),
+		"one interpolation path across static/stream and sample-rate boundaries"
+	);
+	let source = Arc::new(Window {
+		frames: (0..100).map(|n| Frame::from_mono(n as f32)).collect(),
+		ready: AtomicBool::new(false),
+	});
+	let data = StaticSoundData {
+		sample_rate: 1,
+		frames: FrameStorage::Stream(source.clone()),
+		settings: Default::default(),
+		slice: None,
+	};
+	let (mut sound, mut handle) = data.split();
+	let info = MockInfoBuilder::new().build();
+	for _ in 0..10 {
+		sound.on_start_processing();
+		assert_eq!(sound.process_one(1., &info), Frame::ZERO);
+	}
+	assert_eq!(handle.position(), 0.);
+	source.ready.store(true, Ordering::Release);
+	assert_eq!(
+		sound.process_one(1., &info),
+		Frame::from_mono(0.).panned(Panning::CENTER)
+	);
+	source.ready.store(false, Ordering::Release);
+	handle.seek_to(15.);
+	for _ in 0..10 {
+		sound.on_start_processing();
+		assert_eq!(sound.process_one(1., &info), Frame::ZERO);
+	}
+	assert_eq!(handle.position(), 15.);
+	source.ready.store(true, Ordering::Release);
+	assert_eq!(
+		sound.process_one(1., &info),
+		Frame::from_mono(15.).panned(Panning::CENTER)
+	);
+}
+
+#[test]
 fn prepared_queue_has_no_silent_frame_at_segment_boundaries() {
 	use crate::sound::static_sound::{QueueClosed, QueuedStaticSound};
 	let (mut sound, handle, mut queue) =
@@ -87,7 +176,10 @@ fn full_queue_returns_original_pcm_and_residency_for_retry() {
 		})
 		.unwrap_err();
 	assert_eq!(rejected.index, 2);
-	assert!(Arc::ptr_eq(&rejected.data.frames, &frames));
+	assert!(Arc::ptr_eq(
+		rejected.data.frames.static_frames().unwrap(),
+		frames.static_frames().unwrap()
+	));
 	assert!(Arc::ptr_eq(
 		rejected.retention.as_ref().unwrap(),
 		&retention
@@ -252,7 +344,8 @@ fn plays_all_samples() {
 			Frame::from_mono(1.0),
 			Frame::from_mono(2.0),
 			Frame::from_mono(3.0),
-		]),
+		])
+		.into(),
 		settings: StaticSoundSettings::new(),
 		slice: None,
 	};
@@ -291,7 +384,7 @@ fn plays_all_samples() {
 fn reports_playback_state() {
 	let data = StaticSoundData {
 		sample_rate: 1,
-		frames: Arc::new([Frame::from_mono(0.0); 10]),
+		frames: Arc::new([Frame::from_mono(0.0); 10]).into(),
 		settings: StaticSoundSettings::new(),
 		slice: None,
 	};
@@ -313,7 +406,7 @@ fn reports_playback_state() {
 fn reports_playback_position() {
 	let data = StaticSoundData {
 		sample_rate: 1,
-		frames: Arc::new([Frame::from_mono(0.0); 10]),
+		frames: Arc::new([Frame::from_mono(0.0); 10]).into(),
 		settings: StaticSoundSettings::new(),
 		slice: None,
 	};
@@ -336,7 +429,7 @@ fn reports_playback_position() {
 fn pauses_and_resumes_with_fades() {
 	let data = StaticSoundData {
 		sample_rate: 1,
-		frames: Arc::new([Frame::from_mono(1.0); 100]),
+		frames: Arc::new([Frame::from_mono(1.0); 100]).into(),
 		settings: StaticSoundSettings::new(),
 		slice: None,
 	};
@@ -446,7 +539,7 @@ fn pauses_and_resumes_with_fades() {
 fn stops_with_fade_out() {
 	let data = StaticSoundData {
 		sample_rate: 1,
-		frames: Arc::new([Frame::from_mono(1.0); 100]),
+		frames: Arc::new([Frame::from_mono(1.0); 100]).into(),
 		settings: StaticSoundSettings::new(),
 		slice: None,
 	};
@@ -818,7 +911,7 @@ fn loops_forward() {
 fn volume() {
 	let data = StaticSoundData {
 		sample_rate: 1,
-		frames: Arc::new([Frame::from_mono(1.0); 10]),
+		frames: Arc::new([Frame::from_mono(1.0); 10]).into(),
 		settings: StaticSoundSettings::new().volume(-6.0),
 		slice: None,
 	};
@@ -836,7 +929,7 @@ fn volume() {
 fn set_volume() {
 	let data = StaticSoundData {
 		sample_rate: 1,
-		frames: Arc::new([Frame::from_mono(1.0); 10]),
+		frames: Arc::new([Frame::from_mono(1.0); 10]).into(),
 		settings: StaticSoundSettings::new(),
 		slice: None,
 	};
@@ -866,7 +959,7 @@ fn set_volume() {
 fn panning() {
 	let data = StaticSoundData {
 		sample_rate: 1,
-		frames: Arc::new([Frame::from_mono(1.0); 10]),
+		frames: Arc::new([Frame::from_mono(1.0); 10]).into(),
 		settings: StaticSoundSettings::new().panning(Panning::LEFT),
 		slice: None,
 	};
@@ -884,7 +977,7 @@ fn panning() {
 fn set_panning() {
 	let data = StaticSoundData {
 		sample_rate: 1,
-		frames: Arc::new([Frame::from_mono(1.0); 10]),
+		frames: Arc::new([Frame::from_mono(1.0); 10]).into(),
 		settings: StaticSoundSettings::new(),
 		slice: None,
 	};
@@ -982,7 +1075,8 @@ fn interpolates_samples() {
 			Frame::from_mono(1.0),
 			Frame::from_mono(1.0),
 			Frame::from_mono(-10.0),
-		]),
+		])
+		.into(),
 		settings: Default::default(),
 		slice: None,
 	};
@@ -1007,7 +1101,7 @@ fn interpolates_samples() {
 fn interpolates_samples_when_looping() {
 	let data = StaticSoundData {
 		sample_rate: 1,
-		frames: Arc::new([Frame::from_mono(10.0), Frame::from_mono(9.0)]),
+		frames: Arc::new([Frame::from_mono(10.0), Frame::from_mono(9.0)]).into(),
 		settings: StaticSoundSettings::new().loop_region(Some((..).into())),
 		slice: None,
 	};
@@ -1135,4 +1229,99 @@ fn reverse() {
 			Frame::from_mono(i as f32).panned(Panning::CENTER)
 		);
 	}
+}
+
+#[test]
+fn unknown_frame_count_adopts_eof_for_completion_and_whole_loop() {
+	use crate::sound::static_sound::{FrameSource, FrameStorage};
+	use std::sync::atomic::{AtomicUsize, Ordering};
+	struct Unknown {
+		length: AtomicUsize,
+	}
+	impl FrameSource for Unknown {
+		fn len(&self) -> usize {
+			self.length.load(Ordering::Acquire)
+		}
+		fn frame(&self, index: usize) -> Option<Frame> {
+			(index < 8).then(|| Frame::from_mono(index as f32 + 1.))
+		}
+	}
+	for looping in [false, true] {
+		let source = Arc::new(Unknown {
+			length: AtomicUsize::new(usize::MAX),
+		});
+		let mut data = StaticSoundData {
+			sample_rate: 1,
+			frames: FrameStorage::Stream(source.clone()),
+			settings: Default::default(),
+			slice: None,
+		};
+		if looping {
+			data = data.loop_region(..);
+		}
+		let (mut sound, _) = data.split();
+		let info = MockInfoBuilder::new().build();
+		for _ in 0..3 {
+			sound.process_one(1., &info);
+		}
+		source.length.store(8, Ordering::Release);
+		sound.on_start_processing();
+		for _ in 0..20 {
+			sound.process_one(1., &info);
+		}
+		assert_eq!(sound.finished(), !looping);
+		if looping {
+			assert!(sound.process_one(1., &info) != Frame::ZERO);
+		}
+	}
+}
+
+#[test]
+fn queued_stream_preroll_recovers_within_one_callback_without_skipping_samples() {
+	use crate::sound::static_sound::{FrameSource, FrameStorage, QueuedStaticSound};
+	use std::sync::atomic::{AtomicUsize, Ordering};
+	struct Delayed {
+		attempts: AtomicUsize,
+		delay: usize,
+	}
+	impl FrameSource for Delayed {
+		fn len(&self) -> usize {
+			8
+		}
+		fn frame(&self, index: usize) -> Option<Frame> {
+			if self.attempts.fetch_add(1, Ordering::Relaxed) < self.delay {
+				return None;
+			}
+			(index < 8).then(|| Frame::from_mono(index as f32 + 3.))
+		}
+	}
+	fn render(delay: usize) -> Vec<Frame> {
+		let (mut sound, _, mut queue) =
+			queue_data(4, &[1., 2., 3., 4., 5., 6., 7., 8.]).into_sound_with_queue(2, Arc::new(()));
+		let next = StaticSoundData {
+			sample_rate: 8,
+			frames: FrameStorage::Stream(Arc::new(Delayed {
+				attempts: AtomicUsize::new(0),
+				delay,
+			})),
+			settings: Default::default(),
+			slice: None,
+		};
+		queue.announce(1).unwrap();
+		assert!(
+			queue
+				.push(QueuedStaticSound {
+					index: 1,
+					data: next,
+					retention: None
+				})
+				.is_ok()
+		);
+		queue.start();
+		sound.on_start_processing();
+		let mut out = [Frame::ZERO; 128];
+		sound.process(&mut out, 0.125, &MockInfoBuilder::new().build());
+		out.into_iter().filter(|f| *f != Frame::ZERO).collect()
+	}
+	assert_eq!(render(10), render(0));
 }

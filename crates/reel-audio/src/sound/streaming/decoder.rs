@@ -1,7 +1,8 @@
 #[cfg(test)]
 pub(crate) mod mock;
 #[cfg(feature = "symphonia")]
-pub(crate) mod symphonia;
+/// Shared Symphonia packet decoder for host readers.
+pub mod symphonia;
 
 use crate::frame::Frame;
 

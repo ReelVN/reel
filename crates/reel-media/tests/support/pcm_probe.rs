@@ -172,7 +172,50 @@ fn queued_segments_have_no_callback_allocation() {
     println!("prepared_queue segments=4 exclusive_end=64/128 boundary_gaps=0 callback_alloc=0 realloc=0 dealloc=0 final_pcm_bytes={}", pool.usage().bytes);
 }
 
+fn streaming_callback_is_allocation_free() {
+    use std::{sync::{Arc, atomic::AtomicBool}, time::Duration};
+    let bytes = std::fs::read("examples/assets/chime.wav").unwrap();
+    let length = bytes.len() as u64;
+    let pool = BudgetPool::new(BudgetCategory::CpuOutput, QueueLimits { max_requests: 4, max_bytes: 1 << 20 });
+    let sound = DecodedSound::prepare(std::io::Cursor::new(bytes), length, pool.clone(), 0, 1024, Arc::new(|| {}), &AtomicBool::new(false)).unwrap().looping();
+    let mut service = AudioReclaimService::new(ReclaimLimits::default(), WakeSignal::new(|| {})).unwrap();
+    let mut output = OfflineOutput::new(AudioDeviceConfig { sample_rate_hz: 48_000, sample_format: SampleFormat::F32, layout: ChannelLayout::Stereo }, WakeSignal::new(|| {})).unwrap();
+    let format = output.configure(AudioRequest::default()).unwrap();
+    let mut mixer = KiraMixer::new(&format, MixerLimits::default(), &service).unwrap();
+    let mut voice = mixer.play(sound).unwrap();
+    assert!(output.start(mixer.take_fill().unwrap()).is_ok());
+    let mut pcm = [0.0f32; 256];
+    let mut audible = false;
+    for block in 0..1024 {
+        if block == 512 { voice.seek(Duration::from_millis(20)); }
+        ENABLED.set(true);
+        output.render(&mut pcm, CallbackTiming { now: MonoTime(0), latency_frames: None, uncertainty_frames: None });
+        ENABLED.set(false);
+        audible |= pcm.iter().any(|v| *v != 0.);
+        std::thread::sleep(Duration::from_micros(100));
+    }
+    assert!(audible, "stream position={} stopped={} error={:?}", voice.position_seconds(), voice.is_stopped(), voice.error());
+    voice.stop();
+    ENABLED.set(true);
+    output.render(&mut pcm, CallbackTiming { now: MonoTime(0), latency_frames: None, uncertainty_frames: None });
+    ENABLED.set(false);
+    drop(voice);
+    wait_for(|| {
+        ENABLED.set(true);
+        output.render(&mut pcm, CallbackTiming { now: MonoTime(0), latency_frames: None, uncertainty_frames: None });
+        ENABLED.set(false);
+        mixer.reclaim_unused(64); pool.usage().bytes == 0
+    });
+    output.stop().unwrap();
+    drop(mixer);
+    service.drain_and_join().unwrap();
+    let c = COUNTS.get();
+    assert_eq!((c.allocations, c.reallocations, c.deallocations), (0, 0, 0));
+    println!("streaming PCM_calls=1025 loop/seek/stop alloc=0 realloc=0 dealloc=0 final_pcm=0");
+}
+
 fn main() {
+    streaming_callback_is_allocation_free();
     queued_segments_have_no_callback_allocation();
     let mut service =
         AudioReclaimService::new(ReclaimLimits::default(), WakeSignal::new(|| {})).unwrap();
