@@ -147,6 +147,33 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
         .into();
     let mut cases = vec![
         (
+            r#"fn options(flag) {
+                if flag { {accept: [40]} } else { {back: [2]} }
+            }
+            fn empty_block() { {} }
+            fn empty_table() { ({}) }
+            fn main() {
+                let mut calls=0;
+                fn key() { calls+=1; "answer" }
+                let keys=["answer"];
+                let first=if true { {[keys[0]]: options(true).accept[0]} }
+                    else { {back: 0} };
+                let second=if false { {unused: key()} }
+                    else { {[key()]: options(false).back[0]} };
+                let copy=|| { {...first, f"{"中文"}": second.answer} };
+                let result=match 1 { _ => { {answer: copy().answer + copy()["中文"]} } };
+                let mut visits=0;
+                { outer: loop { visits+=1; break outer; } }
+                { outer: while true { visits+=1; break outer; } }
+                { outer: for item in [1] { visits+=1; break outer; } }
+                if calls!=1 || visits!=3 || empty_block()!=null || empty_table().len()!=0 {
+                    throw "table/block selection changed execution";
+                }
+                result.answer
+            }"#,
+            42,
+        ),
+        (
             r#"fn main() {
                 let mut calls=0; let mut guards=0;
                 fn source(){calls+=1; "hello"}

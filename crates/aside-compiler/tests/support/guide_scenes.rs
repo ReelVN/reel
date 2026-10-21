@@ -56,6 +56,7 @@ pub const SCENES: &[(&str, E)] = &[
     ("component result in story", E::Block),
     ("scoped prompt in story", E::Block),
     ("choice component and branch in story", E::Block),
+    ("conditional component options", E::Block),
     ("clear dialogue presentation", E::Block),
     ("retain recent history", E::Block),
     ("save button construction", E::Module),

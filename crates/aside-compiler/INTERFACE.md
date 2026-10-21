@@ -84,6 +84,13 @@ type/effect checking, lowering, package verification or execution.
 - Match arms (lines 25/119): outer bare `{ ... }` is a statement block with an
   optional final value; object results are grouped, `_ => ({name: value})`.
   This shares closure/block rules.
+- Inside a statement block, an object field prefix (`{name:`, `{"key":`,
+  `{[expression]:`) or spread prefix (`{...`) selects the ordinary object
+  expression, including as the block's final value. A label followed by
+  while/for/loop keeps its block meaning. Empty `{}` remains a statement block;
+  use `({})` for an empty object value. Required outer blocks and trailing
+  children keep their existing grammar. This changes parsing only; HIR,
+  bytecode and native ABI are unchanged.
 - Control heads (line 25): outer if/while/for/match heads disable trailing
   children; explicit parentheses restore ordinary expressions. Proven pairs:
   `if ready() { go(); }` / `if (ready() { node; }) { go(); }`. Class base

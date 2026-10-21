@@ -13,6 +13,39 @@ use support::*;
 const SOURCE: &str = include_str!("../../../examples/author_buttons.aside");
 
 #[test]
+fn conditional_table_tails_configure_input_from_source_and_asb() {
+    let source = r#"fn main() {
+        for flag in [true, false] {
+            let actions=if flag { {accept: [binding("Enter")]} }
+                else { {back: [binding("Escape")]} };
+            if actions.has_own("accept") != flag || actions.has_own("back") == flag {
+                throw "wrong conditional input table";
+            }
+            stage.replace(input(bindings: actions, on_action: |event| {}) {
+                column { text("Conditional input"); }
+            });
+        }
+        stage.replace(stack());
+    }"#;
+    let checked = reel_cli::check(source, "conditional-input.aside").unwrap();
+    let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
+    for story in [
+        reel_cli::into_story(checked, "main::main").unwrap(),
+        reel_cli::decode_story(&artifact.bytes).unwrap(),
+    ] {
+        let mut driver = AsideSessionUi::from_compiled(
+            Session::new(SessionId(1), Epoch(1)).unwrap(),
+            story,
+            "en",
+            VmLimits::default(),
+        )
+        .unwrap();
+        settle(&mut driver);
+        assert_eq!(driver.state(), StoryState::Finished);
+    }
+}
+
+#[test]
 fn source_and_asb_retire_a_batch_of_live_completion_owners() {
     let source = r#"fn main() {
         let owner=stack(); stage.replace(owner);
