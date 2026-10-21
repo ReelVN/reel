@@ -41,18 +41,19 @@ impl SessionVm {
         let Some((target, callback)) = self.stage.input_wheel(self.vm.heap(), input)? else {
             return Ok(false);
         };
-        let event = super::observable::record(
-            self.vm.heap_mut(),
-            &[
-                ("target", target),
-                ("x", Value::float(input.position.x)),
-                ("y", Value::float(input.position.y)),
-                ("delta_x", Value::float(input.delta.x)),
-                ("delta_y", Value::float(input.delta.y)),
-            ],
-            &[],
-        )?;
-        self.start_callback(session, input.node, callback, event)
+        self.start_callback_with_event(session, input.node, callback, |heap| {
+            super::observable::record(
+                heap,
+                &[
+                    ("target", target),
+                    ("x", Value::float(input.position.x)),
+                    ("y", Value::float(input.position.y)),
+                    ("delta_x", Value::float(input.delta.x)),
+                    ("delta_y", Value::float(input.delta.y)),
+                ],
+                &[],
+            )
+        })
     }
     pub fn input_pointer(
         &mut self,
@@ -84,21 +85,23 @@ impl SessionVm {
             PointerPhase::Released => "released",
             PointerPhase::Cancelled => "cancelled",
         };
-        let heap = self.vm.heap_mut();
-        let phase = heap.alloc_string(phase)?;
-        let event = super::observable::record(
-            heap,
-            &[
-                ("target", target),
-                ("x", Value::float(input.position.x)),
-                ("y", Value::float(input.position.y)),
-                ("phase", phase),
-            ],
-            &[],
-        )?;
-        self.start_callback(session, input.node, callback, event)?;
+        let mut argument = None;
+        self.start_callback_with_event(session, input.node, callback, |heap| {
+            let phase = heap.alloc_string(phase)?;
+            let event = super::observable::record(
+                heap,
+                &[
+                    ("target", target),
+                    ("x", Value::float(input.position.x)),
+                    ("y", Value::float(input.position.y)),
+                    ("phase", phase),
+                ],
+                &[],
+            )?;
+            argument = Some(event);
+            Ok(event)
+        })?;
         if input.phase == PointerPhase::Moved {
-            let argument = self.vm.callable_has_parameters(callback)?.then_some(event);
             self.tasks.last_mut().unwrap().pending_move = Some((argument, callback));
         }
         Ok(true)
@@ -120,29 +123,30 @@ impl SessionVm {
             ActionPhase::Cancelled => "cancelled",
             ActionPhase::Changed => return Err(AdapterError::Input("invalid key phase")),
         };
-        let heap = self.vm.heap_mut();
-        let event = heap.alloc_table()?;
-        let code = heap.alloc_string(&input.event.code.to_string())?;
-        let key = heap.alloc_string(&input.event.key.to_string())?;
-        let phase = heap.alloc_string(phase)?;
-        let mods = input.event.modifiers;
-        for (i, (name, value)) in [
-            ("target", target),
-            ("code", code),
-            ("key", key),
-            ("phase", phase),
-            ("shift", Value::bool(mods.shift())),
-            ("ctrl", Value::bool(mods.ctrl())),
-            ("alt", Value::bool(mods.alt())),
-            ("meta", Value::bool(mods.meta())),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let key = heap.alloc_string(name)?;
-            heap.table_store(event, i as u32, key, value)?;
-        }
-        self.start_callback(session, input.node, callback, event)
+        self.start_callback_with_event(session, input.node, callback, |heap| {
+            let event = heap.alloc_table()?;
+            let code = heap.alloc_string(&input.event.code.to_string())?;
+            let key = heap.alloc_string(&input.event.key.to_string())?;
+            let phase = heap.alloc_string(phase)?;
+            let mods = input.event.modifiers;
+            for (i, (name, value)) in [
+                ("target", target),
+                ("code", code),
+                ("key", key),
+                ("phase", phase),
+                ("shift", Value::bool(mods.shift())),
+                ("ctrl", Value::bool(mods.ctrl())),
+                ("alt", Value::bool(mods.alt())),
+                ("meta", Value::bool(mods.meta())),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let key = heap.alloc_string(name)?;
+                heap.table_store(event, i as u32, key, value)?;
+            }
+            Ok(event)
+        })
     }
     /// Publish input feedback before dispatching callbacks. A batch uses one stage sync.
     pub fn interactions(
@@ -193,19 +197,20 @@ impl SessionVm {
         // Each callback sees the complete batch's current node state and its
         // own immutable transition. No events or tasks are made without a handler.
         for (node, target, callback, state) in callbacks {
-            let event = super::observable::record(
-                self.vm.heap_mut(),
-                &[
-                    ("target", target),
-                    ("hover", Value::bool(state.hover)),
-                    ("pressed", Value::bool(state.pressed)),
-                    ("focused", Value::bool(state.focused)),
-                    ("disabled", Value::bool(state.disabled)),
-                    ("focus_visible", Value::bool(state.focus_visible)),
-                ],
-                &[],
-            )?;
-            self.start_callback(session, node, callback, event)?;
+            self.start_callback_with_event(session, node, callback, |heap| {
+                super::observable::record(
+                    heap,
+                    &[
+                        ("target", target),
+                        ("hover", Value::bool(state.hover)),
+                        ("pressed", Value::bool(state.pressed)),
+                        ("focused", Value::bool(state.focused)),
+                        ("disabled", Value::bool(state.disabled)),
+                        ("focus_visible", Value::bool(state.focus_visible)),
+                    ],
+                    &[],
+                )
+            })?;
         }
         Ok(changed)
     }
@@ -217,10 +222,12 @@ impl SessionVm {
         let Some((target, closure)) = self.stage.click(self.vm.heap(), node)? else {
             return Ok(false);
         };
-        let event = self.vm.heap_mut().alloc_table()?;
-        let key = self.vm.heap_mut().alloc_string("target")?;
-        self.vm.heap_mut().table_store(event, 0, key, target)?;
-        self.start_callback(session, node, closure, event)
+        self.start_callback_with_event(session, node, closure, |heap| {
+            let event = heap.alloc_table()?;
+            let key = heap.alloc_string("target")?;
+            heap.table_store(event, 0, key, target)?;
+            Ok(event)
+        })
     }
 
     pub fn text_link(
@@ -232,10 +239,11 @@ impl SessionVm {
         let Some((target, callback)) = self.stage.text_link(self.vm.heap(), link)? else {
             return Ok(false);
         };
-        let heap = self.vm.heap_mut();
-        let id = super::text::alloc_string(heap, &link.id, self.read_limit)?;
-        let event = super::observable::record(heap, &[("target", target), ("id", id)], &[])?;
-        self.start_callback(session, link.node, callback, event)
+        let read_limit = self.read_limit;
+        self.start_callback_with_event(session, link.node, callback, |heap| {
+            let id = super::text::alloc_string(heap, &link.id, read_limit)?;
+            super::observable::record(heap, &[("target", target), ("id", id)], &[])
+        })
     }
 
     pub fn input_action(
@@ -286,16 +294,17 @@ impl SessionVm {
         };
         self.stage.sync(self.vm.heap_mut(), self.read_limit)?;
         if closure.tag() != ValueTag::Null {
-            let heap = self.vm.heap_mut();
-            let event = heap.alloc_table()?;
-            for (i, (name, value)) in [("target", target), ("value", value)]
-                .into_iter()
-                .enumerate()
-            {
-                let key = heap.alloc_string(name)?;
-                heap.table_store(event, i as u32, key, value)?;
-            }
-            self.start_callback(session, change.node, closure, event)?;
+            self.start_callback_with_event(session, change.node, closure, |heap| {
+                let event = heap.alloc_table()?;
+                for (i, (name, value)) in [("target", target), ("value", value)]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let key = heap.alloc_string(name)?;
+                    heap.table_store(event, i as u32, key, value)?;
+                }
+                Ok(event)
+            })?;
         }
         Ok(true)
     }
@@ -313,16 +322,17 @@ impl SessionVm {
         };
         self.stage.sync(self.vm.heap_mut(), self.read_limit)?;
         if closure.tag() != ValueTag::Null {
-            let heap = self.vm.heap_mut();
-            let event = heap.alloc_table()?;
-            for (i, (name, value)) in [("target", target), ("value", value)]
-                .into_iter()
-                .enumerate()
-            {
-                let key = heap.alloc_string(name)?;
-                heap.table_store(event, i as u32, key, value)?;
-            }
-            self.start_callback(session, input.node, closure, event)?;
+            self.start_callback_with_event(session, input.node, closure, |heap| {
+                let event = heap.alloc_table()?;
+                for (i, (name, value)) in [("target", target), ("value", value)]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let key = heap.alloc_string(name)?;
+                    heap.table_store(event, i as u32, key, value)?;
+                }
+                Ok(event)
+            })?;
         }
         Ok(true)
     }
@@ -334,13 +344,24 @@ impl SessionVm {
         closure: Value,
         event: Value,
     ) -> Result<bool, AdapterError> {
-        let arguments = [event];
-        let arguments = if self.vm.callable_has_parameters(closure)? {
-            &arguments[..]
+        self.start_callback_with_event(session, node, closure, |_| Ok(event))
+    }
+
+    // Build the input payload only when the callable accepts an argument.
+    // Task creation and node ownership follow the same path for every handler.
+    fn start_callback_with_event(
+        &mut self,
+        session: &mut Session,
+        node: NodeId,
+        closure: Value,
+        event: impl FnOnce(&mut aside_vm::Heap) -> Result<Value, AdapterError>,
+    ) -> Result<bool, AdapterError> {
+        let argument = if self.vm.callable_has_parameters(closure)? {
+            Some(event(self.vm.heap_mut())?)
         } else {
-            &[]
+            None
         };
-        self.start_owned_task(session, Some(node), closure, arguments, None)?;
+        self.start_owned_task(session, Some(node), closure, argument.as_slice(), None)?;
         Ok(true)
     }
 
