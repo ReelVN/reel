@@ -12,6 +12,12 @@ Reel 的目标是让你用 Aside 表达想象中的画面和交互，组合自�
 
 ## 一 最小项目与共同写法
 
+### 在 VS Code 中编写
+
+正在接入的 Aside 扩展提供诊断、补全、参数提示、悬停说明和定义跳转。安装 VSIX 后打开 `.aside` 文件，或运行 **Aside: New File**。函数调用中按 Ctrl+Shift+Space 查看具名参数、类型和默认值；F12 跳转到作者源码，内置接口则打开由 Rust 声明生成的只读 Aside 定义。
+
+Windows 扩展包内含 `reel-lsp`。使用自己构建的服务端时，将 `aside.server.path` 设为可执行文件完整路径；独立语言工程使用 `aside-lsp`。**Aside: Run Current File** 保存当前文件并调用 Reel CLI，`aside.reel.path` 指定 CLI 路径，`aside.reel.assets` 指定资源目录。编辑检查直接使用未保存内容。
+
 从 main.aside 的 main 启动工程。check/build/dev 接受源码文件或工程目录，run 执行已经构建的 .asb。可运行多文件工程见 [author_project](../../examples/author_project/main.aside)。标题页可用 game.start 切换到全新剧情会话。
 
 保存为 main.aside，并在资源根提供 fonts/body.ttf。下文命令会准备本地验证字体并运行工程。

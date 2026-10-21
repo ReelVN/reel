@@ -19,6 +19,8 @@ The macro preserves the Rust function and generates a same-named module with `SY
 
 `NativeContract::external()` supplies source-analysis metadata. `aside_host::lower()` generates bytecode native linkage and constant default functions. `aside_host::runtime_support()` resolves the host's contracts against the package; pass its result to `Vm::load`. The host selects which native calls a package may use.
 
+The editor integration being implemented generates signatures and read-only Aside declarations from this metadata. Parameters retain their registered names and literal defaults. Rust declarations can refine a dynamic runtime value with a source type, such as a named host object or a union; property declarations also supply their read and write types. This information feeds semantic member lookup, completion, hover and definition navigation. The generated declarations share the English source documentation and remain views of the host implementation.
+
 Once the host includes this declaration in its analysis environment, Aside can use positional, named and default arguments, including through a function value:
 
 ```aside

@@ -12,6 +12,12 @@ Interface parameters, properties and examples live in English documentation besi
 
 ## 1 A Minimal Project and Shared Conventions
 
+### Writing in VS Code
+
+The Aside extension being integrated provides diagnostics, completion, signature help, hover documentation and definition navigation. Install the VSIX and open an `.aside` file, or run **Aside: New File**. Press Ctrl+Shift+Space inside a call to see named parameters, types and defaults. F12 opens author source or a read-only Aside definition generated from the built-in interface's Rust declaration.
+
+The Windows extension package includes `reel-lsp`. To use your own server build, set `aside.server.path` to its full executable path; use `aside-lsp` for standalone language projects. **Aside: Run Current File** saves the current file and invokes the Reel CLI. Set `aside.reel.path` to the CLI executable and `aside.reel.assets` to the asset directory. Editor checks use unsaved document contents.
+
 Start the project from main in main.aside. check/build/dev accept a source file or project directory; run executes the built .asb. See the runnable multi-file [author_project](../../examples/author_project/main.aside). The title screen can use game.start to enter a fresh story session.
 
 Save this as main.aside and provide fonts/body.ttf under the resource root. The commands below prepare a local font and run the project.
