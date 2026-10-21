@@ -4,6 +4,18 @@
 use crate::core::{EventCtx, PointerEvent, PointerInfo, PointerType, ScrollDelta, pointer_info};
 use crate::kurbo::{Point, Rect, Size, Vec2};
 
+/// Convert native wheel units to logical window-axis pixels shared by scroll and input.
+pub fn wheel_delta_pixels(delta: ScrollDelta, scale_factor: f64, viewport: Size) -> Vec2 {
+    match delta {
+        ScrollDelta::LineDelta(x, y) => Vec2::new(f64::from(x) * 40., f64::from(y) * 40.),
+        ScrollDelta::PageDelta(x, y) => Vec2::new(
+            f64::from(x) * viewport.width,
+            f64::from(y) * viewport.height,
+        ),
+        ScrollDelta::PixelDelta(p) => Vec2::new(p.x, p.y) / scale_factor,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ScrollAxis {
     Horizontal,
@@ -190,16 +202,7 @@ impl ScrollState {
         let info = pointer_info(event);
         match event {
             PointerEvent::Scroll(event) => {
-                let delta = match event.delta {
-                    ScrollDelta::LineDelta(x, y) => {
-                        Vec2::new(f64::from(x) * 40., f64::from(y) * 40.)
-                    }
-                    ScrollDelta::PageDelta(x, y) => Vec2::new(
-                        f64::from(x) * self.viewport.width,
-                        f64::from(y) * self.viewport.height,
-                    ),
-                    ScrollDelta::PixelDelta(p) => Vec2::new(p.x, p.y) / ctx.scale_factor(),
-                };
+                let delta = wheel_delta_pixels(event.delta, ctx.scale_factor(), self.viewport);
                 let delta = if self.axis == ScrollAxis::Horizontal && delta.x == 0. {
                     Vec2::new(delta.y, 0.)
                 } else {

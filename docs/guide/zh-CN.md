@@ -799,11 +799,11 @@ fn preferences() {
 ```aside
 fn picture_button(normal, hovered, pressed, clicked) {
     let control = button(on_click: clicked);
-    control.content = image(source: derive(|| {
+    control.add(image(source: derive(|| {
         if control.pressed { pressed }
         else if control.hover { hovered }
         else { normal }
-    }));
+    })));
     return control;
 }
 ```
@@ -1314,6 +1314,9 @@ fn main() {
 ```
 
 ## 命名动作与输入节点
+
+滚轮交互使用 `input(on_wheel: |event| { ... })`，事件含 target、x、y、delta_x、delta_y。x/y 是已显示画面中节点内容区的局部位置；delta 是逻辑窗口轴像素，正值向右/向下，不再按画布或节点变换缩放。行滚轮每行40像素，像素滚轮除窗口DPI，页滚轮乘接收input内容区宽高。内层scroll能移动时消费；到边界后向祖先冒泡，第一个有on_wheel的input消费整件事件。回调可以等待并归节点所有，沿模态和隐藏/禁用/退休规则，不产生pressed/released。示例：[author_wheel.aside](../../examples/author_wheel.aside)。
+
 
 `input` 是按 stack 布局的共同节点，绑定键盘、手柄与指针到自定义动作。根 input 在控件尚未获得焦点时即可接收键盘/手柄输入；已聚焦的子控件保持优先权，未消费的输入交给最近的祖先映射。因此菜单可统一绑定 Escape/手柄返回，场景可统一绑定快进，点击子按钮不会使这些映射失效。焦点改变取消保持中的动作；输入不跨越模态范围，文本框保留键盘与 IME。下面与 [author_input.aside](../../examples/author_input.aside) 相同，可用第一节的 dev/build/run 命令运行。将字体文件放在 `fonts/body.ttf`，或修改 main 中的路径。
 

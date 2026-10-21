@@ -236,6 +236,8 @@ reel-ui Stage 只投影当前行、逻辑索引、位置、总估计高度及修
 
 ### 当前作者舞台实现合同
 
+`input(on_wheel: callback)` 沿普通指针冒泡接收内层控件未处理的整个滚轮事件；首个声明回调的 input 消费该事件，不拆分轴或剩余量。事件为 `{target,x,y,delta_x,delta_y}`：x/y 使用已接受画面的节点内容区局部坐标；delta 使用逻辑窗口轴的像素，正值向右/向下，不按画布或节点缩放/旋转二次转换。LineDelta 每行40像素，PixelDelta 除窗口DPI，PageDelta 乘接收input的内容区宽高，与现有scroll策略一致。内层scroll实际移动时消费，边界未移动才继续冒泡。回调可等待并归节点owner，模态、隐藏、禁用、退休及接受画面沿共同输入合同；没有按住/释放状态。input native ABI 19，input宿主属性快照适配器10；Aside字节码、VM/Session格式与依赖不变。范围为UI事件、player路由、engine回调/属性快照、示例和双语指南；检查源码/ASB、DPI/画布缩放、滚动边界、模态和owner取消。
+
 `stage.capture(width: null, height: null, owner: null)` 返回可取消的 Awaitable，完成值为不可变 PNG Bytes。宿主锁定请求被取走时最后实际呈现的帧；没有已呈现帧则拒绝。省略尺寸使用该帧尺寸，只指定一边则保持比例。截图按目标尺寸绘制，不改变舞台、呈现确认或输入几何。截图后端与窗口系统独立；GPU 读回使用完成通知，PNG 编码在工作线程完成，字节及排队工作计入资源预算。节点退休、取消、会话替换和设备丢失终结请求，旧帧资源保留至 GPU 完成；截图处理中不采集执行快照。`image(source:)` 同时接受资源名和 PNG/JPEG Bytes；相同字节对象的普通属性更新复用图像来源。
 
 `saves.save(slot, title: null, thumbnail: null)` 接受 PNG Bytes，与执行快照在同一个槽文件内原子提交。`saves.list()` 只返回元数据及 has_thumbnail；`await saves.thumbnail(slot)` 按需返回 PNG Bytes 或 null。目录存储将 PNG 作为压缩快照后的可选附件，用固定尾索引定位；列表不解压快照或加载图片。缩略图由作者在打开菜单前获取，不自动截图菜单。此变更覆盖 reel-render/reel-player/reel-engine/reel-ui、示例与双语指南，capture/thumbnail native ABI 1、save ABI 2；无新依赖，Aside/Aside 字节码 不变。Rust 宿主实现 `CaptureBackend` 并驱动 `CaptureService`，在 `StoryRuntime` 显式启用 frame capture；`CaptureService::drive` 接收 `&mut AsideSessionUi` 与最近已接受的 `RenderFrame`，通过 `StoryRuntime::driver_mut()` 取得驱动以遵守执行快照的可变访问屏障。未安装能力或资源不足时请求拒绝。GPU 提交保留资源至完成，取消的 PNG 编码在输出分块处退出。作者示例：[author_capture.aside](../examples/author_capture.aside)。

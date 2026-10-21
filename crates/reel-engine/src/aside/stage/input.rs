@@ -16,6 +16,8 @@ pub(in crate::aside) enum InputField {
     OnKey,
     #[aside(name = "on_pointer", ty = Any, default = null, validate = validate_callback)]
     OnPointer,
+    #[aside(name = "on_wheel", ty = Any, default = null, validate = validate_callback)]
+    OnWheel,
 }
 fn validate_bindings(heap: &Heap, value: Value) -> Result<(), HeapError> {
     read_bindings(heap, value)
@@ -68,6 +70,28 @@ pub(super) fn validate(heap: &Heap, index: u32, value: Value) -> Result<(), Heap
 }
 
 impl StageBinding {
+    pub(in crate::aside) fn input_wheel(
+        &self,
+        heap: &Heap,
+        event: &reel_ui::stage::NodeWheel,
+    ) -> Result<Option<(Value, Value)>, AdapterError> {
+        if !self
+            .scene
+            .node(event.node)
+            .is_some_and(|n| matches!(n.kind, NodeKind::Input { wheel: true, .. }))
+            || !self.mounted_in_scope(heap, event.node, self.modal_scope(heap)?)?
+        {
+            return Ok(None);
+        }
+        let target = self.value(heap, event.node)?;
+        let callback = heap
+            .table_entry(
+                heap.host_fields(target)?,
+                InputField::OnWheel.index() as u32,
+            )?
+            .1;
+        Ok((callback.tag() != ValueTag::Null).then_some((target, callback)))
+    }
     pub(in crate::aside) fn input_pointer(
         &self,
         heap: &Heap,

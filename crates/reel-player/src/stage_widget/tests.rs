@@ -5,6 +5,7 @@ mod retained;
 mod scroll_alignment;
 mod scroll_restore;
 mod virtual_images;
+mod wheel;
 use crate::session::SessionUi;
 use reel_core::budget::{BudgetCategory, BudgetPool, QueueLimits};
 use reel_core::identity::{FrameId, SurfaceEpoch};
@@ -525,6 +526,9 @@ fn virtual_list_navigation_finds_controls_beyond_initial_nonfocusable_rows() {
 }
 impl Fixture {
     fn new(font: Option<reel_ui::peniko::Blob<u8>>) -> Self {
+        Self::with_canvas(font, None)
+    }
+    fn with_canvas(font: Option<reel_ui::peniko::Blob<u8>>, canvas: Option<[u32; 2]>) -> Self {
         let mut stage = Stage::default();
         let red = stage
             .create(
@@ -577,6 +581,11 @@ impl Fixture {
         ui.set_stage(&stage);
         let widget = ui.widget().prepare();
         let id = widget.id();
+        let widget = if let Some(size) = canvas {
+            reel_ui::core::NewWidget::new(reel_ui::widgets::Canvas::new(widget, size)).erased()
+        } else {
+            widget.erased()
+        };
         let root_widget = RenderRoot::new(
             widget,
             |_| {},
@@ -2175,6 +2184,7 @@ fn camera_accepted_frame_pointer_clip_and_composition_cost() {
                 listening: false,
                 keyboard: false,
                 pointer: true,
+                wheel: false,
             },
             NodeProps {
                 x: 30.,

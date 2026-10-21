@@ -787,11 +787,11 @@ An image button is also the author's own ordinary function. The button provides 
 ```aside
 fn picture_button(normal, hovered, pressed, clicked) {
     let control = button(on_click: clicked);
-    control.content = image(source: derive(|| {
+    control.add(image(source: derive(|| {
         if control.pressed { pressed }
         else if control.hover { hovered }
         else { normal }
-    }));
+    })));
     return control;
 }
 ```
@@ -1315,6 +1315,9 @@ fn main() {
 ```
 
 ## Named actions and input nodes
+
+Use `input(on_wheel: |event| { ... })` for wheel interactions. Events contain target, x, y, delta_x and delta_y. x/y are local content-box positions in the accepted frame; deltas are pixels along logical window axes, positive right/down, without another canvas or node transform. Line deltas use 40 pixels per line, pixel deltas divide by window DPI, and page deltas multiply the receiving input's content-box dimensions. An inner scroll consumes events when it moves; at a boundary they bubble to the first ancestor input with on_wheel, which consumes the entire event. Callbacks may wait and belong to their node, following modal, visibility, enabled and retirement rules, with no pressed/released state. Example: [author_wheel.aside](../../examples/author_wheel.aside).
+
 
 Focused controls handle input first; unclaimed input reaches the nearest matching ancestor input node. A menu can bind Escape/gamepad Back and a scene can bind skip without repeating those bindings on every child button. Focus changes cancel held actions. Input stays within the modal scope, and text editors retain keyboard and IME input.
 
