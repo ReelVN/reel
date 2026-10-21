@@ -49,7 +49,7 @@ pub struct TextOutline {
 }
 
 use accesskit::{TextDecoration, TextDecorationStyle};
-use kurbo::{Affine, Line, Stroke};
+use kurbo::{Affine, Line, Stroke, Vec2};
 use peniko::{Brush, Fill};
 use reel_text::{Layout, PositionedLayoutItem, Style};
 use smallvec::SmallVec;
@@ -130,6 +130,13 @@ pub(crate) fn render_text_lines(
             let font = run.font();
             let font_size = run.font_size();
             let synthesis = run.synthesis();
+            let font_embolden = if synthesis.embolden() {
+                // One twenty-fourth of an em keeps synthesis proportional to
+                // each rich-text run, before its glyph transform and raster scale.
+                Vec2::new(1., 1.) * (f64::from(font_size) / 24.)
+            } else {
+                Vec2::ZERO
+            };
             let glyph_xform = synthesis
                 .skew()
                 .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
@@ -154,6 +161,7 @@ pub(crate) fn render_text_lines(
                     .hint(hint)
                     .transform(transform)
                     .glyph_transform(glyph_xform)
+                    .font_embolden(font_embolden)
                     .font_size(font_size)
                     .normalized_coords(coords)
                     .draw(
@@ -166,6 +174,7 @@ pub(crate) fn render_text_lines(
                 .hint(hint)
                 .transform(transform)
                 .glyph_transform(glyph_xform)
+                .font_embolden(font_embolden)
                 .font_size(font_size)
                 .normalized_coords(coords)
                 .draw(&peniko::Style::Fill(Fill::NonZero), &glyphs);
@@ -256,6 +265,13 @@ pub(crate) fn render_text_revealed_lines(
             let font = run.font();
             let font_size = run.font_size();
             let synthesis = run.synthesis();
+            let font_embolden = if synthesis.embolden() {
+                // One twenty-fourth of an em keeps synthesis proportional to
+                // each rich-text run, before its glyph transform and raster scale.
+                Vec2::new(1., 1.) * (f64::from(font_size) / 24.)
+            } else {
+                Vec2::ZERO
+            };
             let glyph_xform = synthesis
                 .skew()
                 .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
@@ -328,6 +344,7 @@ pub(crate) fn render_text_revealed_lines(
                         .hint(hint)
                         .transform(transform)
                         .glyph_transform(glyph_xform)
+                        .font_embolden(font_embolden)
                         .font_size(font_size)
                         .normalized_coords(coords)
                         .draw(
@@ -340,6 +357,7 @@ pub(crate) fn render_text_revealed_lines(
                     .hint(hint)
                     .transform(transform)
                     .glyph_transform(glyph_xform)
+                    .font_embolden(font_embolden)
                     .font_size(font_size)
                     .normalized_coords(coords)
                     .draw(&peniko::Style::Fill(Fill::NonZero), &glyphs);
@@ -462,6 +480,9 @@ mod reveal_tests {
     use crate::reel_text::{FontContext, LayoutContext};
 
     fn layout(text: &str, styled: bool) -> Layout<BrushIndex> {
+        weighted_layout(text, styled, 400.)
+    }
+    fn weighted_layout(text: &str, styled: bool, weight: f32) -> Layout<BrushIndex> {
         let bytes = std::fs::read(std::env::var_os("REEL_SESSION_FONT").expect(
             "set REEL_SESSION_FONT to a real font with Latin ligatures and Hebrew/Arabic glyphs",
         ))
@@ -485,6 +506,9 @@ mod reveal_tests {
         let mut builder = context.ranged_builder(&mut fonts, text, 1., false);
         builder.push_default(reel_text::StyleProperty::FontFamily(family.as_str().into()));
         builder.push_default(reel_text::StyleProperty::FontSize(24.));
+        builder.push_default(reel_text::StyleProperty::FontWeight(
+            reel_text::FontWeight::new(weight),
+        ));
         if styled {
             builder.push_default(reel_text::StyleProperty::Underline(true));
             builder.push_default(reel_text::StyleProperty::Strikethrough(true));
@@ -548,6 +572,83 @@ mod reveal_tests {
             })
             .flat_map(|run| run.glyphs.iter().map(|glyph| (*glyph, run.brush.clone())))
             .collect()
+    }
+
+    #[test]
+    #[ignore = "requires REEL_SESSION_FONT containing a single Regular face"]
+    fn synthetic_bold_preserves_shaping_and_reveal_in_fill_and_outline() {
+        fn runs(scene: &Scene) -> Vec<&crate::imaging::record::GlyphRun> {
+            scene
+                .commands()
+                .iter()
+                .filter_map(|command| match command {
+                    Command::Draw(id) => match scene.draw_op(*id) {
+                        Draw::GlyphRun(run) => Some(run),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect()
+        }
+        let text = "Bold office";
+        let regular = weighted_layout(text, false, 400.);
+        let bold = weighted_layout(text, false, 700.);
+        let regular_scene = painted(&regular, None);
+        let bold_scene = painted(&bold, None);
+        assert_eq!(
+            glyphs(&regular_scene),
+            glyphs(&bold_scene),
+            "synthetic weight keeps shaping positions"
+        );
+        assert!(
+            runs(&regular_scene)
+                .iter()
+                .all(|run| run.font_embolden == Vec2::ZERO)
+        );
+        assert!(!runs(&bold_scene).is_empty());
+        assert!(
+            runs(&bold_scene)
+                .iter()
+                .all(|run| run.font_embolden.x > 0. && run.font_embolden.y > 0.)
+        );
+        for end in [4, text.len()] {
+            let revealed = painted(&bold, Some(0..end));
+            let outlined = outlined(&bold, 0..end);
+            let reveal_runs = runs(&revealed);
+            let outlined_runs = runs(&outlined);
+            assert!(glyphs(&revealed).len() <= glyphs(&bold_scene).len());
+            assert_eq!(outlined_runs.len(), reveal_runs.len() * 2);
+            for (plain, pair) in reveal_runs.iter().zip(outlined_runs.chunks_exact(2)) {
+                for drawn in pair {
+                    assert_eq!(drawn.font_embolden, plain.font_embolden);
+                    assert!(drawn.font_embolden.x > 0.);
+                    assert_eq!(drawn.glyphs, plain.glyphs);
+                }
+            }
+            if end == text.len() {
+                assert_eq!(glyphs(&revealed), glyphs(&bold_scene));
+            } else {
+                assert!(glyphs(&revealed).len() < glyphs(&bold_scene).len());
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires REEL_SESSION_FONT containing a single Bold face"]
+    fn real_bold_face_does_not_receive_synthetic_weight() {
+        let layout = weighted_layout("Real bold", false, 700.);
+        let mut count = 0;
+        for scene in [painted(&layout, None), outlined(&layout, 0..4)] {
+            for command in scene.commands() {
+                if let Command::Draw(id) = command
+                    && let Draw::GlyphRun(run) = scene.draw_op(*id)
+                {
+                    assert_eq!(run.font_embolden, Vec2::ZERO);
+                    count += 1;
+                }
+            }
+        }
+        assert!(count > 0);
     }
 
     #[test]
