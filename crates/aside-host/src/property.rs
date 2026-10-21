@@ -13,6 +13,12 @@ pub struct Property {
     pub animatable: bool,
     pub validator: Option<PropertyValidator>,
 }
+
+/// A property's registered type/default and its declaration documentation.
+pub struct PropertyDocumentation {
+    pub property: &'static Property,
+    pub markdown: &'static str,
+}
 impl Property {
     pub fn parameter(&self) -> NativeParameter {
         NativeParameter {
@@ -37,6 +43,8 @@ impl Property {
 }
 pub trait PropertySchema {
     const PROPERTIES: &'static [Property];
+    /// Return the declaration's Markdown for hover and completion documentation.
+    fn documentation(index: usize) -> &'static str;
     /// Host write entry point. Override to validate relationships between fields.
     fn validate_host(heap: &Heap, _host: Value, index: u32, value: Value) -> Result<(), HeapError> {
         Self::validate(heap, index, value)

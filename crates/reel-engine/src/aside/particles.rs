@@ -1,5 +1,18 @@
 //! Sprite emission producers reuse the common stage clock and result protocol.
 use super::{AdapterError, HostTicket, SessionVm, results, stage, text};
+
+aside_host::native_documentation! {
+    pub(super) fn documentation {
+        /// Create a particle node from an image source and deterministic seed.
+        /// Emission batches are started with emit and use the ordinary node transform.
+        "reel::particles";
+        /// Start an emission batch and return its activity. Burst/rate/duration control
+        /// births; lifetime, velocity, acceleration, size, opacity and spin control motion.
+        /// A repeated emit adds a batch. Pause freezes it; stop clears it. Finite batches
+        /// can finish; owner retirement cancels them. State and random sequence survive saves.
+        "reel::emit";
+    }
+}
 use aside_vm::executor::HostResponse;
 use aside_vm::{Heap, HeapError, HeapReservation, RootKind, RootToken, Value, ValueTag};
 use reel_core::budget::{BudgetCategory, BudgetPool, QueueLimits};

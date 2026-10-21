@@ -1065,6 +1065,128 @@ fn pointer_use_hides_navigation_focus_without_losing_keyboard_activation() {
 }
 
 #[test]
+fn virtual_images_cannot_settle_new_geometry_or_presentation_waits() {
+    for wait in ["stage.geometry(viewport)", "stage.presented()"] {
+        let source = r#"fn main() {
+            let state=model({pending:false,message:"waiting"});
+            let values=[];for i in 0..100 {values.append(i);}
+            let rows=list(||values,key:|i|i,virtual:true,build:|row|column(height:40){
+                image("withheld.png",width:40,height:40,visible:derive(||state.pending && row.value==4));
+            });
+            let viewport=scroll(width:200,height:100){rows};
+            stage.replace(stack{
+                viewport;
+                button(x:220,width:50,height:40,on_click:||{state.pending=true;await WAIT;state.message="done";});
+                button(x:280,width:50,height:40,on_click:||{state.pending=false;});
+                text(bind(state.message),y:200);
+            });
+        }"#.replace("WAIT",wait);
+        let mut runtime = runtime(&source);
+        runtime
+            .driver_mut()
+            .unwrap()
+            .ui_mut()
+            .set_assets(crate::assets::Assets::with_adapters(
+                Default::default(),
+                |wake| {
+                    let limits = reel_core::budget::QueueLimits {
+                        max_requests: 32,
+                        max_bytes: 768 << 20,
+                    };
+                    (
+                        Box::new(reel_core::test_support::MemoryAssetIo::new(
+                            limits,
+                            limits,
+                            wake.clone(),
+                        )),
+                        Box::new(crate::assets::ImageExecutor::new(limits, wake)),
+                    )
+                },
+            ));
+        let (mut bridge, root) = mount(runtime.driver().ui());
+        let mut serial = 0;
+        let draw =
+            |runtime: &mut StoryRuntime, bridge: &mut PresentationBridge, serial: &mut u64| {
+                runtime.driver_mut().unwrap().sync(bridge, root).unwrap();
+                *serial += 1;
+                let (source, receipt) = runtime
+                    .driver()
+                    .record(bridge, root, FrameId(*serial))
+                    .unwrap()?;
+                assert_eq!(
+                    bridge.resolve(PresentationNotice::new(
+                        source.key(),
+                        SurfaceEpoch(1),
+                        PresentationOutcome::Accepted(FrameId(*serial))
+                    )),
+                    NoticeResult::Accepted
+                );
+                runtime
+                    .driver_mut()
+                    .unwrap()
+                    .presented(bridge, &receipt)
+                    .unwrap();
+                Some(receipt)
+            };
+        for _ in 0..12 {
+            runtime.wake_input();
+            drain(&mut runtime);
+            draw(&mut runtime, &mut bridge, &mut serial);
+        }
+        let activate = |runtime: &mut StoryRuntime, bridge: &mut PresentationBridge, x| {
+            for kind in ["move", "down", "up"] {
+                runtime
+                    .driver_mut()
+                    .unwrap()
+                    .handle_pointer(bridge, mouse(kind, (x, 20.)))
+                    .unwrap();
+            }
+            runtime.wake_input();
+            drain(runtime);
+        };
+        let state = |runtime: &StoryRuntime| {
+            runtime
+                .driver()
+                .adapter()
+                .stage()
+                .nodes()
+                .find_map(|n| {
+                    if let NodeKind::Text(t) = &n.kind {
+                        Some(t.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap()
+        };
+        activate(&mut runtime, &mut bridge, 240.);
+        let mut retained = 0;
+        for _ in 0..12 {
+            if let Some(receipt) = draw(&mut runtime, &mut bridge, &mut serial) {
+                assert!(!receipt.current, "{wait}");
+                assert!(receipt.geometry.is_none());
+                retained += 1;
+            }
+            runtime.wake_input();
+            drain(&mut runtime);
+            assert_eq!(state(&runtime), "waiting", "{wait}");
+        }
+        assert!(
+            retained > 0,
+            "a complete visible window must remain presentable"
+        );
+        assert!(runtime.driver().ui().images_pending());
+        activate(&mut runtime, &mut bridge, 300.);
+        for _ in 0..12 {
+            draw(&mut runtime, &mut bridge, &mut serial);
+            runtime.wake_input();
+            drain(&mut runtime);
+        }
+        assert_eq!(state(&runtime), "done", "{wait}");
+    }
+}
+
+#[test]
 fn scene_presentation_wait_includes_image_io_and_rejects_old_or_unaccepted_frames() {
     for prepared in [false, true] {
         let generated = prepared.then(|| super::prepared_image_tests::fixture().6);
@@ -1259,4 +1381,57 @@ fn scene_presentation_wait_includes_image_io_and_rejects_old_or_unaccepted_frame
         drain(&mut runtime);
         assert!(runtime.close_complete());
     }
+}
+
+#[test]
+fn idle_manual_advance_publishes_request_and_wakes_author_without_animation() {
+    let mut runtime = runtime(
+        r#"fn main(){stage.replace(text("before"));narrator("A",wait:false);await when(||game.dialogue().advance_requested);stage.replace(text("done"));await completion();}"#,
+    );
+    drain(&mut runtime);
+    let session = runtime.driver_mut().unwrap().ui_mut().session_mut();
+    let id = session.view().interaction.unwrap().id();
+    session
+        .advance_reveal(
+            session.root_owner(),
+            id,
+            std::time::Duration::from_secs(1),
+            1000.,
+        )
+        .unwrap();
+    let (mut bridge, root) = mount(runtime.driver().ui());
+    present(&mut runtime, &mut bridge, root, 1);
+    assert!(
+        !runtime.needs_tick(),
+        "ready open speech must sleep without animations"
+    );
+    for state in [keyboard::KeyState::Down, keyboard::KeyState::Up] {
+        let mut event = key(state, keyboard::Key::Named(keyboard::NamedKey::Enter));
+        if let TextEvent::Keyboard(key) = &mut event {
+            key.code = keyboard::Code::Enter;
+        }
+        runtime
+            .driver_mut()
+            .unwrap()
+            .handle_text(&mut bridge, event)
+            .unwrap();
+    }
+    assert!(
+        matches!(runtime.driver().ui().session().view().interaction,Some(reel_engine::InteractionView::Dialogue(d)) if d.advance_requested()),
+        "manual Enter not accepted"
+    );
+    runtime.wake_input();
+    assert!(
+        runtime.needs_tick(),
+        "accepted manual request must wake observer before a new frame"
+    );
+    drain(&mut runtime);
+    assert!(
+        runtime
+            .driver()
+            .adapter()
+            .stage()
+            .nodes()
+            .any(|n| matches!(&n.kind,NodeKind::Text(t) if t.as_ref()=="done"))
+    );
 }

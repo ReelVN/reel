@@ -9,7 +9,7 @@ mod support;
 
 use reel_core::{budget::QueueLimits, wake::WakeSignal};
 use reel_engine::{
-    Epoch, Session, SessionId,
+    Epoch, InteractionView, Session, SessionId,
     aside::{SliceBudget, VmLimits},
 };
 use reel_player::{
@@ -62,15 +62,44 @@ fn scenario_clicks() -> Vec<(u64, [f64; 2])> {
     clicks
 }
 
+// CPU-only interaction requests from self-checking author projects. A marker
+// consumes one accepted manual Advance; unrelated titles never inject input.
+fn scenario_advances() -> Vec<String> {
+    let Some(value) = std::env::var_os("REEL_SCENARIO_ADVANCES") else {
+        return Vec::new();
+    };
+    let titles: Vec<String> =
+        serde_json::from_str(value.to_str().expect("advance titles must be UTF-8"))
+            .expect("REEL_SCENARIO_ADVANCES expects a JSON array of title strings");
+    assert!(
+        titles.iter().all(|title| !title.is_empty()),
+        "advance title markers must be nonempty"
+    );
+    titles
+}
+
 fn execute_project_with_capture(
     path: &Path,
     timeout: Duration,
     gpu_capture: bool,
     clicks: &[(u64, [f64; 2])],
 ) -> (Vec<audio::AudioStats>, Vec<scenario_capture::CaptureStats>) {
+    // Scale game time and offline PCM together; timeouts and CPU slices retain wall time.
+    let time_scale: f64 = std::env::var("REEL_SCENARIO_TIME_SCALE")
+        .map(|value| value.parse().expect("scenario time scale must be a number"))
+        .unwrap_or(1.);
+    assert!(
+        time_scale.is_finite() && time_scale > 0.,
+        "scenario time scale must be finite and positive"
+    );
     assert!(
         gpu_capture || clicks.is_empty(),
         "scenario clicks require GPU captures"
+    );
+    let advance_titles = scenario_advances();
+    assert!(
+        !gpu_capture || advance_titles.is_empty(),
+        "manual Advance markers use CPU presentation"
     );
     let loaded =
         reel_cli::project::load(path).unwrap_or_else(|error| panic!("{:?}", error.failure));
@@ -120,30 +149,64 @@ fn execute_project_with_capture(
         let mut identity = runtime.driver().ui().session().identity();
         let mut replacements = 0;
         let mut clicks = clicks.iter().peekable();
+        let mut advances = advance_titles.iter().peekable();
+        let mut advance_phase = 0_u8;
         let mut pointer_events = VecDeque::new();
         let started = Instant::now();
+        let logical_elapsed = || started.elapsed().mul_f64(time_scale);
+        let slice_ns = Duration::from_millis(2).mul_f64(time_scale).as_nanos() as u64;
+        let mut progress_at = Duration::from_secs(30);
         let mut frame = 0;
         loop {
             frame += 1;
-            audio.advance(started.elapsed());
+            audio.advance(logical_elapsed());
             // Match the window host: native continuations share one frame's CPU
             // deadline. A budget slice must not advance game time by one frame.
-            let deadline = started.elapsed().as_nanos() as u64 + 2_000_000;
+            let deadline = logical_elapsed().as_nanos() as u64 + slice_ns;
             runtime
                 .tick(
                     SliceBudget {
                         deadline_ns: Some(deadline),
                         ..Default::default()
                     },
-                    || started.elapsed().as_nanos() as u64,
+                    || logical_elapsed().as_nanos() as u64,
                 )
                 .unwrap_or_else(|error| {
+                    if let Some(fault) = runtime.driver().fault().unwrap() {
+                        let vm = runtime.driver().adapter().vm();
+                        let package = vm.program().package();
+                        let mut stack = vm.heap().fault_stack(fault.id).unwrap();
+                        while let Some(frame) = stack.next(vm.heap()).unwrap() {
+                            let function = &package.functions[frame.location.code.function.index()];
+                            let module = &package.modules[function.module.index()];
+                            eprintln!(
+                                "{kind}: fault frame {}::{} pc={} registers={} kind={:?}",
+                                package.symbols[module.path.index()],
+                                package.symbols[function.name.index()],
+                                frame.location.pc.0,
+                                function.register_count,
+                                frame.kind,
+                            );
+                        }
+                    }
                     panic!(
                         "{kind}: {error}; title={:?}; vm={:?}",
                         runtime.driver().adapter().game_settings().title,
                         runtime.driver().adapter().vm().stats(),
                     )
                 });
+            if started.elapsed() >= progress_at {
+                eprintln!(
+                    "{kind}: elapsed={:.1}s, logical={:.1}s, frame={frame}, title={:?}, state={:?}, activities={}, presentation={:?}",
+                    started.elapsed().as_secs_f64(),
+                    logical_elapsed().as_secs_f64(),
+                    runtime.driver().adapter().game_settings().title,
+                    runtime.driver().state(),
+                    runtime.driver().activities_pending(),
+                    runtime.driver().projection_stamp()
+                );
+                progress_at = started.elapsed() + Duration::from_secs(30);
+            }
             assert!(
                 started.elapsed() < timeout,
                 "{kind} scenario did not finish within {timeout:?}: {}; title={:?}, frame={frame}, state={:?}, capture={}, tasks={}, activities={}, presentation={:?}",
@@ -181,6 +244,48 @@ fn execute_project_with_capture(
                 let driver = runtime.driver_mut().unwrap();
                 captures.drive(driver);
                 captures.present(driver, &mut bridge, root, frame);
+                // Enter press/release each use a newly accepted CPU frame, just
+                // like pointer input. Consume a marker only after the Session
+                // reports the actual manual advance on its current dialogue.
+                if advance_phase == 2 {
+                    if matches!(driver.ui().session().view().interaction,
+                        Some(InteractionView::Dialogue(dialogue)) if dialogue.advance_requested())
+                    {
+                        eprintln!(
+                            "{kind}: manual Enter accepted {:?}",
+                            advances.next().unwrap()
+                        );
+                        advance_phase = 0;
+                    }
+                } else if advance_phase == 1
+                    || advances.peek().is_some_and(|title| {
+                        title.as_str() == driver.adapter().game_settings().title
+                    })
+                {
+                    use reel_ui::core::{TextEvent, keyboard};
+                    let released = advance_phase == 1;
+                    let outcome = driver
+                        .handle_text(
+                            &mut bridge,
+                            TextEvent::Keyboard(keyboard::KeyboardEvent {
+                                state: if released {
+                                    keyboard::KeyState::Up
+                                } else {
+                                    keyboard::KeyState::Down
+                                },
+                                key: keyboard::Key::Named(keyboard::NamedKey::Enter),
+                                code: keyboard::Code::Enter,
+                                location: keyboard::Location::Standard,
+                                modifiers: Default::default(),
+                                repeat: false,
+                                is_composing: false,
+                            }),
+                        )
+                        .unwrap();
+                    eprintln!("{kind}: manual Enter released={released}: {outcome:?}");
+                    advance_phase = if released { 2 } else { 1 };
+                }
+
                 if pointer_events.is_empty()
                     && let Some(&&(capture, [x, y])) = clicks.peek()
                     && captures.stats().count >= capture
@@ -217,13 +322,17 @@ fn execute_project_with_capture(
             clicks.next().is_none() && pointer_events.is_empty(),
             "scenario ended before its configured clicks"
         );
+        assert!(
+            advances.next().is_none() && advance_phase == 0,
+            "scenario ended before all manual Advance markers were consumed"
+        );
         audio_stats.push(audio.stats());
         if gpu_capture {
             eprintln!("{kind} GPU captures: {:?}", captures.stats());
             capture_stats.push(captures.stats());
         }
         eprintln!(
-            "{kind}: {} completed; frames={frame}, session_replacements={replacements}, audio={:?}",
+            "{kind}: {} completed; time_scale={time_scale}, frames={frame}, session_replacements={replacements}, audio={:?}",
             path.display(),
             audio.stats()
         );
@@ -619,6 +728,40 @@ fn project_scenario_media_position_cue_restores_with_real_audio() {
         assert!(mixed.frames > 0);
         assert!(mixed.peak > 0.01, "real decoded PCM was not consumed");
     }
+}
+
+#[test]
+fn segmented_dialogue_resumes_after_deferred_skip_and_auto_advance() {
+    let project = tempfile::tempdir().unwrap();
+    let source = project.path().join("main.aside");
+    std::fs::write(
+        &source,
+        r#"
+        fn main() {
+            game.configure(text_speed:0);
+            let owner = stack(width:64, height:64);
+            stage.replace(owner);
+            for skipping in [true, false] {
+                if skipping {game.set_skip(true, unread:true);}
+                else {game.set_auto(true, delay:0.01);}
+                let line = narrator("Deferred advance", wait:false);
+                await stage.presented(owner:owner);
+                await run(delay(0.02), owner:owner);
+                if !game.dialogue().ready {throw "deferred line was not revealed";}
+                line.wait();
+                line.append(" and another segment");
+                await stage.presented(owner:owner);
+                await run(delay(0.02), owner:owner);
+                if !game.dialogue().ready {throw "appended line was not revealed";}
+                line.wait();
+                if !game.dialogue().active {throw "open dialogue was retired";}
+            }
+            game.set_auto(false);
+        }
+        "#,
+    )
+    .unwrap();
+    execute_project(&source, Duration::from_secs(15));
 }
 
 #[test]

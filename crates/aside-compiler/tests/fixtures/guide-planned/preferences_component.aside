@@ -1,0 +1,22 @@
+fn preferences() {
+    let pages = switcher(selected: "audio") {
+        page("audio") {
+            text("音乐");
+            slider(value: bind(settings.music), min: 0, max: 1,
+                   width: 600,
+                   track: image("assets/slider-track.png"),
+                   thumb: image("assets/slider-thumb.png"));
+        };
+        page("reading") {
+            text("文字速度");
+            slider(value: bind(settings.text_speed), min: 1, max: 100);
+        };
+    };
+    column(gap: 16) {
+        row(gap: 12) {
+            button("声音", on_click: |event| pages.select("audio"));
+            button("阅读", on_click: |event| pages.select("reading"));
+        };
+        pages;
+    }
+}

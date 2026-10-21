@@ -3,10 +3,14 @@ use super::*;
 use crate::{Epoch, InputAction, OwnerLifecycle, SessionId};
 use aside_vm::bytecode as bc;
 mod activities;
+mod auto_condition;
 mod buttons;
 mod clock_batches;
+mod conditions;
 mod curves;
+mod dialogue_append;
 mod dialogue_history;
+mod documentation;
 mod dynamic_stage;
 mod frame_animation;
 mod geometry;
@@ -22,6 +26,7 @@ mod rich_text;
 mod scopes;
 mod snapshots;
 mod tasks;
+mod text_fade;
 mod transitions;
 mod video;
 mod virtual_lists;
@@ -902,5 +907,8 @@ fn authored_components_keep_node_identity_across_gc_updates_and_replacement() {
 }
 
 mod keyed_lists;
+mod reactive_reads_restore;
 mod reactive_views;
 mod text_spacing;
+
+mod capture_included;

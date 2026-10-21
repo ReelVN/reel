@@ -18,3 +18,6 @@ composition live in reel-core and reel-ui, respectively.
 
 Shaping uses HarfRust's shared font instances and reusable in-place buffer;
 cached instances share Fontique's font bytes without copying them.
+
+Style changes flush the preceding run before selecting the new style; absolute
+line-height changes delimit runs, preserving each span's blank-line metrics.

@@ -162,7 +162,11 @@ fn immutable_aliases_preserve_result_usage_without_guessing_dynamic_calls() {
         &mut NoModules,
     )
     .unwrap();
-    assert!(mutable_enclosing.is_ok(), "{:?}", mutable_enclosing.diagnostics);
+    assert!(
+        mutable_enclosing.is_ok(),
+        "{:?}",
+        mutable_enclosing.diagnostics
+    );
 }
 
 #[test]

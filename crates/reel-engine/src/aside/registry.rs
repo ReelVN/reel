@@ -59,21 +59,21 @@ pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
         "reel::slider" => &["value", "min", "max", "step", "on_change"],
         "reel::toggle" | "reel::checkbox" => &["label", "value", "on_change"],
         "reel::radio" => &["option", "label", "value", "on_change"],
-        "reel::input" => &["bindings", "on_action", "on_key", "on_pointer"],
+        "reel::input" => &["bindings", "on_action", "on_key", "on_pointer", "on_wheel"],
         _ => &[],
     }
 }
 
 pub(super) fn contracts() -> Vec<NativeContract> {
     let mut contracts: Vec<_> = [
-        ("narrator", "text", BuiltinType::Any, BuiltinType::Null),
+        ("narrator", "text", BuiltinType::Any, BuiltinType::Any),
         ("choose", "options", BuiltinType::Array, BuiltinType::String),
     ]
     .into_iter()
     .map(|(name, parameter, input, result)| NativeContract {
         rest: None,
         symbol: format!("reel::{name}"),
-        abi_version: if name == "narrator" { 4 } else { 1 },
+        abi_version: 1,
         parameters: {
             let mut parameters = vec![NativeParameter {
                 name: parameter.into(),
@@ -88,6 +88,11 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 });
                 parameters.push(NativeParameter {
                     name: "reveal_skippable".into(),
+                    ty: BuiltinType::Bool,
+                    default: Some(bc::Const::Bool(true)),
+                });
+                parameters.push(NativeParameter {
+                    name: "wait".into(),
                     ty: BuiltinType::Bool,
                     default: Some(bc::Const::Bool(true)),
                 });
@@ -109,7 +114,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::window::{name}"),
-            abi_version: 3,
+            abi_version: 1,
             parameters: fields
                 .iter()
                 .map(|field| NativeParameter {
@@ -189,6 +194,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                     BuiltinType::Bool,
                     Some(bc::Const::Bool(true)),
                 ),
+                ("wait", BuiltinType::Bool, Some(bc::Const::Bool(true))),
             ],
             Effects::ALL.0,
         ),
@@ -201,19 +207,29 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                     BuiltinType::Bool,
                     Some(bc::Const::Bool(true)),
                 ),
+                ("wait", BuiltinType::Bool, Some(bc::Const::Bool(true))),
             ],
+            Effects::ALL.0,
+        ),
+        (
+            "speech::append",
+            vec![
+                ("speech", BuiltinType::Any, None),
+                ("text", BuiltinType::Any, None),
+                ("history", BuiltinType::Any, Some(bc::Const::Bool(true))),
+            ],
+            Effects::ALL.0,
+        ),
+        (
+            "speech::wait",
+            vec![("speech", BuiltinType::Any, None)],
             Effects::ALL.0,
         ),
     ] {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::{symbol}"),
-            abi_version: match symbol {
-                "character::speak" => 4,
-                "character::line" => 3,
-                "say" => 2,
-                _ => 1,
-            },
+            abi_version: 1,
             parameters: parameters
                 .into_iter()
                 .map(|(name, ty, default)| NativeParameter {
@@ -336,31 +352,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::{name}"),
-            abi_version: if name == "cursor" {
-                3
-            } else if name == "video" {
-                7
-            } else if name == "image" {
-                18
-            } else if name == "slider" {
-                17
-            } else if name == "particles" {
-                12
-            } else if name == "camera" {
-                10
-            } else if matches!(name, "checkbox" | "radio") {
-                12
-            } else if name == "input" {
-                18
-            } else if name == "scroll" {
-                14
-            } else if name == "text_input" {
-                13
-            } else if name == "text_area" {
-                1
-            } else {
-                16
-            },
+            abi_version: 1,
             parameters,
             result: BuiltinType::Any,
             effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
@@ -456,7 +448,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     contracts.push(NativeContract {
         rest: None,
         symbol: "reel::list".into(),
-        abi_version: 13,
+        abi_version: 1,
         parameters: list_parameters,
         result: BuiltinType::Any,
         effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
@@ -469,7 +461,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     contracts.push(NativeContract {
         rest: None,
         symbol: "reel::view".into(),
-        abi_version: 9,
+        abi_version: 1,
         parameters: view_parameters.clone(),
         result: BuiltinType::Any,
         effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
@@ -478,8 +470,41 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     view_parameters[0].name = "layers".into();
     contracts.push(NativeContract {
         rest: None,
+        symbol: "reel::when".into(),
+        abi_version: 1,
+        parameters: vec![
+            NativeParameter {
+                name: "predicate".into(),
+                ty: BuiltinType::Any,
+                default: None,
+            },
+            NativeParameter {
+                name: "owner".into(),
+                ty: BuiltinType::Any,
+                default: Some(bc::Const::Null),
+            },
+        ],
+        result: BuiltinType::Any,
+        effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
+        required_capabilities: vec!["reel.stage".into()],
+    });
+    contracts.push(NativeContract {
+        rest: None,
+        symbol: "reel::when::evaluate".into(),
+        abi_version: 1,
+        parameters: vec![NativeParameter {
+            name: "predicate".into(),
+            ty: BuiltinType::Any,
+            default: None,
+        }],
+        result: BuiltinType::Bool,
+        effects: Effects(Effects::ALLOCATE),
+        required_capabilities: vec!["reel.stage".into()],
+    });
+    contracts.push(NativeContract {
+        rest: None,
         symbol: "reel::layered_image".into(),
-        abi_version: 8,
+        abi_version: 1,
         parameters: view_parameters,
         result: BuiltinType::Any,
         effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
@@ -540,7 +565,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     contracts.push(NativeContract {
         rest: None,
         symbol: "reel::game::configure".into(),
-        abi_version: 3,
+        abi_version: 1,
         parameters: ["title", "width", "height", "fonts", "text_speed"]
             .into_iter()
             .map(|name| NativeParameter {
@@ -588,7 +613,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::saves::{name}"),
-            abi_version: if name == "save" { 2 } else { 1 },
+            abi_version: 1,
             parameters,
             result: BuiltinType::Any,
             effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
@@ -702,11 +727,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::audio::{name}"),
-            abi_version: match name {
-                "play" => 5,
-                "volume" | "queue" | "position" => 2,
-                _ => 1,
-            },
+            abi_version: 1,
             parameters,
             result: if name == "position" {
                 BuiltinType::Float
@@ -753,11 +774,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::video::{name}"),
-            abi_version: if matches!(name, "position" | "play") {
-                2
-            } else {
-                1
-            },
+            abi_version: 1,
             parameters,
             result: BuiltinType::Any,
             effects: Effects(
@@ -771,18 +788,17 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             required_capabilities: vec!["reel.stage".into()],
         });
     }
-    for (symbol, abi_version, parameters) in [
-        ("reel::game::clear_read_progress", 1, vec![]),
+    for (symbol, parameters) in [
+        ("reel::game::clear_read_progress", vec![]),
         (
             "reel::game::clear_history",
-            2,
             vec![parameter("keep_last", Some(bc::Const::Int(0)))],
         ),
     ] {
         contracts.push(NativeContract {
             rest: None,
             symbol: symbol.into(),
-            abi_version,
+            abi_version: 1,
             parameters,
             result: BuiltinType::Null,
             effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
@@ -794,8 +810,9 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         symbol: "reel::game::set_auto".into(),
         abi_version: 1,
         parameters: vec![
-            parameter("enabled", None),
+            parameter("enabled", Some(bc::Const::Null)),
             parameter("delay", Some(bc::Const::Null)),
+            parameter("condition", Some(bc::Const::Null)),
         ],
         result: BuiltinType::Null,
         effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
@@ -804,7 +821,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     contracts.push(NativeContract {
         rest: None,
         symbol: "reel::game::set_skip".into(),
-        abi_version: 2,
+        abi_version: 1,
         parameters: vec![
             parameter("enabled", None),
             parameter("unread", Some(bc::Const::Bool(false))),
@@ -819,7 +836,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         parameter("duration", Some(bc::Const::FloatBits(0.3_f64.to_bits()))),
         NativeParameter {
             name: "easing".into(),
-            ty: BuiltinType::String,
+            ty: BuiltinType::Any,
             default: Some(bc::Const::Utf8("linear".into())),
         },
     ];
@@ -904,6 +921,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             ],
             false,
         ),
+        ("scope::cancel", vec![parameter("scope", None)], false),
         ("override::remove", vec![parameter("token", None)], false),
         (
             "scope::offset",
@@ -1003,14 +1021,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: format!("reel::{name}"),
-            abi_version: match name {
-                "tween" => 9,
-                "scope" => 4,
-                "clock" => 3,
-                "run" | "scope::run" => 2,
-                "completion" | "spawn" | "scope::spawn" => 2,
-                _ => 1,
-            },
+            abi_version: 1,
             parameters,
             result: BuiltinType::Any,
             effects: Effects(
@@ -1086,7 +1097,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         contracts.push(NativeContract {
             rest: None,
             symbol: symbol.into(),
-            abi_version: if symbol == "reel::tr" { 3 } else { 1 },
+            abi_version: 1,
             parameters,
             result,
             effects: Effects(effects),
@@ -1096,7 +1107,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     contracts.push(NativeContract {
         rest: None,
         symbol: "reel::emit".into(),
-        abi_version: 2,
+        abi_version: 1,
         parameters: super::particles::emission_parameters(),
         result: BuiltinType::Any,
         effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),

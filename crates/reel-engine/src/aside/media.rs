@@ -1126,3 +1126,60 @@ fn audio_loop(
         Ok(None)
     }
 }
+
+aside_host::native_documentation! {
+    pub(super) fn documentation {
+        /// Start audio playback and return an awaitable media activity immediately.
+        /// `source` is an asset path; `group` is music, voice, effects or ui.
+        /// Volume is finite and nonnegative; pan is in -1..1. All times are seconds.
+        /// `start`/`end` select the playback interval; a non-null end must follow start.
+        /// With `looping: true`, `loop_start`/`loop_end` select the repeated interval.
+        /// `fade_in` ramps the initial volume; `paused: true` prepares a paused transport.
+        /// `owner` defaults to the current scope owner; retiring it cancels playback.
+        /// Awaiting returns "Completed" or "Stopped"; output failures and cancellation throw.
+        "reel::audio::play";
+        /// Append an audio asset to a live audio activity's playback queue.
+        /// Times are seconds. `start`/`end` select the queued interval; looping and
+        /// loop bounds apply to that queued item. The existing activity retains its owner.
+        /// Returns null after queue admission; a terminal or non-audio activity is rejected.
+        "reel::audio::queue";
+        /// Set an activity's finite, nonnegative volume, optionally ramping over
+        /// `duration` seconds. Returns the same activity without waiting for the ramp.
+        "reel::audio::volume";
+        /// Set the finite, nonnegative gain of music, voice, effects, ui or master.
+        /// `duration` is a nonnegative ramp time in seconds. Returns null after admission.
+        /// This changes the shared bus rather than creating an owned playback activity.
+        "reel::audio::group_volume";
+        /// Set an activity's stereo pan in -1..1, optionally ramping over `duration`
+        /// seconds. Returns the same activity without waiting for the ramp.
+        "reel::audio::pan";
+        /// Stop a media activity, fading out over `fade` seconds when requested.
+        /// Returns the same activity immediately; await it to observe the terminal result.
+        /// Stopping an already terminal activity preserves its recorded outcome.
+        "reel::audio::stop";
+        /// Seek a media activity to a finite, nonnegative position in seconds.
+        /// Returns null after the transport accepts the command. Position cues are
+        /// reevaluated against the updated transport cursor; terminal activities stay terminal.
+        "reel::audio::seek" | "reel::video::seek";
+        /// Create an awaitable cue for a finite, nonnegative transport position in seconds.
+        /// Awaiting returns true once the cursor reaches that position, or false if normal
+        /// playback ends first. Source failure or cancellation throws even at the threshold.
+        /// The cue belongs to the current scope owner and does not pause or stop playback.
+        "reel::audio::at" | "reel::video::at";
+        /// Read the media transport's latest published position in seconds.
+        /// The read participates in reactive dependency tracking. Terminal activities
+        /// retain their final position; this does not wait for playback or a new frame.
+        "reel::audio::position" | "reel::video::position";
+        /// Await a media activity or position cue. Ordinary `await activity` uses this
+        /// same binding. Playback yields "Completed" or "Stopped"; cues yield a bool.
+        /// Repeated awaits preserve the terminal result. Failure or owner cancellation throws.
+        "reel::audio::await";
+        /// Play a video node's source and return an awaitable media activity immediately.
+        /// `start` and optional `end` are seconds; end must follow start. Volume is finite
+        /// and nonnegative. `looping` repeats playback; `paused` prepares a paused transport.
+        /// The activity updates the supplied video node. Its owner defaults to the current
+        /// scope owner; owner retirement cancels playback. Awaiting returns "Completed" or
+        /// "Stopped", while failure and cancellation throw. Completion keeps the last frame.
+        "reel::video::play";
+    }
+}

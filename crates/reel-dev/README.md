@@ -26,9 +26,10 @@ checks real PCM mixing and background release; it does not verify an audio devic
 and allocation costs; their optional MODE is passed to the selected probe.
 
 For UI/render measurements, capture Cargo JSON for the desired profile, then run
-`cargo run --locked -p reel-dev -- measure BUILD_JSON contracts/r01_measurements [TEST_ARGS]`.
-The tool resolves the exact artifact from Cargo output, not a guessed executable.
+`cargo run --locked -p reel-dev -- measure BUILD_JSON TARGET [TEST_ARGS]`.
+TARGET is `contracts` or `r01_measurements`; the latter requires `--ignored`
+or `--include-ignored` in TEST_ARGS. The tool resolves the exact artifact from
+Cargo output and verifies that the named measurement tests completed.
 
-Borrowed runtime code is maintained in workspace crates. There is no fork-copy,
-source-hash gate or C++ compatibility runner. Original Quirrel inputs and output
-oracles remain in [compiler fixtures](../aside-compiler/tests/fixtures/quirrel/README.md).
+Borrowed runtime code is maintained in workspace crates with provenance and
+license records. Original Quirrel inputs and output oracles remain in [compiler fixtures](../aside-compiler/tests/fixtures/quirrel/README.md).

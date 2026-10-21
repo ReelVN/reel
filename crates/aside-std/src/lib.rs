@@ -4,7 +4,9 @@
 //! Script values and mutable random state belong to the VM heap, not this adapter.
 #![forbid(unsafe_code)]
 
+mod core;
 mod curve;
+pub use curve::sample_curve;
 mod math;
 mod random;
 mod time;
@@ -30,6 +32,7 @@ fn bindings() -> Vec<NativeBinding<StandardLibrary, NativeError>> {
     bindings.extend(math::bindings());
     bindings.push(curve::binding());
     bindings.push(curve::sample::binding());
+    bindings.push(core::error_info::binding());
     bindings
 }
 
@@ -38,6 +41,15 @@ pub fn contracts() -> Vec<NativeContract> {
     bindings()
         .into_iter()
         .map(|binding| binding.contract)
+        .collect()
+}
+
+/// Query the registered library signatures and their English source documentation.
+/// Editor clients match the canonical contract symbol after resolving an import.
+pub fn documentation() -> Vec<aside_host::NativeDocumentation> {
+    bindings()
+        .into_iter()
+        .map(NativeBinding::into_documentation)
         .collect()
 }
 
@@ -62,6 +74,11 @@ pub fn modules() -> Vec<ModuleInterface> {
             exports: prelude(),
         })
         .collect();
+    modules.push(ModuleInterface {
+        canonical_path: "std::core".into(),
+        version: "1".into(),
+        exports: vec![core::error_info::binding().contract.external()],
+    });
     modules.push(ModuleInterface {
         canonical_path: "std::time".into(),
         version: "1".into(),

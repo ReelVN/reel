@@ -77,7 +77,7 @@ system accessibility adapters remain open.
 ```sh
 cargo test -p reel-player --no-default-features portable_host_runs_story
 cargo check -p reel-player --no-default-features --features winit
-cargo run -p reel-dev -- deps
+cargo run --locked -p reel-dev -- deps
 # Requires a native Windows or Linux X11 display and an actual graphics adapter:
 cargo test -p reel-player --features window actual_window_retry_and_recovery_contract -- --ignored --nocapture
 ```
@@ -95,7 +95,7 @@ adapter work. Unsupported drawing records and quota refusals are logged with the
 record location where applicable and retain the last accepted view.
 
 See [device contract](../reel-render/R02-INTERFACE.md) and
-[verification and remaining scope](../reel-render/R02-REPORT.md).
+[verification and remaining scope](https://github.com/jhq223/reel/blob/355571b18bd4024914438a7ac6bd94ebf3c7826f/crates/reel-render/R02-REPORT.md).
 
 ## Rust session-host window
 
@@ -184,8 +184,9 @@ hardware and the complete author-facing DSL remain separate.
 With the `window` feature, call
 `shell::run_story(story, shell::StoryWindowOptions::default())`, where `story`
 is a prepared `reel_engine::aside::source::CompiledStory`. Options expose the
-window title, locale and logical window size (default 960 × 540). That size is
-not a fixed author canvas. The story configures its font files with
+window title, locale, optional initial window size and optional author canvas.
+With neither size supplied, the native window starts at 1280 × 720; a canvas
+configured by the story determines its logical coordinate system. The story configures its font files with
 `game.configure(fonts: ["fonts/body.ttf"])` before presentation. Fonts resolve
 relative to the asset root and share the existing text renderer and resource leases.
 

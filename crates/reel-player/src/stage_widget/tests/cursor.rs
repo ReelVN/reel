@@ -2,7 +2,7 @@ use super::*;
 use reel_ui::dpi::PhysicalPosition;
 use std::{cell::RefCell, rc::Rc};
 
-fn pointer(kind: PointerType, position: (f64, f64), down: Option<bool>) -> PointerEvent {
+pub(super) fn pointer(kind: PointerType, position: (f64, f64), down: Option<bool>) -> PointerEvent {
     let pointer = PointerInfo {
         pointer_id: Some(PointerId::PRIMARY),
         persistent_device_id: None,
@@ -635,6 +635,38 @@ fn cursor_deepest_owner_wins_and_disabled_owner_yields_to_ancestor() {
 }
 
 #[test]
+fn pointer_queries_keep_accepted_feedback_geometry_without_authorizing_capture() {
+    let (mut f, owner, _, _, _) = fixture();
+    let initial = f.record();
+    f.accept(&initial);
+    f.ui.handle_pointer(
+        &mut f.bridge,
+        pointer(PointerType::Mouse, (110., 90.), None),
+    )
+    .unwrap();
+
+    let mut feedback = f.record();
+    feedback.receipt.current = false;
+    f.accept(&feedback);
+    assert!(!f.ui.current_presentation_ready());
+    assert_eq!(
+        f.ui.pointer_position(&f.bridge, f.widget),
+        Some([110., 90.])
+    );
+    assert_eq!(
+        f.ui.pointer_destination(&f.bridge, f.widget, owner, [200., 150.]),
+        Some([200., 150.])
+    );
+
+    f.ui.clear_presented();
+    assert_eq!(f.ui.pointer_position(&f.bridge, f.widget), None);
+    assert_eq!(
+        f.ui.pointer_destination(&f.bridge, f.widget, owner, [200., 150.]),
+        None
+    );
+}
+
+#[test]
 fn pointer_queries_require_accepted_mouse_and_current_input_ownership() {
     let (mut f, owner, _, _, _) = fixture();
     assert_eq!(f.ui.pointer_position(&f.bridge, f.widget), None);
@@ -803,4 +835,43 @@ fn pointer_coordinates_round_trip_accepted_canvas_fit_and_dpi() {
         f.ui.pointer_destination(&f.bridge, f.widget, owner, [150., 100.]),
         Some([150., 160.])
     );
+}
+
+#[test]
+fn capture_exclusions_follow_cursor_overlay_and_inherit_its_original_parent() {
+    for exclude_parent in [false, true] {
+        let (mut f, owner, cursor, _, _) = fixture();
+        let initial = f.record();
+        f.accept(&initial);
+        f.ui.handle_pointer(
+            &mut f.bridge,
+            pointer(PointerType::Mouse, (110., 90.), None),
+        )
+        .unwrap();
+        f.edit(if exclude_parent { owner } else { cursor }, |p| {
+            p.capture_included = false
+        });
+        let frame = f.record();
+        let plan = frame.plan();
+        let last = plan.capture_exclusions.last().unwrap();
+        assert!(
+            last.start >= plan.body_commands,
+            "cursor exclusions are rebased to the final overlay stream"
+        );
+        let total = plan
+            .layers
+            .iter()
+            .map(|layer| match &layer.kind {
+                reel_ui::app::VisualLayerKind::Scene(scene) => scene.commands().len(),
+                reel_ui::app::VisualLayerKind::External { .. } => 1,
+            })
+            .sum::<usize>();
+        assert_eq!(last.end, total);
+        assert!(
+            plan.subtrees
+                .iter()
+                .filter(|s| s.commands.start >= plan.body_commands)
+                .all(|s| !s.capture_included)
+        );
+    }
 }

@@ -719,3 +719,97 @@ fn pending_pointer_moves_coalesce_across_gc_with_and_without_event_arguments() {
         }
     }
 }
+
+#[test]
+fn wheel_callbacks_source_asb_restore_scope_and_owner_retirement() {
+    use aside_vm::snapshot::SnapshotBudget;
+    use reel_ui::{
+        kurbo::{Point, Vec2},
+        stage::NodeWheel,
+    };
+    let code = r#"fn opening() {
+        let output = text("wheel");
+        let control = input(on_wheel: |event| {
+            if event.target != control { throw "target identity"; }
+            output.x += event.delta_y;
+            output.y = event.x;
+            await run(delay(20));
+            throw "retired wheel callback resumed";
+        });
+        let modal = stack(modal: true, visible: false);
+        modal.add(button("close modal", on_click: || { modal.visible = false; }));
+        stage.replace(stack { output; control; modal;
+            button("hide", on_click: || { control.visible = false; });
+            button("show", on_click: || { control.visible = true; });
+            button("modal", on_click: || { modal.visible = true; });
+            button("remove", on_click: || { control.remove(); });
+        });
+        narrator("waiting");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        pump(&mut vm, &mut session);
+        let program = vm.vm.program().clone();
+        let mut capture = vm.snapshot_begin(&session).unwrap();
+        while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let bytes = capture.finish().unwrap().encode().unwrap();
+        let mut image = snapshot::SessionSnapshot::decode(&bytes).unwrap();
+        let mut restore = SessionVm::restore_begin(
+            &mut image,
+            program,
+            VmLimits::default(),
+            SessionIdentity {
+                session_id: SessionId(41),
+                epoch: Epoch(20),
+            },
+            crate::ReadProgress::default(),
+            None,
+            None,
+        )
+        .unwrap();
+        while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let (mut session, mut vm) = restore.finish().unwrap();
+        pump(&mut vm, &mut session);
+        let node = vm
+            .stage()
+            .nodes()
+            .find(|n| matches!(n.kind, NodeKind::Input { wheel: true, .. }))
+            .unwrap()
+            .id;
+        let event = NodeWheel {
+            node,
+            position: Point::new(12., 8.),
+            delta: Vec2::new(0., 40.),
+        };
+        assert!(vm.input_wheel(&mut session, &event).unwrap());
+        pump(&mut vm, &mut session);
+        assert_eq!(text_x(&vm, "wheel"), 40.);
+        let output = vm
+            .stage()
+            .nodes()
+            .find(|n| n.kind == NodeKind::Text("wheel".into()))
+            .unwrap();
+        assert_eq!(output.props.y, 12.);
+        let hide = button(&vm, "hide");
+        vm.click(&mut session, hide).unwrap();
+        pump(&mut vm, &mut session);
+        assert!(!vm.input_wheel(&mut session, &event).unwrap());
+        let show = button(&vm, "show");
+        vm.click(&mut session, show).unwrap();
+        pump(&mut vm, &mut session);
+        let open_modal = button(&vm, "modal");
+        vm.click(&mut session, open_modal).unwrap();
+        pump(&mut vm, &mut session);
+        assert!(!vm.input_wheel(&mut session, &event).unwrap());
+        let close_modal = button(&vm, "close modal");
+        vm.click(&mut session, close_modal).unwrap();
+        pump(&mut vm, &mut session);
+        let remove = button(&vm, "remove");
+        vm.click(&mut session, remove).unwrap();
+        pump(&mut vm, &mut session);
+        assert!(!vm.input_wheel(&mut session, &event).unwrap());
+        super::activities::advance_clock(&mut vm, &session, 30., 1);
+        pump(&mut vm, &mut session);
+        assert_eq!(text_x(&vm, "wheel"), 40.);
+    }
+}

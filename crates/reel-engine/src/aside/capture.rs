@@ -215,3 +215,18 @@ impl SessionVm {
         Ok(())
     }
 }
+
+aside_host::native_documentation! {
+    pub(super) fn documentation {
+        /// Request a PNG image of an accepted stage frame and return an awaitable result.
+        /// Optional width/height are positive pixel integers; omitted dimensions follow the
+        /// accepted frame's aspect ratio and physical size. Awaiting yields PNG Bytes suitable
+        /// for an image source or a save thumbnail. The host waits for the requested stage
+        /// presentation and resource readiness before selecting the frame.
+        /// Nodes with `capture_included: false` omit their complete subtree, including
+        /// retained transition content, using inclusion frozen in that accepted frame.
+        /// Normal presentation is unchanged. `owner` defaults to the current scope owner;
+        /// retirement cancels the result, while host capture failures reject it.
+        "reel::stage::capture";
+    }
+}

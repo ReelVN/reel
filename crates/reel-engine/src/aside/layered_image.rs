@@ -1,6 +1,18 @@
 //! Dependency-driven image slots built from ordinary stage nodes. All retained
 //! state belongs to the VM heap, including work suspended between native slices.
 use super::*;
+
+aside_host::native_documentation! {
+    pub(super) fn documentation {
+        /// Return a stable container composed from `layers()`, a read-only reactive
+        /// function returning an array of image descriptors or null slots. Each descriptor
+        /// uses image constructor fields; array position identifies the slot, without keys.
+        /// Reusing a slot updates its existing node. A null slot hides its previous node
+        /// while retaining that node and its source; shortening the array retires its tail.
+        /// Observable descriptor fields participate in dependency tracking.
+        "reel::layered_image";
+    }
+}
 use aside_host::PropertySchema;
 use aside_vm::bytecode::Const;
 use aside_vm::executor::{Continuation, FaultRetention};

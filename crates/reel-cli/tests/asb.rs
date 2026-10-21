@@ -288,7 +288,7 @@ fn index_rejects_overflow_overlap_duplicates_versions_and_required_extensions() 
     let original = artifact("fn main() { 1 }", None).bytes;
     let index = u64_at(&original, 24);
     let mutations = [
-        (8, vec![1]),
+        (8, vec![2]),
         (10, vec![1]),
         (12, 1u32.to_le_bytes().to_vec()),
         (32, 111u64.to_le_bytes().to_vec()),
@@ -586,14 +586,16 @@ fn embedded_distribution_roundtrips_and_seek_reader_skips_code_payloads() {
         rp::decode(&corrupted, Limits::default()).unwrap_err().kind,
         ErrorKind::Integrity
     );
-    let mut legacy = bytes;
-    legacy[8..10].copy_from_slice(&1u16.to_le_bytes());
+    let mut unsupported = bytes;
+    unsupported[8..10].copy_from_slice(&2u16.to_le_bytes());
     assert_eq!(
-        rp::decode(&legacy, Limits::default()).unwrap_err().kind,
+        rp::decode(&unsupported, Limits::default())
+            .unwrap_err()
+            .kind,
         ErrorKind::Version
     );
     assert!(
-        rp::read_distribution(&mut Cursor::new(&legacy), Limits::default())
+        rp::read_distribution(&mut Cursor::new(&unsupported), Limits::default())
             .unwrap_err()
             .to_string()
             .contains("version")

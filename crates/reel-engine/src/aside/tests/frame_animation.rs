@@ -83,10 +83,10 @@ fn shown(vm: &SessionVm) -> String {
     vm.stage()
         .nodes()
         .find_map(|node| {
-            if node.props.visible {
-                if let NodeKind::Image { source, .. } = &node.kind {
-                    return Some(source.key().to_owned());
-                }
+            if node.props.visible
+                && let NodeKind::Image { source, .. } = &node.kind
+            {
+                return Some(source.key().to_owned());
             }
             None
         })

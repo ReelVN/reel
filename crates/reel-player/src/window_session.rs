@@ -166,7 +166,7 @@ impl WindowSession {
     pub(crate) fn frame_ready(&self) -> bool {
         match self {
             Self::Diagnostic(_) => true,
-            Self::Aside { story, .. } => story.driver().adapter().stage_ready(),
+            Self::Aside { story, .. } => story.driver().frame_ready(),
         }
     }
     pub(crate) fn presented(

@@ -1,17 +1,17 @@
-use std::convert::TryInto;
-
 use crate::{
 	frame::Frame,
 	sound::{FromFileError, symphonia::load_frames_from_buffer_ref},
 };
 use symphonia::core::{
+	audio::{Audio, GenericAudioBufferRef},
 	codecs::{CodecParameters, audio::AudioDecoder},
 	formats::{FormatReader, SeekMode, SeekTo, TrackType, probe::Hint},
 	io::{MediaSource, MediaSourceStream},
 	units::Timestamp,
 };
 
-pub(crate) struct SymphoniaDecoder {
+/// The existing packet decoder, shared by static and windowed preparation.
+pub struct SymphoniaDecoder {
 	format_reader: Box<dyn FormatReader>,
 	decoder: Box<dyn AudioDecoder>,
 	sample_rate: u32,
@@ -20,7 +20,8 @@ pub(crate) struct SymphoniaDecoder {
 }
 
 impl SymphoniaDecoder {
-	pub(crate) fn new(media_source: Box<dyn MediaSource>) -> Result<Self, FromFileError> {
+	/// Probe a native Symphonia media source.
+	pub fn new(media_source: Box<dyn MediaSource>) -> Result<Self, FromFileError> {
 		let codecs = symphonia::default::get_codecs();
 		let probe = symphonia::default::get_probe();
 		let mss = MediaSourceStream::new(media_source, Default::default());
@@ -42,9 +43,10 @@ impl SymphoniaDecoder {
 			.ok_or(FromFileError::UnknownSampleRate)?;
 		let num_frames = default_track
 			.num_frames
-			.ok_or(FromFileError::UnknownSampleRate)?
-			.try_into()
-			.expect("could not convert u64 into usize");
+			.map(usize::try_from)
+			.transpose()
+			.map_err(|_| std::io::Error::other("audio frame count exceeds address space"))?
+			.unwrap_or(usize::MAX);
 		let decoder = codecs.make_audio_decoder(audio_params, &Default::default())?;
 		let track_id = default_track.id;
 		Ok(Self {
@@ -54,6 +56,141 @@ impl SymphoniaDecoder {
 			num_frames,
 			track_id,
 		})
+	}
+
+	/// Probe a host reader without requiring the host to depend on Symphonia.
+	pub fn from_reader(
+		reader: impl AudioRead + 'static,
+		length: u64,
+	) -> Result<Self, FromFileError> {
+		Self::new(Box::new(Reader { reader, length }))
+	}
+
+	/// Decode the next nonempty PCM chunk, reserving storage for each packet.
+	/// Empty codec output (for example encoder priming) is consumed internally;
+	/// an empty result means the format reader reached EOF. The reservation
+	/// callback remains a cancellation checkpoint for every selected packet.
+	pub fn decode_reserved(
+		&mut self,
+		mut reserve: impl FnMut(usize) -> Result<(), std::io::Error>,
+	) -> Result<Vec<Frame>, FromFileError> {
+		loop {
+			let packet = loop {
+				match self.format_reader.next_packet()? {
+					Some(packet) if packet.track_id == self.track_id => break packet,
+					Some(_) => continue,
+					None => return Ok(vec![]),
+				}
+			};
+			let packet_bytes = packet.data.len();
+			reserve(packet_bytes)?;
+			let buffer = self.decoder.decode(&packet)?;
+			macro_rules! bytes {
+				($b:expr, $t:ty) => {
+					$b.capacity() * $b.num_planes() * std::mem::size_of::<$t>()
+				};
+			}
+			let native = match &buffer {
+				GenericAudioBufferRef::U8(b) => bytes!(b, u8),
+				GenericAudioBufferRef::U16(b) => bytes!(b, u16),
+				GenericAudioBufferRef::U24(b) => bytes!(b, u32),
+				GenericAudioBufferRef::U32(b) => bytes!(b, u32),
+				GenericAudioBufferRef::S8(b) => bytes!(b, i8),
+				GenericAudioBufferRef::S16(b) => bytes!(b, i16),
+				GenericAudioBufferRef::S24(b) => bytes!(b, i32),
+				GenericAudioBufferRef::S32(b) => bytes!(b, i32),
+				GenericAudioBufferRef::F32(b) => bytes!(b, f32),
+				GenericAudioBufferRef::F64(b) => bytes!(b, f64),
+			};
+			reserve(
+				packet_bytes
+					+ native + buffer
+					.frames()
+					.checked_mul(std::mem::size_of::<Frame>())
+					.ok_or_else(|| std::io::Error::other("audio packet size overflow"))?,
+			)?;
+			// A codec may consume priming or padding packets without producing PCM.
+			// Only the format reader's end-of-stream result terminates this decoder.
+			if buffer.frames() == 0 {
+				continue;
+			}
+			return load_frames_from_buffer_ref(&buffer);
+		}
+	}
+
+	/// Finish static preparation using this already-probed packet decoder.
+	pub fn into_static(
+		mut self,
+		mut reserve: impl FnMut(usize) -> Result<(), std::io::Error>,
+	) -> Result<crate::sound::static_sound::StaticSoundData, FromFileError> {
+		let mut frames = Vec::<Frame>::new();
+		loop {
+			let retained = frames.capacity() * std::mem::size_of::<Frame>();
+			let mut workspace = 0;
+			let packet = self.decode_reserved(|scratch| {
+				workspace = scratch;
+				reserve(retained + scratch)
+			})?;
+			if packet.is_empty() {
+				break;
+			}
+			let required = frames
+				.len()
+				.checked_add(packet.len())
+				.ok_or_else(|| std::io::Error::other("PCM size overflow"))?;
+			let capacity = if required > frames.capacity() {
+				required.max(frames.capacity().saturating_mul(2))
+			} else {
+				frames.capacity()
+			};
+			let old = if capacity > frames.capacity() {
+				frames.capacity()
+			} else {
+				0
+			};
+			reserve(
+				(capacity + old + packet.capacity()) * std::mem::size_of::<Frame>() + workspace,
+			)?;
+			if capacity > frames.capacity() {
+				frames
+					.try_reserve_exact(capacity - frames.len())
+					.map_err(std::io::Error::other)?;
+			}
+			frames.extend(packet);
+		}
+		reserve((frames.capacity() + frames.len()) * std::mem::size_of::<Frame>())?;
+		Ok(crate::sound::static_sound::StaticSoundData {
+			sample_rate: self.sample_rate,
+			frames: frames.into(),
+			settings: Default::default(),
+			slice: None,
+		})
+	}
+}
+
+/// A seekable host resource. Reads and seeks run on decoder workers only.
+pub trait AudioRead: std::io::Read + std::io::Seek + Send + Sync {}
+impl<T: std::io::Read + std::io::Seek + Send + Sync> AudioRead for T {}
+struct Reader<R> {
+	reader: R,
+	length: u64,
+}
+impl<R: AudioRead> std::io::Read for Reader<R> {
+	fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+		self.reader.read(output)
+	}
+}
+impl<R: AudioRead> std::io::Seek for Reader<R> {
+	fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+		self.reader.seek(to)
+	}
+}
+impl<R: AudioRead> MediaSource for Reader<R> {
+	fn is_seekable(&self) -> bool {
+		true
+	}
+	fn byte_len(&self) -> Option<u64> {
+		Some(self.length)
 	}
 }
 
@@ -69,15 +206,7 @@ impl super::Decoder for SymphoniaDecoder {
 	}
 
 	fn decode(&mut self) -> Result<Vec<Frame>, Self::Error> {
-		let packet = loop {
-			match self.format_reader.next_packet()? {
-				Some(packet) if packet.track_id == self.track_id => break packet,
-				Some(_) => continue,
-				None => return Ok(vec![]),
-			}
-		};
-		let buffer = self.decoder.decode(&packet)?;
-		load_frames_from_buffer_ref(&buffer)
+		self.decode_reserved(|_| Ok(()))
 	}
 
 	fn seek(&mut self, index: usize) -> Result<usize, Self::Error> {
@@ -89,10 +218,109 @@ impl super::Decoder for SymphoniaDecoder {
 			},
 		)?;
 		let actual = seeked_to.actual_ts.get();
+		self.decoder.reset();
 		Ok(if actual < 0 {
 			0
 		} else {
 			(actual as usize).min(self.num_frames)
 		})
+	}
+}
+
+#[cfg(all(test, feature = "mp3"))]
+mod tests {
+	use super::*;
+	use std::io::Cursor;
+
+	const MP3: &[u8] = include_bytes!("../../../../tests/fixtures/short-tone.mp3");
+
+	fn packet_frames(mut decoder: SymphoniaDecoder) -> Vec<usize> {
+		let mut counts = Vec::new();
+		while let Some(packet) = decoder.format_reader.next_packet().unwrap() {
+			if packet.track_id == decoder.track_id {
+				counts.push(decoder.decoder.decode(&packet).unwrap().frames());
+			}
+		}
+		counts
+	}
+
+	#[test]
+	fn mp3_zero_output_packet_is_followed_by_pcm() {
+		let bytes = if let Some(path) = std::env::var_os("REEL_DECODER_PROBE") {
+			std::fs::read(path).unwrap()
+		} else {
+			MP3.to_vec()
+		};
+		let decoder =
+			SymphoniaDecoder::from_reader(Cursor::new(bytes.clone()), bytes.len() as u64).unwrap();
+		let counts = packet_frames(decoder);
+		eprintln!("decoded packet frames: {counts:?}");
+		assert_eq!(counts[0], 0);
+		assert!(counts[1..].iter().any(|&count| count > 0));
+	}
+	#[test]
+	fn mp3_empty_packets_do_not_terminate_reserved_or_static_decode() {
+		let bytes = std::env::var_os("REEL_DECODER_PROBE")
+			.map(|path| std::fs::read(path).unwrap())
+			.unwrap_or_else(|| MP3.to_vec());
+		let open = || {
+			SymphoniaDecoder::from_reader(Cursor::new(bytes.clone()), bytes.len() as u64).unwrap()
+		};
+		let expected: usize = packet_frames(open()).into_iter().sum();
+		assert!(expected > 0);
+		let mut decoder = open();
+		let mut total = 0;
+		let mut checkpoints = 0;
+		loop {
+			let frames = decoder
+				.decode_reserved(|_| {
+					checkpoints += 1;
+					Ok(())
+				})
+				.unwrap();
+			if frames.is_empty() {
+				break;
+			}
+			total += frames.len();
+		}
+		assert_eq!(total, expected);
+		assert!(
+			checkpoints >= 4,
+			"priming and PCM packets both reserve storage"
+		);
+		assert!(decoder.decode_reserved(|_| Ok(())).unwrap().is_empty());
+		let data = open().into_static(|_| Ok(())).unwrap();
+		assert_eq!(data.frames.len(), expected);
+		let reference =
+			crate::sound::static_sound::StaticSoundData::from_cursor(Cursor::new(bytes)).unwrap();
+		assert_eq!(data.frames.len(), reference.frames.len());
+		for index in 0..expected {
+			assert_eq!(data.frames.frame(index), reference.frames.frame(index));
+		}
+	}
+
+	#[test]
+	fn mp3_reservation_can_cancel_after_zero_output_packet() {
+		let mut decoder =
+			SymphoniaDecoder::from_reader(Cursor::new(MP3), MP3.len() as u64).unwrap();
+		let mut calls = 0;
+		let error = decoder
+			.decode_reserved(|_| {
+				calls += 1;
+				if calls == 3 {
+					Err(std::io::Error::other("cancelled after priming"))
+				} else {
+					Ok(())
+				}
+			})
+			.unwrap_err();
+		assert_eq!(calls, 3);
+		assert!(error.to_string().contains("cancelled after priming"));
+		let mut decoder =
+			SymphoniaDecoder::from_reader(Cursor::new(MP3), MP3.len() as u64).unwrap();
+		let error = decoder
+			.decode_reserved(|_| Err(std::io::Error::other("budget rejected")))
+			.unwrap_err();
+		assert!(error.to_string().contains("budget rejected"));
 	}
 }

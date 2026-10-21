@@ -68,6 +68,7 @@ struct SavedResource {
 #[derive(Debug, Serialize, Deserialize)]
 struct StoredDrawing {
     commands: Vec<FrameCommand>,
+    capture_exclusions: Vec<Range<usize>>,
     masks: BTreeMap<u32, Arc<FrameMask>>,
 }
 #[derive(Debug)]
@@ -76,6 +77,12 @@ enum Drawing {
     Stored(StoredDrawing),
 }
 impl Drawing {
+    fn capture_exclusions(&self) -> &[Range<usize>] {
+        match self {
+            Self::Live(v) => &v.capture_exclusions,
+            Self::Stored(v) => &v.capture_exclusions,
+        }
+    }
     fn commands(&self) -> &[FrameCommand] {
         match self {
             Self::Live(v) => &v.commands,
@@ -92,8 +99,9 @@ impl Drawing {
 impl Serialize for Drawing {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut record = serializer.serialize_struct("StoredDrawing", 2)?;
+        let mut record = serializer.serialize_struct("StoredDrawing", 3)?;
         record.serialize_field("commands", self.commands())?;
+        record.serialize_field("capture_exclusions", self.capture_exclusions())?;
         record.serialize_field("masks", self.masks())?;
         record.end()
     }
@@ -107,6 +115,7 @@ impl<'de> Deserialize<'de> for Drawing {
 #[derive(Debug, Serialize, Deserialize)]
 struct SavedTransition {
     commands: Range<usize>,
+    capture_included: bool,
     previous: usize,
     to_parent: Affine,
     progress: f32,
@@ -270,6 +279,7 @@ impl RetainedScene {
                 }
                 transitions.push(SavedTransition {
                     commands: transition.commands.clone(),
+                    capture_included: transition.capture_included,
                     previous: node_ids[&(Arc::as_ptr(&transition.previous.drawing) as usize)],
                     to_parent: transition.previous.to_parent,
                     progress: transition.progress,
@@ -322,7 +332,9 @@ impl SavedRetainedScene {
             let drawing = match &node.drawing {
                 Drawing::Live(drawing) => drawing.accounted_bytes,
                 Drawing::Stored(drawing) => {
-                    (drawing.commands.capacity() * size_of::<FrameCommand>()) as u64
+                    (drawing.commands.capacity() * size_of::<FrameCommand>()
+                        + drawing.capture_exclusions.capacity() * size_of::<Range<usize>>())
+                        as u64
                 }
             };
             let metadata = drawing
@@ -432,6 +444,7 @@ pub struct RestoreProgress {
 
 struct Building {
     commands: Vec<FrameCommand>,
+    capture_exclusions: Vec<Range<usize>>,
     masks: BTreeMap<u32, Arc<FrameMask>>,
     current_mask: Option<u32>,
     last_mask: Option<u32>,
@@ -442,6 +455,8 @@ struct Building {
     ticket: BudgetTicket,
     balance: validate::Balance,
     commands_validated: bool,
+    exclusion_balance: validate::Balance,
+    exclusion_next: usize,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ResourceKind {
@@ -558,15 +573,30 @@ impl RetainedRestore {
                 break;
             }
             if self.building.is_none() {
-                let commands = self.source.0.nodes[self.drawings.len()].drawing.commands();
+                let drawing = &self.source.0.nodes[self.drawings.len()].drawing;
+                let commands = drawing.commands();
                 let count = commands.len();
-                let bytes = (size_of::<FrameDrawing>() + std::mem::size_of_val(commands)) as u64;
-                if !admit(&mut progress.build, budget, 1, bytes) {
+                let bytes = (size_of::<FrameDrawing>()
+                    + std::mem::size_of_val(commands)
+                    + std::mem::size_of_val(drawing.capture_exclusions()))
+                    as u64;
+                if !admit(
+                    &mut progress.build,
+                    budget,
+                    1 + drawing.capture_exclusions().len() as u64,
+                    bytes,
+                ) {
                     break;
                 }
+                validate::capture_exclusions(commands.len(), drawing.capture_exclusions())?;
                 self.charge(bytes)?;
+                let capture_exclusions = self.source.0.nodes[self.drawings.len()]
+                    .drawing
+                    .capture_exclusions()
+                    .to_vec();
                 self.building = Some(Building {
                     commands: Vec::with_capacity(count),
+                    capture_exclusions,
                     masks: BTreeMap::new(),
                     current_mask: None,
                     last_mask: None,
@@ -580,6 +610,8 @@ impl RetainedRestore {
                         .map_err(|_| retained::error(BuildErrorKind::Bytes))?,
                     balance: validate::Balance::default(),
                     commands_validated: false,
+                    exclusion_balance: validate::Balance::default(),
+                    exclusion_next: 0,
                 });
                 continue;
             }
@@ -690,6 +722,16 @@ impl RetainedRestore {
                 self.bytes += bytes;
                 validate::command(command, mask, node.drawing.masks())?;
                 build.balance.command(&command.op)?;
+                if mask.is_none()
+                    && let Some(range) = build.capture_exclusions.get(build.exclusion_next)
+                    && range.contains(&build.commands.len())
+                {
+                    build.exclusion_balance.command(&command.op)?;
+                    if build.commands.len() + 1 == range.end {
+                        build.exclusion_balance.finish()?;
+                        build.exclusion_next += 1;
+                    }
+                }
                 let mut command = command.clone();
                 remap_command(&mut command, &build.handles)?;
                 if let Some(id) = mask {
@@ -742,6 +784,7 @@ impl RetainedRestore {
                 }
                 build.transitions.push(SceneTransition {
                     commands: transition.commands.clone(),
+                    capture_included: transition.capture_included,
                     previous: RetainedScene {
                         drawing: self.drawings[transition.previous].clone(),
                         to_parent: transition.to_parent,
@@ -763,6 +806,7 @@ impl RetainedRestore {
                 .map_err(|_| retained::error(BuildErrorKind::Bytes))?;
             self.drawings.push(Arc::new(FrameDrawing {
                 commands: build.commands,
+                capture_exclusions: build.capture_exclusions,
                 masks: build.masks,
                 transitions: build.transitions,
                 resources,

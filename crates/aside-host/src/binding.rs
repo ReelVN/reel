@@ -40,6 +40,24 @@ pub type NativeHandler<H, E> = fn(&mut H, &mut Vm, HostTicket) -> Result<(), E>;
 pub struct NativeBinding<H = (), E = Error> {
     pub contract: NativeContract,
     pub invoke: NativeHandler<H, E>,
+    /// Markdown extracted from the exported function's Rust documentation.
+    /// Tooling reads this static text by canonical symbol; VM linkage stores only the contract.
+    pub documentation: &'static str,
+}
+
+/// The registered signature and its source-authored Markdown, for editor tooling.
+pub struct NativeDocumentation {
+    pub contract: NativeContract,
+    pub markdown: &'static str,
+}
+
+impl<H, E> NativeBinding<H, E> {
+    pub fn into_documentation(self) -> NativeDocumentation {
+        NativeDocumentation {
+            contract: self.contract,
+            markdown: self.documentation,
+        }
+    }
 }
 
 /// Owned conversions used at the native boundary. Value itself is a borrowed

@@ -55,6 +55,41 @@ fn scroll(offset: f64) -> NodeKind {
 }
 
 #[test]
+fn virtual_feedback_keeps_committed_topology_and_input_ownership() {
+    let mut stage = Stage::default();
+    let child = stage
+        .create(NodeKind::Column, NodeProps::default(), vec![])
+        .unwrap();
+    let root = stage
+        .create(scroll(0.), NodeProps::default(), vec![child])
+        .unwrap();
+    stage.replace(root).unwrap();
+    let view = StageView::capture(&stage);
+    stage
+        .update(root, scroll(25.), NodeProps::default())
+        .unwrap();
+    let mut props = stage.node(child).unwrap().props.clone();
+    props.y = 15.;
+    props.opacity = 0.75;
+    stage
+        .update(child, NodeKind::Column, props.clone())
+        .unwrap();
+    assert!(view.permits_feedback(&stage));
+    for field in 0..3 {
+        let mut changed = props.clone();
+        match field {
+            0 => changed.visible = false,
+            1 => changed.enabled = false,
+            _ => changed.modal = true,
+        }
+        stage.update(child, NodeKind::Column, changed).unwrap();
+        assert!(!view.permits_feedback(&stage));
+    }
+    stage.update(child, NodeKind::Row, props).unwrap();
+    assert!(!view.permits_feedback(&stage));
+}
+
+#[test]
 #[ignore = "CPU allocation measurement; run alone with --ignored --exact --test-threads=1 --nocapture"]
 fn scroll_projection_and_sync_share_ten_thousand_text_nodes() {
     let mut measurements = Vec::new();

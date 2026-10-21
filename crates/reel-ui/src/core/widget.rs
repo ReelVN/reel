@@ -164,6 +164,12 @@ pub type ChildrenIds = SmallVec<[WidgetId; 16]>;
 /// widget should only be mutated either during a method call or through a [`WidgetMut`].
 #[allow(unused_variables, reason = "Default impls don't use method arguments")]
 pub trait Widget: AsDynWidget + Any {
+    /// Whether accepted-frame captures include this widget and its descendants.
+    /// This does not affect presentation, layout, or input.
+    fn capture_included(&self) -> bool {
+        true
+    }
+
     /// The action type that this widget will submit, through [`EventCtx::submit_action`]
     /// (or the method of the same name on a different context).
     /// The type of actions submitted by this widget will be validated against this type.

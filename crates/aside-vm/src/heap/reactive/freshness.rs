@@ -2,6 +2,45 @@
 use super::*;
 
 impl Heap {
+    /// Semantic reads in an observer refresh their actual bound source. Ordinary
+    /// script segments retain the last published value until their boundary.
+    pub(crate) fn reactive_read_source(
+        &mut self,
+        property: PropertyId,
+    ) -> Result<(Option<Value>, u64), HeapError> {
+        if self.reactive_capture.is_none() {
+            return Ok((None, 0));
+        }
+        let object = self.object(self.key(property.host)?)?;
+        if !object.model && property.field >= object.observable_fields {
+            return Ok((None, 0));
+        }
+        let output = self.property_source(property)?.0.host;
+        if !self.object(self.key(output)?)?.derived {
+            return Ok((None, 0));
+        }
+        let mut active = self.reactive_capture;
+        let mut work = 1;
+        while let Some(capture) = active {
+            work += 1;
+            if capture.same_bits(output) {
+                return Err(HeapError::BindingCycle);
+            }
+            let parent = self.host_payload(capture, DerivedSlot::Parent as u32)?;
+            active = (parent.tag() != crate::ValueTag::Null).then_some(parent);
+        }
+        let current = self.derived_is_current_work(output, None, &mut work)?;
+        Ok(((!current).then_some(output), work))
+    }
+    pub(crate) fn derived_claim_work(&self) -> u64 {
+        self.reactive_queue.len() as u64
+    }
+    pub(crate) fn claim_derived(&mut self, output: Value) -> Result<(), HeapError> {
+        let key = self.key(output)?;
+        self.reactive_queue.retain(|queued| *queued != key);
+        self.objects.get_mut(key).unwrap().derived_dirty = false;
+        Ok(())
+    }
     fn dependency_payload(
         &self,
         key: HeapKey,
@@ -27,9 +66,15 @@ impl Heap {
         }
     }
 
-    fn push_derived_ancestor(&mut self, key: HeapKey, index: u32) -> Result<(), HeapError> {
+    fn push_derived_ancestor(
+        &mut self,
+        key: HeapKey,
+        index: u32,
+        work: &mut u64,
+    ) -> Result<(), HeapError> {
         let inputs = &self.dependency_payload(key)?.ancestors;
         if inputs.len() == inputs.capacity() {
+            *work += inputs.len() as u64;
             let capacity = (inputs.capacity() * 2).max(8);
             // Allocate separately so both old and new storage are admitted and
             // counted while they overlap. Failure keeps the incomplete cache invalid.
@@ -58,7 +103,11 @@ impl Heap {
         Ok(())
     }
 
-    fn prepare_derived_ancestors(&mut self, dependencies: Value) -> Result<(), HeapError> {
+    fn prepare_derived_ancestors(
+        &mut self,
+        dependencies: Value,
+        work: &mut u64,
+    ) -> Result<(), HeapError> {
         let key = self.key(dependencies)?;
         if self.dependency_payload(key)?.ancestor_revision == self.binding_revision {
             return Ok(());
@@ -70,6 +119,7 @@ impl Heap {
         payload.ancestors.clear();
         let mut inputs = DependencyCursor::new(dependencies);
         while let Some((host, selector)) = inputs.next(self)? {
+            *work += 1;
             let mut source = PropertyId {
                 host,
                 field: selector.as_int().unwrap() as u32,
@@ -78,7 +128,7 @@ impl Heap {
                 source = self.property_source(source)?.0;
             }
             if self.object(self.key(source.host)?)?.derived {
-                self.push_derived_ancestor(key, inputs.offset - 2)?;
+                self.push_derived_ancestor(key, inputs.offset - 2, work)?;
             }
         }
         let Payload::Dependencies(payload) = &mut self.objects.get_mut(key).unwrap().payload else {
@@ -97,6 +147,15 @@ impl Heap {
         output: Value,
         evaluating: Option<Value>,
     ) -> Result<bool, HeapError> {
+        self.derived_is_current_work(output, evaluating, &mut 0)
+    }
+
+    fn derived_is_current_work(
+        &mut self,
+        output: Value,
+        evaluating: Option<Value>,
+        work: &mut u64,
+    ) -> Result<bool, HeapError> {
         self.property_work.clear();
         self.work_push(PropertyId {
             host: output,
@@ -104,6 +163,7 @@ impl Heap {
         })?;
         let mut cursor = 0;
         while cursor < self.property_work.len() {
+            *work += 1;
             let mut current = self.property_work[cursor];
             cursor += 1;
             if current.field != u32::MAX {
@@ -125,6 +185,7 @@ impl Heap {
             // An untracked component factory also owns an unfinished capture.
             let mut active = self.reactive_capture;
             while let Some(value) = active {
+                *work += 1;
                 if value.same_bits(current.host) {
                     return Ok(false);
                 }
@@ -135,18 +196,18 @@ impl Heap {
             if dependencies.tag() == crate::ValueTag::Null {
                 continue;
             }
-            self.prepare_derived_ancestors(dependencies)?;
+            self.prepare_derived_ancestors(dependencies, work)?;
             let dependency_key = self.key(dependencies)?;
             let count = self.dependency_payload(dependency_key)?.ancestors.len();
             for index in 0..count {
+                *work += 1;
                 let i = self.dependency_payload(dependency_key)?.ancestors[index];
                 let mut next = self.dependency_source(dependencies, i)?;
                 next.field = u32::MAX;
-                if !self
-                    .property_work
-                    .iter()
-                    .any(|p| p.host.same_bits(next.host) && p.field == next.field)
-                {
+                if !self.property_work.iter().any(|p| {
+                    *work += 1;
+                    p.host.same_bits(next.host) && p.field == next.field
+                }) {
                     self.work_push(next)?;
                 }
             }

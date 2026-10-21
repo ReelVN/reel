@@ -100,6 +100,51 @@ fn accept_final(vm: &mut SessionVm) {
     }
 }
 
+#[test]
+fn transition_leaf_nodes_keep_identity_and_wait_for_both_presentations() {
+    for encoded in [false, true] {
+        for (make, change, check) in [
+            (
+                "image(\"old.png\",width:40,height:40)",
+                "node.source=\"new.png\"",
+                "node.source==\"new.png\"",
+            ),
+            (
+                "text(\"before\")",
+                "node.value=\"after\"",
+                "node.value==\"after\"",
+            ),
+        ] {
+            let code = format!(
+                r#"fn opening() {{
+                let node={make};stage.replace(stack(){{node;}});
+                let original=node;
+                stage.transition(target:node,duration:1,change:||{{{change};}});
+                if node!=original || !({check}) {{throw "leaf identity";}}
+                narrator("done");
+            }}"#
+            );
+            let (mut session, mut vm) = prepared(&code, encoded);
+            drive(&mut vm, &mut session, false);
+            let request = vm.take_transition_request().unwrap().unwrap();
+            assert!(request.target.is_some());
+            vm.accept_presentation(&session, request.presentation_request)
+                .unwrap();
+            vm.complete_transition_request(request.id, Ok(retained_picture()))
+                .unwrap();
+            drive(&mut vm, &mut session, false);
+            let view = vm.transition_views().next().unwrap();
+            assert_eq!(view.phase, TransitionPhase::NewPending);
+            vm.accept_transition(view.id, view.phase, 0.).unwrap();
+            vm.advance_time(&session, 1., 64).unwrap();
+            accept_final(&mut vm);
+            drive(&mut vm, &mut session, false);
+            assert!(matches!(session.view().interaction,
+                Some(crate::InteractionView::Dialogue(d)) if d.text()=="done"));
+        }
+    }
+}
+
 fn restored(vm: &SessionVm, session: &Session) -> (Session, SessionVm) {
     let mut capture = vm.snapshot_begin(session).unwrap();
     while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
@@ -554,7 +599,7 @@ fn transition_target_retirement_cancels_callback_and_keeps_outer_task() {
 }
 
 #[test]
-fn transition_rejects_leaf_unmounted_and_cursor_targets_before_change() {
+fn transition_rejects_unmounted_and_cursor_targets_before_change() {
     let code = r#"fn opening() {
         let leaf=text("leaf");
         let pointer_child=stack();
@@ -562,11 +607,11 @@ fn transition_rejects_leaf_unmounted_and_cursor_targets_before_change() {
         stage.replace(column() { leaf; pointer; });
         let detached=stack();
         let state={calls:0,errors:0};
-        for target in [leaf,detached,pointer,pointer_child] {
+        for target in [detached,pointer,pointer_child] {
             try { stage.transition(target:target,duration:0,change:|| { state.calls+=1; }); }
             catch error { state.errors+=1; }
         }
-        if state.calls!=0 || state.errors!=4 { throw "invalid transition target"; }
+        if state.calls!=0 || state.errors!=3 { throw "invalid transition target"; }
         stage.replace(text("targets validated"));
     }"#;
     for encoded in [false, true] {

@@ -66,6 +66,7 @@ pub fn parse_with_options(source: &str, options: ParseOptions) -> Result<Parse, 
         depth: 0,
         halted: false,
         exhausted: lexed.exhausted,
+        exhaustion_reason: None,
         frames: Vec::new(),
         allow_min: false,
         stop_pipe: false,
@@ -109,6 +110,7 @@ struct Parser<'a> {
     depth: usize,
     halted: bool,
     exhausted: bool,
+    exhaustion_reason: Option<&'static str>,
     frames: Vec<Vec<usize>>,
     allow_min: bool,
     stop_pipe: bool,
@@ -248,8 +250,7 @@ impl Parser<'_> {
         if self.probe {
             let remaining = self.probes.remaining.get();
             if remaining == 0 {
-                self.halted = true;
-                self.exhausted = true;
+                self.limit("assignment pattern trial budget exhausted");
                 return;
             }
             self.probes.remaining.set(remaining - 1);
@@ -324,7 +325,8 @@ impl Parser<'_> {
     fn leave(&mut self) {
         self.depth -= 1;
     }
-    fn limit(&mut self, message: &str) {
+    fn limit(&mut self, message: &'static str) {
+        self.exhaustion_reason.get_or_insert(message);
         self.error(D::BudgetExceeded, message);
         self.halted = true;
         self.exhausted = true;
@@ -634,6 +636,7 @@ impl Parser<'_> {
             depth: self.depth,
             halted: false,
             exhausted: false,
+            exhaustion_reason: None,
             frames: Vec::new(),
             allow_min: false,
             stop_pipe: self.stop_pipe,
@@ -644,7 +647,11 @@ impl Parser<'_> {
         let shape = trial.pattern();
         let result = !trial.halted && shape.destructuring && trial.peek() == K::Eq;
         if trial.exhausted {
-            self.limit("assignment pattern trial budget exhausted");
+            self.limit(
+                trial
+                    .exhaustion_reason
+                    .expect("trial exhaustion records its cause"),
+            );
         } else {
             self.probes.cache.borrow_mut().insert(key, result);
         }
@@ -1589,6 +1596,7 @@ mod probe_tests {
                 depth: 0,
                 halted: false,
                 exhausted: false,
+                exhaustion_reason: None,
                 frames: Vec::new(),
                 allow_min: true,
                 stop_pipe: true,
@@ -1608,6 +1616,10 @@ mod probe_tests {
                 assert_eq!(probes.remaining.get(), 0);
                 assert_eq!(parser.diagnostics.len(), 1);
                 assert_eq!(parser.diagnostics[0].code, D::BudgetExceeded);
+                assert_eq!(
+                    parser.diagnostics[0].message,
+                    "assignment pattern trial budget exhausted"
+                );
                 assert_eq!(parser.diagnostics[0].range, span(0, 1));
                 assert!(probes.cache.borrow().is_empty());
             } else {

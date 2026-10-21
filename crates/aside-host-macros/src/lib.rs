@@ -58,6 +58,15 @@ fn helper(attrs: &Attributes, allowed: &[&str]) -> Result<Vec<Meta>, ParseError>
     };
     options(group.tokens.clone(), allowed)
 }
+fn documentation(attrs: &Attributes) -> TokenStream {
+    let mut lines = Vec::new();
+    for attr in attrs.iter().filter(|attr| attr.path.is_ident("doc")) {
+        if let MetaContent::Expr { expr, .. } = &attr.content {
+            lines.push(expr.clone());
+        }
+    }
+    moxy::template! { concat!(@for line in &lines { {{ line }}, "\n", }) }
+}
 fn constant(meta: &Meta) -> Result<TokenStream, ParseError> {
     let tokens = expression(meta)?;
     if tokens.to_string() == "null" {
@@ -299,6 +308,7 @@ fn native_impl(
         |name| moxy::template! { Some({{ name }}.into()) },
     );
     let attrs = &function.attrs;
+    let documentation = documentation(attrs);
     let gates: Vec<_> = attrs
         .iter()
         .filter(|attr| attr.path.is_ident("cfg"))
@@ -315,6 +325,7 @@ fn native_impl(
         {{ vis }} mod {{ name }} {
             use super::*;
             pub const SYMBOL: &str = {{ &symbol }};
+            pub const DOCUMENTATION: &str = {{ documentation }};
             pub fn binding() -> ::aside_host::NativeBinding<{{ &host }}, {{ &error }}> {
                 ::aside_host::NativeBinding {
                     contract: ::aside_host::NativeContract {
@@ -326,6 +337,7 @@ fn native_impl(
                         required_capabilities: ({{ capabilities }}).into_iter().map(|v: &str| v.into()).collect(),
                     },
                     invoke,
+                    documentation: DOCUMENTATION,
                 }
             }
             pub fn invoke(__aside_host: &mut {{ host }}, __aside_vm: &mut ::aside_host::aside_vm::executor::Vm,
@@ -368,6 +380,7 @@ fn properties_impl(item: ItemEnum) -> Result<TokenStream, ParseError> {
     }
     let mut entries = Vec::new();
     let mut identities = Vec::new();
+    let mut documents = Vec::new();
     let mut names = std::collections::BTreeSet::new();
     for (index, variant) in item.variants.iter().enumerate() {
         if !matches!(variant.fields, Fields::Unit) || variant.discriminant.is_some() {
@@ -421,6 +434,8 @@ fn properties_impl(item: ItemEnum) -> Result<TokenStream, ParseError> {
         let writable = moxy::token::LitBool::new(writable, Span::call_site());
         let animated = moxy::token::LitBool::new(animated, Span::call_site());
         let index = literal(index);
+        let documentation = documentation(&variant.attrs);
+        documents.push(moxy::template! { {{ &index }} => {{ documentation }}, });
         entries.push(moxy::template! { ::aside_host::Property { name: {{ name }},
         ty: ::aside_host::aside_vm::bytecode::BuiltinType::{{ ty }}, default: || {{ default }},
         writable: {{ writable }}, animatable: {{ animated }}, validator: {{ validator }} } });
@@ -430,6 +445,9 @@ fn properties_impl(item: ItemEnum) -> Result<TokenStream, ParseError> {
     Ok(moxy::template! {
         impl ::aside_host::PropertySchema for {{ ident }} {
             const PROPERTIES: &'static [::aside_host::Property] = &[ @for entry in &entries { {{ entry }}, } ];
+            fn documentation(index: usize) -> &'static str {
+                match index { @for document in &documents { {{ document }} } _ => "" }
+            }
         }
         impl {{ ident }} {
             pub const fn index(self) -> usize { match self { @for identity in &identities { {{ identity }} } } }

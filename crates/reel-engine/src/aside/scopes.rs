@@ -1,5 +1,47 @@
 //! Native callback lifetimes share the ordinary host-owner and task protocols.
 use super::*;
+
+aside_host::native_documentation! {
+    pub(super) fn documentation {
+        /// Run `body(scope)` in the current task and return its result. Work created
+        /// inside inherits the scope. Leaving the body retires its unfinished activities,
+        /// tasks, owned nodes and overrides. `owner` optionally anchors it to a stage node.
+        "reel::scope";
+        /// Request scope retirement. The first request returns true; repeated requests
+        /// and calls through an extracted bound method after retirement return false.
+        /// The scope handle retires on exit. Cancellation revokes its native region,
+        /// nested scopes and owned work, then raises ScopeCancelled outside scope.
+        /// The body can cancel itself; its current native response completes first.
+        ///
+        /// ```aside
+        /// fn main() {
+        ///     let mut cancel = null;
+        ///     try {
+        ///         scope(body: |s| { cancel = s.cancel; cancel(); await completion(); });
+        ///     } catch error {
+        ///         if error != "ScopeCancelled" { throw; }
+        ///     }
+        ///     if cancel() { throw "scope remained live"; }
+        /// }
+        /// ```
+        "reel::scope::cancel";
+        /// Start an action owned by this scope, optionally paused.
+        "reel::scope::run";
+        /// Start a zero-argument task owned by this scope. Its result is awaitable.
+        "reel::scope::spawn";
+        /// Insert a node under parent at the optional child index and own its lifetime
+        /// through this scope. Scope retirement removes the node.
+        "reel::scope::add";
+        /// Temporarily override named properties on a node. Return a removable override
+        /// token; scope retirement restores the preceding effective values and bindings.
+        "reel::scope::override";
+        /// Remove this override token and restore the preceding effective properties.
+        "reel::override::remove";
+        /// Add a temporary x/y offset to a node while retaining its base position.
+        /// Return an override token controlled by the scope.
+        "reel::scope::offset";
+    }
+}
 use aside_vm::executor::{Continuation, FaultRetention, FrameId};
 use aside_vm::{Heap, HeapReservation, ValueTag};
 use std::collections::VecDeque;
@@ -14,12 +56,13 @@ pub(super) fn is_scope(heap: &Heap, value: Value) -> bool {
 pub(super) struct Scope {
     pub task: TaskId,
     pub frame: FrameId,
+    pub(super) cancel_requested: bool,
     root: RootToken,
 }
 
 #[derive(Default)]
 pub(super) struct Scopes {
-    pub methods: Option<[FunctionId; 6]>,
+    pub methods: Option<[FunctionId; 7]>,
     pub live: VecDeque<Scope>,
     charge: Option<HeapReservation>,
 }
@@ -75,7 +118,7 @@ impl SessionVm {
             let heap = self.vm.heap();
             let object = heap.root_value(scope.root).expect("live scope root");
             let owner = heap.host_payload(object, 1).expect("scope owner");
-            !owner_live(heap, owner)
+            scope.cancel_requested || !owner_live(heap, owner)
         })
     }
 
@@ -172,7 +215,7 @@ impl SessionVm {
             let scope = &self.scopes.live[index];
             let object = self.vm.heap().root_value(scope.root)?;
             let owner = self.vm.heap().host_payload(object, 1)?;
-            if owner_live(self.vm.heap(), owner) {
+            if !scope.cancel_requested && owner_live(self.vm.heap(), owner) {
                 index += 1;
                 continue;
             }
@@ -180,6 +223,30 @@ impl SessionVm {
             self.cancel_native_region(session, task, scope.frame)?;
             self.close_scope(index)?;
         }
+        Ok(())
+    }
+
+    pub(super) fn dispatch_scope_cancel(&mut self, ticket: HostTicket) -> Result<(), AdapterError> {
+        let object = self.vm.host_arguments(ticket)?[0];
+        match self.vm.heap().host_fields(object) {
+            Ok(_) if !is_scope(self.vm.heap(), object) => {
+                return Err(AdapterError::Input("cancel requires a scope"));
+            }
+            Ok(_) | Err(aside_vm::HeapError::RetiredHost) => {}
+            Err(error) => return Err(error.into()),
+        }
+        let mut requested = false;
+        for scope in &mut self.scopes.live {
+            if self.vm.heap().root_value(scope.root)?.same_bits(object) {
+                requested = !scope.cancel_requested;
+                scope.cancel_requested = true;
+                break;
+            }
+        }
+        // Complete this call before maintenance can revoke its own callback region.
+        self.vm
+            .respond(ticket, HostResponse::Ready(Value::bool(requested)))?;
+        self.issued = None;
         Ok(())
     }
 
@@ -223,6 +290,7 @@ impl SessionVm {
                     find("reel::scope::override")?,
                     find("reel::scope::offset")?,
                     find("reel::override::remove")?,
+                    find("reel::scope::cancel")?,
                 ]);
             }
             results::reserve_queue(
@@ -237,9 +305,9 @@ impl SessionVm {
                 &[Value::int(TAG), owner, Value::NULL, Value::NULL],
                 Some(results::readonly),
             )?;
-            for (i, (name, function)) in ["run", "spawn", "add", "override", "offset"]
+            for (i, (name, function)) in ["run", "spawn", "add", "override", "offset", "cancel"]
                 .into_iter()
-                .zip(self.scopes.methods.unwrap())
+                .zip([0, 1, 2, 3, 4, 6].map(|index| self.scopes.methods.unwrap()[index]))
                 .enumerate()
             {
                 let method = self.vm.bind_native(object, function)?;
@@ -261,7 +329,7 @@ impl SessionVm {
                         &[]
                     },
                     continuation: Continuation {
-                        version: 4,
+                        version: 1,
                         stage: 0,
                         values: &[object],
                         faults: FaultRetention::Preserve,
@@ -275,6 +343,7 @@ impl SessionVm {
             self.scopes.live.push_back(Scope {
                 task: ticket.task,
                 frame: ticket.frame,
+                cancel_requested: false,
                 root,
             });
         } else {

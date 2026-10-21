@@ -312,6 +312,7 @@ impl Vm {
                     match ret {
                         ReturnTo::Register { frame, call, .. }
                         | ReturnTo::Default { frame, call, .. }
+                        | ReturnTo::ReactiveRead { frame, call }
                             if frame == s.id =>
                         {
                             call

@@ -74,7 +74,7 @@ cargo fmt -p aside-compiler --check
 cargo clippy -p aside-compiler --all-targets --locked -- -D warnings
 cargo test -p aside-compiler --locked
 cargo test -p aside-compiler --release --locked
-cargo run -p aside-compiler --example check -- path/to/file.aside module
+cargo run --locked -p aside-compiler --example check -- path/to/file.aside module
 cargo build -p aside-compiler --example frontend_probe --release --locked
 cargo run --locked -p reel-dev -- compiler-probe frontend parse
 cargo run --locked -p reel-dev -- compiler-probe frontend lex
@@ -111,7 +111,7 @@ assert_eq!(module.functions().len(), 1);
 explicit host registrations and lexical enclosing bindings for fragments.
 `ModuleResolver` accepts logical import requests; `MemoryResolver` and
 `analyze_project` support in-memory module fixtures and legal SCC initialization
-plans. No compiler filesystem policy or VM dependency is introduced.
+plans. The resolver supplies filesystem policy; lowering uses the shared aside-vm bytecode model.
 
 Source checks live in `tests/semantics.rs`, `semantic_modules.rs`,
 `semantic_guides.rs`, `semantic_quirrel.rs`, and `semantic_depth.rs`.
@@ -138,7 +138,7 @@ allocation/retained storage, named-signature scaling and bounded diagnostics.
 and runs its entry on the real VM, including tiny slices with interleaved GC.
 It checks arithmetic, shared captures, defaults, finally, prepared index targets,
 members, optional short-circuiting, spread/rest and loops against scalar results.
-Trailing children now executes with independent nested collectors, ordinary helper
+Trailing children execute with independent nested collectors, ordinary helper
 functions, and array/tuple `for` loops. Each iteration has its own captured binding.
 Only host values registered for composition are collected; null is ignored,
 declarations and assignments do not contribute children. Shared host fields retain

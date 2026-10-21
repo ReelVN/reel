@@ -2,8 +2,7 @@
 
 `reel prepare-image original.png --output panorama.reel-image` prepares an original
 PNG/JPEG for `image("panorama.reel-image")`. The command writes an immutable manifest
-and its adjacent `.tiles` directory. Ship both. Ordinary PNG/JPEG sources retain
-their existing behavior. ASB and native signatures do not change.
+and its adjacent `.tiles` directory. Ship both.
 
 Run [author_large_image.aside](../examples/author_large_image.aside) with a wide
 original and the font preparation from the creator guide. It pans, zooms out/in,
@@ -30,8 +29,8 @@ whose texels are approximately physical pixels; a one-tile neighbor ring is opti
 prefetch. Multiple nodes share resource keys and leases. Admission follows configured
 byte budgets, without a fixed image/tile count limit.
 
-Metadata layout is not presentation. Missing required tiles keep the last accepted
-GPU frame; input and `stage.presented()` cannot accept that unfinished projection.
+Missing required tiles keep the last accepted GPU frame. Input and
+`stage.presented()` advance after the required tiles are ready.
 Superseded requests are cancelled, late results cannot enter the new demand, and
 retirement releases image leases through the existing resource lifecycle. Optional
 prefetch is evicted/deferred before required loading. Accepted and pending frames
@@ -40,8 +39,8 @@ directly on the shared target while the one-pixel neighbor gutter supplies bilin
 samples across tile boundaries. Tile interiors do not use separate clip layers;
 adjacent antialiased edges must share rasterization before group compositing.
 
-Scope: reel-core format, reel-cli preparation, reel-player loading/layout, reel-ui
-image painting and bridge geometry access; no second graph, runtime or image codec.
+The format lives in reel-core, preparation in reel-cli, loading and layout in
+reel-player, and image painting in reel-ui.
 Checks cover malformed manifests, odd-size pyramids/gutters, transformed visibility,
 cold/warm pan and zoom, cancellation, residency release and actual byte/load counts.
 GPU pixel and device-limit verification is target-specific and reported separately.

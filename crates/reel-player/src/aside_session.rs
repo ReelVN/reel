@@ -321,6 +321,14 @@ impl AsideSessionUi {
     pub fn transitions_pending(&self) -> bool {
         self.transitions.pending()
     }
+    #[cfg(feature = "window")]
+    pub(crate) fn frame_ready(&self) -> bool {
+        (self.vm.stage_ready()
+            || (self.vm.virtual_feedback_ready()
+                && self.ui.permits_virtual_feedback(self.vm.stage())))
+            && !self.ui.images_block_presentation()
+            && self.transitions.ready()
+    }
     pub fn record(
         &self,
         bridge: &mut PresentationBridge,
@@ -330,12 +338,24 @@ impl AsideSessionUi {
         // sync can turn layout feedback into more reactive work. Do not record
         // that intermediate tree (for example an empty far-scroll window), or
         // mint a receipt that could complete a geometry/presentation barrier.
+        let feedback = self.state == StoryState::Running && !self.vm.stage_ready();
         if self.state == StoryState::Running
-            && (!self.vm.stage_ready() || self.ui.images_pending() || !self.transitions.ready())
+            && ((feedback
+                && (!self.vm.virtual_feedback_ready()
+                    || !self.ui.permits_virtual_feedback(self.vm.stage())
+                    || !self.ui.virtual_feedback_visible(bridge, root)?))
+                || self.ui.images_block_presentation()
+                || !self.transitions.ready()
+                || (self.ui.images_pending()
+                    && (self.transitions.pending() || self.vm.transition_views().next().is_some())))
         {
             return Ok(None);
         }
         let (source, mut frame) = self.ui.record(bridge, root, id)?;
+        frame.current &= !feedback;
+        if !frame.current {
+            return Ok(Some((source, frame)));
+        }
         frame.geometry = Some(self.vm.record_geometry(
             frame.stamp.presentation_request,
             |query| {
@@ -383,7 +403,7 @@ impl AsideSessionUi {
     fn accept_recorded(&mut self, frame: &RecordedProjection) -> Result<(), Error> {
         self.transitions
             .accepted_projection(&mut self.vm, &frame.transitions)?;
-        if self.state == StoryState::Running {
+        if self.state == StoryState::Running && frame.current {
             if let Some(identity) = &frame.identity
                 && let Some(geometry) = &frame.geometry
             {
@@ -418,15 +438,21 @@ impl AsideSessionUi {
         }
         if !matches!(self.state, StoryState::Finished | StoryState::Cancelled) {
             self.vm.sync_stage(self.ui.session())?;
-            if !self.vm.stage_ready() {
+            let feedback = !self.vm.stage_ready();
+            if feedback
+                && (!self.vm.virtual_feedback_ready()
+                    || !self.ui.permits_virtual_feedback(self.vm.stage()))
+            {
                 return Ok(());
             }
-            if self.vm.stage_is_input_feedback() {
+            if feedback || self.vm.stage_is_input_feedback() {
                 self.ui.set_feedback_stage(self.vm.stage());
             } else {
                 self.ui.set_stage(self.vm.stage());
             }
-            self.ui.request_presentation(self.vm.presentation_request());
+            if !feedback {
+                self.ui.request_presentation(self.vm.presentation_request());
+            }
         }
         self.sync_input(bridge, root)?;
         if let Some(stage) = SessionUi::stage_widget(bridge, root) {
@@ -508,6 +534,9 @@ impl AsideSessionUi {
                         NodeEvent::Pointer(input) => {
                             self.vm.input_pointer(self.ui.session_mut(), input)?;
                         }
+                        NodeEvent::Wheel(input) => {
+                            self.vm.input_wheel(self.ui.session_mut(), input)?;
+                        }
                         NodeEvent::Interaction(_)
                         | NodeEvent::Scroll(_)
                         | NodeEvent::VirtualList(_) => {}
@@ -523,7 +552,8 @@ impl AsideSessionUi {
         result
     }
     pub fn has_runnable_tasks(&self) -> bool {
-        self.state == StoryState::Running && self.vm.has_runnable_tasks()
+        self.state == StoryState::Running
+            && (self.ui.session().completion_pending() || self.vm.has_runnable_tasks())
     }
     pub fn reveal_more(&mut self, graphemes: usize) -> Result<(), Error> {
         if let Some(InteractionView::Dialogue(dialogue)) = self.ui.session().view().interaction {

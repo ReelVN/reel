@@ -13,7 +13,7 @@ fn main() {
     );
     await run(entrance);
 
-    // 对白等待期间，画面的变化继续进行。
+    // Animation continues while dialogue waits for input.
     let sway = sequence(
         tween(card, x: 240, rotation: 2, duration: 2, easing: "in_out"),
         tween(card, x: 220, rotation: 0, duration: 2, easing: "in_out")
@@ -23,11 +23,11 @@ fn main() {
     pause(drift);
     narrator("画面停在此刻。继续后让它回到原位。");
 
-    // 新演出从当前值接管同一属性；旧活动结算为 Stopped。
+    // A new activity takes over these properties and settles the old one as Stopped.
     await run(tween(card, x: 220, rotation: 0, duration: 0.5, easing: "in_out"));
     narrator("写作时只需描述画面应该如何变化。");
     await run(tween(card, opacity: 0, duration: 0.4));
-    // 复用动作中的起值，延迟结束后重新入场。
+    // Reuse the authored starting values for another entrance after the delay.
     await run(sequence(delay(0.5), entrance));
     narrator("同一个入场动作，也可以留给重播按钮。");
 }

@@ -290,7 +290,7 @@ impl StoryRuntime {
                 .unwrap()
                 .ui_mut()
                 .advance_dialogue(self.logical_ns, speed)?;
-            if reading_changed && self.driver().ui().session().view().interaction.is_none() {
+            if reading_changed && self.driver().has_runnable_tasks() {
                 self.runnable = true;
             }
             let progress = self
@@ -311,6 +311,9 @@ impl StoryRuntime {
                 return Ok(());
             }
             self.step(budget, &mut now)?;
+            if self.driver().adapter().virtual_feedback_boundary() {
+                return Ok(());
+            }
             if self.starting.is_some() || budget.deadline_ns.is_none() || !self.needs_work() {
                 return Ok(());
             }

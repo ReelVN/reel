@@ -1,9 +1,8 @@
 # R02 device contract (implemented portable device profile)
 
-Scope: `reel-render` optional wgpu adapter and `reel-player` assembly; UI/core
-remain portable. Started from R01 411cc7531431f35fbd43a614476815e22cd58f21;
-synchronized the exact accepted painter work-error repair
-9578cb3991d62a5dffb6a8580a1a6d1a850230cc. No VM execution.
+This contract covers reel-render's optional wgpu adapter and its integration
+with reel-player. The portable frame/resource contracts remain in reel-ui and
+reel-core.
 
 The adapter consumes RenderFrame directly. Native windows and surface creation
 stay in player assembly; `gpu::WgpuBackend` owns the resulting native surface,
@@ -156,7 +155,7 @@ no miter can satisfy that limit; remaining Miter limits must fit finite f32.
 This adapts the semantics to Lyon without imposing Lyon's assertion on valid frames.
 Color conversion uses Peniko's typed color-space and alpha operations. Independent
 f64 reference formulas live only in `tests/support/color.rs`; there is no production
-`reel_render::color` module. Frame colors and byte image formats are unchanged.
+`reel_render::color` module. Frame colors and byte image formats use the same color-space contract.
 Replay scopes and mask continuations use explicit, growing work stacks; their
 allocated capacity is charged to the existing transient budget. Every nested
 scope still reserves its actual render targets. There is no separate nesting
@@ -242,11 +241,9 @@ even after an earlier preparation was dropped without submission.
 The existing upload_cost([1,1]) remains 536 resource bytes: 16 bytes of f32
 input, 256 bytes each of CPU/GPU padded staging, and 8 bytes of texture extent.
 This conservative application charge is held once per using transaction, not
-once per draw; target/transient quotas and every other resource path are
-unchanged. It does not measure driver allocator granularity. Publication follows
+once per draw. Driver allocator granularity is outside this application charge. Publication follows
 successful upload encoding. Refusal/cancellation drops the Context/encoder and
 all its reservations. Prepared carries the ticket through submit into Inflight;
 only observed completion (or Renderer teardown after completion/device loss)
 releases residency. The encoder/queue own the actual wgpu resource references
-after the Context slot drops. Device/foreign-preparation checks and R03 pipeline
-scope confirmation remain unchanged. No quality, public API or atlas change.
+after the Context slot drops. Device and preparation identities are validated before publication.

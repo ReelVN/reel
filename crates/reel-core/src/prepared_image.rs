@@ -6,24 +6,6 @@ pub struct PreparedImage {
     pub tile_edge: u32,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn manifest_round_trip_and_odd_pyramid_edges() {
-        let image = PreparedImage::new(40001, 17, 512).unwrap();
-        assert_eq!(PreparedImage::decode(&image.encode()), Ok(image));
-        assert_eq!(image.dimensions(1), [20001, 9]);
-        assert_eq!(image.dimensions(image.levels() - 1), [1, 1]);
-        assert_eq!(image.tile_dimensions(0, 78, 0), Some([67, 19]));
-        assert_eq!(image.tile_dimensions(0, 79, 0), None);
-        let mut invalid = image.encode();
-        invalid[20] = 0;
-        assert!(PreparedImage::decode(&invalid).is_err());
-        assert!(PreparedImage::decode(&invalid[..23]).is_err());
-        assert!(PreparedImage::new(0, 17, 512).is_err());
-    }
-}
 impl PreparedImage {
     pub fn new(width: u32, height: u32, tile_edge: u32) -> Result<Self, &'static str> {
         let tile_bytes = tile_edge
@@ -103,5 +85,24 @@ impl PreparedImage {
     }
     pub fn tile_source(source: &str, level: u32, x: u32, y: u32) -> String {
         format!("{source}.tiles/{level}/{x}-{y}.png")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn manifest_round_trip_and_odd_pyramid_edges() {
+        let image = PreparedImage::new(40001, 17, 512).unwrap();
+        assert_eq!(PreparedImage::decode(&image.encode()), Ok(image));
+        assert_eq!(image.dimensions(1), [20001, 9]);
+        assert_eq!(image.dimensions(image.levels() - 1), [1, 1]);
+        assert_eq!(image.tile_dimensions(0, 78, 0), Some([67, 19]));
+        assert_eq!(image.tile_dimensions(0, 79, 0), None);
+        let mut invalid = image.encode();
+        invalid[20] = 0;
+        assert!(PreparedImage::decode(&invalid).is_err());
+        assert!(PreparedImage::decode(&invalid[..23]).is_err());
+        assert!(PreparedImage::new(0, 17, 512).is_err());
     }
 }

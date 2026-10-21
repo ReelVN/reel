@@ -992,7 +992,12 @@ fn assignment_trials_bound_nested_defaults_and_reuse_completed_groups() {
     let source = format!("{target} = value;");
     let p = at(&source, E::Module);
     assert!(p.exhausted());
-    assert!(p.diagnostics().iter().any(|d| d.code == D::BudgetExceeded));
+    assert!(
+        p.diagnostics().iter().any(|d| d.code == D::BudgetExceeded
+            && d.message == "recursive syntax nesting budget exhausted"),
+        "{:?}",
+        p.diagnostics()
+    );
     ranges(&p, &source);
 }
 

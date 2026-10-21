@@ -1253,7 +1253,7 @@ fn point_lookup_survives_value_updates_but_rejects_structural_changes() {
 }
 
 #[test]
-fn point_lookup_snapshot_preserves_structure_version_and_rejects_old_semantics() {
+fn point_lookup_snapshot_preserves_structure_version_and_rejects_unsupported_format() {
     check_point_lookup_value_and_structure_changes(true);
 }
 
@@ -1291,13 +1291,13 @@ fn check_point_lookup_value_and_structure_changes(restore: bool) {
                     while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
                     let mut image = capture.finish().unwrap();
                     if !model && !indexed && !write && mutation == 0 {
-                        image.version = 8;
+                        image.version = 2;
                         assert!(matches!(
                             VmSnapshot::decode(&image.encode().unwrap()),
                             Err(SnapshotError::Version {
                                 format: "VM",
-                                actual: 8,
-                                expected: 9,
+                                actual: 2,
+                                expected: 1,
                             })
                         ));
                         assert!(matches!(
@@ -1315,8 +1315,8 @@ fn check_point_lookup_value_and_structure_changes(restore: bool) {
                             ),
                             Err(SnapshotError::Version {
                                 format: "VM",
-                                actual: 8,
-                                expected: 9,
+                                actual: 2,
+                                expected: 1,
                             })
                         ));
                         image.version = VmSnapshot::FORMAT_VERSION;
@@ -1423,6 +1423,66 @@ fn derived_point_lookup_observes_the_field_read_at_commit() {
             .same_bits(output)
     );
     vm.heap_mut().release_root(root).unwrap();
+}
+
+#[test]
+fn derived_host_lookup_rejects_changed_structure_before_resolving_old_entry() {
+    for indexed in [false, true] {
+        for reorder in [false, true] {
+            let mut vm = load(point_lookup_package(indexed, false));
+            let fields = vm.heap_mut().alloc_table().unwrap();
+            let position = vm.heap_mut().alloc_string("position").unwrap();
+            let repeat = vm.heap_mut().alloc_string("repeat").unwrap();
+            vm.heap_mut()
+                .table_store(fields, 0, position, Value::int(42))
+                .unwrap();
+            vm.heap_mut()
+                .table_store(fields, 1, repeat, Value::bool(false))
+                .unwrap();
+            let host = vm.heap_mut().alloc_host(fields, &[], None).unwrap();
+            vm.heap_mut().observe_host_properties(host, 0, 2).unwrap();
+            let output = vm.heap_mut().alloc_derived(Value::NULL).unwrap();
+            let root = vm
+                .heap_mut()
+                .add_root(RootOwner(8), RootKind::Host, output)
+                .unwrap();
+            vm.heap_mut().begin_derived(output).unwrap();
+            let task = pause_point_lookup(&mut vm, host, Context::Derived);
+            for _ in 0..1000 {
+                if matches!(vm.active.frames.data.last(),Some(Frame::Script(s)) if s.table_work.is_some_and(|work|work.matched()))
+                {
+                    break;
+                }
+                let result = vm
+                    .run_slice(
+                        task,
+                        SliceBudget {
+                            instructions: 1,
+                            work: vm.last_usage.required_work.max(1),
+                            ..Default::default()
+                        },
+                        || 0,
+                    )
+                    .unwrap();
+                assert!(matches!(result, RunOutcome::BudgetYield(_)));
+            }
+            assert!(
+                matches!(vm.active.frames.data.last(),Some(Frame::Script(s)) if s.table_work.is_some_and(|work|work.matched()))
+            );
+            vm.heap_mut().clear_collection(fields).unwrap();
+            if reorder {
+                vm.heap_mut()
+                    .table_store(fields, 0, repeat, Value::bool(false))
+                    .unwrap();
+                vm.heap_mut()
+                    .table_store(fields, 1, position, Value::int(42))
+                    .unwrap();
+            }
+            fault(&mut vm, task, FaultKind::ConcurrentModification);
+            vm.heap_mut().end_derived(output).unwrap();
+            vm.heap_mut().release_root(root).unwrap();
+        }
+    }
 }
 
 #[test]

@@ -5,7 +5,7 @@ use aside_vm::bytecode as bc;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
 pub const MAGIC: &[u8; 8] = b"REELASB\0";
-pub const VERSION: u16 = 2;
+pub const VERSION: u16 = 1;
 pub const HEADER_LEN: usize = 72;
 pub const INDEX_ENTRY_LEN: usize = 56;
 const B01: u32 = 1;

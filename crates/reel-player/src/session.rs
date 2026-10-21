@@ -6,7 +6,7 @@ mod geometry;
 mod playback;
 use crate::stage_widget::{StageView, StageWidget};
 pub use geometry::RecordedProjection;
-use playback::dialogue_complete;
+use playback::{dialogue_complete, dialogue_revision};
 #[cfg(test)]
 mod button_tests;
 #[cfg(test)]
@@ -47,6 +47,7 @@ type Error = Box<dyn std::error::Error>;
 pub struct ProjectionStamp {
     pub(crate) presentation_request: u64,
     dialogue_complete: bool,
+    dialogue_revision: u64,
     revision: u64,
     advance_revision: u64,
     button_revision: u64,
@@ -58,6 +59,7 @@ impl ProjectionStamp {
         self.advance_revision == other.advance_revision
             && self.interaction == other.interaction
             && self.dialogue_complete == other.dialogue_complete
+            && self.dialogue_revision == other.dialogue_revision
             && self.scroll_bits == other.scroll_bits
     }
 }
@@ -458,18 +460,32 @@ impl Widget for SessionWidget {
             self.scrolling.cancel();
         }
         use reel_ui::input::{ActionPhase, NavigationAction};
-        let TextEvent::Navigation(event) = event else {
-            return;
-        };
-        if event.action != NavigationAction::Confirm || !self.dialogue_active {
+        if ctx.is_handled() || !self.dialogue_active {
             return;
         }
+        let phase = match event {
+            TextEvent::Navigation(event) if event.action == NavigationAction::Confirm => {
+                event.phase
+            }
+            TextEvent::Keyboard(key)
+                if key.key == keyboard::Key::Named(keyboard::NamedKey::Enter) =>
+            {
+                if key.state.is_up() {
+                    ActionPhase::Released
+                } else if key.repeat {
+                    ActionPhase::Repeated
+                } else {
+                    ActionPhase::Pressed
+                }
+            }
+            _ => return,
+        };
         let Some(interaction) = self.projection.interaction else {
             return;
         };
         let current = self.current_stamp();
         let mut binding = self.binding.borrow_mut();
-        match event.phase {
+        match phase {
             ActionPhase::Pressed => binding.navigation_down = binding.accepted,
             ActionPhase::Cancelled => binding.navigation_down = None,
             ActionPhase::Released
@@ -560,6 +576,9 @@ impl Widget for SessionWidget {
                     ) || self.binding.borrow().permits_control() =>
                 {
                     self.events.borrow_mut().push(NodeEvent::Pointer(*input))
+                }
+                NodeEvent::Wheel(input) if self.binding.borrow().control_accepted.is_some() => {
+                    self.events.borrow_mut().push(NodeEvent::Wheel(*input));
                 }
                 _ => {}
             }
@@ -832,6 +851,8 @@ pub struct SessionUi {
     stage: Option<StageView>,
     stage_dirty: bool,
     pending_stage: Option<StageView>,
+    virtual_images_ready: bool,
+    pub(crate) images_waiting_presentation: bool,
     images: crate::images::Images,
     playback: playback::Playback,
     preview: bool,
@@ -856,6 +877,7 @@ impl SessionUi {
         let stamp = ProjectionStamp {
             presentation_request: 0,
             dialogue_complete: dialogue_complete(&session),
+            dialogue_revision: dialogue_revision(&session),
             revision: 1,
             advance_revision: 1,
             button_revision: 0,
@@ -876,6 +898,8 @@ impl SessionUi {
             stage: None,
             stage_dirty: false,
             pending_stage: None,
+            virtual_images_ready: false,
+            images_waiting_presentation: false,
             playback: Default::default(),
             preview,
             reading_modal: false,
@@ -905,7 +929,43 @@ impl SessionUi {
     pub(crate) fn set_feedback_stage(&mut self, stage: &reel_ui::stage::Stage) {
         self.update_stage(stage, true);
     }
+    pub(crate) fn permits_virtual_feedback(&self, stage: &reel_ui::stage::Stage) -> bool {
+        self.pending_stage
+            .as_ref()
+            .is_none_or(|pending| pending.permits_feedback(stage))
+            && self
+                .stage
+                .as_ref()
+                .is_some_and(|view| view.permits_feedback(stage))
+    }
+    pub(crate) fn virtual_feedback_visible(
+        &self,
+        bridge: &mut PresentationBridge,
+        root: WidgetId,
+    ) -> Result<bool, Error> {
+        let geometry = bridge
+            .layout_geometry()
+            .map_err(|error| format!("scroll layout geometry: {error:?}"))?;
+        Ok(Self::stage_widget(bridge, root)
+            .and_then(|id| bridge.root().get_widget(id))
+            .and_then(|widget| widget.downcast::<StageWidget>())
+            .zip(self.stage.as_ref())
+            .is_some_and(|(widget, view)| {
+                widget.virtual_images_visible_ready(
+                    bridge.root(),
+                    view,
+                    &geometry,
+                    &self.images.loaded,
+                )
+            }))
+    }
+    pub(crate) fn current_presentation_ready(&self) -> bool {
+        !self.images_pending()
+            && !self.images_waiting_presentation
+            && self.binding.borrow().accepted == Some(self.projection_stamp())
+    }
     fn update_stage(&mut self, stage: &reel_ui::stage::Stage, feedback: bool) {
+        self.virtual_images_ready = false;
         if self
             .pending_stage
             .as_ref()
@@ -967,6 +1027,7 @@ impl SessionUi {
                 })
                 .collect();
             self.pending_stage = Some(view);
+            self.images_waiting_presentation = true;
             // Stable control identities retain gestures across value/layout changes.
             // Scene retirement, configuration and modal changes are checked by routing.
         }
@@ -1003,6 +1064,9 @@ impl SessionUi {
     pub fn images_pending(&self) -> bool {
         self.pending_stage.is_some()
     }
+    pub(crate) fn images_block_presentation(&self) -> bool {
+        self.images_pending() && !self.virtual_images_ready
+    }
     /// Bind the request to the candidate carrying the stable authored state.
     /// Pending image work must not attach it to the retained previous frame.
     pub(crate) fn request_presentation(&mut self, request: u64) {
@@ -1029,6 +1093,8 @@ impl SessionUi {
     }
     pub(crate) fn close_resources(&mut self) {
         self.pending_stage = None;
+        self.virtual_images_ready = false;
+        self.images_waiting_presentation = false;
         self.images.close();
         self.stage = None;
         self.stage_dirty = true;
@@ -1068,6 +1134,7 @@ impl SessionUi {
         root_id: WidgetId,
     ) -> Result<(), Error> {
         bridge.set_focus_fallback(Some(self.input_fallback.unwrap_or(root_id)));
+        self.virtual_images_ready = false;
         let images_ready = self.images.poll()?;
         if self.images.metadata_ready() && !self.images.manifests.is_empty() {
             if !self.prepare_tiles(bridge, root_id)? {
@@ -1083,15 +1150,54 @@ impl SessionUi {
                 self.images.commit();
             }
         } else if self.images_pending() {
+            self.images_waiting_presentation = true;
+            if let Some(candidate) = self.pending_stage.as_ref()
+                && self.stage.as_ref().is_some_and(|current| {
+                    candidate.same_stage(current)
+                        && candidate.input_scope() == current.input_scope()
+                })
+                && self.images.manifests.is_empty()
+                && candidate.can_layout_virtual_images(&self.images.loaded)
+            {
+                let mut view = candidate.clone();
+                view.resolve_metadata(&self.images);
+                bridge.edit_widget(root_id, |mut widget| {
+                    let mut widget = widget.downcast::<SessionWidget>();
+                    let this = &mut widget;
+                    let mut stage = this.ctx.get_mut(&mut this.widget.stage).unwrap();
+                    StageWidget::sync(&mut stage, &view);
+                });
+                self.stage = Some(view);
+                self.stage_dirty = true;
+                let geometry = bridge
+                    .layout_geometry()
+                    .map_err(|error| format!("scroll layout geometry: {error:?}"))?;
+                self.virtual_images_ready = Self::stage_widget(bridge, root_id)
+                    .and_then(|id| bridge.root().get_widget(id))
+                    .and_then(|widget| widget.downcast::<StageWidget>())
+                    .is_some_and(|widget| {
+                        widget.virtual_images_visible_ready(
+                            bridge.root(),
+                            self.pending_stage.as_ref().unwrap(),
+                            &geometry,
+                            &self.images.loaded,
+                        )
+                    });
+            }
             self.pause_dialogue();
             self.binding.borrow_mut().accepted = None;
-            return Ok(());
+            if !self.virtual_images_ready {
+                return Ok(());
+            }
         }
         let view = self.session.view();
         let interaction = view.interaction.map(|i| i.id());
         let mut changed = view.status != self.projection.status
             || view.history.len() != self.projection.history_count;
-        if interaction != self.projection.interaction {
+        let dialogue_revision = dialogue_revision(&self.session);
+        if interaction != self.projection.interaction
+            || dialogue_revision != self.stamp.dialogue_revision
+        {
             let projection = Projection::from_session(&self.session, self.preview)?;
             let replacement =
                 match allocate_choice_owners(&mut self.session, projection.choices.len()) {
@@ -1125,6 +1231,7 @@ impl SessionUi {
         }
         if changed || self.stage_dirty {
             self.stamp.dialogue_complete = complete;
+            self.stamp.dialogue_revision = dialogue_revision;
             self.stamp.revision = self
                 .stamp
                 .revision
@@ -1199,10 +1306,12 @@ impl SessionUi {
         }
         if !self.images.poll()? {
             self.pending_stage = candidate;
+            self.images_waiting_presentation = true;
             return Ok(false);
         }
         if let Some(mut view) = candidate {
             // Rebuild leases from this demand; previous accepted frames retain their own.
+            self.images_waiting_presentation = true;
             view.resolve_metadata(&self.images);
             view.resolve_tiles(&self.images, &regions);
             self.stage = Some(view);
@@ -1216,6 +1325,7 @@ impl SessionUi {
         bridge: &mut PresentationBridge,
         event: PointerEvent,
     ) -> Result<UiDispatch, Error> {
+        self.virtual_images_ready = false;
         if matches!(
             event,
             PointerEvent::Down(_) | PointerEvent::Up(_) | PointerEvent::Cancel(_)
@@ -1514,6 +1624,36 @@ mod tests {
             NoticeResult::Accepted
         );
         ui.presented(bridge, &stamp);
+    }
+    #[test]
+    fn feedback_receipt_does_not_authorize_capture_but_scrolled_complete_receipt_does() {
+        let mut ui = SessionUi::new(session()).unwrap();
+        let mut stage = reel_ui::stage::Stage::default();
+        let node = stage
+            .create(reel_ui::stage::NodeKind::Stack, Default::default(), vec![])
+            .unwrap();
+        stage.replace(node).unwrap();
+        ui.set_stage(&stage);
+        let (mut bridge, root) = mount(&ui);
+        ui.sync(&mut bridge, root).unwrap();
+        // The dialogue/history scroll Rc participates in the actual widget stamp.
+        ui.scroll.set(125.);
+        let (source, mut receipt) = ui.record(&mut bridge, root, FrameId(1)).unwrap();
+        assert_eq!(receipt.stamp.scroll_bits, 125f64.to_bits());
+        receipt.current = false;
+        assert_eq!(
+            bridge.resolve(PresentationNotice::new(
+                source.key(),
+                SurfaceEpoch(1),
+                PresentationOutcome::Accepted(FrameId(1))
+            )),
+            NoticeResult::Accepted
+        );
+        assert!(ui.presented(&bridge, &receipt));
+        assert!(!ui.current_presentation_ready());
+        assert!(ui.binding.borrow().control_accepted.is_some());
+        accept(&mut ui, &mut bridge, root, 2);
+        assert!(ui.current_presentation_ready());
     }
     #[test]
     fn initial_record_waits_for_preparation_then_uses_explicit_root() {
@@ -1850,6 +1990,97 @@ mod tests {
         ui.sync(&mut bridge, id).unwrap();
         assert_eq!(visible(&ui), "The unseen successor".len());
     }
+    #[test]
+    fn auto_condition_preserves_print_clock_and_restarts_only_auto_delay() {
+        let mut session = session();
+        say(&mut session, "Long enough text");
+        session.set_auto_reading(true, Some(std::time::Duration::from_secs(2)));
+        let mut ui = SessionUi::preview(session).unwrap();
+        let (mut bridge, root) = mount(&ui);
+        accept(&mut ui, &mut bridge, root, 1);
+        ui.advance_dialogue(0, 10.).unwrap();
+        ui.session.set_auto_condition(false);
+        ui.advance_dialogue(100_000_000, 10.).unwrap();
+        ui.sync(&mut bridge, root).unwrap();
+        assert_eq!(visible(&ui), 1, "gate must preserve printing clock");
+        accept(&mut ui, &mut bridge, root, 2);
+        ui.advance_dialogue(10_000_000_000, 0.).unwrap();
+        ui.sync(&mut bridge, root).unwrap();
+        accept(&mut ui, &mut bridge, root, 3);
+        assert!(!ui.dialogue_needs_time());
+        ui.session.set_auto_condition(true);
+        ui.advance_dialogue(20_000_000_000, 0.).unwrap();
+        ui.advance_dialogue(21_000_000_000, 0.).unwrap();
+        ui.session.set_auto_condition(false);
+        ui.session.set_auto_condition(true);
+        ui.advance_dialogue(22_000_000_000, 0.).unwrap();
+        ui.advance_dialogue(23_999_999_999, 0.).unwrap();
+        assert!(ui.session.take_completion().is_none());
+        ui.advance_dialogue(24_000_000_000, 0.).unwrap();
+        assert_eq!(
+            ui.session.take_completion().unwrap().outcome(),
+            &CompletionOutcome::Advanced
+        );
+    }
+
+    #[test]
+    fn explicit_next_continues_with_auto_condition_closed() {
+        let mut session = session();
+        let id = session
+            .begin_say(
+                session.root_owner(),
+                &[DialogueLineInput {
+                    history: Default::default(),
+                    speaker_id: None,
+                    speaker_name: "",
+                    content_id: "next",
+                    text: (&reel_core::text::Text::parse("Continue[next]").unwrap()).into(),
+                }],
+                "en",
+                true,
+            )
+            .unwrap();
+        session
+            .reveal_more(session.root_owner(), id, usize::MAX)
+            .unwrap();
+        session.set_auto_condition(false);
+        let mut ui = SessionUi::preview(session).unwrap();
+        let (mut bridge, root) = mount(&ui);
+        accept(&mut ui, &mut bridge, root, 1);
+        assert!(ui.dialogue_needs_time());
+        ui.advance_dialogue(0, 30.).unwrap();
+        assert_eq!(
+            ui.session.take_completion().unwrap().outcome(),
+            &CompletionOutcome::Advanced
+        );
+    }
+
+    #[test]
+    fn closed_auto_condition_allows_manual_reveal_advance_and_skip() {
+        for skip in [false, true] {
+            let mut session = session();
+            say(&mut session, "Gate closed");
+            session.set_auto_condition(false);
+            let mut ui = SessionUi::preview(session).unwrap();
+            let (mut bridge, root) = mount(&ui);
+            accept(&mut ui, &mut bridge, root, 1);
+            if skip {
+                ui.session.set_skip_reading(true, true, false);
+                ui.advance_dialogue(0, 30.).unwrap();
+            } else {
+                click(&mut ui, &mut bridge, (100., 300.));
+                ui.sync(&mut bridge, root).unwrap();
+                assert_eq!(visible(&ui), "Gate closed".len());
+                accept(&mut ui, &mut bridge, root, 2);
+                click(&mut ui, &mut bridge, (100., 300.));
+            }
+            assert_eq!(
+                ui.session.take_completion().unwrap().outcome(),
+                &CompletionOutcome::Advanced
+            );
+        }
+    }
+
     #[test]
     fn manual_dialogue_input_stops_reading_modes_after_admission() {
         for skip in [false, true] {

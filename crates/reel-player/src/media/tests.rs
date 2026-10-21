@@ -4,6 +4,7 @@ use crate::{
     assets::AssetOptions,
     story_runtime::StoryRuntime,
 };
+use reel_core::budget::OwnedBytes;
 use reel_engine::{
     Epoch, Session, SessionId,
     aside::{SliceBudget, VmLimits, source},
@@ -283,8 +284,138 @@ fn ready_intro_waits_for_explicit_batch_and_blocked_successor() {
 
 #[test]
 fn queue_preserves_current_item_remaining_order_pause_and_content_restore() {
+    queue_restore(MediaOptions::default());
+}
+
+#[test]
+fn streaming_queue_preserves_current_item_remaining_order_pause_and_content_restore() {
+    queue_restore(MediaOptions {
+        static_pcm_threshold_bytes: 0,
+        stream_window_frames: 256,
+        ..Default::default()
+    });
+}
+
+#[test]
+#[ignore = "requires REEL_LONG_AUDIO pointing to an original full long track"]
+fn external_long_audio_streams_seeks_restores_and_retires_with_bounded_pcm() {
+    let path =
+        std::path::PathBuf::from(std::env::var_os("REEL_LONG_AUDIO").expect("REEL_LONG_AUDIO"));
+    let source = path.file_name().unwrap().to_str().unwrap().to_owned();
+    let root = path.parent().unwrap().to_path_buf();
+    let options = MediaOptions {
+        pcm_bytes: 2 << 20,
+        stream_window_frames: 4096,
+        ..Default::default()
+    };
+    let (mut first, output) = rig_at(root.clone(), options.clone());
+    let mut music = request(true);
+    music.source = source.clone();
+    music.group = AudioGroup::Music;
+    let id = first.play_audio(music, false).unwrap();
+    first.commit_audio(id);
+    let mut peak = 0f32;
+    until(|| {
+        first.maintain(Duration::ZERO);
+        peak = peak.max(output.render());
+        if let Phase::Done(result) = &first.entries[&id].phase {
+            panic!("long track ended during startup: {result:?}");
+        }
+        peak > 0.
+            && first
+                .position(id)
+                .is_some_and(|p| p > Duration::from_millis(100))
+    });
+    first
+        .command(id, MediaCommand::Seek(Duration::from_secs(30)))
+        .unwrap();
+    assert_eq!(first.position(id), Some(Duration::from_secs(30)));
+    until(|| {
+        first.maintain(Duration::ZERO);
+        output.render();
+        if let Phase::Done(result) = &first.entries[&id].phase {
+            panic!("long track failed seeking: {result:?}");
+        }
+        first
+            .position(id)
+            .is_some_and(|p| p > Duration::from_millis(30_050))
+    });
+    first.command(id, MediaCommand::Pause).unwrap();
+    output.render();
+    first.maintain(Duration::ZERO);
+    let saved = first.audio_snapshot(id).unwrap();
+    let position = saved.request.start_position;
+    first.close();
+    until(|| {
+        first.maintain(Duration::ZERO);
+        !first.cleanup_pending()
+    });
+    assert_eq!(first.pcm_usage().bytes, 0);
+    let first_peak = first.pcm_usage().peak_bytes;
+    let (mut restored, restored_output) = rig_at(root.clone(), options.clone());
+    let second = restored.play_audio(saved.request, true).unwrap();
+    restored.commit_audio(second);
+    until(|| {
+        restored.maintain(Duration::ZERO);
+        matches!(restored.entries[&second].phase, Phase::Ready(_, _))
+    });
+    assert_eq!(restored.position(second), Some(position));
+    assert_eq!(restored_output.render(), 0.);
+    restored.command(second, MediaCommand::Resume).unwrap();
+    until(|| {
+        restored.maintain(Duration::ZERO);
+        restored_output.render();
+        restored
+            .position(second)
+            .is_some_and(|p| p > position + Duration::from_millis(20))
+    });
+    restored.command(second, MediaCommand::Stop).unwrap();
+    restored.close();
+    until(|| {
+        restored.maintain(Duration::ZERO);
+        !restored.cleanup_pending()
+    });
+    assert_eq!(restored.pcm_usage().bytes, 0);
+    let (mut looping, loop_output) = rig_at(root, options);
+    let mut loop_request = request(true);
+    loop_request.source = source;
+    loop_request.loop_region = Some(AudioLoopRegion {
+        start: Duration::from_millis(100),
+        end: Some(Duration::from_millis(160)),
+    });
+    let loop_id = looping.play_audio(loop_request, false).unwrap();
+    looping.commit_audio(loop_id);
+    let mut previous = Duration::ZERO;
+    let mut wraps = 0;
+    until(|| {
+        looping.maintain(Duration::ZERO);
+        loop_output.render();
+        if let Phase::Done(result) = &looping.entries[&loop_id].phase {
+            panic!("long track loop failed: {result:?}");
+        }
+        let position = looping.position(loop_id).unwrap();
+        if position < previous {
+            wraps += 1;
+        }
+        previous = position;
+        wraps >= 3
+    });
+    looping.close();
+    until(|| {
+        looping.maintain(Duration::ZERO);
+        !looping.cleanup_pending()
+    });
+    assert_eq!(looping.pcm_usage().bytes, 0);
+    eprintln!(
+        "original long track: first_peak_pcm={first_peak}, restored_peak_pcm={}, final_pcm=0, audible_peak={peak}, restored_position={position:?}",
+        restored.pcm_usage().peak_bytes
+    );
+}
+
+fn queue_restore(options: MediaOptions) {
     let ms = Duration::from_millis;
-    let (mut player, output) = rig();
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    let (mut player, output) = rig_at(root.clone(), options.clone());
     let mut intro = request(false);
     intro.group = AudioGroup::Voice;
     intro.start_position = ms(200);
@@ -346,7 +477,7 @@ fn queue_preserves_current_item_remaining_order_pause_and_content_restore() {
     assert_eq!(saved.queue[0].start_position, ms(120));
     assert_eq!(saved.queue[0].end_position, Some(ms(180)));
     let position = saved.request.start_position;
-    let (mut restored, second_output) = rig();
+    let (mut restored, second_output) = rig_at(root, options);
     let second = restored.play_audio(saved.request, false).unwrap();
     for item in saved.queue {
         restored.queue_audio(second, item).unwrap();
@@ -511,7 +642,7 @@ fn seek_preserves_activity_pause_loop_and_immediate_snapshot_through_decode() {
     assert_eq!(player.position(id), Some(ms(10)));
     until(|| {
         player.maintain(Duration::ZERO);
-        matches!(player.entries[&id].phase, Phase::Queued)
+        matches!(player.entries[&id].phase, Phase::Queued(_))
     });
     // The queued decode must use this newer request when it reaches the control thread.
     player.command(id, MediaCommand::Seek(ms(95))).unwrap();
@@ -941,7 +1072,9 @@ fn loading_cancellation_and_pcm_budget_failure_leave_no_resident_requests() {
         result = player.take_result(id).map(|completion| completion.result);
         result.is_some()
     });
-    assert!(matches!(result, Some(MediaResult::Failed(_))));
+    assert!(
+        matches!(result, Some(MediaResult::Failed(error)) if error.starts_with("assets/chime.wav: "))
+    );
     player.close();
     until(|| {
         player.maintain(Duration::ZERO);

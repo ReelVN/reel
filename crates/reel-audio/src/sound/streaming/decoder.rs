@@ -1,7 +1,8 @@
 #[cfg(test)]
 pub(crate) mod mock;
 #[cfg(feature = "symphonia")]
-pub(crate) mod symphonia;
+/// Shared Symphonia packet decoder for host readers.
+pub mod symphonia;
 
 use crate::frame::Frame;
 
@@ -18,7 +19,8 @@ pub trait Decoder: Send {
 	#[must_use]
 	fn num_frames(&self) -> usize;
 
-	/// Decodes the next chunk of audio.
+	/// Decodes the next chunk of audio. An empty chunk means end of stream;
+	/// packets that produce no PCM must be consumed internally.
 	fn decode(&mut self) -> Result<Vec<Frame>, Self::Error>;
 
 	/// Seeks to an audio sample.

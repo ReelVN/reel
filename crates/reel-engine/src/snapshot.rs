@@ -8,6 +8,7 @@ pub(crate) struct SessionCapture<'a> {
     owner: usize,
     line: usize,
     current: usize,
+    pending_read: usize,
     group: usize,
     history_line: usize,
 }
@@ -22,6 +23,11 @@ impl Session {
                 current_line_ids: Vec::new(),
                 lines: Vec::new(),
                 page_locale: d.page_locale.clone(),
+                open: d.open,
+                awaiting_advance: d.awaiting_advance,
+                revision: d.revision,
+                text_revision: d.text_revision,
+                pending_read_ids: Vec::new(),
             }),
             Interaction::Choice(c) => Interaction::Choice(ChoiceInteraction {
                 id: c.id,
@@ -46,6 +52,7 @@ impl Session {
             owner: 0,
             line: 0,
             current: 0,
+            pending_read: 0,
             group: 0,
             history_line: 0,
         }
@@ -74,7 +81,7 @@ impl Session {
             Some(Interaction::Dialogue(d)) => {
                 self.read_progress
                     .ids
-                    .try_reserve(d.lines.len())
+                    .try_reserve(d.lines.len().max(d.pending_read_ids.len()))
                     .map_err(|_| SnapshotError::Heap(aside_vm::HeapError::AllocationFailure))?;
                 d.id.identity = identity;
                 for id in &mut d.current_line_ids {
@@ -94,6 +101,12 @@ impl Session {
                     {
                         return Err(SnapshotError::Invalid("dialogue reveal boundaries".into()));
                     }
+                }
+                if d.open && d.lines.len() == 1 && !d.pending_read_ids.is_empty() {
+                    d.lines[0].previously_read = d
+                        .pending_read_ids
+                        .iter()
+                        .all(|id| self.read_progress.contains(id));
                 }
                 d.previously_read = d.lines.iter().all(DialogueLine::previously_read);
             }
@@ -124,6 +137,11 @@ impl SessionCapture<'_> {
         }
         match (&self.source.active, &mut self.saved.active) {
             (Some(Interaction::Dialogue(source)), Some(Interaction::Dialogue(saved))) => {
+                if let Some(id) = source.pending_read_ids.get(self.pending_read) {
+                    saved.pending_read_ids.push(id.clone());
+                    self.pending_read += 1;
+                    return false;
+                }
                 if let Some(line) = source.lines.get(self.line) {
                     saved.lines.push(line.clone());
                     self.line += 1;

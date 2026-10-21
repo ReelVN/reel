@@ -1,4 +1,20 @@
 use super::{AdapterError, HostTicket, SessionVm, observable, text};
+
+aside_host::native_documentation! {
+    pub(super) fn documentation {
+        /// Translate source text or an explicit message id with optional Fluent params.
+        /// An explicit locale selects its loaded catalog; otherwise use the current
+        /// observable locale. Missing translations use the supplied source text.
+        "reel::tr";
+        /// Load a Fluent catalog from an asset source for the specified locale.
+        /// Wait for loading to finish; parsing or resource failures propagate to the caller.
+        "reel::localization::load";
+        /// Select the active locale and notify translation-dependent views.
+        "reel::localization::set_locale";
+        /// Read the current observable locale identifier.
+        "reel::localization::locale";
+    }
+}
 use crate::localization::{CatalogLoader, Localization, language_id, message_id};
 use aside_vm::{
     RootKind, RootToken, Value, ValueTag,

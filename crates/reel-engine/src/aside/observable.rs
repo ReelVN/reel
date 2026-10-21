@@ -1,5 +1,22 @@
 //! Shared read-only observable records and collections for author services.
 use super::AdapterError;
+
+aside_host::native_documentation! {
+    pub(super) fn documentation {
+        /// Create observable fields and collections from the supplied defaults.
+        /// Reads participate in dependency tracking; writes notify affected consumers.
+        /// Use `bind(model.field)` for a writable property reference.
+        "reel::model";
+        /// Create a read-only computed property. The function tracks observable reads
+        /// and recomputes when dependencies change. Evaluation permits reads and allocation;
+        /// mutation and waiting are rejected.
+        "reel::derive";
+        /// Remove a writable property's live binding, retaining and returning its current
+        /// resolved value. Pass a property reference such as `bind(node.x)`; a read-only
+        /// reference returned by `derive` cannot be unbound through this operation.
+        "reel::unbind";
+    }
+}
 use aside_vm::{Heap, HeapError, HeapHandle, PropertyId, Value};
 use std::collections::BTreeMap;
 

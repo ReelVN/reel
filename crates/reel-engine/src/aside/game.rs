@@ -1,5 +1,19 @@
 //! Script-owned presentation settings, consumed by the embedding host.
 use super::{AdapterError, HostTicket, SessionVm, text};
+
+aside_host::native_documentation! {
+    pub(super) fn documentation {
+        /// Set title, logical canvas size, font assets and text speed. Omitted values
+        /// remain unchanged. Register fonts before first presentation. The canvas uses
+        /// contain scaling and one transform for drawing and input.
+        "reel::game::configure";
+        /// Replace the current session with a fresh invocation of entry. Persistent
+        /// storage remains available; tasks and transient stage state belong to the new session.
+        "reel::game::start";
+        /// Request that the host close this game session.
+        "reel::game::exit";
+    }
+}
 use aside_vm::{Value, ValueTag, executor::HostResponse};
 use std::sync::Arc;
 

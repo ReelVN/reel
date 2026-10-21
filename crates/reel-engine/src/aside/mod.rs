@@ -30,6 +30,7 @@ mod results;
 mod scopes;
 pub mod transitions;
 pub use results::geometry::{GeometryQuery, GeometryReplies, GeometryReply, NodeGeometry};
+mod conditions;
 mod masks;
 mod rich_text;
 pub mod saves;
@@ -135,8 +136,11 @@ impl AdapterError {
             Self::Session(
                 SessionError::EmptyChoiceKey
                 | SessionError::EmptyChoices
-                | SessionError::DuplicateChoiceKey,
+                | SessionError::DuplicateChoiceKey
+                | SessionError::SingleDialogueLineRequired
+                | SessionError::InvalidTextComposition,
             ) => Some(FaultKind::Type),
+            Self::Session(SessionError::InvalidDialogueHandle) => Some(FaultKind::InvalidState),
             Self::Heap(HeapError::ConcurrentModification) => {
                 Some(FaultKind::ConcurrentModification)
             }
@@ -390,10 +394,34 @@ impl SessionVm {
         self.derived_task.is_none() && !self.vm.heap().derived_pending()
     }
 
+    /// A whole virtual row has returned and ordinary observers have settled.
+    /// The host may now synchronize mounted properties before recording feedback.
+    pub fn virtual_feedback_boundary(&self) -> bool {
+        if !self.reactive_ready
+            || self.derived_task.is_some()
+            || self.activities.pending()
+            || self.transitions.pending(self.activities.time())
+            || self.particles.needs_work(self.stage.retirement_revision)
+        {
+            return false;
+        }
+        let mut outputs = self.vm.heap().pending_derived_outputs().peekable();
+        outputs.peek().is_some() && outputs.all(|output| self.virtual_feedback_output(output))
+    }
+
+    /// Only a committed mounted tree may paint while detached virtual rows wait.
+    pub fn virtual_feedback_ready(&self) -> bool {
+        self.virtual_feedback_boundary()
+            && self
+                .stage
+                .mounted_properties_current(self.vm.heap())
+                .unwrap_or(false)
+    }
+
     /// Publish the properties of the same mounted objects after script work.
     pub fn sync_stage(&mut self, session: &Session) -> Result<(), AdapterError> {
         self.same_session(session)?;
-        if !self.reactive_settled() {
+        if !self.reactive_settled() && !self.virtual_feedback_boundary() {
             return Ok(());
         }
         self.stage.sync(self.vm.heap_mut(), self.read_limit)
@@ -639,6 +667,14 @@ impl SessionVm {
                 self.dispatch_view(ticket)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
+            "reel::when" => {
+                self.dispatch_when(ticket)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
+            "reel::when::evaluate" => {
+                self.evaluate_condition(ticket)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
             "reel::completion"
             | "reel::stage::presented"
             | "reel::spawn"
@@ -696,6 +732,10 @@ impl SessionVm {
             }
             "reel::scope" => {
                 self.dispatch_scope(ticket)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
+            "reel::scope::cancel" => {
+                self.dispatch_scope_cancel(ticket)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::scope::override" => {
@@ -819,6 +859,9 @@ impl SessionVm {
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::character::speak" => self.character_speak(session, ticket, locale),
+            "reel::speech::append" | "reel::speech::wait" => {
+                self.dispatch_speech(session, ticket, symbol.ends_with("append"))
+            }
             "reel::unbind" => {
                 let reference = self.vm.host_arguments(ticket)?[0];
                 let value = self.vm.heap_mut().unbind_property(reference)?;
@@ -1061,12 +1104,15 @@ impl SessionVm {
             return Err(AdapterError::Input("not narrator"));
         }
         let arguments = self.vm.host_arguments(ticket)?;
-        let [text, history, reveal_skippable] = arguments else {
+        let [text, history, reveal_skippable, wait] = arguments else {
             return Err(AdapterError::Input("narrator arity"));
         };
         let reveal_skippable = reveal_skippable
             .as_bool()
             .ok_or(AdapterError::Input("reveal_skippable must be bool"))?;
+        let wait = wait
+            .as_bool()
+            .ok_or(AdapterError::Input("wait must be bool"))?;
         let text = rich_text::read(self.vm.heap(), *text, self.read_limit)?;
         let history = dialogue::HistoryText::read(self.vm.heap(), *history, self.read_limit)?;
         let content_id = self.dialogue_content_id(ticket);
@@ -1082,6 +1128,7 @@ impl SessionVm {
             }],
             locale,
             reveal_skippable,
+            wait,
         )
     }
 
@@ -1119,15 +1166,28 @@ impl SessionVm {
         lines: &[DialogueLineInput<'_>],
         locale: &str,
         reveal_skippable: bool,
+        wait: bool,
     ) -> Result<InteractionId, AdapterError> {
         self.check_story_wait(session, ticket)?;
         let selected_locale = self.locale();
         let locale = selected_locale.as_deref().unwrap_or(locale);
         let publication = publication::Publication::stage(session, |s| {
-            s.begin_say(self.owner, lines, locale, reveal_skippable)
+            if wait {
+                s.begin_say(self.owner, lines, locale, reveal_skippable)
+            } else {
+                s.begin_open_say(self.owner, lines, locale, reveal_skippable)
+            }
         })?;
         let interaction = publication.id();
-        self.accept_wait(session, ticket, publication, None)?;
+        if wait {
+            self.accept_wait(session, ticket, publication, None)?;
+        } else {
+            let handle = self.speech_handle(interaction)?;
+            publication.commit(session);
+            self.sync_narrative(session)?;
+            self.vm.respond(ticket, HostResponse::Ready(handle))?;
+            self.issued = None;
+        }
         Ok(interaction)
     }
 

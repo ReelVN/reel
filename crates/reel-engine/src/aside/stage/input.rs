@@ -16,6 +16,8 @@ pub(in crate::aside) enum InputField {
     OnKey,
     #[aside(name = "on_pointer", ty = Any, default = null, validate = validate_callback)]
     OnPointer,
+    #[aside(name = "on_wheel", ty = Any, default = null, validate = validate_callback)]
+    OnWheel,
 }
 fn validate_bindings(heap: &Heap, value: Value) -> Result<(), HeapError> {
     read_bindings(heap, value)
@@ -68,6 +70,28 @@ pub(super) fn validate(heap: &Heap, index: u32, value: Value) -> Result<(), Heap
 }
 
 impl StageBinding {
+    pub(in crate::aside) fn input_wheel(
+        &self,
+        heap: &Heap,
+        event: &reel_ui::stage::NodeWheel,
+    ) -> Result<Option<(Value, Value)>, AdapterError> {
+        if !self
+            .scene
+            .node(event.node)
+            .is_some_and(|n| matches!(n.kind, NodeKind::Input { wheel: true, .. }))
+            || !self.mounted_in_scope(heap, event.node, self.modal_scope(heap)?)?
+        {
+            return Ok(None);
+        }
+        let target = self.value(heap, event.node)?;
+        let callback = heap
+            .table_entry(
+                heap.host_fields(target)?,
+                InputField::OnWheel.index() as u32,
+            )?
+            .1;
+        Ok((callback.tag() != ValueTag::Null).then_some((target, callback)))
+    }
     pub(in crate::aside) fn input_pointer(
         &self,
         heap: &Heap,
@@ -159,6 +183,12 @@ impl StageBinding {
     }
 }
 
+/// Describe a physical control mapping with a scale and analog dead zone.
+/// Put the returned descriptor in an input node's named bindings.
+/// `control` names a supported keyboard, pointer or gamepad control. `scale`
+/// defaults to 1; `dead_zone` defaults to 0. Invalid controls, non-finite scales
+/// and dead zones outside 0 <= dead_zone < 1 are rejected.
+/// The descriptor owns no input stream or lifetime; its input node owns dispatch.
 #[aside_host::native(symbol = "reel::binding", effects = Effects(Effects::ALLOCATE | Effects::HOST), capabilities = ["reel.stage"])]
 pub(crate) fn binding(
     #[aside(context)] context: &mut CallContext<'_, StageBinding>,
@@ -190,6 +220,10 @@ pub(crate) fn binding(
     ])?)
 }
 
+/// Read the current numeric value of a named action on this input node.
+/// Replacing bindings resets their values to neutral until new input arrives.
+/// `action` must name an action declared in this node's bindings; unknown names
+/// are rejected. Reading the value does not consume an event or wait for input.
 #[aside_host::native(symbol = "reel::node::input_value", effects = Effects(Effects::HOST), capabilities = ["reel.stage"])]
 pub(crate) fn value(
     #[aside(context)] context: &mut CallContext<'_, StageBinding>,
@@ -225,5 +259,14 @@ pub(super) fn source_handle(heap: &Heap, value: Value) -> Result<Option<HeapHand
         Ok(None)
     } else {
         heap.handle(value).map(Some)
+    }
+}
+
+// Keep the native declarations above as the single source of their English docs.
+pub(in crate::aside) fn documentation(symbol: &str) -> Option<&'static str> {
+    match symbol {
+        "reel::binding" => Some(binding::DOCUMENTATION),
+        "reel::node::input_value" => Some(value::DOCUMENTATION),
+        _ => None,
     }
 }

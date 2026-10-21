@@ -1,5 +1,16 @@
 //! Same-task transitions retain accepted drawing, never script nodes or input.
 use super::*;
+
+aside_host::native_documentation! {
+    pub(super) fn documentation {
+        /// Retain the accepted drawing of target, call change in the current task, then
+        /// blend into the newly presented drawing. A null target captures the full stage;
+        /// a mounted body node scopes the transition. Cursor nodes are excluded as targets.
+        /// Duration, easing and masks control the blend; the call waits for completion.
+        /// Retained drawing owns resources independently of retired script nodes.
+        "reel::stage::transition";
+    }
+}
 use aside_vm::executor::{Continuation, FaultRetention, FrameId};
 use aside_vm::{HeapReservation, ValueTag};
 use reel_ui::{
@@ -420,24 +431,6 @@ impl SessionVm {
             return Ok(None);
         }
         let target = self.stage.id(self.vm.heap(), value)?;
-        if !matches!(
-            self.stage.scene.node(target).unwrap().kind,
-            NodeKind::Camera(_)
-                | NodeKind::Row
-                | NodeKind::Column
-                | NodeKind::VirtualList(_)
-                | NodeKind::Scroll { .. }
-                | NodeKind::Stack
-                | NodeKind::Button { .. }
-                | NodeKind::Slider { .. }
-                | NodeKind::Toggle { .. }
-                | NodeKind::Radio { .. }
-                | NodeKind::Input { .. }
-        ) {
-            return Err(AdapterError::Input(
-                "transition target must be a stage container",
-            ));
-        }
         let mut ancestor = target;
         loop {
             let node = self.stage.scene.node(ancestor).unwrap();

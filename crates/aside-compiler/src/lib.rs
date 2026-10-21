@@ -1,6 +1,7 @@
-//! Aside 1.1 lossless syntax and conservative semantic analysis.
+//! Aside v1 lossless syntax and conservative semantic analysis.
 //! Source analysis and bounded lowering to the shared bytecode format.
 mod diagnostic;
+pub mod documentation;
 pub mod hir;
 pub mod lowering;
 pub mod semantic;

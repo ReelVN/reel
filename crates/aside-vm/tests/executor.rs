@@ -893,7 +893,7 @@ fn callscript_and_continue_multi_round_callback_fault_and_rooted_state() {
                                 t,
                                 HostResponse::Continue(Continuation {
                                     faults: FaultRetention::Preserve,
-                                    version: 7,
+                                    version: 1,
                                     stage: 1,
                                     values: &[state],
                                 }),
@@ -902,7 +902,7 @@ fn callscript_and_continue_multi_round_callback_fault_and_rooted_state() {
                             v.heap_mut().release_root(state_root).unwrap();
                         }
                         NativeInput::Continue {
-                            version: 7,
+                            version: 1,
                             stage: 1,
                         } => {
                             assert_eq!(
@@ -920,7 +920,7 @@ fn callscript_and_continue_multi_round_callback_fault_and_rooted_state() {
                                     arguments: &[],
                                     continuation: Continuation {
                                         faults: FaultRetention::Preserve,
-                                        version: 7,
+                                        version: 1,
                                         stage: 2,
                                         values: &[state],
                                     },
@@ -947,7 +947,7 @@ fn callscript_and_continue_multi_round_callback_fault_and_rooted_state() {
                                         arguments: &[],
                                         continuation: Continuation {
                                             faults: FaultRetention::Preserve,
-                                            version: 7,
+                                            version: 1,
                                             stage: rounds,
                                             values: &[state],
                                         },
@@ -2022,7 +2022,7 @@ fn caught_errors_inside_finally_preserve_pending_return_and_throw() {
                                         arguments: &[],
                                         continuation: Continuation {
                                             faults: FaultRetention::Preserve,
-                                            version: 17,
+                                            version: 1,
                                             stage: 73,
                                             values: &[],
                                         },
@@ -2039,7 +2039,7 @@ fn caught_errors_inside_finally_preserve_pending_return_and_throw() {
                             assert_eq!(
                                 t.continuation,
                                 Some(ContinuationState {
-                                    version: 17,
+                                    version: 1,
                                     stage: 73
                                 })
                             );
@@ -2235,7 +2235,7 @@ fn continuation_dispatch_uses_returned_stage_without_host_round_counter() {
             RunOutcome::BudgetYield(_) => {}
             RunOutcome::HostCall(t) => {
                 let stage = t.continuation.map_or(0, |c| {
-                    assert_eq!(c.version, 19);
+                    assert_eq!(c.version, 1);
                     c.stage
                 });
                 if stage == 7 {
@@ -2245,7 +2245,7 @@ fn continuation_dispatch_uses_returned_stage_without_host_round_counter() {
                         t,
                         HostResponse::Continue(Continuation {
                             faults: FaultRetention::Preserve,
-                            version: 19,
+                            version: 1,
                             stage: stage + 1,
                             values: &[],
                         }),
@@ -2259,7 +2259,7 @@ fn continuation_dispatch_uses_returned_stage_without_host_round_counter() {
                             arguments: &[],
                             continuation: Continuation {
                                 faults: FaultRetention::Preserve,
-                                version: 19,
+                                version: 1,
                                 stage: stage + 1,
                                 values: &[],
                             },
@@ -3017,7 +3017,7 @@ fn dynamic_text_allocation_obeys_the_inherited_effect_mask() {
 
 fn continue_at(stage: u64, faults: FaultRetention<'_>) -> Continuation<'_> {
     Continuation {
-        version: 77,
+        version: 1,
         stage,
         values: &[],
         faults,
@@ -3048,7 +3048,7 @@ fn full_native_fault_identity_survives_continue_wait_and_repeated_callbacks_then
                 RunOutcome::BudgetYield(_) => {}
                 RunOutcome::HostCall(t) => {
                     let stage = t.continuation.map_or(0, |c| {
-                        assert_eq!(c.version, 77);
+                        assert_eq!(c.version, 1);
                         c.stage
                     });
                     match (t.input, stage) {

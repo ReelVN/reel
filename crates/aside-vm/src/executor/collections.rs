@@ -230,6 +230,13 @@ pub(super) struct TableWork {
     matched: bool,
 }
 
+#[cfg(test)]
+impl TableWork {
+    pub(super) fn matched(self) -> bool {
+        self.matched
+    }
+}
+
 impl Vm {
     fn key_stack_push(&mut self, key: Value) -> Result<(), VmError> {
         let depth = self.active.equality_cursors.data.len() as u32;
@@ -372,6 +379,19 @@ impl Vm {
     ) -> Result<bool, VmError> {
         let work = s.table_work.unwrap();
         let table = self.value(s.env, 1)?;
+        if self.table_changed(*s)? {
+            if !meter.take(0, 1, 0) {
+                return Ok(false);
+            }
+            // Validate the saved entry before resolving or refreshing its bound
+            // source. Key validation may still own a rooted comparison stack.
+            s.phase = ScriptPhase::EqualityCleanup {
+                dest: Reg(0),
+                negated: false,
+                result: Err(FaultKind::ConcurrentModification),
+            };
+            return Ok(true);
+        }
         let len = self.heap.info(table)?.len;
         // Source keys are unique. Entries appended by this spread cannot
         // match a later source key, so only scan the original destination.
@@ -407,8 +427,49 @@ impl Vm {
         } else {
             0
         };
-        if !meter.take(0, 1, extra) {
+        let mut cost = (1, extra);
+        let property = if scan && work.matched {
+            match work.action {
+                TableAction::GetHost { object, .. } => Some(crate::PropertyId {
+                    host: self.value(s.regs, object.0)?,
+                    field: work.entry,
+                }),
+                TableAction::Get(_)
+                | TableAction::GetDefault { .. }
+                | TableAction::MemberGet { .. }
+                    if self.heap.is_model_table(table)? =>
+                {
+                    Some(crate::PropertyId {
+                        host: table,
+                        field: self.heap.model_field(table, work.entry)?,
+                    })
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let refresh = if let Some(property) = property {
+            match self.reactive_read_plan(property, &mut cost) {
+                Ok(read) => read,
+                Err(error) => {
+                    self.collection_fault(s, vm_fault(error))?;
+                    return Ok(true);
+                }
+            }
+        } else {
+            None
+        };
+        if !meter.take(0, cost.0, cost.1) {
             return Ok(false);
+        }
+        if let Some(read) = refresh {
+            let index = self.index(s.id)?;
+            self.active.frames.data[index] = Frame::Script(*s);
+            if let Err(error) = self.push_reactive_read(*s, read) {
+                self.collection_fault(s, vm_fault(error))?;
+            }
+            return Ok(true);
         }
         if store
             && !work.matched
@@ -416,15 +477,6 @@ impl Vm {
             && s.effects.0 & Effects::ALLOCATE == 0
         {
             self.collection_fault(s, FaultKind::Effect)?;
-            return Ok(true);
-        }
-        if self.table_changed(*s)? {
-            // Key validation may still own an arbitrarily deep rooted stack.
-            s.phase = ScriptPhase::EqualityCleanup {
-                dest: Reg(0),
-                negated: false,
-                result: Err(FaultKind::ConcurrentModification),
-            };
             return Ok(true);
         }
         if !scan {

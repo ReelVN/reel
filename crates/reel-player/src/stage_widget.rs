@@ -31,6 +31,7 @@ mod projection_tests;
 mod selection;
 #[cfg(test)]
 mod tests;
+mod virtual_images;
 use input::NodeInput;
 
 #[derive(Clone, Default)]
@@ -127,6 +128,49 @@ impl StageView {
     }
     pub fn matches(&self, stage: &Stage) -> bool {
         self.identity.as_ref() == Some(stage.identity()) && self.revision == stage.revision()
+    }
+    /// Local feedback may change completed layout/appearance properties, while
+    /// topology, control content and input ownership remain the committed ones.
+    pub(crate) fn permits_feedback(&self, stage: &Stage) -> bool {
+        fn visit(old: &SceneNode, stage: &Stage, id: NodeId) -> bool {
+            let Some(node) = stage.node(id) else {
+                return false;
+            };
+            let same_kind = match (&old.node.kind, &node.kind) {
+                (
+                    NodeKind::Scroll {
+                        axis: a,
+                        follow_end: b,
+                        align: c,
+                        ..
+                    },
+                    NodeKind::Scroll {
+                        axis: x,
+                        follow_end: y,
+                        align: z,
+                        ..
+                    },
+                ) => a == x && b == y && c == z,
+                (a, b) => a == b,
+            };
+            old.node.id == id
+                && same_kind
+                && old.node.props.visible == node.props.visible
+                && old.node.props.enabled == node.props.enabled
+                && old.node.props.modal == node.props.modal
+                && old.children.len() == node.children.len()
+                && old
+                    .children
+                    .iter()
+                    .zip(&node.children)
+                    .all(|(old, id)| visit(old, stage, *id))
+        }
+        self.identity.as_ref() == Some(stage.identity())
+            && self
+                .root
+                .as_ref()
+                .zip(stage.root())
+                .is_some_and(|(old, id)| visit(old, stage, id))
     }
     pub fn update(stage: &Stage, previous: Option<&Self>) -> Self {
         fn capture_node(stage: &Stage, id: NodeId, old: Option<&Arc<SceneNode>>) -> Arc<SceneNode> {
@@ -310,10 +354,13 @@ impl StageView {
             .collect()
     }
     pub fn image_requests(&self) -> Result<ImageRequests, String> {
+        Self::image_requests_for(self.root.as_ref())
+    }
+    fn image_requests_for(root: Option<&Arc<SceneNode>>) -> Result<ImageRequests, String> {
         let mut requests = BTreeMap::new();
         let mut mounted = std::collections::BTreeSet::new();
         let mut encoded = BTreeMap::new();
-        let mut pending: Vec<_> = self.root.iter().map(|node| (node, true)).collect();
+        let mut pending: Vec<_> = root.into_iter().map(|node| (node, true)).collect();
         while let Some((node, parent_visible)) = pending.pop() {
             if !node.image_branch {
                 continue;
@@ -827,6 +874,12 @@ fn text_line_breaking(node: &SceneProperties) -> reel_ui::properties::LineBreaki
         reel_ui::properties::LineBreaking::Overflow
     }
 }
+fn text_shadow(props: &reel_ui::stage::NodeProps) -> Option<reel_ui::core::TextShadow> {
+    (props.text_shadow_x != 0. || props.text_shadow_y != 0.).then(|| reel_ui::core::TextShadow {
+        offset: Vec2::new(props.text_shadow_x, props.text_shadow_y),
+        color: color(props.text_shadow_color),
+    })
+}
 impl SceneWidget {
     fn image_widget(view: &SceneNode) -> Option<WidgetPod<Image>> {
         let NodeKind::Image {
@@ -883,6 +936,15 @@ impl SceneWidget {
             NodeKind::Button { .. } | NodeKind::Toggle { .. } | NodeKind::Radio { .. }
         )
     }
+    fn reveal_fade(node: &SceneProperties) -> Option<reel_ui::core::RevealFade> {
+        node.props
+            .reveal_fade
+            .map(|progress| reel_ui::core::RevealFade {
+                from: node.props.reveal_fade_from,
+                progress,
+                step: node.props.reveal_fade_step,
+            })
+    }
     fn reveal_range(node: &SceneProperties) -> std::ops::Range<usize> {
         let text = Self::caption(&node.kind).unwrap_or("");
         let mut end = node.props.reveal.unwrap_or(text.len()).min(text.len());
@@ -915,6 +977,7 @@ impl SceneWidget {
                             kind => Self::caption(kind).unwrap_or("").into(),
                         })
                         .with_visible_bytes(Self::reveal_range(&view.node))
+                        .with_reveal_fade(Self::reveal_fade(&view.node))
                         .with_style(StyleProperty::FontSize(view.node.props.font_size as f32))
                         .with_style(StyleProperty::FontWeight(
                             reel_ui::reel_text::FontWeight::new(view.node.props.font_weight as f32),
@@ -928,6 +991,7 @@ impl SceneWidget {
                         .with_text_alignment(view.node.props.text_align)
                         .with_text_fit(view.node.props.text_fit)
                         .with_outline(text_outline(&view.node.props))
+                        .with_shadow(text_shadow(&view.node.props))
                         .with_style(StyleProperty::LineHeight(
                             reel_ui::reel_text::LineHeight::FontSizeRelative(
                                 view.node.props.line_height as f32,
@@ -952,8 +1016,14 @@ impl SceneWidget {
                     bindings,
                     keyboard,
                     pointer,
+                    wheel,
                     ..
-                } => Some(NodeInput::new(bindings.clone(), *keyboard, *pointer)),
+                } => Some(NodeInput::new(
+                    bindings.clone(),
+                    *keyboard,
+                    *pointer,
+                    *wheel,
+                )),
                 _ => None,
             },
             label,
@@ -1081,6 +1151,9 @@ impl SceneWidget {
             }
             this.widget.particle_image = view.images.image.clone();
         }
+        if this.widget.node.props.capture_included != view.node.props.capture_included {
+            this.ctx.request_render();
+        }
         let children_changed = this.widget.sync_dirty
             || !Arc::ptr_eq(&this.widget.projection.children, &view.children);
         let order_changed = children_changed
@@ -1161,17 +1234,19 @@ impl SceneWidget {
                 bindings,
                 keyboard,
                 pointer,
+                wheel,
                 ..
             },
         ) = (&mut this.widget.input, &view.node.kind)
             && (input.bindings != *bindings
                 || input.keyboard != *keyboard
-                || input.pointer_enabled != *pointer)
+                || input.pointer_enabled != *pointer
+                || input.wheel_enabled != *wheel)
         {
             input.cancel(this.widget.node.id, |event| {
                 this.ctx.submit_action::<NodeEvent>(event)
             });
-            *input = NodeInput::new(bindings.clone(), *keyboard, *pointer);
+            *input = NodeInput::new(bindings.clone(), *keyboard, *pointer, *wheel);
         }
         if this.widget.node.props.enabled != view.node.props.enabled {
             this.ctx.set_disabled(!view.node.props.enabled);
@@ -1289,6 +1364,11 @@ impl SceneWidget {
             if caption_changed || this.widget.node.props.reveal != view.node.props.reveal {
                 Label::set_visible_bytes(&mut label, Self::reveal_range(&view.node));
             }
+            if caption_changed
+                || Self::reveal_fade(&this.widget.node) != Self::reveal_fade(&view.node)
+            {
+                Label::set_reveal_fade(&mut label, Self::reveal_fade(&view.node));
+            }
             if this.widget.node.props.font_size != view.node.props.font_size {
                 Label::insert_style(
                     &mut label,
@@ -1326,6 +1406,7 @@ impl SceneWidget {
             }
             Label::set_text_fit(&mut label, view.node.props.text_fit);
             Label::set_outline(&mut label, text_outline(&view.node.props));
+            Label::set_shadow(&mut label, text_shadow(&view.node.props));
             if this.widget.node.props.line_height != view.node.props.line_height {
                 Label::insert_style(
                     &mut label,
@@ -1543,6 +1624,9 @@ macro_rules! publish_interaction {
 impl AllowRawMut for SceneWidget {}
 impl Widget for SceneWidget {
     type Action = NodeEvent;
+    fn capture_included(&self) -> bool {
+        self.node.props.capture_included
+    }
     fn virtual_children(&self) -> Option<VirtualChildren<'_>> {
         let NodeKind::VirtualList(list) = &self.node.kind else {
             return None;
@@ -1623,6 +1707,9 @@ impl Widget for SceneWidget {
             return;
         }
         if let Some(input) = &mut self.input {
+            if input.wheel(self.node.id, event, ctx) {
+                return;
+            }
             input.drag(self.node.id, event, ctx);
             if input.pointer(self.node.id, event, |e| ctx.submit_action::<NodeEvent>(e)) {
                 if matches!(event, PointerEvent::Down(_)) {

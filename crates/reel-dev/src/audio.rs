@@ -104,6 +104,8 @@ pub fn probes() -> Result<()> {
                 "-p",
                 "reel-media",
                 "--no-default-features",
+                "--features",
+                "decode",
                 "--locked",
                 "--message-format=json",
             ])

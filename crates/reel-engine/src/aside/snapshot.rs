@@ -19,20 +19,9 @@ fn registry() -> &'static SnapshotRegistry {
             ("reel.activity", activity::readonly),
             ("reel.result", results::readonly),
             ("reel.media", media::readonly),
+            ("reel.auto-condition", narrative::auto_condition_validator),
         ] {
-            registry
-                .register_validator(
-                    name,
-                    if name == "reel.media" {
-                        3
-                    } else if matches!(name, "reel.character" | "reel.result") {
-                        2
-                    } else {
-                        1
-                    },
-                    validator,
-                )
-                .unwrap();
+            registry.register_validator(name, 1, validator).unwrap();
         }
         registry
     });
@@ -120,7 +109,7 @@ pub struct SessionSnapshot {
     pictures: Vec<Option<std::sync::Arc<SavedRetainedScene>>>,
 }
 impl SessionSnapshot {
-    pub const FORMAT_VERSION: u32 = 27;
+    pub const FORMAT_VERSION: u32 = 1;
     /// Serialize directly into the host's compression/file writer on its worker.
     pub fn write_to(
         &self,

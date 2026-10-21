@@ -175,6 +175,7 @@ pub enum AudioState {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioErrorKind {
+    DecodeFailure,
     Busy,
     Unsupported,
     InvalidRequest,

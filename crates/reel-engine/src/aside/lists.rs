@@ -1,6 +1,25 @@
 //! Keyed reconciliation. Persistent and in-flight values live in the VM heap;
 //! only the sorting workspace is Rust-owned, with a scoped heap reservation.
 use super::keys::compare;
+
+aside_host::native_documentation! {
+    pub(super) fn documentation {
+        /// Create a keyed list from `items()`, `key(item)` and `build(row)`.
+        /// The builder receives observable row fields `value` and `index`. Keys must be
+        /// unique: scalars preserve their type, strings compare by content, and other
+        /// objects compare by identity. Stable keys retain mounted rows through reordering.
+        /// With `virtual: true`, mount the scroll view's requested window and navigation
+        /// targets, retiring rows outside that window. Keep persistent row state in the
+        /// item model because remounting creates fresh row nodes.
+        "reel::list";
+        /// Locate a keyed virtual row, scroll it into view, then return its mounted node
+        /// after presentation. Align accepts nearest, start, center or end. Removing the
+        /// key, retiring the list, starting another request, or user scrolling/navigation
+        /// that supersedes this target cancels the pending request. The result is owned by
+        /// the list; cancelling one consumer's await does not cancel the producer.
+        "reel::list::scroll_to";
+    }
+}
 use super::*;
 use aside_vm::executor::{Continuation, FaultRetention};
 use aside_vm::{Heap, ObjectKind, ValueTag};

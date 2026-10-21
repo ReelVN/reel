@@ -10,6 +10,7 @@ use std::{collections::HashSet, ops::Range};
 
 pub mod aside;
 pub mod audio;
+mod dialogue_stream;
 pub mod localization;
 pub mod media;
 mod reading;
@@ -199,10 +200,16 @@ pub struct DialogueLine {
     /// Every grapheme endpoint, including the initial zero boundary.
     grapheme_boundaries: std::sync::Arc<[usize]>,
     revealed_count: usize,
+    advance_requested: bool,
     timing: reveal::RevealTiming,
 }
 
 impl DialogueLine {
+    /// Whether an accepted manual Advance requested completion of this segment.
+    pub fn advance_requested(&self) -> bool {
+        self.advance_requested
+    }
+
     /// Whether this content was completed before this group was submitted.
     pub fn previously_read(&self) -> bool {
         self.previously_read
@@ -268,9 +275,24 @@ pub struct DialogueInteraction {
     current_line_ids: Vec<DialogueLineId>,
     lines: Vec<DialogueLine>,
     page_locale: String,
+    open: bool,
+    awaiting_advance: bool,
+    revision: u64,
+    text_revision: u64,
+    pending_read_ids: Vec<String>,
 }
 
 impl DialogueInteraction {
+    pub fn advance_requested(&self) -> bool {
+        self.lines.iter().any(DialogueLine::advance_requested)
+    }
+
+    pub fn awaiting_advance(&self) -> bool {
+        self.awaiting_advance
+    }
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
     /// Whether advance may complete the group's text and timing immediately.
     pub fn reveal_skippable(&self) -> bool {
         self.reveal_skippable
@@ -546,6 +568,9 @@ impl Completion {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionError {
+    SingleDialogueLineRequired,
+    InvalidDialogueHandle,
+    InvalidTextComposition,
     InvalidTextSpeed,
     SessionNotRunning,
     ForeignOwner,
@@ -828,6 +853,11 @@ impl Session {
         self.reading.set_auto(enabled, delay);
     }
 
+    /// Set the resolved author condition without changing reveal or manual input.
+    pub fn set_auto_condition(&mut self, ready: bool) {
+        self.reading.set_auto_condition(ready);
+    }
+
     pub fn pause_reading(&mut self, paused: bool) {
         self.reading.pause(paused);
     }
@@ -857,6 +887,12 @@ impl Session {
             Some(Interaction::Dialogue(dialogue)) => {
                 bytes += vector_capacity_bytes(&dialogue.lines)
                     + vector_capacity_bytes(&dialogue.current_line_ids)
+                    + vector_capacity_bytes(&dialogue.pending_read_ids)
+                    + dialogue
+                        .pending_read_ids
+                        .iter()
+                        .map(String::capacity)
+                        .sum::<usize>()
                     + dialogue.page_locale.capacity();
                 for line in &dialogue.lines {
                     bytes += line.speaker_id.as_ref().map_or(0, String::capacity)
@@ -1165,6 +1201,7 @@ impl Session {
                 content: content.clone(),
                 grapheme_boundaries: boundaries.into(),
                 revealed_count: 0,
+                advance_requested: false,
                 timing: Default::default(),
             });
             current_line_ids.push(line_id);
@@ -1197,6 +1234,11 @@ impl Session {
             current_line_ids,
             lines: owned_lines,
             page_locale: copy_text(page_locale)?,
+            open: false,
+            awaiting_advance: true,
+            revision: 0,
+            text_revision: 0,
+            pending_read_ids: Vec::new(),
         };
         let history = HistoryGroup {
             group_id: HistoryGroupId(id),
@@ -1407,7 +1449,7 @@ impl Session {
     /// stale or invalid. Foreign/dead sources do not change the high-water mark.
     pub fn handle_input(&mut self, event: InputEvent) -> Result<InputOutcome, InputRejection> {
         self.validate_input_source(event.source_owner)?;
-        self.apply_sequenced_input(event)
+        self.apply_sequenced_input(event, true)
     }
 
     /// Dispatch one new local action, assigning its sequence from this Session's
@@ -1424,6 +1466,24 @@ impl Session {
         source_owner: OwnerHandle,
         action: InputAction,
     ) -> Result<InputOutcome, InputRejection> {
+        self.handle_local_input_origin(source_owner, action, true)
+    }
+
+    /// Dispatch playback-driven input without recording a manual advance request.
+    pub fn handle_playback_input(
+        &mut self,
+        source_owner: OwnerHandle,
+        action: InputAction,
+    ) -> Result<InputOutcome, InputRejection> {
+        self.handle_local_input_origin(source_owner, action, false)
+    }
+
+    fn handle_local_input_origin(
+        &mut self,
+        source_owner: OwnerHandle,
+        action: InputAction,
+        manual: bool,
+    ) -> Result<InputOutcome, InputRejection> {
         self.validate_input_source(source_owner)?;
         let sequence = match self.last_input_sequence {
             Some(last) => InputSequence(
@@ -1433,11 +1493,14 @@ impl Session {
             ),
             None => InputSequence(1),
         };
-        self.apply_sequenced_input(InputEvent {
-            source_owner,
-            sequence,
-            action,
-        })
+        self.apply_sequenced_input(
+            InputEvent {
+                source_owner,
+                sequence,
+                action,
+            },
+            manual,
+        )
     }
 
     fn validate_input_source(&self, source_owner: OwnerHandle) -> Result<(), InputRejection> {
@@ -1453,7 +1516,11 @@ impl Session {
         Ok(())
     }
 
-    fn apply_sequenced_input(&mut self, event: InputEvent) -> Result<InputOutcome, InputRejection> {
+    fn apply_sequenced_input(
+        &mut self,
+        event: InputEvent,
+        manual: bool,
+    ) -> Result<InputOutcome, InputRejection> {
         if self
             .last_input_sequence
             .is_some_and(|last| event.sequence <= last)
@@ -1484,6 +1551,9 @@ impl Session {
                 }
                 let mut revealed = false;
                 for line in &mut dialogue.lines {
+                    if manual {
+                        line.advance_requested = true;
+                    }
                     let total_count = line.grapheme_boundaries.len() - 1;
                     if !line.playback_complete() {
                         line.revealed_count = total_count;
@@ -1493,6 +1563,9 @@ impl Session {
                 }
                 if revealed {
                     return Ok(InputOutcome::Revealed);
+                }
+                if !dialogue.awaiting_advance {
+                    return Ok(InputOutcome::Pending);
                 }
                 self.complete(CompletionOutcome::Advanced);
             }
@@ -1511,6 +1584,11 @@ impl Session {
         Ok(InputOutcome::Completed)
     }
 
+    /// Whether a terminal interaction record is ready for its waiting task.
+    pub fn completion_pending(&self) -> bool {
+        self.completion.is_some()
+    }
+
     /// Claim the single terminal record once. This does not execute or resume a task.
     pub fn take_completion(&mut self) -> Option<Completion> {
         self.completion.take()
@@ -1521,13 +1599,17 @@ impl Session {
     /// external cleanup. Previously declared revoked records remain pending.
     pub fn end(&mut self) -> Result<(), SessionError> {
         self.ensure_running()?;
-        if self.active.is_some() {
+        if self.active.as_ref().is_some_and(|active| {
+            !matches!(active,
+            Interaction::Dialogue(d) if d.open && !d.awaiting_advance)
+        }) {
             return Err(SessionError::InteractionActive);
         }
         if self.completion.is_some() {
             return Err(SessionError::CompletionPending);
         }
         self.status = SessionStatus::Ended;
+        self.active = None;
         self.retire_live_owners_without_obligations();
         Ok(())
     }
@@ -1565,7 +1647,10 @@ impl Session {
         if owner != self.root_owner() {
             return Err(SessionError::MainOwnerRequired);
         }
-        if self.active.is_some() {
+        if self.active.as_ref().is_some_and(|active| {
+            !matches!(active,
+            Interaction::Dialogue(d) if d.open && !d.awaiting_advance)
+        }) {
             return Err(SessionError::InteractionActive);
         }
         if self.completion.is_some() {
@@ -1580,18 +1665,31 @@ impl Session {
     }
 
     fn complete(&mut self, outcome: CompletionOutcome) {
-        let interaction = self
+        let mut interaction = self
             .active
             .take()
             .expect("active interaction reserves completion");
         let interaction_id = interaction.id();
         if matches!(outcome, CompletionOutcome::Advanced)
-            && let Interaction::Dialogue(dialogue) = interaction
+            && let Interaction::Dialogue(dialogue) = &mut interaction
         {
             // Admission reserved the hash table; move owned IDs without allocating on input.
-            for line in dialogue.lines {
-                self.read_progress.ids.insert(line.content.id);
+            if dialogue.open {
+                for id in dialogue.pending_read_ids.drain(..) {
+                    self.read_progress.ids.insert(id);
+                }
+                dialogue.awaiting_advance = false;
+                dialogue.revision = dialogue.revision.wrapping_add(1);
+            } else {
+                for line in &mut dialogue.lines {
+                    self.read_progress
+                        .ids
+                        .insert(std::mem::take(&mut line.content.id));
+                }
             }
+        }
+        if matches!(&interaction, Interaction::Dialogue(d) if d.open) {
+            self.active = Some(interaction);
         }
         debug_assert!(self.completion.is_none());
         self.completion = Some(Completion {

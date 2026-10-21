@@ -1,39 +1,31 @@
 # Reel Game Creator Guide
 
-For images exceeding a device texture dimension, prepare the original with `reel prepare-image panorama.png --output panorama.reel-image`, then use `image("panorama.reel-image")`. Distribute the manifest and its adjacent `.tiles` directory together. The player loads visible tiles and a budget-limited neighbor ring; panning and zooming reuse resident pixels. See the [format and preparation contract](../prepared-images.md). Run the [large-image example](../../examples/author_large_image.aside) with a wide original and the font setup below. Preparation is explicit; build does not copy or prepare images.
-
-Design version 1.1 · Development baseline. Implementation status is stated in the guide.
-
 [中文](zh-CN.md) · [文档目录 / Documentation index](../README.md)
 
-
-Compilation and ASB loading do not impose default quotas on project size, aggregate records, modules or instruction counts. Format widths and available memory still apply; Rust embedders can set explicit Limits. Capacity diagnostics distinguish record counts from requested memory, so a longer story is not mistaken for invalid syntax.
 ## Reading This Guide
 Reel aims to let you express the scenes and interactions you imagine in Aside, composing your own dialogue, UI, choreography and embedded 2D games. Multi-file projects, a shared stage, save/load and packaged exports are available; the full 2D authoring API, long-content costs and device coverage are still being developed. Start with the [basic scene](../../examples/author_stage.aside), [animation](../../examples/author_activities.aside), or [interactive buttons](../../examples/author_buttons.aside). The [capability table](../README.md#当前状态) states the actual boundaries, and [roadmap #94](https://github.com/jhq223/reel/issues/94) tracks implementation order.
 
 This guide starts with the scene you want to create and explains how to use Aside to write stories, compose UI, choreograph scenes, and extend effects. Implemented features are ready to use; the remaining sections describe the target design and identify capabilities that are not yet connected. The Chinese and English editions share the same examples and interface names. Reel Engine Architecture Design describes the runtime; Aside VM and Language Design defines the language rules.
 Authors work with three basic concepts: functions organize reusable content, node trees describe scenes, and activities represent changes over time. Ordinary functions, basic node composition and sequential stories now work together. Activities and advanced creator APIs retain their stated implementation status.
 
-Currently runnable: text, image (PNG/JPEG), row, column, stack, stage.replace, trailing children blocks with if/for composition, updates to existing node properties, local subtree editing, finite animations with waiting and control, and narrator/choose waiting and resumption. Check/build and the player share the same registered Reel interfaces; dev runs source, and run executes .asb directly. See the complete [author-stage example](../../examples/author_stage.aside) and the commands in section 1.
-
-Author button nodes and awaitable on_click callbacks now work; see the runnable example below. model, bind/unbind, derive, dynamic view and author dialogue/choice views are available; audio is connected to creator source; video and save/load are connected to the same stage and execution state. Script initialization and projects with multiple source modules are available; development and packaged release exports use the commands below. Each section identifies runnable examples and designs that are not yet implemented. See the [current implementation status](../README.md#当前状态) for the broader boundary.
-
-Historical verification scope: the R01/R02 Rust renderer and diagnostic window passed independent checks on software Vulkan and Xvfb/X11. Those records establish behavior only for their recorded commits and environments. Source and ASB now connect to the real window entry point; the old diagnostic program's scope no longer describes the author commands. These checks do not establish physical-GPU, hot-plug or platform-lifecycle behavior. See [rendering verification scope](../../crates/reel-render/R02-REPORT.md).
+Interface parameters, properties and examples live in English documentation beside their implementation. Aside `///` comments are also available with their declarations. Host metadata exposes the same signatures and descriptions to editor tooling; see the [host SDK](../aside-host.md). This guide covers authoring workflows and composition.
 
 ## 1 A Minimal Project and Shared Conventions
-`game.exit()` requests that the work close. Scripts stop once the request is accepted; the player cleans up tasks and resources before closing its window. You can await a fade first. Embedded hosts receive the same request and control their outer application. See [author_exit.aside](../../examples/author_exit.aside); provide fonts/body.ttf before running.
 
 Start the project from main in main.aside. check/build/dev accept a source file or project directory; run executes the built .asb. See the runnable multi-file [author_project](../../examples/author_project/main.aside). The title screen can use game.start to enter a fresh story session.
-Call game.configure(title: "窗边", width: 960, height: 540) in main to set the title and logical canvas using ordinary expressions. Omitted fields keep their values. Without a canvas, coordinates follow the viewport; a configured canvas uses contain scaling and the same transform for drawing and input. When first setting one dimension, the other uses the corresponding value from 1920×1080. The desktop window initially matches the first configured canvas, or uses 1280×720 without a canvas. Rust hosts can explicitly override the initial size with StoryWindowOptions.logical_size. After the first canvas is applied, window size stays under player control and continues to use contain scaling. fonts accepts a font file string or an ordered array, such as game.configure(fonts: ["fonts/body.ttf", "fonts/cjk.ttf"]). Paths are relative to the asset root; provide at least one font file before the first presentation. The font property on text and button selects a family or comma-separated fallback list, for example text("标题", font: "Noto Serif SC, system-ui"); font_size controls size. `font_weight` selects a weight, defaults to 400, and accepts finite numbers from 1 to 1000. For example, `text("标题", font: "HK Grotesk", font_weight: 600)` selects a suitable weight from the configured family. Matching weights supplied by the work take priority. With only a Regular font, bold uses synthetic emboldening, consistently in ordinary text, progressive reveal, and outlines. Text, control labels and text_input share this property; assignment, bind and derive update it and trigger layout. Rich text `[b]` sets its span to weight 700. Font files share loaded data; system-ui denotes the configured default list. The player uses only fonts supplied by the work and reports missing font configuration.
 
-`letter_spacing` and `word_spacing` adjust cluster advances and space widths, defaulting to 0 logical stage pixels. Positive values spread text out; negative values tighten it. Word spacing applies to ordinary and non-breaking spaces and adds to letter spacing. Letter spacing adds advance to each shaped cluster, including the last; combining characters and ligatures retain font shaping. Text, control labels and text_input share both properties through assignment, bind and derive. Changes update wrapping, caret positions and hit testing. Rich text and ruby annotations inherit spacing; text_fit: "shrink" scales spacing together with font size. Example: [author_text_spacing.aside](../../examples/author_text_spacing.aside).
+Save this as main.aside and provide fonts/body.ttf under the resource root. The commands below prepare a local font and run the project.
 
 ```aside
-stage.replace(column(gap: 12) {
-    text("CHAPTER ONE", font_size: 32, letter_spacing: 2);
-    text("made with love", font_size: 28, word_spacing: -2);
-});
+fn main() {
+    game.configure(title: "Window light", width: 960, height: 540,
+        fonts: ["fonts/body.ttf"]);
+    stage.replace(text("Hello", x: 24, y: 24));
+}
 ```
+
+### Modules and common syntax
+
 Reel makes all currently registered basic nodes and story services available automatically: text, image, button, row, column, stack, stage, narrator and choose. Each source file can use them without an import. Your module declarations, local bindings and explicit imports take precedence over these defaults. If you define your own text function, `use reel::prelude::text as reel_text;` gives the Reel constructor a separate name. Explicit prelude imports remain ordinary valid imports. This default environment belongs to Reel; standalone Aside has no Reel names. Actions and complete application services retain the design status stated later. Authors build their pages and visual style with ordinary functions. All documents use fn, let, let mut, |parameters| closures and use imports. Except for complete module/function examples, standalone snippets belong inside a running function and reuse earlier variables. Ordinary statements end with semicolons; a function's final expression can be its return value. Object literals use {field: value}. The following imports use the implemented module layout; the title button's game.start call is implemented.
 ```aside
 use game::ui::title::title;
@@ -91,6 +83,8 @@ Projects read only modules imported by the entry. game::ui::scene resolves to ui
 
 Source files, embedded source text and string constants share the actual package budget. Long text and concatenation advance in execution slices; slicing never truncates text or imposes a dialogue length limit.
 
+Compilation and ASB loading do not impose default quotas on project size, aggregate records, modules or instruction counts. Format widths and available memory still apply; Rust embedders can set explicit Limits. Capacity diagnostics distinguish record counts from requested memory, so a longer story is not mistaken for invalid syntax.
+
 Left-associated operations and member or call chains compile in source order without consuming nesting allowance for each link. Actual nesting through parentheses, blocks and subexpressions uses the host's configured compiler resource budget.
 
 ### Exporting Development and Release Directories
@@ -106,7 +100,7 @@ Left-associated operations and member or call chains compile in source order wit
 
 Development output contains editable `script/` files, loose resources, and `game.asb` with source diagnostics. Use run directly or dev to recompile through the embedded source configuration. Release output contains `game.exe`, `game.asb`, `game.rtp`, and `resources.rpk`, plus further volumes when needed. Distribute the complete directory; players double-click `game.exe` to start, or use the equivalent executable on other platforms. The manifest lives inside `game.asb`, with resource paths relative to that file.
 
-The standalone player locates `game.asb` beside its executable and writes saves to the adjacent `saves/` directory by default. Use `--save-directory <directory>` to choose another location, and preserve saves when updating the game. Release export copies the reel-game player beside the reel tool; build release executables with `cargo build --release -p reel-cli --features window`. The current ASB format is 2.0; rebuild older artifacts.
+The standalone player locates `game.asb` beside its executable and writes saves to the adjacent `saves/` directory by default. Use `--save-directory <directory>` to choose another location, and preserve saves when updating the game. Release export copies the reel-game player beside the reel tool; build release executables with `cargo build --release -p reel-cli --features window`. Rebuild packages with the player version you distribute.
 
 Each `--resource prefix=directory` maps a directory to its logical script path. Use `--text locales=build/locales` to put bundled translation catalogs in the text package; scripts still call `localization.load("en", "locales/en.ftl")`. Development copies these files; release packages them. Translators can maintain source catalogs beside their story and UI modules and use `reel loc bundle` to produce runtime catalogs first.
 
@@ -160,12 +154,24 @@ stage.replace(stack {
 });
 ```
 
+### Headless example
+
+Run the [minimal Aside story](../../crates/reel-engine/examples/story_contract.aside) with its [headless host](../../crates/reel-engine/examples/story_contract.rs):
+
+```sh
+cargo run --locked -p reel-engine --example story_contract
+```
+
 ## 2 Describing the Whole Scene in Code
+### Canvas and fonts
+
+Call game.configure(title: "窗边", width: 960, height: 540) in main to set the title and logical canvas using ordinary expressions. Omitted fields keep their values. Without a canvas, coordinates follow the viewport; a configured canvas uses contain scaling and the same transform for drawing and input. When first setting one dimension, the other uses the corresponding value from 1920×1080. The desktop window initially matches the first configured canvas, or uses 1280×720 without a canvas. Rust hosts can explicitly override the initial size with StoryWindowOptions.logical_size. After the first canvas is applied, window size stays under player control and continues to use contain scaling. fonts accepts a font file string or an ordered array, such as game.configure(fonts: ["fonts/body.ttf", "fonts/cjk.ttf"]). Paths are relative to the asset root; provide at least one font file before the first presentation. The font property on text and button selects a family or comma-separated fallback list, for example text("标题", font: "Noto Serif SC, system-ui"); font_size controls size. `font_weight` selects a weight, defaults to 400, and accepts finite numbers from 1 to 1000. For example, `text("标题", font: "HK Grotesk", font_weight: 600)` selects a suitable weight from the configured family. Matching weights supplied by the work take priority. With only a Regular font, bold uses synthetic emboldening, consistently in ordinary text, progressive reveal, and outlines. Text, control labels and text_input share this property; assignment, bind and derive update it and trigger layout. Rich text `[b]` sets its span to weight 700. Font files share loaded data; system-ui denotes the configured default list. The player uses only fonts supplied by the work and reports missing font configuration.
+
 ### Organizing Component Data
 
 While a single table field is being read or written, other tasks or controls can update existing field values; lookup uses the current slot when it completes. Ordinary tables and models follow the same rule. Adding or removing fields interrupts an unfinished lookup with ConcurrentModification. Bulk operations such as copying, spreading and removal still require consistent source contents throughout the operation.
 
-The story VM has no fixed default memory byte quota. Object and root storage grows on demand, without the former default thresholds of 16,384 objects or 1,024 roots; embedding hosts can set an explicit budget for their environment. Incremental GC releases empty object storage pages instead of retaining the peak number of full object slots; small identity indexes and work queues remain available for reuse. Long operations yield across execution slices to keep presentation responsive.
+Memory use grows with live story data and resources. Release references to retired content and keep long-lived caches bounded; embedding hosts can set explicit resource budgets.
 
 Fixed-length tuples can be destructured in let and for, including nested tuples and `_`. All values are prepared before names are bound; a shape mismatch raises PatternMismatch. Closures retain each iteration's values. Array/object/rest patterns and destructuring assignment remain pending. See [tuple_bindings.aside](../../examples/tuple_bindings.aside).
 
@@ -246,7 +252,7 @@ stack(max_width: 420) {
     image("images/panel.png", stretch: "both", slice: 12);
     column(padding: 24, gap: 16) {
         text("The frame follows wrapped text and buttons.", align_x: 0.5, text_align: "center");
-        button("Continue", align_x: 0.5, on_click: |event| game.advance());
+        button("Dismiss", align_x: 0.5, on_click: |event| event.target.remove());
     }
 }
 ```
@@ -421,7 +427,6 @@ Images and fonts use the same resource loading service. File reads and image dec
 
 Every basic node supports rotation, scale_x/scale_y and anchor_x/anchor_y; a container transforms the whole component. Rotation uses clockwise degrees and defaults to 0. Scale defaults to 1; negative values mirror, and zero collapses the picture and excludes it from hit testing. Anchors are fractions of the layout width and height: (0,0) is the default top-left corner and (0.5,0.5) is the center. They may also lie outside the component. The x/y values offset that anchor from the container's layout position. Scale around the anchor, rotate, then place it at that position; the parent's transform applies to the result. Width, height and row/column placement retain their size before transformation. Clips and presented geometry use the same transform. Edits preserve node identity; changing position, rotation, scale, anchor or opacity does not repeat layout.
 
-
 ```aside
 fn main() {
     let card = column(x: 320, y: 220, anchor_x: 0.5, anchor_y: 0.5,
@@ -439,6 +444,10 @@ fn main() {
 ```
 
 See the runnable [author_transforms.aside](../../examples/author_transforms.aside); it uses the same assets and commands as the image example.
+
+### Prepared large images
+
+For images exceeding a device texture dimension, prepare the original with `reel prepare-image panorama.png --output panorama.reel-image`, then use `image("panorama.reel-image")`. Distribute the manifest and its adjacent `.tiles` directory together. The player loads visible tiles and a budget-limited neighbor ring; panning and zooming reuse resident pixels. See the [format and preparation contract](../prepared-images.md). Run the [large-image example](../../examples/author_large_image.aside) with a wide original and the font setup below. Preparation is explicit; build does not copy or prepare images.
 
 ### Camera framing
 
@@ -458,7 +467,7 @@ await run(tween(view, camera_x: 660, camera_y: 210, zoom: 1.8,
 The four camera properties work with assignment, bind/derive and tween, including normal cancellation and ownership. Put HUD siblings outside the camera to keep them fixed; nested cameras are ordinary components. Motion preserves text layout and loaded images. Drawing and pointer coordinates share the accepted frame's transforms and clips. See the complete [author_camera.aside](../../examples/author_camera.aside), which needs only `fonts/body.ttf`; run it using section 1's dev/build/run commands. This is a two-dimensional camera; perspective projection is not implemented.
 
 Scene nodes, drawing records and nesting grow with the actual content. Input paths grow before a new scene is published, keeping existing presses, drags and releases tied to the correct nodes. The host and device manage actual memory budgets and GPU texture dimensions.
-The following room describes the full-scene design and is not directly runnable yet: it relies on game:: modules and the custom dialogue view that are not connected. The background, portrait, CG and author dialogue UI are layered in that order. The function returns named parts that the story needs to manipulate.
+Save this component as ui/room.aside and supply the referenced images. It imports the dialogue_view defined in section 3. Background, portraits, CG and the author dialogue UI are layered in that order; the returned record exposes the parts used by story functions.
 ```aside
 use game::ui::dialogue::dialogue_view;
 
@@ -491,6 +500,21 @@ fn card(children = []) {
 Properties, layout, and rendering belong to nodes; interaction behavior belongs to controls. Authors can put a character portrait inside a button, place a button in a visual group, or rotate or fade out an entire settings page. The shared node tree determines hierarchy rules. Authors explicitly place overlays within the root node.
 
 Keeping a reference to any node also keeps its unmounted parent component alive; GC does not invalidate a node still in use. Property types, colors and numeric ranges are checked at assignment, so the same try/catch can handle errors and a rejected assignment retains the old value. The configured font list supplies missing-glyph fallback in order, including Chinese.
+
+### Querying presented node geometry
+
+`stage.geometry(node, relative_to: overlay, owner: root)` waits for a frame actually presented after the request and returns one read-only geometry snapshot. width/height describe the node itself; bounds supplies x/y/width/height in the reference space, and transform's a/b/c/d/tx/ty maps local points into that space. Omitting relative_to uses logical stage coordinates. A sibling overlay or ancestor may be the reference; scrolling, cameras, rotation and mirroring are included, without clipping. The query uses the published layout recorded with that frame; property edits that have not been presented cannot be attached to an older frame. A retained picture shown while the stage is preparing cannot complete a new query.
+
+```aside
+overlay.visible = true;
+overlay.opacity = 0;
+let geometry = await stage.geometry(thumbnail, relative_to: overlay, owner: root);
+indicator.x = geometry.bounds.x + geometry.bounds.width / 2;
+indicator.y = geometry.bounds.y;
+overlay.opacity = 1;
+```
+
+Hidden nodes have no current layout to query. If the accepted frame still hides or omits either node, or the reference transform is not invertible, catch receives a value whose code is GeometryUnavailable. Transparent nodes still participate in layout. Retiring the target, reference or owner cancels the request; cancellation propagates through await. Do not assume an arbitrary caught value has a code field. Results do not update every frame. For virtual rows, await list.scroll_to(key) before querying the row node. Complete example: [author_geometry.aside](../../examples/author_geometry.aside).
 
 ## 3 Story Code Is Ordinary Sequential Code
 
@@ -558,18 +582,41 @@ let eri = character("Eri");
 say([mio.line("你听见了吗？"), eri.line("在窗外。")]);
 ```
 `game.dialogue()` returns the stable session model. The nvl_view above composes accumulated lines; `model.clear()` clears the displayed page while preserving history. ADV uses the first-line shortcuts, and current_line_ids identifies the current group. Reveal changes update properties without rebuilding the NVL page; appending lines or clearing the page rebuilds the view content. Ordinary layouts determine placement, backgrounds, spacing and bubble shapes. In a custom dialogue view, taps not consumed by controls advance the current line; touch drags only scroll. See [author_scroll.aside](../../examples/author_scroll.aside) for a long menu.
-Compose an upward exit in an ordinary dialogue function: wait for the character's dialogue, then `await run(tween(...))` to move the old text out before starting the next line. [author_dialogue_transition.aside](../../examples/author_dialogue_transition.aside) contains a complete component with clipping, character colors and read colors; supply fonts/body.ttf before running. Adjust typing speed with game.configure(text_speed:). Per-glyph fades, bounces and similar effects are not connected yet.
+Compose an upward exit in an ordinary dialogue function: wait for the character's dialogue, then `await run(tween(...))` to move the old text out before starting the next line. [author_dialogue_transition.aside](../../examples/author_dialogue_transition.aside) contains a complete component with clipping, character colors and read colors; supply fonts/body.ttf before running. Adjust typing speed with game.configure(text_speed:). Use `reveal_fade` for per-glyph opacity; per-glyph displacement effects remain planned.
 
-When you need a route map or chapter restarts, use an ordinary API to register a stable ID and display title for a function. The function still follows the same calling and waiting rules.
-```aside
-fn opening() {
-    // 剧情正文。
-}
-story.register("chapter01.opening", opening, title: "窗上的光");
-```
 `game.start(entry)` accepts an ordinary function in the current ASB with no captures or required parameters. After acceptance, the old script does not continue. The new session reruns module initialization and then calls entry. Previous dialogue, UI callbacks and activities end; script globals, history, auto-play and skip state reset. Read progress, game.configure settings, host assets and save storage remain. The entry constructs its scene; do not clear the old stage after the call. Cross-ASB hot-reload entry resolution and persistent script globals are not implemented. See [author_game_start.aside](../../examples/author_game_start.aside).
 
+Pass `wait: false` to speak in segments. Write sounds, animation and delays between text updates, then call `line.wait()` for player advance. You can append again after waiting; the displayed prefix and history entry retain their identities. The next dialogue or choice retires the old handle. Strings, rich text and embedded newlines are accepted. A multi-speaker say group supports waiting; append targets single-speaker groups. The complete example is [author_dialogue_append.aside](../../examples/author_dialogue_append.aside).
+
+```aside
+let line = mio("Starting", wait: false);
+await run(delay(0.5));
+line.append(" ...");
+audio.play("assets/chime.wav");
+line.append(" ready.");
+line.wait();
+line.append("\nWelcome back.");
+line.wait();
+```
+
+Before line.wait, input may reveal text; advance waits for the script to reach a checkpoint. Append preserves revealed graphemes. Its history parameter follows character calls: true appends displayed text, false omits that segment, and a string or rich value appends replacement text. An omitted or cleared entry stays omitted. Handles belong to the main story; saves resume the current segment and wait.
+
+
+Use `await when(|| game.dialogue().ready)` to wait for printing and inline pauses before continuing sound or choreography. `when` follows the observable properties actually read by its predicate. See its [source API documentation](../../crates/reel-engine/src/aside/conditions.rs) for result ownership and cancellation.
+
 ## 4 Sequencing Changes and Running Them Together
+
+Pass a scalar curve directly to tween when speed changes over time. This curve represents constant acceleration, starting at half the average speed and ending at 1.5 times it. Its sample(0) and sample(1) must be 0 and 1. Curves can be shared; pause, cancellation, repetition and save restoration use the usual activity controls.
+
+```aside
+use std::math::curve;
+
+let acceleration = curve([
+    {time: 0, value: 0, mode: "cubic", out_tangent: 0.5},
+    {time: 1, value: 1, in_tangent: 1.5},
+]);
+await run(tween(portrait, x: 640, duration: 2, easing: acceleration));
+```
 
 Create music, video, animation, and clocks paused, then start them with the scene: `audio.play(..., paused: true)`, `movie.play(..., paused: true)`, `run(..., paused: true)`, and `clock(..., paused: true)`. Omitting paused starts them as usual. Paused media continues loading, decoding, and preparing its first frame while position stays at start; seeking preserves the paused state. Animations validate their actions at creation, then read starting property values and acquire write ownership on their first resume. Clocks keep ticks at 0 and elapsed at 0.0 until then.
 
@@ -621,8 +668,7 @@ await run(tween(portrait, x: 720, duration: 0.8, easing: "sine_out"));
 
 The complete [author_sine_easing.aside](../../examples/author_sine_easing.aside) compares all three sine curves over the same distance and duration; supply `fonts/body.ttf` before opening the window.
 
-
-The language runtime supports awaiting host-registered awaitable objects. An ordinary fn can use `await request` to suspend its call chain while the host handles other work. Even settled objects return on a later scheduling step; failures point to the await expression and retain the producer's cause. Engine activities now use this protocol; async fn and Future construction are not available yet. The runnable host integration check is [host_awaitables.rs](../../crates/aside-compiler/tests/host_awaitables.rs): `cargo test -p aside-compiler --test host_awaitables`.
+Use `await` with activities, completions or other registered awaitable objects. It suspends the current call chain while input and other work continue. Failures propagate at await with their original cause; ordinary functions may wait without an async declaration.
 
 When started normally, empty sequence/parallel and times: 0 complete immediately without property writes. times must be a nonnegative integer or null; omitting it or passing null creates a continuous loop, whose cycle must have a positive duration. A composition with an infinite branch rejects finish before changing the activity; use stop to end it. run checks the complete write sets of parallel branches before taking over existing activities. Pause, stop and cancellation affect the whole group; later segments acquire properties only when they start. A large clock step continues through every segment it crosses.
 
@@ -701,7 +747,9 @@ scope executes an ordinary closure within the current story call chain. Its body
 fn show_cg(view) {
     scope(body: |s| {
         s.add(view.picture, image("assets/window-cg.png"));
-        await game.advance();
+        let next = completion();
+        s.add(view.hud, button("Continue", on_click: || next.resolve()));
+        await next;
     });
 }
 ```
@@ -713,7 +761,9 @@ Property overrides use a record so explicit null retains its meaning. Animate ov
 scope(body: |s| {
     let effect = s.override(panel, {opacity: 0.4, width: null});
     await s.run(tween(effect, opacity: 1, duration: 0.3));
-    await game.advance();
+    let next = completion();
+    s.add(panel, button("Continue", on_click: || next.resolve()));
+    await next;
 });
 ```
 Node properties remain base values; effect properties belong to this layer. Drawing, layout, hit testing and geometry use the effective value. The last created active layer wins per field; editing an older layer does not change its order. Base bindings and hidden animations keep updating, so removal exposes the latest result. effect.remove() removes a layer early; scope exit or target retirement also removes it. Common layout and appearance fields are supported, and the token only exposes fields supplied at creation. Control values, callbacks, read-only interaction states and camera/scroll-specific fields are excluded. Layers animate independently; writers to the same field or final binding source still use normal activity conflict rules.
@@ -734,8 +784,26 @@ await moving;
 
 Unspecified x/y default to 0; each layer accepts assignments, bind/derive and ordinary tween. Multiple offsets add to the current base or override value in the parent container’s coordinates; node.x/y continue to describe the base value. When shaking finishes and the scope exits, the picture returns to the base animation’s current position. shake.remove() removes the layer early; target retirement, cancellation and loading use the shared scope rules. Ordinary run automatically belongs to the current scope here. Try the interactive [author_offsets.aside](../../examples/author_offsets.aside) example.
 
+`s.cancel()` requests scope retirement and returns true for the first request, false for repeats. Event closures can retain `let cancel = s.cancel`; an extracted method returns false after the scope ends. The scope handle retires when it ends, so later property reads through that handle fail. Cancellation uses the owner-retirement cleanup path and delivers `ScopeCancelled` outside the scope, including when the body cancels itself.
+
+```aside
+fn closeable_scene() {
+    let state = model({cancel: null});
+    let close = button("Close", on_click: || state.cancel());
+    stage.replace(stack() { close; });
+    try {
+        scope(body: |s| {
+            state.cancel = s.cancel;
+            narrator("The window is open.");
+        });
+    } catch error {
+        if error != "ScopeCancelled" { throw; }
+    }
+}
+```
+
 By default, scope lives with the current task. Use scope(owner: node, body: ...) when it should end with a particular node. If that node ends first, only the scope region is cancelled, and ScopeCancelled is raised at the outer call site. Main-story code that is still alive can catch it outside the scope. Code involving invalid nodes within the region ends, and the host performs cleanup. If the current task itself is cancelled, the entire task ends.
-visible=false hides the subtree and removes it from hit testing and focus; enabled=false keeps it visible but disables interaction; opacity changes only transparency. Use stage.replace(new_root) for permanent scene changes and a container's replace(new_child) for permanent local replacements.
+visible=false hides the subtree and removes it from hit testing and focus; enabled=false keeps it visible but disables interaction; opacity changes only transparency. Use stage.replace(new_root) for permanent scene changes and clear() followed by add(new_child) for permanent local replacements.
 
 ## 6 Logos, Title Screens, and Local Interaction
 
@@ -767,55 +835,151 @@ hint.remove();
 ```
 photo_panel is an author-defined component control object. The example only demonstrates a button's lifetime interleaved with the story. Event callbacks are scheduled under their owning nodes. When a modal node opens, the engine consistently handles input isolation for underlying content, focus entry, and focus restoration after closing. A callback that needs to take over the main story submits an entry operation through game; ordinary scene changes can run directly.
 
+### Closing the work
+
+`game.exit()` requests that the work close. Scripts stop once the request is accepted; the player cleans up tasks and resources before closing its window. You can await a fade first. Embedded hosts receive the same request and control their outer application. See [author_exit.aside](../../examples/author_exit.aside); provide fonts/body.ttf before running.
+
+### Runnable Buttons and Callbacks
+
+button shares the stage tree with every other node. It accepts label, on_click, children and common appearance properties. Omit label to compose images, text or other components through children, laid out like a stack. enabled defaults to true; disabling a parent disables its interactive subtree. Assign a new closure or null to btn.on_click to replace or clear its handler. This code matches [author_buttons.aside](../../examples/author_buttons.aside).
+
+```aside
+fn main() {
+    let caption = text("Ready", width: 320, height: 48);
+    let controls = row(gap: 16) {
+        button("Move", width: 180, height: 64, background: "#284860",
+            on_click: |event| {
+                event.target.enabled = false;
+                await run(tween(caption, x: 120, duration: 0.4));
+                caption.value = "Arrived";
+                event.target.enabled = true;
+            }
+        );
+        button("Finish", width: 180, height: 64, background: "#603840",
+            on_click: |event| { stage.replace(text("Finished")); }
+        );
+    };
+    stage.replace(column(x: 24, y: 24, gap: 24) { controls; caption; });
+}
+```
+
+A click passes the original button as event.target. A callback can await an animation. Synchronous code runs until an explicit await, an ordinary call actually waits, or the task ends. Awaiting an already completed object also gives other ready tasks a turn. Ordinary calls and engine budget slices do not interrupt read-modify-write operations that contain no await. Multiple callbacks may await one activity; cancelling a consumer does not stop the shared producer.
+
+The emitting button owns its callbacks and is the default owner of run inside them. Removing the button, clearing its parent or replacing the stage cancels those callbacks and activities. A callback that removes itself does not execute subsequent statements. narrator/choose currently belong to the main story; calling them from a callback raises a catchable context error. game.start and direct node property bindings are implemented; general event subscriptions remain unimplemented.
+
+Mounted button handlers and activities remain usable after the main entry returns; idle sessions do not repeatedly execute the VM. Once callbacks and activities have ended and no mounted handlers remain, the session finishes and preserves its final scene. A button click does not also advance dialogue. The built-in host supports mouse and touch activation, Tab focus navigation and Enter/Space activation. A gamepad D-pad or left stick navigates by the displayed positions of controls, and long choice lists scroll with focus; the south button confirms, while the east button and Escape send Back to the current UI. Confirmation activates on a paired release. Modal changes, focus loss and disconnection cancel old input; Back does not directly exit the application. Multiple contacts can operate separate controls at once. Releasing outside a button does not click it; system cancellation or suspension releases the interaction. Existing buttons work on touch screens without a separate implementation; run [author_buttons.aside](../../examples/author_buttons.aside). The built-in desktop host integrates the system IME; system accessibility adapters remain future work.
+
+Use the dev/build/run commands in section 1 with this file. Nodes, input and scheduling do not depend on Winit/WGPU. The window feature selects the built-in desktop combination; other hosts can reuse the same session and presentation interfaces.
+
+For a custom platform host, see the [player integration guide](../../crates/reel-player/README.md).
+
+### Modal menus and focus
+
+Before opening a save menu, use `let preview = await stage.capture(width: 256, height: 144);` to obtain PNG Bytes of the last presented frame. Display it with `image(preview)` and store it with the execution snapshot using `await saves.save("slot/1", thumbnail: preview)`. Listed slots expose `has_thumbnail`; load previews on demand with `await saves.thumbnail("slot/1")`. Capture accepts omitted dimensions or a single dimension, supports owner/cancellation, and requires no window or GPU access in author code.
+
+Dialogue indicators, portraits and other controls can animate while players confirm with a pointer, touch, keyboard or gamepad. If the dialogue changes, revealing finishes, the stage root is replaced or the modal scope changes after a press, a new press is required so the old gesture cannot confirm new content.
+
+Every shared node has a writable `modal` property, defaulting to false. A visible modal subtree owns input: clicks outside it and unhandled keyboard events cannot advance the story. With multiple modals, the last one in paint order takes input; node composition determines paint order. Hiding or removing the node releases the scope. Setting enabled to false still blocks underlying content.
+
+Opening a menu focuses an eligible control inside it. Tab/Shift-Tab cycle within the menu; closing a nested menu restores the previous scope’s focus, and closing the last menu restores the original control if it remains eligible. The input scope changes when the new frame is actually presented and cancels dragging outside it. Run [author_modal.aside](../../examples/author_modal.aside) with the dev/build/run commands in the first section.
+
+Keyboard activation requires pressing and releasing Enter or Space on the same button. Changing focus, hiding, disabling, or losing window focus cancels an unfinished key press.
+
+```aside
+fn main() {
+    game.configure(fonts: ["fonts/body.ttf"]);
+    let status = text("Ready", x: 24, y: 96, width: 300, height: 40);
+    let menu = column(x: 260, y: 24, width: 220, gap: 12,
+        padding: 16, background: "#284860", modal: true, visible: false);
+    menu.add(button("Confirm", width: 180, height: 48,
+        on_click: |event| { status.value = "Confirmed"; }));
+    menu.add(button("Close", width: 180, height: 48,
+        on_click: |event| { menu.visible = false; }));
+    stage.replace(stack() {
+        button("Open menu", x: 24, y: 24, width: 180, height: 48,
+            on_click: |event| { menu.visible = true; });
+        status;
+        menu;
+    });
+    narrator("Open the menu. The story waits while you use it.");
+    status.value = "Story continued";
+    narrator("Closing the menu returns input to the story.");
+}
+```
+
+### Named actions and input nodes
+
+Use `input(on_wheel: |event| { ... })` for wheel interactions. Events contain target, x, y, delta_x and delta_y. x/y are local content-box positions in the accepted frame; deltas are pixels along logical window axes, positive right/down, without another canvas or node transform. Line deltas use 40 pixels per line, pixel deltas divide by window DPI, and page deltas multiply the receiving input's content-box dimensions. An inner scroll consumes events when it moves; at a boundary they bubble to the first ancestor input with on_wheel, which consumes the entire event. Callbacks may wait and belong to their node, following modal, visibility, enabled and retirement rules, with no pressed/released state. Example: [author_wheel.aside](../../examples/author_wheel.aside).
+
+Focused controls handle input first; unclaimed input reaches the nearest matching ancestor input node. A menu can bind Escape/gamepad Back and a scene can bind skip without repeating those bindings on every child button. Focus changes cancel held actions. Input stays within the modal scope, and text editors retain keyboard and IME input.
+
+`input` is a shared stage node with stack layout. A root input node receives unclaimed keyboard/gamepad input even before a control gains focus; focused child controls retain priority. It binds keyboard, gamepad and pointer controls to named actions. This example matches [author_input.aside](../../examples/author_input.aside); run it with the dev/build/run commands in the first section. Supply `fonts/body.ttf`, or change the path in main.
+
+A focused button receives South confirmation, even when its parent input also binds South. East and other unclaimed controls still reach ancestor mappings; unbound directions move focus. Once focus returns to the input, South resumes its game action.
+
+```aside
+fn main() {
+    game.configure(fonts: ["fonts/body.ttf"]);
+    let marker = text("Move with A / D or the left stick", x: 160, y: 64,
+        width: 340, height: 48, background: "#284860");
+    let status = text("Ready", x: 24, y: 160, width: 340, height: 48);
+    let controls = input(modal: true, width: 640, height: 280,
+        bindings: {
+            move_x: [binding("KeyA", scale: -1), binding("KeyD"),
+                binding("LeftX", dead_zone: 0.2)],
+            jump: [binding("Space"), binding("South"), binding("PointerPrimary")],
+            finish: [binding("Escape"), binding("East")],
+        },
+        on_action: |event| {
+            if event.action == "move_x" {
+                marker.x = 160 + 120 * event.target.value("move_x");
+                status.value = event.phase;
+            }
+            if event.action == "jump" && event.phase == "pressed" {
+                await run(sequence(
+                    tween(marker, y: 16, duration: 0.15),
+                    tween(marker, y: 64, duration: 0.15)
+                ));
+            }
+            if event.action == "finish" && event.phase == "released" {
+                stage.replace(text("Finished", x: 24, y: 24));
+            }
+        }
+    ) { marker; status; };
+    stage.replace(controls);
+}
+```
+
+Each key in bindings names an action; its value is an array of binding descriptions. Controls use physical key names (KeyA, KeyD, Space, Escape), standard gamepad buttons (South, East, DpadLeft), axes (LeftX, LeftY, RightX, RightY, LeftZ, RightZ), or pointer buttons (PointerPrimary, PointerSecondary, PointerAuxiliary, PointerX1, PointerX2). Axes range from -1 to 1, with positive Y pointing down; trigger buttons range from 0 to 1. scale defaults to 1 and dead_zone to 0. Values outside the dead zone are normalized again before scaling; contributions are added and clamped to -1 through 1. Releasing one device or touch contact does not release an action still held by another.
+
+Events carry target, action, value and phase. Phases are pressed, changed, released and cancelled; keyboard repeat does not produce another pressed event. `node.value("move_x")` reads the latest held value and rejects unknown actions; event.value retains the value of that particular event. Callbacks may await and belong to their node. Assigning `node.bindings = new_table` cancels the old state and installs the new map; edits inside the original table do not implicitly update it. Assign a closure or null to node.on_action.
+
+The input node receives keyboard and gamepad actions while it has focus. When a child control gains focus, it takes ownership and cancels the parent input node's held actions, so the parent cannot steal controller confirmation. Use modal: true to give an independent interaction scope focus immediately. Nonmodal nodes can receive focus through Tab; bound pointer presses also focus the node and capture that contact. Hiding, disabling, losing focus, changing modal scope or clearing the presented frame cancels held actions. Removing a node ends its tasks and activities. A consumed action does not also navigate or advance dialogue. Ordinary buttons and dialogue activate with the primary pointer button or touch; other mouse buttons remain available to author actions.
+
 ## 7 Settings Pages and Image-Based Controls
 
 button, slider, toggle and node bind/unbind are implemented; tabs, settings and slider appearance slots remain design targets.
 
-The following example combines tabs, pages, and sliders into a settings page. switcher preserves each page's nodes and local values; select changes only the selected page. Hidden pages leave input handling and focus navigation.
-```aside
-fn preferences() {
-    let pages = switcher(selected: "audio") {
-        page("audio") {
-            text("音乐");
-            slider(value: bind(settings.music), min: 0, max: 1,
-                   width: 600,
-                   track: image("assets/slider-track.png"),
-                   thumb: image("assets/slider-thumb.png"));
-        };
-        page("reading") {
-            text("文字速度");
-            slider(value: bind(settings.text_speed), min: 1, max: 100);
-        };
-    };
-    column(gap: 16) {
-        row(gap: 12) {
-            button("声音", on_click: |event| pages.select("audio"));
-            button("阅读", on_click: |event| pages.select("reading"));
-        };
-        pages;
-    }
-}
-```
-The control handles pointer capture and value conversion during dragging. The same value determines both the thumb position and the volume. Authors supply rendering nodes for the track and thumb; the control lays them out according to its orientation, range, and slots. settings contains global settings, which retain their current values after a story save is loaded. Ordinary movement, scaling, and layout changes preserve dragging; input uses the geometry of the most recently presented frame. Changing the range, step, direction, or track-endpoint policy ends the current drag. Interaction resumes when the new configuration is shown, while external updates to the bound value still take effect immediately.
 An image button is also the author's own ordinary function. The button provides interaction state, and the image selects a resource based on that state.
 ```aside
 fn picture_button(normal, hovered, pressed, clicked) {
     let control = button(on_click: clicked);
-    control.content = image(source: derive(|| {
+    control.add(image(source: derive(|| {
         if control.pressed { pressed }
         else if control.hover { hovered }
         else { normal }
-    }));
+    })));
     return control;
 }
 ```
 bind connects an observable property while preserving that property's existing read/write permissions. text can read a read-only property; slider requires a writable property when it writes a value back. derive computes read-only presentation values. A derived function establishes dependencies on the observable properties it reads and may also read immutable captured values. Internal changes to ordinary data retain ordinary language semantics. Observable property changes update only the relevant nodes. Continuous clocks and dialogue reveal publish in batches. When a batch spans frames, the previous complete picture remains visible until its derivations settle together; intervening updates are coalesced for the next batch. Calling game.dialogue() again inside a derivation reads the same batch of dialogue data. Explicit story commands still take effect in their original order. Writing a scalar to a writable bound property writes through to its binding source while preserving the binding. Animation also reserves and writes the ultimate source property, so two nodes bound to the same source reveal the actual write conflict. Explicitly changing the source stops the relevant root activities; passive projection updates are reads. Use scope overrides for temporary animation of read-only derived properties. Rebinding or unbind first ends activities that depend on the old binding; unbind preserves the current effective base value. During the brief save-capture period, script-derived computations and author-defined presentation updates pause, then resume using the latest state when capture finishes. Ordinary {...} data records are suitable for passing parameters; use model({...}) to create an observable model for application values that change over time. Cyclic dependencies, writes inside derived computations, and waits inside derived computations produce source-level diagnostics.
-Repeated reads of the same model field in one derivation register one dependency. An internal index deduplicates large sets of model fields; nested components, cancellation and restoration during evaluation preserve the same dependencies and evaluation order without author cache or capacity settings. Virtual lists reduce live row nodes; the full data, key index and dependencies remain resident. Source changes still require indexing. Stable freshness checks before presentation reuse an index of derived ancestors instead of rescanning ordinary model fields. The first check after rebinding or loading a save rebuilds that index and still has dependency-graph cost. No author cache parameter is needed; conditional dependencies, equal-value rebinding, and mid-evaluation restoration keep their existing semantics.
-The engine traverses existing storage blocks to avoid repeated reads while checking and committing large dependency sets. First checks, subscription setup and reindexing still grow with the full source; this does not promise that 100,000 items finish within one frame on every device. Author code stays the same, with no additional resident copy of the dependency graph.
+A derivation tracks the observable fields it reads, including conditional dependencies. Virtual lists reduce live row nodes, while their source data and key indexes remain resident; use stable keys and keep the source data within the host budget.
+
+When a derive or component factory reads another derived value, the engine completes that source's pending recomputation before continuing the read, including sources first read in a new conditional branch. Array bounds checks and consumers such as image paths can be separate derivations while observing the same model update. Ordinary assignments in a synchronous button callback or story function still schedule derivations after that segment ends.
 
 Authors can use the same approach to wrap consistent fonts, button images, spacing, and animation, then import them as ordinary modules. Visual style is reused through components and parameters; shared property objects can also be organized using ordinary language rules.
 
-Use `bind(node.x)` or `bind(node[key])` to capture a stable property location. The receiver and key are evaluated once. Passing the reference to a node constructor or assigning it to a node property establishes a connection; subsequent ordinary assignments write through while keeping it connected. `unbind(bind(node.x))` disconnects that location and preserves and returns its current value. Constraints on every connected control are checked together, and a failed write changes none of them. Explicitly destroying a source node disconnects surviving targets at their last value; existing references can no longer access the retired source. See section 12 and the verified scope for the implementation status of business `model` and `derive`.
+Use `bind(node.x)` or `bind(node[key])` to capture a stable property location. The receiver and key are evaluated once. Passing the reference to a node constructor or assigning it to a node property establishes a connection; subsequent ordinary assignments write through while keeping it connected. `unbind(bind(node.x))` disconnects that location and preserves and returns its current value. Constraints on every connected control are checked together, and a failed write changes none of them. Explicitly destroying a source node disconnects surviving targets at their last value; existing references can no longer access the retired source. See section 12 for application `model` data.
 
 Every node exposes read-only observable `hover`, `pressed`, `focused`, and `disabled` properties. Read them directly or connect them with `bind`; they cannot be assigned or used as writable slider/toggle values. Hover and focus include descendants; pressed includes pointer capture and the button’s own keyboard/controller confirmation hold. Disabled includes ancestor disabling. Cancellation, hiding, disabling, and window focus loss clear ongoing interaction. When a node retires, computations reading it stop updating and keep their last successful value. Removing the last consumer stops its computed appearance updates; shared consumers keep updating, and rebinding a retained reference resumes updates, but cannot restore a retired input. Set `decorated: false` on buttons and toggles to remove the default focus outline and toggle indicator/spacing, then compose the appearance from ordinary children. See [author_control_states.aside](../../examples/author_control_states.aside).
 
@@ -829,6 +993,116 @@ let card = button("Sketch", on_interaction: |event| {
 ```
 
 [author_control_states.aside](../../examples/author_control_states.aside) combines transient appearance with a selection caption retained after leaving a control. Supply `fonts/body.ttf`, then run `reel dev examples/author_control_states.aside`.
+
+### Value controls and settings
+
+`checkbox` takes the same arguments as `toggle`, with a check box appearance instead of a switch. `radio(option, label: null, value: null, on_change: null, ...)` represents one choice. Bind each item's value to the same model field to make an exclusive group, without maintaining separate booleans. option can be changed or bound; an unmatched value selects no item. Values follow list key equality. Tab/Shift-Tab visits each group once, landing on the selected available item or its first item. The first available member determines the group’s position in the Tab order. Arrow keys and controller directions select the previous/next item in node order, skipping hidden or disabled items and wrapping at the boundary. A virtual list first mounts the next logical row and accepts its frame before selection; navigation does not wrap prematurely inside the current window. At the group end it returns to the logical first item, and conversely in reverse. Crossing virtual lists enters the other list at its logical endpoint and constructs only the required window. Leaving a group with Tab does not construct virtual rows to search for an exit. Use direction keys to visit options across windows. Confirm, mouse or touch also selects. Selecting the current value does not call on_change. Programmatic changes do not move focus. Programmatic changes are silent; user changes commit the binding before delivering `{target,value}`.
+
+```aside
+let settings = model({sound: true, language: "zh-CN"});
+column(gap: 12) {
+    checkbox("Sound", value: bind(settings.sound));
+    radio("zh-CN", "简体中文", value: bind(settings.language));
+    radio("en", "English", value: bind(settings.language));
+}
+```
+
+Both compose children and accept `decorated: false` for a fully custom appearance. Check boxes read value; radio items can compare value with option in derive to select their own images or colors. Bindings maintain selection, without manual visual updates in on_change. See [author_selection.aside](../../examples/author_selection.aside); supply fonts/body.ttf before running.
+
+`slider(value: 0, min: 0, max: 1, step: null, on_change: null, ...)` provides a horizontal slider; `toggle(label: null, value: false, on_change: null, children: [], ...)` provides a switch. Both share stage position, size, colors, visibility, enabled state and modal scope; toggles also compose child nodes. The following [author_settings.aside](../../examples/author_settings.aside) runs after supplying fonts/body.ttf.
+
+Sliders require finite increasing min/max and a finite value inside that range. step is null or finite and positive, anchored at min, with both endpoints reachable. Scripts may assign any in-range value regardless of input step. Assigning min/max must also leave the current value in range; invalid writes preserve the previous state. Mouse/touch dragging, arrow keys, Home/End, Shift acceleration, left/right controller navigation and accessibility actions share one control.
+
+Accepted user changes update node.value before on_change runs; events contain target and that change’s value. Script assignments are silent. Callbacks may await and are cancelled when their node is removed. Value and layout updates preserve dragging; changing range/step ends the old drag, and interaction resumes after the new frame is accepted. Controls retain their value without a callback. Node values support bind/unbind; derive supplies read-only values for presentation and cannot be a slider/toggle writeback source.
+
+Sliders also accept child nodes. With `decorated: false`, paint the track, thumb and hover/focus feedback using images or ordinary stage nodes; slider retains input and accessibility. The track spans the full content width with no built-in thumb inset; use padding when the skin needs margins. See [author_slider_skin.aside](../../examples/author_slider_skin.aside): `reel dev examples/author_slider_skin.aside` (provide `fonts/body.ttf`).
+
+```aside
+fn main() {
+    game.configure(title: "Reading settings", width: 640, height: 420,
+                   fonts: ["fonts/body.ttf"], text_speed: 30);
+    let speed = slider(value: 30, min: 0, max: 120, step: 1,
+        width: 300, height: 40,
+        on_change: |event| { game.configure(text_speed: event.value); });
+    let instant = toggle("Instant text", width: 300, height: 40,
+        on_change: |event| {
+            speed.enabled = !event.value;
+            if event.value { game.configure(text_speed: 0); }
+            else { game.configure(text_speed: speed.value); }
+        });
+    stage.replace(column(gap: 12, padding: 20) {
+        text("Text speed");
+        speed;
+        instant;
+        button("Reset", width: 300, height: 40, on_click: |event| {
+            speed.value = 30;
+            speed.enabled = true;
+            instant.value = false;
+            game.configure(text_speed: 30);
+        });
+    });
+    narrator("Adjust the controls while this text appears. The next line uses the same settings.");
+    narrator("Settings remain interactive after the story function returns.");
+}
+```
+
+### Window and presentation settings
+
+Run [author_window.aside](../../examples/author_window.aside) with your own `fonts/body.ttf`, using the same assets directory as the audio example above.
+
+`window.info()` returns the current client area's logical width/height, scale_factor, fullscreen, vsync, windowed_width/windowed_height, platform, capabilities and resolutions. The host supplies platform as windows, macos, linux, android, ios, web or unknown; a host without a window or a declared platform reports unknown. Use this field for platform-specific wording and capabilities.resize/fullscreen/vsync for available settings; a host without a window reports all capabilities as false. resolutions lists the current display's available sizes converted to logical pixels; these are separate from the stage canvas. Call info again after restoring a save to read the current host; a previously saved display table retains its original values. The [runnable window example](../../examples/author_window.aside) displays the platform and client size together.
+
+```aside
+let mut display = window.info();
+if display.capabilities.resize {
+    display = await window.configure(width: 1280, height: 720);
+}
+if display.capabilities.fullscreen {
+    display = await window.configure(fullscreen: true);
+}
+```
+
+configure preserves omitted fields and returns an activity; await receives the actual state after platform application. fullscreen means borderless fullscreen. Sizes configured during fullscreen are retained for the window after leaving it, without changing the monitor mode. A game can disable window-size selection while fullscreen. `await window.configure(vsync: false)` changes presentation synchronization; idle rendering remains demand-driven. Story saves do not restore window state; store player preferences with persistent. A second change while one is pending reports Busy; disable settings controls during application. game.configure continues to configure the canvas independently.
+
+### Connecting stage properties
+
+`text_input` edits a single line. Its value can bind to a writable model field; on_change runs after committed text changes, and on_submit runs on Enter. Both events carry target and value. IME preedit neither writes to the model nor triggers these callbacks. It supports cursor movement, selection, deletion, copy, cut, and paste. The system IME owns conversion and candidate selection; embedding hosts forward portable IME events and handle candidate-window position signals. Assigned values must be single-line strings; newlines in user input or paste become spaces. Style it with common node properties and compose your own background and focus indication; it adds no default border.
+
+With an explicit height, input text is vertically centered in the content area together with its caret, selection and IME position. A regular text node with an explicit width measures its automatic height using all wrapped lines at that width.
+
+Inline event links show an underline on hover or keyboard focus without reshaping text. A custom scrollbar should clamp its drag fraction to 0 through 1 before writing scroll_y, so its visuals do not follow an out-of-range value awaiting layout feedback; see author_scrollbar.aside.
+
+```aside
+let profile = model({name: ""});
+stage.replace(text_input(value: bind(profile.name), width: 280, height: 40,
+    color: "#202020", background: "#ffffff",
+    on_submit: |event| { profile.name = event.value; }));
+```
+
+Runnable example: [author_text_input.aside](../../examples/author_text_input.aside).
+
+Use `text_area` for multiline notes or messages, with the same parameters as text_input. It wraps at its width and aligns text to the top. Enter inserts a newline; Ctrl+Enter (Command+Enter on macOS) calls on_submit; Tab moves focus. Up/Down moves the caret, with Shift extending the selection. Home/End goes to the current visual line's boundaries; Ctrl/Command goes to the document boundaries. The wheel scrolls overflowing content, and editing reveals the caret. Pasted CRLF/CR becomes LF; IME preedit writes value only when committed. Save restoration preserves text and bindings, while selection and the internal viewport reset with the input widget. Runnable example: [author_text_area.aside](../../examples/author_text_area.aside).
+
+For scripted typing or keyboard games, use `input(on_key: |event| { ... })`. Events provide code, key, phase and shift/ctrl/alt/meta; phase is pressed/repeated/released/cancelled. Keys are delivered separately, and focus loss cancels held keys. Focused buttons consume their confirmation keys; other unclaimed keys bubble to an ancestor on_key, so clicking a language button does not stop scripted typing. Focused text editors retain all keyboard and system IME events. Omit bindings when no action mapping is needed, or combine on_action for gamepad and pointer controls; action mappings still follow focus ownership. Example: [author_keyboard.aside](../../examples/author_keyboard.aside).
+
+`bind` and `unbind` work with existing node properties. These sliders share a position value, and the text position and visibility connect directly to the controls, without callbacks that copy state. Run [author_bindings.aside](../../examples/author_bindings.aside) in a window using the font setup from section 1.
+
+```aside
+fn main() {
+    let shown = toggle("Show the scene", value: true);
+    let position = slider(value: 100, min: 0, max: 400, width: 400);
+    let mirror = slider(value: bind(position.value), min: 0, max: 400, width: 400);
+    stage.replace(column(gap: 12) {
+        shown;
+        position;
+        mirror;
+        text("Move me", x: bind(position.value), visible: bind(shown.value));
+        button("Detach", on_click: |event| { unbind(bind(mirror.value)); });
+        button("Reconnect", on_click: |event| { mirror.value = bind(position.value); });
+    });
+    narrator("Both sliders share a value.");
+}
+```
 
 ## 8 Styling and Moving Elements Together
 
@@ -856,7 +1130,7 @@ Use `derive(|| control.hover || control.focus_visible)` for button highlights. R
 
 To move UI and character portraits together, place them in the same group and apply the action to that group.
 ```aside
-let cast = group() {
+let cast = stack() {
     image("assets/mio.png");
     dialogue_view(game.dialogue());
 };
@@ -893,7 +1167,7 @@ stage.transition(target: scene, duration: 0.6, change: || {
 });
 ```
 
-Omit target to replace the whole logical stage with stage.replace inside change. With a target, keep that container and modify its properties or children. The default is a dissolve; mask accepts an image path or the expressions below. mask_softness, mask_invert and mask_x/y follow the existing rules, and easing uses tween's curves, with transition progress clamped to 0..1; elastic overshoot still waits for the full duration. An image path advances its threshold with progress; expressions use mask.param("progress") to vary coverage over time. A zero duration changes the scene and waits for presentation. Timing begins after images and fonts are ready.
+Omit target to replace the whole logical stage with stage.replace inside change. With a target, keep the node and modify its properties or children. Images can update source directly and text nodes can update value; cursors retain their independent window presentation. The default is a dissolve; mask accepts an image path or the expressions below. mask_softness, mask_invert and mask_x/y follow the existing rules, and easing uses tween's built-in named curves, with transition progress clamped to 0..1; elastic overshoot still waits for the full duration. An image path advances its threshold with progress; expressions use mask.param("progress") to vary coverage over time. A zero duration changes the scene and waits for presentation. Timing begins after images and fonts are ready.
 
 The transition retains actual particles, text and video content while the author constructs the new scene. Target input pauses until the final frame is accepted; external menus continue working. change may wait, with interactive waits placed after the transition call. Disjoint subtrees can transition concurrently; identical or overlapping targets report a conflict. Cancellation reveals the current stage and preserves writes already made by change. Saving during playback restores the old picture and progress and continues the original call.
 
@@ -948,7 +1222,56 @@ Effect parameters follow the same animation rules as node properties. More compl
 Custom effects use a versioned Effect description for input images, parameters, output bounds, and backend implementations. Advanced authors can develop host extensions, then compose and reuse common effects through ordinary Aside functions. Shader support is a backend capability; project checks list missing capabilities. Portable effects should also provide simplified implementations, letting the game select an appropriate platform version through capability queries.
 Pixels changed by an effect and logical input regions are declared separately. Ordinary affine transforms and geometric clipping automatically map hit tests. For bends, distortions, and arbitrary shaders, authors provide logical shapes or specialized mappings for interactive regions. Reading the rendered image back from the GPU for every click would add latency, so the base interface uses regions that can be computed directly.
 
+### Sprite particles
+
+Particles can play alongside node tweens for opacity, transforms and other properties; `stage.presented` can complete on an intermediate frame. Ordinary property updates use the shared stage composition, while retiring the target, owner or scope still cancels the corresponding batches.
+
+`particles(source, seed:0, ...node properties)` creates one stage node with a shared sprite and coordinate space. Its source must be a whole PNG/JPEG sprite; prepared `.reel-image` sources are supported by `image` nodes only. Each `emit` appends a batch and returns its own activity. The example uses your own `assets/petal.png` and `fonts/body.ttf`; see [author_particles.aside](../../examples/author_particles.aside).
+
+```aside
+let petals = particles("assets/petal.png", width: 1280, height: 20, seed: 42);
+stage.replace(petals);
+let falling = emit(petals, burst: 0, rate: 80, duration: 10,
+    lifetime: 8, velocity_y: 90, velocity_x: 15, spread_x: 30,
+    size: 18, size_spread: 6, spin_spread: 60);
+await falling;
+```
+
+`emit(node, burst:1, rate:0, duration:null, lifetime:5, lifetime_spread:0, velocity_x:0, velocity_y:80, spread_x:20, spread_y:20, acceleration_x:0, acceleration_y:0, size:12, size_spread:4, size_end:null, opacity_start:1, opacity_end:0, spin:0, spin_spread:30, x:0, y:0, owner:null)` describes this batch. The default emits one particle immediately. Set burst to zero for a stream whose first particle is born after 1/rate seconds. duration null keeps a positive-rate stream emitting; a finite duration includes births at its endpoint. rate zero emits only the burst, even with duration null. duration zero still emits the burst. The activity completes when its last particle actually dies.
+
+Spreads are uniform half-ranges around the base; size is the sprite width and preserves image aspect ratio. Size spread cannot exceed size; lifetime spread cannot exceed the positive lifetime. Each particle has its own seeded lifetime. size_end null keeps its randomly chosen birth width; a nonnegative final width interpolates over its lifetime. Birth positions are uniform within the width/height captured from the node by each emit (omitted dimensions are zero). The batch x/y is the rectangle origin in node-local coordinates; both accept positive or negative finite numbers and are fixed at emission. Moving the node still moves every batch; use emit x/y to add effects at different positions on the same node. Velocity uses logical pixels/second, acceleration pixels/second² and spin degrees/second. Source and seed are read-only; the node's position, rotation, scale, visibility, opacity and clipping still affect every batch.
+
+`pause(falling)` freezes only that batch's births and motion, `resume(falling)` continues it, and `stop(falling)` clears that batch and returns Stopped from await. `finish(falling)` clears a finite batch and returns Completed; it rejects continuous emission. Calling emit again leaves previous batches running. The node seed, successful emission order and elapsed time reproduce the same particles regardless of frame timing; successive emissions use different samples. Retiring the node cancels all its batches; retiring an owner or scope cancels its batches. Hiding does not pause. Cancelling a waiter leaves emission running. Terminal results can be awaited again. Save/restore retains each batch's configuration, time, pause and owner, plus the next emission sequence. No script runs for each particle.
+
+This overlapping spray emits twice on the same node. Common styles can be ordinary functions around emit:
+
+```aside
+let spray = particles("assets/petal.png", x: 640, y: 360, seed: 42);
+stage.replace(spray);
+fn burst() {
+    emit(spray, burst: 48, lifetime: 1, lifetime_spread: 0.4,
+        velocity_y: -160, spread_x: 180, spread_y: 100,
+        acceleration_y: 240, size: 18, size_spread: 6, size_end: 0)
+}
+let first = burst();
+await run(delay(0.2));
+let second = burst();
+await first;
+await second;
+spray.remove();
+```
+
 ## 10 Choices and Changing Content
+
+Text can fade in progressively. `reveal_fade` defaults to null; a number enables an opacity wavefront. `reveal_fade_from` is its UTF-8 byte boundary, with preceding text remaining opaque. `reveal_fade_step` is the opacity difference between adjacent graphemes, defaulting to 0. Grapheme k multiplies its opacity by `clamp(reveal_fade - k * reveal_fade_step, 0, 1)`; existing reveal still limits the visible endpoint. Progress and step support bind/derive and tween; the origin supports binding. Fading reuses the full layout, keeps ligatures whole, and includes outlines and ruby. Links activate after the whole link is revealed and every grapheme has positive opacity. Authors choose the rate and spacing shown below. Complete example: [author_text_fade.aside](../../examples/author_text_fade.aside).
+
+```aside
+let caption = text("The light is moving.", reveal_fade: 0,
+    reveal_fade_from: 0, reveal_fade_step: 20.0 / 255.0);
+stage.replace(caption);
+await run(tween(caption, reveal_fade: 3, duration: 3.0 * 255.0 / 1400.0), owner: caption);
+caption.reveal_fade = null;
+```
 
 Text automatically wraps to the available width by default. Set `text_wrap: false` to retain each explicitly authored line; excess text remains visible unless clip trims it. The property supports direct assignment and bind/derive. This switch applies only to text: control labels such as buttons still do not wrap automatically, and text editors keep their own rules. See [author_text_wrap.aside](../../examples/author_text_wrap.aside) for a complete example.
 
@@ -961,11 +1284,11 @@ Use `text_fit: "shrink"` to fit a complete title or option into a fixed width; `
 
 Use `spawn(work, owner: root)` for independent scripted scenes or background game logic. work is a zero-argument function, closure or bound method and may loop and await animations/results. `await task` returns its value or raises its original error; repeated awaits share the terminal result. `task.cancel()` returns true for the first cancellation request and false afterwards; waiters receive Cancelled after cleanup. Cancellation does not run script finally blocks, so attach resources to their owning nodes. Removing a node cancels its tasks; hiding it does not. Cancelling a waiter leaves the producer running. An omitted owner inherits the callback/task node, or the session in the main story. Work starts after the caller waits or returns and has no main-story dialogue/choice permission. Initialization, pure derive and NoWait contexts cannot spawn tasks. See [author_tasks.aside](../../examples/author_tasks.aside). Use sequence/parallel/repeat for fixed animations; tween supports quadratic `quad_in`, `quad_out`, `quad_in_out` curves alongside the cubic in/out/in_out curves.
 
-Task capacity grows with actual concurrency and is reused. Successive short tasks reuse completed task slots, preparing execution space for the current resident work at each start. Before entering a call, the VM admits its execution windows against the current slice budget; an insufficient budget preserves the call for a retry with the required grant. Rust hosts can set their own admission quota through `VmLimits.max_tasks`; allocation and execution storage compaction count against the heap budget.
-
-The player grants each task the VM's actual minimum work and allocation request on its next slice, then returns to the ordinary slice budget. Deadlines, instruction counts and hard heap limits still apply; one execution-storage relocation can exceed the target frame time. Embedded Rust hosts select `SessionBudget::Exact` for exact grants or `RetryMinimum` for the player's retry policy.
+Task storage grows with actual concurrency and reuses completed task slots. Keep only results that the game still needs; await a task to receive its return value or original failure.
 
 Ordinary functions run in the current task and return after their internal waits complete. If `ask()` already uses `await result` and returns bool, call it as `if ask() { ... }`; use another await only when a function returns an awaitable activity or completion. Awaiting a plain value such as bool reports `NotAwaitable` at that line.
+
+`text_shadow_x` and `text_shadow_y` set the text shadow offset, and `text_shadow_color` sets its uniform color. Two zero offsets disable the shadow. For example: `text("标题", text_shadow_x: 1, text_shadow_y: 1)`. The shadow shares the text layout and follows progressive reveal and fading; rich span colors remain visible in the foreground.
 
 See [author_fitted_text.aside](../../examples/author_fitted_text.aside) for a runnable example of resizing, switching text languages and hover outlines.
 
@@ -1038,22 +1361,26 @@ A for loop inside ordinary children constructs current content. `view(|| ...)` r
 
 Long menus, history, and galleries can use `list(..., virtual:true)` as the only flow content of a vertical scroll with a finite viewport height. Only nearby rows remain mounted; leaving the window retires a component, and returning rebuilds it. Keep persistent state in model. Rows being edited or dragged remain until that interaction ends. Filter omitted items in the source and return a node from build; natural measurement requires a positive natural height. The list itself uses natural height: do not set height/max_height, vertical stretch, or its own position, rotation, scale, or anchor; transform the outer scroll instead. Rows can combine ordinary text, images, controls, and custom appearances. Layout measures varying heights automatically and refills the buffer before unmeasured rows enter the viewport. New windows use their measured heights for contiguous placement while preserving the reading anchor, with keyboard/controller navigation across windows. Scroll and row offsets retain subpixel precision through the shared drawing and hit geometry, including scaled canvases. Unmeasured content uses the average of rows measured at the current width, so content_height used by a custom scrollbar is still refined over time; distant jumps and newly loaded images cannot have guaranteed sizes in advance. This reduces component and layout costs; full text and source data remain retained. For a gallery with several columns, group each row of pictures into an item with a stable key and return an ordinary row composition from build. The whole row is measured and retired together; keep persistent picture state in model. Changing the column count or grouping constructs rows under their new keys; this is not two-dimensional grid virtualization. The interactive [thousand-item menu](../../examples/author_list.aside) demonstrates varying descriptions, expanded state, filtering, reordering, and keyboard/controller selection. Run `reel dev examples/author_list.aside --assets target/reel-artifacts/author-assets` after supplying fonts/body.ttf as the example describes.
 
-Runnable example: [an automatically measured gallery and custom scrollbar](../../examples/author_list_gallery.aside). Supply fonts/body.ttf and run `reel dev examples/author_list_gallery.aside --assets target/reel-artifacts/author-assets`. Express row content with ordinary layout; no separate row-height argument is needed. Dragging applies pointer deltas to the current reading position, so a refined total height does not move the content under a stationary pointer. While a distant window is being built and measured, the player keeps the previous complete frame, then publishes the ready window. It does not show an empty or partly positioned intermediate frame.
+Runnable example: [an automatically measured gallery and custom scrollbar](../../examples/author_list_gallery.aside). Supply fonts/body.ttf and run `reel dev examples/author_list_gallery.aside --assets target/reel-artifacts/author-assets`. Express row content with ordinary layout; no separate row-height argument is needed. Dragging applies pointer deltas to the current reading position, so a refined total height does not move the content under a stationary pointer. Images for additional buffer rows load concurrently in the background. Wheel and drag scrolling can continue while prepared consecutive rows cover the viewport and all actually visible content has its resources. Buttons, text, and hover states follow the current scene. Missing offscreen images use explicit width and height for layout; images requiring their natural size wait for preparation. While a distant window is being built and measured, the player keeps the previous complete frame, then publishes the ready window; new stage.presented, geometry, and capture requests wait for the new frame to be accepted.
 
 Positioning by key: `let row = await items.scroll_to(key, align: "nearest")` constructs and measures the target window, then returns the row node after its frame is actually presented. Choose start, center, end, or nearest; the default scrolls only as needed. Reordering follows the same key. Removing the target, retiring the list, or a newer scroll or positioning request cancels the old request; handle it with try/catch. Returned nodes retain the ordinary offscreen retirement rules, so keep persistent state in model.
 Resizing the viewport while waiting realigns the target; automatic scroll clamping does not cancel the request. When the source recomputes, the request waits for the new position to be presented before returning.
+
+While a virtual list prepares offscreen rows, scrolling and dragging remain responsive when its committed rows still cover the viewport. After each new row completes, scrollbar and hover derivations settle before construction continues. Small movements preserve construction progress; source, layout width, or navigation target changes prepare a new candidate. stage.presented, stage.geometry, list.scroll_to, and capture still wait for a fully committed frame. Row factories follow the same cancellation and save rules as other components.
 
 ## 11 Saves, History, Routes, and Skipping
 
 History, auto-reading and save/load interfaces are implemented; route switching and chapter jumping remain design targets. Authors compose the UI; services do not generate fixed screens.
 
-Call `game.clear_history()` when earlier history is no longer needed, or `game.clear_history(keep_last: 37)` to retain the latest 37 recorded history lines. The count is in lines, not dialogue groups; lines with `history:false` do not count. The earliest retained group may keep only its trailing lines. Retained groups and lines keep their IDs, objects, contents and order without renumbering; the group's speaker_name/text update to its first remaining line. The observable history array and retained groups' lines arrays keep their identities. Omitting the argument or passing 0 clears everything; a count at least as large as the current line count changes nothing. Negative or non-integer counts are rejected. Current dialogue, NVL display, advancement, read progress, preferences and saved slots remain unchanged; loading a save restores its recorded history. New group IDs are not reused. Trimming performs synchronous work proportional to the record count, releases session references and requests incremental GC, so reclamation continues even if later interactions allocate little. References or UI caches held by your script still retain their contents: retire those views or refresh them from the history array as well. History has no automatic length limit and needs no cleanup timer. Rust hosts use `Session::clear_history(keep_last)`. See [author_reading.aside](../../examples/author_reading.aside).
+Call `game.clear_history()` when earlier history is no longer needed, or `game.clear_history(keep_last: 37)` to retain the latest 37 recorded history lines. The count is in lines, not dialogue groups; lines with `history:false` do not count. The earliest retained group may keep only its trailing lines. Retained groups and lines keep their IDs, objects, contents and order without renumbering; the group's speaker_name/text update to its first remaining line. The observable history array and retained groups' lines arrays keep their identities. Omitting the argument or passing 0 clears everything; a count at least as large as the current line count changes nothing. Negative or non-integer counts are rejected. Current dialogue, NVL display, advancement, read progress, preferences and saved slots remain unchanged; loading a save restores its recorded history. New group IDs are not reused. Trimming takes work proportional to the record count and releases the session’s references. References or UI caches held by your script still retain their contents: retire those views or refresh them from the history array as well. History has no automatic length limit and needs no cleanup timer. See [author_reading.aside](../../examples/author_reading.aside).
 
 ```aside
 game.dialogue().clear();
 game.clear_history();
 narrator("A new chapter begins.");
 ```
+
+`game.dialogue().advance_requested` and the corresponding active-line field are read-only observable manual advance requests for the current segment. An accepted manual Advance sets them when reveal is skippable or the text is already ready. An incomplete protected reveal keeps them false. Playback-driven auto and skip do not set them. New dialogue, append and clear reset them; snapshots retain the current value. The root field becomes false when the interaction ends. Older displayed rows retain their last projected value; use `current_line_ids` to identify the active segment’s lines. Authors can finish custom text effects from this state while the shared dialogue service continues to own input and advancement.
 
 ```aside
 game.clear_history(keep_last: 37);
@@ -1063,11 +1390,13 @@ game.clear_history(keep_last: 37);
 
 A caller may await its own save. Loading that snapshot restores the request as succeeded with read-only `restored` set to true (false after a normal write), allowing a menu to close, and continues after await without repeating the save call. Other unfinished external requests settle with OperationInterrupted. A successful load replaces the session; its caller does not resume in the old session.
 
-Execution snapshot capture advances in work slices; encoding, compression and writing run on a worker. If business input needs to mutate state during snapshot capture, that save reports CaptureBusy, input proceeds, and the old slot remains intact. Desktop saves default to the user-data directory; Rust hosts can set `StoryWindowOptions.save_directory` and `save_bytes`. Custom hosts install `RuntimeSaves` with their own `SaveStorage` and audio backend. The directory adapter resolves the existing save directory, writes a temporary file in that same directory tree, syncs it and atomically replaces the old slot, including its thumbnail. The current VM snapshot format is 9 and the session snapshot format is 27. Saves require matching code and formats; older formats report an explicit version mismatch. System data in `persistent` is independent of story snapshots. Cross-version migration is not provided. Existing save restoration check: `cargo test -p reel-player --lib save_slot_survives`.
+Saving captures execution state and writes the slot in the background. If input must change the state during capture, the request fails with CaptureBusy, the input proceeds and the old slot stays intact. The thumbnail and snapshot publish atomically. Saves require matching code and formats; cross-version migration is not provided. persistent system data is independent of story snapshots.
 
 Runnable example: [author_saves.aside](../../examples/author_saves.aside).
 
 Capture and preview example: [author_capture.aside](../../examples/author_capture.aside). `await stage.capture(width: 256, height: 144)` obtains PNG Bytes from the most recently presented frame; capture before opening the menu and pass the result as thumbnail. `await saves.thumbnail(slot)` reads only that slot's image and returns null when absent; display it with `image(bytes)`. Requests fail when no frame has been presented, the host does not support capture, or resources are insufficient; use try/catch to display errors.
+
+Set `capture_included: false` on menus or advance indicators to exclude them and their descendants from `stage.capture`. Display and interaction continue normally. Capture uses the flags frozen in the presented frame; both sides of a transition retain their own exclusion ranges.
 
 For a portable desktop game, launch with `reel run game.asb --save-directory saves` from its directory. `dev` accepts the same option; relative paths use the launch working directory. A launcher can pass an absolute path next to the game. On platforms with read-only installation directories, keep saves in the platform's writable user-data directory. Scripts use the same slot API in either case.
 
@@ -1085,11 +1414,11 @@ fn save_slot(id: string) {
 stage.replace(button("Save", enabled: derive(|| !menu.busy), on_click: |e| save_slot("page1/slot1")));
 ```
 
-game.restart(story_id) uses the current session's fixed main-story module set to rerun the story task from a named chapter entry point. It preserves current story variables and ends the previous main-story task and its interaction; the target function is responsible for constructing its own scene. game.start(entry) creates a fresh session, suitable for a new game. saves.load restores the saved position, variables, and scene. Authors use these distinctions to give route buttons clearly defined actions.
-`game.reading()` returns stable read-only observable `auto/paused/delay` state. `game.set_auto(enabled, delay: null)` controls auto-reading; delay is a finite nonnegative number of seconds after the full text has actually been presented, defaults to 2 seconds, and is preserved when omitted. `game.pause_reading(paused)` pauses reveal, automatic advancement and dialogue/choice input; ordinary UI controls can still close a history page. Auto-reading waits for player input at choices and continues afterward. Focus loss, suspension, modal UI, pending resources and active input gestures stop timing; resuming starts a full delay again. State belongs to the session, survives UI replacement, and defaults to manual and unpaused in a new session. Finite scene activities and independent audio have separate controls. Authors choose every control, layout and history-page interaction.
-`game.set_skip(enabled, unread: false, after_choices: false)` is implemented. Observe `game.reading().skipping/skip_unread/skip_after_choices` for mode and policy, and `game.dialogue().read` for whether the entire group was read before submission. By default, unread dialogue or a choice turns skipping off. unread: true also skips unread dialogue. after_choices: true preserves skip mode while waiting for the player to choose, then continues under the same read policy. Pause, focus loss and modal UI still cancel this mode. Skipping follows normal control flow, bypasses reveal/dwell, and finishes running finite activities owned by the main story. Infinite, paused, node-owned activities and independent audio retain their controls. Auto-reading and skipping are mutually exclusive. Reading pause, focus loss, suspension and modal UI turn skipping off. Retiring the input node that started skipping also clears its held mode. Authors can use input callbacks to enable on pressed and disable on released/cancelled, or compose toggle controls. Content is marked read when dialogue advancement completes, not on cancellation or full reveal alone. Rust hosts reuse `ReadProgress` through `Session::new_with_read_progress` and connect `ids/from_ids` to their own persistent storage; new sessions default to empty progress. A changed source module version is conservatively unread.
+`game.start(entry)` creates a fresh session; `saves.load(slot)` restores the saved variables, position and scene. A same-session chapter restart through `game.restart(story_id)` is planned and is not registered in the current author API.
+`game.reading()` returns stable read-only observable `auto/paused/delay` state. `game.set_auto(enabled: null, delay: null, condition: null)` controls auto-reading; delay is a finite nonnegative number of seconds after the full text has actually been presented, defaults to 2 seconds, and is preserved when omitted. `game.pause_reading(paused)` pauses reveal, automatic advancement and dialogue/choice input; ordinary UI controls can still close a history page. Auto-reading waits for player input at choices and continues afterward. Focus loss, suspension, modal UI, pending resources and active input gestures stop timing; resuming starts a full delay again. State belongs to the session, survives UI replacement, and defaults to manual and unpaused in a new session. Finite scene activities and independent audio have separate controls. Authors choose every control, layout and history-page interaction. `condition` accepts a bool or a `bind`/`derive` reference. Null preserves each argument, including the existing condition binding; true replaces that binding. The read-only `auto_ready` field reports the resolved condition (initially true). While false, only the automatic countdown resets: printing, manual advance, skip and `[next]` continue normally. When it becomes true, automatic advance waits a full delay after complete presentation. The condition and its binding survive snapshots.
+`game.set_skip(enabled, unread: false, after_choices: false)` is implemented. Observe `game.reading().skipping/skip_unread/skip_after_choices` for mode and policy, and `game.dialogue().read` for whether the entire group was read before submission. By default, unread dialogue or a choice turns skipping off. unread: true also skips unread dialogue. after_choices: true preserves skip mode while waiting for the player to choose, then continues under the same read policy. Pause, focus loss and modal UI still cancel this mode. Skipping follows normal control flow, bypasses reveal/dwell, and finishes running finite activities owned by the main story. Infinite, paused, node-owned activities and independent audio retain their controls. Auto-reading and skipping are mutually exclusive. Reading pause, focus loss, suspension and modal UI turn skipping off. Retiring the input node that started skipping also clears its held mode. Authors can use input callbacks to enable on pressed and disable on released/cancelled, or compose toggle controls. Content is marked read when dialogue advancement completes, not on cancellation or full reveal alone. A changed source module version is conservatively unread.
 
-Use `game.clear_read_progress()` to reset read progress. The current waiting dialogue group and its lines immediately report `read: false`, and skipping that is limited to read dialogue stops. Future dialogue is unread until normal advancement records it again. History and completed NVL lines retain their presentation; automatic reading and skipping that includes unread dialogue keep their policies. Loading a save also evaluates its waiting dialogue against the current read records. This operation releases the old records and takes time proportional to their capacity. It performs no disk IO and does not delete game saves or `persistent` system data. Rust hosts have the corresponding `Session::clear_read_progress()` method. See the runnable [author_reading.aside](../../examples/author_reading.aside).
+Use `game.clear_read_progress()` to reset read progress. The current waiting dialogue group and its lines immediately report `read: false`, and skipping that is limited to read dialogue stops. Future dialogue is unread until normal advancement records it again. History and completed NVL lines retain their presentation; automatic reading and skipping that includes unread dialogue keep their policies. Loading a save also evaluates its waiting dialogue against the current read records. This operation releases the old records and takes time proportional to their capacity. It performs no disk IO and does not delete game saves or `persistent` system data. See the runnable [author_reading.aside](../../examples/author_reading.aside).
 
 ```aside
 stage.replace(button("Reset read progress", on_click: |event| game.clear_read_progress()));
@@ -1102,7 +1431,7 @@ These services provide data and operations; authors compose their pages. Manual 
 
 `model`, two-way field bindings, save restoration and independent system data are implemented. state and node.state remain design targets.
 
-Use model for application data independent of view nodes. Controls can share a field: input writes back to the data, and connected text, visibility and styling follow it. Run [author_models.aside](../../examples/author_models.aside): `cargo run -p reel-cli --features window -- dev examples/author_models.aside`.
+Use model for application data independent of view nodes. Controls can share a field: input writes back to the data, and connected text, visibility and styling follow it. Run [author_models.aside](../../examples/author_models.aside): `cargo run --locked -p reel-cli --features window -- dev examples/author_models.aside`.
 
 ```aside
 let settings = model({volume: 0.8, music: true, palette: {accent: "#70d890"}});
@@ -1115,13 +1444,6 @@ settings.palette.accent = "#ffd580";
 Defaults are copied with their internal aliases and cycles preserved; the original objects remain independent. Data can contain fully constructed class instances, tables, arrays, tuples, strings, byte strings and mutable buffers; closures and host resources such as nodes cannot be defaults. Objects assigned later retain shared identity. Aliases obtained through nested instances, tables or array elements can still expose bindable fields. Ordinary table methods remain available. clear freezes existing connections at their last value and invalidates old references; bind again after adding a field with the same name. Copying advances within a work budget, and cancellation leaves no partial model.
 
 In the language, let/let mut determines whether a binding can be reassigned, model determines whether properties are observable, and state ownership determines how state is saved and released. Each serves a separate purpose.
-```aside
-let route = state("route", {affection: 0, visited: set()});
-
-route.affection += 1;
-route.visited.add("window");
-```
-state(id, defaults) returns named observable state in the current session; the same ID returns the same object. It is saved and restored through saving, loading, and rollback, and recreated from defaults for a new game. Function-local values and closure captures can also be saved with the complete call stack. Named state mainly serves shared game data and stable lookup during hot reload.
 Use `persistent.read(key, default: null)`, `persistent.write(key, value)` and `persistent.delete(key)` for system data. Operations return awaitable requests; catch handles failure, and successful writing means the file has been published. Only a missing record uses default; stored null/false/0 remain intact. Supported data includes null/bool/int/float, string/Bytes, array/table/tuple, preserving aliases and cycles. Tables store own fields only. Convert class instances, nodes, tasks and closures to data first. Records are independent of story slots and ASB versions, live in the same save-directory, and do not appear in saves.list. See [author_persistent.aside](../../examples/author_persistent.aside).
 
 ```aside
@@ -1131,18 +1453,7 @@ await persistent.write("settings", preferences);
 ```
 
 Reads return ordinary copies; mutations require an explicit write. Loading a story does not overwrite system files, but local copies restore with the snapshot. Reread and apply current settings in the `restored` branch of a `saves.save` request and in new-game entries. Writes already handed to the background service continue across session replacement; unsubmitted requests are not replayed after loading. Games manage data upgrades using their own stored version fields.
-model/state copies the default data graph and creates observable properties, preserving internal aliases and cycles in the copy. Nested mutable arrays, table values, Set values, buffers, and registered observable data types all notify through shared mutation hooks; changes made through an internal alias also notify. Session objects assigned later retain their ordinary shared identity and are incorporated into the observable graph. model objects are kept alive by actual references. Temporary component state can be stored in the node's own state slots.
-```aside
-fn settings_panel() {
-    let root = column(key: "settings", gap: 16);
-    let local = root.state("ui", {tab: "audio"});
-    root.add(button("声音", on_click: |event| { local.tab = "audio"; }));
-    root.add(button("阅读", on_click: |event| { local.tab = "reading"; }));
-    // 页面容器的 selected 绑定 local.tab。
-    return root;
-}
-```
-node.state(key, defaults) belongs to that component instance. The same local key is independent across different component instances. After node destruction, the state is reclaimed normally according to reachability. Loading restores the component state; hot reload reuses it through stable node keys and state-slot keys. During ordinary execution, a call checks once and atomically adds missing fields, which the next statement can read. During candidate initialization or reconstruction, reads through the candidate view can see fields pending addition, while the live session continues to see the old values. Additions become externally visible only when the candidate transaction commits; failure preserves the old values. Data-structure upgrades use explicit, versioned migrations.
+model copies the default data graph and creates observable properties, preserving internal aliases and cycles in the copy. Nested mutable arrays, table values, Set values, buffers, and registered observable data types all notify through shared mutation hooks; changes made through an internal alias also notify. Session objects assigned later retain their ordinary shared identity and are incorporated into the observable graph. model objects are kept alive by actual references. Keep temporary component data in a model retained by the component closure.
 Store global preferences with persistent and read/apply current settings at startup and after restoring a story save. Changes to application state follow ordinary control flow, and their results are preserved when temporary scope effects end.
 
 ## 13 Extending Your Own Building Blocks
@@ -1163,13 +1474,24 @@ The same arrive function can be used for characters, title-screen buttons, or en
 
 ## 14 Text, Media, and Extension Entry Points
 
+### Typography
+
+`letter_spacing` and `word_spacing` adjust cluster advances and space widths, defaulting to 0 logical stage pixels. Positive values spread text out; negative values tighten it. Word spacing applies to ordinary and non-breaking spaces and adds to letter spacing. Letter spacing adds advance to each shaped cluster, including the last; combining characters and ligatures retain font shaping. Text, control labels and text_input share both properties through assignment, bind and derive. Changes update wrapping, caret positions and hit testing. Rich text and ruby annotations inherit spacing; text_fit: "shrink" scales spacing together with font size. Example: [author_text_spacing.aside](../../examples/author_text_spacing.aside).
+
+```aside
+stage.replace(column(gap: 12) {
+    text("CHAPTER ONE", font_size: 32, letter_spacing: 2);
+    text("made with love", font_size: 28, word_spacing: -2);
+});
+```
+
 Use explicit `rich(markup)` for inline styles: `narrator(rich("仰望 [ruby=ほしぞら]星空[/ruby]，[color=#ffd580][b]记住这一刻[/b][/color]。"));`. text, character calls, character.line and narrator accept plain strings or rich text; dialogue models and history retain all styles. Plain strings remain literal. A rich value's read-only `.plain` property returns its body without tags; `.markup` returns the original markup string. Neither read copies the text. Use `rich("[b]姓名：[/b] " + line.text.markup)` to compose a history entry while retaining its styles; escape ordinary strings with `rich_escape`. `model({text: rich("[b]初始内容[/b]")})` works directly as observable state; copying model defaults shares immutable rich values. Runnable example: [author_rich_text.aside](../../examples/author_rich_text.aside).
 
 `game.dialogue().ready` means the current dialogue group has finished its text and all timing cues, including trailing pauses; it is false without an active dialogue. Each row in `lines` also exposes its own `ready`, which stays true for completed rows. Auto, skip and pause policies do not change this state. For example, a cue can use `visible: derive(|| dialogue.ready && !reading.auto && !reading.skipping && !reading.paused)`, where reading is `game.reading()`. Use ordinary text/image nodes, layout and animation to style the cue without comparing text lengths. See the [sentence timing example](../../examples/author_dialogue_timing.aside).
 
 Write sentence timing in rich text too: `[speed=15]慢慢说[/speed]` reveals 15 graphemes per second, `[speed=2x]快一些[/speed]` uses twice the player's speed, `[speed=0]立即出现[/speed]` reveals an immediate segment, and `[pause=0.5]` pauses for half a second at that position. Speed tags can nest; closing one restores its enclosing speed. `[next]` continues after this line finishes and is presented, without changing global auto reading; grouped dialogue requires the marker on every line. Trailing pauses run first. Manual completion, skip, or global text_speed: 0 consumes remaining timing; menus and suspension preserve remaining pauses. Tags are absent from the body, history display and character count; ordinary text controls display the complete body. See [author_dialogue_timing.aside](../../examples/author_dialogue_timing.aside).
 
-Paired, nested tags include `[b]`, `[i]`, `[u]`, `[s]` (bold, italic, underline, strike), `[size=36]`, `[color=#RRGGBB]` / `[color=#RRGGBBAA]`, `[em]` (emphasis dots), `[ruby=注音]基文[/ruby]`, and `[link=词条ID]正文[/link]`. `[[` represents a literal opening bracket; use rich_escape before inserting arbitrary player text. Invalid markup reports the rich call's source location and includes the tag's UTF-8 byte offset in the error value. Ruby cannot nest. Its base and half-size annotation wrap as one unit; the base reveals progressively and the annotation appears when the complete base is visible. Games supply fonts. Bold uses a matching weight when available and synthetic emboldening with only Regular; italic follows font matching and synthetic slanting.
+Paired, nested tags include `[b]`, `[i]`, `[u]`, `[s]` (bold, italic, underline, strike), `[font=SimSun]`, `[weight=400]`, `[line_height=46]`, `[size=36]`, `[color=#RRGGBB]` / `[color=#RRGGBBAA]`, `[em]` (emphasis dots), `[ruby=注音]基文[/ruby]`, and `[link=词条ID]正文[/link]`. `[[` represents a literal opening bracket; use rich_escape before inserting arbitrary player text. Invalid markup reports the rich call's source location and includes the tag's UTF-8 byte offset in the error value. Ruby cannot nest. Its base and half-size annotation wrap as one unit; the base reveals progressively and the annotation appears when the complete base is visible. Games supply fonts. Bold uses a matching weight when available and synthetic emboldening with only Regular; italic follows font matching and synthetic slanting. `[font=family]` selects a configured font family; closing a nested tag restores the outer family. Span fonts determine empty-line metrics and are inherited by ruby annotations. Appended spans retain their own font selection. `[weight=400]` accepts finite weights from 1 to 1000; `[b]` sets 700. Closing a nested tag restores the outer weight. `[line_height=46]` sets a finite nonnegative absolute logical line height, independently of the node's font-size multiplier.
 
 text wraps to its available width by default. width, x/y, padding and scroll determine NVL page placement and bounds; list gap controls paragraph spacing. `text_align` accepts start/end/left/right/center/justify and defaults to start. `line_height` is a font-size multiplier, defaulting to 1.2. Mixed sizes, ruby and emphasis dots participate in line height; reveal changes painting without reshaping. Node color supplies the base color, while explicit inline colors override their spans. Omit inline color to inherit speaker or read-state coloring.
 
@@ -1181,9 +1503,7 @@ Rust extensions can also declare variadic positional arguments with `#[aside(res
 
 Basic text uses real text layout; external catalogs and reactive language switching are implemented. Inline rich text and video nodes are implemented; Aside custom drawing remains a future capability.
 
-Rust custom drawing shares linear-premultiplied color conversion for solid colors, text and images. Both strokes and geometric clips support dashes, including curves, closed paths and dash offsets. An all-zero dash pattern draws a solid line; small miter limits use bevel joins. These capabilities belong to the existing Rust drawing interface; the Aside custom drawing entry point is still pending.
-
-Author audio connects background resource loading, the real mixer and story waits; see [Author audio](#author-audio). Native-device and offline-mixing coverage are recorded separately in [audio verification](../../crates/reel-media/VERIFICATION.md). Video and precise audiovisual synchronization remain design contracts.
+Author audio connects background resource loading, the real mixer and story waits; see [Author audio](#author-audio). Native-device and offline-mixing coverage are recorded separately in [audio verification](../../crates/reel-media/VERIFICATION.md). Video uses the same mixer content clock; see the video node section.
 
 `localization.load(locale, source)` reads a UTF-8 Fluent catalog through the asset service. The calling task waits for background IO and parsing. Success replaces that locale's catalog; IO, syntax and duplicate-ID errors can be caught with try/catch and preserve the old catalog. Cancelling the task cancels the load. `localization.set_locale(locale)` selects a language; `localization.locale()` reads the observable language tag.
 
@@ -1223,251 +1543,18 @@ reel loc check target/reel-artifacts/localization/en.ftl --locale en
 Extraction follows imported modules and includes source locations and function context. `--output-dir` mirrors module paths: story/day_one.aside becomes story/day_one.ftl. Identical IDs appear once in the first module by sorted relative path, with all call sites retained. Literal text is escaped automatically; source text with params is checked as a Fluent template. Dynamic text or IDs are reported with their locations and need a catalog supplied by the content generator. `--overwrite` explicitly replaces the selected outputs. Directory mode leaves other files in place and reports old FTL files with no current messages; review and remove them before bundling, or extract to a fresh directory. Keep translations separate from generated source catalogs; extraction does not implicitly merge or modify them.
 
 Keep each language's translations in a separate directory, organized like the story and UI: locales/en/story/day_one.ftl and locales/en/ui/settings.ftl. Shared terms can live in common.ftl. `loc bundle` merges those files in relative-path order into one ordinary FTL outside the source directory; only maintain the module files, and generate the distribution catalog during the build. Cross-file references work normally. Duplicate message or term IDs and syntax errors report the original file, line and column; failed builds preserve the old output. Replacing an existing bundle requires `--overwrite`. Moving a translation between files does not change its identity. Runtime code continues to load one catalog per language; only load languages the game uses. Parsing and static text preparation happen during loading, with no per-translation directory scan. Localized asset substitution remains a future capability.
-video is an ordinary node; audio provides tracks, queues, loop regions, filters, and synchronization groups. play returns an awaitable activity, stop leaves it at its current state, and finish is for activities with an endpoint. Tracks and resources are managed by stable identity. Device reconstruction and seek preserve or rebind logical waits; errors have explicit terminal states.
-custom_node can directly register state, measure, record, route, and event implemented in Aside. measure/record are read-only layout/rendering callbacks with execution budgets. route synchronously decides event consumption, capture, and focus, then event runs as an ordinary suspendable task. A minigame node can therefore prevent the same input from advancing the story while still being able to wait for resources in its application callback. New low-level graphics and platform capabilities are registered through native modules.
-Camera, Mesh, Material, and Effect provide perspective stages and programmable effects, with state and resource identities still included in saves. Each backend declares its supported implementations and fallbacks in a capability list. Live2D, system text-to-speech, mobile/Web packaging, and external services are adapter capabilities within the full target scope. Their specific API documentation will provide examples in the same style alongside verified implementations.
-External writes, such as network operations and purchases, use separate operation records and idempotency strategies. Unknown outcomes are queried and verified first; replay is read-only by default. Their lifetimes are explicitly distinguished from those of ordinary rollback-capable game variables. Author-defined components and script libraries can always extend scenes, layouts, choreography, and application logic.
+Video and audio playback return awaitable activities, with the ownership, controls and save behavior described in their sections. Filters and synchronization-group author APIs remain planned.
+Planned: `custom_node` will expose Aside state, measure, record, route and event callbacks. Its layout/render callbacks are read-only; routing decides consumption, capture and focus before a suspendable event task runs. This author interface is not registered yet; host extensions use the [Aside host SDK](../aside-host.md).
+Perspective stages, Mesh, Material and programmable Effect interfaces remain planned. The implemented `camera` is two-dimensional. Live2D, system speech, mobile/Web packaging and external-service adapters need separate implementations and capability documentation.
+External-service adapters and replay-safe operation records are planned; see [extension scope](../engine-architecture.md#十一-完整制作能力与扩展).
 
-### Finding and Handling Errors (Design Contract)
+### Finding and Handling Errors
 The player reports the specific reason a host interface rejected a call, alongside its source file, line, column and error kind. In catch, use `f"{error}"` to display a CoreError: string details take precedence, otherwise it uses the fixed error message. Ordinary thrown values retain their original semantics.
 
 Use try/catch for resource loading, media playback, or errors you throw yourself. catch receives the original value: a thrown string remains a string, and a thrown object is the original object. Use throw; to propagate the same fault. Writing throw error; throws again at the current location, retaining the previous fault as a cause.
-core.error_info() provides the current catch's error code, original location, call stack, and causes. An ordinary helper called while handling the error can read the same information. Keeping the returned view keeps its fault record alive. finally is for synchronous cleanup; ordinary helpers may return synchronously within it. If cleanup raises another error, diagnostics show which return result or fault it replaced. The engine retains this information across suspension, host callbacks, and saves. See the [language specification: fault lifetimes](../aside-language.md#二十三-完整故障记录与生命周期).
+After `use std::core;`, `core.error_info()` reads the current caught fault, source location, call stack and causes. Stack and cause views support for iteration. See the [English source documentation](../../crates/aside-std/src/core.rs) for fields and executable examples. Recovery uses the value received by catch and `throw;`.
 
-## 15 Keeping Documentation and Code in Sync
-The project lead maintains this guide. Each API is marked as designed or implemented, with its applicable version. Once implemented, examples are extracted as source snippets checked alongside the code: parsing, type and interface checks, and any necessary behavior verification use the same examples. The Chinese and English editions reference the same example files; translation updates are committed with interface changes.
-When an interface, behavior, default, or cancellation rule changes, the same PR updates the implementation, specification, both language editions, and affected examples. Advanced uses still in planning are labeled separately. Users can begin creating with the implemented sections. When composition proves difficult, they can report minimal source code and the intended scene so the project lead can refine the shared interfaces.
-The repository commit containing this guide is its version reference. Feature status is marked by section; interface changes update the Chinese edition, English edition, and shared examples together.
-The core composition rules are ordinary functions, unified nodes, action values, and scopes. The style, temporary-interface, offset-animation, and variable examples constrain the implementation together. Once the capabilities are complete, the same source examples serve as acceptance tests.
-
-## Verified Source Execution Scope
-
-The compiler, VM and session pass native Windows execution checks covering collections/members, closures/default arguments, exceptions/finally, children/for, wait/resume, GC and cancellation. The author-stage example also passes actual check/build, ASB loading and SessionVm execution: existing scene nodes retain identity while text and appearance change between two dialogue lines. The window entry point uses the same program and presented-input path. The Chinese author scene also completed offscreen GPU readback on Windows with an AMD Radeon RX 7900 GRE using Vulkan. Native window lifecycles and hot-plug behavior still require separate verification.
-
-Run the [minimal Aside story](../../crates/reel-engine/examples/story_contract.aside) with its [headless host](../../crates/reel-engine/examples/story_contract.rs):
-
-```sh
-cargo run --locked -p reel-engine --example story_contract
-```
-
-The host advances dialogue and selects the first option through actual compilation, module initialization, VM waiting/resumption and owner retirement. Symbol and name-use links to the same native coalesce; conflicting registrations still reject. The host linkage package uses the requested content version independently of native ABI v1.
-
-Entries must be ordinary module-level functions with no required parameters or captured environment; private functions are supported. Dialogue and choices use content layout and scrolling without a separate two-row or two-option cap. Both source and ASB window launch commands are implemented. Natural completion preserves the final scene; closing the window finishes cleanup. The headless example above focuses on dialogue and choices; use the author-stage example in section 1 for basic node composition. Finite animation, button events, video and save/restore have runnable examples in their respective sections. Delegates/hooks and property-bags remain unimplemented.
-
-## Runnable Buttons and Callbacks
-
-button shares the stage tree with every other node. It accepts label, on_click, children and common appearance properties. Omit label to compose images, text or other components through children, laid out like a stack. enabled defaults to true; disabling a parent disables its interactive subtree. Assign a new closure or null to btn.on_click to replace or clear its handler. This code matches [author_buttons.aside](../../examples/author_buttons.aside).
-
-```aside
-fn main() {
-    let caption = text("Ready", width: 320, height: 48);
-    let controls = row(gap: 16) {
-        button("Move", width: 180, height: 64, background: "#284860",
-            on_click: |event| {
-                event.target.enabled = false;
-                await run(tween(caption, x: 120, duration: 0.4));
-                caption.value = "Arrived";
-                event.target.enabled = true;
-            }
-        );
-        button("Finish", width: 180, height: 64, background: "#603840",
-            on_click: |event| { stage.replace(text("Finished")); }
-        );
-    };
-    stage.replace(column(x: 24, y: 24, gap: 24) { controls; caption; });
-}
-```
-
-A click passes the original button as event.target. A callback can await an animation. Synchronous code runs until an explicit await, an ordinary call actually waits, or the task ends. Awaiting an already completed object also gives other ready tasks a turn. Ordinary calls and engine budget slices do not interrupt read-modify-write operations that contain no await. Multiple callbacks may await one activity; cancelling a consumer does not stop the shared producer.
-
-The emitting button owns its callbacks and is the default owner of run inside them. Removing the button, clearing its parent or replacing the stage cancels those callbacks and activities. A callback that removes itself does not execute subsequent statements. narrator/choose currently belong to the main story; calling them from a callback raises a catchable context error. game.start and direct node property bindings are implemented; general event subscriptions remain unimplemented.
-
-Mounted button handlers and activities remain usable after the main entry returns; idle sessions do not repeatedly execute the VM. Once callbacks and activities have ended and no mounted handlers remain, the session finishes and preserves its final scene. A button click does not also advance dialogue. The built-in host supports mouse and touch activation, Tab focus navigation and Enter/Space activation. A gamepad D-pad or left stick navigates by the displayed positions of controls, and long choice lists scroll with focus; the south button confirms, while the east button and Escape send Back to the current UI. Confirmation activates on a paired release. Modal changes, focus loss and disconnection cancel old input; Back does not directly exit the application. Multiple contacts can operate separate controls at once. Releasing outside a button does not click it; system cancellation or suspension releases the interaction. Existing buttons work on touch screens without a separate implementation; run [author_buttons.aside](../../examples/author_buttons.aside). The built-in desktop host integrates the system IME; system accessibility adapters remain future work.
-
-Use the dev/build/run commands in section 1 with this file. Nodes, input and scheduling do not depend on Winit/WGPU. The window feature selects the built-in desktop combination; other hosts can reuse the same session and presentation interfaces.
-
-For ports and embedding, use PlatformHost, Presentation and StoryRuntime from reel-player, and RenderBackend from reel-render. Enabling reel-player/winit alone provides the Winit host without WGPU; reel-render/wgpu provides the independent WGPU backend. The built-in player uses these interfaces too: only an actually presented new frame updates input geometry, temporary resource pressure retries after submission completion, and permanent refusal preserves the previous frame. Story animations pause while the application is suspended and continue on resume; closing still completes task cleanup. Authors do not need to change their scripts or select a graphics API. Touch uses portable PointerEvent values; hosts enabling winit can reuse TouchInput to convert native contacts. Rust games and hosts can use reel_ui::input::ActionMap to bind keyboard, pointer and gamepad controls, read held values and receive press, change, release and cancellation events. NavigationInput supplies configurable thresholds, repeat timing and remapping. The independent gamepad feature uses Gilrs for desktop devices without requiring Winit/WGPU. The Winit adapter forwards system IME events and candidate-window positions; system accessibility remains unimplemented. See the [player documentation](../../crates/reel-player/README.md) for host integration and reproducible checks.
-
-When images first appear or a save restores a cold cache, the backend batches uploads within available capacity, resumes large images by row, and reuses fully submitted textures. The previous complete view remains visible while waiting; upload completion does not advance input geometry. Rust hosts use `RenderEvent::ResourcesAvailable` to wake waiting presentation requests. Requests that genuinely exceed the host resource budget still report an error.
-
-## Modal menus and focus
-
-Before opening a save menu, use `let preview = await stage.capture(width: 256, height: 144);` to obtain PNG Bytes of the last presented frame. Display it with `image(preview)` and store it with the execution snapshot using `await saves.save("slot/1", thumbnail: preview)`. Listed slots expose `has_thumbnail`; load previews on demand with `await saves.thumbnail("slot/1")`. Capture accepts omitted dimensions or a single dimension, supports owner/cancellation, and requires no window or GPU access in author code.
-
-Dialogue indicators, portraits and other controls can animate while players confirm with a pointer, touch, keyboard or gamepad. If the dialogue changes, revealing finishes, the stage root is replaced or the modal scope changes after a press, a new press is required so the old gesture cannot confirm new content.
-
-Every shared node has a writable `modal` property, defaulting to false. A visible modal subtree owns input: clicks outside it and unhandled keyboard events cannot advance the story. With multiple modals, the last one in paint order takes input; node composition determines paint order. Hiding or removing the node releases the scope. Setting enabled to false still blocks underlying content.
-
-Opening a menu focuses an eligible control inside it. Tab/Shift-Tab cycle within the menu; closing a nested menu restores the previous scope’s focus, and closing the last menu restores the original control if it remains eligible. The input scope changes when the new frame is actually presented and cancels dragging outside it. Run [author_modal.aside](../../examples/author_modal.aside) with the dev/build/run commands in the first section.
-
-Keyboard activation requires pressing and releasing Enter or Space on the same button. Changing focus, hiding, disabling, or losing window focus cancels an unfinished key press.
-
-```aside
-fn main() {
-    game.configure(fonts: ["fonts/body.ttf"]);
-    let status = text("Ready", x: 24, y: 96, width: 300, height: 40);
-    let menu = column(x: 260, y: 24, width: 220, gap: 12,
-        padding: 16, background: "#284860", modal: true, visible: false);
-    menu.add(button("Confirm", width: 180, height: 48,
-        on_click: |event| { status.value = "Confirmed"; }));
-    menu.add(button("Close", width: 180, height: 48,
-        on_click: |event| { menu.visible = false; }));
-    stage.replace(stack() {
-        button("Open menu", x: 24, y: 24, width: 180, height: 48,
-            on_click: |event| { menu.visible = true; });
-        status;
-        menu;
-    });
-    narrator("Open the menu. The story waits while you use it.");
-    status.value = "Story continued";
-    narrator("Closing the menu returns input to the story.");
-}
-```
-
-## Named actions and input nodes
-
-Focused controls handle input first; unclaimed input reaches the nearest matching ancestor input node. A menu can bind Escape/gamepad Back and a scene can bind skip without repeating those bindings on every child button. Focus changes cancel held actions. Input stays within the modal scope, and text editors retain keyboard and IME input.
-
-`input` is a shared stage node with stack layout. A root input node receives unclaimed keyboard/gamepad input even before a control gains focus; focused child controls retain priority. It binds keyboard, gamepad and pointer controls to named actions. This example matches [author_input.aside](../../examples/author_input.aside); run it with the dev/build/run commands in the first section. Supply `fonts/body.ttf`, or change the path in main.
-
-A focused button receives South confirmation, even when its parent input also binds South. East and other unclaimed controls still reach ancestor mappings; unbound directions move focus. Once focus returns to the input, South resumes its game action.
-
-```aside
-fn main() {
-    game.configure(fonts: ["fonts/body.ttf"]);
-    let marker = text("Move with A / D or the left stick", x: 160, y: 64,
-        width: 340, height: 48, background: "#284860");
-    let status = text("Ready", x: 24, y: 160, width: 340, height: 48);
-    let controls = input(modal: true, width: 640, height: 280,
-        bindings: {
-            move_x: [binding("KeyA", scale: -1), binding("KeyD"),
-                binding("LeftX", dead_zone: 0.2)],
-            jump: [binding("Space"), binding("South"), binding("PointerPrimary")],
-            finish: [binding("Escape"), binding("East")],
-        },
-        on_action: |event| {
-            if event.action == "move_x" {
-                marker.x = 160 + 120 * event.target.value("move_x");
-                status.value = event.phase;
-            }
-            if event.action == "jump" && event.phase == "pressed" {
-                await run(sequence(
-                    tween(marker, y: 16, duration: 0.15),
-                    tween(marker, y: 64, duration: 0.15)
-                ));
-            }
-            if event.action == "finish" && event.phase == "released" {
-                stage.replace(text("Finished", x: 24, y: 24));
-            }
-        }
-    ) { marker; status; };
-    stage.replace(controls);
-}
-```
-
-Each key in bindings names an action; its value is an array of binding descriptions. Controls use physical key names (KeyA, KeyD, Space, Escape), standard gamepad buttons (South, East, DpadLeft), axes (LeftX, LeftY, RightX, RightY, LeftZ, RightZ), or pointer buttons (PointerPrimary, PointerSecondary, PointerAuxiliary, PointerX1, PointerX2). Axes range from -1 to 1, with positive Y pointing down; trigger buttons range from 0 to 1. scale defaults to 1 and dead_zone to 0. Values outside the dead zone are normalized again before scaling; contributions are added and clamped to -1 through 1. Releasing one device or touch contact does not release an action still held by another.
-
-Events carry target, action, value and phase. Phases are pressed, changed, released and cancelled; keyboard repeat does not produce another pressed event. `node.value("move_x")` reads the latest held value and rejects unknown actions; event.value retains the value of that particular event. Callbacks may await and belong to their node. Assigning `node.bindings = new_table` cancels the old state and installs the new map; edits inside the original table do not implicitly update it. Assign a closure or null to node.on_action.
-
-The input node receives keyboard and gamepad actions while it has focus. When a child control gains focus, it takes ownership and cancels the parent input node's held actions, so the parent cannot steal controller confirmation. Use modal: true to give an independent interaction scope focus immediately. Nonmodal nodes can receive focus through Tab; bound pointer presses also focus the node and capture that contact. Hiding, disabling, losing focus, changing modal scope or clearing the presented frame cancels held actions. Removing a node ends its tasks and activities. A consumed action does not also navigate or advance dialogue. Ordinary buttons and dialogue activate with the primary pointer button or touch; other mouse buttons remain available to author actions.
-
-Rust hosts use `InputDeviceId::{Keyboard, Pointer, Gamepad}`, `InputBindings`, `NodeKind::Input` and `NodeAction`. Route native controls through TextEvent::Input first; its Handled result reports whether an action in the current scope claimed the control. Unbound controls can feed NavigationInput within that same UI; raw events cannot cross modal boundaries. The fallible AsideSessionUi::presented and clear_presented calls deliver routing cancellations to the VM after presentation acceptance or revocation. Wake StoryRuntime when those calls create tasks.
-
-## Value controls and settings
-
-`checkbox` takes the same arguments as `toggle`, with a check box appearance instead of a switch. `radio(option, label: null, value: null, on_change: null, ...)` represents one choice. Bind each item's value to the same model field to make an exclusive group, without maintaining separate booleans. option can be changed or bound; an unmatched value selects no item. Values follow list key equality. Tab/Shift-Tab visits each group once, landing on the selected available item or its first item. The first available member determines the group’s position in the Tab order. Arrow keys and controller directions select the previous/next item in node order, skipping hidden or disabled items and wrapping at the boundary. A virtual list first mounts the next logical row and accepts its frame before selection; navigation does not wrap prematurely inside the current window. At the group end it returns to the logical first item, and conversely in reverse. Crossing virtual lists enters the other list at its logical endpoint and constructs only the required window. Leaving a group with Tab does not construct virtual rows to search for an exit. Use direction keys to visit options across windows. Confirm, mouse or touch also selects. Selecting the current value does not call on_change. Programmatic changes do not move focus. Programmatic changes are silent; user changes commit the binding before delivering `{target,value}`.
-
-```aside
-let settings = model({sound: true, language: "zh-CN"});
-column(gap: 12) {
-    checkbox("Sound", value: bind(settings.sound));
-    radio("zh-CN", "简体中文", value: bind(settings.language));
-    radio("en", "English", value: bind(settings.language));
-}
-```
-
-Both compose children and accept `decorated: false` for a fully custom appearance. Check boxes read value; radio items can compare value with option in derive to select their own images or colors. Bindings maintain selection, without manual visual updates in on_change. See [author_selection.aside](../../examples/author_selection.aside); supply fonts/body.ttf before running.
-
-`slider(value: 0, min: 0, max: 1, step: null, on_change: null, ...)` provides a horizontal slider; `toggle(label: null, value: false, on_change: null, children: [], ...)` provides a switch. Both share stage position, size, colors, visibility, enabled state and modal scope; toggles also compose child nodes. The following [author_settings.aside](../../examples/author_settings.aside) runs after supplying fonts/body.ttf.
-
-Sliders require finite increasing min/max and a finite value inside that range. step is null or finite and positive, anchored at min, with both endpoints reachable. Scripts may assign any in-range value regardless of input step. Assigning min/max must also leave the current value in range; invalid writes preserve the previous state. Mouse/touch dragging, arrow keys, Home/End, Shift acceleration, left/right controller navigation and accessibility actions share one control.
-
-Accepted user changes update node.value before on_change runs; events contain target and that change’s value. Script assignments are silent. Callbacks may await and are cancelled when their node is removed. Value and layout updates preserve dragging; changing range/step ends the old drag, and interaction resumes after the new frame is accepted. Controls retain their value without a callback. Node values support bind/unbind; derive supplies read-only values for presentation and cannot be a slider/toggle writeback source.
-
-Sliders also accept child nodes. With `decorated: false`, paint the track, thumb and hover/focus feedback using images or ordinary stage nodes; slider retains input and accessibility. The track spans the full content width with no built-in thumb inset; use padding when the skin needs margins. See [author_slider_skin.aside](../../examples/author_slider_skin.aside): `reel dev examples/author_slider_skin.aside` (provide `fonts/body.ttf`).
-
-```aside
-fn main() {
-    game.configure(title: "Reading settings", width: 640, height: 420,
-                   fonts: ["fonts/body.ttf"], text_speed: 30);
-    let speed = slider(value: 30, min: 0, max: 120, step: 1,
-        width: 300, height: 40,
-        on_change: |event| { game.configure(text_speed: event.value); });
-    let instant = toggle("Instant text", width: 300, height: 40,
-        on_change: |event| {
-            speed.enabled = !event.value;
-            if event.value { game.configure(text_speed: 0); }
-            else { game.configure(text_speed: speed.value); }
-        });
-    stage.replace(column(gap: 12, padding: 20) {
-        text("Text speed");
-        speed;
-        instant;
-        button("Reset", width: 300, height: 40, on_click: |event| {
-            speed.value = 30;
-            speed.enabled = true;
-            instant.value = false;
-            game.configure(text_speed: 30);
-        });
-    });
-    narrator("Adjust the controls while this text appears. The next line uses the same settings.");
-    narrator("Settings remain interactive after the story function returns.");
-}
-```
-
-Rust hosts submit AccessKit ActionRequest through `SessionUi::handle_access` / `AsideSessionUi::handle_access`, preserving accepted-frame and modal rules; the platform host supplies the native screen-reader connection.
-
-## Connecting stage properties
-
-`text_input` edits a single line. Its value can bind to a writable model field; on_change runs after committed text changes, and on_submit runs on Enter. Both events carry target and value. IME preedit neither writes to the model nor triggers these callbacks. It supports cursor movement, selection, deletion, copy, cut, and paste. The system IME owns conversion and candidate selection; embedding hosts forward portable IME events and handle candidate-window position signals. Assigned values must be single-line strings; newlines in user input or paste become spaces. Style it with common node properties and compose your own background and focus indication; it adds no default border.
-
-With an explicit height, input text is vertically centered in the content area together with its caret, selection and IME position. A regular text node with an explicit width measures its automatic height using all wrapped lines at that width.
-
-Inline event links show an underline on hover or keyboard focus without reshaping text. A custom scrollbar should clamp its drag fraction to 0 through 1 before writing scroll_y, so its visuals do not follow an out-of-range value awaiting layout feedback; see author_scrollbar.aside.
-
-```aside
-let profile = model({name: ""});
-stage.replace(text_input(value: bind(profile.name), width: 280, height: 40,
-    color: "#202020", background: "#ffffff",
-    on_submit: |event| { profile.name = event.value; }));
-```
-
-Runnable example: [author_text_input.aside](../../examples/author_text_input.aside).
-
-Use `text_area` for multiline notes or messages, with the same parameters as text_input. It wraps at its width and aligns text to the top. Enter inserts a newline; Ctrl+Enter (Command+Enter on macOS) calls on_submit; Tab moves focus. Up/Down moves the caret, with Shift extending the selection. Home/End goes to the current visual line's boundaries; Ctrl/Command goes to the document boundaries. The wheel scrolls overflowing content, and editing reveals the caret. Pasted CRLF/CR becomes LF; IME preedit writes value only when committed. Save restoration preserves text and bindings, while selection and the internal viewport reset with the input widget. Runnable example: [author_text_area.aside](../../examples/author_text_area.aside).
-
-For scripted typing or keyboard games, use `input(on_key: |event| { ... })`. Events provide code, key, phase and shift/ctrl/alt/meta; phase is pressed/repeated/released/cancelled. Keys are delivered separately, and focus loss cancels held keys. Focused buttons consume their confirmation keys; other unclaimed keys bubble to an ancestor on_key, so clicking a language button does not stop scripted typing. Focused text editors retain all keyboard and system IME events. Omit bindings when no action mapping is needed, or combine on_action for gamepad and pointer controls; action mappings still follow focus ownership. Example: [author_keyboard.aside](../../examples/author_keyboard.aside).
-
-`bind` and `unbind` work with existing node properties. These sliders share a position value, and the text position and visibility connect directly to the controls, without callbacks that copy state. Run [author_bindings.aside](../../examples/author_bindings.aside) in a window using the font setup from section 1.
-
-```aside
-fn main() {
-    let shown = toggle("Show the scene", value: true);
-    let position = slider(value: 100, min: 0, max: 400, width: 400);
-    let mirror = slider(value: bind(position.value), min: 0, max: 400, width: 400);
-    stage.replace(column(gap: 12) {
-        shown;
-        position;
-        mirror;
-        text("Move me", x: bind(position.value), visible: bind(shown.value));
-        button("Detach", on_click: |event| { unbind(bind(mirror.value)); });
-        button("Reconnect", on_click: |event| { mirror.value = bind(position.value); });
-    });
-    narrator("Both sliders share a value.");
-}
-```
-
-## Author audio
+### Author audio
 
 ```aside
 fn main() {
@@ -1535,7 +1622,7 @@ $env:REEL_SCENARIO_TIMEOUT_SECS = "600"
 cargo test -p reel-cli --test project_scenarios external_project_scenario -- --ignored --nocapture
 ```
 
-WAV/PCM, Ogg/Vorbis, FLAC and MP3 support predecoded playback. PCM is charged to the host memory budget without a separate duration limit. Starting positions, loop regions, seeking during playback and save restoration are connected; streaming long tracks remains part of the full design. Completed means mixer consumption, so it cannot establish precise hardware synchronization. Physical-device coverage is recorded in [audio verification](../../crates/reel-media/VERIFICATION.md).
+WAV/PCM, Ogg/Vorbis, FLAC and MP3 are supported. Automatic audio preparation: ordinary audio.play and audio.queue keep the same author syntax, while the host predecodes short sounds and reads long tracks through a bounded PCM window. The default static threshold is 8MiB of stereo f32 PCM; authors do not choose a player based on track length. Hosts may configure the threshold; audio groups continue to control mixing. A supply underrun pauses content position until samples return. Save restoration prepares the same resource and position again. Unknown lengths become known at EOF: whole-track loops use that endpoint, while explicit end/loop_end values beyond it fail the activity. Starting positions, loop regions, seeking during playback and restoration follow the same activity contract. Completed means mixer consumption, so it cannot establish precise hardware synchronization. Physical-device coverage is recorded in [audio verification](../../crates/reel-media/VERIFICATION.md).
 
 Runnable example: [author_audio.aside](../../examples/author_audio.aside), using examples as the asset root and the same font configuration as other author examples. Its chime.wav is an original short sine tone supplied by this repository.
 
@@ -1544,74 +1631,14 @@ Runnable example: [author_audio.aside](../../examples/author_audio.aside), using
 ./target/debug/reel.exe dev examples/author_audio.aside --assets target/reel-artifacts/author-assets
 ```
 
-### Window and presentation settings
+### Planned interfaces
 
-Run [author_window.aside](../../examples/author_window.aside) with your own `fonts/body.ttf`, using the same assets directory as the audio example above.
+- Named `state` and component `node.state`, page tabs and slider skin slots: [state and style design](../engine-architecture.md#六-作用域-样式与状态).
+- Chapter registration, restart and skip-to: [story interaction design](../engine-architecture.md#十-热重载).
+- Custom drawing, perspective scenes and external adapters: [extension scope](../engine-architecture.md#十一-完整制作能力与扩展).
 
-`window.info()` returns the current client area's logical width/height, scale_factor, fullscreen, vsync, windowed_width/windowed_height, platform, capabilities and resolutions. The host supplies platform as windows, macos, linux, android, ios, web or unknown; a host without a window or a declared platform reports unknown. Use this field for platform-specific wording and capabilities.resize/fullscreen/vsync for available settings; a host without a window reports all capabilities as false. resolutions lists the current display's available sizes converted to logical pixels; these are separate from the stage canvas. Call info again after restoring a save to read the current host; a previously saved display table retains its original values. The [runnable window example](../../examples/author_window.aside) displays the platform and client size together.
+These names are design targets; use ordinary functions, model data and the implemented controls for current projects.
 
-```aside
-let mut display = window.info();
-if display.capabilities.resize {
-    display = await window.configure(width: 1280, height: 720);
-}
-if display.capabilities.fullscreen {
-    display = await window.configure(fullscreen: true);
-}
-```
+## 15 Further references
 
-configure preserves omitted fields and returns an activity; await receives the actual state after platform application. fullscreen means borderless fullscreen. Sizes configured during fullscreen are retained for the window after leaving it, without changing the monitor mode. A game can disable window-size selection while fullscreen. `await window.configure(vsync: false)` changes presentation synchronization; idle rendering remains demand-driven. Story saves do not restore window state; store player preferences with persistent. A second change while one is pending reports Busy; disable settings controls during application. game.configure continues to configure the canvas independently.
-
-### Sprite particles
-
-Particles can play alongside node tweens for opacity, transforms and other properties; `stage.presented` can complete on an intermediate frame. Ordinary property updates use the shared stage composition, while retiring the target, owner or scope still cancels the corresponding batches.
-
-`particles(source, seed:0, ...node properties)` creates one stage node with a shared sprite and coordinate space. Its source must be a whole PNG/JPEG sprite; prepared `.reel-image` sources are supported by `image` nodes only. Each `emit` appends a batch and returns its own activity. The example uses your own `assets/petal.png` and `fonts/body.ttf`; see [author_particles.aside](../../examples/author_particles.aside).
-
-```aside
-let petals = particles("assets/petal.png", width: 1280, height: 20, seed: 42);
-stage.replace(petals);
-let falling = emit(petals, burst: 0, rate: 80, duration: 10,
-    lifetime: 8, velocity_y: 90, velocity_x: 15, spread_x: 30,
-    size: 18, size_spread: 6, spin_spread: 60);
-await falling;
-```
-
-`emit(node, burst:1, rate:0, duration:null, lifetime:5, lifetime_spread:0, velocity_x:0, velocity_y:80, spread_x:20, spread_y:20, acceleration_x:0, acceleration_y:0, size:12, size_spread:4, size_end:null, opacity_start:1, opacity_end:0, spin:0, spin_spread:30, x:0, y:0, owner:null)` describes this batch. The default emits one particle immediately. Set burst to zero for a stream whose first particle is born after 1/rate seconds. duration null keeps a positive-rate stream emitting; a finite duration includes births at its endpoint. rate zero emits only the burst, even with duration null. duration zero still emits the burst. The activity completes when its last particle actually dies.
-
-Spreads are uniform half-ranges around the base; size is the sprite width and preserves image aspect ratio. Size spread cannot exceed size; lifetime spread cannot exceed the positive lifetime. Each particle has its own seeded lifetime. size_end null keeps its randomly chosen birth width; a nonnegative final width interpolates over its lifetime. Birth positions are uniform within the width/height captured from the node by each emit (omitted dimensions are zero). The batch x/y is the rectangle origin in node-local coordinates; both accept positive or negative finite numbers and are fixed at emission. Moving the node still moves every batch; use emit x/y to add effects at different positions on the same node. Velocity uses logical pixels/second, acceleration pixels/second² and spin degrees/second. Source and seed are read-only; the node's position, rotation, scale, visibility, opacity and clipping still affect every batch.
-
-`pause(falling)` freezes only that batch's births and motion, `resume(falling)` continues it, and `stop(falling)` clears that batch and returns Stopped from await. `finish(falling)` clears a finite batch and returns Completed; it rejects continuous emission. Calling emit again leaves previous batches running. The node seed, successful emission order and elapsed time reproduce the same particles regardless of frame timing; successive emissions use different samples. Retiring the node cancels all its batches; retiring an owner or scope cancels its batches. Hiding does not pause. Cancelling a waiter leaves emission running. Terminal results can be awaited again. Save/restore retains each batch's configuration, time, pause and owner, plus the next emission sequence. No script runs for each particle.
-
-This overlapping spray emits twice on the same node. Common styles can be ordinary functions around emit:
-
-```aside
-let spray = particles("assets/petal.png", x: 640, y: 360, seed: 42);
-stage.replace(spray);
-fn burst() {
-    emit(spray, burst: 48, lifetime: 1, lifetime_spread: 0.4,
-        velocity_y: -160, spread_x: 180, spread_y: 100,
-        acceleration_y: 240, size: 18, size_spread: 6, size_end: 0)
-}
-let first = burst();
-await run(delay(0.2));
-let second = burst();
-await first;
-await second;
-spray.remove();
-```
-
-### Querying presented node geometry
-
-`stage.geometry(node, relative_to: overlay, owner: root)` waits for a frame actually presented after the request and returns one read-only geometry snapshot. width/height describe the node itself; bounds supplies x/y/width/height in the reference space, and transform's a/b/c/d/tx/ty maps local points into that space. Omitting relative_to uses logical stage coordinates. A sibling overlay or ancestor may be the reference; scrolling, cameras, rotation and mirroring are included, without clipping. The query uses the published layout recorded with that frame; property edits that have not been presented cannot be attached to an older frame. A retained picture shown while the stage is preparing cannot complete a new query.
-
-```aside
-overlay.visible = true;
-overlay.opacity = 0;
-let geometry = await stage.geometry(thumbnail, relative_to: overlay, owner: root);
-indicator.x = geometry.bounds.x + geometry.bounds.width / 2;
-indicator.y = geometry.bounds.y;
-overlay.opacity = 1;
-```
-
-Hidden nodes have no current layout to query. If the accepted frame still hides or omits either node, or the reference transform is not invertible, catch receives a value whose code is GeometryUnavailable. Transparent nodes still participate in layout. Retiring the target, reference or owner cancels the request; inspect `core.error_info().code` for cancellation rather than assuming the caught value has a code field. Results do not update every frame. For virtual rows, await list.scroll_to(key) before querying the row node. Complete example: [author_geometry.aside](../../examples/author_geometry.aside).
+See the [documentation index](../README.md), [language specification](../aside-language.md), and [host SDK](../aside-host.md) for language rules and embedding.

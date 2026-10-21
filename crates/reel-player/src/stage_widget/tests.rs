@@ -4,6 +4,8 @@ mod radio_navigation;
 mod retained;
 mod scroll_alignment;
 mod scroll_restore;
+mod virtual_images;
+mod wheel;
 use crate::session::SessionUi;
 use reel_core::budget::{BudgetCategory, BudgetPool, QueueLimits};
 use reel_core::identity::{FrameId, SurfaceEpoch};
@@ -524,6 +526,9 @@ fn virtual_list_navigation_finds_controls_beyond_initial_nonfocusable_rows() {
 }
 impl Fixture {
     fn new(font: Option<reel_ui::peniko::Blob<u8>>) -> Self {
+        Self::with_canvas(font, None)
+    }
+    fn with_canvas(font: Option<reel_ui::peniko::Blob<u8>>, canvas: Option<[u32; 2]>) -> Self {
         let mut stage = Stage::default();
         let red = stage
             .create(
@@ -576,6 +581,11 @@ impl Fixture {
         ui.set_stage(&stage);
         let widget = ui.widget().prepare();
         let id = widget.id();
+        let widget = if let Some(size) = canvas {
+            reel_ui::core::NewWidget::new(reel_ui::widgets::Canvas::new(widget, size)).erased()
+        } else {
+            widget.erased()
+        };
         let root_widget = RenderRoot::new(
             widget,
             |_| {},
@@ -1817,6 +1827,27 @@ fn text_wrap_changes_height_preserves_newlines_and_reuses_the_label() {
     drop(filled);
 
     f.edit(f.blue, |props| {
+        props.text_shadow_x = -1.;
+        props.text_shadow_y = 2.;
+    });
+    let shadowed = f.record();
+    f.accept(&shadowed);
+    assert_eq!(height(&shadowed), original_height);
+    assert_eq!(glyphs(&shadowed).len(), original_glyphs.len() * 2);
+    assert_eq!(label_identity(&f).0, label_id);
+    drop(shadowed);
+    let layouts = f.layouts();
+    f.edit(f.blue, |props| props.text_shadow_color = [255, 0, 0, 255]);
+    let recolored = f.record();
+    f.accept(&recolored);
+    assert_eq!(f.layouts(), layouts, "shadow color reuses the paragraph");
+    drop(recolored);
+    f.edit(f.blue, |props| {
+        props.text_shadow_x = 0.;
+        props.text_shadow_y = 0.;
+    });
+
+    f.edit(f.blue, |props| {
         props.text_fit = reel_ui::core::TextFit::Shrink { min_font_size: 0. }
     });
     let fitted = f.record();
@@ -2174,6 +2205,7 @@ fn camera_accepted_frame_pointer_clip_and_composition_cost() {
                 listening: false,
                 keyboard: false,
                 pointer: true,
+                wheel: false,
             },
             NodeProps {
                 x: 30.,
@@ -2800,3 +2832,33 @@ impl std::ops::Deref for TestFrame {
 mod font_weight;
 mod natural_height;
 mod text_spacing;
+
+#[test]
+fn reveal_fade_live_node_updates_keep_stage_label_and_layout_identity() {
+    let label_identity = |f: &Fixture| {
+        let scene = f.bridge.root().get_widget(f.layouts()[&f.blue].0).unwrap();
+        scene
+            .downcast::<SceneWidget>()
+            .unwrap()
+            .label
+            .as_ref()
+            .unwrap()
+            .id()
+    };
+    let mut f = Fixture::new(None);
+    let first = f.record();
+    f.accept(&first);
+    let before = f.layouts();
+    let label_id = label_identity(&f);
+    for amount in [0., 0.5, 1., 2.] {
+        f.edit(f.blue, |p| {
+            p.reveal_fade = Some(amount);
+            p.reveal_fade_step = 0.25;
+            p.reveal_fade_from = 0;
+        });
+        let frame = f.record();
+        f.accept(&frame);
+        assert_eq!(f.layouts(), before);
+        assert_eq!(label_identity(&f), label_id);
+    }
+}

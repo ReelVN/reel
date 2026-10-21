@@ -305,6 +305,7 @@ struct FrameData {
 #[derive(Debug)]
 pub struct FrameDrawing {
     commands: Vec<FrameCommand>,
+    capture_exclusions: Vec<Range<usize>>,
     masks: BTreeMap<u32, Arc<FrameMask>>,
     resources: ResourceSnapshot,
     transitions: Vec<SceneTransition>,
@@ -313,6 +314,20 @@ pub struct FrameDrawing {
 }
 type FrameSubtree = crate::app::SubtreePaint;
 impl FrameDrawing {
+    /// Sorted balanced command intervals omitted only during capture replay.
+    pub fn capture_exclusions(&self) -> &[Range<usize>] {
+        &self.capture_exclusions
+    }
+    /// Return the next retained command index when this command is excluded.
+    pub fn capture_exclusion_end(&self, index: usize) -> Option<usize> {
+        let slot = self
+            .capture_exclusions
+            .partition_point(|range| range.end <= index);
+        self.capture_exclusions
+            .get(slot)
+            .filter(|range| range.start <= index)
+            .map(|range| range.end)
+    }
     pub fn commands(&self) -> &[FrameCommand] {
         &self.commands
     }
@@ -525,6 +540,15 @@ impl FrameBuild {
                         .checked_mul(size_of::<FrameSubtree>())?,
                 )
             })
+            .and_then(|n| {
+                n.checked_add(
+                    source
+                        .plan
+                        .capture_exclusions
+                        .capacity()
+                        .checked_mul(size_of::<Range<usize>>())?,
+                )
+            })
             .and_then(|n| n.checked_add(size_of::<Cursor>()))
             .ok_or_else(|| error(BuildErrorKind::Bytes))?;
         if initial as u64 > limits.max_bytes {
@@ -628,6 +652,7 @@ impl FrameBuild {
         } = state;
         let subtrees = std::mem::take(&mut source.plan.subtrees);
         let body_end = source.plan.body_commands;
+        let capture_exclusions = std::mem::take(&mut source.plan.capture_exclusions);
         let (compiled, transition_roots) = retained::compile_transitions(
             &transitions,
             &subtrees,
@@ -648,6 +673,7 @@ impl FrameBuild {
                 geometry,
                 drawing: Arc::new(FrameDrawing {
                     commands,
+                    capture_exclusions,
                     masks: masks
                         .into_iter()
                         .enumerate()

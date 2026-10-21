@@ -39,6 +39,94 @@ impl HistoryText {
 }
 
 impl SessionVm {
+    pub(super) fn speech_handle(
+        &mut self,
+        id: crate::InteractionId,
+    ) -> Result<Value, AdapterError> {
+        let fields = self.vm.heap_mut().alloc_table()?;
+        let value = self.vm.heap_mut().alloc_host(
+            fields,
+            &[Value::int(id.generation() as i64)],
+            Some(immutable),
+        )?;
+        for name in ["append", "wait"] {
+            let symbol = format!("reel::speech::{name}");
+            let p = self.vm.program().package();
+            let function = p
+                .functions
+                .iter()
+                .enumerate()
+                .find_map(|(i, f)| match f.kind {
+                    FunctionKind::Native(n)
+                        if p.symbols[p.natives[n.index()].symbol.index()] == symbol =>
+                    {
+                        Some(FunctionId(i as u32))
+                    }
+                    _ => None,
+                })
+                .ok_or(AdapterError::Input("speech method missing"))?;
+            let method = self.vm.bind_native(value, function)?;
+            let heap = self.vm.heap_mut();
+            let key = heap.alloc_string(name)?;
+            heap.table_store(fields, heap.table_len(fields)?, key, method)?;
+        }
+        Ok(value)
+    }
+
+    pub(super) fn dispatch_speech(
+        &mut self,
+        session: &mut Session,
+        ticket: HostTicket,
+        append: bool,
+    ) -> Result<NativeDispatch, AdapterError> {
+        self.check_story_wait(session, ticket)?;
+        let args = self.vm.host_arguments(ticket)?;
+        let heap = self.vm.heap();
+        if heap.host_payload_len(args[0])? != 1 {
+            return Err(AdapterError::Input("expected a speech handle"));
+        }
+        let generation = heap
+            .host_payload(args[0], 0)?
+            .as_int()
+            .ok_or(AdapterError::Input("invalid speech handle"))? as u64;
+        let id = crate::InteractionId {
+            identity: session.identity(),
+            generation,
+        };
+        session.open_dialogue(id)?;
+        if append {
+            let text = rich_text::read(heap, args[1], self.read_limit)?;
+            let history = HistoryText::read(heap, args[2], self.read_limit)?;
+            let content_id = self.dialogue_content_id(ticket);
+            session.append_dialogue(self.owner, id, &text, &content_id, history.input())?;
+            self.sync_narrative(session)?;
+            self.vm.respond(ticket, HostResponse::Ready(Value::NULL))?;
+            self.issued = None;
+            Ok(NativeDispatch::Ready { work: 1 })
+        } else {
+            // Validate admission before publishing the VM wait; no scripts run
+            // between this response and arming the existing interaction.
+            if session.completion.is_some() {
+                return Err(crate::SessionError::CompletionPending.into());
+            }
+            let wait = ticket.wait_id();
+            self.vm.respond(ticket, HostResponse::Pending(wait))?;
+            session.wait_dialogue(self.owner, id)?;
+            self.pending = Some(super::PendingInteraction {
+                interaction: id,
+                task: ticket.task,
+                wait,
+                keys: None,
+            });
+            self.feedback_only = false;
+            self.issued = None;
+            Ok(NativeDispatch::Published {
+                interaction: id,
+                work: 1,
+            })
+        }
+    }
+
     pub(super) fn record_history(
         &mut self,
         session: &mut Session,
@@ -157,6 +245,9 @@ impl SessionVm {
         let reveal_skippable = args[3]
             .as_bool()
             .ok_or(AdapterError::Input("reveal_skippable must be bool"))?;
+        let wait = args[4]
+            .as_bool()
+            .ok_or(AdapterError::Input("wait must be bool"))?;
         let content_id = self.dialogue_content_id(ticket);
         let interaction = self.publish_say(
             session,
@@ -170,6 +261,7 @@ impl SessionVm {
             }],
             locale,
             reveal_skippable,
+            wait,
         )?;
         Ok(NativeDispatch::Published {
             interaction,
@@ -188,6 +280,9 @@ impl SessionVm {
         let reveal_skippable = self.vm.host_arguments(ticket)?[1]
             .as_bool()
             .ok_or(AdapterError::Input("reveal_skippable must be bool"))?;
+        let wait = self.vm.host_arguments(ticket)?[2]
+            .as_bool()
+            .ok_or(AdapterError::Input("wait must be bool"))?;
         let mut reader = if let Some(reader) = self.dialogue_reader.take() {
             reader
         } else {
@@ -216,7 +311,8 @@ impl SessionVm {
                         content_id: id,
                     })
                     .collect();
-                let result = self.publish_say(session, ticket, &inputs, locale, reveal_skippable);
+                let result =
+                    self.publish_say(session, ticket, &inputs, locale, reveal_skippable, wait);
                 reader.release(self.vm.heap_mut())?;
                 result.map(|interaction| NativeDispatch::Published { interaction, work })
             }
