@@ -87,6 +87,61 @@ fn tuple_group_object_block_and_spread_have_distinct_trees() {
     assert_eq!(has(&p, K::ObjectExpr), 1);
 }
 #[test]
+fn table_tails_keep_blocks_labels_children_and_source_locations() {
+    let p = ok("{name: 1};", E::Block);
+    assert_eq!(has(&p, K::ObjectExpr), 1);
+    assert_eq!(has(&p, K::Block), 1);
+    for source in [
+        r#"if flag { {accept: [1]} } else { {back: [2]} }"#,
+        r#"if flag { {"中文": 1} } else { {"": 2} }"#,
+        r#"if flag { {[keys[0]]: 1} } else { {["[back]"]: 2} }"#,
+        r#"if flag { {f"{keys[0]}": 1} } else { {f"{f"{key}"}": 2} }"#,
+        r#"if flag { {...defaults, accept: 1} } else { {back: 2} }"#,
+    ] {
+        let p = ok(source, E::Expression);
+        assert_eq!(has(&p, K::ObjectExpr), 2, "{source}");
+        assert_eq!(has(&p, K::Block), 2, "{source}");
+        ranges(&p, source);
+    }
+    let p = ok("|| { {answer: 42} }", E::Expression);
+    assert_eq!(has(&p, K::Block), 1);
+    assert_eq!(has(&p, K::ObjectExpr), 1);
+    let p = ok("match value { _ => { {answer: 42} } }", E::Expression);
+    assert_eq!(has(&p, K::Block), 1);
+    assert_eq!(has(&p, K::ObjectExpr), 1);
+    for source in [
+        "{ outer: loop { break outer; } }",
+        "{ outer: while true { break outer; } }",
+        "{ outer: for item in items { break outer; } }",
+    ] {
+        let p = ok(source, E::Block);
+        assert_eq!(has(&p, K::LabelStmt), 1);
+        assert_eq!(has(&p, K::Block), 3);
+        assert_eq!(has(&p, K::ObjectExpr), 0);
+    }
+    let p = ok("|| { {}; {} }", E::Expression);
+    assert_eq!(has(&p, K::Block), 3);
+    assert_eq!(has(&p, K::ObjectExpr), 0);
+    let p = ok("|| { ({}) }", E::Expression);
+    assert_eq!(has(&p, K::Block), 1);
+    assert_eq!(has(&p, K::ObjectExpr), 1);
+    let p = ok("column { text(\"hello\"); }", E::Module);
+    assert_eq!(has(&p, K::Children), 1);
+    assert_eq!(has(&p, K::Block), 1);
+    assert_eq!(has(&p, K::ObjectExpr), 0);
+    rejects("|| {name: 1}", E::Expression, D::MissingSemicolon);
+    rejects("if true {name: 1}", E::Expression, D::MissingSemicolon);
+    let source = "fn main() { {中文: } }";
+    let p = rejects(source, E::Module, D::ExpectedExpression);
+    assert_eq!(p.diagnostics().len(), 1);
+    assert_eq!(
+        &source[byte_range(p.diagnostics()[0].range)],
+        "}",
+        "diagnose the missing field value at its source boundary"
+    );
+    ranges(&p, source);
+}
+#[test]
 fn closure_or_and_control_heads_use_one_expression_grammar() {
     let p = ok("a || b && c", E::Expression);
     assert_eq!(has(&p, K::ClosureExpr), 0);

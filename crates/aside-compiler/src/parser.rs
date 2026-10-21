@@ -377,7 +377,7 @@ impl Parser<'_> {
             K::Use | K::Pub | K::Fn | K::Async | K::Gen => self.declaration(false),
             K::Class if self.nth(1) == K::Ident => self.declaration(false),
             K::Let => self.let_decl(false),
-            K::LBrace => self.block(),
+            K::LBrace if !tail || !self.object_statement_ahead() => self.block(),
             K::Return | K::Throw | K::Break | K::Continue => self.jump(),
             K::Try => self.try_stmt(),
             K::While | K::For | K::Loop => {
@@ -410,6 +410,40 @@ impl Parser<'_> {
                 }
                 self.finish();
             }
+        }
+    }
+    fn object_statement_ahead(&self) -> bool {
+        let mut tokens = self.tokens[self.cursor..]
+            .iter()
+            .filter(|token| !token.kind.is_trivia())
+            .map(|token| token.kind);
+        tokens.next(); // Opening brace; required outer blocks bypass this choice.
+        match tokens.next() {
+            Some(K::Ident) => {
+                tokens.next() == Some(K::Colon)
+                    && !matches!(tokens.next(), Some(K::While | K::For | K::Loop))
+            }
+            Some(open @ (K::StringStart | K::LBracket)) => {
+                let close = if open == K::StringStart {
+                    K::StringEnd
+                } else {
+                    K::RBracket
+                };
+                let mut depth = 1usize;
+                for kind in tokens.by_ref() {
+                    if kind == open {
+                        depth += 1;
+                    } else if kind == close {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                }
+                depth == 0 && tokens.next() == Some(K::Colon)
+            }
+            Some(K::Ellipsis) => true,
+            _ => false,
         }
     }
     fn block(&mut self) {
