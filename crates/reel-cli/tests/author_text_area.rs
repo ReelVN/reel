@@ -247,7 +247,9 @@ fn text_area_source_asb_edit_submit_preedit_cancel_and_navigation() {
 
 #[test]
 fn text_area_public_example_compiles_and_retains_business_state() {
-    for mut d in drivers(include_str!("../../../examples/author_text_area.aside")) {
+    for mut d in drivers(include_str!(
+        "../../../examples/author_text_area/src/main.aside"
+    )) {
         let font = include_bytes!("../../reel-player/tests/fixtures/font-weight/400.ttf").to_vec();
         let (mut bridge, root) = bridge_with_font(&d, Some(font.into()));
         present(&mut d, &mut bridge, root, 1);

@@ -10,7 +10,7 @@ use reel_ui::{bridge::PresentationBridge, core::*, dpi::PhysicalPosition, stage:
 mod support;
 use support::*;
 
-const SOURCE: &str = include_str!("../../../examples/author_buttons.aside");
+const SOURCE: &str = include_str!("../../../examples/author_buttons/src/main.aside");
 
 #[test]
 fn conditional_table_tails_configure_input_from_source_and_asb() {
@@ -298,7 +298,7 @@ fn source_and_asb_keep_buttons_live_then_finish_after_last_handler_retires() {
 
 #[test]
 fn source_and_asb_modal_menu_isolates_dialogue_and_restores_keyboard_focus() {
-    const MODAL: &str = include_str!("../../../examples/author_modal.aside");
+    const MODAL: &str = include_str!("../../../examples/author_modal/src/main.aside");
     let checked = reel_cli::check(MODAL, "author_modal.aside").unwrap();
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for story in [
@@ -424,7 +424,7 @@ fn source_and_asb_dialogue_confirmation_uses_presented_pairing() {
 #[test]
 fn source_and_asb_author_actions_share_keyboard_gamepad_values_and_cancellation() {
     use reel_ui::input::*;
-    const INPUT: &str = include_str!("../../../examples/author_input.aside");
+    const INPUT: &str = include_str!("../../../examples/author_input/src/main.aside");
     let checked = reel_cli::check(INPUT, "author_input.aside").unwrap();
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for story in [
@@ -1250,7 +1250,7 @@ fn main() {
 fn source_and_asb_characters_share_history_unicode_playback_and_group_advance() {
     use reel_engine::InteractionView;
     use reel_player::story_runtime::StoryRuntime;
-    const DIALOGUE: &str = include_str!("../../../examples/author_dialogue.aside");
+    const DIALOGUE: &str = include_str!("../../../examples/author_dialogue/src/main.aside");
     let checked = reel_cli::check(DIALOGUE, "author_dialogue.aside").unwrap();
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for story in [

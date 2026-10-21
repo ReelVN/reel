@@ -95,7 +95,7 @@ fn component_tail_values_optional_nodes_and_children_execute_after_bytecode_roun
 #[test]
 fn public_stage_example_uses_returned_and_optional_components() {
     source::compile_story(
-        include_str!("../../../../../examples/author_stage.aside"),
+        include_str!("../../../../../examples/author_stage/src/main.aside"),
         "author_stage",
         1,
         "main",

@@ -148,6 +148,10 @@ fn real_stdio_preserves_unicode_edits_unsaved_imports_and_shutdown() {
         }),
     );
     assert_eq!(initialized["capabilities"]["positionEncoding"], "utf-16");
+    assert_eq!(
+        initialized["capabilities"]["documentFormattingProvider"],
+        true
+    );
     server.notify("initialized", json!({}));
 
     let source = "use helper::twice;\r\nfn main() { let 文 = \"😀\"; missing(); twice(2); }";
@@ -228,5 +232,32 @@ fn real_stdio_preserves_unicode_edits_unsaved_imports_and_shutdown() {
         json!({"textDocument":{"uri":helper_uri}}),
     );
     assert_eq!(server.diagnostics(&main_uri, 2), json!([]));
+    let formatting = json!({
+        "textDocument":{"uri":main_uri},
+        "options":{"tabSize":4,"insertSpaces":true}
+    });
+    let edits = server.request(6, "textDocument/formatting", formatting.clone());
+    assert_eq!(edits.as_array().unwrap().len(), 1);
+    let edited_source = source.replace("missing(); ", "");
+    assert_eq!(edits[0]["range"]["start"], json!({"line":0,"character":0}));
+    assert_eq!(
+        edits[0]["range"]["end"],
+        json!({
+            "line":1,"character":edited_source.lines().nth(1).unwrap().encode_utf16().count()
+        })
+    );
+    assert!(edits[0]["newText"].as_str().unwrap().contains("\"😀\""));
+    server.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument":{"uri":main_uri,"version":3},
+            "contentChanges":[{"range":edits[0]["range"],"text":edits[0]["newText"]}]
+        }),
+    );
+    assert_eq!(server.diagnostics(&main_uri, 3), json!([]));
+    assert_eq!(
+        server.request(7, "textDocument/formatting", formatting),
+        json!([])
+    );
     server.stop();
 }

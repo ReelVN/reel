@@ -12,7 +12,11 @@ pub fn options() -> ServerOptions {
     ServerOptions {
         host: host_context(reel_engine::aside::source::api()),
         project_prefix: Some("game".into()),
-        ..Default::default()
+        source_root: Some(|directory, exists| {
+            crate::project::locate_with(directory, exists)
+                .ok()
+                .map(|project| project.root.join("src"))
+        }),
     }
 }
 

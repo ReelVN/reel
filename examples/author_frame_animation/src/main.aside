@@ -1,0 +1,24 @@
+// Uses the repository's existing sample pictures; run with --assets examples.
+// Replace these paths with equal-sized animation frames for your own artwork.
+fn main() {
+    game.configure(title: "Frame animation", width: 320, height: 240);
+    let frames = ["assets/panels.png", "assets/sun.jpg"];
+    let count = frames.len();
+    let root = stack(width: 320, height: 240, background: "#182330");
+    let timer = clock(interval: 0.125, paused: true, owner: root);
+    root.add(
+        image(
+            source: derive(|| frames[timer.ticks % count]), x: 64, y: 24, width: 192, height: 192,
+            fit: "contain"
+        )
+    );
+    stage.replace(root);
+    await stage.presented(owner: root);
+    resume(timer);
+    await run(delay(2));
+    pause(timer);
+    await run(delay(1));
+    resume(timer);
+    await run(delay(2));
+    stop(timer);
+}

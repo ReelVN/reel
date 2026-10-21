@@ -190,7 +190,7 @@ fn retired_consumers_release_conditional_skins_and_retained_derivations_can_rebi
 
 #[test]
 fn form_and_child_game_return_values_without_story_interactions() {
-    let code = include_str!("../../../../../examples/author_results.aside")
+    let code = include_str!("../../../../../examples/author_results/src/main.aside")
         .replace("fn main()", "fn opening()");
     for encoded in [false, true] {
         let (mut session, mut vm) = prepared(&code, encoded);
@@ -344,7 +344,7 @@ fn null_failure_owner_retirement_and_late_waits_share_terminal_state() {
 fn embedded_puzzle_source_pauses_restores_and_returns_to_dialogue() {
     use aside_vm::snapshot::SnapshotBudget;
     let code = concat!(
-        include_str!("../../../../../examples/author_embedded_puzzle.aside"),
+        include_str!("../../../../../examples/author_embedded_puzzle/src/main.aside"),
         "\nfn opening() { main(); }"
     );
     for leave in [false, true] {

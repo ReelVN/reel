@@ -1,0 +1,56 @@
+fn painted_button(label, clicked) {
+    let control = button(
+        label, decorated: false, width: 260, height: 64, background: "#284860", on_click: clicked
+    );
+    control.add(stack(width: 260, height: 64, background: "#406ba0", visible: bind(control.hover)));
+    control.add(
+        stack(width: 260, height: 64, background: "#705090", visible: bind(control.pressed))
+    );
+    control.add(
+        stack(y: 59, width: 260, height: 5, background: "#ffd580", visible: bind(control.focused))
+    );
+    control.add(text(label, x: 18, y: 18, font_size: 24));
+    return control;
+}
+
+fn main() {
+    game.configure(
+        title: "Author-owned controls", width: 960, height: 540, fonts: ["fonts/body.ttf"]
+    );
+    let status = text("Choose a control", font_size: 24);
+    let start = painted_button(
+        "Start",
+        |event| {
+            status.value = "Activated";
+        }
+    );
+    start.on_interaction = |event| {
+        if event.hover || event.focus_visible {
+            status.value = "Start selected";
+        }
+    };
+    let music = toggle(decorated: false, width: 260, height: 64, background: "#284860");
+    music.add(text("Music", x: 18, y: 18));
+    music.add(
+        stack(
+            x: 208, y: 20, width: 28, height: 28, background: "#70d890", visible: bind(music.value),
+            rotation: 45
+        )
+    );
+    music.add(
+        stack(y: 59, width: 260, height: 5, background: "#ffd580", visible: bind(music.focused))
+    );
+    music.on_interaction = |event| {
+        if event.hover || event.focus_visible {
+            status.value = "Music selected";
+        }
+    };
+    stage.replace(
+        column(gap: 20, padding: 28, width: 960, height: 540) {
+            start;
+            music;
+            status;
+        }
+    );
+    narrator("Hover, press, focus and toggle: every visual is an ordinary stage node.");
+}

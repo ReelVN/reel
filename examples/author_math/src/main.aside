@@ -1,0 +1,23 @@
+// Supply fonts/body.ttf under --assets.
+use std::math::{ sin, cos, radians };
+
+fn main() {
+    game.configure(width: 1280, height: 720, fonts: "fonts/body.ttf");
+    let state = model({ angle: 0.0 });
+    let marker = stack(
+        width: 24, height: 24, background: "#ffd17a",
+        x: derive(|| 640 + cos(radians(state.angle)) * 180),
+        y: derive(|| 360 + sin(radians(state.angle)) * 180), anchor_x: 0.5, anchor_y: 0.5
+    );
+    stage.replace(
+        stack(width: 1280, height: 720, background: "#172534") {
+            marker;
+            button(
+                "Rotate", x: 560, y: 620, width: 160,
+                on_click: || {
+                    state.angle += 30;
+                }
+            );
+        }
+    );
+}

@@ -1,0 +1,15 @@
+fn main() {
+    game.configure(fonts: ["font.ttf"]);
+    let panel = column(x: 40, y: 40, gap: 16);
+    let timer = clock(owner: panel);
+    panel.add(text(derive(|| f"Elapsed: {timer.elapsed} seconds")));
+    panel.add(
+        row(gap: 12) {
+            button("Pause", on_click: |e| pause(timer));
+            button("Resume", on_click: |e| resume(timer));
+            button("Stop", on_click: |e| stop(timer));
+            button("Remove", on_click: |e| panel.remove());
+        }
+    );
+    stage.replace(panel);
+}

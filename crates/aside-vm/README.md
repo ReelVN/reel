@@ -135,7 +135,7 @@ source-level `aside-compiler/tests/host_awaitables.rs` round-trip checks.
 String methods expose byte/scalar lengths and slices, prefix/suffix checks and
 separator-based joins. UTF-8 scans borrow bounded segments; copying and joining
 use rooted private buffers and detect source mutation before publication.
-The [text example](../../examples/text_operations.aside) runs through the same VM.
+The [text example](../../examples/text_operations/src/main.aside) runs through the same VM.
 
 Collection methods include array insert/remove/resize/reverse/extend/clear/top/swap,
 range slice on arrays and tuples, and table keys/values/entries/clear. Method

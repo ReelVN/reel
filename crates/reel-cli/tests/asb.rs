@@ -490,7 +490,7 @@ fn optional_sections_are_ignored_but_verified_and_required_unknowns_fail() {
 
 #[test]
 fn embedded_distribution_roundtrips_and_seek_reader_skips_code_payloads() {
-    use reel_package::distribution::{Distribution, SourceProject};
+    use reel_package::distribution::{Distribution, LooseResources};
     use std::{
         collections::BTreeMap,
         io::{self, Cursor, Read, Seek, SeekFrom},
@@ -506,12 +506,8 @@ fn embedded_distribution_roundtrips_and_seek_reader_skips_code_payloads() {
     let manifest = Distribution {
         text: Some("game.rtp".into()),
         resources: vec!["resources.rpk".into(), "resources-002.rpk".into()],
-        loose: None,
-        source: Some(SourceProject {
-            entry: "script/序章.aside".into(),
-            modules: BTreeMap::from([("shared".into(), "modules/shared".into())]),
-            function: "main::main".into(),
-        }),
+        catalogs: BTreeMap::new(),
+        loose: Some(LooseResources::Directory("resources/序章".into())),
     };
     let bytes = rp::encode(
         section(&original, 0),
@@ -608,11 +604,12 @@ fn embedded_distribution_rejects_paths_duplicates_and_unknown_fields_at_both_bou
     let original = artifact("fn main() { 1 }", None).bytes;
     let original_index = u64_at(&original, 24);
     for json in [
-        r#"{"text":"../secret.rtp","resources":[],"loose":null,"source":null}"#,
-        r#"{"text":null,"resources":["/absolute.rpk"],"loose":null,"source":null}"#,
-        r#"{"text":null,"resources":[],"loose":null,"source":{"entry":"main.aside","modules":{"shared":"../outside"},"function":"main::main"}}"#,
-        r#"{"text":null,"text":null,"resources":[],"loose":null,"source":null}"#,
-        r#"{"code":"game.asb","text":null,"resources":[],"loose":null,"source":null}"#,
+        r#"{"text":"../secret.rtp","resources":[],"catalogs":{},"loose":null}"#,
+        r#"{"text":null,"resources":["/absolute.rpk"],"catalogs":{},"loose":null}"#,
+        r#"{"text":null,"resources":[],"catalogs":{},"loose":{"directory":"../outside"}}"#,
+        r#"{"text":null,"text":null,"resources":[],"catalogs":{},"loose":null}"#,
+        r#"{"code":"game.asb","text":null,"resources":[],"catalogs":{},"loose":null}"#,
+        r#"{"text":null,"resources":[],"catalogs":{},"loose":null,"source":{"entry":"src/main.aside"}}"#,
     ] {
         let mut bytes = original[..original_index].to_vec();
         bytes.extend_from_slice(json.as_bytes());
@@ -721,7 +718,7 @@ fn authored_scene_builds_loads_and_runs_without_recompilation() {
     let source = format!(
         "//{}\n{}",
         "x".repeat(8 * 1024 * 1024 + 1),
-        include_str!("../../../examples/author_stage.aside").replace(
+        include_str!("../../../examples/author_stage/src/main.aside").replace(
             "narrator(\"先让画面停留片刻。\");",
             &format!("narrator(\"{text}\" + \" 完整结束\");")
         )

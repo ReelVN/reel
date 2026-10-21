@@ -4,6 +4,10 @@ use reel_core::{budget::OwnedBytes, identity::Priority};
 use reel_engine::localization::{Catalog, CatalogLoader};
 use std::{collections::BTreeMap, sync::Arc};
 
+/// Validated canonical language tags mapped to logical catalog asset keys.
+/// Sessions and their loaders share this immutable index across replacements.
+pub type CatalogIndex = Arc<BTreeMap<String, String>>;
+
 struct Parse {
     id: u64,
     locale: String,
@@ -25,13 +29,14 @@ enum Pending {
 }
 pub struct AssetCatalogLoader {
     assets: Assets,
+    catalogs: CatalogIndex,
     worker: Worker<Parse, Parsed>,
     pending: BTreeMap<u64, Pending>,
     events: Vec<Parsed>,
     next: u64,
 }
 impl AssetCatalogLoader {
-    pub fn new(assets: Assets) -> Self {
+    pub fn new(assets: Assets, catalogs: CatalogIndex) -> Self {
         let worker = Worker::new(
             assets.worker_limits(),
             assets.wake_signal(),
@@ -48,6 +53,7 @@ impl AssetCatalogLoader {
         );
         Self {
             assets,
+            catalogs,
             worker,
             pending: BTreeMap::new(),
             events: Vec::new(),
@@ -56,6 +62,10 @@ impl AssetCatalogLoader {
     }
 }
 impl CatalogLoader for AssetCatalogLoader {
+    fn resolve(&self, locale: &str) -> Option<&str> {
+        self.catalogs.get(locale).map(String::as_str)
+    }
+
     fn load(&mut self, locale: &str, source: &str) -> Result<u64, String> {
         self.next = self
             .next
@@ -133,20 +143,121 @@ impl Drop for AssetCatalogLoader {
 
 #[cfg(test)]
 mod tests {
+    use super::CatalogIndex;
     use crate::{
         aside_session::{AsideSessionUi, StoryState},
-        assets::AssetOptions,
+        assets::{AssetOptions, Assets},
         story_runtime::StoryRuntime,
     };
     use reel_engine::{
         Epoch, Session, SessionId,
         aside::{SliceBudget, VmLimits},
     };
+    use std::{collections::BTreeMap, fs, path::Path, sync::Arc};
+
+    #[test]
+    fn indexed_archives_select_exact_and_base_catalogs_across_new_sessions() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/reel-artifacts/indexed-catalog-player");
+        fs::create_dir_all(&root).unwrap();
+        let temporary = tempfile_directory(&root);
+        let archive = temporary.join("languages.rtp");
+        let mut writer = reel_package::archive::ArchiveWriter::new(
+            fs::File::create(&archive).unwrap(),
+            reel_package::archive::ArchiveKind::Text,
+        )
+        .unwrap();
+        let catalogs: CatalogIndex = Arc::new(BTreeMap::from([
+            ("en".into(), "__reel/catalogs/en.ftl".into()),
+            ("en-US".into(), "__reel/catalogs/en-US.ftl".into()),
+            ("fr".into(), "__reel/catalogs/fr.ftl".into()),
+        ]));
+        for (locale, text) in [
+            ("en", "greeting = Base English\ncommon = Base fallback\n"),
+            ("en-US", "greeting = US English\n"),
+            ("fr", "greeting = Français\n"),
+        ] {
+            writer.add(&catalogs[locale], &mut text.as_bytes()).unwrap();
+        }
+        writer.finish().unwrap();
+        let assets = Assets::packaged(
+            AssetOptions {
+                root: temporary.clone(),
+                ..Default::default()
+            },
+            [archive],
+            None,
+        )
+        .unwrap();
+        let script = r#"
+            fn main() {
+                localization.set_locale("en");
+                if tr("source", id: "greeting") != "Base English" { throw "initial indexed catalog"; }
+                game.start(next);
+            }
+            fn next() {
+                localization.set_locale("en-US");
+                if tr("source", id: "greeting") != "US English" { throw "exact indexed catalog"; }
+                if tr("source", id: "common") != "Base fallback" { throw "base indexed catalog"; }
+                localization.set_locale("fr");
+                if tr("source", id: "greeting") != "Français" { throw "new session indexed catalog"; }
+                localization.set_locale("de");
+                if tr("original", id: "greeting") != "original" { throw "missing catalog fallback"; }
+            }
+        "#;
+        let driver = AsideSessionUi::from_source(
+            Session::new(SessionId(73), Epoch(1)).unwrap(),
+            script,
+            "indexed",
+            1,
+            "main",
+            "en",
+            VmLimits::default(),
+        )
+        .unwrap()
+        .with_asset_context(assets, catalogs.clone());
+        let mut runtime = StoryRuntime::new(driver);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while runtime.driver().state() != StoryState::Finished || runtime.needs_tick() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "indexed runtime stalled"
+            );
+            runtime.tick(SliceBudget::default(), || 0).unwrap();
+            assert!(
+                matches!(
+                    runtime.driver().state(),
+                    StoryState::Running | StoryState::Finished
+                ),
+                "indexed runtime failed: {:?} {:?}",
+                runtime.driver().state(),
+                runtime.driver().fault().unwrap()
+            );
+            if runtime.driver().adapter().localization_pending() {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+        assert_eq!(runtime.driver().ui().session().identity().epoch, Epoch(2));
+        assert!(Arc::ptr_eq(&catalogs, &runtime.driver().catalogs()));
+        drop(runtime);
+        fs::remove_dir_all(temporary).unwrap();
+    }
+
+    fn tempfile_directory(root: &Path) -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let directory = root.join(format!(
+            "{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        fs::create_dir(&directory).unwrap();
+        directory
+    }
 
     #[test]
     fn localization_resource_wait_wakes_runtime_and_then_becomes_idle() {
         let script = r#"fn main() {
-            localization.load("en", "locales/en/story.ftl");
+            localization.load("en", "localization/translations/en/story.ftl");
             localization.set_locale("en");
             if tr("雨停了。") != "The rain stopped." { throw "external catalog"; }
             let mut failed = false;

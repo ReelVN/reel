@@ -1,6 +1,7 @@
 //! Versioned document overlays and cached compiler project analysis.
 use crate::{
-    HostContext, HostDeclaration, HostDocument, HostMember, ModuleRoot, NamedType, ServerOptions,
+    HostContext, HostDeclaration, HostDocument, HostMember, NamedType, ServerOptions,
+    SourceRootQuery,
     position::{Encoding, LineIndex},
 };
 use aside_compiler::{
@@ -13,6 +14,7 @@ use lsp_types::{
     TextDocumentContentChangeEvent, Uri,
 };
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, BTreeSet, VecDeque},
     path::{Path, PathBuf},
     str::FromStr,
@@ -205,7 +207,7 @@ struct Document {
 /// the same lossless trees and semantic snapshot; no game session is started.
 pub(crate) struct Workspace {
     pub host: Arc<HostIndex>,
-    pub roots: Vec<ModuleRoot>,
+    source_root: Option<SourceRootQuery>,
     project_prefix: Option<String>,
     documents: BTreeMap<String, Document>,
     disk_sources: BTreeMap<String, Source>,
@@ -216,14 +218,7 @@ impl Workspace {
     pub fn new(options: ServerOptions) -> Self {
         Self {
             host: Arc::new(options.host.into()),
-            roots: options
-                .module_roots
-                .into_iter()
-                .map(|mut root| {
-                    root.path = normalize_drive(root.path);
-                    root
-                })
-                .collect(),
+            source_root: options.source_root,
             project_prefix: options.project_prefix,
             documents: BTreeMap::new(),
             disk_sources: BTreeMap::new(),
@@ -303,14 +298,39 @@ impl Workspace {
             .map(|document| document.source.uri.clone())
             .collect()
     }
+    /// Format the cached lossless tree without constructing a semantic snapshot.
+    /// Syntax errors already have diagnostics and leave the editor buffer unchanged.
+    pub fn format(
+        &self,
+        uri: &Uri,
+        encoding: Encoding,
+    ) -> Result<Vec<lsp_types::TextEdit>, String> {
+        let document = self
+            .documents
+            .get(&source_key(uri))
+            .ok_or("document is not open")?;
+        let source = &document.source;
+        let Ok(formatted) = aside_compiler::format_parsed(&source.parsed) else {
+            return Ok(Vec::new());
+        };
+        if formatted == source.text.as_ref() {
+            return Ok(Vec::new());
+        }
+        let length = u32::try_from(source.text.len()).expect("parsed source has a u32 byte range");
+        Ok(vec![lsp_types::TextEdit {
+            range: source.lines.range(
+                &source.text,
+                aside_compiler::TextRange::new(0.into(), length.into()),
+                encoding,
+            ),
+            new_text: formatted,
+        }])
+    }
     pub fn invalidate(&mut self, uri: &Uri) {
-        let project_boundary = uri_path(uri)
-            .is_some_and(|path| path.file_name().is_some_and(|name| name == "main.aside"));
         let uri = source_key(uri);
         self.disk_sources.remove(&uri);
         for (key, document) in &mut self.documents {
-            if project_boundary
-                || key == &uri
+            if key == &uri
                 || document
                     .snapshot
                     .as_ref()
@@ -326,10 +346,10 @@ impl Workspace {
         if let Some(snapshot) = &document.snapshot {
             return Ok(snapshot.clone());
         }
-        let roots = self.effective_roots(uri);
+        let (roots, mut dependencies) = self.effective_roots(uri);
         let entry = module_path(uri, &roots).unwrap_or_else(|| uri.as_str().to_owned());
         let mut sources = BTreeMap::from([(entry.clone(), document.source.clone())]);
-        let mut dependencies = BTreeSet::from([key.clone()]);
+        dependencies.insert(key.clone());
         let mut queue = VecDeque::from([entry.clone()]);
         let mut visited = BTreeSet::new();
         while let Some(module) = queue.pop_front() {
@@ -429,32 +449,38 @@ impl Workspace {
         self.documents.get_mut(&key).unwrap().snapshot = Some(snapshot.clone());
         Ok(snapshot)
     }
-    fn effective_roots(&self, uri: &Uri) -> Vec<ModuleRoot> {
-        let mut roots = self.roots.clone();
-        if let Some(path) = uri_path(uri)
-            && let Some(parent) = path.parent()
-            && let Some(project) = parent.ancestors().find(|directory| {
-                let main = directory.join("main.aside");
-                main.is_file()
-                    || file_uri(&main)
-                        .ok()
-                        .is_some_and(|uri| self.documents.contains_key(&source_key(&uri)))
+    fn effective_roots(&self, uri: &Uri) -> (Vec<ModuleRoot>, BTreeSet<String>) {
+        let Some(path) = uri_path(uri) else {
+            return (Vec::new(), BTreeSet::new());
+        };
+        let Some(parent) = path.parent() else {
+            return (Vec::new(), BTreeSet::new());
+        };
+        let dependencies = RefCell::new(BTreeSet::new());
+        let project = self.source_root.and_then(|query| {
+            query(parent, &|candidate| {
+                let open = file_uri(candidate).ok().is_some_and(|uri| {
+                    let key = source_key(&uri);
+                    dependencies.borrow_mut().insert(key.clone());
+                    self.documents.contains_key(&key)
+                });
+                open || candidate.is_file()
             })
+        });
+        let source = normalize_drive(project.clone().unwrap_or_else(|| parent.to_path_buf()));
+        let mut roots = vec![ModuleRoot {
+            prefix: String::new(),
+            path: source.clone(),
+        }];
+        if project.is_some()
+            && let Some(prefix) = &self.project_prefix
         {
             roots.push(ModuleRoot {
-                prefix: String::new(),
-                path: project.to_path_buf(),
+                prefix: prefix.clone(),
+                path: source,
             });
-            if let Some(prefix) = &self.project_prefix
-                && !roots.iter().any(|root| &root.prefix == prefix)
-            {
-                roots.push(ModuleRoot {
-                    prefix: prefix.clone(),
-                    path: project.to_path_buf(),
-                });
-            }
         }
-        roots
+        (roots, dependencies.into_inner())
     }
     pub fn diagnostics(
         &mut self,
@@ -496,6 +522,11 @@ impl Workspace {
     }
 }
 
+struct ModuleRoot {
+    prefix: String,
+    path: PathBuf,
+}
+
 pub(crate) fn file_uri(path: &Path) -> Result<Uri, String> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
@@ -513,6 +544,20 @@ pub(crate) fn uri_path(uri: &Uri) -> Option<PathBuf> {
     ))
 }
 fn normalize_drive(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    let path = {
+        use std::path::{Component, Prefix};
+        let mut components = path.components();
+        if let Some(Component::Prefix(prefix)) = components.next()
+            && let Prefix::VerbatimDisk(letter) = prefix.kind()
+        {
+            let mut normalized = PathBuf::from(format!("{}:", char::from(letter)));
+            normalized.push(components.as_path());
+            normalized
+        } else {
+            path
+        }
+    };
     #[cfg(windows)]
     if let Some(text) = path.to_str()
         && text.as_bytes().get(1) == Some(&b':')

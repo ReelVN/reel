@@ -236,7 +236,7 @@ fn terminal_video_collected_before_publication_restores_its_picture() {
 #[test]
 fn video_nodes_share_activity_ownership_and_restore_live_and_terminal_frames() {
     source::compile_story(
-        include_str!("../../../../../examples/author_video.aside"),
+        include_str!("../../../../../examples/author_video/src/main.aside"),
         "author_video",
         1,
         "main",

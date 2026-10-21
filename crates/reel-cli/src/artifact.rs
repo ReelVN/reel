@@ -197,7 +197,7 @@ pub(crate) fn select_entry(
     let (owner, index, declaration) = found.ok_or_else(|| {
         let debug = module.debug.as_ref().expect("checked source");
         at(module, text_range(debug.source_span),
-            format!("story entry {name} was not found; define fn {short}() or select another function with --entry"))
+            format!("story entry {name} was not found; define fn {short}(); Reel projects start main from src/main.aside"))
     })?;
     let function = &p.functions[declaration.function_id as usize];
     let signature = &p.signatures[function.signature.index()];

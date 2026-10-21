@@ -1,4 +1,4 @@
-//! Source discovery rooted at the entry file, with optional external module roots.
+//! Discover the imported source graph of the nearest Reel project.
 use super::{Checked, Failure, ReportedDiagnostic, check_sources, error, read_source};
 use aside_compiler::{
     DiagnosticCode, TextRange,
@@ -6,11 +6,61 @@ use aside_compiler::{
 };
 use std::{
     collections::{BTreeMap, VecDeque},
+    io,
     path::{Path, PathBuf},
 };
 
-pub struct Loaded {
+/// The fixed entry shared by project commands and compiled artifacts.
+pub const ENTRY: &str = "main::main";
+
+/// Project directory and its fixed source entry.
+pub struct Location {
     pub root: PathBuf,
+    pub input: PathBuf,
+}
+
+/// Find `src/main.aside` in this directory or an ancestor, without scanning trees.
+pub fn locate(directory: &Path) -> io::Result<Location> {
+    locate_with(directory, &Path::is_file)
+}
+
+/// Query project membership for compiled artifacts that may live without source.
+pub fn find(directory: &Path) -> io::Result<Option<Location>> {
+    find_with(directory, &Path::is_file)
+}
+
+/// Share project discovery with editor overlays containing an unsaved entry.
+pub fn locate_with(directory: &Path, exists: &dyn Fn(&Path) -> bool) -> io::Result<Location> {
+    find_with(directory, exists)?.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "Reel project not found: expected src/main.aside in this directory or an ancestor",
+        )
+    })
+}
+
+fn find_with(directory: &Path, exists: &dyn Fn(&Path) -> bool) -> io::Result<Option<Location>> {
+    let directory = directory.canonicalize()?;
+    if !directory.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotADirectory,
+            "project discovery requires a directory",
+        ));
+    }
+    Ok(directory
+        .ancestors()
+        .find(|root| exists(&root.join("src/main.aside")))
+        .map(|root| Location {
+            root: root.to_path_buf(),
+            input: root.join("src/main.aside"),
+        }))
+}
+
+pub struct Loaded {
+    /// Source module root, independent of the project's resource/build directory.
+    pub root: PathBuf,
+    /// Canonical project directory for default outputs and loose resources.
+    pub project_root: PathBuf,
     pub input: PathBuf,
     pub sources: Vec<SourceModule>,
     pub files: Vec<PathBuf>,
@@ -48,15 +98,14 @@ fn canonical(path: &[String], aliases: &BTreeMap<String, String>) -> Vec<String>
     .path
     .clone()
 }
-fn module_file(
-    path: &[String],
-    roots: &BTreeMap<String, PathBuf>,
-    input: &Path,
-) -> Option<PathBuf> {
+fn module_file(path: &[String], root: &Path, input: &Path) -> Option<PathBuf> {
     if path == ["main"] {
         return Some(input.to_path_buf());
     }
-    let mut file = roots.get(path.first()?)?.clone();
+    if path.first()?.as_str() != "game" {
+        return None;
+    }
+    let mut file = root.to_path_buf();
     if path.len() == 1 {
         file.push("mod");
     } else {
@@ -68,36 +117,34 @@ fn module_file(
     Some(file)
 }
 impl Loaded {
-    pub fn check(&self) -> Result<Checked, Failure> {
-        check_sources(&self.sources, &self.aliases)
+    /// Project resources retain their logical path relative to `resources/`.
+    pub fn assets(&self) -> PathBuf {
+        self.project_root.join("resources")
     }
-    pub fn entry(&self, requested: Option<&str>) -> String {
-        let mut path = requested
-            .unwrap_or("main::main")
-            .split("::")
-            .map(str::to_owned)
-            .collect::<Vec<_>>();
-        if path.first().is_some_and(|root| {
-            root != "main" && root != "game" && !self.aliases.contains_key(root)
-        }) {
-            path.insert(0, "game".into());
-        }
-        canonical(&path, &self.aliases).join("::")
+    pub fn check(&self) -> Result<Checked, Failure> {
+        let checked = check_sources(&self.sources, &self.aliases)?;
+        super::artifact::select_entry(&checked, Some(ENTRY))?;
+        Ok(checked)
     }
 }
 pub fn load(input: &Path) -> Result<Loaded, LoadError> {
-    load_with_modules(input, &BTreeMap::new())
-}
-
-pub fn load_with_modules(
-    input: &Path,
-    modules: &BTreeMap<String, PathBuf>,
-) -> Result<Loaded, LoadError> {
-    let input = if input.is_dir() {
-        input.join("main.aside")
-    } else {
-        input.to_path_buf()
-    };
+    let location = locate(input).map_err(|error| {
+        let mut result = failure(
+            "input",
+            &input.to_string_lossy(),
+            TextRange::empty(0.into()),
+            error.to_string(),
+            vec![],
+        );
+        result.input_error = Some(Box::new(super::InputError {
+            code: "REEL-INPUT-IO",
+            message: format!("cannot locate source: {error}"),
+            byte_range: None,
+            exit_code: 2,
+        }));
+        result
+    })?;
+    let input = location.input;
     let text = read_source(&input).map_err(|error| {
         let mut result = failure(
             "input",
@@ -111,61 +158,12 @@ pub fn load_with_modules(
     })?;
     let source = SourceModule {
         canonical_path: "main".into(),
-        source_path: Some(input.to_string_lossy().into()),
+        source_path: Some("src/main.aside".into()),
         version: "1".into(),
         source: text.into(),
     };
-    let setup_error = |message| {
-        failure(
-            "resolve",
-            &input.to_string_lossy(),
-            TextRange::empty(0.into()),
-            message,
-            vec![source.clone()],
-        )
-    };
-    let root = input
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."))
-        .canonicalize()
-        .map_err(|e| setup_error(e.to_string()))?;
-    let mut roots = BTreeMap::from([("game".into(), root.clone())]);
-    let mut aliases = BTreeMap::new();
-    if let Some(stem) = input.file_stem().and_then(|v| v.to_str()) {
-        aliases.insert(format!("game::{stem}"), "main".into());
-    }
-    let mut directories = BTreeMap::from([(root.clone(), "game".to_owned())]);
-    for (alias, path) in modules {
-        let valid = aside_compiler::lex(alias).is_ok_and(|l| {
-            l.diagnostics.is_empty()
-                && l.tokens.len() == 1
-                && l.tokens[0].kind == aside_compiler::SyntaxKind::Ident
-                && usize::from(l.tokens[0].range.end()) == alias.len()
-        });
-        if !valid || matches!(alias.as_str(), "main" | "game" | "reel" | "std") {
-            return Err(setup_error(format!(
-                "invalid or reserved module alias {alias}"
-            )));
-        }
-        let directory = path
-            .canonicalize()
-            .map_err(|e| setup_error(format!("module {alias}: {e}")))?;
-        if !directory.is_dir() {
-            return Err(setup_error(format!("module {alias} needs a directory")));
-        }
-        let canonical = directories
-            .entry(directory.clone())
-            .or_insert_with(|| alias.clone())
-            .clone();
-        aliases.insert(alias.clone(), canonical.clone());
-        if canonical == "game"
-            && let Some(stem) = input.file_stem().and_then(|v| v.to_str())
-        {
-            aliases.insert(format!("{alias}::{stem}"), "main".into());
-        }
-        roots.entry(canonical).or_insert(directory);
-    }
+    let root = location.root.join("src");
+    let mut aliases = BTreeMap::from([("game::main".into(), "main".into())]);
     let mut first = Some(source);
     let mut pending = VecDeque::from([(vec!["main".into()], None::<(String, TextRange)>)]);
     let mut sources = Vec::new();
@@ -179,7 +177,7 @@ pub fn load_with_modules(
         if logical.contains(&name) {
             continue;
         }
-        let file = module_file(&path, &roots, &input).expect("discovered module root");
+        let file = module_file(&path, &root, &input).expect("discovered module root");
         let (origin_path, span) =
             origin.unwrap_or_else(|| (input.to_string_lossy().into(), TextRange::empty(0.into())));
         let physical = file.canonicalize().map_err(|e| {
@@ -193,17 +191,6 @@ pub fn load_with_modules(
         })?;
         if let Some(target) = loaded.get(&physical) {
             aliases.insert(name.clone(), target.clone());
-            let root_aliases = aliases
-                .iter()
-                .filter(|(alias, target)| !alias.contains("::") && *target == &path[0])
-                .map(|(alias, _)| alias.clone())
-                .collect::<Vec<_>>();
-            for alias in root_aliases {
-                aliases.insert(
-                    format!("{}::{}", alias, path[1..].join("::")),
-                    target.clone(),
-                );
-            }
             logical.insert(name);
             continue;
         }
@@ -219,11 +206,7 @@ pub fn load_with_modules(
                     sources.clone(),
                 )
             })?;
-            let label = if path[0] == "game" {
-                path[1..].join("/") + ".aside"
-            } else {
-                path.join("/") + ".aside"
-            };
+            let label = "src/".to_owned() + &path[1..].join("/") + ".aside";
             SourceModule {
                 canonical_path: name.clone(),
                 source_path: Some(label),
@@ -287,7 +270,7 @@ pub fn load_with_modules(
             .into_iter()
             .flatten()
             {
-                if module_file(candidate, &roots, &input).is_some_and(|file| file.is_file()) {
+                if module_file(candidate, &root, &input).is_some_and(|file| file.is_file()) {
                     pending.push_back((candidate.to_vec(), Some((label.clone(), span))));
                     found = true;
                 }
@@ -305,6 +288,7 @@ pub fn load_with_modules(
     }
     Ok(Loaded {
         root,
+        project_root: location.root,
         input,
         sources,
         files,

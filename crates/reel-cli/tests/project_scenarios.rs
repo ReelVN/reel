@@ -25,6 +25,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+fn scenario_project() -> tempfile::TempDir {
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("src")).unwrap();
+    std::fs::create_dir(project.path().join("resources")).unwrap();
+    project
+}
+
 fn execute_project(path: &Path, timeout: Duration) -> Vec<audio::AudioStats> {
     let clicks = scenario_clicks();
     execute_project_with_capture(
@@ -104,17 +111,17 @@ fn execute_project_with_capture(
     let loaded =
         reel_cli::project::load(path).unwrap_or_else(|error| panic!("{:?}", error.failure));
     let checked = loaded.check().unwrap();
-    let entry = loaded.entry(None);
-    let artifact = reel_cli::build(&checked, Some(&entry)).unwrap();
+    let entry = reel_cli::project::ENTRY;
+    let artifact = reel_cli::build(&checked, Some(entry)).unwrap();
     let mut audio_stats = Vec::new();
     let mut capture_stats = Vec::new();
     for (kind, story) in [
-        ("source", reel_cli::into_story(checked, &entry).unwrap()),
+        ("source", reel_cli::into_story(checked, entry).unwrap()),
         ("ASB", reel_cli::decode_story(&artifact.bytes).unwrap()),
     ] {
         let saves = tempfile::tempdir().unwrap();
         let mut audio = audio::AudioClock::default();
-        let media = audio.factory(loaded.root.clone());
+        let media = audio.factory(loaded.assets());
         let driver = AsideSessionUi::from_compiled(
             Session::new(SessionId(1), Epoch(1)).unwrap(),
             story,
@@ -123,7 +130,7 @@ fn execute_project_with_capture(
         )
         .unwrap()
         .with_asset_options(AssetOptions {
-            root: loaded.root.clone(),
+            root: loaded.assets(),
             ..Default::default()
         })
         .with_media(media())
@@ -343,8 +350,8 @@ fn execute_project_with_capture(
 #[test]
 #[ignore = "requires a GPU adapter for capture-gated pointer input"]
 fn project_scenario_pointer_clicks_reach_modal_buttons_after_accepted_frames() {
-    let project = tempfile::tempdir().unwrap();
-    let source = project.path().join("main.aside");
+    let project = scenario_project();
+    let source = project.path().join("src/main.aside");
     std::fs::write(
         &source,
         r##"
@@ -370,8 +377,12 @@ fn project_scenario_pointer_clicks_reach_modal_buttons_after_accepted_frames() {
     "##,
     )
     .unwrap();
-    let (_, stats) =
-        execute_project_with_capture(&source, Duration::from_secs(30), true, &[(1, [32., 32.])]);
+    let (_, stats) = execute_project_with_capture(
+        project.path(),
+        Duration::from_secs(30),
+        true,
+        &[(1, [32., 32.])],
+    );
     assert_eq!(stats.len(), 2);
     for capture in stats {
         assert_eq!(capture.count, 1);
@@ -382,11 +393,11 @@ fn project_scenario_pointer_clicks_reach_modal_buttons_after_accepted_frames() {
 #[test]
 #[ignore = "requires a GPU adapter for real frame capture"]
 fn project_scenario_gpu_capture_restores_png_images_and_particles_at_canvas_size() {
-    let project = tempfile::tempdir().unwrap();
+    let project = scenario_project();
     image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 255, 255]))
-        .save(project.path().join("blue.png"))
+        .save(project.path().join("resources/blue.png"))
         .unwrap();
-    let source = project.path().join("main.aside");
+    let source = project.path().join("src/main.aside");
     std::fs::write(
         &source,
         r##"
@@ -415,7 +426,8 @@ fn project_scenario_gpu_capture_restores_png_images_and_particles_at_canvas_size
     "##,
     )
     .unwrap();
-    let (_, stats) = execute_project_with_capture(&source, Duration::from_secs(90), true, &[]);
+    let (_, stats) =
+        execute_project_with_capture(project.path(), Duration::from_secs(90), true, &[]);
     assert_eq!(stats.len(), 2, "source and actual ASB must both render");
     for captured in stats {
         assert_eq!(captured.count, 2);
@@ -442,8 +454,8 @@ fn project_scenario_gpu_capture_restores_png_images_and_particles_at_canvas_size
 
 #[test]
 fn project_scenario_executes_assertions_across_save_restore_and_new_session() {
-    let project = tempfile::tempdir().unwrap();
-    let source = project.path().join("main.aside");
+    let project = scenario_project();
+    let source = project.path().join("src/main.aside");
     std::fs::write(
         &source,
         r#"
@@ -471,12 +483,12 @@ fn project_scenario_executes_assertions_across_save_restore_and_new_session() {
     "#,
     )
     .unwrap();
-    execute_project(&source, Duration::from_secs(90));
+    execute_project(project.path(), Duration::from_secs(90));
 }
 
 #[test]
 fn project_scenario_retains_transition_assets_across_playing_save_restore() {
-    let project = tempfile::tempdir().unwrap();
+    let project = scenario_project();
     for (name, color) in [
         ("old.png", [255, 0, 0, 255]),
         ("new.png", [0, 0, 255, 255]),
@@ -486,7 +498,7 @@ fn project_scenario_retains_transition_assets_across_playing_save_restore() {
             .save(project.path().join(name))
             .unwrap();
     }
-    let source = project.path().join("main.aside");
+    let source = project.path().join("src/main.aside");
     std::fs::write(
         &source,
         r##"
@@ -538,19 +550,19 @@ fn project_scenario_retains_transition_assets_across_playing_save_restore() {
     "##,
     )
     .unwrap();
-    execute_project_with_capture(&source, Duration::from_secs(30), false, &[]);
+    execute_project_with_capture(project.path(), Duration::from_secs(30), false, &[]);
 }
 
 #[test]
 #[ignore = "requires a GPU adapter for transition pixels and saved drawing restoration"]
 fn project_scenario_gpu_transition_keeps_ancestor_opacity_and_restores_old_drawing() {
-    let project = tempfile::tempdir().unwrap();
+    let project = scenario_project();
     for (name, color) in [("old.png", [255, 0, 0, 255]), ("new.png", [0, 0, 255, 255])] {
         image::RgbaImage::from_pixel(16, 16, image::Rgba(color))
             .save(project.path().join(name))
             .unwrap();
     }
-    let source = project.path().join("main.aside");
+    let source = project.path().join("src/main.aside");
     std::fs::write(
         &source,
         r##"
@@ -595,7 +607,8 @@ fn project_scenario_gpu_transition_keeps_ancestor_opacity_and_restores_old_drawi
     "##,
     )
     .unwrap();
-    let (_, stats) = execute_project_with_capture(&source, Duration::from_secs(90), true, &[]);
+    let (_, stats) =
+        execute_project_with_capture(project.path(), Duration::from_secs(90), true, &[]);
     assert_eq!(stats.len(), 2);
     for stats in stats {
         assert_eq!(
@@ -629,13 +642,13 @@ fn project_scenario_gpu_transition_keeps_ancestor_opacity_and_restores_old_drawi
 
 #[test]
 fn project_scenario_mixes_audio_queue_across_save_restore_and_new_session() {
-    let project = tempfile::tempdir().unwrap();
+    let project = scenario_project();
     std::fs::write(
-        project.path().join("chime.wav"),
+        project.path().join("resources/chime.wav"),
         include_bytes!("../../../examples/assets/chime.wav"),
     )
     .unwrap();
-    let source = project.path().join("main.aside");
+    let source = project.path().join("src/main.aside");
     std::fs::write(&source, r#"
         fn main() {
             stage.replace(stack(width: 320, height: 180));
@@ -674,7 +687,7 @@ fn project_scenario_mixes_audio_queue_across_save_restore_and_new_session() {
             }
         }
     "#).unwrap();
-    for mixed in execute_project(&source, Duration::from_secs(90)) {
+    for mixed in execute_project(project.path(), Duration::from_secs(90)) {
         assert!(mixed.frames > 0, "offline device did not consume frames");
         assert!(
             mixed.peak > 0.01,
@@ -685,13 +698,13 @@ fn project_scenario_mixes_audio_queue_across_save_restore_and_new_session() {
 
 #[test]
 fn project_scenario_media_position_cue_restores_with_real_audio() {
-    let project = tempfile::tempdir().unwrap();
+    let project = scenario_project();
     std::fs::write(
-        project.path().join("chime.wav"),
+        project.path().join("resources/chime.wav"),
         include_bytes!("../../../examples/assets/chime.wav"),
     )
     .unwrap();
-    let source = project.path().join("main.aside");
+    let source = project.path().join("src/main.aside");
     std::fs::write(
         &source,
         r#"
@@ -724,7 +737,7 @@ fn project_scenario_media_position_cue_restores_with_real_audio() {
     "#,
     )
     .unwrap();
-    for mixed in execute_project(&source, Duration::from_secs(30)) {
+    for mixed in execute_project(project.path(), Duration::from_secs(30)) {
         assert!(mixed.frames > 0);
         assert!(mixed.peak > 0.01, "real decoded PCM was not consumed");
     }
@@ -732,8 +745,8 @@ fn project_scenario_media_position_cue_restores_with_real_audio() {
 
 #[test]
 fn segmented_dialogue_resumes_after_deferred_skip_and_auto_advance() {
-    let project = tempfile::tempdir().unwrap();
-    let source = project.path().join("main.aside");
+    let project = scenario_project();
+    let source = project.path().join("src/main.aside");
     std::fs::write(
         &source,
         r#"
@@ -770,7 +783,7 @@ fn segmented_dialogue_resumes_after_deferred_skip_and_auto_advance() {
         "#,
     )
     .unwrap();
-    execute_project(&source, Duration::from_secs(15));
+    execute_project(project.path(), Duration::from_secs(15));
 }
 
 #[test]
@@ -798,9 +811,9 @@ fn offline_audio_clock_preserves_fractional_time_and_releases_retired_outputs() 
 }
 
 #[test]
-#[ignore = "requires REEL_SCENARIO pointing to a self-checking project entry"]
+#[ignore = "requires REEL_SCENARIO pointing to a self-checking project directory"]
 fn external_project_scenario() {
-    let path = std::env::var_os("REEL_SCENARIO").expect("set REEL_SCENARIO to an Aside entry file");
+    let path = std::env::var_os("REEL_SCENARIO").expect("set REEL_SCENARIO to a Reel project directory");
     let timeout = std::env::var_os("REEL_SCENARIO_TIMEOUT_SECS")
         .map(|value| {
             let seconds = value

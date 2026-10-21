@@ -1,10 +1,13 @@
 //! Source-first localization tools sharing the author compiler and Fluent runtime.
+mod project;
 use aside_compiler::{
     SourceMap, SourcePosition, SyntaxKind,
     hir::{AnalyzedModule, FieldKey, Form, HirKind, NodeId, SymbolId},
 };
 use aside_vm::bytecode as bc;
 use fluent_syntax::{ast::Entry, parser};
+pub(crate) use project::bundle_project;
+pub use project::{PreparedCatalogs, check_project, prepare_project};
 use reel_engine::{
     aside::source,
     localization::{Catalog, message_id},
@@ -129,14 +132,12 @@ fn collect(input: &Path) -> Result<SourceCatalog, String> {
         }
     }
     let mut modules = compiled.modules.iter().collect::<Vec<_>>();
-    // The entry's source_path may be absolute, while imports are project-relative.
-    // Normalize both before choosing the deterministic owner of a shared message.
+    // Catalog paths mirror the project's source root; source references retain src/.
     let module_path = |module: &AnalyzedModule| {
-        if module.canonical_path() == "main" {
-            PathBuf::from(loaded.input.file_name().expect("project entry filename"))
-        } else {
-            PathBuf::from(module.source_path())
-        }
+        Path::new(module.source_path())
+            .strip_prefix("src")
+            .expect("project sources are relative to src")
+            .to_path_buf()
     };
     modules.sort_by_key(|module| module_path(module));
     let mut messages: Vec<Message> = Vec::new();
@@ -336,56 +337,64 @@ pub fn bundle(input: &Path, output: &Path, overwrite: bool) -> Result<Bundle, St
     if files.is_empty() {
         return Err(format!("{}: no .ftl catalogs found", input.display()));
     }
-    let mut identities = HashMap::<String, (usize, SourcePosition)>::new();
+    let mut entries = 0;
     let published = reel_storage::publish(&output, overwrite, |file| {
-        for (file_index, path) in files.iter().enumerate() {
-            let text = std::fs::read_to_string(path)
-                .map_err(|error| io::Error::other(format!("{}: {error}", path.display())))?;
-            let positions = SourceMap::new(&text);
-            let resource = parser::parse_runtime(text.as_str()).map_err(|(_, errors)| {
-                io::Error::other(
-                    errors
-                        .iter()
-                        .map(|error| {
-                            format!(
-                                "{}: {error}",
-                                location(path, positions.position(error.pos.start).unwrap())
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                )
-            })?;
-            for entry in &resource.body {
-                // Fluent uses one shared namespace for messages and terms.
-                let id = match entry {
-                    Entry::Message(message) => message.id.name,
-                    Entry::Term(term) => term.id.name,
-                    _ => continue,
-                };
-                let offset = id.as_ptr().addr() - text.as_ptr().addr();
-                let position = positions.position(offset).unwrap();
-                if let Some(&(first_file, first_position)) = identities.get(id) {
-                    let declaration = location(path, position);
-                    let first = location(&files[first_file], first_position);
-                    return Err(io::Error::other(format!(
-                        "{declaration}: duplicate Fluent id {id:?}\nfirst declaration: {first}"
-                    )));
-                }
-                identities.insert(id.into(), (file_index, position));
-            }
-            // A blank line prevents the next file from continuing a comment/pattern.
-            file.write_all(text.as_bytes())?;
-            file.write_all(b"\n\n")?;
-        }
+        entries = write_bundle(&files, file)?;
         Ok(())
     })
     .map_err(|error| error.to_string())?;
     Ok(Bundle {
         files: files.len(),
-        entries: identities.len(),
+        entries,
         cleanup_warning: published.cleanup_warning,
     })
+}
+
+// The explicit bundle command and automatic project preparation share one
+// parser, namespace check, source-location mapping, and streaming writer.
+fn write_bundle(files: &[PathBuf], file: &mut impl io::Write) -> io::Result<usize> {
+    let mut identities = HashMap::<String, (usize, SourcePosition)>::new();
+    for (file_index, path) in files.iter().enumerate() {
+        let text = std::fs::read_to_string(path)
+            .map_err(|error| io::Error::other(format!("{}: {error}", path.display())))?;
+        let positions = SourceMap::new(&text);
+        let resource = parser::parse_runtime(text.as_str()).map_err(|(_, errors)| {
+            io::Error::other(
+                errors
+                    .iter()
+                    .map(|error| {
+                        format!(
+                            "{}: {error}",
+                            location(path, positions.position(error.pos.start).unwrap())
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
+        })?;
+        for entry in &resource.body {
+            // Fluent uses one shared namespace for messages and terms.
+            let id = match entry {
+                Entry::Message(message) => message.id.name,
+                Entry::Term(term) => term.id.name,
+                _ => continue,
+            };
+            let offset = id.as_ptr().addr() - text.as_ptr().addr();
+            let position = positions.position(offset).unwrap();
+            if let Some(&(first_file, first_position)) = identities.get(id) {
+                let declaration = location(path, position);
+                let first = location(&files[first_file], first_position);
+                return Err(io::Error::other(format!(
+                    "{declaration}: duplicate Fluent id {id:?}\nfirst declaration: {first}"
+                )));
+            }
+            identities.insert(id.into(), (file_index, position));
+        }
+        // A blank line prevents the next file from continuing a comment/pattern.
+        file.write_all(text.as_bytes())?;
+        file.write_all(b"\n\n")?;
+    }
+    Ok(identities.len())
 }
 
 fn location(path: &Path, position: SourcePosition) -> String {

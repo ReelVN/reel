@@ -127,6 +127,9 @@ fn static_text(
 
 /// A request is owned by the calling script task until its one terminal result.
 pub trait CatalogLoader {
+    /// Resolve a canonical locale to its indexed asset key without reading it.
+    /// Missing locales use source-text fallback and do not create a request.
+    fn resolve(&self, locale: &str) -> Option<&str>;
     fn load(&mut self, locale: &str, source: &str) -> Result<u64, String>;
     fn poll(&mut self, id: u64) -> Option<Result<Catalog, String>>;
     fn cancel(&mut self, id: u64);
@@ -135,8 +138,13 @@ pub trait CatalogLoader {
 pub struct Localization {
     locale: LanguageIdentifier,
     base_locale: LanguageIdentifier,
-    catalogs: HashMap<LanguageIdentifier, Catalog>,
+    catalogs: HashMap<LanguageIdentifier, InstalledCatalog>,
     templates: HashMap<(LanguageIdentifier, String), Catalog>,
+    retained: HashMap<LanguageIdentifier, usize>,
+}
+struct InstalledCatalog {
+    catalog: Catalog,
+    pinned: bool,
 }
 impl Default for Localization {
     fn default() -> Self {
@@ -146,28 +154,104 @@ impl Default for Localization {
             locale,
             catalogs: HashMap::new(),
             templates: HashMap::new(),
+            retained: HashMap::new(),
         }
     }
 }
 impl Localization {
-    pub(crate) fn sources(&self) -> impl Iterator<Item = (String, String)> + '_ {
-        self.catalogs
-            .values()
-            .map(|c| (c.locale.to_string(), c.source.clone()))
+    pub(crate) fn sources(&self) -> impl Iterator<Item = (String, String, bool)> + '_ {
+        self.catalogs.values().map(|entry| {
+            (
+                entry.catalog.locale.to_string(),
+                entry.catalog.source.clone(),
+                entry.pinned,
+            )
+        })
     }
     pub fn locale(&self) -> &LanguageIdentifier {
         &self.locale
     }
+    /// Select a prepared locale and release inactive automatic catalogs and templates.
+    /// Explicit installations and catalogs retained by pending preloads stay available.
     pub fn set_locale(&mut self, locale: LanguageIdentifier) -> bool {
-        if locale == self.locale {
-            return false;
-        }
+        let changed = locale != self.locale;
         self.base_locale = LanguageIdentifier::from_parts(locale.language, None, None, &[]);
         self.locale = locale;
-        true
+        self.prune();
+        changed
     }
+    fn prune(&mut self) -> bool {
+        let previous = (self.catalogs.len(), self.templates.len());
+        self.catalogs.retain(|locale, entry| {
+            entry.pinned
+                || locale == &self.locale
+                || locale == &self.base_locale
+                || self.retained.contains_key(locale)
+        });
+        self.templates.retain(|(locale, _), _| {
+            locale == &self.locale
+                || locale == &self.base_locale
+                || self.catalogs.get(locale).is_some_and(|entry| entry.pinned)
+                || self.retained.contains_key(locale)
+        });
+        previous != (self.catalogs.len(), self.templates.len())
+    }
+    /// Install an explicitly loaded catalog and retain it across locale changes.
     pub fn install(&mut self, catalog: Catalog) {
-        self.catalogs.insert(catalog.locale.clone(), catalog);
+        self.install_owned(catalog, true);
+    }
+    pub(crate) fn install_owned(&mut self, catalog: Catalog, pinned: bool) {
+        if !pinned
+            && self
+                .catalogs
+                .get(&catalog.locale)
+                .is_some_and(|entry| entry.pinned)
+        {
+            return;
+        }
+        let pinned = pinned
+            || self
+                .catalogs
+                .get(&catalog.locale)
+                .is_some_and(|entry| entry.pinned);
+        self.catalogs
+            .insert(catalog.locale.clone(), InstalledCatalog { catalog, pinned });
+    }
+    pub(crate) fn contains(&self, locale: &LanguageIdentifier) -> bool {
+        self.catalogs.contains_key(locale)
+    }
+    pub(crate) fn automatic(&self, locale: &LanguageIdentifier) -> bool {
+        self.catalogs.get(locale).is_some_and(|entry| !entry.pinned)
+    }
+    pub(crate) fn retain_for_load(&mut self, locales: &[String]) {
+        for locale in locales {
+            *self
+                .retained
+                .entry(language_id(locale).unwrap())
+                .or_default() += 1;
+        }
+    }
+    pub(crate) fn release_load(&mut self, locales: &[String]) -> bool {
+        if locales.is_empty() {
+            return false;
+        }
+        for locale in locales {
+            let locale = language_id(locale).unwrap();
+            let uses = self
+                .retained
+                .get_mut(&locale)
+                .expect("pending catalog retention");
+            *uses -= 1;
+            if *uses == 0 {
+                self.retained.remove(&locale);
+            }
+        }
+        self.prune()
+    }
+    pub(crate) fn pin(&mut self, locale: &LanguageIdentifier) {
+        if let Some(entry) = self.catalogs.get_mut(locale) {
+            entry.pinned = true;
+        }
     }
     pub fn format(
         &mut self,
@@ -196,7 +280,7 @@ impl Localization {
             if let Some(result) = self
                 .catalogs
                 .get(locale)
-                .and_then(|c| c.format(id, parameters))
+                .and_then(|entry| entry.catalog.format(id, parameters))
             {
                 return result;
             }
@@ -213,5 +297,46 @@ impl Localization {
         self.templates[&key]
             .format("fallback", parameters)
             .unwrap_or_else(|| Err(format!("{id}: fallback has no message value")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selection_reclaims_automatic_catalogs_and_their_fallback_templates() {
+        let mut service = Localization::default();
+        service.install_owned(
+            Catalog::parse("en", "en.ftl", "hello = Hello\n".into()).unwrap(),
+            false,
+        );
+        service.install(Catalog::parse("de", "de.ftl", "hello = Hallo\n".into()).unwrap());
+        service.set_locale(language_id("en").unwrap());
+        let args = FluentArgs::new();
+        for locale in ["en", "de"] {
+            service
+                .format_in(
+                    Some(&language_id(locale).unwrap()),
+                    "missing",
+                    "Literal",
+                    Some(&args),
+                )
+                .unwrap();
+        }
+        assert_eq!(service.templates.len(), 2);
+        service.install_owned(
+            Catalog::parse("fr", "fr.ftl", "hello = Bonjour\n".into()).unwrap(),
+            false,
+        );
+        service.set_locale(language_id("fr").unwrap());
+        assert_eq!(service.catalogs.len(), 2);
+        assert!(!service.contains(&language_id("en").unwrap()));
+        assert!(service.contains(&language_id("de").unwrap()));
+        assert_eq!(service.templates.len(), 1);
+        assert_eq!(
+            service.templates.keys().next().unwrap().0,
+            language_id("de").unwrap()
+        );
     }
 }

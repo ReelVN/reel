@@ -1,0 +1,45 @@
+fn change(state, width = null, height = null, fullscreen = null, vsync = null) {
+    state.busy = true;
+    state.error = "";
+    try {
+        state.display = await window.configure(
+            width: width, height: height, fullscreen: fullscreen, vsync: vsync
+        );
+    } catch error {
+        state.error = f"{error}";
+    }
+    state.busy = false;
+}
+
+fn main() {
+    game.configure(title: "Window settings", fonts: ["fonts/body.ttf"]);
+    let state = model({ display: window.info(), busy: false, error: "" });
+    stage.replace(
+        column(x: 40, y: 40, gap: 16, enabled: derive(|| !state.busy)) {
+            text(
+                derive(
+                    || f"{state.display.platform}: {state.display.width} × {state.display.height}"
+                ), font_size: 24
+            );
+            if state.display.capabilities.resize {
+                button(
+                    "1280 × 720", width: 260, enabled: derive(|| !state.display.fullscreen),
+                    on_click: |event| change(state, width: 1280, height: 720)
+                );
+            }
+            if state.display.capabilities.fullscreen {
+                button(
+                    "Toggle fullscreen", width: 260,
+                    on_click: |event| change(state, fullscreen: !state.display.fullscreen)
+                );
+            }
+            if state.display.capabilities.vsync {
+                button(
+                    "Toggle VSync", width: 260,
+                    on_click: |event| change(state, vsync: !state.display.vsync)
+                );
+            }
+            text(bind(state.error), color: "#ff8888", width: 600);
+        }
+    );
+}

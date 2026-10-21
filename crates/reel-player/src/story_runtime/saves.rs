@@ -98,9 +98,7 @@ impl StoryRuntime {
                         identity,
                         driver.ui().session().read_progress().clone(),
                         self.media_factory.as_ref().map(|factory| factory()),
-                        Some(Box::new(crate::localization::AssetCatalogLoader::new(
-                            driver.ui().assets(),
-                        ))),
+                        Some(driver.catalog_loader()),
                     );
                     match restored {
                         Ok(restore) => {
@@ -153,6 +151,7 @@ impl StoryRuntime {
                     live.locale().into(),
                     live.ui().assets(),
                     live.initializer(),
+                    live.catalogs(),
                 )?)?);
             }
             if let Some(candidate) = &mut saves.candidate {

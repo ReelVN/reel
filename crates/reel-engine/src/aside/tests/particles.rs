@@ -247,7 +247,7 @@ fn particles_clock_slices_storage_and_tween_coexist_without_particle_objects() {
 #[test]
 fn particle_example_uses_registered_author_interfaces() {
     source::compile_story(
-        include_str!("../../../../../examples/author_particles.aside"),
+        include_str!("../../../../../examples/author_particles/src/main.aside"),
         "author_particles",
         1,
         "main",

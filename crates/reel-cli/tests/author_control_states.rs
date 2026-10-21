@@ -235,7 +235,7 @@ fn source_and_asb_interaction_feedback_survives_presentation_and_cancels_with_ow
 
 #[test]
 fn author_control_states_example_initializes_from_source_and_asb() {
-    let source = include_str!("../../../examples/author_control_states.aside");
+    let source = include_str!("../../../examples/author_control_states/src/main.aside");
     let checked = reel_cli::check(source, "author_control_states.aside").unwrap();
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for story in [
@@ -267,7 +267,7 @@ fn author_control_states_example_initializes_from_source_and_asb() {
 
 #[test]
 fn author_models_example_initializes_from_source_and_asb() {
-    let source = include_str!("../../../examples/author_models.aside");
+    let source = include_str!("../../../examples/author_models/src/main.aside");
     let checked = reel_cli::check(source, "author_models.aside").unwrap();
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for story in [
@@ -342,7 +342,7 @@ fn derived_pressed_visual_preserves_mouse_and_touch_activation() {
 
 #[test]
 fn author_narrative_example_initializes_from_source_and_asb() {
-    let source = include_str!("../../../examples/author_narrative.aside");
+    let source = include_str!("../../../examples/author_narrative/src/main.aside");
     let checked = reel_cli::check(source, "author_narrative.aside").unwrap();
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for story in [

@@ -1,0 +1,43 @@
+// Reel imports the Aside standard prelude; other hosts can expose std::random too.
+class Word {
+    let text: string;
+    let score: int;
+    fn init(self, text: string, score: int) {
+        self.text = text;
+        self.score = score;
+    }
+}
+
+fn main() {
+    game.configure(fonts: ["fonts/body.ttf"]);
+    let rng = random();
+    let words = [Word("星光", 3), Word("雨声", 2), Word("远行", 1)];
+    let caption = text("抽一个词，开始一段故事。", font_size: 32);
+    let buttons = row(gap: 12);
+    stage.replace(
+        column(x: 40, y: 60, gap: 20) {
+            caption;
+            buttons;
+            button(
+                "重新抽取",
+                on_click: |event| {
+                    let word = rng.pick(words);
+                    caption.value = f"{word.text} · {word.score}";
+                }
+            );
+        }
+    );
+    // Draw without replacement by removing from a separate pool.
+    let pool = words.slice(0 .. words.len());
+    while pool.len() > 0 {
+        let word = pool.remove(rng.int(0, pool.len()));
+        buttons.add(
+            button(
+                word.text,
+                on_click: |event| {
+                    caption.value = f"{word.text} · {word.score}";
+                }
+            )
+        );
+    }
+}

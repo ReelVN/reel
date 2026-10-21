@@ -1,4 +1,5 @@
 mod commands;
+mod formatting;
 use aside_compiler::{SourceMap, semantic::SourceModule};
 use clap::Parser;
 use codespan_reporting::{files::SimpleFile, term};
@@ -48,11 +49,27 @@ fn run() -> io::Result<u8> {
         Command::Run(args) => run_package(args),
         Command::Loc(command) => localization_command(command),
         Command::PrepareImage(args) => prepare_image_command(args),
+        Command::Fmt(args) => formatting::run(args.check),
     }
 }
 
 fn run_package(args: commands::Run) -> io::Result<u8> {
-    let Some(path) = args.source.to_str() else {
+    let source = if let Some(source) = args.source {
+        source
+    } else {
+        match reel_cli::project::locate(Path::new(".")) {
+            Ok(project) => project.root.join(if args.release {
+                "build/release/game.asb"
+            } else {
+                "build/debug/game.asb"
+            }),
+            Err(error) => {
+                failure(false, "project", None, &error.to_string())?;
+                return Ok(2);
+            }
+        }
+    };
+    let Some(path) = source.to_str() else {
         failure(
             false,
             "input",
@@ -61,11 +78,7 @@ fn run_package(args: commands::Run) -> io::Result<u8> {
         )?;
         return Ok(2);
     };
-    match reel_cli::playback::run(
-        &args.source,
-        args.playback.assets,
-        args.playback.save_directory,
-    ) {
+    match reel_cli::playback::run(&source, args.playback.assets, args.playback.save_directory) {
         Ok(()) => Ok(0),
         Err(error) => {
             failure(false, "package", Some(path), &error)?;
@@ -76,59 +89,8 @@ fn run_package(args: commands::Run) -> io::Result<u8> {
 
 fn source_command(command: SourceCommand) -> io::Result<u8> {
     let json_format = command.format().json();
-    let source = command.project().source.clone();
-    let Some(path) = source.to_str() else {
-        failure(
-            json_format,
-            "input",
-            None,
-            "source path must be UTF-8 for diagnostic reporting",
-        )?;
-        return Ok(2);
-    };
-    let mut modules = match command.project().module_roots() {
-        Ok(modules) => modules,
-        Err(error) => {
-            failure(json_format, "usage", None, &error)?;
-            return Ok(2);
-        }
-    };
-    let mut project_path = source.clone();
-    let mut requested_entry = command.entry().map(str::to_owned);
-    let mut asset_root = None;
-    if let SourceCommand::Dev(args) = &command {
-        asset_root = args.playback.assets.clone();
-        if source
-            .extension()
-            .is_some_and(|extension| extension == "asb")
-        {
-            let manifest = match reel_cli::distribution::read_manifest(&source) {
-                Ok(manifest) => manifest,
-                Err(error) => {
-                    failure(false, "project", Some(path), &error.to_string())?;
-                    return Ok(1);
-                }
-            };
-            let Some(project) = manifest.source else {
-                failure(
-                    false,
-                    "project",
-                    Some(path),
-                    "release export has no source project",
-                )?;
-                return Ok(1);
-            };
-            let root = source.parent().unwrap();
-            project_path = root.join(project.entry);
-            for (alias, directory) in project.modules {
-                modules.entry(alias).or_insert_with(|| root.join(directory));
-            }
-            requested_entry = requested_entry.or(Some(project.function));
-            asset_root =
-                asset_root.or_else(|| manifest.loose.map(|directory| root.join(directory)));
-        }
-    }
-    let loaded = match reel_cli::project::load_with_modules(&project_path, &modules) {
+    let path = "src/main.aside";
+    let loaded = match reel_cli::project::load(Path::new(".")) {
         Ok(project) => project,
         Err(error) if error.sources.is_empty() => {
             if let Some(input) = error.input_error {
@@ -154,39 +116,91 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
         Err(error) => return source_error(json_format, path, &error.sources, error.failure),
     };
     let inputs = &loaded.sources;
-    let entry = loaded.entry(requested_entry.as_deref());
+    let entry = reel_cli::project::ENTRY;
     let checked = match loaded.check() {
         Ok(checked) => checked,
         Err(error) => return source_error(json_format, path, inputs, error),
     };
     match command {
-        SourceCommand::Check(_) => compilation_report(&checked, None, None, json_format, path),
+        SourceCommand::Check(_) => {
+            if let Err(error) = reel_cli::localization::check_project(&loaded.project_root) {
+                failure(json_format, "localization", Some(path), &error.to_string())?;
+                return Ok(1);
+            }
+            compilation_report(&checked, None, None, json_format, path)
+        }
         SourceCommand::Build(args) => {
-            let artifact = match build_with_profile(&checked, Some(&entry), args.settings.profile())
+            let mut artifact =
+                match build_with_profile(&checked, Some(entry), args.settings.profile()) {
+                    Ok(artifact) => artifact,
+                    Err(error) => return source_error(json_format, path, inputs, error),
+                };
+            let default_output = args.output.is_none();
+            let output = args.output.unwrap_or_else(|| {
+                loaded
+                    .project_root
+                    .join(format!("build/{}/game.asb", args.settings.profile().name()))
+            });
+            if default_output && let Err(error) = std::fs::create_dir_all(output.parent().unwrap())
             {
-                Ok(artifact) => artifact,
-                Err(error) => return source_error(json_format, path, inputs, error),
-            };
-            let published = match reel_cli::output::write(
-                &args.output,
-                &loaded.input,
-                &artifact.bytes,
-                args.settings.overwrite,
-            ) {
-                Ok(published) => published,
-                Err(error) => {
+                failure(json_format, "output", output.to_str(), &error.to_string())?;
+                return Ok(2);
+            }
+            let archive_directory = output
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+            let archive_directory = match archive_directory.canonicalize() {
+                Ok(directory) if directory.is_dir() => directory,
+                Ok(_) => {
                     failure(
                         json_format,
                         "output",
-                        args.output.to_str(),
-                        &error.to_string(),
+                        output.to_str(),
+                        "output parent must be a directory",
                     )?;
+                    return Ok(2);
+                }
+                Err(error) => {
+                    failure(json_format, "output", output.to_str(), &error.to_string())?;
+                    return Ok(2);
+                }
+            };
+            let prepared = match reel_cli::localization::prepare_project(
+                &loaded.project_root,
+                &archive_directory,
+            ) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    failure(json_format, "localization", Some(path), &error.to_string())?;
+                    return Ok(1);
+                }
+            };
+            if prepared.archive.is_some() {
+                artifact.bytes = match reel_cli::distribution::with_catalogs(&artifact, &prepared) {
+                    Ok(bytes) => bytes,
+                    Err(error) => {
+                        failure(json_format, "output", output.to_str(), &error.to_string())?;
+                        return Ok(2);
+                    }
+                };
+                artifact.blake3 = reel_package::digest(&artifact.bytes);
+            }
+            let published = match reel_cli::output::write(
+                &output,
+                &loaded.input,
+                &artifact.bytes,
+                default_output || args.settings.overwrite,
+            ) {
+                Ok(published) => published,
+                Err(error) => {
+                    failure(json_format, "output", output.to_str(), &error.to_string())?;
                     return Ok(2);
                 }
             };
             compilation_report(
                 &checked,
-                Some((&artifact, &args.output)),
+                Some((&artifact, &output)),
                 published.cleanup_warning.as_deref(),
                 json_format,
                 path,
@@ -201,7 +215,7 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
                         json_format,
                         "export",
                         player.to_str(),
-                        "platform player is missing; build with: cargo build --release -p reel-cli --features window",
+                        "platform player is missing; download the complete Reel tool package, including reel-game",
                     )?;
                     return Ok(1);
                 }
@@ -209,17 +223,31 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
             } else {
                 None
             };
-            let artifact = match reel_cli::build_export(&checked, &entry, profile) {
+            let artifact = match reel_cli::build_export(&checked, entry, profile) {
                 Ok(artifact) => artifact,
                 Err(error) => return source_error(json_format, path, inputs, error),
             };
+            let default_output = args.output.is_none();
+            let resources = if args.resources.is_empty()
+                && args.text.is_empty()
+                && loaded.project_root.join("resources").is_dir()
+            {
+                vec![reel_cli::distribution::Mount {
+                    prefix: ".".into(),
+                    directory: loaded.project_root.join("resources"),
+                }]
+            } else {
+                args.resources
+            };
             let options = reel_cli::distribution::ExportOptions {
-                output: args.output,
-                overwrite: args.settings.overwrite,
-                resources: args.resources,
+                output: args.output.unwrap_or_else(|| {
+                    loaded
+                        .project_root
+                        .join(format!("build/export/{}", profile.name()))
+                }),
+                overwrite: default_output || args.settings.overwrite,
+                resources,
                 text: args.text,
-                modules,
-                entry,
                 pack_bytes: args
                     .pack_bytes
                     .unwrap_or(std::num::NonZeroU64::new(2 << 30).unwrap()),
@@ -256,16 +284,33 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
                 }
             }
         }
-        SourceCommand::Dev(args) => match reel_cli::into_story(checked, &entry) {
-            Ok(story) => launch(
-                story,
-                asset_root.or(Some(loaded.root)),
-                None,
-                args.playback.save_directory,
-                path,
-            ),
-            Err(error) => source_error(false, path, inputs, error),
-        },
+        SourceCommand::Dev(args) => {
+            let prepared = match reel_cli::localization::prepare_project(
+                &loaded.project_root,
+                &loaded.project_root.join("build/debug"),
+            ) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    failure(false, "localization", Some(path), &error.to_string())?;
+                    return Ok(1);
+                }
+            };
+            let assets = args.playback.assets.unwrap_or_else(|| loaded.assets());
+            let packages = prepared
+                .archive
+                .map(|archive| (vec![archive], Some(assets.clone())));
+            match reel_cli::into_story(checked, entry) {
+                Ok(story) => launch(
+                    story,
+                    Some(assets),
+                    packages,
+                    prepared.catalogs,
+                    args.playback.save_directory,
+                    path,
+                ),
+                Err(error) => source_error(false, path, inputs, error),
+            }
+        }
     }
 }
 
@@ -349,7 +394,8 @@ fn localization_command(command: Localization) -> io::Result<u8> {
         }
         Localization::Extract(args) => {
             let (output, extraction) = if let Some(output) = args.destination.output {
-                let result = reel_cli::localization::extract(&args.source, &output, args.overwrite);
+                let result =
+                    reel_cli::localization::extract(Path::new("."), &output, args.overwrite);
                 (output, result)
             } else {
                 let output = args
@@ -357,7 +403,7 @@ fn localization_command(command: Localization) -> io::Result<u8> {
                     .output_dir
                     .expect("clap requires one extraction output");
                 let result = reel_cli::localization::extract_directory(
-                    &args.source,
+                    Path::new("."),
                     &output,
                     args.overwrite,
                 );
@@ -389,7 +435,7 @@ fn localization_command(command: Localization) -> io::Result<u8> {
                     Ok(0)
                 }
                 Err(error) => {
-                    failure(false, "localization", args.source.to_str(), &error)?;
+                    failure(false, "localization", Some("src/main.aside"), &error)?;
                     Ok(1)
                 }
             }
@@ -467,11 +513,12 @@ fn launch(
     story: reel_engine::aside::source::CompiledStory,
     assets: Option<PathBuf>,
     packages: Option<(Vec<PathBuf>, Option<PathBuf>)>,
+    catalogs: std::collections::BTreeMap<String, String>,
     save_directory: Option<PathBuf>,
     path: &str,
 ) -> io::Result<u8> {
     let root = assets.unwrap_or_else(|| Path::new(path).parent().unwrap().to_path_buf());
-    let result = reel_cli::playback::launch(story, root, packages, save_directory);
+    let result = reel_cli::playback::launch(story, root, packages, catalogs, save_directory);
     match result {
         Ok(()) => Ok(0),
         Err(message) => {

@@ -1,0 +1,41 @@
+fn main() {
+    game.configure(
+        title: "Reading settings", width: 640, height: 420, fonts: ["fonts/body.ttf"],
+        text_speed: 30
+    );
+    let speed = slider(
+        value: 30, min: 0, max: 120, step: 1, width: 300, height: 40,
+        on_change: |event| {
+            game.configure(text_speed: event.value);
+        }
+    );
+    let instant = toggle(
+        "Instant text", width: 300, height: 40,
+        on_change: |event| {
+            speed.enabled = !event.value;
+            if event.value {
+                game.configure(text_speed: 0);
+            } else {
+                game.configure(text_speed: speed.value);
+            }
+        }
+    );
+    stage.replace(
+        column(gap: 12, padding: 20) {
+            text("Text speed");
+            speed;
+            instant;
+            button(
+                "Reset", width: 300, height: 40,
+                on_click: |event| {
+                    speed.value = 30;
+                    speed.enabled = true;
+                    instant.value = false;
+                    game.configure(text_speed: 30);
+                }
+            );
+        }
+    );
+    narrator("Adjust the controls while this text appears. The next line uses the same settings.");
+    narrator("Settings remain interactive after the story function returns.");
+}

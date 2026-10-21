@@ -1,0 +1,16 @@
+// Supply assets/logo.mp4 under --assets: H.264 Baseline + optional AAC-LC.
+fn main() {
+    game.configure(title: "Video stage", width: 1280, height: 720);
+    let movie = video("assets/logo.mp4", width: 1280, height: 720, fit: "contain");
+    let playing = movie.play();
+    stage.replace(
+        button(
+            width: 1280, height: 720, decorated: false, background: "#000000",
+            on_click: || stop(playing)
+        ) {
+            movie;
+        }
+    );
+    await playing;
+    stage.replace(stack(width: 1280, height: 720, background: "#172534"));
+}

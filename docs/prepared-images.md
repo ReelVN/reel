@@ -4,7 +4,7 @@
 PNG/JPEG for `image("panorama.reel-image")`. The command writes an immutable manifest
 and its adjacent `.tiles` directory. Ship both.
 
-Run [author_large_image.aside](../examples/author_large_image.aside) with a wide
+Run [author_large_image.aside](../examples/author_large_image/src/main.aside) with a wide
 original and the font preparation from the creator guide. It pans, zooms out/in,
 then revisits the panorama using common stage transforms. Preparation is currently
 explicit; ASB build does not prepare or package image assets automatically.

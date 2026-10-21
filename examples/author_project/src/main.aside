@@ -1,0 +1,13 @@
+use game::ui::scene::{ scene };
+use game::motion::{ sway };
+
+fn main() {
+    game.configure(title: "窗边", width: 960, height: 540, fonts: ["fonts/body.ttf"]);
+    let view = scene();
+    stage.replace(view.root);
+    let movement = run(repeat(sway(view.card)), owner: view.card);
+    narrator("画面、按钮和动作来自不同模块，共用同一组节点。");
+    stop(movement);
+    await run(tween(view.card, rotation: 0, duration: 0.3));
+    narrator("模块负责组织与复用，剧情仍然按直觉顺序书写。");
+}

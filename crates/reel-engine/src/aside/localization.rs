@@ -6,10 +6,15 @@ aside_host::native_documentation! {
         /// An explicit locale selects its loaded catalog; otherwise use the current
         /// observable locale. Missing translations use the supplied source text.
         "reel::tr";
-        /// Load a Fluent catalog from an asset source for the specified locale.
-        /// Wait for loading to finish; parsing or resource failures propagate to the caller.
+        /// Preload and retain a locale's indexed catalogs, including its available base locale.
+        /// An explicit source loads one custom Fluent asset for that locale instead.
+        /// Wait for complete parsing; failures or task cancellation preserve installed catalogs.
         "reel::localization::load";
-        /// Select the active locale and notify translation-dependent views.
+        /// Load the indexed locale and its available base before selecting it atomically.
+        /// Missing catalogs use source text. Failures or task cancellation preserve the
+        /// current language; a newer selection supersedes an older pending call.
+        /// Superseded calls finish with null and do not publish their selection.
+        /// Retain only current/base automatic catalogs and explicitly preloaded catalogs.
         "reel::localization::set_locale";
         /// Read the current observable locale identifier.
         "reel::localization::locale";
@@ -22,12 +27,65 @@ use aside_vm::{
 };
 use fluent_bundle::{FluentArgs, FluentValue};
 
-struct Pending {
-    wait: Option<WaitId>,
+pub(super) fn describe(api: &mut aside_host::source::Api) {
+    use aside_compiler::semantic::TypeHint as T;
+    use aside_host::source::nullable;
+    api.refine(
+        "reel::localization::load",
+        T::Null,
+        &[("locale", T::String), ("source", nullable(T::String))],
+    );
+    api.refine(
+        "reel::localization::set_locale",
+        T::Null,
+        &[("locale", T::String)],
+    );
+    api.refine("reel::localization::locale", T::String, &[]);
+}
+
+struct Candidate {
     id: u64,
     locale: String,
     source: String,
-    result: Option<Result<crate::localization::Catalog, String>>,
+    result: Option<crate::localization::Catalog>,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+enum Operation {
+    Select { locale: String, generation: u64 },
+    Load { locales: Vec<String> },
+    Restore { pinned: bool },
+}
+type SavedCatalogs = (
+    Option<WaitId>,
+    Operation,
+    Vec<(String, String)>,
+    Vec<String>,
+);
+struct Pending {
+    wait: Option<WaitId>,
+    operation: Operation,
+    catalogs: Vec<Candidate>,
+    retained: Vec<String>,
+}
+impl Pending {
+    fn cancel(&self, loader: &mut dyn CatalogLoader) {
+        for candidate in &self.catalogs {
+            loader.cancel(candidate.id);
+        }
+    }
+    fn poll(&mut self, loader: &mut dyn CatalogLoader) -> Result<bool, String> {
+        let mut ready = true;
+        for candidate in &mut self.catalogs {
+            if candidate.result.is_none() {
+                match loader.poll(candidate.id) {
+                    Some(Ok(catalog)) => candidate.result = Some(catalog),
+                    Some(Err(error)) => return Err(error),
+                    None => ready = false,
+                }
+            }
+        }
+        Ok(ready)
+    }
 }
 #[derive(Default)]
 pub(super) struct Translations {
@@ -36,6 +94,7 @@ pub(super) struct Translations {
     pending: Vec<Pending>,
     revision: Option<RootToken>,
     selected: bool,
+    generation: u64,
 }
 impl Translations {
     pub(super) fn snapshot_records(&self) -> super::snapshot::RecordStream<'_> {
@@ -48,17 +107,29 @@ impl Translations {
                         locale: self.service.locale().to_string(),
                         revision: self.revision,
                         selected: self.selected,
+                        generation: self.generation,
                     },
                 )
             })
-            .chain(self.service.sources().map(|(locale, source)| {
-                Record::new(Part::Catalog, &(None::<WaitId>, locale, source))
+            .chain(self.service.sources().map(|(locale, source, pinned)| {
+                Record::new(
+                    Part::Catalog,
+                    &(
+                        None::<WaitId>,
+                        Operation::Restore { pinned },
+                        vec![(locale, source)],
+                        Vec::<String>::new(),
+                    ),
+                )
             }))
-            .chain(
-                self.pending
+            .chain(self.pending.iter().map(|p| {
+                let sources: Vec<_> = p
+                    .catalogs
                     .iter()
-                    .map(|p| Record::new(Part::Catalog, &(p.wait, &p.locale, &p.source))),
-            ),
+                    .map(|candidate| (&candidate.locale, &candidate.source))
+                    .collect();
+                Record::new(Part::Catalog, &(p.wait, &p.operation, sources, &p.retained))
+            })),
         )
     }
     pub(super) fn restore_record(
@@ -70,24 +141,24 @@ impl Translations {
             let saved: SavedTranslations = record.read()?;
             self.revision = saved.revision.map(|r| map.root(r)).transpose()?;
             self.selected = saved.selected;
+            self.generation = saved.generation;
             self.service.set_locale(
                 language_id(&saved.locale).map_err(aside_vm::snapshot::SnapshotError::Invalid)?,
             );
         } else {
-            let (wait, locale, source): (Option<WaitId>, String, String) = record.read()?;
+            let (wait, operation, sources, retained): SavedCatalogs = record.read()?;
             let wait = wait.map(|w| map.wait(w)).transpose()?;
-            let id = self
-                .loader
-                .as_mut()
-                .ok_or(AdapterError::Input("restoring catalogs requires a loader"))?
-                .load(&locale, &source)
+            let catalogs = self
+                .start_catalogs(sources)
                 .map_err(aside_vm::snapshot::SnapshotError::Invalid)?;
+            // Installed records are restored first. Keep this ownership even while
+            // their asynchronous loads are still waiting to publish the old catalogs.
+            self.service.retain_for_load(&retained);
             self.pending.push(Pending {
                 wait,
-                id,
-                locale,
-                source,
-                result: None,
+                operation,
+                catalogs,
+                retained,
             });
         }
         Ok(())
@@ -95,9 +166,49 @@ impl Translations {
     pub(super) fn close(&mut self) {
         if let Some(loader) = &mut self.loader {
             for pending in self.pending.drain(..) {
-                loader.cancel(pending.id);
+                pending.cancel(loader.as_mut());
+                self.service.release_load(&pending.retained);
             }
         }
+    }
+    fn start_catalogs(&mut self, sources: Vec<(String, String)>) -> Result<Vec<Candidate>, String> {
+        let mut catalogs: Vec<Candidate> = Vec::with_capacity(sources.len());
+        if sources.is_empty() {
+            return Ok(catalogs);
+        }
+        let loader = self
+            .loader
+            .as_mut()
+            .ok_or("catalog loader is not installed")?;
+        for (locale, source) in sources {
+            match loader.load(&locale, &source) {
+                Ok(id) => catalogs.push(Candidate {
+                    id,
+                    locale,
+                    source,
+                    result: None,
+                }),
+                Err(error) => {
+                    for candidate in catalogs {
+                        loader.cancel(candidate.id);
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        Ok(catalogs)
+    }
+    fn indexed_sources(&self, locales: &[String]) -> Vec<(String, String)> {
+        locales
+            .iter()
+            .filter(|locale| !self.service.contains(&language_id(locale).unwrap()))
+            .filter_map(|locale| {
+                self.loader
+                    .as_ref()?
+                    .resolve(locale)
+                    .map(|source| (locale.clone(), source.to_owned()))
+            })
+            .collect()
     }
 }
 
@@ -106,6 +217,7 @@ pub(super) struct SavedTranslations {
     locale: String,
     revision: Option<RootToken>,
     selected: bool,
+    generation: u64,
 }
 impl Drop for Translations {
     fn drop(&mut self) {
@@ -171,52 +283,195 @@ impl SessionVm {
         let mut woke = false;
         let mut index = 0;
         while index < self.translations.pending.len() {
-            let Pending { wait, id, .. } = self.translations.pending[index];
+            let wait = self.translations.pending[index].wait;
             let loader = self.translations.loader.as_mut().unwrap();
             if wait.is_some_and(|wait| !self.vm.wait_is_pending(wait)) {
-                loader.cancel(id);
-                self.translations.pending.swap_remove(index);
-                continue;
-            }
-            if self.translations.pending[index].result.is_none() {
-                self.translations.pending[index].result = loader.poll(id);
-            }
-            let Some(result) = &self.translations.pending[index].result else {
-                if wait.is_none() {
-                    break;
-                } // Install saved catalogs before pending replacements.
-                index += 1;
-                continue;
-            };
-            if wait.is_none()
-                && let Err(error) = result
-            {
-                return Err(aside_vm::snapshot::SnapshotError::Invalid(format!(
-                    "restoring translation catalog: {error}"
-                ))
-                .into());
-            }
-            let result = match result {
-                Ok(_) => {
+                self.translations.pending[index].cancel(loader.as_mut());
+                let pending = self.translations.pending.swap_remove(index);
+                if self.translations.service.release_load(&pending.retained) {
                     self.translation_changed()?;
-                    Completion::Ready(Value::NULL)
+                    woke = true;
                 }
-                Err(message) => Completion::Error(self.translation_fault(message.clone())?),
-            };
-            if let Some(wait) = wait {
-                self.vm.complete(wait, result)?;
+                continue;
             }
-            let pending = if wait.is_none() {
-                self.translations.pending.remove(index)
-            } else {
-                self.translations.pending.swap_remove(index)
-            };
-            if let Some(Ok(catalog)) = pending.result {
-                self.translations.service.install(catalog);
+            match self.translations.pending[index].poll(loader.as_mut()) {
+                Ok(false) => {
+                    if wait.is_none() {
+                        break; // Restore installed catalogs before pending replacements.
+                    }
+                    index += 1;
+                    continue;
+                }
+                Err(message) => {
+                    if wait.is_none() {
+                        return Err(aside_vm::snapshot::SnapshotError::Invalid(format!(
+                            "restoring translation catalog: {message}"
+                        ))
+                        .into());
+                    }
+                    let fault = self.translation_fault(message)?;
+                    self.vm.complete(wait.unwrap(), Completion::Error(fault))?;
+                    let pending = self.translations.pending.swap_remove(index);
+                    pending.cancel(self.translations.loader.as_mut().unwrap().as_mut());
+                    if self.translations.service.release_load(&pending.retained) {
+                        self.translation_changed()?;
+                    }
+                }
+                Ok(true) => {
+                    let changed = self.translation_will_change(
+                        &self.translations.pending[index].operation,
+                        &self.translations.pending[index].catalogs,
+                    );
+                    if changed {
+                        self.translation_changed()?;
+                    }
+                    if let Some(wait) = wait {
+                        self.vm.complete(wait, Completion::Ready(Value::NULL))?;
+                    }
+                    let pending = self.translations.pending.remove(index);
+                    self.commit_translation(pending.operation, pending.catalogs);
+                    self.translations.service.release_load(&pending.retained);
+                }
             }
             woke = true;
         }
         Ok(woke)
+    }
+    fn translation_will_change(&self, operation: &Operation, catalogs: &[Candidate]) -> bool {
+        if let Operation::Select { generation, .. } = &operation
+            && *generation != self.translations.generation
+        {
+            return false;
+        }
+        if !catalogs.is_empty() {
+            return true;
+        }
+        matches!(operation, Operation::Select { locale, .. }
+            if language_id(locale).unwrap() != *self.translations.service.locale())
+    }
+    fn commit_translation(&mut self, operation: Operation, catalogs: Vec<Candidate>) {
+        if let Operation::Select { generation, .. } = &operation
+            && *generation != self.translations.generation
+        {
+            return;
+        }
+        let pinned = match &operation {
+            Operation::Select { .. } => false,
+            Operation::Load { .. } => true,
+            Operation::Restore { pinned } => *pinned,
+        };
+        for candidate in catalogs {
+            self.translations.service.install_owned(
+                candidate.result.expect("completed catalog candidate"),
+                pinned,
+            );
+        }
+        match operation {
+            Operation::Select { locale, .. } => {
+                self.translations
+                    .service
+                    .set_locale(language_id(&locale).unwrap());
+                self.translations.selected = true;
+            }
+            Operation::Load { locales } => {
+                for locale in locales {
+                    self.translations
+                        .service
+                        .pin(&language_id(&locale).unwrap());
+                }
+            }
+            Operation::Restore { .. } => {}
+        }
+    }
+    fn supersede_locale_selection(&mut self) -> Result<u64, AdapterError> {
+        self.translations.generation = self
+            .translations
+            .generation
+            .checked_add(1)
+            .ok_or(AdapterError::Input("locale selection identity exhausted"))?;
+        let mut index = 0;
+        while index < self.translations.pending.len() {
+            if !matches!(
+                self.translations.pending[index].operation,
+                Operation::Select { .. }
+            ) {
+                index += 1;
+                continue;
+            }
+            if let Some(wait) = self.translations.pending[index].wait
+                && self.vm.wait_is_pending(wait)
+            {
+                // A superseded UI callback finishes normally without publishing its selection.
+                self.vm.complete(wait, Completion::Ready(Value::NULL))?;
+            }
+            let pending = self.translations.pending.swap_remove(index);
+            pending.cancel(self.translations.loader.as_mut().unwrap().as_mut());
+            if self.translations.service.release_load(&pending.retained) {
+                self.translation_changed()?;
+            }
+        }
+        Ok(self.translations.generation)
+    }
+    fn begin_translation(
+        &mut self,
+        ticket: HostTicket,
+        operation: Operation,
+        sources: Vec<(String, String)>,
+    ) -> Result<(), AdapterError> {
+        let catalogs = match self.translations.start_catalogs(sources) {
+            Ok(catalogs) => catalogs,
+            Err(message) => {
+                let fault = self.translation_fault(message)?;
+                self.vm.respond(ticket, HostResponse::Error(fault))?;
+                self.issued = None;
+                return Ok(());
+            }
+        };
+        if catalogs.is_empty() {
+            if self.translation_will_change(&operation, &catalogs) {
+                self.translation_changed()?;
+            }
+            self.vm.respond(ticket, HostResponse::Ready(Value::NULL))?;
+            self.commit_translation(operation, catalogs);
+        } else {
+            let retained = match &operation {
+                Operation::Load { locales } => locales
+                    .iter()
+                    .filter(|locale| {
+                        !catalogs
+                            .iter()
+                            .any(|candidate| &candidate.locale == *locale)
+                    })
+                    .filter(|locale| {
+                        self.translations
+                            .service
+                            .automatic(&language_id(locale).unwrap())
+                    })
+                    .cloned()
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let wait = ticket.wait_id();
+            if let Err(error) = self.vm.respond(ticket, HostResponse::Pending(wait)) {
+                for candidate in catalogs {
+                    self.translations
+                        .loader
+                        .as_mut()
+                        .unwrap()
+                        .cancel(candidate.id);
+                }
+                return Err(error.into());
+            }
+            self.translations.service.retain_for_load(&retained);
+            self.translations.pending.push(Pending {
+                wait: Some(wait),
+                operation,
+                catalogs,
+                retained,
+            });
+        }
+        self.issued = None;
+        Ok(())
     }
     pub(super) fn dispatch_localization(
         &mut self,
@@ -227,30 +482,23 @@ impl SessionVm {
         let result = match symbol {
             "reel::localization::load" => {
                 let locale = text::read_string(self.vm.heap(), args[0], self.read_limit)?;
-                let source = text::read_string(self.vm.heap(), args[1], self.read_limit)?;
-                let request = language_id(&locale).and_then(|locale| {
-                    self.translations
-                        .loader
-                        .as_mut()
-                        .ok_or_else(|| "catalog loader is not installed".to_string())?
-                        .load(&locale.to_string(), &source)
-                });
-                match request {
-                    Ok(id) => {
-                        let wait = ticket.wait_id();
-                        if let Err(error) = self.vm.respond(ticket, HostResponse::Pending(wait)) {
-                            self.translations.loader.as_mut().unwrap().cancel(id);
-                            return Err(error.into());
-                        }
-                        self.translations.pending.push(Pending {
-                            wait: Some(wait),
-                            id,
-                            locale,
-                            source,
-                            result: None,
-                        });
-                        self.issued = None;
-                        return Ok(());
+                match language_id(&locale) {
+                    Ok(locale) => {
+                        let (locales, sources) = if args[1].tag() == ValueTag::Null {
+                            let locales = locale_chain(&locale);
+                            let sources = self.translations.indexed_sources(&locales);
+                            (locales, sources)
+                        } else {
+                            let source =
+                                text::read_string(self.vm.heap(), args[1], self.read_limit)?;
+                            let locale = locale.to_string();
+                            (vec![locale.clone()], vec![(locale, source)])
+                        };
+                        return self.begin_translation(
+                            ticket,
+                            Operation::Load { locales },
+                            sources,
+                        );
                     }
                     Err(message) => Err(message),
                 }
@@ -259,12 +507,16 @@ impl SessionVm {
                 let locale = text::read_string(self.vm.heap(), args[0], self.read_limit)?;
                 match language_id(&locale) {
                     Ok(locale) => {
-                        if self.translations.service.locale() != &locale {
-                            self.translation_changed()?;
-                        }
-                        self.translations.service.set_locale(locale);
-                        self.translations.selected = true;
-                        Ok(Value::NULL)
+                        let generation = self.supersede_locale_selection()?;
+                        let sources = self.translations.indexed_sources(&locale_chain(&locale));
+                        return self.begin_translation(
+                            ticket,
+                            Operation::Select {
+                                locale: locale.to_string(),
+                                generation,
+                            },
+                            sources,
+                        );
                     }
                     Err(message) => Err(message),
                 }
@@ -334,4 +586,13 @@ impl SessionVm {
         self.issued = None;
         Ok(())
     }
+}
+
+fn locale_chain(locale: &unic_langid::LanguageIdentifier) -> Vec<String> {
+    let base = unic_langid::LanguageIdentifier::from_parts(locale.language, None, None, &[]);
+    let mut locales = vec![locale.to_string()];
+    if base != *locale {
+        locales.push(base.to_string());
+    }
+    locales
 }

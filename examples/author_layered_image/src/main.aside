@@ -1,0 +1,35 @@
+fn main() {
+    game.configure(fonts: ["fonts/body.ttf"]);
+    let state = model({ face: 0, warm: false });
+    let image_color = derive(
+        || if state.warm {
+            "#ffaaaa"
+        } else {
+            "#ffffff"
+        }
+    );
+    let body = { source: "assets/panels.png", width: 320, height: 180, color: image_color };
+    let faces = [null, { source: "assets/sun.jpg", x: 180, y: 20, width: 80, height: 80 }];
+    let portrait = layered_image(|| [body, faces[state.face]], width: 320, height: 180);
+    stage.replace(
+        column(gap: 16, padding: 24) {
+            portrait;
+            image("assets/panels.png", width: 160, height: 90, color: image_color);
+            button(
+                "切换图层",
+                on_click: |event| {
+                    state.face = 1 - state.face;
+                }
+            );
+            button(
+                "切换图片颜色",
+                on_click: |event| {
+                    state.warm = !state.warm;
+                }
+            );
+        }
+    );
+    narrator("点击按钮切换前景图层，背景节点保持不变。");
+    await run(tween(portrait, x: 100, duration: 0.5));
+    narrator("移动、缩放、透明度和存档使用同一个舞台模型。");
+}

@@ -1009,7 +1009,7 @@ fn camera_source_asb_binding_animation_takeover_and_retirement() {
 
 #[test]
 fn camera_public_example_executes_source_and_asb() {
-    let source = include_str!("../../../../../examples/author_camera.aside")
+    let source = include_str!("../../../../../examples/author_camera/src/main.aside")
         .replace("fn main()", "fn opening()");
     for encoded in [false, true] {
         let (mut session, mut vm) = models::prepared(&source, encoded);
@@ -1048,7 +1048,7 @@ fn camera_public_example_executes_source_and_asb() {
 
 #[test]
 fn sine_easing_public_example_source_asb_endpoints_midpoints_and_sampling_cost() {
-    let source = include_str!("../../../../../examples/author_sine_easing.aside")
+    let source = include_str!("../../../../../examples/author_sine_easing/src/main.aside")
         .replace("fn main()", "fn opening()");
     for encoded in [false, true] {
         let (mut session, mut vm) = models::prepared(&source, encoded);

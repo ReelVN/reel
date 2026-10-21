@@ -243,7 +243,7 @@ fn same_parent_move_preserves_identity_bindings_activities_and_ownership() {
 #[test]
 fn same_parent_reorder_public_example_callbacks_keep_the_animation() {
     use reel_ui::stage::NodeKind;
-    let source = include_str!("../../../../../examples/author_reorder.aside")
+    let source = include_str!("../../../../../examples/author_reorder/src/main.aside")
         .replace("fn main()", "fn opening()");
     for encoded in [false, true] {
         let (mut session, mut vm) = models::prepared(&source, encoded);

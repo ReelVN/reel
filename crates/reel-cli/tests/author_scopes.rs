@@ -10,7 +10,7 @@ use support::*;
 #[test]
 fn scope_example_start_stop_retires_child_work_from_source_and_asb() {
     let checked = reel_cli::check(
-        include_str!("../../../examples/author_scope.aside"),
+        include_str!("../../../examples/author_scope/src/main.aside"),
         "author_scope.aside",
     )
     .unwrap();
@@ -88,7 +88,7 @@ fn scope_example_start_stop_retires_child_work_from_source_and_asb() {
 #[test]
 fn scope_offset_example_keeps_base_motion_during_shake_stop_and_completion() {
     let checked = reel_cli::check(
-        include_str!("../../../examples/author_offsets.aside"),
+        include_str!("../../../examples/author_offsets/src/main.aside"),
         "author_offsets.aside",
     )
     .unwrap();

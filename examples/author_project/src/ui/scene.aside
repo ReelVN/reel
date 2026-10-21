@@ -1,0 +1,20 @@
+use game::ui::narrative::{ narrative };
+
+pub fn scene() {
+    let caption = text("雨后的窗边", font_size: 32, x: 24, y: 24);
+    let card = stack(width: 360, height: 200, x: 300, y: 100, background: "#27395d") {
+        caption;
+        button(
+            "改变画面", x: 24, y: 100,
+            on_click: |event| {
+                caption.value = "同一个节点，新的画面。";
+                await run(tween(caption, x: 48, duration: 0.3));
+            }
+        );
+    };
+    let root = stack() {
+        card;
+        narrative();
+    };
+    return { root: root, card: card };
+}

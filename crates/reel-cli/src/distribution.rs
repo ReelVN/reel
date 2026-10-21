@@ -3,12 +3,12 @@ use crate::{Artifact, BuildProfile, project::Loaded};
 use aside_vm::bytecode::TextPool;
 use reel_package::{
     archive::{ArchiveIndex, ArchiveKind, ArchiveWriter},
-    distribution::{Distribution, SourceProject, relative_path},
+    distribution::{Distribution, LooseResources, relative_path},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File},
-    io::{self, Read, Seek, SeekFrom},
+    io::{self, Read, Seek, SeekFrom, Write},
     num::NonZeroU64,
     path::{Path, PathBuf},
     sync::Arc,
@@ -16,6 +16,35 @@ use std::{
 
 pub const TEXT_POOL_ENTRY: &str = "__reel/text.pool";
 pub const MAIN_PACKAGE: &str = "game.asb";
+
+/// Add a prepared language index without changing bytecode or code identity.
+/// The content-addressed archive is already published beside the target ASB.
+pub fn with_catalogs(
+    artifact: &Artifact,
+    prepared: &crate::localization::PreparedCatalogs,
+) -> io::Result<Vec<u8>> {
+    let Some(archive) = &prepared.archive else {
+        return Ok(artifact.bytes.clone());
+    };
+    let manifest = Distribution {
+        text: Some(
+            archive
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| io::Error::other("catalog archive filename must be UTF-8"))?
+                .into(),
+        ),
+        resources: Vec::new(),
+        catalogs: prepared.catalogs.clone(),
+        loose: Some(LooseResources::Project),
+    };
+    let limits = reel_package::Limits::default();
+    let package = reel_package::decode(&artifact.bytes, limits).map_err(io::Error::other)?;
+    let bytecode = aside_vm::bytecode::encode(package.program().package(), limits.bytecode)
+        .map_err(io::Error::other)?;
+    reel_package::encode(&bytecode, package.metadata(), Some(&manifest), limits)
+        .map_err(io::Error::other)
+}
 
 pub fn player_path(cli: &Path) -> PathBuf {
     cli.with_file_name(format!("reel-game{}", std::env::consts::EXE_SUFFIX))
@@ -33,9 +62,11 @@ pub struct Mount {
 impl Mount {
     pub fn parse(value: &str) -> Result<Self, String> {
         let (prefix, directory) = value.split_once('=').ok_or("expected prefix=directory")?;
-        relative_path(prefix).map_err(|e| e.to_string())?;
-        if prefix == "." || prefix.starts_with("__reel") || directory.is_empty() {
-            return Err("use a nonempty resource prefix outside __reel".into());
+        if prefix != "." {
+            relative_path(prefix).map_err(|e| e.to_string())?;
+        }
+        if prefix.starts_with("__reel") || directory.is_empty() {
+            return Err("use a resource prefix outside __reel and a nonempty directory".into());
         }
         Ok(Self {
             prefix: prefix.into(),
@@ -49,8 +80,6 @@ pub struct ExportOptions {
     pub overwrite: bool,
     pub resources: Vec<Mount>,
     pub text: Vec<Mount>,
-    pub modules: BTreeMap<String, PathBuf>,
-    pub entry: String,
     pub pack_bytes: NonZeroU64,
     /// Platform player to copy into a release export.
     pub player: Option<PathBuf>,
@@ -107,7 +136,11 @@ fn collect(root: &Path, prefix: &str, out: &mut BTreeMap<String, PathBuf>) -> io
                     .to_str()
                     .ok_or_else(|| io::Error::other("resource path must be UTF-8"))?
                     .replace('\\', "/");
-                let name = format!("{prefix}/{suffix}");
+                let name = if prefix == "." {
+                    suffix
+                } else {
+                    format!("{prefix}/{suffix}")
+                };
                 relative_path(&name)?;
                 if out.insert(name.clone(), file).is_some() {
                     return Err(io::Error::other(format!(
@@ -140,83 +173,17 @@ fn copy(file: &Path, target: &Path) -> io::Result<u64> {
     fs::copy(file, target)
 }
 
-fn sources(loaded: &Loaded, options: &ExportOptions, staging: &Path) -> io::Result<SourceProject> {
-    let mut requested = vec![(loaded.root.canonicalize()?, "script".to_owned())];
-    for (alias, directory) in &options.modules {
-        let root = directory.canonicalize()?;
-        let target = format!("script/_modules/{alias}");
-        relative_path(&target)?;
-        if !requested.iter().any(|(path, _)| path == &root) {
-            requested.push((root, target));
-        }
-    }
-    requested.sort_by_key(|(path, _)| path.components().count());
-    let mut roots: Vec<(PathBuf, String)> = Vec::new();
-    for (root, preferred) in requested {
-        let target = if let Some((ancestor, prefix)) =
-            roots.iter().rev().find(|(path, _)| root.starts_with(path))
-        {
-            format!(
-                "{prefix}/{}",
-                root.strip_prefix(ancestor)
-                    .unwrap()
-                    .to_str()
-                    .ok_or_else(|| io::Error::other("module root must be UTF-8"))?
-                    .replace('\\', "/")
-            )
-        } else {
-            preferred
-        };
-        roots.push((root, target));
-    }
-    let modules = options
-        .modules
-        .iter()
-        .map(|(alias, path)| {
-            let root = path.canonicalize()?;
-            Ok((
-                alias.clone(),
-                roots
-                    .iter()
-                    .find(|(path, _)| path == &root)
-                    .unwrap()
-                    .1
-                    .clone(),
-            ))
-        })
-        .collect::<io::Result<BTreeMap<_, _>>>()?;
-    for (_, directory) in &roots {
-        fs::create_dir_all(staging.join(directory))?;
-    }
-    // Most specific root wins when libraries live under the project directory.
-    roots.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
-    let mut entry = None;
-    let input = loaded.input.canonicalize()?;
+fn sources(loaded: &Loaded, staging: &Path) -> io::Result<()> {
+    let root = loaded.root.canonicalize()?;
+    fs::create_dir_all(staging.join("src"))?;
     for file in &loaded.files {
         let file = file.canonicalize()?;
-        let (root, prefix) = roots
-            .iter()
-            .find(|(root, _)| file.starts_with(root))
-            .ok_or_else(|| {
-                io::Error::other(format!("source outside declared roots: {}", file.display()))
-            })?;
-        let suffix = file
-            .strip_prefix(root)
-            .unwrap()
-            .to_str()
-            .ok_or_else(|| io::Error::other("source path must be UTF-8"))?
-            .replace('\\', "/");
-        let name = format!("{prefix}/{suffix}");
-        copy(&file, &staging.join(&name))?;
-        if file == input {
-            entry = Some(name);
-        }
+        let relative = file.strip_prefix(&root).map_err(|_| {
+            io::Error::other(format!("source outside project src: {}", file.display()))
+        })?;
+        copy(&file, &staging.join("src").join(relative))?;
     }
-    Ok(SourceProject {
-        entry: entry.ok_or_else(|| io::Error::other("entry source missing from project"))?,
-        modules,
-        function: options.entry.clone(),
-    })
+    Ok(())
 }
 
 pub fn export(
@@ -235,12 +202,30 @@ pub fn export(
         .output
         .file_name()
         .ok_or_else(|| io::Error::other("export output needs a directory name"))?;
-    let output = parent.join(name);
-    let source_root = loaded.root.canonicalize()?;
-    if output.starts_with(&source_root) || source_root.starts_with(&output) {
-        return Err(io::Error::other(
-            "export output must be outside the source tree",
-        ));
+    let requested_output = parent.join(name);
+    let output = match fs::symlink_metadata(&requested_output) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(io::Error::other("export output must not be a link"));
+        }
+        Ok(_) => requested_output.canonicalize()?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => requested_output,
+        Err(error) => return Err(error),
+    };
+    for file in &loaded.files {
+        if file.canonicalize()?.starts_with(&output) {
+            return Err(io::Error::other(
+                "export output contains an input source file",
+            ));
+        }
+    }
+    let translation_source = loaded.project_root.join("translations");
+    if translation_source.is_dir() {
+        let translation_source = translation_source.canonicalize()?;
+        if output.starts_with(&translation_source) || translation_source.starts_with(&output) {
+            return Err(io::Error::other(
+                "export output overlaps the project translation source directory",
+            ));
+        }
     }
     if output.exists() {
         if !options.overwrite {
@@ -248,9 +233,6 @@ pub fn export(
                 io::ErrorKind::AlreadyExists,
                 "export exists; pass --overwrite to replace it",
             ));
-        }
-        if fs::symlink_metadata(&output)?.file_type().is_symlink() {
-            return Err(io::Error::other("export output must not be a link"));
         }
         read_manifest(&output.join(MAIN_PACKAGE))?;
     }
@@ -278,6 +260,14 @@ pub fn export(
             )));
         }
     }
+    let catalogs = crate::localization::bundle_project(&loaded.project_root)?;
+    for key in catalogs.files.keys() {
+        if resources.contains_key(key) || text.contains_key(key) {
+            return Err(io::Error::other(format!(
+                "project language catalog conflicts with an explicit resource or text mount: {key}"
+            )));
+        }
+    }
     let player = if artifact.profile == BuildProfile::Release {
         Some(
             options
@@ -296,8 +286,8 @@ pub fn export(
         let mut manifest = Distribution {
             text: None,
             resources: vec![],
+            catalogs: catalogs.catalogs.clone(),
             loose: None,
-            source: None,
         };
         if artifact.profile == BuildProfile::Release {
             let pool = artifact
@@ -310,15 +300,33 @@ pub fn export(
             for (name, file) in &text {
                 writer.add(name, &mut File::open(file)?)?;
             }
+            for (name, file) in &catalogs.files {
+                writer.add(name, &mut File::open(file)?)?;
+            }
             writer.finish()?.sync_all()?;
             manifest.text = Some("game.rtp".into());
             manifest.resources = resource_volumes(&resources, staging, options.pack_bytes.get())?;
         } else {
-            for (name, file) in resources.iter().chain(text.iter()) {
-                copy(file, &staging.join(name))?;
+            fs::create_dir_all(staging.join("resources"))?;
+            if !catalogs.files.is_empty() {
+                let mut writer = ArchiveWriter::new(
+                    File::create_new(staging.join("game.rtp"))?,
+                    ArchiveKind::Text,
+                )?;
+                for (name, file) in &catalogs.files {
+                    writer.add(name, &mut File::open(file)?)?;
+                }
+                writer.finish()?.sync_all()?;
+                manifest.text = Some("game.rtp".into());
             }
-            manifest.loose = Some(".".into());
-            manifest.source = Some(sources(loaded, options, staging)?);
+            for (name, file) in resources.iter().chain(text.iter()) {
+                copy(file, &staging.join("resources").join(name))?;
+            }
+            manifest.loose = Some(LooseResources::Directory("resources".into()));
+            sources(loaded, staging)?;
+            for (file, relative) in &catalogs.sources {
+                copy(file, &staging.join(relative))?;
+            }
         }
         manifest.validate()?;
         let limits = reel_package::Limits::default();
@@ -327,7 +335,7 @@ pub fn export(
             .map_err(io::Error::other)?;
         let encoded = reel_package::encode(&bytecode, package.metadata(), Some(&manifest), limits)
             .map_err(io::Error::other)?;
-        fs::write(staging.join(MAIN_PACKAGE), &encoded)?;
+        File::create_new(staging.join(MAIN_PACKAGE))?.write_all(&encoded)?;
         let player_bytes = if let Some(player) = player {
             fs::copy(player, staging.join(exported_player_name()))?
         } else {
@@ -338,13 +346,14 @@ pub fn export(
             + resources
                 .values()
                 .chain(text.values())
+                .chain(catalogs.files.values())
                 .try_fold(0u64, |n, path| fs::metadata(path).map(|m| n + m.len()))?
             + artifact
                 .text_pool
                 .as_ref()
                 .map_or(0, |p| p.as_bytes().len() as u64);
         Ok(Exported {
-            files: resources.len() + text.len(),
+            files: resources.len() + text.len() + catalogs.files.len(),
             bytes,
         })
     })();
@@ -392,6 +401,40 @@ pub struct LoadedDistribution {
     pub root: PathBuf,
     pub packages: Vec<PathBuf>,
     pub loose: Option<PathBuf>,
+    pub catalogs: BTreeMap<String, String>,
+}
+
+/// Resource locations resolved once for either an ASB launch or editable export.
+pub struct ResourceContext {
+    pub packages: Vec<PathBuf>,
+    pub loose: Option<PathBuf>,
+    pub catalogs: BTreeMap<String, String>,
+}
+
+/// Interpret a distribution's package and loose-asset rules without decoding code.
+pub fn resource_context(root: &Path, manifest: Distribution) -> io::Result<ResourceContext> {
+    let mut packages = Vec::new();
+    if let Some(text) = manifest.text {
+        packages.push(root.join(text));
+    }
+    packages.extend(manifest.resources.into_iter().map(|name| root.join(name)));
+    let loose = match manifest.loose {
+        Some(LooseResources::Directory(directory)) => Some(root.join(directory)),
+        Some(LooseResources::Project) => {
+            let project = crate::project::find(root)?;
+            Some(
+                project
+                    .map_or_else(|| root.to_path_buf(), |project| project.root)
+                    .join("resources"),
+            )
+        }
+        None => None,
+    };
+    Ok(ResourceContext {
+        packages,
+        loose,
+        catalogs: manifest.catalogs,
+    })
 }
 
 pub fn load(path: &Path) -> io::Result<LoadedDistribution> {
@@ -408,10 +451,9 @@ pub fn load(path: &Path) -> io::Result<LoadedDistribution> {
         .unwrap_or_else(|| Distribution {
             text: None,
             resources: vec![],
-            loose: Some(".".into()),
-            source: None,
+            catalogs: BTreeMap::new(),
+            loose: Some(LooseResources::Project),
         });
-    let mut packages = Vec::new();
     if let Some(text) = &manifest.text {
         let path = root.join(text);
         let mut file = File::open(&path)?;
@@ -419,34 +461,37 @@ pub fn load(path: &Path) -> io::Result<LoadedDistribution> {
         if index.kind() != ArchiveKind::Text {
             return Err(io::Error::other("text package has resource kind"));
         }
-        let entry = index
-            .get(TEXT_POOL_ENTRY)
-            .ok_or_else(|| io::Error::other("text package has no original text pool"))?;
-        let descriptor = package
-            .program()
-            .package()
-            .text_pool
-            .ok_or_else(|| io::Error::other("ASB does not reference an external text pool"))?;
-        if descriptor.byte_len != entry.length || descriptor.digest != entry.version {
-            return Err(io::Error::other("text pool does not match ASB"));
+        for (locale, key) in &manifest.catalogs {
+            if index.get(key).is_none() {
+                return Err(io::Error::other(format!(
+                    "text archive lacks indexed catalog {locale}: {key}"
+                )));
+            }
         }
-        let len = usize::try_from(entry.length).map_err(io::Error::other)?;
-        let mut bytes = Vec::new();
-        bytes.try_reserve_exact(len).map_err(io::Error::other)?;
-        file.seek(SeekFrom::Start(entry.offset))?;
-        file.take(entry.length).read_to_end(&mut bytes)?;
-        let pool = TextPool::from_bytes(Arc::from(bytes)).map_err(io::Error::other)?;
-        package = package.bind_text_pool(pool).map_err(io::Error::other)?;
-        packages.push(path);
+        if let Some(descriptor) = package.program().package().text_pool {
+            let entry = index
+                .get(TEXT_POOL_ENTRY)
+                .ok_or_else(|| io::Error::other("text package has no original text pool"))?;
+            if descriptor.byte_len != entry.length || descriptor.digest != entry.version {
+                return Err(io::Error::other("text pool does not match ASB"));
+            }
+            let len = usize::try_from(entry.length).map_err(io::Error::other)?;
+            let mut bytes = Vec::new();
+            bytes.try_reserve_exact(len).map_err(io::Error::other)?;
+            file.seek(SeekFrom::Start(entry.offset))?;
+            file.take(entry.length).read_to_end(&mut bytes)?;
+            let pool = TextPool::from_bytes(Arc::from(bytes)).map_err(io::Error::other)?;
+            package = package.bind_text_pool(pool).map_err(io::Error::other)?;
+        }
     } else if package.program().package().text_pool.is_some() {
         return Err(io::Error::other("ASB requires a text package"));
     }
-    packages.extend(manifest.resources.iter().map(|name| root.join(name)));
-    let loose = manifest.loose.map(|name| root.join(name));
+    let context = resource_context(&root, manifest)?;
     Ok(LoadedDistribution {
         package,
         root,
-        packages,
-        loose,
+        packages: context.packages,
+        loose: context.loose,
+        catalogs: context.catalogs,
     })
 }

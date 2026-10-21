@@ -1,0 +1,21 @@
+fn main() {
+    let chapters = ["序章", "第一章"];
+    chapters.insert(index: 1, value: "幕间");
+    chapters.extend(["第二章", "终章"]);
+    let preview = chapters.slice(0 .. 3);
+    chapters.reverse();
+    let theme = { title: "章节预览", color: "#e8d5ac" };
+    stage.replace(
+        column(x: 32, y: 32, gap: 16) {
+            text(theme.title, font_size: 32, color: theme.color);
+            for chapter in preview {
+                text(chapter);
+            }
+            text(f"倒序首项：{chapters.top()}");
+            for field in theme.entries() {
+                text(f"{field[0]}：{field[1]}", font_size: 18);
+            }
+        }
+    );
+    narrator("数组编辑保留原对象身份，切片保留选取时的内容。");
+}

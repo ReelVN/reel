@@ -1,9 +1,5 @@
 //! LSP transport and lifecycle; parsing and query semantics stay in the compiler.
-use crate::{
-    ModuleRoot, ServerOptions,
-    position::Encoding,
-    workspace::{Workspace, uri_path},
-};
+use crate::{ServerOptions, position::Encoding, workspace::Workspace};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use lsp_types::*;
 use serde::Deserialize;
@@ -11,7 +7,6 @@ use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
-    path::PathBuf,
 };
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
@@ -25,15 +20,9 @@ pub fn run_stdio(options: ServerOptions) -> Result<()> {
     Ok(())
 }
 
-#[derive(Default, Deserialize)]
-struct InitializationOptions {
-    #[serde(default)]
-    modules: BTreeMap<String, PathBuf>,
-}
-
 /// Serve one initialized LSP connection. In-memory connections use this same
 /// request path for lifecycle and editor-contract tests.
-pub fn run_connection(connection: Connection, mut options: ServerOptions) -> Result<()> {
+pub fn run_connection(connection: Connection, options: ServerOptions) -> Result<()> {
     let (id, params) = connection.initialize_start()?;
     let params: InitializeParams = serde_json::from_value(params)?;
     let encoding = Encoding::negotiate(
@@ -43,42 +32,6 @@ pub fn run_connection(connection: Connection, mut options: ServerOptions) -> Res
             .as_ref()
             .and_then(|general| general.position_encodings.as_deref()),
     );
-    let initialize: InitializationOptions = params
-        .initialization_options
-        .map(serde_json::from_value)
-        .transpose()?
-        .unwrap_or_default();
-    let folders: Vec<_> = params
-        .workspace_folders
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|folder| uri_path(&folder.uri))
-        .collect();
-    #[allow(deprecated)]
-    let root = params
-        .root_uri
-        .as_ref()
-        .and_then(uri_path)
-        .or_else(|| folders.first().cloned());
-    for (prefix, path) in initialize.modules {
-        let path = if path.is_absolute() {
-            path
-        } else {
-            root.clone().unwrap_or(std::env::current_dir()?).join(path)
-        };
-        options
-            .module_roots
-            .retain(|existing| existing.prefix != prefix);
-        options.module_roots.push(ModuleRoot { prefix, path });
-    }
-    if options.module_roots.is_empty() {
-        for path in folders.into_iter().chain(root).collect::<BTreeSet<_>>() {
-            options.module_roots.push(ModuleRoot {
-                prefix: String::new(),
-                path,
-            });
-        }
-    }
     let capabilities = ServerCapabilities {
         position_encoding: Some(encoding.kind()),
         text_document_sync: Some(TextDocumentSyncCapability::Kind(
@@ -90,6 +43,7 @@ pub fn run_connection(connection: Connection, mut options: ServerOptions) -> Res
         }),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(OneOf::Left(true)),
+        document_formatting_provider: Some(OneOf::Left(true)),
         signature_help_provider: Some(SignatureHelpOptions {
             trigger_characters: Some(vec!["(".into(), ",".into(), ":".into()]),
             ..Default::default()
@@ -288,6 +242,12 @@ fn dispatch(workspace: &mut Workspace, request: Request, encoding: Encoding) -> 
         serde_json::from_value(value).map_err(|error| (ErrorCode::InvalidParams, error.to_string()))
     }
     let result = match request.method.as_str() {
+        "textDocument/formatting" => {
+            let params: DocumentFormattingParams = params(request.params)?;
+            workspace
+                .format(&params.text_document.uri, encoding)
+                .and_then(|value| serde_json::to_value(value).map_err(|error| error.to_string()))
+        }
         "textDocument/completion" => {
             let params: CompletionParams = params(request.params)?;
             workspace

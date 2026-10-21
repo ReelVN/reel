@@ -10,7 +10,7 @@ use support::*;
 #[test]
 fn cursor_example_source_and_asb_animate_retire_and_move_without_vm_allocation() {
     let checked = reel_cli::check(
-        include_str!("../../../examples/author_cursor.aside"),
+        include_str!("../../../examples/author_cursor/src/main.aside"),
         "author_cursor.aside",
     )
     .unwrap();

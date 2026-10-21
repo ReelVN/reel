@@ -938,6 +938,7 @@ fn bounded_audio_source_and_asb_restore_real_transport_and_queue_endpoints() {
             "en".into(),
             live.ui().assets(),
             live.initializer(),
+            live.catalogs(),
         )
         .unwrap();
         while !restored.prepare_restored(SliceBudget::default()).unwrap() {}

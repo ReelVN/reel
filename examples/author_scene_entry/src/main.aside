@@ -1,0 +1,14 @@
+// Supply fonts/body.ttf relative to the asset root before opening a window.
+fn main() {
+    game.configure(width: 1280, height: 720, fonts: ["fonts/body.ttf"]);
+    let scene = stack(width: 1280, height: 720, opacity: 0) {
+        image("assets/panels.png", width: 1280, height: 720, fit: "cover");
+        text(
+            "The scene enters after its resources are presented.", x: 100, y: 540, width: 1080,
+            font_size: 32
+        );
+    };
+    stage.replace(scene);
+    await stage.presented(owner: scene);
+    await run(tween(scene, opacity: 1, duration: 0.5));
+}
