@@ -20,7 +20,9 @@ aside_host::native_documentation! {
         "reel::say";
         /// Append plain or rich text to the current single-speaker speech handle.
         /// Keep its already revealed prefix and history entry. `history` selects the
-        /// appended history text. A newer dialogue or choice retires the handle.
+        /// appended history text. Wait for advance by default; `wait: false` returns
+        /// immediately for sounds or choreography before the next advance point.
+        /// A newer dialogue or choice retires the handle.
         "reel::speech::append";
         /// Arm and wait for advance on the current speech handle. May be called again
         /// after an append. The handle belongs to the main story task and survives saves.
