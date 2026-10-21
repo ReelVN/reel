@@ -321,6 +321,7 @@ impl AsideSessionUi {
     pub fn transitions_pending(&self) -> bool {
         self.transitions.pending()
     }
+    #[cfg(feature = "window")]
     pub(crate) fn frame_ready(&self) -> bool {
         (self.vm.stage_ready()
             || (self.vm.virtual_feedback_ready()
@@ -551,7 +552,8 @@ impl AsideSessionUi {
         result
     }
     pub fn has_runnable_tasks(&self) -> bool {
-        self.state == StoryState::Running && self.vm.has_runnable_tasks()
+        self.state == StoryState::Running
+            && (self.ui.session().completion_pending() || self.vm.has_runnable_tasks())
     }
     pub fn reveal_more(&mut self, graphemes: usize) -> Result<(), Error> {
         if let Some(InteractionView::Dialogue(dialogue)) = self.ui.session().view().interaction {

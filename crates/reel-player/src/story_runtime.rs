@@ -290,7 +290,7 @@ impl StoryRuntime {
                 .unwrap()
                 .ui_mut()
                 .advance_dialogue(self.logical_ns, speed)?;
-            if reading_changed && self.driver().ui().session().view().interaction.is_none() {
+            if reading_changed && self.driver().has_runnable_tasks() {
                 self.runnable = true;
             }
             let progress = self
