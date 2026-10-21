@@ -1546,6 +1546,8 @@ configure preserves omitted fields and returns an activity; await receives the a
 
 ### Sprite particles
 
+Particles can play alongside node tweens for opacity, transforms and other properties; `stage.presented` can complete on an intermediate frame. Ordinary property updates use the shared stage composition, while retiring the target, owner or scope still cancels the corresponding batches.
+
 `particles(source, seed:0, ...node properties)` creates one stage node with a shared sprite and coordinate space. Its source must be a whole PNG/JPEG sprite; prepared `.reel-image` sources are supported by `image` nodes only. Each `emit` appends a batch and returns its own activity. The example uses your own `assets/petal.png` and `fonts/body.ttf`; see [author_particles.aside](../../examples/author_particles.aside).
 
 ```aside

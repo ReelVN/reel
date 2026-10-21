@@ -1543,6 +1543,8 @@ configure 省略的项保持原值，返回活动，await 得到平台应用后�
 
 ### 图片粒子
 
+粒子可以与节点的透明度、变换等 tween 同时播放；`stage.presented` 可在演出中间帧完成。普通属性更新沿共同舞台合成，目标、owner 或作用域退休仍会取消对应批次。
+
 `particles(source, seed:0, ...节点属性)` 创建一个共享精灵与坐标空间的舞台节点。source 必须是完整 PNG/JPEG 精灵；预处理的 `.reel-image` 只供 image 使用。每次 `emit` 追加一个批次并返回独立活动。示例需要自行提供 `assets/petal.png` 和 `fonts/body.ttf`，完整示例见 [author_particles.aside](../../examples/author_particles.aside)。
 
 ```aside

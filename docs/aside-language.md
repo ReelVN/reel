@@ -734,6 +734,8 @@ Reel 默认导入 `window` 命名空间，独立 Aside 不注册。`window.info(
 
 Reel 注册 `particles(source, seed:0, ...节点属性)`（native ABI 10）和 `emit(node, burst:1, rate:0, duration:null, ...运动参数)`（native ABI 2），独立 Aside 不注册这些名称。particles 定义共享精灵、种子和坐标空间，source/seed 只读，共同节点字段保持原属性、绑定与动画语义。emit 每次追加独立活动，已有批次继续存活；配置在调用时捕获，不再作为节点构造参数。本批 x/y 为有限的本地出生原点，与捕获的节点 width/height 一同保存；后续节点变换仍整体作用于全部批次。所有权、pause/resume/stop/finish 与重复 await 复用普通活动合同，作用域退休取消所拥有的批次。构造和控制遵循既有宿主效果边界；失败在原调用位置抛出，保留已有批次和下一发射序号。批次配置与节点发射序号进入宿主 SessionSnapshot 17；VM 快照、Aside 字节码/ASB 和语言语法不变。完整参数、确定性取样、终态与资源边界见[引擎架构的批量舞台粒子](engine-architecture.md#批量舞台粒子)。
 
+粒子运行时可并行动画节点属性；一次完整时钟采样与属性投影即可呈现中间帧，stage.presented 沿原协议接受该帧。所有权维护依赖实际节点/作用域退休，普通属性发布保留本轮维护结果。
+
 Reel tween 的 `sine_in`、`sine_out`、`sine_in_out`、`quint_in`、`quint_out`、`quint_in_out`、`bounce_in`、`bounce_out`、`bounce_in_out` 是既有 easing 字符串参数的选项，由宿主动作采样，不新增 Aside 语法、native 签名或 Aside 字节码/ASB 格式。
 
 `quart_in/out/in_out` 和 `elastic_in/out/in_out` 也使用同一 easing 参数及动作快照。quart 为四次曲线；elastic 为允许越过起终值的衰减振荡，适合位置、旋转和缩放，端点精确抵达原值与目标值。属性合法范围沿原有规则；stage.transition 将曲线采样夹在 0..1，按 duration 完成过渡。

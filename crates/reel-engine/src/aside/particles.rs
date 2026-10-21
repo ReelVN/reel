@@ -238,6 +238,7 @@ pub(super) struct Particles {
     projection_pool: Option<BudgetPool>,
     time: f64,
     remaining: usize,
+    // Last node-retirement version checked; ordinary property changes keep this pass valid.
     revision: u64,
     woke: bool,
 }
@@ -261,6 +262,7 @@ impl Particles {
         map: &aside_vm::snapshot::SnapshotMap,
         heap: &Heap,
         stage: &mut reel_ui::stage::Stage,
+        retirement_revision: u64,
     ) -> Result<(), AdapterError> {
         use super::snapshot::Part;
         match record.part {
@@ -287,7 +289,7 @@ impl Particles {
             }
             _ => unreachable!(),
         }
-        self.revision = stage.revision();
+        self.revision = retirement_revision;
         Ok(())
     }
     /// Admission prepares the replacement before changing either the activity
@@ -347,8 +349,8 @@ impl Particles {
     pub fn needs_time(&self) -> bool {
         self.live.iter().any(|live| !live.paused)
     }
-    pub fn needs_work(&self, revision: u64) -> bool {
-        self.remaining != 0 || (!self.live.is_empty() && self.revision != revision)
+    pub fn needs_work(&self, retirement_revision: u64) -> bool {
+        self.remaining != 0 || (!self.live.is_empty() && self.revision != retirement_revision)
     }
     pub fn begin(&mut self, time: f64) -> Result<(), AdapterError> {
         if !time.is_finite() || time < self.time {
@@ -372,7 +374,7 @@ impl Particles {
 
 impl SessionVm {
     pub(super) fn maintain_particles(&mut self, budget: u32) -> Result<u32, AdapterError> {
-        if !self.particles.needs_work(self.stage.scene.revision()) {
+        if !self.particles.needs_work(self.stage.retirement_revision) {
             return Ok(0);
         }
         if self.particles.remaining == 0 {
@@ -453,7 +455,7 @@ impl SessionVm {
             self.particles.remaining -= 1;
         }
         if self.particles.remaining == 0 {
-            self.particles.revision = self.stage.scene.revision();
+            self.particles.revision = self.stage.retirement_revision;
         }
         if self.particles.live.is_empty() {
             self.particles.clear();
