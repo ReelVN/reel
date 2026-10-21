@@ -1072,7 +1072,9 @@ fn loading_cancellation_and_pcm_budget_failure_leave_no_resident_requests() {
         result = player.take_result(id).map(|completion| completion.result);
         result.is_some()
     });
-    assert!(matches!(result, Some(MediaResult::Failed(_))));
+    assert!(
+        matches!(result, Some(MediaResult::Failed(error)) if error.starts_with("assets/chime.wav: "))
+    );
     player.close();
     until(|| {
         player.maintain(Duration::ZERO);

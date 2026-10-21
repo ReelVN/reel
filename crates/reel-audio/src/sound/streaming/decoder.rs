@@ -19,7 +19,8 @@ pub trait Decoder: Send {
 	#[must_use]
 	fn num_frames(&self) -> usize;
 
-	/// Decodes the next chunk of audio.
+	/// Decodes the next chunk of audio. An empty chunk means end of stream;
+	/// packets that produce no PCM must be consumed internally.
 	fn decode(&mut self) -> Result<Vec<Frame>, Self::Error>;
 
 	/// Seeks to an audio sample.

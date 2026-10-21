@@ -42,3 +42,18 @@ existing static/queued transport. Missing frames freeze its content cursor; seek
 clear interpolation and request source preparation without callback IO. The shared
 Symphonia packet decoder accepts host readers and publishes unknown length at EOF.
 Both storage forms preserve queue, resampling and background retirement behavior.
+
+The packet decoder consumes successful zero-frame codec output internally and
+returns an empty chunk only at container EOF. Every consumed audio packet keeps
+the reservation/cancellation checkpoint. `tests/fixtures/short-tone.mp3` is an
+original synthetic 660 Hz tone, distributed under this crate's license. It has
+encoder priming and padding packets with no decoded frames. Reproduce it with
+FFmpeg 9.0 and libmp3lame (no source media):
+
+```sh
+ffmpeg -f lavfi -i "sine=frequency=660:sample_rate=22050:duration=0.08" -ac 2 -c:a libmp3lame -b:a 64k -map_metadata -1 short-tone.mp3
+```
+
+Its decoder regression checks chunk and static output, real EOF, reservation
+failure and cancellation between a priming packet and the following PCM packet:
+`cargo test --locked --offline -p reel-audio --features mp3 mp3_ --lib`.
