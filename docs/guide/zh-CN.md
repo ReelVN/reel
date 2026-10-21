@@ -161,6 +161,8 @@ stage.replace(stack {
 ## 二 让代码表达整幅画面
 ### 组织组件数据
 
+读取或写入表的单个字段时，其他任务或控件可继续更新已有字段值；查找完成时使用当前槽。普通 table 和 model 遵循同一规则。增删字段会中断尚未完成的查找并报告 ConcurrentModification。复制、展开和删除等批量操作仍要求来源内容在操作期间保持一致。
+
 剧本 VM 默认不设固定的内存字节总额，对象和根存储按实际需求增长，不再设 16,384 个对象或 1,024 个根的默认门槛；嵌入引擎的宿主可按运行环境显式设置预算。增量 GC 会释放空对象存储页，不再保留峰值数量的完整对象槽；较小的身份索引和工作队列仍可复用。长操作会按执行切片让出，避免阻塞画面。
 
 固定长度 tuple 可以在 let 和 for 中解构，支持嵌套和 `_` 忽略项；先准备所有值再建立名称，结构不符抛出 PatternMismatch。每轮循环的闭包保留当轮值。数组/对象/rest 解构及解构赋值仍待实现。见 [tuple_bindings.aside](../../examples/tuple_bindings.aside)。
@@ -1056,7 +1058,7 @@ game.clear_history(keep_last: 37);
 
 可以等待自己的保存请求。这份存档恢复时，该请求为已成功且只读 `restored` 为 true（正常写盘完成为 false），可据此关闭存档菜单；调用者继续执行 await 后的语句；保存调用不会重复执行。其他未完成的外部请求以 OperationInterrupted 结算。成功读档会替换会话，原来的读档调用不会在旧会话中继续。
 
-执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 8，会话快照格式为 26；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
+执行快照按工作量分片，后台编码、压缩和写盘；快照捕获期间若业务输入需要修改状态，本次保存报告 CaptureBusy，输入继续处理，旧槽位保留。桌面默认存档在用户数据目录，Rust 宿主可设置 `StoryWindowOptions.save_directory` 与 `save_bytes`。自定义宿主通过 `RuntimeSaves` 接入自己的 `SaveStorage` 和音频后端。目录适配器先解析存档目录的真实路径，在同一目录树中写入临时文件，同步后原子替换旧档，缩略图随同一文件提交。当前 VM 执行快照格式为 9，会话快照格式为 26；存档要求匹配当前代码和格式，旧格式明确报告版本不匹配。系统数据 `persistent` 独立于剧情快照。当前不提供跨版本迁移。现有存档恢复检查命令：`cargo test -p reel-player --lib save_slot_survives`。
 
 可运行示例：[author_saves.aside](../../examples/author_saves.aside)。
 
