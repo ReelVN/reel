@@ -16,6 +16,18 @@ pub struct QueuedStaticSound {
 	pub retention: Option<Arc<dyn Send + Sync>>,
 }
 
+/// The renderer has closed the queue's tail to further announcements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueueClosed;
+
+impl std::fmt::Display for QueueClosed {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		f.write_str("the audio queue has ended")
+	}
+}
+
+impl std::error::Error for QueueClosed {}
+
 /// Control-side endpoints. Drop this on the host's reclaim worker, because an
 /// output failure can leave accepted PCM in either bounded ring.
 pub struct StaticSoundQueue {
@@ -69,16 +81,20 @@ impl StaticSoundQueue {
 	}
 	/// Announce a submitted segment before its asynchronous decode finishes.
 	/// The caller reserves capacity before announcing; indices are consecutive.
-	pub fn announce(&self, index: u64) -> Result<(), ()> {
+	pub fn announce(&self, index: u64) -> Result<(), QueueClosed> {
 		self.tail
 			.fetch_update(Ordering::AcqRel, Ordering::Acquire, |tail| {
 				(tail != u64::MAX).then_some(index)
 			})
 			.map(|_| ())
-			.map_err(|_| ())
+			.map_err(|_| QueueClosed)
 	}
 
 	/// Transfer prepared PCM in announcement order, returning it on backpressure.
+	#[expect(
+		clippy::result_large_err,
+		reason = "backpressure returns the original PCM and residency owner without allocating"
+	)]
 	pub fn push(&mut self, item: QueuedStaticSound) -> Result<(), QueuedStaticSound> {
 		self.incoming
 			.push(item)

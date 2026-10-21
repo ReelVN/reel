@@ -26,7 +26,7 @@ fn queue_data(rate: u32, samples: &[f32]) -> StaticSoundData {
 
 #[test]
 fn prepared_queue_has_no_silent_frame_at_segment_boundaries() {
-	use crate::sound::static_sound::QueuedStaticSound;
+	use crate::sound::static_sound::{QueueClosed, QueuedStaticSound};
 	let (mut sound, handle, mut queue) =
 		queue_data(4, &[1., 2.]).into_sound_with_queue(4, Arc::new(()));
 	queue.announce(2).unwrap();
@@ -57,8 +57,54 @@ fn prepared_queue_has_no_silent_frame_at_segment_boundaries() {
 		sound.process_one(0.25, &info);
 	}
 	assert!(sound.finished());
+	assert_eq!(queue.announce(3), Err(QueueClosed));
 	assert_eq!(queue.take_retired().unwrap().index, 0);
 	assert_eq!(queue.take_retired().unwrap().index, 1);
+}
+
+#[test]
+fn full_queue_returns_original_pcm_and_residency_for_retry() {
+	use crate::sound::static_sound::QueuedStaticSound;
+	let (mut sound, _, mut queue) = queue_data(4, &[1., 2.]).into_sound_with_queue(1, Arc::new(()));
+	queue.announce(2).unwrap();
+	assert!(
+		queue
+			.push(QueuedStaticSound {
+				index: 1,
+				data: queue_data(4, &[3., 4.]),
+				retention: None,
+			})
+			.is_ok()
+	);
+	let data = queue_data(4, &[5., 6.]);
+	let frames = data.frames.clone();
+	let retention: Arc<dyn Send + Sync> = Arc::new(());
+	let rejected = queue
+		.push(QueuedStaticSound {
+			index: 2,
+			data,
+			retention: Some(retention.clone()),
+		})
+		.unwrap_err();
+	assert_eq!(rejected.index, 2);
+	assert!(Arc::ptr_eq(&rejected.data.frames, &frames));
+	assert!(Arc::ptr_eq(
+		rejected.retention.as_ref().unwrap(),
+		&retention
+	));
+	queue.start();
+	let info = MockInfoBuilder::new().build();
+	assert_eq!(
+		sound.process_one(0.25, &info),
+		Frame::from_mono(1.).panned(Panning::CENTER)
+	);
+	assert!(queue.push(rejected).is_ok());
+	for sample in 2..=6 {
+		assert_eq!(
+			sound.process_one(0.25, &info),
+			Frame::from_mono(sample as f32).panned(Panning::CENTER)
+		);
+	}
 }
 
 #[test]

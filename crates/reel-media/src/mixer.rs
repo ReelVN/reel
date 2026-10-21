@@ -691,7 +691,7 @@ impl KiraMixer {
             .expect("live playback queue");
         queue
             .announce(index)
-            .map_err(|()| AudioError::new(AudioErrorKind::InvalidRequest, "audio has ended"))
+            .map_err(|_| AudioError::new(AudioErrorKind::InvalidRequest, "audio has ended"))
     }
     pub fn queue(
         &mut self,

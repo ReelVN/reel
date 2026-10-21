@@ -533,7 +533,7 @@ impl Shared {
 	pub fn cursor(&self) -> (u64, f64) {
 		loop {
 			let sequence = self.cursor_sequence.load(Ordering::SeqCst);
-			if sequence % 2 != 0 {
+			if !sequence.is_multiple_of(2) {
 				continue;
 			}
 			let item = self.item.load(Ordering::SeqCst);
