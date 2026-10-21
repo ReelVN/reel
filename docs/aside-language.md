@@ -191,6 +191,8 @@ class 使用单继承，命名声明写 class Child: Parent { ... }；匿名类�
 
 方法调用提供接收者一次；方法取值形成强保留接收者的绑定闭包，普通表中的闭包不自动注入 self，普通函数不继承调用者的隐式 this。super.method 固定从词法基类查找并保留同一个接收者。每次方法取值可以创建新闭包，不保证两次取值身份相等；事件注销依赖 Subscription token。static let/static let mut 与 static fn 属于类，static fn 无 self；只读 static 初始化一次。class 可作为值和局部声明，继承图不得成环，公开字段与方法反射不暴露内部布局。
 
+类、实例和 super 可以用字符串索引访问成员，`object[name]` 与对应的点访问共享字段类型、读写权限、继承和接收者绑定。赋值与复合赋值的对象、键各求值一次。非字符串键报告 Type，缺失成员报告 MissingKey；固定布局保留，索引赋值不能增加字段。可观察实例的索引读取记录实际字段依赖，bind 固定创建时选中的字段。
+
 已链接的 native 函数可以作为普通函数值保存、传递、返回和可选调用，也可以交给宿主的 CallScript 回调入口。Aside 字节码 FunctionKind 新增 Native(NativeId)，编码为 tag 3 后接 u32 注册索引；签名必须与注册一致，不携带脚本指令、寄存器、绑定、捕获或异常区域，源码映射可在 PC 0 保存取值位置。普通调用、宿主启动和 CallScript 都直接建立同一种 NativeFrame，完整参数只绑定一次；缺省闭包与可变参数共享原来的 Cell，不经过脚本转发帧。aside-host 为每个合同预置一个 Native FunctionDef，供宿主绑定方法；编译器复用已有定义，仅在缺失且实际取值时新建。VM 在模块常量根区持有稳定函数值，MakeClosure 读取该常量而不分配对象，也不要求 ALLOCATE 效果。不添加作者全局变量。实际脚本调用处优先作为故障来源；宿主直接启动该函数值时使用定义中的取值位置（若有）。
 
 ## 九 delegate 与扩展操作

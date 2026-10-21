@@ -2457,14 +2457,65 @@ impl Vm {
             ScriptPhase::Body => {
                 let instruction =
                     self.program.package().functions[s.code.function.index()].code[s.pc.index()];
-                let op = instruction_spec(instruction.opcode)
+                let mut op = instruction_spec(instruction.opcode)
                     .expect("verified spec")
                     .opcode;
-                let [a, b, c] = instruction.operands;
+                let [a, mut b, mut c] = instruction.operands;
+                let mut index_work = 0;
+                if matches!(op, Opcode::IndexGet | Opcode::IndexSet) {
+                    let object = self
+                        .slots
+                        .read(at(s.regs, if op == Opcode::IndexGet { b } else { a }))?;
+                    if object.tag() == ValueTag::Object
+                        && matches!(
+                            self.heap.info(object)?.kind,
+                            ObjectKind::Class | ObjectKind::Instance | ObjectKind::Super
+                        )
+                    {
+                        let key = self
+                            .slots
+                            .read(at(s.regs, if op == Opcode::IndexGet { c } else { b }))?;
+                        let bytes = if key.tag() == ValueTag::Object {
+                            self.heap.info(key)?.len
+                        } else {
+                            0
+                        };
+                        index_work = self.type_checks.symbol_work(bytes);
+                        // A dynamic name uses the existing immutable symbol index.
+                        // Check its work before comparing text; register reads do
+                        // not re-evaluate the author's object or key expressions.
+                        if !m.admits(1, index_work + 1, 0) {
+                            return Ok(false);
+                        }
+                        let name = self
+                            .type_checks
+                            .symbol(self.program.package(), &self.heap, key)
+                            .map_err(heap_fault)
+                            .and_then(|name| name.ok_or(FaultKind::MissingKey));
+                        let name = match name {
+                            Ok(name) => name,
+                            Err(kind) => {
+                                assert!(m.take(1, index_work + 1, 0));
+                                self.collection_fault(&mut s, kind)?;
+                                self.active.frames.data[top] = Frame::Script(s);
+                                return Ok(true);
+                            }
+                        };
+                        // Execute the ordinary member operation in this same
+                        // frame and PC, including reactive refresh and writes.
+                        op = if op == Opcode::IndexGet {
+                            Opcode::MemberGet
+                        } else {
+                            b = c;
+                            Opcode::MemberSet
+                        };
+                        c = name.0;
+                    }
+                }
                 let (work, allocation) = match self.instruction_cost(s, op, a, b, c) {
-                    Ok(cost) => cost,
+                    Ok((work, allocation)) => (work + index_work, allocation),
                     Err(error) => {
-                        if !m.take(1, 1, 0) {
+                        if !m.take(1, 1 + index_work, 0) {
                             return Ok(false);
                         }
                         self.put(s.env, 1, Value::NULL)?;
@@ -4721,13 +4772,15 @@ struct Meter {
     usage: SliceUsage,
 }
 impl Meter {
-    fn take(&mut self, instructions: u32, work: u64, allocation: u64) -> bool {
+    fn admits(&mut self, instructions: u32, work: u64, allocation: u64) -> bool {
         self.usage.required_work = work;
         self.usage.required_allocation = allocation;
-        if instructions > self.budget.instructions - self.usage.instructions
-            || work > self.budget.work - self.usage.work
-            || allocation > self.budget.allocation_bytes - self.usage.allocation_bytes
-        {
+        instructions <= self.budget.instructions - self.usage.instructions
+            && work <= self.budget.work - self.usage.work
+            && allocation <= self.budget.allocation_bytes - self.usage.allocation_bytes
+    }
+    fn take(&mut self, instructions: u32, work: u64, allocation: u64) -> bool {
+        if !self.admits(instructions, work, allocation) {
             return false;
         }
         self.usage.instructions += instructions;

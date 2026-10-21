@@ -1908,6 +1908,13 @@ impl Binder<'_> {
                 }
                 ANY
             }
+            Type::Class(_) | Type::Instance(_) => {
+                if let Some(&c) = children.get(1) {
+                    self.require(c, index, STRING, "class member name");
+                }
+                self.check(n, RuntimeChecks::TYPE);
+                ANY
+            }
             Type::String => {
                 self.error(
                     D::TypeMismatch,

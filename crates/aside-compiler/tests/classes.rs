@@ -2,6 +2,9 @@
 use aside_compiler::{AnalysisOptions, analyze_module, lowering, semantic::NoModules};
 use aside_vm::{GcBudget, GcPhase, RootOwner, SessionEpoch, Value, bytecode as bc, executor::*};
 
+#[path = "classes/dynamic_index.rs"]
+mod dynamic_index;
+
 fn finish(vm: &mut Vm, task: TaskId, tiny: bool) -> Value {
     let mut budget = if tiny {
         SliceBudget {
@@ -112,7 +115,7 @@ fn fields_methods_and_author_data() {
 
 #[test]
 fn cancellation_invalidates_escaped_instance_and_retained_method() {
-    let source = "let mut escaped=null;let mut method=null;class Building{let value:int;fn init(self){escaped=self;method=self.read;loop{}}fn read(self){42}}fn make(){Building();}fn published(){escaped!=null}fn field(){escaped.value}fn bound(){method()}";
+    let source = "let mut escaped=null;let mut method=null;class Building{let value:int;fn init(self){escaped=self;method=self.read;loop{}}fn read(self){42}}fn make(){Building();}fn published(){escaped!=null}fn field(){escaped.value}fn bound(){method()}fn indexed(){escaped[\"value\"]}fn indexed_write(){escaped[\"value\"]=42;}fn indexed_method(){escaped[\"read\"]()}";
     let module = analyze_module(source, &AnalysisOptions::default(), &mut NoModules)
         .unwrap()
         .into_module()
@@ -124,7 +127,16 @@ fn cancellation_invalidates_escaped_instance_and_retained_method() {
     )
     .unwrap();
     let p = compiled.program.package();
-    let ids = ["make", "published", "field", "bound"].map(|name| {
+    let ids = [
+        "make",
+        "published",
+        "field",
+        "bound",
+        "indexed",
+        "indexed_write",
+        "indexed_method",
+    ]
+    .map(|name| {
         bc::FunctionId(
             p.functions
                 .iter()
@@ -347,7 +359,7 @@ fn snapshots_resume_instruction_work_and_exception_cleanup_without_replaying_cod
     use aside_vm::snapshot::{SnapshotBudget, SnapshotRegistry, VmSnapshot};
     let source = r#"
         let mut writes = 0;
-        class Counter { let items = [1, 2, 3]; fn read(self) { self.items[1] } }
+        class Counter { let items = [1, 2, 3]; let mut reads:int=0; fn read(self) { self["reads"]+=1; self["items"][1] } }
         fn value() {
             let counter = Counter();
             let tuple = (counter, [counter]);
@@ -358,7 +370,7 @@ fn snapshots_resume_instruction_work_and_exception_cleanup_without_replaying_cod
             if parts.len() != 4 || parts[1] != "🙂" || parts[3] != "" { throw "split state"; }
             try { throw 7; } catch caught {
                 writes += 1;
-                try { return counter.read() + 39 + writes; }
+                try { let method=counter["read"]; let value=method(); if counter["reads"]!=1 {throw "indexed method replay";} return value + 39 + writes; }
                 finally { writes += 1; let joined = "x" + "y"; if tuple[1][0] != counter || joined != "xy" { throw 0; } }
             } finally { writes += 1; }
         }
