@@ -122,7 +122,6 @@ pub(crate) fn shape_text<'a, B: Brush>(
         }
         let level = levels.get(char_index).copied().unwrap_or(0);
         if item.style_index != *style_index {
-            item.style_index = *style_index;
             style = &styles[*style_index as usize];
             if !nearly_eq(style.font_size, item.size)
                 || style.locale != item.locale
@@ -130,6 +129,9 @@ pub(crate) fn shape_text<'a, B: Brush>(
                 || style.font_features != item.features
                 || !nearly_eq(style.letter_spacing, item.letter_spacing)
                 || !nearly_eq(style.word_spacing, item.word_spacing)
+                || !style
+                    .line_height
+                    .nearly_eq(styles[item.style_index as usize].line_height)
             {
                 break_run = true;
             }
@@ -186,6 +188,7 @@ pub(crate) fn shape_text<'a, B: Brush>(
             char_range.start = char_range.end;
         }
 
+        item.style_index = *style_index;
         if let Some(deferred_boxes) = deferred_boxes {
             for box_idx in deferred_boxes {
                 layout.data.push_inline_box(box_idx);

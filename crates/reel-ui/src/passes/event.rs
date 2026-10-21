@@ -19,7 +19,7 @@ fn get_pointer_target(
     pointer_pos: Option<LogicalPosition<f64>>,
     view: GeometryView<'_>,
 ) -> Option<WidgetId> {
-    // See the [pointer capture documentation](../doc/concepts.md#pointer-capture).
+    // See crate::doc::concepts for pointer capture ownership.
     if let Some(capture_target) = root.global_state.pointer.pointer_capture_target
         && root.widget_arena.has(capture_target)
     {

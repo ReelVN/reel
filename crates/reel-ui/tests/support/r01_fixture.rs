@@ -27,6 +27,7 @@ pub struct RecordWidget {
     pub invert: f32,
     pub blend: reel_ui::peniko::BlendMode,
     pub mask: Option<PaintImageMask>,
+    pub capture_included: bool,
 }
 impl RecordWidget {
     pub fn new(own: Scene) -> Self {
@@ -47,11 +48,15 @@ impl RecordWidget {
             invert: 0.,
             blend: Default::default(),
             mask: None,
+            capture_included: true,
         }
     }
 }
 impl Widget for RecordWidget {
     type Action = ();
+    fn capture_included(&self) -> bool {
+        self.capture_included
+    }
     fn register_children(&mut self, c: &mut RegisterCtx<'_>) {
         self.inner.register_children(c)
     }

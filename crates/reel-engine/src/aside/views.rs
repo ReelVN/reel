@@ -1,6 +1,17 @@
 //! A stable stage container with dependency-driven component construction.
 use super::*;
 
+aside_host::native_documentation! {
+    pub(super) fn documentation {
+        /// Create a stable container whose child is built by a non-waiting reactive function.
+        /// Return a node or null. Observable dependency changes rerun the builder. Returning
+        /// a different child retires the previous subtree and its owned work; returning the
+        /// same child preserves it. The builder may construct nodes and start non-waiting
+        /// activities; the enclosing container keeps its identity.
+        "reel::view";
+    }
+}
+
 impl SessionVm {
     pub(super) fn dispatch_view(&mut self, ticket: HostTicket) -> Result<(), AdapterError> {
         match ticket.input {

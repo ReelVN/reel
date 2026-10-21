@@ -1,8 +1,8 @@
 //! One shaped paragraph with ranged styles and baseline-aligned ruby boxes.
 use crate::{
     core::{
-        BrushIndex, StyleProperty, StyleSet, TextOutline, render_text_lines,
-        render_text_revealed_lines,
+        BrushIndex, RevealFade, StyleProperty, StyleSet, TextOutline, render_text_faded_lines,
+        render_text_lines,
     },
     imaging::Painter,
     kurbo::{Affine, Rect},
@@ -140,8 +140,18 @@ impl Paragraph {
                         .unwrap_or(24.)
                 });
             note_styles.insert(StyleProperty::FontSize(base_size * 0.5));
-            if text.style_at(unit.start).is_some_and(|s| s.bold) {
-                note_styles.insert(StyleProperty::FontWeight(reel_text::FontWeight::BOLD));
+            if let Some(family) = text.style_at(unit.start).and_then(|s| s.font.as_deref()) {
+                note_styles.insert(StyleProperty::FontFamily(
+                    reel_text::FontFamily::from(family).into_owned(),
+                ));
+            }
+            if let Some(weight) = text
+                .style_at(unit.start)
+                .and_then(|s| s.weight.or_else(|| s.bold.then_some(700.)))
+            {
+                note_styles.insert(StyleProperty::FontWeight(reel_text::FontWeight::new(
+                    weight,
+                )));
             }
             let mut note = Self::fragment(
                 fonts,
@@ -355,6 +365,7 @@ impl Paragraph {
         clippy::too_many_arguments,
         reason = "recursive ruby painting shares style, reveal, and viewport inputs"
     )]
+    #[cfg(test)]
     pub fn paint(
         &mut self,
         painter: &mut Painter<'_>,
@@ -365,10 +376,46 @@ impl Paragraph {
         outline: Option<TextOutline>,
         viewport: Option<Rect>,
     ) {
+        self.paint_faded(
+            painter,
+            transform,
+            color,
+            hint,
+            visible,
+            outline,
+            viewport,
+            None,
+            &[],
+            1.,
+            None,
+        );
+    }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "shared paragraph painting and scalar opacity inputs"
+    )]
+    pub fn paint_faded(
+        &mut self,
+        painter: &mut Painter<'_>,
+        transform: Affine,
+        color: Brush,
+        hint: bool,
+        visible: Range<usize>,
+        outline: Option<TextOutline>,
+        viewport: Option<Rect>,
+        fade: Option<RevealFade>,
+        graphemes: &[usize],
+        inherited_alpha: f32,
+        brush_override: Option<&Brush>,
+    ) {
         self.brushes[0] = self.default_color.clone().unwrap_or_else(|| color.clone());
         let range = self.position(visible.start)..self.position(visible.end);
         let lines = self.visible_lines(viewport, transform, outline);
-        if range.start == 0 && range.end == self.text.len() {
+        if range.start == 0
+            && range.end == self.text.len()
+            && fade.is_none_or(|fade| fade.alpha(graphemes, self.plain.clone()) == 1.)
+            && inherited_alpha == 1.
+        {
             render_text_lines(
                 painter,
                 transform,
@@ -377,9 +424,18 @@ impl Paragraph {
                 hint,
                 outline,
                 lines.clone(),
+                brush_override,
             );
         } else {
-            render_text_revealed_lines(
+            let opacity = |range: Range<usize>| {
+                inherited_alpha
+                    * fade.map_or(1., |fade| {
+                        let start = self.plain_position(range.start).unwrap_or(self.plain.start);
+                        let end = self.plain_position(range.end).unwrap_or(self.plain.end);
+                        fade.alpha(graphemes, start..end)
+                    })
+            };
+            render_text_faded_lines(
                 painter,
                 transform,
                 &self.layout,
@@ -388,6 +444,8 @@ impl Paragraph {
                 range,
                 outline,
                 lines.clone(),
+                Some(&opacity),
+                brush_override,
             );
         }
         if self.emphasis {
@@ -430,7 +488,14 @@ impl Paragraph {
                         }
                         let y =
                             line.metrics().baseline - run.metrics().ascent - run.font_size() * 0.14;
-                        let color = style.color.map(brush).unwrap_or_else(|| color.clone());
+                        let alpha = inherited_alpha
+                            * fade.map_or(1., |fade| fade.alpha(graphemes, offset..end));
+                        if alpha == 0. {
+                            continue;
+                        }
+                        let color = brush_override.cloned().unwrap_or_else(|| {
+                            style.color.map(brush).unwrap_or_else(|| color.clone())
+                        });
                         painter
                             .fill(
                                 crate::kurbo::Circle::new(
@@ -440,6 +505,10 @@ impl Paragraph {
                                 &color,
                             )
                             .transform(transform)
+                            .composite(crate::imaging::Composite {
+                                alpha,
+                                ..Default::default()
+                            })
                             .draw();
                     }
                 }
@@ -454,7 +523,7 @@ impl Paragraph {
                 let item = &mut self.boxes[position.id as usize];
                 let base_x = position.x + (item.width - item.base.width()) / 2.;
                 let base_y = position.y + item.note.height();
-                item.base.paint(
+                item.base.paint_faded(
                     painter,
                     transform * Affine::translate((base_x as f64, base_y as f64)),
                     color.clone(),
@@ -462,10 +531,14 @@ impl Paragraph {
                     visible.clone(),
                     outline,
                     None,
+                    fade,
+                    graphemes,
+                    inherited_alpha,
+                    brush_override,
                 );
                 if visible.start <= item.range.start && item.range.end <= visible.end {
                     let note_x = position.x + (item.width - item.note.width()) / 2.;
-                    item.note.paint(
+                    item.note.paint_faded(
                         painter,
                         transform * Affine::translate((note_x as f64, position.y as f64)),
                         color.clone(),
@@ -473,6 +546,11 @@ impl Paragraph {
                         0..usize::MAX,
                         outline,
                         None,
+                        None,
+                        &[],
+                        inherited_alpha
+                            * fade.map_or(1., |fade| fade.alpha(graphemes, item.range.clone())),
+                        brush_override,
                     );
                 }
             }
@@ -577,9 +655,21 @@ fn apply(
     range: Range<usize>,
     brushes: &mut Vec<Brush>,
 ) {
-    if style.bold {
+    if let Some(family) = style.font.as_deref() {
         builder.push(
-            StyleProperty::FontWeight(reel_text::FontWeight::BOLD),
+            StyleProperty::FontFamily(reel_text::FontFamily::from(family).into_owned()),
+            range.clone(),
+        );
+    }
+    if let Some(height) = style.line_height {
+        builder.push(
+            StyleProperty::LineHeight(reel_text::LineHeight::Absolute(height)),
+            range.clone(),
+        );
+    }
+    if let Some(weight) = style.weight.or_else(|| style.bold.then_some(700.)) {
+        builder.push(
+            StyleProperty::FontWeight(reel_text::FontWeight::new(weight)),
             range.clone(),
         );
     }
@@ -645,6 +735,76 @@ mod viewport_tests {
         peniko::Blob,
     };
     use std::time::Instant;
+
+    #[test]
+    #[ignore = "requires two configured fonts; CPU font identity and line metrics only"]
+    fn rich_fonts_restore_nested_runs_and_absolute_empty_line_metrics() {
+        let mut fonts = FontContext {
+            collection: reel_text::fontique::Collection::new(
+                reel_text::fontique::CollectionOptions {
+                    system_fonts: false,
+                    ..Default::default()
+                },
+            ),
+            source_cache: Default::default(),
+        };
+        let mut names = Vec::new();
+        let mut ids = Vec::new();
+        for key in ["REEL_SESSION_FONT", "REEL_SESSION_SECOND_FONT"] {
+            let blob =
+                Blob::from(std::fs::read(std::env::var_os(key).expect("configured font")).unwrap());
+            ids.push(blob.id());
+            let family = fonts.collection.register_fonts(blob, None)[0].0;
+            names.push(fonts.collection.family_name(family).unwrap().to_owned());
+        }
+        let mut styles = StyleSet::new(24.);
+        styles.insert(StyleProperty::FontFamily(
+            reel_text::FontFamily::from(names[0].as_str()).into_owned(),
+        ));
+        let source = Text::parse(format!(
+            "[font={}][weight=400]A[font={}][weight=700]B[/weight][/font]C[/weight][/font]",
+            names[0], names[1]
+        ))
+        .unwrap();
+        let layout = Paragraph::build(
+            &mut fonts,
+            &mut LayoutContext::new(),
+            &source,
+            &styles,
+            None,
+            1.,
+            false,
+        );
+        let runs: Vec<_> = layout
+            .lines()
+            .flat_map(|line| {
+                line.items().filter_map(|item| {
+                    if let PositionedLayoutItem::GlyphRun(g) = item {
+                        Some(g.run().font().data.id())
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+        assert_eq!(runs, vec![ids[0], ids[1], ids[0]]);
+        let source=Text::parse(format!("[font={}][size=36][line_height=46]\n[/line_height][/size][/font][font={}][size=20][line_height=30]\n[/line_height][/size][/font]X",names[0],names[1])).unwrap();
+        let layout = Paragraph::build(
+            &mut fonts,
+            &mut LayoutContext::new(),
+            &source,
+            &styles,
+            None,
+            1.,
+            false,
+        );
+        assert!(
+            (layout.get(0).unwrap().metrics().line_height - 46.).abs() < 0.01,
+            "{:?}",
+            layout.get(0).unwrap().metrics()
+        );
+        assert!((layout.get(1).unwrap().metrics().line_height - 30.).abs() < 0.01);
+    }
 
     fn paragraph(text: &Text) -> Paragraph {
         let bytes =

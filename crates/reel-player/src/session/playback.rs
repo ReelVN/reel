@@ -8,6 +8,7 @@ pub(super) struct Playback {
     dialogue_revision: u64,
     last_ns: Option<u64>,
     reading_revision: u64,
+    auto_revision: u64,
     auto_last: Option<u64>,
     remaining: Duration,
 }
@@ -55,7 +56,9 @@ impl SessionUi {
             && (skip_can_advance(&self.session)
                 || !dialogue_complete(&self.session)
                 || (awaiting_advance(&self.session)
-                    && (self.session.reading().automatic() || continues(&self.session))
+                    && ((self.session.reading().automatic()
+                        && self.session.reading().auto_ready())
+                        || continues(&self.session))
                     && accepted.is_some_and(|stamp| stamp.dialogue_complete)))
     }
 
@@ -77,6 +80,12 @@ impl SessionUi {
         if self.playback.reading_revision != revision {
             self.pause_dialogue();
             self.playback.reading_revision = revision;
+        }
+        let auto_revision = self.session.reading().auto_revision();
+        if self.playback.auto_revision != auto_revision {
+            self.playback.auto_last = None;
+            self.playback.remaining = self.session.reading().delay();
+            self.playback.auto_revision = auto_revision;
         }
         if !self.dialogue_needs_time() {
             self.pause_dialogue();
@@ -155,7 +164,10 @@ impl SessionUi {
         }
         if dialogue_complete(&self.session) {
             // First tick establishes the deadline after actual presentation.
-            return if continues(&self.session) || self.playback.auto_last.is_none() {
+            return if continues(&self.session)
+                || self.playback.auto_last.is_none()
+                || self.playback.auto_revision != self.session.reading().auto_revision()
+            {
                 Duration::ZERO
             } else {
                 self.playback.remaining

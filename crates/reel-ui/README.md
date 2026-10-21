@@ -2,7 +2,7 @@
 
 One platform-independent UI package, maintained by Reel from borrowed Masonry
 code. [Source and license](ORIGIN.md) · [Input contract](INTERFACE.md) ·
-[Frame/resource contract](R01-INTERFACE.md) · [Historical R01 evidence](R01-REPORT.md).
+[Frame/resource contract](R01-INTERFACE.md) · [Historical R01 evidence](https://github.com/jhq223/reel/blob/355571b18bd4024914438a7ac6bd94ebf3c7826f/crates/reel-ui/R01-REPORT.md).
 
 | Module | Responsibility |
 | --- | --- |
@@ -48,14 +48,13 @@ probes and busy-workspace fallback assertions are retained. Pointer allocation
 probes keep their separate binary. `reel-dev measure` selects the exact `reel-ui`
 Cargo executable for `contracts` and `r01_measurements`.
 
-Widget screenshot Markdown is maintained locally in `src/doc/widgets` and embeds
-the unchanged PNG bytes, so generated rustdoc needs neither a macro crate nor a
-remote image host. Original images: [button](screenshots/button_hello.png),
+Widget documentation lives in each widget's Rust source. Shared concepts and
+pass descriptions live in `src/doc` as Rust modules. Original images: [button](screenshots/button_hello.png),
 [label](screenshots/label_styled_label.png), [slider](screenshots/slider_initial_state.png).
 
 Generated logs and measurements go under ignored `target/reel-artifacts/`.
 Native device tests and window Expose/recovery commands are documented in the
-[R02 report](../reel-render/R02-REPORT.md). Those require a Vulkan device and an
+[R02 report](https://github.com/jhq223/reel/blob/355571b18bd4024914438a7ac6bd94ebf3c7826f/crates/reel-render/R02-REPORT.md). Those require a Vulkan device and an
 actual window/display; software Vulkan/Xvfb results establish only that environment.
 The shared author stage and Aside composition are connected through reel-engine
 and reel-player, including author images, sliders and toggles. See the

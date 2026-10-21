@@ -843,6 +843,11 @@ impl Session {
         self.reading.set_auto(enabled, delay);
     }
 
+    /// Set the resolved author condition without changing reveal or manual input.
+    pub fn set_auto_condition(&mut self, ready: bool) {
+        self.reading.set_auto_condition(ready);
+    }
+
     pub fn pause_reading(&mut self, paused: bool) {
         self.reading.pause(paused);
     }

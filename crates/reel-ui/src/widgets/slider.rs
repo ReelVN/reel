@@ -25,7 +25,7 @@ use crate::theme;
 
 /// A widget that allows a user to select a value from a continuous range.
 ///
-#[doc = include_str!("../doc/widgets/slider.md")]
+/// ![Slider](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAMgAAAAgCAMAAABgkcdDAAAAXVBMVEUpKSknJyoqKy46etsxTXgpKirJ2O7y8vLC1O7x8fGQtOrB0+5OiuV+qenl6vErOU8vSnQpKSo6etouPlcoKCo4bL04bb40XJkuP1k7fuM0W5cqLTI3aLRFhOQ7fuSVzae6AAAAgklEQVR42u3WRw6AMAwEQFND7x2y/38mQogjB+CSoJ0fWLK9K0RERPTKNA7NME5iuXWZcZiXVWwWbNBJWqSJxhaIxXzoUB1CDV/s5XqI1CmC54pB2h6PZLE6xRlKxxRdLT2eydUlR+UYo/vNIL9ZrW/HzvfLQGRFuS+NbM9ERETm2QFJkiLhTZDb1gAAAABJRU5ErkJggg==)
 pub struct Slider {
     range: SliderRange,
     value: f64,

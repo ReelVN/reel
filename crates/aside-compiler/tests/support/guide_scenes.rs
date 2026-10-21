@@ -1,6 +1,6 @@
 use aside_compiler::EntryPoint as E;
 pub const SCENES: &[(&str, E)] = &[
-    ("text spacing", E::Block),
+    ("minimal single-file project", E::Module),
     ("main module", E::Module),
     ("title module", E::Module),
     ("ranges, collections and interpolation", E::Block),
@@ -23,12 +23,14 @@ pub const SCENES: &[(&str, E)] = &[
     ("camera framing", E::Block),
     ("room module", E::Module),
     ("card component", E::Module),
+    ("accepted node geometry", E::Block),
     ("protected dialogue reveal", E::Block),
     ("selective history", E::Block),
     ("opening module", E::Module),
     ("dialogue component", E::Module),
     ("simultaneous dialogue in story", E::Block),
-    ("story registration", E::Module),
+    ("segmented dialogue in story", E::Block),
+    ("accelerating scalar curve", E::Block),
     ("paused scene entrance", E::Block),
     ("entrance in story", E::Block),
     ("parallel entrance", E::Block),
@@ -41,9 +43,16 @@ pub const SCENES: &[(&str, E)] = &[
     ("scoped additive offset", E::Block),
     ("video startup", E::Block),
     ("temporary hint in story", E::Block),
-    ("preferences component", E::Module),
+    ("runnable button module", E::Module),
+    ("modal menu module", E::Module),
+    ("named input actions module", E::Module),
     ("picture button component", E::Module),
     ("interaction state callback", E::Block),
+    ("shared selection controls", E::Block),
+    ("reading settings module", E::Module),
+    ("window configuration", E::Block),
+    ("editable text in story", E::Block),
+    ("shared property module", E::Module),
     ("menu style and construction", E::Module),
     ("moving group in story", E::Block),
     ("scoped choreography in story", E::Block),
@@ -52,6 +61,9 @@ pub const SCENES: &[(&str, E)] = &[
     ("composed mask", E::Block),
     ("subtree inversion", E::Block),
     ("subtree blending", E::Block),
+    ("continuous particles", E::Block),
+    ("burst particles", E::Block),
+    ("progressive glyph opacity", E::Block),
     ("authored line wrapping", E::Block),
     ("component result in story", E::Block),
     ("scoped prompt in story", E::Block),
@@ -62,26 +74,14 @@ pub const SCENES: &[(&str, E)] = &[
     ("save button construction", E::Module),
     ("clear read progress", E::Block),
     ("shared model controls", E::Block),
-    ("game variables in story", E::Block),
     ("persistent settings", E::Block),
-    ("settings component", E::Module),
     ("arrive helper", E::Module),
+    ("text spacing", E::Block),
     ("bilingual dialogue", E::Block),
     ("external translations in story", E::Block),
-    ("runnable button module", E::Module),
-    ("modal menu module", E::Module),
-    ("named input actions module", E::Module),
-    ("shared selection controls", E::Block),
-    ("reading settings module", E::Module),
-    ("editable text in story", E::Block),
-    ("shared property module", E::Module),
     ("author audio", E::Module),
     ("audio continuation", E::Block),
     ("queued audio continuation", E::Block),
-    ("window configuration", E::Block),
-    ("continuous particles", E::Block),
-    ("burst particles", E::Block),
-    ("accepted node geometry", E::Block),
 ];
 pub fn snippets(doc: &str) -> Vec<(usize, String)> {
     let mut result = Vec::new();
@@ -106,6 +106,8 @@ pub fn snippets(doc: &str) -> Vec<(usize, String)> {
 #[allow(dead_code)]
 pub fn enclosing(scene: &str) -> &[&str] {
     match scene {
+        "segmented dialogue in story" => &["mio"],
+        "accelerating scalar curve" => &["portrait"],
         "opening module" => &["show_cg"],
         "value match expressions" => &["mode"],
         "mask in story" => &["view"],
@@ -135,3 +137,28 @@ pub fn enclosing(scene: &str) -> &[&str] {
 pub fn mutable(scene: &str, name: &str) -> bool {
     scene == "queued audio continuation" && name == "music"
 }
+
+// Kept as syntax/recovery inputs; these are not implemented author interfaces.
+#[allow(dead_code)]
+pub const PLANNED_SOURCES: &[(&str, &str, E)] = &[
+    (
+        "story registration",
+        include_str!("../fixtures/guide-planned/story_registration.aside"),
+        E::Module,
+    ),
+    (
+        "preferences component",
+        include_str!("../fixtures/guide-planned/preferences_component.aside"),
+        E::Module,
+    ),
+    (
+        "game variables in story",
+        include_str!("../fixtures/guide-planned/game_variables_in_story.aside"),
+        E::Block,
+    ),
+    (
+        "settings component",
+        include_str!("../fixtures/guide-planned/settings_component.aside"),
+        E::Module,
+    ),
+];

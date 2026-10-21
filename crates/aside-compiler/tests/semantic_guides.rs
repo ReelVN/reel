@@ -21,13 +21,10 @@ const PRELUDE: &[&str] = &[
     "stop",
     "stage",
     "game",
-    "story",
-    "settings",
     "saves",
     "column",
     "row",
     "stack",
-    "group",
     "text",
     "button",
     "input",
@@ -40,10 +37,7 @@ const PRELUDE: &[&str] = &[
     "toggle",
     "checkbox",
     "radio",
-    "switcher",
-    "page",
     "list",
-    "grid",
     "scroll",
     "character",
     "narrator",
@@ -60,7 +54,6 @@ const PRELUDE: &[&str] = &[
     "bind",
     "unbind",
     "derive",
-    "state",
     "persistent",
     "model",
     "set",
@@ -107,7 +100,7 @@ fn all_bilingual_scenes_analyze_with_explicit_host_and_lexical_context() {
     let mut resolver = MemoryResolver::default();
     resolver.insert(ModuleInterface {
         canonical_path: "reel::prelude".into(),
-        version: "guide-1.1".into(),
+        version: "guide-v1".into(),
         exports: PRELUDE.iter().map(|&n| prelude_symbol(n)).collect(),
     });
     for (path, name) in [
@@ -119,7 +112,7 @@ fn all_bilingual_scenes_analyze_with_explicit_host_and_lexical_context() {
     ] {
         resolver.insert(ModuleInterface {
             canonical_path: path.into(),
-            version: "guide-1.1".into(),
+            version: "guide-v1".into(),
             exports: vec![ExternalSymbol::dynamic(name)],
         });
     }
@@ -130,13 +123,14 @@ fn all_bilingual_scenes_analyze_with_explicit_host_and_lexical_context() {
             let block = entry == EntryPoint::Block;
             let options = AnalysisOptions {
                 module: format!("guide::{edition}::{i}"),
-                version: "guide-design-1.1".into(),
+                version: "guide-v1".into(),
                 context: if block {
                     AnalysisContext::Function
                 } else {
                     AnalysisContext::Module
                 },
-                // The documented Reel prelude supplies the outer host scope.
+                // Only implemented Reel prelude names are admitted.
+                // Proposed interfaces live in parser-only fixtures, not a fake host environment.
                 hosts: PRELUDE.iter().map(|&name| prelude_symbol(name)).collect(),
                 enclosing: scenes::enclosing(name)
                     .iter()

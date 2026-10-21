@@ -381,3 +381,27 @@ impl Restore {
         Ok(())
     }
 }
+
+aside_host::native_documentation! {
+    pub(super) fn documentation {
+        /// Read a persistent record by nonempty key, independently of story save slots.
+        /// Returns an awaitable operation; awaiting yields the stored plain value graph
+        /// or `default` (null when omitted) when the record is absent. Storage failures throw.
+        /// The operation belongs to the session, without a node-owner parameter; a host-claimed
+        /// storage request is not cancelled merely because its requesting UI was removed.
+        "reel::persistent::read";
+        /// Store a detached plain value graph under a nonempty persistent key.
+        /// Supported values are null, bool, int, float, strings, Bytes, arrays, tuples and
+        /// tables, including shared references and cycles. Instances, closures, buffers and
+        /// native resources must first be converted to plain data. Capture is incremental;
+        /// mutating captured source objects before it finishes is rejected.
+        /// Returns a session-owned awaitable operation; awaiting yields null after the host
+        /// commits the write, or throws on failure. A claimed write survives removal of its UI.
+        "reel::persistent::write";
+        /// Delete the persistent record identified by a nonempty key.
+        /// Returns a session-owned awaitable operation; awaiting yields null on success
+        /// or throws on storage failure. It does not delete a story save slot.
+        /// Host-claimed storage work is independent of the requesting UI's lifetime.
+        "reel::persistent::delete";
+    }
+}

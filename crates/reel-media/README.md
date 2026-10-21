@@ -70,10 +70,10 @@ cargo clippy -p reel-media --no-default-features --all-targets --locked -- -D wa
 cargo fmt --all -- --check
 cargo tree -p reel-media --no-default-features --edges normal
 cargo check -p reel-media --all-targets --target x86_64-pc-windows-gnu --locked
-cargo run -p reel-dev --locked -- audio-regression
-cargo run -p reel-dev --locked -- audio-regression --release
-cargo run -p reel-dev --locked -- audio-probe
-cargo run -p reel-media --example device_probe --locked
+cargo run --locked -p reel-dev -- audio-regression
+cargo run --locked -p reel-dev -- audio-regression --release
+cargo run --locked -p reel-dev -- audio-probe
+cargo run --locked -p reel-media --example device_probe
 ```
 
 `tests/audio_contracts.rs` uses actual reel-audio StaticSound and Renderer, including two-track summation, stereo→8ch, mono, integer/float conversion, finite-value handling, malformed buffers, PCM shortages, freeze/resume, fault→stop→configure→new reel-audio and budget reclamation. `src/output/tests.rs` drives the **same lifecycle implementation** with injected build/play/pause/verify failures and an observable in-flight interval. The failed native operations in those unit fixtures are simulated output failures, not hardware measurements. Both tests of immediate native rejection assert identity of the original uncalled Box. A retained-native-callback fixture proves immediate control-side fill disposal even when native pause fails and the callback object survives stop. The concurrent fixture deliberately blocks its fill to prove the fence; production fills must remain bounded.
@@ -166,8 +166,7 @@ high-water reservation while the codec can retain samples. Symphonia format/code
 bookkeeping and allocation-before-return are not enclosed by that budget: this is
 not a hard bound on arbitrary decoder input. A complete hard decoder budget needs
 budget-aware allocations in Symphonia's format packet readers and audio-buffer
-resize/allocation paths. No such borrowed dependency fork is introduced here.
-
+resize/allocation paths.
 Reproduce the full unmodified long-track check with `REEL_LONG_AUDIO` set to an
 external full track and `cargo test --locked --offline -p reel-player --lib
 external_long_audio_streams -- --ignored --nocapture`. It covers startup under a

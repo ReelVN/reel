@@ -1,5 +1,29 @@
 //! Native callback lifetimes share the ordinary host-owner and task protocols.
 use super::*;
+
+aside_host::native_documentation! {
+    pub(super) fn documentation {
+        /// Run `body(scope)` in the current task and return its result. Work created
+        /// inside inherits the scope. Leaving the body retires its unfinished activities,
+        /// tasks, owned nodes and overrides. `owner` optionally anchors it to a stage node.
+        "reel::scope";
+        /// Start an action owned by this scope, optionally paused.
+        "reel::scope::run";
+        /// Start a zero-argument task owned by this scope. Its result is awaitable.
+        "reel::scope::spawn";
+        /// Insert a node under parent at the optional child index and own its lifetime
+        /// through this scope. Scope retirement removes the node.
+        "reel::scope::add";
+        /// Temporarily override named properties on a node. Return a removable override
+        /// token; scope retirement restores the preceding effective values and bindings.
+        "reel::scope::override";
+        /// Remove this override token and restore the preceding effective properties.
+        "reel::override::remove";
+        /// Add a temporary x/y offset to a node while retaining its base position.
+        /// Return an override token controlled by the scope.
+        "reel::scope::offset";
+    }
+}
 use aside_vm::executor::{Continuation, FaultRetention, FrameId};
 use aside_vm::{Heap, HeapReservation, ValueTag};
 use std::collections::VecDeque;

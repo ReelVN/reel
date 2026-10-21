@@ -1,5 +1,38 @@
 //! One-shot component results. Pending native frames own all subscription values.
 use super::{AdapterError, FaultKind, HostTicket, Session, SessionVm};
+
+aside_host::native_documentation! {
+    pub(super) fn documentation {
+        /// Wait until an accepted frame includes current stage changes and prepared assets.
+        /// Return an awaitable result owned by the supplied node or current owner.
+        /// Other tasks and media continue while presentation is pending.
+        "reel::stage::presented";
+        /// Create a one-shot awaitable with observable `pending`. Resolve accepts any
+        /// value; reject throws the supplied value; cancel throws Cancelled. The first
+        /// settlement returns true, later attempts false. Owner retirement cancels it.
+        "reel::completion";
+        /// Settle a pending completion with the supplied value, defaulting to null.
+        /// Return true only for the first settlement. Values are returned without adoption.
+        "reel::completion::resolve";
+        /// Reject a pending completion with this error value. Await rethrows it while
+        /// preserving the producer fault when available. Return true on first settlement.
+        "reel::completion::reject";
+        /// Cancel a pending completion. Its waiters receive Cancelled. Return true only
+        /// when this call settles the result.
+        "reel::completion::cancel";
+        /// Wait for a completion or task result. Repeated awaits observe its terminal
+        /// value or fault; cancellation of one consumer removes only that consumer's wait.
+        "reel::completion::await";
+        /// Start a zero-argument callable as an owned task and return its awaitable result.
+        /// It begins after the caller yields or returns. Background tasks can animate and
+        /// handle input; main-story dialogue and choice remain on the main task.
+        "reel::spawn";
+        /// Request cancellation of this task. Return true for the first request.
+        /// `pending` stays true until cleanup finishes. Cancellation retires owned work
+        /// without executing script finally blocks.
+        "reel::task::cancel";
+    }
+}
 use aside_vm::{
     Heap, HeapError, HeapReservation, RootKind, RootToken, Value, ValueTag,
     bytecode::{FunctionId, FunctionKind, NativeId},
@@ -18,6 +51,7 @@ pub(super) enum Kind {
     Operation = -1105,
     Capture = -1106,
     Window = -1107,
+    Condition = -1108,
 }
 
 #[repr(u32)]
@@ -181,7 +215,10 @@ pub(super) fn readonly(
     // The property is registered read-only. This validator also runs when the
     // producer publishes it; methods remain immutable ordinary fields.
     if field == 0
-        && matches!(heap.host_payload(object, 0)?.as_int(), Some(-1101 | -1102))
+        && matches!(
+            heap.host_payload(object, 0)?.as_int(),
+            Some(-1101 | -1102 | -1108)
+        )
         && value.as_bool().is_some()
     {
         Ok(())
@@ -192,8 +229,18 @@ pub(super) fn readonly(
 fn settle(heap: &mut Heap, object: Value, state: State, value: Value) -> Result<(), AdapterError> {
     // Publication may reserve property traversal space. Complete it before the
     // infallible writes to this validated result's private terminal slots.
-    if matches!(kind(heap, object)?, Kind::Completion | Kind::Task) {
+    if matches!(
+        kind(heap, object)?,
+        Kind::Completion | Kind::Task | Kind::Condition
+    ) {
         super::observable::publish(heap, object, 0, Value::bool(false))?;
+    }
+    if kind(heap, object)? == Kind::Condition {
+        let output = heap.host_payload(object, Slot::Attachment as u32)?;
+        if output.tag() != ValueTag::Null {
+            heap.disconnect_derived(output)?;
+            heap.set_host_payload(object, Slot::Attachment as u32, Value::NULL)?;
+        }
     }
     heap.set_host_payload(object, Slot::Value as u32, value)?;
     heap.set_host_payload(object, Slot::State as u32, Value::int(state as i64))?;
@@ -215,6 +262,7 @@ pub(super) fn kind(heap: &Heap, object: Value) -> Result<Kind, AdapterError> {
         Some(-1105) => Ok(Kind::Operation),
         Some(-1106) => Ok(Kind::Capture),
         Some(-1107) => Ok(Kind::Window),
+        Some(-1108) => Ok(Kind::Condition),
         _ => Err(AdapterError::Input("expected completion or task")),
     }
 }
@@ -281,6 +329,47 @@ fn response(heap: &mut Heap, object: Value) -> Result<Option<Completion>, Adapte
     })
 }
 impl Results {
+    pub(super) fn create_condition(
+        &mut self,
+        vm: &mut Vm,
+        root_owner: aside_vm::RootOwner,
+        owner: Value,
+    ) -> Result<Value, AdapterError> {
+        let result = self.create(vm, owner, Kind::Condition)?;
+        self.track_completion(vm, root_owner, result)?;
+        Ok(result)
+    }
+    pub(super) fn settle_condition(
+        &mut self,
+        heap: &mut Heap,
+        result: Value,
+        value: Value,
+        failed: bool,
+    ) -> Result<(), AdapterError> {
+        if pending(heap, result)? {
+            settle(
+                heap,
+                result,
+                if failed {
+                    State::Faulted
+                } else {
+                    State::Resolved
+                },
+                value,
+            )?;
+            self.changed();
+            self.owners_changed();
+        }
+        Ok(())
+    }
+    pub(super) fn attach_condition(
+        heap: &mut Heap,
+        result: Value,
+        output: Value,
+    ) -> Result<(), AdapterError> {
+        heap.set_host_payload(result, Slot::Attachment as u32, output)?;
+        Ok(())
+    }
     /// One producer root per result, including while its presentation is disarmed.
     pub(super) fn create_presentation(
         &mut self,
@@ -385,7 +474,7 @@ impl Results {
         ];
         let object = heap.alloc_host(
             fields,
-            &slots[..if kind == Kind::Presentation {
+            &slots[..if matches!(kind, Kind::Presentation | Kind::Condition) {
                 6
             } else if kind == Kind::Particle {
                 5
@@ -398,7 +487,7 @@ impl Results {
                 Some(readonly)
             },
         )?;
-        let observable = matches!(kind, Kind::Completion | Kind::Task);
+        let observable = matches!(kind, Kind::Completion | Kind::Task | Kind::Condition);
         if observable {
             let key = heap.alloc_string("pending")?;
             heap.table_store(fields, 0, key, Value::bool(true))?;
@@ -784,8 +873,10 @@ impl SessionVm {
             } else {
                 let kind = kind(self.vm.heap(), object)?;
                 if kind != Kind::Completion
-                    && !(matches!(kind, Kind::Presentation | Kind::Capture | Kind::Window)
-                        && symbol == "reel::completion::cancel")
+                    && !(matches!(
+                        kind,
+                        Kind::Presentation | Kind::Capture | Kind::Window | Kind::Condition
+                    ) && symbol == "reel::completion::cancel")
                 {
                     return Err(AdapterError::Input("expected completion"));
                 }
@@ -804,7 +895,7 @@ impl SessionVm {
                         self.virtual_result_cancelled(owner, object)?;
                     }
                     self.results.changed();
-                    if kind == Kind::Completion {
+                    if matches!(kind, Kind::Completion | Kind::Condition) {
                         self.results.owners_changed();
                     }
                 }

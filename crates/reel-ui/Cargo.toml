@@ -20,6 +20,7 @@ anymore.workspace = true
 cursor-icon = "=1.2.0"
 dpi.workspace = true
 imaging.workspace = true
+unicode-segmentation = "=1.13.3"
 kurbo.workspace = true
 reel-text.workspace = true
 peniko = { workspace = true, features = ["serde"] }

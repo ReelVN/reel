@@ -1,6 +1,47 @@
 //! Reusable descriptions and traced execution graphs share the VM heap.
 //! Rust keeps only scheduling indexes and bounded traversal cursors.
 pub(super) mod action;
+
+aside_host::native_documentation! {
+    pub(super) fn documentation {
+        /// Describe numeric changes on a stage node. `duration` is nonnegative seconds;
+        /// `from` can supply starting values. Omitted properties remain unchanged.
+        /// Easing accepts a named curve or `std::math::curve` value. `run` starts the action.
+        "reel::tween";
+        /// Describe a wait of nonnegative seconds. Compose it with `sequence` or
+        /// `parallel`, then start it with `run`.
+        "reel::delay";
+        /// Describe actions played in argument order. The returned description can be
+        /// started repeatedly; each run owns its execution state.
+        "reel::sequence";
+        /// Describe actions played together, completing when all children complete.
+        "reel::parallel";
+        /// Describe repeated execution of an action. `times: null` repeats indefinitely;
+        /// a nonnegative integer count finishes after that many iterations.
+        "reel::repeat";
+        /// Start an action and return its awaitable activity. `paused` starts with its
+        /// clock frozen. Default ownership follows the active scope, then the current
+        /// task owner. Await returns Completed or Stopped; retirement cancels the activity.
+        "reel::run";
+        /// Start a periodic activity with observable integer ticks and elapsed seconds.
+        /// Publish the latest complete interval when time advances. Pause freezes time;
+        /// stop settles the activity. A clock has no finite endpoint for `finish`.
+        "reel::clock";
+        /// Wait for the activity's terminal result. Multiple consumers share the result;
+        /// cancelling a consumer removes its wait without stopping the producer.
+        "reel::activity::await";
+        /// Pause the activity at its current progress. Its owner and saved state remain
+        /// active; `resume` continues from that progress.
+        "reel::pause";
+        /// Resume a paused activity from its saved progress.
+        "reel::resume";
+        /// Stop the activity at its current progress and settle its waiters as Stopped.
+        "reel::stop";
+        /// Apply the finite activity's endpoint and settle it as Completed. Indefinite
+        /// clocks, repetitions and continuous emissions have no endpoint.
+        "reel::finish";
+    }
+}
 pub(super) mod easing;
 mod graph;
 mod runner;

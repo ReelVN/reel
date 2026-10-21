@@ -1,5 +1,15 @@
 //! Geometry requests are attachments on the single presentation-result queue.
 use super::*;
+
+aside_host::native_documentation! {
+    pub(in crate::aside) fn documentation {
+        /// Request geometry from a newly accepted frame. Await returns immutable width,
+        /// height, bounds and affine transform, optionally relative to another node.
+        /// Unavailable geometry rejects with {code: GeometryUnavailable}; retirement cancels
+        /// it. Saved pending requests wait for a fresh presentation after restore.
+        "reel::stage::geometry";
+    }
+}
 use crate::aside::observable;
 use reel_ui::stage::{NodeId, StageIdentity};
 

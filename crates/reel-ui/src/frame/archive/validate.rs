@@ -186,3 +186,18 @@ pub(super) fn transition(
         Err(retained::error(BuildErrorKind::InvalidRecord))
     }
 }
+
+/// Validate interval ordering and bounds before incremental scope validation.
+pub(super) fn capture_exclusions(
+    command_count: usize,
+    ranges: &[Range<usize>],
+) -> Result<(), RetainError> {
+    let mut end = 0;
+    for range in ranges {
+        if range.start < end || range.start >= range.end || range.end > command_count {
+            return Err(retained::error(BuildErrorKind::InvalidRecord));
+        }
+        end = range.end;
+    }
+    Ok(())
+}

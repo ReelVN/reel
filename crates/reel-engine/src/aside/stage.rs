@@ -1,5 +1,62 @@
 //! Stable Aside host nodes projected into Reel's one shared stage model.
 use std::collections::BTreeMap;
+
+aside_host::native_documentation! {
+    pub(super) fn documentation {
+        /// Create a video image node. Its play method starts playback and returns an
+        /// activity. Common image fit, clipping, transforms and masks apply to decoded
+        /// frames; hiding the node leaves playback running.
+        "reel::video";
+        /// Create an input scope with named bindings and action, key, pointer or wheel
+        /// callbacks. Events not consumed by a focused child reach this scope. Input
+        /// ownership, cancellation and callbacks follow the node's lifetime.
+        "reel::input";
+        /// Create a text node from plain or rich text. Common font, reveal, outline,
+        /// shadow and layout properties apply to the same paragraph. `on_link` receives
+        /// activated rich link ids; text itself creates no dialogue interaction.
+        "reel::text";
+        /// Create an editable text control bound to value. `on_change` receives edits;
+        /// `on_submit` handles submission. text_input is single-line; text_area is multiline.
+        /// Use a writable bind reference to keep an author model synchronized.
+        "reel::text_input" | "reel::text_area";
+        /// Create an image node from an asset path or captured image bytes. Fit, slicing,
+        /// repetition and corner colors configure its common image presentation.
+        "reel::image";
+        /// Lay out children horizontally with common gap, padding and alignment.
+        "reel::row";
+        /// Lay out children vertically with common gap, padding and alignment.
+        "reel::column";
+        /// Overlay children in declaration order. Later children paint above earlier ones.
+        "reel::stack";
+        /// Place authored pointer artwork in the cursor layer. It follows the accepted
+        /// pointer position, shares node properties and does not intercept input.
+        "reel::cursor";
+        /// Create a button with optional label and on_click callback. Authored children
+        /// can supply its appearance; decorated:false disables built-in decoration.
+        /// The callback receives an event with this node as target.
+        "reel::button";
+        /// Create a numeric control with min, max and step. Bind value to a writable
+        /// property; on_change observes committed value changes.
+        "reel::slider";
+        /// Create a boolean control with optional label. Bind value to a writable
+        /// property, and use on_change for committed changes.
+        "reel::toggle" | "reel::checkbox";
+        /// Create an option control. Selecting it writes option to the shared value
+        /// binding; controls with the same binding share the selected value.
+        "reel::radio";
+        /// Create a scroll viewport. axis selects scroll directions; scroll_x/y are
+        /// observable offsets. follow_end follows appended content while at the end.
+        /// content_align positions content smaller than the viewport.
+        "reel::scroll";
+        /// Create a clipped camera container. camera_x/y select the viewed world point;
+        /// zoom and camera_rotation transform its ordinary children. Drawing and input
+        /// use the same transform; the common x/y properties place the viewport.
+        "reel::camera";
+        /// Replace the mounted stage root with this node. Retired nodes cancel their
+        /// owned work. Build the new tree before mounting it.
+        "reel::stage::replace";
+    }
+}
 use std::sync::Arc;
 pub(super) mod camera;
 pub(super) mod controls;
@@ -25,98 +82,166 @@ use aside_vm::executor::Vm;
 /// One host schema feeds construction, writes and animation; NodeProps remains in reel-ui.
 #[derive(aside_host::Properties)]
 pub(super) enum NodeProperty {
+    /// Horizontal position in the parent's logical coordinate space.
     #[aside(name = "x", ty = Any, default = 0, validate = validate_number, animatable)]
     X,
+    /// Vertical position in the parent's logical coordinate space.
     #[aside(name = "y", ty = Any, default = 0, validate = validate_number, animatable)]
     Y,
+    /// Explicit logical width; null uses the node's measured width.
     #[aside(name = "width", ty = Any, default = null, validate = validate_dimension, animatable)]
     Width,
+    /// Explicit logical height; null uses the node's measured height.
     #[aside(name = "height", ty = Any, default = null, validate = validate_dimension, animatable)]
     Height,
+    /// Opacity of the node and its subtree, from 0 (transparent) to 1 (opaque).
     #[aside(name = "opacity", ty = Any, default = 1, validate = validate_opacity, animatable)]
     Opacity,
+    /// Color inversion strength, from 0 to 1.
     #[aside(name = "invert", ty = Any, default = 0, validate = validate_invert, animatable)]
     Invert,
+    /// Blend mode for compositing this subtree with the scene behind it.
     #[aside(name = "blend", ty = String, default = "normal", validate = validate_blend)]
     Blend,
+    /// Show this subtree and include it in input hit testing.
     #[aside(name = "visible", ty = Bool, default = true)]
     Visible,
+    /// Allow this subtree to receive input while retaining its presentation.
     #[aside(name = "enabled", ty = Bool, default = true)]
     Enabled,
+    /// Capture input above lower scene layers while the node is visible.
     #[aside(name = "modal", ty = Bool, default = false)]
     Modal,
+    /// Clip child drawing and hit testing to this node's bounds.
     #[aside(name = "clip", ty = Bool, default = false)]
     Clip,
+    /// Space between adjacent children in row and column layouts.
     #[aside(name = "gap", ty = Any, default = 0, validate = validate_nonnegative, animatable)]
     Gap,
+    /// Inset between this node's bounds and its content.
     #[aside(name = "padding", ty = Any, default = 0, validate = validate_nonnegative, animatable)]
     Padding,
+    /// Text size in logical pixels.
     #[aside(name = "font_size", ty = Any, default = 24, validate = validate_nonnegative, animatable)]
     FontSize,
+    /// Family name registered through game.configure fonts.
     #[aside(name = "font", ty = String, default = "system-ui")]
     Font,
+    /// Foreground text color as a CSS hex color.
     #[aside(name = "color", ty = String, default = "#ffffff", validate = validate_color)]
     Color,
+    /// Node background color; null leaves the background transparent.
     #[aside(name = "background", ty = Any, default = null, validate = validate_background)]
     Background,
+    /// Rotation in degrees around the node's anchor.
     #[aside(name = "rotation", ty = Any, default = 0, validate = validate_number, animatable)]
     Rotation,
+    /// Horizontal scale around the node's anchor.
     #[aside(name = "scale_x", ty = Any, default = 1, validate = validate_number, animatable)]
     ScaleX,
+    /// Vertical scale around the node's anchor.
     #[aside(name = "scale_y", ty = Any, default = 1, validate = validate_number, animatable)]
     ScaleY,
+    /// Horizontal transform anchor as a fraction of the node width.
     #[aside(name = "anchor_x", ty = Any, default = 0, validate = validate_number, animatable)]
     AnchorX,
+    /// Vertical transform anchor as a fraction of the node height.
     #[aside(name = "anchor_y", ty = Any, default = 0, validate = validate_number, animatable)]
     AnchorY,
+    /// Draw the control's built-in decoration. Input and bindings stay active.
     #[aside(name = "decorated", ty = Bool, default = true)]
     Decorated,
+    /// Visible UTF-8 byte prefix of a text node; null reveals the whole text.
     #[aside(name = "reveal", ty = Any, default = null, validate = validate_reveal)]
     Reveal,
+    /// Soft reveal progress. Grapheme k uses clamp(progress - k * step, 0, 1).
+    /// Null disables soft reveal; the hard reveal prefix still applies.
+    #[aside(name = "reveal_fade", ty = Any, default = null, validate = validate_optional_number, animatable)]
+    RevealFade,
+    /// UTF-8 byte offset where soft reveal begins. Earlier text stays opaque.
+    #[aside(name = "reveal_fade_from", ty = Any, default = 0, validate = validate_byte_index)]
+    RevealFadeFrom,
+    /// Nonnegative delay between successive graphemes in soft reveal progress units.
+    #[aside(name = "reveal_fade_step", ty = Any, default = 0, validate = validate_nonnegative, animatable)]
+    RevealFadeStep,
+    /// Horizontal text alignment: start, end, left, right, center or justify.
     #[aside(name = "text_align", ty = String, default = "start", validate = validate_text_align)]
     TextAlign,
+    /// Wrap text at the available content width.
     #[aside(name = "text_wrap", ty = Bool, default = true)]
     TextWrap,
+    /// Line-height multiplier relative to the font size.
     #[aside(name = "line_height", ty = Any, default = 1.2, validate = validate_nonnegative, animatable)]
     LineHeight,
+    /// Use shrink to fit text into fixed bounds, or none for the declared size.
     #[aside(name = "text_fit", ty = String, default = "none", validate = validate_text_fit)]
     TextFit,
+    /// Smallest font size allowed by text_fit: shrink.
     #[aside(name = "min_font_size", ty = Any, default = 0, validate = validate_nonnegative)]
     MinFontSize,
+    /// Text outline width in logical pixels.
     #[aside(name = "text_outline", ty = Any, default = 0, validate = validate_nonnegative, animatable)]
     TextOutline,
+    /// Color of the text outline.
     #[aside(name = "text_outline_color", ty = String, default = "#000000", validate = validate_color)]
     TextOutlineColor,
+    /// Image or composed mask applied to this subtree; null disables masking.
     #[aside(name = "mask", ty = Any, default = null, validate = validate_mask)]
     Mask,
+    /// Reveal threshold for the subtree mask.
     #[aside(name = "mask_progress", ty = Any, default = 1, validate = validate_mask_progress, animatable)]
     MaskProgress,
+    /// Softness of the mask threshold transition.
     #[aside(name = "mask_softness", ty = Any, default = 0.06, validate = validate_nonnegative, animatable)]
     MaskSoftness,
+    /// Reverse the mask's coverage.
     #[aside(name = "mask_invert", ty = Bool, default = false)]
     MaskInvert,
+    /// Horizontal mask sampling offset in local coordinates.
     #[aside(name = "mask_x", ty = Any, default = 0, validate = validate_mask_offset, animatable)]
     MaskX,
+    /// Vertical mask sampling offset in local coordinates.
     #[aside(name = "mask_y", ty = Any, default = 0, validate = validate_mask_offset, animatable)]
     MaskY,
+    /// Fill available layout space along none, x, y or both axes.
     #[aside(name = "stretch", ty = String, default = "none", validate = validate_stretch)]
     Stretch,
+    /// Upper bound on measured logical width; null leaves it unconstrained.
     #[aside(name = "max_width", ty = Any, default = null, validate = validate_dimension, animatable)]
     MaxWidth,
+    /// Upper bound on measured logical height; null leaves it unconstrained.
     #[aside(name = "max_height", ty = Any, default = null, validate = validate_dimension, animatable)]
     MaxHeight,
+    /// Horizontal alignment within available space: 0 starts, 1 ends.
     #[aside(name = "align_x", ty = Any, default = 0, validate = validate_opacity, animatable)]
     AlignX,
+    /// Vertical alignment within available space: 0 starts, 1 ends.
     #[aside(name = "align_y", ty = Any, default = 0, validate = validate_opacity, animatable)]
     AlignY,
+    /// Callback for hover, press and focus interaction changes.
     #[aside(name = "on_interaction", ty = Any, default = null, validate = validate_callback)]
     OnInteraction,
+    /// Requested font weight; 400 selects normal text.
     #[aside(name = "font_weight", ty = Any, default = 400, validate = validate_font_weight)]
     FontWeight,
+    /// Extra spacing between text glyphs in logical pixels.
     #[aside(name = "letter_spacing", ty = Any, default = 0, validate = validate_text_spacing)]
     LetterSpacing,
+    /// Extra spacing at word boundaries in logical pixels.
     #[aside(name = "word_spacing", ty = Any, default = 0, validate = validate_text_spacing)]
     WordSpacing,
+    /// Include this subtree in stage.capture images. Normal presentation is unchanged.
+    #[aside(name = "capture_included", ty = Bool, default = true)]
+    CaptureIncluded,
+    /// Horizontal shadow offset in logical pixels. Two zero offsets disable the shadow.
+    #[aside(name = "text_shadow_x", ty = Any, default = 0, validate = validate_number, animatable)]
+    TextShadowX,
+    /// Vertical shadow offset in logical pixels. Reuses the text's shaped layout.
+    #[aside(name = "text_shadow_y", ty = Any, default = 0, validate = validate_number, animatable)]
+    TextShadowY,
+    /// Uniform shadow color, independent of rich span colors and subject to text reveal.
+    #[aside(name = "text_shadow_color", ty = String, default = "#000000", validate = validate_color)]
+    TextShadowColor,
 }
 
 pub(super) struct StageBinding {
@@ -399,6 +524,7 @@ impl StageBinding {
             None,
             mask_origin,
         )?;
+        validate_text_fade(&kind, &props)?;
         let mask_source = mask_handle(heap, fields, prefix.len(), Value::NULL)?;
         let mut children = Vec::new();
         let references = heap.alloc_array(&[])?;
@@ -816,6 +942,7 @@ impl StageBinding {
                 node.props.mask_origin.clone(),
             )?;
             overrides::apply_offsets(heap, value, &mut props)?;
+            validate_text_fade(&kind, &props)?;
             if matches!(kind, NodeKind::VirtualList(_)) {
                 validate_virtual_props(&props)?;
             }
@@ -964,10 +1091,22 @@ impl StageBinding {
             return Ok(None);
         };
         if text != &link.text
-            || !text
-                .links()
-                .iter()
-                .any(|l| l.id == link.id && node.props.reveal.is_none_or(|end| l.range.end <= end))
+            || !text.links().iter().any(|l| {
+                l.id == link.id
+                    && node.props.reveal.is_none_or(|end| l.range.end <= end)
+                    && node.props.reveal_fade.is_none_or(|progress| {
+                        use unicode_segmentation::UnicodeSegmentation;
+                        let graphemes: Vec<_> =
+                            text.grapheme_indices(true).map(|(i, _)| i).collect();
+                        reel_ui::core::RevealFade {
+                            from: node.props.reveal_fade_from,
+                            progress,
+                            step: node.props.reveal_fade_step,
+                        }
+                        .alpha(&graphemes, l.range.clone())
+                            > 0.
+                    })
+            })
         {
             return Ok(None);
         }
@@ -1131,6 +1270,18 @@ pub(super) fn bindings() -> [NativeBinding<StageBinding, AdapterError>; 6] {
     ]
 }
 
+/// Insert an unmounted child at index, or append it when index is null.
+/// Return the inserted node. The parent owns its child's lifetime.
+///
+/// ```aside
+/// fn main() {
+///     game.configure(fonts: ["fonts/body.ttf"]);
+///     let panel = stack();
+///     stage.replace(panel);
+///     let child = panel.add(text("Added"));
+///     child.remove();
+/// }
+/// ```
 #[aside_host::native(symbol = "reel::node::add", effects = Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST), capabilities = ["reel.stage"])]
 pub(super) fn add(
     #[aside(context)] context: &mut CallContext<'_, StageBinding>,
@@ -1178,8 +1329,8 @@ impl StageBinding {
     }
 }
 
-/// Reorder one direct child using the existing reconciliation path. No node is
-/// adopted or retired, and all VM references still point at the same objects.
+/// Move a direct child to a zero-based index within this container.
+/// Return the same child, preserving its state and references.
 #[aside_host::native(symbol = "reel::node::move", effects = Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST), capabilities = ["reel.stage"])]
 pub(super) fn move_child(
     #[aside(context)] context: &mut CallContext<'_, StageBinding>,
@@ -1220,6 +1371,8 @@ pub(super) fn move_child(
     Ok(child)
 }
 
+/// Retire this node and its descendants, cancelling their owned activities.
+/// Removing an already retired node completes immediately.
 #[aside_host::native(symbol = "reel::node::remove", effects = Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST), capabilities = ["reel.stage"])]
 pub(super) fn remove(
     #[aside(context)] context: &mut CallContext<'_, StageBinding>,
@@ -1262,6 +1415,7 @@ impl StageBinding {
     }
 }
 
+/// Retire all children while preserving this container and its properties.
 #[aside_host::native(symbol = "reel::node::clear", effects = Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST), capabilities = ["reel.stage"])]
 pub(super) fn clear(
     #[aside(context)] context: &mut CallContext<'_, StageBinding>,
@@ -1702,6 +1856,38 @@ fn validate_background(heap: &Heap, value: Value) -> Result<(), HeapError> {
         validate_color(heap, value)
     }
 }
+fn validate_text_fade(kind: &NodeKind, props: &NodeProps) -> Result<(), AdapterError> {
+    let source = match kind {
+        NodeKind::Text(text) => Some(text.as_ref()),
+        NodeKind::Button { label, .. }
+        | NodeKind::Toggle { label, .. }
+        | NodeKind::Radio { label, .. } => label.as_deref(),
+        _ => None,
+    };
+    if source.is_some_and(|text| {
+        props.reveal_fade_from < text.len() && !text.is_char_boundary(props.reveal_fade_from)
+    }) {
+        return Err(AdapterError::Input(
+            "reveal_fade_from must be a UTF-8 byte boundary",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_optional_number(heap: &Heap, value: Value) -> Result<(), HeapError> {
+    if value.tag() == ValueTag::Null {
+        Ok(())
+    } else {
+        validate_number(heap, value)
+    }
+}
+fn validate_byte_index(_: &Heap, value: Value) -> Result<(), HeapError> {
+    if value.as_int().is_some_and(|n| usize::try_from(n).is_ok()) {
+        Ok(())
+    } else {
+        Err(HeapError::TypeMismatch)
+    }
+}
 fn validate_reveal(_: &Heap, value: Value) -> Result<(), HeapError> {
     if value.tag() == ValueTag::Null || value.as_int().is_some_and(|n| usize::try_from(n).is_ok()) {
         Ok(())
@@ -1812,11 +1998,19 @@ fn read_props(
         invert: invert(get(NodeProperty::Invert)?)?,
         blend: blend(heap, get(NodeProperty::Blend)?)?,
         visible: boolean(get(NodeProperty::Visible)?)?,
+        capture_included: boolean(get(NodeProperty::CaptureIncluded)?)?,
         enabled: boolean(get(NodeProperty::Enabled)?)?,
         modal: boolean(get(NodeProperty::Modal)?)?,
         clip: boolean(get(NodeProperty::Clip)?)?,
         decorated: boolean(get(NodeProperty::Decorated)?)?,
         reveal: get(NodeProperty::Reveal)?.as_int().map(|v| v as usize),
+        reveal_fade: if get(NodeProperty::RevealFade)?.tag() == ValueTag::Null {
+            None
+        } else {
+            Some(number(get(NodeProperty::RevealFade)?)?)
+        },
+        reveal_fade_from: get(NodeProperty::RevealFadeFrom)?.as_int().unwrap() as usize,
+        reveal_fade_step: nonnegative(get(NodeProperty::RevealFadeStep)?)?,
         gap: nonnegative(get(NodeProperty::Gap)?)?,
         padding: nonnegative(get(NodeProperty::Padding)?)?,
         font_size: nonnegative(get(NodeProperty::FontSize)?)?,
@@ -1836,6 +2030,9 @@ fn read_props(
         },
         text_outline: nonnegative(get(NodeProperty::TextOutline)?)?,
         text_outline_color: color(heap, get(NodeProperty::TextOutlineColor)?)?,
+        text_shadow_x: number(get(NodeProperty::TextShadowX)?)?,
+        text_shadow_y: number(get(NodeProperty::TextShadowY)?)?,
+        text_shadow_color: color(heap, get(NodeProperty::TextShadowColor)?)?,
         color: color(heap, get(NodeProperty::Color)?)?,
         background: if background.tag() == ValueTag::Null {
             None

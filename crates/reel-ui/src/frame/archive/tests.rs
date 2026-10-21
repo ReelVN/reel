@@ -19,7 +19,11 @@ fn command(op: FrameOp) -> FrameCommand {
 fn saved(commands: Vec<FrameCommand>, masks: BTreeMap<u32, Arc<FrameMask>>) -> SavedRetainedScene {
     SavedRetainedScene(Arc::new(Archive {
         nodes: vec![SavedNode {
-            drawing: Drawing::Stored(StoredDrawing { commands, masks }),
+            drawing: Drawing::Stored(StoredDrawing {
+                commands,
+                masks,
+                capture_exclusions: Vec::new(),
+            }),
             resources: Vec::new(),
             transitions: Vec::new(),
         }],
@@ -205,6 +209,7 @@ fn saved_drawing_rejects_a_transition_cut_through_an_open_group() {
         0,
         SavedNode {
             drawing: Drawing::Stored(StoredDrawing {
+                capture_exclusions: Vec::new(),
                 commands: Vec::new(),
                 masks: BTreeMap::new(),
             }),
@@ -213,6 +218,7 @@ fn saved_drawing_rejects_a_transition_cut_through_an_open_group() {
         },
     );
     archive.nodes[1].transitions.push(SavedTransition {
+        capture_included: true,
         commands: 1..2,
         previous: 0,
         to_parent: Affine::IDENTITY,
@@ -269,6 +275,7 @@ fn retained(
         (size_of::<FrameDrawing>() + transitions.capacity() * size_of::<SceneTransition>()) as u64;
     RetainedScene {
         drawing: Arc::new(FrameDrawing {
+            capture_exclusions: Vec::new(),
             commands: Vec::new(),
             masks: BTreeMap::new(),
             resources: ResourceSnapshot::capture(leases.into_iter().map(Ok), pool).unwrap(),
@@ -318,6 +325,7 @@ fn snapshot_metadata_refunds_workspace_and_counts_shared_resident_pixels_once() 
         vec![lease.clone()],
         (0..64)
             .map(|_| SceneTransition {
+                capture_included: true,
                 commands: 0..0,
                 previous: child.clone(),
                 progress: 0.5,
@@ -414,4 +422,42 @@ fn snapshot_metadata_refunds_workspace_and_counts_shared_resident_pixels_once() 
     drop((saved, scene, child, lease, registry));
     assert_eq!(pool.usage().bytes, 0);
     assert_eq!(producers.usage().bytes, 0);
+}
+
+#[test]
+#[expect(
+    clippy::single_range_in_vec_init,
+    reason = "fixtures contain command intervals"
+)]
+fn capture_exclusions_restore_and_reject_unbalanced_intervals() {
+    let commands = vec![
+        command(FrameOp::PushGroup(group())),
+        command(FrameOp::PopGroup),
+    ];
+    let mut value = saved(commands, BTreeMap::new());
+    let Drawing::Stored(drawing) = &mut Arc::get_mut(&mut value.0).unwrap().nodes[0].drawing else {
+        unreachable!()
+    };
+    drawing.capture_exclusions = vec![0..2];
+    let result = restore(&value).unwrap();
+    assert_eq!(result.drawing().capture_exclusions(), &[0..2]);
+    assert_eq!(result.drawing().capture_exclusion_end(0), Some(2));
+    assert_eq!(result.drawing().capture_exclusion_end(2), None);
+    for invalid in [
+        vec![0..1],
+        vec![1..2],
+        vec![0..3],
+        vec![1..1],
+        vec![0..2, 1..2],
+    ] {
+        let Drawing::Stored(drawing) = &mut Arc::get_mut(&mut value.0).unwrap().nodes[0].drawing
+        else {
+            unreachable!()
+        };
+        drawing.capture_exclusions = invalid;
+        assert_eq!(
+            restore(&value).unwrap_err().kind,
+            BuildErrorKind::InvalidRecord
+        );
+    }
 }

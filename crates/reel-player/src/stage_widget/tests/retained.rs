@@ -267,3 +267,127 @@ fn retained_file_images_save_version_references_and_reject_wrong_rebinding() {
     let restored = restore.finish().unwrap();
     assert_eq!(restored.drawing().resources().leases().len(), 2);
 }
+
+fn capture_frame(
+    f: &mut Fixture,
+    transitions: Vec<reel_ui::frame::FrameTransition>,
+    pool: &BudgetPool,
+) -> reel_ui::frame::RenderFrame {
+    let recorded = f.record();
+    f.accept(&recorded);
+    let resources =
+        ResourceSnapshot::capture(f.ui.image_resources().iter().cloned().map(Ok), pool).unwrap();
+    let mut build = FrameBuild::new(
+        recorded.source,
+        resources,
+        FrameInfo {
+            logical_size: [640., 420.],
+            physical_size: [640, 420],
+        },
+        LIMITS,
+        pool,
+    )
+    .unwrap();
+    build.set_transitions(transitions).unwrap();
+    while !build.step(STEP).unwrap().complete {}
+    build.finish().unwrap()
+}
+fn retain_frame(
+    frame: &reel_ui::frame::RenderFrame,
+    root: Option<WidgetId>,
+    pool: &BudgetPool,
+) -> RetainedScene {
+    let mut build = RetainBuild::new(frame, root, LIMITS, pool).unwrap();
+    while !build.step(STEP).unwrap().complete {}
+    build.finish().unwrap()
+}
+#[test]
+fn capture_exclusion_freezes_subtrees_and_survives_retention_and_archive() {
+    let pool = pool();
+    let mut f = Fixture::new(None);
+    let ordinary = capture_frame(&mut f, vec![], &pool);
+    f.edit(f.red, |p| p.capture_included = false);
+    let excluded = capture_frame(&mut f, vec![], &pool);
+    assert_eq!(
+        ordinary.commands().len(),
+        excluded.commands().len(),
+        "normal painting is unchanged"
+    );
+    assert!(ordinary.drawing().capture_exclusions().is_empty());
+    assert_eq!(excluded.drawing().capture_exclusions().len(), 1);
+    let red = f.layouts()[&f.red].0;
+    let retained = retain_frame(&excluded, Some(red), &pool);
+    assert_eq!(retained.drawing().capture_exclusions().len(), 1);
+    assert_eq!(
+        retained.drawing().capture_exclusions()[0],
+        0..retained.drawing().commands().len()
+    );
+    let saved = retained.snapshot(|_| None).unwrap();
+    let decoded: SavedRetainedScene =
+        postcard::from_bytes(&postcard::to_stdvec(&saved).unwrap()).unwrap();
+    let restored = restore_inline(&decoded, &pool);
+    assert_eq!(
+        restored.drawing().capture_exclusions(),
+        retained.drawing().capture_exclusions()
+    );
+    f.edit(f.red, |p| p.capture_included = true);
+    let current = capture_frame(&mut f, vec![], &pool);
+    assert!(current.drawing().capture_exclusions().is_empty());
+    assert_eq!(
+        excluded.drawing().capture_exclusions().len(),
+        1,
+        "accepted frames never reread live state"
+    );
+    drop((
+        ordinary, excluded, retained, restored, saved, decoded, current,
+    ));
+    assert_eq!(pool.usage().bytes, 0);
+}
+#[test]
+fn excluded_parent_covers_descendants_and_empty_transition_target() {
+    use reel_ui::frame::FrameTransition;
+    let pool = pool();
+    let mut f = Fixture::new(None);
+    let old_frame = capture_frame(&mut f, vec![], &pool);
+    let red = f.layouts()[&f.red].0;
+    let previous = retain_frame(&old_frame, Some(red), &pool);
+    f.edit(f.root, |p| {
+        p.capture_included = false;
+        p.opacity = 0.5;
+    });
+    f.edit(f.red, |p| p.background = None);
+    let excluded = capture_frame(
+        &mut f,
+        vec![FrameTransition {
+            root: Some(red),
+            previous,
+            progress: 0.5,
+            mask: None,
+        }],
+        &pool,
+    );
+    let transition = &excluded.drawing().transitions()[0];
+    assert!(
+        transition.commands.is_empty(),
+        "empty target still has an old transition side"
+    );
+    assert!(
+        !transition.capture_included,
+        "ancestor exclusion includes empty targets"
+    );
+    assert_eq!(
+        excluded.drawing().capture_exclusions().len(),
+        1,
+        "nested exclusions are merged at recording"
+    );
+    let scene = retain_frame(&excluded, None, &pool);
+    let saved = scene.snapshot(|_| None).unwrap();
+    let decoded: SavedRetainedScene =
+        postcard::from_bytes(&postcard::to_stdvec(&saved).unwrap()).unwrap();
+    let restored = restore_inline(&decoded, &pool);
+    assert!(!restored.drawing().transitions()[0].capture_included);
+    assert_eq!(
+        restored.drawing().capture_exclusions(),
+        scene.drawing().capture_exclusions()
+    );
+}

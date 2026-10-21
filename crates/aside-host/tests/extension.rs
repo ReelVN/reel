@@ -1,6 +1,11 @@
 use aside_host::{CallContext, Error, NativeContract, Properties, PropertySchema, native};
 use aside_vm::{Heap, HeapError, RootOwner, SessionEpoch, Value, bytecode as bc, executor::*};
 
+/// Add two integers, clamping a nonpositive result to zero.
+///
+/// ```aside
+/// fn main() { add(3, right: 4) }
+/// ```
 #[native(symbol = "sample::add")]
 fn add(#[aside(name = "left")] __aside_vm: i64, #[aside(default = 2)] right: i64) -> i64 {
     let Some(result) = __aside_vm.checked_add(right) else {
@@ -40,6 +45,7 @@ fn nonnegative(_: &Heap, value: Value) -> Result<(), HeapError> {
 }
 #[derive(Properties)]
 enum Field {
+    /// Horizontal position in logical pixels.
     #[aside(ty = Float, default = 0.0, animatable, validate = nonnegative)]
     X,
     #[aside(ty = Bool, default = true)]
@@ -73,6 +79,13 @@ fn collect(#[aside(rest)] items: Value) -> Value {
 #[test]
 fn standalone_macro_host_compiles_encodes_admits_and_calls_rust() {
     let add = add::binding();
+    assert!(add.documentation.contains("Add two integers"));
+    assert!(add.documentation.contains("add(3, right: 4)"));
+    assert_eq!(
+        Field::documentation(Field::X.index()),
+        " Horizontal position in logical pixels.\n"
+    );
+    assert_eq!(Field::documentation(Field::Visible.index()), "");
     let decorate = decorate::binding();
     let gauge = gauge::binding();
     let collect = collect::binding();

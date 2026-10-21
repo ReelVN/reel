@@ -3,6 +3,12 @@ use std::{ops::Range, sync::Arc};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TextStyle {
+    /// Configured font-family selection for this immutable text range.
+    pub font: Option<Arc<str>>,
+    /// Absolute logical line height for this range, including empty lines.
+    pub line_height: Option<f32>,
+    /// Explicit CSS font weight in 1..=1000, independent of enclosing defaults.
+    pub weight: Option<f32>,
     pub bold: bool,
     pub italic: bool,
     pub underline: bool,
@@ -97,6 +103,7 @@ struct RichText {
     links: Vec<TextLink>,
     cues: Vec<TextCue>,
     continue_after: bool,
+    font_bytes: usize,
 }
 
 impl Default for Text {
@@ -191,6 +198,7 @@ impl Text {
                     + r.ruby.capacity() * std::mem::size_of::<Ruby>()
                     + r.links.capacity() * std::mem::size_of::<TextLink>()
                     + r.cues.capacity() * std::mem::size_of::<TextCue>()
+                    + r.font_bytes
                     + r.ruby.iter().map(|r| r.annotation.len()).sum::<usize>()
                     + r.links.iter().map(|link| link.id.len()).sum::<usize>()
             })
@@ -204,6 +212,12 @@ impl Text {
             .filter(|s| s.range.contains(&offset))
             .map(|s| &s.style)
     }
+    /// Parse nested immutable markup spans.
+    /// `[font=family]` selects a configured font family, including blank lines;
+    /// `[line_height=46]` sets an absolute finite nonnegative logical height.
+    /// `[weight=400]` accepts finite weights in 1..=1000; `[b]` sets 700.
+    /// Inner tags override outer values and closing tags restore them.
+    /// Family names must be nonempty; layout resolves them through the host's fonts.
     pub fn parse(markup: impl Into<Arc<str>>) -> Result<Self, MarkupError> {
         let markup = markup.into();
         let mut plain = String::with_capacity(markup.len());
@@ -304,7 +318,10 @@ impl Text {
                                 kind: TextCueKind::Speed(speed),
                             });
                         }
-                        ("b", None) => next.bold = true,
+                        ("b", None) => {
+                            next.bold = true;
+                            next.weight = Some(700.);
+                        }
                         ("i", None) => next.italic = true,
                         ("u", None) => next.underline = true,
                         ("s", None) => next.strike = true,
@@ -316,6 +333,30 @@ impl Text {
                                 return Err(error("font size must be positive and finite"));
                             }
                             next.size = Some(size);
+                        }
+                        ("font", Some(value)) => {
+                            let family = value.trim();
+                            if family.is_empty() {
+                                return Err(error("font family must not be empty"));
+                            }
+                            next.font = Some(family.into());
+                        }
+                        ("line_height", Some(value)) => {
+                            let height: f32 =
+                                value.parse().map_err(|_| error("invalid line height"))?;
+                            if !height.is_finite() || height < 0. {
+                                return Err(error("line height must be finite and nonnegative"));
+                            }
+                            next.line_height = Some(height);
+                        }
+                        ("weight", Some(value)) => {
+                            let weight: f32 =
+                                value.parse().map_err(|_| error("invalid font weight"))?;
+                            if !weight.is_finite() || !(1. ..=1000.).contains(&weight) {
+                                return Err(error("font weight must be finite and within 1..1000"));
+                            }
+                            next.weight = Some(weight);
+                            next.bold = weight >= 600.;
                         }
                         ("color", Some(value)) => {
                             next.color = Some(
@@ -379,6 +420,13 @@ impl Text {
                 message: "unclosed tag",
             });
         }
+        let mut fonts = std::collections::BTreeSet::new();
+        let font_bytes = spans
+            .iter()
+            .filter_map(|span| span.style.font.as_ref())
+            .filter(|font| fonts.insert(Arc::as_ptr(font) as *const () as usize))
+            .map(|font| font.len() + 2 * std::mem::size_of::<usize>())
+            .sum();
         Ok(Self {
             plain: plain.into(),
             rich: Some(Arc::new(RichText {
@@ -388,6 +436,7 @@ impl Text {
                 links,
                 cues,
                 continue_after,
+                font_bytes,
             })),
         })
     }
@@ -408,6 +457,46 @@ fn parse_color(value: &str) -> Option<[u8; 4]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn font_and_absolute_line_height_restore_nested_ranges_and_roundtrip() {
+        let text=Text::parse("[font=Outer Family][line_height=46]A[font=Inner][line_height=30]\nB[/line_height][/font]C[/line_height][/font]D").unwrap();
+        assert_eq!(&*text, "A\nBCD");
+        for (offset, family, height) in [
+            (0, Some("Outer Family"), Some(46.)),
+            (1, Some("Inner"), Some(30.)),
+            (2, Some("Inner"), Some(30.)),
+            (3, Some("Outer Family"), Some(46.)),
+            (4, None, None),
+        ] {
+            let style = text.style_at(offset);
+            assert_eq!(style.and_then(|s| s.font.as_deref()), family);
+            assert_eq!(style.and_then(|s| s.line_height), height);
+        }
+        assert_eq!(Text::parse(text.markup().unwrap().clone()).unwrap(), text);
+        for invalid in [
+            "[font=]x[/font]",
+            "[font=   ]x[/font]",
+            "[line_height=-1]x[/line_height]",
+            "[line_height=NaN]x[/line_height]",
+            "[line_height=inf]x[/line_height]",
+        ] {
+            assert!(Text::parse(invalid).is_err(), "{invalid}");
+        }
+        assert!(Text::parse("[line_height=0]x[/line_height]").is_ok());
+        let weights =
+            Text::parse("[weight=400]A[b]B[weight=500]C[/weight]D[/b]E[/weight]").unwrap();
+        for (index, expected) in [400., 700., 500., 700., 400.].into_iter().enumerate() {
+            assert_eq!(weights.style_at(index).unwrap().weight, Some(expected));
+        }
+        for invalid in [
+            "[weight=0]x[/weight]",
+            "[weight=1001]x[/weight]",
+            "[weight=NaN]x[/weight]",
+        ] {
+            assert!(Text::parse(invalid).is_err(), "{invalid}");
+        }
+    }
 
     #[test]
     fn nested_markup_keeps_utf8_ranges_styles_and_plain_identity() {
