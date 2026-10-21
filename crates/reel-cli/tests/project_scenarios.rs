@@ -68,6 +68,14 @@ fn execute_project_with_capture(
     gpu_capture: bool,
     clicks: &[(u64, [f64; 2])],
 ) -> (Vec<audio::AudioStats>, Vec<scenario_capture::CaptureStats>) {
+    // Scale game time and offline PCM together; timeouts and CPU slices retain wall time.
+    let time_scale: f64 = std::env::var("REEL_SCENARIO_TIME_SCALE")
+        .map(|value| value.parse().expect("scenario time scale must be a number"))
+        .unwrap_or(1.);
+    assert!(
+        time_scale.is_finite() && time_scale > 0.,
+        "scenario time scale must be finite and positive"
+    );
     assert!(
         gpu_capture || clicks.is_empty(),
         "scenario clicks require GPU captures"
@@ -122,28 +130,60 @@ fn execute_project_with_capture(
         let mut clicks = clicks.iter().peekable();
         let mut pointer_events = VecDeque::new();
         let started = Instant::now();
+        let logical_elapsed = || started.elapsed().mul_f64(time_scale);
+        let slice_ns = Duration::from_millis(2).mul_f64(time_scale).as_nanos() as u64;
+        let mut progress_at = Duration::from_secs(30);
         let mut frame = 0;
         loop {
             frame += 1;
-            audio.advance(started.elapsed());
+            audio.advance(logical_elapsed());
             // Match the window host: native continuations share one frame's CPU
             // deadline. A budget slice must not advance game time by one frame.
-            let deadline = started.elapsed().as_nanos() as u64 + 2_000_000;
+            let deadline = logical_elapsed().as_nanos() as u64 + slice_ns;
             runtime
                 .tick(
                     SliceBudget {
                         deadline_ns: Some(deadline),
                         ..Default::default()
                     },
-                    || started.elapsed().as_nanos() as u64,
+                    || logical_elapsed().as_nanos() as u64,
                 )
                 .unwrap_or_else(|error| {
+                    if let Some(fault) = runtime.driver().fault().unwrap() {
+                        let vm = runtime.driver().adapter().vm();
+                        let package = vm.program().package();
+                        let mut stack = vm.heap().fault_stack(fault.id).unwrap();
+                        while let Some(frame) = stack.next(vm.heap()).unwrap() {
+                            let function = &package.functions[frame.location.code.function.index()];
+                            let module = &package.modules[function.module.index()];
+                            eprintln!(
+                                "{kind}: fault frame {}::{} pc={} registers={} kind={:?}",
+                                package.symbols[module.path.index()],
+                                package.symbols[function.name.index()],
+                                frame.location.pc.0,
+                                function.register_count,
+                                frame.kind,
+                            );
+                        }
+                    }
                     panic!(
                         "{kind}: {error}; title={:?}; vm={:?}",
                         runtime.driver().adapter().game_settings().title,
                         runtime.driver().adapter().vm().stats(),
                     )
                 });
+            if started.elapsed() >= progress_at {
+                eprintln!(
+                    "{kind}: elapsed={:.1}s, logical={:.1}s, frame={frame}, title={:?}, state={:?}, activities={}, presentation={:?}",
+                    started.elapsed().as_secs_f64(),
+                    logical_elapsed().as_secs_f64(),
+                    runtime.driver().adapter().game_settings().title,
+                    runtime.driver().state(),
+                    runtime.driver().activities_pending(),
+                    runtime.driver().projection_stamp()
+                );
+                progress_at = started.elapsed() + Duration::from_secs(30);
+            }
             assert!(
                 started.elapsed() < timeout,
                 "{kind} scenario did not finish within {timeout:?}: {}; title={:?}, frame={frame}, state={:?}, capture={}, tasks={}, activities={}, presentation={:?}",
@@ -223,7 +263,7 @@ fn execute_project_with_capture(
             capture_stats.push(captures.stats());
         }
         eprintln!(
-            "{kind}: {} completed; frames={frame}, session_replacements={replacements}, audio={:?}",
+            "{kind}: {} completed; time_scale={time_scale}, frames={frame}, session_replacements={replacements}, audio={:?}",
             path.display(),
             audio.stats()
         );
@@ -619,6 +659,40 @@ fn project_scenario_media_position_cue_restores_with_real_audio() {
         assert!(mixed.frames > 0);
         assert!(mixed.peak > 0.01, "real decoded PCM was not consumed");
     }
+}
+
+#[test]
+fn segmented_dialogue_resumes_after_deferred_skip_and_auto_advance() {
+    let project = tempfile::tempdir().unwrap();
+    let source = project.path().join("main.aside");
+    std::fs::write(
+        &source,
+        r#"
+        fn main() {
+            game.configure(text_speed:0);
+            let owner = stack(width:64, height:64);
+            stage.replace(owner);
+            for skipping in [true, false] {
+                if skipping {game.set_skip(true, unread:true);}
+                else {game.set_auto(true, delay:0.01);}
+                let line = narrator("Deferred advance", wait:false);
+                await stage.presented(owner:owner);
+                await run(delay(0.02), owner:owner);
+                if !game.dialogue().ready {throw "deferred line was not revealed";}
+                line.wait();
+                line.append(" and another segment");
+                await stage.presented(owner:owner);
+                await run(delay(0.02), owner:owner);
+                if !game.dialogue().ready {throw "appended line was not revealed";}
+                line.wait();
+                if !game.dialogue().active {throw "open dialogue was retired";}
+            }
+            game.set_auto(false);
+        }
+        "#,
+    )
+    .unwrap();
+    execute_project(&source, Duration::from_secs(15));
 }
 
 #[test]

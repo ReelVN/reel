@@ -1540,6 +1540,11 @@ impl Session {
         Ok(InputOutcome::Completed)
     }
 
+    /// Whether a terminal interaction record is ready for its waiting task.
+    pub fn completion_pending(&self) -> bool {
+        self.completion.is_some()
+    }
+
     /// Claim the single terminal record once. This does not execute or resume a task.
     pub fn take_completion(&mut self) -> Option<Completion> {
         self.completion.take()
