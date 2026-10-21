@@ -1,4 +1,4 @@
 fn opening() {
-    // 剧情正文。
+    // Story content.
 }
 story.register("chapter01.opening", opening, title: "窗上的光");
