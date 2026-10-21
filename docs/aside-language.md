@@ -1,3 +1,5 @@
+Reel 导出将发布清单放在 ASB 2.0 的 Distribution 区段，`run game.asb` 加载代码和资源配置，`dev game.asb` 根据内嵌源码配置重新编译。发布播放器从自身目录直接启动 game.asb。容器变更由 reel-package/reel-cli 负责；Aside 字节码、模块初始化、原生调用和快照执行语义保持。旧 ASB 版本直接拒绝，具体格式与目录合同见引擎架构“字节码与资源分包发布”。
+
 # Aside VM 与完整语言规范
 
 舞台转场沿普通宿主回调续体：`stage.transition(change:, target:null, duration:0.3, ...)` 在当前任务等待旧画面保留、执行 change、完成过渡并返回回调原值，写法与 scope 相同，不在调用外再 await。回调可等待，保留原任务权限；并发使用 spawn。准备、取消、故障与恢复沿既有 native continuation/TaskId/FrameId，不新增语法、VM 指令或隐藏执行器。旧图只提取目标子树的绘制数据，资源内容共享；普通帧的内部命令存储不改变调用、取消或快照续体语义。实现合同见引擎架构“保留画面的舞台转场”；native ABI 1，当前 SessionSnapshot 26、VM8，ASB 格式保持不变。

@@ -1,16 +1,25 @@
-use super::{Budget, CodePackage, Error, ErrorKind, Limits, Metadata, require};
+use super::{
+    Budget, CodePackage, Error, ErrorKind, Limits, Metadata, distribution::Distribution, require,
+};
 use aside_vm::bytecode as bc;
-use std::io::Write;
+use std::io::{self, Read, Seek, SeekFrom, Write};
 
 pub const MAGIC: &[u8; 8] = b"REELASB\0";
+pub const VERSION: u16 = 2;
 pub const HEADER_LEN: usize = 72;
 pub const INDEX_ENTRY_LEN: usize = 56;
 const B01: u32 = 1;
 const METADATA: u32 = 2;
+const DISTRIBUTION: u32 = 3;
 const REQUIRED: u32 = 1;
 
-/// Canonical writer: header, B01, metadata, index; no padding or timestamps.
-pub fn encode(bytecode: &[u8], metadata: &Metadata, limits: Limits) -> Result<Vec<u8>, Error> {
+/// Canonical writer: header, B01, metadata, distribution, index; no padding or timestamps.
+pub fn encode(
+    bytecode: &[u8],
+    metadata: &Metadata,
+    distribution: Option<&Distribution>,
+    limits: Limits,
+) -> Result<Vec<u8>, Error> {
     let mut budget = Budget::new(limits);
     require(
         bytecode.len() <= limits.bytecode.max_bytes,
@@ -20,26 +29,31 @@ pub fn encode(bytecode: &[u8], metadata: &Metadata, limits: Limits) -> Result<Ve
     let program = bc::VerifiedProgram::decode(bytecode, limits.bytecode)
         .map_err(|e| Error::new(ErrorKind::Bytecode, e.to_string()))?;
     metadata.validate(&program, bytecode, limits, &mut budget)?;
-    let mut writer = BoundedWriter {
-        bytes: Vec::new(),
-        limit: limits.max_metadata_bytes,
-    };
-    serde_json::to_writer(&mut writer, metadata)
-        .map_err(|e| Error::new(ErrorKind::Limit, e.to_string()))?;
-    let json = writer.bytes;
+    let json = json_bytes(metadata, limits)?;
     budget.charge(json.len())?;
-    preflight_json(&json, limits)?;
+    let distribution = distribution
+        .map(|distribution| {
+            distribution
+                .validate()
+                .map_err(|e| Error::new(ErrorKind::Metadata, e.to_string()))?;
+            json_bytes(distribution, limits)
+        })
+        .transpose()?;
+    let distribution_bytes = distribution.as_deref().unwrap_or_default();
+    budget.charge(distribution_bytes.len())?;
+    let section_count = 2 + usize::from(distribution.is_some());
     require(
-        limits.max_sections >= 2,
+        limits.max_sections >= section_count,
         ErrorKind::Limit,
         "section count budget exceeded",
     )?;
     let index_offset = HEADER_LEN
         .checked_add(bytecode.len())
         .and_then(|n| n.checked_add(json.len()))
+        .and_then(|n| n.checked_add(distribution_bytes.len()))
         .ok_or_else(|| Error::new(ErrorKind::Limit, "container size overflow"))?;
     let total = index_offset
-        .checked_add(2 * INDEX_ENTRY_LEN)
+        .checked_add(section_count * INDEX_ENTRY_LEN)
         .ok_or_else(|| Error::new(ErrorKind::Limit, "container size overflow"))?;
     require(
         total <= limits.max_file_bytes,
@@ -53,17 +67,37 @@ pub fn encode(bytecode: &[u8], metadata: &Metadata, limits: Limits) -> Result<Ve
     out.resize(HEADER_LEN, 0);
     out.extend_from_slice(bytecode);
     out.extend_from_slice(&json);
+    out.extend_from_slice(distribution_bytes);
     index_entry(&mut out, B01, HEADER_LEN, bytecode);
     index_entry(&mut out, METADATA, HEADER_LEN + bytecode.len(), &json);
+    if distribution.is_some() {
+        index_entry(
+            &mut out,
+            DISTRIBUTION,
+            HEADER_LEN + bytecode.len() + json.len(),
+            distribution_bytes,
+        );
+    }
     out[..8].copy_from_slice(MAGIC);
-    out[8..10].copy_from_slice(&1u16.to_le_bytes());
+    out[8..10].copy_from_slice(&VERSION.to_le_bytes());
     // minor and reserved flags remain zero.
     out[16..24].copy_from_slice(&(total as u64).to_le_bytes());
     out[24..32].copy_from_slice(&(index_offset as u64).to_le_bytes());
-    out[32..40].copy_from_slice(&(2u64 * INDEX_ENTRY_LEN as u64).to_le_bytes());
+    out[32..40].copy_from_slice(&((section_count * INDEX_ENTRY_LEN) as u64).to_le_bytes());
     let index_hash = blake3::hash(&out[index_offset..]);
     out[40..72].copy_from_slice(index_hash.as_bytes());
     Ok(out)
+}
+
+fn json_bytes(value: &impl serde::Serialize, limits: Limits) -> Result<Vec<u8>, Error> {
+    let mut writer = BoundedWriter {
+        bytes: Vec::new(),
+        limit: limits.max_metadata_bytes,
+    };
+    serde_json::to_writer(&mut writer, value)
+        .map_err(|e| Error::new(ErrorKind::Limit, e.to_string()))?;
+    preflight_json(&writer.bytes, limits)?;
+    Ok(writer.bytes)
 }
 
 fn index_entry(out: &mut Vec<u8>, kind: u32, offset: usize, bytes: &[u8]) {
@@ -77,28 +111,101 @@ fn index_entry(out: &mut Vec<u8>, kind: u32, offset: usize, bytes: &[u8]) {
 /// Bounded static validation only. Unknown optional sections are hash-checked
 /// and ignored; they cannot affect entry, linking, or host authorization.
 pub fn decode(input: &[u8], limits: Limits) -> Result<CodePackage, Error> {
-    use ErrorKind::{Encoding, Integrity, Limit, Version};
+    let mut budget = Budget::new(limits);
+    budget.charge(input.len())?;
+    let index = parse_header(input, input.len(), limits)?;
+    let sections = parse_index(input, &input[index.clone()], index, input.len(), limits)?;
+    for section in &sections {
+        check_digest(&input[section.range.clone()], &section.digest)?;
+    }
+    let b01 = payload(input, &sections, B01).expect("required B01");
+    let json = payload(input, &sections, METADATA).expect("required metadata");
+    let metadata: Metadata = decode_json(json, limits, &mut budget)?;
+    let distribution = payload(input, &sections, DISTRIBUTION)
+        .map(|json| decode_distribution(json, limits, &mut budget))
+        .transpose()?;
+    let program = bc::VerifiedProgram::decode(b01, limits.bytecode)
+        .map_err(|e| Error::new(ErrorKind::Bytecode, e.to_string()))?;
+    metadata.validate(&program, b01, limits, &mut budget)?;
+    Ok(CodePackage {
+        program,
+        metadata,
+        distribution,
+    })
+}
+
+/// Read only the embedded distribution, without decoding bytecode or reading resources.
+pub fn read_distribution(
+    reader: &mut (impl Read + Seek),
+    limits: Limits,
+) -> io::Result<Option<Distribution>> {
+    let total = usize::try_from(reader.seek(SeekFrom::End(0))?).map_err(io::Error::other)?;
+    reader.seek(SeekFrom::Start(0))?;
+    let mut header = [0; HEADER_LEN];
+    reader.read_exact(&mut header)?;
+    let index_range = parse_header(&header, total, limits).map_err(io::Error::other)?;
+    let mut budget = Budget::new(limits);
+    budget.charge(HEADER_LEN).map_err(io::Error::other)?;
+    let index = read_range(reader, index_range.clone(), &mut budget)?;
+    let sections =
+        parse_index(&header, &index, index_range, total, limits).map_err(io::Error::other)?;
+    let Some(section) = sections.iter().find(|section| section.kind == DISTRIBUTION) else {
+        return Ok(None);
+    };
+    let json = read_range(reader, section.range.clone(), &mut budget)?;
+    check_digest(&json, &section.digest).map_err(io::Error::other)?;
+    decode_distribution(&json, limits, &mut budget)
+        .map(Some)
+        .map_err(io::Error::other)
+}
+
+fn read_range(
+    reader: &mut (impl Read + Seek),
+    range: std::ops::Range<usize>,
+    budget: &mut Budget,
+) -> io::Result<Vec<u8>> {
+    budget.charge(range.len()).map_err(io::Error::other)?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(range.len())
+        .map_err(io::Error::other)?;
+    bytes.resize(range.len(), 0);
+    reader.seek(SeekFrom::Start(range.start as u64))?;
+    reader.read_exact(&mut bytes)?;
+    Ok(bytes)
+}
+
+struct Section {
+    kind: u32,
+    range: std::ops::Range<usize>,
+    digest: [u8; 32],
+}
+
+fn parse_header(
+    input: &[u8],
+    total: usize,
+    limits: Limits,
+) -> Result<std::ops::Range<usize>, Error> {
+    use ErrorKind::{Encoding, Limit, Version};
     require(
-        input.len() <= limits.max_file_bytes,
+        total <= limits.max_file_bytes,
         Limit,
         "container byte budget exceeded",
     )?;
-    let mut budget = Budget::new(limits);
-    budget.charge(input.len())?;
     require(input.len() >= HEADER_LEN, Encoding, "truncated ASB header")?;
     require(&input[..8] == MAGIC, Encoding, "invalid ASB magic")?;
     require(
-        input[8..12] == [1, 0, 0, 0],
+        input[8..10] == VERSION.to_le_bytes() && input[10..12] == [0, 0],
         Version,
         "unsupported ASB version",
     )?;
     require(u32_at(input, 12) == 0, Version, "unknown header flags")?;
     require(
-        u64_at(input, 16) == input.len() as u64,
+        u64_at(input, 16) == total as u64,
         Encoding,
         "total length mismatch",
     )?;
-    let index = range(u64_at(input, 24), u64_at(input, 32), input.len())?;
+    let index = range(u64_at(input, 24), u64_at(input, 32), total)?;
     require(
         index.start >= HEADER_LEN
             && !index.is_empty()
@@ -112,28 +219,34 @@ pub fn decode(input: &[u8], limits: Limits) -> Result<CodePackage, Error> {
         Limit,
         "section count budget exceeded",
     )?;
+    Ok(index)
+}
+
+fn parse_index(
+    header: &[u8],
+    bytes: &[u8],
+    index: std::ops::Range<usize>,
+    total: usize,
+    limits: Limits,
+) -> Result<Vec<Section>, Error> {
+    use ErrorKind::{Encoding, Integrity, Limit, Version};
     require(
-        blake3::hash(&input[index.clone()]).as_bytes() == &input[40..72],
+        blake3::hash(bytes).as_bytes() == &header[40..72],
         Integrity,
         "index digest mismatch",
     )?;
-    let mut sections = Vec::new();
+    let count = bytes.len() / INDEX_ENTRY_LEN;
+    let mut sections: Vec<Section> = Vec::new();
     sections
         .try_reserve_exact(count)
         .map_err(|e| Error::new(Limit, e.to_string()))?;
     let mut kinds = std::collections::BTreeSet::new();
-    let mut hashes = Vec::new();
-    hashes
-        .try_reserve_exact(count)
-        .map_err(|e| Error::new(Limit, e.to_string()))?;
-    let mut bytecode = None;
-    let mut metadata = None;
-    for entry in input[index.clone()].chunks_exact(INDEX_ENTRY_LEN) {
+    for entry in bytes.chunks_exact(INDEX_ENTRY_LEN) {
         let kind = u32_at(entry, 0);
         let flags = u32_at(entry, 4);
         require(kinds.insert(kind), Encoding, "duplicate section kind")?;
         require(flags & !REQUIRED == 0, Version, "unknown section flags")?;
-        let known = kind == B01 || kind == METADATA;
+        let known = matches!(kind, B01 | METADATA | DISTRIBUTION);
         require(
             known || flags & REQUIRED == 0,
             Version,
@@ -144,62 +257,87 @@ pub fn decode(input: &[u8], limits: Limits) -> Result<CodePackage, Error> {
             Encoding,
             "core section must be required",
         )?;
-        let section = range(u64_at(entry, 8), u64_at(entry, 16), input.len())?;
+        let section = range(u64_at(entry, 8), u64_at(entry, 16), total)?;
         require(
             !section.is_empty() && section.start >= HEADER_LEN && !overlaps(&section, &index),
             Encoding,
             "section overlaps header/index or is empty",
         )?;
-        sections.push(section.clone());
         if kind == B01 {
             require(
                 section.len() <= limits.bytecode.max_bytes,
                 Limit,
                 "B01 byte budget exceeded",
             )?;
-            bytecode = Some(section.clone());
-        } else if kind == METADATA {
+        } else if matches!(kind, METADATA | DISTRIBUTION) {
             require(
                 section.len() <= limits.max_metadata_bytes,
                 Limit,
                 "metadata byte budget exceeded",
             )?;
-            metadata = Some(section.clone());
         }
-        hashes.push((section, &entry[24..56]));
+        sections.push(Section {
+            kind,
+            range: section,
+            digest: entry[24..56].try_into().unwrap(),
+        });
     }
-    sections.push(index);
-    sections.sort_unstable_by_key(|r| r.start);
+    require(kinds.contains(&B01), Encoding, "missing B01 section")?;
+    require(
+        kinds.contains(&METADATA),
+        Encoding,
+        "missing metadata section",
+    )?;
+    sections.sort_unstable_by_key(|section| section.range.start);
     let mut end = HEADER_LEN;
-    for section in sections {
-        require(section.start >= end, Encoding, "overlapping sections")?;
-        end = section.end;
+    for section in &sections {
+        require(section.range.start >= end, Encoding, "overlapping sections")?;
+        end = section.range.end;
     }
-    // Only hash payloads after proving they are disjoint. Their total work
-    // cannot exceed the prepaid file byte budget even for malicious indices.
-    for (section, expected) in hashes {
-        require(
-            blake3::hash(&input[section]).as_bytes() == expected,
-            Integrity,
-            "section digest mismatch",
-        )?;
-    }
-    let b01 = &input[bytecode.ok_or_else(|| Error::new(Encoding, "missing B01 section"))?];
-    let json = &input[metadata.ok_or_else(|| Error::new(Encoding, "missing metadata section"))?];
+    Ok(sections)
+}
+
+fn payload<'a>(input: &'a [u8], sections: &[Section], kind: u32) -> Option<&'a [u8]> {
+    sections
+        .iter()
+        .find(|section| section.kind == kind)
+        .map(|section| &input[section.range.clone()])
+}
+
+fn check_digest(bytes: &[u8], digest: &[u8; 32]) -> Result<(), Error> {
+    require(
+        blake3::hash(bytes).as_bytes() == digest,
+        ErrorKind::Integrity,
+        "section digest mismatch",
+    )
+}
+
+fn decode_json<T: serde::de::DeserializeOwned>(
+    json: &[u8],
+    limits: Limits,
+    budget: &mut Budget,
+) -> Result<T, Error> {
     budget.charge(
         json.len()
             .checked_mul(2)
-            .ok_or_else(|| Error::new(Limit, "metadata work overflow"))?,
+            .ok_or_else(|| Error::new(ErrorKind::Limit, "metadata work overflow"))?,
     )?;
     preflight_json(json, limits)?;
     // Deserialize straight to bounded, closed DTOs. Derived struct visitors
     // reject duplicate/unknown fields; no unbounded serde_json::Value tree.
-    let metadata: Metadata =
-        serde_json::from_slice(json).map_err(|e| Error::new(ErrorKind::Metadata, e.to_string()))?;
-    let program = bc::VerifiedProgram::decode(b01, limits.bytecode)
-        .map_err(|e| Error::new(ErrorKind::Bytecode, e.to_string()))?;
-    metadata.validate(&program, b01, limits, &mut budget)?;
-    Ok(CodePackage { program, metadata })
+    serde_json::from_slice(json).map_err(|e| Error::new(ErrorKind::Metadata, e.to_string()))
+}
+
+fn decode_distribution(
+    json: &[u8],
+    limits: Limits,
+    budget: &mut Budget,
+) -> Result<Distribution, Error> {
+    let distribution: Distribution = decode_json(json, limits, budget)?;
+    distribution
+        .validate()
+        .map_err(|e| Error::new(ErrorKind::Metadata, e.to_string()))?;
+    Ok(distribution)
 }
 fn u32_at(bytes: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())

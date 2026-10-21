@@ -297,7 +297,7 @@ fn build_inner(
         game_entry: game_entry.clone(),
     };
     let limits = rp::Limits::default();
-    let bytes = rp::encode(bytecode, &metadata, limits).map_err(|e| fail(e.to_string()))?;
+    let bytes = rp::encode(bytecode, &metadata, None, limits).map_err(|e| fail(e.to_string()))?;
     let verified = rp::decode(&bytes, limits).map_err(|e| fail(e.to_string()))?;
     if verified.metadata() != &metadata || verified.program().package() != p {
         return Err(fail("ASB round trip changed program/metadata".into()));

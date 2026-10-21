@@ -22,7 +22,7 @@ pub struct Cli {
 pub enum Command {
     #[command(flatten)]
     Source(SourceCommand),
-    /// Play a built ASB or an exported release.json without recompiling.
+    /// Play an ASB, including its embedded distribution, without recompiling.
     Run(Run),
     /// Extract, bundle and check translation catalogs.
     #[command(subcommand)]
@@ -39,7 +39,7 @@ pub enum SourceCommand {
     Build(Build),
     /// Export a complete project; Release packages code, text and resources.
     Export(Export),
-    /// Compile and play source or a development release.json.
+    /// Compile and play source or an exported development ASB.
     Dev(Dev),
 }
 impl SourceCommand {
@@ -83,7 +83,7 @@ impl Format {
 
 #[derive(Args)]
 pub struct Project {
-    /// Source file or directory containing main.aside (dev also accepts release.json).
+    /// Source file or directory containing main.aside (dev also accepts an exported ASB).
     #[arg(value_name = "SOURCE")]
     pub source: PathBuf,
     /// Add an external source root; repeat for multiple aliases.
@@ -190,7 +190,7 @@ pub struct Export {
 }
 #[derive(Args)]
 pub struct Playback {
-    /// Asset directory; for release manifests this explicitly enables loose-file overrides.
+    /// Asset directory; for exported ASB this explicitly enables loose-file overrides.
     #[arg(long, value_name = "DIRECTORY")]
     pub assets: Option<PathBuf>,
     /// Override the player's save directory.
@@ -202,7 +202,7 @@ pub struct Playback {
 pub struct Dev {
     #[command(flatten)]
     pub project: Project,
-    /// Entry function; defaults to main::main or the development manifest's entry.
+    /// Entry function; defaults to main::main or the embedded development entry.
     #[arg(long, value_name = "FUNCTION")]
     pub entry: Option<String>,
     #[command(flatten)]
@@ -211,7 +211,7 @@ pub struct Dev {
 #[derive(Args)]
 #[command(after_help = "Requires: cargo build -p reel-cli --features window")]
 pub struct Run {
-    #[arg(value_name = "ASB_OR_RELEASE_JSON")]
+    #[arg(value_name = "ASB")]
     pub source: PathBuf,
     #[command(flatten)]
     pub playback: Playback,
