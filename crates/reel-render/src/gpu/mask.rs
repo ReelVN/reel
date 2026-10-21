@@ -133,7 +133,7 @@ impl Cache {
         )?;
         let mut code = String::with_capacity(count.0);
         shader(program, &mut code).unwrap();
-        let bytes = program.operations().len() * size_of::<MaskOp>()
+        let bytes = size_of_val(program.operations())
             + size_of::<Weak<MaskProgram>>()
             + size_of::<Compiled>()
             + 2 * size_of::<usize>();
@@ -219,6 +219,10 @@ pub(super) struct Inputs<'a> {
     pub images: Vec<&'a wgpu::TextureView>,
 }
 impl Compiled {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the draw call borrows GPU resources and receives per-node mask parameters"
+    )]
     pub(super) fn draw(
         &self,
         device: &wgpu::Device,

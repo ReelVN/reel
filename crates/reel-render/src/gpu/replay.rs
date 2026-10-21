@@ -146,38 +146,37 @@ impl Context<'_> {
         loop {
             let current = streams.last_mut().expect("active replay stream");
             // A transition boundary is a gap, including an empty hidden subtree.
-            if current.transitions_enabled {
-                if let Some(transition) = current.drawing.transitions().get(current.transition_next)
-                    && transition.commands.start == current.offset + current.next
-                {
-                    current.transition_next += 1;
-                    current.next = transition.commands.end - current.offset;
-                    self.scissor = current.scopes.last().scissor;
-                    let child = self.start_stream(
-                        transition.previous.drawing(),
-                        transition.previous.drawing().commands(),
-                        0,
-                        true,
-                        current.transform
-                            * transition.parent_to_window
-                            * transition.previous.to_parent(),
-                        self.scissor,
-                    )?;
-                    self.combine(
-                        &child.scopes.last().target,
-                        &current.scopes.last().target.view,
-                        &current.scopes.last().target.view,
-                        1.,
-                        0.,
-                        CompositeOperation::Transition(0.),
-                    )?;
-                    current.pending = Some(Pending::Transition {
-                        definition: transition,
-                        previous: None,
-                    });
-                    push_stack(&mut streams, child, |bytes| self.transient(bytes))?;
-                    continue;
-                }
+            if current.transitions_enabled
+                && let Some(transition) = current.drawing.transitions().get(current.transition_next)
+                && transition.commands.start == current.offset + current.next
+            {
+                current.transition_next += 1;
+                current.next = transition.commands.end - current.offset;
+                self.scissor = current.scopes.last().scissor;
+                let child = self.start_stream(
+                    transition.previous.drawing(),
+                    transition.previous.drawing().commands(),
+                    0,
+                    true,
+                    current.transform
+                        * transition.parent_to_window
+                        * transition.previous.to_parent(),
+                    self.scissor,
+                )?;
+                self.combine(
+                    &child.scopes.last().target,
+                    &current.scopes.last().target.view,
+                    &current.scopes.last().target.view,
+                    1.,
+                    0.,
+                    CompositeOperation::Transition(0.),
+                )?;
+                current.pending = Some(Pending::Transition {
+                    definition: transition,
+                    previous: None,
+                });
+                push_stack(&mut streams, child, |bytes| self.transient(bytes))?;
+                continue;
             }
             let Some(command) = current.commands.get(current.next) else {
                 let finished = streams.pop().unwrap().scopes.finish()?.target;
@@ -502,6 +501,10 @@ impl Context<'_> {
         );
         Ok(())
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one composite pass borrows its target, sampled textures and node properties"
+    )]
     fn combine_group(
         &mut self,
         target: &Target,

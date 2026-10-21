@@ -24,7 +24,7 @@ button 与可等待的 on_click 回调已接通，见文末可运行示例。mod
 `game.exit()` 请求关闭作品；接收后不再执行脚本，播放器完成任务和资源清理后退出窗口。可先等待淡出动画再调用。嵌入宿主接收同一请求并决定外层应用的行为。完整按钮示例见 [author_exit.aside](../../examples/author_exit.aside)，运行前提供 fonts/body.ttf。
 
 从 main.aside 的 main 启动工程。check/build/dev 接受源码文件或工程目录，run 执行已经构建的 .asb。可运行多文件工程见 [author_project](../../examples/author_project/main.aside)。标题页可用 game.start 切换到全新剧情会话。
-在 main 中调用 game.configure(title: "窗边", width: 960, height: 540) 设置标题与逻辑画布，参数可以使用普通表达式。省略项保留原值；未设置画布时沿用窗口空间，设置后按 contain 等比缩放并留边，绘制与输入使用同一换算。首设一个维度时，另一个维度采用 1920×1080 的对应值。桌面窗口默认匹配首次配置的画布尺寸；未配置画布时为 1280×720。Rust 宿主可用 StoryWindowOptions.logical_size 显式指定其他初始尺寸。首次应用画布后不再自动调整窗口，玩家改变窗口尺寸时仍按 contain 缩放。fonts 接受字体文件字符串或按优先顺序排列的数组，例如 game.configure(fonts: ["fonts/body.ttf", "fonts/cjk.ttf"])；路径相对资源根，作品须在首次呈现前提供至少一个字体文件。text 和 button 的 font 属性选择字体族或逗号分隔的回退列表，例如 text("标题", font: "Noto Serif SC, system-ui")，font_size 控制大小。`font_weight` 选择字重，默认为 400，接受 1 到 1000 的有限数值；例如 `text("标题", font: "HK Grotesk", font_weight: 600)` 从已配置的该字体族中选择合适字重。作品应同时提供所需字重的字体文件。text、控件标签和 text_input 共用该属性，可以直接赋值、bind 或 derive；更改后重新排版。富文本 `[b]` 将对应文字局部设为 700。字体文件共享加载；system-ui 表示配置的默认列表。播放器只使用作品提供的字体，不读取系统字体；未配置字体会报错。
+在 main 中调用 game.configure(title: "窗边", width: 960, height: 540) 设置标题与逻辑画布，参数可以使用普通表达式。省略项保留原值；未设置画布时沿用窗口空间，设置后按 contain 等比缩放并留边，绘制与输入使用同一换算。首设一个维度时，另一个维度采用 1920×1080 的对应值。桌面窗口默认匹配首次配置的画布尺寸；未配置画布时为 1280×720。Rust 宿主可用 StoryWindowOptions.logical_size 显式指定其他初始尺寸。首次应用画布后不再自动调整窗口，玩家改变窗口尺寸时仍按 contain 缩放。fonts 接受字体文件字符串或按优先顺序排列的数组，例如 game.configure(fonts: ["fonts/body.ttf", "fonts/cjk.ttf"])；路径相对资源根，作品须在首次呈现前提供至少一个字体文件。text 和 button 的 font 属性选择字体族或逗号分隔的回退列表，例如 text("标题", font: "Noto Serif SC, system-ui")，font_size 控制大小。`font_weight` 选择字重，默认为 400，接受 1 到 1000 的有限数值；例如 `text("标题", font: "HK Grotesk", font_weight: 600)` 从已配置的该字体族中选择合适字重。优先使用作品提供的对应字重；只有 Regular 字体时，请求粗体会使用合成加粗，普通文本、逐字显示及描边沿同一字形路径。text、控件标签和 text_input 共用该属性，可以直接赋值、bind 或 derive；更改后重新排版。富文本 `[b]` 将对应文字局部设为 700。字体文件共享加载；system-ui 表示配置的默认列表。播放器只使用作品提供的字体，不读取系统字体；未配置字体会报错。
 
 `letter_spacing` 和 `word_spacing` 分别调整字簇间距和空格宽度，默认 0，单位为逻辑舞台像素。正值拉开、负值收紧；词距作用于普通空格和不换行空格，与字距叠加。字距按整形后的字簇增加 advance，包含末字簇，组合字符和连字保留字体整形。text、控件标签和 text_input 共用这两个属性，支持直接赋值、bind/derive；实际变化时更新换行、光标和命中位置。富文本和 ruby 注音继承间距，text_fit: "shrink" 将间距与字号一起缩放。示例：[author_text_spacing.aside](../../examples/author_text_spacing.aside)。
 
@@ -87,7 +87,7 @@ build 默认使用 Debug，完整源码与映射保存在包内，运行错误�
 
 启用 window 后，源码与构建产物都使用真实窗口、文字布局和呈现输入路径。同步构造组件在同一运行时间片内连续推进，到等待或时间片结束才更新画面，不会每创建一个节点就单独显示一帧。对白或选择等待时会先完成当前 GC，再休眠等待输入；自然结束后窗口保留最后画面，关闭窗口退出并完成清理；Escape 作为返回输入交给当前 UI。
 
-工程只读取入口实际导入的源码。game::ui::scene 对应入口目录下的 ui/scene.aside；--module first=../library 可提供外部源码根，同一目录的别名共享环境。函数循环引用允许链接，顶层读取未初始化绑定在实际读取处报 ModuleInitializationCycle。build 把完整模块图和入口放入同一 .asb，移动后无需原源码，初始化设置仍由同一段 main 执行。资源根默认为源码或 ASB 所在目录，也可用 --assets 指定；export 另外生成资源包与可搬移的 release.json 清单。
+工程只读取入口实际导入的源码。game::ui::scene 对应入口目录下的 ui/scene.aside；--module first=../library 可提供外部源码根，同一目录的别名共享环境。函数循环引用允许链接，顶层读取未初始化绑定在实际读取处报 ModuleInitializationCycle。build 把完整模块图和入口放入同一 .asb，移动后无需原源码，初始化设置仍由同一段 main 执行。资源根默认为源码或 ASB 所在目录，也可用 --assets 指定；export 另外生成资源包，并将可搬移的清单嵌入 ASB。
 
 源码、完整源码定位文本和文字常量统一使用实际包预算。长文本和拼接按执行片推进，分片不会截断文字，也不规定台词长度。
 
@@ -95,16 +95,18 @@ build 默认使用 Debug，完整源码与映射保存在包内，运行错误�
 
 ### 导出开发工程和发布目录
 
-`reel export` 在同一次构建中组织代码和资源；默认导出开发工程，`--release` 导出发布目录。先按前面的示例准备字体，再执行：
+`reel export` 在同一次构建中组织代码和资源；默认导出开发工程，`--release` 导出发布目录。先按前面的示例准备字体，并用 `cargo build -p reel-cli --features window` 构建工具与独立播放器，再执行：
 
 ```powershell
 ./target/debug/reel.exe export examples/author_stage.aside --output target/reel-artifacts/development --resource assets=examples/assets --resource fonts=target/reel-artifacts/author-assets/fonts
 ./target/debug/reel.exe export examples/author_stage.aside --release --output target/reel-artifacts/release --resource assets=examples/assets --resource fonts=target/reel-artifacts/author-assets/fonts
-./target/debug/reel.exe run target/reel-artifacts/release/release.json
-./target/debug/reel.exe dev target/reel-artifacts/development/release.json
+./target/debug/reel.exe run target/reel-artifacts/release/game.asb
+./target/debug/reel.exe dev target/reel-artifacts/development/game.asb
 ```
 
-开发目录包含可修改的 `script/`、散资源、带源码诊断的 `game.asb` 和 `release.json`；可以直接 run，也可以 dev 重新编译。发布目录包含 `game.asb`、`game.rtp`、`resources.rpk` 和 `release.json`，另外携带对应平台播放器即可分发。复制整个目录后仍使用相同命令，不依赖构建机绝对路径。
+开发目录包含可修改的 `script/`、散资源和带源码诊断的 `game.asb`；可以直接 run，也可以 dev 按内嵌源码配置重新编译。发布目录包含 `game.exe`、`game.asb`、`game.rtp` 和 `resources.rpk`（资源较多时还有后续卷）。将整个目录交给玩家，双击 `game.exe` 即可开始；其他平台使用对应可执行文件。清单内嵌于 `game.asb`，所有资源路径相对主包目录。
+
+发布播放器从自身目录寻找 `game.asb`，存档默认写入同级 `saves/`；`--save-directory <directory>` 可另选位置。更新游戏时保留 saves。发布导出使用 reel 工具同级的 reel-game 播放器；发行构建可用 `cargo build --release -p reel-cli --features window`。当前 ASB 为 2.0，旧产物需重新构建。
 
 `--resource prefix=directory` 把一个目录映射到脚本中的逻辑路径；可重复声明。`--text locales=build/locales` 将已合并的翻译目录放入文本包，脚本仍使用 `localization.load("en", "locales/en.ftl")`。开发导出复制这些文件，发布导出将它们打包。翻译源文件可继续按剧情和 UI 模块组织，先用 `reel loc bundle` 生成运行目录。
 
@@ -112,7 +114,7 @@ build 默认使用 Debug，完整源码与映射保存在包内，运行错误�
 
 发布时原文常量移入 `game.rtp`，ASB 不携带完整源码。池目前整体驻留，字符串按使用共享引用；不是启动就把所有正文复制成永久 VM 对象。修改译文无需重编代码，但原文池必须与 ASB 对应。图片、音频和视频按资源包索引读取，不整体解包。
 
-发布默认关闭散文件覆盖；需要模组或调试覆盖时显式 `reel run release.json --assets overrides`。清单里的包按顺序后者覆盖前者，散文件优先。`--overwrite` 会替换整个既有导出目录，旧存档与额外文件不复制到新导出；运行数据应单独保存。导出目录不能放在输入源码或资源目录里面。
+发布默认关闭散文件覆盖；需要模组或调试覆盖时显式 `reel run game.asb --assets overrides`。清单里的包按顺序后者覆盖前者，散文件优先。`--overwrite` 会替换整个既有导出目录，旧存档与额外文件不复制到新导出；运行数据应单独保存。导出目录不能放在输入源码或资源目录里面。
 
 ### 已接通的范围、容器与插值
 在函数里可以用范围循环生成内容，再用插值展示结果。范围不会先创建一个大数组；`..` 不含终点，`..=` 包含终点。数组支持 `append`、`pop` 和 `len`，表支持 `has_own`、`get`、`remove` 和 `len`。插值当前支持字符串、数字、布尔值和 null。
@@ -564,7 +566,7 @@ say([mio.line("你听见了吗？"), eri.line("在窗外。")]);
 
 句内节奏也写在 rich 中：`[speed=15]慢慢说[/speed]` 按每秒 15 个字素显示，`[speed=2x]快一些[/speed]` 使用玩家速度的两倍，`[speed=0]立即出现[/speed]` 显示即时段，`[pause=0.5]` 在当前位置停半秒。speed 可以嵌套，关闭时恢复外层速度。`[next]` 使本句播完并呈现后自动续句，不改变全局自动阅读；同时对白要求每行都有该标记。末尾停顿会先执行。手动补全、快进或全局 text_speed: 0 越过剩余节奏；打开菜单或挂起保留剩余停顿。标记不进入正文、历史或字数，普通 text 显示完整内容。完整示例见 [author_dialogue_timing.aside](../../examples/author_dialogue_timing.aside)。
 
-支持成对嵌套的 `[b]`、`[i]`、`[u]`、`[s]`（粗体、斜体、下划线、删除线）、`[size=36]`、`[color=#RRGGBB]` / `[color=#RRGGBBAA]`、`[em]`（着重号）、`[ruby=注音]基文[/ruby]`、`[link=词条ID]正文[/link]`。`[[` 表示字面左方括号；把任意玩家输入插入富文本前用 rich_escape 转义。错误标记在 rich 调用位置报错，错误值包含标记的 UTF-8 字节位置。ruby 不嵌套；基文和半字号注音一起换行，基文逐字显示，基文全部显示后出现注音。字体仍由游戏提供，粗体、斜体的字形效果取决于字体。
+支持成对嵌套的 `[b]`、`[i]`、`[u]`、`[s]`（粗体、斜体、下划线、删除线）、`[size=36]`、`[color=#RRGGBB]` / `[color=#RRGGBBAA]`、`[em]`（着重号）、`[ruby=注音]基文[/ruby]`、`[link=词条ID]正文[/link]`。`[[` 表示字面左方括号；把任意玩家输入插入富文本前用 rich_escape 转义。错误标记在 rich 调用位置报错，错误值包含标记的 UTF-8 字节位置。ruby 不嵌套；基文和半字号注音一起换行，基文逐字显示，基文全部显示后出现注音。字体由游戏提供；粗体优先选择对应字重，只有 Regular 时使用合成加粗，斜体沿字体匹配和合成倾斜。
 
 text 默认按可用宽度自然换行；width、x/y、padding、scroll 决定 NVL 页面的位置与边界，列表 gap 决定段落间距。`text_align` 支持 start/end/left/right/center/justify，默认 start；`line_height` 是字号倍率，默认 1.2。不同字号、ruby 与着重号共同决定行高，逐字显示只改变绘制范围。节点 color 是基础颜色，显式句内颜色覆盖对应片段；省略句内颜色即可沿用角色或已读配色。
 
@@ -1031,9 +1033,9 @@ let actions = if flag {
 
 普通 children 中的 for 构造当下内容；`view(|| ...)` 在实际读取的可观察数据变化后重新构造子树，外层容器身份保持。计算成功后才替换旧内容；旧节点拥有的回调和活动随之取消。用 bind/derive 更新单个属性时保留节点身份。需要保留控件身份的集合使用 `list(|| data.items, key: |item| item.id, build: |row| text(value: derive(|| row.value.label)))`。插入、排序保留相同 key 的节点、焦点和局部状态；删除则退休其任务和活动。key 可以是任意值，但在列表内必须唯一；标量区分类型，字符串按内容比较，其余对象按身份比较。因此可直接使用选项 id 或稳定的对象引用，不必另造数字 id。每个新 key 只调用一次 build，参数 row 提供只读可观察 key、value（当前条目）和 index（从 0 开始）；返回 null 时该 key 不产生节点。回调读取 row.value 取得最新记录；derive 会跟随记录替换，bind(row.value.label) 则固定原字段位置。只有来源函数和 key 函数的读取决定列表协调；行内变化使用 bind/derive/view。重复 key 或组件失败不替换原树。列表子节点由来源数据管理，外层可组合 scroll。默认保留全部条目。见 [author_list.aside](../../examples/author_list.aside)。
 
-长菜单、历史和图库可使用虚拟列表 `list(..., virtual:true)`，放在有限高度纵向 scroll 内，作为唯一的流式内容。它只保留窗口附近的行；离开后组件会退休，回来时重新构造，长期状态应保存在 model 中。正在编辑或拖动的行保留到交互结束。来源先过滤不显示的项，build 必须返回节点，行的自然高度须为正；list 使用自然高度，不设置 height/max_height、纵向 stretch 或自身位置/旋转/缩放/锚点，整体变换可放在外层 scroll。行内仍可组合普通文字、图片、控件和自定义外观。不同高度由布局自动测量，缓冲区在未测行进入视口前提前补充；新窗口先按本次测量连续排列并保留阅读锚点，支持跨窗口键盘/手柄导航。尚未测量的内容使用当前宽度已测行的平均高度，所以自定义滚动条的 content_height 仍会逐步修正；远跳和新图片的实际尺寸无法提前保证。它减少组件和排版成本，全文与来源数据仍保留。多列图库可以先把每一排照片组织为稳定 key 的条目，再在 build 中返回普通 row 组合；整排一起测量和退休，照片的长期状态仍放在 model 中。列数改变或重新分组后，新行按新 key 构造，这不提供二维网格虚拟化。可交互的千项菜单见 [author_list.aside](../../examples/author_list.aside)：支持变高说明、展开状态、过滤、重排、键盘和手柄选择。运行 `reel dev examples/author_list.aside --assets target/reel-artifacts/author-assets`，先按示例准备 fonts/body.ttf。
+长菜单、历史和图库可使用虚拟列表 `list(..., virtual:true)`，放在有限高度纵向 scroll 内，作为唯一的流式内容。它只保留窗口附近的行；离开后组件会退休，回来时重新构造，长期状态应保存在 model 中。正在编辑或拖动的行保留到交互结束。来源先过滤不显示的项，build 必须返回节点，行的自然高度须为正；list 使用自然高度，不设置 height/max_height、纵向 stretch 或自身位置/旋转/缩放/锚点，整体变换可放在外层 scroll。行内仍可组合普通文字、图片、控件和自定义外观。不同高度由布局自动测量，缓冲区在未测行进入视口前提前补充；新窗口先按本次测量连续排列并保留阅读锚点，支持跨窗口键盘/手柄导航。滚动与行偏移保留小数精度，缩放画布也使用同一绘制和命中坐标。尚未测量的内容使用当前宽度已测行的平均高度，所以自定义滚动条的 content_height 仍会逐步修正；远跳和新图片的实际尺寸无法提前保证。它减少组件和排版成本，全文与来源数据仍保留。多列图库可以先把每一排照片组织为稳定 key 的条目，再在 build 中返回普通 row 组合；整排一起测量和退休，照片的长期状态仍放在 model 中。列数改变或重新分组后，新行按新 key 构造，这不提供二维网格虚拟化。可交互的千项菜单见 [author_list.aside](../../examples/author_list.aside)：支持变高说明、展开状态、过滤、重排、键盘和手柄选择。运行 `reel dev examples/author_list.aside --assets target/reel-artifacts/author-assets`，先按示例准备 fonts/body.ttf。
 
-可运行的自动测量图库及自定义滚动条见 [author_list_gallery.aside](../../examples/author_list_gallery.aside)。准备 fonts/body.ttf 后运行 `reel dev examples/author_list_gallery.aside --assets target/reel-artifacts/author-assets`。行内按普通布局表达内容，不需要另传行高。远处窗口构造、测量期间保留上一完整画面，准备就绪后发布，不先显示空白或只校正了一部分的中间帧。
+可运行的自动测量图库及自定义滚动条见 [author_list_gallery.aside](../../examples/author_list_gallery.aside)。准备 fonts/body.ttf 后运行 `reel dev examples/author_list_gallery.aside --assets target/reel-artifacts/author-assets`。行内按普通布局表达内容，不需要另传行高。拖动以指针位移更新当前阅读位置，避免总高度修正时静止指针再次改变位置。远处窗口构造、测量期间保留上一完整画面，准备就绪后发布，不先显示空白或只校正了一部分的中间帧。
 
 按 key 定位：`let row = await items.scroll_to(key, align: "nearest")` 先构造和测量目标附近的行，在实际呈现后返回该行节点。align 可选 start、center、end、nearest，默认只做必要滚动。重排仍跟随同一 key；过滤掉目标、移除列表或新的滚动/定位会取消旧请求，可用 try/catch 处理。返回节点仍遵循普通离屏退休规则，持久状态保存在 model。
 等待期间改变视口尺寸会重新校准目标；自动夹取滚动范围不会取消请求。来源重算后，会等待新位置的实际呈现再返回。

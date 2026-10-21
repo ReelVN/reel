@@ -2349,7 +2349,12 @@ impl Widget for SceneWidget {
                 .as_ref()
                 .and_then(|state| state.placement.iter().find(|(id, _)| *id == node.id))
                 .map_or(0., |(_, y)| *y);
-            ctx.set_child_scroll_translation(child, translation + Vec2::new(0., row_offset));
+            // Keep scroll and row prefixes continuous until their transforms
+            // combine. Rounding each layer can move a stationary reading anchor.
+            ctx.set_animated_child_scroll_translation(
+                child,
+                translation + Vec2::new(0., row_offset),
+            );
         }
     }
     fn pre_paint(&mut self, ctx: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, _: &mut Painter<'_>) {

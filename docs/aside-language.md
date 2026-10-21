@@ -1,5 +1,9 @@
 # Aside VM 与完整语言规范
 
+舞台滚动与虚拟行合成保留亚像素位置，避免小数滚动量或高度估算校正因逐层取整产生跳变。scroll_y 的读写、自然高度索引、等待和取消合同保持，ABI/VM/ASB/快照格式保持；改变仅位于 reel-player 合成及其真实输入检查。
+
+Reel 导出将发布清单放在 ASB 2.0 的 Distribution 区段，`run game.asb` 加载代码和资源配置，`dev game.asb` 根据内嵌源码配置重新编译。发布播放器从自身目录直接启动 game.asb。容器变更由 reel-package/reel-cli 负责；Aside 字节码、模块初始化、原生调用和快照执行语义保持。旧 ASB 版本直接拒绝，具体格式与目录合同见引擎架构“字节码与资源分包发布”。
+
 舞台转场沿普通宿主回调续体：`stage.transition(change:, target:null, duration:0.3, ...)` 在当前任务等待旧画面保留、执行 change、完成过渡并返回回调原值，写法与 scope 相同，不在调用外再 await。回调可等待，保留原任务权限；并发使用 spawn。准备、取消、故障与恢复沿既有 native continuation/TaskId/FrameId，不新增语法、VM 指令或隐藏执行器。旧图只提取目标子树的绘制数据，资源内容共享；普通帧的内部命令存储不改变调用、取消或快照续体语义。实现合同见引擎架构“保留画面的舞台转场”；native ABI 1，当前 SessionSnapshot 26、VM9，ASB 格式保持不变。
 
 舞台指针沿普通宿主接口：`stage.pointer()` 返回当前已接受舞台的鼠标坐标快照或 null；`stage.move_pointer(x,y,owner:node)` 返回归节点所有的可等待结果，bool 表示宿主是否执行。新接口 ABI 1，window.info/configure ABI 3 增加 pointer_move 能力；参数、等待、取消及诊断沿现有协议，无新语法/VM/ASB/SessionSnapshot 格式。真实位置是宿主临时状态，读档后等待真实鼠标输入；查询所得普通表仍可随存档保存。
@@ -368,6 +372,8 @@ Reel `image(..., slice: null, slice_scale: 1)` 使用普通属性表达九宫格
 普通 table、model 和宿主字段的分片单键查找依据字段结构版本；输入、布局或派生更新字段值不使合法属性读写与 bind 失败，提交时访问当前值并检查对象仍存活。复制、展开和删除继续检查内容版本，默认迭代器按结构版本推进。VM 执行快照版本为 9，保存查找续体的结构版本及已有排序、比较器返回续体与响应式捕获；旧续体记录的内容版本语义不同，旧格式明确报告版本不匹配。SessionSnapshot 外层保持 26，Aside 字节码/ASB 与 native ABI 不变，独立 persistent 系统数据不受影响。
 
 Reel 共同节点字段 `font_weight` 默认 400，接受 1..1000 的有限数值，可在构造时给出、直接赋值或 bind/derive。文字、控件标签和文本输入使用同一字体匹配与布局通路，实际变化时重新排版；富文本局部粗体保留所在范围的样式覆盖。该样式字段随节点宿主对象保存恢复。共同节点构造 native ABI（含 list/view/layered_image）及节点宿主字段验证器各递增 1，SessionSnapshot 23，VM8 与 ASB 格式保持。
+
+配置字体未包含所需粗体字面时，font_weight 或富文本 [b] 沿字体匹配的合成粗体结果绘制；真实粗体字面和变量字体轴仍优先。普通文字、逐字揭示和描边共用该结果，保留原整形几何；这是现有样式的绘制修正，Aside 语法、native ABI 与快照格式保持。
 
 共同文字属性 `letter_spacing` 与 `word_spacing` 默认 0，表示以逻辑舞台像素计的附加间距，接受可表示为有限 float32 的整数或浮点数。letter_spacing 加到每个整形字符簇的推进宽度，包含末簇；组合字符和连字沿字体整形保留。word_spacing 额外加到普通空格 U+0020 和不换行空格 U+00A0，和 letter_spacing 叠加。负值收紧文字，允许字形重叠。间距参与换行、布局宽度、命中及编辑光标位置。
 

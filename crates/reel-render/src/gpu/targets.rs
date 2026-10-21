@@ -134,25 +134,22 @@ pub(super) fn peak_targets(
     )?;
     loop {
         let current = stack.last_mut().unwrap();
-        if current.transitions_enabled {
-            if let Some(transition) = current.drawing.transitions().get(current.transition_next)
-                && transition.commands.start == current.offset + current.next
-            {
-                current.transition_next += 1;
-                current.next = transition.commands.end - current.offset;
-                current.pending = Some(Pending::Old(transition));
-                let child = stream(
-                    transition.previous.drawing(),
-                    transition.previous.drawing().commands(),
-                    0,
-                    true,
-                    current.transform
-                        * transition.parent_to_window
-                        * transition.previous.to_parent(),
-                );
-                super::scopes::push_stack(&mut stack, child, &mut reserve)?;
-                continue;
-            }
+        if current.transitions_enabled
+            && let Some(transition) = current.drawing.transitions().get(current.transition_next)
+            && transition.commands.start == current.offset + current.next
+        {
+            current.transition_next += 1;
+            current.next = transition.commands.end - current.offset;
+            current.pending = Some(Pending::Old(transition));
+            let child = stream(
+                transition.previous.drawing(),
+                transition.previous.drawing().commands(),
+                0,
+                true,
+                current.transform * transition.parent_to_window * transition.previous.to_parent(),
+            );
+            super::scopes::push_stack(&mut stack, child, &mut reserve)?;
+            continue;
         }
         let Some(command) = current.commands.get(current.next) else {
             let finished = stack.pop().unwrap();
