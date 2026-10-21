@@ -242,13 +242,30 @@ fn actual_rows(
 }
 #[test]
 fn virtual_list_natural_real_host_drag_frames_keep_displayed_rows_stable() {
+    natural_scroll_motion(false, false);
+}
+
+#[test]
+fn virtual_list_natural_wheel_frames_keep_displayed_rows_stable() {
+    natural_scroll_motion(true, false);
+}
+
+#[test]
+// The external fixture idles with its first virtual list in a 1313x920 scroll
+// at the origin under a 0.6666667 scale, matching the built-in motion fixture.
+#[ignore = "requires REEL_SCROLL_ASB, REEL_SCROLL_ASSETS and REEL_SESSION_FONT"]
+fn virtual_list_natural_external_wheel_frames() {
+    natural_scroll_motion(true, true);
+}
+
+fn natural_scroll_motion(wheel: bool, external: bool) {
     let code = r#"
         fn main(){
             let items=[];for id in 0..80 {items.append({id:id,height:if id==0 {217} else if id%10==0 {277} else {187}});}
             let rows=list(||items,key:|item|item.id,virtual:true,build:|row|column(height:row.value.height));
             let viewport=scroll(width:1313,height:920){rows};
             let mut step=0;let fractions=[0.8,0.1,0.55,0.93,0.0,1.0];
-            stage.replace(stack(width:1600,height:1000){viewport;
+            stage.replace(stack(width:1600,height:1000,scale_x:0.6666667,scale_y:0.6666667){viewport;
                 button("jump",x:1400,y:20,width:100,height:50,on_click:||{
                     viewport.scroll_y=fractions[step]*(viewport.content_height-viewport.viewport_height);step+=1;
                 });
@@ -256,8 +273,22 @@ fn virtual_list_natural_real_host_drag_frames_keep_displayed_rows_stable() {
         }
     "#;
     for encoded in [false, true] {
-        let mut compiled =
-            reel_engine::aside::source::compile_story(code, "list", 1, "main").unwrap();
+        if external && encoded {
+            continue;
+        }
+        let mut compiled = if external {
+            let bytes = std::fs::read(std::env::var_os("REEL_SCROLL_ASB").unwrap()).unwrap();
+            let (program, metadata) = reel_package::decode(&bytes, reel_package::Limits::default())
+                .unwrap()
+                .into_parts();
+            reel_engine::aside::source::CompiledStory {
+                program,
+                initializer: aside_vm::bytecode::FunctionId(metadata.initializer.function_id),
+                entry: aside_vm::bytecode::FunctionId(metadata.game_entry.unwrap().function_id),
+            }
+        } else {
+            reel_engine::aside::source::compile_story(code, "list", 1, "main").unwrap()
+        };
         if encoded {
             use aside_vm::bytecode as bc;
             let bytes = bc::encode(compiled.program.package(), bc::Limits::default()).unwrap();
@@ -274,6 +305,12 @@ fn virtual_list_natural_real_host_drag_frames_keep_displayed_rows_stable() {
             VmLimits::default(),
         )
         .unwrap();
+        if external {
+            d = d.with_asset_options(crate::assets::AssetOptions {
+                root: std::env::var_os("REEL_SCROLL_ASSETS").unwrap().into(),
+                ..Default::default()
+            });
+        }
         settle(&mut d);
         let widget = d.widget().prepare();
         let root = widget.id();
@@ -286,7 +323,15 @@ fn virtual_list_natural_real_host_drag_frames_keep_displayed_rows_stable() {
                 size_policy: WindowSizePolicy::User,
                 size: PhysicalSize::new(1600, 1000),
                 scale_factor: 1.,
-                default_font: None,
+                default_font: if external {
+                    Some(
+                        std::fs::read(std::env::var_os("REEL_SESSION_FONT").unwrap())
+                            .unwrap()
+                            .into(),
+                    )
+                } else {
+                    None
+                },
             },
         );
         let mut bridge = PresentationBridge::new(
@@ -307,10 +352,13 @@ fn virtual_list_natural_real_host_drag_frames_keep_displayed_rows_stable() {
             let pending = bridge.pending_count();
             frame += 1;
             let Some((source, receipt)) = d.record(bridge, root, FrameId(frame)).unwrap() else {
-                assert!(d.has_runnable_tasks());
+                assert!(d.has_runnable_tasks() || d.ui().images_pending());
                 assert_eq!(bridge.pending_count(), pending);
                 assert_eq!(bridge.accepted_key().map(|key| key.frame_id()), accepted);
                 settle(d);
+                if external {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
                 return None;
             };
             let rows = actual_rows(d, bridge, root, &source);
@@ -326,52 +374,112 @@ fn virtual_list_natural_real_host_drag_frames_keep_displayed_rows_stable() {
             settle(d);
             Some(rows)
         };
-        for _ in 0..5 {
-            render(&mut d, &mut bridge);
+        let mut previous_rows = BTreeMap::new();
+        let mut warm_frames = 0;
+        for _ in 0..2000 {
+            if let Some(rows) = render(&mut d, &mut bridge) {
+                previous_rows = rows;
+                warm_frames += 1;
+                if warm_frames == 5 {
+                    break;
+                }
+            }
         }
-        for jump in 0..6 {
-            for down in [true, false] {
-                let e = PointerButtonEvent {
-                    pointer: PointerInfo {
-                        pointer_id: Some(PointerId::PRIMARY),
-                        persistent_device_id: None,
-                        pointer_type: PointerType::Mouse,
-                    },
-                    state: PointerState {
-                        position: PhysicalPosition::new(1440., 40.),
-                        ..Default::default()
-                    },
-                    button: Some(PointerButton::Primary),
-                };
+        assert!(!previous_rows.is_empty());
+        for jump in 0..if wheel { 180 } else { 6 } {
+            if wheel {
                 d.handle_pointer(
                     &mut bridge,
-                    if down {
-                        PointerEvent::Down(e)
-                    } else {
-                        PointerEvent::Up(e)
-                    },
+                    PointerEvent::Scroll(PointerScrollEvent {
+                        pointer: PointerInfo {
+                            pointer_id: Some(PointerId::PRIMARY),
+                            persistent_device_id: None,
+                            pointer_type: PointerType::Mouse,
+                        },
+                        state: PointerState {
+                            position: PhysicalPosition::new(100., 100.),
+                            ..Default::default()
+                        },
+                        delta: ScrollDelta::PixelDelta(PhysicalPosition::new(
+                            0.,
+                            if jump < 90 { 40.25 } else { -37.25 },
+                        )),
+                    }),
                 )
                 .unwrap();
+            } else {
+                for down in [true, false] {
+                    let e = PointerButtonEvent {
+                        pointer: PointerInfo {
+                            pointer_id: Some(PointerId::PRIMARY),
+                            persistent_device_id: None,
+                            pointer_type: PointerType::Mouse,
+                        },
+                        state: PointerState {
+                            position: PhysicalPosition::new(960., 26.666668),
+                            ..Default::default()
+                        },
+                        button: Some(PointerButton::Primary),
+                    };
+                    d.handle_pointer(
+                        &mut bridge,
+                        if down {
+                            PointerEvent::Down(e)
+                        } else {
+                            PointerEvent::Up(e)
+                        },
+                    )
+                    .unwrap();
+                }
             }
             settle(&mut d);
             let mut before: BTreeMap<usize, (f64, f64)> = BTreeMap::new();
             let mut accepted = 0;
-            for phase in 0..5 {
+            let started = std::time::Instant::now();
+            let mut waiting_images = 0;
+            for phase in 0..if external { 1000 } else { 5 } {
                 let Some(rows) = render(&mut d, &mut bridge) else {
+                    waiting_images += usize::from(d.ui().images_pending());
                     continue;
                 };
+                if external && accepted == 0 && waiting_images > 0 {
+                    eprintln!(
+                        "wheel={jump} image_wait_frames={waiting_images} accepted_after={:?}",
+                        started.elapsed()
+                    );
+                }
                 accepted += 1;
+                if wheel {
+                    let motion = if accepted == 1 {
+                        if jump < 90 { 40.25 } else { -37.25 }
+                    } else {
+                        0.
+                    };
+                    for (index, (old_y, old_h)) in &previous_rows {
+                        if *old_y < 920. * 0.6666667
+                            && old_y + old_h * 0.6666667 > 0.
+                            && let Some((new_y, _)) = rows.get(index)
+                        {
+                            assert!(
+                                (old_y - new_y - motion * 0.6666667).abs() < 1e-6,
+                                "wheel={jump} phase={phase} row={index}: {old_y} -> {new_y}, expected delta {}",
+                                motion * 0.6666667
+                            );
+                        }
+                    }
+                    previous_rows = rows.clone();
+                }
                 let visible = rows
                     .iter()
-                    .filter(|(_, (y, h))| *y < 920. && y + h > 0.)
+                    .filter(|(_, (y, h))| *y < 920. * 0.6666667 && y + h * 0.6666667 > 0.)
                     .count();
                 assert!(
                     visible > 0,
                     "jump={jump} phase={phase} accepted an empty window"
                 );
                 for (index, (old_y, old_h)) in &before {
-                    if *old_y < 920.
-                        && old_y + old_h > 0.
+                    if *old_y < 920. * 0.6666667
+                        && old_y + old_h * 0.6666667 > 0.
                         && let Some((new_y, _)) = rows.get(index)
                     {
                         assert!(
@@ -381,6 +489,9 @@ fn virtual_list_natural_real_host_drag_frames_keep_displayed_rows_stable() {
                     }
                 }
                 before = rows;
+                if accepted == 3 {
+                    break;
+                }
             }
             assert!(accepted >= 2, "far window did not become ready");
         }

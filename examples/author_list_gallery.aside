@@ -16,7 +16,7 @@ pub fn main() {
             };
         });
     let viewport = scroll(width: 620, height: 480) { rows; };
-    let grab = model({offset: 0.0});
+    let grab = model({offset: 0.0, pointer: 0.0});
     let thumb = derive(|| if viewport.content_height > 0 {
         480 * viewport.viewport_height / viewport.content_height
     } else { 480 });
@@ -31,15 +31,28 @@ pub fn main() {
         stack(width: 664, height: 480) {
             viewport;
             input(x: 640, width: 16, height: 480, on_pointer: |event| {
+                let extent = viewport.content_height - viewport.viewport_height;
+                if extent <= 0 { return; }
                 if event.phase == "pressed" {
-                    grab.offset = if event.y >= position.value && event.y <= position.value + thumb.value {
-                        event.y - position.value
-                    } else { thumb.value / 2 };
+                    let on_thumb = event.y >= position.value && event.y <= position.value + thumb.value;
+                    grab.offset = if on_thumb { event.y - position.value } else { thumb.value / 2 };
+                    grab.pointer = event.y;
+                    if !on_thumb {
+                        let fraction = (event.y - grab.offset) / (480 - thumb.value);
+                        viewport.scroll_y = (if fraction < 0 { 0 } else if fraction > 1 { 1 } else { fraction }) * extent;
+                    }
                 }
-                if event.phase == "pressed" || event.phase == "moved" {
-                    let fraction = (event.y - grab.offset) / (480 - thumb.value);
-                    viewport.scroll_y = (if fraction < 0 { 0 } else if fraction > 1 { 1 } else { fraction })
-                        * (viewport.content_height - viewport.viewport_height);
+                if event.phase == "moved" {
+                    // Apply motion to the current reading anchor: measuring new
+                    // rows may have corrected both the range and scroll_y.
+                    let delta = event.y - grab.pointer;
+                    grab.pointer = event.y;
+                    if delta != 0 {
+                        let next = viewport.scroll_y + delta * extent / (480 - thumb.value);
+                        viewport.scroll_y = if event.y <= grab.offset || next < 0 { 0 }
+                            else if event.y >= 480 - thumb.value + grab.offset || next > extent { extent }
+                            else { next };
+                    }
                 }
             }) { stack(y: position, width: 16, height: thumb, background: "#d6c5e8"); };
         };
