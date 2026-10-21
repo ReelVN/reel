@@ -27,6 +27,10 @@ Named host types share one trusted registration between source analysis, bytecod
 
 `NamedType` describes an existing host value. Its name is available in type annotations and `is`; constructors remain registered functions. Callable and awaitable types expose their actual call signature and awaited result through the same declaration. Ordinary member access retains the object's receiver.
 
+`NamedType::registration()` derives shared native methods from the type's bound member declarations, including inherited members and overrides. `HostTypeSupport::methods` identifies each method by its visible name, canonical native symbol and ABI version. Loading resolves these entries to the package's independently admitted native callable definitions and verifies their required receiver parameter. A smaller package may omit an unlinked native. The shared method table is charged once per type and code lease; constructing a host stores its own fields and nominal identity.
+
+Member reads, including dynamic string indexing, search own host fields first and then the shared method table. Own fields retain their existing validators and write policy; a shared method without an own field is read-only. Extracting a method creates the ordinary `BoundNative` value, retaining the original receiver through GC and snapshots. A direct method call uses this same temporary binding. Methods work on immutable host values, and changing a shared method declaration changes the registration fingerprint checked during restoration.
+
 A declaration may refine its result for a constant argument. Source analysis applies the matching case after positional and named argument binding; omitted arguments use the registered default. Dynamic arguments retain the declaration's complete result type. Native admission verifies the source signature and runtime ABI at their respective boundaries.
 
 Once the host includes this declaration in its analysis environment, Aside can use positional, named and default arguments, including through a function value:

@@ -1271,6 +1271,23 @@ impl Vm {
         }
     }
 
+    fn shared_host_method(
+        &self,
+        object: Value,
+        key: Value,
+    ) -> Result<Option<FunctionId>, HeapError> {
+        if !self.heap.accepts_builtin(BuiltinType::String, key)? {
+            return Ok(None);
+        }
+        let Some(name) = self
+            .type_checks
+            .symbol(self.program.package(), &self.heap, key)?
+        else {
+            return Ok(None);
+        };
+        self.heap.shared_host_method(object, name)
+    }
+
     /// Bind the receiver of an admitted native callable. The immutable value
     /// traces its receiver and shares ordinary native argument preparation.
     pub fn bind_native(&mut self, receiver: Value, function: FunctionId) -> Result<Value, VmError> {
@@ -2579,6 +2596,9 @@ impl Vm {
                     None
                 };
                 if !m.take(1, cost.0, cost.1) {
+                    // Dynamic class indexing resolved its symbol before the
+                    // final member operation's allocation admission.
+                    m.usage.work += index_work;
                     return Ok(false);
                 }
                 if let Some(read) = refresh {

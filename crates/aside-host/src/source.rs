@@ -260,6 +260,20 @@ impl NamedType {
             name: self.name.clone(),
             version: self.version,
             bases: self.bases.clone(),
+            methods: self
+                .members
+                .iter()
+                .filter_map(|member| {
+                    let symbol = &member.declaration.symbol;
+                    symbol.signature.as_ref()?;
+                    let reference = symbol.reference.as_ref()?;
+                    Some(aside_vm::HostMethodSupport {
+                        name: symbol.name.clone(),
+                        native: format!("{}::{}", reference.module, reference.export.as_deref()?),
+                        abi_version: reference.version.parse().expect("native ABI version"),
+                    })
+                })
+                .collect(),
         }
     }
 }
