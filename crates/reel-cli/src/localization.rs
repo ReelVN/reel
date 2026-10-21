@@ -132,14 +132,12 @@ fn collect(input: &Path) -> Result<SourceCatalog, String> {
         }
     }
     let mut modules = compiled.modules.iter().collect::<Vec<_>>();
-    // The entry's source_path may be absolute, while imports are project-relative.
-    // Normalize both before choosing the deterministic owner of a shared message.
+    // Catalog paths mirror the project's source root; source references retain src/.
     let module_path = |module: &AnalyzedModule| {
-        if module.canonical_path() == "main" {
-            PathBuf::from(loaded.input.file_name().expect("project entry filename"))
-        } else {
-            PathBuf::from(module.source_path())
-        }
+        Path::new(module.source_path())
+            .strip_prefix("src")
+            .expect("project sources are relative to src")
+            .to_path_buf()
     };
     modules.sort_by_key(|module| module_path(module));
     let mut messages: Vec<Message> = Vec::new();

@@ -168,7 +168,7 @@ fn stable_bindings_drive_controls_from_source_and_asb() {
 
 #[test]
 fn shared_property_example_initializes_from_source_and_asb() {
-    let source = include_str!("../../../examples/author_bindings.aside");
+    let source = include_str!("../../../examples/author_bindings/src/main.aside");
     let checked = reel_cli::check(source, "author_bindings.aside").unwrap();
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for story in [

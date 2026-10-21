@@ -225,9 +225,9 @@ $env:REEL_SESSION_FONT = "C:/Windows/Fonts/msyh.ttc"
 cargo test --locked -p reel-player --lib author_scene_renders_edits_original_nodes_and_keeps_final_picture
 ```
 
-Author source receives the registered Reel prelude automatically, while module declarations, local bindings and explicit imports take precedence. PNG/JPEG `image` nodes load only when mounted through the background resource loader. Source paths resolve against the source directory in `dev` and the ASB directory in `run`; `--assets <directory>` overrides that root, and library hosts configure `AssetOptions`. ASB build does not copy assets. The previous complete scene remains visible with story input paused until all new images are ready. Loading errors end the run and include the path and constructor location. See the [image example](../../examples/author_images.aside) and [creator guide](../../docs/guide/en.md).
+Author source receives the registered Reel prelude automatically, while module declarations, local bindings and explicit imports take precedence. PNG/JPEG `image` nodes load only when mounted through the background resource loader. Resource paths resolve against the project's `resources/` in `dev` and standalone builds, or the embedded resource manifest in exported ASB packages; `--assets <directory>` overrides that root, and library hosts configure `AssetOptions`. ASB build does not copy assets. The previous complete scene remains visible with story input paused until all new images are ready. Loading errors end the run and include the path and constructor location. See the [image example](../../examples/author_images/src/main.aside) and [creator guide](../../docs/guide/en.md).
 
-Author nodes share rotation (clockwise degrees), scale_x/scale_y and proportional anchor_x/anchor_y. Negative scale mirrors and zero scale collapses without retiring the node. Position, transform and opacity edits preserve layout and widget identities; the compose pass supplies the same affine to drawing, clipping and presented input geometry. See [author_transforms.aside](../../examples/author_transforms.aside).
+Author nodes share rotation (clockwise degrees), scale_x/scale_y and proportional anchor_x/anchor_y. Negative scale mirrors and zero scale collapses without retiring the node. Position, transform and opacity edits preserve layout and widget identities; the compose pass supplies the same affine to drawing, clipping and presented input geometry. See [author_transforms.aside](../../examples/author_transforms/src/main.aside).
 
 ## Buttons and portable scheduling
 
@@ -236,7 +236,7 @@ presented-input routing. `event.target` retains the original node. Common
 `enabled` applies to descendants, and callbacks may await activities without
 blocking the main story's dialogue. Retiring the node cancels its callback tasks
 before their next script statement. Main entry return keeps mounted handlers
-usable; idle sessions sleep. See [author_buttons.aside](../../examples/author_buttons.aside).
+usable; idle sessions sleep. See [author_buttons.aside](../../examples/author_buttons/src/main.aside).
 
 `story_runtime::StoryRuntime` is available without the `window` feature. Hosts
 provide a monotonic nanosecond clock and `SliceBudget`, call `wake_input` after
@@ -259,4 +259,4 @@ These CPU checks prove portable contracts on the host where they run, not
 device support on every target. Native IME candidate windows and clipboard
 operations need device checks; system accessibility integration remains open.
 
-Author action scopes use `input(bindings:, on_action:)` in Aside or `NodeKind::Input` in Rust, with shared `InputBindings` and `NodeAction` events. See [author_input.aside](../../examples/author_input.aside). Raw controls route through `TextEvent::Input` before default navigation; its result identifies action consumption within the current modal scope. Input device IDs distinguish keyboard, pointer contact and gamepad. Held state resets on focus/scope loss, presentation revocation and remapping. After `PresentationBridge::resolve` or `clear`, call the fallible `AsideSessionUi::presented` or `clear_presented` to deliver cancellation callbacks, then wake the story runtime if work became runnable.
+Author action scopes use `input(bindings:, on_action:)` in Aside or `NodeKind::Input` in Rust, with shared `InputBindings` and `NodeAction` events. See [author_input.aside](../../examples/author_input/src/main.aside). Raw controls route through `TextEvent::Input` before default navigation; its result identifies action consumption within the current modal scope. Input device IDs distinguish keyboard, pointer contact and gamepad. Held state resets on focus/scope loss, presentation revocation and remapping. After `PresentationBridge::resolve` or `clear`, call the fallible `AsideSessionUi::presented` or `clear_presented` to deliver cancellation callbacks, then wake the story runtime if work became runnable.

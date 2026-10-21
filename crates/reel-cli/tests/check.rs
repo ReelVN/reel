@@ -21,14 +21,14 @@ impl Case {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        fs::create_dir(&dir).unwrap();
+        fs::create_dir_all(dir.join("src")).unwrap();
         Self { dir }
     }
     fn run(&self, source: &[u8], format: &str) -> Output {
-        fs::write(self.dir.join("input.aside"), source).unwrap();
+        fs::write(self.dir.join("src/main.aside"), source).unwrap();
         Command::new(env!("CARGO_BIN_EXE_reel"))
             .current_dir(&self.dir)
-            .args(["check", "input.aside", "--format", format])
+            .args(["check", "--format", format])
             .output()
             .unwrap()
     }
@@ -42,7 +42,7 @@ impl Drop for Case {
 #[test]
 fn check_never_executes_an_infinite_loop_and_writes_no_artifacts() {
     let case = Case::new();
-    let output = case.run(b"loop {}", "json");
+    let output = case.run(b"fn main() { loop {} }", "json");
     assert!(
         output.status.success(),
         "{}",
@@ -66,14 +66,14 @@ fn machine_and_human_failures_locate_the_original_source() {
     assert_eq!(output.status.code(), Some(1));
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["stage"], "analyze");
-    assert_eq!(report["source"], "input.aside");
+    assert_eq!(report["source"], "src/main.aside");
     assert_eq!(report["diagnostics"][0]["code"], "ASS002");
     assert_eq!(report["diagnostics"][0]["range"]["start"]["line"], 1);
     let output = case.run(source.as_bytes(), "human");
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     let diagnostic = String::from_utf8(output.stderr).unwrap();
-    assert!(diagnostic.contains("input.aside:2:1"), "{diagnostic}");
+    assert!(diagnostic.contains("src/main.aside:2:1"), "{diagnostic}");
     assert!(diagnostic.contains("missing"));
 }
 
@@ -113,7 +113,7 @@ fn usage_io_and_invalid_utf8_are_machine_readable() {
         vec!["dev", "--format", "json"],
         vec!["check", "--bad", "--format", "json"],
         vec!["check", "--bad", "--format=json"],
-        vec!["check", "input.aside", "extra.aside", "--format", "json"],
+        vec!["check", "src/main.aside", "extra.aside", "--format", "json"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_reel"))
             .current_dir(&case.dir)
@@ -160,21 +160,16 @@ fn compiler_related_locations_and_fixes_survive_json_rendering() {
 fn option_terminator_help_and_duplicate_options() {
     let case = Case::new();
     fs::write(case.dir.join("-source.aside"), "let value = 1;").unwrap();
-    for args in [
-        vec!["check", "--help"],
-        vec!["check", "--format", "json", "--", "-source.aside"],
-    ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_reel"))
-            .current_dir(&case.dir)
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
+    let output = Command::new(env!("CARGO_BIN_EXE_reel"))
+        .current_dir(&case.dir)
+        .args(["check", "--help"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let output = Command::new(env!("CARGO_BIN_EXE_reel"))
         .current_dir(&case.dir)
         .args(["check", "--", "--format", "json"])
@@ -185,18 +180,11 @@ fn option_terminator_help_and_duplicate_options() {
     assert!(
         String::from_utf8(output.stderr)
             .unwrap()
-            .contains("unexpected argument 'json'")
+            .contains("unexpected argument '--format'")
     );
     let output = Command::new(env!("CARGO_BIN_EXE_reel"))
         .current_dir(&case.dir)
-        .args([
-            "check",
-            "input.aside",
-            "--format",
-            "json",
-            "--format",
-            "human",
-        ])
+        .args(["check", "--format", "json", "--format", "human"])
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(2));
@@ -238,20 +226,7 @@ fn rejects_non_utf8_paths_and_special_files_without_opening_them() {
     let case = Case::new();
     let path = case.dir.join(std::ffi::OsString::from_vec(vec![0xff]));
     fs::write(&path, "let value = 1;").unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_reel"))
-        .arg("check")
-        .arg(&path)
-        .args(["--format", "json"])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(2));
-    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(
-        report["diagnostics"][0]["message"]
-            .as_str()
-            .unwrap()
-            .contains("path must be UTF-8")
-    );
+    assert_eq!(reel_cli::read_source(&path).unwrap(), "let value = 1;");
     let socket = case.dir.join("socket.aside");
     let _listener = UnixListener::bind(&socket).unwrap();
     assert_eq!(

@@ -10,6 +10,25 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 use std::{str::FromStr, time::Duration};
 
+fn project_options() -> ServerOptions {
+    ServerOptions {
+        source_root: Some(|directory, exists| {
+            directory
+                .ancestors()
+                .find(|root| exists(&root.join("src/main.aside")))
+                .map(|root| root.join("src"))
+        }),
+        project_prefix: Some("game".into()),
+        ..Default::default()
+    }
+}
+fn project_sources() -> (tempfile::TempDir, std::path::PathBuf) {
+    let project = tempfile::tempdir().unwrap();
+    let source = project.path().join("src");
+    std::fs::create_dir(&source).unwrap();
+    (project, source)
+}
+
 fn position(source: &str, needle: &str, end: bool) -> Position {
     let offset = source.rfind(needle).unwrap() + if end { needle.len() } else { 0 };
     LineIndex::new(source)
@@ -98,17 +117,14 @@ fn local_shadowing_docs_signature_and_recovery_use_original_scope() {
 
 #[test]
 fn unsaved_imports_missing_modules_and_close_invalidate_dependencies() {
-    let root = tempfile::tempdir().unwrap();
-    let main = root.path().join("main.aside");
-    let helper = root.path().join("helpers.aside");
+    let (_project, root) = project_sources();
+    let main = root.join("main.aside");
+    let helper = root.join("helpers.aside");
     let source = "use game::helpers::add; fn main(){add(step:3);}";
     std::fs::write(&main, source).unwrap();
     let main_uri = file_uri(&main).unwrap();
     let helper_uri = file_uri(&helper).unwrap();
-    let mut workspace = Workspace::new(ServerOptions {
-        project_prefix: Some("game".into()),
-        ..Default::default()
-    });
+    let mut workspace = Workspace::new(project_options());
     workspace.open(main_uri.clone(), 1, source.into()).unwrap();
     assert!(
         workspace
@@ -185,16 +201,10 @@ fn unsaved_imports_missing_modules_and_close_invalidate_dependencies() {
 #[test]
 fn multiple_nearest_projects_and_public_reexports_keep_real_definition() {
     let root = tempfile::tempdir().unwrap();
-    let mut workspace = Workspace::new(ServerOptions {
-        project_prefix: Some("game".into()),
-        module_roots: vec![ModuleRoot {
-            prefix: String::new(),
-            path: root.path().to_path_buf(),
-        }],
-        ..Default::default()
-    });
+    let mut workspace = Workspace::new(project_options());
+    let mut documents = Vec::new();
     for (name, ty, value) in [("first", "int", "1"), ("second", "string", "\"two\"")] {
-        let project = root.path().join(name);
+        let project = root.path().join(name).join("src");
         std::fs::create_dir_all(project.join("ui")).unwrap();
         std::fs::write(project.join("main.aside"), "fn main(){}").unwrap();
         std::fs::write(
@@ -221,7 +231,21 @@ fn multiple_nearest_projects_and_public_reexports_keep_real_definition() {
                 .uri,
             file_uri(&project.join("helpers.aside")).unwrap()
         );
+        documents.push(uri);
     }
+    let analyses = workspace.analyses;
+    let unrelated = file_uri(&root.path().join("main.aside")).unwrap();
+    workspace
+        .open(unrelated.clone(), 1, "fn main(){}".into())
+        .unwrap();
+    for uri in &documents {
+        workspace.snapshot(uri).unwrap();
+    }
+    assert_eq!(
+        workspace.analyses, analyses,
+        "unrelated entry changes invalidated other projects"
+    );
+    workspace.close(&unrelated);
 }
 
 #[test]
@@ -248,20 +272,13 @@ fn source_class_members_and_bound_method_parameters() {
 
 #[test]
 fn imported_class_constructor_members_defaults_and_reexports_share_identity() {
-    let root = tempfile::tempdir().unwrap();
+    let (_project, root) = project_sources();
     let model = "/// A small counter.\npub class Counter {let value:int=1; fn init(self, start:int=4){} /// Adds an amount.\nfn add(self, amount:int=2)->int {self.value+amount} static fn zero()->int {0}}";
-    std::fs::write(root.path().join("model.aside"), model).unwrap();
-    std::fs::write(
-        root.path().join("api.aside"),
-        "pub use game::model::Counter;",
-    )
-    .unwrap();
+    std::fs::write(root.join("model.aside"), model).unwrap();
+    std::fs::write(root.join("api.aside"), "pub use game::model::Counter;").unwrap();
     let source = "use game::api::Counter; fn main(){let counter=Counter(start:5); counter.value; counter.add(amount:3); let method=counter.add; method(amount:6); Counter.zero();}";
-    let main = file_uri(&root.path().join("main.aside")).unwrap();
-    let mut workspace = Workspace::new(ServerOptions {
-        project_prefix: Some("game".into()),
-        ..Default::default()
-    });
+    let main = file_uri(&root.join("main.aside")).unwrap();
+    let mut workspace = Workspace::new(project_options());
     workspace.open(main.clone(), 1, source.into()).unwrap();
     assert!(
         workspace
@@ -310,10 +327,7 @@ fn imported_class_constructor_members_defaults_and_reexports_share_identity() {
         )
         .unwrap()
         .unwrap();
-    assert_eq!(
-        definition.uri,
-        file_uri(&root.path().join("model.aside")).unwrap()
-    );
+    assert_eq!(definition.uri, file_uri(&root.join("model.aside")).unwrap());
     assert_eq!(definition.range.start, position(model, "add(self", false));
     let static_items = workspace
         .complete(
@@ -339,26 +353,23 @@ fn imported_class_constructor_members_defaults_and_reexports_share_identity() {
 
 #[test]
 fn cross_module_inheritance_reuses_constructor_and_completion_declarations() {
-    let root = tempfile::tempdir().unwrap();
+    let (_project, root) = project_sources();
     let base = "pub class Base {let base_field:int=3; /// Creates the base scene.\nfn init(self,label:string=\"Default\",count:int=2){} /// Inherited action.\nfn inherited(self,step:int=7)->int {step} fn named(self,value:int=1)->int {value} /// Static base action.\nstatic fn static_base(value:int=11)->int {value}}";
-    std::fs::write(root.path().join("base.aside"), base).unwrap();
-    std::fs::write(root.path().join("middle.aside"),"use game::base::Base as Root; pub class Middle:Root {/// Replaces the base action.\nfn named(self,value:string=\"middle\")->string {value}}").unwrap();
+    std::fs::write(root.join("base.aside"), base).unwrap();
+    std::fs::write(root.join("middle.aside"),"use game::base::Base as Root; pub class Middle:Root {/// Replaces the base action.\nfn named(self,value:string=\"middle\")->string {value}}").unwrap();
     std::fs::write(
-        root.path().join("child.aside"),
+        root.join("child.aside"),
         "use game::middle::Middle as Parent; /// A derived scene.\npub class Child:Parent {}",
     )
     .unwrap();
     std::fs::write(
-        root.path().join("api.aside"),
+        root.join("api.aside"),
         "pub use game::child::Child as PublicChild;",
     )
     .unwrap();
     let source = "use game::api::PublicChild as Renamed; fn main(){let child=Renamed(label:\"x\",count:3); child.inherited(step:4); child.named(value:\"x\"); Renamed.static_base(value:12); child.base_field;}";
-    let main = file_uri(&root.path().join("main.aside")).unwrap();
-    let mut workspace = Workspace::new(ServerOptions {
-        project_prefix: Some("game".into()),
-        ..Default::default()
-    });
+    let main = file_uri(&root.join("main.aside")).unwrap();
+    let mut workspace = Workspace::new(project_options());
     workspace.open(main.clone(), 1, source.into()).unwrap();
     let diagnostics = workspace.diagnostics(&main, Encoding::Utf16).unwrap();
     assert!(
@@ -443,15 +454,12 @@ fn cross_module_inheritance_reuses_constructor_and_completion_declarations() {
         )
         .unwrap()
         .unwrap();
-    assert_eq!(
-        definition.uri,
-        file_uri(&root.path().join("base.aside")).unwrap()
-    );
+    assert_eq!(definition.uri, file_uri(&root.join("base.aside")).unwrap());
     assert_eq!(
         definition.range.start,
         position(base, "inherited(self", false)
     );
-    let base_uri = file_uri(&root.path().join("base.aside")).unwrap();
+    let base_uri = file_uri(&root.join("base.aside")).unwrap();
     workspace
         .open(
             base_uri.clone(),
@@ -975,15 +983,12 @@ fn identity_result_parameters_preserve_specific_arguments_through_all_call_forms
 
 #[test]
 fn mutable_unannotated_fields_and_inherited_imported_constructors_remain_dynamic() {
-    let root = tempfile::tempdir().unwrap();
-    std::fs::write(root.path().join("model.aside"),"pub class Base{let mut value=null; fn init(self,value){self.value=value;} fn set(self,value){self.value=value;} fn run(self){self.value()}} pub class Child:Base{}").unwrap();
+    let (_project, root) = project_sources();
+    std::fs::write(root.join("model.aside"),"pub class Base{let mut value=null; fn init(self,value){self.value=value;} fn set(self,value){self.value=value;} fn run(self){self.value()}} pub class Child:Base{}").unwrap();
     let source =
         "use game::model::Child; fn main(){let child=Child(||1); child.set(2); child.run();}";
-    let main = file_uri(&root.path().join("main.aside")).unwrap();
-    let mut workspace = Workspace::new(ServerOptions {
-        project_prefix: Some("game".into()),
-        ..Default::default()
-    });
+    let main = file_uri(&root.join("main.aside")).unwrap();
+    let mut workspace = Workspace::new(project_options());
     workspace.open(main.clone(), 1, source.into()).unwrap();
     let diagnostics = workspace.diagnostics(&main, Encoding::Utf16).unwrap();
     assert!(
@@ -996,16 +1001,13 @@ fn mutable_unannotated_fields_and_inherited_imported_constructors_remain_dynamic
 
 #[test]
 fn disk_sources_are_shared_until_watched_change_and_project_creation_invalidates_roots() {
-    let root = tempfile::tempdir().unwrap();
-    let helper = root.path().join("helper.aside");
+    let (_project, root) = project_sources();
+    let helper = root.join("helper.aside");
     std::fs::write(&helper, "pub fn value()->int{1}").unwrap();
     let source = "use game::helper::value; fn main(){value();}";
-    let mut workspace = Workspace::new(ServerOptions {
-        project_prefix: Some("game".into()),
-        ..Default::default()
-    });
-    let a = file_uri(&root.path().join("ui/a.aside")).unwrap();
-    let b = file_uri(&root.path().join("ui/b.aside")).unwrap();
+    let mut workspace = Workspace::new(project_options());
+    let a = file_uri(&root.join("ui/a.aside")).unwrap();
+    let b = file_uri(&root.join("ui/b.aside")).unwrap();
     workspace.open(a.clone(), 1, source.into()).unwrap();
     assert!(
         workspace
@@ -1014,7 +1016,7 @@ fn disk_sources_are_shared_until_watched_change_and_project_creation_invalidates
             .iter()
             .any(|params| !params.diagnostics.is_empty())
     );
-    let main = file_uri(&root.path().join("main.aside")).unwrap();
+    let main = file_uri(&root.join("main.aside")).unwrap();
     workspace
         .open(main.clone(), 1, "fn main(){}".into())
         .unwrap();
@@ -1047,6 +1049,103 @@ fn disk_sources_are_shared_until_watched_change_and_project_creation_invalidates
             .iter()
             .any(|params| !params.diagnostics.is_empty())
     );
+    std::fs::write(root.join("main.aside"), "fn main(){}").unwrap();
+    workspace.invalidate(&main);
+    assert!(
+        workspace
+            .diagnostics(&a, Encoding::Utf16)
+            .unwrap()
+            .iter()
+            .all(|params| params.diagnostics.is_empty())
+    );
+    assert_eq!(
+        workspace.disk_reads, 2,
+        "creating an entry must reuse unchanged source parses"
+    );
+    std::fs::remove_file(root.join("main.aside")).unwrap();
+    workspace.invalidate(&main);
+    assert!(
+        workspace
+            .diagnostics(&a, Encoding::Utf16)
+            .unwrap()
+            .iter()
+            .any(|params| !params.diagnostics.is_empty())
+    );
+}
+
+#[test]
+fn formatting_reuses_syntax_and_preserves_negotiated_unicode_edit_ranges() {
+    let source = "fn main(){let 文=\"😀\";unknown(1,2);}\r\n// 尾😀";
+    for encoding in [Encoding::Utf8, Encoding::Utf16] {
+        let mut workspace = Workspace::new(ServerOptions::default());
+        workspace.open(uri(), 1, source.into()).unwrap();
+        let edits = workspace.format(&uri(), encoding).unwrap();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].range.start, Position::new(0, 0));
+        let last_line = source.rsplit('\n').next().unwrap();
+        let end = match encoding {
+            Encoding::Utf8 => last_line.len(),
+            Encoding::Utf16 => last_line.encode_utf16().count(),
+        };
+        assert_eq!(edits[0].range.end, Position::new(1, end as u32));
+        assert!(edits[0].new_text.contains("\"😀\""));
+        assert!(edits[0].new_text.contains("// 尾😀"));
+        assert_eq!(
+            workspace.analyses, 0,
+            "formatting must not construct semantic facts"
+        );
+        assert_eq!(
+            workspace.disk_reads, 0,
+            "formatting must not resolve source imports"
+        );
+        assert_eq!(
+            workspace.format(&uri(), encoding).unwrap(),
+            edits,
+            "formatting mutated the open document"
+        );
+        workspace
+            .change(
+                &uri(),
+                2,
+                vec![TextDocumentContentChangeEvent {
+                    range: Some(edits[0].range),
+                    range_length: None,
+                    text: edits[0].new_text.clone(),
+                }],
+                encoding,
+            )
+            .unwrap();
+        assert!(workspace.format(&uri(), encoding).unwrap().is_empty());
+        assert!(
+            workspace
+                .diagnostics(&uri(), encoding)
+                .unwrap()
+                .iter()
+                .any(|params| {
+                    params
+                        .diagnostics
+                        .iter()
+                        .any(|diagnostic| diagnostic.message.contains("unknown"))
+                }),
+            "formatting must preserve unresolved-name diagnostics"
+        );
+        workspace
+            .change(
+                &uri(),
+                3,
+                vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: "fn main(){let 文=\"😀\";".into(),
+                }],
+                encoding,
+            )
+            .unwrap();
+        assert!(
+            workspace.format(&uri(), encoding).unwrap().is_empty(),
+            "incomplete syntax must remain untouched"
+        );
+    }
 }
 
 fn response(connection: &Connection, id: i32) -> Response {
@@ -1094,6 +1193,10 @@ fn protocol_connection_initializes_edits_queries_closes_and_exits() {
         .unwrap();
     let initialized = response(&client, 1).result.unwrap();
     assert_eq!(initialized["capabilities"]["positionEncoding"], "utf-8");
+    assert_eq!(
+        initialized["capabilities"]["documentFormattingProvider"],
+        true
+    );
     client
         .sender
         .send(Notification::new("initialized".into(), json!({})).into())
@@ -1101,6 +1204,26 @@ fn protocol_connection_initializes_edits_queries_closes_and_exits() {
     client.sender.send(Notification::new("textDocument/didOpen".into(),json!({"textDocument":{"uri":uri(),"languageId":"aside","version":1,"text":"fn main(){中文;}"}})).into()).unwrap();
     let errors = diagnostics(&client);
     assert!(!errors.diagnostics.is_empty());
+    client
+        .sender
+        .send(
+            Request::new(
+                5.into(),
+                "textDocument/formatting".into(),
+                json!({
+                    "textDocument":{"uri":uri()},"options":{"tabSize":4,"insertSpaces":true}
+                }),
+            )
+            .into(),
+        )
+        .unwrap();
+    let edits = response(&client, 5).result.unwrap();
+    assert_eq!(edits.as_array().unwrap().len(), 1);
+    assert_eq!(
+        edits[0]["range"]["end"],
+        json!({"line":0,"character":"fn main(){中文;}".len()})
+    );
+    assert!(edits[0]["newText"].as_str().unwrap().contains("    中文;"));
     client.sender.send(Notification::new("textDocument/didChange".into(),json!({"textDocument":{"uri":uri(),"version":2},"contentChanges":[{"text":"fn main(){let 中文=1; 中文;}"}]})).into()).unwrap();
     assert!(diagnostics(&client).diagnostics.is_empty());
     client

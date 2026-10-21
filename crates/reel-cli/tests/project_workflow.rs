@@ -2,7 +2,6 @@
 use reel_cli::{BuildProfile, build_export, distribution, project};
 use serde_json::Value;
 use std::{
-    collections::BTreeMap,
     fs,
     path::Path,
     process::{Command, Output},
@@ -40,7 +39,7 @@ fn success(output: Output) -> Value {
 }
 
 #[test]
-fn directory_and_explicit_entries_share_project_outputs_with_distinct_module_roots() {
+fn project_discovery_fixes_entry_and_source_root_from_nested_directories() {
     let temporary = temporary();
     let root = temporary.path();
     write(
@@ -50,10 +49,10 @@ fn directory_and_explicit_entries_share_project_outputs_with_distinct_module_roo
     );
     write(root, "src/utility.aside", "pub fn answer() { 42 }");
     write(root, "src/unused.aside", "invalid unused source");
-    write(root, "main.aside", "invalid lower-priority entry");
     write(root, "src/ui/preview.aside", "fn main() { 7 }");
     write(root, "resources/images/sample.bin", "asset");
-    let loaded = project::load(root).unwrap_or_else(|error| panic!("{:?}", error.failure));
+    let loaded =
+        project::load(&root.join("src/ui")).unwrap_or_else(|error| panic!("{:?}", error.failure));
     assert_eq!(loaded.project_root, root.canonicalize().unwrap());
     assert_eq!(loaded.root, root.join("src").canonicalize().unwrap());
     assert_eq!(loaded.files.len(), 2);
@@ -61,52 +60,72 @@ fn directory_and_explicit_entries_share_project_outputs_with_distinct_module_roo
         loaded.assets(),
         root.join("resources").canonicalize().unwrap()
     );
-    let preview = project::load(&root.join("src/ui/preview.aside"))
-        .unwrap_or_else(|error| panic!("{:?}", error.failure));
-    assert_eq!(preview.project_root, loaded.project_root);
-    assert_eq!(preview.root, root.join("src/ui").canonicalize().unwrap());
-    assert_eq!(preview.files.len(), 1);
-    let located = project::locate(&root.join("src/ui")).unwrap();
-    assert_eq!(located.root, loaded.project_root);
-    assert_eq!(
-        located.input,
-        root.join("src/main.aside").canonicalize().unwrap()
-    );
+    assert!(project::locate(&root.join("src/ui/preview.aside")).is_err());
     let report = success(command(
         &root.join("src/ui"),
         &["check", "--format", "json"],
     ));
     assert_eq!(report["status"], "verified");
     assert!(!root.join("build").exists());
-    let report = success(command(
-        root,
-        &["build", "src/ui/preview.aside", "--format", "json"],
+    success(command(
+        &root.join("src/ui"),
+        &["build", "--format", "json"],
     ));
-    assert_eq!(report["artifact"]["profile"], "debug");
     assert!(root.join("build/debug/game.asb").is_file());
     assert!(!root.join("src/ui/build").exists());
+    for action in ["check", "build", "export", "dev"] {
+        for extra in [
+            vec!["src/ui/preview.aside"],
+            vec!["--entry", "main::main"],
+            vec!["--module", "library=src"],
+        ] {
+            let result = command(root, &[vec![action], extra].concat());
+            assert_eq!(result.status.code(), Some(2));
+        }
+    }
+}
+
+#[test]
+fn root_main_is_not_a_project_and_check_validates_the_fixed_main() {
+    let temporary = temporary();
+    let root = temporary.path();
+    write(root, "main.aside", "fn main() { 1 }");
+    assert!(project::find(root).unwrap().is_none());
+    assert_eq!(
+        command(root, &["check", "--format", "json"]).status.code(),
+        Some(2)
+    );
+    assert!(!root.join("build").exists());
+    for source in ["fn other() { 1 }", "fn main(required) { required }"] {
+        write(root, "src/main.aside", source);
+        let output = command(root, &["check", "--format", "json"]);
+        assert_eq!(output.status.code(), Some(1));
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["stage"], "entry");
+        assert!(!root.join("build").exists());
+    }
 }
 
 #[test]
 fn default_builds_replace_after_success_and_explicit_outputs_keep_overwrite_choice() {
     let temporary = temporary();
     let root = temporary.path();
-    write(root, "main.aside", "fn main() { 1 }");
+    write(root, "src/main.aside", "fn main() { 1 }");
     success(command(root, &["build", "--format", "json"]));
     let output = root.join("build/debug/game.asb");
     let first = fs::read(&output).unwrap();
-    write(root, "main.aside", "fn main() { 2 }");
+    write(root, "src/main.aside", "fn main() { 2 }");
     success(command(root, &["build", "--format", "json"]));
     let second = fs::read(&output).unwrap();
     assert_ne!(first, second);
-    write(root, "main.aside", "fn main() { invalid_name() }");
+    write(root, "src/main.aside", "fn main() { invalid_name() }");
     assert!(
         !command(root, &["build", "--format", "json"])
             .status
             .success()
     );
     assert_eq!(fs::read(&output).unwrap(), second);
-    write(root, "main.aside", "fn main() { 3 }");
+    write(root, "src/main.aside", "fn main() { 3 }");
     let release = success(command(root, &["build", "--release", "--format", "json"]));
     assert_eq!(release["artifact"]["profile"], "release");
     assert_eq!(release["artifact"]["source_included"], false);
@@ -116,7 +135,7 @@ fn default_builds_replace_after_success_and_explicit_outputs_keep_overwrite_choi
         &["build", "--output", "selected.asb", "--format", "json"],
     ));
     let selected = fs::read(root.join("selected.asb")).unwrap();
-    write(root, "main.aside", "fn main() { 4 }");
+    write(root, "src/main.aside", "fn main() { 4 }");
     assert!(
         !command(
             root,
@@ -151,20 +170,25 @@ fn default_export_preserves_inputs_and_explicit_mounts_select_the_complete_set()
     success(command(root, &["export", "--format", "json"]));
     let output = root.join("build/export/debug");
     assert_eq!(
-        fs::read_to_string(output.join("images/sample.bin")).unwrap(),
+        fs::read_to_string(output.join("resources/images/sample.bin")).unwrap(),
         "original resource"
     );
     assert_eq!(
-        fs::read_to_string(output.join("script/main.aside")).unwrap(),
+        fs::read_to_string(output.join("src/main.aside")).unwrap(),
         source
     );
-    assert!(!output.join("resources").exists());
+    assert!(output.join("resources").is_dir());
     let manifest = distribution::read_manifest(&output.join("game.asb")).unwrap();
-    assert_eq!(manifest.source.unwrap().entry, "script/main.aside");
+    assert_eq!(
+        manifest.loose,
+        Some(reel_package::distribution::LooseResources::Directory(
+            "resources".into()
+        ))
+    );
     write(root, "resources/images/sample.bin", "updated resource");
     success(command(root, &["export", "--format", "json"]));
     assert_eq!(
-        fs::read_to_string(output.join("images/sample.bin")).unwrap(),
+        fs::read_to_string(output.join("resources/images/sample.bin")).unwrap(),
         "updated resource"
     );
     assert_eq!(
@@ -187,8 +211,15 @@ fn default_export_preserves_inputs_and_explicit_mounts_select_the_complete_set()
             "json",
         ],
     ));
-    assert!(root.join("build/text-only/locales/en.ftl").is_file());
-    assert!(!root.join("build/text-only/images/sample.bin").exists());
+    assert!(
+        root.join("build/text-only/resources/locales/en.ftl")
+            .is_file()
+    );
+    assert!(
+        !root
+            .join("build/text-only/resources/images/sample.bin")
+            .exists()
+    );
     success(command(
         root,
         &[
@@ -201,7 +232,10 @@ fn default_export_preserves_inputs_and_explicit_mounts_select_the_complete_set()
             "json",
         ],
     ));
-    assert!(root.join("build/root-mount/images/sample.bin").is_file());
+    assert!(
+        root.join("build/root-mount/resources/images/sample.bin")
+            .is_file()
+    );
     assert!(
         !command(
             root,
@@ -218,17 +252,12 @@ fn default_export_preserves_inputs_and_explicit_mounts_select_the_complete_set()
         .status
         .success()
     );
-    let previous = fs::read(output.join("game.asb")).unwrap();
-    write(root, "resources/game.asb", "colliding resource");
-    assert!(
-        !command(root, &["export", "--format", "json"])
-            .status
-            .success()
-    );
-    assert_eq!(fs::read(output.join("game.asb")).unwrap(), previous);
+    write(root, "resources/game.asb", "ordinary resource");
+    success(command(root, &["export", "--format", "json"]));
+    distribution::load(&output.join("game.asb")).unwrap();
     assert_eq!(
-        fs::read_to_string(root.join("resources/game.asb")).unwrap(),
-        "colliding resource"
+        fs::read_to_string(output.join("resources/game.asb")).unwrap(),
+        "ordinary resource"
     );
 }
 
@@ -239,13 +268,11 @@ fn export_allows_project_build_but_protects_imported_sources_and_resource_trees(
     write(
         root,
         "src/main.aside",
-        "use shared::part::value; fn main() { value() }",
+        "use game::library::part::value; fn main() { value() }",
     );
-    write(root, "library/part.aside", "pub fn value() { 1 }");
+    write(root, "src/library/part.aside", "pub fn value() { 1 }");
     write(root, "resources/image.bin", "resource");
-    let modules = BTreeMap::from([("shared".into(), root.join("library"))]);
-    let loaded = project::load_with_modules(root, &modules)
-        .unwrap_or_else(|error| panic!("{:?}", error.failure));
+    let loaded = project::load(root).unwrap_or_else(|error| panic!("{:?}", error.failure));
     let checked = loaded.check().unwrap();
     let player = root.join("player");
     fs::write(&player, "player fixture").unwrap();
@@ -256,8 +283,6 @@ fn export_allows_project_build_but_protects_imported_sources_and_resource_trees(
             distribution::Mount::parse(&format!(".={}", root.join("resources").display())).unwrap(),
         ],
         text: vec![],
-        modules,
-        entry: "main::main".into(),
         pack_bytes: 4096.try_into().unwrap(),
         player: Some(player),
     };
@@ -270,7 +295,7 @@ fn export_allows_project_build_but_protects_imported_sources_and_resource_trees(
     );
     for (directory, message) in [
         ("src", "input source"),
-        ("library", "input source"),
+        ("src/library", "input source"),
         ("resources/subdir", "resource directory"),
     ] {
         options.output = root.join(directory);
@@ -280,7 +305,7 @@ fn export_allows_project_build_but_protects_imported_sources_and_resource_trees(
         assert!(error.to_string().contains(message), "{error}");
     }
     assert!(root.join("src/main.aside").is_file());
-    assert!(root.join("library/part.aside").is_file());
+    assert!(root.join("src/library/part.aside").is_file());
     assert_eq!(
         fs::read_to_string(root.join("resources/image.bin")).unwrap(),
         "resource"

@@ -131,13 +131,14 @@ fn existing_project_editor_cost() {
     );
 }
 
-fn diagnostics(connection: &Connection) -> Value {
+fn diagnostics(connection: &Connection, uri: &str) -> Value {
     loop {
         if let Message::Notification(notification) = connection
             .receiver
             .recv_timeout(Duration::from_secs(15))
             .unwrap()
             && notification.method == "textDocument/publishDiagnostics"
+            && notification.params["uri"] == uri
         {
             return notification.params["diagnostics"].clone();
         }
@@ -177,9 +178,8 @@ fn nested_src_document_uses_the_project_source_root() {
     for directory in ["src/ui", "src/story", "story", "resources", "build"] {
         std::fs::create_dir_all(root.join(directory)).unwrap();
     }
-    // Both entry layouts exist, so resolving from the workspace root is incorrect.
+    // A root-level main does not establish a Reel project.
     std::fs::write(root.join("main.aside"), "fn main() {}\n").unwrap();
-    std::fs::write(root.join("src/main.aside"), "fn main() {}\n").unwrap();
     std::fs::write(
         root.join("story/opening.aside"),
         "pub fn opening() -> int { 42 }\n",
@@ -196,6 +196,7 @@ fn nested_src_document_uses_the_project_source_root() {
     std::fs::write(&path, source).unwrap();
     let uri = file_uri(&path);
     let opening_uri = file_uri(&opening);
+    let main_uri = file_uri(&root.join("src/main.aside"));
 
     let options = reel_cli::editor::options();
     let (server, client) = Connection::memory();
@@ -219,6 +220,22 @@ fn nested_src_document_uses_the_project_source_root() {
                 "textDocument/didOpen".into(),
                 json!({"textDocument":{
                     "uri":uri,"languageId":"aside","version":1,"text":source
+                }}),
+            )
+            .into(),
+        )
+        .unwrap();
+    assert!(
+        !diagnostics(&client, &uri).as_array().unwrap().is_empty(),
+        "a root-level main must not establish the project source directory"
+    );
+    client
+        .sender
+        .send(
+            Notification::new(
+                "textDocument/didOpen".into(),
+                json!({"textDocument":{
+                    "uri":main_uri,"languageId":"aside","version":1,"text":"fn main() {}"
                 }}),
             )
             .into(),
@@ -260,6 +277,45 @@ fn nested_src_document_uses_the_project_source_root() {
     let definition = request(&client, 3, "textDocument/definition", query);
     assert_eq!(definition["uri"], opening_uri);
     assert_eq!(definition["range"]["start"]["line"], 1);
+    client
+        .sender
+        .send(
+            Notification::new(
+                "textDocument/didOpen".into(),
+                json!({"textDocument":{
+                    "uri":opening_uri,"languageId":"aside","version":1,
+                    "text":"pub fn opening() -> int { 42 }"
+                }}),
+            )
+            .into(),
+        )
+        .unwrap();
+    assert!(!diagnostics(&client, &uri).as_array().unwrap().is_empty());
+    client
+        .sender
+        .send(
+            Notification::new(
+                "textDocument/didClose".into(),
+                json!({"textDocument":{"uri":opening_uri}}),
+            )
+            .into(),
+        )
+        .unwrap();
+    assert_eq!(diagnostics(&client, &uri), json!([]));
+    client
+        .sender
+        .send(
+            Notification::new(
+                "textDocument/didClose".into(),
+                json!({"textDocument":{"uri":main_uri}}),
+            )
+            .into(),
+        )
+        .unwrap();
+    assert!(
+        !diagnostics(&client, &uri).as_array().unwrap().is_empty(),
+        "closing the unsaved src/main must retire its project root"
+    );
     request(&client, 4, "shutdown", Value::Null);
     client
         .sender
@@ -300,7 +356,7 @@ fn main() {
             .into(),
         )
         .unwrap();
-    assert_eq!(diagnostics(&client), json!([]));
+    assert_eq!(diagnostics(&client, "untitled:reel.aside"), json!([]));
 
     let items = request(
         &client,
@@ -398,7 +454,10 @@ fn main() {
         )
         .unwrap();
     assert!(
-        !diagnostics(&client).as_array().unwrap().is_empty(),
+        !diagnostics(&client, "untitled:reel.aside")
+            .as_array()
+            .unwrap()
+            .is_empty(),
         "read-only engine state must reject assignment"
     );
     request(&client, 8, "shutdown", Value::Null);

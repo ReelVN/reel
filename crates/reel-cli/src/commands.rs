@@ -2,7 +2,6 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use reel_cli::{BuildProfile, distribution::Mount};
 use std::{
-    collections::BTreeMap,
     ffi::{OsStr, OsString},
     path::PathBuf,
 };
@@ -29,6 +28,15 @@ pub enum Command {
     Loc(Localization),
     /// Prepare a tiled image pyramid for visible-region loading.
     PrepareImage(PrepareImage),
+    /// Format every Aside source file in the current project's src directory.
+    Fmt(Fmt),
+}
+
+#[derive(Args)]
+pub struct Fmt {
+    /// Report formatting differences without writing files.
+    #[arg(long)]
+    pub check: bool,
 }
 
 #[derive(Subcommand)]
@@ -39,32 +47,16 @@ pub enum SourceCommand {
     Build(Build),
     /// Export a complete project; Release packages code, text and resources.
     Export(Export),
-    /// Compile and play source or an exported development ASB.
+    /// Compile and play the current project.
     Dev(Dev),
 }
 impl SourceCommand {
-    pub fn project(&self) -> &Project {
-        match self {
-            Self::Check(v) => &v.project,
-            Self::Build(v) => &v.project,
-            Self::Export(v) => &v.project,
-            Self::Dev(v) => &v.project,
-        }
-    }
     pub fn format(&self) -> Format {
         match self {
             Self::Check(v) => v.format,
             Self::Build(v) => v.format,
             Self::Export(v) => v.format,
             Self::Dev(_) => Format::Human,
-        }
-    }
-    pub fn entry(&self) -> Option<&str> {
-        match self {
-            Self::Check(_) => None,
-            Self::Build(v) => v.settings.entry.as_deref(),
-            Self::Export(v) => v.settings.entry.as_deref(),
-            Self::Dev(v) => v.entry.as_deref(),
         }
     }
 }
@@ -82,55 +74,12 @@ impl Format {
 }
 
 #[derive(Args)]
-pub struct Project {
-    /// Project directory or source file; defaults to the current project (dev also accepts an exported ASB).
-    #[arg(value_name = "SOURCE", default_value = ".")]
-    pub source: PathBuf,
-    /// Add an external source root; repeat for multiple aliases.
-    #[arg(long = "module", value_name = "ALIAS=DIRECTORY", value_parser = module_root)]
-    pub modules: Vec<ModuleRoot>,
-}
-impl Project {
-    pub fn module_roots(&self) -> Result<BTreeMap<String, PathBuf>, String> {
-        let mut modules = BTreeMap::new();
-        for module in &self.modules {
-            if modules
-                .insert(module.alias.clone(), module.directory.clone())
-                .is_some()
-            {
-                return Err(format!("module alias {} was specified twice", module.alias));
-            }
-        }
-        Ok(modules)
-    }
-}
-#[derive(Clone)]
-pub struct ModuleRoot {
-    alias: String,
-    directory: PathBuf,
-}
-fn module_root(value: &str) -> Result<ModuleRoot, String> {
-    let (alias, directory) = value
-        .split_once('=')
-        .filter(|(a, p)| !a.is_empty() && !p.is_empty())
-        .ok_or("expected nonempty alias=directory")?;
-    Ok(ModuleRoot {
-        alias: alias.into(),
-        directory: directory.into(),
-    })
-}
-#[derive(Args)]
 pub struct Check {
-    #[command(flatten)]
-    pub project: Project,
     #[arg(long, value_enum, default_value = "human")]
     pub format: Format,
 }
 #[derive(Args)]
 pub struct BuildSettings {
-    /// Entry function; defaults to main::main.
-    #[arg(long, value_name = "FUNCTION")]
-    pub entry: Option<String>,
     /// Omit source and debug mappings from the compiled program.
     #[arg(long)]
     pub release: bool,
@@ -150,8 +99,6 @@ impl BuildSettings {
 #[derive(Args)]
 pub struct Build {
     #[command(flatten)]
-    pub project: Project,
-    #[command(flatten)]
     pub settings: BuildSettings,
     /// Destination ASB file; defaults to build/debug/game.asb (build/release with --release).
     #[arg(long, value_name = "FILE.asb", value_parser = asb_output)]
@@ -169,8 +116,6 @@ fn asb_output(value: &str) -> Result<PathBuf, String> {
 }
 #[derive(Args)]
 pub struct Export {
-    #[command(flatten)]
-    pub project: Project,
     #[command(flatten)]
     pub settings: BuildSettings,
     /// Destination directory; defaults to build/export/debug (release with --release).
@@ -203,11 +148,6 @@ pub struct Playback {
 )]
 pub struct Dev {
     #[command(flatten)]
-    pub project: Project,
-    /// Entry function; defaults to main::main or the embedded development entry.
-    #[arg(long, value_name = "FUNCTION")]
-    pub entry: Option<String>,
-    #[command(flatten)]
     pub playback: Playback,
 }
 #[derive(Args)]
@@ -236,8 +176,6 @@ pub enum Localization {
 }
 #[derive(Args)]
 pub struct Extract {
-    #[arg(value_name = "SOURCE")]
-    pub source: PathBuf,
     #[command(flatten)]
     pub destination: ExtractionOutput,
     #[arg(long)]

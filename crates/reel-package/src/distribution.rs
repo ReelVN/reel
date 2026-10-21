@@ -12,42 +12,28 @@ pub struct Distribution {
     pub catalogs: BTreeMap<String, String>,
     /// None means package-only resolution, without loose-file probing.
     pub loose: Option<LooseResources>,
-    pub source: Option<SourceProject>,
 }
 
 /// Loose assets selected by a project build or a relocatable export.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LooseResources {
-    /// Resolve the surrounding project's resources directory at launch.
+    /// Use the surrounding project's `resources`, or `resources` beside the ASB.
     Project,
-    /// Resolve a directory relative to the ASB, such as an export's `.`.
+    /// Resolve a directory relative to the ASB, such as an export's `resources`.
     Directory(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SourceProject {
-    pub entry: String,
-    pub modules: BTreeMap<String, String>,
-    pub function: String,
 }
 
 impl Distribution {
     pub fn validate(&self) -> std::io::Result<()> {
-        for path in self
-            .text
-            .iter()
-            .chain(self.resources.iter())
-            .chain(self.loose.iter().filter_map(|loose| match loose {
-                LooseResources::Project => None,
-                LooseResources::Directory(path) => Some(path),
-            }))
-            .chain(
-                self.source
-                    .iter()
-                    .flat_map(|s| std::iter::once(&s.entry).chain(s.modules.values())),
-            )
+        for path in
+            self.text
+                .iter()
+                .chain(self.resources.iter())
+                .chain(self.loose.iter().filter_map(|loose| match loose {
+                    LooseResources::Project => None,
+                    LooseResources::Directory(path) => Some(path),
+                }))
         {
             relative_path(path)?;
         }
@@ -95,7 +81,6 @@ mod tests {
             resources: Vec::new(),
             catalogs: BTreeMap::from([("en-US".into(), "__reel/catalogs/en-US.ftl".into())]),
             loose: Some(LooseResources::Project),
-            source: None,
         };
         manifest.validate().unwrap();
         let encoded = serde_json::to_vec(&manifest).unwrap();

@@ -1,0 +1,26 @@
+/// Play, pause, seek and fade audio while displaying the current dialogue.
+/// Provide fonts/body.ttf and assets/chime.wav in the project asset directory.
+fn main() {
+    game.configure(fonts: ["fonts/body.ttf"]);
+    let dialogue = game.dialogue();
+    stage.replace(
+        stack(width: 1280, height: 720, padding: 32) {
+            text(bind(dialogue.text), reveal: bind(dialogue.reveal), width: 1100);
+        }
+    );
+    audio.group_volume("music", 0.7);
+    let music = audio.play(
+        "assets/chime.wav", group: "music", looping: true, volume: 0.4, fade_in: 0.5
+    );
+    narrator("音乐在后台播放，剧情和界面照常响应。");
+    pause(music);
+    audio.seek(music, 0);
+    narrator("音乐暂停并回到开头。继续后恢复，再播放一个音效。");
+    resume(music);
+    audio.volume(music, 0.2, duration: 0.5);
+    let sound = audio.play("assets/chime.wav", pan: -0.5, start: 0.05, end: 0.2);
+    await sound;
+    audio.stop(music, fade: 0.5);
+    await music;
+    narrator("音效已结束，循环音乐已停止。");
+}

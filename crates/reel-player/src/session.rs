@@ -1888,7 +1888,7 @@ mod tests {
         }
         let mut driver = AsideSessionUi::from_source(
             session(),
-            include_str!("../../../examples/author_stage.aside"),
+            include_str!("../../../examples/author_stage/src/main.aside"),
             "main",
             1,
             "main",

@@ -4,7 +4,7 @@ use reel_ui::stage::NodeKind;
 
 #[test]
 fn text_spacing_public_example_updates_from_source_and_asb() {
-    let code = include_str!("../../../../../examples/author_text_spacing.aside")
+    let code = include_str!("../../../../../examples/author_text_spacing/src/main.aside")
         .replace("fn main()", "fn opening()");
     for encoded in [false, true] {
         let (mut session, mut vm) = models::prepared(&code, encoded);

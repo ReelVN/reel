@@ -1,5 +1,9 @@
 //! Optional host metadata. All semantic signatures come from the compiler contract.
-use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 pub use aside_compiler::semantic::ExternalMember as HostMember;
 use aside_compiler::{
@@ -60,20 +64,17 @@ pub struct HostContext {
     pub documents: Vec<HostDocument>,
 }
 
-/// Map a logical import prefix to a source directory.
-/// Empty prefixes map standalone project modules relative to the directory.
-#[derive(Debug, Clone)]
-pub struct ModuleRoot {
-    pub prefix: String,
-    pub path: PathBuf,
-}
+/// Find one source directory using the host's project convention. The existence
+/// query includes open editor buffers, so an unsaved entry can establish a project.
+pub type SourceRootQuery = fn(directory: &Path, exists: &dyn Fn(&Path) -> bool) -> Option<PathBuf>;
 
 /// Host configuration supplied before the LSP initialization handshake.
 #[derive(Debug, Clone, Default)]
 pub struct ServerOptions {
     pub host: HostContext,
-    pub module_roots: Vec<ModuleRoot>,
-    /// Optional host project namespace mapped to each file's nearest `main.aside`.
-    /// Standalone Aside has no implicit host namespace.
+    /// The embedding tool's sole project discovery policy. Files outside a project
+    /// use their own directory; untitled buffers remain independent documents.
+    pub source_root: Option<SourceRootQuery>,
+    /// Optional namespace for imports from the discovered source directory.
     pub project_prefix: Option<String>,
 }

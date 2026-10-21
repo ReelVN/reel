@@ -11,7 +11,7 @@ use support::*;
 #[test]
 fn pointer_example_source_and_asb_handle_refusal_and_destination_input() {
     let checked = reel_cli::check(
-        include_str!("../../../examples/author_pointer.aside"),
+        include_str!("../../../examples/author_pointer/src/main.aside"),
         "author_pointer.aside",
     )
     .unwrap();

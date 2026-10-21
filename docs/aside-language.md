@@ -97,7 +97,7 @@ has_own 只检查自有槽；规划中的 has_in_chain 只检查自有与 delega
 
 普通 table、model 和宿主属性的单键读取、写入、has_own 与 bind 引用查找只校验结构版本。切片间覆盖已有字段保留键的位置，操作完成时读取或写入当前槽；相同字段与无关字段的覆盖均不使查找失败。增删或重排键使尚未完成的查找报告 ConcurrentModification。derive 在实际读取时记录该字段依赖；复制、展开和 remove 仍按既有完整内容版本校验，默认迭代器仍按结构版本推进。
 
-`table.remove(key)`：删除自有键并返回原值，保留其余键的插入顺序及内部对象身份；缺键报 MissingKey，非法键沿普通索引的验证路径报错。方法可取值后调用，也接受 `key:` 具名参数；自有同名字段仍优先。删除再插入的键位于末尾。查找、工作副本及 model 字段位置映射按 VM 预算推进，成功提交时更新内容和结构版本；取消或来源内容在切片间改变时不发布副本。未完成删除的调用及映射进入 VM 快照，恢复继续原进度；源码示例见 [collections.aside](../examples/collections.aside)。
+`table.remove(key)`：删除自有键并返回原值，保留其余键的插入顺序及内部对象身份；缺键报 MissingKey，非法键沿普通索引的验证路径报错。方法可取值后调用，也接受 `key:` 具名参数；自有同名字段仍优先。删除再插入的键位于末尾。查找、工作副本及 model 字段位置映射按 VM 预算推进，成功提交时更新内容和结构版本；取消或来源内容在切片间改变时不发布副本。未完成删除的调用及映射进入 VM 快照，恢复继续原进度；源码示例见 [collections.aside](../examples/collections/src/main.aside)。
 
 可散列键为 null、bool、int、除 NaN 外的 float、string、Bytes 及递归可散列 tuple。等值键必须同 hash，包括精确相等的 int/float 与正负零；可变对象及含它们的 tuple 不能作为普通键，错误指出元素路径。规划中的 Set 使用同一键规则与插入顺序，提供 membership、add/remove、union/intersection/difference。规划中的 IdentityMap/IdentitySet 另行按对象身份存键，适合对象索引；其键为强引用，弱键版本明确命名且不保证枚举稳定。弱集合及 weakref 的保活、失效和快照使用第十八节规则。
 
@@ -171,7 +171,7 @@ let result = match event {
 
 match scrutinee 只求值一次，按源码顺序匹配，guard 要求 bool，命中后只执行一个分支。guard 不可外部等待；其显式副作用不会因不命中而回滚。动态输入未匹配抛 MatchError，有限已知类型可作穷尽诊断，默认鼓励 _ 分支。if let/while let 使用同一模式规则。
 
-执行子集支持 match 的名称、通配符、字面值、分组、类型测试和 OR，以及 guard、分支取值和分支内控制流；结构解构及 if let/while let 仍待接通。分支绑定按每次进入创建，闭包保留当次值。匹配降低为共享比较、类型检查和控制流指令，字符串比较沿既有可恢复执行器运行；无分支命中由 MatchFail 指令产生 MatchError，源码和 ASB 行为相同。示例见 [match_values.aside](../examples/match_values.aside)。
+执行子集支持 match 的名称、通配符、字面值、分组、类型测试和 OR，以及 guard、分支取值和分支内控制流；结构解构及 if let/while let 仍待接通。分支绑定按每次进入创建，闭包保留当次值。匹配降低为共享比较、类型检查和控制流指令，字符串比较沿既有可恢复执行器运行；无分支命中由 MatchFail 指令产生 MatchError，源码和 ASB 行为相同。示例见 [match_values.aside](../examples/match_values/src/main.aside)。
 
 `let (key, value) = entry` 和 `for (key, value) in entries` 已支持固定长度 tuple 解构，允许嵌套 tuple、名称、`_` 和类型标记。先检查结构并准备全部结果，再建立绑定；类型或长度不匹配抛出 PatternMismatch。每轮 for 为捕获的名称建立独立绑定。使用现有 Is、IndexGet 和 PatternRequire 指令，不复制 tuple。数组/对象/rest 解构、解构赋值及 match 中的结构模式仍待实现。
 
@@ -212,7 +212,7 @@ set_delegate/get_delegate 管理 table 的显式后备链，拒绝环，改变�
 
 use reel::{stage,text}; 为分组导入，use game::ui::dialogue::dialogue_view; 为单项导入，use reel::prelude::*; 为公开名字通配导入。别名用 as，pub 控制导出，pub use 重导出；命名空间导入使用 use game::ui::dialogue as dialogue;，解析器依据模块/符号声明区分，若两者同名则要求显式分组选择符号。通配不能静默覆盖已有名字。
 
-入口源码所在目录是源码根；Reel 项目工具按 src/main.aside、main.aside 的顺序选择入口，默认启动其中的 main。game:: 后的模块段对应源码根中的目录和 .aside 文件，名称须合法标识符。外部源码根可由工具的 --module 别名=目录 参数提供，同一实际文件只建立一个模块环境。main/game/reel/std 保留；reel 与 std 由宿主注册，不搜索同名源码目录。启动函数可以私有，这不使其余私有符号可被导入。use 在编译时解析，构建产物保存确定的模块集合。
+宿主为编译器提供源码模块和入口。Reel 项目固定以 src 为源码根，启动 src/main.aside 中的 main；game:: 后的模块段对应 src 中的目录和 .aside 文件，名称须合法标识符。共享源码复制到项目后沿普通 use 导入，同一实际文件只建立一个模块环境。main/game/reel/std 保留；reel 与 std 由宿主注册，不搜索同名源码目录。启动函数可以私有，这不使其余私有符号可被导入。use 在编译时解析，构建产物保存确定的模块集合。
 
 当前普通函数与值模块已贯通多源码分析、Aside 字节码 和 VM。文件提供方按真实导入发现源码，模块别名归一到固定声明身份；同一文件只产生一份环境。导入读取与重导出共享原 cell，Aside 字节码 的模块绑定编号依次包含自有全局和导入，验证时解析并缓存实际 cell 索引。物理来源独立保存在 SourceFile.path，运行故障保留对应文件与表达式范围。
 
@@ -437,7 +437,7 @@ Reel 宿主的 `persistent.read/write/delete` 是独立系统数据服务，不�
 
 舞台滚动与虚拟行合成保留亚像素位置，避免小数滚动量或高度估算校正因逐层取整产生跳变。改变仅位于 reel-player 合成及其真实输入检查。
 
-Reel 导出将发布清单放在 ASB 1.0 的 Distribution 区段，`run game.asb` 加载代码和资源配置，`dev game.asb` 根据内嵌源码配置重新编译。发布播放器从自身目录直接启动 game.asb。容器变更由 reel-package/reel-cli 负责；Aside 字节码、模块初始化、原生调用和快照执行语义保持。旧 ASB 版本直接拒绝，具体格式与目录合同见引擎架构“字节码与资源分包发布”。
+Reel 导出将发布清单放在 ASB 1.0 的 Distribution 区段，`run game.asb` 加载代码和资源配置，进入开发工程后，`dev` 编译 src/main.aside 及其导入模块。发布播放器从自身目录直接启动 game.asb。容器变更由 reel-package/reel-cli 负责；Aside 字节码、模块初始化、原生调用和快照执行语义保持。旧 ASB 版本直接拒绝，具体格式与目录合同见引擎架构“字节码与资源分包发布”。
 
 字节码文本存储：发布宿主可把 Utf8 常量外置为 Text{offset,len}，包内 TextPoolDescriptor 保存共享 UTF-8 池长度与摘要。验证器静态检查描述与范围；宿主通过 VerifiedProgram::bind_text_pool 绑定正文后才允许 VM 加载。Aside 不承担文件或资源包 IO。内嵌与外置字符串均在 LoadConst 时创建共享视图，弱常量句柄只复用仍存活对象；未使用正文不分配 GC 字符串对象。tuple 常量构造可按执行预算让出，保持值相等语义，不暴露对象身份。存档中的常量引用恢复到同一程序正文，动态字符串保存实际内容。仅支持当前字节码和快照格式，不保留旧格式兼容路径。
 
@@ -463,7 +463,9 @@ source feature 的裁剪属于构建目标，当前依赖以各 crate 的 Cargo.
 
 成员的源码声明身份供类型查询与定义跳转使用；普通对象成员仍通过成员访问及接收者绑定执行。命名空间导出与原生函数引用才参与静态链接。
 
-正在实现的 `aside-lsp` 通过标准输入输出提供语言服务，复用编译器的无损语法树、符号身份、类型和模块解析。打开文档的内容覆盖磁盘版本；源码使用 UTF-8，编辑器位置按协议协商转换，诊断带文档版本。作用域补全、悬停、定义跳转和参数提示共享一次分析结果。项目宿主注入自己的默认环境与接口说明，Aside 后端保持独立。内置接口的定义视图从 Rust 声明生成，包含英文文档、具名参数、类型、默认值及属性读写权限；定义视图供阅读和导航，运行时仍调用原宿主实现。
+`aside-lsp` 通过标准输入输出提供语言服务，复用编译器的无损语法树、符号身份、类型和模块解析。打开文档的内容覆盖磁盘版本；源码使用 UTF-8，编辑器位置按协议协商转换，诊断带文档版本。作用域补全、悬停、定义跳转和参数提示共享一次分析结果。项目宿主注入自己的默认环境与接口说明，Aside 后端保持独立。内置接口的定义视图从 Rust 声明生成，包含英文文档、具名参数、类型、默认值及属性读写权限；定义视图供阅读和导航，运行时仍调用原宿主实现。
+
+格式化由 aside-compiler 的同一无损语法树打印器提供：`format(&str)` 解析后格式化，`format_parsed(&Parse)` 复用现有解析结果。语法有效即可格式化，名称和宿主解析独立进行；语法错误返回原诊断。排版使用 4 个空格缩进、100 字符目标行宽，短调用保留一行，长调用在续行紧凑排列参数，长成员调用链按操作分行。代码块与 children 块按语法结构缩进；换行保留语句和 postfix 的解析关系。字符串、数字、注释内容及非空白词元的顺序保持原样，文档注释仍归属原声明。输出使用 LF，非空文件以一个 LF 结束，纯空白文件输出空串。连续格式化得到相同文本。
 
 诊断含稳定 code、严重性、模块版本、主/相关源码范围、调用栈及可选修复。保留 UTF-8 字节范围与展示行列，中文不能错位；动态调用标出签名/实参，await/native continuation 标出等待点与原失败点。提供人读和结构化输出，不向作者泄露内部地址或 Rust panic。覆盖名称/类型/参数/模式、只读写、受限等待/效果、无效句柄、资源额度、代码/恢复缺失及坏包错误。
 
@@ -754,7 +756,7 @@ start、loop_start 和非 null 的 end/loop_end 为有限非负秒；显式 end 
 
 播放活动通过标准 native awaitable 协议接入 await；pause/resume/stop 仍由 Reel 按活动类型分派。audio.stop 的淡出使用音频消费时钟，真正停止后才返回 Stopped；尚未开始或已暂停的声音立即停止。音量/声像控制返回原活动，group_volume 返回 null。暂停保留播放位置，音量/声像包络继续按混音时钟推进；输出挂起冻结全部包络。淡出停止期间再暂停会立即完成停止。owner 取消与关闭立即终止。读取与设备错误通过同一 host completion 传播到原始 await 位置。活动是只读宿主值，终态保存在 VM 堆内，活跃生产者保留宿主根；取消消费者仅撤销等待，owner 退休才取消生产者。
 
-`audio.position(activity)` 与 `video.position(activity)` 是读取已发布 VM 状态的纯 native（ABI），可直接放入 derive；seek 立即发布宿主实际目标。`audio.at(activity,seconds)`、`video.at(activity,seconds)`（ABI）返回可重复等待对象：观察位置 >= 有限非负 seconds 返回 true，提前 Completed/Stopped 返回 false，终态先判断最终位置；失败和取消抛原错误。等待者取消保留播放，已达结果在 seek 回退后仍为 true。循环或队列回绕使用当前素材位置，条件持续等待下一次满足的观察。位置是软件内容消费进度。媒体位置与普通活动共用响应式采样批次；同包 SessionSnapshot 保留位置、条件、结果及共享媒体身份。示例见 [author_media_position.aside](../examples/author_media_position.aside)。
+`audio.position(activity)` 与 `video.position(activity)` 是读取已发布 VM 状态的纯 native（ABI），可直接放入 derive；seek 立即发布宿主实际目标。`audio.at(activity,seconds)`、`video.at(activity,seconds)`（ABI）返回可重复等待对象：观察位置 >= 有限非负 seconds 返回 true，提前 Completed/Stopped 返回 false，终态先判断最终位置；失败和取消抛原错误。等待者取消保留播放，已达结果在 seek 回退后仍为 true。循环或队列回绕使用当前素材位置，条件持续等待下一次满足的观察。位置是软件内容消费进度。媒体位置与普通活动共用响应式采样批次；同包 SessionSnapshot 保留位置、条件、结果及共享媒体身份。示例见 [author_media_position.aside](../examples/author_media_position/src/main.aside)。
 
 ### 窗口宿主接口
 

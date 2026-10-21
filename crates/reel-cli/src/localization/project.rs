@@ -62,11 +62,6 @@ fn locales(project: &Path) -> io::Result<Vec<Locale>> {
         locales.insert(tag.clone(), Locale { tag, files });
     }
     let resources = project.join("resources");
-    let resources = if resources.is_dir() {
-        resources.as_path()
-    } else {
-        project
-    };
     for locale in locales.keys() {
         let key = format!("__reel/catalogs/{locale}.ftl");
         let conflict = resources.join(&key);

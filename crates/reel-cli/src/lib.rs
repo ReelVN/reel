@@ -234,7 +234,7 @@ pub fn story_from_package(
     let (program, metadata) = package.into_parts();
     let entry = metadata.game_entry.ok_or_else(|| reel_package::Error {
         kind: reel_package::ErrorKind::Metadata,
-        detail: "this package contains only a module; use reel build <source.aside> --output <story.asb> to build a runnable story".into(),
+        detail: "this package contains only a module; define main in src/main.aside and run reel build from the project".into(),
     })?;
     Ok(CompiledStory {
         program,

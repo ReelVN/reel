@@ -56,7 +56,7 @@ fn wheel(y: f64) -> PointerEvent {
 
 #[test]
 fn source_and_asb_long_choices_scroll_without_activating_the_dragged_button() {
-    let source = include_str!("../../../examples/author_scroll.aside");
+    let source = include_str!("../../../examples/author_scroll/src/main.aside");
     let checked = reel_cli::check(source, "author_scroll.aside").unwrap();
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for story in [
@@ -132,7 +132,7 @@ fn source_and_asb_long_choices_scroll_without_activating_the_dragged_button() {
 
 #[test]
 fn nested_author_scroll_follows_gamepad_focus_to_the_last_choice() {
-    let source = include_str!("../../../examples/author_scroll.aside")
+    let source = include_str!("../../../examples/author_scroll/src/main.aside")
         .replace("scroll(x: 20, y: 20, width: 300, height: 180) {", "scroll(x: 20, y: 20, width: 320, height: 180) { column() { stack(height: 160); scroll(width: 300, height: 160) {")
         .replace("    });\n    let options", "    } } });\n    let options");
     let story = compile_story(&source, "main", 1, "main").unwrap();

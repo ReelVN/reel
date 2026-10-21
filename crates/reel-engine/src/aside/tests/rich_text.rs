@@ -282,7 +282,7 @@ fn text_wrap_validates_reacts_and_restores_from_source_and_asb() {
 
 #[test]
 fn published_text_wrap_example_projects_from_source_and_asb() {
-    let code = include_str!("../../../../../examples/author_text_wrap.aside")
+    let code = include_str!("../../../../../examples/author_text_wrap/src/main.aside")
         .replace("fn main()", "fn opening()");
     for encoded in [false, true] {
         let (mut session, mut vm) = models::prepared(&code, encoded);
@@ -305,7 +305,7 @@ fn published_text_wrap_example_projects_from_source_and_asb() {
 
 #[test]
 fn published_rich_nvl_example_retains_styled_lines_and_activates_the_glossary() {
-    let code = include_str!("../../../../../examples/author_rich_text.aside")
+    let code = include_str!("../../../../../examples/author_rich_text/src/main.aside")
         .replace("fn main()", "fn opening()");
     for encoded in [false, true] {
         let (mut session, mut vm) = models::prepared(&code, encoded);

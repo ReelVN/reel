@@ -210,7 +210,9 @@ fn source_and_asb_controls_keep_dragging_and_commit_values_before_callbacks() {
 }
 #[test]
 fn settings_example_compiles_from_source_and_asb_and_initializes_live_controls() {
-    for story in stories(include_str!("../../../examples/author_settings.aside")) {
+    for story in stories(include_str!(
+        "../../../examples/author_settings/src/main.aside"
+    )) {
         let mut driver = driver(story);
         let (mut bridge, root) = bridge(&driver);
         present(&mut driver, &mut bridge, root, 1);

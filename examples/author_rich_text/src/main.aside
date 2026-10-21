@@ -1,0 +1,41 @@
+// Supply fonts/body.ttf relative to this file to open the native window.
+let dialogue = game.dialogue();
+let glossary = model({ description: "点击正文中的「星图」。" });
+
+fn main() {
+    game.configure(
+        title: "Rich text and NVL", width: 1000, height: 720, fonts: ["fonts/body.ttf"],
+        text_speed: 18
+    );
+    stage.replace(
+        stack(width: 1000, height: 720, background: "#102030") {
+            scroll(x: 60, y: 60, width: 880, height: 540, follow_end: true) {
+                list(
+                    || dialogue.lines, key: |line| line.id, gap: 24,
+                    build: |row| text(
+                        value: bind(row.value.text), reveal: bind(row.value.reveal), width: 840,
+                        font_size: 24, line_height: 1.5, text_align: "start",
+                        color: derive(
+                            || if row.value.read {
+                                "#aaaaaa"
+                            } else {
+                                "#ffffff"
+                            }
+                        ),
+                        on_link: |event| {
+                            if event.id == "star-map" {
+                                glossary.description = "星图：记录恒星的位置。这个说明由普通脚本回调显示。";
+                            }
+                        }
+                    )
+                );
+            }
+            text(value: bind(glossary.description), x: 60, y: 630, width: 880, font_size: 18);
+        }
+    );
+    let emphasis = rich("[b]加粗文字[/b]");
+    narrator(rich("普通正文与 " + emphasis.markup + " 在同一段中自然换行，也可以 [u]加下划线[/u]。"));
+    narrator(rich("这几个字是 [size=36][color=#ffd580]更大、更醒目[/color][/size] 的重点。"));
+    narrator(rich("我们仰望 [ruby=ほしぞら]星空[/ruby]。注音与正文一起排版。[em]请记住这片天空。[/em]"));
+    narrator(rich("打开 [link=star-map][u][color=#9ed8ff]星图[/color][/u][/link] 查看说明。点击链接不会推进对白。"));
+}

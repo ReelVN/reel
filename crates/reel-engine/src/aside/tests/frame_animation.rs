@@ -105,7 +105,7 @@ fn advance_dialogue(vm: &mut SessionVm, session: &mut Session) {
 
 #[test]
 fn frame_animation_example_runs_from_source_and_asb() {
-    let example = include_str!("../../../../../examples/author_frame_animation.aside");
+    let example = include_str!("../../../../../examples/author_frame_animation/src/main.aside");
     for encoded in [false, true] {
         let code = format!("{example}\nfn opening() {{ main(); }}");
         let (mut session, mut vm) = models::prepared(&code, encoded);

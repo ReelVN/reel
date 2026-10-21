@@ -201,47 +201,47 @@ fn creator_ui_examples_initialize_from_source_and_asb() {
     for (name, source) in [
         (
             "author_fitted_text.aside",
-            include_str!("../../../examples/author_fitted_text.aside"),
+            include_str!("../../../examples/author_fitted_text/src/main.aside"),
         ),
         (
             "author_tasks.aside",
-            include_str!("../../../examples/author_tasks.aside"),
+            include_str!("../../../examples/author_tasks/src/main.aside"),
         ),
         (
             "author_class_models.aside",
-            include_str!("../../../examples/author_class_models.aside"),
+            include_str!("../../../examples/author_class_models/src/main.aside"),
         ),
         (
             "author_random.aside",
-            include_str!("../../../examples/author_random.aside"),
+            include_str!("../../../examples/author_random/src/main.aside"),
         ),
         (
             "author_list.aside",
-            include_str!("../../../examples/author_list.aside"),
+            include_str!("../../../examples/author_list/src/main.aside"),
         ),
         (
             "author_narrative.aside",
-            include_str!("../../../examples/author_narrative.aside"),
+            include_str!("../../../examples/author_narrative/src/main.aside"),
         ),
         (
             "author_reading.aside",
-            include_str!("../../../examples/author_reading.aside"),
+            include_str!("../../../examples/author_reading/src/main.aside"),
         ),
         (
             "author_text_input.aside",
-            include_str!("../../../examples/author_text_input.aside"),
+            include_str!("../../../examples/author_text_input/src/main.aside"),
         ),
         (
             "author_timing.aside",
-            include_str!("../../../examples/author_timing.aside"),
+            include_str!("../../../examples/author_timing/src/main.aside"),
         ),
         (
             "author_keyboard.aside",
-            include_str!("../../../examples/author_keyboard.aside"),
+            include_str!("../../../examples/author_keyboard/src/main.aside"),
         ),
         (
             "match_values.aside",
-            include_str!("../../../examples/match_values.aside"),
+            include_str!("../../../examples/match_values/src/main.aside"),
         ),
     ] {
         let checked = reel_cli::check(source, name).unwrap();
@@ -496,7 +496,7 @@ fn virtual_scroll_to_source_and_asb_complete_only_after_real_layout_and_acceptan
 #[test]
 fn natural_gallery_example_source_and_asb_measure_only_the_window() {
     let checked = reel_cli::check(
-        include_str!("../../../examples/author_list_gallery.aside"),
+        include_str!("../../../examples/author_list_gallery/src/main.aside"),
         "natural-gallery.aside",
     )
     .unwrap();

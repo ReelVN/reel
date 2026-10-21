@@ -338,7 +338,7 @@ fn source_and_asb_reading_controls_wait_for_presentation_and_preserve_choices() 
 
 #[test]
 fn creator_reading_example_builds_as_source_and_asb() {
-    let source = include_str!("../../../examples/author_reading.aside");
+    let source = include_str!("../../../examples/author_reading/src/main.aside");
     let checked = reel_cli::check(source, "author_reading.aside").unwrap();
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for compiled in [

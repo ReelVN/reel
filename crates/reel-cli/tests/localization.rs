@@ -23,7 +23,11 @@ impl Case {
         Self(path)
     }
     fn write(&self, path: &str, text: &str) {
-        let path = self.0.join(path);
+        let path = self.0.join(if path.ends_with(".aside") {
+            PathBuf::from("src").join(path)
+        } else {
+            PathBuf::from(path)
+        });
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, text).unwrap();
     }
@@ -72,7 +76,7 @@ pub fn show() { let _ = text(tr("共享", locale: "en")); let _ = text(tr("打�
 fn custom() { let tr = |value| value; tr("not a translation"); }
 "#,
     );
-    let output = case.command(&["loc", "extract", ".", "--output-dir", "source"]);
+    let output = case.command(&["loc", "extract", "--output-dir", "source"]);
     succeeds(output);
     let shared = message_id("共享");
     let main = case.read("source/main.ftl");
@@ -90,14 +94,7 @@ fn custom() { let tr = |value| value; tr("not a translation"); }
     succeeds(case.command(&["loc", "bundle", "source", "--output", "dist/en.ftl"]));
     succeeds(case.command(&["loc", "check", "dist/en.ftl", "--locale", "en"]));
     let before = case.read("dist/en.ftl");
-    succeeds(case.command(&[
-        "loc",
-        "extract",
-        ".",
-        "--output-dir",
-        "source",
-        "--overwrite",
-    ]));
+    succeeds(case.command(&["loc", "extract", "--output-dir", "source", "--overwrite"]));
     succeeds(case.command(&[
         "loc",
         "bundle",
@@ -238,25 +235,17 @@ fn bundle_failure_preserves_output_and_reports_original_declarations() {
 fn invalid_cli_output_combinations_fail_without_creating_outputs() {
     let case = Case::new();
     for args in [
+        vec!["loc", "extract", ".", "--output", "source.ftl"],
         vec![
             "loc",
             "extract",
-            ".",
             "--output-dir",
             "source",
             "--output",
             "source.ftl",
         ],
         vec!["loc", "bundle", ".", "--output-dir", "source"],
-        vec![
-            "loc",
-            "check",
-            ".",
-            "--locale",
-            "en",
-            "--output-dir",
-            "source",
-        ],
+        vec!["loc", "check", "--locale", "en", "--output-dir", "source"],
     ] {
         assert_eq!(case.command(&args).status.code(), Some(2));
     }

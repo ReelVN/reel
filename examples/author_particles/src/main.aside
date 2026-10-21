@@ -1,0 +1,40 @@
+// Supply your own assets/petal.png and fonts/body.ttf under --assets.
+fn main() {
+    game.configure(title: "Sprite particles", width: 1280, height: 720, fonts: "fonts/body.ttf");
+    let petals = particles("assets/petal.png", width: 1280, height: 20, seed: 42);
+    let spray = particles("assets/petal.png", x: 640, y: 360, seed: 17);
+    let scene = stack(width: 1280, height: 720, clip: true, background: "#172534") {
+        petals;
+        spray;
+    };
+    stage.replace(scene);
+    await stage.presented(owner: petals);
+    let falling = emit(
+        petals, burst: 0, rate: 80, duration: 30, lifetime: 8, velocity_y: 90, velocity_x: 15,
+        spread_x: 30, size: 18, size_spread: 6, spin_spread: 60
+    );
+    scene.add(
+        row(x: 24, y: 640, gap: 12) {
+            button("Pause", on_click: || pause(falling));
+            button("Resume", on_click: || resume(falling));
+            button("Stop", on_click: || stop(falling));
+            button(
+                "Burst",
+                on_click: || emit(
+                    spray, burst: 48, lifetime: 1, lifetime_spread: 0.4, velocity_y: -160,
+                    spread_x: 180, spread_y: 100, acceleration_y: 240, size: 18, size_spread: 6,
+                    size_end: 0
+                )
+            );
+            button(
+                "Jet",
+                on_click: || emit(
+                    spray, burst: 0, rate: 120, duration: 0.25, lifetime: 0.6, x: -24, y: 0,
+                    velocity_x: 260, velocity_y: -160, spread_x: 20, spread_y: 20,
+                    acceleration_y: 240, size: 18, size_spread: 6, size_end: 0
+                )
+            );
+        }
+    );
+    await falling;
+}

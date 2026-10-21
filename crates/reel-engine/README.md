@@ -137,9 +137,9 @@ and numeric ranges are catchable at the assignment and preserve the old value.
 Using a retired node in a native call also produces a catchable `InvalidState`
 at that call; invalid heap identities remain host errors.
 
-The [author example](../../examples/author_stage.aside) uses functions, children,
+The [author example](../../examples/author_stage/src/main.aside) uses functions, children,
 conditions and loops, then changes existing nodes between two dialogue waits.
-Run it with `cargo run --locked -p reel-cli --features window -- dev examples/author_stage.aside --assets target/reel-artifacts/author-assets`.
+Enter `examples/author_stage/` and run `reel dev --assets ../../target/reel-artifacts/author-assets`.
 
 `button` adds an optional label and `on_click` closure to the same node model;
 its children use stack layout. All nodes expose `enabled`, including containers.
@@ -154,4 +154,4 @@ and terminal results permit another task. Multiple consumers can await one
 activity. Callback retirement releases actual VM storage before reusing its
 session owner slot. `discard_delivery` therefore requires a mutable session.
 `narrator` and `choose` remain main-story operations; callback use raises a
-catchable context error. See the [button example](../../examples/author_buttons.aside).
+catchable context error. See the [button example](../../examples/author_buttons/src/main.aside).

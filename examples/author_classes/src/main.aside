@@ -1,0 +1,36 @@
+class PoemWord {
+    let text: string;
+    let score: int;
+
+    fn init(self, text: string, score: int = 1) {
+        self.text = text;
+        self.score = score;
+    }
+
+    fn caption(self) -> string {
+        f"{self.text} · {self.score}"
+    }
+}
+
+fn word_button(word: PoemWord, caption) {
+    button(
+        word.caption(),
+        on_click: |event| {
+            caption.value = word.text;
+        }
+    )
+}
+
+fn main() {
+    game.configure(fonts: ["fonts/body.ttf"]);
+    let caption = text("选一个词，开始一段故事。");
+    let words = [PoemWord("星光", score: 3), PoemWord("雨声", score: 2)];
+    stage.replace(
+        column(gap: 12) {
+            caption;
+            for word in words {
+                word_button(word, caption);
+            }
+        }
+    );
+}

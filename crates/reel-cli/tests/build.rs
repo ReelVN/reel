@@ -21,21 +21,14 @@ impl Case {
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
             ));
-        fs::create_dir_all(&dir).unwrap();
-        fs::write(dir.join("input.aside"), source).unwrap();
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/main.aside"), source).unwrap();
         Self { dir }
     }
     fn run(&self, extra: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_reel"))
             .current_dir(&self.dir)
-            .args([
-                "build",
-                "input.aside",
-                "--output",
-                "result.asb",
-                "--format",
-                "json",
-            ])
+            .args(["build", "--output", "result.asb", "--format", "json"])
             .args(extra)
             .output()
             .unwrap()
@@ -60,7 +53,7 @@ impl Drop for Case {
 }
 
 #[test]
-fn builds_default_and_explicit_private_entry_reproducibly() {
+fn builds_fixed_project_entry_and_library_private_entry_reproducibly() {
     let case = Case::new("fn main() { 1 } fn hidden(a = 1) { loop {} }");
     let output = case.run(&[]);
     assert!(
@@ -85,25 +78,31 @@ fn builds_default_and_explicit_private_entry_reproducibly() {
     );
     assert_eq!(
         package.symbols[package.sources[0].path.index()],
-        "input.aside"
+        "src/main.aside"
     );
-    let output = case.run(&["--entry", "main::hidden", "--overwrite"]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stdout)
+    let checked =
+        reel_cli::check("fn main() { 1 } fn hidden(a = 1) { loop {} }", "unit.aside").unwrap();
+    let private = reel_cli::build(&checked, Some("main::hidden")).unwrap();
+    let story = reel_cli::decode_story(&private.bytes).unwrap();
+    let package = story.program.package();
+    assert_eq!(
+        package.symbols[package.functions[story.entry.index()].name.index()],
+        "hidden"
     );
-    let bytes = case.bytes();
-    let read = rp::decode(&bytes, rp::Limits::default()).unwrap();
-    assert!(read.metadata().game_entry.is_some());
-    let output = case.run(&["--entry", "main::hidden", "--overwrite"]);
-    assert!(output.status.success());
-    assert_eq!(case.bytes(), bytes);
+    assert_eq!(
+        reel_cli::build(&checked, Some("main::hidden"))
+            .unwrap()
+            .bytes,
+        private.bytes
+    );
+    let before = case.bytes();
+    assert!(case.run(&["--overwrite"]).status.success());
+    assert_eq!(case.bytes(), before);
     case.assert_no_staging();
 }
 
 #[test]
-fn release_flag_strips_debug_data_and_is_build_only() {
+fn release_build_strips_debug_data_and_check_dev_reject_release() {
     let case = Case::new("// private author note\nfn main() { \"正文不能删除\" }");
     let output = case.run(&["--release"]);
     assert!(
@@ -131,9 +130,9 @@ fn release_flag_strips_debug_data_and_is_build_only() {
             .windows(b"private author note".len())
             .any(|bytes| bytes == b"private author note")
     );
-    for command in ["check", "dev", "run"] {
+    for command in ["check", "dev"] {
         let output = Command::new(env!("CARGO_BIN_EXE_reel"))
-            .args([command, "input.aside", "--release", "--format", "json"])
+            .args([command, "--release", "--format", "json"])
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(2));
@@ -151,7 +150,7 @@ fn release_flag_strips_debug_data_and_is_build_only() {
 #[test]
 fn function_value_example_builds_and_runs_with_stage_coordinates_and_real_wait() {
     let text = author_example(
-        include_str!("../../../examples/function_values.aside"),
+        include_str!("../../../examples/function_values/src/main.aside"),
         &[(32., 48.), (32., 90.), (32., 150.)],
     );
     assert_eq!(
@@ -163,15 +162,15 @@ fn function_value_example_builds_and_runs_with_stage_coordinates_and_real_wait()
         ]
     );
     author_example(
-        include_str!("../../../examples/collections.aside"),
+        include_str!("../../../examples/collections/src/main.aside"),
         &[(32., 48.), (32., 90.), (32., 132.)],
     );
     author_example(
-        include_str!("../../../examples/collection_editing.aside"),
+        include_str!("../../../examples/collection_editing/src/main.aside"),
         &[(0., 0.); 7],
     );
     let text = author_example(
-        include_str!("../../../examples/text_operations.aside"),
+        include_str!("../../../examples/text_operations/src/main.aside"),
         &[(0., 0.); 8],
     );
     assert_eq!(
@@ -287,7 +286,7 @@ fn author_example(source: &str, coordinates: &[(f64, f64)]) -> Vec<String> {
 }
 
 #[test]
-fn existing_output_survives_default_publication_and_all_source_failures() {
+fn explicit_output_survives_no_overwrite_and_all_source_failures() {
     let case = Case::new("fn main() { 1 }");
     fs::write(case.dir.join("result.asb"), b"original bytes").unwrap();
     let output = case.run(&[]);
@@ -299,7 +298,7 @@ fn existing_output_survives_default_publication_and_all_source_failures() {
         "use reel::story;",
         "fn main() { let [a]=[1]; a }",
     ] {
-        fs::write(case.dir.join("input.aside"), source).unwrap();
+        fs::write(case.dir.join("src/main.aside"), source).unwrap();
         let output = case.run(&["--overwrite"]);
         assert_eq!(output.status.code(), Some(1));
         assert_eq!(case.bytes(), b"original bytes");
@@ -323,31 +322,10 @@ fn bad_entry_has_source_location_and_never_publishes() {
 fn explicit_output_rules_and_source_protection() {
     let case = Case::new("fn main() { 1 }");
     for args in [
-        vec!["build", "input.aside", "--format", "json"],
-        vec![
-            "build",
-            "input.aside",
-            "--output",
-            "bad.rpk",
-            "--format",
-            "json",
-        ],
-        vec![
-            "build",
-            "input.aside",
-            "--output",
-            "missing/out.asb",
-            "--format",
-            "json",
-        ],
-        vec![
-            "check",
-            "input.aside",
-            "--entry",
-            "main::main",
-            "--format",
-            "json",
-        ],
+        vec!["build", "other.aside", "--format", "json"],
+        vec!["build", "--output", "bad.rpk", "--format", "json"],
+        vec!["build", "--output", "missing/out.asb", "--format", "json"],
+        vec!["check", "--entry", "main::main", "--format", "json"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_reel"))
             .current_dir(&case.dir)
@@ -358,20 +336,8 @@ fn explicit_output_rules_and_source_protection() {
     }
     let source = "fn main() { 1 }";
     fs::write(case.dir.join("self.asb"), source).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_reel"))
-        .current_dir(&case.dir)
-        .args([
-            "build",
-            "self.asb",
-            "--output",
-            "self.asb",
-            "--overwrite",
-            "--format",
-            "json",
-        ])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(2));
+    let file = case.dir.join("self.asb");
+    assert!(reel_cli::output::write(&file, &file, b"replacement", true).is_err());
     assert_eq!(
         fs::read_to_string(case.dir.join("self.asb")).unwrap(),
         source
@@ -397,7 +363,7 @@ fn output_symlinks_and_directories_are_not_replaced() {
 }
 
 #[test]
-fn concurrent_default_builds_publish_exactly_one_complete_artifact() {
+fn concurrent_explicit_outputs_publish_exactly_one_complete_artifact() {
     let case = Case::new("fn main() { 1 }");
     let results = std::thread::scope(|scope| {
         let a = scope.spawn(|| case.run(&[]));

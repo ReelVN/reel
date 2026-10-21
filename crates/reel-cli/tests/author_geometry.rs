@@ -222,7 +222,7 @@ fn geometry_old_surface_candidate_cannot_complete_a_request() {
 #[test]
 fn geometry_example_compiles_as_source_and_asb() {
     let checked = reel_cli::check(
-        include_str!("../../../examples/author_geometry.aside"),
+        include_str!("../../../examples/author_geometry/src/main.aside"),
         "author_geometry.aside",
     )
     .unwrap();

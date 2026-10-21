@@ -14,7 +14,6 @@ use reel_player::{
     assets::{AssetOptions, Assets},
 };
 use std::{
-    collections::BTreeMap,
     fs::{self, File},
     io::{Read, Seek, SeekFrom},
     path::Path,
@@ -64,23 +63,25 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path();
     let source = root.join("source");
-    let library = root.join("library");
+    let scripts = source.join("src");
+    let library = scripts.join("shared");
     let catalogs = root.join("catalogs");
     let resources = root.join("assets");
     let player = root.join("platform-player");
     fs::write(&player, b"platform player fixture").unwrap();
-    for directory in [&source, &library, &catalogs, &resources] {
-        fs::create_dir(directory).unwrap();
+    for directory in [&scripts, &library, &catalogs, &resources] {
+        fs::create_dir_all(directory).unwrap();
     }
-    let nested = source.join("nested");
-    let unused = source.join("unused");
+    let nested = scripts.join("local");
+    let unused = scripts.join("unused");
     fs::create_dir(&nested).unwrap();
     fs::create_dir(&unused).unwrap();
+    fs::write(unused.join("unused.aside"), "fn invalid(").unwrap();
     fs::write(
-        source.join("main.aside"),
+        scripts.join("main.aside"),
         r#"
-        use shared::opening::line;
-        use local::message::opening_id;
+        use game::shared::opening::line;
+        use game::local::message::opening_id;
         fn main() {
             localization.load("en", "locales/en.ftl");
             localization.set_locale("en");
@@ -103,21 +104,13 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
     fs::write(resources.join("sample.bin"), b"range-readable resource").unwrap();
     fs::write(resources.join("00-small.bin"), [1; 17]).unwrap();
     fs::write(resources.join("01-large.bin"), [2; 1024]).unwrap();
-    let modules = BTreeMap::from([
-        ("shared".into(), library),
-        ("local".into(), nested),
-        ("unused".into(), unused),
-    ]);
-    let loaded =
-        project::load_with_modules(&source, &modules).unwrap_or_else(|e| panic!("{:?}", e.failure));
+    let loaded = project::load(&source).unwrap_or_else(|e| panic!("{:?}", e.failure));
     let checked = loaded.check().unwrap();
     let mut options = ExportOptions {
         output: root.join("development"),
         overwrite: false,
-        entry: loaded.entry(None),
         pack_bytes: std::num::NonZeroU64::new(128).unwrap(),
         player: Some(player),
-        modules,
         resources: vec![Mount {
             prefix: "assets".into(),
             directory: resources.clone(),
@@ -132,28 +125,30 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
         (BuildProfile::Release, "release"),
     ] {
         options.output = root.join(name);
-        let artifact = build_export(&checked, &options.entry, profile).unwrap();
+        let artifact = build_export(&checked, project::ENTRY, profile).unwrap();
         distribution::export(&loaded, &artifact, &options).unwrap();
         let relocated = root.join(format!("relocated-{name}"));
         fs::rename(&options.output, &relocated).unwrap();
         assert!(!relocated.join("release.json").exists());
         let manifest = distribution::read_manifest(&relocated.join("game.asb")).unwrap();
         if profile == BuildProfile::Debug {
-            let author = manifest.source.unwrap();
-            let roots = author
-                .modules
-                .iter()
-                .map(|(key, value)| (key.clone(), relocated.join(value)))
-                .collect();
-            let copied = project::load_with_modules(&relocated.join(&author.entry), &roots)
-                .unwrap_or_else(|e| panic!("{:?}", e.failure));
+            let copied = project::load(&relocated).unwrap_or_else(|e| panic!("{:?}", e.failure));
             copied.check().unwrap();
-            assert!(relocated.join("assets/sample.bin").exists());
+            assert!(relocated.join("src/shared/opening.aside").exists());
+            assert!(relocated.join("src/local/message.aside").exists());
+            assert!(!relocated.join("src/unused").exists());
+            assert!(relocated.join("resources/assets/sample.bin").exists());
+            assert_eq!(
+                manifest.loose,
+                Some(reel_package::distribution::LooseResources::Directory(
+                    "resources".into()
+                ))
+            );
             // dev follows the relocated editable source; run still uses the ASB.
-            fs::write(relocated.join(&author.entry), "fn main(").unwrap();
+            fs::write(relocated.join("src/main.aside"), "fn main(").unwrap();
             let failed = std::process::Command::new(env!("CARGO_BIN_EXE_reel"))
-                .args(["dev", relocated.join("game.asb").to_str().unwrap()])
-                .current_dir(root)
+                .arg("dev")
+                .current_dir(&relocated)
                 .output()
                 .unwrap();
             assert!(!failed.status.success());
@@ -167,9 +162,8 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
                 fs::read(relocated.join(distribution::exported_player_name())).unwrap(),
                 b"platform player fixture"
             );
-            assert!(manifest.source.is_none());
             assert!(manifest.loose.is_none());
-            assert!(!relocated.join("script").exists());
+            assert!(!relocated.join("src").exists());
             assert!(!relocated.join("locales").exists());
             assert!(!relocated.join("assets").exists());
             assert_eq!(
@@ -273,14 +267,13 @@ fn failed_player_copy_preserves_previous_export_and_overwrite_requires_embedded_
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path();
     let source = root.join("source");
-    fs::create_dir(&source).unwrap();
+    fs::create_dir_all(source.join("src")).unwrap();
     fs::write(
-        source.join("main.aside"),
+        source.join("src/main.aside"),
         "fn main() { narrator(\"original\"); }",
     )
     .unwrap();
-    let loaded = project::load_with_modules(&source, &BTreeMap::new())
-        .unwrap_or_else(|error| panic!("{:?}", error.failure));
+    let loaded = project::load(&source).unwrap_or_else(|error| panic!("{:?}", error.failure));
     let artifact = build_export(
         &loaded.check().unwrap(),
         "main::main",
@@ -292,9 +285,7 @@ fn failed_player_copy_preserves_previous_export_and_overwrite_requires_embedded_
     let mut options = ExportOptions {
         output: root.join("release"),
         overwrite: false,
-        entry: "main::main".into(),
         pack_bytes: std::num::NonZeroU64::new(1024).unwrap(),
-        modules: BTreeMap::new(),
         resources: vec![],
         text: vec![],
         player: Some(player),
@@ -351,9 +342,9 @@ fn exported_player_launches_beside_its_executable_from_foreign_cwd() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path();
     let source = root.join("source");
-    fs::create_dir(&source).unwrap();
+    fs::create_dir_all(source.join("src")).unwrap();
     fs::write(
-        source.join("main.aside"),
+        source.join("src/main.aside"),
         r#"fn main() {
         game.configure(width: 320, height: 180, fonts: ["fonts/400.ttf"]);
         stage.replace(text("A", font_size: 32));
@@ -368,7 +359,7 @@ fn exported_player_launches_beside_its_executable_from_foreign_cwd() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../reel-player/tests/fixtures/font-weight");
     let exported = Command::new(env!("CARGO_BIN_EXE_reel"))
         .arg("export")
-        .arg(&source)
+        .current_dir(&source)
         .arg("--release")
         .arg("--output")
         .arg(&output)
@@ -430,6 +421,6 @@ fn exported_player_launches_beside_its_executable_from_foreign_cwd() {
         .collect();
     assert!(!names.iter().any(|name| name == "release.json"
         || name.ends_with(".cmd")
-        || name == "script"
+        || name == "src"
         || name == "fonts"));
 }

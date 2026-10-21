@@ -3,7 +3,7 @@ use crate::{Artifact, BuildProfile, project::Loaded};
 use aside_vm::bytecode::TextPool;
 use reel_package::{
     archive::{ArchiveIndex, ArchiveKind, ArchiveWriter},
-    distribution::{Distribution, LooseResources, SourceProject, relative_path},
+    distribution::{Distribution, LooseResources, relative_path},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -37,7 +37,6 @@ pub fn with_catalogs(
         resources: Vec::new(),
         catalogs: prepared.catalogs.clone(),
         loose: Some(LooseResources::Project),
-        source: None,
     };
     let limits = reel_package::Limits::default();
     let package = reel_package::decode(&artifact.bytes, limits).map_err(io::Error::other)?;
@@ -81,8 +80,6 @@ pub struct ExportOptions {
     pub overwrite: bool,
     pub resources: Vec<Mount>,
     pub text: Vec<Mount>,
-    pub modules: BTreeMap<String, PathBuf>,
-    pub entry: String,
     pub pack_bytes: NonZeroU64,
     /// Platform player to copy into a release export.
     pub player: Option<PathBuf>,
@@ -176,83 +173,17 @@ fn copy(file: &Path, target: &Path) -> io::Result<u64> {
     fs::copy(file, target)
 }
 
-fn sources(loaded: &Loaded, options: &ExportOptions, staging: &Path) -> io::Result<SourceProject> {
-    let mut requested = vec![(loaded.root.canonicalize()?, "script".to_owned())];
-    for (alias, directory) in &options.modules {
-        let root = directory.canonicalize()?;
-        let target = format!("script/_modules/{alias}");
-        relative_path(&target)?;
-        if !requested.iter().any(|(path, _)| path == &root) {
-            requested.push((root, target));
-        }
-    }
-    requested.sort_by_key(|(path, _)| path.components().count());
-    let mut roots: Vec<(PathBuf, String)> = Vec::new();
-    for (root, preferred) in requested {
-        let target = if let Some((ancestor, prefix)) =
-            roots.iter().rev().find(|(path, _)| root.starts_with(path))
-        {
-            format!(
-                "{prefix}/{}",
-                root.strip_prefix(ancestor)
-                    .unwrap()
-                    .to_str()
-                    .ok_or_else(|| io::Error::other("module root must be UTF-8"))?
-                    .replace('\\', "/")
-            )
-        } else {
-            preferred
-        };
-        roots.push((root, target));
-    }
-    let modules = options
-        .modules
-        .iter()
-        .map(|(alias, path)| {
-            let root = path.canonicalize()?;
-            Ok((
-                alias.clone(),
-                roots
-                    .iter()
-                    .find(|(path, _)| path == &root)
-                    .unwrap()
-                    .1
-                    .clone(),
-            ))
-        })
-        .collect::<io::Result<BTreeMap<_, _>>>()?;
-    for (_, directory) in &roots {
-        fs::create_dir_all(staging.join(directory))?;
-    }
-    // Most specific root wins when libraries live under the project directory.
-    roots.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
-    let mut entry = None;
-    let input = loaded.input.canonicalize()?;
+fn sources(loaded: &Loaded, staging: &Path) -> io::Result<()> {
+    let root = loaded.root.canonicalize()?;
+    fs::create_dir_all(staging.join("src"))?;
     for file in &loaded.files {
         let file = file.canonicalize()?;
-        let (root, prefix) = roots
-            .iter()
-            .find(|(root, _)| file.starts_with(root))
-            .ok_or_else(|| {
-                io::Error::other(format!("source outside declared roots: {}", file.display()))
-            })?;
-        let suffix = file
-            .strip_prefix(root)
-            .unwrap()
-            .to_str()
-            .ok_or_else(|| io::Error::other("source path must be UTF-8"))?
-            .replace('\\', "/");
-        let name = format!("{prefix}/{suffix}");
-        copy(&file, &staging.join(&name))?;
-        if file == input {
-            entry = Some(name);
-        }
+        let relative = file.strip_prefix(&root).map_err(|_| {
+            io::Error::other(format!("source outside project src: {}", file.display()))
+        })?;
+        copy(&file, &staging.join("src").join(relative))?;
     }
-    Ok(SourceProject {
-        entry: entry.ok_or_else(|| io::Error::other("entry source missing from project"))?,
-        modules,
-        function: options.entry.clone(),
-    })
+    Ok(())
 }
 
 pub fn export(
@@ -357,7 +288,6 @@ pub fn export(
             resources: vec![],
             catalogs: catalogs.catalogs.clone(),
             loose: None,
-            source: None,
         };
         if artifact.profile == BuildProfile::Release {
             let pool = artifact
@@ -377,6 +307,7 @@ pub fn export(
             manifest.text = Some("game.rtp".into());
             manifest.resources = resource_volumes(&resources, staging, options.pack_bytes.get())?;
         } else {
+            fs::create_dir_all(staging.join("resources"))?;
             if !catalogs.files.is_empty() {
                 let mut writer = ArchiveWriter::new(
                     File::create_new(staging.join("game.rtp"))?,
@@ -389,12 +320,12 @@ pub fn export(
                 manifest.text = Some("game.rtp".into());
             }
             for (name, file) in resources.iter().chain(text.iter()) {
-                copy(file, &staging.join(name))?;
+                copy(file, &staging.join("resources").join(name))?;
             }
-            manifest.loose = Some(LooseResources::Directory(".".into()));
-            manifest.source = Some(sources(loaded, options, staging)?);
+            manifest.loose = Some(LooseResources::Directory("resources".into()));
+            sources(loaded, staging)?;
             for (file, relative) in &catalogs.sources {
-                copy(file, &staging.join("script").join(relative))?;
+                copy(file, &staging.join(relative))?;
             }
         }
         manifest.validate()?;
@@ -490,13 +421,12 @@ pub fn resource_context(root: &Path, manifest: Distribution) -> io::Result<Resou
     let loose = match manifest.loose {
         Some(LooseResources::Directory(directory)) => Some(root.join(directory)),
         Some(LooseResources::Project) => {
-            let project = crate::project::locate(root)?;
-            let resources = project.root.join("resources");
-            Some(if resources.is_dir() {
-                resources
-            } else {
-                project.root
-            })
+            let project = crate::project::find(root)?;
+            Some(
+                project
+                    .map_or_else(|| root.to_path_buf(), |project| project.root)
+                    .join("resources"),
+            )
         }
         None => None,
     };
@@ -522,8 +452,7 @@ pub fn load(path: &Path) -> io::Result<LoadedDistribution> {
             text: None,
             resources: vec![],
             catalogs: BTreeMap::new(),
-            loose: Some(LooseResources::Directory(".".into())),
-            source: None,
+            loose: Some(LooseResources::Project),
         });
     if let Some(text) = &manifest.text {
         let path = root.join(text);

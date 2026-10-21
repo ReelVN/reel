@@ -117,7 +117,7 @@ fn mask_construction_rejects_invalid_values_at_author_calls() {
 
 #[test]
 fn composed_mask_example_links_from_source_and_asb() {
-    let code = include_str!("../../../../../examples/author_composed_mask.aside");
+    let code = include_str!("../../../../../examples/author_composed_mask/src/main.aside");
     let story = source::compile_story(code, "example", 1, "main").unwrap();
     let bytes = bc::encode(story.program.package(), bc::Limits::default()).unwrap();
     let program = bc::verify(

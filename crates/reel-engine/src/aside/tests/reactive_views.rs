@@ -359,7 +359,7 @@ fn dialogue_identity_and_read_styling_survive_completion_choice_and_nvl_retentio
 
 #[test]
 fn authored_scroll_out_example_keeps_nodes_and_reveals_the_next_line_after_exit() {
-    let code = include_str!("../../../../../examples/author_dialogue_transition.aside")
+    let code = include_str!("../../../../../examples/author_dialogue_transition/src/main.aside")
         .replace("fn main()", "fn opening()");
     for encoded in [false, true] {
         let (mut session, mut vm) = models::prepared(&code, encoded);

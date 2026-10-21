@@ -28,7 +28,11 @@ impl Case {
         Self { dir }
     }
     fn write(&self, path: &str, value: &str) {
-        let path = self.dir.join(path);
+        let path = self.dir.join(if path.ends_with(".aside") {
+            PathBuf::from("src").join(path)
+        } else {
+            PathBuf::from(path)
+        });
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, value).unwrap();
     }
@@ -80,41 +84,24 @@ fn execute(
 }
 
 #[test]
-fn project_aliases_share_module_state_and_code_runs_after_moving_the_artifact() {
+fn copied_source_aliases_share_module_state_and_code_runs_after_moving_the_artifact() {
     let case = Case::new();
     case.write(
         "library/data.aside",
         "pub use reel::prelude::text as label; use std::random; pub let model={value:0}; pub fn bump(){model.value+=random(seed: 42).int(1,2);}",
     );
-    case.write("main.aside", "use first::data as a; use second::data as b; use home::main as entry; pub let project={}; fn main(){if entry.project!=project {throw \"entry identity\";}game.configure(title: \"窗\"+\"边\", width: 400*2, height: 600, fonts: [\"body.ttf\", \"cjk.ttf\"]); let label=text(\"Title\", font: \"serif\"); label.font=\"sans-serif, system-ui\"; if label.font!=\"sans-serif, system-ui\" {throw \"font\";} a.bump(); b.bump(); if a.model!=b.model {throw \"identity\";} if a.label!=text {throw \"native identity\";} a.model.value==2}");
-    let modules = std::collections::BTreeMap::from([
-        ("first".into(), case.dir.join("library")),
-        ("second".into(), case.dir.join("library")),
-        ("home".into(), case.dir.clone()),
-    ]);
-    let loaded = reel_cli::project::load_with_modules(&case.dir, &modules)
-        .unwrap_or_else(|error| panic!("{:?}", error.failure));
+    case.write("main.aside", "use game::library::data as a; use game::library::data as b; use game::main as entry; pub let project={}; fn main(){if entry.project!=project {throw \"entry identity\";}game.configure(title: \"窗\"+\"边\", width: 400*2, height: 600, fonts: [\"body.ttf\", \"cjk.ttf\"]); let label=text(\"Title\", font: \"serif\"); label.font=\"sans-serif, system-ui\"; if label.font!=\"sans-serif, system-ui\" {throw \"font\";} a.bump(); b.bump(); if a.model!=b.model {throw \"identity\";} if a.label!=text {throw \"native identity\";} a.model.value==2}");
+    let loaded =
+        reel_cli::project::load(&case.dir).unwrap_or_else(|error| panic!("{:?}", error.failure));
     assert_eq!(loaded.sources.len(), 2);
     let checked = loaded.check().unwrap();
-    let (result, settings) = execute(reel_cli::into_story(checked, &loaded.entry(None)).unwrap());
+    let (result, settings) =
+        execute(reel_cli::into_story(checked, reel_cli::project::ENTRY).unwrap());
     assert!(result);
     assert_eq!(settings.title, "窗边");
     assert_eq!(settings.canvas_size, Some([800, 600]));
     assert_eq!(settings.fonts, ["body.ttf", "cjk.ttf"]);
-    let output = case.command(&[
-        "build",
-        ".",
-        "--module",
-        "first=library",
-        "--module",
-        "second=library",
-        "--module",
-        "home=.",
-        "--output",
-        "project.asb",
-        "--format",
-        "json",
-    ]);
+    let output = case.command(&["build", "--output", "project.asb", "--format", "json"]);
     assert!(
         output.status.success(),
         "{}",
@@ -123,7 +110,7 @@ fn project_aliases_share_module_state_and_code_runs_after_moving_the_artifact() 
     let destination = case.dir.join("moved");
     fs::create_dir_all(&destination).unwrap();
     fs::rename(case.dir.join("project.asb"), destination.join("story.asb")).unwrap();
-    fs::remove_file(case.dir.join("main.aside")).unwrap();
+    fs::remove_file(case.dir.join("src/main.aside")).unwrap();
     let bytes = fs::read(destination.join("story.asb")).unwrap();
     let package = reel_package::decode(&bytes, Default::default()).unwrap();
     assert_eq!(package.metadata().modules.len(), 2);
@@ -141,37 +128,35 @@ fn project_diagnostics_locate_imported_source_and_missing_import_without_executi
         "ui.aside",
         "pub fn panel(){\n let text=\"字\";\n missing;\n}",
     );
-    let output = case.command(&["check", "main.aside", "--format", "json"]);
+    let output = case.command(&["check", "--format", "json"]);
     assert!(!output.status.success());
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["executed"], false);
     let diagnostics = report["diagnostics"].as_array().unwrap();
     let diagnostic = diagnostics
         .iter()
-        .find(|d| d["source"] == "ui.aside")
+        .find(|d| d["source"] == "src/ui.aside")
         .unwrap_or_else(|| panic!("imported source diagnostic: {report}"));
     assert_eq!(diagnostic["range"]["start"]["line"], 2);
-    fs::remove_file(case.dir.join("ui.aside")).unwrap();
-    let output = case.command(&["check", "main.aside", "--format", "json"]);
+    fs::remove_file(case.dir.join("src/ui.aside")).unwrap();
+    let output = case.command(&["check", "--format", "json"]);
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["stage"], "resolve");
-    assert_eq!(report["diagnostics"][0]["source"], "main.aside");
+    assert_eq!(report["diagnostics"][0]["source"], "src/main.aside");
     assert!(!case.dir.join("project.asb").exists());
     case.write("main.aside", "use game::ui::{panel}; fn main(){} ");
     case.write("ui.aside", "pub fn panel(required){required}");
-    let output = case.command(&[
-        "build",
-        "main.aside",
-        "--entry",
-        "game::ui::panel",
-        "--output",
-        "project.asb",
-        "--format",
-        "json",
-    ]);
-    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(report["stage"], "entry");
-    assert_eq!(report["diagnostics"][0]["source"], "ui.aside");
+    let loaded =
+        reel_cli::project::load(&case.dir).unwrap_or_else(|error| panic!("{:?}", error.failure));
+    let checked = loaded.check().unwrap();
+    let failure = reel_cli::build(&checked, Some("game::ui::panel"))
+        .err()
+        .unwrap();
+    assert_eq!(failure.stage, "entry");
+    assert_eq!(
+        failure.diagnostics[0].source.as_deref(),
+        Some("src/ui.aside")
+    );
     assert!(!case.dir.join("project.asb").exists());
 }
 
@@ -182,7 +167,7 @@ fn runnable_project_example_checks_and_builds_the_complete_source_graph() {
         reel_cli::project::load(&path).unwrap_or_else(|error| panic!("{:?}", error.failure));
     assert_eq!(loaded.sources.len(), 4);
     let checked = loaded.check().unwrap();
-    let artifact = reel_cli::build(&checked, Some(&loaded.entry(None))).unwrap();
+    let artifact = reel_cli::build(&checked, Some(reel_cli::project::ENTRY)).unwrap();
     let package = reel_package::decode(&artifact.bytes, Default::default()).unwrap();
     assert_eq!(package.metadata().modules.len(), 4);
     assert!(package.metadata().game_entry.is_some());

@@ -7,7 +7,6 @@ use reel_cli::{
 };
 use reel_package::{archive::ArchiveIndex, distribution::LooseResources};
 use std::{
-    collections::BTreeMap,
     fs::{self, File},
     io::{Read, Seek, SeekFrom},
     path::Path,
@@ -219,22 +218,27 @@ fn exports_keep_editable_translations_and_reject_colliding_text_mounts() {
         overwrite: false,
         resources: Vec::new(),
         text: Vec::new(),
-        modules: BTreeMap::new(),
-        entry: "main::main".into(),
         pack_bytes: 4096.try_into().unwrap(),
         player: Some(root.join("platform-player")),
     };
     for profile in [BuildProfile::Debug, BuildProfile::Release] {
         options.output = root.join(format!("build/export/{}", profile.name()));
-        let artifact = build_export(&checked, &options.entry, profile).unwrap();
+        let artifact = build_export(&checked, project::ENTRY, profile).unwrap();
         distribution::export(&loaded, &artifact, &options).unwrap();
         let decoded = distribution::load(&options.output.join("game.asb")).unwrap();
         assert!(
             translation(&options.output.join("game.rtp"), &decoded.catalogs["en"])
                 .contains("title = English menu")
         );
-        let editable = options.output.join("script/translations/en/ui/menu.ftl");
+        let editable = options.output.join("translations/en/ui/menu.ftl");
         assert_eq!(editable.exists(), profile == BuildProfile::Debug);
+        if profile == BuildProfile::Debug {
+            assert!(options.output.join("src/main.aside").is_file());
+            assert!(options.output.join("resources").is_dir());
+            let copied = project::load(&options.output)
+                .unwrap_or_else(|error| panic!("{:?}", error.failure));
+            copied.check().unwrap();
+        }
         assert!(!options.output.join("__reel/catalogs/en.ftl").exists());
     }
     let original = fs::read(options.output.join("game.asb")).unwrap();
@@ -248,7 +252,7 @@ fn exports_keep_editable_translations_and_reject_colliding_text_mounts() {
         directory: root.join("explicit"),
     }];
     options.overwrite = true;
-    let artifact = build_export(&checked, &options.entry, BuildProfile::Release).unwrap();
+    let artifact = build_export(&checked, project::ENTRY, BuildProfile::Release).unwrap();
     let error = distribution::export(&loaded, &artifact, &options)
         .err()
         .unwrap()

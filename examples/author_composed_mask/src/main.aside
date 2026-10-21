@@ -1,0 +1,25 @@
+// Run reel dev from examples/author_composed_mask/.
+fn main() {
+    game.configure(title: "Compose a moving mask", width: 800, height: 450);
+    let rings = mask.alpha("assets/mask-rings.png");
+    let waves = mask.alpha("assets/mask-waves.png", x: mask.param("x"), repeat: "x");
+    let detail = mask.add(mask.pow(rings, 2), mask.multiply(0.5, waves));
+    let coverage = mask.smoothstep(0.2, 0.8, mask.multiply(detail, mask.param("progress")));
+    let reveal = stack(width: 740, height: 270, mask: coverage, mask_progress: 0.6) {
+        stack(width: 740, height: 270, background: "#2d8aab");
+        text("Imagine the next scene", x: 40, y: 100, font_size: 42);
+    };
+    stage.replace(
+        column(padding: 30, gap: 18, width: 800, height: 450, background: "#152032") {
+            reveal;
+            text("Two alpha images, one moving reveal.");
+            slider(value: bind(reveal.mask_progress), min: 0, max: 1, width: 740);
+        }
+    );
+    await stage.presented(owner: reveal);
+    run(
+        repeat(
+            sequence(tween(reveal, mask_x: 1, duration: 4), tween(reveal, mask_x: 0, duration: 4))
+        ), owner: reveal
+    );
+}

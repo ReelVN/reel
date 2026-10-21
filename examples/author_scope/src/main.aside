@@ -1,0 +1,67 @@
+// Run reel dev from examples/author_scope/.
+fn main() {
+    game.configure(title: "One lifetime for an effect", width: 640, height: 360);
+    let state = model({ turns: 0 });
+    let job = { value: null };
+    let panel = stack(
+        width: 220, height: 90, background: "#b64b72",
+        opacity: derive(
+            || if state.turns % 2 == 0 {
+                0.8
+            } else {
+                0.6
+            }
+        )
+    );
+    let root = column(gap: 16, padding: 24) {
+        panel;
+        text(value: derive(|| f"Scope ticks: {state.turns}"));
+    };
+    let start = || {
+        if job.value != null {
+            job.value.cancel();
+        }
+        job.value = spawn(
+            || scope(
+                body: |s| {
+                    s.add(root, text("Scoped effect is running"));
+                    await stage.presented();
+                    let effect = s.override(panel, { opacity: 1 });
+                    s.run(
+                        repeat(
+                            sequence(
+                                tween(effect, opacity: 0.25, duration: 0.4),
+                                tween(effect, opacity: 1, duration: 0.4)
+                            )
+                        )
+                    );
+                    s.spawn(
+                        || {
+                            loop {
+                                await run(delay(0.2));
+                                state.turns += 1;
+                            }
+                        }
+                    );
+                    await completion();
+                }
+            ),
+            owner: root
+        );
+    };
+    root.add(
+        row(gap: 12) {
+            button("Start", on_click: start);
+            button(
+                "Stop",
+                on_click: || {
+                    if job.value != null {
+                        job.value.cancel();
+                        job.value = null;
+                    }
+                }
+            );
+        }
+    );
+    stage.replace(root);
+}
