@@ -181,8 +181,10 @@ impl Cache {
                 &layout,
                 &code,
                 false,
-                "fragment",
-                None,
+                pipeline::FragmentOutput {
+                    entry: "fragment",
+                    blend: None,
+                },
                 #[cfg(test)]
                 None,
             );

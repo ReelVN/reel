@@ -232,8 +232,10 @@ impl Pipelines {
             &yuv_layout,
             include_str!("paint.wgsl"),
             true,
-            "fragment_yuv",
-            Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+            FragmentOutput {
+                entry: "fragment_yuv",
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+            },
             #[cfg(test)]
             Some(counts),
         );
@@ -252,8 +254,10 @@ impl Pipelines {
             &composite_layout,
             include_str!("composite.wgsl"),
             false,
-            "fragment",
-            None,
+            FragmentOutput {
+                entry: "fragment",
+                blend: None,
+            },
             #[cfg(test)]
             Some(counts),
         );
@@ -384,20 +388,26 @@ pub fn pipeline(
         layout,
         code,
         mesh,
-        "fragment",
-        Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+        FragmentOutput {
+            entry: "fragment",
+            blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+        },
         #[cfg(test)]
         counts,
     )
 }
+pub(super) struct FragmentOutput<'a> {
+    pub entry: &'a str,
+    pub blend: Option<wgpu::BlendState>,
+}
+
 pub(super) fn pipeline_entry(
     device: &wgpu::Device,
     quality: Quality,
     layout: &wgpu::BindGroupLayout,
     code: &str,
     mesh: bool,
-    fragment: &str,
-    blend: Option<wgpu::BlendState>,
+    fragment: FragmentOutput<'_>,
     #[cfg(test)] counts: Option<&Creations>,
 ) -> wgpu::RenderPipeline {
     #[cfg(test)]
@@ -451,11 +461,11 @@ pub(super) fn pipeline_entry(
         },
         fragment: Some(wgpu::FragmentState {
             module: &shader,
-            entry_point: Some(fragment),
+            entry_point: Some(fragment.entry),
             compilation_options: Default::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format: quality.format,
-                blend,
+                blend: fragment.blend,
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
