@@ -461,3 +461,146 @@ fn effect_scope_cancels_particles_clock_and_presentation_requests() {
 
 mod offsets;
 mod overrides;
+
+#[test]
+fn scope_cancel_self_and_pending_request_restore_preserve_outer_fault_boundary() {
+    let code = r#"
+    use std::core;
+    fn opening() {
+        let root=stack();stage.replace(root);
+        let state={cancel:null,inner:false,after:false,caught:0,child:null,motion:null};
+        try {scope(body:|s| {
+            state.cancel=s.cancel;
+            state.child=s.spawn(||await completion());
+            state.motion=s.run(tween(root,x:50,duration:10));
+            scope(body:|| {
+                try {
+                    state.cancel();state.after=true;
+                    await completion();
+                } catch error {state.inner=true;}
+                finally {state.inner=true;}
+            });
+            throw "cancelled body continued";
+        });} catch error {
+            if error!="ScopeCancelled" || core.error_info().code!="Cancelled" {throw "cancel identity";}
+            state.caught+=1;
+        }
+        if state.inner || state.after || state.caught!=1 || state.cancel() {throw "retired cancel or unwind";}
+        let mut cancelled=0;
+        for work in [state.child,state.motion] {try {await work;}catch error{cancelled+=1;}}
+        if cancelled!=2 {throw "owned resources survived";}
+        let mut normal=null;scope(body:|s| {normal=s.cancel;});
+        if normal() {throw "normal exit cancel";}
+        stage.replace(text("cancel complete"));
+    }"#;
+    for encoded in [false, true] {
+        for snapshot in [false, true] {
+            let (mut session, mut vm) = prepared(code, encoded);
+            if snapshot {
+                for _ in 0..10000 {
+                    if vm.scopes.live.iter().any(|s| s.cancel_requested) {
+                        break;
+                    }
+                    match vm
+                        .step(
+                            &mut session,
+                            SessionBudget::Exact(SliceBudget {
+                                instructions: 1,
+                                ..Default::default()
+                            }),
+                            || 0,
+                        )
+                        .unwrap()
+                    {
+                        SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
+                            vm.dispatch(&mut session, ticket, "en", 32).unwrap();
+                        }
+                        SessionStep::Vm(RunOutcome::Returned(_)) => {
+                            vm.discard_delivery(&mut session).unwrap()
+                        }
+                        SessionStep::Vm(RunOutcome::Fault(id)) => {
+                            panic!("before capture: {:?}", vm.vm.delivery_fault(id))
+                        }
+                        _ => {}
+                    }
+                }
+                assert!(vm.scopes.live.iter().any(|s| s.cancel_requested));
+                (session, vm) = restored(&mut vm, &session);
+                assert!(vm.scopes.live.iter().any(|s| s.cancel_requested));
+            }
+            drive(&mut vm, &mut session, true);
+            assert!(vm.scopes.live.is_empty());
+            assert!(vm.tasks.is_empty());
+            assert!(!vm.activities.has_active());
+            assert!(
+                vm.stage()
+                    .nodes()
+                    .any(|n| n.kind == NodeKind::Text("cancel complete".into()))
+            );
+        }
+    }
+}
+
+#[test]
+fn scope_cancel_from_retained_callback_after_restore_is_idempotent() {
+    let code = r#"fn opening() {
+        let root=stack();stage.replace(root);
+        let signal=completion();let state={cancel:null,first:false,second:true,created:0};
+        let callback=|| {state.first=state.cancel();state.second=state.cancel();};
+        let worker=spawn(||{await signal;callback();},owner:root);
+        let mut caught=false;
+        try {scope(body:|s| {
+            state.created+=1;state.cancel=s.cancel;
+            s.add(root,text("temporary"));
+            narrator("checkpoint");signal.resolve();await completion();
+        });}catch error{caught=error=="ScopeCancelled";}
+        await worker;
+        if !caught || !state.first || state.second || state.cancel() || state.created!=1 {throw "callback cancel";}
+        stage.replace(text("callback complete"));
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = prepared(code, encoded);
+        drive(&mut vm, &mut session, false);
+        (session, vm) = restored(&mut vm, &session);
+        let interaction = session.view().interaction.unwrap().id();
+        for _ in 0..2 {
+            session
+                .handle_local_input(session.root_owner(), InputAction::Advance(interaction))
+                .unwrap();
+        }
+        drive(&mut vm, &mut session, true);
+        assert!(vm.scopes.live.is_empty());
+        assert!(vm.tasks.is_empty());
+        assert_eq!(vm.stage().nodes().count(), 1);
+    }
+}
+
+#[test]
+fn scope_cancel_rejects_non_scope_native_arguments() {
+    for encoded in [false, true] {
+        for wrong_node in [false, true] {
+            let (mut session, mut vm) = prepared("fn opening(){scope(body:||{});}", encoded);
+            drive(&mut vm, &mut session, true);
+            let object = if wrong_node {
+                let fields = vm.vm.heap_mut().alloc_table().unwrap();
+                vm.vm.heap_mut().alloc_host(fields, &[], None).unwrap()
+            } else {
+                Value::int(12)
+            };
+            let function = vm.scopes.methods.unwrap()[6];
+            let task = vm
+                .vm
+                .start(function, &[object], vm.root_owner, bc::Context::Ordinary)
+                .unwrap();
+            let RunOutcome::HostCall(ticket) =
+                vm.vm.run_slice(task, SliceBudget::default(), || 0).unwrap()
+            else {
+                panic!("native entry")
+            };
+            assert!(vm.dispatch_scope_cancel(ticket).is_err());
+            vm.vm
+                .respond(ticket, HostResponse::Ready(Value::NULL))
+                .unwrap();
+        }
+    }
+}

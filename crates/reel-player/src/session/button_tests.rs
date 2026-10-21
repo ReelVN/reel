@@ -1382,3 +1382,56 @@ fn scene_presentation_wait_includes_image_io_and_rejects_old_or_unaccepted_frame
         assert!(runtime.close_complete());
     }
 }
+
+#[test]
+fn idle_manual_advance_publishes_request_and_wakes_author_without_animation() {
+    let mut runtime = runtime(
+        r#"fn main(){stage.replace(text("before"));narrator("A",wait:false);await when(||game.dialogue().advance_requested);stage.replace(text("done"));await completion();}"#,
+    );
+    drain(&mut runtime);
+    let session = runtime.driver_mut().unwrap().ui_mut().session_mut();
+    let id = session.view().interaction.unwrap().id();
+    session
+        .advance_reveal(
+            session.root_owner(),
+            id,
+            std::time::Duration::from_secs(1),
+            1000.,
+        )
+        .unwrap();
+    let (mut bridge, root) = mount(runtime.driver().ui());
+    present(&mut runtime, &mut bridge, root, 1);
+    assert!(
+        !runtime.needs_tick(),
+        "ready open speech must sleep without animations"
+    );
+    for state in [keyboard::KeyState::Down, keyboard::KeyState::Up] {
+        let mut event = key(state, keyboard::Key::Named(keyboard::NamedKey::Enter));
+        if let TextEvent::Keyboard(key) = &mut event {
+            key.code = keyboard::Code::Enter;
+        }
+        runtime
+            .driver_mut()
+            .unwrap()
+            .handle_text(&mut bridge, event)
+            .unwrap();
+    }
+    assert!(
+        matches!(runtime.driver().ui().session().view().interaction,Some(reel_engine::InteractionView::Dialogue(d)) if d.advance_requested()),
+        "manual Enter not accepted"
+    );
+    runtime.wake_input();
+    assert!(
+        runtime.needs_tick(),
+        "accepted manual request must wake observer before a new frame"
+    );
+    drain(&mut runtime);
+    assert!(
+        runtime
+            .driver()
+            .adapter()
+            .stage()
+            .nodes()
+            .any(|n| matches!(&n.kind,NodeKind::Text(t) if t.as_ref()=="done"))
+    );
+}

@@ -200,10 +200,16 @@ pub struct DialogueLine {
     /// Every grapheme endpoint, including the initial zero boundary.
     grapheme_boundaries: std::sync::Arc<[usize]>,
     revealed_count: usize,
+    advance_requested: bool,
     timing: reveal::RevealTiming,
 }
 
 impl DialogueLine {
+    /// Whether an accepted manual Advance requested completion of this segment.
+    pub fn advance_requested(&self) -> bool {
+        self.advance_requested
+    }
+
     /// Whether this content was completed before this group was submitted.
     pub fn previously_read(&self) -> bool {
         self.previously_read
@@ -277,6 +283,10 @@ pub struct DialogueInteraction {
 }
 
 impl DialogueInteraction {
+    pub fn advance_requested(&self) -> bool {
+        self.lines.iter().any(DialogueLine::advance_requested)
+    }
+
     pub fn awaiting_advance(&self) -> bool {
         self.awaiting_advance
     }
@@ -1191,6 +1201,7 @@ impl Session {
                 content: content.clone(),
                 grapheme_boundaries: boundaries.into(),
                 revealed_count: 0,
+                advance_requested: false,
                 timing: Default::default(),
             });
             current_line_ids.push(line_id);
@@ -1438,7 +1449,7 @@ impl Session {
     /// stale or invalid. Foreign/dead sources do not change the high-water mark.
     pub fn handle_input(&mut self, event: InputEvent) -> Result<InputOutcome, InputRejection> {
         self.validate_input_source(event.source_owner)?;
-        self.apply_sequenced_input(event)
+        self.apply_sequenced_input(event, true)
     }
 
     /// Dispatch one new local action, assigning its sequence from this Session's
@@ -1455,6 +1466,24 @@ impl Session {
         source_owner: OwnerHandle,
         action: InputAction,
     ) -> Result<InputOutcome, InputRejection> {
+        self.handle_local_input_origin(source_owner, action, true)
+    }
+
+    /// Dispatch playback-driven input without recording a manual advance request.
+    pub fn handle_playback_input(
+        &mut self,
+        source_owner: OwnerHandle,
+        action: InputAction,
+    ) -> Result<InputOutcome, InputRejection> {
+        self.handle_local_input_origin(source_owner, action, false)
+    }
+
+    fn handle_local_input_origin(
+        &mut self,
+        source_owner: OwnerHandle,
+        action: InputAction,
+        manual: bool,
+    ) -> Result<InputOutcome, InputRejection> {
         self.validate_input_source(source_owner)?;
         let sequence = match self.last_input_sequence {
             Some(last) => InputSequence(
@@ -1464,11 +1493,14 @@ impl Session {
             ),
             None => InputSequence(1),
         };
-        self.apply_sequenced_input(InputEvent {
-            source_owner,
-            sequence,
-            action,
-        })
+        self.apply_sequenced_input(
+            InputEvent {
+                source_owner,
+                sequence,
+                action,
+            },
+            manual,
+        )
     }
 
     fn validate_input_source(&self, source_owner: OwnerHandle) -> Result<(), InputRejection> {
@@ -1484,7 +1516,11 @@ impl Session {
         Ok(())
     }
 
-    fn apply_sequenced_input(&mut self, event: InputEvent) -> Result<InputOutcome, InputRejection> {
+    fn apply_sequenced_input(
+        &mut self,
+        event: InputEvent,
+        manual: bool,
+    ) -> Result<InputOutcome, InputRejection> {
         if self
             .last_input_sequence
             .is_some_and(|last| event.sequence <= last)
@@ -1515,6 +1551,9 @@ impl Session {
                 }
                 let mut revealed = false;
                 for line in &mut dialogue.lines {
+                    if manual {
+                        line.advance_requested = true;
+                    }
                     let total_count = line.grapheme_boundaries.len() - 1;
                     if !line.playback_complete() {
                         line.revealed_count = total_count;

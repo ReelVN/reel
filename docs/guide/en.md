@@ -770,6 +770,24 @@ await moving;
 
 Unspecified x/y default to 0; each layer accepts assignments, bind/derive and ordinary tween. Multiple offsets add to the current base or override value in the parent container’s coordinates; node.x/y continue to describe the base value. When shaking finishes and the scope exits, the picture returns to the base animation’s current position. shake.remove() removes the layer early; target retirement, cancellation and loading use the shared scope rules. Ordinary run automatically belongs to the current scope here. Try the interactive [author_offsets.aside](../../examples/author_offsets.aside) example.
 
+`s.cancel()` requests scope retirement and returns true for the first request, false for repeats. Event closures can retain `let cancel = s.cancel`; an extracted method returns false after the scope ends. The scope handle retires when it ends, so later property reads through that handle fail. Cancellation uses the owner-retirement cleanup path and delivers `ScopeCancelled` outside the scope, including when the body cancels itself.
+
+```aside
+fn closeable_scene() {
+    let state = model({cancel: null});
+    let close = button("Close", on_click: || state.cancel());
+    stage.replace(stack() { close; });
+    try {
+        scope(body: |s| {
+            state.cancel = s.cancel;
+            narrator("The window is open.");
+        });
+    } catch error {
+        if error != "ScopeCancelled" { throw; }
+    }
+}
+```
+
 By default, scope lives with the current task. Use scope(owner: node, body: ...) when it should end with a particular node. If that node ends first, only the scope region is cancelled, and ScopeCancelled is raised at the outer call site. Main-story code that is still alive can catch it outside the scope. Code involving invalid nodes within the region ends, and the host performs cleanup. If the current task itself is cancelled, the entire task ends.
 visible=false hides the subtree and removes it from hit testing and focus; enabled=false keeps it visible but disables interaction; opacity changes only transparency. Use stage.replace(new_root) for permanent scene changes and clear() followed by add(new_child) for permanent local replacements.
 
@@ -1347,6 +1365,8 @@ game.dialogue().clear();
 game.clear_history();
 narrator("A new chapter begins.");
 ```
+
+`game.dialogue().advance_requested` and the corresponding active-line field are read-only observable manual advance requests for the current segment. An accepted manual Advance sets them when reveal is skippable or the text is already ready. An incomplete protected reveal keeps them false. Playback-driven auto and skip do not set them. New dialogue, append and clear reset them; snapshots retain the current value. The root field becomes false when the interaction ends. Older displayed rows retain their last projected value; use `current_line_ids` to identify the active segment’s lines. Authors can finish custom text effects from this state while the shared dialogue service continues to own input and advancement.
 
 ```aside
 game.clear_history(keep_last: 37);

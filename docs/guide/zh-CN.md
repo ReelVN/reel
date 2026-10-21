@@ -781,6 +781,24 @@ await moving;
 
 未指定的 x/y 默认为 0，支持赋值、bind/derive 和普通 tween。多层偏移叠加在当前基础值或覆盖值之后，坐标按父容器的方向和单位解释；node.x/y 继续表示基础值。摇晃结束退出 scope 后，画面回到基础动画当时的位置。shake.remove() 提前撤销该层；目标退休、取消和读档沿作用域的共同规则。普通 run 在这里自动归当前 scope。完整交互示例：[author_offsets.aside](../../examples/author_offsets.aside)。
 
+`s.cancel()` 请求结束当前作用域，首次请求返回 true，重复请求返回 false。事件闭包可保存 `let cancel = s.cancel`；已提取的方法在作用域结束后仍返回 false。作用域结束时 handle 退休，之后通过 handle 读取属性会报错。取消复用 owner 退休的区域清理，并在 scope 外交付 `ScopeCancelled`；正文调用自己的 cancel 也沿同一路径展开。
+
+```aside
+fn closeable_scene() {
+    let state = model({cancel: null});
+    let close = button("Close", on_click: || state.cancel());
+    stage.replace(stack() { close; });
+    try {
+        scope(body: |s| {
+            state.cancel = s.cancel;
+            narrator("The window is open.");
+        });
+    } catch error {
+        if error != "ScopeCancelled" { throw; }
+    }
+}
+```
+
 普通返回、异常和场景退出都触发同步、幂等的宿主清理。退场动画由正文主动等待。作用域可以嵌套；记录了当前调用位置、活动和临时子树的存档恢复后，继续同一段正文，再按相同规则释放。游戏变量的正常写入保持其业务含义，scope 只管理显式登记的临时效果。
 默认 scope 随当前任务存活。需要随某个节点结束时写 scope(owner: node, body: ...)。若该节点先结束，仅撤销 scope 区域并在外层调用点产生 ScopeCancelled，仍存活的主剧情可以在 scope 外捕获；区域内的失效节点代码结束，宿主完成清理。当前任务自身被撤销时，整个任务结束。
 visible=false 隐藏子树并退出命中与焦点；enabled=false 保留画面并禁用交互；opacity 只改变透明度。永久换景用 stage.replace(new_root)，局部永久替换用容器 clear() 后再 add(new_child)。
@@ -1361,6 +1379,8 @@ game.dialogue().clear();
 game.clear_history();
 narrator("A new chapter begins.");
 ```
+
+`game.dialogue().advance_requested` 与当前活动行的同名字段是只读可观察的逐段手动推进请求。有效手动 Advance 在允许跳过显现或正文已经 ready 时置 true；尚未完成且禁止跳显时保持 false。自动阅读与快进驱动不会设置它。新对白、append 新段和清页重置；快照保留当前值。互动结束后根字段为 false，仍展示的旧行保留最后一次投影值；用 `current_line_ids` 确定描述当前段的行。作者可用它结束自定义文字演出，输入仍由共同对白服务接受和推进。
 
 ```aside
 game.clear_history(keep_last: 37);

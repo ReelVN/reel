@@ -340,7 +340,9 @@ CallScript 允许 native 算法调用可暂停脚本：宿主退出 Rust 栈，�
 
 Continue 保存版本化 native 算法状态，在同一 Task 下一预算片继续执行，无 WaitId、无外部等待，也不重新执行入口。它覆盖编码、hash、复制等无需脚本回调的分块算法，在允许 BudgetYield 的受限上下文同样适用。native frame 的临时根和游标进入快照。
 
-CallScript 不提升权限或取消已有受限上下文；sort 的同步 comparator 仍不能等待，受限 derive 仍不能写外部状态。需要普通可暂停 callback 的宿主操作在签名中明确声明。native frame 的取消/释放由宿主 adapter 幂等完成；脚本 fault 未被 continuation 处理则按原调用链传播。旧 continuation 版本在所有帧/快照引用退出前必须可解析。
+CallScript 不提升权限或取消已有受限上下文；sort 的同步 comparator 仍不能等待，受限 derive 仍不能写外部状态。需要普通可暂停 callback 的宿主操作在签名中明确声明。native frame 的取消/释放由宿主 adapter 幂等完成；脚本 fault 未被 continuation 处理则按原调用链传播。continuation 按当前包和快照的 v1 schema 验证。
+
+作用域的 `cancel()` 是普通宿主方法：首次请求退休返回 true，重复请求返回 false。正文自身或保存绑定方法的事件闭包均可调用。结束时 handle 退休，已提取的 cancel 方法随后返回 false；维护边界沿区域撤销规则在 scope 外交付 ScopeCancelled，保留外侧 catch 和快照语义。
 
 native continuation 的回调取消屏障由所属 TaskId 与原生 FrameId 标识；宿主取消后按预算释放内层执行帧，以 CallbackCancelled 恢复原续体，外层任务及其异常处理保留。VM 快照保存未完成的清理边界。Reel 可附加 owner 条件，不改变 Task 的主 owner。Reel scope(owner: node, body: callback) 通过它执行：节点先结束时只撤销该 region，取消其等待并丢弃到屏障为止的 callback 帧，内层脚本 catch/finally 不可阻止撤销；native adapter 幂等清理本区域资源后，在屏障外的原调用位置交付 ScopeCancelled，仍存活 Task 可继续。整个 Task 主 owner 撤销则按硬终止规则结束全部区域。区域层次、取消条件、临时资源及屏障 frame 一同保存；Task 主 owner 保持不变；执行上下文的默认资源 owner 为最内层活动 scope，否则为主 owner。新 async 子任务和未指定 owner 的活动使用该默认资源 owner，显式 owner 表示明确转交生存范围。Reel 的 s.add(parent, node, index:null) 将显式挂载的临时节点登记到作用域对象图，复用普通节点挂载和退休语义。
 
@@ -646,6 +648,8 @@ Reel 作者窗口在首个挂载场景的字体、图片准备好后提交首帧
 `game.dialogue()` 与 `game.choice()` 返回当前会话的稳定只读可观察服务对象。前者提供累积 `lines`、`current_line_ids`、当前组第一行 `speaker_name/text/reveal` 和 `active`；每行提供 `id/speaker_name/text/reveal`。`reveal` 是完整 UTF-8 文本的可见字节终点，`text(reveal: ...)` 只改变绘制范围，保留完整文本排版。`dialogue.clear()` 清除显示页，保留会话历史；当前仍在显示的行组继续拥有原来的推进权限。后者提供 `options` 与 `select(id)`。服务列表和行由引擎拥有，脚本不可修改；过期/重复 select 返回 false，成功返回 true，choose 返回原业务 key。对白和选择不会自动创建界面；作者显式把读取这些服务的组件挂到舞台。桌面播放器默认用首次画布尺寸初始化窗口；未设置画布时为 1280×720，显式 Rust 窗口尺寸优先。这是宿主呈现策略，不改变 Aside 的执行或等待语义。未消费的对白推进输入仍由会话处理。
 
 `game.history()` 返回会话稳定的只读可观察历史数组；历史组的 `lines` 和行字段同样只读。`game.clear_history(keep_last: int = 0)` 使用 native ABI，返回 null；0 全部清空，正数保留末尾至多指定数量的实际历史行（不是组，`history:false` 不计），超长无改变，负数或非整数拒绝。允许只保留首组尾部行：保留原组/行 ID、对象、内容与顺序，组 speaker_name/text 更新为剩余首行，顶层数组和保留组 lines 数组身份不变并通知观察者。正文、NVL、已读记录与作者已持有的行引用不变，新组 ID 不复用；裁剪后快照保存相同结果。调用同步线性执行并请求增量 GC，不增加自动历史上限、数组脚本写权限、VM 指令或快照格式。`game.reading()` 提供只读可观察 `auto/paused/delay`，可以 bind/derive 到任意作者控件。`game.set_auto(enabled: null, delay: null, condition: null)` enabled 接受 bool 或 null，省略 delay 保留当前值，显式 delay 为有限非负秒数；`game.pause_reading(paused)` 接受 bool。这些变更通过既有宿主属性通知发布，不引入语言特殊语法；赋值只读服务字段或修改历史集合会报错。 `condition` 接受 bool 或 `bind`/`derive` 引用；各参数为 null 时保留当前值及绑定，condition 为 true 时解除旧绑定。只读 `auto_ready` 显示条件的当前值，初值 true。false 只重置自动倒计时，文字显现、手动推进、快进与 `[next]` 保持原路径；恢复 true 后，全文实际呈现完毕再等待完整 delay。条件及绑定随快照恢复。
+
+`game.dialogue().advance_requested` 与当前活动行的同名字段是只读可观察的逐段手动推进请求。有效手动 Advance 在允许跳过显现或正文已经 ready 时置 true；尚未完成且禁止跳显时保持 false。自动阅读与快进驱动不会设置它。新对白、append 新段和清页重置；快照保留当前值。互动结束后根字段为 false，仍展示的旧行保留最后一次投影值；用 `current_line_ids` 确定描述当前段的行。作者可用它结束自定义文字演出，输入仍由共同对白服务接受和推进。
 
 `game.set_skip(enabled, unread: false, after_choices: false)` 的参数均为 bool；`game.reading().skipping/skip_unread` 与 `game.dialogue().read` 为只读可观察属性。快进与自动阅读互斥，模式切换复用既有属性通知，不引入 VM 跳转或特殊语法。播放器接受手动对白推进后关闭这两种模式；内部自动推进及无效输入不触发此切换。
 

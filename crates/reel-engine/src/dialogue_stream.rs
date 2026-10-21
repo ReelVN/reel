@@ -181,6 +181,7 @@ impl Session {
         line.content.fallback = joined;
         line.grapheme_boundaries = boundaries.into();
         line.revealed_count = revealed;
+        line.advance_requested = false;
         d.revision = d.revision.wrapping_add(1);
         if let (Some(index), Some(text)) = (history_index, history_text) {
             self.history[index].lines[0].content.fallback = text;
