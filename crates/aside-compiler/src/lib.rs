@@ -3,6 +3,7 @@
 mod diagnostic;
 pub mod documentation;
 pub mod editor;
+mod format;
 pub mod hir;
 pub mod lowering;
 pub mod semantic;
@@ -16,6 +17,7 @@ mod raw;
 mod syntax;
 pub use aside_syntax::{GreenNode, TextRange, TextSize};
 pub use diagnostic::*;
+pub use format::{FormatError, format, format_parsed};
 pub use lexer::{Lexed, Token, lex, lex_with_limits};
 pub use parser::{EntryPoint, Parse, ParseOptions, parse, parse_with_options};
 pub use syntax::*;
