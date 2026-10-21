@@ -1135,7 +1135,10 @@ aside_host::native_documentation! {
         /// `start`/`end` select the playback interval; a non-null end must follow start.
         /// With `looping: true`, `loop_start`/`loop_end` select the repeated interval.
         /// `fade_in` ramps the initial volume; `paused: true` prepares a paused transport.
-        /// `owner` defaults to the current scope owner; retiring it cancels playback.
+        /// `owner` accepts a stage node or scope handle. When omitted, ownership follows
+        /// the innermost active scope, otherwise the task's inherited resource owner.
+        /// A callback inherits its event node; the main story uses the session.
+        /// Retiring the owner cancels loading and playback.
         /// Awaiting returns "Completed" or "Stopped"; output failures and cancellation throw.
         "reel::audio::play";
         /// Append an audio asset to a live audio activity's playback queue.

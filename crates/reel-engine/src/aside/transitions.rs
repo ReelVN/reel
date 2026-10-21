@@ -6,7 +6,8 @@ aside_host::native_documentation! {
         /// Retain the accepted drawing of target, call change in the current task, then
         /// blend into the newly presented drawing. A null target captures the full stage;
         /// a mounted body node scopes the transition. Cursor nodes are excluded as targets.
-        /// Duration, easing and masks control the blend; the call waits for completion.
+        /// Duration, easing and masks control the blend. The call waits for final frame
+        /// acceptance and returns the original value returned by `change`.
         /// Retained drawing owns resources independently of retired script nodes.
         "reel::stage::transition";
     }
