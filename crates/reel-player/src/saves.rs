@@ -14,7 +14,7 @@ use reel_engine::aside::{
 };
 use std::{
     fs,
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, BufWriter, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -236,11 +236,15 @@ impl SaveStorage for DirectorySaves {
             file.write_all(b"REELDATA\x01")?;
             let compressed = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
             let mut writer = LimitedWriter {
-                inner: compressed,
+                inner: BufWriter::new(compressed),
                 remaining: self.max_snapshot_bytes,
             };
             data.write_to(&mut writer).map_err(io::Error::other)?;
-            writer.inner.finish()?;
+            writer
+                .inner
+                .into_inner()
+                .map_err(|e| e.into_error())?
+                .finish()?;
             Ok(())
         })?;
         if let Some(warning) = published.cleanup_warning {
@@ -298,13 +302,19 @@ impl SaveStorage for DirectorySaves {
             file.write_all(b"REELSLOT")?;
             file.write_all(&(metadata.len() as u64).to_le_bytes())?;
             file.write_all(&metadata)?;
-            let mut compressed = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
+            let compressed = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
             let mut writer = LimitedWriter {
-                inner: &mut compressed,
+                // Postcard emits small scalar writes. Batch those before compression,
+                // while charging the original uncompressed byte limit.
+                inner: BufWriter::new(compressed),
                 remaining: self.max_snapshot_bytes,
             };
             snapshot.write_to(&mut writer).map_err(io::Error::other)?;
-            let file = compressed.finish()?;
+            let file = writer
+                .inner
+                .into_inner()
+                .map_err(|e| e.into_error())?
+                .finish()?;
             if !thumbnail.is_empty() {
                 file.write_all(thumbnail)?;
                 file.write_all(&(thumbnail.len() as u64).to_le_bytes())?;
