@@ -19,6 +19,105 @@ fn dialogue(vm: &mut SessionVm, session: &mut Session) {
     }
     models::drive(vm, session, false);
 }
+
+#[test]
+fn particle_fade_publishes_middle_frames_without_restarting_owner_maintenance() {
+    let code = r#"fn opening() {
+        let p=particles("spark.png");
+        let owner=stack();
+        stage.replace(stack() {p; owner;});
+        emit(p,burst:2,lifetime:3,velocity_x:100,velocity_y:0,spread_x:0,spread_y:0);
+        let paused=emit(p,owner:owner);pause(paused);
+        run(tween(p,opacity:0,duration:2));
+        await stage.presented();
+        narrator("middle frame accepted");
+        owner.remove();
+        let mut cancelled=false;
+        try {await paused;} catch error {cancelled=true;}
+        if !cancelled {throw "paused owner survived retirement";}
+        stage.replace(text("retired"));
+        narrator("done");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, false);
+        activities::advance_clock(&mut vm, &session, 0.5, 1);
+        vm.sync_stage(&session).unwrap();
+        let particles = vm
+            .stage()
+            .nodes()
+            .find(|node| matches!(node.kind, NodeKind::Particles(_)))
+            .unwrap();
+        assert_eq!(particles.props.opacity, 0.75);
+        assert_eq!(batch(&vm).samples().next().unwrap().position[0], 50.);
+        assert!(
+            vm.stage_ready(),
+            "ordinary opacity publication must not invalidate a completed particle clock pass"
+        );
+        assert_eq!(
+            vm.maintain_particles(64).unwrap(),
+            0,
+            "property-only revision must not rescan particle owners"
+        );
+        vm.accept_presentation(&session, vm.presentation_request())
+            .unwrap();
+        models::drive(&mut vm, &mut session, false);
+        assert!(matches!(session.view().interaction,
+            Some(crate::InteractionView::Dialogue(d)) if d.text()=="middle frame accepted"));
+        dialogue(&mut vm, &mut session);
+        assert!(
+            !vm.particles.has_active(),
+            "owner retirement and stage replacement clear paused and live emissions at the same time"
+        );
+    }
+}
+#[test]
+fn restored_paused_particle_owner_retires_without_advancing_time() {
+    use aside_vm::snapshot::SnapshotBudget;
+    let code = r#"fn opening() {
+        let old=stack();old.remove();
+        let p=particles("spark.png");stage.replace(p);
+        let owner=stack();
+        let flight=emit(p,owner:owner);pause(flight);
+        narrator("save");
+        owner.remove();
+        let mut cancelled=false;
+        try {await flight;} catch error {cancelled=true;}
+        if !cancelled {throw "restored owner survived";}
+        narrator("cancelled");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, false);
+        assert!(!vm.activities_need_time());
+        let program = vm.vm.program().clone();
+        let mut capture = vm.snapshot_begin(&session).unwrap();
+        while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let bytes = capture.finish().unwrap().encode().unwrap();
+        let mut image = snapshot::SessionSnapshot::decode(&bytes).unwrap();
+        let mut restore = SessionVm::restore_begin(
+            &mut image,
+            program,
+            VmLimits::default(),
+            SessionIdentity {
+                session_id: SessionId(91),
+                epoch: Epoch(12),
+            },
+            crate::ReadProgress::default(),
+            None,
+            None,
+        )
+        .unwrap();
+        while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let (mut session, mut vm) = restore.finish().unwrap();
+        dialogue(&mut vm, &mut session);
+        assert!(matches!(session.view().interaction,
+            Some(crate::InteractionView::Dialogue(d)) if d.text()=="cancelled"));
+        assert!(!vm.particles.has_active());
+        assert_eq!(batch(&vm).samples().count(), 0);
+    }
+}
+
 #[test]
 fn particles_source_asb_seed_pause_overlap_and_retirement() {
     let code = r#"fn opening() {

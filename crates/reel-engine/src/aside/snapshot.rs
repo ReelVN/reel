@@ -267,7 +267,7 @@ impl SessionVm {
             || self.choice_reader.is_some()
             || self.dialogue_reader.is_some()
             || self.activities_pending()
-            || self.particles.needs_work(self.stage.scene.revision())
+            || self.particles.needs_work(self.stage.retirement_revision)
             || !self.activities.snapshot_ready()
             || self.exit_requested
             || self.start_requested.is_some()
@@ -594,6 +594,7 @@ impl SessionRestore<'_> {
                             map,
                             runtime.vm.heap(),
                             &mut runtime.stage.scene,
+                            runtime.stage.retirement_revision,
                         )?;
                     }
                     Part::Media | Part::MediaWait | Part::MediaCue | Part::VideoPoster => {

@@ -386,7 +386,7 @@ impl SessionVm {
         self.scopes_pending()
             || self.transitions_pending()
             || self.transitions.pending(self.activities.time())
-            || self.particles.needs_work(self.stage.scene.revision())
+            || self.particles.needs_work(self.stage.retirement_revision)
             || self
                 .results
                 .needs_work(self.stage.scene.revision(), self.stage.retirement_revision)
@@ -559,7 +559,7 @@ impl SessionVm {
         self.maintain_localization()?;
         self.activities.maintain(&mut self.vm)?;
         self.maintain_particles(64)?;
-        if self.particles.needs_work(self.stage.scene.revision()) {
+        if self.particles.needs_work(self.stage.retirement_revision) {
             return Ok(SessionStep::Progress);
         }
         let evaluating = self

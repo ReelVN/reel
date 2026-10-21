@@ -402,7 +402,7 @@ impl SessionVm {
     pub fn stage_ready(&self) -> bool {
         !self.activities.pending()
             && !self.transitions.pending(self.activities.time())
-            && !self.particles.needs_work(self.stage.scene.revision())
+            && !self.particles.needs_work(self.stage.retirement_revision)
             && self.derived_task.is_none()
             && !self.vm.heap().derived_pending()
     }
@@ -452,7 +452,7 @@ impl SessionVm {
             progress.woke |= transition.woke;
             progress.pending |= transition.pending;
         }
-        progress.pending |= self.particles.needs_work(self.stage.scene.revision());
+        progress.pending |= self.particles.needs_work(self.stage.retirement_revision);
         if self.reactive_ready && sample {
             self.sync_narrative(session)?;
         }
@@ -463,7 +463,7 @@ impl SessionVm {
     pub fn activities_pending(&self) -> bool {
         !self.revoked
             && (self.activities.pending()
-                || self.particles.needs_work(self.stage.scene.revision())
+                || self.particles.needs_work(self.stage.retirement_revision)
                 || self.transitions.pending(self.activities.time()))
     }
 
