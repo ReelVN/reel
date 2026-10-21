@@ -1614,7 +1614,7 @@ music = next;
 
 分组音量用 `audio.group_volume("music", value)` 设置，可选 music/voice/effects/ui；master 控制总音量。每声、组、总增益相乘，设置也影响之后开始的声音。`audio.pan(sound, value, duration: seconds)` 将声像从 -1（左）移动到 1（右），0 居中；`audio.volume` 和 `audio.group_volume` 同样接受 duration，省略时立即生效。`fade_in` 从实际播放开始计时；`audio.stop(sound, fade: seconds)` 淡出结束后才让 await 返回 Stopped，加载中或已暂停的声音立即停止。暂停保留播放位置，音量/声像包络继续推进；输出挂起冻结全部包络。淡出停止期间再暂停会立即停止。音量过渡在分贝域进行，静音端点为 -60 dB；新命令从当前值接续，加载中的控制更新首次播放值。
 
-缺省声音属于当前回调节点；在主剧情中属于会话。也可用 `owner: node` 指定：节点被移除时，加载与声音一起取消。取消等待者不停止共享声音。播放、节点取消与窗口退出复用同一资源回收路径。
+省略 owner 时，声音优先属于最内层的活动 scope；在作用域外继承当前任务的资源 owner，事件回调使用事件节点，主剧情使用会话。显式 owner 接受舞台节点或作用域对象，例如 `owner: node` 或 `owner: s`；该所有者结束时，加载与播放一起取消。取消等待者只解除本次等待，共享声音继续播放。播放、所有者取消与窗口退出复用同一资源回收路径。
 
 Windows 播放器向系统提交双声道音频，默认设备配置为多声道时同样可以使用。
 
