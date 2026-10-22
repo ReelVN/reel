@@ -329,6 +329,15 @@ pub struct Api {
 pub struct Document {
     pub uri: String,
     pub text: String,
+    /// Exact source references into the same generated declaration catalog.
+    pub references: Vec<Reference>,
+}
+/// A displayed symbol refers to one original declaration without copying its signature.
+#[derive(Clone, Debug)]
+pub struct Reference {
+    pub range: TextRange,
+    /// Index into the enclosing `Documents::locations` collection.
+    pub declaration: usize,
 }
 /// A canonical declaration's exact range in the generated source.
 #[derive(Clone, Debug)]
@@ -425,29 +434,26 @@ impl Api {
     /// Generate module roots, complete classes and native signatures from the same schemas.
     pub fn documents(&self, authority: &str) -> Documents {
         let mut result = Documents::default();
+        let mut document_references = Vec::new();
         for ty in &self.types {
-            let (module, name) = ty.name.rsplit_once("::").expect("canonical host type");
+            let (_, name) = ty.name.rsplit_once("::").expect("canonical host type");
             let uri = format!(
                 "aside-native://{authority}/types/{}.aside",
                 ty.name.replace("::", "/")
             );
             let mut text = String::new();
+            let mut references = Vec::new();
             append_docs(&mut text, "", &ty.documentation);
             let start = text.len();
             text.push_str(&format!("pub class {name}"));
             if let Some(base) = ty.bases.first() {
                 text.push_str(": ");
-                text.push_str(base.rsplit("::").next().unwrap());
+                append_path(&mut text, base, &mut references);
             }
             text.push_str(" {\n");
-            let symbol = ExternalSymbol::dynamic(name).with_reference(SymbolReference {
-                module: module.into(),
-                version: "1".into(),
-                export: Some(name.into()),
-            });
             result.locations.push(Location {
                 declaration: Declaration {
-                    symbol,
+                    symbol: ty.symbol(),
                     documentation: ty.documentation.clone(),
                     parameter_defaults: BTreeMap::new(),
                     property_default: None,
@@ -483,10 +489,16 @@ impl Api {
                     member.write_type.is_some(),
                     &uri,
                     &mut result.locations,
+                    &mut references,
                 );
             }
             text.push_str("}\n");
-            result.documents.push(Document { uri, text });
+            result.documents.push(Document {
+                uri,
+                text,
+                references: Vec::new(),
+            });
+            document_references.push(references);
         }
         let mut modules: BTreeMap<&str, Vec<&Declaration>> = BTreeMap::new();
         for declaration in &self.functions {
@@ -509,6 +521,7 @@ impl Api {
                 module.replace("::", "/")
             );
             let mut text = String::new();
+            let mut references = Vec::new();
             let registered = self
                 .modules
                 .iter()
@@ -550,7 +563,7 @@ impl Api {
             append_docs(&mut text, "", &declaration.documentation);
             text.push_str("use ");
             let namespace_start = text.len();
-            text.push_str(module);
+            append_path(&mut text, module, &mut references);
             let name = &declaration.symbol.name;
             let start = namespace_start + module.len() - name.len();
             text.push_str(";\n\n");
@@ -559,6 +572,31 @@ impl Api {
                 declaration,
                 uri: uri.clone(),
             });
+            if let Some(registered) = registered {
+                for export in &registered.exports {
+                    let Some(reference) = &export.reference else {
+                        continue;
+                    };
+                    if reference.module == module && export.signature.is_some() {
+                        continue;
+                    }
+                    text.push_str("pub use ");
+                    append_path(&mut text, &canonical(export), &mut references);
+                    if reference
+                        .export
+                        .as_deref()
+                        .unwrap_or_else(|| reference.module.rsplit("::").next().unwrap())
+                        != export.name
+                    {
+                        text.push_str(" as ");
+                        let start = text.len();
+                        text.push_str(&export.name);
+                        references.push((range(start, export.name.len()), canonical(export)));
+                    }
+                    text.push_str(";\n");
+                }
+                text.push('\n');
+            }
             for declaration in declarations {
                 append_declaration(
                     &mut text,
@@ -567,9 +605,45 @@ impl Api {
                     false,
                     &uri,
                     &mut result.locations,
+                    &mut references,
                 );
+                text.push('\n');
             }
-            result.documents.push(Document { uri, text });
+            result.documents.push(Document {
+                uri,
+                text,
+                references: Vec::new(),
+            });
+            document_references.push(references);
+        }
+        // Native declarations follow bound views, so canonical exports resolve
+        // to their actual module signature rather than a receiver-bound alias.
+        let targets = result
+            .locations
+            .iter()
+            .enumerate()
+            .map(|(index, location)| (canonical(&location.declaration.symbol), index))
+            .collect::<BTreeMap<_, _>>();
+        for (document, references) in result.documents.iter_mut().zip(document_references) {
+            document.references = references
+                .into_iter()
+                .filter_map(|(range, canonical)| {
+                    Some(Reference {
+                        range,
+                        declaration: *targets.get(&canonical)?,
+                    })
+                })
+                .collect();
+            document
+                .references
+                .extend(result.locations.iter().enumerate().filter_map(
+                    |(declaration, location)| {
+                        (location.uri == document.uri).then_some(Reference {
+                            range: location.range,
+                            declaration,
+                        })
+                    },
+                ));
         }
         result
     }
@@ -603,6 +677,7 @@ fn append_declaration(
     writable: bool,
     uri: &str,
     locations: &mut Vec<Location>,
+    references: &mut Vec<(TextRange, String)>,
 ) {
     append_docs(text, indent, &declaration.documentation);
     text.push_str(indent);
@@ -614,28 +689,58 @@ fn append_declaration(
         text.push_str(&symbol.name);
         let span = range(start, symbol.name.len());
         text.push('(');
+        let parameters = signature
+            .parameters
+            .iter()
+            .map(|p| {
+                let mut parameter = String::new();
+                append_parameter(&mut parameter, p, declaration);
+                parameter
+            })
+            .collect::<Vec<_>>();
+        // Keep short declarations compact. Schema-expanded signatures retain
+        // every parameter in ABI order, with a readable property boundary.
+        let multiline = indent.len()
+            + 7
+            + symbol.name.len()
+            + parameters.iter().map(String::len).sum::<usize>()
+            + parameters.len().saturating_sub(1) * 2
+            + 6
+            + type_name(&signature.result).len()
+            > 100;
+        let mut property_group = None;
         for (index, p) in signature.parameters.iter().enumerate() {
-            if index > 0 {
+            if multiline {
+                text.push('\n');
+                let property = declaration.property_parameters.contains(&p.name);
+                if !declaration.property_parameters.is_empty() && property_group != Some(property) {
+                    text.push_str(indent);
+                    text.push_str(if property {
+                        "    // Registered node properties.\n"
+                    } else {
+                        "    // Call parameters.\n"
+                    });
+                    property_group = Some(property);
+                }
+                text.push_str(indent);
+                text.push_str("    ");
+            } else if index > 0 {
                 text.push_str(", ");
             }
-            if p.rest {
-                text.push_str("...");
-            }
-            text.push_str(&p.name);
-            let default = declaration.parameter_defaults.get(&p.name);
-            if matches!(default, Some(ParameterDefault::Omitted))
-                || (default.is_none() && p.default)
-            {
-                text.push('?');
-            }
-            text.push_str(": ");
-            text.push_str(&type_name(&p.ty));
-            if let Some(ParameterDefault::Value(default)) = default {
-                text.push_str(" = ");
-                text.push_str(&constant(default));
+            let parameter_start = text.len();
+            text.push_str(&parameters[index]);
+            let ty_start = parameter_start + parameters[index].find(": ").unwrap() + 2;
+            type_references(&p.ty, ty_start, references);
+            if multiline {
+                text.push(',');
             }
         }
+        if multiline {
+            text.push('\n');
+            text.push_str(indent);
+        }
         text.push_str(") -> ");
+        type_references(&signature.result, text.len(), references);
         text.push_str(&type_name(&signature.result));
         text.push_str(";\n");
         locations.push(Location {
@@ -649,6 +754,7 @@ fn append_declaration(
         text.push_str(&symbol.name);
         let span = range(start, symbol.name.len());
         text.push_str(": ");
+        type_references(&symbol.ty, text.len(), references);
         text.push_str(&type_name(&symbol.ty));
         if let Some(default) = &declaration.property_default {
             text.push_str(" = ");
@@ -660,6 +766,82 @@ fn append_declaration(
             uri: uri.into(),
             range: span,
         });
+    }
+}
+fn append_parameter(
+    text: &mut String,
+    p: &aside_compiler::semantic::ExternalParameter,
+    declaration: &Declaration,
+) {
+    if p.rest {
+        text.push_str("...");
+    }
+    text.push_str(&p.name);
+    let default = declaration.parameter_defaults.get(&p.name);
+    if matches!(default, Some(ParameterDefault::Omitted)) || (default.is_none() && p.default) {
+        text.push('?');
+    }
+    text.push_str(": ");
+    text.push_str(&type_name(&p.ty));
+    if let Some(ParameterDefault::Value(default)) = default {
+        text.push_str(" = ");
+        text.push_str(&constant(default));
+    }
+}
+fn append_path(text: &mut String, path: &str, references: &mut Vec<(TextRange, String)>) {
+    let start = text.len();
+    text.push_str(path);
+    path_references(path, start, references);
+}
+fn path_references(path: &str, start: usize, references: &mut Vec<(TextRange, String)>) {
+    let mut end = 0;
+    for segment in path.split("::") {
+        references.push((
+            range(start + end, segment.len()),
+            path[..end + segment.len()].into(),
+        ));
+        end += segment.len() + 2;
+    }
+}
+fn type_references(ty: &TypeHint, start: usize, references: &mut Vec<(TextRange, String)>) {
+    fn names<'a>(ty: &'a TypeHint, result: &mut std::collections::BTreeSet<&'a str>) {
+        match ty {
+            TypeHint::Named(name) => {
+                result.insert(name);
+            }
+            TypeHint::Tuple(types) | TypeHint::Union(types) => {
+                for ty in types {
+                    names(ty, result);
+                }
+            }
+            TypeHint::Callable(parameters, result_type) => {
+                for ty in parameters {
+                    names(ty, result);
+                }
+                names(result_type, result);
+            }
+            _ => {}
+        }
+    }
+    let formatted = type_name(ty);
+    let mut registered = std::collections::BTreeSet::new();
+    names(ty, &mut registered);
+    for name in registered {
+        for (offset, _) in formatted.match_indices(name) {
+            let boundary = |c: char| c.is_alphanumeric() || c == '_' || c == ':';
+            if formatted[..offset]
+                .chars()
+                .next_back()
+                .is_some_and(boundary)
+                || formatted[offset + name.len()..]
+                    .chars()
+                    .next()
+                    .is_some_and(boundary)
+            {
+                continue;
+            }
+            path_references(name, start + offset, references);
+        }
     }
 }
 /// Display semantic types with Aside's declaration syntax.
