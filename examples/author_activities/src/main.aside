@@ -5,9 +5,11 @@ fn main() {
         text("同一组节点，同时承担画面与演出。", x: 32, y: 100);
     };
     stage.replace(card);
-    let entrance = tween(card, from: { opacity: 0 }, opacity: 1, duration: 0.5, easing: "quart_in")
-        .together(tween(card, from: { x: 80 }, x: 220, duration: 0.8, easing: "elastic_out"))
-        .together(tween(card, from: { y: 120 }, y: 180, duration: 1.2, easing: "bounce_out"));
+    let entrance = parallel(
+        tween(card, from: { opacity: 0 }, opacity: 1, duration: 0.5, easing: "quart_in"),
+        tween(card, from: { x: 80 }, x: 220, duration: 0.8, easing: "elastic_out"),
+        tween(card, from: { y: 120 }, y: 180, duration: 1.2, easing: "bounce_out")
+    );
     await entrance.run();
 
     // Animation continues while dialogue waits for input.
