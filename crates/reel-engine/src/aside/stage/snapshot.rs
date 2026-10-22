@@ -245,6 +245,7 @@ impl StageBinding {
             )
         };
         controls::project_group(heap, value, &mut kind)?;
+        text_input::project(heap, value, &mut kind)?;
         let selected = overrides::selection(heap, value)?;
         let mut props = read_props(
             heap,
@@ -295,6 +296,7 @@ impl StageBinding {
                 overrides,
                 mask_source,
                 input,
+                text_history: None,
                 text_source: if matches!(
                     saved.shape,
                     Shape::Text | Shape::TextInput | Shape::TextArea | Shape::Image | Shape::Video

@@ -2,8 +2,107 @@
 use super::*;
 use reel_ui::{
     stage::{NodeText, TextInputOptions},
-    widgets::TextInputEvent,
+    widgets::{TextInputEvent, TextSelection},
 };
+mod history;
+mod queue;
+mod runtime;
+mod saved;
+pub(super) use history::{History, HistoryState};
+pub(super) use queue::project as project_queue;
+pub(super) use runtime::describe;
+pub(in crate::aside) use runtime::{contracts, dispatch, documentation};
+pub(in crate::aside) use saved::{SavedTextInputIntent, snapshot_intents, snapshot_records};
+
+pub(super) const METRICS: [&str; 4] = [
+    "selection_anchor",
+    "selection_focus",
+    "can_undo",
+    "can_redo",
+];
+pub(super) fn metrics() -> u32 {
+    (TextInputField::PROPERTIES.len() + NodeProperty::PROPERTIES.len() + interaction::FIELDS.len())
+        as u32
+}
+pub(super) fn selection(heap: &Heap, host: Value) -> Result<TextSelection, HeapError> {
+    Ok(TextSelection {
+        anchor: heap
+            .host_property(PropertyId {
+                host,
+                field: metrics(),
+            })?
+            .as_int()
+            .unwrap() as usize,
+        focus: heap
+            .host_property(PropertyId {
+                host,
+                field: metrics() + 1,
+            })?
+            .as_int()
+            .unwrap() as usize,
+    })
+}
+pub(super) fn revision(heap: &Heap, host: Value) -> Result<u64, HeapError> {
+    Ok(heap.host_payload(host, 4)?.as_int().unwrap() as u64)
+}
+pub(super) fn project(heap: &Heap, host: Value, kind: &mut NodeKind) -> Result<(), HeapError> {
+    if let NodeKind::TextInput { options, .. } = kind {
+        options.selection = selection(heap, host)?;
+        options.selection_revision = revision(heap, host)?;
+    }
+    Ok(())
+}
+
+pub(super) fn publish(
+    heap: &mut Heap,
+    host: Value,
+    value: Option<Value>,
+    selection: TextSelection,
+    undo: bool,
+    redo: bool,
+) -> Result<(), HeapError> {
+    let field = metrics();
+    let mut writes = [
+        (
+            PropertyId { host, field },
+            Value::int(selection.anchor as i64),
+        ),
+        (
+            PropertyId {
+                host,
+                field: field + 1,
+            },
+            Value::int(selection.focus as i64),
+        ),
+        (
+            PropertyId {
+                host,
+                field: field + 2,
+            },
+            Value::bool(undo),
+        ),
+        (
+            PropertyId {
+                host,
+                field: field + 3,
+            },
+            Value::bool(redo),
+        ),
+        (
+            PropertyId {
+                host,
+                field: TextInputField::Value.index() as u32,
+            },
+            Value::NULL,
+        ),
+    ];
+    if let Some(value) = value {
+        writes[4].1 = value;
+        heap.publish_host_properties(&writes)
+    } else {
+        heap.publish_host_properties(&[writes[0], writes[1], writes[2], writes[3]])
+    }
+}
 
 #[derive(aside_host::Properties)]
 pub(in crate::aside) enum TextInputField {
@@ -53,7 +152,19 @@ pub(super) fn validate(
     multiline: bool,
 ) -> Result<(), HeapError> {
     let count = TextInputField::PROPERTIES.len() as u32;
-    if multiline && index == TextInputField::Value.index() as u32 {
+    if (metrics()..metrics() + 4).contains(&index) {
+        if index < metrics() + 2 {
+            if value.as_int().is_some_and(|n| n >= 0) {
+                Ok(())
+            } else {
+                Err(HeapError::TypeMismatch)
+            }
+        } else if value.as_bool().is_some() {
+            Ok(())
+        } else {
+            Err(HeapError::TypeMismatch)
+        }
+    } else if multiline && index == TextInputField::Value.index() as u32 {
         if heap.info(value)?.kind == ObjectKind::String {
             Ok(())
         } else {
@@ -81,7 +192,7 @@ pub(super) fn kind(
     })
 }
 
-fn matches_text(heap: &Heap, value: Value, expected: &str) -> Result<bool, HeapError> {
+pub(super) fn matches_text(heap: &Heap, value: Value, expected: &str) -> Result<bool, HeapError> {
     if heap.info(value)?.len as usize != expected.len() {
         return Ok(false);
     }
@@ -126,10 +237,85 @@ pub(super) fn options(
         } else {
             Some(color(heap, caret)?)
         },
+        selection: Default::default(),
+        selection_revision: 0,
+        pending_edit: false,
+        replay: None,
     })
 }
 
 impl StageBinding {
+    #[cfg(test)]
+    pub(in crate::aside) fn text_history_entries(
+        &self,
+        node: reel_ui::stage::NodeId,
+    ) -> Option<usize> {
+        self.handles
+            .get(&node)?
+            .text_history
+            .as_ref()
+            .map(|h| h.entries.len())
+    }
+    #[cfg(test)]
+    pub(in crate::aside) fn text_queue_budget(
+        &self,
+        node: reel_ui::stage::NodeId,
+    ) -> Option<reel_core::budget::BudgetPool> {
+        Some(
+            self.handles
+                .get(&node)?
+                .text_history
+                .as_ref()?
+                .queue
+                .as_ref()?
+                .pool
+                .clone(),
+        )
+    }
+    pub(in crate::aside) fn text_target_current(
+        &self,
+        heap: &Heap,
+        node: reel_ui::stage::NodeId,
+    ) -> Result<bool, AdapterError> {
+        Ok(self
+            .scene
+            .node(node)
+            .is_some_and(|n| matches!(n.kind, NodeKind::TextInput { .. }))
+            && self.mounted_in_scope(heap, node, self.modal_scope(heap)?)?)
+    }
+    pub(in crate::aside) fn text_action(
+        &self,
+        heap: &Heap,
+        node: reel_ui::stage::NodeId,
+        value: &str,
+        requested: u64,
+    ) -> Result<bool, AdapterError> {
+        if !self
+            .scene
+            .node(node)
+            .is_some_and(|n| matches!(n.kind, NodeKind::TextInput { .. }))
+            || !self.mounted_in_scope(heap, node, self.modal_scope(heap)?)?
+        {
+            return Ok(false);
+        }
+        let target = self.value(heap, node)?;
+        Ok(revision(heap, target)? == requested
+            && heap
+                .host_property(PropertyId {
+                    host: target,
+                    field: TextInputField::ReadOnly.index() as u32,
+                })?
+                .as_bool()
+                == Some(false)
+            && matches_text(
+                heap,
+                heap.host_property(PropertyId {
+                    host: target,
+                    field: 0,
+                })?,
+                value,
+            )?)
+    }
     pub(in crate::aside) fn text_input(
         &mut self,
         heap: &mut Heap,
@@ -145,47 +331,142 @@ impl StageBinding {
         }
         let target = self.value(heap, input.node)?;
         let fields = heap.host_fields(target)?;
-        if matches!(input.event, TextInputEvent::Changed { .. })
-            && heap
-                .table_entry(fields, TextInputField::ReadOnly.index() as u32)?
-                .1
-                .as_bool()
-                == Some(true)
+        if matches!(
+            input.event,
+            TextInputEvent::Changed { .. }
+                | TextInputEvent::Undo { .. }
+                | TextInputEvent::Redo { .. }
+        ) && heap
+            .table_entry(fields, TextInputField::ReadOnly.index() as u32)?
+            .1
+            .as_bool()
+            == Some(true)
         {
             return Ok(None);
         }
         let current = heap
             .table_entry(fields, TextInputField::Value.index() as u32)?
             .1;
-        let (baseline, value, callback) = match &input.event {
-            TextInputEvent::Changed { previous, value } => {
-                (previous, value, TextInputField::OnChange)
+        if let TextInputEvent::Selection {
+            value,
+            selection,
+            revision: requested,
+            replay,
+        } = &input.event
+        {
+            if *requested != revision(heap, target)? || !matches_text(heap, current, value)? {
+                return Ok(None);
             }
-            TextInputEvent::Submitted(value) => (value, value, TextInputField::OnSubmit),
+            validate_selection(value, *selection)?;
+            let history = self
+                .handles
+                .get_mut(&input.node)
+                .unwrap()
+                .text_history
+                .as_mut();
+            let (undo, redo) = history
+                .as_ref()
+                .map_or((false, false), |h| (h.can_undo(), h.can_redo()));
+            publish(heap, target, None, *selection, undo, redo)?;
+            if let Some(history) = history {
+                history.split();
+            }
+            if let Some(sequence) = replay {
+                self.complete_text_replay(input.node, *sequence);
+            }
+            return Ok(Some((target, Value::NULL, current)));
+        }
+        let (baseline, value, callback) = match &input.event {
+            TextInputEvent::Changed {
+                previous, value, ..
+            } => (previous, value, TextInputField::OnChange),
+            TextInputEvent::Submitted { value, .. } => (value, value, TextInputField::OnSubmit),
+            _ => return Ok(None),
         };
         // An edit queued against an older model must not overwrite an author's replacement.
         if !matches_text(heap, current, baseline)? {
             return Ok(None);
         }
         let value = match &input.event {
-            TextInputEvent::Changed { .. } => {
-                let value = heap.alloc_string(value)?;
-                heap.write_host_property(
-                    PropertyId {
-                        host: target,
-                        field: TextInputField::Value.index() as u32,
-                    },
-                    value,
-                    true,
-                )?;
+            TextInputEvent::Changed { edit, .. } => {
+                if edit.revision != revision(heap, target)? {
+                    return Ok(None);
+                }
+                let removed = baseline
+                    .get(edit.range.clone())
+                    .ok_or(HeapError::OutOfBounds)?;
+                let inserted_end = value
+                    .len()
+                    .checked_sub(baseline.len() - edit.range.end)
+                    .ok_or(HeapError::OutOfBounds)?;
+                let inserted = value
+                    .get(edit.range.start..inserted_end)
+                    .ok_or(HeapError::OutOfBounds)?;
+                if baseline[..edit.range.start] != value[..edit.range.start]
+                    || baseline[edit.range.end..] != value[inserted_end..]
+                {
+                    return Err(HeapError::TypeMismatch.into());
+                }
+                validate_selection(baseline, edit.before)?;
+                validate_selection(value, edit.after)?;
+                let value = crate::aside::text::alloc_string(heap, value, 1024)?;
+                let expected = heap.handle(current)?;
+                let binding = self.handles.get_mut(&input.node).unwrap();
+                let stale = binding
+                    .text_history
+                    .as_ref()
+                    .is_some_and(|history| history.expected != expected);
+                let mut candidate = if binding.text_history.is_none() || stale {
+                    Some(History::new(heap, expected)?)
+                } else {
+                    None
+                };
+                let history = candidate
+                    .as_deref_mut()
+                    .unwrap_or_else(|| binding.text_history.as_deref_mut().unwrap());
+                let prepared = history.prepare(edit, removed, inserted)?;
+                if let Err(error) = publish(heap, target, Some(value), edit.after, true, false) {
+                    history.abort(prepared);
+                    return Err(error.into());
+                }
+                history.commit(prepared, edit, removed, inserted, heap.handle(value)?);
+                if let Some(candidate) = candidate {
+                    binding.text_history = Some(candidate);
+                }
+                if let Some(sequence) = edit.replay {
+                    self.complete_text_replay(input.node, sequence);
+                }
                 value
             }
-            TextInputEvent::Submitted(_) => current,
+            TextInputEvent::Submitted { replay, .. } => {
+                if let Some(history) = self
+                    .handles
+                    .get_mut(&input.node)
+                    .unwrap()
+                    .text_history
+                    .as_mut()
+                {
+                    history.split();
+                }
+                if let Some(sequence) = replay {
+                    self.complete_text_replay(input.node, *sequence);
+                }
+                current
+            }
+            _ => unreachable!("committed text event"),
         };
         Ok(Some((
             target,
             heap.table_entry(fields, callback.index() as u32)?.1,
             value,
         )))
+    }
+}
+
+fn validate_selection(value: &str, selection: TextSelection) -> Result<(), HeapError> {
+    if value.is_char_boundary(selection.anchor) && value.is_char_boundary(selection.focus) {
+        Ok(())
+    } else {
+        Err(HeapError::OutOfBounds)
     }
 }

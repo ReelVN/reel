@@ -177,6 +177,9 @@ pub(in crate::aside) fn describe(api: &mut Api) {
                 ));
             }
         }
+        if constructor == "text_input" {
+            text_input::describe(api, &mut members);
+        }
         if constructor == "video" {
             let source = members
                 .iter_mut()

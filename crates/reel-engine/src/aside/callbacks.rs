@@ -336,13 +336,103 @@ impl SessionVm {
         input: &reel_ui::stage::NodeText,
     ) -> Result<bool, AdapterError> {
         self.live(session)?;
+        if let Some(id) = input.event.replay_id()
+            && !self.stage.text_replay_current(input.node, id)
+        {
+            return Ok(false);
+        }
+        if matches!(
+            input.event,
+            reel_ui::widgets::TextInputEvent::CompositionCancelled
+        ) {
+            self.stage.cancel_text_composition(input.node);
+            self.stage.sync(self.vm.heap_mut(), self.read_limit)?;
+            return Ok(true);
+        }
+        if let reel_ui::widgets::TextInputEvent::Deferred { intent, revision } = &input.event {
+            if !self.stage.text_target_current(self.vm.heap(), input.node)? {
+                return Ok(false);
+            }
+            let host = self.stage.value(self.vm.heap(), input.node)?;
+            let current_revision = self.vm.heap().host_payload(host, 4)?.as_int().unwrap() as u64;
+            if matches!(
+                intent.as_ref(),
+                reel_ui::widgets::TextInputIntent::Selection { .. }
+            ) && *revision != current_revision
+            {
+                return Ok(false);
+            }
+            let queue = self.stage.ensure_text_queue(self.vm.heap(), input.node)?;
+            if *revision < queue.original_revision || *revision > current_revision {
+                return Err(AdapterError::Input(
+                    "editing intent belongs to a replaced selection revision",
+                ));
+            }
+            queue.push(intent.clone())?;
+            self.stage.mark_text_projection(input.node);
+            self.stage.sync(self.vm.heap_mut(), self.read_limit)?;
+            return Ok(true);
+        }
+        if let reel_ui::widgets::TextInputEvent::ReplayCompleted(sequence) = input.event {
+            self.stage.complete_text_replay(input.node, sequence);
+            self.stage.sync(self.vm.heap_mut(), self.read_limit)?;
+            return Ok(true);
+        }
+        if let reel_ui::widgets::TextInputEvent::Undo {
+            value,
+            revision,
+            replay,
+        }
+        | reel_ui::widgets::TextInputEvent::Redo {
+            value,
+            revision,
+            replay,
+        } = &input.event
+        {
+            if !self
+                .stage
+                .text_action(self.vm.heap(), input.node, value, *revision)?
+            {
+                return Ok(false);
+            }
+            let target = self.stage.value(self.vm.heap(), input.node)?;
+            let name = if matches!(input.event, reel_ui::widgets::TextInputEvent::Redo { .. }) {
+                "redo"
+            } else {
+                "undo"
+            };
+            let method = self
+                .vm
+                .bind_host_method(target, name)?
+                .expect("registered editor method");
+            self.stage.ensure_text_queue(self.vm.heap(), input.node)?;
+            let task = self.start_owned_task(session, Some(input.node), method, &[], None)?;
+            let queue = self.stage.ensure_text_queue(self.vm.heap(), input.node)?;
+            queue.active = Some(task);
+            queue.active_replay = *replay;
+            self.stage.mark_text_projection(input.node);
+            self.stage.sync(self.vm.heap_mut(), self.read_limit)?;
+            return Ok(true);
+        }
         let Some((target, closure, value)) = self.stage.text_input(self.vm.heap_mut(), input)?
         else {
             return Ok(false);
         };
         self.stage.sync(self.vm.heap_mut(), self.read_limit)?;
+        self.start_text_callback(session, input.node, target, closure, value)?;
+        Ok(true)
+    }
+
+    pub(super) fn start_text_callback(
+        &mut self,
+        session: &mut Session,
+        node: NodeId,
+        target: Value,
+        closure: Value,
+        value: Value,
+    ) -> Result<(), AdapterError> {
         if closure.tag() != ValueTag::Null {
-            self.start_callback_with_event(session, input.node, closure, |heap| {
+            self.start_callback_with_event(session, node, closure, |heap| {
                 let event = heap.alloc_table()?;
                 for (i, (name, value)) in [("target", target), ("value", value)]
                     .into_iter()
@@ -354,7 +444,7 @@ impl SessionVm {
                 Ok(event)
             })?;
         }
-        Ok(true)
+        Ok(())
     }
 
     // Build the input payload only when the callable accepts an argument.
@@ -551,6 +641,9 @@ impl SessionVm {
         index: usize,
     ) -> Result<(), AdapterError> {
         let callback = self.tasks.remove(index);
+        if let Some(node) = callback.node {
+            self.stage.retire_text_operation(node, callback.task);
+        }
         // Removing a callback shifts later scheduler slots (slot 0 is main).
         // Keep the next task's identity, including across an empty idle period.
         if self.schedule_cursor > index + 1 {

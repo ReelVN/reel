@@ -1,4 +1,5 @@
 use super::*;
+mod queue;
 use aside_vm::snapshot::SnapshotBudget;
 use reel_ui::{
     stage::{NodeId, NodeKind, NodeText},
@@ -43,19 +44,16 @@ fn editing_policy_uses_shared_schema_bindings_and_restores_source_and_asb() {
             .find(|n| matches!(n.kind, NodeKind::TextInput { .. }))
             .unwrap()
             .id;
-        let edit = |before: &str, after: &str| NodeText {
+        let edit = |before: &str, after: &str, revision: u64| NodeText {
             node: editor,
-            event: TextInputEvent::Changed {
-                previous: before.into(),
-                value: after.into(),
-            },
+            event: TextInputEvent::replace_all(before, after, revision),
         };
-        assert!(vm.text_input(&mut session, &edit("", "user")).unwrap());
+        assert!(vm.text_input(&mut session, &edit("", "user", 0)).unwrap());
         drive(&mut vm, &mut session);
         vm.click(&mut session, button(&vm, "lock")).unwrap();
         drive(&mut vm, &mut session);
         assert!(
-            !vm.text_input(&mut session, &edit("user", "queued edit"))
+            !vm.text_input(&mut session, &edit("user", "queued edit", 0))
                 .unwrap()
         );
         assert!(
@@ -63,7 +61,10 @@ fn editing_policy_uses_shared_schema_bindings_and_restores_source_and_asb() {
                 &mut session,
                 &NodeText {
                     node: editor,
-                    event: TextInputEvent::Submitted("user".into())
+                    event: TextInputEvent::Submitted {
+                        value: "user".into(),
+                        replay: None
+                    }
                 }
             )
             .unwrap()
@@ -114,7 +115,7 @@ fn editing_policy_uses_shared_schema_bindings_and_restores_source_and_asb() {
         vm.click(&mut session, button(&vm, "unlock")).unwrap();
         drive(&mut vm, &mut session);
         assert!(
-            vm.text_input(&mut session, &edit("author\nvalue", "new"))
+            vm.text_input(&mut session, &edit("author\nvalue", "new", 1))
                 .unwrap()
         );
         drive(&mut vm, &mut session);
@@ -123,6 +124,141 @@ fn editing_policy_uses_shared_schema_bindings_and_restores_source_and_asb() {
             panic!()
         };
         assert!(options.placeholder.is_none());
+    }
+}
+
+#[test]
+fn input_history_coalesces_typed_edits_and_restores_typed_methods_and_selection() {
+    use reel_ui::widgets::{TextEdit, TextEditKind, TextSelection};
+    let code = r#"fn opening() {
+        let data = model({body: ""});
+        let status = text("status");
+        let editor = text_input(value: bind(data.body), on_change: |e| {
+            if data.body != e.value || editor_value(e.target) != e.value { throw "commit"; }
+            status.x += 1;
+        });
+        stage.replace(column { editor; status;
+            button("undo", on_click: || { if editor.undo() != editor { throw "identity"; } });
+            button("redo", on_click: || { if editor.redo() != editor { throw "identity"; } });
+            button("select", on_click: || {
+                if editor.select_bytes(3, focus: 1).select_all() != editor { throw "selection identity"; }
+                let mut rejected = 0;
+                try { editor.select_bytes(2); } catch _ { rejected += 1; }
+                try { editor.select_bytes(-1); } catch _ { rejected += 1; }
+                if rejected != 2 { throw "UTF-8 validation"; }
+                if editor.selection_anchor != 0 || editor.selection_focus != 6 { throw "selection"; }
+            });
+            button("replace", on_click: || { data.body = "author"; });
+        });
+        narrator("wait");
+    }
+    fn editor_value(input: TextInputNode) -> string { return input.value; }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        drive(&mut vm, &mut session);
+        let editor = vm
+            .stage()
+            .nodes()
+            .find(|n| matches!(n.kind, NodeKind::TextInput { .. }))
+            .unwrap()
+            .id;
+        let mut previous = String::new();
+        for text in ["A", "é", "中"] {
+            let value = format!("{previous}{text}");
+            let before = TextSelection {
+                anchor: previous.len(),
+                focus: previous.len(),
+            };
+            let after = TextSelection {
+                anchor: value.len(),
+                focus: value.len(),
+            };
+            assert!(
+                vm.text_input(
+                    &mut session,
+                    &NodeText {
+                        node: editor,
+                        event: TextInputEvent::Changed {
+                            previous: previous.clone().into(),
+                            value: value.clone().into(),
+                            edit: TextEdit {
+                                range: previous.len()..previous.len(),
+                                before,
+                                after,
+                                kind: TextEditKind::Insert,
+                                revision: 0,
+                                replay: None,
+                            },
+                        }
+                    }
+                )
+                .unwrap()
+            );
+            drive(&mut vm, &mut session);
+            previous = value;
+        }
+        let host = vm.stage.value(vm.vm.heap(), editor).unwrap();
+        assert_eq!(vm.stage.text_history_entries(editor), Some(1));
+        assert_eq!(text_x(&vm, "status"), 3.);
+        vm.click(&mut session, button(&vm, "select")).unwrap();
+        drive(&mut vm, &mut session);
+        assert_eq!(
+            vm.vm.heap().host_payload(host, 4).unwrap().as_int(),
+            Some(2)
+        );
+
+        let program = vm.vm.program().clone();
+        let mut capture = vm.snapshot_begin(&session).unwrap();
+        while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let mut image =
+            snapshot::SessionSnapshot::decode(&capture.finish().unwrap().encode().unwrap())
+                .unwrap();
+        let mut restore = SessionVm::restore_begin(
+            &mut image,
+            program,
+            VmLimits::default(),
+            SessionIdentity {
+                session_id: SessionId(48),
+                epoch: Epoch(21),
+            },
+            crate::ReadProgress::default(),
+            None,
+            None,
+        )
+        .unwrap();
+        while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let (mut session, mut vm) = restore.finish().unwrap();
+        drive(&mut vm, &mut session);
+        let NodeKind::TextInput { options, .. } = &vm.stage().node(editor).unwrap().kind else {
+            unreachable!()
+        };
+        assert_eq!(
+            options.selection,
+            TextSelection {
+                anchor: 0,
+                focus: 6
+            }
+        );
+        assert_eq!(options.selection_revision, 2);
+        vm.click(&mut session, button(&vm, "undo")).unwrap();
+        drive(&mut vm, &mut session);
+        let NodeKind::TextInput { value, options, .. } = &vm.stage().node(editor).unwrap().kind
+        else {
+            unreachable!()
+        };
+        assert_eq!(value.as_ref(), "");
+        assert_eq!(options.selection, TextSelection::default());
+        assert_eq!(text_x(&vm, "status"), 4.);
+        vm.click(&mut session, button(&vm, "redo")).unwrap();
+        drive(&mut vm, &mut session);
+        let NodeKind::TextInput { value, .. } = &vm.stage().node(editor).unwrap().kind else {
+            unreachable!()
+        };
+        assert_eq!(value.as_ref(), "Aé中");
+        assert_eq!(text_x(&vm, "status"), 5.);
+        vm.click(&mut session, button(&vm, "replace")).unwrap();
+        drive(&mut vm, &mut session);
+        assert!(vm.stage.text_history_entries(editor).is_none());
     }
 }
 

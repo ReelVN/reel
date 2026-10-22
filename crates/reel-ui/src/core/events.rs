@@ -3,6 +3,8 @@
 
 //! Events.
 
+use std::sync::Arc;
+
 use ui_events::keyboard::{Code, Key, KeyState, KeyboardEvent};
 
 use crate::dpi::PhysicalSize;
@@ -39,8 +41,8 @@ pub enum TextEvent {
     /// The window took or lost focus.
     WindowFocusChange(bool),
     // TODO - Handle rich text copy-pasting
-    /// The user pasted content in.
-    ClipboardPaste(String),
+    /// Pasted text is converted once at the platform boundary, then shared by queued edits.
+    ClipboardPaste(Arc<str>),
 }
 
 /// An accessibility event.
@@ -193,7 +195,7 @@ impl TextEvent {
     ///
     /// This is mostly useful for testing.
     pub fn preedit(text: String) -> Self {
-        Self::Ime(Ime::Preedit(text, None))
+        Self::Ime(Ime::Preedit(text.into(), None))
     }
 
     /// Constructor for [`Ime::Preedit`] events.
@@ -210,7 +212,7 @@ impl TextEvent {
             panic!("Error building Preedit event: '{selected}' not found in '{text}'");
         };
         let span = (offset, selected.len());
-        Self::Ime(Ime::Preedit(text, Some(span)))
+        Self::Ime(Ime::Preedit(text.into(), Some(span)))
     }
 
     /// Short name of the event, for debug logging.
@@ -369,16 +371,16 @@ pub enum Ime {
     /// Notifies when a new composing text should be set at the cursor position.
     ///
     /// The value represents a pair of the preedit string and the cursor begin position and end
-    /// position. When it's `None`, the cursor should be hidden. When `String` is an empty string
+    /// position. When it's `None`, the cursor should be hidden. When the text is empty
     /// this indicates that preedit was cleared.
     ///
     /// The cursor position is byte-wise indexed.
-    Preedit(String, Option<(usize, usize)>),
+    Preedit(Arc<str>, Option<(usize, usize)>),
 
     /// Notifies when text should be inserted into the editor widget.
     ///
     /// Right before this event winit will send empty [`Self::Preedit`] event.
-    Commit(String),
+    Commit(Arc<str>),
 
     /// Notifies when the IME was disabled.
     ///

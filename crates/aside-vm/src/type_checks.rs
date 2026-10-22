@@ -89,6 +89,14 @@ impl TypeChecks {
         u64::from(self.symbols.data.len().checked_ilog2().unwrap_or(0) + 1) * (u64::from(bytes) + 1)
     }
 
+    pub(crate) fn symbol_str(&self, p: &BytecodePackage, name: &str) -> Option<SymbolId> {
+        self.symbols
+            .data
+            .binary_search_by(|symbol| p.symbols[symbol.index()].as_str().cmp(name))
+            .ok()
+            .map(|index| self.symbols.data[index])
+    }
+
     /// Resolve dynamic property names without allocating text or scanning all symbols.
     pub(crate) fn symbol(
         &self,

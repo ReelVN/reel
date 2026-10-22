@@ -357,7 +357,17 @@ fn real_with_updates_report_vm_native_and_storage_cost_against_assignments() {
                     )
                 });
             if chained && followers == 0 {
-                assert_eq!(growth, Some((0, 0)));
+                let first = first_configuration.unwrap();
+                let last = last_configuration.unwrap();
+                assert_eq!(last.payload_bytes, first.payload_bytes);
+                assert_eq!(last.external_bytes, first.external_bytes);
+                assert_eq!(last.chunk_allocations, first.chunk_allocations);
+                // Existing bound-method objects may cross an object-slot capacity boundary.
+                // Configuration itself retains no new payload or external storage.
+                assert_eq!(
+                    last.charged_bytes - first.charged_bytes,
+                    last.reserved_bytes - first.reserved_bytes
+                );
                 assert_eq!(configure_dispatches, 21);
             }
             eprintln!(

@@ -3,6 +3,10 @@
 
 //! Text editing using the shared Parley editor, scroll geometry and platform IME events.
 use std::{borrow::Cow, sync::Arc};
+mod intent;
+pub use intent::{
+    TextInputEditingLimits, TextInputIntent, TextInputKey, TextInputReplay, TextInputReplayId,
+};
 
 use crate::{
     TextAlign,
@@ -20,10 +24,106 @@ use crate::{
     widgets::{ScrollAxis, ScrollState},
 };
 
+/// Logical UTF-8 byte endpoints. Anchor and focus preserve selection direction.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TextSelection {
+    pub anchor: usize,
+    pub focus: usize,
+}
+
+/// Adjacent edits of the same directional kind may form one undo transaction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum TextEditKind {
+    Insert,
+    Backspace,
+    Delete,
+    Transaction,
+}
+
+/// One committed replacement. Preedit never creates an edit or changes the model.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextEdit {
+    pub range: std::ops::Range<usize>,
+    pub before: TextSelection,
+    pub after: TextSelection,
+    pub kind: TextEditKind,
+    pub revision: u64,
+    pub replay: Option<TextInputReplayId>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum TextInputEvent {
-    Changed { previous: Arc<str>, value: Arc<str> },
-    Submitted(Arc<str>),
+    Changed {
+        previous: Arc<str>,
+        value: Arc<str>,
+        edit: TextEdit,
+    },
+    Selection {
+        value: Arc<str>,
+        selection: TextSelection,
+        revision: u64,
+        replay: Option<TextInputReplayId>,
+    },
+    Undo {
+        value: Arc<str>,
+        revision: u64,
+        replay: Option<TextInputReplayId>,
+    },
+    Redo {
+        value: Arc<str>,
+        revision: u64,
+        replay: Option<TextInputReplayId>,
+    },
+    Deferred {
+        intent: Arc<TextInputIntent>,
+        revision: u64,
+    },
+    ReplayCompleted(TextInputReplayId),
+    CompositionCancelled,
+    Submitted {
+        value: Arc<str>,
+        replay: Option<TextInputReplayId>,
+    },
+}
+
+impl TextInputEvent {
+    /// Identity of an accepted replay whose publication must still match its queue head.
+    pub fn replay_id(&self) -> Option<TextInputReplayId> {
+        match self {
+            Self::Changed { edit, .. } => edit.replay,
+            Self::Selection { replay, .. }
+            | Self::Undo { replay, .. }
+            | Self::Redo { replay, .. }
+            | Self::Submitted { replay, .. } => *replay,
+            _ => None,
+        }
+    }
+    /// Build a complete-value replacement using the presented options' selection revision.
+    /// Accessibility and embedding hosts still participate in stale-event validation.
+    pub fn replace_all(
+        previous: impl Into<Arc<str>>,
+        value: impl Into<Arc<str>>,
+        revision: u64,
+    ) -> Self {
+        let previous = previous.into();
+        let value = value.into();
+        let edit = TextEdit {
+            range: 0..previous.len(),
+            before: TextSelection::default(),
+            after: TextSelection {
+                anchor: value.len(),
+                focus: value.len(),
+            },
+            kind: TextEditKind::Transaction,
+            revision,
+            replay: None,
+        };
+        Self::Changed {
+            previous,
+            value,
+            edit,
+        }
+    }
 }
 
 /// A plain-text editor sharing its layout between text, selection, caret and IME geometry.
@@ -50,6 +150,12 @@ pub struct TextInput {
     caret_color: Option<Color>,
     outline: Option<TextOutline>,
     shadow: Option<TextShadow>,
+    selection_revision: u64,
+    initial_selection: Option<TextSelection>,
+    pending_edit: bool,
+    replaying: Option<TextInputReplayId>,
+    last_replay: Option<TextInputReplayId>,
+    initial_replay: Option<Arc<TextInputReplay>>,
 }
 
 struct Placeholder {
@@ -119,6 +225,152 @@ impl TextInput {
             caret_color: None,
             outline: None,
             shadow: None,
+            selection_revision: 0,
+            initial_selection: None,
+            pending_edit: false,
+            replaying: None,
+            last_replay: None,
+            initial_replay: None,
+        }
+    }
+
+    /// Restores logical selection before the first layout, without requesting focus.
+    pub fn with_selection(mut self, selection: TextSelection, revision: u64) -> Self {
+        self.initial_selection = Some(selection);
+        self.selection_revision = revision;
+        self
+    }
+
+    /// Restores pending editor ownership; queued work waits for the first real layout.
+    pub fn with_editing(mut self, pending: bool, replay: Option<Arc<TextInputReplay>>) -> Self {
+        self.pending_edit = pending;
+        self.initial_replay = replay;
+        self
+    }
+
+    /// Applies an authoritative selection revision using the shared editor geometry.
+    /// Ordinary feedback with the same revision leaves newer local pointer input alone.
+    pub fn set_selection(this: &mut WidgetMut<'_, Self>, selection: TextSelection, revision: u64) {
+        if this.widget.selection_revision == revision {
+            return;
+        }
+        let composing = this.widget.composition.is_some();
+        let (fonts, layouts) = this.ctx.text_contexts();
+        this.widget.cancel_compose(fonts, layouts);
+        this.widget
+            .editor
+            .driver(fonts, layouts)
+            .select_byte_range(selection.anchor, selection.focus);
+        this.widget.selection_revision = revision;
+        let actual = this.widget.selection();
+        if actual != selection {
+            this.ctx
+                .submit_action::<TextInputEvent>(TextInputEvent::Selection {
+                    value: this.widget.value.clone(),
+                    selection: actual,
+                    revision,
+                    replay: None,
+                });
+        }
+        this.widget.reveal_caret = true;
+        this.widget.keep_caret_visible();
+        if composing {
+            this.ctx.reset_ime();
+            this.ctx.request_layout();
+        }
+        this.ctx.set_ime_area(this.widget.ime_area());
+        this.ctx.request_render();
+    }
+
+    /// Replay an already accepted editing intent after its preceding operation commits.
+    /// The same editor parses relative navigation against its current layout and caret.
+    /// Focus changes route new input elsewhere; accepted work remains owned by this input.
+    pub fn set_editing(
+        this: &mut WidgetMut<'_, Self>,
+        pending: bool,
+        replay: Option<&TextInputReplay>,
+    ) {
+        this.widget.pending_edit = pending;
+        let Some(replay) = replay.filter(|r| Some(r.id) != this.widget.last_replay) else {
+            return;
+        };
+        let MutateCtx {
+            geometry,
+            global_state,
+            widget_state,
+            children,
+            property_arena,
+            ..
+        } = &mut this.ctx;
+        let target = widget_state.id;
+        let mut ctx = EventCtx {
+            geometry: *geometry,
+            global_state,
+            widget_state,
+            children: children.reborrow_mut(),
+            property_arena,
+            target,
+            allow_pointer_capture: false,
+            is_handled: false,
+            propagation_stopped: false,
+        };
+        this.widget.replay(&mut ctx, replay);
+    }
+
+    fn replay(&mut self, ctx: &mut EventCtx<'_>, replay: &TextInputReplay) {
+        self.last_replay = Some(replay.id);
+        self.replaying = Some(replay.id);
+        if let TextInputIntent::Selection { selection } = replay.intent.as_ref() {
+            let before = self.selection();
+            let normalize = |mut offset: usize| {
+                offset = offset.min(self.value.len());
+                while !self.value.is_char_boundary(offset) {
+                    offset -= 1;
+                }
+                offset
+            };
+            let (anchor, focus) = (normalize(selection.anchor), normalize(selection.focus));
+            let (fonts, layout) = ctx.text_contexts();
+            self.editor
+                .driver(fonts, layout)
+                .select_byte_range(anchor, focus);
+            self.publish_selection(ctx, before);
+            self.keep_caret_visible();
+            ctx.set_ime_area(self.ime_area());
+            ctx.request_render();
+        } else if let TextInputIntent::ReplaceAll(text) = replay.intent.as_ref() {
+            self.replace_value(ctx, text);
+        } else if let Some(event) = replay.intent.event() {
+            self.handle_text_event(ctx, &event);
+        }
+        ctx.submit_action::<TextInputEvent>(TextInputEvent::ReplayCompleted(replay.id));
+        self.replaying = None;
+    }
+
+    fn selection(&self) -> TextSelection {
+        let selection = self.editor.raw_selection();
+        TextSelection {
+            anchor: selection.anchor().index(),
+            focus: selection.focus().index(),
+        }
+    }
+
+    fn publish_selection(&self, ctx: &mut EventCtx<'_>, before: TextSelection) {
+        let selection = self.selection();
+        if selection != before {
+            if self.pending_edit && self.replaying.is_none() {
+                ctx.submit_action::<TextInputEvent>(TextInputEvent::Deferred {
+                    intent: Arc::new(TextInputIntent::Selection { selection }),
+                    revision: self.selection_revision,
+                });
+                return;
+            }
+            ctx.submit_action::<TextInputEvent>(TextInputEvent::Selection {
+                value: self.value.clone(),
+                selection,
+                revision: self.selection_revision,
+                replay: self.replaying,
+            });
         }
     }
 
@@ -427,12 +679,342 @@ impl TextInput {
         }
     }
 
-    fn publish(&mut self, ctx: &mut EventCtx<'_>) {
+    fn publish(
+        &mut self,
+        ctx: &mut EventCtx<'_>,
+        before: TextSelection,
+        kind: TextEditKind,
+        replace_all: bool,
+    ) {
         if self.editor.raw_text() != self.value.as_ref() {
             let value: Arc<str> = self.editor.raw_text().into();
+            let after = self.selection();
+            let mut range = before.anchor.min(before.focus)..before.anchor.max(before.focus);
+            if replace_all {
+                range = 0..self.value.len();
+            } else if range.is_empty() && value.len() < self.value.len() {
+                let removed = self.value.len() - value.len();
+                if kind == TextEditKind::Backspace {
+                    range.start -= removed;
+                } else if kind == TextEditKind::Delete {
+                    range.end += removed;
+                }
+            }
             let previous = std::mem::replace(&mut self.value, value.clone());
-            ctx.submit_action::<TextInputEvent>(TextInputEvent::Changed { previous, value });
+            ctx.submit_action::<TextInputEvent>(TextInputEvent::Changed {
+                previous,
+                value,
+                edit: TextEdit {
+                    range,
+                    before,
+                    after,
+                    kind,
+                    revision: self.selection_revision,
+                    replay: self.replaying,
+                },
+            });
+        } else if kind == TextEditKind::Transaction {
+            ctx.submit_action::<TextInputEvent>(TextInputEvent::Selection {
+                value: self.value.clone(),
+                selection: self.selection(),
+                revision: self.selection_revision,
+                replay: self.replaying,
+            });
+        } else {
+            self.publish_selection(ctx, before);
         }
+    }
+
+    fn replace_value(&mut self, ctx: &mut EventCtx<'_>, text: &str) {
+        let composing = self.composition.is_some();
+        let before = self.selection();
+        let (fonts, layout) = ctx.text_contexts();
+        self.cancel_compose(fonts, layout);
+        self.editor.set_text(&input_text(text, self.multiline));
+        self.geometry_dirty = true;
+        if composing {
+            ctx.reset_ime();
+        }
+        self.publish(ctx, before, TextEditKind::Transaction, true);
+        self.reveal_caret = true;
+        ctx.request_layout();
+        ctx.set_handled();
+    }
+
+    fn handle_text_event(&mut self, ctx: &mut EventCtx<'_>, event: &TextEvent) {
+        if ctx.is_disabled()
+            || (self.replaying.is_none() && !ctx.is_focus_target())
+            || !ctx.input_configuration_is_current()
+        {
+            return;
+        }
+        if self.pending_edit
+            && !self.read_only
+            && self.replaying.is_none()
+            && let Some(intent) = TextInputIntent::capture(event)
+        {
+            ctx.submit_action::<TextInputEvent>(TextInputEvent::Deferred {
+                intent: Arc::new(intent),
+                revision: self.selection_revision,
+            });
+            ctx.set_handled();
+            return;
+        }
+        if self.read_only && matches!(event, TextEvent::Ime(_) | TextEvent::ClipboardPaste(_)) {
+            ctx.set_handled();
+            return;
+        }
+        let mut changed = false;
+        let before = self.composition.as_ref().map_or_else(
+            || self.selection(),
+            |(_, anchor, focus)| TextSelection {
+                anchor: *anchor,
+                focus: *focus,
+            },
+        );
+        let mut kind = TextEditKind::Transaction;
+        match event {
+            TextEvent::Ime(Ime::Preedit(text, cursor)) => {
+                if text.is_empty() {
+                    let (fonts, layout) = ctx.text_contexts();
+                    self.cancel_compose(fonts, layout);
+                    ctx.request_layout();
+                    ctx.set_handled();
+                    return;
+                }
+                if self.composition.is_none() {
+                    let selection = self.editor.raw_selection();
+                    self.composition = Some((
+                        self.value.clone(),
+                        selection.anchor().index(),
+                        selection.focus().index(),
+                    ));
+                }
+                let (fonts, layout) = ctx.text_contexts();
+                let mut driver = self.editor.driver(fonts, layout);
+                driver.set_compose(text, *cursor);
+                self.geometry_dirty = true;
+            }
+            TextEvent::Ime(Ime::Commit(text)) => {
+                let (fonts, layout) = ctx.text_contexts();
+                let mut driver = self.editor.driver(fonts, layout);
+                driver.clear_compose();
+                driver.insert_or_replace_selection(&input_text(text, self.multiline));
+                self.composition = None;
+                changed = true;
+            }
+            TextEvent::Ime(Ime::Disabled) => {
+                if self.pending_edit {
+                    ctx.submit_action::<TextInputEvent>(TextInputEvent::CompositionCancelled);
+                }
+                let (fonts, layout) = ctx.text_contexts();
+                self.cancel_compose(fonts, layout);
+            }
+            TextEvent::ClipboardPaste(text) => {
+                let composing = self.composition.is_some();
+                let (fonts, layout) = ctx.text_contexts();
+                self.cancel_compose(fonts, layout);
+                self.editor
+                    .driver(fonts, layout)
+                    .insert_or_replace_selection(&input_text(text, self.multiline));
+                if composing {
+                    ctx.reset_ime();
+                }
+                changed = true;
+            }
+            TextEvent::Keyboard(event) => {
+                if event.state.is_up() {
+                    return;
+                }
+                if self.composition.is_some() || event.is_composing {
+                    ctx.set_handled();
+                    return;
+                }
+                let alt_graph = event.modifiers.contains(keyboard::Modifiers::ALT_GRAPH)
+                    || (!cfg!(target_os = "macos")
+                        && event.modifiers.ctrl()
+                        && event.modifiers.alt());
+                let command = !alt_graph
+                    && !event.modifiers.alt()
+                    && if cfg!(target_os = "macos") {
+                        event.modifiers.meta()
+                    } else {
+                        event.modifiers.ctrl()
+                    };
+                let word = if cfg!(target_os = "macos") {
+                    event.modifiers.alt()
+                } else {
+                    command
+                };
+                let shift = event.modifiers.shift();
+                if let Key::Character(key) = &event.key
+                    && command
+                    && (key.eq_ignore_ascii_case("z")
+                        || (!cfg!(target_os = "macos") && key.eq_ignore_ascii_case("y")))
+                {
+                    if !self.read_only {
+                        let redo = shift || key.eq_ignore_ascii_case("y");
+                        self.pending_edit = true;
+                        ctx.submit_action::<TextInputEvent>(if redo {
+                            TextInputEvent::Redo {
+                                value: self.value.clone(),
+                                revision: self.selection_revision,
+                                replay: self.replaying,
+                            }
+                        } else {
+                            TextInputEvent::Undo {
+                                value: self.value.clone(),
+                                revision: self.selection_revision,
+                                replay: self.replaying,
+                            }
+                        });
+                    }
+                    ctx.set_handled();
+                    return;
+                }
+                if let Key::Character(key) = &event.key
+                    && command
+                    && (key.eq_ignore_ascii_case("c") || key.eq_ignore_ascii_case("x"))
+                {
+                    if (!self.read_only || key.eq_ignore_ascii_case("c"))
+                        && let Some(text) = self.editor.selected_text()
+                    {
+                        ctx.set_clipboard(text.to_owned());
+                    }
+                    if !self.read_only && key.eq_ignore_ascii_case("x") {
+                        let (fonts, layout) = ctx.text_contexts();
+                        self.editor.driver(fonts, layout).delete_selection();
+                        changed = true;
+                    }
+                } else if event.key == Key::Named(NamedKey::Enter) {
+                    if self.multiline && !command {
+                        if !self.read_only {
+                            let (fonts, layout) = ctx.text_contexts();
+                            self.editor
+                                .driver(fonts, layout)
+                                .insert_or_replace_selection("\n");
+                            changed = true;
+                        }
+                    } else if !event.repeat {
+                        ctx.submit_action::<TextInputEvent>(TextInputEvent::Submitted {
+                            value: self.value.clone(),
+                            replay: self.replaying,
+                        });
+                    }
+                } else {
+                    let (fonts, layout) = ctx.text_contexts();
+                    let mut driver = self.editor.driver(fonts, layout);
+                    match &event.key {
+                        Key::Character(key) if command && key.eq_ignore_ascii_case("a") => {
+                            driver.select_all()
+                        }
+                        // The host supplies ClipboardPaste after resolving the system clipboard.
+                        Key::Character(key) if command && key.eq_ignore_ascii_case("v") => {}
+                        Key::Character(key)
+                            if !self.read_only
+                                && !command
+                                && (alt_graph
+                                    || !event.modifiers.alt()
+                                    || cfg!(target_os = "macos")) =>
+                        {
+                            driver.insert_or_replace_selection(&input_text(key, self.multiline));
+                            kind = TextEditKind::Insert;
+                            changed = true;
+                        }
+                        Key::Named(NamedKey::Backspace) if !self.read_only => {
+                            kind = TextEditKind::Backspace;
+                            if word {
+                                driver.backdelete_word();
+                            } else {
+                                driver.backdelete();
+                            }
+                            changed = true;
+                        }
+                        Key::Named(NamedKey::Delete) if !self.read_only => {
+                            kind = TextEditKind::Delete;
+                            if word {
+                                driver.delete_word();
+                            } else {
+                                driver.delete();
+                            }
+                            changed = true;
+                        }
+                        Key::Named(NamedKey::ArrowLeft) => match (word, shift) {
+                            (true, true) => driver.select_word_left(),
+                            (true, false) => driver.move_word_left(),
+                            (false, true) => driver.select_left(),
+                            (false, false) => driver.move_left(),
+                        },
+                        Key::Named(NamedKey::ArrowRight) => match (word, shift) {
+                            (true, true) => driver.select_word_right(),
+                            (true, false) => driver.move_word_right(),
+                            (false, true) => driver.select_right(),
+                            (false, false) => driver.move_right(),
+                        },
+                        Key::Named(NamedKey::Home) => {
+                            if self.multiline && !command {
+                                if shift {
+                                    driver.select_to_line_start();
+                                } else {
+                                    driver.move_to_line_start();
+                                }
+                            } else if shift {
+                                driver.select_to_text_start();
+                            } else {
+                                driver.move_to_text_start();
+                            }
+                        }
+                        Key::Named(NamedKey::End) => {
+                            if self.multiline && !command {
+                                if shift {
+                                    driver.select_to_line_end();
+                                } else {
+                                    driver.move_to_line_end();
+                                }
+                            } else if shift {
+                                driver.select_to_text_end();
+                            } else {
+                                driver.move_to_text_end();
+                            }
+                        }
+                        Key::Named(NamedKey::ArrowUp) if self.multiline => {
+                            if shift {
+                                driver.select_up();
+                            } else {
+                                driver.move_up();
+                            }
+                        }
+                        Key::Named(NamedKey::ArrowDown) if self.multiline => {
+                            if shift {
+                                driver.select_down();
+                            } else {
+                                driver.move_down();
+                            }
+                        }
+                        Key::Character(_) | Key::Named(NamedKey::Backspace | NamedKey::Delete)
+                            if self.read_only => {}
+                        _ => return,
+                    }
+                }
+            }
+            _ => return,
+        }
+        if changed {
+            self.geometry_dirty = true;
+            self.publish(ctx, before, kind, false);
+        }
+        if !changed && self.composition.is_none() {
+            self.publish_selection(ctx, before);
+        }
+        self.keep_caret_visible();
+        ctx.set_ime_area(self.ime_area());
+        if changed || matches!(event, TextEvent::Ime(_) | TextEvent::ClipboardPaste(_)) {
+            self.reveal_caret = true;
+            ctx.request_layout();
+        } else {
+            ctx.request_render();
+        }
+        ctx.set_handled();
     }
 
     fn update_geometry(&mut self, viewport: Size) {
@@ -530,6 +1112,7 @@ impl Widget for TextInput {
             _ => return,
         };
         let point = ctx.local_position(position) - self.translation();
+        let before = self.selection();
         let composing = self.composition.is_some();
         let (fonts, layout) = ctx.text_contexts();
         self.cancel_compose(fonts, layout);
@@ -540,6 +1123,7 @@ impl Widget for TextInput {
             driver.move_to_point(point.x as f32, point.y as f32);
         }
         self.keep_caret_visible();
+        self.publish_selection(ctx, before);
         if composing {
             ctx.reset_ime();
         }
@@ -554,221 +1138,7 @@ impl Widget for TextInput {
         _: &mut PropertiesMut<'_>,
         event: &TextEvent,
     ) {
-        if ctx.is_disabled() || !ctx.is_focus_target() || !ctx.input_configuration_is_current() {
-            return;
-        }
-        if self.read_only && matches!(event, TextEvent::Ime(_) | TextEvent::ClipboardPaste(_)) {
-            ctx.set_handled();
-            return;
-        }
-        let mut changed = false;
-        match event {
-            TextEvent::Ime(Ime::Preedit(text, cursor)) => {
-                if text.is_empty() {
-                    let (fonts, layout) = ctx.text_contexts();
-                    self.cancel_compose(fonts, layout);
-                    ctx.request_layout();
-                    ctx.set_handled();
-                    return;
-                }
-                if self.composition.is_none() {
-                    let selection = self.editor.raw_selection();
-                    self.composition = Some((
-                        self.value.clone(),
-                        selection.anchor().index(),
-                        selection.focus().index(),
-                    ));
-                }
-                let (fonts, layout) = ctx.text_contexts();
-                let mut driver = self.editor.driver(fonts, layout);
-                driver.set_compose(text, *cursor);
-                self.geometry_dirty = true;
-            }
-            TextEvent::Ime(Ime::Commit(text)) => {
-                let (fonts, layout) = ctx.text_contexts();
-                let mut driver = self.editor.driver(fonts, layout);
-                driver.clear_compose();
-                driver.insert_or_replace_selection(&input_text(text, self.multiline));
-                self.composition = None;
-                changed = true;
-            }
-            TextEvent::Ime(Ime::Disabled) => {
-                let (fonts, layout) = ctx.text_contexts();
-                self.cancel_compose(fonts, layout);
-            }
-            TextEvent::ClipboardPaste(text) => {
-                let composing = self.composition.is_some();
-                let (fonts, layout) = ctx.text_contexts();
-                self.cancel_compose(fonts, layout);
-                self.editor
-                    .driver(fonts, layout)
-                    .insert_or_replace_selection(&input_text(text, self.multiline));
-                if composing {
-                    ctx.reset_ime();
-                }
-                changed = true;
-            }
-            TextEvent::Keyboard(event) => {
-                if event.state.is_up() {
-                    return;
-                }
-                if self.composition.is_some() || event.is_composing {
-                    ctx.set_handled();
-                    return;
-                }
-                let alt_graph = event.modifiers.contains(keyboard::Modifiers::ALT_GRAPH)
-                    || (!cfg!(target_os = "macos")
-                        && event.modifiers.ctrl()
-                        && event.modifiers.alt());
-                let command = !alt_graph
-                    && !event.modifiers.alt()
-                    && if cfg!(target_os = "macos") {
-                        event.modifiers.meta()
-                    } else {
-                        event.modifiers.ctrl()
-                    };
-                let word = if cfg!(target_os = "macos") {
-                    event.modifiers.alt()
-                } else {
-                    command
-                };
-                let shift = event.modifiers.shift();
-                if let Key::Character(key) = &event.key
-                    && command
-                    && (key.eq_ignore_ascii_case("c") || key.eq_ignore_ascii_case("x"))
-                {
-                    if (!self.read_only || key.eq_ignore_ascii_case("c"))
-                        && let Some(text) = self.editor.selected_text()
-                    {
-                        ctx.set_clipboard(text.to_owned());
-                    }
-                    if !self.read_only && key.eq_ignore_ascii_case("x") {
-                        let (fonts, layout) = ctx.text_contexts();
-                        self.editor.driver(fonts, layout).delete_selection();
-                        changed = true;
-                    }
-                } else if event.key == Key::Named(NamedKey::Enter) {
-                    if self.multiline && !command {
-                        if !self.read_only {
-                            let (fonts, layout) = ctx.text_contexts();
-                            self.editor
-                                .driver(fonts, layout)
-                                .insert_or_replace_selection("\n");
-                            changed = true;
-                        }
-                    } else if !event.repeat {
-                        ctx.submit_action::<TextInputEvent>(TextInputEvent::Submitted(
-                            self.value.clone(),
-                        ));
-                    }
-                } else {
-                    let (fonts, layout) = ctx.text_contexts();
-                    let mut driver = self.editor.driver(fonts, layout);
-                    match &event.key {
-                        Key::Character(key) if command && key.eq_ignore_ascii_case("a") => {
-                            driver.select_all()
-                        }
-                        // The host supplies ClipboardPaste after resolving the system clipboard.
-                        Key::Character(key) if command && key.eq_ignore_ascii_case("v") => {}
-                        Key::Character(key)
-                            if !self.read_only
-                                && !command
-                                && (alt_graph
-                                    || !event.modifiers.alt()
-                                    || cfg!(target_os = "macos")) =>
-                        {
-                            driver.insert_or_replace_selection(&input_text(key, self.multiline));
-                            changed = true;
-                        }
-                        Key::Named(NamedKey::Backspace) if !self.read_only => {
-                            if word {
-                                driver.backdelete_word();
-                            } else {
-                                driver.backdelete();
-                            }
-                            changed = true;
-                        }
-                        Key::Named(NamedKey::Delete) if !self.read_only => {
-                            if word {
-                                driver.delete_word();
-                            } else {
-                                driver.delete();
-                            }
-                            changed = true;
-                        }
-                        Key::Named(NamedKey::ArrowLeft) => match (word, shift) {
-                            (true, true) => driver.select_word_left(),
-                            (true, false) => driver.move_word_left(),
-                            (false, true) => driver.select_left(),
-                            (false, false) => driver.move_left(),
-                        },
-                        Key::Named(NamedKey::ArrowRight) => match (word, shift) {
-                            (true, true) => driver.select_word_right(),
-                            (true, false) => driver.move_word_right(),
-                            (false, true) => driver.select_right(),
-                            (false, false) => driver.move_right(),
-                        },
-                        Key::Named(NamedKey::Home) => {
-                            if self.multiline && !command {
-                                if shift {
-                                    driver.select_to_line_start();
-                                } else {
-                                    driver.move_to_line_start();
-                                }
-                            } else if shift {
-                                driver.select_to_text_start();
-                            } else {
-                                driver.move_to_text_start();
-                            }
-                        }
-                        Key::Named(NamedKey::End) => {
-                            if self.multiline && !command {
-                                if shift {
-                                    driver.select_to_line_end();
-                                } else {
-                                    driver.move_to_line_end();
-                                }
-                            } else if shift {
-                                driver.select_to_text_end();
-                            } else {
-                                driver.move_to_text_end();
-                            }
-                        }
-                        Key::Named(NamedKey::ArrowUp) if self.multiline => {
-                            if shift {
-                                driver.select_up();
-                            } else {
-                                driver.move_up();
-                            }
-                        }
-                        Key::Named(NamedKey::ArrowDown) if self.multiline => {
-                            if shift {
-                                driver.select_down();
-                            } else {
-                                driver.move_down();
-                            }
-                        }
-                        Key::Character(_) | Key::Named(NamedKey::Backspace | NamedKey::Delete)
-                            if self.read_only => {}
-                        _ => return,
-                    }
-                }
-            }
-            _ => return,
-        }
-        if changed {
-            self.geometry_dirty = true;
-            self.publish(ctx);
-        }
-        self.keep_caret_visible();
-        ctx.set_ime_area(self.ime_area());
-        if changed || matches!(event, TextEvent::Ime(_) | TextEvent::ClipboardPaste(_)) {
-            self.reveal_caret = true;
-            ctx.request_layout();
-        } else {
-            ctx.request_render();
-        }
-        ctx.set_handled();
+        self.handle_text_event(ctx, event);
     }
 
     fn update(&mut self, ctx: &mut UpdateCtx<'_>, _: &mut PropertiesMut<'_>, event: &Update) {
@@ -778,6 +1148,9 @@ impl Widget for TextInput {
             | Update::WindowFocusChanged(false)
             | Update::DisabledChanged(true)
             | Update::StashedChanged(true) => {
+                if self.pending_edit {
+                    ctx.submit_action::<TextInputEvent>(TextInputEvent::CompositionCancelled);
+                }
                 let (fonts, layout) = ctx.text_contexts();
                 self.cancel_compose(fonts, layout);
                 ctx.request_layout();
@@ -824,6 +1197,11 @@ impl Widget for TextInput {
         }
         let (fonts, layout) = ctx.text_contexts();
         self.editor.refresh_layout(fonts, layout);
+        if let Some(selection) = self.initial_selection.take() {
+            self.editor
+                .driver(fonts, layout)
+                .select_byte_range(selection.anchor, selection.focus);
+        }
         self.refresh_placeholder(fonts, layout);
         self.update_geometry(size);
         if self.reveal_caret {
@@ -832,6 +1210,29 @@ impl Widget for TextInput {
         }
         ctx.set_clip_path(size.to_rect());
         ctx.set_ime_area(self.ime_area());
+        if let Some(replay) = self.initial_replay.take() {
+            let LayoutCtx {
+                geometry,
+                global_state,
+                widget_state,
+                children,
+                property_arena,
+                ..
+            } = ctx;
+            let target = widget_state.id;
+            let mut events = EventCtx {
+                geometry: *geometry,
+                global_state,
+                widget_state,
+                children: children.reborrow_mut(),
+                property_arena,
+                target,
+                allow_pointer_capture: false,
+                is_handled: false,
+                propagation_stopped: false,
+            };
+            self.replay(&mut events, &replay);
+        }
     }
 
     fn paint(
@@ -922,20 +1323,18 @@ impl Widget for TextInput {
         if event.action == Action::SetValue
             && let Some(ActionData::Value(text)) = &event.data
         {
-            let composing = self.composition.is_some();
-            let (fonts, layout) = ctx.text_contexts();
-            self.cancel_compose(fonts, layout);
-            self.editor.set_text(&input_text(text, self.multiline));
-            self.geometry_dirty = true;
-            if composing {
-                ctx.reset_ime();
+            if self.pending_edit {
+                ctx.submit_action::<TextInputEvent>(TextInputEvent::Deferred {
+                    intent: Arc::new(TextInputIntent::ReplaceAll(Arc::from(text.as_ref()))),
+                    revision: self.selection_revision,
+                });
+                ctx.set_handled();
+            } else {
+                self.replace_value(ctx, text);
             }
-            self.publish(ctx);
-            self.reveal_caret = true;
-            ctx.request_layout();
-            ctx.set_handled();
         }
     }
+
     fn get_cursor(&self, _: &QueryCtx<'_>, _: Point) -> CursorIcon {
         CursorIcon::Text
     }

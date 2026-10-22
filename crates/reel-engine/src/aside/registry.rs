@@ -1092,6 +1092,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     }
     contracts.extend(super::stage::bindings().map(|binding| binding.contract));
     contracts.extend(super::stage::configure::contracts());
+    contracts.extend(super::stage::text_input::contracts());
     contracts.push(NativeContract {
         rest: None,
         symbol: "reel::rich".into(),

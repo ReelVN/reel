@@ -79,7 +79,7 @@ impl WinitHost {
                 && character.eq_ignore_ascii_case("v")
             {
                 match self.text.clipboard(arboard::Clipboard::get_text) {
-                    Ok(text) => return Some(TextEvent::ClipboardPaste(text)),
+                    Ok(text) => return Some(TextEvent::ClipboardPaste(text.into())),
                     Err(arboard::Error::ContentNotAvailable) => {}
                     Err(error) => eprintln!("clipboard paste: {error}"),
                 }
@@ -97,7 +97,7 @@ pub fn ime(event: winit::event::Ime) -> TextEvent {
     TextEvent::Ime(match event {
         winit::event::Ime::Enabled => Ime::Enabled,
         winit::event::Ime::Disabled => Ime::Disabled,
-        winit::event::Ime::Preedit(text, cursor) => Ime::Preedit(text, cursor),
-        winit::event::Ime::Commit(text) => Ime::Commit(text),
+        winit::event::Ime::Preedit(text, cursor) => Ime::Preedit(text.into(), cursor),
+        winit::event::Ime::Commit(text) => Ime::Commit(text.into()),
     })
 }

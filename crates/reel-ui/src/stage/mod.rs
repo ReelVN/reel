@@ -245,6 +245,11 @@ pub struct TextInputOptions {
     pub read_only: bool,
     pub selection_color: [u8; 4],
     pub caret_color: Option<[u8; 4]>,
+    pub selection: crate::widgets::TextSelection,
+    /// Only authoritative selection changes advance this revision; local feedback does not.
+    pub selection_revision: u64,
+    pub pending_edit: bool,
+    pub replay: Option<Arc<crate::widgets::TextInputReplay>>,
 }
 impl Default for TextInputOptions {
     fn default() -> Self {
@@ -253,6 +258,10 @@ impl Default for TextInputOptions {
             read_only: false,
             selection_color: [60, 120, 220, 95],
             caret_color: None,
+            selection: Default::default(),
+            selection_revision: 0,
+            pending_edit: false,
+            replay: None,
         }
     }
 }
