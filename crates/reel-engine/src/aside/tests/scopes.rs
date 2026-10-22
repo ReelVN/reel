@@ -460,6 +460,7 @@ fn effect_scope_cancels_particles_clock_and_presentation_requests() {
     }
 }
 
+mod finish;
 mod offsets;
 mod overrides;
 
@@ -499,7 +500,12 @@ fn scope_cancel_self_and_pending_request_restore_preserve_outer_fault_boundary()
             let (mut session, mut vm) = prepared(code, encoded);
             if snapshot {
                 for _ in 0..10000 {
-                    if vm.scopes.live.iter().any(|s| s.cancel_requested) {
+                    if vm
+                        .scopes
+                        .live
+                        .iter()
+                        .any(|s| matches!(s.exit, Some(crate::aside::scopes::ScopeExit::Cancel)))
+                    {
                         break;
                     }
                     match vm
@@ -526,9 +532,19 @@ fn scope_cancel_self_and_pending_request_restore_preserve_outer_fault_boundary()
                         _ => {}
                     }
                 }
-                assert!(vm.scopes.live.iter().any(|s| s.cancel_requested));
+                assert!(
+                    vm.scopes
+                        .live
+                        .iter()
+                        .any(|s| matches!(s.exit, Some(crate::aside::scopes::ScopeExit::Cancel)))
+                );
                 (session, vm) = restored(&mut vm, &session);
-                assert!(vm.scopes.live.iter().any(|s| s.cancel_requested));
+                assert!(
+                    vm.scopes
+                        .live
+                        .iter()
+                        .any(|s| matches!(s.exit, Some(crate::aside::scopes::ScopeExit::Cancel)))
+                );
             }
             drive(&mut vm, &mut session, true);
             assert!(vm.scopes.live.is_empty());
@@ -599,7 +615,10 @@ fn scope_cancel_rejects_non_scope_native_arguments() {
             else {
                 panic!("native entry")
             };
-            assert!(vm.dispatch_scope_cancel(ticket).is_err());
+            assert!(
+                vm.dispatch_scope_exit(ticket, crate::aside::scopes::ScopeExit::Cancel)
+                    .is_err()
+            );
             vm.vm
                 .respond(ticket, HostResponse::Ready(Value::NULL))
                 .unwrap();

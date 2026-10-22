@@ -104,7 +104,7 @@ struct SavedTask {
     delivery: Option<RootRangeToken>,
     terminal: Option<Terminal>,
     cancelling: bool,
-    cancel_boundary: Option<FrameId>,
+    cancel_boundary: Option<CallbackBoundary>,
     task_owner: Option<RootOwner>,
     task_id: Option<TaskId>,
     root_owner: RootOwner,
@@ -144,6 +144,11 @@ impl SavedTask {
             || self.equality_cursors > limits.max_unwinds as usize
         {
             return Err(SnapshotError::Limit);
+        }
+        if self.cancel_boundary.is_some()
+            && (!self.cancelling || self.task_id.is_none() || self.terminal.is_some())
+        {
+            return Err(SnapshotError::Invalid("callback retirement state".into()));
         }
         let usage = vm.heap.budget_usage();
         let mut task = TaskState::new(&usage, &mut vm.heap, &mut vm.slots, limits, false)?;
@@ -256,6 +261,7 @@ impl Vm {
             expected_tasks: 0,
             range_values: 0,
             constant_validation: None,
+            callback_validation: None,
             complete: false,
         })
     }
@@ -394,6 +400,7 @@ pub struct VmRestore<'a> {
     expected_tasks: usize,
     range_values: u64,
     constant_validation: Option<ConstantValidation>,
+    callback_validation: Option<CallbackValidation>,
     complete: bool,
 }
 impl VmRestore<'_> {
@@ -403,6 +410,13 @@ impl VmRestore<'_> {
             if let Some(validation) = &mut self.constant_validation {
                 if validation.step(&self.vm)? {
                     self.constant_validation = None;
+                }
+                progress.units += 1;
+                continue;
+            }
+            if let Some(validation) = &mut self.callback_validation {
+                if validation.step(&self.vm)? {
+                    self.callback_validation = None;
                 }
                 progress.units += 1;
                 continue;
@@ -605,7 +619,54 @@ impl VmRestore<'_> {
         {
             return Err(SnapshotError::Invalid("task record counts".into()));
         }
+        if let Some(boundary) = task.cancel_boundary {
+            self.callback_validation = Some(CallbackValidation {
+                task: record.key,
+                boundary,
+                next: 0,
+            });
+        }
         Ok(())
+    }
+}
+
+/// Locate and validate a saved retirement boundary one frame per restore unit.
+/// Its return value is already mapped with the native frame's ordinary roots.
+struct CallbackValidation {
+    task: u64,
+    boundary: CallbackBoundary,
+    next: usize,
+}
+impl CallbackValidation {
+    fn step(&mut self, vm: &Vm) -> Result<bool, SnapshotError> {
+        let task = if self.task == 0 {
+            &vm.active
+        } else {
+            &vm.tasks.data[self.task as usize - 1]
+        };
+        let frame = task
+            .frames
+            .data
+            .get(self.next)
+            .ok_or_else(|| SnapshotError::Invalid("callback retirement boundary".into()))?;
+        self.next += 1;
+        if frame.id() != self.boundary.frame() {
+            return Ok(false);
+        }
+        let Frame::Native(native) = frame else {
+            return Err(SnapshotError::Invalid(
+                "callback retirement native frame".into(),
+            ));
+        };
+        if !native.continuation_active {
+            return Err(SnapshotError::Invalid(
+                "callback retirement continuation".into(),
+            ));
+        }
+        if matches!(self.boundary, CallbackBoundary::Returned(_)) {
+            vm.value(native.roots, 0)?;
+        }
+        Ok(true)
     }
 }
 fn append<T>(values: &mut ChargedVec<T>, index: u32, value: T) -> Result<(), SnapshotError> {

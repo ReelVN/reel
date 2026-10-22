@@ -14,6 +14,8 @@ Reel 的目标是让创作者直观地表达想象中的画面和交互，包括
 
 作者通过共同舞台组合 UI、对白与二维演出；组件、模型和活动使用同一所有权与保存协议。
 
+作品入口直接组织配置、共享状态与初始流程。普通函数组合画面、对白、交互和演出，并返回业务结果；类用于持续操控的组件。页面与剧情使用同一节点树和活动作用域，所需状态由调用方明确传入。一个创作单元的画面和行为共同维护，依照实际复用拆分模块。
+
 ## 二 模块职责与依赖
 
 通用库由独立的 `aside-std` crate 维护，通过 Aside host SDK 向任意宿主提供声明、模块接口和 native 调度。Reel 注册标准库并默认导入其 prelude；舞台、对白、音频和资源仍归 Reel。已有文本、集合操作继续共用 VM 实现，不复制到标准库。
@@ -536,6 +538,8 @@ scope 管理任务、活动、等待、临时节点、属性覆盖和加性偏�
 
 `scope(body:, owner:null)` 通过 VM 的 CallScript/native continuation 在原 Task 中执行 body，返回 body 的结果，故障保留原身份。body 可接受零参数或一个作用域对象。作用域用普通宿主 owner 对象和 TaskId/FrameId 关联；`s.run(action)` 与 `s.spawn(work)` 显式归该作用域。run、spawn、clock、音视频、粒子、completion 与呈现请求默认继承当前作用域；子任务继续继承其资源 owner，显式 owner 转交生存范围。正常返回/异常退休 owner，后台资源沿现有账本清理，退场动画由 body 显式等待。附加 owner 撤销时，VM 只释放到指定 native 屏障，宿主退休资源后在原 scope 调用点交付 ScopeCancelled；外层主剧情仍可处理。硬撤销跳过区域内脚本 catch/finally，普通 return/throw 按语言规则展开。活动停止保留当前属性值。可运行示例为 [author_scope.aside](../examples/author_scope/src/main.aside)。
 `s.cancel()` 首次请求退休该作用域并返回 true，重复请求返回 false。请求保存在同一作用域维护索引及执行快照中；维护阶段沿 owner 退休路径撤销 native region、嵌套作用域、所属任务与活动，在 scope 外交付 ScopeCancelled。自身取消先完成当前 native 响应，再撤销其区域。handle 仍在结束时退休；提前提取的绑定 cancel 方法在结束后幂等返回 false。
+
+`s.finish(value:null)` 正常结束作用域，使原 `scope` 调用返回 value。finish 与 cancel 共用首次结算规则；后续请求返回 false。请求先完成自身调用，再由共同 native 边界退休正文、嵌套作用域、任务和临时节点；区域内尚未执行的语句及 finally 被跳过。必须完成的保存或退场动画应在 finish 前等待，或在 scope 返回后执行。返回值保留原身份，随既有 VM 根及快照保存；区域退休按执行预算推进。页面按钮可直接交回选择，外层流程据此继续。
 
 `s.add(parent, node, index:null)` 挂载临时子树：要求与 node.add 相同的未挂载节点，返回原 node，index 省略时追加。普通 node.add 保持父节点寿命。注册发生在同一挂载边界，挂载失败不转交所有权；作用域退出按登记逆序移除仍存活的子树，提前 remove、clear、stage.replace 和嵌套作用域不会重复退休。节点拥有的输入任务、活动与呈现等待沿原退休路径结束，已接受输入几何仍由呈现协议更新。登记数组进入现有 VM 对象图，恢复后只继续等待和清理，不重跑构造。登记与退休按实际节点规模处理；子树移除仍使用舞台同步退休，当前不承诺大型临时树单帧完成。
 属性覆盖：`let effect = s.override(node, {opacity: 0.4, width: null})` 创建独立可观察 token，记录参数保留显式 null。允许共同节点布局和外观属性，不包含 on_interaction、控件业务值、只读交互状态或 camera/scroll 专属字段；未知名与类型错误在调用处诊断。token 只公开本次提供的属性和 remove 方法，可直接赋值、bind/derive 或作为 tween 的目标。`node.x` 始终读写基础值，`effect.x` 读写本层值；几何、绘制和输入读取有效值。同字段取最后建立且仍存活的层，修改或重绑不提升优先序。基础绑定在遮挡期间继续更新。`effect.remove()`、scope 正常返回/错误/取消以及目标退休移除覆盖，不把旧值写回基础字段；嵌套与非顶层移除沿同一规则。

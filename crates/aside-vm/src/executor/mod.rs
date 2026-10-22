@@ -33,6 +33,8 @@ use crate::type_checks as types;
 use builtins::Builtin;
 use collections::{TableAction, TableWork};
 #[cfg(test)]
+mod callback_tests;
+#[cfg(test)]
 mod cancellation_tests;
 #[cfg(test)]
 mod exit_tests;
@@ -368,6 +370,20 @@ struct CaughtFault {
     info: FaultSeed,
     activation: u64,
 }
+
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+enum CallbackBoundary {
+    Cancelled(FrameId),
+    Returned(FrameId),
+}
+impl CallbackBoundary {
+    fn frame(self) -> FrameId {
+        match self {
+            Self::Cancelled(frame) | Self::Returned(frame) => frame,
+        }
+    }
+}
+
 /// One shared heap/module set, with independently owned task state machines.
 struct TaskState {
     frames: ChargedVec<Frame>,
@@ -378,7 +394,7 @@ struct TaskState {
     delivery: Option<RootRangeToken>,
     terminal: Option<Terminal>,
     cancelling: bool,
-    cancel_boundary: Option<FrameId>,
+    cancel_boundary: Option<CallbackBoundary>,
     task_owner: Option<RootOwner>,
     task_id: Option<TaskId>,
     root_owner: RootOwner,
@@ -1994,22 +2010,58 @@ impl Vm {
     /// Tickets and waits become invalid immediately; slices reclaim the frames
     /// before returning `CallbackCancelled` to the named native frame.
     pub fn cancel_host_callback(&mut self, task: TaskId, frame: FrameId) -> Result<bool, VmError> {
+        self.retire_host_callback(task, frame, None)
+    }
+    /// Finish a native callback region with `value`, skipping its inner handlers.
+    /// Tickets and waits become invalid immediately; slices reclaim inner frames
+    /// before resuming the native continuation with `CallbackReturned`. The value
+    /// stays in that frame's existing resume root through GC and snapshots.
+    /// Return false when the frame has ended or an earlier retirement request
+    /// already covers it. An outer request supersedes an inner request.
+    pub fn finish_host_callback(
+        &mut self,
+        task: TaskId,
+        frame: FrameId,
+        value: Value,
+    ) -> Result<bool, VmError> {
+        self.retire_host_callback(task, frame, Some(value))
+    }
+    fn retire_host_callback(
+        &mut self,
+        task: TaskId,
+        frame: FrameId,
+        value: Option<Value>,
+    ) -> Result<bool, VmError> {
         self.select_task(task)?;
         if self.active.cancelling
             && self
                 .active
                 .cancel_boundary
-                .is_none_or(|boundary| boundary.0 <= frame.0)
+                .is_none_or(|boundary| boundary.frame().0 <= frame.0)
         {
             return Ok(false);
         }
-        if !self.active.frames.data.iter().any(|candidate| {
-            matches!(candidate, Frame::Native(n) if n.id == frame && n.continuation_active)
-        }) {
+        let Some(native) = self
+            .active
+            .frames
+            .data
+            .iter()
+            .find_map(|candidate| match candidate {
+                Frame::Native(n) if n.id == frame && n.continuation_active => Some(*n),
+                _ => None,
+            })
+        else {
             return Ok(false);
+        };
+        if let Some(value) = value {
+            self.put(native.roots, 0, value)?;
         }
         self.cancel_active()?;
-        self.active.cancel_boundary = Some(frame);
+        self.active.cancel_boundary = Some(if value.is_some() {
+            CallbackBoundary::Returned(frame)
+        } else {
+            CallbackBoundary::Cancelled(frame)
+        });
         Ok(true)
     }
     fn cancel_active(&mut self) -> Result<(), VmError> {
@@ -2120,7 +2172,7 @@ impl Vm {
                 return Ok(RunOutcome::BudgetYield(m.usage));
             }
             if self.active.cancelling {
-                let boundary = self.active.cancel_boundary;
+                let boundary = self.active.cancel_boundary.map(CallbackBoundary::frame);
                 if self.active.caught.data.last().is_some_and(|caught| {
                     boundary.is_none_or(|boundary| caught.frame.0 > boundary.0)
                 }) {
@@ -2158,11 +2210,17 @@ impl Vm {
                         let Frame::Native(mut native) = f else {
                             unreachable!("callback boundary is a native frame")
                         };
-                        self.put(native.roots, 0, Value::NULL)?;
+                        let input = match self.active.cancel_boundary.unwrap() {
+                            CallbackBoundary::Returned(_) => NativeInput::CallbackReturned,
+                            CallbackBoundary::Cancelled(_) => {
+                                self.put(native.roots, 0, Value::NULL)?;
+                                NativeInput::CallbackCancelled
+                            }
+                        };
                         self.clear(native.roots, self.native_pending_slot())?;
                         native.callback_fault = None;
                         native.pending_fault = None;
-                        native.phase = NativePhase::Resume(NativeInput::CallbackCancelled);
+                        native.phase = NativePhase::Resume(input);
                         *self.active.frames.data.last_mut().unwrap() = Frame::Native(native);
                         self.active.cancelling = false;
                         self.active.cancel_boundary = None;

@@ -41,6 +41,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
             vec![("node", node)],
         ),
         ("cancel", TypeHint::Bool, Vec::new()),
+        ("finish", TypeHint::Bool, vec![("value", TypeHint::Any)]),
     ] {
         let mut parameters = parameters;
         parameters.push(("scope", scope.clone()));
@@ -55,16 +56,18 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
     api.types.push(NamedType::new(
         "reel::types::Scope",
         "A callback lifetime that owns tasks, activities, nodes and property overrides.",
-        ["run", "spawn", "add", "override", "offset", "cancel"]
-            .into_iter()
-            .map(|method| {
-                Member::method(
-                    api.native(&format!("reel::scope::{method}"))
-                        .clone()
-                        .bound(method),
-                )
-            })
-            .collect(),
+        [
+            "run", "spawn", "add", "override", "offset", "cancel", "finish",
+        ]
+        .into_iter()
+        .map(|method| {
+            Member::method(
+                api.native(&format!("reel::scope::{method}"))
+                    .clone()
+                    .bound(method),
+            )
+        })
+        .collect(),
     ));
     api.types.push(NamedType::new(
         "reel::types::Override",
@@ -99,6 +102,23 @@ aside_host::native_documentation! {
         /// }
         /// ```
         "reel::scope::cancel";
+        /// End this scope and return `value` from its original call. The first finish
+        /// or cancel request returns true; later requests return false. This call
+        /// responds before the body, nested scopes and owned work are retired.
+        /// Remaining body statements and finally blocks are skipped. Await saves
+        /// and exit animations before finishing, or perform them after scope returns.
+        /// Extracted bound methods return false after retirement.
+        ///
+        /// ```aside
+        /// fn main() {
+        ///     let result = scope(body: |s| {
+        ///         s.finish("continue");
+        ///         await completion();
+        ///     });
+        ///     if result != "continue" { throw "scope result"; }
+        /// }
+        /// ```
+        "reel::scope::finish";
         /// Start an action owned by this scope, optionally paused.
         "reel::scope::run";
         /// Start a zero-argument task owned by this scope. Its result is awaitable.
@@ -130,13 +150,19 @@ pub(super) fn is_scope(heap: &Heap, value: Value) -> bool {
 pub(super) struct Scope {
     pub task: TaskId,
     pub frame: FrameId,
-    pub(super) cancel_requested: bool,
+    pub(super) exit: Option<ScopeExit>,
     root: RootToken,
+}
+
+#[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub(super) enum ScopeExit {
+    Cancel,
+    Finish,
 }
 
 #[derive(Default)]
 pub(super) struct Scopes {
-    pub methods: Option<[FunctionId; 7]>,
+    pub methods: Option<[FunctionId; 8]>,
     pub live: VecDeque<Scope>,
     charge: Option<HeapReservation>,
 }
@@ -192,7 +218,7 @@ impl SessionVm {
             let heap = self.vm.heap();
             let object = heap.root_value(scope.root).expect("live scope root");
             let owner = heap.host_payload(object, 1).expect("scope owner");
-            scope.cancel_requested || !owner_live(heap, owner)
+            scope.exit.is_some() || !owner_live(heap, owner)
         })
     }
 
@@ -255,7 +281,21 @@ impl SessionVm {
         task: TaskId,
         frame: FrameId,
     ) -> Result<(), AdapterError> {
-        self.vm.cancel_host_callback(task, frame)?;
+        self.end_native_region(session, task, frame, None)
+    }
+
+    fn end_native_region(
+        &mut self,
+        session: &mut Session,
+        task: TaskId,
+        frame: FrameId,
+        result: Option<Value>,
+    ) -> Result<(), AdapterError> {
+        if let Some(value) = result {
+            self.vm.finish_host_callback(task, frame, value)?;
+        } else {
+            self.vm.cancel_host_callback(task, frame)?;
+        }
         self.cancel_task_transitions(task, Some(frame))?;
         self.activities.cancel_native(self.vm.heap_mut(), task)?;
         if self.issued.is_some_and(|ticket| ticket.task == task) {
@@ -289,22 +329,36 @@ impl SessionVm {
             let scope = &self.scopes.live[index];
             let object = self.vm.heap().root_value(scope.root)?;
             let owner = self.vm.heap().host_payload(object, 1)?;
-            if !scope.cancel_requested && owner_live(self.vm.heap(), owner) {
+            if scope.exit.is_none() && owner_live(self.vm.heap(), owner) {
                 index += 1;
                 continue;
             }
             let task = scope.task;
-            self.cancel_native_region(session, task, scope.frame)?;
+            let result = if matches!(scope.exit, Some(ScopeExit::Finish)) {
+                Some(self.vm.heap().host_payload(object, 4)?)
+            } else {
+                None
+            };
+            self.end_native_region(session, task, scope.frame, result)?;
             self.close_scope(index)?;
         }
         Ok(())
     }
 
-    pub(super) fn dispatch_scope_cancel(&mut self, ticket: HostTicket) -> Result<(), AdapterError> {
+    pub(super) fn dispatch_scope_exit(
+        &mut self,
+        ticket: HostTicket,
+        exit: ScopeExit,
+    ) -> Result<(), AdapterError> {
         let object = self.vm.host_arguments(ticket)?[0];
+        let value = if matches!(exit, ScopeExit::Finish) {
+            self.vm.host_arguments(ticket)?[1]
+        } else {
+            Value::NULL
+        };
         match self.vm.heap().host_fields(object) {
             Ok(_) if !is_scope(self.vm.heap(), object) => {
-                return Err(AdapterError::Input("cancel requires a scope"));
+                return Err(AdapterError::Input("scope exit requires a scope"));
             }
             Ok(_) | Err(aside_vm::HeapError::RetiredHost) => {}
             Err(error) => return Err(error.into()),
@@ -312,8 +366,11 @@ impl SessionVm {
         let mut requested = false;
         for scope in &mut self.scopes.live {
             if self.vm.heap().root_value(scope.root)?.same_bits(object) {
-                requested = !scope.cancel_requested;
-                scope.cancel_requested = true;
+                requested = scope.exit.is_none();
+                if requested {
+                    self.vm.heap_mut().set_host_payload(object, 4, value)?;
+                    scope.exit = Some(exit);
+                }
                 break;
             }
         }
@@ -365,6 +422,7 @@ impl SessionVm {
                     find("reel::scope::offset")?,
                     find("reel::override::remove")?,
                     find("reel::scope::cancel")?,
+                    find("reel::scope::finish")?,
                 ]);
             }
             results::reserve_queue(
@@ -376,14 +434,22 @@ impl SessionVm {
             let fields = heap.alloc_table()?;
             let object = heap.alloc_host(
                 fields,
-                &[Value::int(TAG), owner, Value::NULL, Value::NULL],
+                &[
+                    Value::int(TAG),
+                    owner,
+                    Value::NULL,
+                    Value::NULL,
+                    Value::NULL,
+                ],
                 Some(results::readonly),
             )?;
             self.stage.types.mark(heap, object, "reel::types::Scope")?;
-            for (i, (name, function)) in ["run", "spawn", "add", "override", "offset", "cancel"]
-                .into_iter()
-                .zip([0, 1, 2, 3, 4, 6].map(|index| self.scopes.methods.unwrap()[index]))
-                .enumerate()
+            for (i, (name, function)) in [
+                "run", "spawn", "add", "override", "offset", "cancel", "finish",
+            ]
+            .into_iter()
+            .zip([0, 1, 2, 3, 4, 6, 7].map(|index| self.scopes.methods.unwrap()[index]))
+            .enumerate()
             {
                 let method = self.vm.bind_native(object, function)?;
                 let heap = self.vm.heap_mut();
@@ -418,7 +484,7 @@ impl SessionVm {
             self.scopes.live.push_back(Scope {
                 task: ticket.task,
                 frame: ticket.frame,
-                cancel_requested: false,
+                exit: None,
                 root,
             });
         } else {
