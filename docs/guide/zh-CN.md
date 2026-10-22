@@ -1519,7 +1519,9 @@ narrator("A new chapter begins.");
 game.reading().clear_history(keep_last: 37);
 ```
 
-`saves.save(slot, title: null, thumbnail: null)`、`saves.load(slot)`、`saves.delete(slot)`、`saves.thumbnail(slot)` 和 `saves.list()` 立即返回可等待请求，具有只读的 `status`（pending、succeeded、failed）与 `error`。失败会在 await 处抛出错误；成功保存意味着完整文件已原子发布。`await saves.list()` 返回已占用槽位摘要，包含字符串 id、title、saved_at（UTC Unix 秒）与 has_thumbnail，不加载图片。槽位名是逻辑标识；作者决定页面与空槽，用 `"quick"` 等固定标识组合快速保存。
+`saves.save(slot, title: null, thumbnail: null)`、`saves.load(slot)`、`saves.copy(source, destination)`、`saves.delete(slot)`、`saves.thumbnail(slot)` 和 `saves.list()` 立即返回可等待请求，具有只读的 `status`（pending、succeeded、failed）与 `error`。失败会在 await 处抛出错误；成功保存意味着完整文件已原子发布。`await saves.list()` 返回已占用槽位摘要，包含字符串 id、title、saved_at（UTC Unix 秒）与 has_thumbnail，不加载图片。槽位名是逻辑标识；作者决定页面与空槽，用 `"quick"` 等固定标识组合快速保存。
+
+`await saves.copy("chapter-1", "backup")` 将已有存档复制到目标槽，保留执行状态、标题、保存时间与缩略图，并原子覆盖已有目标。复制期间当前剧情继续运行，成功结果为 null。同槽复制验证源槽后完成；源槽缺失或存储失败会抛出错误。
 
 可以等待自己的保存请求。这份存档恢复时，该请求为已成功且只读 `restored` 为 true（正常写盘完成为 false），可据此关闭存档菜单；调用者继续执行 await 后的语句；保存调用不会重复执行。其他未完成的外部请求以 OperationInterrupted 结算。成功读档会替换会话，原来的读档调用不会在旧会话中继续。
 

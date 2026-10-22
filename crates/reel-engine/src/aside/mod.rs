@@ -614,6 +614,7 @@ impl SessionVm {
             }
             "reel::saves::save"
             | "reel::saves::load"
+            | "reel::saves::copy"
             | "reel::saves::delete"
             | "reel::saves::list"
             | "reel::saves::thumbnail" => self.dispatch_save(ticket, &symbol, work),

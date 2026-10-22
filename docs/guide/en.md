@@ -1510,7 +1510,9 @@ narrator("A new chapter begins.");
 game.reading().clear_history(keep_last: 37);
 ```
 
-`saves.save(slot, title: null, thumbnail: null)`, `saves.load(slot)`, `saves.delete(slot)`, `saves.thumbnail(slot)` and `saves.list()` immediately return awaitable requests with read-only `status` (pending, succeeded, failed) and `error`. Awaiting a failed request throws its error; a successful save has atomically published the complete file. `await saves.list()` returns occupied slot summaries with string id, title, saved_at (UTC Unix seconds) and has_thumbnail, without loading images. Slot names are logical keys. Authors choose pages and empty slots and can use a fixed key such as `"quick"` for quick saves.
+`saves.save(slot, title: null, thumbnail: null)`, `saves.load(slot)`, `saves.copy(source, destination)`, `saves.delete(slot)`, `saves.thumbnail(slot)` and `saves.list()` immediately return awaitable requests with read-only `status` (pending, succeeded, failed) and `error`. Awaiting a failed request throws its error; a successful save has atomically published the complete file. `await saves.list()` returns occupied slot summaries with string id, title, saved_at (UTC Unix seconds) and has_thumbnail, without loading images. Slot names are logical keys. Authors choose pages and empty slots and can use a fixed key such as `"quick"` for quick saves.
+
+`await saves.copy("chapter-1", "backup")` copies an existing save to the destination slot, preserving its execution state, title, timestamp and thumbnail while atomically replacing an existing destination. The current story continues running during the copy, and success yields null. Copying a slot to itself validates the source and completes; missing sources and storage failures throw.
 
 A caller may await its own save. Loading that snapshot restores the request as succeeded with read-only `restored` set to true (false after a normal write), allowing a menu to close, and continues after await without repeating the save call. Other unfinished external requests settle with OperationInterrupted. A successful load replaces the session; its caller does not resume in the old session.
 

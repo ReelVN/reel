@@ -620,6 +620,10 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             ],
         ),
         ("load", vec![parameter("slot", None)]),
+        (
+            "copy",
+            vec![parameter("source", None), parameter("destination", None)],
+        ),
         ("delete", vec![parameter("slot", None)]),
         ("thumbnail", vec![parameter("slot", None)]),
         ("list", vec![]),

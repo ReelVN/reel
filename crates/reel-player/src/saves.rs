@@ -150,6 +150,10 @@ pub trait SaveStorage: Send + Sync + 'static {
     ) -> Result<(), StorageError>;
     fn thumbnail(&self, slot: &str) -> Result<Option<Vec<u8>>, StorageError>;
     fn read(&self, slot: &str) -> Result<SessionSnapshot, StorageError>;
+    /// Copy a committed slot to `destination`, preserving its snapshot, title,
+    /// timestamp and thumbnail. Publish replacements atomically. Equal identifiers
+    /// validate the source and succeed without writing; a missing source fails.
+    fn copy(&self, source: &str, destination: &str) -> Result<(), StorageError>;
     fn delete(&self, slot: &str) -> Result<(), StorageError>;
     fn list(&self) -> Result<Vec<SaveSlot>, StorageError>;
     fn write_data(&self, key: &str, data: &DataDocument) -> Result<(), StorageError>;
@@ -230,6 +234,39 @@ impl DirectorySaves {
     }
 }
 impl SaveStorage for DirectorySaves {
+    fn copy(&self, source: &str, destination: &str) -> Result<(), StorageError> {
+        let mut input = fs::File::open(self.path(source))?;
+        let slot = self.metadata(&mut input)?;
+        if slot.id != source {
+            return Err("slot identity mismatch".into());
+        }
+        if source == destination {
+            return Ok(());
+        }
+        let metadata = postcard::to_allocvec(&(destination, &slot.title, slot.saved_at))?;
+        if metadata.len() as u64 > self.max_snapshot_bytes {
+            return Err("slot metadata exceeds storage budget".into());
+        }
+        let published = reel_storage::publish(&self.path(destination), true, |output| {
+            output.write_all(b"REELSLOT")?;
+            output.write_all(&(metadata.len() as u64).to_le_bytes())?;
+            output.write_all(&metadata)?;
+            let mut scratch = [0; 64 << 10];
+            loop {
+                let read = input.read(&mut scratch)?;
+                if read == 0 {
+                    break;
+                }
+                output.write_all(&scratch[..read])?;
+            }
+            Ok(())
+        })?;
+        if let Some(warning) = published.cleanup_warning {
+            eprintln!("{warning}");
+        }
+        Ok(())
+    }
+
     fn write_data(&self, key: &str, data: &DataDocument) -> Result<(), StorageError> {
         fs::create_dir_all(&self.root)?;
         let published = reel_storage::publish(&self.data_path(key), true, |file| {
@@ -398,6 +435,11 @@ impl<W: Write> Write for LimitedWriter<W> {
 }
 
 pub enum StorageJob {
+    /// Stream an existing slot into an atomically published destination.
+    Copy {
+        source: String,
+        destination: String,
+    },
     Save {
         slot: String,
         title: String,
@@ -461,6 +503,13 @@ impl SaveService {
                         }
                         StorageJob::Load(slot) => {
                             StorageResult::Loaded(Box::new(storage.read(&slot)?))
+                        }
+                        StorageJob::Copy {
+                            source,
+                            destination,
+                        } => {
+                            storage.copy(&source, &destination)?;
+                            StorageResult::Saved
                         }
                         StorageJob::Delete(slot) => {
                             storage.delete(&slot)?;
@@ -574,6 +623,101 @@ mod tests {
             ));
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    fn snapshot() -> SessionSnapshot {
+        let mut driver = AsideSessionUi::from_source(
+            reel_engine::Session::new(reel_engine::SessionId(1), reel_engine::Epoch(1)).unwrap(),
+            "fn main() { narrator(\"checkpoint\"); }",
+            "main",
+            1,
+            "main",
+            "en",
+            Default::default(),
+        )
+        .unwrap();
+        for _ in 0..1000 {
+            driver.tick(Default::default(), 256, || 0).unwrap();
+            if driver.ui().session().view().interaction.is_some() {
+                break;
+            }
+        }
+        assert!(driver.ui().session().view().interaction.is_some());
+        let mut capture = driver.snapshot_begin().unwrap();
+        while !capture
+            .step(SnapshotBudget { units: 256 })
+            .unwrap()
+            .complete
+        {}
+        capture.finish().unwrap()
+    }
+
+    #[test]
+    fn slot_copy_preserves_snapshot_metadata_thumbnail_and_source() {
+        let root = temporary();
+        let storage = DirectorySaves::new(&root, 16 << 20);
+        let snapshot = snapshot();
+        let png = include_bytes!("../../../examples/assets/panels.png");
+        let source = SaveSlot {
+            id: "chapter/一".into(),
+            title: "Original chapter".into(),
+            saved_at: 42,
+            has_thumbnail: true,
+        };
+        storage.write(source.clone(), &snapshot, Some(png)).unwrap();
+        storage
+            .write(
+                SaveSlot {
+                    id: "backup".into(),
+                    title: "Old backup".into(),
+                    saved_at: 99,
+                    has_thumbnail: false,
+                },
+                &snapshot,
+                None,
+            )
+            .unwrap();
+        let original = fs::read(storage.path(&source.id)).unwrap();
+        storage.copy(&source.id, "backup").unwrap();
+        assert_eq!(fs::read(storage.path(&source.id)).unwrap(), original);
+        assert_eq!(
+            storage.read("backup").unwrap().encode().unwrap(),
+            snapshot.encode().unwrap()
+        );
+        assert_eq!(
+            storage.thumbnail("backup").unwrap().as_deref(),
+            Some(png.as_slice())
+        );
+        let mut expected = source.clone();
+        expected.id = "backup".into();
+        assert_eq!(storage.list().unwrap(), [expected, source.clone()]);
+
+        let mut input = fs::File::open(storage.path(&source.id)).unwrap();
+        let mut output = fs::File::open(storage.path("backup")).unwrap();
+        storage.metadata(&mut input).unwrap();
+        storage.metadata(&mut output).unwrap();
+        let mut source_payload = Vec::new();
+        let mut copied_payload = Vec::new();
+        input.read_to_end(&mut source_payload).unwrap();
+        output.read_to_end(&mut copied_payload).unwrap();
+        assert_eq!(copied_payload, source_payload);
+
+        let copied = fs::read(storage.path("backup")).unwrap();
+        storage.copy("backup", "backup").unwrap();
+        assert_eq!(fs::read(storage.path("backup")).unwrap(), copied);
+        assert!(storage.copy("missing", "backup").is_err());
+        assert!(storage.copy("missing", "missing").is_err());
+        assert_eq!(fs::read(storage.path("backup")).unwrap(), copied);
+        fs::write(storage.path("corrupt"), b"invalid slot").unwrap();
+        assert!(storage.copy("corrupt", "backup").is_err());
+        assert_eq!(fs::read(storage.path("backup")).unwrap(), copied);
+
+        let destination = "x".repeat(128);
+        storage.copy("backup", &destination).unwrap();
+        let original = fs::read(storage.path(&destination)).unwrap();
+        let constrained = DirectorySaves::new(&root, 64);
+        assert!(constrained.copy("backup", &destination).is_err());
+        assert_eq!(fs::read(storage.path(&destination)).unwrap(), original);
     }
 
     #[test]

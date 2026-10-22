@@ -119,7 +119,10 @@ fn execute_project_with_capture(
         ("source", reel_cli::into_story(checked, entry).unwrap()),
         ("ASB", reel_cli::decode_story(&artifact.bytes).unwrap()),
     ] {
-        let saves = tempfile::tempdir().unwrap();
+        let save_artifacts = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/reel-artifacts/scenario-saves");
+        std::fs::create_dir_all(&save_artifacts).unwrap();
+        let saves = tempfile::tempdir_in(save_artifacts).unwrap();
         let mut audio = audio::AudioClock::default();
         let media = audio.factory(loaded.assets());
         let driver = AsideSessionUi::from_compiled(
@@ -450,6 +453,58 @@ fn project_scenario_gpu_capture_restores_png_images_and_particles_at_canvas_size
             "restored PNG lost its source image"
         );
     }
+}
+
+#[test]
+fn project_scenario_copies_saved_state_without_capturing_current_state() {
+    let project = scenario_project();
+    std::fs::write(
+        project.path().join("src/main.aside"),
+        r#"
+        fn main() {
+            stage.replace(stack(width: 320, height: 180));
+            await stage.presented();
+            let state = model({value: 1});
+            let saved = saves.save("source", title: "Original checkpoint");
+            await saved;
+            if saved.restored {
+                if state.value != 1 || await persistent.read("copied") != true {
+                    throw "copy did not retain the original saved continuation";
+                }
+                return;
+            }
+            state.value = 9;
+            let copied = saves.copy(source: "source", destination: "backup");
+            if await copied != null || copied.status != "succeeded" || copied.restored {
+                throw "copy operation result";
+            }
+            if state.value != 9 { throw "copy changed the current session"; }
+            let slots = await saves.list();
+            if slots.len() != 2 || slots[0].id != "backup" || slots[1].id != "source"
+                || slots[0].title != "Original checkpoint"
+                || slots[0].title != slots[1].title || slots[0].saved_at != slots[1].saved_at
+                || slots[0].has_thumbnail != slots[1].has_thumbnail {
+                throw "copy metadata changed";
+            }
+            await saves.copy("backup", "backup");
+            let failed = saves.copy("missing", "backup");
+            let mut rejected = false;
+            try { await failed; } catch error { rejected = true; }
+            if !rejected || failed.status != "failed" || failed.error == null {
+                throw "missing source was accepted";
+            }
+            let mut invalid = 0;
+            try { saves.copy("", "backup"); } catch error { invalid += 1; }
+            try { saves.copy("source", ""); } catch error { invalid += 1; }
+            if invalid != 2 { throw "empty slot identifier was accepted"; }
+            await persistent.write("copied", true);
+            await saves.load("backup");
+            throw "load returned to the old session";
+        }
+    "#,
+    )
+    .unwrap();
+    execute_project(project.path(), Duration::from_secs(90));
 }
 
 #[test]

@@ -327,6 +327,13 @@ impl StoryRuntime {
         } else {
             let job = match &request.operation {
                 SaveOperation::Load { slot } => StorageJob::Load(slot.clone()),
+                SaveOperation::Copy {
+                    source,
+                    destination,
+                } => StorageJob::Copy {
+                    source: source.clone(),
+                    destination: destination.clone(),
+                },
                 SaveOperation::Delete { slot } => StorageJob::Delete(slot.clone()),
                 SaveOperation::List => StorageJob::List,
                 SaveOperation::Thumbnail { slot } => StorageJob::Thumbnail(slot.clone()),
