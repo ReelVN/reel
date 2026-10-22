@@ -672,8 +672,18 @@ fn validate_program(
                     )?;
                 }
             }
-            TypeDef::Function(s) => {
-                get(&p.signatures, s.0, "function type signature")?;
+            TypeDef::Function {
+                parameters,
+                return_type,
+            } => {
+                for id in parameters.iter().chain(std::iter::once(return_type)) {
+                    b.work(1)?;
+                    check(
+                        id.index() < i,
+                        ErrorKind::Index,
+                        "function type must refer backwards",
+                    )?;
+                }
             }
             TypeDef::Named {
                 module,
@@ -766,7 +776,6 @@ fn validate_program(
             )?;
         }
     }
-    check_type_cycles(p, &mut b)?;
     unique_slice(
         &p.natives,
         |n| n.symbol.0,
@@ -1227,60 +1236,6 @@ impl ParameterLayouts {
     }
 }
 
-fn check_type_cycles(p: &BytecodePackage, b: &mut Budget) -> Result<(), Error> {
-    // Edges between structural type records and signature records. Nominal types
-    // are leaves, so recursive classes remain possible without recursive layouts.
-    let count = p.types.len() + p.signatures.len();
-    let mut states = b.vec::<u8>(count)?;
-    states.resize(count, 0);
-    let mut stack = b.vec::<(usize, usize)>(count)?;
-    for root in 0..count {
-        if states[root] != 0 {
-            continue;
-        }
-        states[root] = 1;
-        stack.push((root, 0));
-        while let Some((node, edge)) = stack.last_mut() {
-            b.work(1)?;
-            let next = if *node < p.types.len() {
-                match &p.types[*node] {
-                    TypeDef::Tuple(ids) | TypeDef::Union(ids) => ids.get(*edge).map(|i| i.index()),
-                    TypeDef::Function(sig) if *edge == 0 => Some(p.types.len() + sig.index()),
-                    _ => None,
-                }
-            } else {
-                let s = &p.signatures[*node - p.types.len()];
-                if *edge < s.parameters.len() {
-                    Some(s.parameters[*edge].ty.index())
-                } else if *edge == s.parameters.len() {
-                    Some(s.return_type.index())
-                } else if *edge == s.parameters.len() + 1 {
-                    s.rest.as_ref().map(|r| r.ty.index())
-                } else {
-                    None
-                }
-            };
-            *edge += 1;
-            if let Some(next) = next {
-                check(
-                    states[next] != 1,
-                    ErrorKind::Signature,
-                    "recursive structural type/signature",
-                )?;
-                if states[next] == 0 {
-                    states[next] = 1;
-                    stack.push((next, 0));
-                }
-            } else {
-                states[*node] = 2;
-                stack.pop();
-            }
-        }
-    }
-    b.release(stack);
-    b.release(states);
-    Ok(())
-}
 fn validate_function(
     p: &BytecodePackage,
     fi: usize,
@@ -1382,6 +1337,16 @@ fn validate_call(
     c: &CallDesc,
     b: &mut Budget,
 ) -> Result<(), Error> {
+    if let Some(contract) = c.contract {
+        check(
+            matches!(
+                get(&p.types, contract.0, "call contract")?,
+                TypeDef::Function { .. }
+            ),
+            ErrorKind::Signature,
+            "call contract must be a function type",
+        )?;
+    }
     let sig = match c.target {
         CallTarget::Register(r) => {
             reg(f, r)?;

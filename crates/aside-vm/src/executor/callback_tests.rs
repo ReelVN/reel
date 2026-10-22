@@ -21,6 +21,7 @@ fn program(encoded: bool) -> (VerifiedProgram, RuntimeSupport) {
         i(Opcode::Return, 1, 0, 0),
     ];
     main.descriptors.push(Descriptor::Call(CallDesc {
+        contract: None,
         target: CallTarget::Native(NativeId(0)),
         arguments: Arguments::Window(RegWindow {
             start: Reg(0),

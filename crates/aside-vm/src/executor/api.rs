@@ -361,6 +361,7 @@ pub const SUPPORTED_OPCODES: &[Opcode] = &[
     Opcode::Not,
     Opcode::BitNot,
     Opcode::Is,
+    Opcode::CheckType,
     Opcode::TextNew,
     Opcode::TextPush,
     Opcode::TextFinish,

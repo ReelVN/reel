@@ -144,9 +144,22 @@ impl Vm {
             unreachable!()
         };
         let receiver = self.value(s.env, 1)?;
-        let source = ArgSource::Caller {
-            frame: s.id,
-            descriptor: call.descriptor,
+        let Descriptor::Call(desc) = &self.program.package().functions[s.code.function.index()]
+            .descriptors[call.descriptor.index()]
+        else {
+            unreachable!()
+        };
+        let source = if let Some(contract) = desc.contract {
+            ArgSource::CheckedCaller {
+                frame: s.id,
+                descriptor: call.descriptor,
+                contract,
+            }
+        } else {
+            ArgSource::Caller {
+                frame: s.id,
+                descriptor: call.descriptor,
+            }
         };
         if !call.prepared {
             let (parameters, required) = call.method.parameters();
@@ -159,6 +172,18 @@ impl Vm {
                     &mut call.binding,
                     meter,
                 )?;
+                if matches!(result, ArgumentStep::Ready(Ok(_)))
+                    && matches!(source, ArgSource::CheckedCaller { .. })
+                {
+                    if !meter.take(0, self.argument_work(source, index), 0) {
+                        s.phase = ScriptPhase::Builtin(call);
+                        return Ok(false);
+                    }
+                    if let Err(error) = self.checked_argument(source, index) {
+                        self.collection_fault(s, language_fault(error)?)?;
+                        return Ok(true);
+                    }
+                }
                 let binding = match result {
                     ArgumentStep::More => {
                         s.phase = ScriptPhase::Builtin(call);

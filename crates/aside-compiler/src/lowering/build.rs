@@ -587,10 +587,16 @@ impl Lowerer<'_> {
                     }
                 }
                 h::Type::Callable(parameters, result) => {
-                    // Structural callable contracts require parameter names in B01.
-                    // HIR v1 stores only types, so fail instead of inventing names.
-                    let _ = (parameters, result);
-                    return Err(self.b.error(ErrorKind::Unsupported, "explicit structural callable annotations await a shared name-free type contract"));
+                    self.b.work(parameters.len() as u64)?;
+                    let mut out = Vec::new();
+                    for &parameter in parameters {
+                        let ty = self.ty(parameter, depth + 1)?;
+                        self.b.push(&mut out, ty)?;
+                    }
+                    bc::TypeDef::Function {
+                        parameters: out,
+                        return_type: self.ty(*result, depth + 1)?,
+                    }
                 }
                 _ => {
                     return Err(self.b.error(

@@ -161,6 +161,7 @@ impl Metadata {
                 init.code[index] == bc::Instruction::new(bc::Opcode::Call, 0, index as u32, 0)
                     && init.descriptors[index]
                         == bc::Descriptor::Call(bc::CallDesc {
+                            contract: None,
                             target: bc::CallTarget::Function(target),
                             arguments: bc::Arguments::Window(bc::RegWindow {
                                 start: bc::Reg(0),
