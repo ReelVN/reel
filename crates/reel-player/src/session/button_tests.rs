@@ -310,8 +310,10 @@ fn nested_view_centers_content_and_routes_unfocused_control_keys() {
         let data = model({held: false, clicks: 0});
         fn main() {
             stage.replace(stack(width: 600, height: 400) {
-                input(stretch: "both", bindings: {skip: [binding("ControlLeft")]},
-                    on_action: |e| { data.held = e.phase == "pressed"; }) {
+                input(stretch: "both", actions: {skip: {
+                    bindings: [binding("ControlLeft")],
+                    on_action: |e| { data.held = e.phase == "pressed"; }
+                }}) {
                     view(|| button(derive(|| f"{data.held}:{data.clicks}"),
                         width: 100, height: 40, align_x: 0.5, align_y: 0.5,
                         on_click: |e| { data.clicks += 1; }), stretch: "both");

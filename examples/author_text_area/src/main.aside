@@ -1,19 +1,22 @@
 fn main() {
     game.configure(title: "Field notes", width: 640, height: 420, fonts: "fonts/body.ttf");
-    let notes = model({ body: "The door opens.\nWhat happens next?", saved: "" });
+    let notes = model({ body: "The door opens.\nWhat happens next?", saved: "", wrap: true });
     let save = || {
         notes.saved = notes.body;
     };
-    let editor = text_area(
-        value: bind(notes.body), width: 560, height: 220, padding: 16, background: "#182638",
-        font_size: 24, on_submit: save
-    );
+    let editor = text_area(value: bind(notes.body), on_submit: save)
+        .with(
+            width: 560, height: 220, padding: 16, background: "#182638", corner_radius: 12,
+            border_width: 2, border_color: "#92a8c8", font_size: 24, line_height: 1.5,
+            text_align: "start", text_wrap: bind(notes.wrap)
+        );
     stage.replace(
         column(padding: 24, gap: 16) {
             text("Field notes", font_size: 28);
             editor;
             row(gap: 16) {
                 button("Keep notes", width: 160, height: 40, on_click: save);
+                checkbox("Wrap", value: bind(notes.wrap));
                 text(
                     derive(
                         || if notes.body == notes.saved {

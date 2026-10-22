@@ -119,7 +119,7 @@ fn worker_errors_keep_constructor_location_and_cancelled_completions_cannot_resu
     for (source, resident, decode, expected) in [
         ("assets/missing.png", 1 << 20, 1 << 20, "image"),
         (
-            "author_images.aside",
+            "author_images/src/main.aside",
             1 << 20,
             1 << 20,
             "expected PNG or JPEG",

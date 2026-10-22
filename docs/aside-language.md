@@ -683,7 +683,7 @@ Reel 角色调用、narrator 与 say 的 `wait: false` 使用普通具名参数�
 
 Reel 节点构造把 children 候选归一化为显式提供的完整组件根；已属于这些根的后代不再重复挂载。Aside 尾随 children 块仍按原规则收集表达式，普通 add 返回值不变，显式 children 数组使用同一节点合同；这不是语言对某个方法名的特判。
 
-text_input 的显式高度内文字、选区、光标和 IME 位置共同垂直居中；text 的显式宽度参与自动高度测量。富文本事件链接悬停/聚焦下划线仅重绘。
+text_input 的显式高度内文字、选区、光标和 IME 位置共同垂直居中；text 的显式宽度参与自动高度测量。text_input 与 text_area 使用共同 text_align、line_height，text_area 同时使用 text_wrap。共同节点的 border_width、border_color、corner_radius 沿现有构造、with、赋值、绑定和数值动画规则提供内描边与圆角背景。富文本事件链接悬停/聚焦下划线仅重绘。
 
 Reel 的 `text_area` 与 `text_input` 使用相同的 value/on_change/on_submit 参数、可写 bind 和节点所有权；多行编辑复用普通宿主字段与输入事件，不新增语言语法。换行、提交和选区规则见架构及双语指南。
 

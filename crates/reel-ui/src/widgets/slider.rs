@@ -299,7 +299,7 @@ impl Widget for Slider {
         let p = PrePaintProps::fetch(props, cache);
 
         paint_box_shadow(painter, bbox, p.box_shadow, p.corner_radius);
-        paint_background(painter, bbox, p.background, p.border_width, p.corner_radius);
+        paint_background(painter, bbox, p.background, p.corner_radius);
 
         if ctx.is_focus_target() || ctx.is_hovered() {
             // TODO: Replace this custom implementation with the general paint_border()

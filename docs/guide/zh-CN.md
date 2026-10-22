@@ -1168,7 +1168,7 @@ stage.replace(text_input(value: bind(profile.name), width: 280, height: 40,
 
 可运行示例：[author_text_input.aside](../../examples/author_text_input/src/main.aside)。
 
-多行笔记或留言使用 `text_area`，参数与 text_input 相同。它按宽度自动换行，正文从顶部开始；Enter 换行，Ctrl+Enter（macOS 为 Command+Enter）触发 on_submit，Tab 切换焦点。上下方向键移动光标，配合 Shift 扩展选区；Home/End 定位当前显示行，配合 Ctrl/Command 定位全文首尾。滚轮查看溢出内容，编辑时自动将光标滚入可见区域。粘贴的 CRLF/CR 转为 LF；IME 预编辑在确认后才写回 value。保存恢复保留正文和绑定，选区及内部滚动位置随输入控件重建。可运行示例：[author_text_area.aside](../../examples/author_text_area/src/main.aside)。
+多行笔记或留言使用 `text_area`，参数与 text_input 相同。两者使用 `text_align` 设置水平对齐，`line_height` 设置字号倍率行高。text_area 默认按宽度自动换行，`text_wrap: false` 保留显式换行并允许横向滚动；正文从顶部开始。Enter 换行，Ctrl+Enter（macOS 为 Command+Enter）触发 on_submit，Tab 切换焦点。上下方向键移动光标，配合 Shift 扩展选区；Home/End 定位当前显示行，配合 Ctrl/Command 定位全文首尾。滚轮查看溢出内容，编辑时自动将光标滚入可见区域。粘贴的 CRLF/CR 转为 LF；IME 预编辑在确认后才写回 value。保存恢复保留正文和绑定，选区及内部滚动位置随输入控件重建。可运行示例：[author_text_area.aside](../../examples/author_text_area/src/main.aside)。
 
 按键打字演出或键盘小游戏使用 `input(on_key: |event| { ... })`。事件提供 code、key、phase 和 shift/ctrl/alt/meta，phase 为 pressed/repeated/released/cancelled；多键分别交付，失焦会取消旧按键。聚焦按钮先处理自己的确认键，其余未消费的键向祖先 on_key 冒泡，因此点击语言按钮后仍能继续按键打字。聚焦的文本编辑控件保留全部键盘和系统输入法事件。actions 可省略，命名动作可同时用于手柄或鼠标映射，动作映射仍遵守焦点所有权。示例：[author_keyboard.aside](../../examples/author_keyboard/src/main.aside)。
 
@@ -1195,7 +1195,7 @@ fn main() {
 
 图片使用相同资源时由播放器共享。wgpu 后端复用已提交的 GPU 图片，界面文字或悬停状态变化不会要求重新上传整套图片；缓存会在资源退休或需要腾出空间时释放，作者无需管理 GPU 句柄。
 
-普通函数、样式展开、节点属性修改、变换、有限动画和临时 scope 覆盖已可用。
+普通函数、样式展开、节点属性修改、变换、有限动画和临时 scope 覆盖已可用。节点的 `corner_radius` 设置背景和边框圆角，`border_width`、`border_color` 设置内描边；例如 `panel.with(background: "#182638", corner_radius: 12, border_width: 2, border_color: "#92a8c8")`。内容留白由 padding 控制，样式沿用节点的布局与命中矩形。输入框和多行笔记的组合见 [author_text_area](../../examples/author_text_area/src/main.aside)。
 
 常用风格就是普通数据，组件函数决定如何把它应用到自己的节点。先写默认值，再用变体与显式参数覆盖；字段缺失才采用默认值，false、0 和 null 都保留作者的明确含义。临时 scope 覆盖优先于节点底层属性。
 ```aside
@@ -1359,7 +1359,7 @@ await run(tween(caption, reveal_fade: 3, duration: 3.0 * 255.0 / 1400.0), owner:
 caption.reveal_fade = null;
 ```
 
-text 默认按可用宽度自动折行。设置 `text_wrap: false` 保留每个显式书写的行，超出宽度的部分仍显示，或由 clip 裁剪；它可以直接赋值，也可以 bind/derive。这个开关只作用于 text，按钮等控件的标签仍不自动折行，文本编辑器使用自身规则。完整示例：[author_text_wrap.aside](../../examples/author_text_wrap/src/main.aside)。
+text 默认按可用宽度自动折行。设置 `text_wrap: false` 保留每个显式书写的行，超出宽度的部分仍显示，或由 clip 裁剪；它可以直接赋值，也可以 bind/derive。这个开关也适用于 text_area；text_input 保持单行，按钮等控件的标签仍不自动折行。完整示例：[author_text_wrap.aside](../../examples/author_text_wrap/src/main.aside)。
 
 ```aside
 stage.replace(text("A long authored line without automatic wrapping.\nA second explicit line.",

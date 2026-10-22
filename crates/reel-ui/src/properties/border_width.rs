@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::core::{Property, UsesProperty, Widget};
-use crate::kurbo::{Axis, Insets, Point, Rect, RoundedRect, Size, Vec2};
+use crate::kurbo::{Axis, BezPath, Insets, Point, Rect, Shape as _, Size, Vec2};
 use crate::layout::Length;
 use crate::properties::CornerRadius;
 
@@ -119,27 +119,60 @@ impl BorderWidth {
         origin + Vec2::new(border_width, border_width)
     }
 
-    /// Creates a rounded rectangle that is inset by the border width.
-    ///
-    /// Use to display a box's background.
-    ///
-    /// Helper function to be called in [`Widget::paint`].
-    pub fn bg_rect(&self, border_box: Rect, border_radius: &CornerRadius) -> RoundedRect {
-        let border_width = self.width.get();
-        border_box
-            .inset(-border_width)
-            .to_rounded_rect(border_radius.radius.saturating_sub(self.width).get())
+    /// Creates an inside border with the requested outer corner radius.
+    /// Fill this path using the even-odd rule; its inner contour excludes the content.
+    pub fn border_path(&self, border_box: Rect, border_radius: &CornerRadius) -> BezPath {
+        let outer = border_box.to_rounded_rect(border_radius.radius.get());
+        let width = self.width.get();
+        let inner = border_box.inset(-width);
+        let mut path = BezPath::with_capacity(20);
+        path.extend(outer.path_elements(0.1));
+        if inner.width() > 0. && inner.height() > 0. {
+            let radius = (outer.radii().top_left - width).max(0.);
+            path.extend(inner.to_rounded_rect(radius).path_elements(0.1));
+        }
+        path
     }
+}
 
-    /// Creates a rounded rectangle that is inset by half the border width.
-    ///
-    /// Use to display a box's border.
-    ///
-    /// Helper function to be called in [`Widget::paint`].
-    pub fn border_rect(&self, border_box: Rect, border_radius: &CornerRadius) -> RoundedRect {
-        let border_width = self.width.get();
-        border_box
-            .inset(-border_width / 2.0)
-            .to_rounded_rect(border_radius.radius.get())
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inside_border_keeps_outer_rounding_and_excludes_only_the_inner_box() {
+        let bounds = Rect::new(0., 0., 60., 30.);
+        for radius in [0., 8., 1000.] {
+            let corners = CornerRadius::all(Length::px(radius));
+            let outer = bounds.to_rounded_rect(radius);
+            for width in [2., 15.] {
+                let path = BorderWidth::all(Length::px(width)).border_path(bounds, &corners);
+                let actual = path.bounding_box();
+                for (actual, expected) in [actual.x0, actual.y0, actual.x1, actual.y1]
+                    .into_iter()
+                    .zip([bounds.x0, bounds.y0, bounds.x1, bounds.y1])
+                {
+                    assert!((actual - expected).abs() < 1e-9);
+                }
+                let inner = bounds
+                    .inset(-width)
+                    .to_rounded_rect((outer.radii().top_left - width).max(0.));
+                for point in [
+                    Point::new(0.1, 0.1),
+                    Point::new(2.05, 9.),
+                    Point::new(30., 1.),
+                    Point::new(30., 15.),
+                    Point::new(60.1, 15.),
+                ] {
+                    let in_outer = outer.winding(point) != 0;
+                    let in_inner = width < 15. && inner.winding(point) != 0;
+                    assert_eq!(
+                        path.winding(point).abs() % 2 == 1,
+                        in_outer && !in_inner,
+                        "radius={radius}, width={width}, point={point:?}"
+                    );
+                }
+            }
+        }
     }
 }
