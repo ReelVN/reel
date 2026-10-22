@@ -112,7 +112,7 @@ fn validate_label(heap: &Heap, value: Value) -> Result<(), HeapError> {
     validate_button_property(heap, 0, value)
 }
 fn slider_values(
-    heap: &Heap,
+    heap: &aside_vm::PropertyRead<'_>,
     fields: Value,
     replacement: Option<(u32, Value)>,
 ) -> Result<(SliderRange, f64), AdapterError> {
@@ -146,7 +146,7 @@ fn slider_values(
     Ok((range, value))
 }
 pub(super) fn slider_kind(heap: &Heap, fields: Value) -> Result<NodeKind, AdapterError> {
-    let (range, value) = slider_values(heap, fields, None)?;
+    let (range, value) = slider_values(&aside_vm::PropertyRead::current(heap), fields, None)?;
     let callback = heap
         .table_entry(fields, SliderField::OnChange.index() as u32)?
         .1;
@@ -188,7 +188,7 @@ pub(super) fn toggle_kind(
     })
 }
 pub(super) fn validate_slider(
-    heap: &Heap,
+    heap: &aside_vm::PropertyRead<'_>,
     host: Value,
     index: u32,
     value: Value,
@@ -198,9 +198,11 @@ pub(super) fn validate_slider(
         return validate_layout_property(heap, index - count, value);
     }
     SliderField::validate(heap, index, value)?;
-    slider_values(heap, heap.host_fields(host)?, Some((index, value)))
-        .map(|_| ())
-        .map_err(|_| HeapError::TypeMismatch)
+    validation(slider_values(
+        heap,
+        heap.host_fields(host)?,
+        Some((index, value)),
+    ))
 }
 pub(super) fn validate_toggle(heap: &Heap, index: u32, value: Value) -> Result<(), HeapError> {
     let count = ToggleField::PROPERTIES.len() as u32;
@@ -230,7 +232,7 @@ impl StageBinding {
         let target = self.value(heap, change.node)?;
         let fields = heap.host_fields(target)?;
         let (index, handler, value) = if slider {
-            let (range, _) = slider_values(heap, fields, None)?;
+            let (range, _) = slider_values(&aside_vm::PropertyRead::current(heap), fields, None)?;
             let ControlValue::Number(value) = change.value else {
                 return Ok(None);
             };

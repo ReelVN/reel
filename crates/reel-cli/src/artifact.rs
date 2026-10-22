@@ -108,6 +108,7 @@ pub struct Artifact {
     pub profile: BuildProfile,
     pub bytecode_bytes: usize,
     pub text_pool: Option<bc::TextPool>,
+    pub catalogs: std::sync::Arc<reel_engine::aside::source::CatalogProducts>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -309,6 +310,7 @@ fn build_inner(
         profile,
         bytecode_bytes: bytecode.len(),
         text_pool,
+        catalogs: checked.catalogs.clone(),
     })
 }
 

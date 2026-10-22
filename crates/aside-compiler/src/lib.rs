@@ -7,6 +7,7 @@ mod format;
 pub mod hir;
 pub mod lowering;
 pub mod semantic;
+pub mod strings;
 pub use semantic::{
     Analysis, AnalysisContext, AnalysisLimits, AnalysisOptions, analyze, analyze_module,
     analyze_source,

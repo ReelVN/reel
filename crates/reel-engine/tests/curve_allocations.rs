@@ -34,8 +34,14 @@ fn drive(vm: &mut SessionVm, session: &mut Session) -> (u64, u64) {
                 {
                     samples += 1;
                 }
-                if let NativeDispatch::Ready { work: used } =
-                    vm.dispatch(session, ticket, "en", 64).unwrap()
+                if let NativeDispatch::Ready { work: used } = vm
+                    .dispatch(
+                        session,
+                        ticket,
+                        "en",
+                        reel_engine::aside::NativeBudget::Exact(64),
+                    )
+                    .unwrap()
                 {
                     work += u64::from(used);
                 }

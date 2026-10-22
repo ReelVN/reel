@@ -230,7 +230,9 @@ mod audio {
                 )
                 .unwrap();
             if let SessionStep::Vm(RunOutcome::HostCall(ticket)) = progress {
-                runtime.dispatch(&mut session, ticket, "en", 32).unwrap();
+                runtime
+                    .dispatch(&mut session, ticket, "en", NativeBudget::Exact(32))
+                    .unwrap();
                 runtime.maintain_media().unwrap();
                 if !host.0.borrow().is_empty() {
                     break;
@@ -277,7 +279,9 @@ mod audio {
                 .unwrap();
             match progress {
                 SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
-                    runtime.dispatch(&mut session, ticket, "en", 32).unwrap();
+                    runtime
+                        .dispatch(&mut session, ticket, "en", NativeBudget::Exact(32))
+                        .unwrap();
                     runtime.maintain_media().unwrap();
                     assert!(
                         restored.1.borrow().is_empty(),
@@ -340,7 +344,9 @@ mod audio {
                             "ordinary native keeps the batch open"
                         );
                     }
-                    runtime.dispatch(&mut session, ticket, "en", 32).unwrap();
+                    runtime
+                        .dispatch(&mut session, ticket, "en", NativeBudget::Exact(32))
+                        .unwrap();
                     runtime.maintain_media().unwrap();
                     if explicit {
                         assert!(!runtime.vm.wait_is_pending(ticket.wait_id()));

@@ -345,6 +345,7 @@ impl SessionVm {
             stage_root: None,
             media,
             catalogs,
+            source_catalogs: None,
             limits,
             complete: false,
         })
@@ -382,6 +383,17 @@ impl OwnedSessionRestore {
             )
             .map(Some)
         })?))
+    }
+    /// Supply the source compilation's shared catalogs before restoring adapter
+    /// records. Asset catalogs continue through the loader passed to `new`.
+    pub fn with_source_catalogs(
+        mut self,
+        catalogs: super::localization::SourceCatalogs,
+    ) -> Result<Self, AdapterError> {
+        self.0.with_dependent_mut(|_, cursor| {
+            cursor.as_mut().unwrap().select_source_catalogs(catalogs)
+        })?;
+        Ok(self)
     }
     pub fn step(&mut self, budget: SnapshotBudget) -> Result<SnapshotProgress, AdapterError> {
         self.0
@@ -458,10 +470,32 @@ pub struct SessionRestore<'a> {
     stage_root: Option<RootToken>,
     media: Option<Box<dyn crate::media::MediaBackend>>,
     catalogs: Option<Box<dyn crate::localization::CatalogLoader>>,
+    source_catalogs: Option<super::localization::SourceCatalogs>,
     limits: VmLimits,
     complete: bool,
 }
 impl SessionRestore<'_> {
+    /// Supply the source compilation's shared catalogs before restoring adapter
+    /// records. The same source index remains available after restoration.
+    pub fn with_source_catalogs(
+        mut self,
+        catalogs: super::localization::SourceCatalogs,
+    ) -> Result<Self, AdapterError> {
+        self.select_source_catalogs(catalogs)?;
+        Ok(self)
+    }
+    fn select_source_catalogs(
+        &mut self,
+        catalogs: super::localization::SourceCatalogs,
+    ) -> Result<(), AdapterError> {
+        if self.candidate.is_some() {
+            return Err(AdapterError::Input(
+                "select source catalogs before restoring adapter state",
+            ));
+        }
+        self.source_catalogs = Some(catalogs);
+        Ok(())
+    }
     pub fn step(&mut self, budget: SnapshotBudget) -> Result<SnapshotProgress, AdapterError> {
         let mut progress = SnapshotProgress::default();
         while !self.complete && progress.units < budget.units {
@@ -477,6 +511,9 @@ impl SessionRestore<'_> {
                         self.limits,
                     )?);
                     let runtime = self.candidate.as_mut().unwrap();
+                    if let Some(source) = self.source_catalogs.take() {
+                        runtime.set_source_catalogs(source)?;
+                    }
                     if let Some(audio) = self.media.take() {
                         runtime.set_media(audio)?;
                         runtime.suspend_media();

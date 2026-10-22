@@ -229,8 +229,14 @@ fn author_example(source: &str, coordinates: &[(f64, f64)]) -> Vec<String> {
             match outcome {
                 RunOutcome::BudgetYield(_) => {}
                 RunOutcome::HostCall(ticket) => {
-                    if let NativeDispatch::Published { interaction, .. } =
-                        vm.dispatch(&mut session, ticket, "zh-CN", 256).unwrap()
+                    if let NativeDispatch::Published { interaction, .. } = vm
+                        .dispatch(
+                            &mut session,
+                            ticket,
+                            "zh-CN",
+                            reel_engine::aside::NativeBudget::Exact(256),
+                        )
+                        .unwrap()
                     {
                         publications += 1;
                         published = Some(interaction);

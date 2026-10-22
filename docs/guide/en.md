@@ -78,6 +78,14 @@ let fixes a variable's binding while leaving node properties mutable. Use let mu
 
 The desktop player rebuilds a lost graphics device while retaining the current story state. Diagnostics include the backend's device-loss reason. If rebuilding fails, the player reports the error and exits.
 
+### Organizing Creative Units
+
+`src/main.aside` configures the work, creates shared state and starts its entry. As content grows, organize modules around chapters, menus, character performances or minigames; keep each unit's scene, local state and behavior together. Page components own layout and styling; chapter functions compose dialogue, choices and choreography, calling the relevant component when the scene changes.
+
+A simple component returns a node. A component that needs later interaction returns a class instance with meaningful methods. Callers express intent through those methods; the component manages its nodes and tasks. Annotate boundary parameters with their actual component types so cross-module calls retain checks, completion and definition navigation. Pass shared progress, preferences and routes from the entry; keep local state with its component.
+
+Express stories with ordinary functions, sequential calls, conditions and loops. Prefer method chains for nodes, dialogue and actions, placing each operation of a long chain on its own line. Compose waiting, parallel work, cancellation, bindings and input through shared engine interfaces; choose an animation's owner with its node or scope. Extract shared components when actual reuse appears.
+
 ### Available Check, Build and Run Commands
 The desktop player waits for the first mounted scene's fonts and images before presenting it. Platforms that support hidden windows show the window after the first frame is accepted. To provide a loading screen, mount ordinary stage nodes first, then start subsequent tasks. Startup errors retain their source locations.
 
@@ -132,15 +140,15 @@ Pop-Location
 Pop-Location
 ```
 
-Development output contains editable `src/`, `resources/`, `translations/`, and `game.asb` with source diagnostics. Enter its directory and use `reel dev` to run source or `reel run game.asb` to run the compiled output. Release output contains `game.exe`, `game.asb`, `game.rtp`, and `resources.rpk`, plus further volumes when needed. Distribute the complete directory; players double-click `game.exe` to start, or use the equivalent executable on other platforms. The manifest lives inside `game.asb`, with resource paths relative to that file.
+Development output contains editable `src/`, `resources/`, and `game.asb` with source diagnostics. Enter its directory and use `reel dev` to run source or `reel run game.asb` to run the compiled output. Release output contains `game.exe`, `game.asb`, `game.rtp`, and `resources.rpk`, plus further volumes when needed. Distribute the complete directory; players double-click `game.exe` to start, or use the equivalent executable on other platforms. The manifest lives inside `game.asb`, with resource paths relative to that file.
 
 The standalone player locates `game.asb` beside its executable and writes saves to the adjacent `saves/` directory by default. Use `--save-directory <directory>` to choose another location, and preserve saves when updating the game. Release export copies the reel-game player beside the reel tool. The tool package keeps the CLI and player together. Rebuild packages with the player version you distribute.
 
-Each `--resource prefix=directory` maps a directory to its logical script path. Use `--resource .=directory` to mount at the resource root, or `--text prefix=directory` for additional text resources. Project `translations/<locale>/` directories participate automatically in checking, development, builds and exports. Development exports include editable translations; release exports put language content in the text package. Scripts select a language with `localization.set_locale("en")`.
+Each `--resource prefix=directory` maps a directory to its logical script path. Use `--resource .=directory` to mount at the resource root, or `--text prefix=directory` for additional text resources. Translations live in source `tr` calls and participate in checking, development, builds and exports. Development exports retain this source; release exports put language content in the text package. Scripts select a language with `localization.set_locale("en")`.
 
 Resource packages split automatically at a target of 2 GiB including headers and indexes. Add `--pack-bytes 1073741824` to the release command for 1 GiB volumes. Splits occur between complete resources; an oversized resource occupies its own volume. Additional files are named `resources-002.rpk` and so on, and the manifest lists them automatically without changing script paths. Mounting reads indexes only; payloads are read by range.
 
-Release export moves original string constants into `game.rtp` and excludes complete source from the ASB. The pool currently remains resident, with strings sharing its bytes when used; startup does not copy every passage into permanent VM objects. Translations can change without recompiling code, while the original text pool must match its ASB. Images, audio and video use indexed resource reads without extracting the entire archive.
+Release export moves original string constants into `game.rtp` and excludes complete source from the ASB. The source text pool remains resident, with strings sharing its bytes when used. Rebuild after changing source text or translations and update the text package together with its ASB. Images, audio and video use indexed resource reads.
 
 Release disables loose-file overrides by default. Explicitly enable a mod or development overlay with `reel run game.asb --assets overrides`. Later packages in the manifest override earlier ones, and loose files take precedence. `--overwrite` replaces the whole previous export; saves and additional files are not copied into it. Store runtime data separately. Output can live in the project's `build/` directory and must avoid actual source files and resource directories.
 
@@ -372,6 +380,17 @@ let caption = word.caption;
 `let state = model(MyState());` copies an already constructed instance's data, preserving its type, methods and internal shared references without rerunning construction. Connect controls with `bind(state.field)` and compose display values with `derive(|| state.caption())`; method-driven field changes update the corresponding views. Read-only fields provide one-way reads, while writable fields retain their type contracts on control writeback. Instances assigned later keep their shared identity. Closures and resources remain invalid as copied defaults, and static fields do not belong to instance state. See [author_class_models.aside](../../examples/author_class_models/src/main.aside).
 
 ### Editing components while running
+
+Use `.with(...)` to compose content and appearance in the order you create them. It also updates existing nodes and returns the original node. Omitted properties keep their values; related properties are checked together, such as a slider's min, max and value.
+
+```aside
+let caption = text("窗外下起了雨。")
+    .with(font_size: 28, color: "#eeeeee")
+    .with(x: 48, y: 420, max_width: 720);
+caption.with(opacity: 0.5);
+```
+
+The editor shows optional configuration properties as `opacity?: int | float | Binding`; omitting one keeps its current value.
 
 Use `state[field_name]` when data selects a field name. String indexing shares the same type, read-only and binding rules as dot access. `bind(state[field_name])` fixes the selected field; use `derive(|| state[field_name])` to follow changes to the field name.
 
@@ -638,9 +657,17 @@ line.append("\nWelcome back.");
 While the script is between advance points, input may reveal text. Both a waiting append and line.wait use the usual manual, automatic and skip rules. Append preserves revealed graphemes. Its history parameter follows character calls: true appends displayed text, false omits that segment, and a string or rich value appends replacement text. An omitted or cleared entry stays omitted. Handles belong to the main story; saves resume the current segment and wait.
 
 
-Use `await when(|| game.dialogue().ready)` to wait for printing and inline pauses before continuing sound or choreography. `when` follows the observable properties actually read by its predicate. See its [source API documentation](../../crates/reel-engine/src/aside/conditions.rs) for result ownership and cancellation.
+Use `line.revealed()` to wait for this speech's text and inline pauses before continuing sound or choreography. It preserves the current advance point; `line.wait()` waits for the player to advance. `append`, `revealed` and `wait` return the same handle for further chaining. Author components combine their own text animation activities with these dialogue waits.
 
 ## 4 Sequencing Changes and Running Them Together
+
+Action descriptions are reusable: `.then(other)` follows one action with another, `.together(other)` runs both together, `.repeat(times: 3)` repeats the whole description, and `.run()` starts an awaitable activity. Each operation combines the entire preceding expression; use named variables for separately grouped passages. An activity's `.pause()`, `.resume()`, `.stop()` and `.finish()` return that same activity.
+
+```aside
+let entrance = tween(portrait, opacity: 1, duration: 0.3);
+let move = tween(portrait, x: 640, duration: 1);
+await entrance.then(move).then(delay(0.5)).run();
+```
 
 Pass a scalar curve directly to tween when speed changes over time. This curve represents constant acceleration, starting at half the average speed and ending at 1.5 times it. Its sample(0) and sample(1) must be 0 and 1. Curves can be shared; pause, cancellation, repetition and save restoration use the usual activity controls.
 
@@ -651,26 +678,26 @@ let acceleration = curve([
     {time: 0, value: 0, mode: "cubic", out_tangent: 0.5},
     {time: 1, value: 1, in_tangent: 1.5},
 ]);
-await run(tween(portrait, x: 640, duration: 2, easing: acceleration));
+await tween(portrait, x: 640, duration: 2, easing: acceleration).run();
 ```
 
-Create music, video, animation, and clocks paused, then start them with the scene: `audio.play(..., paused: true)`, `movie.play(..., paused: true)`, `run(..., paused: true)`, and `clock(..., paused: true)`. Omitting paused starts them as usual. Paused media continues loading, decoding, and preparing its first frame while position stays at start; seeking preserves the paused state. Animations validate their actions at creation, then read starting property values and acquire write ownership on their first resume. Clocks keep ticks at 0 and elapsed at 0.0 until then.
+Create music, video, animation, and clocks paused, then start them with the scene: `audio.play(..., paused: true)`, `movie.play(..., paused: true)`, `action.run(paused: true)`, and `clock(..., paused: true)`. Omitting paused starts them as usual. Paused media continues loading, decoding, and preparing its first frame while position stays at start; seeking preserves the paused state. Animations validate their actions at creation, then read starting property values and acquire write ownership on their first resume. Clocks keep ticks at 0 and elapsed at 0.0 until then.
 
 ```aside
 panel.opacity = 0;
 let music = audio.play("assets/chime.wav", owner: panel, paused: true);
-let entrance = run(tween(panel, opacity: 1, duration: 0.25), owner: panel, paused: true);
+let entrance = tween(panel, opacity: 1, duration: 0.25).run(owner: panel, paused: true);
 stage.replace(panel);
 await stage.presented(owner: panel);
-resume(music);
-resume(entrance);
+music.resume();
+entrance.resume();
 ```
 
 `s.run(action, paused: true)` follows the same rules. Paused empty combinations and zero-duration actions also wait for resume before completing; finish explicitly completes finite actions, and stop preserves current properties. Saves retain the paused state, and node or scope retirement uses the existing ownership cleanup. The complete [music position example](../../examples/author_media_position/src/main.aside) uses this pattern to start playback after the scene is ready.
 
 `clock(interval: 60, owner: panel)` creates an observable periodic clock. Read-only ticks is an int count of complete intervals, initially 0, usable directly as an array index or string slice boundary. elapsed is their total duration in float seconds, initially 0.0. Use derive to compose clocks, countdowns or progress displays. Large time steps publish the latest value directly. All derivations from one time update settle together before the stage is published. If computation spans frames, intervening time updates are coalesced for the next batch, so a running clock cannot continually invalidate an unfinished batch. pause/resume/stop and await use the activity contract; paused time is excluded, stopping preserves the last values, and retiring the owner cancels the clock. An endless clock cannot finish. Loading a save preserves both value types, the count and pause state, then continues the original interval. See the [clock example](../../examples/author_clock/src/main.aside).
 
-Animation and composed activities are available: `tween(node, x: 320, duration: 0.5, easing: "in_out")` describes a change and `run(action, owner: node)` starts it. Omitting owner uses the current scope first; outside a scope, it uses the session in the main story and the event node in a button callback. Control an activity with `pause(activity)`, `resume(activity)`, `stop(activity)` and `finish(activity)`. Await returns the string `Completed` or `Stopped`; retiring a target or owner cancels the activity and throws at await. Duration is in nonnegative seconds; zero completes immediately. Easing accepts linear, cubic in/out/in_out, quadratic quad_in/quad_out/quad_in_out and sine_in/sine_out/sine_in_out. Shared numeric properties can animate; width/height need finite starting values on the node or in from, and null leaves a property out of the animation. Run [author_activities.aside](../../examples/author_activities/src/main.aside) with `reel dev --assets ../../target/reel-artifacts/author-assets` (from `examples/author_activities/`). sequence/parallel/repeat and scope ownership of activities and tasks are available.
+Animation and composed activities are available: `tween(node, x: 320, duration: 0.5, easing: "in_out")` describes a change and `action.run(owner: node)` starts it. Omitting owner uses the current scope first; outside a scope, it uses the session in the main story and the event node in a button callback. Control an activity with `activity.pause()`, `activity.resume()`, `activity.stop()` and `activity.finish()`. Await returns the string `Completed` or `Stopped`; retiring a target or owner cancels the activity and throws at await. Duration is in nonnegative seconds; zero completes immediately. Easing accepts linear, cubic in/out/in_out, quadratic quad_in/quad_out/quad_in_out and sine_in/sine_out/sine_in_out. Shared numeric properties can animate; width/height need finite starting values on the node or in from, and null leaves a property out of the animation. Run [author_activities.aside](../../examples/author_activities/src/main.aside) with `reel dev --assets ../../target/reel-artifacts/author-assets` (from `examples/author_activities/`). sequence/parallel/repeat and scope ownership of activities and tasks are available.
 
 Hidden scroll regions retain their position and measured sizes. After saving and loading while a menu covers the region, showing it resumes at that position, clamped to the new range if content dimensions changed.
 
@@ -687,10 +714,10 @@ let timer = clock(interval: 0.125, paused: true, owner: root);
 root.add(image(source: derive(|| frames[timer.ticks % count]), width: 64, height: 64));
 stage.replace(root);
 await stage.presented(owner: root);
-resume(timer);
+timer.resume();
 ```
 
-`pause(timer)` holds the current frame, `resume(timer)` continues the cycle, and `stop(timer)` freezes the last frame. Retiring the owner cancels the clock. Saves retain its count and pause state. A time step crossing several frames selects the current frame directly, which suits animation that only needs to display the current picture. Schedule individual sounds, scoring, and other events with ordinary sequential code when each event must execute. The complete [author_frame_animation.aside](../../examples/author_frame_animation/src/main.aside) uses existing repository pictures: run `reel dev --assets ..` (from `examples/author_frame_animation/`).
+`timer.pause()` holds the current frame, `timer.resume()` continues the cycle, and `timer.stop()` freezes the last frame. Retiring the owner cancels the clock. Saves retain its count and pause state. A time step crossing several frames selects the current frame directly, which suits animation that only needs to display the current picture. Schedule individual sounds, scoring, and other events with ordinary sequential code when each event must execute. The complete [author_frame_animation.aside](../../examples/author_frame_animation/src/main.aside) uses existing repository pictures: run `reel dev --assets ..` (from `examples/author_frame_animation/`).
 
 For wall-clock time, import `use std::time::{now, parts, format};`. now() returns integer UTC Unix seconds. parts(timestamp, timezone: null) returns year/month/day/hour/minute/second/weekday/offset_seconds; weekday is Monday 1 through Sunday 7. format(timestamp, pattern: "%Y-%m-%d %H:%M", timezone: null) formats text using strftime patterns. timezone accepts IANA names such as Asia/Shanghai and UTC; omission uses the system zone, or UTC when unavailable. saves.list's saved_at can be passed directly. These calls do not refresh automatically: update a model from a regular task and bind the text. See [author_wall_clock.aside](../../examples/author_wall_clock/src/main.aside).
 
@@ -699,7 +726,7 @@ The quintic curves `quint_in`, `quint_out` and `quint_in_out` give stronger acce
 `quart_in`, `quart_out` and `quart_in_out` use fourth-power curves. `elastic_out` oscillates around the destination with decreasing amplitude, `elastic_in` reverses that motion, and `elastic_in_out` combines both ends. Elastic curves overshoot the starting and ending values, making them suitable for position, rotation and scale. Use curves without overshoot for bounded properties such as opacity. Pause, stop and save restoration work as with other tweens. [author_activities.aside](../../examples/author_activities/src/main.aside) combines a quartic fade with an elastic entrance.
 
 ```aside
-await run(tween(portrait, x: 720, duration: 0.8, easing: "sine_out"));
+await tween(portrait, x: 720, duration: 0.8, easing: "sine_out").run();
 ```
 
 The complete [author_sine_easing.aside](../../examples/author_sine_easing/src/main.aside) compares all three sine curves over the same distance and duration; supply `fonts/body.ttf` before opening the window.
@@ -711,11 +738,9 @@ When started normally, empty sequence/parallel and times: 0 complete immediately
 tween describes target properties, final values, duration, and optional starting values. sequence combines actions in order, parallel combines them concurrently, and repeat repeats an action. These are all ordinary library functions that produce reusable action values. Only run starts an activity, returning an activity that can be awaited and controlled. await activity waits for it to end while input, audio, and other activities continue. run(action) belongs to the current scope, otherwise it inherits its task resource owner; the main story uses the session lifetime. Specify a stage node with owner or a scope with s.run(action).
 Without explicit starting values, an action reads current properties when it actually becomes active. In a sequence, a later step reads its starting values after the previous step finishes. Action descriptions are reusable, and every run creates independent progress. An activity acquires property writes when a segment actually starts. A new segment stops any conflicting older root activity and takes over from the current values, including from paused activities. A sequence may write the same property in order; parallel branches must have disjoint write sets. Direct assignment, including assignment of the same value, stops the root activity writing that property. Assignments to other properties are unaffected. Ending an activity releases all of its writes.
 ```aside
-let entrance = parallel(
-    tween(view.portrait, x: 320, duration: 0.5),
-    tween(view.hud, opacity: 1, duration: 0.3)
-);
-await run(entrance);
+let entrance = tween(view.portrait, x: 320, duration: 0.5)
+    .together(tween(view.hud, opacity: 1, duration: 0.3));
+await entrance.run();
 ```
 Use `from` to include starting values in an action, such as a fade, an entrance, or a loop that restarts each cycle. It accepts an ordinary record whose keys match properties with final values in this tween; other properties start from their values at activation. Construction validates and copies the record values using the target property constraints, so later changes to the record do not change the action. Starting values apply at activation after a delay, on every repeat, and on the first resume after an initially paused run. Set `opacity: 0` when creating a node that should stay hidden while waiting. Zero duration or finish goes directly to final values. Explicit width/height starting values also allow an action to start on a node whose current size is auto.
 
@@ -723,19 +748,18 @@ Use `from` to include starting values in an action, such as a fade, an entrance,
 fn fade_in(node, seconds = 0.5) {
     tween(node, from: {opacity: 0}, opacity: 1, duration: seconds)
 }
-await run(sequence(delay(0.5), fade_in(view.hud)));
+await delay(0.5).then(fade_in(view.hud)).run();
 ```
 
-Run the same action again to replay it. A repeating movement can use `repeat(tween(particle, from: {y: -20}, y: 740, duration: 3))` directly. See the complete entrance and replay example in [author_activities.aside](../../examples/author_activities/src/main.aside).
+Run the same action again to replay it. A repeating movement can use `tween(particle, from: {y: -20}, y: 740, duration: 3).repeat()` directly. See the complete entrance and replay example in [author_activities.aside](../../examples/author_activities/src/main.aside).
 
 Every activity has a defined owner. Startup and main-story functions belong to the session; UI callbacks belong to the node that emitted the event. stage.replace ends the old scene and its callbacks, while the session-owned story code that called it continues. Action targets are only validated handles. If any node or effect target is destroyed, the entire root activity ends as Cancelled and releases all property reservations. When an owner is destroyed on the stage, its activities and callback tasks end together. pause suspends progress, resume continues it, and stop leaves the current value in place and causes a wait to return Stopped. finish brings finite actions to their final values and returns Completed; natural completion also returns Completed. Use stop to end an infinite loop, which has no final completion value of its own. Resource errors or activity cancellation raise the corresponding error in any waiting task that is still alive, where ordinary try/catch can handle it. If the waiting task's own owner has ended, that task ends immediately. The host releases its resources, and script cleanup code ends with the task.
 parallel waits for all finite child actions. If any child action fails, it ends the remaining actions in the group and reports the error; sequence stops subsequent actions on failure. repeat(action, times: 3) repeats a finite number of times; omitting times creates a loop. Continuous loops, such as breathing or falling rain, run separately under scene ownership. Story code waits only for the finite activities it needs.
 ```aside
-let breathing = repeat(sequence(
-    tween(view.portrait, opacity: 0.92, duration: 1.4),
-    tween(view.portrait, opacity: 1.0, duration: 1.4)
-));
-run(breathing, owner: view.root);
+let breathing = tween(view.portrait, opacity: 0.92, duration: 1.4)
+    .then(tween(view.portrait, opacity: 1.0, duration: 1.4))
+    .repeat();
+breathing.run(owner: view.root);
 mio("听，雨又大了。");
 ```
 The example above demonstrates the rules for composing loops. Actual character breathing can use subtle movement or scaling instead, with the same script structure. Authors wrap common actions in ordinary fn functions that take any node and return an action value. UI and character portraits can share these actions.
@@ -1545,49 +1569,35 @@ Basic text uses real text layout; external catalogs and reactive language switch
 
 Author audio connects background resource loading, the real mixer and story waits; see [Author audio](#author-audio). Native-device and offline-mixing coverage are recorded separately in [audio verification](../../crates/reel-media/VERIFICATION.md). Video uses the same mixer content clock; see the video node section.
 
-Maintain UTF-8 Fluent translations under the project's `translations/<locale>/`, such as `translations/en/story/opening.ftl`. `reel check` validates them; `dev`, `build` and `export` prepare language packages automatically. A single-language game uses its original text directly.
-
-`localization.set_locale(locale)` loads the requested language and its available base language on demand. The calling task waits for background IO and parsing, then commits the catalogs and selection together. `localization.locale()` reads the observable language tag. Catch IO or parsing failures with try/catch; the displayed language keeps its previous value. Cancelling the call discards an uncommitted selection. When requests overlap, the latest valid request owns the selection.
-
-To use several languages together, preload them with `localization.load(locale)`; preloaded catalogs remain available across language switches. `localization.load(locale, source)` reads a specific resource. Ordinary language selection retains only the current and base language's automatically loaded catalogs.
-
-`tr(source, id: null, params: null, locale: null)` returns an ordinary string, searching the exact locale, its base language, then the source fallback. Without params, the fallback is literal text; with a parameter table, it is a Fluent pattern. Translations always use Fluent. Named string/int/float parameters and plural selectors are supported. Parameters are never reparsed as templates; missing parameters and other formatting errors are catchable. Fluent preserves bidirectional isolation marks so names in another writing direction cannot reorder surrounding text.
-
-A per-call `locale` lets one view retrieve several languages without changing the global selection. For bilingual dialogue, include both lines in your view and bind reveal independently on the main line. Missing catalogs or translations use the same source fallback. Both calls share loaded catalogs rather than copying a language pack.
-```aside
-localization.load("en");
-column(gap: 6) {
-    text(tr("你好。", id: "greeting", locale: "zh-CN"), font_size: 28);
-    text(tr("你好。", id: "greeting", locale: "en"), font_size: 18);
-}
-```
-
-Use `derive(|| tr(...))` for live UI: changing language reevaluates subscribed expressions. Ordinary tr calls, submitted dialogue/choices, input drafts and stored history strings retain their evaluated content. For live chat history or choice presentation, retain IDs, source text and parameters and call tr in the display binding; branch keys remain independent of labels. No special LocalText type is required.
-
-This fragment comes from the [translation example](../../examples/localization/src/main.aside), with English translations in [translations/en](../../examples/localization/translations/en/). Run `reel dev --assets ../../target/reel-artifacts/author-assets` (from `examples/localization/`) with the font prepared in the first section.
+Keep source text and its translations in the same `tr` call. `reel check` checks language tags and interpolation; `dev` runs source directly, while `build` and `export` generate language packages. A single-language game uses ordinary strings.
 
 ```aside
 localization.set_locale("zh-CN");
-let data = model({name: "Mio", count: 2});
+let data = model({name: "Mio"});
 stage.replace(column(gap: 12) {
-    text(value: derive(|| tr("你好，{ $name }。", id: "welcome", params: {name: data.name})));
+    text(derive(|| tr(f"你好，{data.name}。", {en: f"Hello, {data.name}."})));
     button("English", on_click: |event| localization.set_locale("en"));
 });
 ```
 
-Usually write `tr("雨停了。")` directly. Extraction gives identical source text the same ID; moving code or changing indentation preserves it, while editing the text creates a new ID. Use `tr("雨停了。", id: "opening")` to distinguish meanings or retain an original content ID across edits. Omit the parameter table when the source has no parameters.
+Interpolation uses ordinary Aside expressions. Each expression in the source text is evaluated once in source order; translations reuse those values and may reorder, repeat or omit them. Give a complex shared expression a local variable name first. Language tags use keys such as `en`, `ja` or quoted `"zh-CN"`. Source text, translations and context move together; the compiler generates internal message identities.
 
-Generate translation templates from the project directory. For a new language, copy them into `translations/<locale>/` and fill in the translations.
+`localization.set_locale(locale)` waits for the selected language and its available base language, then updates the selection and UI together. Lookup tries the exact language, its base, then source text. Catch loading failures with try/catch; the previous language remains available. `localization.locale()` reads the observable selection.
 
-```sh
-reel loc extract --output-dir build/translation-template
-reel check
-reel build
+Use `derive(|| tr(...))` for UI that follows language changes. Ordinary calls, submitted dialogue, choices and history retain their evaluated text; define branch keys separately from labels. Ordinary conditions can choose plural wording, with translations beside each branch. For Fluent numeric selectors, use the `params` interface described in the English source documentation.
+
+To display several languages together, preload with `localization.load(locale)` and select a per-call `locale`:
+
+```aside
+localization.load("en");
+column(gap: 6) {
+    text(tr("你好。", {en: "Hello."}, locale: "zh-CN"), font_size: 28);
+    text(tr("你好。", {en: "Hello."}, locale: "en"), font_size: 18);
+}
 ```
 
-Extraction follows imported modules and includes source locations and function context. `--output-dir` mirrors module paths: story/day_one.aside becomes story/day_one.ftl. Identical IDs appear once in the first module by sorted relative path, with all call sites retained. Literal text is escaped automatically; source text with params is checked as a Fluent template. Dynamic text or IDs are reported with their locations and need a catalog supplied by the content generator. `--overwrite` explicitly replaces the selected outputs. Directory mode leaves other files in place and reports old FTL files with no current messages; review and remove them before bundling, or extract to a fresh directory. Keep translations separate from generated source catalogs; extraction does not implicitly merge or modify them.
+Release packages load the current language and its base on demand; explicitly preloaded languages remain available. Source runs share generated translation text and parse catalogs on demand. See the [translation example](../../examples/localization/src/main.aside) and [English API documentation](../../crates/reel-engine/src/aside/localization.rs).
 
-Organize translations by content, such as `translations/en/story/day_one.ftl` and `translations/en/ui/settings.ftl`, with shared terms in `common.ftl`. The tools merge files in relative-path order and resolve cross-file references. Duplicate IDs and syntax errors report the original file, line and column. Moving a translation file preserves message identity. Custom pipelines can use `reel loc bundle <directory> --output <file.ftl>` to produce a standalone catalog and `reel loc check <file.ftl> --locale en` to validate it. Runtime loads and parses by language; individual translations reuse the loaded catalog. Localized asset substitution remains a future capability.
 Video and audio playback return awaitable activities, with the ownership, controls and save behavior described in their sections. Filters and synchronization-group author APIs remain planned.
 Planned: `custom_node` will expose Aside state, measure, record, route and event callbacks. Its layout/render callbacks are read-only; routing decides consumption, capture and focus before a suspendable event task runs. This author interface is not registered yet; host extensions use the [Aside host SDK](../aside-host.md).
 Perspective stages, Mesh, Material and programmable Effect interfaces remain planned. The implemented `camera` is two-dimensional. Live2D, system speech, mobile/Web packaging and external-service adapters need separate implementations and capability documentation.

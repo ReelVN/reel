@@ -75,7 +75,8 @@ fn nested_reactive_read_restores_and_collects_after_each_nested_budget_boundary(
                             .unwrap()
                             .is_some_and(|outer| !outer.same_bits(output));
                     }
-                    vm.dispatch(&mut session, ticket, "en", 1).unwrap();
+                    vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(1))
+                        .unwrap();
                 }
                 SessionStep::Vm(RunOutcome::BudgetYield(usage))
                     if nested && vm.derived_task.is_some() =>
@@ -159,7 +160,8 @@ fn cancelling_nested_reactive_read_releases_both_capture_levels() {
                             .unwrap()
                             .is_some_and(|outer| !outer.same_bits(output));
                     }
-                    vm.dispatch(&mut session, ticket, "en", 1).unwrap();
+                    vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(1))
+                        .unwrap();
                 }
                 SessionStep::Vm(RunOutcome::BudgetYield(_)) if nested => {
                     (session, vm) = restore(&session, &vm);

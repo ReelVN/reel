@@ -8,12 +8,31 @@ use aside_compiler::{
 };
 use std::collections::BTreeMap;
 
+/// A source-visible default value or a parameter handled only when supplied.
+/// Native ABI defaults remain on the independently registered contract.
+#[derive(Clone, Debug)]
+pub enum ParameterDefault {
+    /// The literal value used when the author omits this parameter.
+    Value(aside_vm::bytecode::Const),
+    /// The host distinguishes absence from every explicitly supplied value.
+    Omitted,
+}
+impl ParameterDefault {
+    /// Return the literal author default, when omission has a source value.
+    pub fn value(&self) -> Option<&aside_vm::bytecode::Const> {
+        match self {
+            Self::Value(value) => Some(value),
+            Self::Omitted => None,
+        }
+    }
+}
+
 /// A declaration retains its compiler identity, documentation and real defaults.
 #[derive(Clone, Debug)]
 pub struct Declaration {
     pub symbol: ExternalSymbol,
     pub documentation: String,
-    pub parameter_defaults: BTreeMap<String, aside_vm::bytecode::Const>,
+    pub parameter_defaults: BTreeMap<String, ParameterDefault>,
     pub property_default: Option<aside_vm::bytecode::Const>,
     /// Parameter names expanded from the implementation's registered property schema.
     pub property_parameters: Vec<String>,
@@ -52,7 +71,7 @@ impl Declaration {
                 .filter_map(|p| {
                     p.default
                         .as_ref()
-                        .map(|value| (p.name.clone(), value.clone()))
+                        .map(|value| (p.name.clone(), ParameterDefault::Value(value.clone())))
                 })
                 .collect(),
             property_default: None,
@@ -104,6 +123,23 @@ impl Declaration {
         signature.result_parameter = Some(name.into());
     }
 
+    /// Describe optional parameters whose omitted ABI values are ignored by the
+    /// host. Their source types still govern every explicitly supplied value.
+    pub fn supplied_only(&mut self, names: &[&str]) {
+        let signature = self.symbol.signature.as_ref().expect("native signature");
+        for name in names {
+            assert!(
+                signature
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.name == *name && parameter.default),
+                "supplied-only parameter is an actual optional native parameter"
+            );
+            self.parameter_defaults
+                .insert((*name).into(), ParameterDefault::Omitted);
+        }
+    }
+
     /// Refine constant-dependent results using the native's original defaults.
     pub fn result_cases(&mut self, cases: &[(&str, aside_vm::bytecode::Const, TypeHint)]) {
         let signature = self.symbol.signature.as_mut().expect("native signature");
@@ -121,7 +157,7 @@ impl Declaration {
                     when_omitted: self
                         .parameter_defaults
                         .get(*parameter)
-                        .is_some_and(|value| value == equals),
+                        .is_some_and(|value| value.value() == Some(equals)),
                 }
             })
             .collect();
@@ -431,6 +467,10 @@ impl Api {
                         .any(|base_member| {
                             base_member.declaration.symbol.reference
                                 == member.declaration.symbol.reference
+                                && base_member.declaration.symbol.signature
+                                    == member.declaration.symbol.signature
+                                && base_member.declaration.symbol.ty == member.declaration.symbol.ty
+                                && base_member.write_type == member.write_type
                         })
                 });
                 if inherited {
@@ -531,20 +571,6 @@ impl Api {
             }
             result.documents.push(Document { uri, text });
         }
-        let mut seen = std::collections::BTreeSet::new();
-        result.locations.retain(|location| {
-            let reference = location
-                .declaration
-                .symbol
-                .reference
-                .as_ref()
-                .expect("registered identity");
-            seen.insert((
-                reference.module.clone(),
-                reference.version.clone(),
-                reference.export.clone(),
-            ))
-        });
         result
     }
 }
@@ -596,9 +622,15 @@ fn append_declaration(
                 text.push_str("...");
             }
             text.push_str(&p.name);
+            let default = declaration.parameter_defaults.get(&p.name);
+            if matches!(default, Some(ParameterDefault::Omitted))
+                || (default.is_none() && p.default)
+            {
+                text.push('?');
+            }
             text.push_str(": ");
             text.push_str(&type_name(&p.ty));
-            if let Some(default) = declaration.parameter_defaults.get(&p.name) {
+            if let Some(ParameterDefault::Value(default)) = default {
                 text.push_str(" = ");
                 text.push_str(&constant(default));
             }

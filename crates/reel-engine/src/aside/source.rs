@@ -9,7 +9,33 @@ use aside_compiler::{
 use aside_host::source::{Api, Declaration};
 use aside_vm::bytecode as bc;
 pub use bc::FunctionId as StoryFunction;
-use std::sync::OnceLock;
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, OnceLock},
+};
+
+mod translations;
+pub use translations::{
+    TranslationAnalysis, TranslationDiagnostic, TranslationHole, TranslationSite,
+    TranslationVariant, analyze_translations, extract_translations,
+};
+
+/// Locale catalog text emitted by the same analyzed source compilation. These
+/// are build products; release packaging stores each locale as a seekable asset.
+#[derive(Default, Debug)]
+pub struct CatalogProducts {
+    pub catalogs: BTreeMap<String, String>,
+    pub messages: Vec<TranslationMessage>,
+}
+
+/// Generated lookup identity with the author's original diagnostic location.
+#[derive(Debug)]
+pub struct TranslationMessage {
+    pub key: String,
+    pub source: String,
+    pub module: String,
+    pub span: aside_compiler::TextRange,
+}
 
 static SOURCE_API: OnceLock<Api> = OnceLock::new();
 
@@ -97,6 +123,7 @@ pub fn documentation() -> Vec<aside_host::NativeDocumentation> {
                 .or_else(|| super::rich_text::documentation(&contract.symbol))
                 .or_else(|| super::particles::documentation(&contract.symbol))
                 .or_else(|| super::stage::documentation(&contract.symbol))
+                .or_else(|| super::stage::configure::documentation(&contract.symbol))
                 .or_else(|| super::game::documentation(&contract.symbol))
                 .or_else(|| super::transitions::documentation(&contract.symbol))
                 .or_else(|| super::results::geometry::documentation(&contract.symbol))
@@ -137,6 +164,9 @@ pub struct CompiledStory {
     /// Run the real emitted module initializer before the selected story entry.
     pub initializer: bc::FunctionId,
     pub entry: bc::FunctionId,
+    /// Source compilation products, consumed by `SessionVm::load_story`.
+    /// Bytecode assets use an empty product and their indexed asset loader.
+    pub catalogs: Arc<CatalogProducts>,
 }
 
 impl CompiledStory {
@@ -192,6 +222,7 @@ pub enum SourceError {
     Entry,
     ProjectAnalysis(aside_compiler::semantic::ProjectAnalysis),
     ProjectLowering(lowering::ProjectError),
+    Translation(TranslationDiagnostic),
 }
 impl std::fmt::Display for SourceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -204,11 +235,13 @@ impl std::error::Error for SourceError {}
 pub struct SourceCompilation {
     pub module: AnalyzedModule,
     pub compilation: lowering::Compilation,
+    pub catalogs: Arc<CatalogProducts>,
 }
 
 pub struct ProjectSourceCompilation {
     pub modules: Vec<AnalyzedModule>,
     pub compilation: lowering::ProjectCompilation,
+    pub catalogs: Arc<CatalogProducts>,
 }
 
 /// The author CLI and runtime share this resolver and trusted native registry.
@@ -240,8 +273,10 @@ fn build_api() -> Api {
     super::capture::describe(&mut api);
     super::window::describe(&mut api);
     super::particles::describe(&mut api);
+    super::activity::describe_controls(&mut api);
     super::localization::describe(&mut api);
     super::transitions::describe(&mut api);
+    super::stage::configure::describe(&mut api);
     api.refine(
         "reel::derive",
         aside_host::source::named("Binding"),
@@ -483,15 +518,20 @@ pub fn compile_module(
         .map_err(SourceError::Source)?
         .into_module()
         .map_err(SourceError::Analysis)?;
+    let (catalogs, expansions) =
+        extract_translations(std::slice::from_ref(&module)).map_err(SourceError::Translation)?;
     let compiled = aside_host::lower(
         &module,
         contracts(),
         &api().functions,
         types(),
         &registry::capabilities(),
-        lowering::Options {
-            content_version,
-            ..Default::default()
+        aside_host::CompileOptions {
+            lowering: lowering::Options {
+                content_version,
+                ..Default::default()
+            },
+            expansions: &expansions,
         },
     )
     .map_err(|error| match error {
@@ -501,6 +541,7 @@ pub fn compile_module(
     Ok(SourceCompilation {
         module,
         compilation: compiled,
+        catalogs: Arc::new(catalogs),
     })
 }
 
@@ -513,6 +554,7 @@ pub fn compile_story(
     let SourceCompilation {
         module,
         compilation: compiled,
+        catalogs,
     } = compile_module(source, module_path, module_path, content_version)?;
     // The compiler initializes module function globals at runtime; their
     // GlobalDef.linked_function is intentionally None. Select the real HIR
@@ -538,6 +580,7 @@ pub fn compile_story(
         program: compiled.program,
         initializer: compiled.entry,
         entry,
+        catalogs,
     };
     story.validate()?;
     Ok(story)
@@ -564,6 +607,8 @@ pub fn compile_project(
     let modules = analysis
         .into_modules()
         .map_err(SourceError::ProjectAnalysis)?;
+    let (catalogs, expansions) =
+        extract_translations(&modules).map_err(SourceError::Translation)?;
     let compilation = aside_host::lower_project(
         &modules,
         &plan,
@@ -571,15 +616,19 @@ pub fn compile_project(
         &api().functions,
         types(),
         &registry::capabilities(),
-        lowering::Options {
-            content_version,
-            ..Default::default()
+        aside_host::CompileOptions {
+            lowering: lowering::Options {
+                content_version,
+                ..Default::default()
+            },
+            expansions: &expansions,
         },
     )
     .map_err(SourceError::ProjectLowering)?;
     Ok(ProjectSourceCompilation {
         modules,
         compilation,
+        catalogs: Arc::new(catalogs),
     })
 }
 

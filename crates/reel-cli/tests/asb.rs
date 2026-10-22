@@ -757,8 +757,14 @@ fn authored_scene_builds_loads_and_runs_without_recompilation() {
         match outcome {
             RunOutcome::BudgetYield(_) => {}
             RunOutcome::HostCall(ticket) => {
-                if let NativeDispatch::Published { interaction, .. } =
-                    vm.dispatch(&mut session, ticket, "zh-CN", 64).unwrap()
+                if let NativeDispatch::Published { interaction, .. } = vm
+                    .dispatch(
+                        &mut session,
+                        ticket,
+                        "zh-CN",
+                        reel_engine::aside::NativeBudget::RetryMinimum(64),
+                    )
+                    .unwrap()
                 {
                     vm.sync_stage(&session).unwrap();
                     let stage = vm.stage();

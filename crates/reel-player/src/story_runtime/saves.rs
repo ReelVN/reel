@@ -99,7 +99,10 @@ impl StoryRuntime {
                         driver.ui().session().read_progress().clone(),
                         self.media_factory.as_ref().map(|factory| factory()),
                         Some(driver.catalog_loader()),
-                    );
+                    )
+                    .and_then(|restore| {
+                        restore.with_source_catalogs(driver.adapter().source_catalogs())
+                    });
                     match restored {
                         Ok(restore) => {
                             saves.restore = Some(restore);

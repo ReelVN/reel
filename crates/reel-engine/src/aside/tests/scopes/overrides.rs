@@ -270,7 +270,8 @@ fn scope_override_cancellation_uses_existing_storage_and_idle_cost_ignores_layer
                         == "reel::scope"
                         && ticket.input == NativeInput::CallbackReturned;
                     let before = vm.vm.heap().stats();
-                    vm.dispatch(&mut session, ticket, "en", 32).unwrap();
+                    vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(32))
+                        .unwrap();
                     if closing {
                         assert_eq!(
                             vm.vm.heap().stats().chunk_allocations,

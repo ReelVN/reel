@@ -1,8 +1,10 @@
 //! Character values and grouped ADV dialogue use the existing session wait.
-use super::{AdapterError, NativeDispatch, SessionVm, rich_text, text};
+use super::{AdapterError, NativeDispatch, PendingInteractionKind, SessionVm, rich_text, text};
 use crate::{DialogueLineInput, HistoryInput, Session};
 use aside_vm::bytecode::{FunctionId, FunctionKind};
-use aside_vm::executor::{HostResponse, HostTicket};
+use aside_vm::executor::{
+    Completion as VmCompletion, Continuation, FaultRetention, HostResponse, HostTicket, NativeInput,
+};
 use aside_vm::{Heap, HeapError, ObjectKind, RootKind, RootOwner, RootToken, Value, ValueTag};
 
 pub(super) fn describe(api: &mut aside_host::source::Api) {
@@ -47,18 +49,24 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
     );
     api.refine(
         "reel::speech::append",
-        TypeHint::Null,
+        speech.clone(),
         &[
             ("speech", speech.clone()),
             ("text", text),
             ("history", history),
         ],
     );
-    api.refine("reel::speech::wait", TypeHint::Null, &[("speech", speech)]);
+    for method in ["wait", "revealed"] {
+        api.refine(
+            &format!("reel::speech::{method}"),
+            speech.clone(),
+            &[("speech", speech.clone())],
+        );
+    }
     api.types.push(NamedType::new(
         "reel::types::Speech",
-        "A submitted dialogue interaction. Append text or wait for its shared advancement.",
-        ["append", "wait"]
+        "A submitted dialogue interaction. Chain text, playback waits and advancement on the same speech.",
+        ["append", "wait", "revealed"]
             .into_iter()
             .map(|method| {
                 Member::method(
@@ -102,7 +110,18 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
     ));
 }
 
-pub(super) fn immutable(_: &Heap, _: Value, _: u32, _: Value) -> Result<(), HeapError> {
+pub(super) enum SpeechCommand {
+    Append,
+    Wait,
+    Revealed,
+}
+
+pub(super) fn immutable(
+    _: &aside_vm::PropertyRead<'_>,
+    _: Value,
+    _: u32,
+    _: Value,
+) -> Result<(), HeapError> {
     Err(HeapError::ReadOnly)
 }
 
@@ -140,32 +159,8 @@ impl SessionVm {
         &mut self,
         id: crate::InteractionId,
     ) -> Result<Value, AdapterError> {
-        let methods = if let Some(methods) = self.speech_methods {
-            methods
-        } else {
-            let p = self.vm.program().package();
-            let find = |symbol: &str| {
-                p.functions
-                    .iter()
-                    .enumerate()
-                    .find_map(|(i, f)| match f.kind {
-                        FunctionKind::Native(n)
-                            if p.symbols[p.natives[n.index()].symbol.index()] == symbol =>
-                        {
-                            Some(FunctionId(i as u32))
-                        }
-                        _ => None,
-                    })
-                    .ok_or(AdapterError::Input("speech method missing"))
-            };
-            let methods = [find("reel::speech::append")?, find("reel::speech::wait")?];
-            self.speech_methods = Some(methods);
-            #[cfg(test)]
-            {
-                self.speech_costs[0] += 1;
-            }
-            methods
-        };
+        #[cfg(test)]
+        let objects = self.vm.heap().stats().live_objects;
         let fields = self.vm.heap_mut().alloc_table()?;
         let value = self.vm.heap_mut().alloc_host(
             fields,
@@ -175,15 +170,10 @@ impl SessionVm {
         self.stage
             .types
             .mark(self.vm.heap_mut(), value, "reel::types::Speech")?;
-        for (name, function) in ["append", "wait"].into_iter().zip(methods) {
-            let method = self.vm.bind_native(value, function)?;
-            let heap = self.vm.heap_mut();
-            let key = heap.alloc_string(name)?;
-            heap.table_store(fields, heap.table_len(fields)?, key, method)?;
-        }
         #[cfg(test)]
         {
-            self.speech_costs[1] += 1;
+            self.speech_costs[0] += 1;
+            self.speech_costs[1] += (self.vm.heap().stats().live_objects - objects) as usize;
         }
         Ok(value)
     }
@@ -192,8 +182,15 @@ impl SessionVm {
         &mut self,
         session: &mut Session,
         ticket: HostTicket,
-        append: bool,
+        command: SpeechCommand,
     ) -> Result<NativeDispatch, AdapterError> {
+        if matches!(ticket.input, NativeInput::WaitingFault) {
+            let fault = self.vm.host_callback_fault(ticket)?.unwrap();
+            self.vm
+                .respond(ticket, HostResponse::ForwardFault(fault.id))?;
+            self.issued = None;
+            return Ok(NativeDispatch::Ready { work: 1 });
+        }
         self.check_story_wait(session, ticket)?;
         let args = self.vm.host_arguments(ticket)?;
         let heap = self.vm.heap();
@@ -209,43 +206,106 @@ impl SessionVm {
             generation,
         };
         session.open_dialogue(id)?;
-        let wait = !append
-            || args[3]
-                .as_bool()
-                .ok_or(AdapterError::Input("wait must be bool"))?;
-        if wait && session.completion.is_some() {
-            return Err(crate::SessionError::CompletionPending.into());
-        }
-        if append {
-            let text = rich_text::read(heap, args[1], self.read_limit)?;
-            let history = HistoryText::read(heap, args[2], self.read_limit)?;
-            let content_id = self.dialogue_content_id(ticket);
-            session.append_dialogue(self.owner, id, &text, &content_id, history.input())?;
-            self.sync_narrative(session)?;
-        }
-        if !wait {
-            self.vm.respond(ticket, HostResponse::Ready(Value::NULL))?;
+        let receiver = args[0];
+        if matches!(ticket.input, NativeInput::WaitingReturned) {
+            // The original argument remains rooted by this native frame while the
+            // interaction waits. Returning it preserves identity without a host root.
+            self.vm.respond(ticket, HostResponse::Ready(receiver))?;
             self.issued = None;
-            Ok(NativeDispatch::Ready { work: 1 })
+            return Ok(NativeDispatch::Ready { work: 1 });
+        }
+        if matches!(ticket.input, NativeInput::Entry) {
+            let wait = !matches!(command, SpeechCommand::Append)
+                || args[3]
+                    .as_bool()
+                    .ok_or(AdapterError::Input("wait must be bool"))?;
+            if wait && session.completion.is_some() {
+                return Err(crate::SessionError::CompletionPending.into());
+            }
+            if matches!(command, SpeechCommand::Append) {
+                let text = rich_text::read(heap, args[1], self.read_limit)?;
+                let history = HistoryText::read(heap, args[2], self.read_limit)?;
+                let content_id = self.dialogue_content_id(ticket);
+                session.append_dialogue(self.owner, id, &text, &content_id, history.input())?;
+                self.sync_narrative(session)?;
+            }
+            if !wait {
+                self.vm.respond(ticket, HostResponse::Ready(receiver))?;
+            } else {
+                // Continue once before waiting so the same frame can return its
+                // receiver after completion, including across cancellation/save.
+                self.vm.respond(
+                    ticket,
+                    HostResponse::Continue(Continuation {
+                        version: 1,
+                        stage: 0,
+                        values: &[],
+                        faults: FaultRetention::Preserve,
+                    }),
+                )?;
+            }
+            self.issued = None;
+            return Ok(NativeDispatch::Ready { work: 1 });
+        }
+        if !matches!(ticket.input, NativeInput::Continue { .. }) {
+            return Err(AdapterError::Input("invalid speech continuation"));
+        }
+        let kind = if matches!(command, SpeechCommand::Revealed) {
+            if session
+                .open_dialogue(id)?
+                .lines()
+                .iter()
+                .all(crate::DialogueLine::playback_complete)
+            {
+                self.vm.respond(ticket, HostResponse::Ready(receiver))?;
+                self.issued = None;
+                return Ok(NativeDispatch::Ready { work: 1 });
+            }
+            PendingInteractionKind::Reveal
         } else {
-            // Validate admission before publishing the VM wait; no scripts run
-            // between this response and arming the existing interaction.
-            let wait = ticket.wait_id();
-            self.vm.respond(ticket, HostResponse::Pending(wait))?;
+            PendingInteractionKind::Advance
+        };
+        let wait = ticket.wait_id();
+        self.vm.respond(ticket, HostResponse::Pending(wait))?;
+        if matches!(kind, PendingInteractionKind::Advance) {
+            // The admission checks precede the VM wait. No scripts run between
+            // publishing it and arming the already validated interaction.
             session.wait_dialogue(self.owner, id)?;
-            self.pending = Some(super::PendingInteraction {
-                interaction: id,
-                task: ticket.task,
-                wait,
-                keys: None,
-            });
-            self.feedback_only = false;
-            self.issued = None;
-            Ok(NativeDispatch::Published {
-                interaction: id,
-                work: 1,
-            })
         }
+        self.pending = Some(super::PendingInteraction {
+            interaction: id,
+            task: ticket.task,
+            wait,
+            keys: None,
+            kind,
+        });
+        self.feedback_only = false;
+        self.issued = None;
+        Ok(NativeDispatch::Published {
+            interaction: id,
+            work: 1,
+        })
+    }
+
+    pub(super) fn deliver_speech_reveal(&mut self, session: &Session) -> Result<(), AdapterError> {
+        let pending = self.pending.as_ref().expect("pending speech reveal");
+        self.live(session)?;
+        if self.task != Some(pending.task) {
+            return Err(AdapterError::Input("speech reveal task mismatch"));
+        }
+        let dialogue = session.open_dialogue(pending.interaction)?;
+        if dialogue
+            .lines()
+            .iter()
+            .all(crate::DialogueLine::playback_complete)
+        {
+            // Reveal is a playback observation. It does not arm advancement,
+            // consume the session completion or record a read checkpoint.
+            self.vm
+                .complete(pending.wait, VmCompletion::Ready(Value::NULL))?;
+            self.pending = None;
+        }
+        Ok(())
     }
 
     pub(super) fn record_history(
@@ -316,7 +376,6 @@ impl SessionVm {
                 .ok_or(AdapterError::Input("character callable missing"))
         };
         let call = method("reel::character::speak")?;
-        let line = method("reel::character::line")?;
         let heap = self.vm.heap_mut();
         let fields = heap.alloc_table()?;
         for (i, (key, value)) in [("id", id), ("name", name)].into_iter().enumerate() {
@@ -328,9 +387,6 @@ impl SessionVm {
             .types
             .mark(heap, value, "reel::types::Character")?;
         self.vm.bind_callable(value, call)?;
-        let method = self.vm.bind_native(value, line)?;
-        let key = self.vm.heap_mut().alloc_string("line")?;
-        self.vm.heap_mut().table_store(fields, 2, key, method)?;
         self.vm.respond(ticket, HostResponse::Ready(value))?;
         self.issued = None;
         Ok(())

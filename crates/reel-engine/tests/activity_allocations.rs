@@ -81,7 +81,13 @@ fn drive(vm: &mut SessionVm, session: &mut Session) {
             .unwrap()
         {
             SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
-                vm.dispatch(session, ticket, "en", 1024).unwrap();
+                vm.dispatch(
+                    session,
+                    ticket,
+                    "en",
+                    reel_engine::aside::NativeBudget::Exact(1024),
+                )
+                .unwrap();
             }
             SessionStep::Vm(RunOutcome::Returned(_)) => vm.discard_delivery(session).unwrap(),
             SessionStep::Vm(RunOutcome::Fault(id)) => panic!("activity fault: {id:?}"),

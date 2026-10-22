@@ -144,7 +144,7 @@ impl Shape {
                     validate_image_property(h, i, v)
                 }
             },
-            Self::Particles => super::super::particles::validate,
+            Self::Particles => |h, host, i, v| super::super::particles::validate(h, host, i, v),
             Self::Camera => |h, _, i, v| camera::validate(h, i, v),
             Self::Scroll => |h, _, i, v| scroll::validate(h, i, v),
             Self::Row | Self::Column | Self::Stack | Self::VirtualList | Self::Cursor => {

@@ -4,6 +4,7 @@ extern crate self as aside_host;
 
 mod binding;
 mod declaration;
+mod literal_defaults;
 mod property;
 pub mod source;
 pub use aside_compiler;

@@ -218,15 +218,6 @@ pub fn export(
             ));
         }
     }
-    let translation_source = loaded.project_root.join("translations");
-    if translation_source.is_dir() {
-        let translation_source = translation_source.canonicalize()?;
-        if output.starts_with(&translation_source) || translation_source.starts_with(&output) {
-            return Err(io::Error::other(
-                "export output overlaps the project translation source directory",
-            ));
-        }
-    }
     if output.exists() {
         if !options.overwrite {
             return Err(io::Error::new(
@@ -260,7 +251,7 @@ pub fn export(
             )));
         }
     }
-    let catalogs = crate::localization::bundle_project(&loaded.project_root)?;
+    let catalogs = crate::localization::bundle_project(&loaded.project_root, &artifact.catalogs)?;
     for key in catalogs.files.keys() {
         if resources.contains_key(key) || text.contains_key(key) {
             return Err(io::Error::other(format!(
@@ -300,8 +291,8 @@ pub fn export(
             for (name, file) in &text {
                 writer.add(name, &mut File::open(file)?)?;
             }
-            for (name, file) in &catalogs.files {
-                writer.add(name, &mut File::open(file)?)?;
+            for (name, text) in &catalogs.files {
+                writer.add(name, &mut text.as_bytes())?;
             }
             writer.finish()?.sync_all()?;
             manifest.text = Some("game.rtp".into());
@@ -313,8 +304,8 @@ pub fn export(
                     File::create_new(staging.join("game.rtp"))?,
                     ArchiveKind::Text,
                 )?;
-                for (name, file) in &catalogs.files {
-                    writer.add(name, &mut File::open(file)?)?;
+                for (name, text) in &catalogs.files {
+                    writer.add(name, &mut text.as_bytes())?;
                 }
                 writer.finish()?.sync_all()?;
                 manifest.text = Some("game.rtp".into());
@@ -324,9 +315,6 @@ pub fn export(
             }
             manifest.loose = Some(LooseResources::Directory("resources".into()));
             sources(loaded, staging)?;
-            for (file, relative) in &catalogs.sources {
-                copy(file, &staging.join(relative))?;
-            }
         }
         manifest.validate()?;
         let limits = reel_package::Limits::default();
@@ -346,8 +334,12 @@ pub fn export(
             + resources
                 .values()
                 .chain(text.values())
-                .chain(catalogs.files.values())
                 .try_fold(0u64, |n, path| fs::metadata(path).map(|m| n + m.len()))?
+            + catalogs
+                .files
+                .values()
+                .map(|text| text.len() as u64)
+                .sum::<u64>()
             + artifact
                 .text_pool
                 .as_ref()

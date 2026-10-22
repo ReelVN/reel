@@ -275,7 +275,9 @@ fn tween_from_unmatched_key_reports_the_authors_call() {
         let id = loop {
             match next(&mut vm, &mut session) {
                 RunOutcome::HostCall(ticket) => {
-                    if let Err(error) = vm.dispatch(&mut session, ticket, "en", 32) {
+                    if let Err(error) =
+                        vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(32))
+                    {
                         vm.reject_native(&session, ticket, error).unwrap();
                     }
                 }

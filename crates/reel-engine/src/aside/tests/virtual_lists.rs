@@ -18,7 +18,7 @@ fn drive(vm: &mut SessionVm, session: &mut Session) {
             .unwrap()
         {
             SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
-                if let Err(error) = vm.dispatch(session, ticket, "en", 32) {
+                if let Err(error) = vm.dispatch(session, ticket, "en", NativeBudget::Exact(32)) {
                     vm.reject_native(session, ticket, error).unwrap();
                 }
             }
@@ -175,7 +175,8 @@ fn next_row_boundary(vm: &mut SessionVm, session: &mut Session) {
             .unwrap()
         {
             SessionStep::Vm(RunOutcome::HostCall(t)) => {
-                vm.dispatch(session, t, "en", 32).unwrap();
+                vm.dispatch(session, t, "en", NativeBudget::Exact(32))
+                    .unwrap();
             }
             SessionStep::Vm(RunOutcome::Fault(id)) => {
                 panic!("{:?}", vm.vm.delivery_fault(id).unwrap())
@@ -303,7 +304,8 @@ fn virtual_list_source_reorder_after_row_boundary_cannot_reuse_retired_candidate
             if built {
                 request_feedback(&mut vm, &mut session, 15_001., &[]);
             }
-            vm.dispatch(&mut session, t, "en", 32).unwrap();
+            vm.dispatch(&mut session, t, "en", NativeBudget::Exact(32))
+                .unwrap();
             if built {
                 delivered = true;
                 break;
@@ -336,7 +338,8 @@ fn virtual_list_source_reorder_after_row_boundary_cannot_reuse_retired_candidate
                     vm.stage().node(detached).is_some(),
                     "source must start before the old window commits"
                 );
-                vm.dispatch(&mut session, t, "en", 32).unwrap();
+                vm.dispatch(&mut session, t, "en", NativeBudget::Exact(32))
+                    .unwrap();
                 assert!(
                     vm.stage().node(detached).is_none(),
                     "source clears detached rows before copying entries"
@@ -344,7 +347,8 @@ fn virtual_list_source_reorder_after_row_boundary_cannot_reuse_retired_candidate
                 hit_source = true;
                 break;
             }
-            vm.dispatch(&mut session, t, "en", 32).unwrap();
+            vm.dispatch(&mut session, t, "en", NativeBudget::Exact(32))
+                .unwrap();
         }
     }
     assert!(hit_source);
@@ -430,7 +434,8 @@ fn virtual_list_native_capture_survives_snapshot_and_cancellation_inside_factory
             )
             .unwrap()
         {
-            vm.dispatch(&mut session, ticket, "en", 1).unwrap();
+            vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(1))
+                .unwrap();
             if vm
                 .stage()
                 .nodes()
@@ -680,7 +685,8 @@ fn virtual_list_derived_factory_snapshot_keeps_old_projection_and_latest_request
             )
             .unwrap()
         {
-            vm.dispatch(&mut session, t, "en", 1).unwrap();
+            vm.dispatch(&mut session, t, "en", NativeBudget::Exact(1))
+                .unwrap();
             if vm.stage().nodes().count() > previous_nodes {
                 break;
             }
@@ -776,7 +782,7 @@ fn virtual_list_invalid_factory_retires_candidates_and_restores_queued_fault() {
             .unwrap()
         {
             SessionStep::Vm(RunOutcome::HostCall(t)) => {
-                if let Err(error) = vm.dispatch(&mut session, t, "en", 1) {
+                if let Err(error) = vm.dispatch(&mut session, t, "en", NativeBudget::Exact(1)) {
                     vm.reject_native(&session, t, error).unwrap();
                 }
             }
@@ -935,7 +941,9 @@ fn virtual_list_first_window_cost_against_full_materialization() {
                         {
                             index_time = Some(index_start.unwrap().elapsed());
                         }
-                        if let Err(error) = vm.dispatch(&mut session, t, "en", 32) {
+                        if let Err(error) =
+                            vm.dispatch(&mut session, t, "en", NativeBudget::Exact(32))
+                        {
                             vm.reject_native(&session, t, error).unwrap();
                         }
                     }

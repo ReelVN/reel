@@ -335,19 +335,13 @@ fn run_defaults_to_project_profile_and_rejects_profile_with_an_explicit_asb() {
 }
 
 #[test]
-fn project_commands_prepare_indexed_languages_and_preserve_older_builds() {
+fn project_commands_prepare_inline_languages_and_preserve_older_builds() {
     let temporary = temporary();
     let root = temporary.path();
-    write(
-        root,
-        "src/main.aside",
-        "fn main() { localization.set_locale(\"en\"); tr(\"source\", id: \"greeting\") }",
-    );
-    write(
-        root,
-        "translations/en/ui.ftl",
-        "greeting = First translation\n",
-    );
+    let script = |body: &str| {
+        format!(r#"fn main() {{localization.set_locale("en");tr("source",{{en:"{body}"}})}}"#)
+    };
+    write(root, "src/main.aside", &script("First translation"));
     success(command(root, &["check", "--format", "json"]));
     assert!(!root.join("build").exists());
     let report = success(command(root, &["build", "--format", "json"]));
@@ -364,11 +358,7 @@ fn project_commands_prepare_indexed_languages_and_preserve_older_builds() {
     assert!(first_archive.is_file());
     let old = package.with_file_name("old.asb");
     fs::write(&old, &first).unwrap();
-    write(
-        root,
-        "translations/en/ui.ftl",
-        "greeting = Second translation\n",
-    );
+    write(root, "src/main.aside", &script("Second translation"));
     let report = success(command(root, &["build", "--format", "json"]));
     let second = fs::read(&package).unwrap();
     assert_eq!(report["artifact"]["blake3"], reel_package::digest(&second));
@@ -392,20 +382,14 @@ fn project_commands_prepare_indexed_languages_and_preserve_older_builds() {
     );
     write(
         root,
-        "translations/en/duplicate.ftl",
-        "greeting = Duplicate\n",
+        "src/main.aside",
+        r#"fn main(){tr("source",{en:42});}"#,
     );
     for action in ["check", "build"] {
         let result = command(root, &[action, "--format", "json"]);
         assert!(!result.status.success());
         let report: Value = serde_json::from_slice(&result.stdout).unwrap();
-        assert_eq!(report["stage"], "localization");
-        assert!(
-            report["diagnostics"][0]["message"]
-                .as_str()
-                .unwrap()
-                .contains("translations")
-        );
+        assert!(!report["diagnostics"].as_array().unwrap().is_empty());
         assert_eq!(fs::read(&package).unwrap(), second);
         assert_eq!(fs::read(&old).unwrap(), first);
     }

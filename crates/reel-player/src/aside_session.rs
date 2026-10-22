@@ -24,6 +24,11 @@ pub enum StoryProgress {
     Decoding {
         work: u32,
     },
+    /// Preparation yielded with its next atomic step's minimum work budget.
+    NativeBudgetYield {
+        work: u32,
+        required_work: u32,
+    },
     /// A synchronous native operation updated the author stage.
     Updated {
         work: u32,
@@ -155,8 +160,12 @@ impl AsideSessionUi {
             .step_reactive(self.ui.session(), SessionBudget::RetryMinimum(budget), || 0)?
         {
             Some(reel_engine::aside::SessionStep::Vm(RunOutcome::HostCall(ticket))) => {
-                self.vm
-                    .dispatch(self.ui.session_mut(), ticket, &self.locale, 64)?;
+                self.vm.dispatch(
+                    self.ui.session_mut(),
+                    ticket,
+                    &self.locale,
+                    reel_engine::aside::NativeBudget::RetryMinimum(64),
+                )?;
             }
             Some(reel_engine::aside::SessionStep::Vm(RunOutcome::Fault(_))) => {
                 return Err("restored derived expression failed".into());
@@ -195,21 +204,22 @@ impl AsideSessionUi {
         if locale.is_empty() {
             return Err("empty page locale".into());
         }
-        story.validate()?;
+        let initializer = story.initializer;
+        let entry = story.entry;
         let mut ui = SessionUi::new(session)?;
-        let mut vm = SessionVm::load(ui.session(), story.program, limits)?;
+        let mut vm = SessionVm::load_story(ui.session(), story, limits)?;
         let catalogs = crate::localization::CatalogIndex::default();
         vm.set_catalog_loader(Box::new(crate::localization::AssetCatalogLoader::new(
             ui.assets(),
             catalogs.clone(),
         )))?;
-        vm.start(ui.session(), story.initializer)?;
+        vm.start(ui.session(), initializer)?;
         ui.set_stage(vm.stage());
         Ok(Self {
             ui,
             vm,
-            entry: Some(story.entry),
-            initializer: story.initializer,
+            entry: Some(entry),
+            initializer,
             awaiting_stage: false,
             locale: locale.into(),
             catalogs,
@@ -270,7 +280,10 @@ impl AsideSessionUi {
         self.ui.set_assets(assets);
         self.catalogs = catalogs;
         self.vm
-            .set_catalog_loader(self.catalog_loader())
+            .set_catalog_loader(Box::new(crate::localization::AssetCatalogLoader::new(
+                self.ui.assets(),
+                self.catalogs(),
+            )))
             .expect("select assets before driving the story");
     }
     /// Install the host's completion wake-up before requesting resources.
@@ -663,14 +676,23 @@ impl AsideSessionUi {
                 }
             }
             RunOutcome::HostCall(ticket) => {
-                match self
-                    .vm
-                    .dispatch(self.ui.session_mut(), ticket, &self.locale, host_work)
-                {
+                match self.vm.dispatch(
+                    self.ui.session_mut(),
+                    ticket,
+                    &self.locale,
+                    reel_engine::aside::NativeBudget::RetryMinimum(host_work),
+                ) {
                     Ok(NativeDispatch::Published { interaction, .. }) => {
                         Ok(StoryProgress::Interaction(interaction))
                     }
                     Ok(NativeDispatch::Decoding { work }) => Ok(StoryProgress::Decoding { work }),
+                    Ok(NativeDispatch::BudgetYield {
+                        work,
+                        required_work,
+                    }) => Ok(StoryProgress::NativeBudgetYield {
+                        work,
+                        required_work,
+                    }),
                     Ok(NativeDispatch::Ready { .. }) if self.vm.exit_requested() => {
                         self.cancel()?;
                         Ok(StoryProgress::ExitRequested)

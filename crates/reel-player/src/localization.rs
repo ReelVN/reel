@@ -153,7 +153,7 @@ mod tests {
         Epoch, Session, SessionId,
         aside::{SliceBudget, VmLimits},
     };
-    use std::{collections::BTreeMap, fs, path::Path, sync::Arc};
+    use std::{fs, path::Path, sync::Arc};
 
     #[test]
     fn indexed_archives_select_exact_and_base_catalogs_across_new_sessions() {
@@ -161,25 +161,45 @@ mod tests {
             .join("../../target/reel-artifacts/indexed-catalog-player");
         fs::create_dir_all(&root).unwrap();
         let temporary = tempfile_directory(&root);
+        let script = r#"
+            fn greeting(){tr("source",{en:"Base English",["en-US"]:"US English",fr:"Français"})}
+            fn common(){tr("common",{en:"Base fallback"})}
+            fn main() {
+                localization.set_locale("en");
+                if greeting()!="Base English" {throw "initial indexed catalog";}
+                game.start(next);
+            }
+            fn next() {
+                localization.set_locale("en-US");
+                if greeting()!="US English" {throw "exact indexed catalog";}
+                if common()!="Base fallback" {throw "base indexed catalog";}
+                localization.set_locale("fr");
+                if greeting()!="Français" {throw "new session indexed catalog";}
+                localization.set_locale("de");
+                if greeting()!="source" {throw "missing catalog fallback";}
+            }
+        "#;
+        let mut story =
+            reel_engine::aside::source::compile_story(script, "indexed", 1, "main").unwrap();
         let archive = temporary.join("languages.rtp");
         let mut writer = reel_package::archive::ArchiveWriter::new(
             fs::File::create(&archive).unwrap(),
             reel_package::archive::ArchiveKind::Text,
         )
         .unwrap();
-        let catalogs: CatalogIndex = Arc::new(BTreeMap::from([
-            ("en".into(), "__reel/catalogs/en.ftl".into()),
-            ("en-US".into(), "__reel/catalogs/en-US.ftl".into()),
-            ("fr".into(), "__reel/catalogs/fr.ftl".into()),
-        ]));
-        for (locale, text) in [
-            ("en", "greeting = Base English\ncommon = Base fallback\n"),
-            ("en-US", "greeting = US English\n"),
-            ("fr", "greeting = Français\n"),
-        ] {
+        let catalogs: CatalogIndex = Arc::new(
+            story
+                .catalogs
+                .catalogs
+                .keys()
+                .map(|locale| (locale.clone(), format!("__reel/catalogs/{locale}.ftl")))
+                .collect(),
+        );
+        for (locale, text) in &story.catalogs.catalogs {
             writer.add(&catalogs[locale], &mut text.as_bytes()).unwrap();
         }
         writer.finish().unwrap();
+        story.catalogs = Default::default();
         let assets = Assets::packaged(
             AssetOptions {
                 root: temporary.clone(),
@@ -189,28 +209,9 @@ mod tests {
             None,
         )
         .unwrap();
-        let script = r#"
-            fn main() {
-                localization.set_locale("en");
-                if tr("source", id: "greeting") != "Base English" { throw "initial indexed catalog"; }
-                game.start(next);
-            }
-            fn next() {
-                localization.set_locale("en-US");
-                if tr("source", id: "greeting") != "US English" { throw "exact indexed catalog"; }
-                if tr("source", id: "common") != "Base fallback" { throw "base indexed catalog"; }
-                localization.set_locale("fr");
-                if tr("source", id: "greeting") != "Français" { throw "new session indexed catalog"; }
-                localization.set_locale("de");
-                if tr("original", id: "greeting") != "original" { throw "missing catalog fallback"; }
-            }
-        "#;
-        let driver = AsideSessionUi::from_source(
+        let driver = AsideSessionUi::from_compiled(
             Session::new(SessionId(73), Epoch(1)).unwrap(),
-            script,
-            "indexed",
-            1,
-            "main",
+            story,
             "en",
             VmLimits::default(),
         )
@@ -255,27 +256,169 @@ mod tests {
     }
 
     #[test]
-    fn localization_resource_wait_wakes_runtime_and_then_becomes_idle() {
-        let script = r#"fn main() {
-            localization.load("en", "localization/translations/en/story.ftl");
-            localization.set_locale("en");
-            if tr("雨停了。") != "The rain stopped." { throw "external catalog"; }
-            let mut failed = false;
-            try { localization.load("en", "locales/missing.ftl"); } catch error { failed = true; }
-            if !failed || tr("雨停了。") != "The rain stopped." { throw "failed load changed catalog"; }
-        }"#;
+    fn source_catalogs_survive_asset_replacement_and_new_story_sessions() {
+        let script = r#"
+            fn greeting(){tr("原文",{en:"Source English",fr:"Français"})}
+            fn main(){
+                localization.set_locale("en-US");
+                if greeting()!="Source English" {throw "source base fallback";}
+                game.start(next);
+            }
+            fn next(){
+                localization.set_locale("fr");
+                if greeting()!="Français" {throw "source index lost on restart";}
+                localization.set_locale("de");
+                if greeting()!="原文" {throw "original fallback";}
+            }
+        "#;
         let driver = AsideSessionUi::from_source(
-            Session::new(SessionId(72), Epoch(1)).unwrap(),
+            Session::new(SessionId(74), Epoch(1)).unwrap(),
             script,
-            "localized",
+            "source_languages",
             1,
             "main",
             "zh-CN",
             VmLimits::default(),
         )
         .unwrap()
+        .with_asset_options(AssetOptions::default());
+        let mut runtime = StoryRuntime::new(driver);
+        for step in 0..10_000 {
+            assert!(step < 9_999, "source catalog runtime stalled");
+            runtime.tick(SliceBudget::default(), || 0).unwrap();
+            assert!(
+                matches!(
+                    runtime.driver().state(),
+                    StoryState::Running | StoryState::Finished
+                ),
+                "{:?}",
+                runtime.driver().fault().unwrap()
+            );
+            if runtime.driver().state() == StoryState::Finished && !runtime.needs_tick() {
+                break;
+            }
+        }
+        assert_eq!(runtime.driver().ui().session().identity().epoch, Epoch(2));
+    }
+
+    #[test]
+    fn restored_source_locale_resolves_before_reactive_projection_and_later_switches() {
+        use reel_engine::{
+            SessionIdentity,
+            aside::{
+                SessionVm,
+                snapshot::{SessionSnapshot, SnapshotBudget},
+            },
+        };
+        use reel_ui::stage::NodeKind;
+        let script = r#"fn main(){
+            localization.set_locale("en");
+            let translated=derive(||tr("原文",{en:"English",fr:"Français"}));
+            stage.replace(column{text(translated);button("French",on_click:||localization.set_locale("fr"));});
+        }"#;
+        let driver = AsideSessionUi::from_source(
+            Session::new(SessionId(75), Epoch(1)).unwrap(),
+            script,
+            "source_restore",
+            1,
+            "main",
+            "zh-CN",
+            VmLimits::default(),
+        )
+        .unwrap();
+        let mut runtime = StoryRuntime::new(driver);
+        for _ in 0..1000 {
+            runtime.tick(SliceBudget::default(), || 0).unwrap();
+            if runtime.driver().state() == StoryState::Finished && !runtime.needs_tick() {
+                break;
+            }
+        }
+        let live = runtime.driver();
+        let mut capture = live.snapshot_begin().unwrap();
+        while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let mut image =
+            SessionSnapshot::decode(&capture.finish().unwrap().encode().unwrap()).unwrap();
+        let mut restore = SessionVm::restore_begin(
+            &mut image,
+            live.adapter().vm().program().clone(),
+            VmLimits::default(),
+            SessionIdentity {
+                session_id: SessionId(75),
+                epoch: Epoch(2),
+            },
+            Default::default(),
+            None,
+            Some(live.catalog_loader()),
+        )
+        .unwrap()
+        .with_source_catalogs(live.adapter().source_catalogs())
+        .unwrap();
+        while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+        let (mut session, mut vm) = restore.finish().unwrap();
+        vm.sync_stage(&session).unwrap();
+        let button=vm.stage().nodes().find(|node|matches!(&node.kind,NodeKind::Button{label:Some(label),..} if label=="French")).unwrap().id;
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|node| node.kind == NodeKind::Text("English".into()))
+        );
+        assert!(vm.click(&mut session, button).unwrap());
+        let mut restored = AsideSessionUi::restored(
+            session,
+            vm,
+            "zh-CN".into(),
+            live.ui().assets(),
+            live.initializer(),
+            live.catalogs(),
+        )
+        .unwrap();
+        while !restored.prepare_restored(SliceBudget::default()).unwrap() {}
+        let mut runtime = StoryRuntime::new(restored);
+        runtime.wake_input();
+        for _ in 0..1000 {
+            runtime.tick(SliceBudget::default(), || 0).unwrap();
+            if !runtime.needs_tick() {
+                break;
+            }
+        }
+        assert!(
+            runtime
+                .driver()
+                .adapter()
+                .stage()
+                .nodes()
+                .any(|node| node.kind == NodeKind::Text("Français".into()))
+        );
+    }
+
+    #[test]
+    fn localization_resource_wait_wakes_runtime_and_then_becomes_idle() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/reel-artifacts/source-catalog-player");
+        fs::create_dir_all(&root).unwrap();
+        let temporary = tempfile_directory(&root);
+        let script = r#"
+        fn phrase(){tr("雨停了。",{en:"The rain stopped."})}
+        fn main() {
+            localization.load("en", "en.ftl");localization.set_locale("en");
+            if phrase()!="The rain stopped." {throw "external catalog";}
+            let mut failed=false;
+            try {localization.load("en","missing.ftl");}catch error{failed=true;}
+            if !failed || phrase()!="The rain stopped." {throw "failed load changed catalog";}
+        }"#;
+        let mut story =
+            reel_engine::aside::source::compile_story(script, "localized", 1, "main").unwrap();
+        fs::write(temporary.join("en.ftl"), &story.catalogs.catalogs["en"]).unwrap();
+        story.catalogs = Default::default();
+        let driver = AsideSessionUi::from_compiled(
+            Session::new(SessionId(72), Epoch(1)).unwrap(),
+            story,
+            "zh-CN",
+            VmLimits::default(),
+        )
+        .unwrap()
         .with_asset_options(AssetOptions {
-            root: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples"),
+            root: temporary.clone(),
             ..Default::default()
         });
         let mut runtime = StoryRuntime::new(driver);
@@ -299,5 +442,7 @@ mod tests {
         }
         assert!(waited);
         assert!(!runtime.needs_tick());
+        drop(runtime);
+        fs::remove_dir_all(temporary).unwrap();
     }
 }

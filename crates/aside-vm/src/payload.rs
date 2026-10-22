@@ -310,6 +310,29 @@ impl Bytes {
             }
         }
     }
+    /// Overwrite an admitted range of a private mutable buffer.
+    pub(crate) fn overwrite(&mut self, offset: u32, input: &[u8]) {
+        debug_assert!(offset as usize + input.len() <= self.len as usize);
+        match &mut self.storage {
+            ByteStorage::Inline(bytes) => {
+                bytes[offset as usize..offset as usize + input.len()].copy_from_slice(input)
+            }
+            ByteStorage::Chunks(chunks) => {
+                let mut copied = 0;
+                while copied < input.len() {
+                    let position = offset as usize + copied;
+                    let within = position % BYTE_CHUNK_LEN;
+                    let count = (input.len() - copied).min(BYTE_CHUNK_LEN - within);
+                    chunks
+                        .get_mut(&((position / BYTE_CHUNK_LEN) as u32))
+                        .unwrap()[within..within + count]
+                        .copy_from_slice(&input[copied..copied + count]);
+                    copied += count;
+                }
+            }
+            ByteStorage::Shared(_, _) => unreachable!("mutable buffer"),
+        }
+    }
     pub fn drop_first_chunk(&mut self) {
         if let ByteStorage::Chunks(chunks) = &mut self.storage {
             chunks.pop_first();

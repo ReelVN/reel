@@ -68,6 +68,7 @@ aside_host::native_documentation! {
 use std::sync::Arc;
 pub(super) mod appearance;
 pub(super) mod camera;
+pub(super) mod configure;
 pub(super) mod controls;
 pub(super) mod input;
 mod interaction;
@@ -86,7 +87,7 @@ use reel_ui::stage::{NodeId, NodeKind, NodeProps, Stage};
 use super::{AdapterError, registry, text};
 use aside_host::PropertySchema;
 use aside_host::{CallContext, NativeBinding};
-use aside_vm::bytecode::{Effects, FunctionId, FunctionKind, VerifiedProgram};
+use aside_vm::bytecode::Effects;
 use aside_vm::executor::Vm;
 
 /// One host schema feeds construction, writes and animation; NodeProps remains in reel-ui.
@@ -260,7 +261,6 @@ pub(super) struct StageBinding {
     pub retirement_revision: u64,
     handles: BTreeMap<NodeId, NodeBinding>,
     root: Option<RootToken>,
-    methods: [FunctionId; 5],
     // Schema names are immutable and shared by live nodes. Weak handles let
     // unused schemas disappear with their last node and require no save roots.
     property_keys: super::observable::SchemaKeys,
@@ -320,37 +320,13 @@ impl StageBinding {
         )?;
         Ok(())
     }
-    pub fn new(program: &VerifiedProgram, heap: &Heap) -> Result<Self, AdapterError> {
-        let p = program.package();
-        let mut methods = [FunctionId(0); 5];
-        for (slot, symbol) in methods.iter_mut().zip([
-            add::SYMBOL,
-            remove::SYMBOL,
-            clear::SYMBOL,
-            move_child::SYMBOL,
-            input::value::SYMBOL,
-        ]) {
-            *slot = p
-                .functions
-                .iter()
-                .enumerate()
-                .find_map(|(i, f)| match f.kind {
-                    FunctionKind::Native(native)
-                        if p.symbols[p.natives[native.index()].symbol.index()] == symbol =>
-                    {
-                        Some(FunctionId(i as u32))
-                    }
-                    _ => None,
-                })
-                .ok_or(AdapterError::Input("node method callable missing"))?;
-        }
+    pub fn new(heap: &Heap) -> Result<Self, AdapterError> {
         Ok(Self {
             types: super::source::HostTypes::new(heap)?,
             scene: Stage::default(),
             retirement_revision: 0,
             handles: BTreeMap::new(),
             root: None,
-            methods,
             property_keys: Default::default(),
         })
     }
@@ -596,7 +572,7 @@ impl StageBinding {
             )?;
         }
         heap.observe_host_properties(value, field_count as u32, interaction::FIELDS.len() as u32)?;
-        let mut extra_fields = interaction::FIELDS.len();
+        let extra_fields = interaction::FIELDS.len();
         if symbol == "reel::scroll" {
             for (i, name) in scroll::METRICS.into_iter().enumerate() {
                 let key = self.property_key(heap, name)?;
@@ -612,7 +588,6 @@ impl StageBinding {
                 (field_count + extra_fields) as u32,
                 scroll::METRICS.len() as u32,
             )?;
-            extra_fields += scroll::METRICS.len();
             for field in [scroll::ScrollField::X, scroll::ScrollField::Y] {
                 heap.require_writable_property(PropertyId {
                     host: value,
@@ -647,41 +622,6 @@ impl StageBinding {
                 )?;
             }
         }
-        for (i, (name, function)) in ["add", "remove", "clear", "move", "value"]
-            .into_iter()
-            .zip(self.methods)
-            .enumerate()
-        {
-            if name == "value" && symbol != "reel::input" {
-                continue;
-            }
-            let method = vm.bind_native(value, function)?;
-            let heap = vm.heap_mut();
-            let key = self.property_key(heap, name)?;
-            heap.table_store(fields, (field_count + extra_fields + i) as u32, key, method)?;
-        }
-        if symbol == "reel::video" {
-            let p = vm.program().package();
-            let play = p
-                .functions
-                .iter()
-                .enumerate()
-                .find_map(|(i, f)| match f.kind {
-                    FunctionKind::Native(native)
-                        if p.symbols[p.natives[native.index()].symbol.index()]
-                            == "reel::video::play" =>
-                    {
-                        Some(FunctionId(i as u32))
-                    }
-                    _ => None,
-                })
-                .ok_or(AdapterError::Input("video play binding missing"))?;
-            let method = vm.bind_native(value, play)?;
-            let heap = vm.heap_mut();
-            let key = self.property_key(heap, "play")?;
-            heap.table_store(fields, heap.table_len(fields)?, key, method)?;
-        }
-        let heap = vm.heap_mut();
         let input = if let Some(declaration) = input_declaration {
             Some(input::initialize(heap, value, args[0], declaration)?)
         } else {

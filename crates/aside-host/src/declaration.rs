@@ -1,11 +1,11 @@
 use aside_compiler::semantic::{
     CallEffect, ExternalParameter, ExternalSignature, ExternalSymbol, SymbolReference, TypeHint,
 };
-pub use aside_vm::{HostMethodSupport, HostTypeSupport};
 use aside_vm::bytecode::{
     self as bc, BuiltinType, Effects, NativeSupport, Parameter, RuntimeSupport, Signature,
     SymbolId, TypeDef, TypeId,
 };
+pub use aside_vm::{HostMethodSupport, HostTypeSupport};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeclarationError(pub &'static str);
@@ -19,6 +19,9 @@ impl std::error::Error for DeclarationError {}
 /// No package Signature/TypeId/FunctionId can be imported as a trust assertion.
 /// Parameter defaults are ordinary bytecode default functions generated from these
 /// host-owned constants. Runtime admission resolves the same declarations.
+/// Identical literals share an implementation when their complete preceding
+/// parameter contracts and return types match; this internal identity is not a
+/// source-level callable or a replacement for dependent script defaults.
 #[derive(Clone, Debug)]
 pub struct NativeParameter {
     pub name: String,
@@ -96,6 +99,23 @@ impl std::fmt::Display for BuildError {
 }
 impl std::error::Error for BuildError {}
 
+/// Borrowed host compile plans, one set per analyzed module. Empty plans leave
+/// ordinary source lowering unchanged. Single-module compilation accepts at
+/// most one set; project compilation requires one set per module when present.
+#[derive(Default)]
+pub struct CompileOptions<'a> {
+    pub lowering: aside_compiler::lowering::Options,
+    pub expansions: &'a [Vec<aside_compiler::lowering::CallExpansion>],
+}
+impl From<aside_compiler::lowering::Options> for CompileOptions<'_> {
+    fn from(lowering: aside_compiler::lowering::Options) -> Self {
+        Self {
+            lowering,
+            expansions: &[],
+        }
+    }
+}
+
 /// Lower one analyzed module using independently registered native source types,
 /// runtime ABI contracts and host nominal declarations.
 pub fn lower(
@@ -104,9 +124,19 @@ pub fn lower(
     source_declarations: &[crate::source::Declaration],
     types: &[HostTypeSupport],
     capabilities: &[String],
-    options: aside_compiler::lowering::Options,
+    options: CompileOptions<'_>,
 ) -> Result<aside_compiler::lowering::Compilation, BuildError> {
     use aside_compiler::lowering::{self, ExternalTarget, Linkage, NativeLink};
+    if options.expansions.len() > 1 {
+        return Err(BuildError::Lowering(Box::new(lowering::Error {
+            kind: lowering::ErrorKind::LinkContract,
+            span: module.hir().node(aside_compiler::hir::NodeId(0)).span,
+            detail: "single-module compilation accepts one expansion set".into(),
+            stats: Default::default(),
+        })));
+    }
+    let expansions = options.expansions.first().map_or(&[][..], Vec::as_slice);
+    let options = options.lowering;
     let seed = seed(contracts, types, capabilities, options.content_version)
         .map_err(BuildError::Format)?;
     let references = contracts
@@ -149,6 +179,7 @@ pub fn lower(
         &Linkage {
             package: Some(&seed),
             natives: &links,
+            expansions,
         },
         options,
     )
@@ -164,9 +195,11 @@ pub fn lower_project(
     source_declarations: &[crate::source::Declaration],
     types: &[HostTypeSupport],
     capabilities: &[String],
-    options: aside_compiler::lowering::Options,
+    options: CompileOptions<'_>,
 ) -> Result<aside_compiler::lowering::ProjectCompilation, aside_compiler::lowering::ProjectError> {
     use aside_compiler::lowering::{self, ExternalTarget, NativeLink};
+    let expansions = options.expansions;
+    let options = options.lowering;
     let seed = seed(contracts, types, capabilities, options.content_version).map_err(|error| {
         lowering::ProjectError {
             module: "<host>".into(),
@@ -213,7 +246,7 @@ pub fn lower_project(
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    lowering::compile_project(modules, plan, &seed, &links, options)
+    lowering::compile_project(modules, plan, &seed, &links, expansions, options)
 }
 
 /// Resolve independently declared names/types into this package's indices.
@@ -238,13 +271,14 @@ pub fn runtime_support(
             return Err(DeclarationError("duplicate trusted native"));
         }
         // Unused host natives need not have names/types in a smaller package.
-        if !package
+        let Some(native) = package
             .natives
             .iter()
-            .any(|native| package.symbols.get(native.symbol.index()) == Some(&contract.symbol))
-        {
+            .find(|native| package.symbols.get(native.symbol.index()) == Some(&contract.symbol))
+        else {
             continue;
-        }
+        };
+        let declared = &package.signatures[native.signature.index()];
         let symbol = |name: &str| {
             package
                 .symbols
@@ -273,7 +307,7 @@ pub fn runtime_support(
                     default: parameter
                         .default
                         .as_ref()
-                        .map(|value| default_function(program, contract, index, value))
+                        .map(|value| default_function(program, declared, index, value))
                         .transpose()?,
                 })
             })
@@ -310,26 +344,23 @@ pub fn runtime_support(
     })
 }
 
-pub fn default_name(contract: &NativeContract, index: usize) -> String {
-    format!("{}::default::{index}", contract.symbol)
-}
-
 fn default_function(
     program: &bc::VerifiedProgram,
-    contract: &NativeContract,
+    signature: &bc::Signature,
     index: usize,
     value: &bc::Const,
 ) -> Result<bc::FunctionId, DeclarationError> {
     let package = program.package();
-    let name = default_name(contract, index);
-    let (id, function) = package
-        .functions
-        .iter()
-        .enumerate()
-        .find(|(_, function)| package.symbols[function.name.index()] == name)
+    let id = signature
+        .parameters
+        .get(index)
+        .and_then(|p| p.default)
         .ok_or(DeclarationError("native default missing"))?;
+    let function = &package.functions[id.index()];
     // A package cannot replace the registered constant default with script effects.
-    let valid = function.context == bc::Context::NoWait
+    let valid = function.kind == bc::FunctionKind::Plain
+        && function.context == bc::Context::NoWait
+        && package.signatures[function.signature.index()].effects == bc::Effects(0)
         && function.captures.is_empty()
         && function.code.len() == 2
         && function.code[0].opcode == bc::Opcode::LoadConst as u16
@@ -347,7 +378,7 @@ fn default_function(
     if !valid {
         return Err(DeclarationError("native default differs from registry"));
     }
-    Ok(bc::FunctionId(id as u32))
+    Ok(id)
 }
 pub fn hint(ty: &bc::BuiltinType) -> TypeHint {
     match ty {
@@ -447,57 +478,13 @@ pub fn seed(
             version: content_version,
         });
     }
+    let mut defaults = crate::literal_defaults::LiteralDefaults::default();
     for contract in contracts {
         let mut parameters: Vec<bc::Parameter> = Vec::new();
-        for (index, parameter) in contract.parameters.iter().enumerate() {
+        for parameter in &contract.parameters {
             let parameter_type = ty(&mut package, &parameter.ty);
             let default = if let Some(value) = &parameter.default {
-                let constant = package.constants.len() as u32;
-                package.constants.push(value.clone());
-                let name = symbol(&mut package, &default_name(contract, index));
-                let signature = bc::SignatureId(package.signatures.len() as u32);
-                package.signatures.push(bc::Signature {
-                    parameters: parameters
-                        .iter()
-                        .cloned()
-                        .map(|mut p| {
-                            p.default = None;
-                            p
-                        })
-                        .collect(),
-                    rest: None,
-                    return_type: parameter_type,
-                    effects: bc::Effects(0),
-                    property_bag_tail: None,
-                });
-                let function = bc::FunctionId(package.functions.len() as u32);
-                package.functions.push(bc::FunctionDef {
-                    module: bc::ModuleId(0),
-                    name,
-                    kind: bc::FunctionKind::Plain,
-                    signature,
-                    context: bc::Context::NoWait,
-                    captures: vec![],
-                    register_count: index as u32 + 1,
-                    bindings: parameters
-                        .iter()
-                        .enumerate()
-                        .map(|(i, p)| bc::BindingDef {
-                            name: p.name,
-                            ty: p.ty,
-                            mutable: false,
-                            storage: bc::BindingStorage::Value(bc::Reg(i as u32)),
-                            initialization: bc::BindingInitialization::Parameter(i as u32),
-                        })
-                        .collect(),
-                    descriptors: vec![],
-                    regions: vec![],
-                    source_map: vec![],
-                    code: vec![
-                        bc::Instruction::new(bc::Opcode::LoadConst, index as u32, constant, 0),
-                        bc::Instruction::new(bc::Opcode::Return, index as u32, 0, 0),
-                    ],
-                });
+                let function = defaults.intern(&mut package, &parameters, parameter_type, value);
                 Some(function)
             } else {
                 None
@@ -557,5 +544,6 @@ pub fn seed(
         .iter()
         .map(|name| symbol(&mut package, name))
         .collect();
+    drop(defaults);
     bc::verify(package, bc::Limits::default())
 }

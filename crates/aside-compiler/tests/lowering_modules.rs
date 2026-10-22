@@ -19,7 +19,15 @@ fn compile(inputs: &[(&str, &str)]) -> lowering::ProjectCompilation {
     let modules = analysis.into_modules().unwrap();
     let seed = bc::verify(bc::BytecodePackage::default(), bc::Limits::default()).unwrap();
     let links = vec![Vec::new(); modules.len()];
-    lowering::compile_project(&modules, &plan, &seed, &links, lowering::Options::default()).unwrap()
+    lowering::compile_project(
+        &modules,
+        &plan,
+        &seed,
+        &links,
+        &[],
+        lowering::Options::default(),
+    )
+    .unwrap()
 }
 fn drive(vm: &mut Vm, function: bc::FunctionId) -> RunOutcome {
     let task = vm

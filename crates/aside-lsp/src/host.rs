@@ -27,15 +27,26 @@ pub struct HostDocument {
     pub text: Arc<str>,
 }
 
-/// Documentation and presentation details for one canonical registered symbol.
-/// Types and parameter names remain on its `ExternalSymbol`/`ExternalSignature`.
+/// A displayable literal default or an optional parameter with no source value.
+#[derive(Debug, Clone)]
+pub enum ParameterDefault {
+    /// A literal value displayed with the parameter's real source type.
+    Value(String),
+    /// Omission is meaningful to the host and has no default source value.
+    Omitted,
+}
+
+/// Documentation and presentation details for one registered source signature.
 #[derive(Debug, Clone)]
 pub struct HostDeclaration {
     pub reference: SymbolReference,
+    /// A bound member can refine one native's signature for its receiver type.
+    /// Definition lookup retains that exact source contract.
+    pub signature: Option<aside_compiler::semantic::ExternalSignature>,
     pub markdown: String,
     pub definition: Option<HostLocation>,
-    /// Literal source defaults, keyed by their actual parameter names.
-    pub parameter_defaults: BTreeMap<String, String>,
+    /// Source default semantics, keyed by their actual parameter names.
+    pub parameter_defaults: BTreeMap<String, ParameterDefault>,
     /// Parameters contributed by the real property schema. Hover may summarize
     /// optional entries; completion and signature help retain the full contract.
     pub property_parameters: Vec<String>,
@@ -67,6 +78,31 @@ pub struct HostContext {
     pub documents: Vec<HostDocument>,
 }
 
+/// A host-specific view of source, derived from the compiler's existing facts.
+/// Results are cached with the semantic snapshot and use UTF-8 byte ranges.
+#[derive(Debug, Clone, Default)]
+pub struct SourceFeatures {
+    pub diagnostics: Vec<aside_compiler::Diagnostic>,
+    pub hovers: Vec<SourceHover>,
+    pub completions: Vec<SourceCompletions>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SourceHover {
+    pub range: TextRange,
+    pub markdown: Arc<str>,
+}
+
+/// Completion candidates for a host-defined source region. Items supply text
+/// or snippets; the language server owns conversion to protocol positions.
+#[derive(Debug, Clone)]
+pub struct SourceCompletions {
+    pub range: TextRange,
+    pub items: Arc<[lsp_types::CompletionItem]>,
+}
+
+pub type SourceAnalysis = fn(aside_compiler::editor::EditorModule<'_>) -> SourceFeatures;
+
 /// Find one source directory using the host's project convention. The existence
 /// query includes open editor buffers, so an unsaved entry can establish a project.
 pub type SourceRootQuery = fn(directory: &Path, exists: &dyn Fn(&Path) -> bool) -> Option<PathBuf>;
@@ -75,6 +111,9 @@ pub type SourceRootQuery = fn(directory: &Path, exists: &dyn Fn(&Path) -> bool) 
 #[derive(Debug, Clone, Default)]
 pub struct ServerOptions {
     pub host: HostContext,
+    /// Read-only analysis for source constructs owned by the embedding host.
+    /// It receives recovered compiler facts and never executes author code.
+    pub source_analysis: Option<SourceAnalysis>,
     /// The embedding tool's sole project discovery policy. Files outside a project
     /// use their own directory; untitled buffers remain independent documents.
     pub source_root: Option<SourceRootQuery>,

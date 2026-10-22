@@ -423,7 +423,7 @@ pub(crate) fn allocate(
     }
     Ok(())
 }
-fn immutable(_: &Heap, _: Value, _: u32, _: Value) -> Result<(), HeapError> {
+fn immutable(_: &PropertyRead<'_>, _: Value, _: u32, _: Value) -> Result<(), HeapError> {
     Err(HeapError::ReadOnly)
 }
 

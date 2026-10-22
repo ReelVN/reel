@@ -1,11 +1,9 @@
-//! Project catalogs use the ordinary Fluent bundler and seekable text archive.
-use super::{catalog_files, write_bundle};
-use reel_engine::localization::language_id;
+//! Generated source catalogs use the existing seekable text archive.
+use reel_engine::aside::source::CatalogProducts;
 use reel_package::archive::{ArchiveKind, ArchiveWriter};
 use std::{
     collections::BTreeMap,
-    fs::{self, File},
-    io,
+    fs, io,
     path::{Path, PathBuf},
 };
 
@@ -18,119 +16,55 @@ pub struct PreparedCatalogs {
     pub archive: Option<PathBuf>,
 }
 
-struct Locale {
-    tag: String,
-    files: Vec<PathBuf>,
-}
-
-fn locales(project: &Path) -> io::Result<Vec<Locale>> {
-    let source = project.join("translations");
-    let entries = match fs::read_dir(&source) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(io::Error::other(format!("{}: {error}", source.display()))),
-    };
-    let mut locales = BTreeMap::new();
-    for entry in entries {
-        let entry = entry?;
-        if !entry.file_type()?.is_dir() {
-            continue;
-        }
-        let name = entry.file_name();
-        let name = name.to_str().ok_or_else(|| {
-            io::Error::other(format!(
-                "{}: language directory must be UTF-8",
-                entry.path().display()
-            ))
-        })?;
-        let tag = language_id(name)
-            .map_err(|error| io::Error::other(format!("{}: {error}", entry.path().display())))?
-            .to_string();
-        if name != tag {
-            return Err(io::Error::other(format!(
-                "{}: language directory must use canonical tag {tag}",
-                entry.path().display()
-            )));
-        }
-        let files = catalog_files(&entry.path()).map_err(io::Error::other)?;
-        if files.is_empty() {
-            return Err(io::Error::other(format!(
-                "{}: no .ftl catalogs found",
-                entry.path().display()
-            )));
-        }
-        locales.insert(tag.clone(), Locale { tag, files });
-    }
-    let resources = project.join("resources");
-    for locale in locales.keys() {
-        let key = format!("__reel/catalogs/{locale}.ftl");
-        let conflict = resources.join(&key);
+/// Check generated catalog asset names before creating any output.
+pub fn check_project(project: &Path, products: &CatalogProducts) -> io::Result<()> {
+    for locale in products.catalogs.keys() {
+        let conflict = project.join("resources").join(catalog_key(locale));
         if conflict.try_exists()? {
             return Err(io::Error::other(format!(
-                "{}: resource conflicts with generated project language catalog {key}",
+                "{}: resource conflicts with generated source language catalog",
                 conflict.display()
             )));
         }
     }
-    Ok(locales.into_values().collect())
-}
-
-/// Validate every project language without creating generated directories or files.
-pub fn check_project(project: &Path) -> io::Result<()> {
-    for locale in locales(project)? {
-        write_bundle(&locale.files, &mut io::sink())?;
-    }
     Ok(())
 }
+fn catalog_key(locale: &str) -> String {
+    format!("__reel/catalogs/{locale}.ftl")
+}
 
-pub(crate) struct ProjectBundles {
+pub(crate) struct ProjectBundles<'a> {
     pub catalogs: BTreeMap<String, String>,
-    pub files: BTreeMap<String, PathBuf>,
-    pub sources: Vec<(PathBuf, PathBuf)>,
-    _temporary: Option<tempfile::TempDir>,
+    pub files: BTreeMap<String, &'a str>,
+}
+pub(crate) fn bundle_project<'a>(
+    project: &Path,
+    products: &'a CatalogProducts,
+) -> io::Result<ProjectBundles<'a>> {
+    check_project(project, products)?;
+    Ok(ProjectBundles {
+        catalogs: products
+            .catalogs
+            .keys()
+            .map(|locale| (locale.clone(), catalog_key(locale)))
+            .collect(),
+        files: products
+            .catalogs
+            .iter()
+            .map(|(locale, text)| (catalog_key(locale), text.as_str()))
+            .collect(),
+    })
 }
 
-pub(crate) fn bundle_project(project: &Path) -> io::Result<ProjectBundles> {
-    let locales = locales(project)?;
-    let temporary = if locales.is_empty() {
-        None
-    } else {
-        Some(tempfile::tempdir()?)
-    };
-    let mut bundles = ProjectBundles {
-        catalogs: BTreeMap::new(),
-        files: BTreeMap::new(),
-        sources: Vec::new(),
-        _temporary: temporary,
-    };
-    for locale in locales {
-        let path = bundles
-            ._temporary
-            .as_ref()
-            .unwrap()
-            .path()
-            .join(format!("{}.ftl", locale.tag));
-        let mut file = File::create(&path)?;
-        write_bundle(&locale.files, &mut file)?;
-        let key = format!("__reel/catalogs/{}.ftl", locale.tag);
-        bundles.catalogs.insert(locale.tag, key.clone());
-        bundles.files.insert(key, path);
-        for source in locale.files {
-            let relative = source
-                .strip_prefix(project)
-                .expect("project translation source")
-                .to_path_buf();
-            bundles.sources.push((source, relative));
-        }
-    }
-    Ok(bundles)
-}
-
-/// Prepare one content-addressed archive before publishing an ASB that names it.
-/// Existing archives remain available to older ASBs; unchanged catalogs reuse
-/// the same filename. An untranslated project creates no archive or directory.
-pub fn prepare_project(project: &Path, output: &Path) -> io::Result<PreparedCatalogs> {
-    let bundles = bundle_project(project)?;
+/// Publish the same generated catalogs used by source execution. Unchanged
+/// products reuse their content-addressed archive and older ASBs retain theirs.
+/// A project with no translations creates no archive or generated directory.
+pub fn prepare_project(
+    project: &Path,
+    products: &CatalogProducts,
+    output: &Path,
+) -> io::Result<PreparedCatalogs> {
+    let bundles = bundle_project(project, products)?;
     if bundles.files.is_empty() {
         return Ok(PreparedCatalogs::default());
     }
@@ -138,8 +72,8 @@ pub fn prepare_project(project: &Path, output: &Path) -> io::Result<PreparedCata
     let mut candidate = tempfile::NamedTempFile::new_in(output)?;
     let mut writer = ArchiveWriter::new(candidate.as_file_mut(), ArchiveKind::Text)?;
     let mut identity = b"Reel project catalogs v1\0".to_vec();
-    for (key, path) in &bundles.files {
-        let entry = writer.add(key, &mut File::open(path)?)?;
+    for (key, text) in &bundles.files {
+        let entry = writer.add(key, &mut text.as_bytes())?;
         identity.extend_from_slice(&(key.len() as u64).to_le_bytes());
         identity.extend_from_slice(key.as_bytes());
         identity.extend_from_slice(&entry.length.to_le_bytes());

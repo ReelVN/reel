@@ -2,7 +2,9 @@
 use super::*;
 
 mod freshness;
+mod property_cycle;
 mod scan;
+pub(in crate::heap) use property_cycle::PropertyGraphProgress;
 use scan::DependencyCursor;
 
 #[derive(Clone, Copy)]
@@ -65,15 +67,18 @@ impl Heap {
     }
 
     pub fn begin_derived(&mut self, output: Value) -> Result<(), HeapError> {
+        let candidate = self.alloc_dependencies()?;
+        self.begin_capture(output, candidate)
+    }
+    pub(super) fn alloc_dependencies(&mut self) -> Result<Value, HeapError> {
         self.ensure_object_slot()?;
         self.ensure_bytes(crate::dependencies::BASE_BYTES)?;
-        let candidate = self.allocate(
+        Ok(self.allocate(
             ObjectKind::Dependencies,
             Payload::Dependencies(Box::default()),
             None,
             crate::dependencies::BASE_BYTES,
-        );
-        self.begin_capture(output, candidate)
+        ))
     }
 
     /// Isolate component construction from the enclosing observer. Nested
@@ -170,13 +175,22 @@ impl Heap {
         {
             return Ok(());
         }
+        self.capture_dependency(dependencies, source, field)?;
+        Ok(())
+    }
+    pub(super) fn capture_dependency(
+        &mut self,
+        dependencies: Value,
+        source: Value,
+        field: Option<u32>,
+    ) -> Result<bool, HeapError> {
         let selector = field.map_or(-1, i64::from);
         let key = self.key(dependencies)?;
         let Payload::Dependencies(capture) = &self.object(key)?.payload else {
             unreachable!()
         };
         if capture.contains(source, field) {
-            return Ok(());
+            return Ok(false);
         }
         let extra = capture.pair_bytes()?;
         let chunks = Values::growth_bytes(capture.values.len.into(), 2) / VALUE_CHUNK_BYTES;
@@ -189,7 +203,7 @@ impl Heap {
         };
         capture.push_pair(source, Value::int(selector));
         object.charged += extra;
-        Ok(())
+        Ok(true)
     }
 
     pub fn observe_write(&self, value: Value, field: Option<u32>) -> Result<(), HeapError> {
@@ -239,23 +253,28 @@ impl Heap {
         }
         let mut index = 0;
         while index < self.sequence_len(subscribers)? {
+            self.property_traversal_work
+                .set(self.property_traversal_work.get() + 8);
             if self.sequence_get(subscribers, index)?.same_bits(weak)
                 && self
                     .sequence_get(subscribers, index + 1)?
                     .same_bits(selector)
             {
-                let len = self.sequence_len(subscribers)?;
-                let a = self.sequence_get(subscribers, len - 2)?;
-                let b = self.sequence_get(subscribers, len - 1)?;
-                self.set_field(subscribers, index, a)?;
-                self.set_field(subscribers, index + 1, b)?;
-                self.array_pop(subscribers)?;
-                self.array_pop(subscribers)?;
-                return Ok(());
+                return self.reactive_remove_at(subscribers, index);
             } else {
                 index += 2;
             }
         }
+        Ok(())
+    }
+    fn reactive_remove_at(&mut self, subscribers: Value, index: u32) -> Result<(), HeapError> {
+        let len = self.sequence_len(subscribers)?;
+        let a = self.sequence_get(subscribers, len - 2)?;
+        let b = self.sequence_get(subscribers, len - 1)?;
+        self.set_field(subscribers, index, a)?;
+        self.set_field(subscribers, index + 1, b)?;
+        self.array_pop(subscribers)?;
+        self.array_pop(subscribers)?;
         Ok(())
     }
 
@@ -263,6 +282,7 @@ impl Heap {
         &self,
         output: PropertyId,
         mut source: PropertyId,
+        writes: Option<&dyn PropertyWrites>,
     ) -> Result<Option<PropertyId>, HeapError> {
         if source.host.same_bits(output.host)
             && (source.field == output.field || source.field == u32::MAX)
@@ -270,7 +290,13 @@ impl Heap {
             return Err(HeapError::BindingCycle);
         }
         if source.field != u32::MAX {
-            source = self.property_source(source)?.0;
+            source = if let Some(writes) = writes {
+                PropertyRead::proposed(self, writes)
+                    .source_avoiding(source, Some(output))?
+                    .0
+            } else {
+                self.property_source(source)?.0
+            };
         }
         if source.host.same_bits(output.host)
             && (source.field == output.field || source.field == u32::MAX)
@@ -288,8 +314,16 @@ impl Heap {
         output: PropertyId,
         source: PropertyId,
     ) -> Result<(), HeapError> {
+        self.check_derived_configuration_cycle(output, source, None)
+    }
+    pub(super) fn check_derived_configuration_cycle(
+        &mut self,
+        output: PropertyId,
+        source: PropertyId,
+        writes: Option<&dyn PropertyWrites>,
+    ) -> Result<(), HeapError> {
         self.property_work.clear();
-        if let Some(source) = self.derived_cycle_input(output, source)? {
+        if let Some(source) = self.derived_cycle_input(output, source, writes)? {
             self.work_push(source)?;
         }
         let mut cursor = 0;
@@ -308,7 +342,7 @@ impl Heap {
                 };
                 // Ordinary model endpoints can close a binding cycle, but have
                 // no derived inputs. Do not add them to the visited work list.
-                let Some(next) = self.derived_cycle_input(output, next)? else {
+                let Some(next) = self.derived_cycle_input(output, next, writes)? else {
                     continue;
                 };
                 if !self
@@ -402,11 +436,12 @@ impl Heap {
         }
         let mut i = 0;
         while i < self.sequence_len(subscribers)? {
+            self.property_traversal_work
+                .set(self.property_traversal_work.get() + 8);
             let weak = self.sequence_get(subscribers, i)?;
             let selector = self.sequence_get(subscribers, i + 1)?;
             let Some(output) = self.subscriber_target(weak)? else {
-                let owner = Value::object(self.id, source.data().as_ffi());
-                self.reactive_remove(owner, weak, selector)?;
+                self.reactive_remove_at(subscribers, i)?;
                 continue;
             };
             i += 2;
@@ -476,9 +511,12 @@ impl Heap {
         if !self.object(self.key(output)?)?.derived {
             return Ok(());
         }
-        let mut work = crate::root_ranges::ChargedVec::new(&self.usage, 8)?;
-        work.data.push(output);
-        while let Some(output) = work.data.pop() {
+        self.derived_disconnect_work.clear();
+        self.reserve_derived_disconnect(1)?;
+        self.derived_disconnect_work.push(output);
+        while let Some(output) = self.derived_disconnect_work.pop() {
+            self.property_traversal_work
+                .set(self.property_traversal_work.get() + 16);
             let object = self.object(self.key(output)?)?;
             if !object.derived {
                 continue;
@@ -498,21 +536,79 @@ impl Heap {
                 continue;
             }
             let len = self.sequence_len(dependencies)?;
-            let needed = work.data.len() + len as usize / 2;
-            if needed > work.data.capacity() {
-                let mut larger = crate::root_ranges::ChargedVec::new(
-                    &self.usage,
-                    needed.max(work.data.capacity() * 2),
-                )?;
-                larger.data.append(&mut work.data);
-                work = larger;
-            }
+            let needed = self.derived_disconnect_work.len() + len as usize / 2;
+            self.reserve_derived_disconnect(needed)?;
             for index in (0..len).step_by(2) {
-                work.data.push(self.sequence_get(dependencies, index)?);
+                self.property_traversal_work
+                    .set(self.property_traversal_work.get() + 4);
+                self.derived_disconnect_work
+                    .push(self.sequence_get(dependencies, index)?);
             }
             self.disconnect_derived(output)?;
             self.set_host_payload(output, DerivedSlot::Suspended as u32, Value::bool(true))?;
         }
+        Ok(())
+    }
+
+    fn reserve_derived_disconnect(&mut self, needed: usize) -> Result<(), HeapError> {
+        let old = self.derived_disconnect_work.capacity();
+        if needed <= old {
+            return Ok(());
+        }
+        let next = needed.max(old * 2).max(8);
+        self.ensure_bytes(((next - old) * std::mem::size_of::<Value>()) as u64)?;
+        self.derived_disconnect_work
+            .try_reserve_exact(next - self.derived_disconnect_work.len())
+            .map_err(|_| HeapError::AllocationFailure)?;
+        let bytes =
+            ((self.derived_disconnect_work.capacity() - old) * std::mem::size_of::<Value>()) as u64;
+        self.usage.charge(bytes);
+        self.reserved += bytes;
+        Ok(())
+    }
+
+    /// Reserve an upper bound before publishing any replacement connection.
+    /// Every dependency edge can enter the later stack once before its owner's
+    /// dependency list is disconnected; repeated inputs need no second walk.
+    pub(super) fn prepare_derived_disconnect(&mut self, output: Value) -> Result<(), HeapError> {
+        if !self.object(self.key(output)?)?.derived {
+            return Ok(());
+        }
+        self.property_work.clear();
+        self.work_push(PropertyId {
+            host: output,
+            field: 0,
+        })?;
+        let mut cursor = 0;
+        let mut edges = 1usize;
+        while cursor < self.property_work.len() {
+            let output = self.property_work[cursor].host;
+            cursor += 1;
+            let dependencies = self.host_payload(output, DerivedSlot::Dependencies as u32)?;
+            if dependencies.same_bits(Value::NULL) {
+                continue;
+            }
+            let len = self.sequence_len(dependencies)?;
+            edges = edges
+                .checked_add(len as usize / 2)
+                .ok_or(HeapError::OutOfBounds)?;
+            for index in (0..len).step_by(2) {
+                let source = self.sequence_get(dependencies, index)?;
+                if self.object(self.key(source)?)?.derived
+                    && !self
+                        .property_work
+                        .iter()
+                        .any(|item| item.host.same_bits(source))
+                {
+                    self.work_push(PropertyId {
+                        host: source,
+                        field: 0,
+                    })?;
+                }
+            }
+        }
+        self.reserve_derived_disconnect(edges)?;
+        self.property_work.clear();
         Ok(())
     }
 

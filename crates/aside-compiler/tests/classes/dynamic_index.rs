@@ -382,6 +382,7 @@ fn model_indices_share_bind_locations_and_replace_derived_dependencies() {
         &lowering::Linkage {
             package: Some(&seed),
             natives: &links,
+            expansions: &[],
         },
         lowering::Options::default(),
     )

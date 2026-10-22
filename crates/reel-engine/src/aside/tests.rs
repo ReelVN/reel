@@ -6,6 +6,7 @@ mod activities;
 mod auto_condition;
 mod buttons;
 mod clock_batches;
+mod component_cost;
 mod conditions;
 mod curves;
 mod dialogue_append;
@@ -20,12 +21,15 @@ mod masks;
 mod media_positions;
 mod models;
 mod particles;
+mod property_configuration;
 mod result_use;
 mod results;
 mod rich_text;
 mod scopes;
 mod snapshots;
+mod source_inline;
 mod source_types;
+mod speech_flow;
 mod tasks;
 mod text_fade;
 mod transitions;
@@ -109,8 +113,9 @@ fn default_reel_environment_respects_author_scopes_and_explicit_aliases() {
     loop {
         match next(&mut vm, &mut session) {
             RunOutcome::HostCall(ticket) => {
-                if let NativeDispatch::Published { interaction, .. } =
-                    vm.dispatch(&mut session, ticket, "en", 8).unwrap()
+                if let NativeDispatch::Published { interaction, .. } = vm
+                    .dispatch(&mut session, ticket, "en", NativeBudget::Exact(8))
+                    .unwrap()
                 {
                     vm.sync_stage(&session).unwrap();
                     assert!(vm.stage().nodes().any(|node| {
@@ -178,8 +183,9 @@ fn image_nodes_validate_before_writing_and_preserve_identity_and_origin() {
     loop {
         match next(&mut vm, &mut session) {
             RunOutcome::HostCall(ticket) => {
-                if let NativeDispatch::Published { interaction, .. } =
-                    vm.dispatch(&mut session, ticket, "en", 8).unwrap()
+                if let NativeDispatch::Published { interaction, .. } = vm
+                    .dispatch(&mut session, ticket, "en", NativeBudget::Exact(8))
+                    .unwrap()
                 {
                     collect(&mut vm);
                     vm.sync_stage(&session).unwrap();
@@ -376,7 +382,10 @@ fn malformed_duplicate_choices_leave_no_publication_or_decoder_roots() {
             panic!("choice")
         };
         let before = vm.vm.heap().stats().roots;
-        assert!(vm.dispatch(&mut s, ticket, "en", 256).is_err());
+        assert!(
+            vm.dispatch(&mut s, ticket, "en", NativeBudget::Exact(256))
+                .is_err()
+        );
         assert!(s.view().interaction.is_none());
         assert!(s.view().history.is_empty());
         assert!(vm.pending.is_none());
@@ -400,8 +409,13 @@ fn choice_decode_yields_with_roots_and_returns_original_key_once() {
     };
     let mut published = false;
     for _ in 0..1000 {
-        match vm.dispatch(&mut s, ticket, "en", 1).unwrap() {
-            NativeDispatch::Ready { .. } => panic!("choice must wait"),
+        match vm
+            .dispatch(&mut s, ticket, "en", NativeBudget::Exact(1))
+            .unwrap()
+        {
+            NativeDispatch::Ready { .. } | NativeDispatch::BudgetYield { .. } => {
+                panic!("choice must wait")
+            }
             NativeDispatch::Decoding { work } => {
                 assert!(work <= 1);
                 assert!(s.view().interaction.is_none());
@@ -697,7 +711,10 @@ fn long_story_and_many_choices_keep_complete_text_and_original_key_across_gc() {
                 {
                     choice_roots = Some(vm.vm.heap().stats().roots);
                 }
-                match vm.dispatch(&mut session, ticket, "en", 128).unwrap() {
+                match vm
+                    .dispatch(&mut session, ticket, "en", NativeBudget::Exact(128))
+                    .unwrap()
+                {
                     NativeDispatch::Published { interaction, .. } => {
                         match session.view().interaction.unwrap() {
                             crate::InteractionView::Dialogue(_) => {
@@ -734,7 +751,9 @@ fn long_story_and_many_choices_keep_complete_text_and_original_key_across_gc() {
                         }
                     }
                     NativeDispatch::Decoding { .. } => collect(&mut vm),
-                    NativeDispatch::Ready { .. } => panic!("story native must wait"),
+                    NativeDispatch::Ready { .. } | NativeDispatch::BudgetYield { .. } => {
+                        panic!("story native must wait")
+                    }
                 }
             }
             RunOutcome::Returned(_) => {
@@ -838,7 +857,8 @@ fn authored_components_keep_node_identity_across_gc_updates_and_replacement() {
                             .unwrap(),
                     );
                 }
-                let dispatch = match vm.dispatch(&mut session, ticket, "en", 8) {
+                let dispatch = match vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(8))
+                {
                     Ok(dispatch) => dispatch,
                     Err(error) => {
                         assert!(matches!(error, AdapterError::Heap(HeapError::RetiredHost)));
@@ -943,7 +963,8 @@ fn authored_components_keep_node_identity_across_gc_updates_and_replacement() {
         loop {
             match next(&mut vm, &mut session) {
                 RunOutcome::HostCall(ticket) => {
-                    vm.dispatch(&mut session, ticket, "en", 8).unwrap();
+                    vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(8))
+                        .unwrap();
                 }
                 RunOutcome::Fault(delivery) => {
                     let fault = vm.vm.delivery_fault(delivery).unwrap().unwrap();

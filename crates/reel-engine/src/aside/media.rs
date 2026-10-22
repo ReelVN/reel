@@ -329,7 +329,12 @@ fn settle_cue(heap: &mut Heap, cue: Value) -> Result<bool, AdapterError> {
     heap.set_host_payload(cue, Slot::Owner as u32, Value::NULL)?;
     Ok(true)
 }
-pub(super) fn readonly(_: &Heap, _: Value, _: u32, _: Value) -> Result<(), HeapError> {
+pub(super) fn readonly(
+    _: &aside_vm::PropertyRead<'_>,
+    _: Value,
+    _: u32,
+    _: Value,
+) -> Result<(), HeapError> {
     Err(HeapError::ReadOnly)
 }
 fn response(heap: &Heap, value: Value) -> Result<Option<Completion>, AdapterError> {

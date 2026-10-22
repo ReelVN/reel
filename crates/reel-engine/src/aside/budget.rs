@@ -11,6 +11,30 @@ pub enum SessionBudget {
     RetryMinimum(SliceBudget),
 }
 
+/// Explicit work policy for one native continuation.
+#[derive(Clone, Copy, Debug)]
+pub enum NativeBudget {
+    /// Keep the supplied work limit and report the next required minimum.
+    Exact(u32),
+    /// Admit the current continuation's next indivisible step when necessary.
+    RetryMinimum(u32),
+}
+
+impl NativeBudget {
+    pub(super) fn work(self) -> u32 {
+        match self {
+            Self::Exact(work) | Self::RetryMinimum(work) => work,
+        }
+    }
+
+    pub(super) fn with_minimum(self, required: u32) -> u32 {
+        match self {
+            Self::Exact(work) => work,
+            Self::RetryMinimum(work) => work.max(required),
+        }
+    }
+}
+
 /// Scheduling advice only; the VM continuation remains the source of truth.
 /// Each task owns its hint so another task's slice cannot overwrite it.
 #[derive(Default)]

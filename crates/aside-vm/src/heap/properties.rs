@@ -1,6 +1,13 @@
 //! Stable host properties. Forward connections are traced; subscribers are weak.
 //! Cached values are committed only after validating the entire affected graph.
 use super::*;
+mod batch;
+mod cursor;
+mod source;
+pub(super) use batch::{PreparedBinding, PreparedProperty};
+pub use batch::{PropertyRead, PropertyWrites};
+pub use cursor::{PropertyBatch, PropertyBatchProgress};
+pub(in crate::heap) use source::{SOURCE_WORK, SourceWalkProgress};
 
 #[derive(Clone, Copy, Debug)]
 pub struct PropertyId {
@@ -142,11 +149,15 @@ impl Heap {
         if metadata.same_bits(Value::NULL) {
             metadata = self.alloc_array(&[])?;
             for _ in 0..self.object(self.key(property.host)?)?.observable_fields {
+                self.property_traversal_work
+                    .set(self.property_traversal_work.get() + 4);
                 self.array_push(metadata, Value::NULL)?;
             }
             self.set_property_metadata_array(property.host, metadata)?;
         }
         while self.sequence_len(metadata)? <= property.field {
+            self.property_traversal_work
+                .set(self.property_traversal_work.get() + 4);
             self.array_push(metadata, Value::NULL)?;
         }
         let mut entry = self.sequence_get(metadata, property.field)?;
@@ -320,23 +331,33 @@ impl Heap {
         self.prepare_properties(value, script)?;
         for i in 0..self.property_work.len() {
             let property = self.property_work[i];
-            if self.is_model_cell(property.host)? {
-                if !self.cell_read(property.host)?.same_bits(value) {
-                    self.store_cell_value(property.host, value)?;
-                }
-            } else {
-                let fields = self.property_fields(property.host)?;
-                let position = self.model_position(property)?;
-                let (key, old) = self.table_entry(fields, position)?;
-                if !old.same_bits(value) {
-                    self.store_table_entry(fields, position, key, value)?;
-                }
-            }
-            if script {
-                self.record_host_write(property.host, property.field)?;
-            }
+            self.commit_property_value(property, value, script)?;
         }
         self.property_work.clear();
+        Ok(())
+    }
+
+    fn commit_property_value(
+        &mut self,
+        property: PropertyId,
+        value: Value,
+        script: bool,
+    ) -> Result<(), HeapError> {
+        if self.is_model_cell(property.host)? {
+            if !self.cell_read(property.host)?.same_bits(value) {
+                self.store_cell_value(property.host, value)?;
+            }
+        } else {
+            let fields = self.property_fields(property.host)?;
+            let position = self.model_position(property)?;
+            let (_, old) = self.table_entry(fields, position)?;
+            if !old.same_bits(value) {
+                self.store_prepared_property_value(fields, position, value)?;
+            }
+        }
+        if script {
+            self.record_host_write(property.host, property.field)?;
+        }
         Ok(())
     }
 
@@ -472,6 +493,8 @@ impl Heap {
         let (source, _) = self.property_ref(binding)?;
         let list = self.subscribers(source)?;
         for index in (0..self.sequence_len(list)?).step_by(2) {
+            self.property_traversal_work
+                .set(self.property_traversal_work.get() + 8);
             let weak = self.sequence_get(list, index)?;
             if self
                 .subscriber_target(weak)?

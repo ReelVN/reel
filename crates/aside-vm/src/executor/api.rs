@@ -88,6 +88,41 @@ pub struct HostTicket {
     /// Stable identity of this await expression's execution, if this is an await adapter.
     pub await_activation: Option<u64>,
 }
+
+/// Borrow the explicitly supplied native arguments in source evaluation order.
+/// Each entry keeps its resolved parameter index and original value, including
+/// an explicit null or property reference. Defaults and a bound receiver are absent.
+#[derive(Clone, Copy)]
+pub struct ProvidedArguments<'a> {
+    pub(super) values: &'a [Value],
+}
+
+impl ProvidedArguments<'_> {
+    pub fn len(&self) -> usize {
+        self.values.len() / 2
+    }
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+    /// Read an argument without allocating or repeating name binding.
+    pub fn get(&self, index: usize) -> Option<(u32, Value)> {
+        let pair = self
+            .values
+            .get(index.checked_mul(2)?..index.checked_mul(2)?.checked_add(2)?)?;
+        Some((
+            pair[0].as_int().expect("bound native argument index") as u32,
+            pair[1],
+        ))
+    }
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = (u32, Value)> + '_ {
+        self.values.chunks_exact(2).map(|pair| {
+            (
+                pair[0].as_int().expect("bound native argument index") as u32,
+                pair[1],
+            )
+        })
+    }
+}
 impl HostTicket {
     pub fn wait_id(self) -> WaitId {
         WaitId {

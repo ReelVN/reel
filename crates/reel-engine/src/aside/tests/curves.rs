@@ -165,7 +165,8 @@ fn scalar_curves_budgeted_construction_restores_and_detects_source_change() {
                 } else {
                     None
                 };
-                vm.dispatch(&mut session, ticket, "en", 1).unwrap();
+                vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(1))
+                    .unwrap();
                 if curve && (calls == 3 || !change && calls == 131) {
                     if change {
                         vm.vm.heap_mut().array_pop(source.unwrap()).unwrap();
@@ -221,7 +222,8 @@ fn scalar_curves_cancel_releases_capture_and_tree_workspaces() {
                 let package = vm.vm.program().package();
                 let curve = package.symbols[package.natives[ticket.native.index()].symbol.index()]
                     == "std::math::curve";
-                vm.dispatch(&mut session, ticket, "en", 1).unwrap();
+                vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(1))
+                    .unwrap();
                 if curve {
                     calls += 1;
                 }

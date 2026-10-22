@@ -137,6 +137,15 @@ impl VerifiedProgram {
             .binary_search_by_key(&native.signature.0, |&(signature, _)| signature)
             .is_ok())
     }
+    /// Bound for a lookup in the retained sparse native parameter layout.
+    pub(crate) fn native_parameter_lookup_work(&self) -> u64 {
+        4 + self
+            .0
+            .native_parameter_cells
+            .len()
+            .checked_ilog2()
+            .unwrap_or(0) as u64
+    }
     pub fn source_at(&self, function: FunctionId, pc: Pc) -> Option<SourceSpan> {
         let f = self.0.package.functions.get(function.index())?;
         if pc.index() >= f.code.len() && !(matches!(f.kind, FunctionKind::Native(_)) && pc.0 == 0) {

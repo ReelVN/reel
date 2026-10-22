@@ -95,7 +95,13 @@ fn prepared(code: &str) -> (Session, SessionVm) {
                 .unwrap()
             {
                 SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
-                    vm.dispatch(&mut session, ticket, "en", 64).unwrap();
+                    vm.dispatch(
+                        &mut session,
+                        ticket,
+                        "en",
+                        reel_engine::aside::NativeBudget::Exact(64),
+                    )
+                    .unwrap();
                 }
                 SessionStep::Vm(RunOutcome::Returned(_)) => {
                     vm.discard_delivery(&mut session).unwrap();

@@ -876,6 +876,7 @@ fn direct_native_uses_trusted_identity_abi_capabilities_and_real_default() {
     let linkage = Linkage {
         package: Some(&seed),
         natives: &native_links,
+        expansions: &[],
     };
     let result = lowering::compile(&module, &linkage, Options::default()).unwrap();
     let p = result.program.package();
@@ -933,6 +934,7 @@ fn direct_native_uses_trusted_identity_abi_capabilities_and_real_default() {
         &Linkage {
             package: Some(&seed),
             natives: &aliases,
+            expansions: &[],
         },
         Options::default(),
     )
@@ -950,6 +952,7 @@ fn direct_native_uses_trusted_identity_abi_capabilities_and_real_default() {
         &Linkage {
             package: Some(&conflicting),
             natives: &aliases,
+            expansions: &[],
         },
         Options::default(),
     )
@@ -973,6 +976,7 @@ fn direct_native_uses_trusted_identity_abi_capabilities_and_real_default() {
         &Linkage {
             package: Some(&seed),
             natives: &wrong_links,
+            expansions: &[],
         },
         Options::default(),
     )
@@ -986,6 +990,7 @@ fn direct_native_uses_trusted_identity_abi_capabilities_and_real_default() {
         &Linkage {
             package: Some(&missing_default),
             natives: &native_links,
+            expansions: &[],
         },
         Options::default(),
     )
@@ -1015,6 +1020,7 @@ fn direct_native_uses_trusted_identity_abi_capabilities_and_real_default() {
         &Linkage {
             package: Some(&seed),
             natives: &value_links,
+            expansions: &[],
         },
         Options::default(),
     )
@@ -1304,6 +1310,7 @@ fn native_default_prefix_cells_and_fast_value_slots_come_from_shared_verifier() 
         &Linkage {
             package: Some(&seed),
             natives: &links,
+            expansions: &[],
         },
         Options::default(),
     )
@@ -1423,6 +1430,7 @@ fn qualified_native_import_retains_namespace_and_registration_identity() {
         &Linkage {
             package: Some(&seed),
             natives: &links,
+            expansions: &[],
         },
         Options::default(),
     )

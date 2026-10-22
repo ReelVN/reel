@@ -465,6 +465,28 @@ impl AnalyzedModule {
     pub fn external_bindings(&self) -> &[ExternalBinding] {
         &self.external
     }
+    /// Resolve a bound expression's canonical external identity, including
+    /// immutable aliases and parenthesized references. This is metadata only;
+    /// it does not replace evaluation of the expression or initialize aliases.
+    pub fn canonical_reference(
+        &self,
+        mut node: NodeId,
+    ) -> Option<&crate::semantic::SymbolReference> {
+        while let (HirKind::Group, Form::Single { child }) =
+            (self.hir.node(node).kind, self.hir.node(node).form)
+        {
+            node = child;
+        }
+        let symbol = self.facts[node.0 as usize].symbol;
+        self.external
+            .iter()
+            .find(|binding| {
+                binding.node == Some(node) || symbol.is_some() && binding.symbol == symbol
+            })?
+            .descriptor
+            .reference
+            .as_deref()
+    }
 }
 struct TypeDisplay<'a> {
     module: &'a AnalyzedModule,

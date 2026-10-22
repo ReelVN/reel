@@ -8,7 +8,12 @@ enum Slot {
     State,
 }
 
-pub(super) fn readonly(_: &Heap, _: Value, _: u32, _: Value) -> Result<(), HeapError> {
+pub(super) fn readonly(
+    _: &aside_host::aside_vm::PropertyRead<'_>,
+    _: Value,
+    _: u32,
+    _: Value,
+) -> Result<(), HeapError> {
     Err(HeapError::ReadOnly)
 }
 

@@ -22,11 +22,26 @@ aside_host::native_documentation! {
         /// Keep its already revealed prefix and history entry. `history` selects the
         /// appended history text. Wait for advance by default; `wait: false` returns
         /// immediately for sounds or choreography before the next advance point.
+        /// Return the same Speech in either case so further operations can be chained.
         /// A newer dialogue or choice retires the handle.
         "reel::speech::append";
         /// Arm and wait for advance on the current speech handle. May be called again
         /// after an append. The handle belongs to the main story task and survives saves.
+        /// Return the same Speech after the advancement checkpoint.
         "reel::speech::wait";
+        /// Wait for this speech's text and inline pauses to finish, then return the same
+        /// Speech. This observes playback without arming advance or recording a read
+        /// checkpoint. Manual reveal and the normal playback policy continue to apply.
+        /// Author-owned visual effects remain separate ordinary activities.
+        ///
+        /// ```aside
+        /// use reel::types::Speech;
+        /// fn main() {
+        ///     let line: Speech = narrator("Listen.", wait: false);
+        ///     line.revealed().append("\nThe wind is quiet.", wait: false).wait();
+        /// }
+        /// ```
+        "reel::speech::revealed";
         /// Return the observable dialogue view: lines, text, reveal, active, ready,
         /// speaker_name, speaker_id, content_id, read and advance_requested. Bind these values to ordinary
         /// text nodes. `ready` means printing and inline pauses have completed.
@@ -294,7 +309,7 @@ pub(super) struct Narrative {
 use super::observable::{array, publish, record};
 
 pub(super) fn auto_condition_validator(
-    _: &Heap,
+    _: &aside_vm::PropertyRead<'_>,
     _: Value,
     _: u32,
     value: Value,
@@ -915,7 +930,12 @@ impl SessionVm {
                     if heap.is_property_ref(condition) {
                         heap.write_host_property(property, condition, true)?;
                     } else {
-                        auto_condition_validator(heap, model.auto_condition, 0, condition)?;
+                        auto_condition_validator(
+                            &aside_vm::PropertyRead::current(heap),
+                            model.auto_condition,
+                            0,
+                            condition,
+                        )?;
                         let reference = heap.alloc_property_ref(property, true)?;
                         heap.unbind_property(reference)?;
                         heap.write_host_property(property, condition, true)?;

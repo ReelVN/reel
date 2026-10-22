@@ -1,7 +1,7 @@
 //! Versioned document overlays and cached compiler project analysis.
 use crate::{
     HostContext, HostDeclaration, HostDocument, HostMember, NamedType, ServerOptions,
-    SourceRootQuery,
+    SourceAnalysis, SourceFeatures, SourceRootQuery,
     position::{Encoding, LineIndex},
 };
 use aside_compiler::{
@@ -39,7 +39,7 @@ pub(crate) struct HostIndex {
     pub bases: BTreeMap<String, Vec<String>>,
     pub calls: BTreeMap<String, ExternalSymbol>,
     pub awaits: BTreeMap<String, TypeHint>,
-    pub declarations: BTreeMap<ReferenceKey, HostDeclaration>,
+    pub declarations: BTreeMap<ReferenceKey, Vec<HostDeclaration>>,
     pub documents: BTreeMap<String, HostDocument>,
 }
 impl From<HostContext> for HostIndex {
@@ -75,14 +75,12 @@ impl From<HostContext> for HostIndex {
                 .into_iter()
                 .map(|member| {
                     let name = member.symbol.name.clone();
-                    let member = if let Some(reference) = &member.symbol.reference {
+                    let member = Arc::new(member);
+                    if let Some(reference) = &member.symbol.reference {
                         members
                             .entry(reference_key(reference))
-                            .or_insert_with(|| Arc::new(member))
-                            .clone()
-                    } else {
-                        Arc::new(member)
-                    };
+                            .or_insert_with(|| member.clone());
+                    }
                     (name, member)
                 })
                 .collect();
@@ -92,6 +90,13 @@ impl From<HostContext> for HostIndex {
         for module in host.modules {
             modules.insert(module);
         }
+        let mut declarations: BTreeMap<_, Vec<_>> = BTreeMap::new();
+        for declaration in host.declarations {
+            declarations
+                .entry(reference_key(&declaration.reference))
+                .or_default()
+                .push(declaration);
+        }
         Self {
             globals: host.globals,
             modules,
@@ -100,17 +105,24 @@ impl From<HostContext> for HostIndex {
             awaits,
             types,
             members,
-            declarations: host
-                .declarations
-                .into_iter()
-                .map(|declaration| (reference_key(&declaration.reference), declaration))
-                .collect(),
+            declarations,
             documents: host
                 .documents
                 .into_iter()
                 .map(|document| (document.uri.as_str().to_owned(), document))
                 .collect(),
         }
+    }
+}
+impl HostIndex {
+    pub fn declaration(&self, symbol: &ExternalSymbol) -> Option<&HostDeclaration> {
+        let candidates = self
+            .declarations
+            .get(&reference_key(symbol.reference.as_deref()?))?;
+        candidates
+            .iter()
+            .find(|declaration| declaration.signature == symbol.signature)
+            .or_else(|| candidates.first())
     }
 }
 struct HostResolver<'a> {
@@ -186,6 +198,7 @@ pub(crate) struct Snapshot {
     pub entry: String,
     pub project: EditorProjectAnalysis,
     pub sources: BTreeMap<String, Source>,
+    pub features: BTreeMap<String, SourceFeatures>,
     dependencies: BTreeSet<String>,
 }
 impl Snapshot {
@@ -209,6 +222,7 @@ pub(crate) struct Workspace {
     pub host: Arc<HostIndex>,
     source_root: Option<SourceRootQuery>,
     project_prefix: Option<String>,
+    source_analysis: Option<SourceAnalysis>,
     documents: BTreeMap<String, Document>,
     disk_sources: BTreeMap<String, Source>,
     pub analyses: usize,
@@ -220,6 +234,7 @@ impl Workspace {
             host: Arc::new(options.host.into()),
             source_root: options.source_root,
             project_prefix: options.project_prefix,
+            source_analysis: options.source_analysis,
             documents: BTreeMap::new(),
             disk_sources: BTreeMap::new(),
             analyses: 0,
@@ -439,10 +454,17 @@ impl Workspace {
         let project =
             editor::analyze_project(&inputs, &options, &mut HostResolver { host: &self.host })
                 .map_err(|error| error.to_string())?;
+        let features = self.source_analysis.map_or_else(BTreeMap::new, |analyze| {
+            project
+                .modules()
+                .map(|module| (module.canonical_path().to_owned(), analyze(module)))
+                .collect()
+        });
         let snapshot = Arc::new(Snapshot {
             entry,
             project,
             sources,
+            features,
             dependencies,
         });
         self.analyses += 1;
@@ -572,19 +594,24 @@ impl Workspace {
                     .diagnostics
                     .iter()
                     .filter(|diagnostic| &diagnostic.module == module)
-                    .map(|diagnostic| {
-                        let diagnostic = &diagnostic.diagnostic;
-                        Diagnostic {
-                            range: source.lines.range(&source.text, diagnostic.range, encoding),
-                            severity: Some(match diagnostic.severity {
-                                aside_compiler::Severity::Error => DiagnosticSeverity::ERROR,
-                                aside_compiler::Severity::Warning => DiagnosticSeverity::WARNING,
-                            }),
-                            code: Some(NumberOrString::String(diagnostic.code.as_str().into())),
-                            source: Some("aside".into()),
-                            message: diagnostic.message.clone(),
-                            ..Default::default()
-                        }
+                    .map(|diagnostic| &diagnostic.diagnostic)
+                    .chain(
+                        snapshot
+                            .features
+                            .get(module)
+                            .into_iter()
+                            .flat_map(|features| &features.diagnostics),
+                    )
+                    .map(|diagnostic| Diagnostic {
+                        range: source.lines.range(&source.text, diagnostic.range, encoding),
+                        severity: Some(match diagnostic.severity {
+                            aside_compiler::Severity::Error => DiagnosticSeverity::ERROR,
+                            aside_compiler::Severity::Warning => DiagnosticSeverity::WARNING,
+                        }),
+                        code: Some(NumberOrString::String(diagnostic.code.as_str().into())),
+                        source: Some("aside".into()),
+                        message: diagnostic.message.clone(),
+                        ..Default::default()
                     })
                     .collect();
                 PublishDiagnosticsParams {

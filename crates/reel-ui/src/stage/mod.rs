@@ -39,17 +39,15 @@ impl std::ops::Deref for InputBindings {
 }
 impl InputBindings {
     pub fn new(actions: Vec<ActionDefinition>) -> Result<Self, crate::input::InvalidInput> {
-        for (i, a) in actions.iter().enumerate() {
-            if a.name.is_empty() || actions[..i].iter().any(|b| a.name == b.name) {
+        let mut names = BTreeSet::new();
+        for action in &actions {
+            if action.name.is_empty()
+                || !names.insert(action.name.as_ref())
+                || action.bindings.iter().any(|binding| !binding.is_valid())
+            {
                 return Err(crate::input::InvalidInput);
             }
         }
-        crate::input::ActionMap::new(
-            actions
-                .iter()
-                .enumerate()
-                .map(|(i, a)| (i, a.bindings.clone())),
-        )?;
         Ok(Self(actions.into()))
     }
 }

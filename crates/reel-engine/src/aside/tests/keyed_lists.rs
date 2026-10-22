@@ -36,7 +36,7 @@ fn drive(vm: &mut SessionVm, session: &mut Session, gc: bool) {
                     let p = vm.vm.program().package();
                     p.symbols[p.natives[ticket.native.index()].symbol.index()] == "reel::list"
                 };
-                if let Err(error) = vm.dispatch(session, ticket, "en", 8) {
+                if let Err(error) = vm.dispatch(session, ticket, "en", NativeBudget::Exact(8)) {
                     vm.reject_native(session, ticket, error).unwrap();
                 }
                 if gc && list {
@@ -307,7 +307,8 @@ fn cancelling_inside_a_row_factory_releases_candidates_and_native_roots() {
             )
             .unwrap()
         {
-            vm.dispatch(&mut session, ticket, "en", 1).unwrap();
+            vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(1))
+                .unwrap();
             collect(&mut vm);
             if vm
                 .stage()
@@ -368,7 +369,8 @@ fn failed_reconciliation_preserves_mounted_children_and_reports_the_source() {
             .unwrap()
         {
             SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
-                if let Err(error) = vm.dispatch(&mut session, ticket, "en", 1) {
+                if let Err(error) = vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(1))
+                {
                     vm.reject_native(&session, ticket, error).unwrap();
                 }
                 collect(&mut vm);

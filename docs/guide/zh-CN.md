@@ -78,6 +78,14 @@ let 固定变量绑定，节点属性仍可修改；需要把变量改绑到另�
 
 桌面播放器遇到可恢复的图形设备丢失会重建渲染设备并保留当前剧情状态；诊断包含后端给出的丢失原因。无法重建设备时报告错误并退出。
 
+### 按创作单元组合项目
+
+`src/main.aside` 负责配置作品、创建共享状态和启动入口。随着内容增长，按章节、菜单、人物演出或小游戏拆分模块；一个单元的画面、局部状态和行为一起维护。页面组件负责布局和样式，章节函数组合对白、选择与演出；章节需要改变画面时，调用对应组件。
+
+简单组件直接返回节点；需要后续操作的组件返回一个有明确方法的类实例。调用方通过这些方法表达意图，组件内部管理节点和任务。参数声明实际类型，使跨模块调用保留检查、补全和定义跳转；类型来自组件自己的声明。跨单元共享的进度、设置和路由由入口传入，局部状态随组件存在。
+
+剧情用普通函数、顺序调用、条件和循环表达。节点、对白和动作优先沿对象链式组合，长链按操作换行；等待、并行、取消、绑定和输入使用共同引擎接口。演出的 owner 与节点或作用域一起确定。出现真实复用后再提取公共组件。
+
 ### 当前可用的检查、构建与运行
 
 编译与 ASB 加载默认不设置作品大小、累计记录、模块或指令数量配额；实际格式宽度和可用内存仍适用。嵌入宿主可通过 Rust Limits 显式设定配额。出现容量错误时，诊断会区分记录数和内存请求，避免把较长剧本误报为语法错误。
@@ -132,15 +140,15 @@ Pop-Location
 Pop-Location
 ```
 
-开发目录包含可修改的 `src/`、`resources/`、`translations/` 和带源码诊断的 `game.asb`；进入目录后用 `reel dev` 运行源码，或用 `reel run game.asb` 运行构建产物。发布目录包含 `game.exe`、`game.asb`、`game.rtp` 和 `resources.rpk`（资源较多时还有后续卷）。将整个目录交给玩家，双击 `game.exe` 即可开始；其他平台使用对应可执行文件。清单内嵌于 `game.asb`，所有资源路径相对主包目录。
+开发目录包含可修改的 `src/`、`resources/` 和带源码诊断的 `game.asb`；进入目录后用 `reel dev` 运行源码，或用 `reel run game.asb` 运行构建产物。发布目录包含 `game.exe`、`game.asb`、`game.rtp` 和 `resources.rpk`（资源较多时还有后续卷）。将整个目录交给玩家，双击 `game.exe` 即可开始；其他平台使用对应可执行文件。清单内嵌于 `game.asb`，所有资源路径相对主包目录。
 
 发布播放器从自身目录寻找 `game.asb`，存档默认写入同级 `saves/`；`--save-directory <directory>` 可另选位置。更新游戏时保留 saves。发布导出使用 reel 工具同级的 reel-game 播放器。工具包将播放器与 CLI 放在同一目录。ASB 使用 v1 格式。
 
-`--resource prefix=directory` 把一个目录映射到脚本中的逻辑路径；可重复声明。`--resource .=directory` 挂载到资源根，`--text prefix=directory` 把额外文本资源放入文本包。项目的 `translations/<locale>/` 自动参与检查、开发运行、构建和导出。开发导出同时携带可编辑译文；发布导出将语言内容装入文本包，脚本通过 `localization.set_locale("en")` 选择语言。
+`--resource prefix=directory` 把一个目录映射到脚本中的逻辑路径；可重复声明。`--resource .=directory` 挂载到资源根，`--text prefix=directory` 把额外文本资源放入文本包。译文写在源码的 `tr` 调用中，随项目参与检查、开发运行、构建和导出。开发导出保留这些源码，发布导出将语言内容装入文本包；脚本通过 `localization.set_locale("en")` 选择语言。
 
 资源包默认按 2 GiB 目标体积自动分卷，包头和索引计入体积；可在发布命令添加 `--pack-bytes 1073741824`，改为 1 GiB。分卷沿完整资源边界进行，单个大资源独占一卷；后续文件名为 `resources-002.rpk` 等，清单自动列出，脚本路径无需修改。挂载只读取索引，资源内容按范围读取。
 
-发布时原文常量移入 `game.rtp`，ASB 不携带完整源码。池目前整体驻留，字符串按使用共享引用；不是启动就把所有正文复制成永久 VM 对象。修改译文无需重编代码，但原文池必须与 ASB 对应。图片、音频和视频按资源包索引读取，不整体解包。
+发布时原文常量移入 `game.rtp`，ASB 不携带完整源码。原文池整体驻留，字符串按使用共享引用。修改原文或译文后重新构建，文本包与 ASB 一起更新。图片、音频和视频按资源包索引读取。
 
 发布默认关闭散文件覆盖；需要模组或调试覆盖时显式 `reel run game.asb --assets overrides`。清单里的包按顺序后者覆盖前者，散文件优先。`--overwrite` 会替换整个既有导出目录，旧存档与额外文件不复制到新导出；运行数据应单独保存。输出可位于项目的 `build/` 中，须避开实际源码文件与资源目录。
 
@@ -372,6 +380,17 @@ let caption = word.caption;
 `let state = model(MyState());` 复制已经构造好的实例数据，保留其类型、方法以及内部共享引用，不重新执行构造。使用 `bind(state.field)` 连接控件，使用 `derive(|| state.caption())` 组合显示内容；方法修改字段会更新对应视图。只读字段只能单向读取，可写字段的控件回写仍须符合类型。后续赋入的实例保留共享身份。默认数据中的闭包和资源仍不能复制，静态字段也不属于实例状态。示例见 [author_class_models.aside](../../examples/author_class_models/src/main.aside)。
 
 ### 在运行中修改组件
+
+用 `.with(...)` 把内容和外观按创作顺序组合；它也可以更新已有节点，返回的仍是原节点。省略的属性保持原值，相关属性按本次配置一起检查，例如滑条的 min、max 和 value。
+
+```aside
+let caption = text("窗外下起了雨。")
+    .with(font_size: 28, color: "#eeeeee")
+    .with(x: 48, y: 420, max_width: 720);
+caption.with(opacity: 0.5);
+```
+
+编辑器将可省略的配置属性显示为 `opacity?: int | float | Binding`；省略时保留原值。
 
 字段名由数据决定时，可以写 `state[field_name]`；字符串索引与点访问使用相同的类型、只读和绑定规则。`bind(state[field_name])` 固定选中的字段，需要随字段名变化重新选择时使用 `derive(|| state[field_name])`。
 
@@ -650,9 +669,17 @@ line.append("\nWelcome back.");
 脚本在推进点之间执行时，输入可补全文字。等待型 append 与 line.wait 共用手动、自动和快进规则。追加保留已经显示的字素，append 的 history 参数与角色调用采用相同选择：true 追加显示正文、false 省略这一段、字符串或 rich 追加替代正文。原条目已省略或清除时继续保持省略。句柄只在主剧情使用，保存恢复继续当前段和等待位置。
 
 
-用 `await when(|| game.dialogue().ready)` 等待打印与句内停顿完成，再衔接音效或演出。`when` 随实际读取的可观察属性更新；结果、所有者与取消规则见 [源码接口文档](../../crates/reel-engine/src/aside/conditions.rs)。
+`line.revealed()` 等待这句文字与句内停顿完成，再衔接音效或演出。它保留当前推进点；`line.wait()` 等待玩家推进。`append`、`revealed` 和 `wait` 都返回原句柄，可以继续链式组合。自定义文字动画由作者组件组合自己的活动与对白等待。
 
 ## 四 时间顺序与同时发生的变化
+
+动作描述可以复用：`.then(other)` 接着执行另一动作，`.together(other)` 同时执行，`.repeat(times: 3)` 重复整段，`.run()` 启动并返回可等待的活动。每一步组合整个前缀；用命名变量表达需要单独分组的段落。活动的 `.pause()`、`.resume()`、`.stop()` 和 `.finish()` 返回原活动。
+
+```aside
+let entrance = tween(portrait, opacity: 1, duration: 0.3);
+let move = tween(portrait, x: 640, duration: 1);
+await entrance.then(move).then(delay(0.5)).run();
+```
 
 速度随时间改变时，把标量曲线直接交给 tween。以下曲线表示匀加速：开始速度为平均速度的一半，结束为一点五倍。曲线的 sample(0) 和 sample(1) 须为 0 和 1；可以共享曲线，暂停、取消、重复与保存恢复照常使用。
 
@@ -663,19 +690,19 @@ let acceleration = curve([
     {time: 0, value: 0, mode: "cubic", out_tangent: 0.5},
     {time: 1, value: 1, in_tangent: 1.5},
 ]);
-await run(tween(portrait, x: 640, duration: 2, easing: acceleration));
+await tween(portrait, x: 640, duration: 2, easing: acceleration).run();
 ```
 
-音乐、视频、动画和时钟可以先创建为暂停状态，再随画面开始：`audio.play(..., paused: true)`、`movie.play(..., paused: true)`、`run(..., paused: true)` 和 `clock(..., paused: true)`。省略 paused 时照常启动。媒体在暂停中继续加载、解码和准备首帧，位置保持 start；seek 后仍保持暂停。动画在创建时检查动作，首次 resume 时才读取属性起值并取得写入权；时钟此前保持 ticks 为 0、elapsed 为 0.0。
+音乐、视频、动画和时钟可以先创建为暂停状态，再随画面开始：`audio.play(..., paused: true)`、`movie.play(..., paused: true)`、`action.run(paused: true)` 和 `clock(..., paused: true)`。省略 paused 时照常启动。媒体在暂停中继续加载、解码和准备首帧，位置保持 start；seek 后仍保持暂停。动画在创建时检查动作，首次 resume 时才读取属性起值并取得写入权；时钟此前保持 ticks 为 0、elapsed 为 0.0。
 
 ```aside
 panel.opacity = 0;
 let music = audio.play("assets/chime.wav", owner: panel, paused: true);
-let entrance = run(tween(panel, opacity: 1, duration: 0.25), owner: panel, paused: true);
+let entrance = tween(panel, opacity: 1, duration: 0.25).run(owner: panel, paused: true);
 stage.replace(panel);
 await stage.presented(owner: panel);
-resume(music);
-resume(entrance);
+music.resume();
+entrance.resume();
 ```
 
 `s.run(action, paused: true)` 使用相同规则。暂停的空组合和零时长动作也等到 resume 才完成；finish 可以主动完成有限动作，stop 保留当前属性。存档保留暂停状态，节点和作用域结束时按原所有权清理。完整的 [音乐进度示例](../../examples/author_media_position/src/main.aside) 使用这一写法等画面准备好后开始播放。
@@ -691,14 +718,14 @@ let timer = clock(interval: 0.125, paused: true, owner: root);
 root.add(image(source: derive(|| frames[timer.ticks % count]), width: 64, height: 64));
 stage.replace(root);
 await stage.presented(owner: root);
-resume(timer);
+timer.resume();
 ```
 
-`pause(timer)` 保留当前帧，`resume(timer)` 接续周期，`stop(timer)` 冻结最后一帧；owner 退休取消时钟。存读档保留周期数与暂停状态。时间跨过多帧时直接选择当前帧，适合只需要显示当前画面的动画。需要逐次执行音效、计分或其他事件时，用普通顺序代码安排这些事件。完整示例 [author_frame_animation.aside](../../examples/author_frame_animation/src/main.aside) 使用仓库现有图片，可运行 `reel dev --assets ..`（在 `examples/author_frame_animation/` 中）。
+`timer.pause()` 保留当前帧，`timer.resume()` 接续周期，`timer.stop()` 冻结最后一帧；owner 退休取消时钟。存读档保留周期数与暂停状态。时间跨过多帧时直接选择当前帧，适合只需要显示当前画面的动画。需要逐次执行音效、计分或其他事件时，用普通顺序代码安排这些事件。完整示例 [author_frame_animation.aside](../../examples/author_frame_animation/src/main.aside) 使用仓库现有图片，可运行 `reel dev --assets ..`（在 `examples/author_frame_animation/` 中）。
 
 现实时间使用 `use std::time::{now, parts, format};`：now() 返回 UTC Unix 秒整数，parts(timestamp, timezone: null) 返回 year/month/day/hour/minute/second/weekday/offset_seconds，weekday 为周一 1 至周日 7。format(timestamp, pattern: "%Y-%m-%d %H:%M", timezone: null) 按 strftime 模式返回文字；timezone 可设 IANA 时区（如 Asia/Shanghai、UTC），省略使用系统时区，系统无法提供时使用 UTC。保存时间可直接使用 saves.list 的 saved_at。调用不会自动刷新；在普通任务中更新模型，再绑定文字。见 [author_wall_clock.aside](../../examples/author_wall_clock/src/main.aside)。
 
-动画与组合活动：`tween(node, x: 320, duration: 0.5, easing: "in_out")` 描述变化，`run(action, owner: node)` 启动。owner 省略时，优先归当前 scope；作用域外的主剧情归会话、按钮回调归事件节点；`pause(activity)`、`resume(activity)`、`stop(activity)`、`finish(activity)` 控制同一活动。await 返回字符串 `Completed` 或 `Stopped`；目标或 owner 退休取消活动并在 await 处抛错。duration 使用非负秒数，0 立即完成；easing 支持 linear、三次 in/out/in_out、二次 quad_in/quad_out/quad_in_out 和正弦 sine_in/sine_out/sine_in_out。可以改变全部共同数值属性；width/height 须在节点或 from 提供有限起值，null 表示该属性不参与动画。可运行示例：[author_activities.aside](../../examples/author_activities/src/main.aside)，使用 `reel dev --assets ../../target/reel-artifacts/author-assets`（在 `examples/author_activities/` 中）。sequence/parallel/repeat 与 scope 共同管理活动和任务所有权。
+动画与组合活动：`tween(node, x: 320, duration: 0.5, easing: "in_out")` 描述变化，`action.run(owner: node)` 启动。owner 省略时，优先归当前 scope；作用域外的主剧情归会话、按钮回调归事件节点；`activity.pause()`、`activity.resume()`、`activity.stop()`、`activity.finish()` 控制同一活动。await 返回字符串 `Completed` 或 `Stopped`；目标或 owner 退休取消活动并在 await 处抛错。duration 使用非负秒数，0 立即完成；easing 支持 linear、三次 in/out/in_out、二次 quad_in/quad_out/quad_in_out 和正弦 sine_in/sine_out/sine_in_out。可以改变全部共同数值属性；width/height 须在节点或 from 提供有限起值，null 表示该属性不参与动画。可运行示例：[author_activities.aside](../../examples/author_activities/src/main.aside)，使用 `reel dev --assets ../../target/reel-artifacts/author-assets`（在 `examples/author_activities/` 中）。sequence/parallel/repeat 与 scope 共同管理活动和任务所有权。
 
 隐藏滚动区域会保留位置和已测量尺寸；在菜单中存读档后，再次显示时仍从原位置继续，内容尺寸发生变化时按新范围调整。
 
@@ -711,7 +738,7 @@ resume(timer);
 `quart_in`、`quart_out`、`quart_in_out` 使用四次曲线。`elastic_out` 在终点附近衰减振荡，`elastic_in` 是其反向，`elastic_in_out` 组合两端；弹性会越过起终值，适合位置、旋转和缩放，opacity 等有限区间属性应选择不超调曲线。暂停、停止和存档恢复与其他 tween 相同。[author_activities.aside](../../examples/author_activities/src/main.aside) 将四次淡入与弹性入场组合在一起。
 
 ```aside
-await run(tween(portrait, x: 720, duration: 0.8, easing: "sine_out"));
+await tween(portrait, x: 720, duration: 0.8, easing: "sine_out").run();
 ```
 
 完整的 [author_sine_easing.aside](../../examples/author_sine_easing/src/main.aside) 用相同距离和时长对比三条正弦曲线；打开窗口前请提供 `fonts/body.ttf`。
@@ -723,11 +750,9 @@ await run(tween(portrait, x: 720, duration: 0.8, easing: "sine_out"));
 tween 描述目标属性、终值、时长和可选起值。sequence 顺序组合动作，parallel 同时组合动作，repeat 重复动作。它们都是普通库函数，产生可复用的动作值。run 才启动活动，并返回可等待、可控制的活动；await activity 等待活动结束，输入、声音和其他活动继续进行。run(action) 默认归当前 scope，否则继承任务的资源 owner；主剧情使用会话寿命。显式 owner 可指定舞台节点，s.run(action) 指定所属作用域。
 省略显式起值时，动作在实际激活时读取当前属性。sequence 中后一段在前一段结束后读取起值。动作描述可以复用，每次 run 都产生独立进度。活动只在动作段真正激活时取得属性写入权。新演出停止与之冲突的旧根活动并从当前值接管，暂停的旧活动也遵守此规则。sequence 可按顺序写同一属性；parallel 分支的写集合保持互斥。直接赋值，包括赋相同的值，停止正在写该属性的根活动。其他属性的赋值不受影响；终止活动释放全部写入权。
 ```aside
-let entrance = parallel(
-    tween(view.portrait, x: 320, duration: 0.5),
-    tween(view.hud, opacity: 1, duration: 0.3)
-);
-await run(entrance);
+let entrance = tween(view.portrait, x: 320, duration: 0.5)
+    .together(tween(view.hud, opacity: 1, duration: 0.3));
+await entrance.run();
 ```
 `from` 把起值写进动作，适合淡入、滑入和每轮从头开始的循环。它接受普通记录，键对应本次动画的终值属性；其余属性仍从激活时的当前值开始。记录在构造动作时按目标属性的约束校验并复制，之后修改记录不改变动作。延迟结束、重复的每一轮、初始暂停后的首次 resume 都在激活时应用起值；需要等待期间就隐藏的节点在创建时设 `opacity: 0`。零时长或 finish 直接到终值。显式 width/height 起值也可用于当前尺寸为 auto 的节点。
 
@@ -735,19 +760,18 @@ await run(entrance);
 fn fade_in(node, seconds = 0.5) {
     tween(node, from: {opacity: 0}, opacity: 1, duration: seconds)
 }
-await run(sequence(delay(0.5), fade_in(view.hud)));
+await delay(0.5).then(fade_in(view.hud)).run();
 ```
 
-同一个动作可以重复运行；循环移动可直接写 `repeat(tween(particle, from: {y: -20}, y: 740, duration: 3))`。完整入场与重放例子见 [author_activities.aside](../../examples/author_activities/src/main.aside)。
+同一个动作可以重复运行；循环移动可直接写 `tween(particle, from: {y: -20}, y: 740, duration: 3).repeat()`。完整入场与重放例子见 [author_activities.aside](../../examples/author_activities/src/main.aside)。
 
 每个活动有确定的 owner。启动与主剧情函数归会话所有，UI 回调归发出事件的节点所有。stage.replace 结束旧画面及其回调，调用它的会话剧情继续执行。动作目标只是经过验证的句柄；任一节点或效果目标销毁时，整个根活动结束为 Cancelled，释放所有属性保留。owner 从舞台销毁时，所属活动与回调任务一并结束。pause 暂停进度，resume 继续，stop 停在当前值并使等待返回 Stopped；finish 使有限动作到达其终值，返回 Completed，自然结束也返回 Completed。无限循环使用 stop 结束，其本身没有完成终值。资源错误或活动取消在仍存活的等待任务中产生对应错误，供普通 try/catch 处理。若等待任务自身的 owner 已结束，该任务直接结束；宿主释放其资源，脚本清理代码也随任务结束。
 parallel 等待所有有限子动作。任一子动作失败时结束同组剩余子动作，并报告错误；sequence 随失败停止后续动作。repeat(action, times: 3) 有限重复；省略 times 表示循环。持续的呼吸、雨丝等循环单独运行，由画面所有权管理，剧情只等待自己需要的有限活动。
 ```aside
-let breathing = repeat(sequence(
-    tween(view.portrait, opacity: 0.92, duration: 1.4),
-    tween(view.portrait, opacity: 1.0, duration: 1.4)
-));
-run(breathing, owner: view.root);
+let breathing = tween(view.portrait, opacity: 0.92, duration: 1.4)
+    .then(tween(view.portrait, opacity: 1.0, duration: 1.4))
+    .repeat();
+breathing.run(owner: view.root);
 mio("听，雨又大了。");
 ```
 上例展示循环组合规则。实际立绘呼吸可以改用细微位移或缩放，脚本结构相同。作者把常用动作封装成普通 fn，输入任意节点后返回动作值，UI 与立绘共用这些动作。
@@ -1543,53 +1567,39 @@ stage.replace(column(gap: 12) {
 
 Rust 扩展也可以用 `#[aside(rest)]` 声明可变位置参数。作者按普通参数或 `...items` 调用；每次调用有独立的外层数组，元素保留通常的共享身份。默认参数与绑定方法使用相同规则。这项能力独立于 Reel，本身不代表动作组合已经实现。
 
-当前基础 text 使用真实文字布局；外部语言包与响应式语言切换已实现。句内富文本与视频节点已实现；Aside 自定义绘制接口仍属规划。
+当前基础 text 使用真实文字布局；源码内翻译与响应式语言切换沿共同本地化服务运行。句内富文本与视频节点已实现；Aside 自定义绘制接口仍属规划。
 
 作者音频已接入后台资源读取、真实混音器和剧情等待，见[作者音频](#作者音频)。原生设备验证与离线混音验证分别记录于[音频验证范围](../../crates/reel-media/VERIFICATION.md)。视频与同一混音器的内容时钟已接入，见上文视频节点。
 
-在项目的 `translations/<locale>/` 中维护 UTF-8 Fluent 译文，例如 `translations/en/story/opening.ftl`。`reel check` 验证译文，`dev`、`build` 和 `export` 自动准备语言包。单语言作品直接使用原文。
-
-`localization.set_locale(locale)` 按需读取目标语言及其可用的基础语言，当前任务等待后台读取和解析完成，再一起更新译文与语言选择。`localization.locale()` 返回可观察的语言标记。读取或解析失败可用 try/catch 处理，已显示的语言保持原值；取消调用会撤销尚未提交的选择。连续切换时，以最新有效请求为准。
-
-需要同时使用多个语言时，先用 `localization.load(locale)` 预热；预热的目录在切换语言后继续保留。`localization.load(locale, source)` 可读取指定的资源。普通语言切换只保留当前语言及其基础语言的自动加载目录。
-
-`tr(source, id: null, params: null, locale: null)` 返回当前语言的普通字符串，查找精确语言、基础语言，再回退到原文。未传 params 时原文按字面使用；传入参数表时原文使用 Fluent 模板。译文始终使用 Fluent，参数接受 string/int/float，支持命名参数和复数选择。参数不会作为模板再次解析；缺参数等格式错误可捕获。Fluent 保留双向文本隔离标记，避免不同方向的姓名影响周围文字。
-
-单次指定 `locale` 可同时取得多种语言，不改变全局语言；例如双语对白把下面两行加入自己的视图，再独立绑定主行的 reveal。未加载或缺少翻译时沿用相同的原文回退。两行共享已加载的目录，不复制语言包。
-```aside
-localization.load("en");
-column(gap: 6) {
-    text(tr("你好。", id: "greeting", locale: "zh-CN"), font_size: 28);
-    text(tr("你好。", id: "greeting", locale: "en"), font_size: 18);
-}
-```
-
-界面使用 `derive(|| tr(...))`，语言改变时只重新计算订阅的表达式；普通 tr 调用、已提交对白/选择、输入草稿与历史字符串保留求值时的内容。需要即时翻译的聊天历史或选择外观，可以保存 ID、原文和参数，在展示绑定中调用 tr；分支 key 始终独立于文案。无需特殊 LocalText 类型。
-
-以下片段来自[翻译示例](../../examples/localization/src/main.aside)，英文译文位于 [translations/en](../../examples/localization/translations/en/)。运行 `reel dev --assets ../../target/reel-artifacts/author-assets`（在 `examples/localization/` 中），使用第一节准备的字体。
+原文和译文写在同一个 `tr` 调用中。`reel check` 检查语言标签和插值，`dev` 直接运行源码，`build` 与 `export` 自动生成语言包。单语言作品直接写普通字符串。
 
 ```aside
 localization.set_locale("zh-CN");
-let data = model({name: "Mio", count: 2});
+let data = model({name: "Mio"});
 stage.replace(column(gap: 12) {
-    text(value: derive(|| tr("你好，{ $name }。", id: "welcome", params: {name: data.name})));
+    text(derive(|| tr(f"你好，{data.name}。", {en: f"Hello, {data.name}."})));
     button("English", on_click: |event| localization.set_locale("en"));
 });
 ```
 
-通常直接写 `tr("雨停了。")`。提取工具为相同原文生成相同 ID，移动代码或调整缩进不改变 ID；修改原文则生成新 ID。相同文字需要不同译法，或希望修改原文后仍沿用原作编号时，使用 `tr("雨停了。", id: "opening")`。源文不含参数时不要传空参数表。
+插值沿普通 Aside 表达式书写。原文中的表达式按顺序各求值一次，译文引用这些值，可以调整顺序、重复或省略；共享表达式复杂时，先给它取一个局部变量名。语言标签使用 `en`、`ja` 或带引号的 `"zh-CN"` 等写法。原文、译文和上下文一起移动，内部消息身份由编译器生成。
 
-在项目目录生成待翻译模板；首次翻译时，将模板复制到 `translations/<locale>/` 并填写译文。
+`localization.set_locale(locale)` 等待所选语言及其基础语言准备完成，再一起更新语言和界面。查找顺序为精确语言、基础语言、原文；加载失败可用 try/catch 处理，原语言保持可用。`localization.locale()` 返回可观察的当前语言。
 
-```sh
-reel loc extract --output-dir build/translation-template
-reel check
-reel build
+界面通过 `derive(|| tr(...))` 随语言更新。普通调用、已提交的对白、选项和历史保留求值时的文字；分支 key 与显示文案分别定义。复数等文案选择可以用普通条件分支，每个分支就近写出它的译文。需要 Fluent 数值选择模板时，使用英文源码说明中的 `params` 接口。
+
+同时显示多种语言时，先用 `localization.load(locale)` 预热，再用单次调用的 `locale` 指定语言：
+
+```aside
+localization.load("en");
+column(gap: 6) {
+    text(tr("你好。", {en: "Hello."}, locale: "zh-CN"), font_size: 28);
+    text(tr("你好。", {en: "Hello."}, locale: "en"), font_size: 18);
+}
 ```
 
-提取跟随导入模块，包含源码位置与函数上下文。`--output-dir` 镜像模块路径，例如 story/day_one.aside 对应 story/day_one.ftl。相同 ID 只写入按相对路径排序最早的模块，保留所有调用位置。普通正文自动转义，带 params 的原文作为 Fluent 模板检查。动态文字或 ID 会报告位置，需由内容生成器提供目录。`--overwrite` 显式替换指定输出。目录模式保留其他文件，并逐一报告本次无归属的旧 FTL；合并前检查并移除，或提取到新的目录。手工译文与生成的原文目录分开维护，提取不隐式合并或改写译文。
+发布包按需读取当前语言及其基础语言，显式预热的语言继续保留。开发运行共享编译得到的译文文本，按需解析目录。完整写法见[翻译示例](../../examples/localization/src/main.aside)和[英文接口说明](../../crates/reel-engine/src/aside/localization.rs)。
 
-译文可按内容拆成 `translations/en/story/day_one.ftl` 和 `translations/en/ui/settings.ftl`，公共术语放在 `common.ftl`。工具按相对路径合并，跨文件引用照常使用；重复 ID 与语法错误定位到原文件行列。移动译文文件不改变消息身份。已有自定义流水线可用 `reel loc bundle <directory> --output <file.ftl>` 单独生成目录，`reel loc check <file.ftl> --locale en` 单独验证。运行时按语言读取和解析，每次翻译复用已加载的目录。翻译资源替代仍属后续能力。
 视频与音频播放返回可等待活动，所有权、控制及存档行为见各自章节。作者滤镜与同步组接口仍属规划。
 规划中的 `custom_node` 将开放 Aside 的 state、measure、record、route 和 event 回调：布局与绘制回调只读，路由先决定消费、捕获与焦点，再执行可暂停的事件任务。当前作者接口尚未注册；宿主扩展使用 [Aside host SDK](../aside-host.md)。
 透视舞台、Mesh、Material 与可编程 Effect 接口仍属规划；已实现的 `camera` 用于二维取景。Live2D、系统朗读、移动/Web 打包及外部服务适配需要分别实现并提供能力说明。

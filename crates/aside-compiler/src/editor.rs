@@ -35,6 +35,11 @@ pub struct EditorAnalysis {
 /// A borrowed editor view. Unlike `AnalyzedModule`, this is not a lowering input.
 #[derive(Debug, Clone, Copy)]
 pub struct EditorModule<'a>(&'a AnalyzedModule);
+impl<'a> From<&'a AnalyzedModule> for EditorModule<'a> {
+    fn from(module: &'a AnalyzedModule) -> Self {
+        Self(module)
+    }
+}
 
 impl EditorAnalysis {
     pub fn module(&self) -> Option<EditorModule<'_>> {
@@ -79,6 +84,10 @@ impl<'a> EditorModule<'a> {
     }
     pub fn external_bindings(self) -> &'a [ExternalBinding] {
         self.0.external_bindings()
+    }
+    /// Query external identity without admitting this recoverable view to lowering.
+    pub fn canonical_reference(self, node: NodeId) -> Option<&'a SymbolReference> {
+        self.0.canonical_reference(node)
     }
 }
 

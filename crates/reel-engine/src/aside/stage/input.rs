@@ -26,9 +26,25 @@ pub(in crate::aside) enum InputField {
     OnWheel,
 }
 fn validate_actions(heap: &Heap, value: Value) -> Result<(), HeapError> {
-    read_actions(heap, value, false)
-        .map(|_| ())
-        .map_err(|_| HeapError::TypeMismatch)
+    validate_actions_view(&aside_vm::PropertyRead::current(heap), value)
+}
+fn validate_actions_view(heap: &aside_vm::PropertyRead<'_>, value: Value) -> Result<(), HeapError> {
+    heap.charge_property_validation_work(4)?;
+    let validate = || -> Result<(), AdapterError> {
+        if value.tag() == ValueTag::Null {
+            return Ok(());
+        }
+        for index in 0..heap.table_len(value)? {
+            heap.charge_property_validation_work(8)?;
+            let (name, record) = heap.table_entry(value, index)?;
+            let row = read_action(heap, name, record)?;
+            for index in 0..heap.sequence_len(row[1])? {
+                read_control(heap, heap.sequence_get(row[1], index)?)?;
+            }
+        }
+        Ok(())
+    };
+    validation(validate())
 }
 fn validate_callback(heap: &Heap, value: Value) -> Result<(), HeapError> {
     validate_button_property(heap, 1, value)
@@ -72,41 +88,111 @@ pub(in crate::aside) struct Callback {
     pub value: f32,
 }
 
+fn with_string<T>(
+    heap: &Heap,
+    value: Value,
+    read: impl FnOnce(&str) -> Result<T, AdapterError>,
+) -> Result<T, AdapterError> {
+    let info = heap.info(value)?;
+    if info.kind != ObjectKind::String {
+        return Err(HeapError::TypeMismatch.into());
+    }
+    heap.charge_property_validation_work(u64::from(info.len) + 4)?;
+    let bytes = heap.byte_segment(value, 0)?;
+    if bytes.len() == info.len as usize {
+        read(std::str::from_utf8(bytes).map_err(|_| HeapError::TypeMismatch)?)
+    } else {
+        read(&String::from_value(heap, value)?)
+    }
+}
+
+fn read_control(heap: &Heap, item: Value) -> Result<Binding, AdapterError> {
+    heap.charge_property_validation_work(8)?;
+    let (name, scale, dead_zone) = if heap
+        .info(item)
+        .is_ok_and(|info| info.kind == ObjectKind::String)
+    {
+        (item, 1., 0.)
+    } else {
+        if heap.sequence_len(item)? != 3 {
+            return Err(AdapterError::Input(
+                "expected a control name or binding(control, scale:, dead_zone:)",
+            ));
+        }
+        (
+            heap.sequence_get(item, 0)?,
+            number(heap.sequence_get(item, 1)?)? as f32,
+            number(heap.sequence_get(item, 2)?)? as f32,
+        )
+    };
+    let control: Control = with_string(heap, name, |name| {
+        name.parse()
+            .map_err(|_| AdapterError::Input("unknown physical control"))
+    })?;
+    let binding = Binding {
+        control,
+        scale,
+        dead_zone,
+        positive_only: false,
+    };
+    if !binding.is_valid() {
+        return Err(AdapterError::Input("invalid binding scale or dead zone"));
+    }
+    Ok(binding)
+}
+
 fn read_controls(heap: &Heap, values: Value) -> Result<Vec<Binding>, AdapterError> {
     let mut bindings = Vec::new();
     for j in 0..heap.sequence_len(values)? {
-        let item = heap.sequence_get(values, j)?;
-        let (name, scale, dead_zone) = if heap
-            .info(item)
-            .is_ok_and(|info| info.kind == ObjectKind::String)
-        {
-            (item, 1., 0.)
-        } else {
-            if heap.sequence_len(item)? != 3 {
-                return Err(AdapterError::Input(
-                    "expected a control name or binding(control, scale:, dead_zone:)",
-                ));
-            }
-            (
-                heap.sequence_get(item, 0)?,
-                number(heap.sequence_get(item, 1)?)? as f32,
-                number(heap.sequence_get(item, 2)?)? as f32,
-            )
-        };
-        let control: Control = String::from_value(heap, name)?
-            .parse()
-            .map_err(|_| AdapterError::Input("unknown physical control"))?;
-        bindings.push(Binding {
-            control,
-            scale,
-            dead_zone,
-            positive_only: false,
-        });
+        bindings.push(read_control(heap, heap.sequence_get(values, j)?)?);
     }
     Ok(bindings)
 }
 
+fn read_action(
+    heap: &aside_vm::PropertyRead<'_>,
+    name: Value,
+    record: Value,
+) -> Result<Row, AdapterError> {
+    let info = heap.info(name)?;
+    if info.kind != ObjectKind::String || info.len == 0 {
+        return Err(AdapterError::Input("an action requires a nonempty name"));
+    }
+    // Table keys already enforce unique string names.
+    let mut row = [Value::NULL; 7];
+    row[0] = name;
+    for j in 0..heap.table_len(record)? {
+        heap.charge_property_validation_work(8)?;
+        let (field, value) = heap.table_entry(record, j)?;
+        let index = with_string(heap, field, |field| {
+            if field == "bindings" {
+                Ok(1)
+            } else {
+                HANDLERS
+                    .iter()
+                    .position(|name| *name == field)
+                    .map(|index| 2 + index)
+                    .ok_or(AdapterError::Input("unknown action field"))
+            }
+        })?;
+        if index != 1 {
+            validate_callback(heap, value)?;
+        }
+        row[index] = value;
+    }
+    if row[1].tag() == ValueTag::Null {
+        return Err(AdapterError::Input("an action requires bindings"));
+    }
+    if row[2].tag() != ValueTag::Null && row[3..].iter().any(|v| v.tag() != ValueTag::Null) {
+        return Err(AdapterError::Input(
+            "on_action and phase handlers are mutually exclusive",
+        ));
+    }
+    Ok(row)
+}
+
 fn read_actions(heap: &Heap, value: Value, capture: bool) -> Result<Declaration, AdapterError> {
+    let heap = &aside_vm::PropertyRead::current(heap);
     let mut definitions = Vec::new();
     let mut rows = Vec::new();
     if value.tag() == ValueTag::Null {
@@ -118,28 +204,7 @@ fn read_actions(heap: &Heap, value: Value, capture: bool) -> Result<Declaration,
     for i in 0..heap.table_len(value)? {
         let (key, record) = heap.table_entry(value, i)?;
         let name: Arc<str> = String::from_value(heap, key)?.into();
-        let mut row = [Value::NULL; 7];
-        row[0] = key;
-        for j in 0..heap.table_len(record)? {
-            let (field, value) = heap.table_entry(record, j)?;
-            let field = String::from_value(heap, field)?;
-            if field == "bindings" {
-                row[1] = value;
-            } else if let Some(index) = HANDLERS.iter().position(|name| *name == field) {
-                validate_callback(heap, value)?;
-                row[2 + index] = value;
-            } else {
-                return Err(AdapterError::Input("unknown action field"));
-            }
-        }
-        if row[1].tag() == ValueTag::Null {
-            return Err(AdapterError::Input("an action requires bindings"));
-        }
-        if row[2].tag() != ValueTag::Null && row[3..].iter().any(|v| v.tag() != ValueTag::Null) {
-            return Err(AdapterError::Input(
-                "on_action and phase handlers are mutually exclusive",
-            ));
-        }
+        let row = read_action(heap, key, record)?;
         definitions.push(ActionDefinition {
             name,
             bindings: read_controls(heap, row[1])?,
@@ -256,8 +321,9 @@ pub(super) fn kind(
     fields: Value,
     bindings: InputBindings,
 ) -> Result<NodeKind, AdapterError> {
+    let view = aside_vm::PropertyRead::current(heap);
     for index in 1..InputField::PROPERTIES.len() as u32 {
-        validate(heap, index, heap.table_entry(fields, index)?.1)?;
+        validate(&view, index, view.table_entry(fields, index)?.1)?;
     }
     Ok(NodeKind::Input {
         bindings,
@@ -306,9 +372,15 @@ pub(super) fn replace(
     state.values = values(&declaration.bindings);
     Ok(declaration.bindings)
 }
-pub(super) fn validate(heap: &Heap, index: u32, value: Value) -> Result<(), HeapError> {
+pub(super) fn validate(
+    heap: &aside_vm::PropertyRead<'_>,
+    index: u32,
+    value: Value,
+) -> Result<(), HeapError> {
     let count = InputField::PROPERTIES.len() as u32;
-    if index < count {
+    if index == InputField::Actions.index() as u32 {
+        validate_actions_view(heap, value)
+    } else if index < count {
         InputField::validate(heap, index, value)
     } else {
         validate_layout_property(heap, index - count, value)

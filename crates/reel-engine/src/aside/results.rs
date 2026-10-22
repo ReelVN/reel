@@ -289,7 +289,7 @@ impl Results {
     }
 }
 pub(super) fn readonly(
-    heap: &Heap,
+    heap: &aside_vm::PropertyRead<'_>,
     object: Value,
     field: u32,
     value: Value,

@@ -221,6 +221,11 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             vec![("speech", BuiltinType::Any, None)],
             Effects::ALL.0,
         ),
+        (
+            "speech::revealed",
+            vec![("speech", BuiltinType::Any, None)],
+            Effects::ALL.0,
+        ),
     ] {
         contracts.push(NativeContract {
             rest: None,
@@ -1026,7 +1031,19 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             required_capabilities: vec!["reel.stage".into()],
         });
     }
+    for name in ["then", "together"] {
+        contracts.push(NativeContract {
+            rest: None,
+            symbol: format!("reel::action::{name}"),
+            abi_version: 1,
+            parameters: vec![parameter("action", None), parameter("other", None)],
+            result: BuiltinType::Any,
+            effects: Effects(Effects::ALLOCATE | Effects::HOST),
+            required_capabilities: vec!["reel.stage".into()],
+        });
+    }
     contracts.extend(super::stage::bindings().map(|binding| binding.contract));
+    contracts.extend(super::stage::configure::contracts());
     contracts.push(NativeContract {
         rest: None,
         symbol: "reel::rich".into(),
@@ -1050,7 +1067,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             "reel::tr",
             vec![
                 parameter("source", None),
-                parameter("id", Some(bc::Const::Null)),
+                parameter("translations", Some(bc::Const::Null)),
                 parameter("params", Some(bc::Const::Null)),
                 parameter("locale", Some(bc::Const::Null)),
             ],

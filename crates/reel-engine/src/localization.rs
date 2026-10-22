@@ -17,11 +17,6 @@ enum StaticText {
     Decoded(Box<str>),
 }
 
-/// Content identity shared by runtime calls and authoring tools.
-pub fn message_id(source: &str) -> String {
-    format!("text-{}", blake3::hash(source.as_bytes()).to_hex())
-}
-
 pub fn language_id(locale: &str) -> Result<LanguageIdentifier, String> {
     locale
         .parse()

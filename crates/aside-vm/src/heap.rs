@@ -11,7 +11,9 @@ use crate::payload::{BYTE_CHUNK_BYTES, Bytes, Payload, VALUE_CHUNK_BYTES, Values
 use crate::root_ranges::{BOOK_BYTES, RangeDescriptor};
 use crate::slots::{HeapKey, RangeKey, RootKey, Slots, heap_key, index};
 use crate::{GcPhase, HeapHandle, HeapId, SessionEpoch, Value, WeakHandle};
-pub use properties::PropertyId;
+pub use properties::{
+    PropertyBatch, PropertyBatchProgress, PropertyId, PropertyRead, PropertyWrites,
+};
 use slotmap::Key;
 use std::collections::VecDeque;
 use std::marker::PhantomData;
@@ -161,6 +163,7 @@ pub enum HeapError {
     InvalidHandle,
     RetiredHost,
     BindingCycle,
+    PropertyConflict,
     UnconfirmedLive,
     InvalidRoot,
     WrongKind,
@@ -237,9 +240,10 @@ pub struct HeapStats {
 }
 
 /// Trusted, allocation-free validation at a host property's write boundary.
-/// The index identifies an existing own field. This callback must not execute
-/// script or wait; an error leaves the old property value unchanged.
-pub type HostPropertyValidator = fn(&Heap, Value, u32, Value) -> Result<(), HeapError>;
+/// The index identifies an existing own field. Read related properties through
+/// the supplied view to validate the complete proposed configuration. This
+/// callback must not execute script or wait; errors precede value publication.
+pub type HostPropertyValidator = fn(&PropertyRead<'_>, Value, u32, Value) -> Result<(), HeapError>;
 
 pub(crate) struct Object {
     pub kind: ObjectKind,
@@ -296,6 +300,15 @@ pub struct Heap {
     pub(crate) release: VecDeque<HeapKey>,
     pub(crate) gc: Collector,
     property_work: Vec<PropertyId>,
+    property_batch: Vec<properties::PreparedProperty>,
+    property_batch_index: Vec<usize>,
+    property_index_work: std::cell::Cell<u64>,
+    property_traversal_work: std::cell::Cell<u64>,
+    property_work_used: std::cell::Cell<u64>,
+    property_validation_work: std::cell::Cell<u64>,
+    property_validation_limit: std::cell::Cell<u64>,
+    property_bindings: Vec<properties::PreparedBinding>,
+    derived_disconnect_work: Vec<Value>,
     model_work: Vec<Value>,
     model_walk: u64,
     reactive_queue: VecDeque<HeapKey>,
@@ -381,6 +394,15 @@ impl Heap {
             release: VecDeque::with_capacity(initial_objects),
             gc: Collector::default(),
             property_work: Vec::new(),
+            property_batch: Vec::new(),
+            property_batch_index: Vec::new(),
+            property_index_work: std::cell::Cell::new(0),
+            property_traversal_work: std::cell::Cell::new(0),
+            property_work_used: std::cell::Cell::new(0),
+            property_validation_work: std::cell::Cell::new(0),
+            property_validation_limit: std::cell::Cell::new(u64::MAX),
+            property_bindings: Vec::new(),
+            derived_disconnect_work: Vec::new(),
             model_work: Vec::new(),
             model_walk: 0,
             reactive_queue: VecDeque::with_capacity(initial_objects),
@@ -816,7 +838,7 @@ impl Heap {
             };
         }
         if let Some(validate) = self.object(self.key(host)?)?.host_validator {
-            validate(self, host, index, value)?;
+            validate(&PropertyRead::current(self), host, index, value)?;
         }
         Ok(())
     }
@@ -860,6 +882,8 @@ impl Heap {
             self.table_len(fields)?
         };
         while self.sequence_len(versions)? < count {
+            self.property_traversal_work
+                .set(self.property_traversal_work.get() + 4);
             self.array_push(versions, Value::int(0))?;
         }
         Ok(())
@@ -1373,6 +1397,10 @@ impl Drop for Heap {
         drop(std::mem::take(&mut self.gray));
         drop(std::mem::take(&mut self.release));
         drop(std::mem::take(&mut self.property_work));
+        drop(std::mem::take(&mut self.property_batch));
+        drop(std::mem::take(&mut self.property_batch_index));
+        drop(std::mem::take(&mut self.property_bindings));
+        drop(std::mem::take(&mut self.derived_disconnect_work));
         drop(std::mem::take(&mut self.model_work));
         drop(std::mem::take(&mut self.reactive_queue));
         // The Rc book itself remains physically live while an observer/pool owns it.

@@ -87,6 +87,35 @@ pub struct NativeLink<'a> {
     /// declaration instead of being inferred from a coarse ABI `any`.
     pub source_signature: Option<&'a crate::semantic::ExternalSignature>,
 }
+/// A host compile extension for an already resolved canonical call. Expansions
+/// retain the original callee and shared runtime argument binder. This input is
+/// borrowed build data and never becomes VM state.
+#[derive(Debug, Clone)]
+pub struct CallExpansion {
+    pub call: hir::NodeId,
+    pub reference: crate::semantic::SymbolReference,
+    /// Ordered evaluation plan. Naming every argument preserves source order
+    /// even when a host replaces compile-time syntax with runtime data.
+    pub arguments: Vec<ExpandedArgument>,
+}
+/// One named runtime argument and its original diagnostic source anchor.
+#[derive(Debug, Clone)]
+pub struct ExpandedArgument {
+    pub name: String,
+    pub source: hir::NodeId,
+    pub value: ExpandedValue,
+}
+/// Values expressible by a compile extension using ordinary language lowering.
+#[derive(Debug, Clone)]
+pub enum ExpandedValue {
+    Expression(hir::NodeId),
+    Constant(bc::Const),
+    /// Evaluate each expression once in entry order and construct one table.
+    Record(Vec<(String, hir::NodeId)>),
+    /// Like `Record`, using the language's normal interpolation conversion for
+    /// each value. No host-specific scalar formatting is introduced.
+    TextRecord(Vec<(String, hir::NodeId)>),
+}
 /// The embedder supplies a trusted package with real native signatures,
 /// capabilities, ABI and default function implementations. B01 verification
 /// establishes format validity; trusting a host registration remains the
@@ -95,6 +124,9 @@ pub struct NativeLink<'a> {
 pub struct Linkage<'a> {
     pub package: Option<&'a bc::VerifiedProgram>,
     pub natives: &'a [NativeLink<'a>],
+    /// Sorted by call NodeId, with no duplicates. Exact canonical identity is
+    /// checked against analysis before an expansion can suppress source syntax.
+    pub expansions: &'a [CallExpansion],
 }
 #[derive(Debug, Clone, Copy)]
 pub struct Options {

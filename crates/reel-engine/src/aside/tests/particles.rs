@@ -316,7 +316,8 @@ fn particles_stop_during_a_partial_clock_pass_keeps_the_pending_prefix_exact() {
                     {
                         break ticket;
                     }
-                    vm.dispatch(&mut session, ticket, "en", 32).unwrap();
+                    vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(32))
+                        .unwrap();
                 }
                 SessionStep::Vm(RunOutcome::Fault(id)) => {
                     panic!("{:?}", vm.vm.delivery_fault(id).unwrap());
@@ -332,7 +333,8 @@ fn particles_stop_during_a_partial_clock_pass_keeps_the_pending_prefix_exact() {
         assert_eq!(first.work, 1);
         // The first producer has completed; stop the unprocessed second one
         // before resuming the public, budgeted clock operation.
-        vm.dispatch(&mut session, stop, "en", 32).unwrap();
+        vm.dispatch(&mut session, stop, "en", NativeBudget::Exact(32))
+            .unwrap();
         let last = vm.advance_time(&session, 1., 32).unwrap();
         assert_eq!(last.work, 1, "only the third producer remains unprocessed");
         assert!(!last.pending);
@@ -651,7 +653,8 @@ fn particle_restore_keeps_paint_order_after_emit_during_a_clock_slice() {
                             break ticket;
                         }
                     }
-                    vm.dispatch(&mut session, ticket, "en", 32).unwrap();
+                    vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(32))
+                        .unwrap();
                 }
                 SessionStep::Vm(RunOutcome::Fault(id)) => {
                     panic!("{:?}", vm.vm.delivery_fault(id).unwrap())
@@ -663,7 +666,8 @@ fn particle_restore_keeps_paint_order_after_emit_during_a_clock_slice() {
             }
         };
         assert!(vm.advance_time(&session, 0.2, 1).unwrap().pending);
-        vm.dispatch(&mut session, third, "en", 1).unwrap();
+        vm.dispatch(&mut session, third, "en", NativeBudget::Exact(1))
+            .unwrap();
         activities::advance_clock(&mut vm, &session, 0.2, 1);
         let expected = batch(&vm).samples().collect::<Vec<_>>();
         let program = vm.vm.program().clone();

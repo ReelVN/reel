@@ -148,7 +148,8 @@ fn scope_nodes_retirement_reuses_parent_edges_without_vm_chunk_allocation() {
                     == "reel::scope"
                     && ticket.input == NativeInput::CallbackReturned;
                 let before = vm.vm.heap().stats().chunk_allocations;
-                vm.dispatch(&mut session, ticket, "en", 32).unwrap();
+                vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(32))
+                    .unwrap();
                 if closing {
                     assert_eq!(
                         vm.vm.heap().stats().chunk_allocations,
@@ -513,7 +514,8 @@ fn scope_cancel_self_and_pending_request_restore_preserve_outer_fault_boundary()
                         .unwrap()
                     {
                         SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
-                            vm.dispatch(&mut session, ticket, "en", 32).unwrap();
+                            vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(32))
+                                .unwrap();
                         }
                         SessionStep::Vm(RunOutcome::Returned(_)) => {
                             vm.discard_delivery(&mut session).unwrap()

@@ -450,6 +450,7 @@ fn hover_summarizes_only_optional_schema_properties_and_uses_verified_type_alias
         declarations: vec![
             HostDeclaration {
                 reference: type_reference,
+                signature: None,
                 markdown: "A node.".into(),
                 definition: None,
                 parameter_defaults: BTreeMap::new(),
@@ -458,12 +459,21 @@ fn hover_summarizes_only_optional_schema_properties_and_uses_verified_type_alias
             },
             HostDeclaration {
                 reference: function_reference,
+                signature: None,
                 markdown: "Creates a text node.".into(),
                 definition: None,
                 parameter_defaults: BTreeMap::from([(
                     "source_identity_marker_value".into(),
-                    "\"native::types::Node\"".into(),
-                )]),
+                    crate::ParameterDefault::Value("\"native::types::Node\"".into()),
+                )])
+                .into_iter()
+                .chain(
+                    properties
+                        .iter()
+                        .cloned()
+                        .map(|name| (name, crate::ParameterDefault::Omitted)),
+                )
+                .collect(),
                 property_parameters: std::iter::once("value".into()).chain(properties).collect(),
                 property_default: None,
             },
@@ -510,12 +520,12 @@ fn hover_summarizes_only_optional_schema_properties_and_uses_verified_type_alias
             hover.contains("Additional named properties: 60."),
             "{hover}"
         );
-        assert!(!hover.contains("property_59:"), "{hover}");
+        assert!(!hover.contains("property_59"), "{hover}");
         let help = workspace
             .signature(&uri(), position(source, "\"Hello\"", true), Encoding::Utf16)
             .unwrap()
             .unwrap();
-        assert!(help.signatures[0].label.contains("property_59: int"));
+        assert!(help.signatures[0].label.contains("property_59?: int"));
         assert!(help.signatures[0].label.contains(canonical));
         assert_eq!(help.signatures[0].parameters.as_ref().unwrap().len(), 63);
         let items = workspace
