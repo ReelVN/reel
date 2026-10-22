@@ -82,8 +82,10 @@ capabilities. Compiler-generated PCs retain the author's source ranges.
 - Ordinary functions, closures, classes, modules, collections, fixed tuple
   destructuring, scalar/type/OR match arms, host awaits and callbacks execute on
   the common VM. Array/object/rest structural patterns, destructuring assignment,
-  structural match patterns, native async/generators/threads, delegates/hooks
+  structural match patterns, generators/threads, delegates/hooks
   and property-bag tails retain explicit unsupported diagnostics/admission.
+- The bytecode's reserved Async function tag has no supported source declaration
+  or execution admission. Ordinary functions wait through the common call stack.
 - External fragment bindings require a Value/Cell environment link; lowering
   rejects an absent link at the source range.
 

@@ -37,6 +37,10 @@ Records follow model.rs field order, with these prefixes:
 | ParameterDefault | 0 Constant(u32 ConstId), 1 Function(u32 FunctionId), within the parameter's Option |
 | TableSources entry | 0 Pair([Reg;2]), 1 Spread(Reg) |
 
+The Async function tag is reserved and has no supported source declaration or
+execution admission. Generator and thread protocols remain planned. These format
+records do not imply runtime support; see execution admission below.
+
 Tuple constants and structural tuple/union/function types reference earlier
 records, forming finite DAGs. Named types carry recursive nominal identity.
 Module imports fix module/export/version. Globals retain type/mutability and

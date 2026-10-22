@@ -50,4 +50,5 @@ cargo test --locked -p reel-cli --lib prepare_image
 cargo test --locked -p reel-player --lib prepared_image_tests
 ```
 
-Device-specific rendering and recovery are tracked in [#190](https://github.com/jhq223/reel/issues/190).
+Headless checks cover the manifest and loading contracts. Native rendering and
+recovery depend on the target adapter and driver.
