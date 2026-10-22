@@ -401,6 +401,20 @@ pub struct Documents {
     pub locations: Vec<Location>,
 }
 
+enum ReferenceTarget {
+    Namespace(String),
+    NamedType(String),
+    Registered(Arc<SymbolReference>),
+}
+type PendingReferences = Vec<(TextRange, ReferenceTarget)>;
+fn reference_key(reference: &SymbolReference) -> (String, String, Option<String>) {
+    (
+        reference.module.clone(),
+        reference.version.clone(),
+        reference.export.clone(),
+    )
+}
+
 impl Api {
     /// Resolve a member from the same complete schema used by editor clients.
     pub fn member(&self, type_name: &str, member: &str) -> Option<ExternalMember> {
@@ -496,7 +510,12 @@ impl Api {
             text.push_str(&format!("pub class {name}"));
             if let Some(base) = ty.bases.first() {
                 text.push_str(": ");
-                append_path(&mut text, base, &mut references);
+                append_path(
+                    &mut text,
+                    base,
+                    ReferenceTarget::NamedType(base.clone()),
+                    &mut references,
+                );
             }
             text.push_str(" {\n");
             result.locations.push(Location {
@@ -613,7 +632,14 @@ impl Api {
             append_docs(&mut text, "", &declaration.documentation);
             text.push_str("use ");
             let namespace_start = text.len();
-            append_path(&mut text, module, &mut references);
+            append_path(
+                &mut text,
+                module,
+                ReferenceTarget::Registered(Arc::clone(
+                    declaration.symbol.reference.as_ref().unwrap(),
+                )),
+                &mut references,
+            );
             let name = &declaration.symbol.name;
             let start = namespace_start + module.len() - name.len();
             text.push_str(";\n\n");
@@ -631,7 +657,12 @@ impl Api {
                         continue;
                     }
                     text.push_str("pub use ");
-                    append_path(&mut text, &canonical(export), &mut references);
+                    append_path(
+                        &mut text,
+                        &canonical(export),
+                        ReferenceTarget::Registered(Arc::clone(reference)),
+                        &mut references,
+                    );
                     if reference
                         .export
                         .as_deref()
@@ -641,7 +672,10 @@ impl Api {
                         text.push_str(" as ");
                         let start = text.len();
                         text.push_str(&export.name);
-                        references.push((range(start, export.name.len()), canonical(export)));
+                        references.push((
+                            range(start, export.name.len()),
+                            ReferenceTarget::Registered(Arc::clone(reference)),
+                        ));
                     }
                     text.push_str(";\n");
                 }
@@ -672,15 +706,36 @@ impl Api {
             .locations
             .iter()
             .enumerate()
-            .map(|(index, location)| (canonical(&location.declaration.symbol), index))
+            .map(|(index, location)| {
+                (
+                    reference_key(location.declaration.symbol.reference.as_ref().unwrap()),
+                    index,
+                )
+            })
             .collect::<BTreeMap<_, _>>();
+        let mut namespaces = BTreeMap::new();
+        let mut named_types = BTreeMap::new();
+        for location in &result.locations {
+            let symbol = &location.declaration.symbol;
+            let reference = symbol.reference.as_ref().unwrap();
+            if reference.export.is_none() {
+                namespaces.insert(reference.module.clone(), Arc::clone(reference));
+            } else if symbol.type_only {
+                named_types.insert(canonical(symbol), Arc::clone(reference));
+            }
+        }
         for (document, references) in result.documents.iter_mut().zip(document_references) {
             document.references = references
                 .into_iter()
-                .filter_map(|(range, canonical)| {
+                .filter_map(|(range, target)| {
+                    let reference = match &target {
+                        ReferenceTarget::Namespace(path) => namespaces.get(path)?,
+                        ReferenceTarget::NamedType(path) => named_types.get(path)?,
+                        ReferenceTarget::Registered(reference) => reference,
+                    };
                     Some(Reference {
                         range,
-                        declaration: *targets.get(&canonical)?,
+                        declaration: *targets.get(&reference_key(reference))?,
                     })
                 })
                 .collect();
@@ -733,7 +788,7 @@ fn append_declaration(
     writable: bool,
     uri: &str,
     locations: &mut Vec<Location>,
-    references: &mut Vec<(TextRange, String)>,
+    references: &mut PendingReferences,
 ) {
     append_docs(text, indent, &declaration.documentation);
     text.push_str(indent);
@@ -846,22 +901,36 @@ fn append_parameter(
         text.push_str(&constant(default));
     }
 }
-fn append_path(text: &mut String, path: &str, references: &mut Vec<(TextRange, String)>) {
+fn append_path(
+    text: &mut String,
+    path: &str,
+    target: ReferenceTarget,
+    references: &mut PendingReferences,
+) {
     let start = text.len();
     text.push_str(path);
-    path_references(path, start, references);
+    path_references(path, start, target, references);
 }
-fn path_references(path: &str, start: usize, references: &mut Vec<(TextRange, String)>) {
-    let mut end = 0;
-    for segment in path.split("::") {
+fn path_references(
+    path: &str,
+    start: usize,
+    target: ReferenceTarget,
+    references: &mut PendingReferences,
+) {
+    let mut segment_start = 0;
+    for (separator, _) in path.match_indices("::") {
         references.push((
-            range(start + end, segment.len()),
-            path[..end + segment.len()].into(),
+            range(start + segment_start, separator - segment_start),
+            ReferenceTarget::Namespace(path[..separator].into()),
         ));
-        end += segment.len() + 2;
+        segment_start = separator + 2;
     }
+    references.push((
+        range(start + segment_start, path.len() - segment_start),
+        target,
+    ));
 }
-fn type_references(ty: &TypeHint, start: usize, references: &mut Vec<(TextRange, String)>) {
+fn type_references(ty: &TypeHint, start: usize, references: &mut PendingReferences) {
     fn names<'a>(ty: &'a TypeHint, result: &mut std::collections::BTreeSet<&'a str>) {
         match ty {
             TypeHint::Named(name) => {
@@ -898,7 +967,12 @@ fn type_references(ty: &TypeHint, start: usize, references: &mut Vec<(TextRange,
             {
                 continue;
             }
-            path_references(name, start + offset, references);
+            path_references(
+                name,
+                start + offset,
+                ReferenceTarget::NamedType(name.into()),
+                references,
+            );
         }
     }
 }

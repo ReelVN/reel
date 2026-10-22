@@ -173,3 +173,44 @@ fn node_schema_groups_and_parameter_help_describe_the_actual_properties() {
     }
     server.stop();
 }
+
+#[test]
+fn reexports_keep_function_identity_when_a_namespace_has_the_same_path() {
+    let mut server = Server::start(env!("CARGO_BIN_EXE_reel-lsp"));
+    server.request(1, "initialize", json!({"capabilities":{}}));
+    server.notify("initialized", json!({}));
+    let uri = "untitled:function-namespace-identity.aside";
+    let source = "use reel::prelude::{video}; fn main() { let clip = video(\"clip.mp4\"); }";
+    open(&mut server, uri, source);
+    let mut id = 1;
+    let constructor = definition(&mut server, &mut id, uri, source, "video};");
+    let module = definition(&mut server, &mut id, uri, source, "prelude::{");
+    let (module_uri, module_text) = document(&mut server, &mut id, &module);
+    let reexport = definition(&mut server, &mut id, &module_uri, &module_text, "video;");
+    assert_eq!(
+        reexport, constructor,
+        "the reexport must retain its function identity"
+    );
+    let (_, text) = document(&mut server, &mut id, &reexport);
+    assert!(
+        text.lines()
+            .nth(reexport["range"]["start"]["line"].as_u64().unwrap() as usize)
+            .unwrap()
+            .starts_with("pub fn video(")
+    );
+    let namespace_uri = "aside-native://reel/modules/reel/video.aside";
+    id += 1;
+    let namespace = server.request(id, "aside/nativeDocument", json!({"uri":namespace_uri}));
+    let namespace_text = namespace["text"].as_str().unwrap();
+    open(&mut server, namespace_uri, namespace_text);
+    let namespace = definition(
+        &mut server,
+        &mut id,
+        namespace_uri,
+        namespace_text,
+        "video;",
+    );
+    assert_eq!(namespace["uri"], namespace_uri);
+    assert_ne!(namespace, constructor);
+    server.stop();
+}
