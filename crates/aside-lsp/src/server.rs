@@ -1,5 +1,9 @@
 //! LSP transport and lifecycle; parsing and query semantics stay in the compiler.
-use crate::{ServerOptions, position::Encoding, workspace::Workspace};
+use crate::{
+    ServerOptions,
+    position::Encoding,
+    workspace::{DiagnosticWarmup, Workspace},
+};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use lsp_types::*;
 use serde::Deserialize;
@@ -26,6 +30,8 @@ pub fn run_stdio(options: ServerOptions) -> Result<()> {
 /// Diagnostics coalesce for 150 ms after edits; interactive requests run without
 /// that delay. Cancellation retires queued requests within a 64-message batch;
 /// compiler analysis that has already started runs to completion.
+/// Host source features warm one module at a time between incoming messages,
+/// before publishing the complete diagnostic batch for the current documents.
 pub fn run_connection(connection: Connection, options: ServerOptions) -> Result<()> {
     let (id, params) = connection.initialize_start()?;
     let params: InitializeParams = serde_json::from_value(params)?;
@@ -61,28 +67,43 @@ pub fn run_connection(connection: Connection, options: ServerOptions) -> Result<
     let mut published = BTreeSet::new();
     let mut pending = VecDeque::new();
     let mut diagnostics_due: Option<Instant> = None;
+    let mut diagnostic_warmup: Option<DiagnosticWarmup> = None;
     loop {
         if pending.is_empty() {
-            let message = if let Some(deadline) = diagnostics_due {
-                match connection
-                    .receiver
-                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                {
-                    Ok(message) => message,
-                    Err(error) if error.is_timeout() => {
-                        publish(&connection, &mut workspace, encoding, &mut published)?;
-                        diagnostics_due = None;
+            if let Some(warmup) = diagnostic_warmup.as_mut() {
+                match connection.receiver.try_recv() {
+                    Ok(message) => pending.push_back(message),
+                    Err(error) if error.is_disconnected() => break,
+                    Err(_) => {
+                        if warmup.step() {
+                            diagnostic_warmup = None;
+                            publish(&connection, &mut workspace, encoding, &mut published)?;
+                        }
                         continue;
                     }
-                    Err(_) => break,
                 }
             } else {
-                match connection.receiver.recv() {
-                    Ok(message) => message,
-                    Err(_) => break,
-                }
-            };
-            pending.push_back(message);
+                let message = if let Some(deadline) = diagnostics_due {
+                    match connection
+                        .receiver
+                        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    {
+                        Ok(message) => message,
+                        Err(error) if error.is_timeout() => {
+                            diagnostic_warmup = Some(workspace.diagnostic_warmup());
+                            diagnostics_due = None;
+                            continue;
+                        }
+                        Err(_) => break,
+                    }
+                } else {
+                    match connection.receiver.recv() {
+                        Ok(message) => message,
+                        Err(_) => break,
+                    }
+                };
+                pending.push_back(message);
+            }
         }
         // Read ahead only within this bounded batch. Notifications keep wire
         // order, while cancellations can retire work that has not started.
@@ -101,6 +122,7 @@ pub fn run_connection(connection: Connection, options: ServerOptions) -> Result<
                 if request.method == "shutdown" {
                     shutdown = true;
                     diagnostics_due = None;
+                    diagnostic_warmup = None;
                     connection
                         .sender
                         .send(Response::new_ok(request.id, Value::Null).into())?;
@@ -195,9 +217,14 @@ pub fn run_connection(connection: Connection, options: ServerOptions) -> Result<
                     })
                 })();
                 match outcome {
-                    Ok(true) => diagnostics_due = Some(Instant::now() + Duration::from_millis(150)),
+                    Ok(true) => {
+                        diagnostic_warmup = None;
+                        diagnostics_due = Some(Instant::now() + Duration::from_millis(150));
+                    }
                     Ok(false) => {}
                     Err(error) => {
+                        diagnostic_warmup = None;
+                        diagnostics_due = None;
                         let message = error.to_string();
                         connection.sender.send(
                             Notification::new(

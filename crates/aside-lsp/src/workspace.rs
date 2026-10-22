@@ -290,6 +290,37 @@ struct Document {
     analysis_size: usize,
 }
 
+pub(crate) struct DiagnosticWarmup {
+    projects: VecDeque<Arc<Snapshot>>,
+    last_module: Option<String>,
+}
+impl DiagnosticWarmup {
+    /// Initialize at most one module, yielding to the transport between calls.
+    /// Return true after every current module's host features are ready.
+    pub fn step(&mut self) -> bool {
+        use std::ops::Bound;
+        while let Some(snapshot) = self.projects.front() {
+            let start = self
+                .last_module
+                .as_deref()
+                .map_or(Bound::Unbounded, Bound::Excluded);
+            let next = snapshot
+                .features
+                .range::<str, _>((start, Bound::Unbounded))
+                .find(|(_, features)| features.get().is_none())
+                .map(|(path, _)| path.clone());
+            if let Some(path) = next {
+                snapshot.source_features(&path);
+                self.last_module = Some(path);
+                return false;
+            }
+            self.projects.pop_front();
+            self.last_module = None;
+        }
+        true
+    }
+}
+
 /// Owns open text buffers. Every query for an unchanged dependency graph reuses
 /// the same lossless trees and semantic snapshot; no game session is started.
 /// Recent disk parses retain at most 1,024 inputs and 32 MiB of source text.
@@ -452,6 +483,32 @@ impl Workspace {
             .into_iter()
             .map(|document| document.source.uri.clone())
             .collect()
+    }
+
+    /// Capture one cursor per current shared graph for cooperative publication.
+    pub fn diagnostic_warmup(&mut self) -> DiagnosticWarmup {
+        let mut projects = VecDeque::new();
+        let mut seen = BTreeSet::new();
+        if self.source_analysis.is_some() {
+            for uri in self.open_uris() {
+                if self.host.documents.contains_key(uri.as_str())
+                    || module_paths::index_origin(&uri).is_some()
+                {
+                    continue;
+                }
+                // Failed snapshots retain the normal diagnostic failure path;
+                // they have no host features to warm before publication.
+                if let Ok(snapshot) = self.snapshot(&uri)
+                    && seen.insert(Arc::as_ptr(&snapshot.features) as usize)
+                {
+                    projects.push_back(snapshot);
+                }
+            }
+        }
+        DiagnosticWarmup {
+            projects,
+            last_module: None,
+        }
     }
     /// Format the cached lossless tree without constructing a semantic snapshot.
     /// Syntax errors already have diagnostics and leave the editor buffer unchanged.
@@ -1021,6 +1078,13 @@ mod import_tests {
         workspace
             .open(helper.clone(), 1, "pub fn read()->int{1}".into())
             .unwrap();
+        let mut warmup = workspace.diagnostic_warmup();
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+        assert!(!warmup.step());
+        assert_eq!(CALLS.load(Ordering::SeqCst), 2);
+        assert!(!warmup.step());
+        assert_eq!(CALLS.load(Ordering::SeqCst), 3);
+        assert!(warmup.step());
         workspace.diagnostics(&helper, Encoding::Utf16).unwrap();
         assert_eq!(CALLS.load(Ordering::SeqCst), 3);
         let diagnostics = workspace.diagnostics(&main, Encoding::Utf16).unwrap();
