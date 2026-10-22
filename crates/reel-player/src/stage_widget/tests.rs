@@ -794,7 +794,7 @@ fn configured_fonts_shape_mixed_text_and_live_family_changes_preserve_widget_ide
     f.accept(&mixed);
     assert_eq!(used_fonts(&mixed), [latin.id(), cjk.id()].into());
     let original = f.layouts();
-    f.edit(f.blue, |props| props.font = family.clone());
+    f.edit(f.blue, |props| props.font = family.clone().into());
     let selected = f.record();
     f.accept(&selected);
     assert_eq!(used_fonts(&selected), [cjk.id()].into());
