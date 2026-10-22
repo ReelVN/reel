@@ -1516,3 +1516,134 @@ fn dialogue_validation_is_atomic_and_callable_characters_keep_native_boundaries(
         assert_eq!(driver.state(), StoryState::Cancelled);
     }
 }
+
+#[test]
+fn source_and_asb_composed_dropdown_confirms_or_cancels_and_restores_its_trigger() {
+    use keyboard::NamedKey::*;
+    const POPUP: &str = include_str!("../../../examples/author_popup/src/main.aside");
+    let checked = reel_cli::check(POPUP, "author_popup.aside").unwrap();
+    let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
+    for story in [
+        reel_engine::aside::source::compile_story(POPUP, "main", 1, "main").unwrap(),
+        reel_cli::decode_story(&artifact.bytes).unwrap(),
+    ] {
+        let mut driver = AsideSessionUi::from_compiled(
+            Session::new(SessionId(1), Epoch(1)).unwrap(),
+            story,
+            "en",
+            VmLimits::default(),
+        )
+        .unwrap();
+        settle(&mut driver);
+        let (mut bridge, root) = bridge(&driver);
+        let mut frame = 0;
+        let flush =
+            |driver: &mut AsideSessionUi, bridge: &mut PresentationBridge, frame: &mut u64| {
+                for _ in 0..6 {
+                    *frame += 1;
+                    present(driver, bridge, root, *frame);
+                    settle(driver);
+                }
+            };
+        let press = |driver: &mut AsideSessionUi, bridge: &mut PresentationBridge, key| {
+            for event in [
+                TextEvent::key_down(keyboard::Key::Named(key)),
+                TextEvent::key_up(keyboard::Key::Named(key)),
+            ] {
+                driver.handle_text(bridge, event).unwrap();
+            }
+            settle(driver);
+        };
+        flush(&mut driver, &mut bridge, &mut frame);
+        let count = driver.adapter().stage().nodes().count();
+        let trigger = driver
+            .adapter()
+            .stage()
+            .nodes()
+            .find(|node| {
+                matches!(&node.kind,
+            NodeKind::Button{label:Some(label),..} if label=="Option 1")
+            })
+            .unwrap()
+            .id;
+        let caption = |driver: &AsideSessionUi| {
+            let NodeKind::Button {
+                label: Some(label), ..
+            } = &driver.adapter().stage().node(trigger).unwrap().kind
+            else {
+                panic!("missing trigger");
+            };
+            label.clone()
+        };
+        let popups = |driver: &AsideSessionUi| {
+            driver
+                .adapter()
+                .stage()
+                .nodes()
+                .filter(|node| matches!(node.kind, NodeKind::Popup(_)))
+                .count()
+        };
+        press(&mut driver, &mut bridge, Tab);
+        let focus = bridge.root().focused_widget().unwrap();
+        press(&mut driver, &mut bridge, Enter);
+        flush(&mut driver, &mut bridge, &mut frame);
+        assert_eq!(popups(&driver), 1);
+        assert!(
+            driver
+                .adapter()
+                .stage()
+                .nodes()
+                .any(|node| matches!(&node.kind,
+            NodeKind::VirtualList(list) if list.total_rows==40 && list.rows.len()<40)),
+            "the long menu builds its current window"
+        );
+        assert_ne!(bridge.root().focused_widget(), Some(focus));
+        for _ in 0..3 {
+            press(&mut driver, &mut bridge, ArrowDown);
+        }
+        flush(&mut driver, &mut bridge, &mut frame);
+        assert_eq!(
+            caption(&driver),
+            "Option 1",
+            "temporary focus leaves the committed value unchanged"
+        );
+        press(&mut driver, &mut bridge, Enter);
+        flush(&mut driver, &mut bridge, &mut frame);
+        assert_eq!(
+            caption(&driver),
+            "Option 5",
+            "confirmation returns the option and skips disabled Option 4"
+        );
+        assert_eq!(popups(&driver), 0);
+        assert_eq!(bridge.root().focused_widget(), Some(focus));
+        for outside in [false, true] {
+            press(&mut driver, &mut bridge, Enter);
+            flush(&mut driver, &mut bridge, &mut frame);
+            assert_eq!(popups(&driver), 1);
+            press(&mut driver, &mut bridge, ArrowDown);
+            assert_eq!(caption(&driver), "Option 5");
+            if outside {
+                click_at(&mut driver, &mut bridge, 630., 410.);
+            } else {
+                gamepad_press(
+                    &mut driver,
+                    &mut bridge,
+                    reel_ui::input::GamepadButton::East,
+                );
+            }
+            flush(&mut driver, &mut bridge, &mut frame);
+            assert_eq!(popups(&driver), 0);
+            assert_eq!(
+                caption(&driver),
+                "Option 5",
+                "cancel preserves the previous business value"
+            );
+            assert_eq!(bridge.root().focused_widget(), Some(focus));
+            assert_eq!(
+                driver.adapter().stage().nodes().count(),
+                count,
+                "the menu scope retires its nodes"
+            );
+        }
+    }
+}

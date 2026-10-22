@@ -994,6 +994,8 @@ trigger.add(popup(placement: "bottom-start", offset: 4,
 });
 ```
 
+For a dropdown, let scope return the confirmed option and update the caller's value afterwards; Back or an outside click returns null. The button's hover/focus_visible state supplies temporary highlighting, and closing the popup restores focus to its trigger. Compose scroll and virtual list for long choices; disabled options follow ordinary button navigation. The [complete composition example](../../examples/author_popup/src/main.aside) keeps these behaviors in one selection function. Run `reel dev` from its directory.
+
 Keyboard activation requires pressing and releasing Enter or Space on the same button. Changing focus, hiding, disabling, or losing window focus cancels an unfinished key press.
 
 ```aside
