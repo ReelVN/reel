@@ -1,4 +1,4 @@
-//! Opt-in stdio latency probe over DDLC and Lucy, without changing their files.
+//! Opt-in stdio latency probe over supplied author projects, without changing their files.
 #[path = "../../aside-lsp/tests/support/stdio.rs"]
 mod support;
 
@@ -48,7 +48,7 @@ fn edited(source: &str, value: i32) -> String {
 }
 
 #[test]
-#[ignore = "set REEL_LSP_PROJECTS to semicolon-separated DDLC and Lucy roots"]
+#[ignore = "set REEL_LSP_PROJECTS to semicolon-separated project roots"]
 fn real_project_stdio_latency() {
     let executable = std::env::var_os("REEL_LSP_EXECUTABLE")
         .unwrap_or_else(|| env!("CARGO_BIN_EXE_reel-lsp").into());

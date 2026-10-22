@@ -3,7 +3,6 @@ use super::*;
 use crate::{Epoch, InputAction, OwnerLifecycle, SessionId};
 use aside_vm::bytecode as bc;
 mod activities;
-mod arcade;
 mod auto_condition;
 mod box_style;
 mod buttons;
