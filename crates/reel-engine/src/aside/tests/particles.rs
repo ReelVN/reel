@@ -1,6 +1,39 @@
 use super::*;
 use reel_ui::stage::{NodeKind, particles::ParticleNode};
 
+#[test]
+fn is_checked_node_keeps_particle_type_in_owned_task_after_restore() {
+    let code = r#"use reel::types::{Node,ParticlesNode};
+        fn spray(node:Node) {
+            if node is ParticlesNode {
+                return spawn(||{
+                    emit(node,burst:1,lifetime:10);
+                    await delay(1).run();
+                    emit(node,burst:1,lifetime:10);
+                },owner:node);
+            } else {throw "expected particles";}
+        }
+        fn opening(){
+            let node=particles("spark.png");stage.replace(node);
+            let task=spray(node);
+            narrator("first");
+            await task;
+            narrator("second");
+        }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, false);
+        assert_eq!(batch(&vm).samples().count(), 1);
+        (session, vm) = scopes::restored(&mut vm, &session);
+        dialogue(&mut vm, &mut session);
+        activities::advance_clock(&mut vm, &session, 1., 64);
+        models::drive(&mut vm, &mut session, false);
+        assert_eq!(batch(&vm).samples().count(), 2);
+        assert!(matches!(session.view().interaction,
+            Some(crate::InteractionView::Dialogue(d)) if d.text()=="second"));
+    }
+}
+
 fn batch(vm: &SessionVm) -> ParticleNode {
     vm.stage()
         .nodes()
