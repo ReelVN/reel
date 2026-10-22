@@ -48,6 +48,10 @@ impl EditorAnalysis {
 }
 
 impl<'a> EditorModule<'a> {
+    /// Reuse the compiler's bound source summaries, including imported records.
+    pub fn source_types(self) -> &'a SourceTypes {
+        self.0.source_types()
+    }
     /// Use the compiler's type spelling without exposing a runnable module.
     pub fn display_type(self, ty: TypeId) -> impl std::fmt::Display + 'a {
         self.0.display_type(ty)

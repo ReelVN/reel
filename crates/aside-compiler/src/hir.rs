@@ -400,6 +400,7 @@ pub struct AnalyzedModule {
     pub(crate) exports: Vec<SymbolId>,
     pub(crate) stats: AnalysisStats,
     pub(crate) external: Vec<ExternalBinding>,
+    pub(crate) source_types: crate::semantic::SourceTypes,
 }
 /// A local slot is stable within the fixed module content version, rather than
 /// a process pointer or a globally meaningful arena index.
@@ -410,6 +411,10 @@ pub struct LocalSymbolRef<'a> {
     pub slot: SymbolId,
 }
 impl AnalyzedModule {
+    /// Source inference is separate from the annotated contracts used by lowering.
+    pub fn source_types(&self) -> &crate::semantic::SourceTypes {
+        &self.source_types
+    }
     /// Render a semantic type using Aside names and unambiguous type syntax.
     pub fn display_type(&self, ty: TypeId) -> impl std::fmt::Display + '_ {
         TypeDisplay { module: self, ty }

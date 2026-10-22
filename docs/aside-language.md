@@ -68,6 +68,8 @@ let next = || { count += 1; count };
 
 int 加减乘、负号及整数除法溢出报错；MIN/-1 报错。int/int 的 / 向零截断；任一操作数为 float 则按 float64 运算。% 是与向零除法一致的 remainder，div_euclid/rem_euclid 提供欧几里得规则。数字除零含浮点 ±0 均报错，其余 float 运算允许产生非有限值；宿主属性可另行要求有限值。+ 只接受数值对或字符串对，字符串化使用 str()/插值。
 
+编辑分析从已绑定的表达式与返回路径推导普通函数结果、table 的已知字段和 array 的元素，并保留字段的原模块与声明位置。跨模块使用同一声明摘要，悬停、补全和定义跳转读取编译器事实。推导信息独立于显式类型契约：`-> table` 仍允许普通 table 写入，运行时保持原有值和检查。已知写入更新字段与元素摘要；未知键写入、无法分析的可变调用和别名变化使受影响信息保守扩大。不透明逃逸的可变容器经函数返回或跨模块传递后仍保持动态。递归中尚不能确认的结果保持动态。摘要按源码规模限制工作量并设总上限，耗尽后保留原 HIR 查询；调用者指定的分析总预算仍有效。普通编译与运行时准入不构建这份编辑摘要。
+
 `std::math` 为宿主可安装的纯浮点标准库，复用 Rust f64 数学函数，支持弧度三角函数、atan2、sqrt/hypot、pow、指数/对数、abs/floor/ceil/round 与 radians/degrees。入参允许 int 在标准库调用边界按 float64 转换，结果为 float；其他类型在调用处报告错误。NaN/Infinity 遵循上述浮点值规则。它不引入 VM 指令或 Reel 依赖。
 
 `std::math::curve(keys)` 构造不可变标量曲线，`curve.sample(time)` 返回指定时间的 float64 值。keys 为非空 array/tuple，元素为 `{time, value, mode: "linear", in_tangent: 0, out_tangent: 0}`；time/value 必需，其余字段可省略。所有数值及采样时间须有限，时间允许负值并按非递减顺序提供。mode 描述从该关键帧出发的区间：linear 线性插值，step 保持左值，cubic 使用左帧 out_tangent 与右帧 in_tangent 作三次 Hermite 插值，切线单位为值/秒。重复时刻表示瞬时跳变，恰在该时刻取最后一帧；到达该时刻之前的区间以第一帧为右端。首尾以外保持端值，单帧曲线为常量。插值保留超出端值的结果；中间运算遵循 float64 规则。

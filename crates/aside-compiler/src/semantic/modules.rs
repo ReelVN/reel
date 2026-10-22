@@ -158,6 +158,9 @@ impl Drop for ResolutionSource {
 }
 #[derive(Debug, Clone)]
 pub struct ExternalSymbol {
+    /// Bound source information shared through module interfaces. This never
+    /// replaces the declared native signature or changes runtime admission.
+    pub source_type: Option<Arc<super::SourceType>>,
     pub name: String,
     pub reference: Option<Arc<SymbolReference>>,
     pub resolved_from: Option<Arc<ResolutionSource>>,
@@ -233,6 +236,7 @@ impl ExternalSymbol {
     }
     pub fn dynamic(name: impl Into<String>) -> Self {
         Self {
+            source_type: None,
             name: name.into(),
             reference: None,
             resolved_from: None,
@@ -247,6 +251,7 @@ impl ExternalSymbol {
     }
     pub fn value(name: impl Into<String>, ty: TypeHint) -> Self {
         Self {
+            source_type: None,
             name: name.into(),
             reference: None,
             resolved_from: None,
@@ -261,6 +266,7 @@ impl ExternalSymbol {
     }
     pub fn function(name: impl Into<String>, signature: ExternalSignature) -> Self {
         Self {
+            source_type: None,
             name: name.into(),
             reference: None,
             resolved_from: None,
@@ -485,6 +491,7 @@ impl MemoryResolver {
                     module: m.canonical_path.clone(),
                     version: m.version.clone(),
                     bindings: vec![ExternalSymbol {
+                        source_type: None,
                         name: r.path.last().cloned().unwrap_or_default(),
                         reference: None,
                         resolved_from: None,
