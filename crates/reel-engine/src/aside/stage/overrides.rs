@@ -1,7 +1,6 @@
 //! Scope-owned property layers. Selection changes never write the base property.
 use super::*;
 use aside_vm::HeapReservation;
-use aside_vm::bytecode::FunctionId;
 
 const TAG: i64 = -1109;
 pub(super) const NODE_SLOT: u32 = 5;
@@ -251,40 +250,29 @@ impl StageBinding {
     }
     pub(in crate::aside) fn create_override(
         &mut self,
-        vm: &mut Vm,
+        heap: &mut Heap,
         arguments: [Value; 3],
-        remove: FunctionId,
         limit: usize,
     ) -> Result<Value, AdapterError> {
         let [scope, node, properties] = arguments;
-        self.create_layer(
-            vm,
-            scope,
-            node,
-            Properties::Override(properties),
-            remove,
-            limit,
-        )
+        self.create_layer(heap, scope, node, Properties::Override(properties), limit)
     }
     pub(in crate::aside) fn create_offset(
         &mut self,
-        vm: &mut Vm,
+        heap: &mut Heap,
         arguments: [Value; 4],
-        remove: FunctionId,
     ) -> Result<Value, AdapterError> {
         let [scope, node, x, y] = arguments;
-        self.create_layer(vm, scope, node, Properties::Offset([x, y]), remove, 0)
+        self.create_layer(heap, scope, node, Properties::Offset([x, y]), 0)
     }
     fn create_layer(
         &mut self,
-        vm: &mut Vm,
+        heap: &mut Heap,
         scope: Value,
         node: Value,
         properties: Properties,
-        remove: FunctionId,
         limit: usize,
     ) -> Result<Value, AdapterError> {
-        let heap = vm.heap_mut();
         let id = self.id(heap, node)?;
         let kind = properties.kind();
         let count = properties.count(heap)?;
@@ -347,10 +335,6 @@ impl StageBinding {
                 heap.array_push(references, reference)?;
             }
         }
-        let method = vm.bind_native(token, remove)?;
-        let heap = vm.heap_mut();
-        let key = self.property_key(heap, "remove")?;
-        heap.table_store(fields, count, key, method)?;
         let mut state = heap.host_payload(node, NODE_SLOT)?;
         let mut cache = None;
         if state.tag() == ValueTag::Null {
