@@ -4,6 +4,15 @@ use aside_vm::{HeapHandle, HeapReservation};
 use reel_ui::widgets::{TextEdit, TextEditKind, TextSelection};
 use std::collections::VecDeque;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(in crate::aside::stage) enum HistoryState {
+    Active,
+    // A saved script slice retains its existing readonly fields until maintenance.
+    Invalidated,
+    // A native edit already published the reset; projection only refreshes its cache.
+    ResetPublished,
+}
+
 pub(in crate::aside::stage) struct History {
     pub expected: HeapHandle,
     pub revision: u64,
@@ -11,6 +20,7 @@ pub(in crate::aside::stage) struct History {
     pub(super) initial_len: usize,
     pub(super) entries: Vec<Delta>,
     pub(super) merging: bool,
+    pub(in crate::aside::stage) state: HistoryState,
     pub(super) restoring: Option<super::saved::RestoreState>,
     pub(in crate::aside::stage) queue: Option<Box<super::queue::Queue>>,
     storage: usize,
@@ -71,11 +81,27 @@ impl History {
             initial_len,
             entries: Vec::new(),
             merging: false,
+            state: HistoryState::Active,
             restoring: None,
             queue: None,
             storage: 0,
             charge,
         }))
+    }
+
+    pub(super) fn reset_published(&mut self, expected: HeapHandle, length: usize) {
+        self.expected = expected;
+        self.position = 0;
+        self.initial_len = length;
+        self.entries = Vec::new();
+        self.merging = false;
+        self.restoring = None;
+        self.queue = None;
+        self.storage = 0;
+        self.state = HistoryState::ResetPublished;
+        self.charge
+            .resize(self.bytes())
+            .expect("release invalidated input history");
     }
 
     pub fn split(&mut self) {
@@ -236,6 +262,7 @@ impl History {
             edit.kind != TextEditKind::Transaction && edit.before.anchor == edit.before.focus;
         self.revision = self.revision.wrapping_add(1);
         self.expected = expected;
+        self.state = HistoryState::Active;
         // Shrinking after discarding redo cannot fail and releases its retained byte budget.
         self.charge
             .resize(self.bytes())
@@ -259,6 +286,7 @@ impl History {
             self.position -= 1;
         }
         self.expected = expected;
+        self.state = HistoryState::Active;
         self.revision = self.revision.wrapping_add(1);
         self.merging = false;
     }

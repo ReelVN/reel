@@ -44,16 +44,16 @@ fn editing_policy_uses_shared_schema_bindings_and_restores_source_and_asb() {
             .find(|n| matches!(n.kind, NodeKind::TextInput { .. }))
             .unwrap()
             .id;
-        let edit = |before: &str, after: &str| NodeText {
+        let edit = |before: &str, after: &str, revision: u64| NodeText {
             node: editor,
-            event: TextInputEvent::replace_all(before, after),
+            event: TextInputEvent::replace_all(before, after, revision),
         };
-        assert!(vm.text_input(&mut session, &edit("", "user")).unwrap());
+        assert!(vm.text_input(&mut session, &edit("", "user", 0)).unwrap());
         drive(&mut vm, &mut session);
         vm.click(&mut session, button(&vm, "lock")).unwrap();
         drive(&mut vm, &mut session);
         assert!(
-            !vm.text_input(&mut session, &edit("user", "queued edit"))
+            !vm.text_input(&mut session, &edit("user", "queued edit", 0))
                 .unwrap()
         );
         assert!(
@@ -115,7 +115,7 @@ fn editing_policy_uses_shared_schema_bindings_and_restores_source_and_asb() {
         vm.click(&mut session, button(&vm, "unlock")).unwrap();
         drive(&mut vm, &mut session);
         assert!(
-            vm.text_input(&mut session, &edit("author\nvalue", "new"))
+            vm.text_input(&mut session, &edit("author\nvalue", "new", 1))
                 .unwrap()
         );
         drive(&mut vm, &mut session);

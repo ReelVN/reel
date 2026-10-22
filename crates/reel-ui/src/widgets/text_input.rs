@@ -4,7 +4,9 @@
 //! Text editing using the shared Parley editor, scroll geometry and platform IME events.
 use std::{borrow::Cow, sync::Arc};
 mod intent;
-pub use intent::{TextInputEditingLimits, TextInputIntent, TextInputKey, TextInputReplay};
+pub use intent::{
+    TextInputEditingLimits, TextInputIntent, TextInputKey, TextInputReplay, TextInputReplayId,
+};
 
 use crate::{
     TextAlign,
@@ -46,7 +48,7 @@ pub struct TextEdit {
     pub after: TextSelection,
     pub kind: TextEditKind,
     pub revision: u64,
-    pub replay: Option<u64>,
+    pub replay: Option<TextInputReplayId>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -60,33 +62,49 @@ pub enum TextInputEvent {
         value: Arc<str>,
         selection: TextSelection,
         revision: u64,
-        replay: Option<u64>,
+        replay: Option<TextInputReplayId>,
     },
     Undo {
         value: Arc<str>,
         revision: u64,
-        replay: Option<u64>,
+        replay: Option<TextInputReplayId>,
     },
     Redo {
         value: Arc<str>,
         revision: u64,
-        replay: Option<u64>,
+        replay: Option<TextInputReplayId>,
     },
     Deferred {
         intent: Arc<TextInputIntent>,
         revision: u64,
     },
-    ReplayCompleted(u64),
+    ReplayCompleted(TextInputReplayId),
     CompositionCancelled,
     Submitted {
         value: Arc<str>,
-        replay: Option<u64>,
+        replay: Option<TextInputReplayId>,
     },
 }
 
 impl TextInputEvent {
-    /// Builds one complete-value replacement, for accessibility or embedding hosts.
-    pub fn replace_all(previous: impl Into<Arc<str>>, value: impl Into<Arc<str>>) -> Self {
+    /// Identity of an accepted replay whose publication must still match its queue head.
+    pub fn replay_id(&self) -> Option<TextInputReplayId> {
+        match self {
+            Self::Changed { edit, .. } => edit.replay,
+            Self::Selection { replay, .. }
+            | Self::Undo { replay, .. }
+            | Self::Redo { replay, .. }
+            | Self::Submitted { replay, .. } => *replay,
+            _ => None,
+        }
+    }
+    /// Build a complete-value replacement using the presented options' selection revision.
+    /// Accessibility and embedding hosts still participate in stale-event validation.
+    pub fn replace_all(
+        previous: impl Into<Arc<str>>,
+        value: impl Into<Arc<str>>,
+        revision: u64,
+    ) -> Self {
         let previous = previous.into();
         let value = value.into();
         let edit = TextEdit {
@@ -97,7 +115,7 @@ impl TextInputEvent {
                 focus: value.len(),
             },
             kind: TextEditKind::Transaction,
-            revision: 0,
+            revision,
             replay: None,
         };
         Self::Changed {
@@ -135,8 +153,8 @@ pub struct TextInput {
     selection_revision: u64,
     initial_selection: Option<TextSelection>,
     pending_edit: bool,
-    replaying: Option<u64>,
-    last_replay: u64,
+    replaying: Option<TextInputReplayId>,
+    last_replay: Option<TextInputReplayId>,
     initial_replay: Option<Arc<TextInputReplay>>,
 }
 
@@ -211,7 +229,7 @@ impl TextInput {
             initial_selection: None,
             pending_edit: false,
             replaying: None,
-            last_replay: 0,
+            last_replay: None,
             initial_replay: None,
         }
     }
@@ -273,7 +291,7 @@ impl TextInput {
         replay: Option<&TextInputReplay>,
     ) {
         this.widget.pending_edit = pending;
-        let Some(replay) = replay.filter(|r| r.sequence != this.widget.last_replay) else {
+        let Some(replay) = replay.filter(|r| Some(r.id) != this.widget.last_replay) else {
             return;
         };
         let MutateCtx {
@@ -300,8 +318,8 @@ impl TextInput {
     }
 
     fn replay(&mut self, ctx: &mut EventCtx<'_>, replay: &TextInputReplay) {
-        self.last_replay = replay.sequence;
-        self.replaying = Some(replay.sequence);
+        self.last_replay = Some(replay.id);
+        self.replaying = Some(replay.id);
         if let TextInputIntent::Selection { selection } = replay.intent.as_ref() {
             let before = self.selection();
             let normalize = |mut offset: usize| {
@@ -325,7 +343,7 @@ impl TextInput {
         } else if let Some(event) = replay.intent.event() {
             self.handle_text_event(ctx, &event);
         }
-        ctx.submit_action::<TextInputEvent>(TextInputEvent::ReplayCompleted(replay.sequence));
+        ctx.submit_action::<TextInputEvent>(TextInputEvent::ReplayCompleted(replay.id));
         self.replaying = None;
     }
 
@@ -695,6 +713,13 @@ impl TextInput {
                     replay: self.replaying,
                 },
             });
+        } else if kind == TextEditKind::Transaction {
+            ctx.submit_action::<TextInputEvent>(TextInputEvent::Selection {
+                value: self.value.clone(),
+                selection: self.selection(),
+                revision: self.selection_revision,
+                replay: self.replaying,
+            });
         } else {
             self.publish_selection(ctx, before);
         }
@@ -724,6 +749,7 @@ impl TextInput {
             return;
         }
         if self.pending_edit
+            && !self.read_only
             && self.replaying.is_none()
             && let Some(intent) = TextInputIntent::capture(event)
         {

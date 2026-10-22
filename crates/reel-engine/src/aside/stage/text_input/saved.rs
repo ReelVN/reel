@@ -18,6 +18,10 @@ pub(super) struct RestoreState {
 
 #[derive(Serialize, Deserialize)]
 pub(in crate::aside) enum SavedHistory {
+    Reset {
+        node: NodeId,
+        published: bool,
+    },
     Begin {
         node: NodeId,
         expected: HeapHandle,
@@ -48,7 +52,7 @@ pub(in crate::aside) enum SavedHistory {
     Queue {
         node: NodeId,
         task: Option<aside_vm::executor::TaskId>,
-        active_sequence: Option<u64>,
+        active_replay: Option<reel_ui::widgets::TextInputReplayId>,
         original_revision: u64,
         next_sequence: u64,
         limits: reel_ui::widgets::TextInputEditingLimits,
@@ -64,13 +68,23 @@ pub(in crate::aside) struct SavedTextInputIntent {
     replay: Arc<reel_ui::widgets::TextInputReplay>,
 }
 
-pub(in crate::aside) fn snapshot_intents(
-    stage: &StageBinding,
-) -> impl Iterator<Item = SavedTextInputIntent> + '_ {
-    stage.handles.iter().flat_map(|(node, binding)| {
+fn current_source(heap: &Heap, binding: &NodeBinding) -> Option<HeapHandle> {
+    let host = heap.import_handle(binding.handle).ok()?;
+    heap.handle(heap.host_property(PropertyId { host, field: 0 }).ok()?)
+        .ok()
+}
+
+pub(in crate::aside) fn snapshot_intents<'a>(
+    stage: &'a StageBinding,
+    heap: &'a Heap,
+) -> impl Iterator<Item = SavedTextInputIntent> + 'a {
+    stage.handles.iter().flat_map(move |(node, binding)| {
         binding
             .text_history
             .iter()
+            .filter(move |h| {
+                h.state == HistoryState::Active && Some(h.expected) == current_source(heap, binding)
+            })
             .flat_map(|h| h.queue.iter())
             .flat_map(move |q| {
                 q.entries.iter().map(move |entry| SavedTextInputIntent {
@@ -81,110 +95,142 @@ pub(in crate::aside) fn snapshot_intents(
     })
 }
 
-pub(in crate::aside) fn snapshot_records(stage: &StageBinding) -> RecordStream<'_> {
+pub(in crate::aside) fn snapshot_records<'a>(
+    stage: &'a StageBinding,
+    heap: &'a Heap,
+) -> RecordStream<'a> {
     Box::new(
         stage
             .handles
             .iter()
-            .filter_map(|(node, binding)| {
-                binding
+            .filter_map(move |(node, binding)| {
+                if !matches!(
+                    binding.shape,
+                    snapshot::Shape::TextInput | snapshot::Shape::TextArea
+                ) {
+                    return None;
+                }
+                let source = current_source(heap, binding);
+                let history = binding
                     .text_history
-                    .as_ref()
-                    .map(|history| (*node, history))
+                    .as_deref()
+                    .filter(|h| h.state == HistoryState::Active && Some(h.expected) == source);
+                // A script write can invalidate the journal at an ordinary VM slice,
+                // before stage projection runs. Capture the authoritative replacement.
+                (history.is_some()
+                    || binding.text_history.is_some()
+                    || binding.text_source != source)
+                    .then_some((
+                        *node,
+                        history,
+                        binding.text_history.as_ref().is_some_and(|h| {
+                            h.state == HistoryState::ResetPublished && Some(h.expected) == source
+                        }),
+                    ))
             })
-            .flat_map(|(node, history)| {
+            .flat_map(|(node, history, published)| {
                 let header = std::iter::once_with(move || {
                     Record::new(
                         Part::TextInputHistory,
-                        &SavedHistory::Begin {
-                            node,
-                            expected: history.expected,
-                            revision: history.revision,
-                            position: history.position,
-                            initial_len: history.initial_len,
-                            count: history.entries.len(),
-                            merging: history.merging,
-                        },
+                        &history.map_or(SavedHistory::Reset { node, published }, |history| {
+                            SavedHistory::Begin {
+                                node,
+                                expected: history.expected,
+                                revision: history.revision,
+                                position: history.position,
+                                initial_len: history.initial_len,
+                                count: history.entries.len(),
+                                merging: history.merging,
+                            }
+                        }),
                     )
                 });
-                let entries = history.entries.iter().flat_map(move |delta| {
-                    let metadata = std::iter::once_with(move || {
+                let entries =
+                    history
+                        .into_iter()
+                        .flat_map(|h| h.entries.iter())
+                        .flat_map(move |delta| {
+                            let metadata = std::iter::once_with(move || {
+                                Record::new(
+                                    Part::TextInputHistory,
+                                    &SavedHistory::Delta {
+                                        node,
+                                        start: delta.start,
+                                        before: delta.before,
+                                        after: delta.after,
+                                        kind: delta.kind,
+                                        removed: delta.removed.len(),
+                                        inserted: delta.inserted.len(),
+                                    },
+                                )
+                            });
+                            let text = [true, false].into_iter().flat_map(move |removed| {
+                                let mut offset = 0;
+                                std::iter::from_fn(move || {
+                                    let len = if removed {
+                                        delta.removed.len()
+                                    } else {
+                                        delta.inserted.len()
+                                    };
+                                    if offset == len {
+                                        return None;
+                                    }
+                                    let mut bytes = [0; 1024];
+                                    let count = (len - offset).min(bytes.len());
+                                    if removed {
+                                        for (to, from) in bytes[..count]
+                                            .iter_mut()
+                                            .zip(delta.removed.range(offset..offset + count))
+                                        {
+                                            *to = *from;
+                                        }
+                                    } else {
+                                        bytes[..count].copy_from_slice(
+                                            &delta.inserted[offset..offset + count],
+                                        );
+                                    }
+                                    let count = match std::str::from_utf8(&bytes[..count]) {
+                                        Ok(_) => count,
+                                        Err(error) => error.valid_up_to(),
+                                    };
+                                    let text = std::str::from_utf8(&bytes[..count])
+                                        .expect("UTF-8 journal boundary")
+                                        .to_owned();
+                                    let record = Record::new(
+                                        Part::TextInputHistory,
+                                        &SavedHistory::Text {
+                                            node,
+                                            removed,
+                                            offset,
+                                            text,
+                                        },
+                                    );
+                                    offset += count;
+                                    Some(record)
+                                })
+                            });
+                            metadata.chain(text)
+                        });
+                let queue = history
+                    .into_iter()
+                    .flat_map(|h| h.queue.iter())
+                    .map(move |q| {
                         Record::new(
                             Part::TextInputHistory,
-                            &SavedHistory::Delta {
+                            &SavedHistory::Queue {
                                 node,
-                                start: delta.start,
-                                before: delta.before,
-                                after: delta.after,
-                                kind: delta.kind,
-                                removed: delta.removed.len(),
-                                inserted: delta.inserted.len(),
+                                task: q.active,
+                                active_replay: q.active_replay,
+                                original_revision: q.original_revision,
+                                next_sequence: q.next_sequence,
+                                limits: q.limits,
+                                count: q.entries.len(),
                             },
                         )
                     });
-                    let text = [true, false].into_iter().flat_map(move |removed| {
-                        let mut offset = 0;
-                        std::iter::from_fn(move || {
-                            let len = if removed {
-                                delta.removed.len()
-                            } else {
-                                delta.inserted.len()
-                            };
-                            if offset == len {
-                                return None;
-                            }
-                            let mut bytes = [0; 1024];
-                            let count = (len - offset).min(bytes.len());
-                            if removed {
-                                for (to, from) in bytes[..count]
-                                    .iter_mut()
-                                    .zip(delta.removed.range(offset..offset + count))
-                                {
-                                    *to = *from;
-                                }
-                            } else {
-                                bytes[..count]
-                                    .copy_from_slice(&delta.inserted[offset..offset + count]);
-                            }
-                            let count = match std::str::from_utf8(&bytes[..count]) {
-                                Ok(_) => count,
-                                Err(error) => error.valid_up_to(),
-                            };
-                            let text = std::str::from_utf8(&bytes[..count])
-                                .expect("UTF-8 journal boundary")
-                                .to_owned();
-                            let record = Record::new(
-                                Part::TextInputHistory,
-                                &SavedHistory::Text {
-                                    node,
-                                    removed,
-                                    offset,
-                                    text,
-                                },
-                            );
-                            offset += count;
-                            Some(record)
-                        })
-                    });
-                    metadata.chain(text)
-                });
-                let queue = history.queue.iter().map(move |q| {
-                    Record::new(
-                        Part::TextInputHistory,
-                        &SavedHistory::Queue {
-                            node,
-                            task: q.active,
-                            active_sequence: q.active_sequence,
-                            original_revision: q.original_revision,
-                            next_sequence: q.next_sequence,
-                            limits: q.limits,
-                            count: q.entries.len(),
-                        },
-                    )
-                });
                 header
                     .chain(entries)
-                    .chain(std::iter::once_with(move || {
+                    .chain(history.into_iter().map(move |_| {
                         Record::new(Part::TextInputHistory, &SavedHistory::End { node })
                     }))
                     .chain(queue)
@@ -204,7 +250,8 @@ impl StageBinding {
         record: SavedHistory,
     ) -> Result<(), AdapterError> {
         let node = match &record {
-            SavedHistory::Begin { node, .. }
+            SavedHistory::Reset { node, .. }
+            | SavedHistory::Begin { node, .. }
             | SavedHistory::Delta { node, .. }
             | SavedHistory::Text { node, .. }
             | SavedHistory::End { node }
@@ -221,6 +268,22 @@ impl StageBinding {
             return Err(invalid());
         }
         match record {
+            SavedHistory::Reset { published, .. } => {
+                // Retain the interrupted script's observable fields until normal
+                // maintenance. The marker contains only the current weak identity,
+                // not the retired text, deltas or queue. Native edits also recognize it.
+                let host = heap.import_handle(binding.handle)?;
+                let current = heap.host_property(PropertyId { host, field: 0 })?;
+                let mut marker = History::new(heap, heap.handle(current)?)?;
+                marker.state = if published {
+                    HistoryState::ResetPublished
+                } else {
+                    HistoryState::Invalidated
+                };
+                binding.text_history = Some(marker);
+                binding.text_source = None;
+                binding.projection_dirty = true;
+            }
             SavedHistory::Begin {
                 expected,
                 revision,
@@ -345,7 +408,7 @@ impl StageBinding {
             }
             SavedHistory::Queue {
                 task,
-                active_sequence,
+                active_replay,
                 original_revision,
                 next_sequence,
                 limits,
@@ -353,16 +416,21 @@ impl StageBinding {
                 ..
             } => {
                 let history = binding.text_history.as_mut().ok_or_else(invalid)?;
-                if history.queue.is_some() || next_sequence == 0 || count > limits.max_events {
+                if history.queue.is_some()
+                    || next_sequence == 0
+                    || count > limits.max_events
+                    || active_replay.is_some() && task.is_none()
+                {
                     return Err(invalid());
                 }
                 let mut queue = super::queue::Queue::new(heap, limits, original_revision)?;
                 queue.active = task.map(|task| map.task(task)).transpose()?;
-                queue.active_sequence = active_sequence;
+                queue.active_replay = active_replay;
                 queue.next_sequence = next_sequence;
                 queue.restore_expected = count;
                 history.queue = Some(queue);
                 binding.projection_dirty = true;
+                self.project_restored_text_queue(node)?;
             }
         }
         Ok(())
@@ -372,9 +440,13 @@ impl StageBinding {
         self.handles.values().all(|b| {
             b.text_history.as_ref().is_none_or(|h| {
                 h.restoring.is_none()
-                    && h.queue
-                        .as_ref()
-                        .is_none_or(|q| q.entries.len() == q.restore_expected)
+                    && h.queue.as_ref().is_none_or(|q| {
+                        q.entries.len() == q.restore_expected
+                            && q.active_replay.is_none_or(|id| {
+                                q.active.is_some()
+                                    && q.entries.front().is_some_and(|entry| entry.id == id)
+                            })
+                    })
             })
         })
     }
@@ -398,20 +470,22 @@ impl StageBinding {
             queue.restore_expected = queue.restore_expected.checked_sub(1).ok_or_else(invalid)?;
             return Ok(());
         }
-        if saved.replay.sequence == 0
-            || saved.replay.sequence >= queue.next_sequence
+        if saved.replay.id.generation != queue.original_revision
+            || saved.replay.id.sequence == 0
+            || saved.replay.id.sequence >= queue.next_sequence
             || queue
                 .entries
                 .back()
-                .is_some_and(|e| e.sequence >= saved.replay.sequence)
+                .is_some_and(|e| e.id.sequence >= saved.replay.id.sequence)
         {
             return Err(invalid());
         }
         let next = queue.next_sequence;
-        queue.next_sequence = saved.replay.sequence;
+        queue.next_sequence = saved.replay.id.sequence;
         queue.push(saved.replay.intent.clone())?;
         queue.next_sequence = next;
         binding.projection_dirty = true;
+        self.project_restored_text_queue(saved.node)?;
         Ok(())
     }
 }

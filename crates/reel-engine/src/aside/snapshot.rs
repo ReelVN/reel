@@ -253,7 +253,7 @@ impl SessionVm {
                     .map(|node| Record::new(Part::Node, &node)),
             ),
             self.particles.snapshot_records(),
-            stage::text_input::snapshot_records(&self.stage),
+            stage::text_input::snapshot_records(&self.stage, self.vm.heap()),
             self.transition_snapshot_records(),
         ];
         Box::new(streams.into_iter().flatten())
@@ -293,7 +293,10 @@ impl SessionVm {
             pictures: self.transition_pictures(),
             picture_sizes: Some(Box::new(self.transition_picture_sizes())),
             text_intents: Vec::new(),
-            text_intent_source: Some(Box::new(stage::text_input::snapshot_intents(&self.stage))),
+            text_intent_source: Some(Box::new(stage::text_input::snapshot_intents(
+                &self.stage,
+                self.vm.heap(),
+            ))),
             vm_complete: false,
             complete: false,
         })
@@ -723,9 +726,6 @@ impl SessionRestore<'_> {
             runtime
                 .narrative_contexts
                 .validate(self.session.as_ref().unwrap())?;
-            runtime
-                .stage
-                .sync(runtime.vm.heap_mut(), runtime.read_limit)?;
             if !runtime.stage.text_history_restore_complete() {
                 return Err(AdapterError::Input("incomplete text input history"));
             }

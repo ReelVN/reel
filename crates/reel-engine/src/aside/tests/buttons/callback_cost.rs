@@ -181,7 +181,7 @@ fn dispatch(vm: &mut SessionVm, session: &mut Session, input: Input) {
             &NodeText {
                 node,
                 event: if matches!(input, Input::TextEdit) {
-                    TextInputEvent::replace_all("initial", "updated")
+                    TextInputEvent::replace_all("initial", "updated", 0)
                 } else {
                     TextInputEvent::Submitted {
                         value: "initial".into(),

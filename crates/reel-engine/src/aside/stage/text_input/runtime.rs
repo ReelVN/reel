@@ -23,10 +23,13 @@ aside_host::native_documentation! {
         /// Restore the preceding edit transaction and its selection. Continuous typing
         /// and same-direction deletion merge; selection moves and IME commits split them.
         /// on_change observes the committed value once. No history leaves the value alone.
-        /// Read-only inputs reject mutation. Return the same TextInputNode.
+        /// Read-only inputs reject mutation. Another task's pending edit or unreplayed
+        /// accepted input throws ConcurrentModification before changing the value.
+        /// UI shortcuts retain their queue order. Return the same TextInputNode.
         "reel::text_input::undo";
         /// Reapply the next undone transaction and its selection. A new edit or external
-        /// value replacement discards redo. Return the same TextInputNode.
+        /// value replacement discards redo. Concurrent pending edits are rejected
+        /// before mutation, as with undo. Return the same TextInputNode.
         "reel::text_input::redo";
     }
 }
@@ -134,14 +137,14 @@ fn defer(
 fn publication<R>(
     vm: &mut Vm,
     ticket: HostTicket,
-    phase: u64,
-    mut roots: [Value; 4],
+    continuation: (u64, [Value; 4]),
     writes: &dyn aside_vm::PropertyWrites,
     budget: NativeBudget,
     extra_work: u64,
     prepare: impl FnOnce(&Heap) -> Result<R, AdapterError>,
 ) -> Result<(Option<R>, u32), AdapterError> {
     use aside_vm::{PropertyBatch, PropertyBatchProgress};
+    let (phase, mut roots) = continuation;
     let mut plan = (roots[3].tag() != ValueTag::Null).then(|| PropertyBatch::from_value(roots[3]));
     let required = match plan {
         Some(p) => vm.heap_mut().property_batch_required_work(p, writes)?,
@@ -256,11 +259,23 @@ pub(in crate::aside) fn dispatch(
         host: receiver,
         field: 0,
     })?;
-    let stale = stage.handles[&id]
-        .text_history
-        .as_ref()
-        .is_some_and(|history| vm.heap().handle(current).ok() != Some(history.expected));
+    let expected = vm.heap().handle(current)?;
+    let binding = &stage.handles[&id];
+    let stale = binding.text_history.as_ref().map_or_else(
+        || binding.text_source != Some(expected),
+        |history| history.state == HistoryState::Invalidated || history.expected != expected,
+    );
     if stale {
+        if stage.handles[&id].text_history.is_none() {
+            if budget.with_minimum(aside_vm::PropertyBatch::INITIAL_WORK as u32)
+                < aside_vm::PropertyBatch::INITIAL_WORK as u32
+            {
+                return Ok((defer(vm, ticket, 0, &[], 0)?, None));
+            }
+            let mut marker = History::new(vm.heap(), expected)?;
+            marker.state = HistoryState::Invalidated;
+            stage.handles.get_mut(&id).unwrap().text_history = Some(marker);
+        }
         let (requested, plan) = if let NativeInput::Continue {
             version: 1,
             stage: 5,
@@ -296,11 +311,13 @@ pub(in crate::aside) fn dispatch(
             Value::int(requested.focus as i64),
             plan,
         ];
+        let next_revision = revision(vm.heap(), receiver)?
+            .checked_add(1)
+            .ok_or(HeapError::IdentityExhausted)?;
         let (done, work) = publication(
             vm,
             ticket,
-            5,
-            roots,
+            (5, roots),
             &[updates[0], updates[1], updates[2], updates[3]],
             budget,
             0,
@@ -309,7 +326,17 @@ pub(in crate::aside) fn dispatch(
         if done.is_none() {
             return Ok((NativeDispatch::Decoding { work }, None));
         }
-        stage.handles.get_mut(&id).unwrap().text_history = None;
+        vm.heap_mut()
+            .set_host_payload(receiver, 4, Value::int(next_revision as i64))?;
+        let length = vm.heap().info(current)?.len as usize;
+        stage
+            .handles
+            .get_mut(&id)
+            .unwrap()
+            .text_history
+            .as_mut()
+            .unwrap()
+            .reset_published(expected, length);
         stage.mark_text_projection(id);
         return Ok((defer(vm, ticket, 0, &[], work)?, None));
     }
@@ -379,8 +406,7 @@ pub(in crate::aside) fn dispatch(
         let (done, work) = publication(
             vm,
             ticket,
-            4,
-            roots,
+            (4, roots),
             &[updates[0], updates[1], updates[2], updates[3]],
             budget,
             0,
@@ -410,15 +436,26 @@ pub(in crate::aside) fn dispatch(
     {
         return Err(HeapError::ReadOnly.into());
     }
+    let redo = name == "redo";
+    let idle_noop = stage.handles[&id]
+        .text_history
+        .as_ref()
+        .is_none_or(|history| {
+            history.delta(redo).is_none()
+                && history.queue.as_ref().is_none_or(|queue| !queue.pending())
+        });
+    if idle_noop {
+        vm.respond(ticket, HostResponse::Ready(receiver))?;
+        return Ok((NativeDispatch::Ready { work: 1 }, None));
+    }
     let queue = stage.ensure_text_queue(vm.heap(), id)?;
     if queue.active.is_some_and(|task| task != ticket.task)
         || queue.active.is_none() && !queue.entries.is_empty()
     {
-        return Ok((defer(vm, ticket, 2, &[], 1)?, None));
+        return Err(HeapError::ConcurrentModification.into());
     }
     queue.active = Some(ticket.task);
     stage.mark_text_projection(id);
-    let redo = name == "redo";
     let history = stage.handles[&id].text_history.as_ref().unwrap();
     let Some(delta) = history.delta(redo) else {
         stage.finish_text_operation(vm.heap_mut(), id, ticket.task, None)?;
@@ -431,7 +468,7 @@ pub(in crate::aside) fn dispatch(
         NativeInput::Entry
         | NativeInput::Continue {
             version: 1,
-            stage: 0 | 2,
+            stage: 0,
         } => {
             if budget.with_minimum(64) < 64 {
                 return Ok((defer(vm, ticket, 0, &[], 0)?, None));
@@ -554,8 +591,7 @@ pub(in crate::aside) fn dispatch(
     let (remap, work) = publication(
         vm,
         ticket,
-        3,
-        roots,
+        (3, roots),
         &updates,
         budget,
         history.queue.as_ref().unwrap().entries.len() as u64 * 8,

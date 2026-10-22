@@ -111,9 +111,9 @@ fn value(vm: &SessionVm, node: NodeId) -> &str {
     };
     value
 }
-fn save_restore(vm: SessionVm, session: Session) -> (Session, SessionVm) {
+fn save_restore(vm: &SessionVm, session: &Session) -> (Session, SessionVm) {
     let program = vm.vm.program().clone();
-    let mut capture = vm.snapshot_begin(&session).unwrap();
+    let mut capture = vm.snapshot_begin(session).unwrap();
     while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
     let mut image =
         snapshot::SessionSnapshot::decode(&capture.finish().unwrap().encode().unwrap()).unwrap();
@@ -123,7 +123,7 @@ fn save_restore(vm: SessionVm, session: Session) -> (Session, SessionVm) {
         VmLimits::default(),
         SessionIdentity {
             session_id: SessionId(79),
-            epoch: Epoch(22),
+            epoch: Epoch(session.identity().epoch.0 + 1),
         },
         crate::ReadProgress::default(),
         None,
@@ -202,6 +202,8 @@ fn accepted_typing_keeps_order_after_partial_undo_focus_loss_and_restore() {
                 TextEvent::key_down(Key::Character("C".into())),
                 command("a"),
                 TextEvent::ClipboardPaste("final".into()),
+                TextEvent::Ime(reel_ui::core::Ime::Commit("IME".into())),
+                TextEvent::Ime(reel_ui::core::Ime::Preedit("uncommitted".into(), None)),
             ] {
                 editor.ui.handle_text_event(event);
             }
@@ -215,7 +217,7 @@ fn accepted_typing_keeps_order_after_partial_undo_focus_loss_and_restore() {
             editor.send(&mut vm, &mut session);
             editor.ui.focus_on(None); // Accepted text survives losing focus.
             if restoring {
-                (session, vm) = save_restore(vm, session);
+                (session, vm) = save_restore(&vm, &session);
                 editor = Editor::new(&vm, node);
             }
             let mut observed = Vec::new();
@@ -237,12 +239,12 @@ fn accepted_typing_keeps_order_after_partial_undo_focus_loss_and_restore() {
             }
             assert_eq!(
                 value(&vm, node),
-                "final",
+                "finalIME",
                 "ASB={encoded} restore={restoring}: {observed:?}"
             );
             assert!(observed.contains(&format!("{prefix}AB")), "{observed:?}");
             assert!(observed.contains(&format!("{prefix}ABCx")), "{observed:?}");
-            assert_eq!(text_x(&vm, "status"), 8.);
+            assert_eq!(text_x(&vm, "status"), 9.);
             assert!(editor.ui.focused_widget().is_none());
         }
     }
@@ -254,6 +256,8 @@ fn editing_queue_rejects_before_mutation_and_node_retirement_releases_accepted_p
         let (mut session, mut vm) = models::prepared(
             r#"fn opening() {
             let editor = text_input();
+            if editor.undo().redo() != editor { throw "no-op identity"; }
+            if editor.can_undo || editor.can_redo || editor.selection_anchor != 0 || editor.selection_focus != 0 { throw "no-op state"; }
             stage.replace(column { editor; button("close", on_click: || stage.replace(stack())); });
             narrator("wait");
         }"#,
@@ -333,5 +337,554 @@ fn editing_queue_rejects_before_mutation_and_node_retirement_releases_accepted_p
         drop(editor);
         assert_eq!(pool.usage().tickets, 0);
         assert_eq!(pool.usage().bytes, 0);
+    }
+}
+
+#[test]
+fn replay_generation_survives_replaced_history_old_ack_and_same_widget_restore() {
+    for encoded in [false, true] {
+        for restoring in [false, true] {
+            let (mut session, mut vm) = models::prepared(
+                r#"fn opening(){
+            let data=model({body:"original"});
+            let editor=text_input(value:bind(data.body));
+            stage.replace(column{editor;button("replace",on_click:||{data.body="replacement";});});
+            narrator("wait");
+        }"#,
+                encoded,
+            );
+            drive(&mut vm, &mut session);
+            let node = vm
+                .stage()
+                .nodes()
+                .find(|n| matches!(n.kind, NodeKind::TextInput { .. }))
+                .unwrap()
+                .id;
+            let mut editor = Editor::new(&vm, node);
+            editor.ui.focus_on(Some(editor.widget));
+            editor
+                .ui
+                .handle_text_event(TextEvent::key_down(Key::Named(NamedKey::End)));
+            editor.send(&mut vm, &mut session);
+            editor
+                .ui
+                .handle_text_event(TextEvent::ClipboardPaste("!".into()));
+            editor.send(&mut vm, &mut session);
+            drive(&mut vm, &mut session);
+            editor.sync(&vm);
+            editor.ui.handle_text_event(command("z"));
+            editor.send(&mut vm, &mut session);
+            editor
+                .ui
+                .handle_text_event(TextEvent::key_down(Key::Character("A".into())));
+            editor.send(&mut vm, &mut session);
+            drive(&mut vm, &mut session);
+            editor.sync(&vm);
+            let events = std::mem::take(&mut *editor.events.borrow_mut());
+            let old_id = events
+                .iter()
+                .find_map(|e| {
+                    if let TextInputEvent::ReplayCompleted(id) = e {
+                        Some(*id)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap();
+            for event in events
+                .into_iter()
+                .filter(|e| !matches!(e, TextInputEvent::ReplayCompleted(_)))
+            {
+                assert!(
+                    vm.text_input(&mut session, &NodeText { node, event })
+                        .unwrap()
+                );
+            }
+            drive(&mut vm, &mut session);
+            editor.sync(&vm);
+            assert_eq!(value(&vm, node), "originalA");
+            vm.click(&mut session, button(&vm, "replace")).unwrap();
+            drive(&mut vm, &mut session);
+            editor.sync(&vm);
+            assert_eq!(vm.stage.text_history_entries(node), None);
+            editor
+                .ui
+                .handle_text_event(TextEvent::key_down(Key::Named(NamedKey::End)));
+            editor.send(&mut vm, &mut session);
+            editor
+                .ui
+                .handle_text_event(TextEvent::ClipboardPaste("!".into()));
+            editor.send(&mut vm, &mut session);
+            drive(&mut vm, &mut session);
+            editor.sync(&vm);
+            editor.ui.handle_text_event(command("z"));
+            editor.send(&mut vm, &mut session);
+            editor
+                .ui
+                .handle_text_event(TextEvent::key_down(Key::Character("B".into())));
+            editor.send(&mut vm, &mut session);
+            drive(&mut vm, &mut session);
+            let replay_id = |vm: &SessionVm| {
+                let NodeKind::TextInput { options, .. } = &vm.stage().node(node).unwrap().kind
+                else {
+                    unreachable!()
+                };
+                options.replay.as_ref().unwrap().id
+            };
+            let new_id = replay_id(&vm);
+            assert_eq!(old_id.sequence, 1);
+            assert_eq!(new_id.sequence, 1);
+            assert_ne!(
+                old_id.generation, new_id.generation,
+                "new queue keeps a unique generation"
+            );
+            assert!(
+                vm.text_input(
+                    &mut session,
+                    &NodeText {
+                        node,
+                        event: TextInputEvent::ReplayCompleted(old_id)
+                    }
+                )
+                .unwrap()
+            );
+            assert_eq!(
+                replay_id(&vm),
+                new_id,
+                "late acknowledgement cannot consume a new queue head"
+            );
+            if restoring {
+                (session, vm) = save_restore(&vm, &session);
+            }
+            assert_eq!(
+                replay_id(&vm),
+                new_id,
+                "snapshot preserves the complete replay identity"
+            );
+            editor.sync(&vm);
+            editor.send(&mut vm, &mut session);
+            drive(&mut vm, &mut session);
+            editor.sync(&vm);
+            assert_eq!(
+                value(&vm, node),
+                "replacementB",
+                "ASB={encoded} restore={restoring}"
+            );
+            let NodeKind::TextInput { options, .. } = &vm.stage().node(node).unwrap().kind else {
+                unreachable!()
+            };
+            assert!(!options.pending_edit);
+        }
+    }
+}
+
+#[test]
+fn direct_concurrent_undo_rejects_without_spinning_and_the_accepted_queue_still_finishes() {
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(
+            r#"fn opening(){
+            let status=text("status");
+            let editor=text_input(value:"original");
+            stage.replace(column{editor;status;
+                button("concurrent",on_click:||{
+                    let before=editor.value;
+                    let mut rejected=0;
+                    try{editor.undo();}catch _{rejected+=1;}
+                    try{editor.redo();}catch _{rejected+=1;}
+                    if rejected!=2||editor.value!=before{throw "concurrent edit changed state";}
+                    status.x=rejected;
+                });
+            });narrator("wait");
+        }"#,
+            encoded,
+        );
+        drive(&mut vm, &mut session);
+        let node = vm
+            .stage()
+            .nodes()
+            .find(|n| matches!(n.kind, NodeKind::TextInput { .. }))
+            .unwrap()
+            .id;
+        let mut editor = Editor::new(&vm, node);
+        editor.ui.focus_on(Some(editor.widget));
+        editor
+            .ui
+            .handle_text_event(TextEvent::key_down(Key::Named(NamedKey::End)));
+        editor.send(&mut vm, &mut session);
+        editor
+            .ui
+            .handle_text_event(TextEvent::ClipboardPaste("!".into()));
+        editor.send(&mut vm, &mut session);
+        drive(&mut vm, &mut session);
+        editor.sync(&vm);
+        editor.ui.handle_text_event(command("z"));
+        editor.send(&mut vm, &mut session);
+        editor
+            .ui
+            .handle_text_event(TextEvent::key_down(Key::Character("A".into())));
+        editor.send(&mut vm, &mut session);
+        drive(&mut vm, &mut session);
+        assert_eq!(value(&vm, node), "original");
+        vm.click(&mut session, button(&vm, "concurrent")).unwrap();
+        drive(&mut vm, &mut session);
+        assert_eq!(text_x(&vm, "status"), 2.);
+        assert_eq!(value(&vm, node), "original");
+        editor.sync(&vm);
+        editor.send(&mut vm, &mut session);
+        drive(&mut vm, &mut session);
+        editor.sync(&vm);
+        assert_eq!(value(&vm, node), "originalA");
+    }
+}
+
+#[test]
+fn accepted_explicit_selection_maps_once_and_late_old_geometry_is_rejected() {
+    use reel_ui::widgets::{TextInputIntent, TextSelection};
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(
+            r#"fn opening(){stage.replace(text_input(value:"abcdef"));narrator("wait");}"#,
+            encoded,
+        );
+        drive(&mut vm, &mut session);
+        let node = vm
+            .stage()
+            .nodes()
+            .find(|n| matches!(n.kind, NodeKind::TextInput { .. }))
+            .unwrap()
+            .id;
+        let mut editor = Editor::new(&vm, node);
+        editor.ui.focus_on(Some(editor.widget));
+        editor
+            .ui
+            .handle_text_event(TextEvent::key_down(Key::Named(NamedKey::End)));
+        editor.send(&mut vm, &mut session);
+        editor
+            .ui
+            .handle_text_event(TextEvent::ClipboardPaste("XYZ".into()));
+        editor.send(&mut vm, &mut session);
+        drive(&mut vm, &mut session);
+        editor.sync(&vm);
+        editor.ui.handle_text_event(command("z"));
+        editor.send(&mut vm, &mut session);
+        let select = |anchor, focus, revision| NodeText {
+            node,
+            event: TextInputEvent::Deferred {
+                intent: Arc::new(TextInputIntent::Selection {
+                    selection: TextSelection { anchor, focus },
+                }),
+                revision,
+            },
+        };
+        assert!(vm.text_input(&mut session, &select(8, 9, 0)).unwrap());
+        drive(&mut vm, &mut session);
+        editor.sync(&vm);
+        editor.send(&mut vm, &mut session);
+        drive(&mut vm, &mut session);
+        editor.sync(&vm);
+        let NodeKind::TextInput { options, .. } = &vm.stage().node(node).unwrap().kind else {
+            unreachable!()
+        };
+        assert_eq!(
+            options.selection,
+            TextSelection {
+                anchor: 6,
+                focus: 6
+            }
+        );
+        assert_eq!(options.selection_revision, 1);
+        assert!(
+            !vm.text_input(&mut session, &select(1, 2, 0)).unwrap(),
+            "old displayed byte coordinates are rejected before acceptance"
+        );
+        assert!(
+            vm.text_input(
+                &mut session,
+                &NodeText {
+                    node,
+                    event: TextInputEvent::Deferred {
+                        intent: Arc::new(TextInputIntent::Character {
+                            text: "A".into(),
+                            modifiers: 0,
+                            repeat: false
+                        }),
+                        revision: 0
+                    }
+                }
+            )
+            .unwrap(),
+            "relative accepted input still resolves after preceding edits"
+        );
+        editor.sync(&vm);
+        editor.send(&mut vm, &mut session);
+        drive(&mut vm, &mut session);
+        editor.sync(&vm);
+        assert_eq!(value(&vm, node), "abcdefA");
+        assert!(
+            vm.text_input(&mut session, &select(0, 2, 1)).unwrap(),
+            "current explicit byte selection is accepted"
+        );
+        editor.sync(&vm);
+        editor.send(&mut vm, &mut session);
+        drive(&mut vm, &mut session);
+        editor.sync(&vm);
+        let NodeKind::TextInput { options, .. } = &vm.stage().node(node).unwrap().kind else {
+            unreachable!()
+        };
+        assert_eq!(
+            options.selection,
+            TextSelection {
+                anchor: 0,
+                focus: 2
+            }
+        );
+    }
+}
+
+#[test]
+fn snapshot_after_script_value_write_discards_the_invalidated_journal_before_projection() {
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(
+            r#"fn opening(){
+            let editor=text_input(value:"initial");
+            stage.replace(column{editor;button("replace",on_click:||{editor.value="é"; if !editor.can_redo {throw "readonly outputs advanced before maintenance";} editor.undo().redo(); if editor.can_undo || editor.can_redo {throw "native edit did not see invalidation";} });});
+            narrator("wait");
+        }"#,
+            encoded,
+        );
+        drive(&mut vm, &mut session);
+        let node = vm
+            .stage()
+            .nodes()
+            .find(|n| matches!(n.kind, NodeKind::TextInput { .. }))
+            .unwrap()
+            .id;
+        let mut editor = Editor::new(&vm, node);
+        editor.ui.focus_on(Some(editor.widget));
+        editor
+            .ui
+            .handle_text_event(TextEvent::key_down(Key::Named(NamedKey::ArrowRight)));
+        editor.send(&mut vm, &mut session);
+        editor
+            .ui
+            .handle_text_event(TextEvent::ClipboardPaste("!".into()));
+        editor.send(&mut vm, &mut session);
+        drive(&mut vm, &mut session);
+        editor.sync(&vm);
+        editor.ui.handle_text_event(command("z"));
+        editor.send(&mut vm, &mut session);
+        editor
+            .ui
+            .handle_text_event(TextEvent::key_down(Key::Character("A".into())));
+        editor.send(&mut vm, &mut session);
+        drive(&mut vm, &mut session);
+        let old_id = {
+            let NodeKind::TextInput { options, .. } = &vm.stage().node(node).unwrap().kind else {
+                unreachable!()
+            };
+            options.replay.as_ref().unwrap().id
+        };
+        let host = vm.stage.value(vm.vm.heap(), node).unwrap();
+        vm.click(&mut session, button(&vm, "replace")).unwrap();
+        let mut found = false;
+        for _ in 0..1000 {
+            vm.step(
+                &mut session,
+                SessionBudget::RetryMinimum(SliceBudget {
+                    instructions: 1,
+                    ..Default::default()
+                }),
+                || 0,
+            )
+            .unwrap();
+            let current = vm
+                .vm
+                .heap()
+                .host_property(aside_vm::PropertyId { host, field: 0 })
+                .unwrap();
+            if text::read_string(vm.vm.heap(), current, 4096).unwrap() == "é" {
+                found = true;
+                break;
+            }
+        }
+        assert!(found);
+        assert_ne!(
+            value(&vm, node),
+            "é",
+            "capture the real script budget boundary before stage maintenance"
+        );
+        let (mut restored_session, mut restored_vm) = save_restore(&vm, &session);
+        // Save once more after native reset publication, before the callback continues.
+        // Restoring nodes already projects authoritative values; it must not publish
+        // a second selection revision or advance the interrupted script's outputs.
+        let restored_host = restored_vm
+            .stage
+            .value(restored_vm.vm.heap(), node)
+            .unwrap();
+        let fields = restored_vm.vm.heap().host_fields(restored_host).unwrap();
+        let redo_field = (0..restored_vm.vm.heap().table_len(fields).unwrap())
+            .find(|&index| {
+                let (key, _) = restored_vm.vm.heap().table_entry(fields, index).unwrap();
+                text::read_string(restored_vm.vm.heap(), key, 4096).unwrap() == "can_redo"
+            })
+            .unwrap();
+        let mut reset_published = false;
+        for _ in 0..1000 {
+            let step = restored_vm
+                .step(
+                    &mut restored_session,
+                    SessionBudget::RetryMinimum(SliceBudget {
+                        instructions: 1,
+                        ..Default::default()
+                    }),
+                    || 0,
+                )
+                .unwrap();
+            if let SessionStep::Vm(RunOutcome::HostCall(ticket)) = step {
+                restored_vm
+                    .dispatch(
+                        &mut restored_session,
+                        ticket,
+                        "en",
+                        NativeBudget::RetryMinimum(1),
+                    )
+                    .unwrap();
+            }
+            if restored_vm
+                .vm
+                .heap()
+                .host_property(aside_vm::PropertyId {
+                    host: restored_host,
+                    field: redo_field,
+                })
+                .unwrap()
+                .as_bool()
+                == Some(false)
+            {
+                reset_published = true;
+                break;
+            }
+        }
+        assert!(reset_published);
+        let (mut published_session, mut published_vm) =
+            save_restore(&restored_vm, &restored_session);
+        drive(&mut vm, &mut session);
+        drive(&mut restored_vm, &mut restored_session);
+        drive(&mut published_vm, &mut published_session);
+        for candidate in [&restored_vm, &published_vm] {
+            assert_eq!(
+                vm.stage().node(node).unwrap().kind,
+                candidate.stage().node(node).unwrap().kind,
+                "restore equals direct continuation"
+            );
+        }
+        for (session, vm) in [
+            (&mut session, &mut vm),
+            (&mut restored_session, &mut restored_vm),
+            (&mut published_session, &mut published_vm),
+        ] {
+            assert_eq!(value(vm, node), "é");
+            assert_eq!(vm.stage.text_history_entries(node), None);
+            let NodeKind::TextInput { options, .. } = &vm.stage().node(node).unwrap().kind else {
+                unreachable!()
+            };
+            assert_eq!(
+                options.selection,
+                reel_ui::widgets::TextSelection::default(),
+                "invalid UTF-8 midpoint normalizes to the preceding boundary"
+            );
+            let host = vm.stage.value(vm.vm.heap(), node).unwrap();
+            let fields = vm.vm.heap().host_fields(host).unwrap();
+            for name in ["can_undo", "can_redo"] {
+                let field = (0..vm.vm.heap().table_len(fields).unwrap())
+                    .find(|&index| {
+                        let (key, _) = vm.vm.heap().table_entry(fields, index).unwrap();
+                        text::read_string(vm.vm.heap(), key, 4096).unwrap() == name
+                    })
+                    .unwrap();
+                assert_eq!(
+                    vm.vm
+                        .heap()
+                        .host_property(aside_vm::PropertyId { host, field })
+                        .unwrap()
+                        .as_bool(),
+                    Some(false)
+                );
+            }
+            let mut editor = Editor::new(vm, node);
+            editor.ui.focus_on(Some(editor.widget));
+            editor
+                .ui
+                .handle_text_event(TextEvent::ClipboardPaste("B".into()));
+            editor.send(vm, session);
+            drive(vm, session);
+            editor.sync(vm);
+            editor.ui.handle_text_event(command("z"));
+            editor.send(vm, session);
+            editor
+                .ui
+                .handle_text_event(TextEvent::key_down(Key::Character("C".into())));
+            editor.send(vm, session);
+            drive(vm, session);
+            let new_id = {
+                let NodeKind::TextInput { options, .. } = &vm.stage().node(node).unwrap().kind
+                else {
+                    unreachable!()
+                };
+                options.replay.as_ref().unwrap().id
+            };
+            assert_eq!(new_id.sequence, old_id.sequence);
+            assert_ne!(new_id.generation, old_id.generation);
+            assert!(
+                vm.text_input(
+                    session,
+                    &NodeText {
+                        node,
+                        event: TextInputEvent::ReplayCompleted(old_id)
+                    }
+                )
+                .unwrap()
+            );
+            editor.sync(vm);
+            editor.send(vm, session);
+            drive(vm, session);
+            editor.sync(vm);
+            assert_eq!(
+                value(vm, node),
+                "Cé",
+                "invalidated old input is gone; new input survives an old acknowledgement"
+            );
+        }
+    }
+}
+
+#[test]
+fn external_value_write_then_native_noop_resets_once_without_a_prior_journal() {
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(
+            r#"fn opening() {
+            let editor=text_input(value:"before");
+            stage.replace(editor);
+            editor.value="after";
+            if editor.undo().redo() != editor {throw "identity";}
+            if editor.can_undo || editor.can_redo {throw "no history";}
+            narrator("wait");
+        }"#,
+            encoded,
+        );
+        drive(&mut vm, &mut session);
+        let node = vm
+            .stage()
+            .nodes()
+            .find(|n| matches!(n.kind, NodeKind::TextInput { .. }))
+            .unwrap();
+        assert_eq!(value(&vm, node.id), "after");
+        assert_eq!(vm.stage.text_history_entries(node.id), None);
+        let NodeKind::TextInput { options, .. } = &node.kind else {
+            unreachable!()
+        };
+        assert_eq!(
+            options.selection_revision, 1,
+            "reset published exactly once"
+        );
     }
 }

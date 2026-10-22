@@ -317,6 +317,11 @@ impl SessionVm {
         input: &reel_ui::stage::NodeText,
     ) -> Result<bool, AdapterError> {
         self.live(session)?;
+        if let Some(id) = input.event.replay_id()
+            && !self.stage.text_replay_current(input.node, id)
+        {
+            return Ok(false);
+        }
         if matches!(
             input.event,
             reel_ui::widgets::TextInputEvent::CompositionCancelled
@@ -331,6 +336,13 @@ impl SessionVm {
             }
             let host = self.stage.value(self.vm.heap(), input.node)?;
             let current_revision = self.vm.heap().host_payload(host, 4)?.as_int().unwrap() as u64;
+            if matches!(
+                intent.as_ref(),
+                reel_ui::widgets::TextInputIntent::Selection { .. }
+            ) && *revision != current_revision
+            {
+                return Ok(false);
+            }
             let queue = self.stage.ensure_text_queue(self.vm.heap(), input.node)?;
             if *revision < queue.original_revision || *revision > current_revision {
                 return Err(AdapterError::Input(
@@ -378,7 +390,7 @@ impl SessionVm {
             let task = self.start_owned_task(session, Some(input.node), method, &[], None)?;
             let queue = self.stage.ensure_text_queue(self.vm.heap(), input.node)?;
             queue.active = Some(task);
-            queue.active_sequence = *replay;
+            queue.active_replay = *replay;
             self.stage.mark_text_projection(input.node);
             self.stage.sync(self.vm.heap_mut(), self.read_limit)?;
             return Ok(true);

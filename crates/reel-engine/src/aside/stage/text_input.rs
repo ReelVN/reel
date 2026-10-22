@@ -8,7 +8,8 @@ mod history;
 mod queue;
 mod runtime;
 mod saved;
-pub(super) use history::History;
+pub(super) use history::{History, HistoryState};
+pub(super) use queue::project as project_queue;
 pub(super) use runtime::describe;
 pub(in crate::aside) use runtime::{contracts, dispatch, documentation};
 pub(in crate::aside) use saved::{SavedTextInputIntent, snapshot_intents, snapshot_records};
@@ -191,7 +192,7 @@ pub(super) fn kind(
     })
 }
 
-fn matches_text(heap: &Heap, value: Value, expected: &str) -> Result<bool, HeapError> {
+pub(super) fn matches_text(heap: &Heap, value: Value, expected: &str) -> Result<bool, HeapError> {
     if heap.info(value)?.len as usize != expected.len() {
         return Ok(false);
     }
@@ -438,6 +439,15 @@ impl StageBinding {
                 value
             }
             TextInputEvent::Submitted { replay, .. } => {
+                if let Some(history) = self
+                    .handles
+                    .get_mut(&input.node)
+                    .unwrap()
+                    .text_history
+                    .as_mut()
+                {
+                    history.split();
+                }
                 if let Some(sequence) = replay {
                     self.complete_text_replay(input.node, *sequence);
                 }

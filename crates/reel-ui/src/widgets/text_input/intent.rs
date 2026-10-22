@@ -149,9 +149,16 @@ impl TextInputIntent {
     }
 }
 
+/// A node's queue generation and its ordered event identity survive save restoration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct TextInputReplayId {
+    pub generation: u64,
+    pub sequence: u64,
+}
+
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TextInputReplay {
-    pub sequence: u64,
+    pub id: TextInputReplayId,
     pub intent: Arc<TextInputIntent>,
     // Ownership follows the last queue/projection reference, including an old UI frame.
     #[serde(skip)]
@@ -159,12 +166,12 @@ pub struct TextInputReplay {
 }
 impl TextInputReplay {
     pub fn new(
-        sequence: u64,
+        id: TextInputReplayId,
         intent: Arc<TextInputIntent>,
         retention: Arc<reel_core::budget::BudgetTicket>,
     ) -> Self {
         Self {
-            sequence,
+            id,
             intent,
             _retention: Some(retention),
         }
@@ -172,6 +179,6 @@ impl TextInputReplay {
 }
 impl PartialEq for TextInputReplay {
     fn eq(&self, other: &Self) -> bool {
-        self.sequence == other.sequence && self.intent == other.intent
+        self.id == other.id && self.intent == other.intent
     }
 }

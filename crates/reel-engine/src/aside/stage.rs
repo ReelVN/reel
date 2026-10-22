@@ -907,16 +907,19 @@ impl StageBinding {
                     options,
                 } => {
                     let source = heap.table_entry(fields, 0)?.1;
-                    let projected = if binding.text_source == Some(heap.handle(source)?) {
+                    let projected = if binding.text_source == Some(heap.handle(source)?)
+                        || binding.text_source.is_none()
+                            && text_input::matches_text(heap, source, value)?
+                    {
                         value.clone()
                     } else {
                         Arc::from(read_text(heap, source, read_limit)?)
                     };
-                    if binding.text_source != Some(heap.handle(source)?)
-                        && binding
-                            .text_history
-                            .as_ref()
-                            .is_none_or(|h| Some(h.expected) != heap.handle(source).ok())
+                    if binding.text_history.as_ref().is_some_and(|h| {
+                        h.state == text_input::HistoryState::Invalidated
+                            || Some(h.expected) != heap.handle(source).ok()
+                    }) || binding.text_source != Some(heap.handle(source)?)
+                        && binding.text_history.is_none()
                     {
                         let host = heap.import_handle(binding.handle)?;
                         let text = &projected;
@@ -930,7 +933,17 @@ impl StageBinding {
                         };
                         selected.anchor = boundary(selected.anchor);
                         selected.focus = boundary(selected.focus);
+                        let revision = text_input::revision(heap, host)?
+                            .checked_add(1)
+                            .ok_or(HeapError::IdentityExhausted)?;
                         text_input::publish(heap, host, None, selected, false, false)?;
+                        heap.set_host_payload(host, 4, Value::int(revision as i64))?;
+                        binding.text_history = None;
+                    } else if binding
+                        .text_history
+                        .as_ref()
+                        .is_some_and(|h| h.state == text_input::HistoryState::ResetPublished)
+                    {
                         binding.text_history = None;
                     }
                     (
@@ -1000,19 +1013,7 @@ impl StageBinding {
             let mut kind = kind;
             let host = heap.import_handle(self.handles[&id].handle)?;
             text_input::project(heap, host, &mut kind)?;
-            if let NodeKind::TextInput { options, .. } = &mut kind
-                && let Some(queue) = self.handles[&id]
-                    .text_history
-                    .as_ref()
-                    .and_then(|h| h.queue.as_ref())
-            {
-                options.pending_edit = queue.pending();
-                options.replay = queue
-                    .active
-                    .is_none()
-                    .then(|| queue.entries.front().cloned())
-                    .flatten();
-            }
+            text_input::project_queue(self.handles[&id].text_history.as_deref(), &mut kind);
             if matches!(kind, NodeKind::Radio { .. }) {
                 let value = heap.import_handle(self.handles[&id].handle)?;
                 self.handles.get_mut(&id).unwrap().radio_option = Some(

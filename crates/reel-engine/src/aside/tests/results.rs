@@ -205,7 +205,7 @@ fn form_and_child_game_return_values_without_story_interactions() {
             &mut session,
             &NodeText {
                 node: editor,
-                event: TextInputEvent::replace_all("", "小明"),
+                event: TextInputEvent::replace_all("", "小明", 0),
             },
         )
         .unwrap();

@@ -388,7 +388,7 @@ fn text_input_commits_bindings_rejects_stale_edits_and_retires_callbacks() {
         .id;
     let change = |previous: &str, value: &str| NodeText {
         node,
-        event: TextInputEvent::replace_all(previous, value),
+        event: TextInputEvent::replace_all(previous, value, 0),
     };
     assert!(vm.text_input(&mut session, &change("old", "中文")).unwrap());
     pump(&mut vm, &mut session);
@@ -487,7 +487,7 @@ fn text_area_restores_multiline_binding_and_owned_submit() {
             .id;
         let edit = |previous: &str, value: &str| NodeText {
             node: editor,
-            event: TextInputEvent::replace_all(previous, value),
+            event: TextInputEvent::replace_all(previous, value, 0),
         };
         assert!(
             vm.text_input(&mut session, &edit("first\nsecond", "edited\ntext"))

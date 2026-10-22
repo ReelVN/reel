@@ -5,12 +5,14 @@ use reel_core::{
     budget::{BudgetCategory, BudgetPool, QueueLimits},
     result::{RejectCode, RejectReason},
 };
-use reel_ui::widgets::{TextInputEditingLimits, TextInputIntent, TextInputReplay};
+use reel_ui::widgets::{
+    TextInputEditingLimits, TextInputIntent, TextInputReplay, TextInputReplayId,
+};
 use std::collections::VecDeque;
 
 pub(in crate::aside) struct Queue {
     pub active: Option<TaskId>,
-    pub active_sequence: Option<u64>,
+    pub active_replay: Option<TextInputReplayId>,
     pub original_revision: u64,
     pub next_sequence: u64,
     pub entries: VecDeque<Arc<TextInputReplay>>,
@@ -28,31 +30,41 @@ impl Queue {
         revision: u64,
     ) -> Result<Box<Self>, AdapterError> {
         let charge = heap.budget_usage().reserve(size_of::<Self>() as u64)?;
-        let overhead = (size_of::<TextInputIntent>()
-            + size_of::<TextInputReplay>()
-            + size_of::<reel_core::budget::BudgetTicket>()
-            + 8 * size_of::<usize>()) as u64;
         Ok(Box::new(Self {
             active: None,
-            active_sequence: None,
+            active_replay: None,
             original_revision: revision,
             next_sequence: 1,
             entries: VecDeque::new(),
             limits,
             restore_expected: 0,
             text_bytes: 0,
-            pool: BudgetPool::new(
-                BudgetCategory::CpuInput,
-                QueueLimits {
-                    max_requests: u32::try_from(limits.max_events.saturating_mul(2))
-                        .unwrap_or(u32::MAX),
-                    max_bytes: (limits.max_text_bytes as u64).saturating_add(
-                        overhead.saturating_mul((limits.max_events as u64).saturating_mul(2)),
-                    ),
-                },
-            ),
+            pool: Self::pool(limits),
             charge,
         }))
+    }
+
+    fn pool(limits: TextInputEditingLimits) -> BudgetPool {
+        let overhead = (size_of::<TextInputIntent>()
+            + size_of::<TextInputReplay>()
+            + size_of::<reel_core::budget::BudgetTicket>()
+            + size_of::<[usize; 8]>()) as u64;
+        BudgetPool::new(
+            BudgetCategory::CpuInput,
+            QueueLimits {
+                max_requests: u32::try_from(limits.max_events.saturating_mul(2))
+                    .unwrap_or(u32::MAX),
+                max_bytes: (limits.max_text_bytes as u64).saturating_add(
+                    overhead.saturating_mul((limits.max_events as u64).saturating_mul(2)),
+                ),
+            },
+        )
+    }
+    fn configure(&mut self, limits: TextInputEditingLimits) {
+        if self.limits != limits && !self.pending() {
+            self.pool = Self::pool(limits);
+            self.limits = limits;
+        }
     }
 
     pub fn pending(&self) -> bool {
@@ -73,7 +85,7 @@ impl Queue {
             + size_of::<TextInputIntent>()
             + size_of::<TextInputReplay>()
             + size_of::<reel_core::budget::BudgetTicket>()
-            + 8 * size_of::<usize>();
+            + size_of::<[usize; 8]>();
         let ticket = self
             .pool
             .reserve(bytes as u64)
@@ -100,15 +112,18 @@ impl Queue {
             .ok_or(HeapError::IdentityExhausted)?;
         self.text_bytes += intent.text_bytes();
         self.entries.push_back(Arc::new(TextInputReplay::new(
-            sequence,
+            TextInputReplayId {
+                generation: self.original_revision,
+                sequence,
+            },
             intent,
             Arc::new(ticket),
         )));
         Ok(())
     }
 
-    pub fn complete(&mut self, sequence: u64) -> bool {
-        if self.entries.front().is_some_and(|e| e.sequence == sequence) {
+    pub fn complete(&mut self, id: TextInputReplayId) -> bool {
+        if self.entries.front().is_some_and(|e| e.id == id) {
             let entry = self.entries.pop_front().unwrap();
             self.text_bytes -= entry.intent.text_bytes();
             true
@@ -168,7 +183,7 @@ impl Queue {
                 let bytes = size_of::<TextInputIntent>()
                     + size_of::<TextInputReplay>()
                     + size_of::<reel_core::budget::BudgetTicket>()
-                    + 8 * size_of::<usize>();
+                    + size_of::<[usize; 8]>();
                 let ticket = self
                     .pool
                     .reserve(bytes as u64)
@@ -176,7 +191,7 @@ impl Queue {
                 entries.push((
                     index,
                     Arc::new(TextInputReplay::new(
-                        entry.sequence,
+                        entry.id,
                         Arc::new(TextInputIntent::Selection { selection }),
                         Arc::new(ticket),
                     )),
@@ -200,7 +215,27 @@ pub(in crate::aside) struct Remap {
     _charge: HeapReservation,
 }
 
+pub(in crate::aside::stage) fn project(history: Option<&History>, kind: &mut NodeKind) {
+    if let NodeKind::TextInput { options, .. } = kind {
+        let queue = history.and_then(|h| h.queue.as_ref());
+        options.pending_edit = queue.is_some_and(|q| q.pending());
+        options.replay = queue
+            .filter(|q| q.active.is_none())
+            .and_then(|q| q.entries.front().cloned());
+    }
+}
+
 impl StageBinding {
+    pub(super) fn project_restored_text_queue(
+        &mut self,
+        node: reel_ui::stage::NodeId,
+    ) -> Result<(), AdapterError> {
+        let item = self.scene.node(node).unwrap();
+        let mut kind = item.kind.clone();
+        project(self.handles[&node].text_history.as_deref(), &mut kind);
+        self.scene.update(node, kind, item.props.clone())?;
+        Ok(())
+    }
     pub(in crate::aside) fn mark_text_projection(&mut self, node: reel_ui::stage::NodeId) {
         if let Some(binding) = self.handles.get_mut(&node) {
             binding.projection_dirty = true;
@@ -225,21 +260,36 @@ impl StageBinding {
                 revision(heap, host)?,
             )?);
         }
-        Ok(history.queue.as_deref_mut().unwrap())
+        let queue = history.queue.as_deref_mut().unwrap();
+        queue.configure(self.editing_limits);
+        Ok(queue)
+    }
+
+    pub(in crate::aside) fn text_replay_current(
+        &self,
+        node: reel_ui::stage::NodeId,
+        id: TextInputReplayId,
+    ) -> bool {
+        self.handles
+            .get(&node)
+            .and_then(|b| b.text_history.as_ref())
+            .and_then(|h| h.queue.as_ref())
+            .and_then(|q| q.entries.front())
+            .is_some_and(|entry| entry.id == id)
     }
 
     pub(in crate::aside) fn complete_text_replay(
         &mut self,
         node: reel_ui::stage::NodeId,
-        sequence: u64,
+        id: TextInputReplayId,
     ) {
         if let Some(binding) = self.handles.get_mut(&node)
             && let Some(queue) = binding.text_history.as_mut().and_then(|h| h.queue.as_mut())
         {
-            if queue.active.is_some() && queue.active_sequence == Some(sequence) {
+            if queue.active.is_some() && queue.active_replay == Some(id) {
                 return;
             }
-            binding.projection_dirty |= queue.complete(sequence);
+            binding.projection_dirty |= queue.complete(id);
         }
     }
 
@@ -261,7 +311,7 @@ impl StageBinding {
             && queue.active == Some(task)
         {
             queue.active = None;
-            if let Some(sequence) = queue.active_sequence.take() {
+            if let Some(sequence) = queue.active_replay.take() {
                 queue.complete(sequence);
             }
             binding.projection_dirty = true;
@@ -284,7 +334,7 @@ impl StageBinding {
                 queue.commit_remap(remap);
             }
             queue.active = None;
-            if let Some(sequence) = queue.active_sequence.take() {
+            if let Some(sequence) = queue.active_replay.take() {
                 queue.complete(sequence);
             }
         }

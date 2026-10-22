@@ -1189,6 +1189,8 @@ Use `text_area` for multiline notes or messages, with the same parameters as tex
 
 Use `select_bytes(anchor, focus: null)` to place a caret or directed selection without moving keyboard focus. Endpoints are UTF-8 byte offsets; invalid boundaries fail at the call, while the editor snaps display positions to cluster starts. `select_all()`, `undo()` and `redo()` return the same input for chaining. Observe `selection_anchor`, `selection_focus`, `can_undo` and `can_redo` in derive. Ctrl/Command+Z undoes; Ctrl/Command+Shift+Z redoes, as does Ctrl+Y on Windows/Linux. Adjacent typing and same-direction deletions merge; selection moves, paste, cut, newline and IME commit form transaction boundaries. External value replacement clears the delta history.
 
+Direct `undo()` and `redo()` calls are synchronous editing operations. If another task has an unfinished edit or accepted input still awaits replay, they throw `ConcurrentModification` before changing the value. UI shortcuts continue in their accepted queue order.
+
 <!-- aside: editing transactions -->
 ```aside
 let notes = text_area(value: "Draft", width: 360, height: 180);

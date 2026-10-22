@@ -521,6 +521,7 @@ fn editor_policy_dynamic_updates_keep_widget_layout_and_isolate_read_only_keys()
                     read_only: true,
                     selection_color: [1, 2, 3, 4],
                     caret_color: Some([5, 6, 7, 8]),
+                    ..Default::default()
                 },
             },
             props,

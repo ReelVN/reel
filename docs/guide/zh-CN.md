@@ -1206,6 +1206,8 @@ stage.replace(text_input(value: bind(profile.name), width: 280, height: 40,
 
 `select_bytes(anchor, focus: null)` 放置光标或有方向的选区，保持原键盘焦点。端点为 UTF-8 字节位置；非法边界在调用处报错，编辑器将显示位置定位到所在文字簇的起点。`select_all()`、`undo()`、`redo()` 返回原输入节点，可以继续链式组合；derive 可读取 selection_anchor、selection_focus、can_undo 和 can_redo。Ctrl/Command+Z 撤销，Ctrl/Command+Shift+Z 重做，Windows/Linux 也支持 Ctrl+Y。连续键入和同向删除合并；移动选区、粘贴、剪切、换行与 IME 确认分别形成事务边界。脚本替换正文会清除 delta 历史。
 
+直接调用 `undo()` 与 `redo()` 是同步编辑操作。如果另一任务有未完成编辑，或已接纳输入仍在等待重放，调用会在改值前抛出 `ConcurrentModification`。UI 快捷键继续按已接纳的队列顺序执行。
+
 <!-- aside: editing transactions -->
 ```aside
 let notes = text_area(value: "Draft", width: 360, height: 180);
