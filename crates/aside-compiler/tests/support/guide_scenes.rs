@@ -58,6 +58,7 @@ pub const SCENES: &[(&str, E)] = &[
     ("reading settings module", E::Module),
     ("window configuration", E::Block),
     ("editable text in story", E::Block),
+    ("editing transactions", E::Block),
     ("shared property module", E::Module),
     ("menu style and construction", E::Module),
     ("moving group in story", E::Block),

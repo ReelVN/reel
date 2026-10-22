@@ -205,10 +205,7 @@ fn form_and_child_game_return_values_without_story_interactions() {
             &mut session,
             &NodeText {
                 node: editor,
-                event: TextInputEvent::Changed {
-                    previous: "".into(),
-                    value: "小明".into(),
-                },
+                event: TextInputEvent::replace_all("", "小明", 0),
             },
         )
         .unwrap();

@@ -1185,7 +1185,23 @@ Runnable example: [author_text_input.aside](../../examples/author_text_input/src
 
 `placeholder: "Your name"` displays a hint while the value is empty and no IME composition is active. `read_only: true` retains selection, copying, navigation and submission while preventing user edits; scripts can still assign value. Both fields support assignment and binding. `selection_color` defaults to "#3c78dc5f"; `caret_color: null` follows color. Text outline and shadow use the same layout as the editor. Switching to read-only cancels composition and disables system IME while preserving the text and selection.
 
-Use `text_area` for multiline notes or messages, with the same parameters as text_input. Both use `text_align` for horizontal alignment and `line_height` for line height relative to the font size. A text_area wraps at its width by default; `text_wrap: false` preserves explicit newlines and allows horizontal scrolling. Text starts at the top. Enter inserts a newline; Ctrl+Enter (Command+Enter on macOS) calls on_submit; Tab moves focus. Up/Down moves the caret, with Shift extending the selection. Home/End goes to the current visual line's boundaries; Ctrl/Command goes to the document boundaries. The wheel scrolls overflowing content, and editing reveals the caret. Pasted CRLF/CR becomes LF; IME preedit writes value only when committed. Save restoration preserves text and bindings, while selection and the internal viewport reset with the input widget. Runnable example: [author_text_area.aside](../../examples/author_text_area/src/main.aside).
+Use `text_area` for multiline notes or messages, with the same parameters as text_input. Both use `text_align` for horizontal alignment and `line_height` for line height relative to the font size. A text_area wraps at its width by default; `text_wrap: false` preserves explicit newlines and allows horizontal scrolling. Text starts at the top. Enter inserts a newline; Ctrl+Enter (Command+Enter on macOS) calls on_submit; Tab moves focus. Up/Down moves the caret, with Shift extending the selection. Home/End goes to the current visual line's boundaries; Ctrl/Command goes to the document boundaries. The wheel scrolls overflowing content, and editing reveals the caret. Pasted CRLF/CR becomes LF; IME preedit writes value only when committed. Save restoration preserves text, bindings, committed selection and undo transactions; preedit and the internal viewport reset. Runnable example: [author_text_area.aside](../../examples/author_text_area/src/main.aside).
+
+Use `select_bytes(anchor, focus: null)` to place a caret or directed selection without moving keyboard focus. Endpoints are UTF-8 byte offsets; invalid boundaries fail at the call, while the editor snaps display positions to cluster starts. `select_all()`, `undo()` and `redo()` return the same input for chaining. Observe `selection_anchor`, `selection_focus`, `can_undo` and `can_redo` in derive. Ctrl/Command+Z undoes; Ctrl/Command+Shift+Z redoes, as does Ctrl+Y on Windows/Linux. Adjacent typing and same-direction deletions merge; selection moves, paste, cut, newline and IME commit form transaction boundaries. External value replacement clears the delta history.
+
+Direct `undo()` and `redo()` calls are synchronous editing operations. If another task has an unfinished edit or accepted input still awaits replay, they throw `ConcurrentModification` before changing the value. UI shortcuts continue in their accepted queue order.
+
+<!-- aside: editing transactions -->
+```aside
+let notes = text_area(value: "Draft", width: 360, height: 180);
+let toolbar = row {
+    button("Undo", enabled: derive(|| notes.can_undo), on_click: || notes.undo());
+    button("Redo", enabled: derive(|| notes.can_redo), on_click: || notes.redo());
+    button("Select all", on_click: || notes.select_all());
+};
+stage.replace(column { toolbar; notes; });
+notes.select_bytes(0, focus: 5);
+```
 
 For scripted typing or keyboard games, use `input(on_key: |event| { ... })`. Events provide code, key, phase and shift/ctrl/alt/meta; phase is pressed/repeated/released/cancelled. Keys are delivered separately, and focus loss cancels held keys. Focused buttons consume their confirmation keys; other unclaimed keys bubble to an ancestor on_key, so clicking a language button does not stop scripted typing. Focused text editors retain all keyboard and system IME events. Omit actions when no action mapping is needed, or combine named actions for gamepad and pointer controls; action mappings still follow focus ownership. Example: [author_keyboard.aside](../../examples/author_keyboard/src/main.aside).
 

@@ -71,6 +71,7 @@ pub(super) enum Part {
     Catalog,
     StageRoot,
     Node,
+    TextInputHistory,
     Saves,
     SaveRequest,
     Transitions,
@@ -108,6 +109,7 @@ pub struct SessionSnapshot {
     // Large immutable picture resources are encoded directly by the storage
     // worker, rather than copied into a synchronous adapter Record::bytes.
     pictures: Vec<Option<std::sync::Arc<SavedRetainedScene>>>,
+    text_intents: Vec<stage::text_input::SavedTextInputIntent>,
 }
 impl SessionSnapshot {
     pub const FORMAT_VERSION: u32 = 1;
@@ -177,13 +179,16 @@ pub struct SessionCapture<'a> {
     adapters: RecordStream<'a>,
     pictures: Vec<Option<std::sync::Arc<SavedRetainedScene>>>,
     picture_sizes: Option<Box<dyn Iterator<Item = u64> + 'a>>,
+    text_intents: Vec<stage::text_input::SavedTextInputIntent>,
+    text_intent_source:
+        Option<Box<dyn Iterator<Item = stage::text_input::SavedTextInputIntent> + 'a>>,
     vm_complete: bool,
     complete: bool,
 }
 impl SessionVm {
     fn snapshot_records(&self) -> RecordStream<'_> {
         use std::iter::once_with;
-        let streams: [RecordStream<'_>; 12] = [
+        let streams: [RecordStream<'_>; 13] = [
             Box::new(
                 once_with(|| {
                     Record::new(
@@ -248,6 +253,7 @@ impl SessionVm {
                     .map(|node| Record::new(Part::Node, &node)),
             ),
             self.particles.snapshot_records(),
+            stage::text_input::snapshot_records(&self.stage, self.vm.heap()),
             self.transition_snapshot_records(),
         ];
         Box::new(streams.into_iter().flatten())
@@ -286,6 +292,11 @@ impl SessionVm {
             adapters: self.snapshot_records(),
             pictures: self.transition_pictures(),
             picture_sizes: Some(Box::new(self.transition_picture_sizes())),
+            text_intents: Vec::new(),
+            text_intent_source: Some(Box::new(stage::text_input::snapshot_intents(
+                &self.stage,
+                self.vm.heap(),
+            ))),
             vm_complete: false,
             complete: false,
         })
@@ -345,6 +356,8 @@ impl SessionVm {
             session: Some(session),
             records: &image.records,
             pictures: &image.pictures,
+            text_intents: &image.text_intents,
+            text_intent_cursor: 0,
             cursor: 0,
             children: Vec::new(),
             child: 0,
@@ -424,6 +437,14 @@ impl SessionCapture<'_> {
                 }
                 continue;
             }
+            if let Some(intents) = &mut self.text_intent_source {
+                if let Some(intent) = intents.next() {
+                    self.text_intents.push(intent);
+                } else {
+                    self.text_intent_source = None;
+                }
+                continue;
+            }
             if let Some(session) = &mut self.session {
                 if session.step() {
                     self.saved_session = Some(self.session.take().unwrap().finish());
@@ -458,6 +479,7 @@ impl SessionCapture<'_> {
             session: self.saved_session,
             records: self.records,
             pictures: self.pictures,
+            text_intents: self.text_intents,
         })
     }
 }
@@ -470,6 +492,8 @@ pub struct SessionRestore<'a> {
     session: Option<Session>,
     records: &'a [Record],
     pictures: &'a [Option<std::sync::Arc<SavedRetainedScene>>],
+    text_intents: &'a [stage::text_input::SavedTextInputIntent],
+    text_intent_cursor: usize,
     cursor: usize,
     children: Vec<reel_ui::stage::NodeId>,
     child: usize,
@@ -669,6 +693,11 @@ impl SessionRestore<'_> {
                             self.children.push(node);
                         }
                     }
+                    Part::TextInputHistory => runtime.stage.restore_text_history(
+                        runtime.vm.heap(),
+                        map,
+                        record.read()?,
+                    )?,
                 }
                 progress.bytes += record.bytes.len() as u64;
                 self.cursor += 1;
@@ -686,12 +715,20 @@ impl SessionRestore<'_> {
                 }
                 continue;
             }
+            if let Some(intent) = self.text_intents.get(self.text_intent_cursor) {
+                runtime.stage.restore_text_intent(intent)?;
+                self.text_intent_cursor += 1;
+                continue;
+            }
             runtime
                 .stage
                 .restore_root(runtime.vm.heap(), self.stage_root)?;
             runtime
                 .narrative_contexts
                 .validate(self.session.as_ref().unwrap())?;
+            if !runtime.stage.text_history_restore_complete() {
+                return Err(AdapterError::Input("incomplete text input history"));
+            }
             if runtime.reactive_ready && runtime.derived_task.is_none() {
                 runtime.sync_narrative(self.session.as_ref().unwrap())?;
             }
