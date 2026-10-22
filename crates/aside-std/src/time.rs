@@ -25,18 +25,18 @@ pub(super) fn now(
 }
 
 /// Split a Unix timestamp into civil time fields. `timezone` is an IANA name
-/// such as `Asia/Shanghai`; `null` selects the system timezone. The result has
-/// `year`, `month`, `day`, `hour`, `minute`, `second`, `weekday` (Monday = 1),
-/// and `offset_seconds` east of UTC.
+/// such as `Asia/Shanghai`; `null` selects the system timezone. Return an ordinary
+/// mutable table with integer fields `year`, `month`, `day`, `hour`, `minute`,
+/// `second`, `weekday` (Monday = 1), and `offset_seconds` east of UTC.
 ///
 /// ```aside
 /// use std::time::parts;
 /// fn main() {
-///     let epoch = parts(0, timezone: "UTC");
+///     let epoch: table = parts(0, timezone: "UTC");
 ///     if epoch.year != 1970 || epoch.month != 1 { throw "civil time"; }
 /// }
 /// ```
-#[native(symbol = "std::time::parts", effects = Effects(Effects::HOST | Effects::ALLOCATE))]
+#[native(symbol = "std::time::parts", effects = Effects(Effects::HOST | Effects::ALLOCATE), doc_result = aside_host::aside_compiler::semantic::TypeHint::Table)]
 pub(super) fn parts(
     #[aside(context)] context: &mut CallContext<'_, StandardLibrary>,
     timestamp: i64,
