@@ -74,6 +74,11 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         named("reel::types::Clock"),
         &[("interval", number())],
     );
+    api.refine(
+        "reel::clock::next",
+        TypeHint::Int,
+        &[("clock", named("reel::types::Clock"))],
+    );
     let producer = TypeHint::Union(vec![
         activity.clone(),
         named("reel::types::Playback"),
@@ -113,6 +118,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
             "reel::types::Clock",
             "A periodic activity with observable accepted ticks and elapsed seconds.",
             vec![
+                Member::method(api.native("reel::clock::next").clone().bound("next")),
                 Member::field(
                     "reel::types::Clock",
                     "ticks",
@@ -191,6 +197,12 @@ aside_host::native_documentation! {
         /// Publish the latest complete interval when time advances. Pause freezes time;
         /// stop settles the activity. A clock has no finite endpoint for `finish`.
         "reel::clock";
+        /// Wait for this clock to advance beyond its current complete interval and
+        /// return its total integer ticks. Ordinary calls suspend the current task;
+        /// no separate awaitable or condition is allocated per tick. Each consumer
+        /// waits independently. Missed intervals are combined in the returned count.
+        /// Pause retains the wait; stopping or retiring the clock cancels it.
+        "reel::clock::next";
         /// Wait for the activity's terminal result. Multiple consumers share the result;
         /// cancelling a consumer removes its wait without stopping the producer.
         "reel::activity::await";
@@ -378,7 +390,7 @@ pub(super) struct Activities {
     target_time: f64,
     serial: u64,
     #[serde(skip)]
-    waits: Vec<(WaitId, Value)>,
+    waits: Vec<(WaitId, Value, Option<i64>)>,
 }
 
 impl Activities {
@@ -417,8 +429,8 @@ impl Activities {
                 self.events.insert(key, map.value(value)?);
             }
             Part::ActivityWait => {
-                let (wait, value): (WaitId, Value) = record.read()?;
-                self.waits.push((map.wait(wait)?, map.value(value)?));
+                let (wait, value, tick): (WaitId, Value, Option<i64>) = record.read()?;
+                self.waits.push((map.wait(wait)?, map.value(value)?, tick));
             }
             _ => unreachable!(),
         }

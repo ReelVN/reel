@@ -10,6 +10,7 @@ mod clock_batches;
 mod component_cost;
 mod conditions;
 mod content_identity;
+mod continuous;
 mod curves;
 mod dialogue_append;
 mod dialogue_history;

@@ -880,6 +880,12 @@ impl SessionVm {
                 self.dispatch_emit(ticket)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
+            "reel::clock::next" => {
+                self.check_wait(session, ticket)?;
+                self.activities.next_tick(&mut self.vm, ticket)?;
+                self.issued = None;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
             "reel::pause"
             | "reel::resume"
             | "reel::stop"

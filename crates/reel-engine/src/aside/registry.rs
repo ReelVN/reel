@@ -988,6 +988,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             false,
         ),
         ("activity::await", vec![parameter("activity", None)], true),
+        ("clock::next", vec![parameter("clock", None)], true),
         (
             "stage::presented",
             vec![parameter("owner", Some(bc::Const::Null))],
