@@ -732,7 +732,7 @@ Reel 的 `game.exit()` 是宿主退出请求：接收后不再运行脚本，任
 
 `input(on_wheel: callback)` 注册滚轮回调。回调事件 `{target,x,y,delta_x,delta_y}` 使用节点局部位置与逻辑窗口轴像素增量两个坐标域，沿已接受画面、模态、节点所有权和普通可等待回调执行；滚轮无保持/释放状态。内层控件消费规则及单位换算见引擎架构的滚轮合同。
 
-`checkbox(label: null, value: false, on_change: null, ...)` 与 `radio(option, label: null, value: null, on_change: null, ...)` 是普通宿主节点。checkbox.value 为可写布尔值；radio.value 保存业务值，激活写入 option。共享一个可写绑定即组成单选组，值比较与 list key 相同。组导航已实现：最终可写属性身份用于 Tab 单停靠和方向选择，不新增语言语法或分组参数；当前模态范围内使用选中的可用项，否则首项。组在 Tab 顺序中的位置取其第一个可用节点；方向移动先回写再回调，脚本赋值不抢焦点。虚拟列表先沿既有逻辑导航挂载并接受目标，再选择；首尾循环及跨列表进入使用逻辑端点，不使用当前窗口边界，不预建中间离屏选项。Tab 离开组时不为寻找下一停靠点构造虚拟行；跨窗口访问选项使用方向键。组身份从恢复后的绑定重建，不进入快照格式。脚本赋值静默，用户变更先提交再执行节点所属回调 `{target,value}`；option 更新使旧呈现的选项激活失效。children 与 decorated 仍使用共同舞台，不新增语言语法或 Aside 字节码/ASB 编码。
+`checkbox(label: null, value: false, on_change: null, ...)` 与 `radio(option, label: null, value: null, on_change: null, ...)` 是普通宿主节点。checkbox.value 为可写布尔值；radio.value 保存业务值，激活写入 option。共享一个可写绑定即组成单选组，值比较与 list key 相同。组导航已实现：最终可写属性身份用于 Tab 单停靠和方向选择，不新增语言语法或分组参数；当前模态范围内使用选中的可用项，否则首项。组在 Tab 顺序中的位置取其第一个可用节点；方向移动先回写再回调，脚本赋值不抢焦点。虚拟列表先沿既有逻辑导航挂载并接受目标，再选择；首尾循环及跨列表进入使用逻辑端点，不使用当前窗口边界，另一列表尚无已挂载同组项时，按方向逐行查找，保留窗口范围的节点。Tab 离开组时不为寻找下一停靠点构造虚拟行；跨窗口访问选项使用方向键。组身份从恢复后的绑定重建，不进入快照格式。脚本赋值静默，用户变更先提交再执行节点所属回调 `{target,value}`；option 更新使旧呈现的选项激活失效。children 与 decorated 仍使用共同舞台，不新增语言语法或 Aside 字节码/ASB 编码。
 
 Reel 的 `clock(interval: 1, owner: null, paused:false)` 是普通宿主函数，返回带只读可观察 ticks/elapsed 的活动。ticks 是 int 完整周期数，初值 0，直接用于索引或 slice 范围；elapsed 是 float 已完成周期总秒数，初值 0.0。复用 pause/resume/stop/await，所有者规则与 run 相同；长步长合并周期、暂停不计时，停止保留最后值，finish 拒绝无终点活动。一次活动采样及其派生计算使用固定逻辑时间；计算跨预算片时，新时间合并为最新请求，完成当前舞台属性提交后才开始下一轮，避免持续计时让派生永远无法稳定。快照保留这两种值类型、周期与暂停偏移，恢复后继续原期限。周期计数超出 int 范围时在发布前报错。
 
