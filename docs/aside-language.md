@@ -460,7 +460,7 @@ Value 使用显式标签，完整保留 int64、float64 和对象身份。布局
 公共格式位于 [aside-vm::bytecode](../crates/aside-vm/src/bytecode/FORMAT.md)，包含程序数据、验证和反汇编；aside-compiler 单向依赖它，格式模块不引用 Rowan、parser 或 Reel。下列合同规定编译结果与执行器的共同约束。
 
 程序与验证
-BytecodePackage 保存格式/语言/宿主 ABI 版本、内容版本、符号、常量、模块、函数、能力和源码映射。ModuleDef 包含规范化路径、固定导入/导出、全局绑定与初始化入口；FunctionDef 包含 Plain/Async/Generator/Native 类别、统一 Signature、捕获布局、寄存器数、代码和异常/清理区域。Async 为现有格式保留值，执行准入仍拒绝；Generator 对应尚未实现的生成器规划。Signature 保存参数名称/顺序/类型/可变性、缺省、rest、返回契约和效果。ParameterDefault 区分 Constant(ConstId) 与 Function(FunctionId)：字面常量直接引用常量池，表达式入口继承被调用闭包的定义处词法捕获和 ModuleInstance，并接收前序参数。仅省略实参时求缺省值；捕获分析包含缺省表达式，数组和表构造保持逐次执行。
+BytecodePackage 保存格式/语言/宿主 ABI 版本、内容版本、符号、常量、模块、函数、能力和源码映射。ModuleDef 包含规范化路径、固定导入/导出、全局绑定与初始化入口；FunctionDef 包含 Plain/Async/Generator/Native 类别、统一 Signature、捕获布局、寄存器数、代码和异常/清理区域。当前编码枚举中包含 Async，lowering 与执行准入尚未接通；Generator 对应尚未实现的生成器规划。Signature 保存参数名称/顺序/类型/可变性、缺省、rest、返回契约和效果。ParameterDefault 区分 Constant(ConstId) 与 Function(FunctionId)：字面常量直接引用常量池，表达式入口继承被调用闭包的定义处词法捕获和 ModuleInstance，并接收前序参数。仅省略实参时求缺省值；捕获分析包含缺省表达式，数组和表构造保持逐次执行。
 脚本和 native 共用常量物化及参数类型检查。常量缺省复用不可变值，聚合常量的分片构造、临时根、取消与恢复沿普通常量加载协议；常量缺省不建立函数帧或前序参数副本。
 每次调用按参数顺序建立本次独立绑定，前序参数在后续缺省表达式开始前完成初始化。缺省表达式对前序参数的读写、其中产生的闭包与函数正文共享同一个词法绑定。需要共享可变身份的参数在这一步建立 Cell，正文入口复用它；捕获分析和 lowering 同时考虑缺省中的读写与闭包。已经初始化且身份无关的只读前缀可按值传递。全部调用实参仍先按源码顺序求值，再开始参数绑定。
 
