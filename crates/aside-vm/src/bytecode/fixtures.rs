@@ -115,6 +115,7 @@ pub fn helper_native() -> BytecodePackage {
         ],
     );
     main.descriptors = vec![Descriptor::Call(CallDesc {
+        contract: None,
         target: CallTarget::Function(FunctionId(1)),
         arguments: Arguments::Window(RegWindow {
             start: Reg(0),
@@ -157,6 +158,7 @@ pub fn helper_native() -> BytecodePackage {
         initialization: BindingInitialization::Parameter(0),
     }];
     helper.descriptors = vec![Descriptor::Call(CallDesc {
+        contract: None,
         target: CallTarget::Native(ECHO_NATIVE),
         arguments: Arguments::Window(RegWindow {
             start: Reg(0),
@@ -339,11 +341,13 @@ pub fn duplicate_arguments() -> BytecodePackage {
     ];
     f.descriptors = vec![
         Descriptor::Call(CallDesc {
+            contract: None,
             target: CallTarget::Function(FunctionId(1)),
             arguments: Arguments::Packed(Reg(0)),
             names: vec![],
         }),
         Descriptor::Call(CallDesc {
+            contract: None,
             target: CallTarget::Native(NativeId(0)),
             arguments: Arguments::Window(RegWindow {
                 start: Reg(1),
@@ -462,6 +466,7 @@ pub fn initialized_null_cell() -> BytecodePackage {
 pub fn uninitialized_cell_read() -> BytecodePackage {
     let mut p = forward_readonly_cell();
     p.functions[0].descriptors.push(Descriptor::Call(CallDesc {
+        contract: None,
         target: CallTarget::Register(Reg(2)),
         arguments: Arguments::Window(RegWindow {
             start: Reg(0),
@@ -529,6 +534,7 @@ pub fn parameter_cell_default() -> BytecodePackage {
     );
     main.descriptors = vec![
         Descriptor::Call(CallDesc {
+            contract: None,
             target: CallTarget::Function(FunctionId(1)),
             arguments: Arguments::Window(RegWindow {
                 start: Reg(0),
@@ -537,6 +543,7 @@ pub fn parameter_cell_default() -> BytecodePackage {
             names: vec![],
         }),
         Descriptor::Call(CallDesc {
+            contract: None,
             target: CallTarget::Function(FunctionId(2)),
             arguments: Arguments::Window(RegWindow {
                 start: Reg(0),
@@ -672,6 +679,7 @@ pub fn native_parameter_defaults() -> BytecodePackage {
         ],
     );
     main.descriptors = vec![Descriptor::Call(CallDesc {
+        contract: None,
         target: CallTarget::Native(NativeId(0)),
         arguments: Arguments::Window(RegWindow {
             start: Reg(0),
@@ -715,6 +723,7 @@ pub fn native_parameter_defaults() -> BytecodePackage {
             captures: vec![CaptureSource::Binding(BindingId(1))],
         },
         Descriptor::Call(CallDesc {
+            contract: None,
             target: CallTarget::Register(Reg(2)),
             arguments: Arguments::Window(RegWindow {
                 start: Reg(0),

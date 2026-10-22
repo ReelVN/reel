@@ -177,6 +177,37 @@ fn value_signature(
     name: &str,
     declaration: TextRange,
 ) -> Option<Signature> {
+    if let Type::Union(types) = &module.types()[ty.0 as usize] {
+        let mut candidates = types
+            .iter()
+            .copied()
+            .filter(|id| !matches!(module.types()[id.0 as usize], Type::Null));
+        let inner = candidates.next()?;
+        if candidates.next().is_none() {
+            return value_signature(module, source, inner, name, declaration);
+        }
+    }
+    if let Type::Callable(parameters, result) = &module.types()[ty.0 as usize] {
+        let parameters: Vec<_> = parameters
+            .iter()
+            .map(|&ty| (String::new(), type_label(module, ty)))
+            .collect();
+        let result = type_label(module, *result);
+        return Some(Signature {
+            label: format!(
+                "fn {name}({}) -> {result}",
+                parameters
+                    .iter()
+                    .map(|(_, label)| label.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            name: name.into(),
+            result,
+            parameters,
+            markdown: source_docs(source, declaration),
+        });
+    }
     let (function, bound) = match module.types()[ty.0 as usize] {
         Type::Function(function) => (function, false),
         Type::BoundMethod(function) => (function, true),
@@ -853,7 +884,13 @@ fn source_completion(
     }
     CompletionItem {
         label: name.into(),
-        kind: Some(symbol_kind(symbol.kind)),
+        kind: Some(
+            if matches!(module.types()[symbol.ty.0 as usize], Type::Callable(..)) {
+                CompletionItemKind::FUNCTION
+            } else {
+                symbol_kind(symbol.kind)
+            },
+        ),
         detail: Some(if symbol.kind == SymbolKind::Class {
             local_label(module, source, id)
         } else {
@@ -1625,7 +1662,9 @@ impl Workspace {
                 signature
                     .parameters
                     .into_iter()
-                    .filter(|(name, label)| !supplied.contains(name) && !label.starts_with("..."))
+                    .filter(|(name, label)| {
+                        !name.is_empty() && !supplied.contains(name) && !label.starts_with("...")
+                    })
                     .map(|(name, label)| CompletionItem {
                         label: format!("{name}:"),
                         kind: Some(CompletionItemKind::FIELD),
@@ -1888,20 +1927,29 @@ impl Workspace {
             }
         }
         let active = active.min(signature.parameters.len().saturating_sub(1)) as u32;
+        let mut parameter_offset = 4 + signature.name.encode_utf16().count() as u32;
+        let parameters = signature
+            .parameters
+            .into_iter()
+            .map(|(name, label)| {
+                let end = parameter_offset + label.encode_utf16().count() as u32;
+                let label = if name.is_empty() {
+                    ParameterLabel::LabelOffsets([parameter_offset, end])
+                } else {
+                    ParameterLabel::Simple(label)
+                };
+                parameter_offset = end + 2;
+                ParameterInformation {
+                    label,
+                    documentation: None,
+                }
+            })
+            .collect();
         Ok(Some(SignatureHelp {
             signatures: vec![SignatureInformation {
                 label: signature.label,
                 documentation: signature.markdown.map(Documentation::String),
-                parameters: Some(
-                    signature
-                        .parameters
-                        .into_iter()
-                        .map(|(_, label)| ParameterInformation {
-                            label: ParameterLabel::Simple(label),
-                            documentation: None,
-                        })
-                        .collect(),
-                ),
+                parameters: Some(parameters),
                 active_parameter: Some(active),
             }],
             active_signature: Some(0),

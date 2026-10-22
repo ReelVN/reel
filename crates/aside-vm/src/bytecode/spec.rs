@@ -141,6 +141,7 @@ instructions! {
     TextNew = 0x0025 => [WriteReg, Unused, Unused], Next, true, None;
     TextPush = 0x0026 => [ReadReg, ReadReg, Unused], Next, true, None;
     TextFinish = 0x0027 => [WriteReg, ReadReg, Unused], Next, true, None;
+    CheckType = 0x0028 => [ReadReg, Type, Unused], Next, true, None;
     Jump = 0x0030 => [Pc, Unused, Unused], Jump, false, None;
     BranchBool = 0x0031 => [ReadReg, Pc, Pc], Branch, true, None;
     BranchNull = 0x0032 => [ReadReg, Pc, Pc], Branch, false, None;

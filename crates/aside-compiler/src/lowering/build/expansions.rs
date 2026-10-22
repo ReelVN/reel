@@ -175,6 +175,7 @@ impl<'a> FunctionBuilder<'_, 'a> {
         }
         self.l.b.span = self.span(call);
         let descriptor = self.descriptor(bc::Descriptor::Call(bc::CallDesc {
+            contract: None,
             target,
             arguments: bc::Arguments::Window(window),
             names,

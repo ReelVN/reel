@@ -557,6 +557,7 @@ fn constant_default_type_failures_report_the_original_script_or_native_call() {
                     span: source,
                 }];
                 caller.descriptors = vec![Descriptor::Call(CallDesc {
+                    contract: None,
                     target: CallTarget::Function(FunctionId(0)),
                     arguments: Arguments::Window(RegWindow {
                         start: Reg(0),

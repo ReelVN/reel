@@ -7,7 +7,7 @@ use aside_vm::{
 
 const SOURCE: &str = r#"
 fn helper(request) { await request }
-fn main(request) { helper(request) + helper(request) }
+fn main(request) { let read:fn(any)->int=helper; read(request) + read(request) }
 fn producer() { throw "producer failed"; }
 fn consumer(request) { try { throw 7; } catch previous { await request } }
 fn cooperative(request) { try { await request } catch cancelled { return 42; } }
@@ -18,10 +18,11 @@ fn saved_state(request) {
     let aliases = [counter, counter];
     let cycle = []; cycle.append(cycle);
     let mut calls = 0;
-    let bump = || { calls += 1; counter.read() + calls };
+    let bump:fn()->int = || { calls += 1; counter.read() + calls };
     bump();
     try { throw 7; } catch caught {
-        let result = await request;
+        let read:fn()->int = || await request;
+        let result = read();
         aliases[0].value = 39;
         if aliases[1].value != 39 || cycle[0] != cycle || caught != 7 { return 0; }
         counter.value = 40;

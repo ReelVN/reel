@@ -428,6 +428,7 @@ fn spread_rest_package() -> BytecodePackage {
                 len: 2,
             }),
             Descriptor::Call(CallDesc {
+                contract: None,
                 target: CallTarget::Function(FunctionId(1)),
                 arguments: Arguments::Packed(Reg(3)),
                 names: vec![],
@@ -1166,6 +1167,7 @@ fn method_package(method: &str) -> BytecodePackage {
             op(Opcode::Return, 2, 0, 0),
         ],
         vec![Descriptor::Call(CallDesc {
+            contract: None,
             target: CallTarget::Register(Reg(1)),
             arguments: Arguments::Window(RegWindow {
                 start: Reg(0),

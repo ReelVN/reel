@@ -32,6 +32,7 @@ impl TypeChecks {
         for ty in &p.types {
             let (cost, depth) = match ty {
                 TypeDef::Builtin(_) => (1, 0usize),
+                TypeDef::Function { .. } => (2, 0usize),
                 TypeDef::Named { .. } => (3 + host_types.work, 0usize),
                 TypeDef::Tuple(items) | TypeDef::Union(items) => {
                     let mut cost = 3u64;
@@ -44,11 +45,6 @@ impl TypeChecks {
                         depth = depth.max(depths.data[id.index()] + 1);
                     }
                     (cost, depth)
-                }
-                _ => {
-                    return Err(VmError::Contract(
-                        "named/callable type handler is not connected",
-                    ));
                 }
             };
             work.data.push(cost);
@@ -154,6 +150,12 @@ impl TypeChecks {
                 if let Some((ty, value)) = current.take() {
                     match &p.types[ty.index()] {
                         TypeDef::Builtin(kind) => accepted = heap.accepts_builtin(*kind, value)?,
+                        TypeDef::Function { .. } => {
+                            accepted = heap.accepts_builtin(BuiltinType::Closure, value)?
+                                || (value.tag() == crate::ValueTag::Object
+                                    && heap.info(value)?.kind == crate::ObjectKind::Host
+                                    && heap.host_call(value).is_ok());
+                        }
                         TypeDef::Named { .. } => {
                             accepted = crate::class::accepts_nominal(heap, value, ty)?
                         }
@@ -179,7 +181,6 @@ impl TypeChecks {
                                 continue;
                             }
                         }
-                        _ => unreachable!("load admits executable contracts"),
                     }
                 }
                 loop {

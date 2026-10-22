@@ -1412,14 +1412,33 @@ impl Binder<'_> {
             (Type::Function(f) | Type::BoundMethod(f), Type::Callable(p, r)) => {
                 let bound = matches!(self.out.types[actual.0 as usize], Type::BoundMethod(_));
                 let f = &self.out.functions[f.0 as usize];
-                f.parameters.len() - usize::from(bound) == p.len()
-                    && self.compatible(f.return_type, *r)
-                    && f.parameters
+                let parameters = &f.parameters[usize::from(bound)..];
+                let fixed = parameters
+                    .iter()
+                    .take_while(|parameter| !parameter.rest)
+                    .count();
+                (p.len() <= fixed || parameters.last().is_some_and(|parameter| parameter.rest))
+                    && parameters
                         .iter()
-                        .skip(usize::from(bound))
+                        .skip(p.len())
+                        .all(|parameter| parameter.default.is_some() || parameter.rest)
+                    && self.compatible(f.return_type, *r)
+                    && parameters
+                        .iter()
+                        .take(fixed)
                         .zip(p)
-                        .all(|(a, &b)| self.compatible(self.out.symbols[a.symbol.0 as usize].ty, b))
+                        .all(|(parameter, &ty)| {
+                            self.compatible(ty, self.out.symbols[parameter.symbol.0 as usize].ty)
+                        })
             }
+            (Type::Callable(a, ar), Type::Callable(b, br)) => {
+                a.len() == b.len()
+                    && self.compatible(*ar, *br)
+                    && a.iter()
+                        .zip(b)
+                        .all(|(&actual, &expected)| self.compatible(expected, actual))
+            }
+            (Type::Closure, Type::Callable(..)) => true,
             (Type::Function(_) | Type::BoundMethod(_) | Type::Callable(_, _), Type::Closure) => {
                 true
             }
@@ -2576,8 +2595,23 @@ impl Binder<'_> {
         if let Type::Class(class) = self.out.types[ty.0 as usize] {
             return self.intern_type(Type::Instance(class));
         }
-        if let Type::Callable(_, r) = self.out.types[ty.0 as usize] {
-            return r;
+        let callable = match &self.out.types[ty.0 as usize] {
+            Type::Callable(_, result) => Some(*result),
+            Type::Union(types) => {
+                let mut candidates = types.iter().filter(|&&ty| ty != NULL);
+                match candidates.next().map(|ty| &self.out.types[ty.0 as usize]) {
+                    Some(Type::Callable(_, result)) if candidates.next().is_none() => Some(*result),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        if let Some(result) = callable {
+            return if (optional || chain) && !self.definitely_nonnull(ty) {
+                self.nullable_type(result)
+            } else {
+                result
+            };
         }
         if is_primitive(&self.out.types[ty.0 as usize]) {
             self.error(
@@ -3471,9 +3505,18 @@ impl Binder<'_> {
         else {
             return;
         };
-        let Some(signature) = self.checked_signature(call, callee) else {
+        let signature = self.checked_signature(call, callee);
+        let mut callable_ty = self.ty(callee);
+        if let Type::Union(types) = &self.out.types[callable_ty.0 as usize] {
+            let mut candidates = types.iter().copied().filter(|&ty| ty != NULL);
+            if let Some(inner) = candidates.next().filter(|_| candidates.next().is_none()) {
+                callable_ty = inner;
+            }
+        }
+        let positional = matches!(self.out.types[callable_ty.0 as usize], Type::Callable(..));
+        if signature.is_none() && !positional {
             return;
-        };
+        }
         let mut args = Vec::new();
         for part in arguments.into_iter().chain(trailing) {
             match self.kind(part) {
@@ -3510,6 +3553,57 @@ impl Binder<'_> {
                 _ => (),
             }
         }
+        if positional {
+            let Type::Callable(parameters, _) = &self.out.types[callable_ty.0 as usize] else {
+                unreachable!()
+            };
+            let parameter_count = parameters.len();
+            let mut position = Some(0usize);
+            let mut supplied = 0;
+            let mut dynamic = false;
+            for (arg, name, ty, spread) in args {
+                if !self.budget(arg) {
+                    return;
+                }
+                if name.is_some() {
+                    self.error(
+                        D::InvalidCall,
+                        self.span(arg),
+                        "function types take positional arguments",
+                    );
+                } else if spread {
+                    dynamic = true;
+                    position = None;
+                } else {
+                    supplied += 1;
+                    if let Some(index) = position {
+                        let Type::Callable(parameters, _) = &self.out.types[callable_ty.0 as usize]
+                        else {
+                            unreachable!()
+                        };
+                        if let Some(expected) = parameters.get(index).copied() {
+                            self.require(arg, ty, expected, "call argument");
+                        }
+                        position = Some(index + 1);
+                    }
+                }
+            }
+            if supplied > parameter_count {
+                self.error(
+                    D::InvalidCall,
+                    self.span(call.node),
+                    "too many positional arguments",
+                );
+            } else if !dynamic && supplied < parameter_count {
+                self.error(
+                    D::InvalidCall,
+                    self.span(call.node),
+                    "missing required positional argument",
+                );
+            }
+            return;
+        }
+        let signature = signature.expect("checked ordinary signature");
         let mut used = HashSet::new();
         let mut position = Some(0usize);
         let mut dynamic_spread = false;

@@ -1473,6 +1473,7 @@ fn callback_pending_suspends_same_stack_and_inherits_nowait_dynamically() {
         let callback = &mut p.functions[3];
         callback.register_count = 2;
         callback.descriptors = vec![Descriptor::Call(CallDesc {
+            contract: None,
             target: CallTarget::Native(NativeId(0)),
             arguments: Arguments::Window(RegWindow {
                 start: Reg(0),
@@ -1743,6 +1744,7 @@ fn tasks_share_cells_globals_gc_and_have_independent_tickets_deliveries_and_canc
     a.register_count = 4;
     a.descriptors = vec![
         Descriptor::Call(CallDesc {
+            contract: None,
             target: CallTarget::Native(NativeId(0)),
             arguments: Arguments::Window(RegWindow {
                 start: Reg(1),
@@ -1882,6 +1884,7 @@ fn dynamic_call_type_fault_is_at_call_and_caught_there() {
     f.source_map.clear();
     f.regions.clear();
     f.descriptors = vec![Descriptor::Call(CallDesc {
+        contract: None,
         target: CallTarget::Register(Reg(0)),
         arguments: Arguments::Window(RegWindow {
             start: Reg(0),
@@ -1928,6 +1931,7 @@ fn inner_fault_in_finally(pending_throw: bool, fault: u8) -> BytecodePackage {
     f.source_map.clear();
     f.register_count = 3;
     f.descriptors = vec![Descriptor::Call(CallDesc {
+        contract: None,
         target: CallTarget::Native(NativeId(0)),
         arguments: Arguments::Window(RegWindow {
             start: Reg(1),

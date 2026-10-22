@@ -31,6 +31,7 @@ fn rest_name_cannot_be_supplied_through_a_property_bag_tail() {
         Instruction::new(Opcode::Return, 2, 0, 0),
     ];
     f.descriptors = vec![Descriptor::Call(CallDesc {
+        contract: None,
         target: CallTarget::Native(NativeId(0)),
         arguments: Arguments::Window(RegWindow {
             start: Reg(0),
@@ -740,6 +741,7 @@ fn gallery(op: Opcode) -> BytecodePackage {
         initialization: BindingInitialization::Explicit,
     }];
     let call = CallDesc {
+        contract: None,
         target: CallTarget::Function(FunctionId(1)),
         arguments: Arguments::Window(RegWindow {
             start: Reg(1),
@@ -1033,7 +1035,10 @@ fn modules_structural_types_rest_schema_and_lexical_initializers_roundtrip() {
     p.types.extend([
         TypeDef::Tuple(vec![TypeId(1)]),
         TypeDef::Union(vec![TypeId(0), TypeId(1)]),
-        TypeDef::Function(SignatureId(0)),
+        TypeDef::Function {
+            parameters: vec![TypeId(1)],
+            return_type: TypeId(0),
+        },
         TypeDef::Named {
             module: ModuleId(1),
             name: SymbolId(12),
@@ -1105,9 +1110,11 @@ fn modules_structural_types_rest_schema_and_lexical_initializers_roundtrip() {
         .unwrap()
         .target_parameter = 99;
     bad(wrong, ErrorKind::Signature);
-    p.types.push(TypeDef::Function(SignatureId(2)));
-    p.signatures[2].return_type = TypeId(6);
-    bad(p, ErrorKind::Signature);
+    p.types.push(TypeDef::Function {
+        parameters: vec![],
+        return_type: TypeId(p.types.len() as u32),
+    });
+    bad(p, ErrorKind::Index);
 }
 #[test]
 fn nested_try_can_leave_inside_finally_but_cannot_escape_it() {
@@ -1557,6 +1564,7 @@ fn positional_only_call_descriptors_prepay_shared_required_parameter_scan() {
     let baseline = verify(p.clone(), limits()).unwrap().stats();
     p.functions[0].descriptors = vec![
         Descriptor::Call(CallDesc {
+            contract: None,
             target: CallTarget::Native(NativeId(0)),
             arguments: Arguments::Window(RegWindow {
                 start: Reg(0),

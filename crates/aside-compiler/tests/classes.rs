@@ -2,6 +2,8 @@
 use aside_compiler::{AnalysisOptions, analyze_module, lowering, semantic::NoModules};
 use aside_vm::{GcBudget, GcPhase, RootOwner, SessionEpoch, Value, bytecode as bc, executor::*};
 
+#[path = "classes/callables.rs"]
+mod callables;
 #[path = "classes/dynamic_index.rs"]
 mod dynamic_index;
 
@@ -308,50 +310,54 @@ fn class_payload_charges_match_real_growth_at_inline_and_inheritance_boundaries(
 
 #[test]
 fn retained_method_and_typed_field_updates_reuse_storage() {
-    let source = "class Counter{let mut value:int=0;fn increment(self){self.value+=1;}}let counter=Counter();let increment=counter.increment;fn main(){for i in 0..10000{increment();}counter.value}";
-    let module = analyze_module(source, &AnalysisOptions::default(), &mut NoModules)
-        .unwrap()
-        .into_module()
+    for annotation in ["", ":fn(int)->int"] {
+        let source = format!(
+            "class Counter{{let mut value:int=0;fn increment(self,step:int)->int{{self.value+=step;self.value}}}}let counter=Counter();let increment{annotation}=counter.increment;fn main(){{for i in 0..10000{{increment(1);}}counter.value}}"
+        );
+        let module = analyze_module(&source, &AnalysisOptions::default(), &mut NoModules)
+            .unwrap()
+            .into_module()
+            .unwrap();
+        let compiled = lowering::compile(
+            &module,
+            &lowering::Linkage::default(),
+            lowering::Options::default(),
+        )
         .unwrap();
-    let compiled = lowering::compile(
-        &module,
-        &lowering::Linkage::default(),
-        lowering::Options::default(),
-    )
-    .unwrap();
-    let p = compiled.program.package();
-    let main = bc::FunctionId(
-        p.functions
-            .iter()
-            .position(|f| p.symbols[f.name.index()] == "main")
-            .unwrap() as u32,
-    );
-    let mut vm = Vm::load(
-        compiled.program,
-        bc::RuntimeSupport::default(),
-        VmLimits::default(),
-        SessionEpoch(1),
-    )
-    .unwrap();
-    let init = vm
-        .start(compiled.entry, &[], RootOwner(1), bc::Context::Init)
+        let p = compiled.program.package();
+        let main = bc::FunctionId(
+            p.functions
+                .iter()
+                .position(|f| p.symbols[f.name.index()] == "main")
+                .unwrap() as u32,
+        );
+        let mut vm = Vm::load(
+            compiled.program,
+            bc::RuntimeSupport::default(),
+            VmLimits::default(),
+            SessionEpoch(1),
+        )
         .unwrap();
-    finish(&mut vm, init, false);
-    let before = vm.heap().stats().chunk_allocations;
-    let started = std::time::Instant::now();
-    let task = vm
-        .start(main, &[], RootOwner(1), bc::Context::Ordinary)
-        .unwrap();
-    assert_eq!(finish(&mut vm, task, false).as_int(), Some(10000));
-    let chunks = vm.heap().stats().chunk_allocations - before;
-    assert_eq!(
-        chunks, 0,
-        "range and iteration cursor fit inline; retained calls allocate no payload blocks"
-    );
-    println!(
-        "10000 retained method calls with typed field updates: chunks={chunks}, elapsed={:?}",
-        started.elapsed()
-    );
+        let init = vm
+            .start(compiled.entry, &[], RootOwner(1), bc::Context::Init)
+            .unwrap();
+        finish(&mut vm, init, false);
+        let before = vm.heap().stats().chunk_allocations;
+        let started = std::time::Instant::now();
+        let task = vm
+            .start(main, &[], RootOwner(1), bc::Context::Ordinary)
+            .unwrap();
+        assert_eq!(finish(&mut vm, task, false).as_int(), Some(10000));
+        let chunks = vm.heap().stats().chunk_allocations - before;
+        assert_eq!(
+            chunks, 0,
+            "range and iteration cursor fit inline; retained calls allocate no payload blocks"
+        );
+        println!(
+            "10000 retained method calls with typed field updates: annotation={annotation:?}, chunks={chunks}, elapsed={:?}",
+            started.elapsed()
+        );
+    }
 }
 
 #[test]
@@ -363,14 +369,14 @@ fn snapshots_resume_instruction_work_and_exception_cleanup_without_replaying_cod
         fn value() {
             let counter = Counter();
             let tuple = (counter, [counter]);
-            let get = {count: counter}.get;
+            let get:fn(string,any)->any = {count: counter}.get;
             let fallback = get(...["missing", {counter: counter}]);
-            if get("count") != counter || fallback.counter != counter { throw "get roots"; }
+            if get("count",null) != counter || fallback.counter != counter { throw "get roots"; }
             let parts = "中::🙂::::".split("::");
             if parts.len() != 4 || parts[1] != "🙂" || parts[3] != "" { throw "split state"; }
             try { throw 7; } catch caught {
                 writes += 1;
-                try { let method=counter["read"]; let value=method(); if counter["reads"]!=1 {throw "indexed method replay";} return value + 39 + writes; }
+                try { let method:fn()->int=counter["read"]; let value=method(); if counter["reads"]!=1 {throw "indexed method replay";} return value + 39 + writes; }
                 finally { writes += 1; let joined = "x" + "y"; if tuple[1][0] != counter || joined != "xy" { throw 0; } }
             } finally { writes += 1; }
         }

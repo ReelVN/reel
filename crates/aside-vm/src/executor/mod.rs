@@ -130,6 +130,11 @@ enum ArgSource {
         frame: FrameId,
         descriptor: DescriptorId,
     },
+    CheckedCaller {
+        frame: FrameId,
+        descriptor: DescriptorId,
+        contract: TypeId,
+    },
     Native {
         frame: FrameId,
     },
@@ -1434,6 +1439,36 @@ impl Vm {
         }
         Ok(FunctionId(fi))
     }
+    fn argument_contract(&self, source: ArgSource, index: u32) -> Option<TypeId> {
+        let ArgSource::CheckedCaller { contract, .. } = source else {
+            return None;
+        };
+        let TypeDef::Function { parameters, .. } = &self.program.package().types[contract.index()]
+        else {
+            unreachable!()
+        };
+        parameters.get(index as usize).copied()
+    }
+
+    fn argument_work(&self, source: ArgSource, index: u32) -> u64 {
+        1 + self
+            .argument_contract(source, index)
+            .map_or(0, |ty| 1 + self.type_checks.extra(ty))
+    }
+
+    fn checked_argument(&self, source: ArgSource, index: u32) -> Result<(Value, Value), VmError> {
+        let (name, value) = self.argument(source, index)?;
+        if let Some(ty) = self.argument_contract(source, index)
+            && (name.as_int() != Some(-1)
+                || !self
+                    .type_checks
+                    .accepts(self.program.package(), &self.heap, ty, value)?)
+        {
+            return Err(HeapError::TypeMismatch.into());
+        }
+        Ok((name, value))
+    }
+
     fn argument(&self, source: ArgSource, index: u32) -> Result<(Value, Value), VmError> {
         match source {
             ArgSource::None => Err(VmError::Contract("external arguments already copied")),
@@ -1443,7 +1478,10 @@ impl Vm {
                 };
                 Ok((Value::int(-1), self.slots.read(at(s.regs, value.0))?))
             }
-            ArgSource::Caller { frame, descriptor } => {
+            ArgSource::Caller { frame, descriptor }
+            | ArgSource::CheckedCaller {
+                frame, descriptor, ..
+            } => {
                 let Frame::Script(s) = self.active.frames.data[self.index(frame)?] else {
                     return Err(VmError::Contract("argument source"));
                 };
@@ -2396,11 +2434,11 @@ impl Vm {
                 }
             }
             ScriptPhase::Copy { source, index } => {
-                if !m.take(0, 1, 0) {
+                if !m.take(0, self.argument_work(source, index), 0) {
                     return Ok(false);
                 }
                 if index < s.argument_count {
-                    match self.argument(source, index) {
+                    match self.checked_argument(source, index) {
                         Ok((name, v)) => {
                             self.put(s.args, index * 2, name)?;
                             self.put(s.args, index * 2 + 1, v)?;
@@ -2876,6 +2914,7 @@ impl Vm {
             }
             ScriptPhase::Builtin(_) => {
                 if !self.builtin_step(&mut s, m)? {
+                    self.active.frames.data[top] = Frame::Script(s);
                     return Ok(false);
                 }
             }
@@ -3088,6 +3127,7 @@ impl Vm {
                 )
             }
             Opcode::Is => (1 + self.type_checks.extra(TypeId(c)), 0),
+            Opcode::CheckType => (1 + self.type_checks.extra(TypeId(b)), 0),
             Opcode::Return => (
                 1 + self
                     .type_checks
@@ -3827,6 +3867,7 @@ impl Vm {
                 let result = self.check_type(TypeId(c), v).is_ok();
                 self.write(*s, r(a), Value::bool(result))?;
             }
+            Opcode::CheckType => self.check_type(TypeId(b), self.read(*s, r(a))?)?,
             Opcode::Add
             | Opcode::Sub
             | Opcode::Mul
@@ -3999,10 +4040,30 @@ impl Vm {
                         self.heap.packed_array_len(v).map_err(heap_fault)? / 2
                     }
                 };
-                let source = ArgSource::Caller {
-                    frame: s.id,
-                    descriptor: DescriptorId(b),
+                let source = if let Some(contract) = desc.contract {
+                    ArgSource::CheckedCaller {
+                        frame: s.id,
+                        descriptor: DescriptorId(b),
+                        contract,
+                    }
+                } else {
+                    ArgSource::Caller {
+                        frame: s.id,
+                        descriptor: DescriptorId(b),
+                    }
                 };
+                if let Some(contract) = desc.contract {
+                    let TypeDef::Function { parameters, .. } =
+                        &self.program.package().types[contract.index()]
+                    else {
+                        unreachable!()
+                    };
+                    match (count as usize).cmp(&parameters.len()) {
+                        std::cmp::Ordering::Less => return Err(FaultKind::MissingArgument),
+                        std::cmp::Ordering::Greater => return Err(FaultKind::UnknownArgument),
+                        std::cmp::Ordering::Equal => {}
+                    }
+                }
                 let mut caller = *s;
                 if op == Opcode::CallNoWait
                     || self.active.unwinds.data.iter().any(|u| u.frame == s.id)
@@ -4686,11 +4747,11 @@ impl Vm {
         let top = self.active.frames.data.len() - 1;
         match n.phase {
             NativePhase::Copy { source, index } => {
-                if !m.take(0, 1, 0) {
+                if !m.take(0, self.argument_work(source, index), 0) {
                     return Ok(Some(RunOutcome::BudgetYield(m.usage)));
                 }
                 if index < n.argument_count {
-                    match self.argument(source, index) {
+                    match self.checked_argument(source, index) {
                         Ok((name, value)) => {
                             self.put(n.args, index * 2, name)?;
                             self.put(n.args, index * 2 + 1, value)?;

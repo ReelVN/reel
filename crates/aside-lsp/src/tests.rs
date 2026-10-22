@@ -13,6 +13,52 @@ use std::{str::FromStr, time::Duration};
 mod builtin_methods;
 mod editor_feedback;
 
+#[test]
+fn callable_types_offer_real_signature_positions_without_inventing_parameter_names() {
+    let source = "fn invoke(callback:fn(int,int)->string){callback(1,2);}";
+    let mut workspace = Workspace::new(ServerOptions::default());
+    workspace.open(uri(), 1, source.into()).unwrap();
+    let help = workspace
+        .signature(
+            &uri(),
+            position(source, "callback(1,", true),
+            Encoding::Utf16,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(help.signatures[0].label, "fn callback(int, int) -> string");
+    assert_eq!(help.active_parameter, Some(1));
+    let parameters = help.signatures[0].parameters.as_ref().unwrap();
+    assert_eq!(parameters[0].label, ParameterLabel::LabelOffsets([12, 15]));
+    assert_eq!(parameters[1].label, ParameterLabel::LabelOffsets([17, 20]));
+    let hover = hover_text(
+        workspace
+            .hover(
+                &uri(),
+                position(source, "callback(1", false),
+                Encoding::Utf16,
+            )
+            .unwrap()
+            .unwrap(),
+    );
+    assert!(hover.contains("fn callback(int, int) -> string"), "{hover}");
+    let items = workspace
+        .complete(&uri(), position(source, "callback(", true), Encoding::Utf16)
+        .unwrap();
+    assert!(items.iter().all(|item| item.label != ":"));
+    assert!(items.iter().any(|item| item.label == "callback" && item.kind == Some(CompletionItemKind::FUNCTION)));
+    assert!(
+        workspace
+            .definition(
+                &uri(),
+                position(source, "callback(1", false),
+                Encoding::Utf16
+            )
+            .unwrap()
+            .is_some()
+    );
+}
+
 fn project_options() -> ServerOptions {
     ServerOptions {
         source_root: Some(|directory, exists| {
