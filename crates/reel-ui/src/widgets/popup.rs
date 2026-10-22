@@ -103,6 +103,7 @@ pub struct Popup {
     child: WidgetPod<dyn Widget>,
     modal: bool,
     back_pressed: bool,
+    escape_pressed: bool,
 }
 
 impl Popup {
@@ -111,6 +112,7 @@ impl Popup {
             child: child.erased().to_pod(),
             modal: true,
             back_pressed: false,
+            escape_pressed: false,
         }
     }
 
@@ -161,6 +163,7 @@ impl Widget for Popup {
                 | Update::ChildFocusChanged(false)
         ) {
             self.back_pressed = false;
+            self.escape_pressed = false;
         }
     }
 
@@ -192,25 +195,29 @@ impl Widget for Popup {
             || !ctx.input_configuration_is_current()
         {
             self.back_pressed = false;
+            self.escape_pressed = false;
             return;
         }
-        let phase = match event {
-            TextEvent::Navigation(event) if event.action == NavigationAction::Back => event.phase,
+        let (pressed, phase) = match event {
+            TextEvent::Navigation(event) if event.action == NavigationAction::Back => {
+                (&mut self.back_pressed, event.phase)
+            }
             TextEvent::Keyboard(key) if key.key == Key::Named(NamedKey::Escape) => {
-                if key.state.is_up() {
+                let phase = if key.state.is_up() {
                     ActionPhase::Released
                 } else if key.repeat {
                     ActionPhase::Repeated
                 } else {
                     ActionPhase::Pressed
-                }
+                };
+                (&mut self.escape_pressed, phase)
             }
             _ => return,
         };
         match phase {
-            ActionPhase::Pressed => self.back_pressed = true,
-            ActionPhase::Cancelled => self.back_pressed = false,
-            ActionPhase::Released if std::mem::take(&mut self.back_pressed) => {
+            ActionPhase::Pressed => *pressed = true,
+            ActionPhase::Cancelled => *pressed = false,
+            ActionPhase::Released if std::mem::take(pressed) => {
                 ctx.submit_action::<PopupDismiss>(PopupDismiss::Back);
             }
             _ => {}
@@ -462,6 +469,49 @@ mod tests {
             &*actions.borrow(),
             &[PopupDismiss::Back, PopupDismiss::Back]
         );
+    }
+
+    #[test]
+    fn popup_back_pairs_each_input_channel_without_cross_cancellation() {
+        let Harness {
+            mut root, actions, ..
+        } = setup();
+        let content = Content(Rc::new(Cell::new(0))).prepare();
+        let content_id = content.id();
+        root.add_layer(Popup::new(content).prepare(), Point::ORIGIN);
+        accept(&mut root);
+        root.focus_on(Some(content_id));
+        let back = |phase| {
+            TextEvent::Navigation(NavigationEvent {
+                action: NavigationAction::Back,
+                value: 1.,
+                phase,
+            })
+        };
+        root.handle_text_event(back(ActionPhase::Pressed));
+        root.handle_text_event(TextEvent::key_up(Key::Named(NamedKey::Escape)));
+        assert!(actions.borrow().is_empty(), "Escape has no matching press");
+        root.handle_text_event(back(ActionPhase::Released));
+        assert_eq!(&*actions.borrow(), &[PopupDismiss::Back]);
+
+        root.handle_text_event(TextEvent::key_down(Key::Named(NamedKey::Escape)));
+        root.handle_text_event(back(ActionPhase::Released));
+        assert_eq!(actions.borrow().len(), 1, "Back has no matching press");
+        root.handle_text_event(back(ActionPhase::Cancelled));
+        root.handle_text_event(TextEvent::key_up(Key::Named(NamedKey::Escape)));
+        assert_eq!(
+            actions.borrow().len(),
+            2,
+            "Back cancellation preserves Escape"
+        );
+
+        root.handle_text_event(back(ActionPhase::Pressed));
+        root.handle_text_event(TextEvent::key_down(Key::Named(NamedKey::Escape)));
+        root.handle_text_event(TextEvent::WindowFocusChange(false));
+        root.handle_text_event(TextEvent::WindowFocusChange(true));
+        root.handle_text_event(back(ActionPhase::Released));
+        root.handle_text_event(TextEvent::key_up(Key::Named(NamedKey::Escape)));
+        assert_eq!(actions.borrow().len(), 2, "focus loss clears both channels");
     }
 
     #[test]
