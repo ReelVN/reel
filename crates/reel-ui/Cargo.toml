@@ -25,6 +25,7 @@ kurbo.workspace = true
 reel-text.workspace = true
 peniko = { workspace = true, features = ["serde"] }
 smallvec.workspace = true
+taffy = { version = "=0.14.0", default-features = false, features = ["std", "flexbox", "grid", "content_size"] }
 skrifa = "=0.48.0"
 tracing = { workspace = true, features = ["default"] }
 tracing-core = { version = "=0.1.36", default-features = false }

@@ -92,7 +92,7 @@ fn setup() -> (Fixture, NodeId) {
     (f, blocker)
 }
 
-fn press_pointer(f: &mut Fixture, pressed: bool, x: f64, y: f64) -> Vec<NodeEvent> {
+pub(super) fn press_pointer(f: &mut Fixture, pressed: bool, x: f64, y: f64) -> Vec<NodeEvent> {
     let event = PointerButtonEvent {
         pointer: PointerInfo {
             pointer_id: Some(PointerId::PRIMARY),

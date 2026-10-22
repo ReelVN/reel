@@ -700,6 +700,23 @@ impl_context_method!(MeasureCtx<'_>, LayoutCtx<'_>, {
 
 // --- MARK: MEASURE
 impl MeasureCtx<'_> {
+    /// Measure both axes using the same child cache and size resolution as layout.
+    pub fn compute_size(
+        &mut self,
+        child: &mut WidgetPod<impl Widget + ?Sized>,
+        auto_size: SizeDef,
+        context_size: LayoutSize,
+    ) -> Size {
+        let node = self.children.item_mut(child.id()).unwrap();
+        resolve_size(
+            self.global_state,
+            self.property_arena,
+            node,
+            auto_size,
+            context_size,
+        )
+    }
+
     /// Returns the fallback [`LenDef`] of this measurement.
     ///
     /// This is essential information for widgets that want pass through measurements.

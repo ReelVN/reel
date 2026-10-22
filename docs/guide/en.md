@@ -291,6 +291,20 @@ The runnable [author_stage.aside](../../examples/author_stage/src/main.aside) co
 
 Stack layers children from back to front in source order; row arranges them horizontally and column vertically. Omitted dimensions use content layout. x/y offset the layout position, with the logical origin at the top left, x increasing rightward and y downward. Defaults are font size 24, white text, a transparent background and zero gap/padding. Clip limits the visible area of a container. `scroll(height: 360) { ... }` creates a vertical scrolling region; axis can be "horizontal" or "both". Wheel input, touch dragging and keyboard/gamepad focus use the same input routing. Scrolling preserves text layout. With `follow_end: true`, an NVL page already at the end follows new content; scrolling back preserves the reading position.
 
+In a row or column, `flex: 1` shares the remaining flow-axis space; multiple positive values act as weights. The default 0 keeps natural or explicit sizing. Use `wrap: true` to wrap at the available space, `line_gap` for spacing between lines and `justify` to distribute free space. A grid takes a column count and optional fixed column_width/row_height. Omitted column width shares the known width equally; omitted row height measures each row from its content. column_gap/row_gap inherit gap.
+
+```aside
+column(gap: 24) {
+    row(width: 640, gap: 12) {
+        text("Lucy", width: 120);
+        text("The rest of this row belongs to the dialogue.", flex: 1);
+    }
+    grid(columns: 4, column_width: 140, row_height: 80, gap: 12) {
+        for slot in 0..12 { button(f"{slot + 1}"); }
+    }
+}
+```
+
 Use the common `stretch: "both"` property to fit a background image to a container sized by its content, without counting text lines or writing measured heights back into script state. `"x"` and `"y"` fill only that axis inside the parent's padding; the default is `"none"`. A stretched axis does not contribute to the parent's measurement and overrides width/height on that axis; x/y and anchors still apply. Stretching along a row/column's flow axis makes the child an overlay without consuming flow space or gaps. In scroll containers, stretching uses the viewport's inner box and does not increase that axis's scroll extent.
 
 ```aside

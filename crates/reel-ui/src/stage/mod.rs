@@ -3,6 +3,8 @@
 
 //! Author-owned scene composition, shared by the script host and presentation.
 mod camera;
+mod flow;
+pub use flow::{FlowOptions, GridOptions, Justify};
 mod image;
 mod mask;
 pub use camera::CameraView;
@@ -281,8 +283,9 @@ pub enum NodeKind {
         offset: Vec2,
     },
     Camera(CameraView),
-    Row,
-    Column,
+    Row(FlowOptions),
+    Column(FlowOptions),
+    Grid(GridOptions),
     VirtualList(VirtualListView),
     Stack,
     /// Window-space pointer appearance, owned as an ordinary child subtree.
@@ -311,6 +314,8 @@ impl Stretch {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct NodeProps {
+    /// Positive weights share the remaining row/column space. Zero keeps intrinsic sizing.
+    pub flex: f64,
     pub x: f64,
     pub y: f64,
     pub width: Option<f64>,
@@ -387,6 +392,7 @@ pub struct NodeProps {
 impl Default for NodeProps {
     fn default() -> Self {
         Self {
+            flex: 0.,
             x: 0.,
             y: 0.,
             width: None,
@@ -730,8 +736,9 @@ impl Stage {
         if !matches!(
             container.kind,
             NodeKind::Camera(_)
-                | NodeKind::Row
-                | NodeKind::Column
+                | NodeKind::Row(_)
+                | NodeKind::Column(_)
+                | NodeKind::Grid(_)
                 | NodeKind::VirtualList(_)
                 | NodeKind::Scroll { .. }
                 | NodeKind::Stack
@@ -775,8 +782,9 @@ impl Stage {
         if !matches!(
             container.kind,
             NodeKind::Camera(_)
-                | NodeKind::Row
-                | NodeKind::Column
+                | NodeKind::Row(_)
+                | NodeKind::Column(_)
+                | NodeKind::Grid(_)
                 | NodeKind::VirtualList(_)
                 | NodeKind::Scroll { .. }
                 | NodeKind::Stack
@@ -862,8 +870,9 @@ impl Stage {
         if !matches!(
             node.kind,
             NodeKind::Camera(_)
-                | NodeKind::Row
-                | NodeKind::Column
+                | NodeKind::Row(_)
+                | NodeKind::Column(_)
+                | NodeKind::Grid(_)
                 | NodeKind::VirtualList(_)
                 | NodeKind::Scroll { .. }
                 | NodeKind::Stack

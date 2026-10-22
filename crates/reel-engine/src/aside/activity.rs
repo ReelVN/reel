@@ -25,6 +25,20 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         ],
     );
     api.refine("reel::delay", action.clone(), &[("seconds", number())]);
+    {
+        use aside_host::PropertySchema;
+        let fields = super::stage::NodeProperty::PROPERTIES
+            .iter()
+            .chain(
+                super::stage::animation_prefixes()
+                    .into_iter()
+                    .flat_map(|(_, fields)| fields),
+            )
+            .filter(|p| p.animatable)
+            .map(|p| (p.name, aside_host::source::nullable(p.source_type())))
+            .collect::<Vec<_>>();
+        api.refine("reel::tween", action.clone(), &fields);
+    }
     api.refine(
         "reel::repeat",
         action.clone(),

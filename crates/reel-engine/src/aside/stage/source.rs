@@ -34,6 +34,8 @@ pub(in crate::aside) fn properties(symbol: &str) -> Vec<PropertyDocumentation> {
         "reel::image" | "reel::video" => schema::<appearance::ImageField>(),
         "reel::text" => schema::<appearance::TextField>(),
         "reel::button" => schema::<appearance::ButtonField>(),
+        "reel::row" | "reel::column" => schema::<flow::FlowField>(),
+        "reel::grid" => schema::<flow::GridField>(),
         "reel::camera" => schema::<camera::CameraField>(),
         "reel::scroll" => schema::<scroll::ScrollField>(),
         "reel::input" => schema::<input::InputField>(),

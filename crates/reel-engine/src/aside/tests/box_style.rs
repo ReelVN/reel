@@ -1,7 +1,7 @@
 use super::*;
 use reel_ui::stage::NodeProps;
 
-fn drive(vm: &mut SessionVm, session: &mut Session) {
+pub(super) fn drive(vm: &mut SessionVm, session: &mut Session) {
     for _ in 0..100_000 {
         match vm
             .step(

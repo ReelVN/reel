@@ -375,7 +375,7 @@ fn authored_scroll_out_example_keeps_nodes_and_reveals_the_next_line_after_exit(
         let content = vm
             .stage()
             .nodes()
-            .find(|n| n.kind == NodeKind::Column)
+            .find(|n| n.kind == NodeKind::Column(Default::default()))
             .unwrap()
             .id;
         for step in 0..2 {

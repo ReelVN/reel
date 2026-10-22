@@ -34,6 +34,11 @@ aside_host::native_documentation! {
         "reel::row";
         /// Lay out children vertically with common gap, padding and alignment.
         "reel::column";
+        /// Lay out equal-width columns in source order. Set columns to the column count;
+        /// column_width and row_height choose fixed track sizes. Omitted row_height
+        /// follows content, while an omitted column_width shares available width.
+        /// column_gap and row_gap inherit gap. Common transforms follow layout.
+        "reel::grid";
         /// Overlay children in declaration order. Later children paint above earlier ones.
         "reel::stack";
         /// Place authored pointer artwork in the cursor layer. It follows the accepted
@@ -70,6 +75,7 @@ pub(super) mod appearance;
 pub(super) mod camera;
 pub(super) mod configure;
 pub(super) mod controls;
+pub(super) mod flow;
 pub(super) mod input;
 mod interaction;
 pub(super) mod overrides;
@@ -77,6 +83,17 @@ pub(super) mod scroll;
 pub(super) mod snapshot;
 pub(super) mod source;
 pub(super) mod text_input;
+
+/// Specific numeric fields share one registration and dispatch order.
+pub(in crate::aside) fn animation_prefixes() -> [(&'static str, &'static [aside_host::Property]); 4]
+{
+    [
+        ("camera", camera::CameraField::PROPERTIES),
+        ("scroll", scroll::ScrollField::PROPERTIES),
+        ("flow", flow::FlowField::PROPERTIES),
+        ("grid", flow::GridField::PROPERTIES),
+    ]
+}
 
 use aside_vm::{
     Heap, HeapError, HeapHandle, ObjectKind, PropertyId, RootKind, RootOwner, RootToken, Value,
@@ -93,6 +110,10 @@ use aside_vm::executor::Vm;
 /// One host schema feeds construction, writes and animation; NodeProps remains in reel-ui.
 #[derive(aside_host::Properties)]
 pub(super) enum NodeProperty {
+    /// Share the remaining row/column space by weight. Zero keeps natural or explicit
+    /// sizing; a positive weight starts at zero on the flow axis and honors max size.
+    #[aside(name = "flex", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_nonnegative, animatable)]
+    Flex,
     /// Horizontal position in the parent's logical coordinate space.
     #[aside(name = "x", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number, animatable)]
     X,
@@ -451,6 +472,8 @@ impl StageBinding {
     pub(super) fn property_offset(&self, heap: &Heap, value: Value) -> Result<u32, AdapterError> {
         let id = self.id(heap, value)?;
         Ok(match self.scene.node(id).unwrap().kind {
+            NodeKind::Row(_) | NodeKind::Column(_) => flow::FlowField::PROPERTIES.len() as u32,
+            NodeKind::Grid(_) => flow::GridField::PROPERTIES.len() as u32,
             NodeKind::Camera(_) => camera::CameraField::PROPERTIES.len() as u32,
             NodeKind::Particles(_) => super::particles::PREFIX.len() as u32,
             NodeKind::Text(_) => 2,
@@ -537,8 +560,9 @@ impl StageBinding {
         if matches!(
             kind,
             NodeKind::Camera(_)
-                | NodeKind::Row
-                | NodeKind::Column
+                | NodeKind::Row(_)
+                | NodeKind::Column(_)
+                | NodeKind::Grid(_)
                 | NodeKind::Scroll { .. }
                 | NodeKind::Stack
                 | NodeKind::Cursor
@@ -772,6 +796,14 @@ impl StageBinding {
                 continue;
             }
             let (mut kind, offset) = match &node.kind {
+                NodeKind::Row(_) | NodeKind::Column(_) => (
+                    flow::flow_kind(heap, fields, matches!(node.kind, NodeKind::Row(_)))?,
+                    flow::FlowField::PROPERTIES.len(),
+                ),
+                NodeKind::Grid(_) => (
+                    flow::grid_kind(heap, fields)?,
+                    flow::GridField::PROPERTIES.len(),
+                ),
                 NodeKind::VirtualList(_) => (
                     NodeKind::VirtualList(super::lists::virtualized::project(heap, value)?),
                     0,
@@ -1929,6 +1961,7 @@ fn read_props(
         Some(super::masks::project(heap, mask, read_limit)?)
     };
     Ok(NodeProps {
+        flex: nonnegative(get(NodeProperty::Flex)?)?,
         x: number(get(NodeProperty::X)?)?,
         y: number(get(NodeProperty::Y)?)?,
         width: dimension(get(NodeProperty::Width)?)?,
