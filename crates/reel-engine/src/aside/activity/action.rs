@@ -248,55 +248,34 @@ pub(in crate::aside) fn tween(
         .iter()
         .filter(|p| p.animatable)
         .count();
-    for ((index, _), &value) in stage::camera::CameraField::PROPERTIES
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| p.animatable)
-        .zip(&args[3 + common..])
-    {
-        if value.tag() == ValueTag::Null {
-            continue;
+    let mut argument = 3 + common;
+    for (kind, properties) in stage::animation_prefixes() {
+        for (index, property) in properties.iter().enumerate().filter(|(_, p)| p.animatable) {
+            let value = args[argument];
+            argument += 1;
+            if value.tag() == ValueTag::Null {
+                continue;
+            }
+            let id = stage.id(heap, target)?;
+            let node = &stage.scene.node(id).unwrap().kind;
+            use reel_ui::stage::NodeKind;
+            if !matches!(
+                (kind, node),
+                ("camera", NodeKind::Camera(_))
+                    | ("scroll", NodeKind::Scroll { .. })
+                    | ("flow", NodeKind::Row(_) | NodeKind::Column(_))
+                    | ("grid", NodeKind::Grid(_))
+            ) {
+                return Err(AdapterError::Input(
+                    "animation property does not belong to this node kind",
+                ));
+            }
+            property.validate(heap, value)?;
+            stage::number(value)?;
+            heap.array_push(goals, Value::int(index as i64))?;
+            heap.array_push(goals, Value::NULL)?;
+            heap.array_push(goals, value)?;
         }
-        let id = stage.id(heap, target)?;
-        if !matches!(
-            stage.scene.node(id).unwrap().kind,
-            reel_ui::stage::NodeKind::Camera(_)
-        ) {
-            return Err(AdapterError::Input(
-                "camera animation requires a camera target",
-            ));
-        }
-        stage::camera::CameraField::validate(heap, index as u32, value)?;
-        heap.array_push(goals, Value::int(index as i64))?;
-        heap.array_push(goals, Value::NULL)?;
-        heap.array_push(goals, value)?;
-    }
-    let camera = stage::camera::CameraField::PROPERTIES
-        .iter()
-        .filter(|p| p.animatable)
-        .count();
-    for ((index, _), &value) in stage::scroll::ScrollField::PROPERTIES
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| p.animatable)
-        .zip(&args[3 + common + camera..])
-    {
-        if value.tag() == ValueTag::Null {
-            continue;
-        }
-        let id = stage.id(heap, target)?;
-        if !matches!(
-            stage.scene.node(id).unwrap().kind,
-            reel_ui::stage::NodeKind::Scroll { .. }
-        ) {
-            return Err(AdapterError::Input(
-                "scroll animation requires a scroll target",
-            ));
-        }
-        stage::scroll::ScrollField::validate(heap, index as u32, value)?;
-        heap.array_push(goals, Value::int(index as i64))?;
-        heap.array_push(goals, Value::NULL)?;
-        heap.array_push(goals, value)?;
     }
     let from = *args.last().unwrap();
     if from.tag() != ValueTag::Null {
@@ -311,8 +290,11 @@ pub(in crate::aside) fn tween(
             let name = super::super::text::read_string(heap, key, read_limit)?;
             let (index, property) = NodeProperty::PROPERTIES
                 .iter()
-                .chain(stage::camera::CameraField::PROPERTIES)
-                .chain(stage::scroll::ScrollField::PROPERTIES)
+                .chain(
+                    stage::animation_prefixes()
+                        .into_iter()
+                        .flat_map(|(_, fields)| fields),
+                )
                 .filter(|p| p.animatable)
                 .enumerate()
                 .find(|(_, p)| p.name == name)

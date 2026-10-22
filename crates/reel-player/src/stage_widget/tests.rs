@@ -1,5 +1,6 @@
 use super::*;
 mod cursor;
+mod flow;
 mod input_focus;
 mod radio_navigation;
 mod retained;
@@ -906,7 +907,9 @@ fn content_caps_and_alignment_follow_parent_space_without_shifting_flow() {
         }
     });
     let props = f.stage.node(f.root).unwrap().props.clone();
-    f.stage.update(f.root, NodeKind::Column, props).unwrap();
+    f.stage
+        .update(f.root, NodeKind::Column(Default::default()), props)
+        .unwrap();
     f.edit(f.red, |p| {
         *p = NodeProps {
             width: Some(240.),
@@ -986,7 +989,9 @@ fn stretched_background_follows_content_without_changing_flow_or_scroll_extent()
         };
     });
     let props = f.stage.node(f.root).unwrap().props.clone();
-    f.stage.update(f.root, NodeKind::Column, props).unwrap();
+    f.stage
+        .update(f.root, NodeKind::Column(Default::default()), props)
+        .unwrap();
     f.edit(f.red, |p| {
         *p = NodeProps {
             width: Some(1000.),
@@ -1219,7 +1224,7 @@ fn nested_stage_transforms_share_geometry_and_preserve_layout_and_identity() {
     let row = f
         .stage
         .create(
-            NodeKind::Row,
+            NodeKind::Row(Default::default()),
             NodeProps {
                 x: 100.,
                 y: 50.,

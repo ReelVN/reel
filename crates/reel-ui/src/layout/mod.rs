@@ -5,6 +5,7 @@
 
 mod as_unit;
 mod dim;
+pub mod flow;
 mod layout_size;
 mod len_def;
 mod len_req;

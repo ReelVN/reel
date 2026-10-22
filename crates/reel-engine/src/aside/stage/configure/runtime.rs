@@ -56,6 +56,8 @@ impl PropertyWrites for Writes<'_> {
 fn accepts(schema: &Schema, shape: Shape) -> bool {
     match schema.type_name {
         "reel::types::Node" => true,
+        "reel::types::FlowNode" => matches!(shape, Shape::Row | Shape::Column),
+        "reel::types::GridNode" => shape == Shape::Grid,
         "reel::types::TextNode" => shape == Shape::Text,
         "reel::types::TextInputNode" => matches!(shape, Shape::TextInput | Shape::TextArea),
         "reel::types::ImageNode" => shape == Shape::Image,

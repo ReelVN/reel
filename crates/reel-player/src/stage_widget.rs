@@ -28,6 +28,7 @@ use std::sync::Arc;
 /// navigation completes outside the synchronous keyboard/pointer dispatch span.
 #[derive(Debug)]
 pub(crate) struct NavigationSelection(pub NodeChange);
+mod flow;
 mod input;
 #[cfg(test)]
 mod projection_tests;
@@ -1499,6 +1500,7 @@ impl SceneWidget {
         if children_changed {
             for ((node, pod), next) in this.widget.children.iter_mut().zip(view.children.iter()) {
                 if node.props.visible != next.node.props.visible
+                    || node.props.flex != next.node.props.flex
                     || node.props.stretch != next.node.props.stretch
                     || node.props.align_x != next.node.props.align_x
                     || node.props.align_y != next.node.props.align_y
@@ -1537,6 +1539,7 @@ impl SceneWidget {
             let old = &this.widget.node.props;
             let new = &view.node.props;
             if old.width != new.width
+                || old.flex != new.flex
                 || old.height != new.height
                 || old.max_width != new.max_width
                 || old.max_height != new.max_height
@@ -1553,6 +1556,9 @@ impl SceneWidget {
                 || old.clip != new.clip
                 || old.decorated != new.decorated
                 || match (&this.widget.node.kind, &view.node.kind) {
+                    (NodeKind::Row(a), NodeKind::Row(b))
+                    | (NodeKind::Column(a), NodeKind::Column(b)) => a != b,
+                    (NodeKind::Grid(a), NodeKind::Grid(b)) => a != b,
                     (NodeKind::VirtualList(a), NodeKind::VirtualList(b)) => a != b,
                     (NodeKind::Particles(a), NodeKind::Particles(b)) => a.batches != b.batches,
                     (
@@ -1630,8 +1636,8 @@ impl SceneWidget {
     fn sequential(&self, axis: Axis) -> bool {
         matches!(
             (&self.node.kind, axis),
-            (NodeKind::Row, Axis::Horizontal)
-                | (NodeKind::Column, Axis::Vertical)
+            (NodeKind::Row(_), Axis::Horizontal)
+                | (NodeKind::Column(_), Axis::Vertical)
                 | (
                     NodeKind::Scroll {
                         axis: ScrollAxis::Horizontal,
@@ -2062,6 +2068,9 @@ impl Widget for SceneWidget {
             }
         }
         let padding = Length::px(props.padding * 2.);
+        if reel_ui::layout::flow::is_flow(&self.node.kind) {
+            return self.measure_flow(ctx, axis, request, cross);
+        }
         if self.image.is_some() {
             let other = if props.stretch.axis(axis.cross()) {
                 cross.map(Length::get)
@@ -2229,6 +2238,10 @@ impl Widget for SceneWidget {
             ctx.run_layout(image, inner);
             ctx.place_child(image, Point::new(padding, padding));
         }
+        if reel_ui::layout::flow::is_flow(&self.node.kind) {
+            self.layout_flow(ctx, size);
+            return;
+        }
         let mut cursor = 0.;
         let mut extent = Size::ZERO;
         let virtual_list = match &self.node.kind {
@@ -2320,7 +2333,7 @@ impl Widget for SceneWidget {
                 Point::new(0., row.offset)
             } else {
                 match self.node.kind {
-                    NodeKind::Row
+                    NodeKind::Row(_)
                     | NodeKind::Scroll {
                         axis: ScrollAxis::Horizontal,
                         ..
@@ -2329,7 +2342,7 @@ impl Widget for SceneWidget {
                         cursor += chosen.width + self.node.props.gap;
                         offset
                     }
-                    NodeKind::Column
+                    NodeKind::Column(_)
                     | NodeKind::Scroll {
                         axis: ScrollAxis::Vertical | ScrollAxis::Both,
                         ..
@@ -2342,8 +2355,8 @@ impl Widget for SceneWidget {
                 }
             };
             let (flow_x, flow_y) = match self.node.kind {
-                NodeKind::Row => (true, false),
-                NodeKind::Column | NodeKind::VirtualList(_) => (false, true),
+                NodeKind::Row(_) => (true, false),
+                NodeKind::Column(_) | NodeKind::VirtualList(_) => (false, true),
                 NodeKind::Scroll { axis, .. } => (axis.horizontal(), axis.vertical()),
                 _ => (false, false),
             };

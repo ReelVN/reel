@@ -1,5 +1,6 @@
 # Aside VM 与完整语言规范
 
+
 [文档目录](README.md) · [作者指南 中文](guide/zh-CN.md) · [Creator guide English](guide/en.md)
 
 ## 一 定位与完成标准
@@ -693,6 +694,8 @@ Reel 的 `text_area` 与 `text_input` 使用相同的 value/on_change/on_submit 
 Reel tween 的 easing 还可传 std::math::curve 不可变值，使用普通参数绑定与 VM 引用；内置字符串保持原语义。曲线在归一化时间 0..1 上采样，端值须为 0 和 1。不新增 Aside 语法、VM 指令或平行曲线实现。
 
 Reel 共同节点字段 `font_weight` 默认 400，接受 1..1000 的有限数值，可在构造时给出、直接赋值或 bind/derive。文字、控件标签和文本输入使用同一字体匹配与布局通路，实际变化时重新排版；富文本局部粗体保留所在范围的样式覆盖。该样式字段随节点宿主对象保存恢复。
+
+Reel 的自动布局沿普通节点构造、属性绑定和链式 `.with(...)` 表达：row/column 的 wrap、justify、line_gap，grid 的 columns、column_width、row_height、column_gap、row_gap，以及共同子节点 flex 权重。字段由宿主 schema 验证、向 LSP 提供实际类型，并随现有节点对象图保存；不增加语言语法。布局语义见[统一舞台](engine-architecture.md#五-统一舞台与合成)。
 
 Reel 共同节点属性 `stretch: "none" | "x" | "y" | "both"` 可直接赋值或绑定，默认 none。父布局在所选轴忽略该子节点的测量贡献，再按父内框拉伸该轴；顺序轴拉伸为覆盖层，滚动轴拉伸不扩大内容范围。它是普通宿主字段，和其他节点属性一起恢复，无新的语言类型、语法或 VM 指令。
 

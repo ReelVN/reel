@@ -12,8 +12,9 @@ pub(super) const NODE_CONSTRUCTORS: &[(&str, &str)] = &[
     ("image", "reel::types::ImageNode"),
     ("video", "reel::types::VideoNode"),
     ("particles", "reel::types::ParticlesNode"),
-    ("row", "reel::types::Node"),
-    ("column", "reel::types::Node"),
+    ("row", "reel::types::FlowNode"),
+    ("column", "reel::types::FlowNode"),
+    ("grid", "reel::types::GridNode"),
     ("stack", "reel::types::Node"),
     ("cursor", "reel::types::Node"),
     ("button", "reel::types::ButtonNode"),
@@ -44,6 +45,8 @@ pub(super) fn is_node_constructor(symbol: &str) -> bool {
 
 pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
     match symbol {
+        "reel::row" | "reel::column" => super::stage::flow::FlowField::NAMES,
+        "reel::grid" => super::stage::flow::GridField::NAMES,
         "reel::camera" => super::stage::camera::CameraField::NAMES,
         "reel::scroll" => super::stage::scroll::ScrollField::NAMES,
         "reel::text" => super::stage::appearance::TextField::NAMES,
@@ -246,7 +249,14 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     }
     for &(name, _) in NODE_CONSTRUCTORS {
         let mut parameters = Vec::new();
-        if name == "camera" {
+        if matches!(name, "row" | "column" | "grid") {
+            let properties = if name == "grid" {
+                super::stage::flow::GridField::PROPERTIES
+            } else {
+                super::stage::flow::FlowField::PROPERTIES
+            };
+            parameters.extend(properties.iter().map(|p| p.parameter()));
+        } else if name == "camera" {
             parameters.extend(
                 super::stage::camera::CameraField::PROPERTIES
                     .iter()
@@ -317,7 +327,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
 
         if matches!(
             name,
-            "row"
+            "grid"
+                | "row"
                 | "column"
                 | "stack"
                 | "cursor"
@@ -833,18 +844,14 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             .filter(|p| p.animatable)
             .map(|p| parameter(p.name, Some(bc::Const::Null))),
     );
-    tween.extend(
-        super::stage::camera::CameraField::PROPERTIES
-            .iter()
-            .filter(|p| p.animatable)
-            .map(|p| parameter(p.name, Some(bc::Const::Null))),
-    );
-    tween.extend(
-        super::stage::scroll::ScrollField::PROPERTIES
-            .iter()
-            .filter(|p| p.animatable)
-            .map(|p| parameter(p.name, Some(bc::Const::Null))),
-    );
+    for (_, properties) in super::stage::animation_prefixes() {
+        tween.extend(
+            properties
+                .iter()
+                .filter(|p| p.animatable)
+                .map(|p| parameter(p.name, Some(bc::Const::Null))),
+        );
+    }
     tween.push(parameter("from", Some(bc::Const::Null)));
     for (name, parameters, waits) in [
         ("tween", tween, false),

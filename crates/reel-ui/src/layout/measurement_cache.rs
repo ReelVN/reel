@@ -53,12 +53,15 @@ impl MeasurementCache {
     /// Creates a new [`MeasurementCache`].
     pub(crate) fn new() -> Self {
         Self {
-            entries: Vec::with_capacity(CAPACITY),
+            entries: Vec::new(),
         }
     }
 
     /// Inserts the `result` for the given `inputs` into the cache.
     pub(crate) fn insert(&mut self, inputs: MeasurementInputs, result: Length) {
+        if self.entries.capacity() == 0 {
+            self.entries.reserve_exact(CAPACITY);
+        }
         if let Some(index) = self.entries.iter().position(|e| e.0 == inputs) {
             if index > 0 {
                 // Keep recently referenced entries in front
