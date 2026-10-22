@@ -68,17 +68,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         api.types.push(descriptor);
     }
     api.refine("reel::when", named("reel::types::Condition"), &[]);
-    api.refine(
-        "reel::stage::geometry",
-        named("reel::types::Presentation"),
-        &[
-            ("node", named("reel::types::Node")),
-            (
-                "relative_to",
-                aside_host::source::nullable(named("reel::types::Node")),
-            ),
-        ],
-    );
+    geometry::types::describe(api);
 }
 
 aside_host::native_documentation! {
@@ -193,6 +183,8 @@ pub(super) fn reserve_queue<T>(
 pub(super) struct Results {
     #[serde(skip)]
     type_ids: [Option<aside_vm::HostTypeId>; 8],
+    #[serde(skip)]
+    geometry_keys: super::observable::SchemaKeys,
     methods: Option<Methods>,
     #[serde(skip)]
     waits: VecDeque<(WaitId, Value)>,
@@ -458,8 +450,9 @@ impl Results {
         vm: &mut Vm,
         root_owner: aside_vm::RootOwner,
         owner: Value,
+        ty: Option<aside_vm::HostTypeId>,
     ) -> Result<Value, AdapterError> {
-        let result = self.create(vm, owner, Kind::Presentation)?;
+        let result = self.create_typed(vm, owner, Kind::Presentation, ty)?;
         reserve_queue(
             vm.heap(),
             &mut self.presentations,
@@ -514,6 +507,15 @@ impl Results {
         self.create(vm, owner, Kind::Capture)
     }
     fn create(&mut self, vm: &mut Vm, owner: Value, kind: Kind) -> Result<Value, AdapterError> {
+        self.create_typed(vm, owner, kind, None)
+    }
+    fn create_typed(
+        &mut self,
+        vm: &mut Vm,
+        owner: Value,
+        kind: Kind,
+        ty: Option<aside_vm::HostTypeId>,
+    ) -> Result<Value, AdapterError> {
         if self.methods.is_none() {
             let package = vm.program().package();
             let find = |name: &str| {
@@ -570,7 +572,7 @@ impl Results {
             },
         )?;
         let type_index = (-(kind as i64) - 1101) as usize;
-        let type_id = if let Some(id) = self.type_ids[type_index] {
+        let type_id = if let Some(id) = ty.or(self.type_ids[type_index]) {
             id
         } else {
             let name = match kind {
@@ -959,9 +961,12 @@ impl SessionVm {
                     Kind::Completion
                 };
                 if presentation {
-                    let result =
-                        self.results
-                            .create_presentation(&mut self.vm, self.root_owner, owner)?;
+                    let result = self.results.create_presentation(
+                        &mut self.vm,
+                        self.root_owner,
+                        owner,
+                        None,
+                    )?;
                     self.results
                         .arm_presentation(&mut self.vm, result, Value::NULL)?;
                     result

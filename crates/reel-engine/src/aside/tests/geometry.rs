@@ -23,15 +23,20 @@ fn reply(sequence: u64) -> GeometryReply {
 fn geometry_results_wait_for_geometry_and_acceptance_and_are_readonly_and_reusable() {
     for encoded in [false, true] {
         let (mut session, mut vm) = prepared(
-            r#"fn opening(){
+            r#"use reel::types::{GeometryRequest,Presentation,Geometry,Bounds,Transform,Point};
+            fn change_x(value){value.x=0;}
+            fn inspect(g:Geometry,b:Bounds,t:Transform,p:Point)->float{g.width+b.x+t.tx+p.y}
+            fn opening(){
             let target=stack(width:20,height:30);stage.replace(target);
-            let request=stage.geometry(target);
-            let g=await request;
+            let request:GeometryRequest=stage.geometry(target);
+            let presentation:Presentation=request;
+            let g:Geometry=await request;
+            if inspect(g,g.bounds,g.transform,g.text_end)!=81.0 {throw "typed geometry";}
             if g.width!=20 || g.height!=30 || g.bounds.x!=10 || g.transform.tx!=10 {throw "wrong geometry";}
             if g.text_end.x!=25 || g.text_end.y!=41 {throw "wrong text endpoint";}
-            let mut readonly=false;try{g.bounds.x=0;}catch e{readonly=true;}
+            let mut readonly=false;try{change_x(g.bounds);}catch e{readonly=true;}
             if !readonly {throw "mutable geometry";}
-            readonly=false;try{g.text_end.x=0;}catch e{readonly=true;}
+            readonly=false;try{change_x(g.text_end);}catch e{readonly=true;}
             if !readonly {throw "mutable text endpoint";}
             target.remove();
             if (await request).bounds.x!=10 || (await request).text_end.y!=41 || request.cancel(){throw "terminal result lost";}
@@ -185,9 +190,12 @@ fn geometry_frame_payload_is_charged_until_the_frame_is_released() {
 fn geometry_terminal_snapshot_preserves_the_number_after_target_retirement() {
     use aside_vm::snapshot::SnapshotBudget;
     let (mut session, mut vm) = prepared(
-        r#"fn opening(){let target=stack();stage.replace(target);
+        r#"use reel::types::{GeometryRequest,Geometry,Bounds,Transform,Point};
+        fn opening(){let target=stack();stage.replace(target);
         let request=stage.geometry(target);let first=await request;target.remove();narrator("checkpoint");
         let restored=await request;if restored.bounds.x!=10 || restored.width!=20{throw "terminal geometry lost";}
+        if !(request is GeometryRequest) || !(restored is Geometry) || !(restored.bounds is Bounds)
+            || !(restored.transform is Transform) || !(restored.text_end is Point){throw "geometry type lost";}
         stage.replace(text("done"));}"#,
         true,
     );

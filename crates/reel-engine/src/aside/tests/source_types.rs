@@ -2,6 +2,41 @@ use super::*;
 use aside_compiler::semantic::TypeHint;
 
 #[test]
+fn geometry_fields_are_readonly_in_source_and_have_no_constructor_defaults() {
+    let api = source::api();
+    for (record, fields) in [
+        (
+            "Geometry",
+            &["width", "height", "bounds", "transform", "text_end"][..],
+        ),
+        ("Bounds", &["x", "y", "width", "height"]),
+        ("Transform", &["a", "b", "c", "d", "tx", "ty"]),
+        ("Point", &["x", "y"]),
+    ] {
+        for field in fields {
+            let member = api
+                .member(&format!("reel::types::{record}"), field)
+                .unwrap();
+            assert!(member.write_type.is_none());
+            let descriptor = api
+                .types
+                .iter()
+                .find(|ty| ty.name == format!("reel::types::{record}"))
+                .unwrap()
+                .members
+                .iter()
+                .find(|member| member.declaration.symbol.name == *field)
+                .unwrap();
+            assert!(descriptor.declaration.property_default.is_none());
+            let code = format!(
+                "use reel::types::{record}; fn change(value:{record}){{value.{field}=value.{field};}}"
+            );
+            assert!(source::compile_module(&code, "bad", "bad.aside", 1).is_err());
+        }
+    }
+}
+
+#[test]
 fn callable_annotations_pass_functions_and_bound_methods_to_real_host_callbacks() {
     use crate::aside::transitions::TransitionPhase;
     for annotation in ["closure", "fn()->null"] {

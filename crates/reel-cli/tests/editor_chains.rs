@@ -8,6 +8,93 @@ use support::Server;
 const URI: &str = "untitled:creator-chains.aside";
 
 #[test]
+fn geometry_await_infers_records_and_navigates_generated_readonly_fields() {
+    let source = r#"use reel::types::Point;
+        fn main() {
+            let request = stage.geometry(text("雪"));
+            let geometry = await request;
+            let width = geometry.bounds.width;
+            let translation = geometry.transform.tx;
+            let endpoint = geometry.text_end;
+            if endpoint is Point {let y = endpoint.y;}
+        }"#;
+    let (mut server, _) = open(source);
+    let mut id = 2;
+    for (expression, expected) in [
+        ("request;", "GeometryRequest"),
+        ("geometry.bounds", "Geometry"),
+        ("bounds.width", "Bounds"),
+        ("transform.tx", "Transform"),
+        ("text_end;", "Point | null"),
+    ] {
+        let hover = server.request(id, "textDocument/hover", query(source, expression, false));
+        id += 1;
+        assert!(
+            hover["contents"]["value"]
+                .as_str()
+                .unwrap()
+                .contains(expected),
+            "{expression}: {hover}"
+        );
+    }
+    for (expression, field, description) in [
+        (
+            "geometry.bounds.",
+            "width",
+            "Width of the transformed axis-aligned border box.",
+        ),
+        (
+            "geometry.transform.",
+            "tx",
+            "Horizontal translation in reference coordinates.",
+        ),
+        (
+            "endpoint.",
+            "y",
+            "Vertical coordinate in the query's reference space.",
+        ),
+    ] {
+        let completion = server.request(
+            id,
+            "textDocument/completion",
+            query(source, expression, true),
+        );
+        id += 1;
+        assert!(
+            completion
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["label"] == field),
+            "{completion}"
+        );
+        let definition = server.request(
+            id,
+            "textDocument/definition",
+            query(source, &format!("{expression}{field}"), true),
+        );
+        id += 1;
+        let document = server.request(id, "aside/nativeDocument", json!({"uri":definition["uri"]}));
+        id += 1;
+        let text = document["text"].as_str().unwrap();
+        let declaration = text
+            .lines()
+            .nth(definition["range"]["start"]["line"].as_u64().unwrap() as usize)
+            .unwrap();
+        assert!(
+            declaration.contains(&format!("{field}: float")),
+            "{declaration}"
+        );
+        assert!(
+            !declaration.contains('='),
+            "snapshot fields have no constructor default: {declaration}"
+        );
+        assert!(text.contains(description), "{text}");
+    }
+    server.stop();
+}
+
+#[test]
 fn is_guard_exposes_real_particle_type_inside_owned_closure() {
     let source = r#"use reel::types::{Node,ParticlesNode};
         fn spray(node:Node) {
