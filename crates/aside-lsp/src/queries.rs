@@ -95,23 +95,29 @@ struct Signature {
 }
 fn host_signature(symbol: &ExternalSymbol, host: &HostIndex) -> Option<Signature> {
     let signature = symbol.signature.as_ref()?;
-    let declaration = symbol
-        .reference
-        .as_ref()
-        .and_then(|reference| host.declarations.get(&reference_key(reference)));
+    let declaration = host.declaration(symbol);
     let parameters: Vec<_> = signature
         .parameters
         .iter()
         .map(|parameter| {
             let rest = if parameter.rest { "..." } else { "" };
             let default = declaration
-                .and_then(|declaration| declaration.parameter_defaults.get(&parameter.name))
-                .map(|value| format!(" = {value}"))
-                .unwrap_or_default();
+                .and_then(|declaration| declaration.parameter_defaults.get(&parameter.name));
+            let optional = if matches!(default, Some(crate::ParameterDefault::Omitted))
+                || (default.is_none() && parameter.default)
+            {
+                "?"
+            } else {
+                ""
+            };
+            let value = match default {
+                Some(crate::ParameterDefault::Value(value)) => format!(" = {value}"),
+                _ => String::new(),
+            };
             (
                 parameter.name.clone(),
                 format!(
-                    "{rest}{}: {}{default}",
+                    "{rest}{}{optional}: {}{value}",
                     parameter.name,
                     hint_label(&parameter.ty)
                 ),
@@ -448,8 +454,7 @@ fn external_docs(symbol: &ExternalSymbol, snapshot: &Snapshot, host: &HostIndex)
     if let Some((module, source, id)) = source_symbol(snapshot, reference) {
         return source_docs(source, module.symbols()[id.0 as usize].declaration);
     }
-    host.declarations
-        .get(&reference_key(reference))
+    host.declaration(symbol)
         .map(|declaration| declaration.markdown.clone())
 }
 // Derived declarations replace inherited names; static and instance sets differ.
@@ -980,10 +985,8 @@ fn external_hover(
         && symbol.class.is_none()
         && let Some(signature) = external_signature(&presented, snapshot, host)
     {
-        let property_names = symbol
-            .reference
-            .as_deref()
-            .and_then(|reference| host.declarations.get(&reference_key(reference)))
+        let property_names = host
+            .declaration(symbol)
             .map(|declaration| {
                 declaration
                     .property_parameters
@@ -1035,9 +1038,8 @@ fn property_label_using(
     let key = symbol.reference.as_deref().map(reference_key);
     let member = key.as_ref().and_then(|key| host.members.get(key));
     let mutable = member.is_some_and(|member| member.write_type.is_some());
-    let default = key
-        .as_ref()
-        .and_then(|key| host.declarations.get(key))
+    let default = host
+        .declaration(symbol)
         .and_then(|declaration| declaration.property_default.as_deref())
         .map(|value| format!(" = {value}"))
         .unwrap_or_default();
@@ -1331,6 +1333,16 @@ impl Workspace {
         if completion_in_text(source, offset) {
             return Ok(Vec::new());
         }
+        if let Some(region) = snapshot
+            .features
+            .get(&snapshot.entry)
+            .into_iter()
+            .flat_map(|features| &features.completions)
+            .filter(|region| contains(region.range, offset))
+            .min_by_key(|region| u32::from(region.range.len()))
+        {
+            return Ok(region.items.to_vec());
+        }
         if let Some(context) = import_context(source, offset) {
             let prefix = match context {
                 ImportCompletion::Path(prefix) => prefix,
@@ -1501,7 +1513,13 @@ impl Workspace {
             {
                 return Ok(members
                     .values()
-                    .map(|member| completion(&member.symbol, &snapshot, &self.host))
+                    .map(|member| {
+                        let mut item = completion(&member.symbol, &snapshot, &self.host);
+                        if member.symbol.signature.is_some() {
+                            item.kind = Some(CompletionItemKind::METHOD);
+                        }
+                        item
+                    })
                     .collect());
             }
             if let Some(name) = named_type(module, module.facts()[base.0 as usize].ty)
@@ -1614,6 +1632,22 @@ impl Workspace {
             .lines
             .offset(&source.text, position, encoding)
             .ok_or("invalid hover position")?;
+        if let Some(hover) = snapshot
+            .features
+            .get(&snapshot.entry)
+            .into_iter()
+            .flat_map(|features| &features.hovers)
+            .filter(|hover| hover.range.contains(TextSize::from(offset as u32)))
+            .min_by_key(|hover| u32::from(hover.range.len()))
+        {
+            return Ok(Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: hover.markdown.to_string(),
+                }),
+                range: Some(source.lines.range(&source.text, hover.range, encoding)),
+            }));
+        }
         let Some(module) = snapshot.module() else {
             return Ok(None);
         };
@@ -1704,6 +1738,10 @@ impl Workspace {
         let Some((target, _)) = target_at(module, offset) else {
             return Ok(None);
         };
+        let host_declaration = match &target {
+            Target::External(symbol) => self.host.declaration(symbol),
+            _ => None,
+        };
         let reference = match target {
             Target::Symbol(id) => {
                 return Ok(Some(Location {
@@ -1733,11 +1771,8 @@ impl Workspace {
         let Some(reference) = reference else {
             return Ok(None);
         };
-        if let Some(definition) = self
-            .host
-            .declarations
-            .get(&reference_key(reference))
-            .and_then(|declaration| declaration.definition.as_ref())
+        if let Some(definition) =
+            host_declaration.and_then(|declaration| declaration.definition.as_ref())
             && let Some(document) = self.host.documents.get(definition.uri.as_str())
         {
             return Ok(Some(Location {

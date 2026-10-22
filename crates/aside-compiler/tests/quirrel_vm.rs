@@ -141,6 +141,7 @@ fn execute(source: &str, tiny: bool) -> Result<(String, usize), String> {
         &lowering::Linkage {
             package: Some(&seed),
             natives: &links,
+            expansions: &[],
         },
         lowering::Options::default(),
     )

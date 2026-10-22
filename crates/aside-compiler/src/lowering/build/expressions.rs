@@ -749,14 +749,16 @@ impl FunctionBuilder<'_, '_> {
         Ok(value)
     }
     fn string_value(&mut self, n: h::NodeId, depth: usize) -> Result<Option<bc::Reg>, Box<Error>> {
-        let first = self.l.m.hir().tokens(n).next();
-        let raw = first.is_some_and(|t| self.l.m.hir().text(t.span).starts_with('r'));
-        let format = first.is_some_and(|t| self.l.m.hir().text(t.span).starts_with('f'));
+        use crate::strings::{StringLiteral, StringPart};
+        let literal = StringLiteral::new(self.l.m.hir(), n).expect("analyzed string");
         let interpolated = self.l.m.hir().children(n).next().is_some();
         if !interpolated {
             let mut bytes = Vec::new();
-            for token in self.l.m.hir().tokens(n).filter(|t| t.kind == K::StringText) {
-                let piece = self.string_piece(token, raw, format)?;
+            for part in literal.parts() {
+                let StringPart::Text(text) = part else {
+                    unreachable!("static string")
+                };
+                let piece = self.string_piece(text)?;
                 self.l.b.reserve(&mut bytes, piece.len())?;
                 self.l.b.work(piece.len() as u64)?;
                 bytes.extend_from_slice(piece.as_bytes());
@@ -767,19 +769,13 @@ impl FunctionBuilder<'_, '_> {
         }
         let out = self.temp()?;
         self.op(bc::Opcode::TextNew, out.0, 0, 0, n)?;
-        for element in self.l.m.hir().elements(n) {
-            let value = match *element {
-                h::HirElement::Token(token) if token.kind == K::StringText => {
-                    let text = self.string_piece(token, raw, format)?;
+        for part in literal.parts() {
+            let value = match part {
+                StringPart::Text(text) => {
+                    let text = self.string_piece(text)?;
                     Some(self.constant(bc::Const::Utf8(text), n)?)
                 }
-                h::HirElement::Node(node) => {
-                    let Form::Single { child } = self.l.m.hir().node(node).form else {
-                        unreachable!("interpolation")
-                    };
-                    self.value(child, depth)?
-                }
-                _ => continue,
+                StringPart::Expression { node, .. } => self.value(node, depth)?,
             };
             let Some(value) = value else {
                 self.release(out)?;
@@ -791,83 +787,15 @@ impl FunctionBuilder<'_, '_> {
         self.op(bc::Opcode::TextFinish, out.0, out.0, 0, n)?;
         Ok(Some(out))
     }
-    fn string_piece(
-        &mut self,
-        token: h::HirToken,
-        raw: bool,
-        format: bool,
-    ) -> Result<String, Box<Error>> {
-        let text = self.l.m.hir().text(token.span);
+    fn string_piece(&mut self, text: crate::strings::StringText<'_>) -> Result<String, Box<Error>> {
         let mut bytes = Vec::new();
-        self.l.b.reserve(&mut bytes, text.len())?;
-        self.l.b.work(text.len() as u64)?;
-        if raw {
-            bytes.extend_from_slice(text.as_bytes());
-        } else {
-            let mut chars = text.chars();
-            while let Some(ch) = chars.next() {
-                let ch = if ch == '\\' {
-                    match chars.next() {
-                        Some('n') => '\n',
-                        Some('r') => '\r',
-                        Some('t') => '\t',
-                        Some('0') => '\0',
-                        Some('"') => '"',
-                        Some('\\') => '\\',
-                        Some('u') => {
-                            if chars.next() != Some('{') {
-                                return Err(self
-                                    .l
-                                    .b
-                                    .error(ErrorKind::InvalidIr, "analyzed unicode escape"));
-                            }
-                            let mut value = 0u32;
-                            loop {
-                                match chars.next() {
-                                    Some('}') => break,
-                                    Some(c) => {
-                                        value = value
-                                            .checked_mul(16)
-                                            .and_then(|v| {
-                                                c.to_digit(16).and_then(|c| v.checked_add(c))
-                                            })
-                                            .ok_or_else(|| {
-                                                self.l.b.error(
-                                                    ErrorKind::InvalidIr,
-                                                    "unicode escape overflow",
-                                                )
-                                            })?;
-                                    }
-                                    None => {
-                                        return Err(self.l.b.error(
-                                            ErrorKind::InvalidIr,
-                                            "unterminated analyzed escape",
-                                        ));
-                                    }
-                                }
-                            }
-                            char::from_u32(value).ok_or_else(|| {
-                                self.l
-                                    .b
-                                    .error(ErrorKind::InvalidIr, "analyzed unicode scalar")
-                            })?
-                        }
-                        _ => {
-                            return Err(self
-                                .l
-                                .b
-                                .error(ErrorKind::InvalidIr, "analyzed string escape"));
-                        }
-                    }
-                } else if format && matches!(ch, '{' | '}') {
-                    chars.next();
-                    ch
-                } else {
-                    ch
-                };
-                bytes.extend_from_slice(ch.encode_utf8(&mut [0; 4]).as_bytes());
-            }
-        }
+        self.l.b.reserve(&mut bytes, text.text.len())?;
+        self.l.b.work(text.text.len() as u64)?;
+        text.append_to(&mut bytes).map_err(|_| {
+            self.l
+                .b
+                .error(ErrorKind::InvalidIr, "analyzed string escape")
+        })?;
         Ok(String::from_utf8(bytes).expect("decoded unicode"))
     }
 }

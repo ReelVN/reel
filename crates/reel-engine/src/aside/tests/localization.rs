@@ -7,6 +7,67 @@ use std::{
     rc::Rc,
 };
 
+// External-resource fixtures obtain the actual compiler identities. The author
+// calls below use source text; no test reimplements the content hashing scheme.
+fn fixture_catalog(text: &str) -> String {
+    static KEYS: std::sync::OnceLock<HashMap<&'static str, Vec<String>>> =
+        std::sync::OnceLock::new();
+    let keys = KEYS.get_or_init(|| {
+        let mut keys: HashMap<_, Vec<_>> = HashMap::new();
+        for (entry, original, params) in [
+            ("hello", "你好", false),
+            ("hello", "原文", false),
+            ("hello", "source", false),
+            ("base", "base source", false),
+            ("count", "{ $n } 条消息", true),
+            ("name", "Hello, { $name }!", true),
+        ] {
+            let code = format!(
+                "fn fixture() {{ tr({original:?}{}); }}",
+                if params { ", params: {}" } else { "" }
+            );
+            let compiled =
+                source::compile_module(&code, "catalog_fixture", "catalog_fixture", 1).unwrap();
+            keys.entry(entry)
+                .or_default()
+                .push(compiled.catalogs.messages[0].key.clone());
+        }
+        keys
+    });
+    let mut result = String::new();
+    let mut current = None;
+    let mut body = String::new();
+    let flush = |current: Option<&str>, body: &str, result: &mut String| {
+        if let Some(current) = current {
+            if let Some(aliases) = keys.get(current) {
+                for key in aliases {
+                    result.push_str(key);
+                    result.push_str(" =");
+                    result.push_str(body);
+                }
+            } else {
+                result.push_str(current);
+                result.push_str(" =");
+                result.push_str(body);
+            }
+        }
+    };
+    for line in text.split_inclusive('\n') {
+        if !line.starts_with(char::is_whitespace)
+            && let Some((name, value)) = line.split_once(" =")
+        {
+            flush(current, &body, &mut result);
+            current = Some(name);
+            body.clear();
+            body.push_str(value);
+        } else {
+            body.push_str(line);
+        }
+    }
+    flush(current, &body, &mut result);
+    result
+}
+
 #[derive(Default)]
 struct Loader {
     next: u64,
@@ -27,8 +88,10 @@ impl CatalogLoader for Loader {
             "pending.ftl" => return Ok(self.next),
             _ => return Err("missing catalog".into()),
         };
-        self.pending
-            .insert(self.next, Catalog::parse(locale, source, text.into()));
+        self.pending.insert(
+            self.next,
+            Catalog::parse(locale, source, fixture_catalog(text)),
+        );
         Ok(self.next)
     }
     fn poll(&mut self, id: u64) -> Option<Result<Catalog, String>> {
@@ -55,15 +118,15 @@ fn external_catalogs_react_without_changing_committed_interactions() {
     let code = r#"fn opening() {
         localization.set_locale("zh-CN");
         let data = model({n: 1});
-        let caption = text(value: derive(|| tr("你好", id: "hello")));
+        let caption = text(value: derive(|| tr("你好")));
         let bilingual = column {
-            text(tr("你好", id: "hello", locale: "zh-CN"));
-            text(value: derive(|| tr("你好", id: "hello", locale: "en-US")));
+            text(tr("你好", locale: "zh-CN"));
+            text(value: derive(|| tr("你好", locale: "en-US")));
         };
         stage.replace(column() {
             caption;
             bilingual;
-            text(value: derive(|| tr("{ $n } 条消息", id: "count", params: {n: data.n})));
+            text(value: derive(|| tr("{ $n } 条消息", params: {n: data.n})));
             button("English", on_click: |event| {
                 localization.set_locale("en-US"); data.n = 2;
             });
@@ -71,9 +134,9 @@ fn external_catalogs_react_without_changing_committed_interactions() {
         });
         localization.load("en", "valid.ftl");
         if localization.locale() != "zh-CN"
-           || tr("你好", id: "hello", locale: "en-US") != "Hello"
-           || tr("原文", id: "missing", locale: "en") != "原文"
-           || tr("", id: "count", params: {n: 1}, locale: "en") != "One" {
+           || tr("你好", locale: "en-US") != "Hello"
+           || tr("未翻译原文", locale: "en") != "未翻译原文"
+           || tr("{ $n } 条消息", params: {n: 1}, locale: "en") != "One" {
             throw "per-call language changed global selection or lookup";
         }
         let mut invalid_locale = false;
@@ -84,16 +147,16 @@ fn external_catalogs_react_without_changing_committed_interactions() {
             rejected = error.starts_with("broken.ftl:");
         }
         if !rejected { throw "missing source diagnostic"; }
-        narrator(tr("你好", id: "hello"));
+        narrator(tr("你好"));
         localization.set_locale("en-US");
-        if tr("你好", id: "hello") != "Hello" { throw "atomic catalog replacement/base fallback"; }
-        if tr("literal {0} <~#", id: "missing") != "literal {0} <~#" { throw "literal fallback"; }
-        if tr("", id: "count", params: {n: 1}) != "One" { throw "plural"; }
-        if !tr("", id: "name", params: {name: "{ $secret }"}).starts_with("Hello, ") { throw "parameter"; }
+        if tr("你好") != "Hello" { throw "atomic catalog replacement/base fallback"; }
+        if tr("literal {0} <~#") != "literal {0} <~#" { throw "literal fallback"; }
+        if tr("{ $n } 条消息", params: {n: 1}) != "One" { throw "plural"; }
+        if !tr("Hello, { $name }!", params: {name: "{ $secret }"}).starts_with("Hello, ") { throw "parameter"; }
         let mut missing = false;
-        try { tr("", id: "name"); } catch error { missing = true; }
+        try { tr("Hello, { $name }!", params: {}); } catch error { missing = true; }
         if !missing { throw "missing parameter silently accepted"; }
-        let choice = choose([{key: "stable", label: tr("你好", id: "hello")}]);
+        let choice = choose([{key: "stable", label: tr("你好")}]);
         if choice != "stable" { throw "translated key"; }
     }"#;
     for encoded in [false, true] {
@@ -253,7 +316,7 @@ fn indexed_loader(held: &[&str]) -> (Box<IndexedLoader>, Rc<RefCell<CatalogReque
     let requests = Rc::new(RefCell::new(CatalogRequests {
         text: entries
             .iter()
-            .map(|(_, source, text)| (source.to_string(), text.to_string()))
+            .map(|(_, source, text)| (source.to_string(), fixture_catalog(text)))
             .collect(),
         held: held.iter().map(|source| source.to_string()).collect(),
         ..Default::default()
@@ -305,25 +368,25 @@ fn indexed_selection_commits_exact_and_base_together_and_releases_only_automatic
         localization.set_locale("zh-CN");
         localization.load("de");
         stage.replace(column {
-            text(value: derive(|| tr("原文", id: "hello")));
+            text(value: derive(|| tr("原文")));
             button("English", on_click: || {
                 localization.set_locale("en-US");
-                if tr("source", id:"hello") != "Howdy" || tr("source", id:"base") != "Base" {
+                if tr("source") != "Howdy" || tr("base source") != "Base" {
                     throw "exact/base selection";
                 }
             });
             button("French", on_click: || {
                 localization.set_locale("fr");
-                if tr("source", id:"hello", locale:"en-US") != "source" {
+                if tr("source", locale:"en-US") != "source" {
                     throw "automatic catalog survived";
                 }
-                if tr("source", id:"hello", locale:"de") != "Hallo" {
+                if tr("source", locale:"de") != "Hallo" {
                     throw "explicit preload was released";
                 }
             });
             button("Pin French", on_click: || localization.load("fr"));
             button("Check pinned", on_click: || {
-                if tr("source",id:"hello",locale:"fr") != "Bonjour" {
+                if tr("source",locale:"fr") != "Bonjour" {
                     throw "resident preload was not retained";
                 }
             });
@@ -381,14 +444,14 @@ fn failed_indexed_selection_keeps_old_language_and_discards_every_candidate() {
     let code = r#"fn opening() {
         localization.set_locale("en");
         stage.replace(column {
-            text(value: derive(|| tr("source", id:"hello")));
+            text(value: derive(|| tr("source")));
             button("Broken", on_click: || {
                 let mut failed = false;
                 try { localization.set_locale("es-MX"); } catch error {
                     failed = error.starts_with("broken.ftl:");
                 }
-                if !failed || localization.locale() != "en" || tr("source", id:"hello") != "Hello"
-                    || tr("source", id:"hello",locale:"es") != "source" {
+                if !failed || localization.locale() != "en" || tr("source") != "Hello"
+                    || tr("source",locale:"es") != "source" {
                     throw "failed selection changed installed state";
                 }
             });
@@ -404,7 +467,11 @@ fn failed_indexed_selection_keeps_old_language_and_discards_every_candidate() {
         assert_eq!(vm.locale().as_deref(), Some("en"));
         assert!(has_caption(&vm, "Hello"));
         assert!(!vm.localization_pending());
-        assert_eq!(requests.borrow().cancelled.len(), 2);
+        assert_eq!(
+            requests.borrow().cancelled.len(),
+            1,
+            "only the still-pending fallback request needs cancellation"
+        );
         requests.borrow_mut().release("es.ftl");
         models::drive(&mut vm, &mut session, true);
         assert_eq!(vm.locale().as_deref(), Some("en"));
@@ -481,12 +548,12 @@ fn snapshot_restores_catalog_ownership_and_one_atomic_pending_selection() {
         localization.load("de");
         localization.set_locale("en");
         stage.replace(column {
-            text(value: derive(|| tr("source",id:"hello")));
+            text(value: derive(|| tr("source")));
             button("French",on_click:|| localization.set_locale("fr-FR"));
             button("English",on_click:|| {
                 localization.set_locale("en");
-                if tr("source",id:"hello",locale:"de") != "Hallo"
-                    || tr("source",id:"hello",locale:"fr-FR") != "source" {
+                if tr("source",locale:"de") != "Hallo"
+                    || tr("source",locale:"fr-FR") != "source" {
                     throw "restored catalog ownership";
                 }
             });
@@ -527,7 +594,7 @@ fn concurrent_preload_keeps_its_reused_base_until_success_failure_or_cancellatio
         localization.set_locale("en");
         let state=model({status:"waiting"});
         stage.replace(column {
-            text(value:derive(||tr("source",id:"base",locale:"en-US")));
+            text(value:derive(||tr("base source",locale:"en-US")));
             text(value:derive(||state.status));
             button("Warm",on_click:|| {
                 try { localization.load("en-US"); state.status="done"; }
@@ -536,7 +603,7 @@ fn concurrent_preload_keeps_its_reused_base_until_success_failure_or_cancellatio
             button("French",on_click:||localization.set_locale("fr"));
             button("Japanese",on_click:||localization.set_locale("ja"));
             button("Retire",on_click:||stage.replace(
-                text(value:derive(||tr("source",id:"base",locale:"en-US")))
+                text(value:derive(||tr("base source",locale:"en-US")))
             ));
         });
         narrator("ready");
@@ -594,7 +661,7 @@ fn concurrent_preload_keeps_its_reused_base_until_success_failure_or_cancellatio
                         models::drive(&mut vm, &mut session, true);
                         assert!(has_caption(&vm, "failed"));
                         assert!(
-                            has_caption(&vm, "source"),
+                            has_caption(&vm, "base source"),
                             "failed preload retained its old base"
                         );
                     }
@@ -603,7 +670,7 @@ fn concurrent_preload_keeps_its_reused_base_until_success_failure_or_cancellatio
                         requests.borrow_mut().release("us.ftl");
                         models::drive(&mut vm, &mut session, true);
                         assert!(
-                            has_caption(&vm, "source"),
+                            has_caption(&vm, "base source"),
                             "cancelled preload retained its old base"
                         );
                     }

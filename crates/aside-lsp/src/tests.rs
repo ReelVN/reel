@@ -682,6 +682,7 @@ fn native_types_keep_nominal_members_readonly_defaults_and_definition_documents(
         ],
         declarations: vec![HostDeclaration {
             reference,
+            signature: None,
             markdown: "Node width.".into(),
             definition: Some(HostLocation {
                 uri: doc_uri.clone(),
@@ -905,7 +906,7 @@ fn named_callable_and_await_protocols_keep_real_result_types() {
             .unwrap()
             .signatures[0]
             .label
-            .contains("wait: bool")
+            .contains("wait?: bool")
     );
     assert_eq!(
         crate::queries::hint_label(&TypeHint::Tuple(vec![TypeHint::Int])),

@@ -1577,6 +1577,29 @@ impl Vm {
         let n = self.ticket(ticket)?;
         Ok(self.slots.borrow_initialized(n.bound)?)
     }
+    /// Borrow only supplied arguments; omission remains distinct from explicit null.
+    pub fn host_provided_arguments(
+        &self,
+        ticket: HostTicket,
+    ) -> Result<ProvidedArguments<'_>, VmError> {
+        let n = self.ticket(ticket)?;
+        Ok(ProvidedArguments {
+            values: self.slots.borrow_initialized(n.args)?,
+        })
+    }
+    /// Split the existing argument roots from mutable heap access for a native
+    /// operation. The callback cannot resume the VM or outlive the native frame.
+    pub fn with_host_provided_arguments<T>(
+        &mut self,
+        ticket: HostTicket,
+        body: impl FnOnce(&mut Heap, ProvidedArguments<'_>) -> T,
+    ) -> Result<T, VmError> {
+        let args = self.ticket(ticket)?.args;
+        let provided = ProvidedArguments {
+            values: self.slots.borrow_initialized(args)?,
+        };
+        Ok(body(&mut self.heap, provided))
+    }
     pub fn host_continuation(&self, ticket: HostTicket) -> Result<&[Value], VmError> {
         let n = self.ticket(ticket)?;
         // Open already published physical NULLs with clear initialized bits.
@@ -2153,7 +2176,7 @@ impl Vm {
             if self.active.cooperative_cancel {
                 if !m.take(
                     0,
-                    2 * self.active.frames.data.len() as u64 + self.native_layout_work() + 3,
+                    2 * self.active.frames.data.len() as u64 + self.program_lookup_work() + 3,
                     0,
                 ) {
                     return Ok(RunOutcome::BudgetYield(m.usage));
@@ -2344,7 +2367,14 @@ impl Vm {
                     binding.advance(Value::int(-1));
                     Some(ArgumentStep::Ready(Ok(())))
                 } else {
-                    Some(self.bind_argument_step(signature, s.bound, s.args, &mut binding, m)?)
+                    Some(self.bind_argument_step(
+                        signature,
+                        s.bound,
+                        s.args,
+                        &mut binding,
+                        m,
+                        false,
+                    )?)
                 };
                 if let Some(result) = result {
                     s.phase = ScriptPhase::Bind(binding);
@@ -2806,7 +2836,7 @@ impl Vm {
                     + 12
                     + roots.0
                     + if replacing_fault {
-                        self.native_layout_work()
+                        self.program_lookup_work()
                     } else {
                         0
                     };
@@ -4516,8 +4546,14 @@ impl Vm {
             }
             NativePhase::Bind(mut binding) => {
                 if binding.index < n.argument_count {
-                    let result =
-                        self.bind_argument_step(n.signature, n.bound, n.args, &mut binding, m)?;
+                    let result = self.bind_argument_step(
+                        n.signature,
+                        n.bound,
+                        n.args,
+                        &mut binding,
+                        m,
+                        true,
+                    )?;
                     n.phase = NativePhase::Bind(binding);
                     match result {
                         ArgumentStep::Blocked => {

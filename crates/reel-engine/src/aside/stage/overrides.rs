@@ -1,6 +1,7 @@
 //! Scope-owned property layers. Selection changes never write the base property.
 use super::*;
 use aside_vm::HeapReservation;
+use aside_vm::bytecode::FunctionId;
 
 const TAG: i64 = -1109;
 pub(super) const NODE_SLOT: u32 = 5;
@@ -49,7 +50,7 @@ pub(in crate::aside) fn is_token(heap: &Heap, value: Value) -> bool {
 }
 
 pub(super) fn validate(
-    heap: &Heap,
+    heap: &aside_vm::PropertyRead<'_>,
     host: Value,
     field: u32,
     value: Value,

@@ -171,7 +171,8 @@ fn nested_derived_fault_keeps_the_producer_source_and_releases_capture() {
                 .unwrap()
             {
                 SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
-                    vm.dispatch(&mut session, ticket, "en", 1).unwrap();
+                    vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(1))
+                        .unwrap();
                 }
                 SessionStep::Vm(RunOutcome::Returned(_)) => {
                     vm.discard_delivery(&mut session).unwrap()
@@ -228,7 +229,8 @@ fn nested_derived_cycle_reports_the_author_read() {
                 .unwrap()
             {
                 SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
-                    vm.dispatch(&mut session, ticket, "en", 1).unwrap();
+                    vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(1))
+                        .unwrap();
                 }
                 SessionStep::Vm(RunOutcome::Returned(_)) => {
                     vm.discard_delivery(&mut session).unwrap()
@@ -663,7 +665,8 @@ fn cancellation_during_initial_computation_releases_capture_and_frames() {
             )
             .unwrap()
         {
-            vm.dispatch(&mut session, ticket, "en", 1).unwrap();
+            vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(1))
+                .unwrap();
             if vm.vm.heap().reactive_evaluating() {
                 break;
             }
@@ -769,12 +772,13 @@ fn history_is_stable_readonly_incremental_and_survives_page_and_stage_replacemen
 fn reading_controls_are_observable_transactional_and_gate_narrative_input() {
     let code = r#"
     let r = game.reading();
+    fn dynamic(value) {value}
     fn opening() {
         if r != game.reading() || r.auto || r.paused || r.delay != 2.0 { throw "reading defaults"; }
         game.set_auto(true, delay: 0.5);
         let mut errors = 0;
         try { game.set_auto(false, delay: -1); } catch e { errors += 1; }
-        try { game.set_auto(2); } catch e { errors += 1; }
+        try { game.set_auto(dynamic(2)); } catch e { errors += 1; }
         try { r.auto = false; } catch e { errors += 1; }
         if errors != 3 || !r.auto || r.delay != 0.5 { throw "invalid settings changed state"; }
         stage.replace(column() {

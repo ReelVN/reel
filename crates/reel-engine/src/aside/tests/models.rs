@@ -12,10 +12,12 @@ pub(super) fn prepared(code: &str, encoded: bool) -> (Session, SessionVm) {
         )
         .unwrap();
     }
-    let mut vm = SessionVm::load(&session, story.program, VmLimits::default()).unwrap();
-    vm.start(&session, story.initializer).unwrap();
+    let initializer = story.initializer;
+    let entry = story.entry;
+    let mut vm = SessionVm::load_story(&session, story, VmLimits::default()).unwrap();
+    vm.start(&session, initializer).unwrap();
     drive(&mut vm, &mut session, true);
-    vm.start(&session, story.entry).unwrap();
+    vm.start(&session, entry).unwrap();
     (session, vm)
 }
 
@@ -25,7 +27,7 @@ pub(super) fn drive(vm: &mut SessionVm, session: &mut Session, collect_copies: b
         match vm
             .step(
                 session,
-                SessionBudget::Exact(SliceBudget {
+                SessionBudget::RetryMinimum(SliceBudget {
                     instructions: 7,
                     ..Default::default()
                 }),
@@ -40,7 +42,12 @@ pub(super) fn drive(vm: &mut SessionVm, session: &mut Session, collect_copies: b
                 if model {
                     copies += 1;
                 }
-                if let Err(error) = vm.dispatch(session, ticket, "en", if model { 1 } else { 32 }) {
+                if let Err(error) = vm.dispatch(
+                    session,
+                    ticket,
+                    "en",
+                    NativeBudget::Exact(if model { 1 } else { 32 }),
+                ) {
                     vm.reject_native(session, ticket, error).unwrap();
                 }
                 if model && collect_copies {
@@ -411,7 +418,8 @@ fn cancelling_a_large_model_copy_releases_its_work_graph() {
     let RunOutcome::HostCall(ticket) = next(&mut vm, &mut session) else {
         panic!("expected the model native call");
     };
-    vm.dispatch(&mut session, ticket, "en", 16).unwrap();
+    vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(16))
+        .unwrap();
     collect(&mut vm);
     let before = vm.vm.heap().stats();
     vm.revoke(&mut session).unwrap();

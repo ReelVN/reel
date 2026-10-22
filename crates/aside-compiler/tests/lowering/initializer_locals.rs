@@ -545,6 +545,7 @@ fn enclosing_lexical_symbols_require_real_value_or_cell_links_before_allocation(
             Linkage {
                 package: Some(&seed),
                 natives: &native_links,
+                expansions: &[],
             },
         ] {
             let error = lowering::lower(&m, &linkage, Options::default()).unwrap_err();

@@ -135,7 +135,8 @@ fn host_budget_retries_real_window_minima_for_main_spawn_and_derive_source_asb()
                         measured = true;
                     }
                     SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
-                        vm.dispatch(&mut session, ticket, "en", 32).unwrap();
+                        vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(32))
+                            .unwrap();
                     }
                     SessionStep::Vm(RunOutcome::Returned(_)) => {
                         vm.discard_delivery(&mut session).unwrap()
@@ -182,7 +183,8 @@ fn host_budget_keeps_each_rotating_callback_minimum_and_cleans_cancelled_tasks()
     loop {
         match next(&mut vm, &mut session) {
             RunOutcome::HostCall(ticket) => {
-                vm.dispatch(&mut session, ticket, "en", 32).unwrap();
+                vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(32))
+                    .unwrap();
             }
             RunOutcome::Returned(_) => {
                 vm.discard_delivery(&mut session).unwrap();
@@ -234,7 +236,8 @@ fn host_budget_keeps_each_rotating_callback_minimum_and_cleans_cancelled_tasks()
                 break ticket;
             }
         };
-        vm.dispatch(&mut session, ticket, "en", 32).unwrap();
+        vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(32))
+            .unwrap();
         loop {
             vm.schedule_cursor = index;
             if let SessionStep::Vm(RunOutcome::BudgetYield(usage)) = vm
@@ -291,7 +294,8 @@ fn host_budget_retries_hidden_cleanup_minima_for_main_and_derived_tasks() {
                     break;
                 }
                 SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
-                    vm.dispatch(&mut session, ticket, "en", 32).unwrap();
+                    vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(32))
+                        .unwrap();
                 }
                 SessionStep::Vm(RunOutcome::Returned(_)) => {
                     vm.discard_delivery(&mut session).unwrap()

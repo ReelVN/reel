@@ -5,12 +5,14 @@ use aside_host::source::{Api, constant};
 use aside_lsp::{
     HostContext, HostDeclaration, HostDocument, HostLocation, NamedType, ServerOptions,
 };
+mod translations;
 
 /// Use the same default names, types and source documentation as Reel compilation.
 /// Building this context does not create a game session or load game resources.
 pub fn options() -> ServerOptions {
     ServerOptions {
         host: host_context(reel_engine::aside::source::api()),
+        source_analysis: Some(translations::analyze),
         project_prefix: Some("game".into()),
         source_root: Some(|directory, exists| {
             crate::project::locate_with(directory, exists)
@@ -34,6 +36,7 @@ pub fn host_context(api: &Api) -> HostContext {
                 .expect("generated declarations retain their registered identity");
             HostDeclaration {
                 reference: (*reference).clone(),
+                signature: declaration.symbol.signature,
                 markdown: declaration.documentation,
                 definition: Some(HostLocation {
                     uri: location.uri.parse().expect("generated declaration URI"),
@@ -42,7 +45,19 @@ pub fn host_context(api: &Api) -> HostContext {
                 parameter_defaults: declaration
                     .parameter_defaults
                     .into_iter()
-                    .map(|(name, value)| (name, constant(&value)))
+                    .map(|(name, value)| {
+                        (
+                            name,
+                            match value {
+                                aside_host::source::ParameterDefault::Value(value) => {
+                                    aside_lsp::ParameterDefault::Value(constant(&value))
+                                }
+                                aside_host::source::ParameterDefault::Omitted => {
+                                    aside_lsp::ParameterDefault::Omitted
+                                }
+                            },
+                        )
+                    })
                     .collect(),
                 property_default: declaration.property_default.as_ref().map(constant),
                 property_parameters: declaration.property_parameters,

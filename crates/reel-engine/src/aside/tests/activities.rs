@@ -1,4 +1,5 @@
 use super::*;
+mod chains;
 mod tween_from;
 
 #[test]
@@ -67,7 +68,7 @@ fn initially_paused_activity_restores_before_first_activation() {
 
 #[test]
 fn initially_paused_actions_defer_zero_duration_and_preserve_controls() {
-    let source = r#"fn opening() {
+    let source = r#"fn dynamic(value) { value } fn opening() {
         let node=stack(x:7);stage.replace(node);
         let zero=run(tween(node,x:99,duration:0),paused:true);
         let empty=run(sequence(),paused:true);
@@ -91,8 +92,8 @@ fn initially_paused_actions_defer_zero_duration_and_preserve_controls() {
         try {await waiting;} catch error {cancelled=true;}
         if !cancelled {throw "paused owner retirement";}
         let mut rejected=0;
-        try {clock(paused:1);} catch error {rejected+=1;}
-        try {run(delay(1),paused:1);} catch error {rejected+=1;}
+        try {clock(paused:dynamic(1));} catch error {rejected+=1;}
+        try {run(delay(1),paused:dynamic(1));} catch error {rejected+=1;}
         if rejected!=2 {throw "paused requires bool";}
         narrator("done");
     }"#;
@@ -290,7 +291,7 @@ fn drive(vm: &mut SessionVm, session: &mut Session) -> RunOutcome {
     loop {
         match next(vm, session) {
             RunOutcome::HostCall(ticket) => {
-                if let Err(error) = vm.dispatch(session, ticket, "en", 256) {
+                if let Err(error) = vm.dispatch(session, ticket, "en", NativeBudget::Exact(256)) {
                     vm.reject_native(session, ticket, error).unwrap();
                 }
             }
@@ -315,7 +316,7 @@ fn drive(vm: &mut SessionVm, session: &mut Session) -> RunOutcome {
         }
     }
 }
-fn advance_dialogue(vm: &mut SessionVm, session: &mut Session) {
+pub(super) fn advance_dialogue(vm: &mut SessionVm, session: &mut Session) {
     let id = session.view().interaction.unwrap().id();
     for _ in 0..2 {
         session
@@ -665,7 +666,7 @@ fn composition_large_and_small_clock_steps_agree_on_delayed_takeover() {
 
 #[test]
 fn composed_controls_conflicts_empty_actions_and_failure_terminate_whole_roots() {
-    let source = r#"fn opening() {
+    let source = r#"fn dynamic(value) { value } fn opening() {
         let node = text("moving", width: 10);
         let future = text("future", width: 10);
         let holder = column(children: [node, future]);
@@ -681,7 +682,7 @@ fn composed_controls_conflicts_empty_actions_and_failure_terminate_whole_roots()
         if await run(repeat(tween(node, x: 7, duration: 0), times: 0)) != "Completed" || node.x != 100 { throw "zero repeat"; }
         try { repeat(sequence()); } catch error { errors += 1; }
         try { repeat(tween(node, x: 0), times: -1); } catch error { errors += 1; }
-        try { repeat(tween(node, x: 0), times: 1.5); } catch error { errors += 1; }
+        try { repeat(tween(node, x: 0), times: dynamic(1.5)); } catch error { errors += 1; }
         let cycle = sequence(tween(node, x: 0, duration: 1), tween(node, y: 20, duration: 1));
         let forever = run(repeat(cycle));
         pause(forever);
@@ -796,7 +797,9 @@ fn deep_graph_admission_and_execution_survive_gc_between_every_work_slice() {
     loop {
         match next(&mut vm, &mut session) {
             RunOutcome::HostCall(ticket) => {
-                let dispatch = vm.dispatch(&mut session, ticket, "en", 1).unwrap();
+                let dispatch = vm
+                    .dispatch(&mut session, ticket, "en", NativeBudget::Exact(1))
+                    .unwrap();
                 if matches!(dispatch, NativeDispatch::Decoding { .. }) {
                     slices += 1;
                     collect(&mut vm);

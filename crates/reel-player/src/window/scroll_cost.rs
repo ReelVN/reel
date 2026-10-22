@@ -48,6 +48,7 @@ fn exercise(event_loop: &ActiveEventLoop) {
         program,
         initializer: aside_vm::bytecode::FunctionId(metadata.initializer.function_id),
         entry: aside_vm::bytecode::FunctionId(metadata.game_entry.unwrap().function_id),
+        catalogs: Default::default(),
     };
     let assets = crate::assets::AssetOptions {
         root: std::env::var_os("REEL_SCROLL_ASSETS").unwrap().into(),

@@ -36,7 +36,7 @@ fn formats_all_source_files_with_the_shared_printer_and_check_keeps_files_unchan
     write(root, "src/main.aside", main);
     write(root, "src/ui/unused.aside", unused);
     write(root, "resources/sample.aside", "resource bytes");
-    write(root, "translations/sample.aside", "translation bytes");
+    write(root, "notes/sample.aside", "note bytes");
     let output = command(&root.join("src/ui"), true);
     assert_eq!(output.status.code(), Some(1));
     let listed = String::from_utf8(output.stdout).unwrap().replace('\\', "/");
@@ -68,8 +68,8 @@ fn formats_all_source_files_with_the_shared_printer_and_check_keeps_files_unchan
         "resource bytes"
     );
     assert_eq!(
-        fs::read_to_string(root.join("translations/sample.aside")).unwrap(),
-        "translation bytes"
+        fs::read_to_string(root.join("notes/sample.aside")).unwrap(),
+        "note bytes"
     );
     assert!(command(root, true).status.success());
     assert!(

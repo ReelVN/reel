@@ -2,7 +2,14 @@ use super::{AdapterError, HostTicket, SessionVm, observable, text};
 
 aside_host::native_documentation! {
     pub(super) fn documentation {
-        /// Translate source text or an explicit message id with optional Fluent params.
+        /// Translate literal source text with an adjacent static locale table.
+        /// Interpolated source holes execute once in source order; translated
+        /// holes refer to those values and never execute another expression.
+        /// Use bracketed string keys for tags such as ["zh-CN"].
+        /// The compiler extracts catalogs and supplies the internal lookup key.
+        /// Literal templates can use explicit Fluent params; interpolated strings
+        /// supply their own parameters and use normal Aside text conversion.
+        /// Interpolated values use Fluent's bidirectional text isolation.
         /// An explicit locale selects its loaded catalog; otherwise use the current
         /// observable locale. Missing translations use the supplied source text.
         "reel::tr";
@@ -20,16 +27,131 @@ aside_host::native_documentation! {
         "reel::localization::locale";
     }
 }
-use crate::localization::{CatalogLoader, Localization, language_id, message_id};
+use crate::localization::{CatalogLoader, Localization, language_id};
 use aside_vm::{
     RootKind, RootToken, Value, ValueTag,
     executor::{Completion, HostResponse, WaitId},
 };
 use fluent_bundle::{FluentArgs, FluentValue};
+use std::{collections::BTreeMap, sync::Arc};
+
+/// Shared, unparsed source compilation products retained across fresh sessions
+/// and restoration. Source playback retains all authored locale text; release
+/// assets instead use their seekable catalog loader and an empty handle.
+#[derive(Clone, Default, Debug)]
+pub struct SourceCatalogs(Arc<super::source::CatalogProducts>);
+impl SourceCatalogs {
+    pub(super) fn from_products(products: Arc<super::source::CatalogProducts>) -> Self {
+        Self(products)
+    }
+    /// Combine source catalogs with the platform's indexed and explicit assets.
+    /// Source locales take precedence; explicit asset requests use the fallback.
+    pub fn loader(&self, fallback: Box<dyn CatalogLoader>) -> Box<dyn CatalogLoader> {
+        if self.0.catalogs.is_empty() {
+            fallback
+        } else {
+            self.with_fallback(Some(fallback))
+        }
+    }
+    fn with_fallback(&self, fallback: Option<Box<dyn CatalogLoader>>) -> Box<dyn CatalogLoader> {
+        Box::new(SourceLoader::new(self.clone(), fallback))
+    }
+}
+const SOURCE_CATALOG: &str = "__reel/source-catalog";
+enum SourceLoad {
+    Inline { locale: String },
+    External(u64),
+}
+struct SourceLoader {
+    products: SourceCatalogs,
+    fallback: Option<Box<dyn CatalogLoader>>,
+    pending: BTreeMap<u64, SourceLoad>,
+    next: u64,
+}
+impl SourceLoader {
+    fn new(products: SourceCatalogs, fallback: Option<Box<dyn CatalogLoader>>) -> Self {
+        Self {
+            products,
+            fallback,
+            pending: BTreeMap::new(),
+            next: 0,
+        }
+    }
+}
+impl AsMut<dyn CatalogLoader> for SourceLoader {
+    fn as_mut(&mut self) -> &mut (dyn CatalogLoader + 'static) {
+        self
+    }
+}
+impl CatalogLoader for SourceLoader {
+    fn resolve(&self, locale: &str) -> Option<&str> {
+        if self.products.0.catalogs.contains_key(locale) {
+            Some(SOURCE_CATALOG)
+        } else {
+            self.fallback.as_ref()?.resolve(locale)
+        }
+    }
+    fn load(&mut self, locale: &str, source: &str) -> Result<u64, String> {
+        let id = self
+            .next
+            .checked_add(1)
+            .ok_or("catalog request identity exhausted")?;
+        let request = if source == SOURCE_CATALOG && self.products.0.catalogs.contains_key(locale) {
+            SourceLoad::Inline {
+                locale: locale.into(),
+            }
+        } else {
+            SourceLoad::External(
+                self.fallback
+                    .as_mut()
+                    .ok_or("catalog asset loader is not installed")?
+                    .load(locale, source)?,
+            )
+        };
+        self.next = id;
+        self.pending.insert(id, request);
+        Ok(id)
+    }
+    fn poll(&mut self, id: u64) -> Option<Result<crate::localization::Catalog, String>> {
+        match self.pending.get(&id)? {
+            SourceLoad::Inline { locale } => {
+                let result = crate::localization::Catalog::parse(
+                    locale,
+                    SOURCE_CATALOG,
+                    self.products.0.catalogs[locale].clone(),
+                );
+                self.pending.remove(&id);
+                Some(result)
+            }
+            SourceLoad::External(external) => {
+                let result = self.fallback.as_mut()?.poll(*external)?;
+                self.pending.remove(&id);
+                Some(result)
+            }
+        }
+    }
+    fn cancel(&mut self, id: u64) {
+        if let Some(SourceLoad::External(external)) = self.pending.remove(&id)
+            && let Some(fallback) = self.fallback.as_mut()
+        {
+            fallback.cancel(external);
+        }
+    }
+}
 
 pub(super) fn describe(api: &mut aside_host::source::Api) {
     use aside_compiler::semantic::TypeHint as T;
     use aside_host::source::nullable;
+    api.refine(
+        "reel::tr",
+        T::String,
+        &[
+            ("source", T::String),
+            ("translations", nullable(T::Table)),
+            ("params", nullable(T::Table)),
+            ("locale", nullable(T::String)),
+        ],
+    );
     api.refine(
         "reel::localization::load",
         T::Null,
@@ -90,7 +212,8 @@ impl Pending {
 #[derive(Default)]
 pub(super) struct Translations {
     service: Localization,
-    loader: Option<Box<dyn CatalogLoader>>,
+    loader: Option<SourceLoader>,
+    source: SourceCatalogs,
     pending: Vec<Pending>,
     revision: Option<RootToken>,
     selected: bool,
@@ -236,7 +359,31 @@ impl SessionVm {
                 "cannot replace catalog loader with pending loads or a retired session",
             ));
         }
-        self.translations.loader = Some(loader);
+        self.translations.loader = Some(SourceLoader::new(
+            self.translations.source.clone(),
+            Some(loader),
+        ));
+        Ok(())
+    }
+    /// Retain the same source index when constructing a fresh or restored VM.
+    pub fn source_catalogs(&self) -> SourceCatalogs {
+        self.translations.source.clone()
+    }
+    /// Select source compilation products before any locale loads are pending.
+    /// Subsequent asset-loader replacement preserves this source index.
+    pub fn set_source_catalogs(&mut self, source: SourceCatalogs) -> Result<(), AdapterError> {
+        if self.revoked || !self.translations.pending.is_empty() {
+            return Err(AdapterError::Input(
+                "cannot replace source catalogs with pending loads or a retired session",
+            ));
+        }
+        self.translations.source = source;
+        if let Some(loader) = &mut self.translations.loader {
+            loader.products = self.translations.source.clone();
+        } else {
+            self.translations.loader =
+                Some(SourceLoader::new(self.translations.source.clone(), None));
+        }
         Ok(())
     }
     pub fn localization_pending(&self) -> bool {
@@ -532,11 +679,10 @@ impl SessionVm {
                 self.observe_translation()?;
                 let heap = self.vm.heap_mut();
                 let fallback = text::read_string(heap, args[0], self.read_limit)?;
-                let id = if args[1].tag() == ValueTag::Null {
-                    message_id(&fallback)
-                } else {
-                    text::read_string(heap, args[1], self.read_limit)?
-                };
+                // The source compile extension replaces the static locale table
+                // with its generated key. A raw dynamic native invocation has no
+                // catalog extraction contract and must not discard its table.
+                let id = text::read_string(heap, args[1], self.read_limit)?;
                 let mut parameters = FluentArgs::new();
                 let has_parameters = args[2].tag() != ValueTag::Null;
                 if has_parameters {

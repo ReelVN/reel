@@ -61,7 +61,13 @@ fn execute(
                 .unwrap()
             {
                 SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
-                    vm.dispatch(&mut session, ticket, "en", 8).unwrap();
+                    vm.dispatch(
+                        &mut session,
+                        ticket,
+                        "en",
+                        reel_engine::aside::NativeBudget::Exact(8),
+                    )
+                    .unwrap();
                 }
                 SessionStep::Vm(RunOutcome::Returned(_)) => {
                     if function == story.entry {

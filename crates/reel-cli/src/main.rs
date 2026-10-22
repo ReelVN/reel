@@ -3,7 +3,7 @@ mod formatting;
 use aside_compiler::{SourceMap, semantic::SourceModule};
 use clap::Parser;
 use codespan_reporting::{files::SimpleFile, term};
-use commands::{Cli, Command, Localization, SourceCommand};
+use commands::{Cli, Command, SourceCommand};
 use reel_cli::{BuildProfile, build_with_profile, diagnostic_json, package_limits_json};
 use serde_json::{Value, json};
 use std::{
@@ -47,7 +47,6 @@ fn run() -> io::Result<u8> {
     match cli.command {
         Command::Source(command) => source_command(command),
         Command::Run(args) => run_package(args),
-        Command::Loc(command) => localization_command(command),
         Command::PrepareImage(args) => prepare_image_command(args),
         Command::Fmt(args) => formatting::run(args.check),
     }
@@ -123,7 +122,9 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
     };
     match command {
         SourceCommand::Check(_) => {
-            if let Err(error) = reel_cli::localization::check_project(&loaded.project_root) {
+            if let Err(error) =
+                reel_cli::localization::check_project(&loaded.project_root, &checked.catalogs)
+            {
                 failure(json_format, "localization", Some(path), &error.to_string())?;
                 return Ok(1);
             }
@@ -168,6 +169,7 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
             };
             let prepared = match reel_cli::localization::prepare_project(
                 &loaded.project_root,
+                &checked.catalogs,
                 &archive_directory,
             ) {
                 Ok(prepared) => prepared,
@@ -285,26 +287,13 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
             }
         }
         SourceCommand::Dev(args) => {
-            let prepared = match reel_cli::localization::prepare_project(
-                &loaded.project_root,
-                &loaded.project_root.join("build/debug"),
-            ) {
-                Ok(prepared) => prepared,
-                Err(error) => {
-                    failure(false, "localization", Some(path), &error.to_string())?;
-                    return Ok(1);
-                }
-            };
             let assets = args.playback.assets.unwrap_or_else(|| loaded.assets());
-            let packages = prepared
-                .archive
-                .map(|archive| (vec![archive], Some(assets.clone())));
             match reel_cli::into_story(checked, entry) {
                 Ok(story) => launch(
                     story,
                     Some(assets),
-                    packages,
-                    prepared.catalogs,
+                    None,
+                    Default::default(),
                     args.playback.save_directory,
                     path,
                 ),
@@ -351,96 +340,6 @@ fn compilation_report(
         }
     }
     Ok(0)
-}
-
-fn localization_command(command: Localization) -> io::Result<u8> {
-    match command {
-        Localization::Check(args) => {
-            match reel_cli::localization::check(&args.source, &args.locale) {
-                Ok(()) => {
-                    writeln!(
-                        io::stdout().lock(),
-                        "Catalog checked: {}",
-                        args.source.display()
-                    )?;
-                    Ok(0)
-                }
-                Err(error) => {
-                    failure(false, "localization", args.source.to_str(), &error)?;
-                    Ok(1)
-                }
-            }
-        }
-        Localization::Bundle(args) => {
-            match reel_cli::localization::bundle(&args.source, &args.output, args.overwrite) {
-                Ok(result) => {
-                    writeln!(
-                        io::stdout().lock(),
-                        "Bundled {} entries from {} catalogs: {}",
-                        result.entries,
-                        result.files,
-                        args.output.display()
-                    )?;
-                    if let Some(warning) = result.cleanup_warning {
-                        writeln!(io::stderr().lock(), "warning: {warning}")?;
-                    }
-                    Ok(0)
-                }
-                Err(error) => {
-                    failure(false, "localization", args.source.to_str(), &error)?;
-                    Ok(1)
-                }
-            }
-        }
-        Localization::Extract(args) => {
-            let (output, extraction) = if let Some(output) = args.destination.output {
-                let result =
-                    reel_cli::localization::extract(Path::new("."), &output, args.overwrite);
-                (output, result)
-            } else {
-                let output = args
-                    .destination
-                    .output_dir
-                    .expect("clap requires one extraction output");
-                let result = reel_cli::localization::extract_directory(
-                    Path::new("."),
-                    &output,
-                    args.overwrite,
-                );
-                (output, result)
-            };
-            match extraction {
-                Ok(result) => {
-                    writeln!(
-                        io::stdout().lock(),
-                        "Extracted {} messages from {} calls; skipped {} dynamic calls: {}",
-                        result.messages,
-                        result.occurrences,
-                        result.skipped.len(),
-                        output.display()
-                    )?;
-                    for skipped in result.skipped {
-                        writeln!(io::stderr().lock(), "warning[localization]: {skipped}")?;
-                    }
-                    for stale in result.stale_catalogs {
-                        writeln!(
-                            io::stderr().lock(),
-                            "warning[localization]: {}: no current source messages; file left in place, review before bundling",
-                            stale.display()
-                        )?;
-                    }
-                    if let Some(warning) = result.cleanup_warning {
-                        writeln!(io::stderr().lock(), "warning: {warning}")?;
-                    }
-                    Ok(0)
-                }
-                Err(error) => {
-                    failure(false, "localization", Some("src/main.aside"), &error)?;
-                    Ok(1)
-                }
-            }
-        }
-    }
 }
 
 fn prepare_image_command(args: commands::PrepareImage) -> io::Result<u8> {

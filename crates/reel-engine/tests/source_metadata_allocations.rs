@@ -93,7 +93,13 @@ fn run_typed_asb(contracts: &[aside_host::NativeContract], types: &[bc::HostType
                 .unwrap()
             {
                 SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
-                    vm.dispatch(&mut session, ticket, "en", 1024).unwrap();
+                    vm.dispatch(
+                        &mut session,
+                        ticket,
+                        "en",
+                        reel_engine::aside::NativeBudget::Exact(1024),
+                    )
+                    .unwrap();
                 }
                 SessionStep::Vm(RunOutcome::Returned(delivery)) => {
                     if function == entry {

@@ -9,8 +9,8 @@ mod media;
 pub use activity::ActivityProgress;
 mod budget;
 mod callbacks;
-pub use budget::SessionBudget;
 use budget::SliceMinimum;
+pub use budget::{NativeBudget, SessionBudget};
 pub mod capture;
 mod game;
 pub use game::GameSettings;
@@ -21,6 +21,7 @@ mod keys;
 mod layered_image;
 mod lists;
 mod localization;
+pub use localization::SourceCatalogs;
 mod narrative;
 mod observable;
 mod particles;
@@ -173,7 +174,13 @@ struct RetainedKeys {
     entries: Vec<RetainedKey>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
+enum PendingInteractionKind {
+    Advance,
+    Reveal,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
 struct PendingInteraction {
+    kind: PendingInteractionKind,
     interaction: InteractionId,
     task: TaskId,
     wait: WaitId,
@@ -187,6 +194,12 @@ pub enum NativeDispatch {
     },
     Decoding {
         work: u32,
+    },
+    /// The native retained its preparation in a VM continuation. A later slice
+    /// needs at least `required_work` to perform its next indivisible step.
+    BudgetYield {
+        work: u32,
+        required_work: u32,
     },
     Published {
         interaction: InteractionId,
@@ -224,8 +237,7 @@ pub struct SessionVm {
     pending: Option<PendingInteraction>,
     choice_reader: Option<choice::ChoiceReader>,
     dialogue_reader: Option<dialogue::DialogueReader>,
-    speech_methods: Option<[FunctionId; 2]>,
-    // Method-resolution passes and constructed handles, without production counters.
+    // Constructed speech handles and their VM objects, without production counters.
     #[cfg(test)]
     speech_costs: [usize; 2],
     claimed: Option<Completion>,
@@ -254,6 +266,21 @@ pub struct SessionVm {
 }
 
 impl SessionVm {
+    /// Admit a source compilation with its generated locale catalogs through
+    /// one loading boundary. Catalog text is shared, parsed only when requested,
+    /// and remains available when the host selects another asset loader.
+    pub fn load_story(
+        session: &Session,
+        story: source::CompiledStory,
+        limits: VmLimits,
+    ) -> Result<Self, AdapterError> {
+        story.validate()?;
+        let mut vm = Self::load(session, story.program, limits)?;
+        if !story.catalogs.catalogs.is_empty() {
+            vm.set_source_catalogs(localization::SourceCatalogs::from_products(story.catalogs))?;
+        }
+        Ok(vm)
+    }
     pub fn load(
         session: &Session,
         program: VerifiedProgram,
@@ -276,7 +303,7 @@ impl SessionVm {
     fn from_vm(session: &Session, vm: Vm, limits: VmLimits) -> Result<Self, AdapterError> {
         let identity = session.identity();
         let owner = session.root_owner();
-        let stage = stage::StageBinding::new(vm.program(), vm.heap())?;
+        let stage = stage::StageBinding::new(vm.heap())?;
         let standard = aside_std::StandardLibrary::new(vm.program());
         Ok(Self {
             vm,
@@ -298,7 +325,6 @@ impl SessionVm {
             pending: None,
             choice_reader: None,
             dialogue_reader: None,
-            speech_methods: None,
             #[cfg(test)]
             speech_costs: [0; 2],
             claimed: None,
@@ -527,8 +553,9 @@ impl SessionVm {
         session: &mut Session,
         ticket: HostTicket,
         locale: &str,
-        work: u32,
+        budget: NativeBudget,
     ) -> Result<NativeDispatch, AdapterError> {
+        let work = budget.work();
         self.check_ticket(session, ticket)?;
         if let Some(work) = self.standard.dispatch(&mut self.vm, ticket, work)? {
             self.issued = None;
@@ -731,14 +758,24 @@ impl SessionVm {
                 self.configure_game(ticket)?;
                 Ok(NativeDispatch::Ready { work: 4 })
             }
-            "reel::sequence" | "reel::parallel" => {
-                let kind = if symbol == "reel::sequence" {
+            "reel::sequence"
+            | "reel::parallel"
+            | "reel::action::then"
+            | "reel::action::together" => {
+                let pair = symbol.starts_with("reel::action::");
+                let kind = if matches!(symbol.as_str(), "reel::sequence" | "reel::action::then") {
                     activity::action::Kind::Sequence
                 } else {
                     activity::action::Kind::Parallel
                 };
-                let work =
-                    activity::action::compose(&mut self.vm, &self.stage.types, ticket, kind, work)?;
+                let work = activity::action::compose(
+                    &mut self.vm,
+                    &self.stage.types,
+                    ticket,
+                    kind,
+                    pair,
+                    work,
+                )?;
                 self.issued = None;
                 Ok(NativeDispatch::Ready { work })
             }
@@ -874,8 +911,13 @@ impl SessionVm {
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::character::speak" => self.character_speak(session, ticket, locale),
-            "reel::speech::append" | "reel::speech::wait" => {
-                self.dispatch_speech(session, ticket, symbol.ends_with("append"))
+            "reel::speech::append" | "reel::speech::wait" | "reel::speech::revealed" => {
+                let command = match symbol.as_str() {
+                    "reel::speech::append" => dialogue::SpeechCommand::Append,
+                    "reel::speech::wait" => dialogue::SpeechCommand::Wait,
+                    _ => dialogue::SpeechCommand::Revealed,
+                };
+                self.dispatch_speech(session, ticket, command)
             }
             "reel::unbind" => {
                 let reference = self.vm.host_arguments(ticket)?[0];
@@ -956,7 +998,30 @@ impl SessionVm {
                     work: arguments.len() as u32,
                 })
             }
-            _ => Err(AdapterError::Input("unregistered session native")),
+            _ => {
+                let schema = stage::configure::schema(&symbol)
+                    .ok_or(AdapterError::Input("unregistered session native"))?;
+                let progress = stage::configure::runtime::dispatch(
+                    &self.stage,
+                    &mut self.vm,
+                    ticket,
+                    schema,
+                    budget,
+                )?;
+                self.issued = None;
+                Ok(match progress {
+                    stage::configure::runtime::Progress::Complete { work } => {
+                        NativeDispatch::Ready { work }
+                    }
+                    stage::configure::runtime::Progress::Continue {
+                        work,
+                        required_work,
+                    } => NativeDispatch::BudgetYield {
+                        work,
+                        required_work,
+                    },
+                })
+            }
         }
     }
 
@@ -1278,6 +1343,7 @@ impl SessionVm {
             return Err(error.into());
         }
         self.pending = Some(PendingInteraction {
+            kind: PendingInteractionKind::Advance,
             interaction: publication.id(),
             task: ticket.task,
             wait,
@@ -1297,6 +1363,13 @@ impl SessionVm {
     }
 
     fn deliver_completion(&mut self, session: &mut Session) -> Result<(), AdapterError> {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| matches!(pending.kind, PendingInteractionKind::Reveal))
+        {
+            return self.deliver_speech_reveal(session);
+        }
         if self.pending.is_none() {
             return Ok(());
         }

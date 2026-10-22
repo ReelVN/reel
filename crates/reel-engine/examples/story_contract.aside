@@ -1,7 +1,8 @@
 use reel::prelude::*;
 
 fn main() {
-    narrator("A short story.");
+    localization.set_locale("en");
+    narrator(tr("一个短篇故事。", {en: "A short story."}));
     let answer = choose([
         {key: "continue", label: "Continue"},
         {key: "leave", label: "Leave"}

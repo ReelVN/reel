@@ -768,6 +768,7 @@ fn trusted_native_values_calls_and_optional_chains_share_the_registry() {
                 &Linkage {
                     package: Some(&seed),
                     natives: &[link],
+                    expansions: &[],
                 },
                 Options::default(),
             )
@@ -803,6 +804,7 @@ fn trusted_native_values_calls_and_optional_chains_share_the_registry() {
                         reference: &wrong,
                         ..link
                     }],
+                    expansions: &[],
                 },
                 Options::default(),
             )
@@ -841,6 +843,7 @@ fn trusted_native_values_calls_and_optional_chains_share_the_registry() {
                     native: bc::NativeId(0),
                     reference: &reference,
                 }],
+                expansions: &[],
             },
             Options::default(),
         )
@@ -870,6 +873,7 @@ fn trusted_native_values_calls_and_optional_chains_share_the_registry() {
                     native: bc::NativeId(0),
                     reference: &reference,
                 }],
+                expansions: &[],
             },
             Options::default(),
         )

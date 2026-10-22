@@ -3,6 +3,7 @@ mod chains;
 mod classes;
 mod collections;
 mod composition;
+mod expansions;
 mod expressions;
 mod locations;
 mod native_values;
@@ -65,6 +66,11 @@ pub(super) fn lower<'a>(
     b.work(m.hir().names.len() as u64)?;
     for name in &m.hir().names {
         b.push(&mut names, (name.as_str(), None))?;
+    }
+    for expansion in links.expansions {
+        for argument in &expansion.arguments {
+            b.push(&mut names, (argument.name.as_str(), None))?;
+        }
     }
     for name in [
         m.canonical_path(),
@@ -1805,6 +1811,7 @@ fn preflight(
     project: Option<&ProjectLinks>,
     b: &mut Budget,
 ) -> Result<(), Box<Error>> {
+    expansions::validate(m, links.expansions, b)?;
     let root_scope = m.facts()[0].scope.ok_or_else(|| {
         b.error(
             ErrorKind::InvalidIr,

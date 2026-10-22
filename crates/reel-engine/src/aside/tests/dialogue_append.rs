@@ -57,7 +57,7 @@ fn dialogue_append_wait_source_asb_defaults_and_nonblocking_choreography() {
         await cue;
         speech.append("́",wait:false);
         let result=speech.append(rich("\n[b]C[/b]"),history:false);
-        if result!=null {throw "waiting append returned a value";}
+        if result!=speech {throw "waiting append changed its speech handle";}
         if d.lines[0]!=row || history[0]!=group || group.lines[0]!=recorded {
             throw "waiting append changed dialogue or history identity";
         }
@@ -79,9 +79,8 @@ fn dialogue_append_wait_source_asb_defaults_and_nonblocking_choreography() {
     "#;
     for encoded in [false, true] {
         let (mut session, mut vm) = models::prepared(code, encoded);
-        assert!(vm.speech_methods.is_none());
+        assert_eq!(vm.speech_costs, [0, 0]);
         models::drive(&mut vm, &mut session, true);
-        let methods = vm.speech_methods.unwrap();
         let id = session.view().interaction.unwrap().id();
         assert!(matches!(session.view().interaction,
             Some(InteractionView::Dialogue(d)) if !d.awaiting_advance() && d.text()=="Ae"));
@@ -120,7 +119,6 @@ fn dialogue_append_wait_source_asb_defaults_and_nonblocking_choreography() {
             Some(InteractionView::Dialogue(d)) if d.id()==id && d.awaiting_advance() && d.text()=="Aé\nCD"));
         advance(&mut session);
         models::drive(&mut vm, &mut session, true);
-        assert_eq!(vm.speech_methods.unwrap(), methods);
         assert!(
             vm.stage()
                 .nodes()
@@ -138,20 +136,19 @@ fn dialogue_append_wait_keeps_direct_speech_without_handle_initialization() {
             encoded,
         );
         models::drive(&mut vm, &mut session, true);
-        assert!(vm.speech_methods.is_none());
+        assert_eq!(vm.speech_costs, [0, 0]);
         advance(&mut session);
         models::drive(&mut vm, &mut session, true);
-        assert!(vm.speech_methods.is_none());
+        assert_eq!(vm.speech_costs, [0, 0]);
         advance(&mut session);
         models::drive(&mut vm, &mut session, true);
-        assert!(vm.speech_methods.is_none());
         assert_eq!(vm.speech_costs, [0, 0]);
         vm.finish(&mut session).unwrap();
     }
 }
 
 #[test]
-fn dialogue_append_wait_method_resolution_cost_is_per_package() {
+fn dialogue_append_wait_handles_allocate_only_the_host_and_own_fields_table() {
     let mut code = String::from(
         r#"
         fn opening(){
@@ -171,9 +168,9 @@ fn dialogue_append_wait_method_resolution_cost_is_per_package() {
         let functions = vm.vm.program().package().functions.len();
         assert!(functions >= 256);
         models::drive(&mut vm, &mut session, false);
-        assert_eq!(vm.speech_costs, [1, 128]);
+        assert_eq!(vm.speech_costs, [128, 256]);
         println!(
-            "speech method cost: ASB={encoded}, functions={functions}, resolution_passes={}, handles={}",
+            "speech handle cost: ASB={encoded}, functions={functions}, handles={}, VM objects={}",
             vm.speech_costs[0], vm.speech_costs[1]
         );
         vm.finish(&mut session).unwrap();

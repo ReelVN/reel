@@ -28,6 +28,7 @@ impl StoryRuntime {
             program: old.adapter().vm().program().clone(),
             initializer: old.initializer(),
             entry: self.starting.unwrap(),
+            catalogs: Default::default(),
         };
         let mut next = AsideSessionUi::from_compiled(
             session,
@@ -36,6 +37,8 @@ impl StoryRuntime {
             old.adapter().vm().limits(),
         )?
         .with_asset_context(old.ui().assets(), old.catalogs());
+        next.adapter_mut()
+            .set_source_catalogs(old.adapter().source_catalogs())?;
         next.adapter_mut()
             .inherit_game_settings(old.adapter().game_settings().clone());
         next.adapter_mut()

@@ -98,6 +98,10 @@ impl Binding {
             positive_only: false,
         }
     }
+    /// Whether scale and dead zone define a finite, normalized control mapping.
+    pub fn is_valid(&self) -> bool {
+        self.scale.is_finite() && self.dead_zone.is_finite() && (0. ..1.).contains(&self.dead_zone)
+    }
     fn value(self, value: f32) -> f32 {
         let value = if value.abs() <= self.dead_zone {
             0.
@@ -139,11 +143,7 @@ impl<A: Copy + Eq> ActionMap<A> {
         };
         for (id, bindings) in actions {
             if result.actions.iter().any(|a| a.id == id)
-                || bindings.iter().any(|b| {
-                    !b.scale.is_finite()
-                        || !b.dead_zone.is_finite()
-                        || !(0. ..1.).contains(&b.dead_zone)
-                })
+                || bindings.iter().any(|binding| !binding.is_valid())
             {
                 return Err(InvalidInput);
             }

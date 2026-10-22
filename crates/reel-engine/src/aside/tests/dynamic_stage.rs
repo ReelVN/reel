@@ -54,7 +54,7 @@ fn drive(vm: &mut SessionVm, session: &mut Session) -> RunOutcome {
     loop {
         match next(vm, session) {
             RunOutcome::HostCall(ticket) => {
-                if let Err(error) = vm.dispatch(session, ticket, "en", 256) {
+                if let Err(error) = vm.dispatch(session, ticket, "en", NativeBudget::Exact(256)) {
                     vm.reject_native(session, ticket, error).unwrap();
                 }
             }

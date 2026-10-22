@@ -7,12 +7,14 @@ use reel_engine::{Epoch, InputAction, InteractionView, Session, SessionId};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let story = source::compile_story(include_str!("story_contract.aside"), "story", 7, "main")?;
     let mut session = Session::new(SessionId(1), Epoch(1))?;
-    let mut vm = SessionVm::load(&session, story.program, VmLimits::default())?;
     let mut entry = Some(story.entry);
-    vm.start(&session, story.initializer)?;
+    let initializer = story.initializer;
+    let mut vm = SessionVm::load_story(&session, story, VmLimits::default())?;
+    vm.start(&session, initializer)?;
     let mut finished = false;
     let mut lines = Vec::new();
     for _ in 0..10_000 {
+        vm.maintain_localization()?;
         let reel_engine::aside::SessionStep::Vm(outcome) = vm.step(
             &mut session,
             reel_engine::aside::SessionBudget::Exact(SliceBudget {
@@ -28,7 +30,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             RunOutcome::BudgetYield(_) => {}
             RunOutcome::HostCall(ticket) => {
                 if matches!(
-                    vm.dispatch(&mut session, ticket, "en", 1)?,
+                    vm.dispatch(
+                        &mut session,
+                        ticket,
+                        "en",
+                        reel_engine::aside::NativeBudget::Exact(1)
+                    )?,
                     NativeDispatch::Published { .. }
                 ) {
                     let action = match session.view().interaction.expect("published interaction") {

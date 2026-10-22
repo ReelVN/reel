@@ -84,8 +84,14 @@ fn until_dialogue(vm: &mut SessionVm, session: &mut Session) -> InteractionId {
             .unwrap()
         {
             SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
-                if let NativeDispatch::Published { interaction, .. } =
-                    vm.dispatch(session, ticket, "zh-CN", 64).unwrap()
+                if let NativeDispatch::Published { interaction, .. } = vm
+                    .dispatch(
+                        session,
+                        ticket,
+                        "zh-CN",
+                        reel_engine::aside::NativeBudget::Exact(64),
+                    )
+                    .unwrap()
                 {
                     return interaction;
                 }

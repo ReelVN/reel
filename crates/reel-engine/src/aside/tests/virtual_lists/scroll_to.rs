@@ -206,7 +206,8 @@ fn virtual_list_scroll_to_snapshot_before_measurement_inside_factory_and_after_a
                     .unwrap()
                 {
                     SessionStep::Vm(RunOutcome::HostCall(t)) => {
-                        vm.dispatch(&mut session, t, "en", 1).unwrap();
+                        vm.dispatch(&mut session, t, "en", NativeBudget::Exact(1))
+                            .unwrap();
                     }
                     SessionStep::Vm(RunOutcome::Returned(_)) => {
                         vm.discard_delivery(&mut session).unwrap()
@@ -262,7 +263,8 @@ fn virtual_list_scroll_to_new_target_discards_inflight_far_candidate() {
             )
             .unwrap()
         {
-            vm.dispatch(&mut session, t, "en", 1).unwrap();
+            vm.dispatch(&mut session, t, "en", NativeBudget::Exact(1))
+                .unwrap();
         }
         if vm.derived_task.is_some() && vm.stage().nodes().count() > initial {
             break;
@@ -491,7 +493,8 @@ fn pause_source_update(vm: &mut SessionVm, session: &mut Session, action: &str, 
                 if list && matches!(pause, Pause::Entry) {
                     return;
                 }
-                vm.dispatch(session, t, "en", 1).unwrap();
+                vm.dispatch(session, t, "en", NativeBudget::Exact(1))
+                    .unwrap();
                 if list && matches!(pause, Pause::Index) {
                     return;
                 }
@@ -699,8 +702,13 @@ fn virtual_list_scroll_to_snapshot_during_dirty_source_and_reindexing_rejects_ol
                     vm.snapshot_begin(&session).is_err(),
                     "an issued host call must first be admitted"
                 );
-                vm.dispatch(&mut session, vm.issued.unwrap(), "en", 1)
-                    .unwrap();
+                vm.dispatch(
+                    &mut session,
+                    vm.issued.unwrap(),
+                    "en",
+                    NativeBudget::Exact(1),
+                )
+                .unwrap();
             }
             let (mut session, mut vm) = restore(&mut vm, &session);
             vm.accept_presentation(&session, old).unwrap();

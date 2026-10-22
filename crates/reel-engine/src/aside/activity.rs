@@ -28,9 +28,33 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
     api.refine(
         "reel::repeat",
         action.clone(),
-        &[("action", action.clone())],
+        &[
+            ("action", action.clone()),
+            ("times", aside_host::source::nullable(TypeHint::Int)),
+        ],
     );
-    api.refine("reel::run", activity.clone(), &[("action", action)]);
+    api.refine(
+        "reel::run",
+        activity.clone(),
+        &[
+            ("action", action.clone()),
+            (
+                "owner",
+                aside_host::source::nullable(TypeHint::Union(vec![
+                    named("reel::types::Node"),
+                    named("reel::types::Scope"),
+                ])),
+            ),
+            ("paused", TypeHint::Bool),
+        ],
+    );
+    for symbol in ["then", "together"] {
+        api.refine(
+            &format!("reel::action::{symbol}"),
+            action.clone(),
+            &[("action", action.clone()), ("other", action.clone())],
+        );
+    }
     api.refine(
         "reel::clock",
         named("reel::types::Clock"),
@@ -52,12 +76,20 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
     }
     api.types.push(NamedType::new(
         "reel::types::Action",
-        "An immutable action description reusable by run.",
-        Vec::new(),
+        "An immutable action. Chain then, together and repeat; run starts an independent activity.",
+        [
+            ("then", "reel::action::then"),
+            ("together", "reel::action::together"),
+            ("repeat", "reel::repeat"),
+            ("run", "reel::run"),
+        ]
+        .into_iter()
+        .map(|(name, symbol)| Member::method(api.native(symbol).clone().bound(name)))
+        .collect(),
     ));
     let mut base = NamedType::new(
         "reel::types::Activity",
-        "An awaitable execution of an action. Control it with pause, resume, stop and finish.",
+        "An awaitable execution of an action. Its controls preserve the activity's identity.",
         Vec::new(),
     );
     base.await_result = Some(TypeHint::String);
@@ -89,6 +121,31 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
     );
 }
 
+/// Publish the same controls for every producer that implements the activity protocol.
+pub(super) fn describe_controls(api: &mut aside_host::source::Api) {
+    use aside_host::source::{Member, named};
+    for type_name in ["Activity", "Clock", "Playback", "ParticleActivity"] {
+        let owner = format!("reel::types::{type_name}");
+        let members = ["pause", "resume", "stop", "finish"]
+            .into_iter()
+            .map(|name| {
+                Member::method(
+                    api.native(&format!("reel::{name}"))
+                        .clone()
+                        .bound(name)
+                        .types(named(&owner), &[]),
+                )
+            })
+            .collect::<Vec<_>>();
+        api.types
+            .iter_mut()
+            .find(|ty| ty.name == owner)
+            .expect("registered activity producer")
+            .members
+            .extend(members);
+    }
+}
+
 aside_host::native_documentation! {
     pub(super) fn documentation {
         /// Describe numeric changes on a stage node. `duration` is nonnegative seconds;
@@ -103,6 +160,12 @@ aside_host::native_documentation! {
         "reel::sequence";
         /// Describe actions played together, completing when all children complete.
         "reel::parallel";
+        /// Follow this action with `other`. Both descriptions remain reusable;
+        /// the returned action shares them without copying their contents.
+        "reel::action::then";
+        /// Run this action and `other` together, completing when both finish.
+        /// Each chained operation combines the complete preceding expression.
+        "reel::action::together";
         /// Describe repeated execution of an action. `times: null` repeats indefinitely;
         /// a nonnegative integer count finishes after that many iterations.
         "reel::repeat";
@@ -218,7 +281,12 @@ fn tagged(heap: &Heap, value: Value, tag: i64) -> Result<(), AdapterError> {
     }
     Ok(())
 }
-pub(super) fn readonly(_: &Heap, _: Value, _: u32, _: Value) -> Result<(), HeapError> {
+pub(super) fn readonly(
+    _: &aside_vm::PropertyRead<'_>,
+    _: Value,
+    _: u32,
+    _: Value,
+) -> Result<(), HeapError> {
     Err(HeapError::TypeMismatch)
 }
 fn present(value: Value) -> bool {

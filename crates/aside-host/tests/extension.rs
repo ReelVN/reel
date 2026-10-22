@@ -210,15 +210,38 @@ fn declaration_documents_preserve_bound_and_inherited_identities() {
         .find(|location| location.declaration.symbol.name == "append")
         .unwrap();
     assert_eq!(bound.uri, speech.uri);
-    assert_eq!(
-        documents
-            .locations
-            .iter()
-            .filter(|location| location.declaration.symbol.reference
-                == bound.declaration.symbol.reference)
-            .count(),
-        1
-    );
+    let declarations = documents
+        .locations
+        .iter()
+        .filter(|location| {
+            location.declaration.symbol.reference == bound.declaration.symbol.reference
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(declarations.len(), 2);
+    assert!(declarations.iter().any(|location| {
+        location.declaration.symbol.name == "append"
+            && location
+                .declaration
+                .symbol
+                .signature
+                .as_ref()
+                .unwrap()
+                .parameters
+                .len()
+                == 1
+    }));
+    assert!(declarations.iter().any(|location| {
+        location.declaration.symbol.name == "add"
+            && location
+                .declaration
+                .symbol
+                .signature
+                .as_ref()
+                .unwrap()
+                .parameters
+                .len()
+                == 2
+    }));
     let inherited = documents
         .locations
         .iter()

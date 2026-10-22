@@ -92,6 +92,7 @@ pub fn compile_project(
     plan: &ModulePlan,
     seed: &bc::VerifiedProgram,
     natives: &[Vec<NativeLink<'_>>],
+    expansions: &[Vec<CallExpansion>],
     options: Options,
 ) -> Result<ProjectCompilation, ProjectError> {
     let mut current = "<project>";
@@ -101,6 +102,12 @@ pub fn compile_project(
             return Err(b.error(
                 ErrorKind::LinkContract,
                 "project requires one native-link set per source module",
+            ));
+        }
+        if !expansions.is_empty() && expansions.len() != modules.len() {
+            return Err(b.error(
+                ErrorKind::LinkContract,
+                "project requires one expansion set per source module",
             ));
         }
         if seed.package().content_version != options.content_version {
@@ -113,7 +120,7 @@ pub fn compile_project(
         b.work(seed.stats().records + seed.stats().encoded_bytes as u64)?;
         b.stats.records = seed.stats().records as usize;
         let mut package = seed.package().clone();
-        let names = names(modules, seed, &mut package, &mut b)?;
+        let names = names(modules, seed, expansions, &mut package, &mut b)?;
         let name = |text: &str, b: &mut Budget| name(&names, text, b);
         let mut index = Vec::new();
         for (input, module) in modules.iter().enumerate() {
@@ -257,6 +264,7 @@ pub fn compile_project(
                 &Linkage {
                     package: Some(seed),
                     natives: &natives[entry.input],
+                    expansions: expansions.get(entry.input).map_or(&[], Vec::as_slice),
                 },
                 options,
                 state,
@@ -336,6 +344,7 @@ pub fn compile_project(
 fn names<'a>(
     modules: &'a [h::AnalyzedModule],
     seed: &'a bc::VerifiedProgram,
+    expansions: &'a [Vec<CallExpansion>],
     package: &mut bc::BytecodePackage,
     b: &mut Budget,
 ) -> Result<Vec<(&'a str, bc::SymbolId)>, Box<Error>> {
@@ -349,6 +358,11 @@ fn names<'a>(
         }
         for name in [module.canonical_path(), module.source_path()] {
             b.push(&mut names, (name, None))?;
+        }
+    }
+    for expansion in expansions.iter().flatten() {
+        for argument in &expansion.arguments {
+            b.push(&mut names, (argument.name.as_str(), None))?;
         }
     }
     for name in [

@@ -14,6 +14,7 @@ pub const SCENES: &[(&str, E)] = &[
     ("intrinsic panel layout", E::Block),
     ("custom mouse cursor", E::Block),
     ("typed author classes", E::Module),
+    ("configure a component", E::Block),
     ("presentation wait", E::Block),
     ("locally composed control", E::Block),
     ("layer ordering", E::Block),
@@ -30,6 +31,7 @@ pub const SCENES: &[(&str, E)] = &[
     ("dialogue component", E::Module),
     ("simultaneous dialogue in story", E::Block),
     ("segmented dialogue in story", E::Block),
+    ("chained entrance", E::Block),
     ("accelerating scalar curve", E::Block),
     ("paused scene entrance", E::Block),
     ("clock frame animation", E::Block),
@@ -80,7 +82,7 @@ pub const SCENES: &[(&str, E)] = &[
     ("arrive helper", E::Module),
     ("text spacing", E::Block),
     ("bilingual dialogue", E::Block),
-    ("external translations in story", E::Block),
+    ("inline translations in story", E::Block),
     ("author audio", E::Module),
     ("audio continuation", E::Block),
     ("queued audio continuation", E::Block),
@@ -109,7 +111,7 @@ pub fn snippets(doc: &str) -> Vec<(usize, String)> {
 pub fn enclosing(scene: &str) -> &[&str] {
     match scene {
         "segmented dialogue in story" => &["mio"],
-        "accelerating scalar curve" => &["portrait"],
+        "accelerating scalar curve" | "chained entrance" => &["portrait"],
         "opening module" => &["show_cg"],
         "value match expressions" => &["mode"],
         "mask in story" => &["view"],

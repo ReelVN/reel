@@ -153,6 +153,7 @@ impl Vm {
         args: RootRangeToken,
         binding: &mut ArgumentBinding,
         meter: &mut Meter,
+        record_position: bool,
     ) -> Result<ArgumentStep<()>, VmError> {
         use ArgumentStep::*;
         let name = self.value(args, binding.index * 2)?;
@@ -186,7 +187,7 @@ impl Vm {
         } else {
             self.type_checks.argument_extra(signature)
         };
-        if !meter.take(0, 3 + extra, bytes) {
+        if !meter.take(0, 3 + extra + u64::from(record_position), bytes) {
             return Ok(Blocked);
         }
         let value = self.value(args, binding.index * 2 + 1)?;
@@ -209,6 +210,9 @@ impl Vm {
             Err(FaultKind::UnknownArgument)
         };
         if result.is_ok() {
+            if record_position {
+                self.put(args, binding.index * 2, Value::int(i64::from(slot)))?;
+            }
             binding.advance(name);
         }
         Ok(Ready(result))

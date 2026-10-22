@@ -487,6 +487,7 @@ fn natural_scroll_motion(wheel: bool, external: bool) {
                 program,
                 initializer: aside_vm::bytecode::FunctionId(metadata.initializer.function_id),
                 entry: aside_vm::bytecode::FunctionId(metadata.game_entry.unwrap().function_id),
+                catalogs: Default::default(),
             }
         } else {
             reel_engine::aside::source::compile_story(code, "list", 1, "main").unwrap()

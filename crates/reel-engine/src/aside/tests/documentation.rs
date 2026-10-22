@@ -16,7 +16,33 @@ fn source_api_examples_run_with_the_real_reel_registry() {
             let code = format!("{}\nfn opening() {{ main() }}", example.source);
             for encoded in [false, true] {
                 let (mut session, mut vm) = models::prepared(&code, encoded);
-                models::drive(&mut vm, &mut session, false);
+                for _ in 0..1024 {
+                    models::drive(&mut vm, &mut session, false);
+                    if vm.task().is_none() || vm.pending.is_none() {
+                        break;
+                    }
+                    let Some(crate::InteractionView::Dialogue(dialogue)) =
+                        session.view().interaction
+                    else {
+                        break;
+                    };
+                    let id = dialogue.id();
+                    let advance = dialogue.awaiting_advance();
+                    let owner = session.root_owner();
+                    session
+                        .advance_reveal(
+                            owner,
+                            id,
+                            std::time::Duration::from_secs(1),
+                            vm.game_settings().text_speed,
+                        )
+                        .unwrap();
+                    if advance {
+                        session
+                            .handle_local_input(owner, InputAction::Advance(id))
+                            .unwrap();
+                    }
+                }
                 assert!(
                     vm.task().is_none(),
                     "{}:{} did not finish",

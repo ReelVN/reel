@@ -59,13 +59,44 @@ impl Vm {
         Ok(cell)
     }
     pub(super) fn native_layout_work(&self) -> u64 {
-        // Cache entries occupy owned package bytes; this bounds its binary search.
+        self.program.native_parameter_lookup_work()
+    }
+    pub(super) fn program_lookup_work(&self) -> u64 {
+        // Source-location and fault lookups can inspect other package indexes.
         2 + self
             .program
             .stats()
             .owned_capacity_bytes
             .checked_ilog2()
             .unwrap_or(0) as u64
+    }
+    // Registered literal defaults use ordinary two-instruction functions. Their
+    // unused prefix parameters need no frame or parameter-copy pass. Dependent
+    // defaults and functions with effects retain the ordinary call path.
+    fn native_literal_default(&self, function: FunctionId) -> Option<(ConstId, TypeId)> {
+        let package = self.program.package();
+        let function = &package.functions[function.index()];
+        let signature = &package.signatures[function.signature.index()];
+        if function.kind != FunctionKind::Plain
+            || function.context != Context::NoWait
+            || !function.captures.is_empty()
+            || signature.effects.0 != 0
+            || function.code.len() != 2
+        {
+            return None;
+        }
+        let load = function.code[0];
+        let returned = function.code[1];
+        if load.opcode != Opcode::LoadConst as u16
+            || returned != Instruction::new(Opcode::Return, load.operands[0], 0, 0)
+        {
+            return None;
+        }
+        let constant = ConstId(load.operands[1]);
+        if matches!(package.constants[constant.index()], Const::Tuple(_)) {
+            return None;
+        }
+        Some((constant, signature.return_type))
     }
     pub(super) fn native_parameter_step(
         &mut self,
@@ -88,23 +119,57 @@ impl Vm {
                 }
             }
             NativePhase::Defaults { parameter } => {
-                if !m.take(0, self.native_layout_work() + 2, 0) {
+                let literal = sig
+                    .parameters
+                    .get(parameter as usize)
+                    .filter(|_| self.slots.read(at(n.bound, parameter)).is_err())
+                    .and_then(|p| p.default)
+                    .and_then(|function| self.native_literal_default(function));
+                let literal_work = literal.map_or(0, |(_, ty)| 2 + self.type_checks.extra(ty));
+                let layout_work = if n.bindings.is_some() {
+                    self.native_layout_work()
+                } else {
+                    0
+                };
+                if !m.take(0, layout_work + 8 + literal_work, 0) {
                     return Ok(false);
                 }
                 if parameter == count + u32::from(sig.rest.is_some()) {
                     n.phase = NativePhase::Resume(NativeInput::Entry);
                 } else if self.slots.read(at(n.bound, parameter)).is_ok() {
-                    let storage = self.native_storage(n.native, parameter)?;
+                    let storage = if n.bindings.is_some() {
+                        self.native_storage(n.native, parameter)?
+                    } else {
+                        BindingStorage::Value(Reg(parameter))
+                    };
                     n.phase = NativePhase::Parameter { parameter, storage };
                 } else if let Some(default) = sig
                     .parameters
                     .get(parameter as usize)
                     .and_then(|p| p.default)
                 {
-                    n.phase = NativePhase::DefaultCall {
-                        parameter,
-                        function: default,
-                    };
+                    if let Some((constant, ty)) = literal {
+                        match self.constant_value(constant) {
+                            Ok(Some(value)) => match self.check_type(ty, value) {
+                                Ok(()) => {
+                                    self.put(n.bound, parameter, value)?;
+                                    if n.bindings.is_none() {
+                                        n.phase = NativePhase::Defaults {
+                                            parameter: parameter + 1,
+                                        };
+                                    }
+                                }
+                                Err(kind) => self.native_fault(n, kind)?,
+                            },
+                            Ok(None) => unreachable!("scalar literal default"),
+                            Err(error) => self.native_fault(n, heap_fault(error))?,
+                        }
+                    } else {
+                        n.phase = NativePhase::DefaultCall {
+                            parameter,
+                            function: default,
+                        };
+                    }
                 } else {
                     self.native_fault(n, FaultKind::MissingArgument)?;
                 }

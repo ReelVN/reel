@@ -1,253 +1,160 @@
-//! Module catalogs keep runtime identities and publish only complete valid bundles.
-use reel_cli::localization::{bundle, check, extract, extract_directory};
-use reel_engine::localization::{Catalog, Localization, message_id};
-use std::{
-    fs,
-    path::PathBuf,
-    process::{Command, Output},
-    sync::atomic::{AtomicUsize, Ordering},
+//! Creator translations remain in source and enter the ordinary compile/runtime path.
+use aside_vm::executor::RunOutcome;
+use reel_cli::{into_story, project};
+use reel_engine::{
+    Epoch, Session, SessionId,
+    aside::{SessionBudget, SessionStep, SessionVm, SliceBudget, VmLimits},
 };
-
-struct Case(PathBuf);
-impl Case {
-    fn new() -> Self {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/reel-artifacts/localization-tests")
-            .join(format!(
-                "{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-        fs::create_dir_all(&path).unwrap();
-        Self(path)
+use reel_ui::stage::NodeKind;
+use std::{fs, path::Path};
+fn write(root: &Path, path: &str, source: &str) {
+    let path = root.join("src").join(path);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, source).unwrap();
+}
+fn run(checked: reel_cli::Checked) -> SessionVm {
+    let story = into_story(checked, project::ENTRY).unwrap();
+    let entry = story.entry;
+    let initializer = story.initializer;
+    let mut session = Session::new(SessionId(901), Epoch(1)).unwrap();
+    let mut vm = SessionVm::load_story(&session, story, VmLimits::default()).unwrap();
+    for function in [initializer, entry] {
+        vm.start(&session, function).unwrap();
+        for step in 0..100_000 {
+            assert!(step < 99_999, "source catalog runtime stalled");
+            vm.maintain_localization().unwrap();
+            match vm
+                .step(
+                    &mut session,
+                    SessionBudget::RetryMinimum(SliceBudget::default()),
+                    || 0,
+                )
+                .unwrap()
+            {
+                SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
+                    vm.dispatch(
+                        &mut session,
+                        ticket,
+                        "en",
+                        reel_engine::aside::NativeBudget::Exact(64),
+                    )
+                    .unwrap();
+                }
+                SessionStep::Vm(RunOutcome::Returned(_)) => {
+                    vm.discard_delivery(&mut session).unwrap();
+                }
+                SessionStep::Vm(RunOutcome::Fault(fault)) => panic!(
+                    "source translation fault {:?}",
+                    vm.vm().delivery_fault(fault).unwrap()
+                ),
+                SessionStep::Vm(RunOutcome::ResourceBlocked(error)) => {
+                    panic!("source translation resource {error:?}")
+                }
+                SessionStep::Idle if !vm.has_runnable_tasks() && !vm.localization_pending() => {
+                    break;
+                }
+                _ => {}
+            }
+        }
     }
-    fn write(&self, path: &str, text: &str) {
-        let path = self.0.join(if path.ends_with(".aside") {
-            PathBuf::from("src").join(path)
-        } else {
-            PathBuf::from(path)
-        });
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, text).unwrap();
+    vm.sync_stage(&session).unwrap();
+    vm
+}
+#[test]
+fn imported_translations_retain_their_author_module_and_alias_identity() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    write(
+        root,
+        "main.aside",
+        r#"use game::story;use game::ui::menu;fn main(){localization.set_locale("en");stage.replace(column{ text(story.greeting());text(menu.title()); });}"#,
+    );
+    write(
+        root,
+        "story.aside",
+        r#"use reel::prelude::tr as translated;pub fn greeting(){translated("雨停了。",{en:"The rain stopped."})}"#,
+    );
+    write(
+        root,
+        "ui/menu.aside",
+        r#"pub fn title(){tr("打开 { 文件 }",{en:"Open { file }"})}fn custom(){let tr=|value|value;tr("ordinary function");}"#,
+    );
+    let loaded = project::load(root).unwrap_or_else(|e| panic!("{:?}", e.failure));
+    let checked = loaded.check().unwrap();
+    assert_eq!(checked.catalogs.messages.len(), 2);
+    for suffix in ["story.aside", "ui/menu.aside"] {
+        assert!(
+            checked
+                .catalogs
+                .messages
+                .iter()
+                .any(|message| message.module.ends_with(suffix)
+                    && message.span.start() < message.span.end())
+        );
     }
-    fn read(&self, path: &str) -> String {
-        fs::read_to_string(self.0.join(path)).unwrap()
+    assert!(!checked.catalogs.catalogs["en"].contains("ordinary function"));
+    let vm = run(checked);
+    for expected in ["The rain stopped.", "Open { file }"] {
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|node| node.kind == NodeKind::Text(expected.into())),
+            "missing {expected}"
+        );
     }
-    fn command(&self, arguments: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_reel"))
-            .current_dir(&self.0)
-            .args(arguments)
+    assert!(!root.join("build").exists());
+    assert!(!root.join("translations").exists());
+}
+#[test]
+fn inline_interpolation_and_literal_paragraphs_share_the_source_loader() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    write(
+        root,
+        "main.aside",
+        r#"fn main(){
+        localization.set_locale("en");let name="Mio";let count=3;
+        let greeting=tr(f"你好{name}，{count}封信。",{en:f"Hello {name}, {count} letters."});
+        let literal=tr("原文",{en:"  {quoted}\n\n.second\t "});
+        stage.replace(column{text(greeting);text(literal);});
+    }"#,
+    );
+    let loaded = project::load(root).unwrap_or_else(|e| panic!("{:?}", e.failure));
+    let checked = loaded.check().unwrap();
+    let vm = run(checked);
+    assert!(vm.stage().nodes().any(|node|matches!(&node.kind,NodeKind::Text(text) if text.replace(['\u{2068}','\u{2069}'],"")=="Hello Mio, 3 letters.")));
+    assert!(
+        vm.stage()
+            .nodes()
+            .any(|node| node.kind == NodeKind::Text("  {quoted}\n\n.second\t ".into()))
+    );
+}
+#[test]
+fn source_translation_failure_preserves_the_previous_package() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    write(root, "main.aside", r#"fn main(){tr("你好",{en:"Hello"});}"#);
+    let command = |args: &[&str]| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_reel"))
+            .current_dir(root)
+            .args(args)
             .output()
             .unwrap()
-    }
-}
-fn succeeds(output: Output) {
+    };
+    let built = command(&["build", "--format", "json"]);
     assert!(
-        output.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stdout)
     );
-}
-
-#[test]
-fn extraction_mirrors_imported_modules_and_keeps_one_identity_with_all_call_sites() {
-    let case = Case::new();
-    case.write(
-        "main.aside",
-        r#"
-use game::story::day_one;
-use game::ui::menu;
-fn main() { day_one.play(); menu.show(); tr("共享"); }
-"#,
-    );
-    case.write(
-        "story/day_one.aside",
-        r#"
-use reel::prelude::tr as translated;
-pub fn play() { narrator(translated("共享")); narrator(translated("雨停了。", id: "opening")); }
-"#,
-    );
-    case.write(
-        "ui/menu.aside",
-        r#"
-pub fn show() { let _ = text(tr("共享", locale: "en")); let _ = text(tr("打开 { 文件 }")); }
-fn custom() { let tr = |value| value; tr("not a translation"); }
-"#,
-    );
-    let output = case.command(&["loc", "extract", "--output-dir", "source"]);
-    succeeds(output);
-    let shared = message_id("共享");
-    let main = case.read("source/main.ftl");
-    assert_eq!(main.matches(&format!("{shared} =")).count(), 1);
-    for reference in ["main.aside", "story/day_one.aside", "ui/menu.aside"] {
-        assert!(main.contains(reference), "{main}");
+    let package = root.join("build/debug/game.asb");
+    let bytes = fs::read(&package).unwrap();
+    write(root, "main.aside", r#"fn main(){tr("你好",{en:42});}"#);
+    for action in ["check", "build"] {
+        let output = command(&[action, "--format", "json"]);
+        assert!(!output.status.success());
+        let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(!report["diagnostics"].as_array().unwrap().is_empty());
+        assert_eq!(fs::read(&package).unwrap(), bytes);
     }
-    assert!(!case.read("source/story/day_one.ftl").contains(&shared));
-    assert!(!case.read("source/ui/menu.ftl").contains(&shared));
-    assert!(
-        !case
-            .read("source/ui/menu.ftl")
-            .contains("not a translation")
-    );
-    succeeds(case.command(&["loc", "bundle", "source", "--output", "dist/en.ftl"]));
-    succeeds(case.command(&["loc", "check", "dist/en.ftl", "--locale", "en"]));
-    let before = case.read("dist/en.ftl");
-    succeeds(case.command(&["loc", "extract", "--output-dir", "source", "--overwrite"]));
-    succeeds(case.command(&[
-        "loc",
-        "bundle",
-        "source",
-        "--output",
-        "dist/en.ftl",
-        "--overwrite",
-    ]));
-    assert_eq!(before, case.read("dist/en.ftl"));
-    let single = extract(&case.0, &case.0.join("single.ftl"), false).unwrap();
-    assert_eq!((single.messages, single.occurrences), (3, 5));
-    for text in [case.read("dist/en.ftl"), case.read("single.ftl")] {
-        let mut localization = Localization::default();
-        localization.install(Catalog::parse("en", "test", text).unwrap());
-        assert_eq!(
-            localization.format(&shared, "missing", None).unwrap(),
-            "共享"
-        );
-        assert_eq!(
-            localization.format("opening", "missing", None).unwrap(),
-            "雨停了。"
-        );
-        assert_eq!(
-            localization
-                .format(&message_id("打开 { 文件 }"), "missing", None)
-                .unwrap(),
-            "打开 { 文件 }"
-        );
-    }
-}
-
-#[test]
-fn extraction_reports_stale_catalogs_and_overwrites_only_explicit_outputs() {
-    let case = Case::new();
-    case.write(
-        "main.aside",
-        "use game::story; fn main() { story.play(); tr(\"Shared\"); }",
-    );
-    case.write("story.aside", "pub fn play() { tr(\"Shared\"); }");
-    let target = case.0.join("source");
-    extract_directory(&case.0, &target, false).unwrap();
-    assert!(target.join("main.ftl").is_file());
-    case.write("main.aside", "use game::story; fn main() { story.play(); }");
-    let result = extract_directory(&case.0, &target, true).unwrap();
-    assert_eq!(
-        result.stale_catalogs,
-        [target.join("main.ftl").canonicalize().unwrap()]
-    );
-    assert!(target.join("main.ftl").is_file());
-    assert!(target.join("story.ftl").is_file());
-    let before = case.read("source/story.ftl");
-    case.write("source/translated.ftl", "message = Traduction\n");
-    let result = extract_directory(&case.0, &target, true).unwrap();
-    assert_eq!(result.stale_catalogs.len(), 2);
-    assert_eq!(before, case.read("source/story.ftl"));
-    assert_eq!(case.read("source/translated.ftl"), "message = Traduction\n");
-    assert!(extract(&case.0, &target.join("translated.ftl"), false).is_err());
-    extract(&case.0, &target.join("translated.ftl"), true).unwrap();
-    assert!(
-        case.read("source/translated.ftl")
-            .contains(&message_id("Shared"))
-    );
-}
-
-#[test]
-fn bundles_resolve_cross_file_terms_messages_and_attributes_without_runtime_file_scans() {
-    let case = Case::new();
-    case.write(
-        "en/common.ftl",
-        "-brand = Reel\nname = Mio\n    .title = Captain\n",
-    );
-    case.write(
-        "en/story/day_one.ftl",
-        "welcome = Hello, { name.title } { name }! Welcome to { -brand }.\n",
-    );
-    case.write("en/notes.txt", "not a catalog");
-    let output = case.0.join("dist/en.ftl");
-    let result = bundle(&case.0.join("en"), &output, false).unwrap();
-    assert_eq!((result.files, result.entries), (2, 3));
-    check(&output, "en").unwrap();
-    let text = fs::read_to_string(&output).unwrap();
-    let mut localization = Localization::default();
-    localization.install(Catalog::parse("en", "dist/en.ftl", text.clone()).unwrap());
-    let rendered = localization.format("welcome", "missing", None).unwrap();
-    assert_eq!(
-        rendered.replace(['\u{2068}', '\u{2069}'], ""),
-        "Hello, Captain Mio! Welcome to Reel."
-    );
-    assert!(bundle(&case.0.join("en"), &output, false).is_err());
-    assert_eq!(fs::read_to_string(&output).unwrap(), text);
-    bundle(&case.0.join("en"), &output, true).unwrap();
-    assert_eq!(fs::read_to_string(&output).unwrap(), text);
-    assert!(bundle(&case.0.join("en"), &case.0.join("en/combined.ftl"), true).is_err());
-    assert!(!case.0.join("en/combined.ftl").exists());
-}
-
-#[test]
-fn bundle_failure_preserves_output_and_reports_original_declarations() {
-    let case = Case::new();
-    case.write("dist/en.ftl", "existing = Keep this translation\n");
-    let output = case.0.join("dist/en.ftl");
-    for (first, duplicate, first_column, duplicate_column) in [
-        ("message = First", "message = Second", 1, 1),
-        ("-term = First", "-term = Second", 2, 2),
-        ("-shared = First", "shared = Second", 2, 1),
-    ] {
-        case.write("en/a.ftl", &format!("# first declaration\n{first}\n"));
-        case.write("en/story/b.ftl", &format!("# duplicate\n\n{duplicate}\n"));
-        let error = bundle(&case.0.join("en"), &output, true).err().unwrap();
-        assert!(
-            error.contains(&format!("a.ftl:2:{first_column}")),
-            "{error}"
-        );
-        assert!(
-            error.contains(&format!("b.ftl:3:{duplicate_column}")),
-            "{error}"
-        );
-        assert!(
-            error.contains("first declaration") && error.contains("duplicate Fluent id"),
-            "{error}"
-        );
-        assert_eq!(
-            case.read("dist/en.ftl"),
-            "existing = Keep this translation\n"
-        );
-    }
-    case.write("en/story/b.ftl", "good = Valid\nbad = { @ }\n");
-    let error = bundle(&case.0.join("en"), &output, true).err().unwrap();
-    assert!(error.contains("b.ftl:2:"), "{error}");
-    assert_eq!(
-        case.read("dist/en.ftl"),
-        "existing = Keep this translation\n"
-    );
-    assert_eq!(fs::read_dir(case.0.join("dist")).unwrap().count(), 1);
-}
-
-#[test]
-fn invalid_cli_output_combinations_fail_without_creating_outputs() {
-    let case = Case::new();
-    for args in [
-        vec!["loc", "extract", ".", "--output", "source.ftl"],
-        vec![
-            "loc",
-            "extract",
-            "--output-dir",
-            "source",
-            "--output",
-            "source.ftl",
-        ],
-        vec!["loc", "bundle", ".", "--output-dir", "source"],
-        vec!["loc", "check", "--locale", "en", "--output-dir", "source"],
-    ] {
-        assert_eq!(case.command(&args).status.code(), Some(2));
-    }
-    assert_eq!(fs::read_dir(&case.0).unwrap().count(), 0);
 }

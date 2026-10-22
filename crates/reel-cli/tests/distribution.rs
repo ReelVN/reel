@@ -39,7 +39,7 @@ fn read_line(path: &Path) -> String {
         VmLimits::default(),
     )
     .unwrap()
-    .with_assets(assets);
+    .with_asset_context(assets, std::sync::Arc::new(loaded.catalogs));
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         assert!(Instant::now() < deadline, "catalog/story did not complete");
@@ -81,26 +81,25 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
         scripts.join("main.aside"),
         r#"
         use game::shared::opening::line;
-        use game::local::message::opening_id;
+        use game::local::message::select_language;
         fn main() {
-            localization.load("en", "locales/en.ftl");
-            localization.set_locale("en");
-            narrator(tr(line(), id: opening_id()));
+            select_language();
+            narrator(line());
         }
     "#,
     )
     .unwrap();
     fs::write(
         library.join("opening.aside"),
-        "pub fn line() { \"只在文本池保存的正文。\" }",
+        r#"pub fn line() { tr("只在文本池保存的正文。", {en: "Packaged translation."}) }"#,
     )
     .unwrap();
     fs::write(
         nested.join("message.aside"),
-        "pub fn opening_id() { \"opening\" }",
+        r#"pub fn select_language() { localization.set_locale("en"); }"#,
     )
     .unwrap();
-    fs::write(catalogs.join("en.ftl"), "opening = Packaged translation.\n").unwrap();
+    fs::write(catalogs.join("notes.txt"), "Additional packaged text.").unwrap();
     fs::write(resources.join("sample.bin"), b"range-readable resource").unwrap();
     fs::write(resources.join("00-small.bin"), [1; 17]).unwrap();
     fs::write(resources.join("01-large.bin"), [2; 1024]).unwrap();
@@ -231,8 +230,12 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
                 .unwrap();
             writer
                 .add(
-                    "locales/en.ftl",
-                    &mut b"opening = Updated translation.\n".as_slice(),
+                    "__reel/catalogs/en.ftl",
+                    &mut format!(
+                        "{} = Updated translation.\n",
+                        artifact.catalogs.messages[0].key
+                    )
+                    .as_bytes(),
                 )
                 .unwrap();
             writer.finish().unwrap();

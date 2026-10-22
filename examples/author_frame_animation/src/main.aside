@@ -14,11 +14,11 @@ fn main() {
     );
     stage.replace(root);
     await stage.presented(owner: root);
-    resume(timer);
-    await run(delay(2));
-    pause(timer);
-    await run(delay(1));
-    resume(timer);
-    await run(delay(2));
-    stop(timer);
+    timer.resume();
+    await delay(2).run();
+    timer.pause();
+    await delay(1).run();
+    timer.resume();
+    await delay(2).run();
+    timer.stop();
 }

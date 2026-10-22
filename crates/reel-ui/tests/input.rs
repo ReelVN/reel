@@ -58,6 +58,43 @@ fn actions_aggregate_devices_bindings_analog_values_and_terminal_causes() {
 }
 
 #[test]
+fn stage_bindings_validate_names_and_numeric_controls_without_changing_input_behavior() {
+    use reel_ui::stage::{ActionDefinition, InputBindings};
+    let control = Control::Button(GamepadButton::South);
+    let action = |name: &str, scale, dead_zone| ActionDefinition {
+        name: name.into(),
+        bindings: vec![Binding {
+            control,
+            scale,
+            dead_zone,
+            positive_only: false,
+        }],
+    };
+    for actions in [
+        vec![action("", 1., 0.)],
+        vec![action("confirm", 1., 0.), action("confirm", 1., 0.)],
+        vec![action("confirm", f32::NAN, 0.)],
+        vec![action("confirm", 1., 1.)],
+        vec![action("confirm", 1., -0.1)],
+    ] {
+        assert!(InputBindings::new(actions).is_err());
+    }
+    let bindings = InputBindings::new(vec![action("确认", -2., 0.25)]).unwrap();
+    let mut map = ActionMap::new(
+        bindings
+            .iter()
+            .map(|action| (action.name.as_ref(), action.bindings.clone())),
+    )
+    .unwrap();
+    let mut events = Vec::new();
+    map.update(&value(1, control, 0.5), |event| events.push(event))
+        .unwrap();
+    assert_eq!(events[0].action, "确认");
+    assert_eq!(events[0].phase, ActionPhase::Pressed);
+    assert!((events[0].value + 2. / 3.).abs() < 1e-6);
+}
+
+#[test]
 fn navigation_hysteresis_repeat_disconnect_and_remapping_share_one_clock() {
     let mut input = NavigationInput::default();
     let axis = Control::Axis(GamepadAxis::LeftX);

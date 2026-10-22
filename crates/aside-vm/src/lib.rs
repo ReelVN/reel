@@ -30,8 +30,8 @@ pub use frame_slots::{
 pub use gc::{GcBudget, GcPhase, GcProgress};
 pub use heap::{
     Heap, HeapError, HeapLimits, HeapStats, HostPropertyValidator, ObjectInfo, ObjectKind,
-    PropertyId, RootKind, RootOwner, RootToken, TableLookupProgress, TableLookupStatus,
-    TableStringLookup,
+    PropertyBatch, PropertyBatchProgress, PropertyId, PropertyRead, PropertyWrites, RootKind,
+    RootOwner, RootToken, TableLookupProgress, TableLookupStatus, TableStringLookup,
 };
 pub use host_types::{HostMethodSupport, HostTypeId, HostTypeSupport};
 pub use payload::{

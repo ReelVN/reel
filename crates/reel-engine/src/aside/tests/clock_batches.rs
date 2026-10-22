@@ -14,7 +14,8 @@ fn one_step(vm: &mut SessionVm, session: &mut Session) {
         .unwrap()
     {
         SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
-            vm.dispatch(session, ticket, "en", 1).unwrap();
+            vm.dispatch(session, ticket, "en", NativeBudget::Exact(1))
+                .unwrap();
         }
         SessionStep::Vm(RunOutcome::Returned(_)) => vm.discard_delivery(session).unwrap(),
         SessionStep::Vm(RunOutcome::Fault(id)) => panic!(

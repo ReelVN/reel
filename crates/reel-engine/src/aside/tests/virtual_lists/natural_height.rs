@@ -160,7 +160,8 @@ fn virtual_list_natural_height_cost() {
                         );
                         index_start = Some(Instant::now());
                     }
-                    vm.dispatch(&mut session, t, "en", 32).unwrap();
+                    vm.dispatch(&mut session, t, "en", NativeBudget::Exact(32))
+                        .unwrap();
                 }
                 SessionStep::Vm(RunOutcome::Returned(_)) => {
                     vm.discard_delivery(&mut session).unwrap()

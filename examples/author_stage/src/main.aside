@@ -1,15 +1,15 @@
-fn heading(title, accent) {
+fn heading(title: string, accent: string) {
     text(title, font_size: 23, color: accent)
 }
 
-fn hint(message) {
+fn hint(message: string) {
     if message == "" {
         return null;
     }
     text(message, font_size: 16, color: "#aab8cb")
 }
 
-fn card(title, accent, children = []) {
+fn card(title: string, accent: string, children = []) {
     column(width: 264, height: 202, padding: 20, gap: 14, background: "#1b2a40") {
         row(gap: 10) {
             stack(width: 4, height: 26, background: accent);
@@ -54,10 +54,8 @@ pub fn main() {
     };
     stage.replace(scene);
     narrator("先让画面停留片刻。");
-    title.value = "同一幅画面，新的语气";
-    title.color = "#73dac3";
+    title.with(value: "同一幅画面，新的语气", color: "#73dac3");
     subtitle.value = "修改的是原来的节点，组件与层次继续保留。";
-    glow.opacity = 0.8;
-    glow.x = 600;
+    glow.with(opacity: 0.8, x: 600);
     narrator("现在，标题和光线都回应了这段故事。");
 }

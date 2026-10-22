@@ -1,6 +1,8 @@
 //! Observable data uses ordinary collection identities and the shared property graph.
 use super::*;
+mod adoption;
 mod table;
+pub(in crate::heap) use adoption::ModelAdoptionProgress;
 
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -154,17 +156,10 @@ impl Heap {
         let mut cursor = 0;
         while cursor < self.model_work.len() {
             let current = self.model_work[cursor];
-            let key = self.key(current)?;
             let mut edge = 0;
-            if self.object(key)?.kind == ObjectKind::Instance {
-                // Class layouts contain methods/statics and are shared, not data edges.
-                let (_, fields) = self.instance_data(current)?;
-                self.model_enqueue(fields)?;
-            } else {
-                while let Some(value) = self.object(key)?.payload.edge(edge) {
-                    self.model_enqueue(value)?;
-                    edge += 1;
-                }
+            while let Some(value) = self.model_data_edge(current, edge)? {
+                self.model_enqueue(value)?;
+                edge += 1;
             }
             cursor += 1;
         }
@@ -177,13 +172,12 @@ impl Heap {
         Ok(())
     }
 
-    fn model_enqueue(&mut self, value: Value) -> Result<(), HeapError> {
+    pub(super) fn model_candidate(&self, value: Value) -> Result<bool, HeapError> {
         if value.tag() != crate::ValueTag::Object {
-            return Ok(());
+            return Ok(false);
         }
         let object = self.object(self.key(value)?)?;
         if object.model
-            || object.model_visit == self.model_walk
             || !matches!(
                 object.kind,
                 ObjectKind::Table
@@ -195,10 +189,33 @@ impl Heap {
                     | ObjectKind::Cell
             )
         {
-            return Ok(());
+            return Ok(false);
         }
         if object.kind == ObjectKind::Instance {
             self.instance_data(value)?;
+        }
+        Ok(true)
+    }
+
+    fn model_data_edge(&self, value: Value, edge: u32) -> Result<Option<Value>, HeapError> {
+        let object = self.object(self.key(value)?)?;
+        if object.kind == ObjectKind::Instance {
+            // Class layouts contain methods/statics and are shared, not data edges.
+            Ok(if edge == 0 {
+                Some(self.instance_data(value)?.1)
+            } else {
+                None
+            })
+        } else {
+            Ok(object.payload.edge(edge))
+        }
+    }
+
+    fn model_enqueue(&mut self, value: Value) -> Result<(), HeapError> {
+        if !self.model_candidate(value)?
+            || self.object(self.key(value)?)?.model_visit == self.model_walk
+        {
+            return Ok(());
         }
         if self.model_work.len() == self.model_work.capacity() {
             let old = self.model_work.capacity();

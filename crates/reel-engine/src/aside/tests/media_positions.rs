@@ -567,7 +567,8 @@ fn continuous_media_and_clock_settle_the_same_sliced_reactive_batch() {
                 .unwrap()
             {
                 SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
-                    vm.dispatch(&mut session, ticket, "en", 1).unwrap();
+                    vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(1))
+                        .unwrap();
                 }
                 SessionStep::Vm(RunOutcome::Returned(_)) => {
                     vm.discard_delivery(&mut session).unwrap()

@@ -425,7 +425,12 @@ fn snapshot_restores_shared_graph_cells_classes_faults_waits_and_rejects_stale_c
         .heap_mut()
         .add_root(RootOwner(99), RootKind::Host, bytes)
         .unwrap();
-    fn readonly(_: &aside_vm::Heap, _: Value, _: u32, _: Value) -> Result<(), aside_vm::HeapError> {
+    fn readonly(
+        _: &aside_vm::PropertyRead<'_>,
+        _: Value,
+        _: u32,
+        _: Value,
+    ) -> Result<(), aside_vm::HeapError> {
         Err(aside_vm::HeapError::ReadOnly)
     }
     let fields = vm.heap_mut().alloc_table().unwrap();

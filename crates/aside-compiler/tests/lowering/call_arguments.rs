@@ -570,6 +570,7 @@ fn native_packed_calls_preserve_trusted_rest_defaults_abi_and_identity() {
     let linkage = Linkage {
         package: Some(&seed),
         natives: &links,
+        expansions: &[],
     };
     let c = lowering::compile(&m, &linkage, Options::default()).unwrap();
     let p = c.program.package();
@@ -634,6 +635,7 @@ fn native_packed_calls_preserve_trusted_rest_defaults_abi_and_identity() {
             &Linkage {
                 package: Some(&seed),
                 natives: &links,
+                expansions: &[],
             },
             Options::default(),
         )
@@ -653,7 +655,8 @@ fn native_packed_calls_preserve_trusted_rest_defaults_abi_and_identity() {
             &m,
             &Linkage {
                 package: Some(&missing_rest),
-                natives: &links
+                natives: &links,
+                expansions: &[],
             },
             Options::default()
         )
@@ -681,6 +684,7 @@ fn native_packed_calls_preserve_trusted_rest_defaults_abi_and_identity() {
         &Linkage {
             package: Some(&seed),
             natives: &links,
+            expansions: &[],
         },
         Options::default(),
     )
@@ -724,6 +728,7 @@ fn native_packed_calls_preserve_trusted_rest_defaults_abi_and_identity() {
             &Linkage {
                 package: Some(&seed),
                 natives: &links,
+                expansions: &[],
             },
             Options::default(),
         )

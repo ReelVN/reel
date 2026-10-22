@@ -245,6 +245,26 @@ impl Heap {
         self.invalidate_reactive(table, Some(self.model_field(table, position)?))?;
         Ok(())
     }
+
+    /// Replace an existing property slot after complete graph preparation.
+    /// Adoption and capacity checks precede publication in prepare_properties.
+    pub(super) fn store_prepared_property_value(
+        &mut self,
+        table: Value,
+        position: u32,
+        value: Value,
+    ) -> Result<(), HeapError> {
+        let key = self.key(table)?;
+        let field = self.model_field(table, position)?;
+        self.barrier(value)?;
+        let object = self.objects.get_mut(key).unwrap();
+        let Payload::Table(values) = &mut object.payload else {
+            unreachable!()
+        };
+        values.set(position * 2 + 1, value);
+        object.content_version = object.content_version.wrapping_add(1);
+        self.invalidate_reactive(table, Some(field))
+    }
 }
 
 /// A borrowed-key, allocation-free own-slot lookup. This is not a GC root:

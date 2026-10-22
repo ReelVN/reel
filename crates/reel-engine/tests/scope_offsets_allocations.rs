@@ -106,7 +106,13 @@ fn scope_offsets_reuse_storage_for_idle_projection_motion_and_removal() {
                         && ticket.input == aside_vm::executor::NativeInput::CallbackReturned;
                     let region = Region::new(GLOBAL);
                     let started = Instant::now();
-                    vm.dispatch(&mut session, ticket, "en", 64).unwrap();
+                    vm.dispatch(
+                        &mut session,
+                        ticket,
+                        "en",
+                        reel_engine::aside::NativeBudget::Exact(64),
+                    )
+                    .unwrap();
                     if closing {
                         let elapsed = started.elapsed();
                         let removal = region.change();
@@ -165,7 +171,13 @@ fn drive(vm: &mut SessionVm, session: &mut Session) {
             .unwrap()
         {
             SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
-                vm.dispatch(session, ticket, "en", 64).unwrap();
+                vm.dispatch(
+                    session,
+                    ticket,
+                    "en",
+                    reel_engine::aside::NativeBudget::Exact(64),
+                )
+                .unwrap();
             }
             SessionStep::Vm(RunOutcome::Returned(_)) => vm.discard_delivery(session).unwrap(),
             SessionStep::Vm(RunOutcome::Fault(fault)) => panic!("offset fault {fault:?}"),

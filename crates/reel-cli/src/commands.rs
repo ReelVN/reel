@@ -23,9 +23,6 @@ pub enum Command {
     Source(SourceCommand),
     /// Play an ASB, including its embedded distribution, without recompiling.
     Run(Run),
-    /// Extract, bundle and check translation catalogs.
-    #[command(subcommand)]
-    Loc(Localization),
     /// Prepare a tiled image pyramid for visible-region loading.
     PrepareImage(PrepareImage),
     /// Format every Aside source file in the current project's src directory.
@@ -165,48 +162,6 @@ pub struct Run {
     pub playback: Playback,
 }
 
-#[derive(Subcommand)]
-pub enum Localization {
-    /// Extract messages from the imported module graph.
-    Extract(Extract),
-    /// Compile one language's module catalogs into a runtime FTL.
-    Bundle(Bundle),
-    /// Check Fluent syntax and language-tag validity.
-    Check(CatalogCheck),
-}
-#[derive(Args)]
-pub struct Extract {
-    #[command(flatten)]
-    pub destination: ExtractionOutput,
-    #[arg(long)]
-    pub overwrite: bool,
-}
-#[derive(Args)]
-#[group(required = true, multiple = false)]
-pub struct ExtractionOutput {
-    /// Write a single source catalog.
-    #[arg(long, value_name = "SOURCE.ftl")]
-    pub output: Option<PathBuf>,
-    /// Mirror module paths in a directory of source catalogs.
-    #[arg(long, value_name = "DIRECTORY")]
-    pub output_dir: Option<PathBuf>,
-}
-#[derive(Args)]
-pub struct Bundle {
-    #[arg(value_name = "LOCALE_DIRECTORY")]
-    pub source: PathBuf,
-    #[arg(long, value_name = "CATALOG.ftl")]
-    pub output: PathBuf,
-    #[arg(long)]
-    pub overwrite: bool,
-}
-#[derive(Args)]
-pub struct CatalogCheck {
-    #[arg(value_name = "CATALOG.ftl")]
-    pub source: PathBuf,
-    #[arg(long, value_name = "LANGUAGE_TAG")]
-    pub locale: String,
-}
 #[derive(Args)]
 pub struct PrepareImage {
     #[arg(value_name = "IMAGE")]

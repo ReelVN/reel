@@ -56,7 +56,12 @@ pub trait PropertySchema {
     /// Return the declaration's Markdown for hover and completion documentation.
     fn documentation(index: usize) -> &'static str;
     /// Host write entry point. Override to validate relationships between fields.
-    fn validate_host(heap: &Heap, _host: Value, index: u32, value: Value) -> Result<(), HeapError> {
+    fn validate_host(
+        heap: &aside_vm::PropertyRead<'_>,
+        _host: Value,
+        index: u32,
+        value: Value,
+    ) -> Result<(), HeapError> {
         Self::validate(heap, index, value)
     }
     fn validate(heap: &Heap, index: u32, value: Value) -> Result<(), HeapError> {

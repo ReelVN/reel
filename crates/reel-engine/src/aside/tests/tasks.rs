@@ -219,7 +219,8 @@ fn task_fault_keeps_original_source_as_a_cause_after_gc_and_await() {
         loop {
             match next(&mut vm, &mut session) {
                 RunOutcome::HostCall(ticket) => {
-                    vm.dispatch(&mut session, ticket, "en", 32).unwrap();
+                    vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(32))
+                        .unwrap();
                 }
                 RunOutcome::Fault(delivery) => {
                     let info = vm.vm.delivery_fault(delivery).unwrap().unwrap();
@@ -285,7 +286,8 @@ fn completed_awaits_yield_to_other_tasks_even_on_a_slow_host() {
                         .unwrap()
                     {
                         SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
-                            vm.dispatch(&mut session, ticket, "en", 32).unwrap();
+                            vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(32))
+                                .unwrap();
                             if ticket.task != main
                                 && ticket.await_activation.is_some()
                                 && !vm.vm.wait_is_pending(ticket.wait_id())

@@ -17,6 +17,7 @@ fn advance(vm: &mut SessionVm, session: &mut Session) {
 fn retaining_history_rows_preserves_partial_groups_views_and_restored_aliases() {
     let code = r#"
     let history = game.history();
+    fn dynamic(value) {value}
     fn opening() {
         let mio = character("Mio");
         let d = game.dialogue();
@@ -38,8 +39,8 @@ fn retaining_history_rows_preserves_partial_groups_views_and_restored_aliases() 
             button("retain", on_click: || {
                 let mut errors = 0;
                 try { game.clear_history(-1); } catch e { errors += 1; }
-                try { game.clear_history(1.5); } catch e { errors += 1; }
-                try { game.clear_history(true); } catch e { errors += 1; }
+                try { game.clear_history(dynamic(1.5)); } catch e { errors += 1; }
+                try { game.clear_history(dynamic(true)); } catch e { errors += 1; }
                 if errors != 3 || history.len() != 3 || lines.len() != 3 {
                     throw "invalid retention changed history";
                 }

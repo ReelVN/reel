@@ -313,7 +313,7 @@ fn drive(vm: &mut SessionVm, session: &mut Session, project: bool) {
             .unwrap()
         {
             SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
-                if let Err(error) = vm.dispatch(session, ticket, "en", 8) {
+                if let Err(error) = vm.dispatch(session, ticket, "en", NativeBudget::Exact(8)) {
                     vm.reject_native(session, ticket, error).unwrap();
                 }
             }

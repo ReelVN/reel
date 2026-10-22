@@ -32,10 +32,10 @@ fn children_compose_owned_subtrees_without_duplicate_mounting() {
         let retired = text("retired");
         retired.remove();
         let mut rejected = 0;
-        try { column { outside_child; } } catch e { rejected += 1; }
-        try { column { outside; outside; } } catch e { rejected += 1; }
-        try { column { old; } } catch e { rejected += 1; }
-        try { column { retired; } } catch e { rejected += 1; }
+        try { let _ = column { outside_child; }; } catch e { rejected += 1; }
+        try { let _ = column { outside; outside; }; } catch e { rejected += 1; }
+        try { let _ = column { old; }; } catch e { rejected += 1; }
+        try { let _ = column { retired; }; } catch e { rejected += 1; }
         if rejected != 4 { throw "ownership validation"; }
         let constructor = component;
         let result = constructor {
@@ -81,7 +81,12 @@ fn children_compose_owned_subtrees_without_duplicate_mounting() {
                     .unwrap()
                 {
                     reel_engine::aside::SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
-                        if let Err(error) = vm.dispatch(&mut session, ticket, "en", 1024) {
+                        if let Err(error) = vm.dispatch(
+                            &mut session,
+                            ticket,
+                            "en",
+                            reel_engine::aside::NativeBudget::Exact(1024),
+                        ) {
                             vm.reject_native(&session, ticket, error).unwrap();
                         }
                     }
@@ -141,7 +146,13 @@ fn children_compose_owned_subtrees_without_duplicate_mounting() {
                 .unwrap()
             {
                 reel_engine::aside::SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
-                    vm.dispatch(&mut session, ticket, "en", 1024).unwrap();
+                    vm.dispatch(
+                        &mut session,
+                        ticket,
+                        "en",
+                        reel_engine::aside::NativeBudget::Exact(1024),
+                    )
+                    .unwrap();
                 }
                 reel_engine::aside::SessionStep::Vm(RunOutcome::Waiting(_)) => break,
                 reel_engine::aside::SessionStep::Vm(RunOutcome::Fault(id)) => {

@@ -86,7 +86,7 @@ pub enum CallEffect {
     MayWait,
     Unknown,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ExternalParameter {
     pub name: String,
     pub ty: TypeHint,
@@ -94,7 +94,7 @@ pub struct ExternalParameter {
     pub default: bool,
     pub rest: bool,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ExternalSignature {
     pub parameters: Vec<ExternalParameter>,
     pub result: TypeHint,
@@ -109,7 +109,7 @@ pub struct ExternalSignature {
     pub derived_safe: Option<bool>,
 }
 /// Source typing metadata; this does not change the native calling ABI.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ExternalResultCase {
     pub parameter: String,
     pub equals: Const,

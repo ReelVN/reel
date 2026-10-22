@@ -56,6 +56,7 @@ pub struct Checked {
     pub compilation: lowering::ProjectCompilation,
     pub bytes: Vec<u8>,
     pub modules: Vec<reel_package::ModuleMetadata>,
+    pub catalogs: std::sync::Arc<source::CatalogProducts>,
 }
 
 /// Run the complete supported static pipeline, retaining entry and metadata
@@ -79,6 +80,7 @@ pub fn check_sources(
     let ProjectSourceCompilation {
         modules,
         compilation,
+        catalogs,
     } = source::compile_project(inputs, aliases, 1).map_err(|failure| {
         let mut failure = source_failure(failure);
         for diagnostic in &mut failure.diagnostics {
@@ -128,12 +130,23 @@ pub fn check_sources(
         compilation,
         bytes,
         modules: metadata,
+        catalogs,
     })
 }
 
 pub fn source_failure(failure: SourceError) -> Failure {
     use aside_compiler::DiagnosticCode;
     match failure {
+        SourceError::Translation(failure) => {
+            let mut result = error(
+                "localization",
+                DiagnosticCode::InvalidCall,
+                failure.span,
+                failure.message,
+            );
+            result.diagnostics[0].source = Some(failure.module);
+            result
+        }
         SourceError::Analysis(failure) => {
             Failure {
                 stage: if failure.diagnostics.iter().any(|d| {
@@ -219,6 +232,7 @@ pub fn into_story(checked: Checked, entry: &str) -> Result<CompiledStory, Failur
         program: checked.compilation.program,
         initializer: checked.compilation.initializer,
         entry: bc::FunctionId(entry.function_id),
+        catalogs: checked.catalogs,
     })
 }
 
@@ -240,6 +254,7 @@ pub fn story_from_package(
         program,
         initializer: bc::FunctionId(metadata.initializer.function_id),
         entry: bc::FunctionId(entry.function_id),
+        catalogs: Default::default(),
     })
 }
 

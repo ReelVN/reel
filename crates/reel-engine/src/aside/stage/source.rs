@@ -154,6 +154,7 @@ pub(in crate::aside) fn describe(api: &mut Api) {
             member.declaration.property_default = declaration
                 .parameter_defaults
                 .get(&member.declaration.symbol.name)
+                .and_then(aside_host::source::ParameterDefault::value)
                 .cloned();
         }
         if constructor == "input" {

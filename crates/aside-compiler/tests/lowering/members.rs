@@ -566,6 +566,7 @@ fn resolved_native_members_keep_trusted_linkage_for_calls_and_values() {
         let linkage = Linkage {
             package: Some(&seed),
             natives: &native_links,
+            expansions: &[],
         };
         let c = lowering::compile(&m, &linkage, Options::default()).unwrap();
         let p = c.program.package();
@@ -612,6 +613,7 @@ fn resolved_native_members_keep_trusted_linkage_for_calls_and_values() {
                     reference: &wrong_reference,
                     ..link
                 }],
+                expansions: &[],
             },
             Options::default(),
         )
@@ -631,6 +633,7 @@ fn resolved_native_members_keep_trusted_linkage_for_calls_and_values() {
                         target: lowering::ExternalTarget::Node(group),
                         ..link
                     }],
+                    expansions: &[],
                 },
                 Options::default(),
             )
@@ -746,6 +749,7 @@ fn resolved_native_members_keep_trusted_linkage_for_calls_and_values() {
             &Linkage {
                 package: Some(&seed),
                 natives: &[link],
+                expansions: &[],
             },
             Options::default(),
         );

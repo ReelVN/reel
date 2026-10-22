@@ -60,7 +60,8 @@ fn settle(vm: &mut SessionVm, session: &mut Session, work: &mut Work) {
         {
             SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
                 work.native_calls += 1;
-                vm.dispatch(session, ticket, "en", 32).unwrap();
+                vm.dispatch(session, ticket, "en", NativeBudget::Exact(32))
+                    .unwrap();
             }
             SessionStep::Vm(RunOutcome::Returned(_)) => vm.discard_delivery(session).unwrap(),
             SessionStep::Vm(RunOutcome::Fault(id)) => {

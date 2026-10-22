@@ -11,6 +11,9 @@ impl FunctionBuilder<'_, '_> {
         target: bc::CallTarget,
         depth: usize,
     ) -> Result<Option<bc::Reg>, Box<Error>> {
+        if let Some(expansion) = self.expansion(n)? {
+            return self.expanded_call(n, expansion, target, depth);
+        }
         self.l
             .b
             .work(arguments.map_or(0, |args| self.l.m.hir().elements(args).len()) as u64)?;
