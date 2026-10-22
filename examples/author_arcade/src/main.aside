@@ -1,5 +1,5 @@
 // Complete paddle games composed with the same nodes and scopes as story UI.
-// No external art or font files are required. Run reel dev from this project.
+// The project includes its font. Run reel dev from this project.
 use game::pong;
 use game::bricks;
 use reel::types::Node;
@@ -38,7 +38,10 @@ fn choose_game(parent: Node) -> string {
 }
 
 fn main() {
-    game.configure(title: "A story with an arcade", width: 960, height: 640, text_speed: 0);
+    game.configure(
+        title: "A story with an arcade", width: 960, height: 640, text_speed: 0,
+        fonts: ["fonts/AtkinsonHyperlegible-Regular.ttf"]
+    );
     let dialogue = game.dialogue();
     let root = stack(width: 960, height: 640, background: "#0d1725") {
         stack(
