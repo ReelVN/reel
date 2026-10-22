@@ -25,6 +25,16 @@ pub struct HostLocation {
 pub struct HostDocument {
     pub uri: Uri,
     pub text: Arc<str>,
+    /// Source ranges retain the original host identity, independently of the
+    /// declaration view's display syntax. Symbols are shared per declaration.
+    pub references: Vec<HostDocumentReference>,
+}
+
+/// One navigable symbol occurrence in a generated host document.
+#[derive(Debug, Clone)]
+pub struct HostDocumentReference {
+    pub range: TextRange,
+    pub symbol: Arc<ExternalSymbol>,
 }
 
 /// A displayable literal default or an optional parameter with no source value.

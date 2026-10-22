@@ -258,7 +258,8 @@ fn global_services_and_standard_module_aliases_hover_and_navigate_in_the_real_ls
         if service == "game" {
             let text = document["text"].as_str().unwrap();
             assert!(
-                text.contains("fn configure(title:")
+                text.contains("fn configure(\n")
+                    && text.contains("    title:")
                     && text.contains("Set title, logical canvas size")
             );
         }
@@ -290,6 +291,11 @@ fn global_services_and_standard_module_aliases_hover_and_navigate_in_the_real_ls
     id += 1;
     let document = client.request(id, "aside/nativeDocument", json!({"uri":definition["uri"]}));
     let full = document["text"].as_str().unwrap();
-    assert!(full.contains("x:") && full.contains("font:") && full.contains("fn text(value:"));
+    assert!(
+        full.contains("x:")
+            && full.contains("font:")
+            && full.contains("fn text(\n")
+            && full.contains("    value:")
+    );
     client.stop();
 }

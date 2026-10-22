@@ -115,6 +115,7 @@ fn directory_index(origin: &Uri, module: &str, names: Vec<String>) -> IndexDocum
     }
     IndexDocument {
         document: HostDocument {
+            references: Vec::new(),
             uri,
             text: Arc::from(text),
         },

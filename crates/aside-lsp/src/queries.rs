@@ -1111,26 +1111,7 @@ fn external_hover(
         && symbol.class.is_none()
         && let Some(signature) = external_signature(&presented, snapshot, host)
     {
-        let property_names = host
-            .declaration(symbol)
-            .map(|declaration| {
-                declaration
-                    .property_parameters
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<BTreeSet<_>>()
-            })
-            .unwrap_or_default();
-        let summarized = symbol
-            .signature
-            .as_ref()
-            .into_iter()
-            .flat_map(|signature| &signature.parameters)
-            .filter(|parameter| {
-                parameter.default && property_names.contains(parameter.name.as_str())
-            })
-            .map(|parameter| parameter.name.as_str())
-            .collect::<BTreeSet<_>>();
+        let summarized = summarized_properties(symbol, host);
         return (hover_signature(&signature, &summarized), summarized.len());
     }
     if symbol.signature.is_none()
@@ -1149,6 +1130,26 @@ fn external_hover(
         );
     }
     (external_label(&presented, snapshot, host, name), 0)
+}
+fn summarized_properties<'a>(symbol: &'a ExternalSymbol, host: &HostIndex) -> BTreeSet<&'a str> {
+    let property_names = host
+        .declaration(symbol)
+        .map(|declaration| {
+            declaration
+                .property_parameters
+                .iter()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    symbol
+        .signature
+        .as_ref()
+        .into_iter()
+        .flat_map(|signature| &signature.parameters)
+        .filter(|parameter| parameter.default && property_names.contains(parameter.name.as_str()))
+        .map(|parameter| parameter.name.as_str())
+        .collect()
 }
 fn property_label(symbol: &ExternalSymbol, host: &HostIndex) -> String {
     property_label_using(symbol, host, hint_label)
@@ -1808,6 +1809,50 @@ impl Workspace {
         position: Position,
         encoding: Encoding,
     ) -> Result<Option<Hover>, String> {
+        if let Some(document) = self
+            .host
+            .documents
+            .get(uri.as_str())
+            .filter(|document| !document.references.is_empty())
+        {
+            let lines = crate::position::LineIndex::new(&document.text);
+            let offset = lines
+                .offset(&document.text, position, encoding)
+                .ok_or("invalid hover position")?;
+            let Some(reference) = document
+                .references
+                .iter()
+                .find(|reference| contains(reference.range, offset))
+            else {
+                return Ok(None);
+            };
+            let symbol = &reference.symbol;
+            let label = if symbol.type_only {
+                format!("class {}", symbol.ty)
+            } else if let Some(namespace) = &symbol.namespace {
+                format!("use {}", namespace.module)
+            } else if let Some(signature) = host_signature(symbol, &self.host) {
+                hover_signature(&signature, &summarized_properties(symbol, &self.host))
+            } else {
+                property_label(symbol, &self.host)
+            };
+            let mut value = format!("```aside\n{label}\n```");
+            if let Some(declaration) = self
+                .host
+                .declaration(symbol)
+                .filter(|declaration| !declaration.markdown.is_empty())
+            {
+                value.push_str("\n\n");
+                value.push_str(&declaration.markdown);
+            }
+            return Ok(Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value,
+                }),
+                range: Some(lines.range(&document.text, reference.range, encoding)),
+            }));
+        }
         let snapshot = self.snapshot(uri)?;
         let source = snapshot.source();
         let offset = source
@@ -1957,6 +2002,39 @@ impl Workspace {
         position: Position,
         encoding: Encoding,
     ) -> Result<Option<Location>, String> {
+        if let Some(document) = self
+            .host
+            .documents
+            .get(uri.as_str())
+            .filter(|document| !document.references.is_empty())
+        {
+            let lines = crate::position::LineIndex::new(&document.text);
+            let offset = lines
+                .offset(&document.text, position, encoding)
+                .ok_or("invalid definition position")?;
+            let Some(reference) = document
+                .references
+                .iter()
+                .find(|reference| contains(reference.range, offset))
+            else {
+                return Ok(None);
+            };
+            let definition = self
+                .host
+                .declaration(&reference.symbol)
+                .and_then(|declaration| declaration.definition.as_ref());
+            return Ok(definition.and_then(|definition| {
+                let document = self.host.documents.get(definition.uri.as_str())?;
+                Some(Location {
+                    uri: definition.uri.clone(),
+                    range: crate::position::LineIndex::new(&document.text).range(
+                        &document.text,
+                        definition.range,
+                        encoding,
+                    ),
+                })
+            }));
+        }
         let snapshot = self.snapshot(uri)?;
         let source = snapshot.source();
         let offset = source

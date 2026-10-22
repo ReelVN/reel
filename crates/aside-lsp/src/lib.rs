@@ -10,7 +10,7 @@ pub use server::{run_connection, run_stdio};
 #[cfg(test)]
 mod tests;
 pub use host::{
-    HostContext, HostDeclaration, HostDocument, HostLocation, HostMember, NamedType,
-    ParameterDefault, ServerOptions, SourceAnalysis, SourceCompletions, SourceFeatures,
+    HostContext, HostDeclaration, HostDocument, HostDocumentReference, HostLocation, HostMember,
+    NamedType, ParameterDefault, ServerOptions, SourceAnalysis, SourceCompletions, SourceFeatures,
     SourceHover, SourceRootQuery,
 };

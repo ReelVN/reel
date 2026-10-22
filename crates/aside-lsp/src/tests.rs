@@ -822,6 +822,7 @@ fn native_types_keep_nominal_members_readonly_defaults_and_definition_documents(
             property_default: Some("12".into()),
         }],
         documents: vec![HostDocument {
+            references: Vec::new(),
             uri: doc_uri.clone(),
             text: Arc::from(document),
         }],

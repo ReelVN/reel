@@ -52,6 +52,7 @@ impl From<HostContext> for HostIndex {
         host.documents.push(HostDocument {
             uri: builtin_uri.clone(),
             text: catalog.source.clone(),
+            references: Vec::new(),
         });
         for group in &catalog.types {
             for member in &group.members {
