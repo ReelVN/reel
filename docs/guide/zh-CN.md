@@ -1215,6 +1215,8 @@ stage.replace(text_input(value: bind(profile.name), width: 280, height: 40,
 
 `placeholder: "Your name"` 在 value 为空且没有 IME 预编辑时显示提示。`read_only: true` 保留选区、复制、导航和提交，同时阻止玩家编辑；脚本仍可赋值。两者支持直接赋值与绑定。`selection_color` 默认为 "#3c78dc5f"；`caret_color: null` 沿用 color。文字描边和阴影复用编辑器的同一排版。切为只读撤销预编辑并关闭系统 IME，保留正文与选区。
 
+`edit_filter` 在输入写入绑定值前检查或改写编辑。回调收到 TextEdit：previous 是原文，value 是提案全文，text 是本次替换文本，start/end 是原文中的字节范围。返回 text 接受原编辑，返回另一字符串改写本次替换，返回 null 拒绝。比如 `edit_filter: |edit| if edit.value.scalar_count() <= 12 { edit.text } else { null }` 限制姓名长度；键入、粘贴和输入法提交使用同一规则。回调直接返回结果，确认后的编辑统一进入撤销历史和 on_change。
+
 多行笔记或留言使用 `text_area`，参数与 text_input 相同。两者使用 `text_align` 设置水平对齐，`line_height` 设置字号倍率行高。text_area 默认按宽度自动换行，`text_wrap: false` 保留显式换行并允许横向滚动；正文从顶部开始。Enter 换行，Ctrl+Enter（macOS 为 Command+Enter）触发 on_submit，Tab 切换焦点。上下方向键移动光标，配合 Shift 扩展选区；Home/End 定位当前显示行，配合 Ctrl/Command 定位全文首尾。滚轮查看溢出内容，编辑时自动将光标滚入可见区域。粘贴的 CRLF/CR 转为 LF；IME 预编辑在确认后才写回 value。保存恢复保留正文、绑定、已提交选区和撤销事务；预编辑及内部滚动位置重建。可运行示例：[author_text_area.aside](../../examples/author_text_area/src/main.aside)。
 
 `select_bytes(anchor, focus: null)` 放置光标或有方向的选区，保持原键盘焦点。端点为 UTF-8 字节位置；非法边界在调用处报错，编辑器将显示位置定位到所在文字簇的起点。`select_all()`、`undo()`、`redo()` 返回原输入节点，可以继续链式组合；derive 可读取 selection_anchor、selection_focus、can_undo 和 can_redo。Ctrl/Command+Z 撤销，Ctrl/Command+Shift+Z 重做，Windows/Linux 也支持 Ctrl+Y。连续键入和同向删除合并；移动选区、粘贴、剪切、换行与 IME 确认分别形成事务边界。脚本替换正文会清除 delta 历史。
