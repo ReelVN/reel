@@ -14,6 +14,56 @@ mod builtin_methods;
 mod editor_feedback;
 
 #[test]
+fn is_guard_updates_hover_members_and_definition_in_captured_branch() {
+    let source = "class Base{} class Child:Base{fn answer(self)->int{42}} fn inspect(value:Base){if value is Child{let callback=||value.answer();} let outside=value;}";
+    let mut workspace = Workspace::new(ServerOptions::default());
+    workspace.open(uri(), 1, source.into()).unwrap();
+    let hover = hover_text(
+        workspace
+            .hover(
+                &uri(),
+                position(source, "value.answer", false),
+                Encoding::Utf16,
+            )
+            .unwrap()
+            .unwrap(),
+    );
+    assert!(hover.contains("value: Child"), "{hover}");
+    let items = workspace
+        .complete(
+            &uri(),
+            position(source, "value.answer", true),
+            Encoding::Utf16,
+        )
+        .unwrap();
+    assert!(
+        items
+            .iter()
+            .any(|item| item.label == "answer" && item.kind == Some(CompletionItemKind::METHOD)),
+        "{items:?}"
+    );
+    let definition = workspace
+        .definition(
+            &uri(),
+            position(source, "answer();", false),
+            Encoding::Utf16,
+        )
+        .unwrap();
+    assert!(definition.is_some());
+    let outside = source.rfind("value;").unwrap();
+    let at = LineIndex::new(source)
+        .position(source, outside, Encoding::Utf16)
+        .unwrap();
+    let hover = hover_text(
+        workspace
+            .hover(&uri(), at, Encoding::Utf16)
+            .unwrap()
+            .unwrap(),
+    );
+    assert!(hover.contains("value: Base"), "{hover}");
+}
+
+#[test]
 fn callable_types_offer_real_signature_positions_without_inventing_parameter_names() {
     let source = "fn invoke(callback:fn(int,int)->string){callback(1,2);}";
     let mut workspace = Workspace::new(ServerOptions::default());

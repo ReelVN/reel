@@ -593,7 +593,10 @@ fn class_completion<'a>(
 }
 
 enum Target<'a> {
-    Symbol(SymbolId),
+    Symbol {
+        id: SymbolId,
+        ty: Option<TypeId>,
+    },
     External(&'a ExternalSymbol),
     Member {
         node: NodeId,
@@ -649,8 +652,13 @@ fn target_at(module: EditorModule<'_>, offset: usize) -> Option<(Target<'_>, Tex
                     && let Some(symbol) = module.facts()[node.0 as usize].symbol
                 {
                     return Some((
-                        external(module, None, Some(symbol))
-                            .map_or(Target::Symbol(symbol), Target::External),
+                        external(module, None, Some(symbol)).map_or(
+                            Target::Symbol {
+                                id: symbol,
+                                ty: None,
+                            },
+                            Target::External,
+                        ),
                         range,
                     ));
                 }
@@ -691,7 +699,13 @@ fn target_at(module: EditorModule<'_>, offset: usize) -> Option<(Target<'_>, Tex
             ));
         }
         if let Some(symbol) = symbol {
-            return Some((Target::Symbol(symbol), range));
+            return Some((
+                Target::Symbol {
+                    id: symbol,
+                    ty: matches!(hir.node(node).form, Form::Name { .. }).then_some(facts.ty),
+                },
+                range,
+            ));
         }
     }
     None
@@ -1728,11 +1742,18 @@ impl Workspace {
                 );
                 (label, docs, summarized)
             }
-            Target::Symbol(id) => {
+            Target::Symbol { id, ty } => {
                 let symbol = &module.symbols()[id.0 as usize];
                 (
                     local_signature(module, source, id).map_or_else(
-                        || local_label(module, source, id),
+                        || match ty {
+                            Some(ty) if ty != symbol.ty => format!(
+                                "let {}: {}",
+                                module.hir().name(symbol.name),
+                                type_label(module, ty)
+                            ),
+                            _ => local_label(module, source, id),
+                        },
                         |signature| hover_signature(&signature, &BTreeSet::new()),
                     ),
                     source_docs(source, symbol.declaration),
@@ -1800,7 +1821,7 @@ impl Workspace {
             _ => None,
         };
         let reference = match target {
-            Target::Symbol(id) => {
+            Target::Symbol { id, .. } => {
                 return Ok(Some(Location {
                     uri: source.uri.clone(),
                     range: source.lines.range(

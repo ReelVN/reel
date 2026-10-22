@@ -265,6 +265,8 @@ to_ascii_lowercase()/to_ascii_uppercase() 只转换 ASCII 字母，保留中文�
 
 已注册的函数也可以保存和传递，例如 `let say = narrator; say("你好");`，等待行为与直接调用一致；函数缺省参数也可以是 `text` 等构造函数。可以用 `(int,int)` 约束坐标，用 `(int,int)|null` 表达可省略的坐标；`is`、参数、返回值和变量赋值都会检查相应类型，失败赋值保留旧值。完整可运行示例见 [function_values.aside](../../examples/function_values/src/main.aside)，使用前面的 `dev` 或 `build` 命令替换输入路径即可。
 
+对不可重绑的名称，`if node is ParticlesNode` 成立后，分支内可直接使用粒子节点的接口与补全，分支内创建的闭包也保留这个类型。`&&` 的后半段使用前半段已确认的类型；`!` 可把检查写在相反分支。参数默认不可重绑，适合在组件边界检查具体节点类型。
+
 带尾随子节点块的组件调用作为独立语句时可省略结尾分号；块后换行结束该语句，下一行括号表达式不会被接到前一个调用上。普通调用和属性赋值仍使用分号。显式分号不改变子节点收集。
 
 已实现：text、image、row、column、stack 与 stage.replace 使用同一节点模型。普通函数可以返回节点；尾随 children 块、if 与 array/tuple 上的 for 可以组合节点。value、x/y、width/height、color/background、opacity、visible 和 clip 等属性直接修改原节点，挂载后的身份保持不变。替换舞台会退休旧树，释放旧节点的内容；随后读写旧节点属性会报告错误。完整代码见[作者舞台示例](../../examples/author_stage/src/main.aside)。

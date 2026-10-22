@@ -1,5 +1,6 @@
 use super::*;
 mod arguments;
+mod refinement;
 mod results;
 use crate::hir::*;
 use crate::{DiagnosticCode as D, RelatedRange, SyntaxKind as K, TextRange};
@@ -37,6 +38,8 @@ struct Context {
     conditional: bool,
     derived: bool,
     init: bool,
+    // Stable lexical values retain guard facts in closures created on this path.
+    refined: SmallVec<[(SymbolId, TypeId); 2]>,
 }
 impl super::patterns::PatternTypes for Binder<'_> {
     type Ty = TypeId;
@@ -891,7 +894,8 @@ impl Binder<'_> {
         let previous = self.scope;
         self.scope = self.new_scope(Some(previous), Some(f), self.span(n));
         self.out.facts[n.0 as usize].scope = Some(self.scope);
-        let inner = self.function_context(f, n, receiver);
+        let mut inner = self.function_context(f, n, receiver);
+        inner.refined = ctx.refined.clone();
         self.out.functions[f.0 as usize].declared_context = DeclaredContext {
             no_wait: inner.no_wait,
             init: inner.init,
@@ -1047,7 +1051,8 @@ impl Binder<'_> {
         self.scope = self.out.facts[n.0 as usize]
             .scope
             .expect("prepared function scope");
-        let inner = self.function_context(f, n, receiver);
+        let mut inner = self.function_context(f, n, receiver);
+        inner.refined = ctx.refined.clone();
         for index in 0..self.out.functions[f.0 as usize].parameters.len() {
             if self.exhausted {
                 break;
@@ -1161,7 +1166,16 @@ impl Binder<'_> {
         if let Some(ext) = self.external.get(&s) {
             self.external_nodes.insert(n, ext.clone());
         }
-        self.set_ty(n, symbol.ty)
+        let ty = if write {
+            symbol.ty
+        } else {
+            ctx.refined
+                .iter()
+                .rev()
+                .find_map(|&(id, ty)| (id == s).then_some(ty))
+                .unwrap_or(symbol.ty)
+        };
+        self.set_ty(n, ty)
     }
     fn capture(&mut self, s: SymbolId, span: TextRange, ctx: &Context) {
         let symbol = self.out.symbols[s.0 as usize].clone();
@@ -1899,10 +1913,27 @@ impl Binder<'_> {
             node = receiver;
         }
         let mut ty = self.visit(node, ctx);
+        let mut boolean_path: Option<(K, NodeId, Context)> = None;
         for node in chain.into_iter().rev() {
             let children = self.children(node);
             ty = match self.kind(node) {
-                HirKind::Binary | HirKind::Range => self.binary(node, &children, ty, ctx),
+                HirKind::Binary | HirKind::Range => {
+                    let op = self.tokens(node).first().map(|token| token.kind);
+                    if let Some(op @ (K::AndAnd | K::OrOr)) = op {
+                        let (condition, mut path) = match boolean_path.take() {
+                            Some((previous, last, path)) if previous == op => (last, path),
+                            _ => (children[0], ctx.clone()),
+                        };
+                        // A left-associated chain accumulates each guard once.
+                        self.refine_condition(condition, op == K::AndAnd, &mut path);
+                        let result = self.binary(node, &children, ty, &path);
+                        boolean_path = Some((op, children[1], path));
+                        result
+                    } else {
+                        boolean_path = None;
+                        self.binary(node, &children, ty, ctx)
+                    }
+                }
                 HirKind::Member => self.member(node, &children, ty),
                 HirKind::Index => self.index(node, &children, ty, ctx),
                 HirKind::Call => self.call(node, ty, ctx),
@@ -2653,10 +2684,16 @@ impl Binder<'_> {
         }
         let constant = self.constant_bool(condition);
         inner.conditional |= constant != Some(true);
+        if pattern.is_none() {
+            self.refine_condition(condition, true, &mut inner);
+        }
         let yes = self.visit(body, &inner);
         self.scope = previous;
         let mut otherwise_ctx = ctx.clone();
         otherwise_ctx.conditional |= constant != Some(false);
+        if pattern.is_none() {
+            self.refine_condition(condition, false, &mut otherwise_ctx);
+        }
         let no = otherwise.map_or(NULL, |c| self.visit(c, &otherwise_ctx));
         if is_loop {
             NULL
@@ -3212,6 +3249,7 @@ impl Binder<'_> {
                             no_wait: true,
                             // This synthetic initializer is not a source fn.
                             default_return_boundary: ctx.default_return_boundary,
+                            refined: ctx.refined.clone(),
                             ..Default::default()
                         };
                         if !self.modifier(member, K::Static) {

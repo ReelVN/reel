@@ -2,6 +2,20 @@
 use super::*;
 
 #[test]
+fn checked_instance_captures_keep_identity_through_sliced_calls() {
+    run(r#"class Base {let seed=40;}
+        class Child:Base {fn answer(self)->int{self.seed+2}}
+        fn checked(value:Base) {
+            if value is Child {
+                let callback=||value.answer();
+                if value is Base {return callback;}
+            }
+            throw "wrong instance";
+        }
+        fn main(){let object=Child();let callback=checked(object);callback()}"#);
+}
+
+#[test]
 fn callable_contracts_support_closures_methods_defaults_rest_and_builtins() {
     for source in [
         "fn make(seed:int)->fn(int)->int{|n|seed+n}fn main(){let add=make(40);add(2)}",
