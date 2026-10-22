@@ -421,3 +421,91 @@ fn main() {
     }
     server.stop();
 }
+
+#[test]
+fn text_editor_policy_fields_share_typed_constructor_and_with_declarations() {
+    let source = r##"fn main() {
+    let editor = text_input(placeholder: "Name", read_only: true,
+        selection_color: "#10203040", caret_color: null);
+    editor.with(placeholder: "New hint", read_only: false, caret_color: "#aabbcc");
+    editor.read_only = false;
+    let notes = text_area(placeholder: "Notes", read_only: true);
+    notes.with(caret_color: null);
+    let label = text("Label");
+    label.with(color: "#ffffff");
+    let fresh = text_input();
+    let sheet = text_area();
+    let editor_probe = editor;
+    let notes_probe = notes;
+    editor_probe.with();
+    notes_probe.with();
+}"##;
+    let (mut server, _) = open(source);
+    let mut id = 2;
+    for (expression, result) in [
+        ("with(placeholder:", "TextInputNode"),
+        ("with(caret_color:", "TextInputNode"),
+    ] {
+        assert_method(&mut server, &mut id, source, expression, "with", result);
+    }
+    for expression in [
+        "fresh = text_input(",
+        "sheet = text_area(",
+        "editor_probe.with(",
+        "notes_probe.with(",
+    ] {
+        let items = server.request(
+            id,
+            "textDocument/completion",
+            query(source, expression, true),
+        );
+        id += 1;
+        for name in [
+            "placeholder:",
+            "read_only:",
+            "selection_color:",
+            "caret_color:",
+        ] {
+            assert!(
+                items.as_array().unwrap().iter().any(|i| i["label"] == name),
+                "{expression} is missing {name}"
+            );
+        }
+    }
+    let items = server.request(
+        id,
+        "textDocument/completion",
+        query(source, "label.with(", true),
+    );
+    id += 1;
+    assert!(
+        !items
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["label"] == "read_only:"),
+        "{items}"
+    );
+    let hover = server.request(
+        id,
+        "textDocument/hover",
+        query(source, "read_only =", false),
+    );
+    let markdown = hover["contents"]["value"].as_str().unwrap();
+    assert!(markdown.contains("bool"), "{markdown}");
+    let invalid = source.replace("editor.read_only = false", "editor.read_only = 42");
+    server.notify(
+        "textDocument/didChange",
+        json!({"textDocument":{"uri":URI,"version":2}, "contentChanges":[{"text":invalid}]}),
+    );
+    let diagnostics = server.diagnostics(URI, 2);
+    assert!(
+        diagnostics
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["message"].as_str().unwrap().contains("bool")),
+        "{diagnostics}"
+    );
+    server.stop();
+}

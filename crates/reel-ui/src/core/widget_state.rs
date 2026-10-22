@@ -173,9 +173,11 @@ pub(crate) struct WidgetState {
     pub(crate) input_revision: u64,
     pub(crate) modal_focus: Option<WidgetId>,
 
-    /// Tracks whether widget is eligible for IME events.
+    /// Tracks text-keyboard ownership and base IME eligibility.
     /// Should be immutable after `WidgetAdded` event.
     pub(crate) accepts_text_input: bool,
+    /// Dynamic platform IME eligibility, independent of text-keyboard ownership.
+    pub(crate) ime_enabled: bool,
     /// The area of the widget that is being edited by an IME,
     /// in the widget's border-box coordinate space.
     pub(crate) ime_area: Option<Rect>,
@@ -330,6 +332,7 @@ impl WidgetState {
             input_revision: 0,
             modal_focus: None,
             accepts_text_input: false,
+            ime_enabled: true,
             ime_area: None,
 
             is_new: true,

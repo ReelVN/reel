@@ -90,6 +90,7 @@ fn editor_styles_reach_initial_and_retained_widgets() {
             NodeKind::TextInput {
                 value: "First line of notes contains enough words to wrap.\nSecond.".into(),
                 multiline: true,
+                options: Default::default(),
             },
             NodeProps {
                 width: Some(120.),

@@ -16,7 +16,7 @@ use crate::{
     layout::{LenReq, Length},
     peniko::Color,
     properties::ContentColor,
-    reel_text::{TextWrapMode, editing::PlainEditor},
+    reel_text::{AlignmentOptions, Layout, TextWrapMode, editing::PlainEditor},
     widgets::{ScrollAxis, ScrollState},
 };
 
@@ -43,6 +43,18 @@ pub struct TextInput {
     text_x: f64,
     text_y: f64,
     reveal_caret: bool,
+    placeholder: Option<Arc<str>>,
+    placeholder_layout: Option<Box<Placeholder>>,
+    read_only: bool,
+    selection_color: Color,
+    caret_color: Option<Color>,
+    outline: Option<TextOutline>,
+    shadow: Option<TextShadow>,
+}
+
+struct Placeholder {
+    layout: Layout<BrushIndex>,
+    dirty: bool,
 }
 
 fn input_text(text: &str, multiline: bool) -> Cow<'_, str> {
@@ -100,6 +112,115 @@ impl TextInput {
             text_x: 0.,
             text_y: 0.,
             reveal_caret: true,
+            placeholder: None,
+            placeholder_layout: None,
+            read_only: false,
+            selection_color: Color::from_rgba8(60, 120, 220, 95),
+            caret_color: None,
+            outline: None,
+            shadow: None,
+        }
+    }
+
+    /// Displays a hint while the value is empty and no IME composition is active.
+    /// The hint shares editor formatting and creates a layout only when visible.
+    pub fn with_placeholder(mut self, text: impl Into<Arc<str>>) -> Self {
+        let text = text.into();
+        self.placeholder = (!text.is_empty()).then_some(text);
+        self
+    }
+
+    /// Prevents user mutation while retaining focus, selection, copying and submission.
+    /// Scripted value updates remain available. System IME is disabled while read-only.
+    pub fn with_read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
+    }
+
+    /// Sets the selection background; the default is RGBA (60, 120, 220, 95).
+    pub fn with_selection_color(mut self, color: Color) -> Self {
+        self.selection_color = color;
+        self
+    }
+
+    /// Sets the caret color. `None` follows the content color.
+    pub fn with_caret_color(mut self, color: Option<Color>) -> Self {
+        self.caret_color = color;
+        self
+    }
+
+    /// Paints an outline using the editor's existing glyph layout.
+    pub fn with_outline(mut self, outline: Option<TextOutline>) -> Self {
+        self.outline = outline;
+        self
+    }
+
+    /// Paints a shadow using the editor's existing glyph layout.
+    pub fn with_shadow(mut self, shadow: Option<TextShadow>) -> Self {
+        self.shadow = shadow;
+        self
+    }
+
+    /// Updates the empty-value hint without changing the editor or its selection.
+    /// None or an empty string hides the hint and releases its cached layout.
+    pub fn set_placeholder(this: &mut WidgetMut<'_, Self>, text: Option<Arc<str>>) {
+        let text = text.filter(|text| !text.is_empty());
+        if this.widget.placeholder == text {
+            return;
+        }
+        this.widget.placeholder = text;
+        this.widget.placeholder_layout = None;
+        if this.widget.value.is_empty() && this.widget.composition.is_none() {
+            this.ctx.request_layout();
+        }
+        this.ctx.request_accessibility_update();
+    }
+
+    /// Cancels preedit before changing system IME eligibility. Value and selection survive.
+    pub fn set_read_only(this: &mut WidgetMut<'_, Self>, read_only: bool) {
+        if this.widget.read_only == read_only {
+            return;
+        }
+        let composing = this.widget.composition.is_some();
+        let (fonts, layouts) = this.ctx.text_contexts();
+        this.widget.cancel_compose(fonts, layouts);
+        this.widget.read_only = read_only;
+        this.ctx.set_ime_enabled(!read_only);
+        if composing {
+            this.ctx.request_layout();
+        }
+        this.ctx.request_render();
+    }
+
+    /// Updates selection paint without invalidating text layout.
+    pub fn set_selection_color(this: &mut WidgetMut<'_, Self>, color: Color) {
+        if this.widget.selection_color != color {
+            this.widget.selection_color = color;
+            this.ctx.request_render();
+        }
+    }
+
+    /// Updates caret paint without invalidating text layout. `None` follows content color.
+    pub fn set_caret_color(this: &mut WidgetMut<'_, Self>, color: Option<Color>) {
+        if this.widget.caret_color != color {
+            this.widget.caret_color = color;
+            this.ctx.request_render();
+        }
+    }
+
+    /// Updates outline paint while retaining the shaped text layout.
+    pub fn set_outline(this: &mut WidgetMut<'_, Self>, outline: Option<TextOutline>) {
+        if this.widget.outline != outline {
+            this.widget.outline = outline;
+            this.ctx.request_render();
+        }
+    }
+
+    /// Updates shadow paint while retaining the shaped text layout.
+    pub fn set_shadow(this: &mut WidgetMut<'_, Self>, shadow: Option<TextShadow>) {
+        if this.widget.shadow != shadow {
+            this.widget.shadow = shadow;
+            this.ctx.request_render();
         }
     }
 
@@ -111,6 +232,7 @@ impl TextInput {
             return self.with_text_wrap(mode == TextWrapMode::Wrap);
         }
         self.editor.edit_styles().insert(style);
+        self.invalidate_placeholder();
         self.geometry_dirty = true;
         self
     }
@@ -205,6 +327,7 @@ impl TextInput {
             return;
         }
         this.widget.editor.edit_styles().insert(style);
+        this.widget.invalidate_placeholder();
         this.widget.geometry_dirty = true;
         this.widget.reveal_caret = true;
         this.ctx.request_layout();
@@ -216,12 +339,14 @@ impl TextInput {
         }
         self.text_alignment = text_alignment;
         self.editor.set_alignment(text_alignment);
+        self.invalidate_placeholder();
         self.geometry_dirty = true;
         self.reveal_caret = true;
         true
     }
 
     fn update_wrap_mode(&mut self) {
+        self.invalidate_placeholder();
         self.editor
             .edit_styles()
             .insert(StyleProperty::TextWrapMode(
@@ -239,9 +364,51 @@ impl TextInput {
         if self.layout_width != width {
             self.layout_width = width;
             self.editor.set_width(width);
+            self.invalidate_placeholder();
             self.geometry_dirty = true;
             self.reveal_caret = true;
         }
+    }
+
+    fn invalidate_placeholder(&mut self) {
+        if let Some(hint) = &mut self.placeholder_layout {
+            hint.dirty = true;
+        }
+    }
+
+    fn refresh_placeholder(
+        &mut self,
+        fonts: &mut crate::reel_text::FontContext,
+        layouts: &mut crate::reel_text::LayoutContext<BrushIndex>,
+    ) {
+        if !self.value.is_empty() || self.composition.is_some() {
+            return;
+        }
+        let Some(text) = &self.placeholder else {
+            return;
+        };
+        let hint = self.placeholder_layout.get_or_insert_with(|| {
+            Box::new(Placeholder {
+                layout: Layout::default(),
+                dirty: true,
+            })
+        });
+        if !hint.dirty {
+            return;
+        }
+        let text = input_text(text, self.multiline);
+        let mut builder = layouts.ranged_builder(fonts, &text, 1., true);
+        for style in self.editor.get_styles().inner().values() {
+            builder.push_default(style.clone());
+        }
+        hint.layout = builder.build(&text);
+        hint.layout.break_all_lines(self.layout_width);
+        hint.layout.align(
+            self.layout_width,
+            self.text_alignment,
+            AlignmentOptions::default(),
+        );
+        hint.dirty = false;
     }
 
     fn cancel_compose(
@@ -390,6 +557,10 @@ impl Widget for TextInput {
         if ctx.is_disabled() || !ctx.is_focus_target() || !ctx.input_configuration_is_current() {
             return;
         }
+        if self.read_only && matches!(event, TextEvent::Ime(_) | TextEvent::ClipboardPaste(_)) {
+            ctx.set_handled();
+            return;
+        }
         let mut changed = false;
         match event {
             TextEvent::Ime(Ime::Preedit(text, cursor)) => {
@@ -466,21 +637,25 @@ impl Widget for TextInput {
                     && command
                     && (key.eq_ignore_ascii_case("c") || key.eq_ignore_ascii_case("x"))
                 {
-                    if let Some(text) = self.editor.selected_text() {
+                    if (!self.read_only || key.eq_ignore_ascii_case("c"))
+                        && let Some(text) = self.editor.selected_text()
+                    {
                         ctx.set_clipboard(text.to_owned());
                     }
-                    if key.eq_ignore_ascii_case("x") {
+                    if !self.read_only && key.eq_ignore_ascii_case("x") {
                         let (fonts, layout) = ctx.text_contexts();
                         self.editor.driver(fonts, layout).delete_selection();
                         changed = true;
                     }
                 } else if event.key == Key::Named(NamedKey::Enter) {
                     if self.multiline && !command {
-                        let (fonts, layout) = ctx.text_contexts();
-                        self.editor
-                            .driver(fonts, layout)
-                            .insert_or_replace_selection("\n");
-                        changed = true;
+                        if !self.read_only {
+                            let (fonts, layout) = ctx.text_contexts();
+                            self.editor
+                                .driver(fonts, layout)
+                                .insert_or_replace_selection("\n");
+                            changed = true;
+                        }
                     } else if !event.repeat {
                         ctx.submit_action::<TextInputEvent>(TextInputEvent::Submitted(
                             self.value.clone(),
@@ -496,7 +671,8 @@ impl Widget for TextInput {
                         // The host supplies ClipboardPaste after resolving the system clipboard.
                         Key::Character(key) if command && key.eq_ignore_ascii_case("v") => {}
                         Key::Character(key)
-                            if !command
+                            if !self.read_only
+                                && !command
                                 && (alt_graph
                                     || !event.modifiers.alt()
                                     || cfg!(target_os = "macos")) =>
@@ -504,7 +680,7 @@ impl Widget for TextInput {
                             driver.insert_or_replace_selection(&input_text(key, self.multiline));
                             changed = true;
                         }
-                        Key::Named(NamedKey::Backspace) => {
+                        Key::Named(NamedKey::Backspace) if !self.read_only => {
                             if word {
                                 driver.backdelete_word();
                             } else {
@@ -512,7 +688,7 @@ impl Widget for TextInput {
                             }
                             changed = true;
                         }
-                        Key::Named(NamedKey::Delete) => {
+                        Key::Named(NamedKey::Delete) if !self.read_only => {
                             if word {
                                 driver.delete_word();
                             } else {
@@ -572,6 +748,8 @@ impl Widget for TextInput {
                                 driver.move_down();
                             }
                         }
+                        Key::Character(_) | Key::Named(NamedKey::Backspace | NamedKey::Delete)
+                            if self.read_only => {}
                         _ => return,
                     }
                 }
@@ -595,6 +773,7 @@ impl Widget for TextInput {
 
     fn update(&mut self, ctx: &mut UpdateCtx<'_>, _: &mut PropertiesMut<'_>, event: &Update) {
         match event {
+            Update::WidgetAdded => ctx.set_ime_enabled(!self.read_only),
             Update::FocusChanged(false)
             | Update::WindowFocusChanged(false)
             | Update::DisabledChanged(true)
@@ -606,6 +785,7 @@ impl Widget for TextInput {
             Update::FocusChanged(_) | Update::WindowFocusChanged(_) => ctx.request_render(),
             Update::FontsChanged => {
                 self.editor.set_scale(1.);
+                self.invalidate_placeholder();
                 self.geometry_dirty = true;
                 self.reveal_caret = true;
                 ctx.request_layout();
@@ -644,6 +824,7 @@ impl Widget for TextInput {
         }
         let (fonts, layout) = ctx.text_contexts();
         self.editor.refresh_layout(fonts, layout);
+        self.refresh_placeholder(fonts, layout);
         self.update_geometry(size);
         if self.reveal_caret {
             self.keep_caret_visible();
@@ -664,19 +845,50 @@ impl Widget for TextInput {
         if ctx.is_focus_target() {
             self.editor.selection_geometry_with(|bounds, _| {
                 painter
-                    .fill(rect(bounds), Color::from_rgba8(60, 120, 220, 95))
+                    .fill(rect(bounds), self.selection_color)
                     .transform(transform)
                     .draw();
             });
         }
-        if let Some(layout) = self.editor.try_layout() {
-            render_text(painter, transform, layout, &[color.into()], true, None);
+        let layout = if self.value.is_empty() && self.composition.is_none() {
+            self.placeholder_layout
+                .as_ref()
+                .map(|hint| &hint.layout)
+                .or_else(|| self.editor.try_layout())
+        } else {
+            self.editor.try_layout()
+        };
+        if let Some(layout) = layout {
+            if let Some(shadow) = self.shadow.filter(|s| s.offset != Vec2::ZERO) {
+                render_text(
+                    painter,
+                    Affine::translate(shadow.offset) * transform,
+                    layout,
+                    &[shadow.color.into()],
+                    true,
+                    self.outline.map(|outline| TextOutline {
+                        color: shadow.color,
+                        ..outline
+                    }),
+                );
+            }
+            render_text(
+                painter,
+                transform,
+                layout,
+                &[color.into()],
+                true,
+                self.outline,
+            );
         }
         if ctx.is_focus_target()
             && ctx.is_window_focused()
             && let Some(caret) = self.editor.cursor_geometry(1.)
         {
-            painter.fill(rect(caret), color).transform(transform).draw();
+            painter
+                .fill(rect(caret), self.caret_color.unwrap_or(color))
+                .transform(transform)
+                .draw();
         }
     }
 
@@ -689,7 +901,14 @@ impl Widget for TextInput {
     }
     fn accessibility(&mut self, _: &mut AccessCtx<'_>, _: &PropertiesRef<'_>, node: &mut Node) {
         node.set_value(self.value.as_ref());
-        node.add_action(Action::SetValue);
+        if let Some(placeholder) = &self.placeholder {
+            node.set_placeholder(placeholder.as_ref());
+        }
+        if self.read_only {
+            node.set_read_only();
+        } else {
+            node.add_action(Action::SetValue);
+        }
     }
     fn on_access_event(
         &mut self,
@@ -697,7 +916,7 @@ impl Widget for TextInput {
         _: &mut PropertiesMut<'_>,
         event: &AccessEvent,
     ) {
-        if ctx.is_disabled() || !ctx.input_configuration_is_current() {
+        if self.read_only || ctx.is_disabled() || !ctx.input_configuration_is_current() {
             return;
         }
         if event.action == Action::SetValue

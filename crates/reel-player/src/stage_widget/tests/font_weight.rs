@@ -39,6 +39,7 @@ fn font_weight_selects_faces_for_labels_and_input_without_rebuilding_widgets() {
         NodeKind::TextInput {
             multiline: false,
             value: "AAA".into(),
+            options: Default::default(),
         },
         NodeKind::Toggle {
             label: Some("AAA".into()),

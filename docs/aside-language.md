@@ -691,6 +691,8 @@ Reel 节点构造把 children 候选归一化为显式提供的完整组件根�
 
 text_input 的显式高度内文字、选区、光标和 IME 位置共同垂直居中；text 的显式宽度参与自动高度测量。text_input 与 text_area 使用共同 text_align、line_height，text_area 同时使用 text_wrap。共同节点的 border_width、border_color、corner_radius 沿现有构造、with、赋值、绑定和数值动画规则提供内描边与圆角背景。富文本事件链接悬停/聚焦下划线仅重绘。
 
+`text_input` 与 `text_area` 的 `placeholder`、`read_only`、`selection_color`、`caret_color` 是控件专属宿主字段，默认分别为 ""、false、"#3c78dc5f"、null；null 光标颜色沿用 color。构造、with、赋值、bind/derive 与保存恢复使用同一属性合同。只读保留选择、复制、导航和提交，脚本赋值仍可更新正文；占位文字只参与空值且无预编辑时的显示。
+
 Reel 的 `text_area` 与 `text_input` 使用相同的 value/on_change/on_submit 参数、可写 bind 和节点所有权；多行编辑复用普通宿主字段与输入事件，不新增语言语法。换行、提交和选区规则见架构及双语指南。
 
 Reel tween 的 easing 还可传 std::math::curve 不可变值，使用普通参数绑定与 VM 引用；内置字符串保持原语义。曲线在归一化时间 0..1 上采样，端值须为 0 和 1。不新增 Aside 语法、VM 指令或平行曲线实现。

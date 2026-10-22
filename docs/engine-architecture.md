@@ -237,7 +237,7 @@ owner 缺省继承当前作用域/任务。owner 或局部 target 退休、任�
 
 字体匹配请求合成粗体时，共同文字绘制将每个字形 run 的 synthesis.embolden 传入已有 font_embolden 绘制字段；横纵扩张均为该 run 字号的 1/24，随既有变换和 GPU 栅格密度缩放。真实粗体字面或变量字体轴由字体匹配优先选择，未请求合成的 run 保持零扩张。完整文字、逐字揭示、描边与填色使用同一扩张量，保留整形的字形 ID、推进宽度、位置和可见 cluster；字形缓存沿既有 embolden 键区分。
 
-共同布尔属性 `text_wrap` 默认 true，只控制 text 节点的自动折行；false 保留显式换行，并允许各行超出可用宽度，裁剪仍由 clip 决定。控件标签原有的不自动折行行为和文本编辑器保持不变。构造、直接赋值及 bind/derive 共用节点属性 schema；切换只更新同一 Label 的 LineBreaking 属性并使布局失效，不复制文本或控件。`text_fit:"shrink"` 继续按不自动折行的完整文本适配，不受 text_wrap 开关影响；outline/reveal 沿已有绘制及字形缓存路径。逐字显示复用字形布局；描边宽度变化更新墨迹边界。
+共同布尔属性 `text_wrap` 默认 true，控制 text 与 text_area 的自动折行；false 保留显式换行，text 可由 clip 裁剪溢出，text_area 允许横向滚动。text_input 固定为单行，控件标签保持不自动折行。构造、直接赋值及 bind/derive 共用节点属性 schema；切换更新原 Label 的 LineBreaking 或原编辑器的 TextWrapMode 并使布局失效，不复制正文或控件。`text_fit:"shrink"` 继续按不自动折行的完整文本适配，不受 text_wrap 开关影响；outline/reveal 沿已有绘制及字形缓存路径。逐字显示复用字形布局；描边宽度变化更新墨迹边界。
 
 `spawn(work, owner: null)` 在普通剧情或回调中启动独立的零参数脚本任务，复用同一 VM、协作调度和执行片。返回对象可 await 并用 `.cancel()` 取消实际生产者；返回值保持身份，多次等待共享终态，错误保留原始故障和源码因果链。省略 owner 时沿用当前回调/任务的节点，主剧情中归会话；节点退休取消所属任务，隐藏不取消。等待者取消不影响生产者。取消请求立即阻止后续脚本执行，清理完成后 await 才得到 Cancelled；取消不执行脚本 finally，与既有 owner 撤销一致。任务启动后先返回句柄，正文在调用者等待或返回后调度；不能通过 spawn 绕过初始化/纯派生/NoWait 边界。任务无主剧情对白/选项权限。任务结果复用 completion 的订阅与终态存储，活动仍用现有计时器，没有空闲轮询或 OS 线程。
 
@@ -365,6 +365,8 @@ Label在启用淡显或正文改变时建立逻辑字素起始byte索引，每�
 `input(actions: null, on_key: null, ...NodeProps)` 可在现有输入节点订阅逐次键盘事件。on_key 收到 target、code（物理键）、key（逻辑键）、phase（pressed/repeated/released/cancelled）、shift/ctrl/alt/meta；每个按键单独配对，系统重复不丢弃。null actions 表示没有动作映射。聚焦控件优先消费自己的输入，未消费的事件沿祖先输入节点查找动作映射及 on_key；最近的匹配节点消费事件，不广播给兄弟或模态范围之外。文本编辑控件保留全部键盘与 IME，未消费的编辑按键也不进入游戏回调。根输入仍作为无焦点时的兜底。焦点改变、隐藏、禁用、模态替换与节点退休撤销旧按键及动作；事件沿接受帧准入与节点任务所有权交付。宿主注入使用公共 KeyboardEvent，无原生依赖；空闲不轮询。此变更覆盖 reel-ui/stage、reel-player 输入路由与 reel-engine 属性/回调，不增加依赖；验证多键交错、重复、焦点取消和编辑控件隔离。
 
 `text_input(value: "", on_change: null, on_submit: null, ...NodeProps)` 是共同舞台的单行文本编辑节点，value 支持可写 bind。编辑复用 reel-text 的 PlainEditor；提交文本与 IME 预编辑分别管理，预编辑只存在于控件，提交才写回模型。on_change/on_submit 收到 target/value，Enter 提交而不推进剧情；失焦、隐藏和禁用撤销预编辑。外部值替换结束当前预编辑，普通值回显保留光标和选区。输入事件携带编辑前值，避免用旧呈现覆盖脚本已修改的文本。控件按需布局，空闲不定时轮询。字体、颜色、背景、尺寸、变换和输入范围沿共同节点；不规定字符数量上限。作者赋值须为单行字符串；玩家粘贴或输入的换行转换为空格。平台适配器转发公共 IME 事件和候选框区域，系统负责转换与候选词；原生窗口类型不进入 UI 或 Aside。桌面复制、剪切和粘贴由可选适配器复用固定版本 arboard 3.6.1。
+
+`text_input` 与 `text_area` 的专属字段 `placeholder` 默认空字符串、`read_only` 默认 false、`selection_color` 默认 "#3c78dc5f"、`caret_color` 默认 null（沿用 color），沿同一 schema 支持构造、with、赋值、绑定及快照。占位文字只在正文为空且没有预编辑时显示，按需创建并缓存普通文字布局，复用编辑器样式、宽度、对齐及换行模式，不写入 value。只读保留焦点、选区、复制、导航和提交，拒绝键入、删除、剪切、粘贴、IME 与辅助功能写入；脚本仍可赋值。切为只读撤销预编辑并关闭系统 IME，保留编辑器、正文和选区；文本键盘所有权独立于 IME 开关，继续隔离游戏键盘回调。已排队的用户变更在模型边界重新检查 read_only。outline 与 shadow 复用正文布局，仅更新绘制；选择和光标颜色不重新排版。
 
 `text_area(value: "", on_change: null, on_submit: null, ...NodeProps)` 提供多行编辑，与 text_input 共用 PlainEditor、可写绑定、输入所有权和回调。按宽度自动换行，文字从顶部开始；Enter 插入换行，Ctrl+Enter（macOS 为 Command+Enter）提交，Tab 按通常规则切换焦点。上下方向键移动或扩展选区，Home/End 定位当前显示行，配合提交修饰键定位全文首尾。粘贴和输入的 CRLF/CR 统一为 LF；作者提供的字符串原样保存。滚轮使用公共 ScrollState，光标移动与编辑将光标滚入可见区域；文字、选区、命中与 IME 共享同一偏移。预编辑仍只在控件内，取消、失焦、禁用或作者替换值时撤销。保存恢复保留正文、绑定与回调；选区、预编辑和内部编辑视口沿现有单行控件的临时输入状态规则重建。稳定值与稳定宽度复用排版，不增加定时任务。
 

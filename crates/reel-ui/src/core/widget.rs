@@ -585,11 +585,11 @@ pub trait Widget: AsDynWidget + Any {
     /// Implementations use the same value proposal as pointer activation.
     fn select_group_member(&mut self, _ctx: &mut UpdateCtx<'_>, _props: &mut PropertiesMut<'_>) {}
 
-    /// Whether this widget gets IME events. False by default.
+    /// Whether this widget owns text keyboard input and is eligible for IME. False by default.
     ///
-    /// If true, focusing this widget will start an IME session.
-    ///
-    /// **Note:** The value returned by this method is cached at widget creation and can't be changed.
+    /// Focusing an eligible widget starts IME unless disabled with
+    /// [`UpdateCtx::set_ime_enabled`]. Disabling IME preserves text-keyboard ownership.
+    /// This base eligibility is cached at widget creation.
     fn accepts_text_input(&self) -> bool {
         false
     }

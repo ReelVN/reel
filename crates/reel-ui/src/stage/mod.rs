@@ -222,6 +222,26 @@ pub struct NodeClick {
     pub node: NodeId,
 }
 
+/// Text-editor-only display and input policy. Common typography remains in `NodeProps`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextInputOptions {
+    /// None represents an empty hint without allocating an empty string.
+    pub placeholder: Option<Arc<str>>,
+    pub read_only: bool,
+    pub selection_color: [u8; 4],
+    pub caret_color: Option<[u8; 4]>,
+}
+impl Default for TextInputOptions {
+    fn default() -> Self {
+        Self {
+            placeholder: None,
+            read_only: false,
+            selection_color: [60, 120, 220, 95],
+            caret_color: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum NodeKind {
     Particles(particles::ParticleNode),
@@ -229,6 +249,7 @@ pub enum NodeKind {
     TextInput {
         value: Arc<str>,
         multiline: bool,
+        options: TextInputOptions,
     },
     Button {
         label: Option<String>,

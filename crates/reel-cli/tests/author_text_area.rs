@@ -11,6 +11,7 @@ use reel_ui::{core::*, stage::NodeKind};
 use support::*;
 
 const SOURCE: &str = r#"
+fn dynamic(value: any) -> any { value }
 fn main() {
     let notes = model({body: "first\nsecond", changes: 0, submits: 0});
     let editor = text_area(value: bind(notes.body), width: 240, height: 80,
@@ -20,7 +21,7 @@ fn main() {
         }, on_submit: || { notes.submits += 1; });
     let mut rejected = 0;
     try { let _ = text_area(value: derive(|| notes.body)); } catch e { rejected += 1; }
-    try { editor.value = 1; } catch e { rejected += 1; }
+    try { editor.value = dynamic(1); } catch e { rejected += 1; }
     try { let _ = text_input(value: "two\nlines"); } catch e { rejected += 1; }
     if rejected != 3 { throw "input contract"; }
     stage.replace(column() {
@@ -72,6 +73,7 @@ fn state(d: &AsideSessionUi) -> (String, String) {
             NodeKind::TextInput {
                 value,
                 multiline: true,
+                ..
             } => Some(value.to_string()),
             _ => None,
         })

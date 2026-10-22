@@ -1545,9 +1545,9 @@ impl_context_method!(
             self.global_state.focused_widget
         }
 
-        /// Whether the focused widget owns text editing and IME input.
+        /// Whether the focused widget owns text keyboard input, including read-only editors.
         pub fn is_text_input_focused(&self) -> bool {
-            self.global_state.is_ime_active
+            self.global_state.is_text_input_focused
         }
 
         /// Whether this widget gets pointer events and hovered status.
@@ -2137,6 +2137,30 @@ impl_context_method!(
         /// [`set_ime_area`]: Self::set_ime_area
         pub fn clear_ime_area(&mut self) {
             self.widget_state.ime_area = None;
+        }
+
+        /// Enables or disables this editor's system IME without changing focus or keyboard ownership.
+        /// Discard local preedit before disabling. Unfocused widgets retain the setting for focus.
+        pub fn set_ime_enabled(&mut self, enabled: bool) {
+            self.widget_state.ime_enabled = enabled;
+            if self.global_state.focused_widget != Some(self.widget_state.id)
+                || !self.widget_state.accepts_text_input
+                || self.global_state.is_ime_active == enabled
+            {
+                return;
+            }
+            self.global_state.is_ime_active = enabled;
+            self.global_state.emit_signal(if enabled {
+                RenderRootSignal::StartIme
+            } else {
+                RenderRootSignal::EndIme
+            });
+            if enabled {
+                self.global_state
+                    .emit_signal(RenderRootSignal::new_ime_moved_signal(
+                        self.widget_state.get_ime_area(),
+                    ));
+            }
         }
 
         /// Restart the focused editor's system IME after replacing its value or selection.

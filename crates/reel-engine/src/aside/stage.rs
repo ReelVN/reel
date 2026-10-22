@@ -26,6 +26,9 @@ aside_host::native_documentation! {
         /// Create an editable text control bound to value. `on_change` receives edits;
         /// `on_submit` handles submission. text_input is single-line; text_area is multiline.
         /// Use a writable bind reference to keep an author model synchronized.
+        /// placeholder displays an empty-value hint. read_only preserves selection, copying
+        /// and submission while preventing user edits. Common outline and shadow styles
+        /// reuse the editor layout; selection_color and caret_color customize its marks.
         "reel::text_input" | "reel::text_area";
         /// Create an image node from an asset path or captured image bytes. Fit, slicing,
         /// repetition and corner colors configure its common image presentation.
@@ -870,11 +873,16 @@ impl StageBinding {
                         2,
                     )
                 }
-                NodeKind::TextInput { value, multiline } => {
+                NodeKind::TextInput {
+                    value,
+                    multiline,
+                    options,
+                } => {
                     let source = heap.table_entry(fields, 0)?.1;
                     (
                         NodeKind::TextInput {
                             multiline: *multiline,
+                            options: text_input::options(heap, fields, Some(options), read_limit)?,
                             value: if binding.text_source == Some(heap.handle(source)?) {
                                 value.clone()
                             } else {
