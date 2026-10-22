@@ -62,6 +62,22 @@ fn drive(vm: &mut SessionVm, session: &mut Session) -> (u64, u64) {
 
 #[test]
 fn scalar_curve_reactive_sampling_cost() {
+    let props = reel_ui::stage::NodeProps::default();
+    assert!(std::sync::Arc::ptr_eq(
+        &props.font,
+        &reel_ui::stage::NodeProps::default().font
+    ));
+    let region = Region::new(GLOBAL);
+    for _ in 0..1000 {
+        std::hint::black_box(props.clone());
+    }
+    let clones = region.change();
+    assert_eq!((clones.allocations, clones.reallocations), (0, 0));
+    eprintln!(
+        "node_props_bytes={} stage_node_bytes={} property_clones=1000 clone_allocations=0",
+        std::mem::size_of::<reel_ui::stage::NodeProps>(),
+        std::mem::size_of::<reel_ui::stage::StageNode>()
+    );
     for visible in [1, 31, 144] {
         for native in [false, true] {
             let setup = if native { "curve(keys)" } else { "keys" };

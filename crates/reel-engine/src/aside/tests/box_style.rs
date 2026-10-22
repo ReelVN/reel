@@ -221,3 +221,42 @@ fn box_style_schema_exposes_typed_writes_and_numeric_animation_targets() {
         );
     }
 }
+
+#[test]
+fn font_projection_reuses_text_and_tracks_binding_overrides_after_restore() {
+    use std::sync::Arc;
+    let code = r#"fn opening() {
+        let state=model({font:"明朝体, system-ui"});
+        let node=text("Caption",font:bind(state.font));
+        stage.replace(node);
+        narrator("initial");
+        node.with(x:10,opacity:0.5);
+        narrator("moved");
+        state.font="黑体, system-ui";
+        narrator("changed");
+        scope(body:|page| {
+            page.override(node,{font:"temporary"});
+            narrator("covered");
+        });
+        narrator("restored");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        drive(&mut vm, &mut session);
+        let font = props(&vm).font.clone();
+        let copy = props(&vm).clone();
+        assert!(Arc::ptr_eq(&font, &copy.font));
+        advance(&mut vm, &mut session);
+        assert!(Arc::ptr_eq(&font, &props(&vm).font));
+        assert_eq!((props(&vm).x, props(&vm).opacity), (10., 0.5));
+        advance(&mut vm, &mut session);
+        assert_eq!(&*props(&vm).font, "黑体, system-ui");
+        advance(&mut vm, &mut session);
+        assert_eq!(&*props(&vm).font, "temporary");
+        (session, vm) = scopes::restored(&mut vm, &session);
+        vm.sync_stage(&session).unwrap();
+        assert_eq!(&*props(&vm).font, "temporary");
+        advance(&mut vm, &mut session);
+        assert_eq!(&*props(&vm).font, "黑体, system-ui");
+    }
+}

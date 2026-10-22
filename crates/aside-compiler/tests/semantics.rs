@@ -4,6 +4,8 @@ use aside_compiler::{hir::*, semantic::*, *};
 mod call_arguments;
 #[path = "semantics/initializer_locals.rs"]
 mod initializer_locals;
+#[path = "semantics/refinement.rs"]
+mod refinement;
 #[path = "semantics/result_use.rs"]
 mod result_use;
 fn analyze_code(source: &str) -> Analysis {

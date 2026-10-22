@@ -2039,6 +2039,13 @@ fn read_props(
     } else {
         Some(super::masks::project(heap, mask, read_limit)?)
     };
+    let default_font;
+    let font = if let Some((_, props)) = previous {
+        &props.font
+    } else {
+        default_font = NodeProps::default().font;
+        &default_font
+    };
     Ok(NodeProps {
         flex: nonnegative(get(NodeProperty::Flex)?)?,
         x: number(get(NodeProperty::X)?)?,
@@ -2073,7 +2080,7 @@ fn read_props(
         font_weight: font_weight(get(NodeProperty::FontWeight)?)?,
         letter_spacing: text_spacing(get(NodeProperty::LetterSpacing)?)?,
         word_spacing: text_spacing(get(NodeProperty::WordSpacing)?)?,
-        font: text::read_string(heap, get(NodeProperty::Font)?, read_limit)?,
+        font: text::read_shared_string(heap, get(NodeProperty::Font)?, read_limit, font)?,
         text_align: text_align(heap, get(NodeProperty::TextAlign)?)?,
         text_wrap: boolean(get(NodeProperty::TextWrap)?)?,
         line_height: nonnegative(get(NodeProperty::LineHeight)?)?,

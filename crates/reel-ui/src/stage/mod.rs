@@ -383,7 +383,8 @@ pub struct NodeProps {
     pub font_weight: f64,
     pub letter_spacing: f64,
     pub word_spacing: f64,
-    pub font: String,
+    /// Shared font-family list; presentation clones retain the same immutable text.
+    pub font: Arc<str>,
     pub text_align: crate::TextAlign,
     /// Soft wrapping for text and text-area nodes; explicit newlines are retained.
     /// Text-input nodes remain single-line.
@@ -421,6 +422,8 @@ pub struct NodeProps {
 }
 impl Default for NodeProps {
     fn default() -> Self {
+        static FONT: std::sync::LazyLock<Arc<str>> =
+            std::sync::LazyLock::new(|| Arc::from("system-ui"));
         Self {
             flex: 0.,
             x: 0.,
@@ -451,7 +454,7 @@ impl Default for NodeProps {
             font_weight: 400.,
             letter_spacing: 0.,
             word_spacing: 0.,
-            font: "system-ui".into(),
+            font: FONT.clone(),
             text_align: crate::TextAlign::Start,
             text_wrap: true,
             line_height: 1.2,

@@ -1,5 +1,6 @@
 use super::*;
 mod arguments;
+mod refinement;
 mod results;
 use crate::hir::*;
 use crate::{DiagnosticCode as D, RelatedRange, SyntaxKind as K, TextRange};
@@ -173,6 +174,8 @@ struct Binder<'a> {
     types: HashMap<Type, TypeId>,
     initialized: Vec<bool>,
     annotations: HashSet<SymbolId>,
+    refinements: HashMap<SymbolId, TypeId>,
+    refinement_undo: Vec<(SymbolId, Option<TypeId>)>,
     fn_nodes: HashMap<NodeId, FunctionId>,
     capture_maps: Vec<HashMap<SymbolId, usize>>,
     capture_users: Vec<Vec<(FunctionId, usize)>>,
@@ -307,6 +310,8 @@ pub(super) fn analyze_editor(
         types: type_map,
         initialized: Vec::new(),
         annotations: HashSet::new(),
+        refinements: HashMap::new(),
+        refinement_undo: Vec::new(),
         fn_nodes: HashMap::new(),
         capture_maps: Vec::new(),
         capture_users: Vec::new(),
@@ -1161,7 +1166,12 @@ impl Binder<'_> {
         if let Some(ext) = self.external.get(&s) {
             self.external_nodes.insert(n, ext.clone());
         }
-        self.set_ty(n, symbol.ty)
+        let ty = if write {
+            symbol.ty
+        } else {
+            self.refinements.get(&s).copied().unwrap_or(symbol.ty)
+        };
+        self.set_ty(n, ty)
     }
     fn capture(&mut self, s: SymbolId, span: TextRange, ctx: &Context) {
         let symbol = self.out.symbols[s.0 as usize].clone();
@@ -1899,10 +1909,32 @@ impl Binder<'_> {
             node = receiver;
         }
         let mut ty = self.visit(node, ctx);
+        let refinement_mark = self.refinement_undo.len();
+        let mut boolean_path: Option<(K, NodeId)> = None;
         for node in chain.into_iter().rev() {
             let children = self.children(node);
             ty = match self.kind(node) {
-                HirKind::Binary | HirKind::Range => self.binary(node, &children, ty, ctx),
+                HirKind::Binary | HirKind::Range => {
+                    let op = self.tokens(node).first().map(|token| token.kind);
+                    if let Some(op @ (K::AndAnd | K::OrOr)) = op {
+                        let condition = match boolean_path.take() {
+                            Some((previous, last)) if previous == op => last,
+                            _ => {
+                                self.restore_refinements(refinement_mark);
+                                children[0]
+                            }
+                        };
+                        // A left-associated chain accumulates each guard once.
+                        self.refine_condition(condition, op == K::AndAnd);
+                        let result = self.binary(node, &children, ty, ctx);
+                        boolean_path = Some((op, children[1]));
+                        result
+                    } else {
+                        boolean_path = None;
+                        self.restore_refinements(refinement_mark);
+                        self.binary(node, &children, ty, ctx)
+                    }
+                }
                 HirKind::Member => self.member(node, &children, ty),
                 HirKind::Index => self.index(node, &children, ty, ctx),
                 HirKind::Call => self.call(node, ty, ctx),
@@ -1910,6 +1942,7 @@ impl Binder<'_> {
             };
             self.set_ty(node, ty);
         }
+        self.restore_refinements(refinement_mark);
         ty
     }
     fn index(&mut self, n: NodeId, children: &[NodeId], object: TypeId, ctx: &Context) -> TypeId {
@@ -2653,11 +2686,20 @@ impl Binder<'_> {
         }
         let constant = self.constant_bool(condition);
         inner.conditional |= constant != Some(true);
+        let refinement_mark = self.refinement_undo.len();
+        if pattern.is_none() {
+            self.refine_condition(condition, true);
+        }
         let yes = self.visit(body, &inner);
+        self.restore_refinements(refinement_mark);
         self.scope = previous;
         let mut otherwise_ctx = ctx.clone();
         otherwise_ctx.conditional |= constant != Some(false);
+        if pattern.is_none() {
+            self.refine_condition(condition, false);
+        }
         let no = otherwise.map_or(NULL, |c| self.visit(c, &otherwise_ctx));
+        self.restore_refinements(refinement_mark);
         if is_loop {
             NULL
         } else if yes == no {

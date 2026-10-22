@@ -985,11 +985,14 @@ impl Vm {
         let admission = self
             .slots
             .window_admission(&self.heap, windows as usize, values);
-        // Open scans/removes from the current free list, physically fills each
-        // Value and clears its bit. A later failure can roll back earlier opens;
-        // those releases can grow the free list even when success would not.
+        // Open scans/removes from the current free list, fills each Value and
+        // clears bitmap words with masked boundaries. A later failure can roll
+        // back earlier opens; those releases can grow the free list even when
+        // success would not.
         (
-            2 * values
+            values
+                + values.div_ceil(64)
+                + 8 * windows
                 + windows * (3 * spans + 8)
                 + rollback * (4 * (spans + rollback) + 8)
                 + admission.work,

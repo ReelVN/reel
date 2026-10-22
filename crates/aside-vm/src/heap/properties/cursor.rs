@@ -26,6 +26,49 @@ impl PropertyBatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn configuration_index_handles_branch_writes_split_at_each_byte_limit() {
+        for bytes in [1, 3, 4, 5, 12, 4096] {
+            let mut heap = Heap::new(
+                SessionEpoch(1),
+                HeapLimits {
+                    max_mutation_bytes: bytes,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let source = host(&mut heap, 0);
+            let reference = heap.alloc_property_ref(source, true).unwrap();
+            let mut followers = Vec::new();
+            for _ in 0..64 {
+                let follower = host(&mut heap, 0);
+                heap.bind_host_property(follower, reference).unwrap();
+                followers.push(follower);
+            }
+            let plan = heap.begin_property_batch(true).unwrap();
+            let writes = [(source, Value::int(7))];
+            loop {
+                let allowance = heap
+                    .property_batch_required_work(plan, &writes)
+                    .unwrap()
+                    .max(32);
+                if let PropertyBatchProgress::Prepared {
+                    required_commit_work,
+                    ..
+                } = heap.step_property_batch(plan, &writes, allowance).unwrap()
+                {
+                    heap.commit_property_batch(plan, &writes, required_commit_work)
+                        .unwrap();
+                    break;
+                }
+            }
+            assert_eq!(heap.host_property(source).unwrap().as_int(), Some(7));
+            for follower in followers {
+                assert_eq!(heap.host_property(follower).unwrap().as_int(), Some(7));
+            }
+        }
+    }
+
     pub(super) fn host(heap: &mut Heap, value: i64) -> PropertyId {
         let fields = heap.alloc_table().unwrap();
         heap.table_store(fields, 0, Value::int(0), Value::int(value))
@@ -188,16 +231,17 @@ enum State {
     Adoptions,
     Count,
 }
-const FIELDS: u32 = 9;
+const FIELDS: u32 = 7;
 const HOST: u32 = 0;
+// A field occupies the low 32 bits; private flags share its integer slot.
 const FIELD: u32 = 1;
 const VALUE: u32 = 2;
-const REBOUND: u32 = 3;
-const VERSION: u32 = 4;
-const WRITABLE: u32 = 5;
-const REACTIVE: u32 = 6;
-const REACTIVE_VERSION: u32 = 7;
-const VALIDATION: u32 = 8;
+const VERSION: u32 = 3;
+const REACTIVE: u32 = 4;
+const REACTIVE_VERSION: u32 = 5;
+const VALIDATION: u32 = 6;
+const REBOUND: i64 = 1 << 32;
+const WRITABLE: i64 = 1 << 33;
 const EMPTY: u32 = u32::MAX;
 const ITEM_WORK: u64 = 32;
 
@@ -232,6 +276,11 @@ impl Heap {
     }
     fn cursor_value(&self, plan: Value, index: u32) -> Result<Value, HeapError> {
         self.sequence_get(self.cursor_entries(plan)?, index * FIELDS + VALUE)
+    }
+    fn cursor_flags(&self, entries: Value, index: u32) -> Result<i64, HeapError> {
+        self.sequence_get(entries, index * FIELDS + FIELD)?
+            .as_int()
+            .ok_or(HeapError::TypeMismatch)
     }
     fn index_get(&self, index: Value, slot: u32) -> Result<u32, HeapError> {
         self.property_index_work
@@ -340,15 +389,16 @@ impl Heap {
             && self.cursor_property(plan, previous)?.same(property)
         {
             let old = self.cursor_value(plan, previous)?;
-            let replaced = self
-                .sequence_get(entries, previous * FIELDS + REBOUND)?
-                .as_bool()
-                == Some(true);
-            if !old.same_bits(value) && !replaced {
+            let flags = self.cursor_flags(entries, previous)?;
+            if !old.same_bits(value) && flags & REBOUND == 0 {
                 return Err(HeapError::PropertyConflict);
             }
             if rebound {
-                self.set_field(entries, previous * FIELDS + REBOUND, Value::bool(true))?;
+                self.set_field(
+                    entries,
+                    previous * FIELDS + FIELD,
+                    Value::int(flags | REBOUND),
+                )?;
             }
             return Ok(true);
         }
@@ -364,11 +414,13 @@ impl Heap {
         };
         for next in [
             property.host,
-            Value::int(i64::from(property.field)),
+            Value::int(
+                i64::from(property.field)
+                    | if rebound { REBOUND } else { 0 }
+                    | if writable { WRITABLE } else { 0 },
+            ),
             value,
-            Value::bool(rebound),
             Value::int(version as i64),
-            Value::bool(writable),
             reactive,
             Value::int(reactive_version as i64),
             Value::int(0),
@@ -404,13 +456,15 @@ impl Heap {
             };
             self.property_index_work
                 .set(self.property_index_work.get() + 3);
-            for field in [bit, children[0], children[1]] {
-                for chunk in field
-                    .to_le_bytes()
-                    .chunks(self.limits.max_mutation_bytes.min(4) as usize)
-                {
-                    self.bytes_append(index, chunk)?;
-                }
+            let mut branch = [0; 12];
+            for (bytes, field) in branch
+                .chunks_exact_mut(4)
+                .zip([bit, children[0], children[1]])
+            {
+                bytes.copy_from_slice(&field.to_le_bytes());
+            }
+            for chunk in branch.chunks(self.limits.max_mutation_bytes as usize) {
+                self.bytes_append(index, chunk)?;
             }
             if let Some(parent) = parent {
                 self.index_set(index, parent, reference)?;
@@ -702,13 +756,9 @@ impl Heap {
                         {
                             let property = PropertyId { host, field };
                             let permission = self.property_ref(self.property_binding(property)?)?.1;
-                            let writable = self
-                                .sequence_get(
-                                    self.cursor_entries(plan)?,
-                                    cursor * FIELDS + WRITABLE,
-                                )?
-                                .as_bool()
-                                == Some(true)
+                            let writable = self.cursor_flags(self.cursor_entries(plan)?, cursor)?
+                                & WRITABLE
+                                != 0
                                 && permission
                                 && self.property_access(property)?;
                             if !self.cursor_push(
@@ -774,13 +824,8 @@ impl Heap {
                                 .sequence_get(metadata, Slot::RequiresWrite as u32)?
                                 .as_bool()
                                 == Some(true)
-                            && self
-                                .sequence_get(
-                                    self.cursor_entries(plan)?,
-                                    cursor * FIELDS + WRITABLE,
-                                )?
-                                .as_bool()
-                                != Some(true)
+                            && self.cursor_flags(self.cursor_entries(plan)?, cursor)? & WRITABLE
+                                == 0
                         {
                             return Err(HeapError::ReadOnly);
                         }

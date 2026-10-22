@@ -7,6 +7,61 @@ use support::Server;
 
 const URI: &str = "untitled:creator-chains.aside";
 
+#[test]
+fn is_guard_exposes_real_particle_type_inside_owned_closure() {
+    let source = r#"use reel::types::{Node,ParticlesNode};
+        fn spray(node:Node) {
+            if node is ParticlesNode {
+                spawn(|| {emit(node,burst:1); let seed=node.seed;},owner:node);
+            }
+            node.with(opacity:1);
+        }"#;
+    let (mut server, _) = open(source);
+    let hover = server.request(2, "textDocument/hover", query(source, "node.seed", false));
+    assert!(
+        hover["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("ParticlesNode"),
+        "{hover}"
+    );
+    let inside = server.request(
+        3,
+        "textDocument/completion",
+        query(source, "node.seed", true),
+    );
+    assert!(
+        inside
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["label"] == "seed"),
+        "{inside}"
+    );
+    let outside = server.request(
+        4,
+        "textDocument/completion",
+        query(source, "node.with", true),
+    );
+    assert!(
+        outside
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["label"] != "seed"),
+        "{outside}"
+    );
+    let definition = server.request(5, "textDocument/definition", query(source, "seed;", false));
+    assert!(
+        definition["uri"]
+            .as_str()
+            .unwrap()
+            .starts_with("aside-native://"),
+        "{definition}"
+    );
+    server.stop();
+}
+
 fn position(source: &str, needle: &str, after: bool) -> Value {
     let offset = source.find(needle).unwrap() + if after { needle.len() } else { 0 };
     let prefix = &source[..offset];
