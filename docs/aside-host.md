@@ -155,6 +155,8 @@ Constructors resolve a reference with `property_argument`, then retain the conne
 
 For a joint authoritative service update, use `publish_host_properties`. It shares the configuration batch's preparation, connected-constraint validation and commit, while permitting concrete values for read-only service fields. Binding inputs retain their ordinary write permissions. All storage is prepared before publication; a rejected update preserves the original values.
 
+For bounded preparation, `begin_host_publication()` creates the same rooted `PropertyBatch` used by `begin_property_batch`. Retain its value and the original inputs, then use `property_batch_required_work`, `step_property_batch` and `commit_property_batch`. Preparation yields with the previous values intact; publication requires the reported complete commit allowance. The service-write permission survives restarts and snapshots, while replacement bindings still require ordinary write access.
+
 `PropertySchema::documentation(index)` reads each variant's English `///` comment for property hovers. Documentation stays in static metadata; node values and saved sessions contain the declared properties.
 
 ## Validation and cost
