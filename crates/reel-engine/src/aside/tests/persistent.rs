@@ -171,6 +171,37 @@ fn instance_capture_rejects_unfinished_failed_and_executable_data() {
 }
 
 #[test]
+fn instance_capture_includes_unread_field_edits_at_its_consistent_capture_point() {
+    let code = r#"
+        class Settings { let first: int = 1; let mut second: int = 2; }
+        fn opening() { persistent.write("settings", model(Settings())); }
+    "#;
+    let (_, mut vm, _, value) = pending_write(code, true);
+    let mut capture = Capture::new(vm.vm.heap(), value).unwrap();
+    assert!(!capture.step(vm.vm.heap(), 1, 4096).unwrap().0);
+    let field = vm.vm.heap().instance_field(value, 1).unwrap().cell;
+    vm.vm.heap_mut().cell_write(field, Value::int(3)).unwrap();
+    while !capture.step(vm.vm.heap(), 1, 1).unwrap().0 {}
+    let (document, charge) = capture.finish().unwrap();
+    let owner = vm.root_owner;
+    let mut restore = crate::aside::data::Restore::new(vm.vm.heap_mut(), owner, document).unwrap();
+    while !restore.step(vm.vm.heap_mut(), 1, 1).unwrap() {}
+    let root = restore.value_root(vm.vm.heap_mut(), owner).unwrap();
+    restore.release(vm.vm.heap_mut()).unwrap();
+    let record = vm.vm.heap().root_value(root).unwrap();
+    assert_eq!(
+        vm.vm.heap().table_entry(record, 0).unwrap().1.as_int(),
+        Some(1)
+    );
+    assert_eq!(
+        vm.vm.heap().table_entry(record, 1).unwrap().1.as_int(),
+        Some(3)
+    );
+    vm.vm.heap_mut().release_root(root).unwrap();
+    drop(charge);
+}
+
+#[test]
 fn instance_capture_reuses_field_names_and_creates_no_vm_projection() {
     let code = r#"
         class Settings { let volume: float = 0.8; let language: string = "en"; }

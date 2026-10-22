@@ -478,8 +478,8 @@ aside_host::native_documentation! {
         /// tables, including shared references and cycles. Completed instances store their
         /// data fields as plain tables, including inherited fields. Static fields, methods
         /// and class identity stay in code. Reads return ordinary records for your constructor.
-        /// Convert closures, buffers and native resources to data first. Capture is incremental;
-        /// mutating captured source objects before it finishes is rejected.
+        /// Convert closures, buffers and native resources to data first. Incremental capture
+        /// produces a consistent data graph; edits that conflict with values already read fail.
         /// Returns a session-owned awaitable operation; awaiting yields null after the host
         /// commits the write, or throws on failure. A claimed write survives removal of its UI.
         "reel::persistent::write";
