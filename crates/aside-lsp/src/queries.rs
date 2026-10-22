@@ -1487,8 +1487,7 @@ impl Workspace {
             return Ok(Vec::new());
         }
         if let Some(region) = snapshot
-            .features
-            .get(&snapshot.entry)
+            .source_features(&snapshot.entry)
             .into_iter()
             .flat_map(|features| &features.completions)
             .filter(|region| contains(region.range, offset))
@@ -1841,7 +1840,7 @@ impl Workspace {
             .get(uri.as_str())
             .filter(|document| !document.references.is_empty())
         {
-            let lines = crate::position::LineIndex::new(&document.text);
+            let lines = &document.lines;
             let offset = lines
                 .offset(&document.text, position, encoding)
                 .ok_or("invalid hover position")?;
@@ -1894,8 +1893,7 @@ impl Workspace {
             }));
         }
         if let Some(hover) = snapshot
-            .features
-            .get(&snapshot.entry)
+            .source_features(&snapshot.entry)
             .into_iter()
             .flat_map(|features| &features.hovers)
             .filter(|hover| hover.range.contains(TextSize::from(offset as u32)))
@@ -2036,7 +2034,7 @@ impl Workspace {
             .get(uri.as_str())
             .filter(|document| !document.references.is_empty())
         {
-            let lines = crate::position::LineIndex::new(&document.text);
+            let lines = &document.lines;
             let offset = lines
                 .offset(&document.text, position, encoding)
                 .ok_or("invalid definition position")?;
@@ -2051,11 +2049,9 @@ impl Workspace {
                 let document = self.host.documents.get(definition.uri.as_str())?;
                 Some(Location {
                     uri: definition.uri.clone(),
-                    range: crate::position::LineIndex::new(&document.text).range(
-                        &document.text,
-                        definition.range,
-                        encoding,
-                    ),
+                    range: document
+                        .lines
+                        .range(&document.text, definition.range, encoding),
                 })
             }));
         }
@@ -2123,11 +2119,9 @@ impl Workspace {
         {
             return Ok(Some(Location {
                 uri: definition.uri.clone(),
-                range: crate::position::LineIndex::new(&document.text).range(
-                    &document.text,
-                    definition.range,
-                    encoding,
-                ),
+                range: document
+                    .lines
+                    .range(&document.text, definition.range, encoding),
             }));
         }
         if let Some((module, source, node, _)) = source_member_reference(&snapshot, reference) {
