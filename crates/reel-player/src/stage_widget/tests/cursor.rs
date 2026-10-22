@@ -579,7 +579,11 @@ fn cursor_does_not_contribute_to_natural_flow_size() {
         .unwrap();
     let column = f
         .stage
-        .create(NodeKind::Column, NodeProps::default(), vec![cursor, child])
+        .create(
+            NodeKind::Column(Default::default()),
+            NodeProps::default(),
+            vec![cursor, child],
+        )
         .unwrap();
     f.stage.replace(column).unwrap();
     let frame = f.record();

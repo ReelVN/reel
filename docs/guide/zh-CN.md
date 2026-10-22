@@ -291,6 +291,20 @@ stage.replace(panel);
 
 stack 按书写顺序从后往前叠放子节点，row 横排，column 竖排。未指定宽高时按内容布局；x/y 在布局位置上叠加，逻辑坐标原点在左上，x 向右、y 向下。默认字体大小为 24、文字白色、背景透明，gap/padding 为 0；clip 限制容器的可见区域。`scroll(height: 360) { ... }` 创建纵向滚动区域；axis 可设为 "horizontal" 或 "both"。滚轮、触摸拖动和键盘/手柄焦点跟随共用正常输入；滚动不会重建文字布局。`follow_end: true` 使已处于末端的 NVL 页跟随新内容，上滚阅读后保留位置。
 
+row/column 中，子节点的 `flex: 1` 占剩余流轴空间，多个正数按权重分配；默认 0 保留自然或显式尺寸。容器 `wrap: true` 按可用空间换行，`line_gap` 设置行距，`justify` 分配空白。规则排列使用 grid：columns 指定列数，column_width/row_height 可指定固定格子尺寸；省略列宽时均分已知宽度，省略行高时按各行内容测量，column_gap/row_gap 默认沿用 gap。
+
+```aside
+column(gap: 24) {
+    row(width: 640, gap: 12) {
+        text("Lucy", width: 120);
+        text("The rest of this row belongs to the dialogue.", flex: 1);
+    }
+    grid(columns: 4, column_width: 140, row_height: 80, gap: 12) {
+        for slot in 0..12 { button(f"{slot + 1}"); }
+    }
+}
+```
+
 用共同属性 `stretch: "both"` 让背景图片跟随内容撑开的容器，无需计算文字行数或回写高度。`"x"`、`"y"` 只填满父 padding 内的对应轴，默认 `"none"`。被拉伸轴不参与父尺寸测量，并覆盖该轴的 width/height；x/y、anchor 仍有效。在 row/column 流轴上拉伸时，节点成为覆盖层，不增加位置或 gap；scroll 中按视口内框拉伸，不扩大该轴的滚动范围。
 
 ```aside

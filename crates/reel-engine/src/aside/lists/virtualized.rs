@@ -249,7 +249,7 @@ impl SessionVm {
                 let host = self.stage.dispatch(
                     &mut self.vm,
                     self.root_owner,
-                    "reel::column",
+                    "reel::stack",
                     &layout,
                     self.read_limit,
                     origin,

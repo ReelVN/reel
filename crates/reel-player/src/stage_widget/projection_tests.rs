@@ -58,7 +58,11 @@ fn scroll(offset: f64) -> NodeKind {
 fn virtual_feedback_keeps_committed_topology_and_input_ownership() {
     let mut stage = Stage::default();
     let child = stage
-        .create(NodeKind::Column, NodeProps::default(), vec![])
+        .create(
+            NodeKind::Column(Default::default()),
+            NodeProps::default(),
+            vec![],
+        )
         .unwrap();
     let root = stage
         .create(scroll(0.), NodeProps::default(), vec![child])
@@ -72,7 +76,7 @@ fn virtual_feedback_keeps_committed_topology_and_input_ownership() {
     props.y = 15.;
     props.opacity = 0.75;
     stage
-        .update(child, NodeKind::Column, props.clone())
+        .update(child, NodeKind::Column(Default::default()), props.clone())
         .unwrap();
     assert!(view.permits_feedback(&stage));
     for field in 0..3 {
@@ -82,10 +86,14 @@ fn virtual_feedback_keeps_committed_topology_and_input_ownership() {
             1 => changed.enabled = false,
             _ => changed.modal = true,
         }
-        stage.update(child, NodeKind::Column, changed).unwrap();
+        stage
+            .update(child, NodeKind::Column(Default::default()), changed)
+            .unwrap();
         assert!(!view.permits_feedback(&stage));
     }
-    stage.update(child, NodeKind::Row, props).unwrap();
+    stage
+        .update(child, NodeKind::Row(Default::default()), props)
+        .unwrap();
     assert!(!view.permits_feedback(&stage));
 }
 

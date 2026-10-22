@@ -973,6 +973,7 @@ impl SessionVm {
             | "reel::particles"
             | "reel::row"
             | "reel::column"
+            | "reel::grid"
             | "reel::camera"
             | "reel::scroll"
             | "reel::stack"

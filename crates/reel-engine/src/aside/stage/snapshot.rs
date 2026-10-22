@@ -24,6 +24,7 @@ pub(in crate::aside) enum Shape {
     VirtualList,
     Cursor,
     TextArea,
+    Grid,
 }
 
 impl Shape {
@@ -43,6 +44,7 @@ impl Shape {
             "reel::particles" => Self::Particles,
             "reel::camera" => Self::Camera,
             "reel::scroll" => Self::Scroll,
+            "reel::grid" => Self::Grid,
             "reel::row" => Self::Row,
             "reel::column" => Self::Column,
             "reel::stack" => Self::Stack,
@@ -62,7 +64,9 @@ impl Shape {
             Self::Particles => super::super::particles::PREFIX.len(),
             Self::Camera => camera::CameraField::PROPERTIES.len(),
             Self::Scroll => scroll::ScrollField::PROPERTIES.len(),
-            Self::Row | Self::Column | Self::Stack | Self::VirtualList | Self::Cursor => 0,
+            Self::Row | Self::Column => flow::FlowField::PROPERTIES.len(),
+            Self::Grid => flow::GridField::PROPERTIES.len(),
+            Self::Stack | Self::VirtualList | Self::Cursor => 0,
         }
     }
     pub(super) fn project(
@@ -119,8 +123,8 @@ impl Shape {
             }
             Self::Camera => camera::kind(heap, fields)?,
             Self::Scroll => scroll::kind(heap, fields)?,
-            Self::Row => NodeKind::Row,
-            Self::Column => NodeKind::Column,
+            Self::Row | Self::Column => flow::flow_kind(heap, fields, self == Self::Row)?,
+            Self::Grid => flow::grid_kind(heap, fields)?,
             Self::Stack => NodeKind::Stack,
             Self::Cursor => NodeKind::Cursor,
             Self::VirtualList => unreachable!("virtual list projects its VM-owned state"),
@@ -147,7 +151,9 @@ impl Shape {
             Self::Particles => |h, host, i, v| super::super::particles::validate(h, host, i, v),
             Self::Camera => |h, _, i, v| camera::validate(h, i, v),
             Self::Scroll => |h, _, i, v| scroll::validate(h, i, v),
-            Self::Row | Self::Column | Self::Stack | Self::VirtualList | Self::Cursor => {
+            Self::Row | Self::Column => |h, _, i, v| flow::validate_flow(h, i, v),
+            Self::Grid => |h, _, i, v| flow::validate_grid(h, i, v),
+            Self::Stack | Self::VirtualList | Self::Cursor => {
                 |h, _, i, v| validate_layout_property(h, i, v)
             }
         }
@@ -180,6 +186,8 @@ impl StageBinding {
             ("reel.particles", Shape::Particles),
             ("reel.camera", Shape::Camera),
             ("reel.scroll", Shape::Scroll),
+            ("reel.flow", Shape::Row),
+            ("reel.grid", Shape::Grid),
             ("reel.layout", Shape::Stack),
         ] {
             registry.register_validator(name, 1, shape.validator())?;

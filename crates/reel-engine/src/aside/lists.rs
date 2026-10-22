@@ -261,7 +261,9 @@ impl SessionVm {
                 }
                 (output, state)
             } else {
-                let mut layout = args[4..].to_vec();
+                let justify = text::alloc_string(self.vm.heap_mut(), "start", self.read_limit)?;
+                let mut layout = vec![Value::bool(false), justify, Value::NULL];
+                layout.extend_from_slice(&args[4..]);
                 layout.push(Value::NULL);
                 let origin = self.stage_origin(ticket);
                 let node = self.stage.dispatch(
