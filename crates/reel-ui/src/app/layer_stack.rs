@@ -155,8 +155,10 @@ impl LayerStack {
             Some(0) => debug_panic!("Cannot reposition initial layer"),
             None => debug_panic!("layer with root widget {root_id:?} not found"),
             Some(idx) => {
-                this.widget.layers[idx].position = new_origin;
-                this.ctx.request_layout();
+                if this.widget.layers[idx].position != new_origin {
+                    this.widget.layers[idx].position = new_origin;
+                    this.ctx.request_layout();
+                }
             }
         }
     }

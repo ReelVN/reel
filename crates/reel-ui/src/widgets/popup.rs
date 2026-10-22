@@ -317,6 +317,7 @@ mod tests {
         base: WidgetId,
         clicks: Rc<Cell<usize>>,
         actions: Rc<RefCell<Vec<PopupDismiss>>>,
+        redraws: Rc<Cell<usize>>,
     }
     fn setup() -> Harness {
         let clicks = Rc::new(Cell::new(0));
@@ -324,9 +325,14 @@ mod tests {
         let id = base.id();
         let actions = Rc::new(RefCell::new(Vec::new()));
         let sink = actions.clone();
+        let redraws = Rc::new(Cell::new(0));
+        let redraw_sink = redraws.clone();
         let root = RenderRoot::new(
             base,
             move |signal| {
+                if matches!(signal, RenderRootSignal::RequestRedraw) {
+                    redraw_sink.set(redraw_sink.get() + 1);
+                }
                 if let RenderRootSignal::Action(action, _) = signal
                     && let Some(action) = action.downcast_ref::<PopupDismiss>()
                 {
@@ -347,6 +353,7 @@ mod tests {
             base: id,
             clicks,
             actions,
+            redraws,
         }
     }
 
@@ -357,6 +364,7 @@ mod tests {
             base,
             clicks,
             actions,
+            ..
         } = setup();
         accept(&mut root);
         assert!(root.focus_on(Some(base)));
@@ -389,6 +397,25 @@ mod tests {
         assert!(root.get_widget(content_id).is_none());
         root.handle_pointer_event(down(10., 10.));
         assert_eq!(clicks.get(), 1);
+    }
+
+    #[test]
+    fn popup_stable_position_does_not_invalidate_layout_or_request_redraw() {
+        let Harness {
+            mut root, redraws, ..
+        } = setup();
+        let popup = Popup::new(Content(Rc::new(Cell::new(0))).prepare()).prepare();
+        let id = popup.id();
+        let position = Point::new(80., 60.);
+        root.add_layer(popup, position);
+        accept(&mut root);
+        redraws.set(0);
+        for _ in 0..120 {
+            root.reposition_layer(id, position);
+        }
+        assert_eq!(redraws.get(), 0);
+        root.reposition_layer(id, Point::new(81., 60.));
+        assert!(redraws.get() > 0);
     }
 
     #[test]
