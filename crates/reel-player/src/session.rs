@@ -15,6 +15,8 @@ mod hal_tests;
 mod image_tests;
 #[cfg(test)]
 mod prepared_image_tests;
+#[cfg(test)]
+mod text_editing_tests;
 use reel_engine::{
     ChoiceId, InputAction, InputRejection, InteractionId, InteractionView, OwnerHandle, Session,
 };
@@ -79,6 +81,18 @@ struct InputBinding {
 impl InputBinding {
     fn permits_control(&self) -> bool {
         self.control_accepted.is_some() && (self.down.is_some() || self.non_pointer)
+    }
+    fn permits_text(&self, event: &reel_ui::widgets::TextInputEvent) -> bool {
+        // Replays already own accepted input. Their output and terminal cleanup
+        // arrive during projection, after the physical dispatch window closes.
+        // SessionVm verifies the complete replay identity against the queue head.
+        self.permits_control()
+            || event.replay_id().is_some()
+            || matches!(
+                event,
+                reel_ui::widgets::TextInputEvent::ReplayCompleted(_)
+                    | reel_ui::widgets::TextInputEvent::CompositionCancelled
+            )
     }
     fn permits_button(&self, node: reel_ui::stage::NodeId) -> bool {
         self.buttons.get(&node).is_some_and(|revision| {
@@ -530,7 +544,7 @@ impl Widget for SessionWidget {
                 NodeEvent::Change(change) if self.binding.borrow().permits_control() => {
                     self.events.borrow_mut().push(NodeEvent::Change(*change));
                 }
-                NodeEvent::Text(input) if self.binding.borrow().permits_control() => {
+                NodeEvent::Text(input) if self.binding.borrow().permits_text(&input.event) => {
                     self.events
                         .borrow_mut()
                         .push(NodeEvent::Text(input.clone()));
