@@ -12,6 +12,7 @@ use std::{str::FromStr, time::Duration};
 
 mod builtin_methods;
 mod editor_feedback;
+mod module_navigation;
 
 #[test]
 fn is_guard_updates_hover_members_and_definition_in_captured_branch() {

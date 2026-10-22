@@ -301,16 +301,12 @@ fn dispatch(workspace: &mut Workspace, request: Request, encoding: Encoding) -> 
                 uri: Uri,
             }
             let params: NativeDocumentParams = params(request.params)?;
-            let document = workspace
-                .host
-                .documents
-                .get(params.uri.as_str())
-                .ok_or_else(|| {
-                    (
-                        ErrorCode::InvalidParams,
-                        format!("unknown native document {}", params.uri.as_str()),
-                    )
-                })?;
+            let document = workspace.native_document(&params.uri).ok_or_else(|| {
+                (
+                    ErrorCode::InvalidParams,
+                    format!("unknown native document {}", params.uri.as_str()),
+                )
+            })?;
             Ok(json!({"text":document.text.as_ref(),"languageId":"aside"}))
         }
         _ => {

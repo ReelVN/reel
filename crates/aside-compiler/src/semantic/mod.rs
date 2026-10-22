@@ -222,7 +222,7 @@ pub(crate) fn editor_imports(
     {
         if let Some(path) = hir.children(NodeId(index as u32)).next() {
             let mut imports = Vec::new();
-            link::import_requests(&hir, path, &[], false, module, &mut imports);
+            link::import_requests(&hir, path, &[], false, true, module, &mut imports);
             requests.extend(imports.into_iter().map(|(request, _)| (request, node.span)));
         }
     }

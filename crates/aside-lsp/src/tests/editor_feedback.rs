@@ -9,14 +9,7 @@ fn hover_selects_import_identifiers_and_preserves_source_declarations() {
     let main = file_uri(&root.join("main.aside")).unwrap();
     let mut workspace = Workspace::new(project_options());
     workspace.open(main.clone(), 1, source.into()).unwrap();
-    for needle in [
-        "use game",
-        "game::declarations",
-        "declarations::{",
-        "as Count",
-        "fn main",
-        "let counter",
-    ] {
+    for needle in ["use game", "as Count", "fn main", "let counter"] {
         let offset = source.find(needle).unwrap();
         let position = LineIndex::new(source)
             .position(source, offset, Encoding::Utf16)
@@ -28,6 +21,23 @@ fn hover_selects_import_identifiers_and_preserves_source_declarations() {
                 .is_none(),
             "unexpected symbol at {needle}"
         );
+    }
+    for (needle, name, module) in [
+        ("game::declarations", "game", "game"),
+        ("declarations::{", "declarations", "game::declarations"),
+    ] {
+        let offset = source.find(needle).unwrap();
+        let lines = LineIndex::new(source);
+        let start = lines.position(source, offset, Encoding::Utf16).unwrap();
+        let end = lines
+            .position(source, offset + name.len(), Encoding::Utf16)
+            .unwrap();
+        let hover = workspace
+            .hover(&main, start, Encoding::Utf16)
+            .unwrap()
+            .unwrap();
+        assert_eq!(hover.range, Some(Range::new(start, end)));
+        assert!(hover_text(hover).contains(&format!("use {module}")));
     }
     for (needle, label, docs) in [
         ("Counter as", "class Counter", "A documented counter."),

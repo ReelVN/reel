@@ -21,6 +21,9 @@ use std::{
     sync::Arc,
 };
 
+mod module_paths;
+pub(crate) use module_paths::import_path_at;
+
 pub(crate) type ReferenceKey = (String, String, Option<String>);
 pub(crate) fn reference_key(reference: &SymbolReference) -> ReferenceKey {
     (
@@ -503,6 +506,8 @@ impl Workspace {
         Ok(snapshot)
     }
     fn effective_roots(&self, uri: &Uri) -> (Vec<ModuleRoot>, BTreeSet<String>) {
+        let origin = module_paths::index_origin(uri);
+        let uri = origin.as_ref().unwrap_or(uri);
         let Some(path) = uri_path(uri) else {
             return (Vec::new(), BTreeSet::new());
         };
@@ -615,6 +620,21 @@ impl Workspace {
         uri: &Uri,
         encoding: Encoding,
     ) -> Result<Vec<PublishDiagnosticsParams>, String> {
+        if self.host.documents.contains_key(uri.as_str())
+            || module_paths::index_origin(uri).is_some()
+        {
+            // Generated declarations and directory indexes are navigable views,
+            // not executable author modules with imports or function bodies.
+            let document = self
+                .documents
+                .get(&source_key(uri))
+                .ok_or("document is not open")?;
+            return Ok(vec![PublishDiagnosticsParams {
+                uri: uri.clone(),
+                version: document.source.version,
+                diagnostics: Vec::new(),
+            }]);
+        }
         let snapshot = self.snapshot(uri)?;
         Ok(snapshot
             .sources
