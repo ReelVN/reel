@@ -1750,6 +1750,7 @@ impl_context_method!(
         pub fn children_changed(&mut self) {
             trace!("children_changed");
             self.global_state.modal_dirty = true;
+            self.global_state.input_layer_order_dirty = true;
             self.widget_state.children_changed = true;
             self.widget_state.needs_update_focusable = true;
             self.request_layout();
@@ -1851,6 +1852,13 @@ impl_context_method!(
                 }
 
                 global_state.scene_cache.remove(&state.id);
+                if let Some(index) = global_state
+                    .input_layers
+                    .iter()
+                    .position(|id| *id == state.id)
+                {
+                    global_state.input_layers.remove(index);
+                }
 
                 if let Some(layers) = global_state.attached_layers.remove(&state.id) {
                     for (_, layer_id) in layers {
@@ -2371,6 +2379,19 @@ impl UpdateCtx<'_> {
 }
 
 impl RegisterCtx<'_> {
+    /// Register a direct layer root and enable its pointer interception.
+    /// Nested layer stacks use the same accepted geometry and input routing.
+    /// Ordinary children inside a layer keep using [`Self::register_child`].
+    pub fn register_layer(&mut self, child: &mut WidgetPod<impl Widget + ?Sized>) {
+        self.register_child(child);
+        let id = child.id();
+        let layer = self.children.item_mut(id).expect("registered layer root");
+        if layer.item.widget.as_layer().is_some() && !self.global_state.input_layers.contains(&id) {
+            self.global_state.input_layers.push(id);
+            self.global_state.input_layer_order_dirty = true;
+        }
+    }
+
     /// Registers a child widget.
     ///
     /// Container widgets should call this on all their children in

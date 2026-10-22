@@ -86,6 +86,8 @@ pub(crate) struct RenderRootState {
     pub(crate) input_geometry_source: super::InputGeometrySource,
     pub(crate) max_input_path: usize,
     pub(crate) pointer_route: Vec<WidgetId>,
+    pub(crate) input_layers: Vec<WidgetId>,
+    pub(crate) input_layer_order_dirty: bool,
     pub(crate) pointer_hover_spare: Vec<WidgetId>,
     pub(crate) pointer_active_spare: Vec<WidgetId>,
 
@@ -354,6 +356,8 @@ impl RenderRoot {
                 input_geometry_source: super::InputGeometrySource::Live,
                 max_input_path: 128,
                 pointer_route: Vec::with_capacity(128),
+                input_layers: Vec::new(),
+                input_layer_order_dirty: false,
                 pointer_hover_spare: Vec::with_capacity(128),
                 pointer_active_spare: Vec::with_capacity(128),
                 focused_widget: None,

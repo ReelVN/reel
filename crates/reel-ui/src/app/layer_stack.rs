@@ -170,7 +170,7 @@ impl Widget for LayerStack {
 
     fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {
         for layer in self.layers.iter_mut() {
-            ctx.register_child(&mut layer.root);
+            ctx.register_layer(&mut layer.root);
         }
     }
 

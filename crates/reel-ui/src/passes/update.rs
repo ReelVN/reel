@@ -332,6 +332,36 @@ pub(crate) fn run_update_widget_tree_pass(root: &mut RenderRoot) {
         None,
         false,
     );
+    if root.global_state.input_layer_order_dirty {
+        root.global_state.input_layer_order_dirty = false;
+        if !root.global_state.input_layers.is_empty() {
+            // Rebuild only after a structural change. Pointer dispatch visits
+            // registered layer roots without walking ordinary widget subtrees.
+            let mut registered = std::mem::take(&mut root.global_state.input_layers);
+            registered.sort_unstable_by_key(|id| id.to_raw());
+            let mut ordered = Vec::with_capacity(registered.len());
+            let mut pending: smallvec::SmallVec<[WidgetId; 16]> =
+                smallvec::smallvec![root.root_id()];
+            while let Some(id) = pending.pop() {
+                if registered
+                    .binary_search_by_key(&id.to_raw(), |id| id.to_raw())
+                    .is_ok()
+                {
+                    ordered.push(id);
+                }
+                pending.extend(
+                    root.widget_arena
+                        .get_node(id)
+                        .item
+                        .widget
+                        .children_ids()
+                        .into_iter()
+                        .rev(),
+                );
+            }
+            root.global_state.input_layers = ordered;
+        }
+    }
 }
 
 // ----------------

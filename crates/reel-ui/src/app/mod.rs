@@ -26,3 +26,6 @@ pub use visual_layers::{
 };
 
 pub(crate) use render_root::{MutateCallback, RenderRootState};
+
+#[cfg(test)]
+mod nested_layer_tests;
