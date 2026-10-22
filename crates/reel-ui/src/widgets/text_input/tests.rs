@@ -385,6 +385,120 @@ fn command(key: &str) -> TextEvent {
 }
 
 #[test]
+fn password_hides_accessible_text_and_copy_while_cut_publishes_source_utf8() {
+    use crate::app::RenderRootSignal;
+    use std::{cell::RefCell, rc::Rc};
+    let source = "Ae\u{301}👩‍🚀中";
+    let (mut root, id) = root(
+        input(source, false)
+            .with_password(true)
+            .with_placeholder("Name"),
+        PhysicalSize::new(180, 60),
+    );
+    root.global_state.access_tree_active = true;
+    root.focus_on(Some(id));
+    let (_, tree) = root.redraw();
+    let tree = tree.unwrap();
+    let (_, node) = tree
+        .nodes
+        .iter()
+        .find(|(node, _)| *node == crate::accesskit::NodeId(id.to_raw()))
+        .unwrap();
+    assert_eq!(node.role(), Role::PasswordInput);
+    assert!(node.value().is_none());
+    assert!(node.children().is_empty());
+    assert_eq!(node.placeholder(), Some("Name"));
+    assert!(
+        tree.nodes
+            .iter()
+            .all(|(_, node)| node.value() != Some(source))
+    );
+    let signals = Rc::new(RefCell::new(Vec::new()));
+    let output = signals.clone();
+    root.global_state.signal_sink = Box::new(move |signal| output.borrow_mut().push(signal));
+    root.handle_text_event(command("a"));
+    root.handle_text_event(command("c"));
+    assert!(
+        !signals
+            .borrow()
+            .iter()
+            .any(|signal| matches!(signal, RenderRootSignal::ClipboardStore(_)))
+    );
+    root.handle_text_event(command("x"));
+    assert!(
+        !signals
+            .borrow()
+            .iter()
+            .any(|signal| matches!(signal, RenderRootSignal::ClipboardStore(_)))
+    );
+    assert!(signals.borrow().iter().any(|signal| matches!(signal,
+        RenderRootSignal::Action(action, _) if matches!(action.downcast_ref::<TextInputEvent>(),
+            Some(TextInputEvent::Changed {previous,value,edit}) if previous.as_ref()==source && value.is_empty() && edit.range== (0..source.len())))));
+    root.redraw();
+    let field = root
+        .get_widget(id)
+        .unwrap()
+        .downcast::<TextInput>()
+        .unwrap();
+    assert_eq!(field.value.as_ref(), "");
+    assert!(field.placeholder_layout.is_some());
+}
+
+#[test]
+fn password_mode_changes_preserve_ime_value_selection_and_geometry() {
+    for multiline in [false, true] {
+        let (mut root, id) = root(input("A中", multiline), PhysicalSize::new(120, 60));
+        root.focus_on(Some(id));
+        root.edit_widget(id, |mut widget| {
+            let mut field = widget.downcast::<TextInput>();
+            let (fonts, layouts) = field.ctx.text_contexts();
+            field.widget.editor.driver(fonts, layouts).move_to_byte(1);
+        });
+        root.handle_text_event(TextEvent::Ime(Ime::Preedit(
+            "e\u{301}👩‍🚀".into(),
+            Some((3, 3)),
+        )));
+        root.redraw();
+        for password in [true, false, true] {
+            root.edit_widget(id, |mut widget| {
+                TextInput::set_password(&mut widget.downcast::<TextInput>(), password)
+            });
+            root.redraw();
+            let field = root
+                .get_widget(id)
+                .unwrap()
+                .downcast::<TextInput>()
+                .unwrap();
+            assert_eq!(field.editor.raw_text(), "Ae\u{301}👩‍🚀中");
+            assert_eq!(field.editor.raw_selection().text_range(), 4..4);
+            assert_eq!(*field.editor.raw_compose(), Some(1..15));
+            assert_eq!(field.value.as_ref(), "A中");
+            assert_caret_visible(&field);
+            assert_eq!(
+                field.accessibility_role(),
+                if password {
+                    Role::PasswordInput
+                } else if multiline {
+                    Role::MultilineTextInput
+                } else {
+                    Role::TextInput
+                }
+            );
+        }
+        root.handle_text_event(TextEvent::Ime(Ime::Commit("é".into())));
+        root.redraw();
+        let field = root
+            .get_widget(id)
+            .unwrap()
+            .downcast::<TextInput>()
+            .unwrap();
+        assert_eq!(field.value.as_ref(), "Aé中");
+        assert_eq!(field.editor.raw_selection().text_range(), 3..3);
+        assert!(field.editor.raw_compose().is_none());
+    }
+}
+
+#[test]
 fn read_only_cancels_composition_preserves_selection_and_retains_keyboard_ownership() {
     use crate::app::RenderRootSignal;
     use std::{cell::RefCell, rc::Rc};

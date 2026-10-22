@@ -1129,6 +1129,7 @@ impl SceneWidget {
                     .with_selection(options.selection, options.selection_revision)
                     .with_editing(options.pending_edit, options.replay.clone())
                     .with_read_only(options.read_only)
+                    .with_password(options.password)
                     .with_selection_color(color(options.selection_color))
                     .with_caret_color(options.caret_color.map(color))
                     .with_outline(text_outline(&view.node.props))
@@ -1290,6 +1291,7 @@ impl SceneWidget {
             && let Some(mut editor) = this.ctx.get_mut(pod)
         {
             TextInput::set_read_only(&mut editor, options.read_only);
+            TextInput::set_password(&mut editor, options.password);
             TextInput::set_multiline(&mut editor, *multiline);
             TextInput::set_placeholder(&mut editor, options.placeholder.clone());
             TextInput::set_selection_color(&mut editor, color(options.selection_color));

@@ -243,6 +243,8 @@ pub struct TextInputOptions {
     /// None represents an empty hint without allocating an empty string.
     pub placeholder: Option<Arc<str>>,
     pub read_only: bool,
+    /// Display grapheme bullets while keeping value and selection in source UTF-8.
+    pub password: bool,
     pub selection_color: [u8; 4],
     pub caret_color: Option<[u8; 4]>,
     pub selection: crate::widgets::TextSelection,
@@ -256,6 +258,7 @@ impl Default for TextInputOptions {
         Self {
             placeholder: None,
             read_only: false,
+            password: false,
             selection_color: [60, 120, 220, 95],
             caret_color: None,
             selection: Default::default(),

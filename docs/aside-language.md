@@ -695,6 +695,8 @@ text_input 的显式高度内文字、选区、光标和 IME 位置共同垂直�
 
 `text_input` 与 `text_area` 的 `placeholder`、`read_only`、`selection_color`、`caret_color` 是控件专属宿主字段，默认分别为 ""、false、"#3c78dc5f"、null；null 光标颜色沿用 color。构造、with、赋值、bind/derive 与保存恢复使用同一属性合同。只读保留选择、复制、导航和提交，脚本赋值仍可更新正文；占位文字只参与空值且无预编辑时的显示。
 
+编辑节点的 `password: bool = false` 仅改变字素显示，原文 UTF-8 编辑与生命周期合同见[引擎架构](engine-architecture.md)。
+
 Reel 的 `text_area` 与 `text_input` 使用相同的 value/on_change/on_submit 参数、可写 bind 和节点所有权；多行编辑复用普通宿主字段与输入事件，不新增语言语法。换行、提交和选区规则见架构及双语指南。
 
 `TextInputNode.select_bytes(anchor: int, focus: int | null = null)`、`select_all()`、`undo()`、`redo()` 返回同一节点；选区以 UTF-8 字节端点表达并沿共享编辑器规范化，非法边界在原调用处报错。selection_anchor/selection_focus 与 can_undo/can_redo 为只读可观察字段。撤销仅保留编辑 delta，连续同向编辑合并，IME 提交独立成组；值与选区共同提交，journal 和已提交选区随节点保存恢复，临时预编辑和编辑视口重建。此接口沿普通 native 调用、绑定、取消与恢复协议，不增加语言语法或平台句柄。

@@ -125,6 +125,11 @@ pub(in crate::aside) enum TextInputField {
     /// Caret color in #rrggbb or #rrggbbaa form. Null follows the common color.
     #[aside(name = "caret_color", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::String), default = null, validate = validate_background)]
     CaretColor,
+    /// Display one bullet per Unicode grapheme, including IME preedit. The value,
+    /// selection and undo history retain source UTF-8; switching preserves them.
+    /// Copy exports no text, cut only deletes, and accessibility hides the original text.
+    #[aside(name = "password", ty = Bool, default = false)]
+    Password,
 }
 
 fn validate_value(heap: &Heap, value: Value) -> Result<(), HeapError> {
@@ -231,6 +236,7 @@ pub(super) fn options(
     Ok(TextInputOptions {
         placeholder,
         read_only: boolean(get(TextInputField::ReadOnly)?)?,
+        password: boolean(get(TextInputField::Password)?)?,
         selection_color: color(heap, get(TextInputField::SelectionColor)?)?,
         caret_color: if caret.tag() == ValueTag::Null {
             None
