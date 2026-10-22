@@ -245,14 +245,14 @@ pub(crate) fn analyze(
                 .insert((module.canonical_path.clone(), name.clone()), (index, id));
         }
     }
-    for index in 0..modules.len() {
+    for (index, module) in modules.iter().enumerate() {
         if engine.exhausted {
             break;
         }
         engine.current_module = index;
         let mut state = State::new();
         engine.visit(index, NodeId(0), &mut state, 0);
-        for function in 0..modules[index].functions.len() {
+        for function in 0..module.functions.len() {
             if engine.exhausted {
                 break;
             }
@@ -889,13 +889,13 @@ impl Inference<'_> {
             if !self.charge(1) {
                 return;
             }
-            if let Some(captures) = &value.captures {
-                if closures.insert(captures.as_ptr() as usize) {
-                    if !self.charge(captures.len()) {
-                        return;
-                    }
-                    pending.extend(captures.iter().cloned());
+            if let Some(captures) = &value.captures
+                && closures.insert(captures.as_ptr() as usize)
+            {
+                if !self.charge(captures.len()) {
+                    return;
                 }
+                pending.extend(captures.iter().cloned());
             }
             let Some(id) = value.object else {
                 continue;
@@ -1023,8 +1023,13 @@ impl Inference<'_> {
                 }
             }
             Form::Single { child } if kind == HirKind::Loop => {
+                let Some(before) = self.clone_state(state) else {
+                    return Value::plain(self.unknown.clone());
+                };
                 self.visit(m, child, state, depth + 1);
+                let changes = self.loop_changes(&before, state);
                 state.live = self.has_break(m, n);
+                self.widen_loop(m, child, changes, state);
             }
             Form::Single { child }
             | Form::Spread { value: child }
@@ -1254,7 +1259,11 @@ impl Inference<'_> {
                         (false, false) => self.unknown.clone(),
                     }
                 };
+                let changes = (kind == HirKind::While).then(|| self.loop_changes(state, &yes));
                 self.merge_states(state, yes, no);
+                if let Some(changes) = changes {
+                    self.widen_loop(m, body, changes, state);
+                }
                 result = self.materialize(joined, state);
             }
             Form::For {
@@ -1281,7 +1290,9 @@ impl Inference<'_> {
                     return Value::plain(self.unknown.clone());
                 };
                 self.visit(m, body, &mut after, depth + 1);
+                let changes = self.loop_changes(&before, &after);
                 self.merge_states(state, before, after);
+                self.widen_loop(m, body, changes, state);
                 state.live = true;
             }
             Form::Try { .. } | Form::Match { .. } => {
@@ -1447,7 +1458,7 @@ impl Inference<'_> {
                             receiver,
                             key,
                             index,
-                        } => self.write_field(m, target, receiver, key, index, rhs, state),
+                        } => self.write_field(m, target, receiver, (key, index), rhs, state),
                         Location::Unknown => {}
                     }
                 }
@@ -1494,6 +1505,109 @@ impl Inference<'_> {
             pending.extend(module.hir.children(node));
         }
         false
+    }
+    fn loop_changes(&mut self, before: &State, after: &State) -> (Vec<usize>, Vec<SymbolId>, bool) {
+        let mut objects = Vec::new();
+        let mut bindings = Vec::new();
+        for (id, (a, b)) in before.objects.iter().zip(&after.objects).enumerate() {
+            let width = |o: &Object| match o {
+                Object::Record(f) => f.len(),
+                Object::Array { values, .. } | Object::Alternatives(values) => values.len(),
+            };
+            if !self.charge(width(a) + width(b) + 1) {
+                break;
+            }
+            let same = match (a, b) {
+                (Object::Record(a), Object::Record(b)) => {
+                    a.len() == b.len()
+                        && a.iter()
+                            .zip(b)
+                            .all(|(a, b)| a.name == b.name && a.value.same(&b.value))
+                }
+                (
+                    Object::Array {
+                        values: a,
+                        exact: x,
+                    },
+                    Object::Array {
+                        values: b,
+                        exact: y,
+                    },
+                ) => x == y && a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.same(b)),
+                (Object::Alternatives(a), Object::Alternatives(b)) => {
+                    a.len() == b.len() && a.iter().zip(b).all(|(a, b)| a.same(b))
+                }
+                _ => false,
+            };
+            if !same {
+                objects.push(id);
+            }
+        }
+        if self.charge(before.bindings.len()) {
+            for (&id, value) in &before.bindings {
+                if after
+                    .bindings
+                    .get(&id)
+                    .is_some_and(|other| !value.same(other))
+                {
+                    bindings.push(id);
+                }
+            }
+        }
+        (
+            objects,
+            bindings,
+            after.returns.len() != before.returns.len(),
+        )
+    }
+    fn widen_loop(
+        &mut self,
+        m: usize,
+        body: NodeId,
+        changes: (Vec<usize>, Vec<SymbolId>, bool),
+        state: &mut State,
+    ) {
+        let (objects, bindings, returns) = changes;
+        if objects.is_empty() && bindings.is_empty() {
+            return;
+        }
+        for id in objects {
+            self.invalidated(
+                &Value {
+                    object: Some(id),
+                    ..Value::plain(self.unknown.clone())
+                },
+                state,
+            );
+        }
+        for symbol in bindings {
+            if let Some(value) = state.bindings.get(&symbol).cloned() {
+                self.invalidated(&value, state);
+                state
+                    .bindings
+                    .insert(symbol, Value::plain(self.unknown.clone()));
+            }
+        }
+        if returns {
+            state.returns.push(self.unknown.clone());
+        }
+        let mut pending = vec![body];
+        while let Some(node) = pending.pop() {
+            if !self.charge(self.modules[m].hir.elements(node).len() + 1) {
+                return;
+            }
+            self.facts[m].values[node.0 as usize] = None;
+            if let Some(symbol) = self.modules[m].facts[node.0 as usize].symbol {
+                self.facts[m].symbols[symbol.0 as usize] = None;
+            }
+            if matches!(self.modules[m].hir.node(node).form, Form::Function { .. })
+                && let Some(function) = self.modules[m].facts[node.0 as usize].function
+            {
+                self.facts[m].functions[function.0 as usize] = Some(self.unknown.clone());
+            }
+            self.facts[m].external.remove(&node);
+            pending.extend(self.modules[m].hir.children(node));
+        }
     }
     fn insert_field(fields: &mut Vec<Field>, positions: &mut HashMap<String, usize>, field: Field) {
         if let Some(&index) = positions.get(&field.name) {
@@ -1588,11 +1702,11 @@ impl Inference<'_> {
         m: usize,
         n: NodeId,
         receiver: Value,
-        key: Option<String>,
-        index: Option<usize>,
+        access: (Option<String>, Option<usize>),
         value: Value,
         state: &mut State,
     ) {
+        let (key, index) = access;
         let Some(id) = receiver.object else {
             return;
         };
@@ -1708,13 +1822,13 @@ impl Inference<'_> {
         &mut self,
         a: &Value,
         b: &Value,
-        left: &mut State,
-        right: &mut State,
+        states: (&mut State, &mut State),
         into: &mut State,
         shared: usize,
-        left_memo: &mut TransferMemo,
-        right_memo: &mut TransferMemo,
+        memos: (&mut TransferMemo, &mut TransferMemo),
     ) -> Value {
+        let (left, right) = states;
+        let (left_memo, right_memo) = memos;
         if a.same(b) && a.object.is_none_or(|id| id < shared) {
             return a.clone();
         }
@@ -1777,12 +1891,10 @@ impl Inference<'_> {
                             let value = self.merge_value(
                                 &field.value,
                                 &other.value,
-                                &mut a,
-                                &mut b,
+                                (&mut a, &mut b),
                                 into,
                                 shared,
-                                &mut left_memo,
-                                &mut right_memo,
+                                (&mut left_memo, &mut right_memo),
                             );
                             fields.push(Field { value, ..field });
                         }
@@ -1807,12 +1919,10 @@ impl Inference<'_> {
                         values.push(self.merge_value(
                             left,
                             right,
-                            &mut a,
-                            &mut b,
+                            (&mut a, &mut b),
                             into,
                             shared,
-                            &mut left_memo,
-                            &mut right_memo,
+                            (&mut left_memo, &mut right_memo),
                         ));
                         if self.exhausted {
                             return;
@@ -1856,12 +1966,10 @@ impl Inference<'_> {
                 let value = self.merge_value(
                     &av,
                     &bv,
-                    &mut a,
-                    &mut b,
+                    (&mut a, &mut b),
                     into,
                     shared,
-                    &mut left_memo,
-                    &mut right_memo,
+                    (&mut left_memo, &mut right_memo),
                 );
                 into.bindings.insert(symbol, value);
             }

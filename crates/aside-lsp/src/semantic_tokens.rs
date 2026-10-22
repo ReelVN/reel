@@ -307,6 +307,9 @@ impl Workspace {
             for (index, node) in module.hir().nodes.iter().enumerate() {
                 let id = NodeId(index as u32);
                 let facts = &module.facts()[index];
+                if let Some(symbol) = module.source_types().external(id) {
+                    external_nodes[index] = Some(symbol);
+                }
                 match node.form {
                     Form::Name { name } => {
                         let highlight = facts

@@ -853,7 +853,7 @@ fn source_factory_records_and_arrays_keep_host_members_and_field_definitions() {
 fn amount(flag:bool){if flag{return 7;}11}
 fn rows(){["one"]} fn message(){"hello"}
 fn main(){let panel=parts();let caption=panel.names[0];let count=amount(true);panel.body.with(opacity:0.5);let items=rows();let words=message();items.len();words.byte_len();caption;count;}"#;
-    let (mut server, _) = open(source);
+    let (mut server, initialized) = open(source);
     let mut id = 2;
     for (expression, expected) in [
         ("caption;", "caption: string"),
@@ -923,5 +923,11 @@ fn main(){let panel=parts();let caption=panel.names[0];let count=amount(true);pa
         "with",
         "TextNode",
     );
+    let tokens = server.request(
+        id,
+        "textDocument/semanticTokens/full",
+        json!({"textDocument":{"uri":URI}}),
+    );
+    assert_method_token(&tokens, &initialized, source, "with(opacity");
     server.stop();
 }

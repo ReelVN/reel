@@ -364,3 +364,11 @@ fn main(){recover();choose(true)}"#,
     assert_eq!(expression(&analysis, "recover()").ty, TypeHint::Any);
     assert_eq!(expression(&analysis, "choose(true)").ty, TypeHint::Any);
 }
+
+#[test]
+fn loop_carried_field_changes_are_not_limited_to_one_iteration() {
+    let analysis = module(
+        r#"fn inspect(flag:bool){let state={a:1,b:"x",c:true};while flag{state.a=state.b;state.b=state.c;}state.a}"#,
+    );
+    assert_eq!(expression(&analysis, "state.a").ty, TypeHint::Any);
+}
