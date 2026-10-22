@@ -135,6 +135,12 @@ pub(in crate::aside) enum TextInputField {
     /// nothing. on_change runs once after an accepted transaction.
     #[aside(name = "edit_filter", ty = Any, doc_type = filter::source_type(), default = null, validate = validate_callback)]
     EditFilter,
+
+    /// Display one bullet per Unicode grapheme, including IME preedit. The value,
+    /// selection and undo history retain source UTF-8; switching preserves them.
+    /// Copy exports no text, cut only deletes, and accessibility hides the original text.
+    #[aside(name = "password", ty = Bool, default = false)]
+    Password,
 }
 
 fn validate_value(heap: &Heap, value: Value) -> Result<(), HeapError> {
@@ -241,6 +247,7 @@ pub(super) fn options(
     Ok(TextInputOptions {
         placeholder,
         read_only: boolean(get(TextInputField::ReadOnly)?)?,
+        password: boolean(get(TextInputField::Password)?)?,
         selection_color: color(heap, get(TextInputField::SelectionColor)?)?,
         caret_color: if caret.tag() == ValueTag::Null {
             None

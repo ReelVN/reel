@@ -374,6 +374,8 @@ Aside 浮层接口：`popup(placement: "bottom-start", offset: 0, on_dismiss: nu
 
 `text_input` 与 `text_area` 的专属字段 `placeholder` 默认空字符串、`read_only` 默认 false、`selection_color` 默认 "#3c78dc5f"、`caret_color` 默认 null（沿用 color），沿同一 schema 支持构造、with、赋值、绑定及快照。占位文字只在正文为空且没有预编辑时显示，按需创建并缓存普通文字布局，复用编辑器样式、宽度、对齐及换行模式，不写入 value。只读保留焦点、选区、复制、导航和提交，拒绝键入、删除、剪切、粘贴、IME 与辅助功能写入；脚本仍可赋值。切为只读撤销预编辑并关闭系统 IME，保留编辑器、正文和选区；文本键盘所有权独立于 IME 开关，继续隔离游戏键盘回调。已排队的用户变更在模型边界重新检查 read_only。outline 与 shadow 复用正文布局，仅更新绘制；选择和光标颜色不重新排版。
 
+`password: bool = false` 沿编辑节点的同一属性 schema 提供构造、with、赋值、绑定和保存恢复。开启时正文及 IME 预编辑按 Unicode 字素各显示一个 bullet，placeholder 照常显示；value、编辑、选区端点和 undo 保持原文 UTF-8。PlainEditor 在原文与掩码布局之间共用一份边界映射，选区、命中和 IME 光标使用同一几何。掩码只在正文或模式变化时重建，普通框不分配掩码缓冲。切换只更新显示，保留正文、预编辑和历史。复制不导出正文；剪切仅执行删除且不写剪贴板。可访问性使用 PasswordInput，既不发布原文 value，也不创建包含原文的文本节点。
+
 `text_area(value: "", on_change: null, on_submit: null, ...NodeProps)` 提供多行编辑，与 text_input 共用 PlainEditor、可写绑定、输入所有权和回调。按宽度自动换行，文字从顶部开始；Enter 插入换行，Ctrl+Enter（macOS 为 Command+Enter）提交，Tab 按通常规则切换焦点。上下方向键移动或扩展选区，Home/End 定位当前显示行，配合提交修饰键定位全文首尾。粘贴和输入的 CRLF/CR 统一为 LF；作者提供的字符串原样保存。滚轮使用公共 ScrollState，光标移动与编辑将光标滚入可见区域；文字、选区、命中与 IME 共享同一偏移。预编辑仍只在控件内，取消、失焦、禁用或作者替换值时撤销。保存恢复保留正文、绑定、回调、已提交选区和撤销事务；预编辑和内部编辑视口重建。稳定值与稳定宽度复用排版，不增加定时任务。
 
 文本编辑控制使用同一 `TextInputNode`：`select_bytes(anchor, focus: null)`、`select_all()`、`undo()`、`redo()` 返回原节点。省略 focus 折叠选区；端点为从零起的 UTF-8 字节位置，越界或非 UTF-8 边界在调用处报错。编辑器将端点定位到所在显示簇的起点，保持 anchor/focus 方向；`selection_anchor`、`selection_focus` 报告最后接受的选区，`can_undo`、`can_redo` 报告撤销能力，均只读且可观察。选择不抢焦点；只读允许选择，阻止用户或脚本 undo/redo 修改正文。撤销能力随值提交和舞台同步更新。
