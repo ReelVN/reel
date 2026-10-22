@@ -153,6 +153,7 @@ pub struct TextInput {
     selection_revision: u64,
     initial_selection: Option<TextSelection>,
     pending_edit: bool,
+    filter_edits: bool,
     replaying: Option<TextInputReplayId>,
     last_replay: Option<TextInputReplayId>,
     initial_replay: Option<Arc<TextInputReplay>>,
@@ -228,6 +229,7 @@ impl TextInput {
             selection_revision: 0,
             initial_selection: None,
             pending_edit: false,
+            filter_edits: false,
             replaying: None,
             last_replay: None,
             initial_replay: None,
@@ -239,6 +241,18 @@ impl TextInput {
         self.initial_selection = Some(selection);
         self.selection_revision = revision;
         self
+    }
+
+    /// Defer subsequent input immediately after publishing a user replacement.
+    /// The host resolves that proposal before replaying the existing edit queue.
+    pub fn with_edit_filter(mut self, enabled: bool) -> Self {
+        self.filter_edits = enabled;
+        self
+    }
+
+    /// Configure pre-commit filtering without replacing text or selection.
+    pub fn set_edit_filter(this: &mut WidgetMut<'_, Self>, enabled: bool) {
+        this.widget.filter_edits = enabled;
     }
 
     /// Restores pending editor ownership; queued work waits for the first real layout.
@@ -389,6 +403,13 @@ impl TextInput {
         self
     }
 
+    /// Displays one bullet per grapheme, including preedit, while retaining source UTF-8.
+    /// Copy exports no text; cut deletes without writing to the clipboard.
+    pub fn with_password(mut self, password: bool) -> Self {
+        self.editor.set_password(password);
+        self
+    }
+
     /// Sets the selection background; the default is RGBA (60, 120, 220, 95).
     pub fn with_selection_color(mut self, color: Color) -> Self {
         self.selection_color = color;
@@ -442,6 +463,18 @@ impl TextInput {
             this.ctx.request_layout();
         }
         this.ctx.request_render();
+    }
+
+    /// Changes display policy without replacing text, selection, preedit or editing history.
+    pub fn set_password(this: &mut WidgetMut<'_, Self>, password: bool) {
+        if this.widget.editor.is_password() == password {
+            return;
+        }
+        this.widget.editor.set_password(password);
+        this.widget.geometry_dirty = true;
+        this.widget.reveal_caret = true;
+        this.ctx.request_layout();
+        this.ctx.request_accessibility_update();
     }
 
     /// Updates selection paint without invalidating text layout.
@@ -701,6 +734,7 @@ impl TextInput {
                 }
             }
             let previous = std::mem::replace(&mut self.value, value.clone());
+            self.pending_edit |= self.filter_edits;
             ctx.submit_action::<TextInputEvent>(TextInputEvent::Changed {
                 previous,
                 value,
@@ -876,7 +910,8 @@ impl TextInput {
                     && command
                     && (key.eq_ignore_ascii_case("c") || key.eq_ignore_ascii_case("x"))
                 {
-                    if (!self.read_only || key.eq_ignore_ascii_case("c"))
+                    if !self.editor.is_password()
+                        && (!self.read_only || key.eq_ignore_ascii_case("c"))
                         && let Some(text) = self.editor.selected_text()
                     {
                         ctx.set_clipboard(text.to_owned());
@@ -1294,14 +1329,20 @@ impl Widget for TextInput {
     }
 
     fn accessibility_role(&self) -> Role {
-        if self.multiline {
+        if self.editor.is_password() {
+            Role::PasswordInput
+        } else if self.multiline {
             Role::MultilineTextInput
         } else {
             Role::TextInput
         }
     }
     fn accessibility(&mut self, _: &mut AccessCtx<'_>, _: &PropertiesRef<'_>, node: &mut Node) {
-        node.set_value(self.value.as_ref());
+        if self.editor.is_password() {
+            node.clear_value();
+        } else {
+            node.set_value(self.value.as_ref());
+        }
         if let Some(placeholder) = &self.placeholder {
             node.set_placeholder(placeholder.as_ref());
         }

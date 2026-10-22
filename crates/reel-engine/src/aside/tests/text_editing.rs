@@ -9,30 +9,32 @@ use reel_ui::{
 #[test]
 fn editing_policy_uses_shared_schema_bindings_and_restores_source_and_asb() {
     let code = r##"fn opening() {
-        let data = model({body: "", locked: false, hint: "A hint"});
+        let data = model({body: "", locked: false, hint: "A hint", hidden: false});
         let status = text("status");
         let editor = text_area(value: bind(data.body), placeholder: bind(data.hint),
             read_only: bind(data.locked), selection_color: "#10203040", caret_color: "#aabbcc",
-            text_outline: 1, text_shadow_x: 2, on_change: |e| {
+            password: true, text_outline: 1, text_shadow_x: 2, on_change: |e| {
                 if data.body != e.value || e.target.value != e.value { throw "binding"; }
                 status.x += 1;
             }, on_submit: |e| {
                 if e.value != data.body { throw "submit"; } status.y += 1;
-            });
+            }).with(password: bind(data.hidden));
         stage.replace(column { editor; status;
             button("lock", on_click: || { data.locked = true; });
             button("author", on_click: || {
                 data.body = "author\nvalue";
                 data.hint = "changed";
+                editor.password = true;
                 editor.with(selection_color: "#506070", caret_color: null,
                     text_outline: 2, text_shadow_y: 3);
             });
-            button("unlock", on_click: || { data.locked = false; data.hint = ""; });
+            button("unlock", on_click: || { data.locked = false; data.hint = ""; data.hidden = false; });
         });
         let mut rejected = 0;
         try { editor.selection_color = "bad"; } catch _ { rejected += 1; }
         try { editor.caret_color = "#nope00"; } catch _ { rejected += 1; }
-        if rejected != 2 { throw "invalid colors accepted"; }
+        try { editor.with(password: true, caret_color: "bad"); } catch _ { rejected += 1; }
+        if rejected != 3 || editor.password || data.hidden { throw "invalid configuration accepted"; }
         narrator("waiting");
     }"##;
     for encoded in [false, true] {
@@ -79,6 +81,7 @@ fn editing_policy_uses_shared_schema_bindings_and_restores_source_and_asb() {
             };
             assert_eq!(value.as_ref(), "author\nvalue");
             assert!(options.read_only);
+            assert!(options.password);
             assert_eq!(options.placeholder.as_deref(), Some("changed"));
             assert_eq!(options.selection_color, [0x50, 0x60, 0x70, 0xff]);
             assert_eq!(options.caret_color, None);
@@ -124,6 +127,7 @@ fn editing_policy_uses_shared_schema_bindings_and_restores_source_and_asb() {
             panic!()
         };
         assert!(options.placeholder.is_none());
+        assert!(!options.password);
     }
 }
 
@@ -133,7 +137,7 @@ fn input_history_coalesces_typed_edits_and_restores_typed_methods_and_selection(
     let code = r#"fn opening() {
         let data = model({body: ""});
         let status = text("status");
-        let editor = text_input(value: bind(data.body), on_change: |e| {
+        let editor = text_input(value: bind(data.body), password: true, on_change: |e| {
             if data.body != e.value || editor_value(e.target) != e.value { throw "commit"; }
             status.x += 1;
         });
@@ -141,6 +145,8 @@ fn input_history_coalesces_typed_edits_and_restores_typed_methods_and_selection(
             button("undo", on_click: || { if editor.undo() != editor { throw "identity"; } });
             button("redo", on_click: || { if editor.redo() != editor { throw "identity"; } });
             button("select", on_click: || {
+                editor.password = false;
+                editor.with(password: true);
                 if editor.select_bytes(3, focus: 1).select_all() != editor { throw "selection identity"; }
                 let mut rejected = 0;
                 try { editor.select_bytes(2); } catch _ { rejected += 1; }

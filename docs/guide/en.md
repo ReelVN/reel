@@ -976,6 +976,8 @@ trigger.add(popup(placement: "bottom-start", offset: 4,
 });
 ```
 
+For a dropdown, let scope return the confirmed option and update the caller's value afterwards; Back or an outside click returns null. The button's hover/focus_visible state supplies temporary highlighting, and closing the popup restores focus to its trigger. Compose scroll and virtual list for long choices; disabled options follow ordinary button navigation. The [complete composition example](../../examples/author_popup/src/main.aside) keeps these behaviors in one selection function. Run `reel dev` from its directory.
+
 Keyboard activation requires pressing and releasing Enter or Space on the same button. Changing focus, hiding, disabling, or losing window focus cancels an unfinished key press.
 
 ```aside
@@ -1177,6 +1179,10 @@ stage.replace(text_input(value: bind(profile.name), width: 280, height: 40,
 Runnable example: [author_text_input.aside](../../examples/author_text_input/src/main.aside).
 
 `placeholder: "Your name"` displays a hint while the value is empty and no IME composition is active. `read_only: true` retains selection, copying, navigation and submission while preventing user edits; scripts can still assign value. Both fields support assignment and binding. `selection_color` defaults to "#3c78dc5f"; `caret_color: null` follows color. Text outline and shadow use the same layout as the editor. Switching to read-only cancels composition and disables system IME while preserving the text and selection.
+
+`edit_filter` checks or transforms an edit before it reaches the bound value. Its TextEdit argument contains previous, the original text; value, the proposed full text; text, the replacement; and start/end, byte offsets in the original. Return text to accept the edit, another string to change the replacement, or null to reject it. For example, `edit_filter: |edit| if edit.value.scalar_count() <= 12 { edit.text } else { null }` limits a name's length consistently for typing, paste and IME commit. The callback returns its result directly; accepted edits enter the shared undo history and on_change path.
+
+Set `password: true` to show one bullet per grapheme, including IME preedit. The value, selection and undo history keep the original UTF-8 text; switching the mode preserves them. The placeholder stays readable. Copy exports no text, cut only deletes, and accessibility exposes PasswordInput without the original value or text nodes.
 
 Use `text_area` for multiline notes or messages, with the same parameters as text_input. Both use `text_align` for horizontal alignment and `line_height` for line height relative to the font size. A text_area wraps at its width by default; `text_wrap: false` preserves explicit newlines and allows horizontal scrolling. Text starts at the top. Enter inserts a newline; Ctrl+Enter (Command+Enter on macOS) calls on_submit; Tab moves focus. Up/Down moves the caret, with Shift extending the selection. Home/End goes to the current visual line's boundaries; Ctrl/Command goes to the document boundaries. The wheel scrolls overflowing content, and editing reveals the caret. Pasted CRLF/CR becomes LF; IME preedit writes value only when committed. Save restoration preserves text, bindings, committed selection and undo transactions; preedit and the internal viewport reset. Runnable example: [author_text_area.aside](../../examples/author_text_area/src/main.aside).
 

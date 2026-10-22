@@ -70,6 +70,88 @@ fn reserve_removed(values: &mut VecDeque<u8>, additional: usize) -> Result<(), A
         .map_err(|_| AdapterError::Allocation)
 }
 
+/// Borrow a committed fragment directly from an existing string or VM proposal.
+/// The journal copies its own delta once; filtering needs no temporary full text.
+#[derive(Clone, Copy)]
+pub(super) enum EditText<'a> {
+    Slice(&'a str),
+    Vm {
+        heap: &'a Heap,
+        value: Value,
+        start: usize,
+        length: usize,
+    },
+}
+impl<'a> From<&'a str> for EditText<'a> {
+    fn from(value: &'a str) -> Self {
+        Self::Slice(value)
+    }
+}
+impl<'a> EditText<'a> {
+    pub(super) fn len(self) -> usize {
+        match self {
+            Self::Slice(s) => s.len(),
+            Self::Vm { length, .. } => length,
+        }
+    }
+    fn is_empty(self) -> bool {
+        self.len() == 0
+    }
+    fn bytes(self) -> EditBytes<'a> {
+        let end = self.len();
+        EditBytes {
+            text: self,
+            start: 0,
+            end,
+            chunk: &[],
+        }
+    }
+}
+struct EditBytes<'a> {
+    text: EditText<'a>,
+    start: usize,
+    end: usize,
+    chunk: &'a [u8],
+}
+impl Iterator for EditBytes<'_> {
+    type Item = u8;
+    fn next(&mut self) -> Option<u8> {
+        if self.start == self.end {
+            return None;
+        }
+        if self.chunk.is_empty() {
+            self.chunk = match self.text {
+                EditText::Slice(text) => &text.as_bytes()[self.start..self.end],
+                EditText::Vm {
+                    heap, value, start, ..
+                } => heap
+                    .byte_segment(value, (start + self.start) as u32)
+                    .expect("validated edit fragment"),
+            };
+        }
+        let value = self.chunk[0];
+        self.chunk = &self.chunk[1..];
+        self.start += 1;
+        Some(value)
+    }
+}
+impl DoubleEndedIterator for EditBytes<'_> {
+    fn next_back(&mut self) -> Option<u8> {
+        if self.start == self.end {
+            return None;
+        }
+        self.end -= 1;
+        Some(match self.text {
+            EditText::Slice(text) => text.as_bytes()[self.end],
+            EditText::Vm {
+                heap, value, start, ..
+            } => heap
+                .byte_segment(value, (start + self.end) as u32)
+                .expect("validated edit fragment")[0],
+        })
+    }
+}
+
 impl History {
     pub fn new(heap: &Heap, expected: HeapHandle) -> Result<Box<Self>, AdapterError> {
         let charge = heap.budget_usage().reserve(size_of::<Self>() as u64)?;
@@ -124,12 +206,14 @@ impl History {
         (size_of::<Self>() + self.entries.capacity() * size_of::<Delta>() + self.storage) as u64
     }
 
-    pub(super) fn prepare(
+    pub(super) fn prepare<'a>(
         &mut self,
         edit: &TextEdit,
-        removed: &str,
-        inserted: &str,
+        removed: impl Into<EditText<'a>>,
+        inserted: impl Into<EditText<'a>>,
     ) -> Result<Prepared, AdapterError> {
+        let removed = removed.into();
+        let inserted = inserted.into();
         let merge = self.merging
             && self.position == self.entries.len()
             && edit.before.anchor == edit.before.focus
@@ -197,8 +281,8 @@ impl History {
                 let mut inserted_bytes = Vec::new();
                 reserve_removed(&mut removed_bytes, removed.len())?;
                 reserve(&mut inserted_bytes, inserted.len())?;
-                removed_bytes.extend(removed.as_bytes().iter().copied());
-                inserted_bytes.extend_from_slice(inserted.as_bytes());
+                removed_bytes.extend(removed.bytes());
+                inserted_bytes.extend(inserted.bytes());
                 Ok(Prepared::Append(Delta {
                     start: edit.range.start,
                     before: edit.before,
@@ -225,26 +309,28 @@ impl History {
     }
 
     /// Capacity and byte buffers were prepared before the authoritative model write.
-    pub(super) fn commit(
+    pub(super) fn commit<'a>(
         &mut self,
         prepared: Prepared,
         edit: &TextEdit,
-        removed: &str,
-        inserted: &str,
+        removed: impl Into<EditText<'a>>,
+        inserted: impl Into<EditText<'a>>,
         expected: HeapHandle,
     ) {
+        let removed = removed.into();
+        let inserted = inserted.into();
         match prepared {
             Prepared::Merge => {
                 let last = self.entries.last_mut().unwrap();
                 if edit.kind == TextEditKind::Backspace {
-                    for byte in removed.as_bytes().iter().rev() {
-                        last.removed.push_front(*byte);
+                    for byte in removed.bytes().rev() {
+                        last.removed.push_front(byte);
                     }
                     last.start = edit.range.start;
                 } else {
-                    last.removed.extend(removed.as_bytes().iter().copied());
+                    last.removed.extend(removed.bytes());
                 }
-                last.inserted.extend_from_slice(inserted.as_bytes());
+                last.inserted.extend(inserted.bytes());
                 last.after = edit.after;
             }
             Prepared::Append(delta) => {
@@ -511,7 +597,7 @@ mod tests {
             .reserve(limits.max_bytes - heap.stats().charged_bytes)
             .unwrap();
         let big = "B".repeat(4096);
-        assert!(history.prepare(&edit, "", &big).is_err());
+        assert!(history.prepare(&edit, "", big.as_str()).is_err());
         assert_eq!(history.position, 0);
         assert_eq!(history.entries.len(), 1);
         assert!(!history.can_undo() && history.can_redo());

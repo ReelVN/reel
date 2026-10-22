@@ -323,6 +323,7 @@ pub(super) enum NodeProperty {
 
 pub(super) struct StageBinding {
     pub(super) types: super::source::HostTypes,
+    pub(super) text_filter_function: Option<aside_vm::bytecode::FunctionId>,
     pub scene: Stage,
     pub retirement_revision: u64,
     handles: BTreeMap<NodeId, NodeBinding>,
@@ -391,6 +392,7 @@ impl StageBinding {
     pub fn new(heap: &Heap) -> Result<Self, AdapterError> {
         Ok(Self {
             types: super::source::HostTypes::new(heap)?,
+            text_filter_function: None,
             scene: Stage::default(),
             retirement_revision: 0,
             handles: BTreeMap::new(),

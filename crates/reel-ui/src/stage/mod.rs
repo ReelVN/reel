@@ -243,12 +243,16 @@ pub struct TextInputOptions {
     /// None represents an empty hint without allocating an empty string.
     pub placeholder: Option<Arc<str>>,
     pub read_only: bool,
+    /// Display grapheme bullets while keeping value and selection in source UTF-8.
+    pub password: bool,
     pub selection_color: [u8; 4],
     pub caret_color: Option<[u8; 4]>,
     pub selection: crate::widgets::TextSelection,
     /// Only authoritative selection changes advance this revision; local feedback does not.
     pub selection_revision: u64,
     pub pending_edit: bool,
+    /// User commits require host filtering before subsequent edits can replay.
+    pub filter_edits: bool,
     pub replay: Option<Arc<crate::widgets::TextInputReplay>>,
 }
 impl Default for TextInputOptions {
@@ -256,11 +260,13 @@ impl Default for TextInputOptions {
         Self {
             placeholder: None,
             read_only: false,
+            password: false,
             selection_color: [60, 120, 220, 95],
             caret_color: None,
             selection: Default::default(),
             selection_revision: 0,
             pending_edit: false,
+            filter_edits: false,
             replay: None,
         }
     }

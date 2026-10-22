@@ -988,6 +988,8 @@ trigger.add(popup(placement: "bottom-start", offset: 4,
 });
 ```
 
+下拉选择可让 scope 返回确认的选项，调用方再更新业务值；返回键或外点让 scope 返回 null。按钮的 hover/focus_visible 表达临时高亮，关闭浮层恢复触发控件的焦点。长选项放进 scroll 和虚拟 list，禁用项沿普通按钮规则跳过。[完整组合示例](../../examples/author_popup/src/main.aside) 把这些行为放在同一个选择函数中，可在示例目录运行 `reel dev`。
+
 键盘激活需要在同一个按钮上按下并松开 Enter 或空格；切换焦点、隐藏、禁用或窗口失焦会取消未完成的按键。
 
 ```aside
@@ -1187,6 +1189,10 @@ stage.replace(text_input(value: bind(profile.name), width: 280, height: 40,
 可运行示例：[author_text_input.aside](../../examples/author_text_input/src/main.aside)。
 
 `placeholder: "Your name"` 在 value 为空且没有 IME 预编辑时显示提示。`read_only: true` 保留选区、复制、导航和提交，同时阻止玩家编辑；脚本仍可赋值。两者支持直接赋值与绑定。`selection_color` 默认为 "#3c78dc5f"；`caret_color: null` 沿用 color。文字描边和阴影复用编辑器的同一排版。切为只读撤销预编辑并关闭系统 IME，保留正文与选区。
+
+`edit_filter` 在输入写入绑定值前检查或改写编辑。回调收到 TextEdit：previous 是原文，value 是提案全文，text 是本次替换文本，start/end 是原文中的字节范围。返回 text 接受原编辑，返回另一字符串改写本次替换，返回 null 拒绝。比如 `edit_filter: |edit| if edit.value.scalar_count() <= 12 { edit.text } else { null }` 限制姓名长度；键入、粘贴和输入法提交使用同一规则。回调直接返回结果，确认后的编辑统一进入撤销历史和 on_change。
+
+设置 `password: true` 后，正文与 IME 预编辑的每个字素显示一个 bullet；值、选区与撤销历史保留原文 UTF-8，切换模式保持这些状态。占位提示照常显示。复制不导出正文，剪切仅删除；可访问性使用 PasswordInput，不公开原文值或文本节点。
 
 多行笔记或留言使用 `text_area`，参数与 text_input 相同。两者使用 `text_align` 设置水平对齐，`line_height` 设置字号倍率行高。text_area 默认按宽度自动换行，`text_wrap: false` 保留显式换行并允许横向滚动；正文从顶部开始。Enter 换行，Ctrl+Enter（macOS 为 Command+Enter）触发 on_submit，Tab 切换焦点。上下方向键移动光标，配合 Shift 扩展选区；Home/End 定位当前显示行，配合 Ctrl/Command 定位全文首尾。滚轮查看溢出内容，编辑时自动将光标滚入可见区域。粘贴的 CRLF/CR 转为 LF；IME 预编辑在确认后才写回 value。保存恢复保留正文、绑定、已提交选区和撤销事务；预编辑及内部滚动位置重建。可运行示例：[author_text_area.aside](../../examples/author_text_area/src/main.aside)。
 

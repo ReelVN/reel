@@ -23,6 +23,100 @@ fn contexts() -> (FontContext, LayoutContext<()>) {
 }
 
 #[test]
+fn password_graphemes_keep_source_byte_selection_for_navigation_hits_and_deletion() {
+    let (mut fonts, mut layouts) = contexts();
+    let source = "Ae\u{301}👩‍🚀中";
+    let boundaries = [0, 1, 4, 15, 18];
+    let mut editor = PlainEditor::<()>::new(20.);
+    editor.edit_styles().insert(StyleProperty::FontFamily(
+        FontFamily::from("Reel Weight Fixture").into_owned(),
+    ));
+    editor.set_text(source);
+    assert!(editor.masked.is_none());
+    editor.set_password(true);
+    editor.refresh_layout(&mut fonts, &mut layouts);
+    assert_eq!(editor.masked.as_ref().unwrap().text, "••••");
+    assert_eq!(editor.raw_text(), source);
+    for (ordinal, boundary) in boundaries.into_iter().enumerate() {
+        editor
+            .driver(&mut fonts, &mut layouts)
+            .move_to_byte(boundary);
+        assert_eq!(editor.raw_selection().focus().index(), boundary);
+        let caret = editor.cursor_geometry(1.).unwrap();
+        editor.driver(&mut fonts, &mut layouts).move_to_point(
+            (caret.x0 + 0.1) as f32,
+            ((caret.y0 + caret.y1) * 0.5) as f32,
+        );
+        assert_eq!(editor.raw_selection().focus().index(), boundary);
+        assert_eq!(editor.layout_selection().focus().index(), ordinal * 3);
+    }
+    editor.driver(&mut fonts, &mut layouts).move_to_text_start();
+    assert_eq!(editor.raw_selection().text_range(), 0..0);
+    for boundary in &boundaries[1..] {
+        editor.driver(&mut fonts, &mut layouts).select_right();
+        assert_eq!(editor.raw_selection().text_range(), 0..*boundary);
+    }
+    assert_eq!(editor.selected_text(), Some(source));
+    editor.driver(&mut fonts, &mut layouts).move_to_byte(15);
+    editor.driver(&mut fonts, &mut layouts).backdelete();
+    assert_eq!(editor.raw_text(), "Ae\u{301}中");
+    assert_eq!(editor.raw_selection().text_range(), 4..4);
+    editor.driver(&mut fonts, &mut layouts).delete();
+    assert_eq!(editor.raw_text(), "Ae\u{301}");
+    editor.driver(&mut fonts, &mut layouts).backdelete();
+    assert_eq!(editor.raw_text(), "A");
+}
+
+#[test]
+fn password_ime_and_mode_changes_keep_source_text_selection_and_cached_mask() {
+    let (mut fonts, mut layouts) = contexts();
+    let mut editor = PlainEditor::<()>::new(20.);
+    editor.edit_styles().insert(StyleProperty::FontFamily(
+        FontFamily::from("Reel Weight Fixture").into_owned(),
+    ));
+    editor.set_password(true);
+    editor.set_text("A中");
+    editor.driver(&mut fonts, &mut layouts).move_to_byte(1);
+    editor
+        .driver(&mut fonts, &mut layouts)
+        .set_compose("e\u{301}👩‍🚀", Some((3, 3)));
+    assert_eq!(editor.masked.as_ref().unwrap().text, "••••");
+    assert_eq!(editor.raw_text(), "Ae\u{301}👩‍🚀中");
+    assert_eq!(editor.text(), "A中");
+    assert_eq!(editor.raw_selection().text_range(), 4..4);
+    assert_eq!(*editor.raw_compose(), Some(1..15));
+    let area = editor.ime_cursor_area();
+    let caret = editor.cursor_geometry(1.).unwrap();
+    assert!(area.x0 <= caret.x0 && area.x1 >= caret.x1 - 1.);
+    let mask = editor.masked.as_ref().unwrap();
+    let text_storage = mask.text.as_ptr();
+    editor.set_width(Some(100.));
+    assert!(!editor.masked.as_ref().unwrap().dirty);
+    editor.refresh_layout(&mut fonts, &mut layouts);
+    assert_eq!(editor.masked.as_ref().unwrap().text.as_ptr(), text_storage);
+    for password in [false, true] {
+        editor.set_password(password);
+        editor.refresh_layout(&mut fonts, &mut layouts);
+        assert_eq!(editor.raw_text(), "Ae\u{301}👩‍🚀中");
+        assert_eq!(editor.raw_selection().text_range(), 4..4);
+        assert_eq!(*editor.raw_compose(), Some(1..15));
+    }
+    editor.driver(&mut fonts, &mut layouts).finish_compose();
+    assert_eq!(editor.text(), "Ae\u{301}👩‍🚀中");
+    assert_eq!(editor.masked.as_ref().unwrap().text, "••••");
+    editor.set_password(false);
+    assert!(editor.masked.is_none());
+    editor.driver(&mut fonts, &mut layouts).move_to_text_end();
+    editor
+        .driver(&mut fonts, &mut layouts)
+        .select_to_text_start();
+    assert_eq!(
+        editor.raw_selection().text_range(),
+        0..editor.raw_text().len()
+    );
+}
+
+#[test]
 fn ime_cursor_area_retains_ltr_and_rtl_overflow_before_host_clipping() {
     let (mut fonts, mut layouts) = contexts();
     for text in [
