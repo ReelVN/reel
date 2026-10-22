@@ -4,7 +4,7 @@ The compiler and VM share this format. Only the current encoding is read and wri
 
 Public data: `BytecodePackage {versions, content_version, text_pool, symbols, types, constants, signatures, natives, modules, functions, capabilities, sources}`. Separate u32 newtypes: SymbolId, TypeId, ConstId, SignatureId, NativeId, ModuleId, FunctionId, GlobalId, BindingId, CaptureId, DescriptorId, RegionId, SourceId, Reg, Pc. `Const = Null | Bool | Int(i64) | FloatBits(u64) | Utf8(String) | Text {offset: u64, len: u32} | Bytes(Vec<u8>) | Tuple(Vec<ConstId>)`; tuple references point backwards (finite immutable DAG). No Value/HeapId/token/address.
 
-`Signature {parameters: Vec<Parameter>, rest: Option<Parameter>, return_type: TypeId, effects: Effects}`. Parameter carries name, type, mutable (default false), and optional default-expression FunctionId. A default function receives exactly the preceding ordinary parameters, runs on every binding, is Plain with NoWait context and shares exactly the callee closure’s capture layout and definition ModuleInstance. Captures include lexical references in default expressions. Native defaults have no script closure environment. `mut` permits rebinding only and is never an implicit reference parameter. `TypeDef` covers builtins, named module types, tuple, union and function signatures. Native declarations carry symbol, signature, ABI version and required capabilities. Host registration must match all four, and explicitly report the opcodes it executes.
+`Signature {parameters: Vec<Parameter>, rest: Option<Parameter>, return_type: TypeId, effects: Effects}`. Parameter carries name, type, mutable (default false), and optional default-expression FunctionId. A default function receives exactly the preceding ordinary parameters, runs on every binding, is Plain with NoWait context and shares exactly the callee closure’s capture layout and definition ModuleInstance. Captures include lexical references in default expressions. Native defaults have no script closure environment. `mut` permits rebinding only and is never an implicit reference parameter. `TypeDef` covers builtins, named module types, tuple, union and positional function contracts. A function type stores parameter TypeIds and its return TypeId, all referring to earlier type records. Call descriptors may select this contract; actual arguments use sliced preparation and CheckType validates the returned value. Native declarations carry symbol, signature, ABI version and required capabilities. Host registration must match all four, and explicitly report the opcodes it executes.
 
 `ModuleDef {path, imports, exports, globals, initializer}`; imports fix module/export/version; globals declare name/type/mutable and optional link-time function. `FunctionDef {module,name,kind,signature,context,captures,register_count,bindings,descriptors,code,regions,source_map}`. Parameters occupy the first registers. Bindings distinguish a value register from a cell register and declare Explicit (uninitialized) or Parameter(index) initialization; closure descriptors capture a binding or an existing capture, with an exact Value/Cell layout. No upvalue points to a frame address.
 
@@ -60,11 +60,12 @@ Notation: `d` write Reg; `x/y/z` read Reg; `k` ConstId; `s` SymbolId; `b` Bindin
 | 001f | Ge | d,x,y | next | yes | - |
 | 0020–0023 | Neg,Pos,Not,BitNot | d,x | next | yes | - |
 | 0024 | Is | d,x,TypeId | next | yes | - |
+| 0028 | CheckType | x,TypeId | next (Type on mismatch) | yes | - |
 | 0030 | Jump | p | jump | no | - |
 | 0031 | BranchBool | x,p,p | strict bool two-way | yes | - |
 | 0032 | BranchNull | x,p,p | null/non-null two-way | no | - |
 | 0040 | MakeClosure | d,q:Closure(function,capture sources) | next | yes | - |
-| 0041 | Call | d,q:Call(target,window/packed args,names) | next after return/resume | yes | W |
+| 0041 | Call | d,q:Call(target,window/packed args,names,optional positional contract) | next after return/resume | yes | W |
 | 0042 | Return | x | return through cleanup | yes | - |
 | 0043 | ArgsNew | d | next | yes | - |
 | 0044 | ArgsPush | x,y | next | yes | - |

@@ -72,8 +72,10 @@ bindings initialize once after acceptance, and each entry prepares fresh storage
 MatchFail reports MatchError through ordinary exception cleanup and source maps.
 Fixed tuple destructuring in let/for supports nested tuples, names, wildcards
 and types. Array/object/rest destructuring, destructuring assignment, structural
-match patterns, optional-chain assignment targets, structural callable annotations
-and native generator/thread/async execution remain deferred. Analysis
+match patterns, optional-chain assignment targets and native generator/thread/async
+execution remain deferred. Structural callable annotations use name-free positional
+contracts; argument preparation and return delivery validate actual values without
+allocating wrapper closures. Analysis
 rejects explicit source return in a parameter default with
 InvalidDefault before producing an AnalyzedModule, including conditional and
 short-circuit branches. Nested author functions return through their own boundary;

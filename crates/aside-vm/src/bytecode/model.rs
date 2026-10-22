@@ -115,7 +115,11 @@ pub enum TypeDef {
     Builtin(BuiltinType),
     Tuple(Vec<TypeId>),
     Union(Vec<TypeId>),
-    Function(SignatureId),
+    /// A positional call contract; parameter names belong to the actual callee.
+    Function {
+        parameters: Vec<TypeId>,
+        return_type: TypeId,
+    },
     Named {
         module: ModuleId,
         name: SymbolId,
@@ -337,6 +341,8 @@ pub struct CallDesc {
     pub target: CallTarget,
     pub arguments: Arguments,
     pub names: Vec<NamedArg>,
+    /// Checks positional arguments; CheckType validates the result at the caller.
+    pub contract: Option<TypeId>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClassField {

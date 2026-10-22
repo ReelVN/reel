@@ -14,6 +14,14 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
             ("owner", nullable(node.clone())),
         ],
     );
+    api.refine(
+        "reel::reading",
+        TypeHint::Any,
+        &[
+            ("body", TypeHint::Closure),
+            ("owner", nullable(node.clone())),
+        ],
+    );
     for (method, result, parameters) in [
         (
             "run",
@@ -84,6 +92,28 @@ aside_host::native_documentation! {
         /// inside inherits the scope. Leaving the body retires its unfinished activities,
         /// tasks, owned nodes and overrides. `owner` optionally anchors it to a stage node.
         "reel::scope";
+        /// Run a story page in its own reading context using an ordinary Scope.
+        /// The body may accept that Scope and finish it with an event result.
+        /// Dialogue, choices, history, auto, skip, pause and auto conditions belong
+        /// to the context. Exiting releases them and restores the parent's original
+        /// objects. Delay, settings and read progress remain shared. Ordinary scopes
+        /// inherit the current context. Only the main story task may enter reading.
+        ///
+        /// ```aside
+        /// fn main() {
+        ///     let parent = game.reading();
+        ///     let destination = reading(body: |page| {
+        ///         game.reading().set_auto(condition: false).pause(false);
+        ///         narrator("A page with its own dialogue and history.");
+        ///         page.finish("title");
+        ///         await completion();
+        ///     });
+        ///     if destination != "title" || game.reading() != parent {
+        ///         throw "reading page did not restore its parent";
+        ///     }
+        /// }
+        /// ```
+        "reel::reading";
         /// Request scope retirement. The first request returns true; repeated requests
         /// and calls through an extracted bound method after retirement return false.
         /// The scope handle retires on exit. Cancellation revokes its native region,
@@ -222,7 +252,8 @@ impl SessionVm {
         })
     }
 
-    fn close_scope(&mut self, index: usize) -> Result<(), AdapterError> {
+    fn close_scope(&mut self, session: &mut Session, index: usize) -> Result<(), AdapterError> {
+        self.end_reading(session, self.scopes.live[index].frame)?;
         let root = self.scopes.live[index].root;
         let heap = self.vm.heap_mut();
         let value = heap.root_value(root)?;
@@ -251,10 +282,14 @@ impl SessionVm {
         Ok(())
     }
 
-    pub(super) fn cancel_task_scopes(&mut self, task: TaskId) -> Result<(), AdapterError> {
+    pub(super) fn cancel_task_scopes(
+        &mut self,
+        session: &mut Session,
+        task: TaskId,
+    ) -> Result<(), AdapterError> {
         for index in (0..self.scopes.live.len()).rev() {
             if self.scopes.live[index].task == task {
-                self.close_scope(index)?;
+                self.close_scope(session, index)?;
             }
         }
         Ok(())
@@ -262,13 +297,14 @@ impl SessionVm {
 
     pub(super) fn cancel_inner_scopes(
         &mut self,
+        session: &mut Session,
         task: TaskId,
         frame: FrameId,
     ) -> Result<(), AdapterError> {
         for index in (0..self.scopes.live.len()).rev() {
             let scope = &self.scopes.live[index];
             if scope.task == task && scope.frame.0 > frame.0 {
-                self.close_scope(index)?;
+                self.close_scope(session, index)?;
             }
         }
         Ok(())
@@ -320,6 +356,7 @@ impl SessionVm {
             self.release_keys(pending.keys)?;
             self.main_wait = None;
         }
+        self.cancel_inner_scopes(session, task, frame)?;
         Ok(())
     }
 
@@ -340,7 +377,7 @@ impl SessionVm {
                 None
             };
             self.end_native_region(session, task, scope.frame, result)?;
-            self.close_scope(index)?;
+            self.close_scope(session, index)?;
         }
         Ok(())
     }
@@ -381,7 +418,12 @@ impl SessionVm {
         Ok(())
     }
 
-    pub(super) fn dispatch_scope(&mut self, ticket: HostTicket) -> Result<(), AdapterError> {
+    pub(super) fn dispatch_scope(
+        &mut self,
+        session: &mut Session,
+        ticket: HostTicket,
+        reading: bool,
+    ) -> Result<(), AdapterError> {
         if ticket.input == NativeInput::Entry {
             if ticket.context.no_wait || ticket.context.init || ticket.context.derived {
                 return Err(VmError::Effect.into());
@@ -389,6 +431,13 @@ impl SessionVm {
             let args = self.vm.host_arguments(ticket)?;
             let body = args[0];
             let takes_scope = self.vm.callable_has_parameters(body)?;
+            // CallScript stores this one scope value in the native continuation.
+            // Validate its only configurable response limit before preparation.
+            if self.vm.limits().max_continuation_values == 0
+                || (takes_scope && self.vm.limits().max_arguments == 0)
+            {
+                return Err(VmError::Limit.into());
+            }
             let owner = if args[1].tag() == ValueTag::Null {
                 self.default_activity_owner(ticket.task)?
             } else {
@@ -460,6 +509,13 @@ impl SessionVm {
                 .vm
                 .heap_mut()
                 .add_root(self.root_owner, RootKind::Host, object)?;
+            if reading && let Err(error) = self.begin_reading(session, ticket) {
+                self.vm.heap_mut().release_root(root)?;
+                return Err(error);
+            }
+            // The ticket, callable and native slots remain the ones just checked.
+            // CallScript now writes only existing roots; it allocates no storage
+            // and cannot reject an author-controlled limit after Reading commits.
             let result = self.vm.respond(
                 ticket,
                 HostResponse::CallScript {
@@ -508,7 +564,7 @@ impl SessionVm {
                 .iter()
                 .position(|s| s.task == ticket.task && s.frame == ticket.frame)
             {
-                self.close_scope(index)?;
+                self.close_scope(session, index)?;
             }
             self.vm.respond(ticket, response)?;
         }

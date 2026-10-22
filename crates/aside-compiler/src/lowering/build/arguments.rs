@@ -2,6 +2,46 @@
 use super::*;
 
 impl FunctionBuilder<'_, '_> {
+    fn call_contract(&mut self, node: h::NodeId) -> Result<Option<bc::TypeId>, Box<Error>> {
+        let Form::Call { callee, .. } = self.l.m.hir().node(node).form else {
+            return Ok(None);
+        };
+        let mut ty = self.l.m.facts()[callee.0 as usize].ty;
+        if let h::Type::Union(types) = &self.l.m.types()[ty.0 as usize] {
+            let mut callable = types
+                .iter()
+                .copied()
+                .filter(|id| !matches!(self.l.m.types()[id.0 as usize], h::Type::Null));
+            if let Some(inner) = callable.next().filter(|_| callable.next().is_none()) {
+                ty = inner;
+            }
+        }
+        if matches!(self.l.m.types()[ty.0 as usize], h::Type::Callable(..)) {
+            self.l.ty(ty, 0).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn check_call_result(
+        &mut self,
+        node: h::NodeId,
+        value: bc::Reg,
+        contract: Option<bc::TypeId>,
+    ) -> Result<(), Box<Error>> {
+        if let Some(contract) = contract {
+            let bc::TypeDef::Function { return_type, .. } = self.l.package.types[contract.index()]
+            else {
+                unreachable!()
+            };
+            if self.l.package.types[return_type.index()]
+                != bc::TypeDef::Builtin(bc::BuiltinType::Any)
+            {
+                self.op(bc::Opcode::CheckType, value.0, return_type.0, 0, node)?;
+            }
+        }
+        Ok(())
+    }
     /// The caller owns the callee register across every source-order argument.
     pub(super) fn call_with_target(
         &mut self,
@@ -91,13 +131,16 @@ impl FunctionBuilder<'_, '_> {
             let name = self.l.name("children")?;
             self.l.b.push(&mut names, bc::NamedArg { name, offset })?;
         }
+        let contract = self.call_contract(n)?;
         let descriptor = self.descriptor(bc::Descriptor::Call(bc::CallDesc {
+            contract,
             target,
             arguments: bc::Arguments::Window(window),
             names,
         }))?;
         let out = self.temp()?;
         self.op(self.call_opcode(), out.0, descriptor.0, 0, n)?;
+        self.check_call_result(n, out, contract)?;
         self.release_window(window, n)?;
         Ok(Some(out))
     }
@@ -153,13 +196,16 @@ impl FunctionBuilder<'_, '_> {
             self.release(value)?;
         }
         self.l.b.span = self.span(n);
+        let contract = self.call_contract(n)?;
         let descriptor = self.descriptor(bc::Descriptor::Call(bc::CallDesc {
+            contract,
             target,
             arguments: bc::Arguments::Packed(builder),
             names: Vec::new(),
         }))?;
         let out = self.temp()?;
         self.op(self.call_opcode(), out.0, descriptor.0, 0, n)?;
+        self.check_call_result(n, out, contract)?;
         self.release(builder)?;
         Ok(Some(out))
     }

@@ -11,6 +11,7 @@ pub const SCENES: &[(&str, E)] = &[
     ("value match expressions", E::Block),
     ("collection editing and own fields", E::Block),
     ("component returns and optional children", E::Block),
+    ("remaining space and grid layout", E::Block),
     ("intrinsic panel layout", E::Block),
     ("custom mouse cursor", E::Block),
     ("typed author classes", E::Module),

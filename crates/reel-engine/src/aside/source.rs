@@ -289,8 +289,10 @@ fn build_api() -> Api {
     ]));
     for declaration in &mut api.functions {
         let symbol = aside_host::source::canonical(&declaration.symbol);
-        if !matches!(symbol.as_str(), "reel::scope" | "reel::stage::move_pointer")
-            && let Some(signature) = &mut declaration.symbol.signature
+        if !matches!(
+            symbol.as_str(),
+            "reel::scope" | "reel::reading" | "reel::stage::move_pointer"
+        ) && let Some(signature) = &mut declaration.symbol.signature
         {
             for parameter in &mut signature.parameters {
                 if parameter.name == "owner" {

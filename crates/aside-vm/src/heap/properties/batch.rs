@@ -75,6 +75,85 @@ mod tests {
             .as_int()
             .unwrap()
     }
+
+    #[test]
+    fn authoritative_batch_publishes_readonly_values_and_keeps_connected_constraints_atomic() {
+        let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+        let source = host(&mut heap, &[0, 10, 5], false, Some(range));
+        let follower = host(&mut heap, &[5], true, None);
+        let reference = heap.alloc_property_ref(id(source, 2), false).unwrap();
+        heap.bind_host_property(id(follower, 0), reference).unwrap();
+        let writes = [
+            (id(source, 0), Value::int(10)),
+            (id(source, 1), Value::int(20)),
+            (id(source, 2), Value::int(15)),
+        ];
+        for script in [false, true] {
+            assert!(matches!(
+                heap.write_host_properties(&writes, script),
+                Err(HeapError::ReadOnly)
+            ));
+        }
+        heap.publish_host_properties(&writes).unwrap();
+        assert_eq!(
+            [
+                get(&heap, source, 0),
+                get(&heap, source, 1),
+                get(&heap, source, 2),
+                get(&heap, follower, 0)
+            ],
+            [10, 20, 15, 15]
+        );
+        let invalid = [
+            (id(source, 0), Value::int(11)),
+            (id(source, 2), Value::int(30)),
+        ];
+        assert!(matches!(
+            heap.publish_host_properties(&invalid),
+            Err(HeapError::TypeMismatch)
+        ));
+        assert_eq!(
+            [
+                get(&heap, source, 0),
+                get(&heap, source, 1),
+                get(&heap, source, 2),
+                get(&heap, follower, 0)
+            ],
+            [10, 20, 15, 15]
+        );
+        let other = host(&mut heap, &[16], false, None);
+        let replacement = heap.alloc_property_ref(id(other, 0), false).unwrap();
+        assert!(matches!(
+            heap.publish_host_properties(&[(id(source, 2), replacement)]),
+            Err(HeapError::ReadOnly)
+        ));
+    }
+
+    #[test]
+    fn authoritative_batch_budget_failure_changes_no_values_and_warm_publication_reuses_storage() {
+        let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+        let target = host(&mut heap, &[0, 0], false, None);
+        let writes = [
+            (id(target, 0), Value::int(1)),
+            (id(target, 1), Value::int(2)),
+        ];
+        let usage = heap.budget_usage();
+        let charge = usage.reserve(usage.remaining_bytes()).unwrap();
+        assert!(heap.publish_host_properties(&writes).is_err());
+        assert_eq!([get(&heap, target, 0), get(&heap, target, 1)], [0, 0]);
+        drop(charge);
+        heap.publish_host_properties(&writes).unwrap();
+        let before = heap.stats();
+        for value in 0..120 {
+            heap.publish_host_properties(&[
+                (id(target, 0), Value::int(value)),
+                (id(target, 1), Value::int(value + 1)),
+            ])
+            .unwrap();
+        }
+        assert_eq!(heap.stats().chunk_allocations, before.chunk_allocations);
+        assert_eq!(get(&heap, target, 1), 120);
+    }
     #[test]
     fn prepared_read_admits_and_settles_each_index_query_even_when_the_read_fails() {
         for owned in [false, true] {
@@ -91,7 +170,7 @@ mod tests {
                 ) {}
                 Some(batch.value())
             } else {
-                heap.prepare_property_batch(&writes, true).unwrap();
+                heap.prepare_property_batch(&writes, true, false).unwrap();
                 None
             };
             let view = if let Some(cursor) = cursor {
@@ -829,10 +908,30 @@ impl Heap {
         writes: &dyn PropertyWrites,
         script: bool,
     ) -> Result<(), HeapError> {
+        self.apply_host_properties(writes, script, false)
+    }
+
+    /// Jointly publish authoritative service values, including read-only fields.
+    /// Connected constraints and all storage are prepared before any value changes.
+    /// Binding inputs retain their ordinary write permissions. Preparation reuses
+    /// the same charged scratch storage as `write_host_properties`.
+    pub fn publish_host_properties(
+        &mut self,
+        writes: &dyn PropertyWrites,
+    ) -> Result<(), HeapError> {
+        self.apply_host_properties(writes, false, true)
+    }
+
+    fn apply_host_properties(
+        &mut self,
+        writes: &dyn PropertyWrites,
+        script: bool,
+        publication: bool,
+    ) -> Result<(), HeapError> {
         self.property_work_used.set(0);
         self.clear_property_batch();
         self.property_bindings.clear();
-        if let Err(error) = self.prepare_property_batch(writes, script) {
+        if let Err(error) = self.prepare_property_batch(writes, script, publication) {
             self.discard_binding_plan()?;
             self.clear_property_batch();
             return Err(error);
@@ -1053,6 +1152,7 @@ impl Heap {
         &mut self,
         writes: &dyn PropertyWrites,
         script: bool,
+        publication: bool,
     ) -> Result<(), HeapError> {
         for index in 0..writes.len() {
             let (target, value) = writes.get(index).ok_or(HeapError::OutOfBounds)?;
@@ -1064,7 +1164,7 @@ impl Heap {
                     return Err(HeapError::ReadOnly);
                 }
                 self.check_derived_configuration_cycle(target, source, Some(writes))?;
-            } else if !writable {
+            } else if !writable && !publication {
                 return Err(HeapError::ReadOnly);
             }
             let value = PropertyRead::proposed(self, writes).read(target)?;

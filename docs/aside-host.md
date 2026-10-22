@@ -153,6 +153,8 @@ Reel uses this schema for common node constructor parameters, property writes an
 
 Constructors resolve a reference with `property_argument`, then retain the connection with `bind_host_property`. Script and control writes use `write_host_property`; authoritative read-only service updates use `publish_host_property`. Both validate all affected values before publishing. Use `require_writable_property` for control values that must write back. `retire_host` disconnects subscriptions and freezes surviving targets. `table_store` writes storage directly and is suitable for initialization; bound properties require the publishing APIs above.
 
+For a joint authoritative service update, use `publish_host_properties`. It shares the configuration batch's preparation, connected-constraint validation and commit, while permitting concrete values for read-only service fields. Binding inputs retain their ordinary write permissions. All storage is prepared before publication; a rejected update preserves the original values.
+
 `PropertySchema::documentation(index)` reads each variant's English `///` comment for property hovers. Documentation stays in static metadata; node values and saved sessions contain the declared properties.
 
 ## Validation and cost

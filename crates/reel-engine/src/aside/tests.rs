@@ -25,6 +25,7 @@ mod media_positions;
 mod models;
 mod particles;
 mod property_configuration;
+mod reading_contexts;
 mod result_use;
 mod results;
 mod retired_nodes;
@@ -511,7 +512,7 @@ fn narrator_wait_maps_exact_task_and_resumes_once_across_gc() {
         let owner = s.root_owner();
         s.handle_local_input(owner, InputAction::Advance(id))
             .unwrap();
-        assert!(s.completion.is_none());
+        assert!(s.reading_data.completion.is_none());
         s.handle_local_input(owner, InputAction::Advance(id))
             .unwrap();
         let RunOutcome::HostCall(second) = next(&mut vm, &mut s) else {

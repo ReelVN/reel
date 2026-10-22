@@ -1,5 +1,7 @@
-//! Session-owned observable narrative data, independent of its presentation.
+//! Context-owned observable narrative data, independent of its presentation.
+mod contexts;
 mod history;
+pub(super) use contexts::Contexts;
 
 aside_host::native_documentation! {
     pub(super) fn documentation {
@@ -42,7 +44,7 @@ aside_host::native_documentation! {
         /// }
         /// ```
         "reel::speech::revealed";
-        /// Return the observable dialogue view: lines, text, reveal, active, ready,
+        /// Return the active reading context's observable dialogue view: lines, text, reveal, active, ready,
         /// speaker_name, speaker_id, content_id, read and advance_requested. Bind these values to ordinary
         /// text nodes. `ready` means printing and inline pauses have completed.
         /// `advance_requested` records an accepted manual advance for the active segment,
@@ -50,12 +52,14 @@ aside_host::native_documentation! {
         /// Append/new dialogue/clear reset it; snapshots retain it. The root field is
         /// false after the interaction ends. Older displayed rows retain their last
         /// projected value; current_line_ids identifies the active segment's lines.
+        /// Capture this object when constructing a component. A later getter,
+        /// including an event callback's getter, selects the then-active context.
         "reel::game::dialogue";
         /// Clear displayed lines and ADV fields while retaining the current speech's
         /// wait and advance ownership. History entries are retained. Append displays
         /// the updated speech again; the cleared page survives ticks and snapshots.
         "reel::dialogue::clear";
-        /// Return the observable choice view with options and active. Call `.select(option.id)`
+        /// Return the active reading context's observable choice view with options and active. Call `.select(option.id)`
         /// from an authored control using the opaque id of a current option. The option's
         /// string key is author data; it is not the input identity accepted by select.
         "reel::game::choice";
@@ -66,18 +70,24 @@ aside_host::native_documentation! {
         /// is accepted, or false for a stale/unrecognized id or disallowed input owner.
         /// The waiting `choose` call returns that option's author-supplied string key.
         "reel::choice::select";
-        /// Return the observable dialogue history collection for an authored history view.
+        /// Return the active reading context's observable dialogue history collection.
         /// Entries retain their speaker, text and content identity independently of layout.
+        /// Capture the array in a component and refresh from that same array.
         "reel::game::history";
         /// Append a history entry without presenting dialogue. `speaker` optionally
         /// provides its display name; text accepts plain or rich content.
         "reel::game::record";
-        /// Return observable reading state, including auto, paused, delay, skipping and auto_ready.
-        /// Use `set_auto`, `set_skip` and `pause_reading` to change reading behavior.
+        /// Return the active reading context's observable controls: auto, paused,
+        /// delay, skipping and auto_ready. Direct getters inside derive follow
+        /// context switches; captured objects retain their original context.
+        /// Capture this context's object in components. Its set_auto, set_skip and
+        /// pause methods control that context even while another context is active.
+        /// On exit, retained models keep their last values; control operations fail.
         "reel::game::reading";
         /// Pause or resume dialogue reveal and automatic advancement. Other tasks,
         /// animations and media keep running, so menus can own their own behavior.
-        "reel::game::pause_reading";
+        /// Return the same Reading. Retiring its context releases this pause.
+        "reel::reading::pause";
         /// Configure automatic dialogue advance. Null arguments preserve the current value
         /// or binding. `enabled` accepts bool; `delay` accepts nonnegative finite seconds.
         /// `condition` accepts bool or a bind/derive reference and resolves to auto_ready.
@@ -85,15 +95,18 @@ aside_host::native_documentation! {
         /// [next] continue normally. True replaces any previous condition binding.
         /// Once ready, wait the full delay after presentation. Bindings survive saves.
         /// Segmented speech advances only at `wait`.
-        "reel::game::set_auto";
+        /// The condition belongs to this context; delay is shared across contexts.
+        /// Return the same Reading.
+        "reel::reading::set_auto";
         /// Enable or disable dialogue skipping. `unread` permits unread content;
         /// `after_choices` keeps skipping after a choice. Both options default to false.
-        "reel::game::set_skip";
+        /// Return the same Reading.
+        "reel::reading::set_skip";
         /// Clear the session's accumulated read-content identities.
         "reel::game::clear_read_progress";
         /// Discard older history entries and retain the last `keep_last` entries.
-        /// The default zero clears history.
-        "reel::game::clear_history";
+        /// The default zero clears this context's history. Return the same Reading.
+        "reel::reading::clear_history";
     }
 }
 use super::*;
@@ -104,6 +117,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
     use aside_compiler::semantic::TypeHint;
     use aside_host::source::{Member, NamedType, named, nullable, number};
     let text = TypeHint::Union(vec![TypeHint::String, named("reel::types::RichText")]);
+    let reading = named("reel::types::Reading");
     api.refine(
         "reel::game::record",
         TypeHint::Null,
@@ -113,19 +127,20 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         ],
     );
     api.refine(
-        "reel::game::clear_history",
-        TypeHint::Null,
-        &[("keep_last", TypeHint::Int)],
+        "reel::reading::clear_history",
+        reading.clone(),
+        &[("reading", reading.clone()), ("keep_last", TypeHint::Int)],
     );
     api.refine(
-        "reel::game::pause_reading",
-        TypeHint::Null,
-        &[("paused", TypeHint::Bool)],
+        "reel::reading::pause",
+        reading.clone(),
+        &[("reading", reading.clone()), ("paused", TypeHint::Bool)],
     );
     api.refine(
-        "reel::game::set_auto",
-        TypeHint::Null,
+        "reel::reading::set_auto",
+        reading.clone(),
         &[
+            ("reading", reading.clone()),
             ("enabled", nullable(TypeHint::Bool)),
             ("delay", nullable(number())),
             (
@@ -135,9 +150,10 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         ],
     );
     api.refine(
-        "reel::game::set_skip",
-        TypeHint::Null,
+        "reel::reading::set_skip",
+        reading.clone(),
         &[
+            ("reading", reading.clone()),
             ("enabled", TypeHint::Bool),
             ("unread", TypeHint::Bool),
             ("after_choices", TypeHint::Bool),
@@ -171,7 +187,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
     ));
     api.types.push(NamedType::new(
         "reel::types::Dialogue",
-        "The session's current observable dialogue lines and advancement state.",
+        "A reading context's observable dialogue lines and advancement state.",
         dialogue,
     ));
     let mut choice = vec![
@@ -200,7 +216,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         "The current observable choice and its selection method.",
         choice,
     ));
-    let reading = [
+    let mut reading: Vec<Member> = [
         "auto",
         "paused",
         "delay",
@@ -220,14 +236,19 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
                 TypeHint::Bool
             },
             None,
-            "The session's current reading policy. Change it with game reading commands.",
+            "This reading context's observable control state.",
             None,
         )
     })
     .collect();
+    for method in ["set_auto", "set_skip", "pause", "clear_history"] {
+        let symbol = format!("reel::reading::{method}");
+        api.native_mut(&symbol).returns_parameter("reading");
+        reading.push(Member::method(api.native(&symbol).clone().bound(method)));
+    }
     api.types.push(NamedType::new(
         "reel::types::Reading",
-        "Observable automatic advancement, pause and skip policy.",
+        "A reading context's observable controls and receiver-based operations.",
         reading,
     ));
     for (function, ty) in [
@@ -301,6 +322,7 @@ pub(super) struct Narrative {
     #[serde(skip)]
     option_ids: Vec<(HeapHandle, ChoiceId)>,
     roots: Value,
+    root: RootToken,
     reading: Value,
     auto_condition: Value,
     history: Option<history::History>,
@@ -327,6 +349,23 @@ fn clear_collection(heap: &mut Heap, host: Value, field: u32) -> Result<(), Adap
 }
 
 impl Narrative {
+    #[cfg(test)]
+    pub(super) fn condition_weak(&self, heap: &Heap) -> Result<aside_vm::WeakHandle, HeapError> {
+        let (source, _) = heap.property_source(PropertyId {
+            host: self.auto_condition,
+            field: 0,
+        })?;
+        heap.downgrade(heap.derived_closure(source.host)?)
+    }
+
+    fn condition(&self, heap: &Heap) -> Result<bool, AdapterError> {
+        heap.host_property(PropertyId {
+            host: self.auto_condition,
+            field: 0,
+        })?
+        .as_bool()
+        .ok_or(AdapterError::Input("auto condition requires bool"))
+    }
     pub(super) fn snapshot_options(&self) -> super::snapshot::RecordStream<'_> {
         use super::snapshot::{Part, Record};
         Box::new(
@@ -354,6 +393,7 @@ impl Narrative {
         self.dialogue = map.value(self.dialogue)?;
         self.choice = map.value(self.choice)?;
         self.roots = map.value(self.roots)?;
+        self.root = map.root(self.root)?;
         self.reading = map.value(self.reading)?;
         self.auto_condition = map.value(self.auto_condition)?;
         if let Some(id) = &mut self.interaction {
@@ -454,7 +494,7 @@ impl Narrative {
             let key = heap.alloc_string(name)?;
             heap.table_store(fields, heap.table_len(fields)?, key, method)?;
         }
-        vm.heap_mut().add_root(owner, RootKind::Host, roots)?;
+        let root = vm.heap_mut().add_root(owner, RootKind::Host, roots)?;
         Ok(Self {
             dialogue,
             choice,
@@ -463,6 +503,7 @@ impl Narrative {
             display_cleared: false,
             option_ids: Vec::new(),
             roots,
+            root,
             reading,
             auto_condition,
             history: None,
@@ -817,16 +858,9 @@ impl SessionVm {
         session: &mut Session,
     ) -> Result<(), AdapterError> {
         if let Some(model) = &self.narrative {
-            let value = self.vm.heap().host_property(PropertyId {
-                host: model.auto_condition,
-                field: 0,
-            })?;
-            session.set_auto_condition(
-                value
-                    .as_bool()
-                    .ok_or(AdapterError::Input("auto condition requires bool"))?,
-            );
+            session.set_auto_condition(model.condition(self.vm.heap())?);
         }
+        self.sync_context_conditions(session)?;
         Ok(())
     }
 
@@ -851,7 +885,15 @@ impl SessionVm {
         ticket: HostTicket,
         symbol: &str,
     ) -> Result<(), AdapterError> {
-        let initialize = self.narrative.is_none();
+        let receiver = symbol.starts_with("reel::reading::")
+            || matches!(symbol, "reel::dialogue::clear" | "reel::choice::select");
+        let id = if receiver {
+            self.narrative_id(session, self.vm.host_arguments(ticket)?[0])?
+        } else {
+            self.observe_reading_selection(session)?;
+            session.reading_id
+        };
+        let initialize = id == session.reading_id && self.narrative.is_none();
         if initialize {
             self.narrative = Some(Narrative::new(
                 &mut self.vm,
@@ -859,26 +901,54 @@ impl SessionVm {
                 &self.stage.types,
             )?);
         }
-        // Getter calls inside a derived computation read its current batch.
-        // Author commands outside that capture still publish immediately.
         let sync = initialize || !self.vm.heap().reactive_evaluating();
-        if sync {
-            self.sync_narrative(session)?;
+        let foreground = id == session.reading_id;
+        let mut model = self.take_narrative(session, id).unwrap();
+        let result = session.with_reading(id, |session| {
+            if sync {
+                model.sync(self.vm.heap_mut(), session, self.read_limit)?;
+            }
+            self.dispatch_narrative_model(session, ticket, symbol, &mut model, sync, foreground)
+        })?;
+        self.put_narrative(session, id, model);
+        result?;
+        if symbol == "reel::game::clear_read_progress" {
+            for frame in &mut self.narrative_contexts.frames {
+                if let Some(model) = &mut frame.model {
+                    session.with_reading(frame.parent, |session| {
+                        model.sync(self.vm.heap_mut(), session, self.read_limit)
+                    })??;
+                }
+            }
         }
-        let model = self.narrative.as_mut().unwrap();
+        if sync {
+            self.sync_all_reading_controls(session)?;
+        }
+        Ok(())
+    }
+
+    fn dispatch_narrative_model(
+        &mut self,
+        session: &mut Session,
+        ticket: HostTicket,
+        symbol: &str,
+        model: &mut Narrative,
+        sync: bool,
+        foreground: bool,
+    ) -> Result<(), AdapterError> {
         let value = match symbol {
             "reel::game::dialogue" => model.dialogue,
             "reel::game::choice" => model.choice,
             "reel::game::reading" => model.reading,
-            "reel::game::clear_history" => {
-                let keep = self.vm.host_arguments(ticket)?[0]
+            "reel::reading::clear_history" => {
+                let keep = self.vm.host_arguments(ticket)?[1]
                     .as_int()
                     .filter(|&value| value >= 0)
                     .ok_or(AdapterError::Input(
                         "history keep_last requires a nonnegative int",
                     ))?;
                 session.clear_history(usize::try_from(keep).unwrap_or(usize::MAX));
-                Value::NULL
+                model.reading
             }
             "reel::game::clear_read_progress" => {
                 session.clear_read_progress()?;
@@ -896,21 +966,21 @@ impl SessionVm {
                 }
                 model.history.as_ref().unwrap().value
             }
-            "reel::game::set_auto" => {
+            "reel::reading::set_auto" => {
                 let args = self.vm.host_arguments(ticket)?;
-                let enabled = if args[0].tag() == ValueTag::Null {
+                let enabled = if args[1].tag() == ValueTag::Null {
                     session.reading().automatic()
                 } else {
-                    args[0]
+                    args[1]
                         .as_bool()
                         .ok_or(AdapterError::Input("auto requires bool or null"))?
                 };
-                let delay = if args[1].tag() == ValueTag::Null {
+                let delay = if args[2].tag() == ValueTag::Null {
                     None
                 } else {
-                    let seconds = args[1]
+                    let seconds = args[2]
                         .as_float()
-                        .or_else(|| args[1].as_int().map(|n| n as f64))
+                        .or_else(|| args[2].as_int().map(|n| n as f64))
                         .ok_or(AdapterError::Input("auto delay requires seconds"))?;
                     Some(
                         std::time::Duration::try_from_secs_f64(seconds).map_err(|_| {
@@ -920,7 +990,7 @@ impl SessionVm {
                         })?,
                     )
                 };
-                let condition = args[2];
+                let condition = args[3];
                 if condition.tag() != ValueTag::Null {
                     let heap = self.vm.heap_mut();
                     let property = PropertyId {
@@ -942,40 +1012,42 @@ impl SessionVm {
                     }
                 }
                 session.set_auto_reading(enabled, delay);
-                self.sync_auto_condition(session)?;
-                Value::NULL
+                session.set_auto_condition(model.condition(self.vm.heap())?);
+                model.reading
             }
-            "reel::game::set_skip" => {
+            "reel::reading::set_skip" => {
                 let args = self.vm.host_arguments(ticket)?;
-                let enabled = args[0]
+                let enabled = args[1]
                     .as_bool()
                     .ok_or(AdapterError::Input("skip requires bool"))?;
-                let unread = args[1]
+                let unread = args[2]
                     .as_bool()
                     .ok_or(AdapterError::Input("skip unread requires bool"))?;
-                let after_choices = args[2]
+                let after_choices = args[3]
                     .as_bool()
                     .ok_or(AdapterError::Input("skip after_choices requires bool"))?;
                 session.set_skip_reading(enabled, unread, after_choices);
-                self.skip_input = self
-                    .tasks
-                    .iter()
-                    .find(|callback| callback.task == ticket.task)
-                    .and_then(|callback| callback.node)
-                    .filter(|node| {
-                        session.reading().skipping()
-                            && self.stage.scene.node(*node).is_some_and(|node| {
-                                matches!(node.kind, reel_ui::stage::NodeKind::Input { .. })
-                            })
-                    });
-                Value::NULL
+                if foreground {
+                    self.skip_input = self
+                        .tasks
+                        .iter()
+                        .find(|callback| callback.task == ticket.task)
+                        .and_then(|callback| callback.node)
+                        .filter(|node| {
+                            session.reading().skipping()
+                                && self.stage.scene.node(*node).is_some_and(|node| {
+                                    matches!(node.kind, reel_ui::stage::NodeKind::Input { .. })
+                                })
+                        });
+                }
+                model.reading
             }
-            "reel::game::pause_reading" => {
-                let paused = self.vm.host_arguments(ticket)?[0]
+            "reel::reading::pause" => {
+                let paused = self.vm.host_arguments(ticket)?[1]
                     .as_bool()
                     .ok_or(AdapterError::Input("reading pause requires bool"))?;
                 session.pause_reading(paused);
-                Value::NULL
+                model.reading
             }
             "reel::dialogue::clear" => {
                 session.clear_dialogue_advance_request();
@@ -1008,7 +1080,7 @@ impl SessionVm {
             _ => unreachable!(),
         };
         if sync {
-            self.sync_narrative(session)?;
+            model.sync(self.vm.heap_mut(), session, self.read_limit)?;
         }
         self.vm.respond(ticket, HostResponse::Ready(value))?;
         self.issued = None;

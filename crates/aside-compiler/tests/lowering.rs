@@ -690,7 +690,7 @@ fn inferred_function_types_do_not_become_structural_author_contracts() {
     assert!(
         !p.types
             .iter()
-            .any(|ty| matches!(ty, bc::TypeDef::Function(_)))
+            .any(|ty| matches!(ty, bc::TypeDef::Function { .. }))
     );
     let f = function(p, "f");
     let next = f

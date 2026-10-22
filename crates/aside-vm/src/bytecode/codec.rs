@@ -471,7 +471,8 @@ record!(NamedArg { name, offset });
 record!(CallDesc {
     target,
     arguments,
-    names
+    names,
+    contract
 });
 record!(ClassField {
     name,
@@ -592,9 +593,13 @@ impl Wire for TypeDef {
                 2u8.put(w)?;
                 x.put(w)?
             }
-            Self::Function(x) => {
+            Self::Function {
+                parameters,
+                return_type,
+            } => {
                 3u8.put(w)?;
-                x.put(w)?
+                parameters.put(w)?;
+                return_type.put(w)?
             }
             Self::Named {
                 module,
@@ -614,7 +619,10 @@ impl Wire for TypeDef {
             0 => Ok(Self::Builtin(Wire::get(r)?)),
             1 => Ok(Self::Tuple(Wire::get(r)?)),
             2 => Ok(Self::Union(Wire::get(r)?)),
-            3 => Ok(Self::Function(Wire::get(r)?)),
+            3 => Ok(Self::Function {
+                parameters: Wire::get(r)?,
+                return_type: Wire::get(r)?,
+            }),
             4 => Ok(Self::Named {
                 module: Wire::get(r)?,
                 name: Wire::get(r)?,

@@ -569,6 +569,7 @@ fn initializer(
         b.push(
             &mut descriptors,
             bc::Descriptor::Call(bc::CallDesc {
+                contract: None,
                 target: bc::CallTarget::Function(initializer),
                 arguments: bc::Arguments::Window(bc::RegWindow {
                     start: bc::Reg(0),

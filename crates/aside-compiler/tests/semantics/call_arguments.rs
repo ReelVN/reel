@@ -5,14 +5,38 @@ use super::*;
 fn explicit_callable_types_satisfy_the_unspecialized_closure_category() {
     valid("fn take(value:closure){}fn forward(value:fn()->null){take(value);}");
     valid("fn take(value:closure){}fn forward(value:fn(int)->string){take(value);}");
-    rejects(
-        "fn forward(value:closure){let exact:fn()->null=value;}",
-        DiagnosticCode::TypeMismatch,
-    );
+    valid("fn forward(value:closure){let exact:fn()->null=value;}");
     rejects(
         "fn take(value:closure){}take(1);",
         DiagnosticCode::TypeMismatch,
     );
+}
+
+#[test]
+fn callable_contracts_check_positional_arguments_and_actual_signatures() {
+    for source in [
+        "fn use_it(f:fn(int)->int){f(1)}fn plus(n:int,add:int=1)->int{n+add}use_it(plus);",
+        "fn use_it(f:fn(int,string)->int){f(1,\"x\")}fn count(...items){items.len()}use_it(count);",
+        "fn forward(f:fn(any)->int){let g:fn(int)->any=f;g(2)}",
+    ] {
+        valid(source);
+    }
+    for source in [
+        "fn f(run:fn(int)->int){run();}",
+        "fn f(run:fn(int)->int){run(1,2);}",
+        "fn f(run:fn(int)->int){run(value:1);}",
+        "fn f(run:fn(int)->int){run(...(1,2));}",
+    ] {
+        rejects(source, DiagnosticCode::InvalidCall);
+    }
+    for source in [
+        "fn f(run:fn(int)->int){run(\"bad\");}",
+        "fn f(run:fn(int)->int){run(...(\"bad\",));}",
+        "fn wrong(n:int)->string{\"bad\"}let f:fn(int)->int=wrong;",
+        "fn wrong(n:int,other:int)->int{n}let f:fn(int)->int=wrong;",
+    ] {
+        rejects(source, DiagnosticCode::TypeMismatch);
+    }
 }
 
 #[test]

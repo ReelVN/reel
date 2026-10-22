@@ -71,7 +71,7 @@ pub struct ModuleDiagnostic {
 }
 #[derive(Debug, Clone, Default)]
 pub struct ModulePlan {
-    /// Dependencies precede users; each SCC is sorted by canonical path.
+    /// Value dependencies precede users; each SCC is sorted by canonical path.
     pub components: Vec<Vec<String>>,
     pub initialization_order: Vec<String>,
 }
@@ -550,14 +550,33 @@ fn analyze_project_inner(
             );
             diagnostics.truncate(diagnostic_limit);
             if let Some(module) = result.module.filter(|_| recover || valid) {
-                dependencies.insert(
-                    path,
-                    module
-                        .imports()
-                        .iter()
-                        .map(|i| i.module.clone())
-                        .collect::<BTreeSet<_>>(),
-                );
+                let dependency_work = module
+                    .facts()
+                    .len()
+                    .saturating_add(module.symbols().len())
+                    .saturating_add(module.exports().len())
+                    .saturating_add(
+                        module
+                            .imports()
+                            .iter()
+                            .map(|i| i.names.len())
+                            .sum::<usize>(),
+                    );
+                work = work.saturating_add(dependency_work);
+                if work > options.limits.max_work {
+                    exhausted = true;
+                    diagnostics.push(ModuleDiagnostic {
+                        module: path,
+                        diagnostic: Diagnostic::error(
+                            D::BudgetExceeded,
+                            module.hir().node(NodeId(0)).span,
+                            "project analysis work budget exceeded",
+                        ),
+                    });
+                    diagnostics.truncate(diagnostic_limit);
+                    break;
+                }
+                dependencies.insert(path, initialization_dependencies(&module));
                 modules.push(module);
             }
         }
@@ -569,6 +588,37 @@ fn analyze_project_inner(
         plan,
         exhausted,
     })
+}
+
+fn initialization_dependencies(module: &crate::hir::AnalyzedModule) -> BTreeSet<String> {
+    const TYPE: u8 = 1;
+    const VALUE: u8 = 2;
+    let mut usage = vec![0u8; module.symbols().len()];
+    for (node, fact) in module.hir().nodes.iter().zip(module.facts()) {
+        if let Some(symbol) = fact.symbol {
+            usage[symbol.0 as usize] |= if node.kind == H::NamedType {
+                TYPE
+            } else {
+                VALUE
+            };
+        }
+    }
+    for symbol in module.exports() {
+        usage[symbol.0 as usize] |= VALUE;
+    }
+    module
+        .imports()
+        .iter()
+        .filter(|import| {
+            let used = import
+                .names
+                .iter()
+                .fold(0, |used, (_, symbol)| used | usage[symbol.0 as usize]);
+            // Unused imports retain initialization order, including side effects.
+            used != TYPE
+        })
+        .map(|import| import.module.clone())
+        .collect()
 }
 pub(super) fn declarations(hir: &Hir, module: &str, version: &str) -> Vec<ExternalSymbol> {
     let mut result = Vec::new();

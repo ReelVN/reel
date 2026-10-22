@@ -24,6 +24,7 @@ const PRELUDE: &[&str] = &[
     "saves",
     "column",
     "row",
+    "grid",
     "stack",
     "text",
     "button",
@@ -70,6 +71,7 @@ fn prelude_symbol(name: &str) -> ExternalSymbol {
                 | "video"
                 | "particles"
                 | "row"
+                | "grid"
                 | "column"
                 | "stack"
                 | "cursor"

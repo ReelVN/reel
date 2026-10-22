@@ -52,6 +52,8 @@ pub(super) enum Part {
     Pending,
     ChoiceKey,
     Narrative,
+    NarrativeContexts,
+    ReadingContext,
     NarrativeOption,
     Activities,
     ActivityEvent,
@@ -225,7 +227,16 @@ impl SessionVm {
             ),
             Box::new(
                 once_with(|| Record::new(Part::Narrative, &self.narrative))
-                    .chain(self.narrative.iter().flat_map(|n| n.snapshot_options())),
+                    .chain(self.narrative.iter().flat_map(|n| n.snapshot_options()))
+                    .chain(once_with(|| {
+                        Record::new(Part::NarrativeContexts, &self.narrative_contexts)
+                    }))
+                    .chain(
+                        self.narrative_contexts
+                            .frames
+                            .iter()
+                            .map(|frame| Record::new(Part::ReadingContext, frame)),
+                    ),
             ),
             self.activities.snapshot_records(),
             self.results.snapshot_records(),
@@ -600,6 +611,20 @@ impl SessionRestore<'_> {
                             n.restore(map, runtime.identity)?;
                         }
                     }
+                    Part::NarrativeContexts => {
+                        runtime.narrative_contexts = record.read()?;
+                        runtime.narrative_contexts.restore(map)?;
+                    }
+                    Part::ReadingContext => {
+                        runtime.narrative_contexts.restore_frame(
+                            record.read()?,
+                            map,
+                            self.session.as_ref().unwrap(),
+                            &runtime.scopes,
+                            runtime.task,
+                            runtime.vm.heap(),
+                        )?;
+                    }
                     Part::NarrativeOption => {
                         runtime
                             .narrative
@@ -669,6 +694,9 @@ impl SessionRestore<'_> {
             runtime
                 .stage
                 .restore_root(runtime.vm.heap(), self.stage_root)?;
+            runtime
+                .narrative_contexts
+                .validate(self.session.as_ref().unwrap())?;
             if runtime.reactive_ready && runtime.derived_task.is_none() {
                 runtime.sync_narrative(self.session.as_ref().unwrap())?;
             }
