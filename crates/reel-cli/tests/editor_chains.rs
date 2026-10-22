@@ -183,9 +183,10 @@ fn action_and_speech_chains_infer_complete_navigate_and_color_real_methods() {
 
 #[test]
 fn node_with_chain_retains_the_actual_text_subtype_and_property_schema() {
-    let source = r#"fn main() {
+    let source = r##"fn main() {
     let position = model({x: 12});
-    let label = text("Hello").with(x: bind(position.x), font_size: 24, reveal: null);
+    let label = text("Hello").with(x: bind(position.x), font_size: 24, reveal: null,
+        border_width: 2, border_color: "#92a8c8", corner_radius: 12);
     let styled: TextNode = label;
     styled.with(opacity: 0.5).value;
     let film = video("clip.mp4");
@@ -193,7 +194,7 @@ fn node_with_chain_retains_the_actual_text_subtype_and_property_schema() {
     let dust = particles("spark.png");
     dust.with(x: 2);
     stage.replace(styled);
-}"#;
+}"##;
     let (mut server, initialized) = open(source);
     let hover = server.request(2, "textDocument/hover", query(source, "label;", false));
     let markdown = hover["contents"]["value"].as_str().unwrap();
@@ -202,7 +203,15 @@ fn node_with_chain_retains_the_actual_text_subtype_and_property_schema() {
         "{markdown}"
     );
     let items = server.request(3, "textDocument/completion", query(source, "styled.", true));
-    for name in ["with", "value", "font", "font_size"] {
+    for name in [
+        "with",
+        "value",
+        "font",
+        "font_size",
+        "border_width",
+        "border_color",
+        "corner_radius",
+    ] {
         assert!(
             items
                 .as_array()
@@ -219,7 +228,10 @@ fn node_with_chain_retains_the_actual_text_subtype_and_property_schema() {
     );
     let label = signature["signatures"][0]["label"].as_str().unwrap();
     assert!(
-        label.contains("font_size?:") && label.contains("opacity?:"),
+        label.contains("font_size?:")
+            && label.contains("opacity?:")
+            && label.contains("border_width?:")
+            && label.contains("corner_radius?:"),
         "{label}"
     );
     let mut id = 5;

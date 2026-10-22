@@ -6,7 +6,10 @@ use reel_ui::{
     kurbo::{Axis, Insets, Point, Rect, Size, Vec2},
     layout::{LenDef, LenReq, Length, SizeDef},
     peniko::{Color, ImageData},
-    properties::{ContentColor, ThumbColor, ThumbRadius, TrackColor, TrackThickness},
+    properties::{
+        Background, BorderColor, BorderWidth, ContentColor, CornerRadius, ThumbColor, ThumbRadius,
+        TrackColor, TrackThickness,
+    },
     resources::{ResourceData, ResourceLease},
     stage::{
         ControlValue, InteractionState, NodeChange, NodeClick, NodeEvent, NodeId, NodeInteraction,
@@ -1051,6 +1054,13 @@ impl SceneWidget {
                 Some(
                     NewWidget::new(
                         TextInput::with_mode(value.clone(), *multiline)
+                            .with_text_alignment(view.node.props.text_align)
+                            .with_text_wrap(view.node.props.text_wrap)
+                            .with_style(StyleProperty::LineHeight(
+                                reel_ui::reel_text::LineHeight::FontSizeRelative(
+                                    view.node.props.line_height as f32,
+                                ),
+                            ))
                             .with_style(StyleProperty::FontSize(view.node.props.font_size as f32))
                             .with_style(StyleProperty::FontWeight(
                                 reel_ui::reel_text::FontWeight::new(
@@ -1193,6 +1203,16 @@ impl SceneWidget {
         {
             TextInput::set_multiline(&mut editor, *multiline);
             TextInput::set_value(&mut editor, value.clone());
+            TextInput::set_text_alignment(&mut editor, view.node.props.text_align);
+            TextInput::set_text_wrap(&mut editor, view.node.props.text_wrap);
+            if this.widget.node.props.line_height != view.node.props.line_height {
+                TextInput::insert_style(
+                    &mut editor,
+                    StyleProperty::LineHeight(reel_ui::reel_text::LineHeight::FontSizeRelative(
+                        view.node.props.line_height as f32,
+                    )),
+                );
+            }
             if this.widget.node.props.font_size != view.node.props.font_size {
                 TextInput::insert_style(
                     &mut editor,
@@ -2494,9 +2514,31 @@ impl Widget for SceneWidget {
         );
     }
     fn paint(&mut self, ctx: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, painter: &mut Painter<'_>) {
+        let bounds = self.size.to_rect();
+        let border = BorderWidth::all(Length::px(
+            self.node
+                .props
+                .border_width
+                .min(self.size.width.min(self.size.height) * 0.5),
+        ));
+        let radius = CornerRadius::all(Length::px(self.node.props.corner_radius));
         if let Some(background) = self.node.props.background {
-            painter.fill_rect(self.size.to_rect(), color(background));
+            paint_background(
+                painter,
+                bounds,
+                &Background::Color(color(background)),
+                &radius,
+            );
         }
+        paint_border(
+            painter,
+            bounds,
+            &BorderColor {
+                color: color(self.node.props.border_color),
+            },
+            &border,
+            &radius,
+        );
         if self.node.props.decorated
             && self.is_button()
             && ctx.is_focus_target()

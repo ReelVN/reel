@@ -1151,7 +1151,7 @@ stage.replace(text_input(value: bind(profile.name), width: 280, height: 40,
 
 Runnable example: [author_text_input.aside](../../examples/author_text_input/src/main.aside).
 
-Use `text_area` for multiline notes or messages, with the same parameters as text_input. It wraps at its width and aligns text to the top. Enter inserts a newline; Ctrl+Enter (Command+Enter on macOS) calls on_submit; Tab moves focus. Up/Down moves the caret, with Shift extending the selection. Home/End goes to the current visual line's boundaries; Ctrl/Command goes to the document boundaries. The wheel scrolls overflowing content, and editing reveals the caret. Pasted CRLF/CR becomes LF; IME preedit writes value only when committed. Save restoration preserves text and bindings, while selection and the internal viewport reset with the input widget. Runnable example: [author_text_area.aside](../../examples/author_text_area/src/main.aside).
+Use `text_area` for multiline notes or messages, with the same parameters as text_input. Both use `text_align` for horizontal alignment and `line_height` for line height relative to the font size. A text_area wraps at its width by default; `text_wrap: false` preserves explicit newlines and allows horizontal scrolling. Text starts at the top. Enter inserts a newline; Ctrl+Enter (Command+Enter on macOS) calls on_submit; Tab moves focus. Up/Down moves the caret, with Shift extending the selection. Home/End goes to the current visual line's boundaries; Ctrl/Command goes to the document boundaries. The wheel scrolls overflowing content, and editing reveals the caret. Pasted CRLF/CR becomes LF; IME preedit writes value only when committed. Save restoration preserves text and bindings, while selection and the internal viewport reset with the input widget. Runnable example: [author_text_area.aside](../../examples/author_text_area/src/main.aside).
 
 For scripted typing or keyboard games, use `input(on_key: |event| { ... })`. Events provide code, key, phase and shift/ctrl/alt/meta; phase is pressed/repeated/released/cancelled. Keys are delivered separately, and focus loss cancels held keys. Focused buttons consume their confirmation keys; other unclaimed keys bubble to an ancestor on_key, so clicking a language button does not stop scripted typing. Focused text editors retain all keyboard and system IME events. Omit actions when no action mapping is needed, or combine named actions for gamepad and pointer controls; action mappings still follow focus ownership. Example: [author_keyboard.aside](../../examples/author_keyboard/src/main.aside).
 
@@ -1178,7 +1178,7 @@ fn main() {
 
 Images using the same resource are shared by the player. The wgpu backend reuses submitted GPU images, so changes to text or hover state do not require uploading the whole interface again. Cached images are released on resource retirement or when space is needed; authors do not manage GPU handles.
 
-Ordinary functions, style spreading, node property updates, transforms, finite animation and temporary scope overrides are available.
+Ordinary functions, style spreading, node property updates, transforms, finite animation and temporary scope overrides are available. A node's `corner_radius` rounds its background and border; `border_width` and `border_color` draw an inside border. For example: `panel.with(background: "#182638", corner_radius: 12, border_width: 2, border_color: "#92a8c8")`. Padding controls the content inset; these styles retain the node's layout and hit rectangle. See [author_text_area](../../examples/author_text_area/src/main.aside) for a composed editor.
 
 Reusable styles are ordinary data; component functions decide how to apply them to their nodes. Start with defaults, then override them with variants and explicit arguments. Defaults apply only to missing fields; false, 0, and null retain the author's explicit meaning. Temporary scope overrides take precedence over a node's underlying properties.
 ```aside
@@ -1343,7 +1343,7 @@ await run(tween(caption, reveal_fade: 3, duration: 3.0 * 255.0 / 1400.0), owner:
 caption.reveal_fade = null;
 ```
 
-Text automatically wraps to the available width by default. Set `text_wrap: false` to retain each explicitly authored line; excess text remains visible unless clip trims it. The property supports direct assignment and bind/derive. This switch applies only to text: control labels such as buttons still do not wrap automatically, and text editors keep their own rules. See [author_text_wrap.aside](../../examples/author_text_wrap/src/main.aside) for a complete example.
+Text automatically wraps to the available width by default. Set `text_wrap: false` to retain each explicitly authored line; excess text remains visible unless clip trims it. The property supports direct assignment and bind/derive. It also applies to text_area; text_input remains single-line, and control labels such as buttons still do not wrap automatically. See [author_text_wrap.aside](../../examples/author_text_wrap/src/main.aside) for a complete example.
 
 ```aside
 stage.replace(text("A long authored line without automatic wrapping.\nA second explicit line.",

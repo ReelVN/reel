@@ -144,6 +144,19 @@ pub(super) enum NodeProperty {
     /// Node background color; null leaves the background transparent.
     #[aside(name = "background", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::String), default = null, validate = validate_background)]
     Background,
+    /// Inside-border width in logical pixels. Finite, nonnegative and animatable; defaults to 0.
+    /// Painting clamps the thickness to half the node's short edge. Layout and hit testing
+    /// retain the node rectangle; use padding to inset content independently of the border.
+    #[aside(name = "border_width", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_nonnegative, animatable)]
+    BorderWidth,
+    /// Solid border color as a CSS hex color; defaults to white (#ffffff).
+    /// The border is drawn inside the node and is invisible when border_width is 0.
+    #[aside(name = "border_color", ty = String, default = "#ffffff", validate = validate_color)]
+    BorderColor,
+    /// Background and border corner radius in logical pixels; defaults to 0.
+    /// Finite, nonnegative and animatable. Changes repaint the same layout and hit rectangle.
+    #[aside(name = "corner_radius", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_nonnegative, animatable)]
+    CornerRadius,
     /// Rotation in degrees around the node's anchor.
     #[aside(name = "rotation", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_number, animatable)]
     Rotation,
@@ -178,7 +191,8 @@ pub(super) enum NodeProperty {
     /// Horizontal text alignment: start, end, left, right, center or justify.
     #[aside(name = "text_align", ty = String, default = "start", validate = validate_text_align)]
     TextAlign,
-    /// Wrap text at the available content width.
+    /// Soft-wrap text and text_area at the available content width, retaining explicit newlines.
+    /// text_input remains single-line.
     #[aside(name = "text_wrap", ty = Bool, default = true)]
     TextWrap,
     /// Line-height multiplier relative to the font size.
@@ -1969,6 +1983,9 @@ fn read_props(
         } else {
             Some(color(heap, background)?)
         },
+        border_width: nonnegative(get(NodeProperty::BorderWidth)?)?,
+        border_color: color(heap, get(NodeProperty::BorderColor)?)?,
+        corner_radius: nonnegative(get(NodeProperty::CornerRadius)?)?,
         rotation: number(get(NodeProperty::Rotation)?)?,
         scale_x: number(get(NodeProperty::ScaleX)?)?,
         scale_y: number(get(NodeProperty::ScaleY)?)?,

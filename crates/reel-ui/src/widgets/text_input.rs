@@ -5,6 +5,7 @@
 use std::{borrow::Cow, sync::Arc};
 
 use crate::{
+    TextAlign,
     accesskit::{Action, ActionData, Node, Role},
     core::{
         keyboard::{Key, NamedKey},
@@ -15,7 +16,7 @@ use crate::{
     layout::{LenReq, Length},
     peniko::Color,
     properties::ContentColor,
-    reel_text::editing::PlainEditor,
+    reel_text::{TextWrapMode, editing::PlainEditor},
     widgets::{ScrollAxis, ScrollState},
 };
 
@@ -25,13 +26,21 @@ pub enum TextInputEvent {
     Submitted(Arc<str>),
 }
 
+/// A plain-text editor sharing its layout between text, selection, caret and IME geometry.
+///
+/// Single-line mode never wraps. Multiline mode preserves explicit newlines and supports
+/// optional soft wrapping. Editing state remains in the same editor when formatting changes.
 pub struct TextInput {
     editor: PlainEditor<BrushIndex>,
     value: Arc<str>,
     composition: Option<(Arc<str>, usize, usize)>,
     multiline: bool,
-    wrap_width: Option<f32>,
+    text_wrap: bool,
+    text_alignment: TextAlign,
+    layout_width: Option<f32>,
+    geometry_dirty: bool,
     scroll: ScrollState,
+    text_x: f64,
     text_y: f64,
     reveal_caret: bool,
 }
@@ -71,21 +80,79 @@ impl TextInput {
         };
         let mut editor = PlainEditor::new(24.);
         editor.set_text(&value);
+        editor
+            .edit_styles()
+            .insert(StyleProperty::TextWrapMode(if multiline {
+                TextWrapMode::Wrap
+            } else {
+                TextWrapMode::NoWrap
+            }));
         Self {
             editor,
             value,
             composition: None,
             multiline,
-            wrap_width: None,
+            text_wrap: true,
+            text_alignment: TextAlign::Start,
+            layout_width: None,
+            geometry_dirty: true,
             scroll: ScrollState::default(),
+            text_x: 0.,
             text_y: 0.,
             reveal_caret: true,
         }
     }
 
+    /// Sets a whole-editor style, including font-size-relative or absolute line height.
+    /// `TextWrapMode` follows [`with_text_wrap`](Self::with_text_wrap), keeping single-line
+    /// mode unwrapped.
     pub fn with_style(mut self, style: StyleProperty) -> Self {
+        if let StyleProperty::TextWrapMode(mode) = style {
+            return self.with_text_wrap(mode == TextWrapMode::Wrap);
+        }
         self.editor.edit_styles().insert(style);
+        self.geometry_dirty = true;
         self
+    }
+
+    /// Aligns text within the input's content width without changing its value or selection.
+    ///
+    /// Alignment uses the paragraph direction for `Start` and `End`. A single-line input
+    /// remains unwrapped, including when its text overflows the available width.
+    pub fn with_text_alignment(mut self, text_alignment: TextAlign) -> Self {
+        self.align_text(text_alignment);
+        self
+    }
+
+    /// Enables soft wrapping for a multiline input. The default is `true`.
+    ///
+    /// Disabling wrapping preserves explicit newlines and allows horizontal scrolling.
+    /// Single-line inputs never wrap; this setting is retained if the mode changes later.
+    pub fn with_text_wrap(mut self, text_wrap: bool) -> Self {
+        self.text_wrap = text_wrap;
+        self.update_wrap_mode();
+        self
+    }
+
+    /// Updates alignment while retaining text, selection and an active IME composition.
+    /// Repeating the current value preserves the cached layout.
+    pub fn set_text_alignment(this: &mut WidgetMut<'_, Self>, text_alignment: TextAlign) {
+        if this.widget.align_text(text_alignment) {
+            this.ctx.request_layout();
+        }
+    }
+
+    /// Updates multiline soft wrapping while retaining text, selection and IME composition.
+    /// Single-line inputs retain their unwrapped layout.
+    pub fn set_text_wrap(this: &mut WidgetMut<'_, Self>, text_wrap: bool) {
+        if this.widget.text_wrap == text_wrap {
+            return;
+        }
+        this.widget.text_wrap = text_wrap;
+        if this.widget.multiline {
+            this.widget.update_wrap_mode();
+            this.ctx.request_layout();
+        }
     }
 
     pub fn set_multiline(this: &mut WidgetMut<'_, Self>, multiline: bool) {
@@ -96,7 +163,7 @@ impl TextInput {
         let (fonts, layout) = this.ctx.text_contexts();
         this.widget.cancel_compose(fonts, layout);
         this.widget.multiline = multiline;
-        this.widget.wrap_at(None);
+        this.widget.update_wrap_mode();
         this.widget.reveal_caret = true;
         if composing {
             this.ctx.reset_ime();
@@ -121,6 +188,7 @@ impl TextInput {
         let (fonts, layout) = this.ctx.text_contexts();
         this.widget.cancel_compose(fonts, layout);
         this.widget.editor.set_text(&value);
+        this.widget.geometry_dirty = true;
         this.widget.value = value;
         this.widget.reveal_caret = true;
         if composing {
@@ -129,17 +197,49 @@ impl TextInput {
         this.ctx.request_layout();
     }
 
+    /// Updates a whole-editor style without replacing text, selection or IME composition.
+    /// `TextWrapMode` follows [`set_text_wrap`](Self::set_text_wrap).
     pub fn insert_style(this: &mut WidgetMut<'_, Self>, style: StyleProperty) {
+        if let StyleProperty::TextWrapMode(mode) = style {
+            Self::set_text_wrap(this, mode == TextWrapMode::Wrap);
+            return;
+        }
         this.widget.editor.edit_styles().insert(style);
+        this.widget.geometry_dirty = true;
         this.widget.reveal_caret = true;
         this.ctx.request_layout();
     }
 
-    fn wrap_at(&mut self, width: Option<f32>) {
-        let width = if self.multiline { width } else { None };
-        if self.wrap_width != width {
-            self.wrap_width = width;
+    fn align_text(&mut self, text_alignment: TextAlign) -> bool {
+        if self.text_alignment == text_alignment {
+            return false;
+        }
+        self.text_alignment = text_alignment;
+        self.editor.set_alignment(text_alignment);
+        self.geometry_dirty = true;
+        self.reveal_caret = true;
+        true
+    }
+
+    fn update_wrap_mode(&mut self) {
+        self.editor
+            .edit_styles()
+            .insert(StyleProperty::TextWrapMode(
+                if self.multiline && self.text_wrap {
+                    TextWrapMode::Wrap
+                } else {
+                    TextWrapMode::NoWrap
+                },
+            ));
+        self.geometry_dirty = true;
+        self.reveal_caret = true;
+    }
+
+    fn layout_at(&mut self, width: Option<f32>) {
+        if self.layout_width != width {
+            self.layout_width = width;
             self.editor.set_width(width);
+            self.geometry_dirty = true;
             self.reveal_caret = true;
         }
     }
@@ -155,6 +255,7 @@ impl TextInput {
             self.editor
                 .driver(fonts, layout)
                 .select_byte_range(anchor, focus);
+            self.geometry_dirty = true;
             self.reveal_caret = true;
         }
     }
@@ -167,26 +268,53 @@ impl TextInput {
         }
     }
 
-    fn keep_caret_visible(&mut self) {
-        let content = self.editor.try_layout().map_or(Size::ZERO, |layout| {
-            Size::new(
-                f64::from(layout.full_width()) + 1.,
-                f64::from(layout.height()),
-            )
-        });
+    fn update_geometry(&mut self, viewport: Size) {
+        let mut content = self.scroll.content();
+        if self.geometry_dirty
+            && let Some(layout) = self.editor.try_layout()
+        {
+            // RTL overflow can extend left of the alignment width. Normalize layout
+            // coordinates once so ScrollState can retain its nonnegative offsets.
+            let (mut left, mut right) = (0_f64, 0_f64);
+            for line in layout.lines() {
+                let metrics = line.metrics();
+                let start = f64::from(metrics.offset);
+                left = left.min(start);
+                right = right.max(start + f64::from(metrics.advance));
+            }
+            self.text_x = -left;
+            content = Size::new(right - left + 1., f64::from(layout.height()));
+            self.geometry_dirty = false;
+        }
+        self.text_y = if self.multiline {
+            0.
+        } else {
+            ((viewport.height - content.height) * 0.5).max(0.)
+        };
         self.scroll
-            .layout(self.scroll.viewport(), content, ScrollAxis::Both, false);
+            .layout(viewport, content, ScrollAxis::Both, false);
+    }
+
+    fn keep_caret_visible(&mut self) {
+        self.update_geometry(self.scroll.viewport());
         if let Some(caret) = self.editor.cursor_geometry(1.) {
-            self.scroll.reveal(rect(caret) - self.scroll.offset());
+            self.scroll.reveal(rect(caret) + self.translation());
         }
     }
 
     fn ime_area(&self) -> Rect {
-        rect(self.editor.ime_cursor_area()) + self.translation()
+        let area = rect(self.editor.ime_cursor_area()) + self.translation();
+        let viewport = self.scroll.viewport();
+        Rect::new(
+            area.x0.clamp(0., viewport.width),
+            area.y0.clamp(0., viewport.height),
+            area.x1.clamp(0., viewport.width),
+            area.y1.clamp(0., viewport.height),
+        )
     }
 
     fn translation(&self) -> Vec2 {
-        Vec2::new(0., self.text_y) - self.scroll.offset()
+        Vec2::new(self.text_x, self.text_y) - self.scroll.offset()
     }
 }
 
@@ -283,6 +411,7 @@ impl Widget for TextInput {
                 let (fonts, layout) = ctx.text_contexts();
                 let mut driver = self.editor.driver(fonts, layout);
                 driver.set_compose(text, *cursor);
+                self.geometry_dirty = true;
             }
             TextEvent::Ime(Ime::Commit(text)) => {
                 let (fonts, layout) = ctx.text_contexts();
@@ -450,6 +579,7 @@ impl Widget for TextInput {
             _ => return,
         }
         if changed {
+            self.geometry_dirty = true;
             self.publish(ctx);
         }
         self.keep_caret_visible();
@@ -476,6 +606,7 @@ impl Widget for TextInput {
             Update::FocusChanged(_) | Update::WindowFocusChanged(_) => ctx.request_render(),
             Update::FontsChanged => {
                 self.editor.set_scale(1.);
+                self.geometry_dirty = true;
                 self.reveal_caret = true;
                 ctx.request_layout();
             }
@@ -501,36 +632,19 @@ impl Widget for TextInput {
                 _ => Length::px(160.),
             };
         }
-        self.wrap_at(cross_length.map(|width| width.get() as f32));
+        self.layout_at(cross_length.map(|width| width.get() as f32));
         let (fonts, layout) = ctx.text_contexts();
         Length::px(f64::from(self.editor.layout(fonts, layout).height()))
     }
 
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, _: &PropertiesRef<'_>, size: Size) {
-        self.wrap_at(Some(size.width as f32));
+        self.layout_at(Some(size.width as f32));
         if self.scroll.viewport() != size {
             self.reveal_caret = true;
         }
         let (fonts, layout) = ctx.text_contexts();
         self.editor.refresh_layout(fonts, layout);
-        self.text_y = if self.multiline {
-            0.
-        } else {
-            ((size.height
-                - self
-                    .editor
-                    .try_layout()
-                    .map_or(0., |layout| f64::from(layout.height())))
-                * 0.5)
-                .max(0.)
-        };
-        let content = self.editor.try_layout().map_or(Size::ZERO, |layout| {
-            Size::new(
-                f64::from(layout.full_width()) + 1.,
-                f64::from(layout.height()),
-            )
-        });
-        self.scroll.layout(size, content, ScrollAxis::Both, false);
+        self.update_geometry(size);
         if self.reveal_caret {
             self.keep_caret_visible();
             self.reveal_caret = false;
@@ -593,6 +707,7 @@ impl Widget for TextInput {
             let (fonts, layout) = ctx.text_contexts();
             self.cancel_compose(fonts, layout);
             self.editor.set_text(&input_text(text, self.multiline));
+            self.geometry_dirty = true;
             if composing {
                 ctx.reset_ime();
             }
@@ -606,3 +721,6 @@ impl Widget for TextInput {
         CursorIcon::Text
     }
 }
+
+#[cfg(test)]
+mod tests;

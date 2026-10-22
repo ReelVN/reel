@@ -64,7 +64,7 @@ MediaBackend 统一音频和视频的设备工厂、维护、取消与退休；�
 
 内置桌面使用公共 PlatformHost 与 Presentation，其他平台复用同一会话、输入、记录、已接受帧与生命周期。平台适配器使用 reel-core 的时钟合同和共享会话接口。
 
-PlatformHost 的当前必需命令为 request_redraw、set_wake_deadline、before_present、request_exit，时钟沿用 Clock，后台通知沿用 WakeSignal。原生事件由适配器转换后进入共同 UI/会话；窗口创建及原生表面创建仍在组装代码。剪贴板、IME、系统可访问性属于独立可选平台服务，后续实现时给出真实能力与结果；
+PlatformHost 的当前必需命令为 request_redraw、set_wake_deadline、before_present、request_exit，时钟沿用 Clock，后台通知沿用 WakeSignal。原生事件由适配器转换后进入共同 UI/会话；窗口创建及原生表面创建仍在组装代码。桌面剪贴板和 IME 已由可选平台适配器接入，系统可访问性适配仍待实现。
 
 `window.info()` 返回当前窗口快照：width/height 为客户区逻辑像素，scale_factor 为物理像素倍率，windowed_width/windowed_height 为窗口模式尺寸，fullscreen/vsync 为当前状态，capabilities.resize/fullscreen/vsync 表示实际可修改项，resolutions 为当前显示器去重后的逻辑尺寸列表。只读 platform 为宿主声明的平台：windows、macos、linux、android、ios、web 或 unknown；Winit 按实际编译目标填写，无窗口或未声明的平台填写 unknown。platform 不代表设备能力，交互仍按 capabilities 判断。列表仅在显示器或 DPI 改变时刷新，不逐帧枚举。`window.configure(width:null,height:null,fullscreen:null,vsync:null,owner:null)` 返回可 await 的活动，完成值为应用后的同结构快照；省略项不修改，尺寸为正有限数，全屏明确为无边框，尺寸只控制窗口模式并在退出全屏时恢复。更改中的窗口拒绝另一项更改为 Busy，不积累请求；不支持的能力在原调用处明确报错。取消等待者不撤回已提交的平台更改，owner 退休取消结果，操作提交前取消可撤销请求。窗口状态不由剧情存档回滚，恢复后调用 info 读取当前宿主；脚本保存的旧快照仍是旧值。未完成请求使快照 Busy，完成值可保存。平台值属于已有 WindowInfo 投影，没有新增轮询或单独缓存。
 
@@ -148,7 +148,7 @@ pub trait WorkExecutor {
 - ReadRequest 含资源身份与可选固定版本、offset:u64、len:u32、优先级、Scope 和预算票据；读取结果拥有 bytes 并返回确定版本，明确 eof，长度不得超过请求。SaveWrite 含槽位、提交序号、完整槽位数据、最低持久提交级别与预算票据。IoCaps 声明范围读取、读取/保存队列限制及可提供的提交级别；只保证可见替换、不保证持久性的实现不得报告持久保存成功。
 - WorkRequest 含 kind、拥有型输入、Scope、优先级及预算票据；kind 限于已注册的解码、编码、校验操作。WorkCaps 含 Threaded/Cooperative、支持种类和队列限制；不支持的 kind 在接受前拒绝。处理进度不算终态。
 ### 平台与时间
-PlatformHost 提供命令，原生事件循环转换输入后驱动公共会话与 Presentation，不要求平台提供阻塞的 pump_events。PointerEvent、TextEvent 和 WindowEvent 沿用 reel-ui 的共同数据；原生生命周期驱动 Presentation、RenderBackend 和 StoryRuntime 的挂起/恢复。Presentation 只接受严格递增的表面代数。组装方在恢复时先失效旧输入，再配置后端，成功后恢复剧情时钟；VM 截止时间不扣除挂起区间。剪贴板、组合文本、系统可访问性、触摸/手柄原生适配属于后续独立服务，当前没有空实现声称支持。后台通知复用 reel-core::WakeSignal，实时音频的通知路径仍须单独验证；不把通用平台回调直接作为实时保证。
+PlatformHost 提供命令，原生事件循环转换输入后驱动公共会话与 Presentation，不要求平台提供阻塞的 pump_events。PointerEvent、TextEvent 和 WindowEvent 沿用 reel-ui 的共同数据；原生生命周期驱动 Presentation、RenderBackend 和 StoryRuntime 的挂起/恢复。Presentation 只接受严格递增的表面代数。组装方在恢复时先失效旧输入，再配置后端，成功后恢复剧情时钟；VM 截止时间不扣除挂起区间。桌面适配器已接入剪贴板、IME、触摸和 Gilrs 手柄输入；系统可访问性适配与各目标的实体设备验收继续独立推进。后台通知复用 reel-core::WakeSignal，实时音频的通知路径仍须单独验证；不把通用平台回调直接作为实时保证。
 完整平台能力集规划包含输入、文本服务、可访问性及等待/唤醒；重绘可合并。MonoTime 使用固定单位的 u64，不保存 std::time::Instant。会话逻辑时钟独立累计，可暂停与恢复；墙钟可缺失，只用于显示日期等。恢复后重设截止时间，系统睡眠不得变成巨大动画增量。
 ### 渲染与音频
 SurfaceInfo 只含尺寸、缩放和引擎颜色约定。RenderCaps 声明纹理/离屏上限、格式和效果支持集；RenderFrame 保留画序、分组、裁剪与颜色/alpha 语义，具体路径和字形转为可适配的几何、掩码或图集。效果以 ID 和纯参数表达，只有 WGSL 实现的效果不能宣称可跨后端使用。
@@ -346,7 +346,9 @@ Label在启用淡显或正文改变时建立逻辑字素起始byte索引，每�
 
 文字 GPU 绘制按字体资源、字体索引、字号、hint、变体坐标和字形 ID 复用字形图集，使用 guillotiere 分配图集矩形；同页连续字形合批，位置和颜色不进入字形缓存键。未提交上传仅在当前 preparation 可见，提交后发布；图集矩形由 prepared/in-flight/cache 共同保活，最后引用释放后才能复用。页面与上传分别计入现有资源预算，压力时回收无使用者缓存，字体退休解除缓存。
 
-单行 text_input 在给定高度内垂直居中，文字、选区、光标、点击及 IME 候选位置使用同一偏移。文本节点的自动高度按其显式宽度换行测量，滚动末端以完整排版高度为准。
+单行 text_input 在给定高度内垂直居中，文字、选区、光标、点击及 IME 候选位置使用同一偏移。文本节点的自动高度按其显式宽度换行测量，滚动末端以完整排版高度为准。text_input 与 text_area 共用 text_align 和 line_height；text_area 的 text_wrap 控制软折行并保留显式换行，text_input 固定为单行。编辑器始终取得内容宽度用于对齐，换行模式交给 reel-text；属性变化保留正文、选区与预编辑，稳定值复用布局。
+
+共同节点的 border_width、border_color 与 corner_radius 绘制内描边和圆角背景，默认分别为 0、#ffffff、0。宽度与半径为有限非负逻辑像素，支持构造、with、赋值、绑定和数值动画；沿共同宿主字段保存。描边位于节点矩形内，可用厚度受矩形短边一半限制；padding 决定内容留白，描边和圆角沿用原布局与命中矩形。播放器复用 reel-ui 的边框和背景绘制，样式变化只请求重绘。
 
 容器构造的 children 是候选节点序列：同一序列显式提供完整组件根时，已属于该组件的后代不再作为兄弟重复挂载。根的顺序沿候选顺序；重复身份、退休节点、已挂舞台的组件或缺少完整根的外部子节点仍报错。add 返回值和单一父级所有权不变，尾随块与显式 children 数组行为一致；Aside 通用收集规则不变。Rust Stage::composition_roots 只读归一化候选，create/add 仍严格准入；失败不改现有树。祖先路径在本次构造中记忆化，避免重复遍历共享长链，不增加逐帧工作。
 

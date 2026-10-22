@@ -5,6 +5,7 @@ mod radio_navigation;
 mod retained;
 mod scroll_alignment;
 mod scroll_restore;
+mod styles;
 mod virtual_images;
 mod wheel;
 use crate::session::SessionUi;

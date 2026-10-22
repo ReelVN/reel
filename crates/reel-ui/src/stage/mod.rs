@@ -350,7 +350,8 @@ pub struct NodeProps {
     pub word_spacing: f64,
     pub font: String,
     pub text_align: crate::TextAlign,
-    /// Automatic wrapping for text nodes; explicit newlines are always retained.
+    /// Soft wrapping for text and text-area nodes; explicit newlines are retained.
+    /// Text-input nodes remain single-line.
     pub text_wrap: bool,
     pub line_height: f64,
     pub text_fit: crate::core::TextFit,
@@ -362,6 +363,13 @@ pub struct NodeProps {
     pub text_shadow_color: [u8; 4],
     pub color: [u8; 4],
     pub background: Option<[u8; 4]>,
+    /// Nonnegative inside-border width in logical pixels; painting clamps it to half the short edge.
+    /// Decorations retain the layout and hit rectangle; padding controls the content inset.
+    pub border_width: f64,
+    /// Solid border color; ignored when border_width is zero.
+    pub border_color: [u8; 4],
+    /// Nonnegative radius shared by the background and border, in logical pixels.
+    pub corner_radius: f64,
     pub rotation: f64,
     pub scale_x: f64,
     pub scale_y: f64,
@@ -419,6 +427,9 @@ impl Default for NodeProps {
             text_shadow_color: [0, 0, 0, 255],
             color: [255; 4],
             background: None,
+            border_width: 0.,
+            border_color: [255; 4],
+            corner_radius: 0.,
             rotation: 0.,
             scale_x: 1.,
             scale_y: 1.,

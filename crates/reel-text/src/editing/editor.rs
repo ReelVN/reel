@@ -17,6 +17,9 @@ use crate::layout::{Affinity, Alignment, AlignmentOptions, Layout};
 use crate::style::Brush;
 use crate::{BoundingBox, FontContext, LayoutContext, StyleProperty, StyleSet};
 
+#[cfg(test)]
+mod tests;
+
 #[cfg(feature = "accesskit")]
 use crate::layout::LayoutAccessibility;
 #[cfg(feature = "accesskit")]
@@ -887,6 +890,10 @@ where
     /// This is useful for suggesting an exclusion area to the platform for, e.g., IME candidate
     /// box placement. This bounds the area of the preedit text if present, otherwise it bounds the
     /// selection on the focused line.
+    ///
+    /// The rectangle uses full layout coordinates, including negative coordinates for RTL
+    /// overflow. The host must apply its content translation and scroll offset before clipping
+    /// the rectangle to its viewport.
     pub fn ime_cursor_area(&self) -> BoundingBox {
         let (area, focus) = if let Some(preedit_range) = &self.compose {
             let selection = Selection::new(
@@ -928,10 +935,9 @@ where
             .unwrap_or(self.font_size * self.scale);
         // Using 0.6 as an estimate of the average advance
         let inflate = 3. * 0.6 * font_size as f64;
-        let editor_width = self.width.map(f64::from).unwrap_or(f64::INFINITY);
         BoundingBox {
-            x0: (area.x0 - inflate).max(0.),
-            x1: (area.x1 + inflate).min(editor_width),
+            x0: area.x0 - inflate,
+            x1: area.x1 + inflate,
             y0: area.y0,
             y1: area.y1,
         }
