@@ -281,7 +281,7 @@ derive(|| expression) 创建只读 DerivedBinding，记录实际可观察读取�
 
 普通 fn 在当前 Task 的可恢复调用栈执行，可 await；Reel 入口和 UI 回调由带明确 OwnerId 的任务运行。say 等可暂停 native 能挂起普通 helper 链。普通函数返回可等待对象时保留该对象，由调用者显式 await。没有任务上下文或位于受限边界时，动态尝试外部等待报错。
 
-Reel 通过 `spawn(work, owner: null)` 启动零参数脚本工作，返回可 await、可 cancel 的宿主任务；节点所有权和取消遵循引擎的作者活动合同。它复用上述普通调用栈，正文在调用者等待或返回后开始调度。VM 任务槽按同时活动数量增长并复用，默认没有固定任务数配额；宿主仍可通过 `VmLimits.max_tasks` 显式设限。每次启动逻辑任务都在宿主准入点检查连续执行空间，包括复用已结束槽位和重算派生值。准入沿 FrameSlots 的连续空闲段检查、整理和扩容，保留根身份，旧新缓冲重叠计入堆预算，并遵守宿主的容量上限。
+Reel 通过 `spawn(work, owner: null)` 启动零参数脚本工作，返回可 await、可 cancel 的宿主任务；节点所有权和取消遵循引擎的作者活动合同。它复用上述普通调用栈。VM 任务槽按同时活动数量增长并复用，默认没有固定任务数配额；宿主仍可通过 `VmLimits.max_tasks` 显式设限。每次启动逻辑任务都在宿主准入点检查连续执行空间，包括复用已结束槽位和重算派生值。准入沿 FrameSlots 的连续空闲段检查、整理和扩容，保留根身份，旧新缓冲重叠计入堆预算，并遵守宿主的容量上限。
 
 await 接受 Awaitable，不接受普通标量。对不可等待值使用 await 报 NotAwaitable（core code 24），定位 await 并提示普通函数调用已经等待其返回值；不隐式接受标量或将其包装为任务。此诊断复用既有故障与源码栈，不增加分配或改变 Aside 字节码 指令格式。Reel Task、Activity、Completion 和 SaveRequest/LoadRequest/DeleteRequest 本身实现此协议，直接写 await activity 或 await request，不引入额外完成属性。即使已经完成也在下一调度步骤继续；完成一次后按登记顺序交付所有等待者。Fault 在 await 处建立消费者故障：当前 origin/stack 标出 await 调用链，AwaitedFault.source 保留生产者完整故障及原失败位置；活动 Stopped 是普通终态，Cancelled 抛取消错误。Awaitable 注册等待、解除订阅、结果状态与恢复描述必须显式定义，不能只用类型名称宣称可等待。
 
