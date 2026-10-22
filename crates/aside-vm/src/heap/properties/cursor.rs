@@ -4,6 +4,10 @@ use super::*;
 use crate::heap::model::ModelAdoptionProgress;
 use crate::heap::reactive::PropertyGraphProgress;
 
+#[cfg(test)]
+#[path = "cursor/publication_tests.rs"]
+mod publication_tests;
+
 /// A private proposal retained in the calling native's continuation values.
 /// Keeping this value rooted preserves its plan across GC and snapshots.
 #[derive(Clone, Copy, Debug)]
@@ -22,7 +26,7 @@ impl PropertyBatch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn host(heap: &mut Heap, value: i64) -> PropertyId {
+    pub(super) fn host(heap: &mut Heap, value: i64) -> PropertyId {
         let fields = heap.alloc_table().unwrap();
         heap.table_store(fields, 0, Value::int(0), Value::int(value))
             .unwrap();
@@ -174,6 +178,7 @@ enum State {
     Index,
     Root,
     Script,
+    Publication,
     Inputs,
     SourceWalk,
     SourceActive,
@@ -442,8 +447,22 @@ impl Heap {
     /// Begin a private, per-call proposal. Retain value() in a native continuation;
     /// cancellation releases it by dropping that ordinary rooted value.
     pub fn begin_property_batch(&mut self, script: bool) -> Result<PropertyBatch, HeapError> {
+        self.new_property_batch(script, false)
+    }
+    /// Begin a bounded authoritative service update, including read-only outputs.
+    /// Concrete values may update service fields; replacement bindings retain
+    /// ordinary write permissions. Root and advance this plan like a configuration.
+    pub fn begin_host_publication(&mut self) -> Result<PropertyBatch, HeapError> {
+        self.new_property_batch(false, true)
+    }
+    fn new_property_batch(
+        &mut self,
+        script: bool,
+        publication: bool,
+    ) -> Result<PropertyBatch, HeapError> {
         let plan = self.alloc_array(&[Value::NULL; State::Count as usize])?;
         self.set_field(plan, State::Script as u32, Value::bool(script))?;
+        self.set_field(plan, State::Publication as u32, Value::bool(publication))?;
         self.reset_property_batch(plan)?;
         Ok(PropertyBatch(plan))
     }
@@ -539,7 +558,11 @@ impl Heap {
                                 }
                             };
                         if let Some((source, writable)) = resolved {
-                            if !self.is_property_ref(input) && !writable {
+                            if !self.is_property_ref(input)
+                                && !writable
+                                && self.cursor_state(plan, State::Publication)?.as_bool()
+                                    != Some(true)
+                            {
                                 return Err(HeapError::ReadOnly);
                             }
                             let resolved = self.cursor_state(plan, State::Inputs)?;
