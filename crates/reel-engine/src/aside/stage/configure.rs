@@ -128,11 +128,25 @@ pub(in crate::aside) fn describe(api: &mut Api) {
         api.refine(&schema.symbol, named(schema.type_name), &hints);
         let declaration = api.native_mut(&schema.symbol);
         declaration.returns_parameter("receiver");
-        declaration.property_parameters = schema
-            .fields
-            .iter()
-            .map(|field| field.documentation.property.name.into())
-            .collect();
+        declaration.property_group(
+            &format!(
+                "{} properties",
+                schema.type_name.rsplit("::").next().unwrap()
+            ),
+            schema
+                .fields
+                .iter()
+                .filter(|field| matches!(field.index, FieldIndex::Specific(_)))
+                .map(|field| &field.documentation),
+        );
+        declaration.property_group(
+            "Node properties",
+            schema
+                .fields
+                .iter()
+                .filter(|field| matches!(field.index, FieldIndex::Common(_)))
+                .map(|field| &field.documentation),
+        );
         declaration.supplied_only(
             &schema
                 .fields

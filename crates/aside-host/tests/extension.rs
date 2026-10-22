@@ -201,7 +201,7 @@ fn declaration_documents_preserve_bound_and_inherited_identities() {
         .iter()
         .find(|document| document.uri.ends_with("sample/types/Speech.aside"))
         .unwrap();
-    assert!(speech.text.contains("class Speech: Node"));
+    assert!(speech.text.contains("class Speech: sample::types::Node"));
     assert!(speech.text.contains("fn append(right: int = 2) -> int;"));
     assert!(!speech.text.contains("let mut x"));
     let bound = documents
@@ -267,6 +267,18 @@ fn declaration_documents_preserve_bound_and_inherited_identities() {
         TypeHint::Float
     );
     assert_eq!(named("sample::types::Speech"), api.types[1].symbol().ty);
+    let base_reference = speech
+        .references
+        .iter()
+        .find(|reference| {
+            &speech.text[usize::from(reference.range.start())..usize::from(reference.range.end())]
+                == "Node"
+        })
+        .unwrap();
+    let target = &documents.locations[base_reference.declaration];
+    assert_eq!(target.declaration.symbol.ty, named("sample::types::Node"));
+    assert!(target.declaration.symbol.type_only);
+    assert_eq!(target.uri, inherited.uri);
 }
 
 #[test]

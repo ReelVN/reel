@@ -3,7 +3,8 @@ use std::sync::Arc;
 
 use aside_host::source::{Api, constant};
 use aside_lsp::{
-    HostContext, HostDeclaration, HostDocument, HostLocation, NamedType, ServerOptions,
+    HostContext, HostDeclaration, HostDocument, HostDocumentReference, HostLocation, NamedType,
+    ServerOptions,
 };
 mod translations;
 
@@ -25,6 +26,11 @@ pub fn options() -> ServerOptions {
 /// Project one host API into transport metadata and generated declaration views.
 pub fn host_context(api: &Api) -> HostContext {
     let generated = api.documents("reel");
+    let symbols = generated
+        .locations
+        .iter()
+        .map(|location| Arc::new(location.declaration.symbol.clone()))
+        .collect::<Vec<_>>();
     let declarations = generated
         .locations
         .into_iter()
@@ -61,6 +67,15 @@ pub fn host_context(api: &Api) -> HostContext {
                     .collect(),
                 property_default: declaration.property_default.as_ref().map(constant),
                 property_parameters: declaration.property_parameters,
+                parameter_documentation: declaration.parameter_documentation,
+                property_groups: declaration
+                    .property_groups
+                    .into_iter()
+                    .map(|group| aside_lsp::PropertyParameterGroup {
+                        name: group.name,
+                        parameters: group.parameters,
+                    })
+                    .collect(),
             }
         })
         .collect();
@@ -88,6 +103,14 @@ pub fn host_context(api: &Api) -> HostContext {
             .map(|document| HostDocument {
                 uri: document.uri.parse().expect("generated declaration URI"),
                 text: Arc::from(document.text),
+                references: document
+                    .references
+                    .into_iter()
+                    .map(|reference| HostDocumentReference {
+                        range: reference.range,
+                        symbol: Arc::clone(&symbols[reference.declaration]),
+                    })
+                    .collect(),
             })
             .collect(),
     }

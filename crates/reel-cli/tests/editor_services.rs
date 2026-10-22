@@ -20,6 +20,16 @@ const SERVICES: [&str; 8] = [
 fn every_registered_module_and_global_service_has_a_generated_root_declaration() {
     let api = reel_engine::aside::source::api();
     let context = reel_cli::editor::host_context(api);
+    for document in &context.documents {
+        assert!(
+            document
+                .references
+                .windows(2)
+                .all(|references| references[0].range.end() <= references[1].range.start()),
+            "overlapping references in {}",
+            document.uri.as_str()
+        );
+    }
     let mut services = api
         .globals
         .iter()
@@ -258,7 +268,8 @@ fn global_services_and_standard_module_aliases_hover_and_navigate_in_the_real_ls
         if service == "game" {
             let text = document["text"].as_str().unwrap();
             assert!(
-                text.contains("fn configure(title:")
+                text.contains("fn configure(\n")
+                    && text.contains("    title:")
                     && text.contains("Set title, logical canvas size")
             );
         }
@@ -290,6 +301,11 @@ fn global_services_and_standard_module_aliases_hover_and_navigate_in_the_real_ls
     id += 1;
     let document = client.request(id, "aside/nativeDocument", json!({"uri":definition["uri"]}));
     let full = document["text"].as_str().unwrap();
-    assert!(full.contains("x:") && full.contains("font:") && full.contains("fn text(value:"));
+    assert!(
+        full.contains("x:")
+            && full.contains("font:")
+            && full.contains("fn text(\n")
+            && full.contains("    value:")
+    );
     client.stop();
 }
