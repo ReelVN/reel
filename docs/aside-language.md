@@ -336,6 +336,8 @@ try {...} catch error {...} finally {...} 至少含 catch/finally 一个。throw
 
 资源 close/dispose 必须幂等且可检查终态。文件/游标/订阅/native 资源由显式 token 与 owner 管理，GC 不执行用户脚本 finalizer；宿主低层释放同样有预算/队列。脚本清理无法保证硬终止时执行，底层资源释放必须独立保证。临时业务恢复若必须覆盖硬终止，应通过宿主事务/作用域恢复记录实现。原生崩溃和内部一致性破坏不伪装成可恢复脚本异常。
 
+宿主可通过 `finish_host_callback(task, frame, value)` 结束一个仍活动的 native 回调区域。它与取消共用分片帧退休路径，跳过区域内脚本 finally，并在边界交付 CallbackReturned 与原 value；外层任务继续执行。返回值使用该 native frame 的既有结果根，随 GC 和执行快照保留。Reel 的 `scope.finish(value)` 使用此协议交回页面或交互结果。
+
 不可外部等待的边界包括同步宿主重入、缺省参数、模块初始化、构造、非 _call 元方法、派生求值、finally、children 和同步 iterator/thread 协议。静态可知时提前诊断，动态调用继续检查；“不可等待”不等于“不可按预算暂停”，invoke_sync 的特殊硬预算规则见下节。
 
 ## 十五 VM 与可恢复宿主调用
