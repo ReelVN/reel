@@ -47,7 +47,6 @@ struct Header {
 pub(super) enum Part {
     Header,
     Task,
-    Scopes,
     Scope,
     Pending,
     ChoiceKey,
@@ -206,9 +205,6 @@ impl SessionVm {
                     )
                 })
                 .chain(self.tasks.iter().map(|task| Record::new(Part::Task, task)))
-                .chain(once_with(|| {
-                    Record::new(Part::Scopes, &self.scopes.methods)
-                }))
                 .chain(
                     self.scopes
                         .live
@@ -576,7 +572,6 @@ impl SessionRestore<'_> {
                         task.wait = task.wait.map(|w| map.wait(w)).transpose()?;
                         runtime.tasks.push(task);
                     }
-                    Part::Scopes => runtime.scopes.methods = record.read()?,
                     Part::Scope => {
                         runtime
                             .scopes
