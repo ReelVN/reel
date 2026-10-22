@@ -2,7 +2,18 @@
 use super::*;
 
 impl Binder<'_> {
-    pub(super) fn refine_condition(&mut self, condition: NodeId, truth: bool, ctx: &mut Context) {
+    pub(super) fn restore_refinements(&mut self, mark: usize) {
+        while self.refinement_undo.len() > mark {
+            let (symbol, previous) = self.refinement_undo.pop().unwrap();
+            if let Some(ty) = previous {
+                self.refinements.insert(symbol, ty);
+            } else {
+                self.refinements.remove(&symbol);
+            }
+        }
+    }
+
+    pub(super) fn refine_condition(&mut self, condition: NodeId, truth: bool) {
         let mut pending: SmallVec<[(NodeId, bool); 4]> = smallvec![(condition, truth)];
         while let Some((node, truth)) = pending.pop() {
             if !self.budget(node) {
@@ -47,12 +58,7 @@ impl Binder<'_> {
                     if binding.mutable {
                         continue;
                     }
-                    let before = ctx
-                        .refined
-                        .iter()
-                        .rev()
-                        .find_map(|&(id, ty)| (id == symbol).then_some(ty))
-                        .unwrap_or(binding.ty);
+                    let before = self.refinements.get(&symbol).copied().unwrap_or(binding.ty);
                     let tested = self.ty(right);
                     let after = if truth {
                         if self.proven_subtype(before, tested) {
@@ -76,12 +82,8 @@ impl Binder<'_> {
                         before
                     };
                     if after != before {
-                        if let Some((_, ty)) = ctx.refined.iter_mut().find(|(id, _)| *id == symbol)
-                        {
-                            *ty = after;
-                        } else {
-                            ctx.refined.push((symbol, after));
-                        }
+                        let previous = self.refinements.insert(symbol, after);
+                        self.refinement_undo.push((symbol, previous));
                     }
                 }
                 _ => {}
