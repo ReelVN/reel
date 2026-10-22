@@ -251,6 +251,8 @@ pub struct TextInputOptions {
     /// Only authoritative selection changes advance this revision; local feedback does not.
     pub selection_revision: u64,
     pub pending_edit: bool,
+    /// User commits require host filtering before subsequent edits can replay.
+    pub filter_edits: bool,
     pub replay: Option<Arc<crate::widgets::TextInputReplay>>,
 }
 impl Default for TextInputOptions {
@@ -264,6 +266,7 @@ impl Default for TextInputOptions {
             selection: Default::default(),
             selection_revision: 0,
             pending_edit: false,
+            filter_edits: false,
             replay: None,
         }
     }

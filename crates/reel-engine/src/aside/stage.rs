@@ -59,6 +59,11 @@ aside_host::native_documentation! {
         "reel::toggle" | "reel::checkbox";
         /// Create an option control. Selecting it writes option to the shared value
         /// binding; controls with the same binding share the selected value.
+        /// Arrow navigation also discovers matching options in other virtual lists
+        /// through their existing measured row requests. An interval of K unknown
+        /// rows can require K logical row probes plus ordinary window construction.
+        /// Only current windows and interaction pins remain mounted. Selection
+        /// waits for an accepted frame.
         "reel::radio";
         /// Create a scroll viewport. axis selects scroll directions; scroll_x/y are
         /// observable offsets. follow_end follows appended content while at the end.
@@ -318,6 +323,7 @@ pub(super) enum NodeProperty {
 
 pub(super) struct StageBinding {
     pub(super) types: super::source::HostTypes,
+    pub(super) text_filter_function: Option<aside_vm::bytecode::FunctionId>,
     pub scene: Stage,
     pub retirement_revision: u64,
     handles: BTreeMap<NodeId, NodeBinding>,
@@ -386,6 +392,7 @@ impl StageBinding {
     pub fn new(heap: &Heap) -> Result<Self, AdapterError> {
         Ok(Self {
             types: super::source::HostTypes::new(heap)?,
+            text_filter_function: None,
             scene: Stage::default(),
             retirement_revision: 0,
             handles: BTreeMap::new(),

@@ -1010,6 +1010,8 @@ trigger.add(popup(placement: "bottom-start", offset: 4,
 });
 ```
 
+下拉选择可让 scope 返回确认的选项，调用方再更新业务值；返回键或外点让 scope 返回 null。按钮的 hover/focus_visible 表达临时高亮，关闭浮层恢复触发控件的焦点。长选项放进 scroll 和虚拟 list，禁用项沿普通按钮规则跳过。[完整组合示例](../../examples/author_popup/src/main.aside) 把这些行为放在同一个选择函数中，可在示例目录运行 `reel dev`。
+
 键盘激活需要在同一个按钮上按下并松开 Enter 或空格；切换焦点、隐藏、禁用或窗口失焦会取消未完成的按键。
 
 ```aside
@@ -1126,7 +1128,7 @@ let card = button("Sketch", on_interaction: |event| {
 
 ### 数值控件与设置页
 
-`checkbox` 与 `toggle` 接受相同参数，前者显示勾选框，后者显示开关。`radio(option, label: null, value: null, on_change: null, ...)` 表达单选项；让同组的 value 绑定到同一个业务字段，即可自动互斥，无需维护多份布尔值。option 可以修改或绑定；value 未匹配任何选项时不选中任何项。业务值比较与 list key 相同。组内导航：Tab/Shift-Tab 整组只停一次，进入选中的可用项，否则首项；组在 Tab 顺序中的位置取其第一个可用节点；方向键和手柄方向按节点顺序直接选择前后项，跳过禁用/隐藏项并在边界循环。虚拟列表先滚动挂载下一逻辑行，接受画面后才选择，不在当前窗口提前循环。到组末尾后回到逻辑首项，反向亦然；跨虚拟列表时进入另一列表的逻辑端点，只构造需要的窗口。Tab 离开组时不为寻找下一停靠点构造虚拟行；跨窗口访问选项使用方向键。确认键、鼠标或触摸也可选择；重复选择不触发 on_change。脚本改值不会抢焦点。脚本改值不会触发回调，用户选择先更新绑定再交付 `{target,value}`。
+`checkbox` 与 `toggle` 接受相同参数，前者显示勾选框，后者显示开关。`radio(option, label: null, value: null, on_change: null, ...)` 表达单选项；让同组的 value 绑定到同一个业务字段，即可自动互斥，无需维护多份布尔值。option 可以修改或绑定；value 未匹配任何选项时不选中任何项。业务值比较与 list key 相同。组内导航：Tab/Shift-Tab 整组只停一次，进入选中的可用项，否则首项；组在 Tab 顺序中的位置取其第一个可用节点；方向键和手柄方向按节点顺序直接选择前后项，跳过禁用/隐藏项并在边界循环。虚拟列表先滚动挂载下一逻辑行，接受画面后才选择，不在当前窗口提前循环。到组末尾后回到逻辑首项，反向亦然；跨虚拟列表时进入另一列表的逻辑端点；尚未找到同组项时，沿该方向逐行查找，只保留需要的窗口。Tab 离开组时不为寻找下一停靠点构造虚拟行；跨窗口访问选项使用方向键。确认键、鼠标或触摸也可选择；重复选择不触发 on_change。脚本改值不会抢焦点。脚本改值不会触发回调，用户选择先更新绑定再交付 `{target,value}`。
 
 ```aside
 let settings = model({sound: true, language: "zh-CN"});
@@ -1214,6 +1216,8 @@ stage.replace(text_input(value: bind(profile.name), width: 280, height: 40,
 可运行示例：[author_text_input.aside](../../examples/author_text_input/src/main.aside)。
 
 `placeholder: "Your name"` 在 value 为空且没有 IME 预编辑时显示提示。`read_only: true` 保留选区、复制、导航和提交，同时阻止玩家编辑；脚本仍可赋值。两者支持直接赋值与绑定。`selection_color` 默认为 "#3c78dc5f"；`caret_color: null` 沿用 color。文字描边和阴影复用编辑器的同一排版。切为只读撤销预编辑并关闭系统 IME，保留正文与选区。
+
+`edit_filter` 在输入写入绑定值前检查或改写编辑。回调收到 TextEdit：previous 是原文，value 是提案全文，text 是本次替换文本，start/end 是原文中的字节范围。返回 text 接受原编辑，返回另一字符串改写本次替换，返回 null 拒绝。比如 `edit_filter: |edit| if edit.value.scalar_count() <= 12 { edit.text } else { null }` 限制姓名长度；键入、粘贴和输入法提交使用同一规则。回调直接返回结果，确认后的编辑统一进入撤销历史和 on_change。
 
 设置 `password: true` 后，正文与 IME 预编辑的每个字素显示一个 bullet；值、选区与撤销历史保留原文 UTF-8，切换模式保持这些状态。占位提示照常显示。复制不导出正文，剪切仅删除；可访问性使用 PasswordInput，不公开原文值或文本节点。
 

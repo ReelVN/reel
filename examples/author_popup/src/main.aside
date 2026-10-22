@@ -1,0 +1,75 @@
+use reel::types::{ Node, Scope };
+
+/// Return the confirmed option; dismissing the menu leaves the caller's value unchanged.
+fn choose_option(anchor: Node, options: array, selected: int) -> int | null {
+    scope(
+        owner: anchor,
+        body: |menu: Scope| {
+            let panel = popup(offset: 4, on_dismiss: || menu.finish(null));
+            let rows = list(
+                || options, key: |option| option.id, virtual: true,
+                build: |row| {
+                    let option = row.value;
+                    let control = button(
+                        width: 260, height: 44, enabled: option.enabled, decorated: false,
+                        on_click: || menu.finish(option.id)
+                    );
+                    control.add(
+                        stack(
+                            width: 260, height: 44, background: "#405a80",
+                            visible: derive(|| control.hover || control.focus_visible)
+                        )
+                    );
+                    control.add(
+                        text(
+                            option.label, x: 12, y: 8, font_size: 22,
+                            color: if !option.enabled {
+                                "#798493"
+                            } else if option.id == selected {
+                                "#ffd580"
+                            } else {
+                                "#ffffff"
+                            }
+                        )
+                    );
+                    control
+                }
+            );
+            panel.add(
+                scroll(width: 260, height: 220, background: "#243247") {
+                    rows;
+                }
+            );
+            menu.add(anchor, panel);
+            await completion()
+        }
+    )
+}
+
+fn main() {
+    game.configure(title: "Composed dropdown", width: 640, height: 420);
+    let preferences = model({ selected: 0 });
+    let options = [];
+    for index in 0 .. 40 {
+        options.append({ id: index, label: f"Option {index + 1}", enabled: index != 3 });
+    }
+    let trigger = button(
+        derive(|| f"Option {preferences.selected + 1}"), width: 260, height: 44,
+        on_click: |event| {
+            let selected = choose_option(event.target, options, preferences.selected);
+            if selected is int {
+                preferences.selected = selected;
+            }
+        }
+    );
+    stage.replace(
+        column(x: 40, y: 30, width: 560, gap: 16) {
+            text("Choose an option", font_size: 28);
+            trigger;
+            text(
+                "Arrow keys or Tab move focus; Enter or the controller confirm button chooses. Escape, controller Back or an outside click dismisses.",
+                width: 560, font_size: 18
+            );
+        }
+    );
+}

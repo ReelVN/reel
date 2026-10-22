@@ -429,3 +429,80 @@ fn radio_group_crosses_distinct_virtual_lists_at_their_logical_ends() {
         assert!(d.adapter().stage().nodes().count() < 60);
     }
 }
+
+#[test]
+fn radio_discovers_its_group_beyond_another_virtual_lists_mounted_rows() {
+    use keyboard::NamedKey::*;
+    let source = r#"
+    fn main(){
+        let state=model({selected:0,other:-1,changes:0});
+        let right_items=[];for i in 0..40 {right_items.append(i);}
+        let left=list(||[0],key:|item|item,virtual:true,build:|row|
+            radio(0,"left",value:bind(state.selected),width:180,height:40,
+                on_change:||{state.changes+=1;}));
+        let right=list(||right_items,key:|item|item,virtual:true,build:|row|{
+            if row.value==32 {
+                radio(32,"right",value:bind(state.selected),width:180,height:40,
+                    on_change:||{state.changes+=1;})
+            }else if row.value%2==0 {
+                text("header",width:180,height:40)
+            }else{
+                radio(row.value,"another group",value:bind(state.other),width:180,height:40)
+            }
+        });
+        stage.replace(stack{
+            scroll(width:220,height:120){left;}
+            scroll(x:260,width:220,height:120){right;}
+            text(derive(||f"state:{state.selected}:{state.other}:{state.changes}"),y:340);
+        });narrator("ready");
+    }"#;
+    for mut d in drivers(source) {
+        let (mut b, root) = bridge(&d);
+        let mut frame = 0;
+        for _ in 0..6 {
+            frame += 1;
+            present(&mut d, &mut b, root, frame);
+            settle(&mut d);
+        }
+        assert!(
+            !d.adapter().stage().nodes().any(|node| matches!(&node.kind,
+            NodeKind::Radio{label:Some(label),..} if label=="right")),
+            "the target starts unconstructed"
+        );
+        press(&mut d, &mut b, Tab, false);
+        press(&mut d, &mut b, ArrowDown, false);
+        for _ in 0..120 {
+            frame += 1;
+            present(&mut d, &mut b, root, frame);
+            settle(&mut d);
+            if text(&d, "state:") == "state:32:-1:1" {
+                break;
+            }
+        }
+        assert_eq!(
+            text(&d, "state:"),
+            "state:32:-1:1",
+            "navigation discovers the group before wrapping to the left list"
+        );
+        assert!(
+            d.adapter().stage().nodes().count() < 45,
+            "only the current windows and pinned anchor stay mounted"
+        );
+        for (expected, changes) in [(0, 2), (32, 3)] {
+            press(&mut d, &mut b, ArrowUp, false);
+            for _ in 0..120 {
+                frame += 1;
+                present(&mut d, &mut b, root, frame);
+                settle(&mut d);
+                if text(&d, "state:") == format!("state:{expected}:-1:{changes}") {
+                    break;
+                }
+            }
+            assert_eq!(
+                text(&d, "state:"),
+                format!("state:{expected}:-1:{changes}"),
+                "reverse traversal and wrapping use logical endpoints"
+            );
+        }
+    }
+}

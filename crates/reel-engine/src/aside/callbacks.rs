@@ -414,6 +414,9 @@ impl SessionVm {
             self.stage.sync(self.vm.heap_mut(), self.read_limit)?;
             return Ok(true);
         }
+        if let Some(accepted) = self.start_filtered_edit(session, input)? {
+            return Ok(accepted);
+        }
         let Some((target, closure, value)) = self.stage.text_input(self.vm.heap_mut(), input)?
         else {
             return Ok(false);
@@ -473,6 +476,25 @@ impl SessionVm {
         arguments: &[Value],
         result: Option<Value>,
     ) -> Result<TaskId, AdapterError> {
+        self.start_owned_task_in_context(
+            session,
+            node,
+            closure,
+            arguments,
+            result,
+            Context::Ordinary,
+        )
+    }
+
+    pub(super) fn start_owned_task_in_context(
+        &mut self,
+        session: &mut Session,
+        node: Option<NodeId>,
+        closure: Value,
+        arguments: &[Value],
+        result: Option<Value>,
+        context: Context,
+    ) -> Result<TaskId, AdapterError> {
         self.tasks
             .try_reserve(1)
             .map_err(|_| AdapterError::Allocation)?;
@@ -491,21 +513,20 @@ impl SessionVm {
             },
             None => None,
         };
-        let task = match self.vm.start_closure(
-            closure,
-            arguments,
-            RootOwner(owner.owner_id().0),
-            Context::Ordinary,
-        ) {
-            Ok(task) => task,
-            Err(error) => {
-                if let Some(root) = result {
-                    self.vm.heap_mut().release_root(root)?;
+        let task =
+            match self
+                .vm
+                .start_closure(closure, arguments, RootOwner(owner.owner_id().0), context)
+            {
+                Ok(task) => task,
+                Err(error) => {
+                    if let Some(root) = result {
+                        self.vm.heap_mut().release_root(root)?;
+                    }
+                    session.revoke_owner(owner)?;
+                    return Err(error.into());
                 }
-                session.revoke_owner(owner)?;
-                return Err(error.into());
-            }
-        };
+            };
         self.tasks.push(ScriptTask {
             task,
             owner,
