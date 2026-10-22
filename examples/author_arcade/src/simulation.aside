@@ -1,0 +1,71 @@
+use reel::types::{ Clock, InputNode, Node, Scope };
+
+pub let step = 1.0 / 120;
+
+pub fn clamp(value: int | float, low: int | float, high: int | float) -> int | float {
+    if value < low {
+        low
+    } else if value > high {
+        high
+    } else {
+        value
+    }
+}
+
+// Keep one clock, task and bound callable for the whole component.
+// At most four fixed steps run after a late wake; older intervals are dropped.
+pub fn start(owner: Node, update: fn(float) -> null) -> Clock {
+    let timer = clock(interval: step, owner: owner);
+    let next = timer.next;
+    spawn(
+        || {
+            let mut previous = timer.ticks;
+            loop {
+                let total = next();
+                let pending = total - previous;
+                previous = total;
+                let count = if pending > 4 {
+                    4
+                } else {
+                    pending
+                };
+                for _ in 0 .. count {
+                    update(step);
+                }
+            }
+        },
+        owner: owner
+    );
+    timer
+}
+
+pub fn pause_menu(root: InputNode, timer: Clock, leave: fn() -> null) {
+    let state = model({ paused: false });
+    let toggle = || {
+        state.paused = !state.paused;
+        if state.paused {
+            timer.pause();
+        } else {
+            timer.resume();
+        }
+    };
+    root.actions = {
+        ...root.actions, pause: { bindings: ["Escape", "KeyP", "Start"], on_release: toggle }
+    };
+    root.add(button("Pause  [P / Start]", x: 728, y: 16, width: 208, on_click: toggle));
+    root.add(
+        input(
+            width: 960, height: 640, modal: true, visible: bind(state.paused),
+            background: "#101b2aee",
+            actions: {
+                resume: { bindings: ["Escape", "KeyP", "Start", "East"], on_release: toggle }
+            }
+        ) {
+            column(x: 300, y: 210, width: 360, gap: 20) {
+                text("Paused", font_size: 40, text_align: "center");
+                button("Resume", on_click: toggle);
+                button("Return to story", on_click: leave);
+            }
+        }
+    );
+}

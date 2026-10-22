@@ -1446,6 +1446,8 @@ A persistent component can retain its current request and check `request != null
 
 [author_embedded_puzzle.aside](../../examples/author_embedded_puzzle/src/main.aside) embeds a 2D switch puzzle in custom dialogue. Operate graphical controls by pointer or keyboard/gamepad focus, pause both the component clock and hint animation, and return the move count to the story. Leaving the component cancels its pending result and retires its activities. The puzzle, dialogue and menu use ordinary stage nodes. This example uses existing events and activities; it does not provide physics or a fixed-step update loop. Supply fonts/body.ttf before running.
 
+[author_arcade](../../examples/author_arcade/src/main.aside) combines dialogue with complete Pong and brick-breaking games. Both use named keyboard/gamepad actions, ordinary nodes and a shared fixed-step loop driven by `Clock.next()`. Each game owns its state, pause menu and activities in a scope, then returns its score and outcome to the story. It requires no external assets.
+
 choose, custom choice_view and the read-only choice model are implemented. The engine adds no automatic dialogue or choice UI; mount your own components on the stage and use ordinary functions to package reusable appearances. See [author_narrative.aside](../../examples/author_narrative/src/main.aside) for ADV/NVL switching and custom choices.
 
 choose(options) accepts an array of options, each with a stable key and a label, updates game.choice, and waits for select(option_id). The current line and choices share the right to control main-story interaction. Authors place the choice view within their own scenes and choose its position and background.

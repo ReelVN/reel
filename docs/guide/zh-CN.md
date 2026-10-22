@@ -1455,6 +1455,8 @@ scope(owner: root, body: |s| {
 
 [author_embedded_puzzle.aside](../../examples/author_embedded_puzzle/src/main.aside) 将一个二维开关谜题嵌进自定义对白：点击图形或通过键盘/手柄焦点操作，暂停时同时停止组件时钟和提示动画，完成后将步数交回剧情；离开组件会取消未决结果并退休所属活动。谜题、对白和菜单都使用普通舞台节点。示例使用现有事件与活动，不提供物理或固定步进更新循环；运行前提供 fonts/body.ttf。
 
+[author_arcade](../../examples/author_arcade/src/main.aside) 将对白与完整的 Pong、打砖块游戏组合起来。两作使用键盘/手柄命名动作、普通节点，以及由 `Clock.next()` 驱动的共用固定步进循环。每个游戏在作用域内维护状态、暂停菜单和活动，结束后把分数与结果交回剧情；无需外部资源。
+
 choose、自定义 choice_view 和只读选择模型已实现。引擎不自动叠加对白或选择界面；作者将自己的组件挂到舞台，普通函数可封装并复用外观。完整 ADV/NVL 切换及选择示例见 [author_narrative.aside](../../examples/author_narrative/src/main.aside)。
 
 choose(options) 接收具有稳定 key 和 label 的选项数组，更新 game.choice 并等待 select(option_id)。当前句与选择共用主剧情交互权限。作者把选择视图放在自己的画面里，位置和背景均可自定。

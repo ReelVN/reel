@@ -18,13 +18,14 @@ Reel 让创作者用代码组合画面、对白、UI、演出和嵌入的 2D 游
 | 媒体与资源 | 短音效、流式长音轨、片段队列、视频节点、后台资源加载和分卷发布 | [音频 #67](https://github.com/jhq223/reel/issues/67)、[运行成本 #152](https://github.com/jhq223/reel/issues/152) |
 | 项目与保存 | 固定项目入口、源码内翻译、开发与发布导出、执行快照和独立系统数据 | [保存与恢复 #91](https://github.com/jhq223/reel/issues/91) |
 
-当前优先完善类型推断；生成器保留在语言计划中，[2D 场景 #101](https://github.com/jhq223/reel/issues/101) 留到下一轮。各项范围和推进顺序见[总清单 #94](https://github.com/jhq223/reel/issues/94)。设备支持以对应平台的实际验证为准。
+语言与编辑器继续完善类型推断和增量分析；生成器保留在语言计划中。连续 2D 玩法已可组合命名动作、时钟步进与普通舞台节点，后续能力见 [2D 场景 #101](https://github.com/jhq223/reel/issues/101)。各项范围见[总清单 #94](https://github.com/jhq223/reel/issues/94)。设备支持以对应平台的实际验证为准。
 
 ## 可运行示例
 
 - [基本画面](../examples/author_stage/src/main.aside)、[组合动画](../examples/author_activities/src/main.aside)和[交互按钮](../examples/author_buttons/src/main.aside)。
 - [临时菜单](../examples/author_prompt/src/main.aside)和[下拉选择](../examples/author_popup/src/main.aside)。
 - [虚拟图库](../examples/author_list_gallery/src/main.aside)、[多行编辑](../examples/author_text_area/src/main.aside)和[嵌入谜题](../examples/author_embedded_puzzle/src/main.aside)。
+- [剧情中的球拍游戏](../examples/author_arcade/src/main.aside)：Pong 与打砖块共用动作输入、固定步进、暂停和结果返回。
 
 进入示例项目后运行 `reel check` 和 `reel dev`；资源准备见示例注释与作者指南。
 
