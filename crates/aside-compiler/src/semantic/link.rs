@@ -581,6 +581,44 @@ fn analyze_project_inner(
             }
         }
     }
+    if recover && !exhausted {
+        let remaining = options.limits.max_work.saturating_sub(work);
+        let result = super::source_types::analyze(
+            &mut modules,
+            &mut Overlay {
+                memory: &mut memory,
+                fallback: resolver,
+            },
+            AnalysisLimits {
+                max_work: options.limits.max_work.saturating_sub(work),
+                ..options.limits
+            },
+        );
+        let inferred_work = match result {
+            Ok(work) | Err(work) => work,
+        };
+        if result.is_ok() {
+            for module in &mut modules {
+                module.stats.work_units = module
+                    .stats
+                    .work_units
+                    .saturating_add(module.source_types.work_units());
+            }
+        } else if let Some(module) = modules.first_mut() {
+            module.stats.work_units = module.stats.work_units.saturating_add(inferred_work);
+        }
+        if result.is_err() && inferred_work > remaining {
+            exhausted = true;
+            diagnostics.push(ModuleDiagnostic {
+                module: options.module.clone(),
+                diagnostic: Diagnostic::error(
+                    D::BudgetExceeded,
+                    TextRange::empty(TextSize::from(0)),
+                    "source type inference work budget exceeded",
+                ),
+            });
+        }
+    }
     let plan = plan(&dependencies);
     Ok(crate::editor::EditorProjectAnalysis {
         modules,

@@ -298,6 +298,7 @@ pub(super) fn analyze_editor(
             exports: Vec::new(),
             stats: AnalysisStats::default(),
             external: Vec::new(),
+            source_types: SourceTypes::default(),
         },
         options,
         resolver,

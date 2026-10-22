@@ -846,3 +846,88 @@ fn main() {
     );
     server.stop();
 }
+
+#[test]
+fn source_factory_records_and_arrays_keep_host_members_and_field_definitions() {
+    let source = r#"fn parts()->table {{body:text("Title"),names:["one","two"]}}
+fn amount(flag:bool){if flag{return 7;}11}
+fn rows(){["one"]} fn message(){"hello"}
+fn main(){let panel=parts();let caption=panel.names[0];let count=amount(true);panel.body.with(opacity:0.5);let items=rows();let words=message();items.len();words.byte_len();caption;count;}"#;
+    let (mut server, initialized) = open(source);
+    let mut id = 2;
+    for (expression, expected) in [
+        ("caption;", "caption: string"),
+        ("count;", "count: int"),
+        ("amount(true)", "-> int"),
+    ] {
+        let hover = server.request(id, "textDocument/hover", query(source, expression, false));
+        id += 1;
+        assert!(
+            hover["contents"]["value"]
+                .as_str()
+                .unwrap()
+                .contains(expected),
+            "{expression}: {hover}"
+        );
+    }
+    let completion = server.request(
+        id,
+        "textDocument/completion",
+        query(source, "panel.body.", true),
+    );
+    id += 1;
+    let items = completion["items"]
+        .as_array()
+        .or_else(|| completion.as_array())
+        .unwrap();
+    assert!(
+        items.iter().any(|item| item["label"] == "with"),
+        "{completion}"
+    );
+    for (expression, expected) in [
+        ("panel.", "get"),
+        ("items.", "append"),
+        ("words.", "slice_bytes"),
+    ] {
+        let result = server.request(
+            id,
+            "textDocument/completion",
+            query(source, expression, true),
+        );
+        id += 1;
+        let items = result["items"]
+            .as_array()
+            .or_else(|| result.as_array())
+            .unwrap();
+        assert!(
+            items.iter().any(|item| item["label"] == expected),
+            "{expression}: {result}"
+        );
+    }
+    let definition = server.request(
+        id,
+        "textDocument/definition",
+        query(source, "body.with", false),
+    );
+    id += 1;
+    assert_eq!(definition["uri"], URI);
+    assert_eq!(
+        definition["range"]["start"],
+        query(source, "body:text", false)["position"]
+    );
+    assert_method(
+        &mut server,
+        &mut id,
+        source,
+        "with(opacity",
+        "with",
+        "TextNode",
+    );
+    let tokens = server.request(
+        id,
+        "textDocument/semanticTokens/full",
+        json!({"textDocument":{"uri":URI}}),
+    );
+    assert_method_token(&tokens, &initialized, source, "with(opacity");
+    server.stop();
+}

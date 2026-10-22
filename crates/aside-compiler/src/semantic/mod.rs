@@ -8,8 +8,10 @@ mod forms;
 mod link;
 mod patterns;
 mod project;
+mod source_types;
 mod types;
 pub use link::*;
+pub use source_types::{SourceDefinition, SourceMember, SourceShape, SourceType, SourceTypes};
 pub mod modules;
 use crate::hir::AnalyzedModule;
 use crate::{Diagnostic, Limits, Parse, ParseOptions, SourceTooLarge, parse_with_options};
@@ -171,6 +173,7 @@ pub(crate) fn editor_analysis(
     match project::project_editor(parsed, options.limits) {
         Ok(hir) => {
             let mut result = bind::analyze_editor(hir, options, resolver);
+            infer_source_types(&mut result, options, resolver);
             result
                 .diagnostics
                 .splice(0..0, parsed.diagnostics().iter().cloned());
@@ -189,6 +192,51 @@ pub(crate) fn editor_analysis(
             stats: Default::default(),
         },
     }
+}
+
+fn infer_source_types(
+    analysis: &mut crate::editor::EditorAnalysis,
+    options: &AnalysisOptions,
+    resolver: &mut dyn ModuleResolver,
+) {
+    if analysis.exhausted {
+        return;
+    }
+    let Some(module) = &mut analysis.module else {
+        return;
+    };
+    let result = source_types::analyze(
+        std::slice::from_mut(module),
+        resolver,
+        AnalysisLimits {
+            max_work: options
+                .limits
+                .max_work
+                .saturating_sub(analysis.stats.work_units),
+            ..options.limits
+        },
+    );
+    let work = match result {
+        Ok(work) => work,
+        Err(work) => {
+            if work
+                > options
+                    .limits
+                    .max_work
+                    .saturating_sub(analysis.stats.work_units)
+            {
+                analysis.exhausted = true;
+                analysis.diagnostics.push(Diagnostic::error(
+                    crate::DiagnosticCode::BudgetExceeded,
+                    module.hir.node(crate::hir::NodeId(0)).span,
+                    "source type inference work budget exceeded",
+                ));
+            }
+            work
+        }
+    };
+    analysis.stats.work_units = analysis.stats.work_units.saturating_add(work);
+    module.stats.work_units = analysis.stats.work_units;
 }
 
 pub(crate) fn editor_interface(

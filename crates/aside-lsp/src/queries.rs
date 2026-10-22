@@ -48,6 +48,9 @@ fn external(
     node: Option<NodeId>,
     symbol: Option<SymbolId>,
 ) -> Option<&ExternalSymbol> {
+    if let Some(value) = node.and_then(|node| module.source_types().external(node)) {
+        return Some(value);
+    }
     let bindings = module.external_bindings();
     node.and_then(|node| bindings.iter().find(|binding| binding.node == Some(node)))
         .or_else(|| {
@@ -84,6 +87,34 @@ pub(crate) fn hint_label(ty: &TypeHint) -> String {
 }
 fn type_label(module: EditorModule<'_>, ty: TypeId) -> String {
     module.display_type(ty).to_string()
+}
+fn inferred_label(module: EditorModule<'_>, ty: &TypeHint) -> String {
+    if let TypeHint::Named(name) = ty
+        && let Some(local) = name
+            .strip_prefix(module.canonical_path())
+            .and_then(|name| name.strip_prefix("::"))
+    {
+        return local.into();
+    }
+    ty.to_string()
+}
+
+fn inferred_builtin_members(ty: &TypeHint) -> Option<&'static BuiltinTypeMembers> {
+    if let TypeHint::Union(types) = ty {
+        let mut selected: Option<&BuiltinTypeMembers> = None;
+        for ty in types.iter().filter(|ty| **ty != TypeHint::Null) {
+            let group = inferred_builtin_members(ty)?;
+            if selected.is_some_and(|selected| !std::ptr::eq(selected, group)) {
+                return None;
+            }
+            selected = Some(group);
+        }
+        return selected;
+    }
+    builtin_catalog().types.iter().find(|group| {
+        group.receiver == *ty
+            || matches!((ty, &group.receiver), (TypeHint::Tuple(_), TypeHint::Named(name)) if name == "tuple")
+    })
 }
 
 struct Signature {
@@ -230,7 +261,23 @@ fn function_signature(
     declaration: TextRange,
     bound: bool,
 ) -> Signature {
+    let annotated = matches!(
+        module
+            .hir()
+            .node(module.functions()[function.0 as usize].node)
+            .form,
+        Form::Function {
+            result: Some(_),
+            ..
+        }
+    );
+    let result = (!annotated)
+        .then(|| module.source_types().function_result(function))
+        .flatten()
+        .filter(|info| info.ty != TypeHint::Any)
+        .map(|info| inferred_label(module, &info.ty));
     let function = &module.functions()[function.0 as usize];
+    let result = result.unwrap_or_else(|| type_label(module, function.return_type));
     let parameters: Vec<_> = function
         .parameters
         .iter()
@@ -254,7 +301,7 @@ fn function_signature(
         .collect();
     Signature {
         name: name.into(),
-        result: type_label(module, function.return_type),
+        result: result.clone(),
         label: format!(
             "fn {name}({}) -> {}",
             parameters
@@ -262,7 +309,7 @@ fn function_signature(
                 .map(|(_, label)| label.as_str())
                 .collect::<Vec<_>>()
                 .join(", "),
-            type_label(module, function.return_type)
+            result
         ),
         parameters,
         markdown: source_docs(source, declaration),
@@ -596,6 +643,7 @@ enum Target<'a> {
     Symbol {
         id: SymbolId,
         ty: Option<TypeId>,
+        node: NodeId,
     },
     External(&'a ExternalSymbol),
     Member {
@@ -630,6 +678,10 @@ fn target_at(module: EditorModule<'_>, offset: usize) -> Option<(Target<'_>, Tex
                 name.is_some_and(|name| name.span == range)
             }
             Form::Member { key, .. } => key.span == range,
+            Form::Field {
+                key: FieldKey::Name(key),
+                ..
+            } => key.span == range,
             Form::ImportPath {
                 alias,
                 group: None,
@@ -656,6 +708,7 @@ fn target_at(module: EditorModule<'_>, offset: usize) -> Option<(Target<'_>, Tex
                             Target::Symbol {
                                 id: symbol,
                                 ty: None,
+                                node,
                             },
                             Target::External,
                         ),
@@ -685,6 +738,24 @@ fn target_at(module: EditorModule<'_>, offset: usize) -> Option<(Target<'_>, Tex
         if let Some(external) = external(module, Some(node), symbol) {
             return Some((Target::External(external), range));
         }
+        if module.source_types().definition(node).is_some() {
+            let key = match hir.node(node).form {
+                Form::Member { key, .. }
+                | Form::Field {
+                    key: FieldKey::Name(key),
+                    ..
+                } => key,
+                _ => continue,
+            };
+            return Some((
+                Target::Member {
+                    node,
+                    key,
+                    ty: facts.ty,
+                },
+                range,
+            ));
+        }
         if let Form::Member { object, key, .. } = hir.node(node).form
             && key.span == range
             && let Some(declaration) = source_member(module, object, key)
@@ -703,6 +774,7 @@ fn target_at(module: EditorModule<'_>, offset: usize) -> Option<(Target<'_>, Tex
                 Target::Symbol {
                     id: symbol,
                     ty: matches!(hir.node(node).form, Form::Name { .. }).then_some(facts.ty),
+                    node,
                 },
                 range,
             ));
@@ -1624,20 +1696,59 @@ impl Workspace {
                         .collect());
                 }
             }
+            let inferred = module.source_types().value(base);
             if let Some(group) = builtin_members(
                 module.hir(),
                 module.types(),
                 module.facts()[base.0 as usize].ty,
-            ) {
-                return Ok(group
+            )
+            .or_else(|| inferred.and_then(|info| inferred_builtin_members(&info.ty)))
+            {
+                let mut items: std::collections::BTreeMap<_, _> = group
                     .members
                     .iter()
                     .map(|member| {
                         let mut item = completion(&member.symbol, &snapshot, &self.host);
                         item.kind = Some(CompletionItemKind::METHOD);
-                        item
+                        (item.label.clone(), item)
                     })
-                    .collect());
+                    .collect();
+                if group.receiver == TypeHint::Table
+                    && let Some(SourceShape::Record(fields)) =
+                        inferred.and_then(|info| info.shape.as_ref())
+                {
+                    for field in fields {
+                        items.insert(
+                            field.name.clone(),
+                            CompletionItem {
+                                label: field.name.clone(),
+                                kind: Some(CompletionItemKind::FIELD),
+                                detail: Some(field.value.ty.to_string()),
+                                ..Default::default()
+                            },
+                        );
+                    }
+                }
+                return Ok(items.into_values().collect());
+            }
+            if let Some(info) = inferred
+                && let TypeHint::Named(name) = &info.ty
+            {
+                if let Some(members) = self.host.types.get(name) {
+                    return Ok(members
+                        .values()
+                        .map(|member| {
+                            let mut item = completion(&member.symbol, &snapshot, &self.host);
+                            if member.symbol.signature.is_some() {
+                                item.kind = Some(CompletionItemKind::METHOD);
+                            }
+                            item
+                        })
+                        .collect());
+                }
+                if let Some((module, source, class)) = source_class(&snapshot, name) {
+                    return Ok(class_completion(&snapshot, module, source, class, true));
+                }
             }
         }
         let mut items: Vec<_> = visible(module, offset)
@@ -1753,12 +1864,32 @@ impl Workspace {
                 );
                 (label, docs, summarized)
             }
-            Target::Symbol { id, ty } => {
+            Target::Symbol { id, ty, node } => {
                 let symbol = &module.symbols()[id.0 as usize];
                 (
                     local_signature(module, source, id).map_or_else(
-                        || match ty {
-                            Some(ty) if ty != symbol.ty => format!(
+                        || match (
+                            module
+                                .source_types()
+                                .value(node)
+                                .or_else(|| module.source_types().symbol(id)),
+                            ty,
+                        ) {
+                            (Some(info), _)
+                                if info.ty != TypeHint::Any
+                                    && matches!(
+                                        module.types()[ty.unwrap_or(symbol.ty).0 as usize],
+                                        Type::Any | Type::Table | Type::Array
+                                    ) =>
+                            {
+                                format!(
+                                    "let {}{}: {}",
+                                    if symbol.mutable { "mut " } else { "" },
+                                    module.hir().name(symbol.name),
+                                    inferred_label(module, &hover_type(&info.ty, &aliases))
+                                )
+                            }
+                            (_, Some(ty)) if ty != symbol.ty => format!(
                                 "let {}: {}",
                                 module.hir().name(symbol.name),
                                 type_label(module, ty)
@@ -1784,7 +1915,18 @@ impl Workspace {
                         format!(
                             "let {}: {}",
                             module.hir().text(key.span),
-                            type_label(module, ty)
+                            module
+                                .source_types()
+                                .value(node)
+                                .filter(|info| info.ty != TypeHint::Any
+                                    && matches!(
+                                        module.types()[ty.0 as usize],
+                                        Type::Any | Type::Table | Type::Array
+                                    ))
+                                .map_or_else(
+                                    || type_label(module, ty),
+                                    |info| inferred_label(module, &hover_type(&info.ty, &aliases))
+                                )
                         )
                     },
                     |signature| hover_signature(&signature, &BTreeSet::new()),
@@ -1848,6 +1990,14 @@ impl Workspace {
                 }));
             }
             Target::Member { node, .. } => {
+                if let Some(definition) = module.source_types().definition(node)
+                    && let Some(source) = snapshot.sources.get(definition.module.as_ref())
+                {
+                    return Ok(Some(Location {
+                        uri: source.uri.clone(),
+                        range: source.lines.range(&source.text, definition.range, encoding),
+                    }));
+                }
                 let span = match module.hir().node(node).form {
                     Form::Function {
                         name: Some(name), ..
