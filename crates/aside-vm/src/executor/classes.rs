@@ -2,16 +2,7 @@
 //! an instance advance one member at a time on the ordinary budgeted stack.
 use super::*;
 
-use crate::class::{ClassSlot, InstanceSlot, State};
-#[derive(Clone, Copy)]
-#[repr(u32)]
-enum MemberSlot {
-    Key,
-    Owner,
-    Index,
-    Offset,
-    Method,
-}
+use crate::class::{ClassSlot, InstanceSlot, MemberSlot, State};
 
 #[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub(super) enum ClassStep {

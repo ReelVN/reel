@@ -287,7 +287,7 @@ impl SessionVm {
                             self.saves.capture = Some((ticket, capture));
                             return Ok(NativeDispatch::Decoding { work: used });
                         }
-                        let (data, reservation) = capture.finish();
+                        let (data, reservation) = capture.finish()?;
                         charge = Some(reservation);
                         Some(data)
                     };
@@ -336,7 +336,7 @@ impl SessionVm {
                     self.saves.capture = Some((ticket, capture));
                     return Ok(NativeDispatch::Decoding { work: used });
                 }
-                let (data, charge) = capture.finish();
+                let (data, charge) = capture.finish()?;
                 (SaveOperation::WriteData { key, data }, None, Some(charge))
             }
             _ => unreachable!(),

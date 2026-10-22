@@ -1,5 +1,8 @@
 //! One traced layout shared by execution, model copying and property access.
-use crate::{Heap, HeapError, ObjectKind, Value, bytecode::TypeId};
+use crate::{
+    Heap, HeapError, ObjectKind, Value,
+    bytecode::{SymbolId, TypeId},
+};
 
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -22,6 +25,22 @@ pub(crate) enum InstanceSlot {
     State,
     Initializers,
 }
+#[derive(Clone, Copy)]
+#[repr(u32)]
+pub(crate) enum MemberSlot {
+    Key,
+    Owner,
+    Index,
+    Offset,
+    Method,
+}
+
+/// A borrowed data-field name and its existing language cell.
+pub struct InstanceField<'a> {
+    pub name: &'a str,
+    pub symbol: SymbolId,
+    pub cell: Value,
+}
 #[derive(Clone, Copy, PartialEq)]
 #[repr(i64)]
 pub(crate) enum State {
@@ -31,6 +50,35 @@ pub(crate) enum State {
 }
 
 impl Heap {
+    /// Count data fields, including inherited fields, of a completed instance.
+    pub fn instance_field_count(&self, instance: Value) -> Result<u32, HeapError> {
+        let (_, fields) = self.instance_data(instance)?;
+        Ok(self.info(fields)?.len)
+    }
+
+    /// Read the fixed field layout without allocating or invoking script methods.
+    /// The caller keeps the instance rooted while retaining its field cells.
+    pub fn instance_field(
+        &self,
+        instance: Value,
+        index: u32,
+    ) -> Result<InstanceField<'_>, HeapError> {
+        let (class, fields) = self.instance_data(instance)?;
+        let layout = self.get_field(class, ClassSlot::Fields as u32)?;
+        let member = self.get_field(layout, index)?;
+        let key = self
+            .get_field(member, MemberSlot::Key as u32)?
+            .as_int()
+            .unwrap();
+        let symbol = SymbolId((key / 2) as u32);
+        let code = self.code.as_ref().ok_or(HeapError::WrongKind)?;
+        Ok(InstanceField {
+            name: &code.package().symbols[symbol.index()],
+            symbol,
+            cell: self.get_field(fields, index)?,
+        })
+    }
+
     pub(crate) fn instance_data(&self, instance: Value) -> Result<(Value, Value), HeapError> {
         if self.info(instance)?.kind != ObjectKind::Instance {
             return Err(HeapError::WrongKind);

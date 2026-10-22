@@ -24,6 +24,7 @@ mod masks;
 mod media_positions;
 mod models;
 mod particles;
+mod persistent;
 mod property_configuration;
 mod reading_contexts;
 mod result_use;

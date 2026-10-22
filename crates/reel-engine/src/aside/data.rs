@@ -1,7 +1,8 @@
 //! Code-independent values for system records. No VM handles cross the IO lane.
 use super::AdapterError;
 use aside_vm::{
-    Heap, HeapHandle, HeapReservation, ObjectKind, RootKind, RootOwner, RootToken, Value, ValueTag,
+    Heap, HeapHandle, HeapReservation, InstanceField, ObjectKind, RootKind, RootOwner, RootToken,
+    Value, ValueTag, bytecode::SymbolId,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc};
@@ -114,11 +115,13 @@ struct Source {
     value: Value,
     version: u64,
     len: u32,
+    object: u32,
 }
 pub(super) struct Capture {
     document: DataDocument,
     sources: Vec<Source>,
     ids: HashMap<HeapHandle, u32>,
+    names: HashMap<SymbolId, u32>,
     cursor: usize,
     validation: usize,
     charge: HeapReservation,
@@ -133,6 +136,7 @@ impl Capture {
             },
             sources: Vec::new(),
             ids: HashMap::new(),
+            names: HashMap::new(),
             cursor: 0,
             validation: 0,
             charge: heap.budget_usage().reserve(size_of::<Self>() as u64)?,
@@ -152,14 +156,18 @@ impl Capture {
                     return Ok(Atom::Object(id));
                 }
                 let info = heap.info(value)?;
-                let len = info.len as usize;
+                let len = if info.kind == ObjectKind::Instance {
+                    heap.instance_field_count(value)?
+                } else {
+                    info.len
+                } as usize;
                 let unit = match info.kind {
                     ObjectKind::String | ObjectKind::Bytes => 1,
                     ObjectKind::Array | ObjectKind::Tuple => size_of::<Atom>(),
-                    ObjectKind::Table => size_of::<(Atom, Atom)>(),
+                    ObjectKind::Table | ObjectKind::Instance => size_of::<(Atom, Atom)>(),
                     _ => {
                         return Err(AdapterError::Input(
-                            "persistent data requires plain values; convert instances, buffers and host resources to data first",
+                            "persistent data requires data values; convert buffers, executable values and host resources first",
                         ));
                     }
                 };
@@ -182,7 +190,7 @@ impl Capture {
                     ObjectKind::Bytes => Object::Bytes(buffer(len)?),
                     ObjectKind::Array => Object::Array(buffer(len)?),
                     ObjectKind::Tuple => Object::Tuple(buffer(len)?),
-                    ObjectKind::Table => Object::Table(buffer(len)?),
+                    ObjectKind::Table | ObjectKind::Instance => Object::Table(buffer(len)?),
                     _ => unreachable!(),
                 };
                 let id = u32::try_from(self.document.objects.len())
@@ -202,12 +210,66 @@ impl Capture {
                 self.sources.push(Source {
                     value,
                     version: info.content_version,
-                    len: info.len,
+                    len: len as u32,
+                    object: id,
                 });
                 self.ids.insert(handle, id);
                 Atom::Object(id)
             }
         })
+    }
+
+    fn field_name(
+        &mut self,
+        field: &InstanceField<'_>,
+        chunk: usize,
+    ) -> Result<(Atom, bool), AdapterError> {
+        let id = if let Some(&id) = self.names.get(&field.symbol) {
+            id
+        } else {
+            let overhead = 4 * (size_of::<Object>() + size_of::<(SymbolId, u32)>() + 16);
+            self.charge
+                .resize(self.charge.bytes() + (overhead + field.name.len()) as u64)?;
+            let mut bytes = Vec::new();
+            bytes
+                .try_reserve_exact(field.name.len())
+                .map_err(|_| AdapterError::Allocation)?;
+            self.names
+                .try_reserve(1)
+                .map_err(|_| AdapterError::Allocation)?;
+            self.document
+                .objects
+                .try_reserve(1)
+                .map_err(|_| AdapterError::Allocation)?;
+            let id =
+                u32::try_from(self.document.objects.len()).map_err(|_| AdapterError::Allocation)?;
+            self.document.payload_bytes += bytes.capacity();
+            self.document.objects.push(Object::String(bytes));
+            self.names.insert(field.symbol, id);
+            id
+        };
+        let Object::String(bytes) = &mut self.document.objects[id as usize] else {
+            unreachable!()
+        };
+        let end = field.name.len().min(bytes.len() + chunk.min(4096));
+        bytes.extend_from_slice(&field.name.as_bytes()[bytes.len()..end]);
+        Ok((Atom::Object(id), end == field.name.len()))
+    }
+
+    fn watch_cell(&mut self, heap: &Heap, cell: Value) -> Result<(), AdapterError> {
+        self.charge
+            .resize(self.charge.bytes() + (4 * size_of::<Source>()) as u64)?;
+        self.sources
+            .try_reserve(1)
+            .map_err(|_| AdapterError::Allocation)?;
+        // The field is already copied. Retain only its mutation check until capture finishes.
+        self.sources.push(Source {
+            value: cell,
+            version: heap.info(cell)?.content_version,
+            len: 0,
+            object: 0,
+        });
+        Ok(())
     }
     pub fn step(
         &mut self,
@@ -235,13 +297,14 @@ impl Capture {
                     "persistent data changed during capture",
                 ));
             }
-            let offset = self.document.objects[self.cursor].len();
-            if offset == source.len as usize {
+            let object = source.object as usize;
+            if source.len == 0 || self.document.objects[object].len() == source.len as usize {
                 self.cursor += 1;
                 continue;
             }
+            let offset = self.document.objects[object].len();
             let value = source.value;
-            match &mut self.document.objects[self.cursor] {
+            match &mut self.document.objects[object] {
                 Object::String(bytes) | Object::Bytes(bytes) => {
                     let mut buffer = [0; 4096];
                     let n =
@@ -249,10 +312,20 @@ impl Capture {
                     bytes.extend_from_slice(&buffer[..n]);
                 }
                 Object::Table(_) => {
-                    let (key, value) = heap.table_entry(value, offset as u32)?;
-                    let key = self.atom(heap, key)?;
+                    let (key, value) = if heap.info(value)?.kind == ObjectKind::Instance {
+                        let field = heap.instance_field(value, offset as u32)?;
+                        let (key, complete) = self.field_name(&field, chunk)?;
+                        if !complete {
+                            continue;
+                        }
+                        self.watch_cell(heap, field.cell)?;
+                        (key, heap.cell_read(field.cell)?)
+                    } else {
+                        let (key, value) = heap.table_entry(value, offset as u32)?;
+                        (self.atom(heap, key)?, value)
+                    };
                     let value = self.atom(heap, value)?;
-                    let Object::Table(entries) = &mut self.document.objects[self.cursor] else {
+                    let Object::Table(entries) = &mut self.document.objects[object] else {
                         unreachable!()
                     };
                     entries.push((key, value));
@@ -260,7 +333,7 @@ impl Capture {
                 Object::Array(_) | Object::Tuple(_) => {
                     let value = self.atom(heap, heap.sequence_get(value, offset as u32)?)?;
                     let (Object::Array(values) | Object::Tuple(values)) =
-                        &mut self.document.objects[self.cursor]
+                        &mut self.document.objects[object]
                     else {
                         unreachable!()
                     };
@@ -270,8 +343,18 @@ impl Capture {
         }
         Ok((false, work))
     }
-    pub fn finish(self) -> (Arc<DataDocument>, HeapReservation) {
-        (Arc::new(self.document), self.charge)
+    pub fn finish(self) -> Result<(Arc<DataDocument>, HeapReservation), AdapterError> {
+        let Self {
+            document,
+            sources,
+            ids,
+            names,
+            mut charge,
+            ..
+        } = self;
+        drop((sources, ids, names));
+        charge.resize(document.retained_bytes() + (2 * size_of::<usize>()) as u64)?;
+        Ok((Arc::new(document), charge))
     }
 }
 
@@ -392,8 +475,10 @@ aside_host::native_documentation! {
         "reel::persistent::read";
         /// Store a detached plain value graph under a nonempty persistent key.
         /// Supported values are null, bool, int, float, strings, Bytes, arrays, tuples and
-        /// tables, including shared references and cycles. Instances, closures, buffers and
-        /// native resources must first be converted to plain data. Capture is incremental;
+        /// tables, including shared references and cycles. Completed instances store their
+        /// data fields as plain tables, including inherited fields. Static fields, methods
+        /// and class identity stay in code. Reads return ordinary records for your constructor.
+        /// Convert closures, buffers and native resources to data first. Capture is incremental;
         /// mutating captured source objects before it finishes is rejected.
         /// Returns a session-owned awaitable operation; awaiting yields null after the host
         /// commits the write, or throws on failure. A claimed write survives removal of its UI.

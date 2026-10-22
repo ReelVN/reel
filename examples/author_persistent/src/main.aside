@@ -1,6 +1,14 @@
 // System records survive story loading and a new session.
+class Preferences {
+    let mut volume: float = 0.8;
+
+    fn init(self, record: table | null = null) {
+        if record != null { self.volume = record.volume; }
+    }
+}
+
 fn main() {
-    let settings = model(await persistent.read("settings", default: { volume: 0.8 }));
+    let settings = model(Preferences(await persistent.read("settings")));
     let state = model({ message: "", busy: false });
     stage.replace(
         column(x: 40, y: 40, width: 520, gap: 20) {
@@ -25,7 +33,7 @@ fn main() {
                     let request = saves.save("manual/1");
                     await request;
                     if request.restored {
-                        let current = await persistent.read("settings", default: { volume: 0.8 });
+                        let current = Preferences(await persistent.read("settings"));
                         settings.volume = current.volume;
                     }
                 }

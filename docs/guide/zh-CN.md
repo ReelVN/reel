@@ -1562,10 +1562,16 @@ settings.palette.accent = "#ffd580";
 默认数据图会被复制，保留内部别名与环，不修改传入的默认对象。已完成构造的类实例、table、array、tuple、字符串、字节串及可变缓冲可作为数据；闭包和节点等宿主资源不能用作默认数据。后续赋入的对象保持共享身份，取得嵌套实例、table 或数组元素的别名后仍可绑定其字段。普通 table 方法继续可用；clear 冻结已有连接的最后值并使旧引用失效，新增同名字段需重新 bind。复制按预算分片，取消不留下部分模型。
 
 语言中的 let/let mut 决定绑定能否改写，model 决定属性是否可观察，状态的所属范围决定保存和释放。三者各司其职。
-系统数据使用 `persistent.read(key, default: null)`、`persistent.write(key, value)`、`persistent.delete(key)`。操作返回可等待请求，失败由 catch 接收；写入完成才表示文件已发布。缺失记录返回 default，保存的 null/false/0 保持原值。支持 null/bool/int/float、string/Bytes、array/table/tuple，保留别名与环；table 仅存自有字段。类实例、节点、任务和闭包先转换为数据。文件独立于剧情槽和 ASB 版本，位于同一 save-directory，不出现在 saves.list 中。见 [author_persistent.aside](../../examples/author_persistent/src/main.aside)。
+系统数据使用 `persistent.read(key, default: null)`、`persistent.write(key, value)`、`persistent.delete(key)`。操作返回可等待请求，失败由 catch 接收；写入完成才表示文件已发布。缺失记录返回 default，保存的 null/false/0 保持原值。支持 null/bool/int/float、string/Bytes、array/table/tuple 和已完成构造的实例，保留别名与环。table 保存自有字段；实例的数据字段（包括继承字段）保存为普通 table，静态字段、方法和类身份留在代码中。将读回的记录传给状态构造函数，即可恢复业务类型。节点、任务和闭包先转换为数据。文件独立于剧情槽和 ASB 版本，位于同一 save-directory，不出现在 saves.list 中。见 [author_persistent.aside](../../examples/author_persistent/src/main.aside)。
 
 ```aside
-let preferences = await persistent.read("settings", default: {volume: 0.8});
+class Preferences {
+    let mut volume: float = 0.8;
+    fn init(self, record: table | null = null) {
+        if record != null { self.volume = record.volume; }
+    }
+}
+let preferences = model(Preferences(await persistent.read("settings")));
 preferences.volume = 0.6;
 await persistent.write("settings", preferences);
 ```
