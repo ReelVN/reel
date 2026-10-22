@@ -31,8 +31,10 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
 aside_host::native_documentation! {
     pub(super) fn documentation {
         /// Retain the accepted drawing of target, call change in the current task, then
-        /// blend into the newly presented drawing. A null target captures the full stage;
-        /// a mounted body node scopes the transition. Cursor nodes are excluded as targets.
+        /// blend into the newly presented drawing. A null target captures the full stage
+        /// including popups. A mounted body node scopes the transition to its presentation
+        /// layer; target a popup directly to transition it independently. Cursor nodes are
+        /// excluded as targets.
         /// Duration, easing and masks control the blend. The call waits for final frame
         /// acceptance and returns the original value returned by `change`.
         /// Retained drawing owns resources independently of retired script nodes.
@@ -487,8 +489,13 @@ impl SessionVm {
                 if ancestor == current {
                     return true;
                 }
-                let Some(parent) = self.stage.scene.node(current).and_then(|node| node.parent)
-                else {
+                let Some(node) = self.stage.scene.node(current) else {
+                    return false;
+                };
+                if matches!(node.kind, NodeKind::Popup(_)) {
+                    return false;
+                }
+                let Some(parent) = node.parent else {
                     return false;
                 };
                 current = parent;

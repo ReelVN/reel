@@ -217,7 +217,7 @@ reel-ui 的交互分发层是唯一控件输入入口。它使用冻结的 Prese
 
 ### 保留画面的舞台转场
 
-`stage.transition(change:, target:null, duration:0.3, easing:"linear", mask:null, mask_softness:0.06, mask_invert:false, mask_x:0, mask_y:0, owner:null)` 在当前任务执行完整转场并返回零参数 change 回调的原返回值，调用本身等待完成，不再在外面 await。并发沿用 spawn；初始化、纯派生及 NoWait 边界拒绝调用。target 为仍挂载的舞台正文节点时仅过渡该节点及其子树，null 为整个逻辑舞台正文，窗口光标保持独立。目标节点应保持身份，通过 change 修改其属性或子节点；image 可直接更新 source，text 可直接更新 value；整个舞台的 change 可 stage.replace。duration 有限且非负，easing 使用 tween 的内置具名曲线，mask 使用已有字符串或 MaskExpression，参数沿已有节点遮罩规则；null 用统一进度混合。duration 为零直接执行变更并等待新画面接受，省去旧图保留和计时。
+`stage.transition(change:, target:null, duration:0.3, easing:"linear", mask:null, mask_softness:0.06, mask_invert:false, mask_x:0, mask_y:0, owner:null)` 在当前任务执行完整转场并返回零参数 change 回调的原返回值，调用本身等待完成，不再在外面 await。并发沿用 spawn；初始化、纯派生及 NoWait 边界拒绝调用。target 为仍挂载的舞台正文节点时过渡该节点在所在呈现层内的子树；popup 使用独立层，可直接作为目标。null 一次过渡整个逻辑舞台正文及浮层，窗口光标保持独立。目标节点应保持身份，通过 change 修改其属性或子节点；image 可直接更新 source，text 可直接更新 value；整个舞台的 change 可 stage.replace。duration 有限且非负，easing 使用 tween 的内置具名曲线，mask 使用已有字符串或 MaskExpression，参数沿已有节点遮罩规则；null 用统一进度混合。duration 为零直接执行变更并等待新画面接受，省去旧图保留和计时。
 
 阶段为 OldPending → Changing → NewPending → Playing → FinalPending。先等待稳定舞台实际接受，按这份画面的真正子树边界保留旧绘制与资源，再执行 change；回调可等待，其普通活动与新侧内容沿原所有权继续运行。新资源、布局和零进度合成帧接受后才开始时间；最终进度为一的帧接受后返回并释放旧画面。相同或相互包含的目标在已有转场期间请求另一转场会在执行新 change 前报告目标冲突；独立子树可并行。change 中的交互等待应放到转场返回后：转场目标的输入、焦点和确认准入在整个过程暂停，外部 UI 照常；此门控属于宿主呈现状态，保留作者 enabled/visible 值及绑定。取消后按当前真实舞台的下一接受帧恢复准入。
 

@@ -71,6 +71,19 @@ aside_host::native_documentation! {
         /// Defaults to modal:true. on_dismiss receives {target, reason}, where reason
         /// is outside or back; removing target closes it. Hiding or disabling an
         /// ancestor withdraws the layer. A popup without a parent stays unpresented.
+        /// Dismissal follows the active modal scope.
+        ///
+        /// ```aside
+        /// fn main() {
+        ///     let trigger = button("Options", on_click: |event| {
+        ///         event.target.add(popup(placement: "bottom-start", offset: 4,
+        ///             on_dismiss: |event| event.target.remove()) {
+        ///             text("Click outside to close", padding: 12, background: "#303848");
+        ///         });
+        ///     });
+        ///     stage.replace(trigger);
+        /// }
+        /// ```
         "reel::popup";
         /// Create a clipped camera container. camera_x/y select the viewed world point;
         /// zoom and camera_rotation transform its ordinary children. Drawing and input

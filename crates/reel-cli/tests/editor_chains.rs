@@ -335,6 +335,10 @@ fn node_with_chain_retains_the_actual_text_subtype_and_property_schema() {
     film.with(opacity: 1);
     let dust = particles("spark.png");
     dust.with(x: 2);
+    let menu = popup().with(placement: "top-end", offset: 4);
+    let floating: PopupNode = menu;
+    floating.with(offset: 8);
+    styled.add(floating);
     stage.replace(styled);
 }"##;
     let (mut server, initialized) = open(source);
@@ -384,6 +388,14 @@ fn node_with_chain_retains_the_actual_text_subtype_and_property_schema() {
         "with(opacity",
         "with",
         "TextNode",
+    );
+    assert_method(
+        &mut server,
+        &mut id,
+        source,
+        "with(offset:",
+        "with",
+        "PopupNode",
     );
     let tokens = server.request(
         id,

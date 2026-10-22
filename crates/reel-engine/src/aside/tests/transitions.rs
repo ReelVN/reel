@@ -373,6 +373,55 @@ fn transition_overlap_fault_and_independent_subtrees_follow_existing_tasks() {
 }
 
 #[test]
+fn transition_overlap_respects_independent_popup_layers() {
+    let code = r#"fn opening() {
+        let body=stack();
+        let menu=body.add(popup());
+        let nested=menu.add(popup());
+        let body_child=body.add(stack());
+        let menu_child=menu.add(stack());
+        let nested_child=nested.add(stack());
+        stage.replace(body);
+        let release=completion();
+        let tasks=[];
+        let state={rejected:0,calls:0};
+        for target in [body,menu,nested] {
+            let started=completion();
+            tasks.append(spawn(|| stage.transition(target:target,duration:0,change:|| {
+                state.calls+=1;
+                started.resolve();
+                await release;
+                23
+            })));
+            await started;
+        }
+        for target in [null,body,menu,nested,body_child,menu_child,nested_child] {
+            try { stage.transition(target:target,duration:0,change:|| { state.calls+=100; }); }
+            catch error { state.rejected+=1; }
+        }
+        release.resolve();
+        for task in tasks {
+            if await task!=23 { throw "popup transition result"; }
+        }
+        if state.calls!=3 || state.rejected!=7 { throw "popup transition overlap"; }
+        stage.replace(text("popup transitions complete"));
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = prepared(code, encoded);
+        drive(&mut vm, &mut session, false);
+        assert_eq!(vm.transition_views().count(), 3);
+        accept_final(&mut vm);
+        drive(&mut vm, &mut session, true);
+        assert!(
+            vm.stage()
+                .nodes()
+                .any(|node| { node.kind == NodeKind::Text("popup transitions complete".into()) })
+        );
+        assert!(vm.transition_views().next().is_none());
+    }
+}
+
+#[test]
 fn transition_callback_fault_identity_and_task_cancel_release_state() {
     let code = r#"fn opening() {
         stage.replace(stack());
