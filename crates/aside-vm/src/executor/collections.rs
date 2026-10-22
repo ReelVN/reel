@@ -28,16 +28,22 @@ impl Vm {
     ) -> Result<bool, VmError> {
         let host = self.value(frame.regs, object.0)?;
         let key = self.value(frame.env, 2)?;
-        let bytes = if key.tag() == ValueTag::Object {
+        let name = self.host_member_symbol(frame);
+        let bytes = if name.is_none() && key.tag() == ValueTag::Object {
             self.heap.info(key)?.len
         } else {
             0
         };
-        let lookup = 1 + self.type_checks.symbol_work(bytes) + self.heap.host_method_work(host)?;
+        let lookup =
+            1 + if name.is_none() {
+                self.type_checks.symbol_work(bytes)
+            } else {
+                0
+            } + self.heap.host_method_work(host)?;
         if !meter.admits(0, lookup, 0) {
             return Ok(false);
         }
-        let function = match self.shared_host_method(host, key) {
+        let function = match self.shared_host_method(host, key, name) {
             Ok(Some(function)) => function,
             result => {
                 assert!(meter.take(0, lookup, 0));
@@ -507,17 +513,22 @@ impl Vm {
         {
             let host = self.value(s.regs, object.0)?;
             let key = self.value(s.env, 2)?;
-            let bytes = if key.tag() == ValueTag::Object {
+            let name = self.host_member_symbol(s);
+            let bytes = if name.is_none() && key.tag() == ValueTag::Object {
                 self.heap.info(key)?.len
             } else {
                 0
             };
-            cost.0 += self.type_checks.symbol_work(bytes) + self.heap.host_method_work(host)?;
+            cost.0 += if name.is_none() {
+                self.type_checks.symbol_work(bytes)
+            } else {
+                0
+            } + self.heap.host_method_work(host)?;
             if !meter.admits(0, cost.0, 0) {
                 return Ok(false);
             }
             host_lookup_work = cost.0;
-            host_method = match self.shared_host_method(host, key) {
+            host_method = match self.shared_host_method(host, key, name) {
                 Ok(method) => method,
                 Err(error) => {
                     assert!(meter.take(0, cost.0, 0));

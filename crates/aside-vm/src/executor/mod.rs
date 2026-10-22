@@ -1324,7 +1324,11 @@ impl Vm {
         &self,
         object: Value,
         key: Value,
+        name: Option<SymbolId>,
     ) -> Result<Option<FunctionId>, HeapError> {
+        if let Some(name) = name {
+            return self.heap.shared_host_method(object, name);
+        }
         if !self.heap.accepts_builtin(BuiltinType::String, key)? {
             return Ok(None);
         }
@@ -1335,6 +1339,16 @@ impl Vm {
             return Ok(None);
         };
         self.heap.shared_host_method(object, name)
+    }
+
+    fn host_member_symbol(&self, frame: &ScriptFrame) -> Option<SymbolId> {
+        // Member instructions already carry the linked symbol. Indexed reads
+        // still resolve their runtime string after the own-field lookup.
+        let instruction =
+            self.program.package().functions[frame.code.function.index()].code[frame.pc.index()];
+        (instruction.opcode == Opcode::MemberGet as u16
+            || instruction.opcode == Opcode::MemberSet as u16)
+            .then_some(SymbolId(instruction.operands[2]))
     }
 
     /// Bind the receiver of an admitted native callable. The immutable value
