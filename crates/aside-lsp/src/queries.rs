@@ -123,6 +123,7 @@ struct Signature {
     result: String,
     parameters: Vec<(String, String)>,
     markdown: Option<String>,
+    parameter_documentation: std::collections::BTreeMap<String, std::sync::Arc<str>>,
 }
 fn host_signature(symbol: &ExternalSymbol, host: &HostIndex) -> Option<Signature> {
     let signature = symbol.signature.as_ref()?;
@@ -156,6 +157,9 @@ fn host_signature(symbol: &ExternalSymbol, host: &HostIndex) -> Option<Signature
         })
         .collect();
     Some(Signature {
+        parameter_documentation: declaration
+            .map(|declaration| declaration.parameter_documentation.clone())
+            .unwrap_or_default(),
         name: symbol.name.clone(),
         result: hint_label(&signature.result),
         label: format!(
@@ -225,6 +229,7 @@ fn value_signature(
             .collect();
         let result = type_label(module, *result);
         return Some(Signature {
+            parameter_documentation: Default::default(),
             label: format!(
                 "fn {name}({}) -> {result}",
                 parameters
@@ -300,6 +305,7 @@ fn function_signature(
         })
         .collect();
     Signature {
+        parameter_documentation: Default::default(),
         name: name.into(),
         result: result.clone(),
         label: format!(
@@ -492,6 +498,7 @@ fn external_signature(
                 })
             })
             .unwrap_or(Signature {
+                parameter_documentation: Default::default(),
                 label: String::new(),
                 name: symbol.name.clone(),
                 result: hint_label(&contract.result),
@@ -1111,26 +1118,7 @@ fn external_hover(
         && symbol.class.is_none()
         && let Some(signature) = external_signature(&presented, snapshot, host)
     {
-        let property_names = host
-            .declaration(symbol)
-            .map(|declaration| {
-                declaration
-                    .property_parameters
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<BTreeSet<_>>()
-            })
-            .unwrap_or_default();
-        let summarized = symbol
-            .signature
-            .as_ref()
-            .into_iter()
-            .flat_map(|signature| &signature.parameters)
-            .filter(|parameter| {
-                parameter.default && property_names.contains(parameter.name.as_str())
-            })
-            .map(|parameter| parameter.name.as_str())
-            .collect::<BTreeSet<_>>();
+        let summarized = summarized_properties(symbol, host);
         return (hover_signature(&signature, &summarized), summarized.len());
     }
     if symbol.signature.is_none()
@@ -1149,6 +1137,45 @@ fn external_hover(
         );
     }
     (external_label(&presented, snapshot, host, name), 0)
+}
+fn summarized_properties<'a>(symbol: &'a ExternalSymbol, host: &HostIndex) -> BTreeSet<&'a str> {
+    let property_names = host
+        .declaration(symbol)
+        .map(|declaration| {
+            declaration
+                .property_parameters
+                .iter()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    symbol
+        .signature
+        .as_ref()
+        .into_iter()
+        .flat_map(|signature| &signature.parameters)
+        .filter(|parameter| parameter.default && property_names.contains(parameter.name.as_str()))
+        .map(|parameter| parameter.name.as_str())
+        .collect()
+}
+fn property_group_summary(symbol: &ExternalSymbol, host: &HostIndex) -> String {
+    let Some(declaration) = host.declaration(symbol) else {
+        return String::new();
+    };
+    let summarized = summarized_properties(symbol, host);
+    declaration
+        .property_groups
+        .iter()
+        .filter_map(|group| {
+            let names = group
+                .parameters
+                .iter()
+                .filter(|name| summarized.contains(name.as_str()))
+                .map(|name| format!("`{name}`"))
+                .collect::<Vec<_>>();
+            (!names.is_empty()).then(|| format!("\n\n{}: {}.", group.name, names.join(", ")))
+        })
+        .collect()
 }
 fn property_label(symbol: &ExternalSymbol, host: &HostIndex) -> String {
     property_label_using(symbol, host, hint_label)
@@ -1808,6 +1835,47 @@ impl Workspace {
         position: Position,
         encoding: Encoding,
     ) -> Result<Option<Hover>, String> {
+        if let Some(document) = self
+            .host
+            .documents
+            .get(uri.as_str())
+            .filter(|document| !document.references.is_empty())
+        {
+            let lines = crate::position::LineIndex::new(&document.text);
+            let offset = lines
+                .offset(&document.text, position, encoding)
+                .ok_or("invalid hover position")?;
+            let Some(reference) = document.reference_at(offset) else {
+                return Ok(None);
+            };
+            let symbol = &reference.symbol;
+            let label = if symbol.type_only {
+                format!("class {}", symbol.ty)
+            } else if let Some(namespace) = &symbol.namespace {
+                format!("use {}", namespace.module)
+            } else if let Some(signature) = host_signature(symbol, &self.host) {
+                hover_signature(&signature, &summarized_properties(symbol, &self.host))
+            } else {
+                property_label(symbol, &self.host)
+            };
+            let mut value = format!("```aside\n{label}\n```");
+            value.push_str(&property_group_summary(symbol, &self.host));
+            if let Some(declaration) = self
+                .host
+                .declaration(symbol)
+                .filter(|declaration| !declaration.markdown.is_empty())
+            {
+                value.push_str("\n\n");
+                value.push_str(&declaration.markdown);
+            }
+            return Ok(Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value,
+                }),
+                range: Some(lines.range(&document.text, reference.range, encoding)),
+            }));
+        }
         let snapshot = self.snapshot(uri)?;
         let source = snapshot.source();
         let offset = source
@@ -1848,6 +1916,10 @@ impl Workspace {
             return Ok(None);
         };
         let aliases = hover_type_aliases(module, offset, &self.host);
+        let property_groups = match &target {
+            Target::External(symbol) => property_group_summary(symbol, &self.host),
+            _ => String::new(),
+        };
         let (label, docs, additional_properties) = match target {
             Target::External(symbol) => {
                 let signature = external_signature(symbol, &snapshot, &self.host);
@@ -1939,6 +2011,7 @@ impl Workspace {
         if additional_properties > 0 {
             value.push_str(&format!("\n\nAdditional named properties: {additional_properties}. Use named-argument completion or Go to Definition."));
         }
+        value.push_str(&property_groups);
         if let Some(docs) = docs.filter(|docs| !docs.is_empty()) {
             value.push_str("\n\n");
             value.push_str(&docs);
@@ -1957,6 +2030,35 @@ impl Workspace {
         position: Position,
         encoding: Encoding,
     ) -> Result<Option<Location>, String> {
+        if let Some(document) = self
+            .host
+            .documents
+            .get(uri.as_str())
+            .filter(|document| !document.references.is_empty())
+        {
+            let lines = crate::position::LineIndex::new(&document.text);
+            let offset = lines
+                .offset(&document.text, position, encoding)
+                .ok_or("invalid definition position")?;
+            let Some(reference) = document.reference_at(offset) else {
+                return Ok(None);
+            };
+            let definition = self
+                .host
+                .declaration(&reference.symbol)
+                .and_then(|declaration| declaration.definition.as_ref());
+            return Ok(definition.and_then(|definition| {
+                let document = self.host.documents.get(definition.uri.as_str())?;
+                Some(Location {
+                    uri: definition.uri.clone(),
+                    range: crate::position::LineIndex::new(&document.text).range(
+                        &document.text,
+                        definition.range,
+                        encoding,
+                    ),
+                })
+            }));
+        }
         let snapshot = self.snapshot(uri)?;
         let source = snapshot.source();
         let offset = source
@@ -2126,7 +2228,15 @@ impl Workspace {
                 parameter_offset = end + 2;
                 ParameterInformation {
                     label,
-                    documentation: None,
+                    documentation: signature
+                        .parameter_documentation
+                        .get(&name)
+                        .map(|markdown| {
+                            Documentation::MarkupContent(MarkupContent {
+                                kind: MarkupKind::Markdown,
+                                value: markdown.to_string(),
+                            })
+                        }),
                 }
             })
             .collect();

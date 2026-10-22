@@ -226,10 +226,17 @@ fn assert_method(
     let end = definition["range"]["end"]["character"].as_u64().unwrap() as usize;
     assert_eq!(&line[start..end], method);
     assert!(line.contains(&format!("fn {method}(")), "{line}");
+    let return_line = document["text"]
+        .as_str()
+        .unwrap()
+        .lines()
+        .skip(definition["range"]["start"]["line"].as_u64().unwrap() as usize)
+        .find(|line| line.ends_with(';'))
+        .unwrap();
     assert!(
-        line.ends_with(&format!("-> {result};"))
-            || line.ends_with(&format!("-> reel::types::{result};")),
-        "{expression} navigated to another receiver's declaration: {line}"
+        return_line.ends_with(&format!("-> {result};"))
+            || return_line.ends_with(&format!("-> reel::types::{result};")),
+        "{expression} navigated to another receiver's declaration: {line} ... {return_line}"
     );
 }
 
