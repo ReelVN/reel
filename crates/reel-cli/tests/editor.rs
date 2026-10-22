@@ -44,13 +44,16 @@ fn existing_project_editor_cost() {
         .send(Notification::new("initialized".into(), json!({})).into())
         .unwrap();
     let query = json!({"textDocument":{"uri":uri},"position":{"line":0,"character":0}});
-    let barrier = |id: i32| {
+    let barrier = |id: i32, version: i32| {
         client
             .sender
             .send(Request::new(id.into(), "textDocument/hover".into(), query.clone()).into())
             .unwrap();
         let mut failures = Vec::new();
         let mut documents = 0;
+        let mut answered = false;
+        let mut published = false;
+        let mut fence_sent = false;
         loop {
             match client
                 .receiver
@@ -59,12 +62,18 @@ fn existing_project_editor_cost() {
             {
                 Message::Response(response) if response.id == id.into() => {
                     assert!(response.error.is_none(), "{:?}", response.error);
+                    answered = true;
+                }
+                Message::Response(response) if response.id == (id + 1000).into() => {
+                    assert!(response.error.is_none(), "{:?}", response.error);
                     return (documents, failures);
                 }
                 Message::Notification(notification)
                     if notification.method == "textDocument/publishDiagnostics" =>
                 {
                     documents += 1;
+                    published |= notification.params["uri"] == uri
+                        && notification.params["version"] == version;
                     for diagnostic in notification.params["diagnostics"].as_array().unwrap() {
                         if diagnostic["severity"] == 1 {
                             failures.push(
@@ -74,6 +83,22 @@ fn existing_project_editor_cost() {
                     }
                 }
                 _ => {}
+            }
+            if answered && published && !fence_sent {
+                // The server sends the complete diagnostic batch before it
+                // handles this fence, including modules sorted after the entry.
+                client
+                    .sender
+                    .send(
+                        Request::new(
+                            (id + 1000).into(),
+                            "textDocument/hover".into(),
+                            query.clone(),
+                        )
+                        .into(),
+                    )
+                    .unwrap();
+                fence_sent = true;
             }
         }
     };
@@ -90,7 +115,7 @@ fn existing_project_editor_cost() {
             .into(),
         )
         .unwrap();
-    let (documents, failures) = barrier(2);
+    let (documents, failures) = barrier(2, 1);
     let open_ms = started.elapsed().as_secs_f64() * 1000.0;
     let mut queries = Vec::new();
     let mut completion_bytes = 0;
@@ -108,7 +133,7 @@ fn existing_project_editor_cost() {
     client.sender.send(Notification::new("textDocument/didChange".into(), json!({
         "textDocument":{"uri":uri,"version":2},"contentChanges":[{"text":format!("{source}\n")}]
     })).into()).unwrap();
-    let (_, edited_failures) = barrier(60);
+    let (_, edited_failures) = barrier(60, 2);
     let edit_ms = started.elapsed().as_secs_f64() * 1000.0;
     request(&client, 61, "shutdown", Value::Null);
     client

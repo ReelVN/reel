@@ -18,7 +18,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     path::{Path, PathBuf},
     str::FromStr,
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 mod module_paths;
@@ -258,7 +258,8 @@ pub(crate) struct Snapshot {
     pub entry: String,
     pub project: Arc<EditorProjectAnalysis>,
     pub sources: Arc<BTreeMap<String, Source>>,
-    pub features: Arc<BTreeMap<String, SourceFeatures>>,
+    features: Arc<BTreeMap<String, OnceLock<SourceFeatures>>>,
+    source_analysis: Option<SourceAnalysis>,
     dependencies: Arc<BTreeSet<String>>,
 }
 impl Snapshot {
@@ -269,6 +270,18 @@ impl Snapshot {
     }
     pub fn source(&self) -> &Source {
         &self.sources[&self.entry]
+    }
+    /// Build host-owned facts once per module, shared by every entry view.
+    pub fn source_features(&self, path: &str) -> Option<&SourceFeatures> {
+        let analyze = self.source_analysis?;
+        Some(self.features.get(path)?.get_or_init(|| {
+            let module = self
+                .project
+                .modules()
+                .find(|module| module.canonical_path() == path)
+                .expect("feature slots belong to analyzed modules");
+            analyze(module)
+        }))
     }
 }
 struct Document {
@@ -627,10 +640,10 @@ impl Workspace {
         let project =
             editor::analyze_project(&inputs, &options, &mut HostResolver { host: &self.host })
                 .map_err(|error| error.to_string())?;
-        let features = self.source_analysis.map_or_else(BTreeMap::new, |analyze| {
+        let features = self.source_analysis.map_or_else(BTreeMap::new, |_| {
             project
                 .modules()
-                .map(|module| (module.canonical_path().to_owned(), analyze(module)))
+                .map(|module| (module.canonical_path().to_owned(), OnceLock::new()))
                 .collect()
         });
         let snapshot = Arc::new(Snapshot {
@@ -638,6 +651,7 @@ impl Workspace {
             project: Arc::new(project),
             sources: Arc::new(sources),
             features: Arc::new(features),
+            source_analysis: self.source_analysis,
             dependencies: Arc::new(dependencies),
         });
         self.analyses += 1;
@@ -815,8 +829,7 @@ impl Workspace {
                     .map(|diagnostic| &diagnostic.diagnostic)
                     .chain(
                         snapshot
-                            .features
-                            .get(module)
+                            .source_features(module)
                             .into_iter()
                             .flat_map(|features| &features.diagnostics),
                     )
@@ -963,6 +976,69 @@ fn module_file(module: &str, roots: &[ModuleRoot]) -> Option<PathBuf> {
 #[cfg(test)]
 mod import_tests {
     use super::*;
+
+    #[test]
+    fn host_features_are_lazy_shared_and_diagnostics_complete_the_graph() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        fn analyze(module: editor::EditorModule<'_>) -> SourceFeatures {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            SourceFeatures {
+                diagnostics: vec![aside_compiler::Diagnostic {
+                    code: aside_compiler::DiagnosticCode::InvalidCall,
+                    severity: aside_compiler::Severity::Error,
+                    range: aside_compiler::TextRange::empty(0.into()),
+                    message: format!("host check: {}", module.canonical_path()),
+                    related: Vec::new(),
+                    fix: None,
+                }],
+                ..Default::default()
+            }
+        }
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().join("src");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("main.aside"), "fn main(){}").unwrap();
+        for name in ["helper", "other"] {
+            std::fs::write(root.join(format!("{name}.aside")), "pub fn read()->int{1}").unwrap();
+        }
+        let main = file_uri(&root.join("main.aside")).unwrap();
+        let helper = file_uri(&root.join("helper.aside")).unwrap();
+        let source = "use game::helper::read; use game::other as other; fn main(){read();}";
+        let mut workspace = Workspace::new(ServerOptions {
+            source_analysis: Some(analyze),
+            ..crate::tests::project_options()
+        });
+        workspace.open(main.clone(), 1, source.into()).unwrap();
+        workspace.snapshot(&main).unwrap();
+        assert_eq!(CALLS.load(Ordering::SeqCst), 0);
+        let at = LineIndex::new(source)
+            .position(source, source.rfind("read();").unwrap(), Encoding::Utf16)
+            .unwrap();
+        workspace.hover(&main, at, Encoding::Utf16).unwrap();
+        workspace.hover(&main, at, Encoding::Utf16).unwrap();
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+        workspace
+            .open(helper.clone(), 1, "pub fn read()->int{1}".into())
+            .unwrap();
+        workspace.diagnostics(&helper, Encoding::Utf16).unwrap();
+        assert_eq!(CALLS.load(Ordering::SeqCst), 3);
+        let diagnostics = workspace.diagnostics(&main, Encoding::Utf16).unwrap();
+        assert_eq!(
+            CALLS.load(Ordering::SeqCst),
+            3,
+            "entry views share host results"
+        );
+        assert_eq!(diagnostics.len(), 3);
+        for document in diagnostics {
+            assert_eq!(document.diagnostics.len(), 1);
+            assert!(
+                document.diagnostics[0]
+                    .message
+                    .starts_with("host check: game::")
+            );
+        }
+    }
 
     #[test]
     fn imported_open_buffers_share_analysis_and_keep_overlay_versions() {
