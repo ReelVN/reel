@@ -492,7 +492,7 @@ RenderRootOptions.default_font 是正式默认字体输入，注册其字体族�
 
 ### 已接受帧的几何查询
 
-`stage.geometry(node, relative_to: null, owner: null)` 请求下一稳定投影的已接受帧几何。返回只读 `{width,height,bounds:{x,y,width,height},transform:{a,b,c,d,tx,ty},text_end}`；width/height 是节点本身的布局矩形，bounds 是其四角在参考空间中的轴对齐包围矩形，不含子树墨迹、不裁剪。仿射顺序为 inverse(reference.window_transform) * target.window_transform；参考可为同舞台的兄弟浮层或祖先，null 使用逻辑舞台画布。局部原点与 on_pointer 坐标一致，padding 不额外扣除。旋转、镜像、相机和滚动参与同一变换。参考变换不可逆拒绝 `GeometryUnavailable`。
+`stage.geometry(node, relative_to: null, owner: null)` 请求下一稳定投影的已接受帧几何。返回 `GeometryRequest`，等待后取得只读 `Geometry {width,height,bounds,transform,text_end}`；bounds、transform、text_end 的类型分别为 `Bounds`、`Transform`、`Point | null`，均由实际 Rust 字段声明生成编辑器元数据。width/height 是节点本身的布局矩形，bounds 的 x/y/width/height 是其四角在参考空间中的轴对齐包围矩形，不含子树墨迹、不裁剪。transform 的 a/b/c/d/tx/ty 表示仿射变换，顺序为 inverse(reference.window_transform) * target.window_transform；参考可为同舞台的兄弟浮层或祖先，null 使用逻辑舞台画布。局部原点与 on_pointer 坐标一致，padding 不额外扣除。旋转、镜像、相机和滚动参与同一变换。参考变换不可逆拒绝 `GeometryUnavailable`。
 
 文本节点的 text_end 为完整正文末尾插入光标下端的 `{x,y}`，与 bounds 使用同一参考空间，包含换行、对齐、富文本和 ruby 的实际排版及节点内边距；逐字显示进度不改变该位置。空正文及其他节点返回 null。宿主按请求读取该帧已有的文字布局，将坐标保存在同一几何回执中。
 

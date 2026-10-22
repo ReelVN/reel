@@ -187,7 +187,7 @@ impl SessionVm {
         self.virtual_target_cancel(s)?;
         let result = self
             .results
-            .create_presentation(&mut self.vm, self.root_owner, host)?;
+            .create_presentation(&mut self.vm, self.root_owner, host, None)?;
         let target = self.vm.heap_mut().alloc_array(&[
             key,
             Value::int(align),

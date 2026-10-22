@@ -1,5 +1,6 @@
 //! Geometry requests are attachments on the single presentation-result queue.
 use super::*;
+pub(super) mod types;
 
 aside_host::native_documentation! {
     pub(in crate::aside) fn documentation {
@@ -77,48 +78,31 @@ pub(super) fn retired(heap: &Heap, result: Value) -> Result<bool, HeapError> {
     }
     Ok(false)
 }
-fn record<const N: usize>(
+fn value(
     heap: &mut Heap,
-    fields: [(&'static str, f64); N],
+    host_types: &crate::aside::source::HostTypes,
+    keys: &mut observable::SchemaKeys,
+    geometry: NodeGeometry,
 ) -> Result<Value, AdapterError> {
-    observable::record(
-        heap,
-        &fields.map(|(name, value)| (name, Value::float(value))),
-        &[],
-    )
-}
-fn value(heap: &mut Heap, geometry: NodeGeometry) -> Result<Value, AdapterError> {
-    let [x, y, width, height] = geometry.bounds;
-    let bounds = record(
-        heap,
-        [("x", x), ("y", y), ("width", width), ("height", height)],
-    )?;
-    let [a, b, c, d, tx, ty] = geometry.transform;
-    let transform = record(
-        heap,
-        [
-            ("a", a),
-            ("b", b),
-            ("c", c),
-            ("d", d),
-            ("tx", tx),
-            ("ty", ty),
-        ],
-    )?;
+    use types::{Bounds, Geometry, Point, Transform, record};
+    let bounds = record::<Bounds, _>(heap, host_types, keys, geometry.bounds.map(Value::float))?;
+    let transform =
+        record::<Transform, _>(heap, host_types, keys, geometry.transform.map(Value::float))?;
     let text_end = match geometry.text_end {
-        Some([x, y]) => record(heap, [("x", x), ("y", y)])?,
+        Some(point) => record::<Point, _>(heap, host_types, keys, point.map(Value::float))?,
         None => Value::NULL,
     };
-    observable::record(
+    record::<Geometry, _>(
         heap,
-        &[
-            ("width", Value::float(geometry.width)),
-            ("height", Value::float(geometry.height)),
-            ("bounds", bounds),
-            ("transform", transform),
-            ("text_end", text_end),
+        host_types,
+        keys,
+        [
+            Value::float(geometry.width),
+            Value::float(geometry.height),
+            bounds,
+            transform,
+            text_end,
         ],
-        &[],
     )
 }
 
@@ -144,9 +128,10 @@ impl SessionVm {
         if owner.tag() != ValueTag::Null {
             crate::aside::scopes::validate_owner(self.vm.heap(), &self.stage, owner)?;
         }
-        let result = self
-            .results
-            .create_presentation(&mut self.vm, self.root_owner, owner)?;
+        let ty = self.vm.heap().host_type("reel::types::GeometryRequest")?;
+        let result =
+            self.results
+                .create_presentation(&mut self.vm, self.root_owner, owner, Some(ty))?;
         let query = self.vm.heap_mut().alloc_array(&[target, relative])?;
         self.vm
             .heap_mut()
@@ -245,7 +230,7 @@ impl SessionVm {
         if replies.is_empty() || identity != self.stage.scene.identity() {
             return Ok(());
         }
-        for root in self.results.presentation_roots() {
+        for root in self.results.presentations.iter().copied() {
             let heap = self.vm.heap_mut();
             let result = heap.root_value(root)?;
             if state(heap, result)? != State::Pending
@@ -266,7 +251,12 @@ impl SessionVm {
             let reply = &replies[index];
             match reply.geometry {
                 Some(geometry) => {
-                    let value = value(heap, geometry)?;
+                    let value = value(
+                        heap,
+                        &self.stage.types,
+                        &mut self.results.geometry_keys,
+                        geometry,
+                    )?;
                     heap.set_field(barrier, 1, value)?;
                 }
                 None => {
