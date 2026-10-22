@@ -56,6 +56,52 @@ fn button(vm: &SessionVm, label: &str) -> NodeId {
 }
 
 #[test]
+fn unhandled_popup_dismissal_allocates_no_callback_state() {
+    for encoded in [false, true] {
+        let (mut session, mut vm) =
+            models::prepared("fn opening() {stage.replace(stack {popup();});}", encoded);
+        pump(&mut vm, &mut session);
+        let node = vm
+            .stage()
+            .nodes()
+            .find(|n| matches!(n.kind, NodeKind::Popup(_)))
+            .unwrap()
+            .id;
+        collect(&mut vm);
+        let before = vm.vm.heap().stats();
+        let tasks = vm.tasks.len();
+        for _ in 0..4096 {
+            assert!(
+                !vm.dismiss_popup(
+                    &mut session,
+                    &NodePopupDismiss {
+                        node,
+                        reason: PopupDismiss::Outside
+                    }
+                )
+                .unwrap()
+            );
+        }
+        let after = vm.vm.heap().stats();
+        assert_eq!(vm.tasks.len(), tasks);
+        assert_eq!(
+            (
+                after.live_objects,
+                after.payload_bytes,
+                after.chunk_allocations,
+                after.roots
+            ),
+            (
+                before.live_objects,
+                before.payload_bytes,
+                before.chunk_allocations,
+                before.roots
+            )
+        );
+    }
+}
+
+#[test]
 fn popup_scope_overlays_base_modals_and_restores_its_parent_and_callback() {
     let code = r#"fn opening() {
         let result = text("result");

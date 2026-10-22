@@ -30,6 +30,8 @@ const PRELUDE: &[&str] = &[
     "button",
     "input",
     "text_input",
+    "text_area",
+    "popup",
     "delay",
     "binding",
     "image",
@@ -68,6 +70,8 @@ fn prelude_symbol(name: &str) -> ExternalSymbol {
             name,
             "text"
                 | "text_input"
+                | "text_area"
+                | "popup"
                 | "image"
                 | "video"
                 | "particles"

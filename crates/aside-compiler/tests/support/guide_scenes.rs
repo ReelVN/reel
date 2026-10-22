@@ -115,6 +115,7 @@ pub fn snippets(doc: &str) -> Vec<(usize, String)> {
 pub fn enclosing(scene: &str) -> &[&str] {
     match scene {
         "segmented dialogue in story" => &["mio"],
+        "anchored popup" => &["trigger", "preferences"],
         "accelerating scalar curve" | "chained entrance" => &["portrait"],
         "opening module" => &["show_cg"],
         "value match expressions" => &["mode"],
