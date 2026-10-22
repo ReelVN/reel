@@ -116,6 +116,16 @@ impl Popup {
         }
     }
 
+    /// Classify an outside primary press using this context's accepted geometry.
+    /// A composing layer can reuse the same predicate and emit its own typed action.
+    pub fn outside_dismissal(ctx: &EventCtx<'_>, event: &PointerEvent) -> Option<PopupDismiss> {
+        (ctx.input_configuration_is_current()
+            && matches!(event, PointerEvent::Down(event)
+                if event.button.is_none_or(|button| button == PointerButton::Primary)
+                && !ctx.border_box().contains(ctx.local_position(event.state.position))))
+        .then_some(PopupDismiss::Outside)
+    }
+
     /// Nonmodal popups retain normal input routing to the underlying scene.
     pub fn with_modal(mut self, modal: bool) -> Self {
         self.modal = modal;
@@ -130,16 +140,8 @@ impl Layer for Popup {
         _: &mut PropertiesMut<'_>,
         event: &PointerEvent,
     ) {
-        if ctx.input_configuration_is_current()
-            && let PointerEvent::Down(event) = event
-            && event
-                .button
-                .is_none_or(|button| button == PointerButton::Primary)
-            && !ctx
-                .border_box()
-                .contains(ctx.local_position(event.state.position))
-        {
-            ctx.submit_action::<PopupDismiss>(PopupDismiss::Outside);
+        if let Some(reason) = Self::outside_dismissal(ctx, event) {
+            ctx.submit_action::<PopupDismiss>(reason);
         }
     }
 }
@@ -512,6 +514,94 @@ mod tests {
         root.handle_text_event(back(ActionPhase::Released));
         root.handle_text_event(TextEvent::key_up(Key::Named(NamedKey::Escape)));
         assert_eq!(actions.borrow().len(), 2, "focus loss clears both channels");
+    }
+
+    #[test]
+    fn moving_layers_retains_editor_focus_and_uses_the_accepted_painter_order() {
+        use crate::{
+            core::Ime,
+            widgets::{TextInput, TextInputEvent, TextSelection},
+        };
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let seen = events.clone();
+        let mut root = RenderRoot::new(
+            Content(Rc::new(Cell::new(0))).prepare(),
+            move |signal| {
+                if let RenderRootSignal::Action(action, _) = signal
+                    && let Some(event) = action.downcast_ref::<TextInputEvent>()
+                {
+                    seen.borrow_mut().push(event.clone());
+                }
+            },
+            RenderRootOptions {
+                default_properties: Arc::new(DefaultProperties::new()),
+                use_system_fonts: false,
+                size_policy: WindowSizePolicy::User,
+                size: crate::dpi::PhysicalSize::new(200, 150),
+                scale_factor: 1.,
+                default_font: Some(crate::peniko::Blob::new(Arc::new(
+                    include_bytes!("../../../reel-player/tests/fixtures/font-weight/400.ttf")
+                        .to_vec(),
+                ))),
+            },
+        );
+        let editor = TextInput::new("AA")
+            .with_style(crate::reel_text::StyleProperty::FontFamily(
+                crate::reel_text::FontFamily::from("Reel Weight Fixture").into_owned(),
+            ))
+            .with_selection(
+                TextSelection {
+                    anchor: 1,
+                    focus: 2,
+                },
+                1,
+            )
+            .prepare();
+        let editor_id = editor.id();
+        let first = Popup::new(editor).with_modal(false).prepare();
+        let first_id = first.id();
+        root.add_layer(first, Point::new(40., 40.));
+        let clicks = Rc::new(Cell::new(0));
+        let second = Popup::new(Content(clicks.clone()).prepare())
+            .with_modal(false)
+            .prepare();
+        root.add_layer(second, Point::new(40., 40.));
+        accept(&mut root);
+        assert!(root.focus_on(Some(editor_id)));
+        root.edit_widget(editor_id, |mut editor| {
+            TextInput::set_selection(
+                &mut editor.downcast::<TextInput>(),
+                TextSelection {
+                    anchor: 1,
+                    focus: 2,
+                },
+                2,
+            );
+        });
+        root.handle_text_event(TextEvent::Ime(Ime::Preedit("AAA".into(), Some((3, 3)))));
+        root.move_layer(first_id, 2);
+        assert_eq!(root.focused_widget(), Some(editor_id));
+        assert!(
+            root.get_widget(editor_id).is_some(),
+            "the editor is moved, not rebuilt"
+        );
+        root.handle_text_event(TextEvent::Ime(Ime::Commit("B".into())));
+        assert!(events.borrow().iter().any(|event|matches!(event,
+            TextInputEvent::Changed{previous,value,..} if previous.as_ref()=="AA" && value.as_ref()=="AB"
+        )),"IME commit keeps the original selection after layer movement: {:?}", events.borrow());
+        root.handle_pointer_event(down(45., 45.));
+        assert_eq!(
+            clicks.get(),
+            1,
+            "old accepted geometry retains the former top layer"
+        );
+        accept(&mut root);
+        root.handle_pointer_event(down(45., 45.));
+        assert_eq!(
+            clicks.get(),
+            1,
+            "new accepted order puts the retained editor above it"
+        );
     }
 
     #[test]

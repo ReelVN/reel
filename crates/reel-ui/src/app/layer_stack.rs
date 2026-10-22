@@ -14,7 +14,7 @@ use crate::core::{
 use crate::imaging::Painter;
 use crate::layout::{LenReq, Length, SizeDef};
 
-/// A widget representing the top-level stack of visible layers owned by [`RenderRoot`](crate::app::RenderRoot).
+/// A stack of ordinary widget layers, usable at the window root or inside content.
 ///
 /// This stack must always have at least one child, representing the "base layer",
 /// e.g. most of the stuff drawn in the app.
@@ -29,11 +29,11 @@ use crate::layout::{LenReq, Length, SizeDef};
 ///
 /// [`Dimensions`]: crate::properties::Dimensions
 /// [`Dimensions::MAX`]: crate::properties::Dimensions::MAX
-pub(crate) struct LayerStack {
+pub struct LayerStack {
     layers: Vec<LayerEntry>,
 }
 
-/// A persistent entry in the top-level layer stack.
+/// A persistent entry in a layer stack.
 ///
 /// This is widget ownership state, not a derived visual/render layer.
 struct LayerEntry {
@@ -46,7 +46,7 @@ struct LayerEntry {
 // --- MARK: IMPL LAYER_STACK
 impl LayerStack {
     /// Creates a stack with the provided base layer.
-    pub(crate) fn new(root: NewWidget<impl Widget + ?Sized>) -> Self {
+    pub fn new(root: NewWidget<impl Widget + ?Sized>) -> Self {
         let layer = LayerEntry {
             root: root.erased().to_pod(),
             position: Point::ZERO,
@@ -57,7 +57,7 @@ impl LayerStack {
     }
 
     /// Returns the number of layers, including the base layer.
-    pub(crate) fn layer_count(&self) -> usize {
+    pub fn layer_count(&self) -> usize {
         self.layers.len()
     }
 
@@ -66,7 +66,7 @@ impl LayerStack {
     /// # Panics
     ///
     /// Panics if `idx` is out of bounds.
-    pub(crate) fn layer_root_id(&self, idx: usize) -> WidgetId {
+    pub fn layer_root_id(&self, idx: usize) -> WidgetId {
         self.layers[idx].root.id()
     }
 }
@@ -78,7 +78,7 @@ impl LayerStack {
     /// The given `pos` must be in this `LayerStack`'s content-box coordinate space.
     /// If this `LayerStack` is used as the root widget with no borders, padding, or transforms,
     /// then that coordinate space will exactly match the window's coordinate space.
-    pub(crate) fn add_layer(
+    pub fn add_layer(
         this: &mut WidgetMut<'_, Self>,
         root: NewWidget<impl Widget + ?Sized>,
         position: Point,
@@ -93,11 +93,8 @@ impl LayerStack {
 
     /// Returns a mutable reference to the root widget of the layer at `idx`.
     ///
-    /// # Panics
-    ///
-    /// Panics if `idx` is out of bounds.
-    #[expect(dead_code, reason = "Might be useful later")]
-    pub(crate) fn layer_root_mut<'t>(
+    /// Returns `None` when `idx` is out of bounds or its widget is unavailable.
+    pub fn layer_root_mut<'t>(
         this: &'t mut WidgetMut<'_, Self>,
         idx: usize,
     ) -> Option<WidgetMut<'t, dyn Widget>> {
@@ -113,7 +110,7 @@ impl LayerStack {
     ///
     /// Panics in debug mode if the intended layer is the base layer or
     /// is not found.
-    pub(crate) fn remove_layer(this: &mut WidgetMut<'_, Self>, root_id: WidgetId) {
+    pub fn remove_layer(this: &mut WidgetMut<'_, Self>, root_id: WidgetId) {
         match this
             .widget
             .layers
@@ -129,6 +126,34 @@ impl LayerStack {
         }
     }
 
+    /// Moves an overlay to `index`, preserving its widget identity and state.
+    /// An unchanged order leaves layout and paint invalidation unchanged.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug mode if the root is absent, either index refers to the
+    /// base layer, or `index` is outside this stack.
+    pub fn move_layer(this: &mut WidgetMut<'_, Self>, root_id: WidgetId, index: usize) {
+        let Some(current) = this
+            .widget
+            .layers
+            .iter()
+            .position(|layer| layer.root.id() == root_id)
+        else {
+            debug_panic!("layer with root widget {root_id:?} not found");
+            return;
+        };
+        if current == 0 || index == 0 || index >= this.widget.layers.len() {
+            debug_panic!("Cannot move base layer or use an invalid layer index");
+            return;
+        }
+        if current != index {
+            let layer = this.widget.layers.remove(current);
+            this.widget.layers.insert(index, layer);
+            this.ctx.children_changed();
+        }
+    }
+
     /// Repositions the layer with the given widget as root.
     ///
     /// The given `new_origin` must be in this `LayerStack`'s content-box coordinate space.
@@ -141,11 +166,7 @@ impl LayerStack {
     ///
     /// Panics in debug mode if the intended layer is the base layer or
     /// is not found.
-    pub(crate) fn reposition_layer(
-        this: &mut WidgetMut<'_, Self>,
-        root_id: WidgetId,
-        new_origin: Point,
-    ) {
+    pub fn reposition_layer(this: &mut WidgetMut<'_, Self>, root_id: WidgetId, new_origin: Point) {
         match this
             .widget
             .layers

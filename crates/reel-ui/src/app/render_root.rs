@@ -877,6 +877,17 @@ impl RenderRoot {
         self.run_rewrite_passes();
     }
 
+    /// Move a mounted overlay within painter order while retaining its widgets,
+    /// focus and editing state. The base layer occupies index zero and cannot move.
+    /// Accepted frames retain their original ordering until replaced.
+    pub fn move_layer(&mut self, root_id: WidgetId, index: usize) {
+        mutate_widget(self, self.root_id(), |mut stack| {
+            let mut stack = stack.downcast::<LayerStack>();
+            LayerStack::move_layer(&mut stack, root_id, index);
+        });
+        self.run_rewrite_passes();
+    }
+
     /// Returns the current size of the window.
     pub fn size(&self) -> PhysicalSize<u32> {
         self.global_state.size
