@@ -176,10 +176,13 @@ impl Workspace {
         let (document, range) = match self.module_target(uri, path)? {
             ModuleTarget::Native(declaration) => {
                 let definition = declaration?.definition.as_ref()?;
-                (
-                    self.host.documents.get(definition.uri.as_str())?.clone(),
-                    definition.range,
-                )
+                let document = self.host.documents.get(definition.uri.as_str())?;
+                return Some(Location {
+                    uri: document.uri.clone(),
+                    range: document
+                        .lines
+                        .range(&document.text, definition.range, encoding),
+                });
             }
             ModuleTarget::Source(uri) => {
                 return Some(Location {
@@ -202,7 +205,7 @@ impl Workspace {
     /// for a directory view. Index text is never registered as a runtime module.
     pub(crate) fn native_document(&self, uri: &Uri) -> Option<HostDocument> {
         if let Some(document) = self.host.documents.get(uri.as_str()) {
-            return Some(document.clone());
+            return Some(document.document.clone());
         }
         let (origin, module) = index_context(uri)?;
         let prefix: Vec<_> = module.split("::").collect();

@@ -18,13 +18,17 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     path::{Path, PathBuf},
     str::FromStr,
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 mod module_paths;
 pub(crate) use module_paths::import_path_at;
 
 pub(crate) type ReferenceKey = (String, String, Option<String>);
+// Bound retained disk inputs across project-root and import-graph changes.
+// Active semantic snapshots retain their own shared sources independently.
+const MAX_CACHED_DISK_SOURCES: usize = 1024;
+const MAX_CACHED_DISK_BYTES: usize = 32 * 1024 * 1024;
 pub(crate) fn reference_key(reference: &SymbolReference) -> ReferenceKey {
     (
         reference.module.clone(),
@@ -43,7 +47,19 @@ pub(crate) struct HostIndex {
     pub calls: BTreeMap<String, ExternalSymbol>,
     pub awaits: BTreeMap<String, TypeHint>,
     pub declarations: BTreeMap<ReferenceKey, Vec<HostDeclaration>>,
-    pub documents: BTreeMap<String, HostDocument>,
+    pub documents: BTreeMap<String, IndexedHostDocument>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct IndexedHostDocument {
+    pub document: HostDocument,
+    pub lines: LineIndex,
+}
+impl std::ops::Deref for IndexedHostDocument {
+    type Target = HostDocument;
+    fn deref(&self) -> &Self::Target {
+        &self.document
+    }
 }
 impl From<HostContext> for HostIndex {
     fn from(mut host: HostContext) -> Self {
@@ -146,7 +162,13 @@ impl From<HostContext> for HostIndex {
             documents: host
                 .documents
                 .into_iter()
-                .map(|document| (document.uri.as_str().to_owned(), document))
+                .map(|document| {
+                    let lines = LineIndex::new(&document.text);
+                    (
+                        document.uri.as_str().to_owned(),
+                        IndexedHostDocument { document, lines },
+                    )
+                })
                 .collect(),
         }
     }
@@ -231,12 +253,14 @@ impl Source {
         })
     }
 }
+#[derive(Clone)]
 pub(crate) struct Snapshot {
     pub entry: String,
-    pub project: EditorProjectAnalysis,
-    pub sources: BTreeMap<String, Source>,
-    pub features: BTreeMap<String, SourceFeatures>,
-    dependencies: BTreeSet<String>,
+    pub project: Arc<EditorProjectAnalysis>,
+    pub sources: Arc<BTreeMap<String, Source>>,
+    features: Arc<BTreeMap<String, OnceLock<SourceFeatures>>>,
+    source_analysis: Option<SourceAnalysis>,
+    dependencies: Arc<BTreeSet<String>>,
 }
 impl Snapshot {
     pub fn module(&self) -> Option<editor::EditorModule<'_>> {
@@ -247,14 +271,59 @@ impl Snapshot {
     pub fn source(&self) -> &Source {
         &self.sources[&self.entry]
     }
+    /// Build host-owned facts once per module, shared by every entry view.
+    pub fn source_features(&self, path: &str) -> Option<&SourceFeatures> {
+        let analyze = self.source_analysis?;
+        Some(self.features.get(path)?.get_or_init(|| {
+            let module = self
+                .project
+                .modules()
+                .find(|module| module.canonical_path() == path)
+                .expect("feature slots belong to analyzed modules");
+            analyze(module)
+        }))
+    }
 }
 struct Document {
     source: Source,
     snapshot: Option<Arc<Snapshot>>,
+    analysis_size: usize,
+}
+
+pub(crate) struct DiagnosticWarmup {
+    projects: VecDeque<Arc<Snapshot>>,
+    last_module: Option<String>,
+}
+impl DiagnosticWarmup {
+    /// Initialize at most one module, yielding to the transport between calls.
+    /// Return true after every current module's host features are ready.
+    pub fn step(&mut self) -> bool {
+        use std::ops::Bound;
+        while let Some(snapshot) = self.projects.front() {
+            let start = self
+                .last_module
+                .as_deref()
+                .map_or(Bound::Unbounded, Bound::Excluded);
+            let next = snapshot
+                .features
+                .range::<str, _>((start, Bound::Unbounded))
+                .find(|(_, features)| features.get().is_none())
+                .map(|(path, _)| path.clone());
+            if let Some(path) = next {
+                snapshot.source_features(&path);
+                self.last_module = Some(path);
+                return false;
+            }
+            self.projects.pop_front();
+            self.last_module = None;
+        }
+        true
+    }
 }
 
 /// Owns open text buffers. Every query for an unchanged dependency graph reuses
 /// the same lossless trees and semantic snapshot; no game session is started.
+/// Recent disk parses retain at most 1,024 inputs and 32 MiB of source text.
 pub(crate) struct Workspace {
     pub host: Arc<HostIndex>,
     source_root: Option<SourceRootQuery>,
@@ -262,6 +331,8 @@ pub(crate) struct Workspace {
     source_analysis: Option<SourceAnalysis>,
     documents: BTreeMap<String, Document>,
     disk_sources: BTreeMap<String, Source>,
+    disk_order: VecDeque<String>,
+    disk_bytes: usize,
     pub analyses: usize,
     pub disk_reads: usize,
 }
@@ -274,21 +345,81 @@ impl Workspace {
             source_analysis: options.source_analysis,
             documents: BTreeMap::new(),
             disk_sources: BTreeMap::new(),
+            disk_order: VecDeque::new(),
+            disk_bytes: 0,
             analyses: 0,
             disk_reads: 0,
         }
     }
     pub fn open(&mut self, uri: Uri, version: i32, text: String) -> Result<(), String> {
-        let source = Source::new(uri.clone(), text.into(), Some(version))?;
-        self.invalidate(&uri);
+        let key = source_key(&uri);
+        let analysis_size = self
+            .documents
+            .get(&key)
+            .map_or(0, |document| document.analysis_size);
+        let cached = self
+            .documents
+            .get(&key)
+            .map(|document| &document.source)
+            .or_else(|| self.disk_sources.get(&key));
+        let unchanged = cached.is_some_and(|source| source.text.as_ref() == text);
+        let source = if let Some(cached) = cached.filter(|_| unchanged) {
+            Source {
+                uri: uri.clone(),
+                version: Some(version),
+                ..cached.clone()
+            }
+        } else {
+            Source::new(uri.clone(), text.into(), Some(version))?
+        };
+        if unchanged {
+            self.refresh_sources(&key, &source);
+        } else {
+            self.invalidate(&uri);
+        }
         self.documents.insert(
             source_key(&uri),
             Document {
                 source,
                 snapshot: None,
+                analysis_size,
             },
         );
         Ok(())
+    }
+
+    // Opening an unchanged imported file changes its protocol URI and version,
+    // while retaining compiler identities and the shared semantic project.
+    fn refresh_sources(&mut self, key: &str, source: &Source) {
+        let mut refreshed = BTreeMap::new();
+        for document in self.documents.values_mut() {
+            let Some(snapshot) = &document.snapshot else {
+                continue;
+            };
+            if !snapshot
+                .sources
+                .values()
+                .any(|source| source_key(&source.uri) == key)
+            {
+                continue;
+            }
+            let sources = refreshed
+                .entry(Arc::as_ptr(&snapshot.sources) as usize)
+                .or_insert_with(|| {
+                    let mut sources = snapshot.sources.as_ref().clone();
+                    for cached in sources.values_mut() {
+                        if source_key(&cached.uri) == key {
+                            *cached = source.clone();
+                        }
+                    }
+                    Arc::new(sources)
+                })
+                .clone();
+            document.snapshot = Some(Arc::new(Snapshot {
+                sources,
+                ..snapshot.as_ref().clone()
+            }));
+        }
     }
     pub fn change(
         &mut self,
@@ -327,12 +458,14 @@ impl Workspace {
             }
         }
         let source = Source::new(uri.clone(), text.into(), Some(version))?;
+        let analysis_size = document.analysis_size;
         self.invalidate(uri);
         self.documents.insert(
             key,
             Document {
                 source,
                 snapshot: None,
+                analysis_size,
             },
         );
         Ok(true)
@@ -342,13 +475,44 @@ impl Workspace {
         self.invalidate(uri);
         if self.documents.is_empty() {
             self.disk_sources.clear();
+            self.disk_order.clear();
+            self.disk_bytes = 0;
         }
     }
     pub fn open_uris(&self) -> Vec<Uri> {
-        self.documents
-            .values()
+        // Rebuild the widest known root first so dependent entry views reuse it.
+        let mut documents: Vec<_> = self.documents.values().collect();
+        documents.sort_by_key(|document| std::cmp::Reverse(document.analysis_size));
+        documents
+            .into_iter()
             .map(|document| document.source.uri.clone())
             .collect()
+    }
+
+    /// Capture one cursor per current shared graph for cooperative publication.
+    pub fn diagnostic_warmup(&mut self) -> DiagnosticWarmup {
+        let mut projects = VecDeque::new();
+        let mut seen = BTreeSet::new();
+        if self.source_analysis.is_some() {
+            for uri in self.open_uris() {
+                if self.host.documents.contains_key(uri.as_str())
+                    || module_paths::index_origin(&uri).is_some()
+                {
+                    continue;
+                }
+                // Failed snapshots retain the normal diagnostic failure path;
+                // they have no host features to warm before publication.
+                if let Ok(snapshot) = self.snapshot(&uri)
+                    && seen.insert(Arc::as_ptr(&snapshot.features) as usize)
+                {
+                    projects.push_back(snapshot);
+                }
+            }
+        }
+        DiagnosticWarmup {
+            projects,
+            last_module: None,
+        }
     }
     /// Format the cached lossless tree without constructing a semantic snapshot.
     /// Syntax errors already have diagnostics and leave the editor buffer unchanged.
@@ -380,7 +544,10 @@ impl Workspace {
     }
     pub fn invalidate(&mut self, uri: &Uri) {
         let uri = source_key(uri);
-        self.disk_sources.remove(&uri);
+        if let Some(source) = self.disk_sources.remove(&uri) {
+            self.disk_bytes -= source.text.len();
+            self.disk_order.retain(|key| key != &uri);
+        }
         for (key, document) in &mut self.documents {
             if key == &uri
                 || document
@@ -392,6 +559,31 @@ impl Workspace {
             }
         }
     }
+    fn cached_disk_source(&mut self, key: &str) -> Option<Source> {
+        let source = self.disk_sources.get(key)?.clone();
+        self.disk_order.retain(|candidate| candidate != key);
+        self.disk_order.push_back(key.to_owned());
+        Some(source)
+    }
+    fn cache_disk_source(&mut self, key: String, source: Source) {
+        self.disk_bytes += source.text.len();
+        self.disk_order.push_back(key.clone());
+        self.disk_sources.insert(key, source);
+        // Recent disk parses survive temporary project-root/import changes.
+        while self.disk_sources.len() > MAX_CACHED_DISK_SOURCES
+            || self.disk_bytes > MAX_CACHED_DISK_BYTES
+        {
+            let key = self
+                .disk_order
+                .pop_front()
+                .expect("cached sources have an access order");
+            let source = self
+                .disk_sources
+                .remove(&key)
+                .expect("access order names a cached source");
+            self.disk_bytes -= source.text.len();
+        }
+    }
     pub fn snapshot(&mut self, uri: &Uri) -> Result<Arc<Snapshot>, String> {
         let key = source_key(uri);
         let document = self.documents.get(&key).ok_or("document is not open")?;
@@ -400,6 +592,24 @@ impl Workspace {
         }
         let (roots, mut dependencies) = self.effective_roots(uri);
         let entry = module_path(uri, &roots).unwrap_or_else(|| uri.as_str().to_owned());
+        if let Some(shared) = self
+            .documents
+            .values()
+            .filter_map(|document| document.snapshot.as_ref())
+            .find(|snapshot| {
+                snapshot.sources.get(&entry).is_some_and(|source| {
+                    source_key(&source.uri) == key && source.text == document.source.text
+                })
+            })
+        {
+            let snapshot = Arc::new(Snapshot {
+                entry,
+                ..shared.as_ref().clone()
+            });
+            let document = self.documents.get_mut(&key).unwrap();
+            document.snapshot = Some(snapshot.clone());
+            return Ok(snapshot);
+        }
         let mut sources = BTreeMap::from([(entry.clone(), document.source.clone())]);
         dependencies.insert(key.clone());
         let mut queue = VecDeque::from([entry.clone()]);
@@ -442,14 +652,14 @@ impl Workspace {
                     dependencies.insert(candidate_key.clone());
                     let source = if let Some(open) = self.documents.get(&candidate_key) {
                         Some(open.source.clone())
-                    } else if let Some(cached) = self.disk_sources.get(&candidate_key) {
-                        Some(cached.clone())
+                    } else if let Some(cached) = self.cached_disk_source(&candidate_key) {
+                        Some(cached)
                     } else {
                         match std::fs::read_to_string(&path) {
                             Ok(text) => {
                                 let source = Source::new(candidate_uri, text.into(), None)?;
                                 self.disk_reads += 1;
-                                self.disk_sources.insert(candidate_key, source.clone());
+                                self.cache_disk_source(candidate_key, source.clone());
                                 Some(source)
                             }
                             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -491,21 +701,50 @@ impl Workspace {
         let project =
             editor::analyze_project(&inputs, &options, &mut HostResolver { host: &self.host })
                 .map_err(|error| error.to_string())?;
-        let features = self.source_analysis.map_or_else(BTreeMap::new, |analyze| {
+        let features = self.source_analysis.map_or_else(BTreeMap::new, |_| {
             project
                 .modules()
-                .map(|module| (module.canonical_path().to_owned(), analyze(module)))
+                .map(|module| (module.canonical_path().to_owned(), OnceLock::new()))
                 .collect()
         });
         let snapshot = Arc::new(Snapshot {
             entry,
-            project,
-            sources,
-            features,
-            dependencies,
+            project: Arc::new(project),
+            sources: Arc::new(sources),
+            features: Arc::new(features),
+            source_analysis: self.source_analysis,
+            dependencies: Arc::new(dependencies),
         });
         self.analyses += 1;
-        self.documents.get_mut(&key).unwrap().snapshot = Some(snapshot.clone());
+        // Each open buffer gets an entry view into this one project. Rebuilding
+        // a changed dependency therefore performs one analysis for its callers.
+        let views: Vec<_> = snapshot
+            .sources
+            .iter()
+            .filter_map(|(module, source)| {
+                let key = source_key(&source.uri);
+                let document = self.documents.get(&key)?;
+                let (roots, _) = self.effective_roots(&document.source.uri);
+                let entry = module_path(&document.source.uri, &roots)
+                    .unwrap_or_else(|| document.source.uri.as_str().to_owned());
+                (module == &entry).then_some((key, entry))
+            })
+            .collect();
+        for (key, module) in views {
+            if let Some(document) = self.documents.get_mut(&key) {
+                if module == snapshot.entry {
+                    document.analysis_size = snapshot.sources.len();
+                }
+                document.snapshot = Some(if module == snapshot.entry {
+                    snapshot.clone()
+                } else {
+                    Arc::new(Snapshot {
+                        entry: module.clone(),
+                        ..snapshot.as_ref().clone()
+                    })
+                });
+            }
+        }
         Ok(snapshot)
     }
     fn effective_roots(&self, uri: &Uri) -> (Vec<ModuleRoot>, BTreeSet<String>) {
@@ -651,8 +890,7 @@ impl Workspace {
                     .map(|diagnostic| &diagnostic.diagnostic)
                     .chain(
                         snapshot
-                            .features
-                            .get(module)
+                            .source_features(module)
                             .into_iter()
                             .flat_map(|features| &features.diagnostics),
                     )
@@ -799,6 +1037,142 @@ fn module_file(module: &str, roots: &[ModuleRoot]) -> Option<PathBuf> {
 #[cfg(test)]
 mod import_tests {
     use super::*;
+
+    #[test]
+    fn host_features_are_lazy_shared_and_diagnostics_complete_the_graph() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        fn analyze(module: editor::EditorModule<'_>) -> SourceFeatures {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            SourceFeatures {
+                diagnostics: vec![aside_compiler::Diagnostic {
+                    code: aside_compiler::DiagnosticCode::InvalidCall,
+                    severity: aside_compiler::Severity::Error,
+                    range: aside_compiler::TextRange::empty(0.into()),
+                    message: format!("host check: {}", module.canonical_path()),
+                    related: Vec::new(),
+                    fix: None,
+                }],
+                ..Default::default()
+            }
+        }
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().join("src");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("main.aside"), "fn main(){}").unwrap();
+        for name in ["helper", "other"] {
+            std::fs::write(root.join(format!("{name}.aside")), "pub fn read()->int{1}").unwrap();
+        }
+        let main = file_uri(&root.join("main.aside")).unwrap();
+        let helper = file_uri(&root.join("helper.aside")).unwrap();
+        let source = "use game::helper::read; use game::other as other; fn main(){read();}";
+        let mut workspace = Workspace::new(ServerOptions {
+            source_analysis: Some(analyze),
+            ..crate::tests::project_options()
+        });
+        workspace.open(main.clone(), 1, source.into()).unwrap();
+        workspace.snapshot(&main).unwrap();
+        assert_eq!(CALLS.load(Ordering::SeqCst), 0);
+        let at = LineIndex::new(source)
+            .position(source, source.rfind("read();").unwrap(), Encoding::Utf16)
+            .unwrap();
+        workspace.hover(&main, at, Encoding::Utf16).unwrap();
+        workspace.hover(&main, at, Encoding::Utf16).unwrap();
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+        workspace
+            .open(helper.clone(), 1, "pub fn read()->int{1}".into())
+            .unwrap();
+        let mut warmup = workspace.diagnostic_warmup();
+        assert_eq!(CALLS.load(Ordering::SeqCst), 1);
+        assert!(!warmup.step());
+        assert_eq!(CALLS.load(Ordering::SeqCst), 2);
+        assert!(!warmup.step());
+        assert_eq!(CALLS.load(Ordering::SeqCst), 3);
+        assert!(warmup.step());
+        workspace.diagnostics(&helper, Encoding::Utf16).unwrap();
+        assert_eq!(CALLS.load(Ordering::SeqCst), 3);
+        let diagnostics = workspace.diagnostics(&main, Encoding::Utf16).unwrap();
+        assert_eq!(
+            CALLS.load(Ordering::SeqCst),
+            3,
+            "entry views share host results"
+        );
+        assert_eq!(diagnostics.len(), 3);
+        for document in diagnostics {
+            assert_eq!(document.diagnostics.len(), 1);
+            assert!(
+                document.diagnostics[0]
+                    .message
+                    .starts_with("host check: game::")
+            );
+        }
+    }
+
+    #[test]
+    fn imported_open_buffers_share_analysis_and_keep_overlay_versions() {
+        let project = tempfile::tempdir().unwrap();
+        let source = project.path().join("src");
+        std::fs::create_dir(&source).unwrap();
+        let helper_text = "pub fn read() -> int { 1 }";
+        std::fs::write(source.join("main.aside"), "fn main(){}").unwrap();
+        std::fs::write(source.join("helper.aside"), helper_text).unwrap();
+        let main = file_uri(&source.join("main.aside")).unwrap();
+        let helper = file_uri(&source.join("helper.aside")).unwrap();
+        let mut workspace = Workspace::new(crate::tests::project_options());
+        workspace
+            .open(
+                main.clone(),
+                1,
+                "use helper as plain; use game::helper::read; fn main(){let value:int=read();}"
+                    .into(),
+            )
+            .unwrap();
+        let first = workspace.snapshot(&main).unwrap();
+        assert_eq!(workspace.analyses, 1);
+        workspace
+            .open(helper.clone(), 7, helper_text.into())
+            .unwrap();
+        let leaf = workspace.snapshot(&helper).unwrap();
+        let caller = workspace.snapshot(&main).unwrap();
+        assert!(Arc::ptr_eq(&first.project, &leaf.project));
+        assert!(Arc::ptr_eq(&caller.project, &leaf.project));
+        assert_eq!(leaf.entry, "game::helper");
+        assert_eq!(leaf.source().version, Some(7));
+        assert_eq!(caller.sources["game::helper"].version, Some(7));
+        assert_eq!(caller.sources["helper"].version, Some(7));
+        assert_eq!(caller.sources["helper"].uri, helper);
+        assert_eq!(workspace.analyses, 1);
+        workspace
+            .change(
+                &helper,
+                8,
+                vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: "pub fn read() -> string { \"changed\" }".into(),
+                }],
+                Encoding::Utf16,
+            )
+            .unwrap();
+        for uri in workspace.open_uris() {
+            workspace.diagnostics(&uri, Encoding::Utf16).unwrap();
+        }
+        let caller = workspace.snapshot(&main).unwrap();
+        let leaf = workspace.snapshot(&helper).unwrap();
+        assert_eq!(
+            workspace.analyses, 2,
+            "one rebuilt graph serves both buffers"
+        );
+        assert!(Arc::ptr_eq(&caller.project, &leaf.project));
+        assert_eq!(caller.sources["game::helper"].version, Some(8));
+        assert!(
+            workspace
+                .diagnostics(&main, Encoding::Utf16)
+                .unwrap()
+                .iter()
+                .any(|params| params.uri == main && !params.diagnostics.is_empty())
+        );
+    }
 
     #[test]
     fn import_modules_include_disk_and_unsaved_children_without_analysis() {

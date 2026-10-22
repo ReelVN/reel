@@ -1,12 +1,17 @@
 //! LSP transport and lifecycle; parsing and query semantics stay in the compiler.
-use crate::{ServerOptions, position::Encoding, workspace::Workspace};
+use crate::{
+    ServerOptions,
+    position::Encoding,
+    workspace::{DiagnosticWarmup, Workspace},
+};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use lsp_types::*;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     error::Error,
+    time::{Duration, Instant},
 };
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
@@ -22,6 +27,11 @@ pub fn run_stdio(options: ServerOptions) -> Result<()> {
 
 /// Serve one initialized LSP connection. In-memory connections use this same
 /// request path for lifecycle and editor-contract tests.
+/// Diagnostics coalesce for 150 ms after edits; interactive requests run without
+/// that delay. Cancellation retires queued requests within a 64-message batch;
+/// compiler analysis that has already started runs to completion.
+/// Host source features warm one module at a time between incoming messages,
+/// before publishing the complete diagnostic batch for the current documents.
 pub fn run_connection(connection: Connection, options: ServerOptions) -> Result<()> {
     let (id, params) = connection.initialize_start()?;
     let params: InitializeParams = serde_json::from_value(params)?;
@@ -55,11 +65,64 @@ pub fn run_connection(connection: Connection, options: ServerOptions) -> Result<
     let mut workspace = Workspace::new(options);
     let mut shutdown = false;
     let mut published = BTreeSet::new();
-    for message in &connection.receiver {
+    let mut pending = VecDeque::new();
+    let mut diagnostics_due: Option<Instant> = None;
+    let mut diagnostic_warmup: Option<DiagnosticWarmup> = None;
+    loop {
+        if pending.is_empty() {
+            if let Some(warmup) = diagnostic_warmup.as_mut() {
+                match connection.receiver.try_recv() {
+                    Ok(message) => pending.push_back(message),
+                    Err(error) if error.is_disconnected() => break,
+                    Err(_) => {
+                        if warmup.step() {
+                            diagnostic_warmup = None;
+                            publish(&connection, &mut workspace, encoding, &mut published)?;
+                        }
+                        continue;
+                    }
+                }
+            } else {
+                let message = if let Some(deadline) = diagnostics_due {
+                    match connection
+                        .receiver
+                        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    {
+                        Ok(message) => message,
+                        Err(error) if error.is_timeout() => {
+                            diagnostic_warmup = Some(workspace.diagnostic_warmup());
+                            diagnostics_due = None;
+                            continue;
+                        }
+                        Err(_) => break,
+                    }
+                } else {
+                    match connection.receiver.recv() {
+                        Ok(message) => message,
+                        Err(_) => break,
+                    }
+                };
+                pending.push_back(message);
+            }
+        }
+        // Read ahead only within this bounded batch. Notifications keep wire
+        // order, while cancellations can retire work that has not started.
+        while pending.len() < 64 {
+            let Ok(message) = connection.receiver.try_recv() else {
+                break;
+            };
+            pending.push_back(message);
+        }
+        cancel_queued(&connection, &mut pending)?;
+        let Some(message) = pending.pop_front() else {
+            continue;
+        };
         match message {
             Message::Request(request) => {
                 if request.method == "shutdown" {
                     shutdown = true;
+                    diagnostics_due = None;
+                    diagnostic_warmup = None;
                     connection
                         .sender
                         .send(Response::new_ok(request.id, Value::Null).into())?;
@@ -70,6 +133,12 @@ pub fn run_connection(connection: Connection, options: ServerOptions) -> Result<
                         request.id,
                         ErrorCode::InvalidRequest as i32,
                         "server has shut down".into(),
+                    )
+                } else if superseded(&request, &pending) {
+                    Response::new_err(
+                        request.id,
+                        ErrorCode::ContentModified as i32,
+                        "document changed while the request was queued".into(),
                     )
                 } else {
                     let id = request.id.clone();
@@ -148,9 +217,14 @@ pub fn run_connection(connection: Connection, options: ServerOptions) -> Result<
                     })
                 })();
                 match outcome {
-                    Ok(true) => publish(&connection, &mut workspace, encoding, &mut published)?,
+                    Ok(true) => {
+                        diagnostic_warmup = None;
+                        diagnostics_due = Some(Instant::now() + Duration::from_millis(150));
+                    }
                     Ok(false) => {}
                     Err(error) => {
+                        diagnostic_warmup = None;
+                        diagnostics_due = None;
                         let message = error.to_string();
                         connection.sender.send(
                             Notification::new(
@@ -179,6 +253,68 @@ pub fn run_connection(connection: Connection, options: ServerOptions) -> Result<
         }
     }
     Ok(())
+}
+
+fn cancel_queued(connection: &Connection, pending: &mut VecDeque<Message>) -> Result<()> {
+    let cancelled: Vec<lsp_server::RequestId> = pending
+        .iter()
+        .filter_map(|message| {
+            let Message::Notification(notification) = message else {
+                return None;
+            };
+            if notification.method != "$/cancelRequest" {
+                return None;
+            }
+            serde_json::from_value(notification.params.get("id")?.clone()).ok()
+        })
+        .collect();
+    if cancelled.is_empty() {
+        return Ok(());
+    }
+    let mut retained = VecDeque::with_capacity(pending.len());
+    while let Some(message) = pending.pop_front() {
+        match message {
+            Message::Request(request)
+                if cancelled.contains(&request.id) && request.method != "shutdown" =>
+            {
+                connection.sender.send(
+                    Response::new_err(
+                        request.id,
+                        ErrorCode::RequestCanceled as i32,
+                        "request cancelled before execution".into(),
+                    )
+                    .into(),
+                )?;
+            }
+            Message::Notification(notification) if notification.method == "$/cancelRequest" => {}
+            message => retained.push_back(message),
+        }
+    }
+    *pending = retained;
+    Ok(())
+}
+
+fn superseded(request: &Request, pending: &VecDeque<Message>) -> bool {
+    let Some(uri) = request
+        .params
+        .get("textDocument")
+        .and_then(|document| document.get("uri"))
+    else {
+        return false;
+    };
+    pending.iter().any(|message| {
+        let Message::Notification(notification) = message else {
+            return false;
+        };
+        matches!(
+            notification.method.as_str(),
+            "textDocument/didChange" | "textDocument/didClose"
+        ) && notification
+            .params
+            .get("textDocument")
+            .and_then(|document| document.get("uri"))
+            == Some(uri)
+    })
 }
 fn publish(
     connection: &Connection,
