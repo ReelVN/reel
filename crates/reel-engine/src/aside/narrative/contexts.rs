@@ -3,6 +3,39 @@ use super::*;
 use crate::reading::ReadingId;
 use aside_vm::executor::FrameId;
 
+/// The selector and the parked parent's held-skip policy switch together.
+/// This borrowed, fixed-size proposal uses the existing atomic property writer.
+struct EntryWrites {
+    selector: Option<(PropertyId, Value)>,
+    skipping: Option<Value>,
+}
+impl aside_vm::PropertyWrites for EntryWrites {
+    fn len(&self) -> usize {
+        usize::from(self.selector.is_some()) + if self.skipping.is_some() { 3 } else { 0 }
+    }
+    fn get(&self, index: usize) -> Option<(PropertyId, Value)> {
+        if index == 0
+            && let Some(selector) = self.selector
+        {
+            return Some(selector);
+        }
+        let index = index - usize::from(self.selector.is_some());
+        let field = [
+            ReadingField::Skipping,
+            ReadingField::SkipUnread,
+            ReadingField::SkipAfterChoices,
+        ]
+        .get(index)?;
+        Some((
+            PropertyId {
+                host: self.skipping?,
+                field: *field as u32,
+            },
+            Value::bool(false),
+        ))
+    }
+}
+
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(in crate::aside) struct Contexts {
     #[serde(skip)]
@@ -101,9 +134,6 @@ impl SessionVm {
                 "reading requires a delivered story wait",
             ));
         }
-        // The main task is executing this entry, so any ordinary await recorded
-        // by the scheduler has already resumed. Narrative waits are checked above.
-        self.main_wait = None;
         self.sync_narrative(session)?;
         results::reserve_queue(
             self.vm.heap(),
@@ -111,16 +141,32 @@ impl SessionVm {
             &mut self.narrative_contexts.charge,
         )?;
         let parent = session.reading_id;
-        let id = session.push_reading()?;
+        let id = session.prepare_reading()?;
+        let writes = EntryWrites {
+            selector: self
+                .narrative_contexts
+                .selection
+                .map(|(host, _)| (PropertyId { host, field: 0 }, Value::int(id.0 as i64))),
+            skipping: self
+                .narrative
+                .as_ref()
+                .filter(|_| session.reading().skipping())
+                .map(|model| model.reading),
+        };
+        if aside_vm::PropertyWrites::len(&writes) != 0 {
+            self.vm.heap_mut().publish_host_properties(&writes)?;
+        }
+        // All fallible preparation precedes moving the original data and model.
+        session.push_reading(id);
         self.narrative_contexts.frames.push_back(Context {
             id,
             parent,
             scope: ticket.frame,
             model: self.narrative.take(),
         });
+        // Ordinary awaits have already resumed when main executes this entry.
+        self.main_wait = None;
         self.skip_input = None;
-        self.publish_reading_selection(session)?;
-        self.sync_all_reading_controls(session)?;
         Ok(())
     }
 

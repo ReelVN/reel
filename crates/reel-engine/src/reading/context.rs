@@ -12,7 +12,7 @@ pub(crate) struct ParkedReading {
 }
 
 impl Session {
-    pub(crate) fn push_reading(&mut self) -> Result<ReadingId, SessionError> {
+    pub(crate) fn prepare_reading(&mut self) -> Result<ReadingId, SessionError> {
         self.ensure_running()?;
         if self.reading_data.completion.is_some()
             || matches!(
@@ -30,6 +30,12 @@ impl Session {
             .try_reserve(1)
             .map_err(|_| SessionError::AllocationFailed)?;
         let id = self.next_reading.ok_or(SessionError::IdentityExhausted)?;
+        Ok(ReadingId(id))
+    }
+
+    /// Commit an entry after host publication and both context stacks are prepared.
+    pub(crate) fn push_reading(&mut self, id: ReadingId) {
+        let ReadingId(id) = id;
         self.next_reading = id.checked_add(1).filter(|&id| id <= i64::MAX as u64);
         self.reading_data.control.set_skip(false, false, false);
         let mut data = ReadingData::default();
@@ -40,7 +46,6 @@ impl Session {
             data: parent,
         });
         self.reading_id = ReadingId(id);
-        Ok(self.reading_id)
     }
 
     pub(crate) fn pop_reading(&mut self) {

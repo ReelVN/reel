@@ -424,22 +424,6 @@ impl SessionVm {
         ticket: HostTicket,
         reading: bool,
     ) -> Result<(), AdapterError> {
-        let entering = reading && ticket.input == NativeInput::Entry;
-        if entering {
-            self.begin_reading(session, ticket)?;
-        }
-        let result = self.dispatch_scope_body(session, ticket);
-        if result.is_err() && entering {
-            self.end_reading(session, ticket.frame)?;
-        }
-        result
-    }
-
-    fn dispatch_scope_body(
-        &mut self,
-        session: &mut Session,
-        ticket: HostTicket,
-    ) -> Result<(), AdapterError> {
         if ticket.input == NativeInput::Entry {
             if ticket.context.no_wait || ticket.context.init || ticket.context.derived {
                 return Err(VmError::Effect.into());
@@ -447,6 +431,13 @@ impl SessionVm {
             let args = self.vm.host_arguments(ticket)?;
             let body = args[0];
             let takes_scope = self.vm.callable_has_parameters(body)?;
+            // CallScript stores this one scope value in the native continuation.
+            // Validate its only configurable response limit before preparation.
+            if self.vm.limits().max_continuation_values == 0
+                || (takes_scope && self.vm.limits().max_arguments == 0)
+            {
+                return Err(VmError::Limit.into());
+            }
             let owner = if args[1].tag() == ValueTag::Null {
                 self.default_activity_owner(ticket.task)?
             } else {
@@ -518,6 +509,13 @@ impl SessionVm {
                 .vm
                 .heap_mut()
                 .add_root(self.root_owner, RootKind::Host, object)?;
+            if reading && let Err(error) = self.begin_reading(session, ticket) {
+                self.vm.heap_mut().release_root(root)?;
+                return Err(error);
+            }
+            // The ticket, callable and native slots remain the ones just checked.
+            // CallScript now writes only existing roots; it allocates no storage
+            // and cannot reject an author-controlled limit after Reading commits.
             let result = self.vm.respond(
                 ticket,
                 HostResponse::CallScript {

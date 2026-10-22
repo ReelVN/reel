@@ -373,6 +373,191 @@ fn reading_outer_finish_request_restores_with_nested_wait_and_original_result_id
 }
 
 #[test]
+fn reading_entry_publication_failure_preserves_foreground_and_parent_models() {
+    let code = r#"fn opening() {
+        game.reading();
+        reading(body:||{});
+        game.reading().set_skip(true,unread:true,after_choices:true);
+        reading(body:||{});
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        let mut entries = 0;
+        let ticket = loop {
+            match vm
+                .step(
+                    &mut session,
+                    SessionBudget::RetryMinimum(SliceBudget {
+                        instructions: 1,
+                        ..Default::default()
+                    }),
+                    || 0,
+                )
+                .unwrap()
+            {
+                SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
+                    let package = vm.vm.program().package();
+                    let symbol =
+                        &package.symbols[package.natives[ticket.native.index()].symbol.index()];
+                    if symbol == "reel::reading" && ticket.input == NativeInput::Entry {
+                        entries += 1;
+                        if entries == 2 {
+                            break ticket;
+                        }
+                    }
+                    vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(32))
+                        .unwrap();
+                }
+                SessionStep::Vm(RunOutcome::Fault(id)) => {
+                    panic!("before entry: {:?}", vm.vm.delivery_fault(id))
+                }
+                _ => {}
+            }
+        };
+        let reading = session.reading();
+        let id = session.reading_id;
+        let next = session.next_reading;
+        assert!(reading.skipping() && reading.skip_unread() && reading.skip_after_choices());
+        let usage = vm.vm.heap().budget_usage();
+        let charge = usage.reserve(usage.remaining_bytes()).unwrap();
+        assert!(vm.begin_reading(&mut session, ticket).is_err());
+        assert_eq!(session.reading(), reading);
+        assert_eq!(session.reading_id, id);
+        assert_eq!(session.next_reading, next);
+        assert!(session.parked_readings.is_empty());
+        assert!(vm.narrative_contexts.frames.is_empty());
+        assert!(vm.narrative.is_some());
+        assert!(vm.scopes.live.is_empty());
+        drop(charge);
+        // The same still-live entry succeeds once publication storage is available.
+        vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(32))
+            .unwrap();
+        models::drive(&mut vm, &mut session, true);
+        assert!(session.parked_readings.is_empty());
+        assert!(vm.narrative_contexts.frames.is_empty());
+    }
+}
+
+#[test]
+fn reading_scope_budget_failures_preserve_parent_for_cold_and_warm_admission() {
+    for encoded in [false, true] {
+        for warm in [false, true] {
+            let warmup = if warm { "reading(body:||{});" } else { "" };
+            let code = format!(
+                r#"fn opening(){{game.reading();{warmup}
+                game.reading().set_skip(true,unread:true,after_choices:true);
+                reading(body:||{{}});
+            }}"#
+            );
+            let (mut session, mut vm) = models::prepared(&code, encoded);
+            let mut entries = 0;
+            let ticket = loop {
+                let RunOutcome::HostCall(ticket) = next(&mut vm, &mut session) else {
+                    panic!("reading admission");
+                };
+                let package = vm.vm.program().package();
+                let symbol =
+                    &package.symbols[package.natives[ticket.native.index()].symbol.index()];
+                if symbol == "reel::reading" && ticket.input == NativeInput::Entry {
+                    entries += 1;
+                    if entries == if warm { 2 } else { 1 } {
+                        break ticket;
+                    }
+                }
+                vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(32))
+                    .unwrap();
+            };
+            let before = session.reading();
+            let next_id = session.next_reading;
+            let roots = vm.vm.heap().stats().roots;
+            let usage = vm.vm.heap().budget_usage();
+            let reservation = usage.reserve(usage.remaining_bytes()).unwrap();
+            assert!(
+                vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(32))
+                    .is_err()
+            );
+            assert_eq!(session.reading(), before);
+            assert_eq!(session.next_reading, next_id);
+            assert!(session.parked_readings.is_empty());
+            assert!(vm.narrative_contexts.frames.is_empty());
+            assert!(vm.scopes.live.is_empty());
+            assert!(vm.narrative.is_some());
+            assert_eq!(vm.vm.heap().stats().roots, roots);
+            drop(reservation);
+            collect(&mut vm);
+            vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(32))
+                .unwrap();
+            models::drive(&mut vm, &mut session, false);
+            assert!(session.parked_readings.is_empty());
+        }
+    }
+}
+
+#[test]
+fn reading_continuation_limit_rejects_before_moving_or_publishing_parent() {
+    let code = r#"fn opening() {
+        let parent=game.reading().set_skip(true,unread:true,after_choices:true);
+        reading(body:||throw_after_entry());
+    }
+    fn throw_after_entry() {throw "body entered";}
+    "#;
+    for encoded in [false, true] {
+        let mut session = session();
+        let mut story = source::compile_story(code, "reading_limit", 1, "opening").unwrap();
+        if encoded {
+            story.program = bc::verify(
+                bc::decode(
+                    &bc::encode(story.program.package(), bc::Limits::default()).unwrap(),
+                    bc::Limits::default(),
+                )
+                .unwrap(),
+                bc::Limits::default(),
+            )
+            .unwrap();
+        }
+        let initializer = story.initializer;
+        let entry = story.entry;
+        let mut vm = SessionVm::load_story(
+            &session,
+            story,
+            VmLimits {
+                max_continuation_values: 0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        vm.start(&session, initializer).unwrap();
+        models::drive(&mut vm, &mut session, false);
+        vm.start(&session, entry).unwrap();
+        let ticket = loop {
+            let RunOutcome::HostCall(ticket) = next(&mut vm, &mut session) else {
+                panic!("reading entry");
+            };
+            let package = vm.vm.program().package();
+            let symbol = &package.symbols[package.natives[ticket.native.index()].symbol.index()];
+            if symbol == "reel::reading" {
+                break ticket;
+            }
+            vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(32))
+                .unwrap();
+        };
+        let before = session.reading();
+        let roots = vm.vm.heap().stats().roots;
+        assert!(before.skipping() && before.skip_unread() && before.skip_after_choices());
+        assert!(matches!(
+            vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(32)),
+            Err(AdapterError::Vm(VmError::Limit))
+        ));
+        assert_eq!(session.reading(), before);
+        assert_eq!(vm.vm.heap().stats().roots, roots);
+        assert_eq!(session.next_reading, Some(1));
+        assert!(session.parked_readings.is_empty());
+        assert!(vm.narrative_contexts.frames.is_empty());
+        assert!(vm.scopes.live.is_empty());
+    }
+}
+
+#[test]
 #[ignore = "reproducible reading-page navigation, retained history and idle storage measurement"]
 fn reading_context_storage_cost() {
     let pages = std::env::var("REEL_READING_PAGES")
