@@ -749,3 +749,100 @@ fn input_transactions_keep_typed_chain_hover_navigation_completion_and_readonly_
     );
     server.stop();
 }
+
+#[test]
+fn standard_native_types_drive_hover_signature_and_generated_definition() {
+    let source = r#"use std::math::{sin,pow};
+use std::time as clock;
+fn main() {
+    let angle = sin(1);
+    let power = pow(2,3);
+    let epoch = clock.parts(0, timezone: "UTC");
+}"#;
+    let (mut server, _) = open(source);
+    let mut id = 2;
+    for (expression, name, expected, description) in [
+        (
+            "sin(1)",
+            "sin",
+            "fn sin(value: int | float) -> float",
+            "converting integer input to float64",
+        ),
+        (
+            "pow(2,3)",
+            "pow",
+            "fn pow(base: int | float, exponent: int | float) -> float",
+            "converting integers to float64",
+        ),
+        (
+            "parts(0",
+            "parts",
+            "fn parts(timestamp: int, timezone: string | null = null) -> table",
+            "mutable table with integer fields",
+        ),
+    ] {
+        let hover = server.request(id, "textDocument/hover", query(source, expression, false));
+        id += 1;
+        let markdown = hover["contents"]["value"].as_str().unwrap();
+        assert!(markdown.contains(expected), "{expression}: {markdown}");
+        assert!(markdown.contains(description), "{expression}: {markdown}");
+        let definition = server.request(
+            id,
+            "textDocument/definition",
+            query(source, expression, false),
+        );
+        id += 1;
+        let document = server.request(id, "aside/nativeDocument", json!({"uri":definition["uri"]}));
+        id += 1;
+        let text = document["text"].as_str().unwrap();
+        let line = text
+            .lines()
+            .nth(definition["range"]["start"]["line"].as_u64().unwrap() as usize)
+            .unwrap();
+        let start = definition["range"]["start"]["character"].as_u64().unwrap() as usize;
+        let end = definition["range"]["end"]["character"].as_u64().unwrap() as usize;
+        assert_eq!(
+            &line[start..end],
+            name,
+            "definition must target the actual function declaration"
+        );
+        assert!(line.contains(expected), "{line}");
+        assert!(text.contains(description), "{text}");
+    }
+    for (binding, expected) in [
+        ("angle =", "float"),
+        ("power =", "float"),
+        ("epoch =", "table"),
+    ] {
+        let hover = server.request(id, "textDocument/hover", query(source, binding, false));
+        id += 1;
+        let markdown = hover["contents"]["value"].as_str().unwrap();
+        assert!(
+            markdown.contains(expected) && !markdown.contains("any"),
+            "{binding}: {markdown}"
+        );
+    }
+    let signature = server.request(
+        id,
+        "textDocument/signatureHelp",
+        query(source, "pow(2,", true),
+    );
+    assert!(
+        signature["signatures"][0]["label"]
+            .as_str()
+            .unwrap()
+            .contains("base: int | float, exponent: int | float"),
+        "{signature}"
+    );
+    assert_eq!(signature["activeParameter"], 1);
+    let invalid = source.replace("sin(1)", "sin(\"wrong\")");
+    server.notify(
+        "textDocument/didChange",
+        json!({"textDocument":{"uri":URI,"version":2},"contentChanges":[{"text":invalid}]}),
+    );
+    assert!(
+        !server.diagnostics(URI, 2).as_array().unwrap().is_empty(),
+        "known invalid numeric input must be diagnosed"
+    );
+    server.stop();
+}

@@ -77,3 +77,80 @@ fn source_documentation_examples_execute_against_registered_signatures() {
         }
     }
 }
+
+#[test]
+fn generated_declarations_keep_validated_numbers_and_known_table_results_precise() {
+    use aside_compiler::semantic::TypeHint;
+    let api = aside_std::api();
+    let contracts = aside_std::contracts();
+    let mut math_functions = 0;
+    for declaration in &api.functions {
+        let symbol = aside_host::source::canonical(&declaration.symbol);
+        if symbol.starts_with("std::math::") && !symbol.starts_with("std::math::curve") {
+            math_functions += 1;
+            let source = declaration.symbol.signature.as_ref().unwrap();
+            assert_eq!(source.result, TypeHint::Float, "{symbol}");
+            let runtime = contracts
+                .iter()
+                .find(|contract| contract.symbol == symbol)
+                .unwrap();
+            assert_eq!(
+                source.parameters.len(),
+                runtime.parameters.len(),
+                "{symbol}"
+            );
+            for (author, abi) in source.parameters.iter().zip(&runtime.parameters) {
+                assert_eq!(
+                    author.ty,
+                    aside_host::source::number(),
+                    "{symbol}::{}",
+                    author.name
+                );
+                assert_eq!(
+                    abi.ty,
+                    bc::BuiltinType::Any,
+                    "Rust validates numeric inputs at the same runtime boundary"
+                );
+            }
+        }
+    }
+    assert_eq!(math_functions, 20);
+    assert_eq!(
+        api.native("std::time::parts")
+            .symbol
+            .signature
+            .as_ref()
+            .unwrap()
+            .result,
+        TypeHint::Table
+    );
+    assert_eq!(
+        api.native("std::random::pick")
+            .symbol
+            .signature
+            .as_ref()
+            .unwrap()
+            .result,
+        TypeHint::Any,
+        "a selected sequence element retains its arbitrary type and identity"
+    );
+    let documents = api.documents("std");
+    let generated = documents
+        .documents
+        .iter()
+        .map(|document| document.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for signature in [
+        "fn sin(value: int | float) -> float",
+        "fn atan2(y: int | float, x: int | float) -> float",
+        "fn hypot(x: int | float, y: int | float) -> float",
+        "fn pow(base: int | float, exponent: int | float) -> float",
+        "fn parts(timestamp: int, timezone: string | null = null) -> table",
+    ] {
+        assert!(
+            generated.contains(signature),
+            "missing {signature}: {generated}"
+        );
+    }
+}

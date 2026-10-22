@@ -14,7 +14,8 @@ fn main() {
     sqrt(4),hypot(3.0,4),pow(2,3),exp(0),ln(1),log2(8),log10(100),
     abs(-7),floor(3),ceil(3),round(3),radians(180),degrees(0)]
 }
-fn invalid() {pow("wrong",2)}
+fn untyped(value) {value}
+fn invalid() {pow(untyped("wrong"),2)}
 "#;
 
 fn drive(
@@ -52,6 +53,16 @@ fn math_accepts_int_and_float_at_native_boundary_with_float_results_and_source_e
         .unwrap()
         .into_module()
         .is_err()
+    );
+    assert!(
+        !aside_compiler::analyze_module(
+            "use std::math::pow; fn main(){pow(\"wrong\",2);}",
+            &Default::default(),
+            &mut resolver,
+        )
+        .unwrap()
+        .is_ok(),
+        "known invalid numeric arguments must fail during source analysis"
     );
     let module = aside_compiler::analyze_module(SOURCE, &Default::default(), &mut resolver)
         .unwrap()
@@ -154,7 +165,7 @@ fn math_accepts_int_and_float_at_native_boundary_with_float_results_and_source_e
         let span = fault.location.source.unwrap();
         assert_eq!(
             &SOURCE[span.start as usize..span.end as usize],
-            "pow(\"wrong\",2)"
+            "pow(untyped(\"wrong\"),2)"
         );
         vm.discard_delivery(id).unwrap();
     }
