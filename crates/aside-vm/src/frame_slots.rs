@@ -244,6 +244,24 @@ impl FrameSlots {
             *word &= !bit;
         }
     }
+    fn clear_initialized(&mut self, start: usize, len: usize) {
+        if len == 0 {
+            return;
+        }
+        let end = start + len - 1;
+        let first = start / 64;
+        let last = end / 64;
+        let from = u64::MAX << (start % 64);
+        let through = u64::MAX >> (63 - end % 64);
+        let words = &mut self.bitmap.as_mut().unwrap().data;
+        if first == last {
+            words[first] &= !(from & through);
+        } else {
+            words[first] &= !from;
+            words[first + 1..last].fill(0);
+            words[last] &= !through;
+        }
+    }
     fn put(&mut self, i: usize, value: Value, initialized: bool) {
         self.values.as_mut().unwrap().data[i] = value;
         self.set_initialized(i, initialized);
@@ -319,9 +337,7 @@ impl FrameSlots {
         let base = free_index.map_or(0, |i| self.free.as_ref().unwrap().data[i].base);
         // Whole null contents and clear initialization bits precede joint publication.
         self.values.as_mut().unwrap().data[base as usize..(base + len) as usize].fill(Value::NULL);
-        for i in base..base + len {
-            self.set_initialized(i as usize, false);
-        }
+        self.clear_initialized(base as usize, len as usize);
         let token = heap.register_null_range(owner, kind, len)?;
         self.mappings.as_mut().unwrap().data[index(token.key)] = Some(Window {
             key: token.key,
@@ -808,6 +824,127 @@ impl Drop for FrameSlots {
 mod tests {
     use super::*;
     use crate::{GcBudget, GcPhase, HeapLimits};
+
+    #[test]
+    fn recycled_windows_clear_only_their_initialization_bits_at_word_boundaries() {
+        for prefix in [0, 1, 17, 63, 64, 65] {
+            for length in [0, 1, 2, 63, 64, 65, 127, 128, 523] {
+                let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+                let mut slots = FrameSlots::new(
+                    &mut heap,
+                    FrameSlotsLimits {
+                        initial_capacity: 1024,
+                        max_capacity: 1024,
+                        max_window_len: 1024,
+                    },
+                )
+                .unwrap();
+                let left = slots
+                    .open(&mut heap, RootOwner(1), RootKind::TaskFrame, prefix)
+                    .unwrap();
+                let middle = slots
+                    .open(&mut heap, RootOwner(1), RootKind::TaskFrame, length)
+                    .unwrap();
+                let right = slots
+                    .open(&mut heap, RootOwner(1), RootKind::TaskFrame, 65)
+                    .unwrap();
+                for (range, len) in [(left, prefix), (middle, length), (right, 65)] {
+                    for index in 0..len {
+                        slots
+                            .write(&mut heap, RangePosition { range, index }, Value::int(42))
+                            .unwrap();
+                    }
+                }
+                slots.release(&mut heap, middle).unwrap();
+                let reused = slots
+                    .open(&mut heap, RootOwner(1), RootKind::TaskFrame, length)
+                    .unwrap();
+                for (range, len) in [(left, prefix), (right, 65)] {
+                    for index in 0..len {
+                        assert_eq!(
+                            slots.read(RangePosition { range, index }).unwrap().as_int(),
+                            Some(42)
+                        );
+                    }
+                }
+                for index in 0..length {
+                    assert!(matches!(
+                        slots.read(RangePosition {
+                            range: reused,
+                            index
+                        }),
+                        Err(HeapError::UninitializedSlot)
+                    ));
+                }
+                assert!(
+                    slots
+                        .roots()
+                        .resolve(reused)
+                        .unwrap()
+                        .iter()
+                        .all(|value| value.same_bits(Value::NULL))
+                );
+                slots.close(&mut heap).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "root-window admission cost for script and native call sizes"]
+    fn root_window_admission_cost() {
+        let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+        let mut slots = FrameSlots::new(
+            &mut heap,
+            FrameSlotsLimits {
+                initial_capacity: 8192,
+                max_capacity: 8192,
+                max_window_len: 4096,
+            },
+        )
+        .unwrap();
+        let prefix = slots
+            .open(&mut heap, RootOwner(1), RootKind::Arguments, 17)
+            .unwrap();
+        for length in [3, 64, 523, 4096] {
+            let started = std::time::Instant::now();
+            for _ in 0..10_000 {
+                let range = slots
+                    .open(
+                        &mut heap,
+                        RootOwner(1),
+                        RootKind::NativeContinuation,
+                        length,
+                    )
+                    .unwrap();
+                slots
+                    .write(
+                        &mut heap,
+                        RangePosition {
+                            range,
+                            index: length - 1,
+                        },
+                        Value::int(42),
+                    )
+                    .unwrap();
+                std::hint::black_box(
+                    slots
+                        .read(RangePosition {
+                            range,
+                            index: length - 1,
+                        })
+                        .unwrap(),
+                );
+                slots.release(&mut heap, range).unwrap();
+            }
+            println!(
+                "root_windows length={length} iterations=10000 elapsed_ns={} charged_bytes={}",
+                started.elapsed().as_nanos(),
+                slots.stats().charged_bytes
+            );
+        }
+        slots.release(&mut heap, prefix).unwrap();
+        slots.close(&mut heap).unwrap();
+    }
     #[test]
     fn task_admission_compacts_fragmented_free_windows_without_losing_roots() {
         let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
