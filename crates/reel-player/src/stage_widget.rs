@@ -1127,6 +1127,7 @@ impl SceneWidget {
             {
                 let editor = TextInput::with_mode(value.clone(), *multiline)
                     .with_selection(options.selection, options.selection_revision)
+                    .with_edit_filter(options.filter_edits)
                     .with_editing(options.pending_edit, options.replay.clone())
                     .with_read_only(options.read_only)
                     .with_selection_color(color(options.selection_color))
@@ -1340,6 +1341,7 @@ impl SceneWidget {
             if this.widget.node.props.color != view.node.props.color {
                 editor.insert_prop(ContentColor::new(color(view.node.props.color)));
             }
+            TextInput::set_edit_filter(&mut editor, options.filter_edits);
             TextInput::set_editing(&mut editor, options.pending_edit, options.replay.as_deref());
         }
         if let (Some(pod), NodeKind::Slider { range, value, .. }) =

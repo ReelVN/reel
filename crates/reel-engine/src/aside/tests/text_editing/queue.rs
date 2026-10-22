@@ -8,7 +8,7 @@ use reel_ui::{
     },
     dpi::PhysicalSize,
     properties::Dimensions,
-    widgets::TextInput,
+    widgets::{TextInput, TextSelection},
 };
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -30,6 +30,7 @@ impl Editor {
                 reel_ui::reel_text::FontFamily::from("Reel Weight Fixture").into_owned(),
             ))
             .with_selection(options.selection, options.selection_revision)
+            .with_edit_filter(options.filter_edits)
             .with_editing(options.pending_edit, options.replay.clone())
             .prepare()
             .with_props(Dimensions::MAX);
@@ -74,6 +75,7 @@ impl Editor {
             let mut input = widget.downcast::<TextInput>();
             TextInput::set_value(&mut input, value.clone());
             TextInput::set_selection(&mut input, options.selection, options.selection_revision);
+            TextInput::set_edit_filter(&mut input, options.filter_edits);
             TextInput::set_editing(&mut input, options.pending_edit, options.replay.as_deref());
         });
         self.ui.redraw();
@@ -886,5 +888,338 @@ fn external_value_write_then_native_noop_resets_once_without_a_prior_journal() {
             options.selection_revision, 1,
             "reset published exactly once"
         );
+    }
+}
+
+impl Editor {
+    fn settle(&mut self, vm: &mut SessionVm, session: &mut Session) {
+        for _ in 0..32 {
+            self.send(vm, session);
+            drive(vm, session);
+            self.sync(vm);
+            let NodeKind::TextInput { options, .. } = &vm.stage().node(self.node).unwrap().kind
+            else {
+                unreachable!()
+            };
+            if !options.pending_edit && self.events.borrow().is_empty() {
+                return;
+            }
+        }
+        panic!("filtered edit queue did not settle");
+    }
+}
+
+#[test]
+fn edit_filter_uses_real_typing_paste_and_ime_with_one_history_publication() {
+    let code = r#"use reel::types::TextEdit;
+    fn opening() {
+        let data=model({body:""});
+        let status=text("status");
+        let editor=text_input(value:bind(data.body), edit_filter:|e:TextEdit| {
+            status.y+=1;
+            if e.value != e.previous.slice_bytes(0..e.start)+e.text+e.previous.slice_bytes(e.end..e.previous.byte_len()) {throw "proposal";}
+            if e.text=="reject" {return null;}
+            if e.text=="xy" {return "XY";}
+            if e.text=="中" {return "語";}
+            return e.text;
+        },on_change:|e| {if data.body!=e.value {throw "publication";} status.x+=1;});
+        stage.replace(column{editor;status;
+            button("author",on_click:||{editor.value="author";});
+        });
+        narrator("wait");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        drive(&mut vm, &mut session);
+        let node = vm
+            .stage()
+            .nodes()
+            .find(|n| matches!(n.kind, NodeKind::TextInput { .. }))
+            .unwrap()
+            .id;
+        let mut editor = Editor::new(&vm, node);
+        editor.ui.focus_on(Some(editor.widget));
+        // A second character in the same presentation already uses Deferred.
+        editor
+            .ui
+            .handle_text_event(TextEvent::key_down(Key::Character("a".into())));
+        editor
+            .ui
+            .handle_text_event(TextEvent::key_down(Key::Character("b".into())));
+        assert!(matches!(
+            editor.events.borrow()[1],
+            TextInputEvent::Deferred { .. }
+        ));
+        editor.settle(&mut vm, &mut session);
+        assert_eq!(value(&vm, node), "ab");
+        editor
+            .ui
+            .handle_text_event(TextEvent::ClipboardPaste("xy".into()));
+        editor.settle(&mut vm, &mut session);
+        assert_eq!(value(&vm, node), "abXY");
+        let NodeKind::TextInput { options, .. } = &vm.stage().node(node).unwrap().kind else {
+            unreachable!()
+        };
+        assert_eq!(
+            options.selection,
+            TextSelection {
+                anchor: 4,
+                focus: 4
+            }
+        );
+        editor
+            .ui
+            .handle_text_event(TextEvent::ClipboardPaste("reject".into()));
+        editor.settle(&mut vm, &mut session);
+        assert_eq!(value(&vm, node), "abXY");
+        assert_eq!(text_x(&vm, "status"), 3.);
+        editor
+            .ui
+            .handle_text_event(TextEvent::Ime(reel_ui::core::Ime::Preedit(
+                "preedit".into(),
+                None,
+            )));
+        editor.send(&mut vm, &mut session);
+        assert_eq!(node_y(&vm, "status"), 4.);
+        editor
+            .ui
+            .handle_text_event(TextEvent::Ime(reel_ui::core::Ime::Commit("中".into())));
+        editor.settle(&mut vm, &mut session);
+        assert_eq!(value(&vm, node), "abXY語");
+        assert_eq!(text_x(&vm, "status"), 4.);
+        assert_eq!(node_y(&vm, "status"), 5.);
+        editor.ui.handle_text_event(command("z"));
+        editor.settle(&mut vm, &mut session);
+        assert_eq!(value(&vm, node), "abXY");
+        editor.ui.handle_text_event(command("y"));
+        editor.settle(&mut vm, &mut session);
+        assert_eq!(value(&vm, node), "abXY語");
+        assert_eq!(node_y(&vm, "status"), 5., "undo/redo bypass filtering");
+        vm.click(&mut session, button(&vm, "author")).unwrap();
+        drive(&mut vm, &mut session);
+        assert_eq!(value(&vm, node), "author");
+        assert_eq!(
+            node_y(&vm, "status"),
+            5.,
+            "script assignment bypasses filtering"
+        );
+        let NodeKind::TextInput { options, .. } = &vm.stage().node(node).unwrap().kind else {
+            unreachable!()
+        };
+        let revision = options.selection_revision;
+        assert!(
+            vm.text_input(
+                &mut session,
+                &NodeText {
+                    node,
+                    event: TextInputEvent::Changed {
+                        previous: "author".into(),
+                        value: "Qauthor".into(),
+                        edit: reel_ui::widgets::TextEdit {
+                            range: 0..0,
+                            before: TextSelection {
+                                anchor: 0,
+                                focus: 0
+                            },
+                            after: TextSelection {
+                                anchor: 1,
+                                focus: 0
+                            },
+                            kind: reel_ui::widgets::TextEditKind::Transaction,
+                            revision,
+                            replay: None,
+                        }
+                    }
+                }
+            )
+            .unwrap()
+        );
+        drive(&mut vm, &mut session);
+        let NodeKind::TextInput { options, .. } = &vm.stage().node(node).unwrap().kind else {
+            unreachable!()
+        };
+        assert_eq!(
+            options.selection,
+            TextSelection {
+                anchor: 1,
+                focus: 0
+            },
+            "unchanged replacement preserves the proposal selection direction"
+        );
+    }
+}
+
+#[test]
+fn edit_filter_pending_callback_restores_queue_and_retires_without_committing() {
+    let code = r#"fn opening(){
+        let status=text("status");
+        let editor=text_input(value:"old",edit_filter:|e:TextEdit|{
+            status.y+=1;
+            let mut i=0;while i<300 {i+=1;}
+            if e.text.byte_len()>32 {return e.text+"!";}
+            return e.text;
+        },on_change:||{status.x+=1;});
+        stage.replace(column{editor;status;});
+        narrator("wait");
+    }"#;
+    for encoded in [false, true] {
+        for cancel in [false, true] {
+            let (mut session, mut vm) = models::prepared(code, encoded);
+            drive(&mut vm, &mut session);
+            let node = vm
+                .stage()
+                .nodes()
+                .find(|n| matches!(n.kind, NodeKind::TextInput { .. }))
+                .unwrap()
+                .id;
+            let mut editor = Editor::new(&vm, node);
+            editor.ui.focus_on(Some(editor.widget));
+            editor
+                .ui
+                .handle_text_event(TextEvent::key_down(Key::Named(NamedKey::End)));
+            editor.send(&mut vm, &mut session);
+            editor
+                .ui
+                .handle_text_event(TextEvent::ClipboardPaste("B".repeat(256).into()));
+            editor
+                .ui
+                .handle_text_event(TextEvent::key_down(Key::Character("q".into())));
+            editor.send(&mut vm, &mut session);
+            for _ in 0..3000 {
+                match vm
+                    .step(
+                        &mut session,
+                        SessionBudget::RetryMinimum(SliceBudget {
+                            instructions: 7,
+                            ..Default::default()
+                        }),
+                        || 0,
+                    )
+                    .unwrap()
+                {
+                    SessionStep::Vm(RunOutcome::HostCall(t)) => {
+                        vm.dispatch(&mut session, t, "en", NativeBudget::RetryMinimum(64))
+                            .unwrap();
+                    }
+                    SessionStep::Vm(RunOutcome::Fault(id)) => panic!("{id:?}"),
+                    _ => {}
+                }
+                let status = vm
+                    .stage()
+                    .nodes()
+                    .find(|n| matches!(&n.kind, NodeKind::Text(text) if text.as_ref()=="status"))
+                    .unwrap()
+                    .id;
+                let status = vm.stage.value(vm.vm.heap(), status).unwrap();
+                let started = vm
+                    .vm
+                    .heap()
+                    .host_property(aside_vm::PropertyId {
+                        host: status,
+                        field: 2 + stage::NodeProperty::Y.index() as u32,
+                    })
+                    .unwrap();
+                if started.as_float() == Some(1.) || started.as_int() == Some(1) {
+                    break;
+                }
+            }
+            let target = vm.stage.value(vm.vm.heap(), node).unwrap();
+            let committed = vm
+                .vm
+                .heap()
+                .host_property(aside_vm::PropertyId {
+                    host: target,
+                    field: 0,
+                })
+                .unwrap();
+            assert_eq!(
+                text::read_string(vm.vm.heap(), committed, 1024).unwrap(),
+                "old",
+                "filter has not published midway"
+            );
+            (session, vm) = save_restore(&vm, &session);
+            if cancel {
+                let host = vm.stage.value(vm.vm.heap(), node).unwrap();
+                vm.stage.remove_node(vm.vm.heap_mut(), host).unwrap();
+                drive(&mut vm, &mut session);
+                assert!(vm.stage().node(node).is_none());
+                assert_eq!(
+                    text_x(&vm, "status"),
+                    0.,
+                    "retirement cancels before publication"
+                );
+                assert_eq!(vm.stage.text_history_entries(node), None);
+                assert!(vm.tasks.is_empty());
+            } else {
+                editor = Editor::new(&vm, node);
+                editor.settle(&mut vm, &mut session);
+                assert_eq!(value(&vm, node), format!("old{}!q", "B".repeat(256)));
+                assert_eq!(text_x(&vm, "status"), 2.);
+                assert_eq!(node_y(&vm, "status"), 2.);
+            }
+        }
+    }
+}
+
+#[test]
+fn edit_filter_fault_and_wait_rejection_preserve_value_and_history() {
+    for body in [
+        "throw \"filter failed\";",
+        "await delay(0.1);return e.text;",
+    ] {
+        let code = format!(
+            r#"fn opening(){{let editor=text_input(value:"old",edit_filter:|e:TextEdit|{{{body}}});stage.replace(editor);narrator("wait");}}"#
+        );
+        let (mut session, mut vm) = models::prepared(&code, false);
+        drive(&mut vm, &mut session);
+        let node = vm
+            .stage()
+            .nodes()
+            .find(|n| matches!(n.kind, NodeKind::TextInput { .. }))
+            .unwrap()
+            .id;
+        assert!(
+            vm.text_input(
+                &mut session,
+                &NodeText {
+                    node,
+                    event: TextInputEvent::replace_all("old", "new", 0)
+                }
+            )
+            .unwrap()
+        );
+        let mut faulted = false;
+        for _ in 0..3000 {
+            match vm
+                .step(
+                    &mut session,
+                    SessionBudget::RetryMinimum(SliceBudget {
+                        instructions: 7,
+                        ..Default::default()
+                    }),
+                    || 0,
+                )
+                .unwrap()
+            {
+                SessionStep::Vm(RunOutcome::HostCall(t)) => {
+                    vm.dispatch(&mut session, t, "en", NativeBudget::RetryMinimum(64))
+                        .unwrap();
+                }
+                SessionStep::Vm(RunOutcome::Fault(_)) => {
+                    faulted = true;
+                    vm.discard_delivery(&mut session).unwrap();
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(faulted);
+        drive(&mut vm, &mut session);
+        assert_eq!(value(&vm, node), "old");
+        assert_eq!(vm.stage.text_history_entries(node), Some(0));
+        let NodeKind::TextInput { options, .. } = &vm.stage().node(node).unwrap().kind else {
+            unreachable!()
+        };
+        assert!(!options.pending_edit);
     }
 }
