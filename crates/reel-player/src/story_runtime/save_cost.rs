@@ -74,6 +74,11 @@ impl MeasuredStorage {
     }
 }
 impl SaveStorage for MeasuredStorage {
+    fn copy(&self, source: &str, destination: &str) -> Result<(), StorageError> {
+        self.measure("copy_slot_publish", || {
+            self.directory.copy(source, destination)
+        })
+    }
     fn write(
         &self,
         slot: SaveSlot,
