@@ -400,13 +400,13 @@ impl AsideSessionUi {
             frame.stamp.presentation_request,
             |query| {
                 self.ui
-                    .read_geometry(bridge, &source, frame.stage_widget, query)
+                    .read_geometry(bridge, &source, root, frame.stage_widget, query)
             },
         )?);
         (frame.transitions, frame.frame_transitions) = self.transitions.record(
             &self.vm,
             bridge,
-            frame.stage_widget,
+            root,
             &source,
             frame.stamp.presentation_request,
         )?;
@@ -470,8 +470,8 @@ impl AsideSessionUi {
         if self.transitions.revision_changed(&self.vm) {
             self.ui.invalidate_projection();
         }
-        if let Some(stage) = SessionUi::stage_widget(bridge, root) {
-            self.transitions.gate(&self.vm, bridge, stage)?;
+        if SessionUi::stage_widget(bridge, root).is_some() {
+            self.transitions.gate(&self.vm, bridge, root)?;
         }
         if self.vm.activities_pending() {
             return Ok(());
@@ -495,8 +495,8 @@ impl AsideSessionUi {
             }
         }
         self.sync_input(bridge, root)?;
-        if let Some(stage) = SessionUi::stage_widget(bridge, root) {
-            self.transitions.gate(&self.vm, bridge, stage)?;
+        if SessionUi::stage_widget(bridge, root).is_some() {
+            self.transitions.gate(&self.vm, bridge, root)?;
         }
         Ok(())
     }
@@ -558,6 +558,9 @@ impl AsideSessionUi {
                         }
                         NodeEvent::Click(click) => {
                             self.vm.click(self.ui.session_mut(), click.node)?;
+                        }
+                        NodeEvent::PopupDismiss(event) => {
+                            self.vm.dismiss_popup(self.ui.session_mut(), event)?;
                         }
                         NodeEvent::Change(change) => {
                             changed |= self.vm.change(self.ui.session_mut(), change)?;

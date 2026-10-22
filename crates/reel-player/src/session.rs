@@ -3,7 +3,11 @@
 //! This layer never executes Aside. The optional native diagnostic below drives
 //! explicit host requests and must not be described as a source story runner.
 mod geometry;
+mod node_events;
 mod playback;
+#[cfg(test)]
+mod popup_tests;
+mod popups;
 use crate::stage_widget::{StageView, StageWidget};
 pub use geometry::RecordedProjection;
 use playback::{dialogue_complete, dialogue_revision};
@@ -26,6 +30,7 @@ use reel_engine::{ChoiceInput, CompletionOutcome, DialogueLineInput, Epoch, Sess
 use reel_engine::{InputEvent, InputSequence};
 use reel_ui::{
     accesskit::{Node, Role},
+    app::LayerStack,
     bridge::PresentationBridge,
     core::*,
     imaging::Painter,
@@ -217,7 +222,9 @@ pub struct SessionWidget {
     scrolling: ScrollState,
     viewport: Size,
     dialogue_rect: Rect,
-    stage: WidgetPod<StageWidget>,
+    content: WidgetPod<LayerStack>,
+    stage: WidgetId,
+    popup_layers: Vec<popups::LayerRecord>,
     authored: bool,
     dialogue_active: bool,
     custom_dialogue: bool,
@@ -233,6 +240,8 @@ impl SessionWidget {
         };
     }
     fn new(ui: &SessionUi) -> Self {
+        let stage = NewWidget::new(StageWidget::new(ui.stage.as_ref()));
+        let stage_id = stage.id();
         let mut widget = Self {
             projection: ui.projection.clone(),
             stamp: ui.stamp,
@@ -253,7 +262,9 @@ impl SessionWidget {
             scrolling: ScrollState::default(),
             viewport: Size::new(640., 420.),
             dialogue_rect: Rect::new(30., 245., 610., 380.),
-            stage: WidgetPod::new(StageWidget::new(ui.stage.as_ref())),
+            content: WidgetPod::new(LayerStack::new(stage)),
+            stage: stage_id,
+            popup_layers: Vec::new(),
             authored: (ui.stage.is_some() || !ui.preview),
             dialogue_active: matches!(
                 ui.session.view().interaction,
@@ -297,10 +308,13 @@ impl SessionWidget {
     fn sync(this: &mut WidgetMut<'_, Self>, ui: &SessionUi) {
         if this.widget.source_owner != ui.source_owner {
             // A restored session has fresh input ownership even when node IDs match.
+            let stage = NewWidget::new(StageWidget::new(ui.stage.as_ref()));
+            this.widget.stage = stage.id();
             let old = std::mem::replace(
-                &mut this.widget.stage,
-                WidgetPod::new(StageWidget::new(ui.stage.as_ref())),
+                &mut this.widget.content,
+                WidgetPod::new(LayerStack::new(stage)),
             );
+            this.widget.popup_layers.clear();
             this.ctx.remove_child(old);
             this.widget.source_owner = ui.source_owner;
             this.widget.binding = ui.binding.clone();
@@ -318,10 +332,11 @@ impl SessionWidget {
         );
         this.widget.custom_dialogue = !ui.preview;
         if ui.stage_dirty
-            && let Some(mut widget) = this.ctx.get_mut(&mut this.widget.stage)
+            && let Some(mut content) = this.ctx.get_mut(&mut this.widget.content)
+            && let Some(mut stage) = LayerStack::layer_root_mut(&mut content, 0)
         {
             StageWidget::sync(
-                &mut widget,
+                &mut stage.downcast::<StageWidget>(),
                 ui.stage.as_ref().unwrap_or(&StageView::default()),
             );
         }
@@ -525,77 +540,21 @@ impl Widget for SessionWidget {
         action: &ErasedAction,
         source: WidgetId,
     ) {
-        if let Some(selection) = action.downcast_ref::<crate::stage_widget::NavigationSelection>() {
-            self.events
-                .borrow_mut()
-                .push(reel_ui::stage::NodeEvent::Change(selection.0));
+        if let Some(reason) = action.downcast_ref::<reel_ui::widgets::PopupDismiss>()
+            && let Some(layer) = self.popup_layers.iter().find(|layer| layer.layer == source)
+        {
+            node_events::admit(
+                &self.binding,
+                &self.events,
+                &reel_ui::stage::NodeEvent::PopupDismiss(reel_ui::stage::NodePopupDismiss {
+                    node: layer.node,
+                    reason: *reason,
+                }),
+            );
             ctx.set_handled();
             return;
         }
-        if let Some(event) = action.downcast_ref::<reel_ui::stage::NodeEvent>() {
-            use reel_ui::{input::ActionPhase, stage::NodeEvent};
-            match event {
-                NodeEvent::Link(link) if self.binding.borrow().permits_control() => {
-                    self.events.borrow_mut().push(NodeEvent::Link(link.clone()));
-                }
-                NodeEvent::Click(click) if self.binding.borrow().permits_button(click.node) => {
-                    self.events.borrow_mut().push(NodeEvent::Click(*click));
-                }
-                NodeEvent::Change(change) if self.binding.borrow().permits_control() => {
-                    self.events.borrow_mut().push(NodeEvent::Change(*change));
-                }
-                NodeEvent::Text(input) if self.binding.borrow().permits_text(&input.event) => {
-                    self.events
-                        .borrow_mut()
-                        .push(NodeEvent::Text(input.clone()));
-                }
-                NodeEvent::Action(action)
-                    if matches!(action.phase, ActionPhase::Released | ActionPhase::Cancelled)
-                        || self.binding.borrow().permits_control() =>
-                {
-                    self.events
-                        .borrow_mut()
-                        .push(NodeEvent::Action(action.clone()));
-                }
-                NodeEvent::Key(input)
-                    if matches!(input.phase, ActionPhase::Released | ActionPhase::Cancelled)
-                        || self.binding.borrow().permits_control() =>
-                {
-                    self.events.borrow_mut().push(NodeEvent::Key(input.clone()));
-                }
-                NodeEvent::Interaction(state) => {
-                    self.events
-                        .borrow_mut()
-                        .push(NodeEvent::Interaction(*state));
-                }
-                NodeEvent::Scroll(state) => {
-                    self.events.borrow_mut().push(NodeEvent::Scroll(*state))
-                }
-                NodeEvent::VirtualList(state) => {
-                    let mut events = self.events.borrow_mut();
-                    if let Some(index) = events.iter().position(|event| {
-                        matches!(event, NodeEvent::VirtualList(previous) if previous.node == state.node)
-                    }) {
-                        events.remove(index);
-                    }
-                    // The latest window follows its matching Scroll offset, even
-                    // when several compose passes are coalesced in one batch.
-                    events.push(NodeEvent::VirtualList(state.clone()));
-                }
-                NodeEvent::Pointer(input)
-                    if matches!(
-                        input.phase,
-                        reel_ui::stage::PointerPhase::Released
-                            | reel_ui::stage::PointerPhase::Cancelled
-                    ) || self.binding.borrow().permits_control() =>
-                {
-                    self.events.borrow_mut().push(NodeEvent::Pointer(*input))
-                }
-                NodeEvent::Wheel(input) if self.binding.borrow().control_accepted.is_some() => {
-                    self.events.borrow_mut().push(NodeEvent::Wheel(*input));
-                }
-                _ => {}
-            }
+        if node_events::accept(&self.binding, &self.events, action) {
             ctx.set_handled();
             return;
         }
@@ -612,7 +571,7 @@ impl Widget for SessionWidget {
         }
     }
     fn register_children(&mut self, ctx: &mut RegisterCtx<'_>) {
-        ctx.register_child(&mut self.stage);
+        ctx.register_child(&mut self.content);
         if let Some(preview) = &mut self.preview {
             ctx.register_child(&mut preview.backdrop);
             ctx.register_child(&mut preview.title);
@@ -650,8 +609,8 @@ impl Widget for SessionWidget {
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, _: &PropertiesRef<'_>, size: Size) {
         self.viewport = size;
         ctx.set_clip_path(size.to_rect());
-        ctx.run_layout(&mut self.stage, size);
-        ctx.place_child(&mut self.stage, Point::ORIGIN);
+        ctx.run_layout(&mut self.content, size);
+        ctx.place_child(&mut self.content, Point::ORIGIN);
         if let Some(preview) = &mut self.preview {
             ctx.set_stashed(&mut preview.title, self.authored);
             ctx.set_stashed(&mut preview.status, self.authored);
@@ -773,7 +732,7 @@ impl Widget for SessionWidget {
         node.set_label("Story; scroll to see all content, click dialogue to reveal then advance, or select a choice");
     }
     fn children_ids(&self) -> ChildrenIds {
-        let mut ids = ChildrenIds::from_slice(&[self.stage.id()]);
+        let mut ids = ChildrenIds::from_slice(&[self.content.id()]);
         if let Some(preview) = &self.preview {
             ids.extend([
                 preview.backdrop.id(),
@@ -960,18 +919,10 @@ impl SessionUi {
         let geometry = bridge
             .layout_geometry()
             .map_err(|error| format!("scroll layout geometry: {error:?}"))?;
-        Ok(Self::stage_widget(bridge, root)
-            .and_then(|id| bridge.root().get_widget(id))
-            .and_then(|widget| widget.downcast::<StageWidget>())
-            .zip(self.stage.as_ref())
-            .is_some_and(|(widget, view)| {
-                widget.virtual_images_visible_ready(
-                    bridge.root(),
-                    view,
-                    &geometry,
-                    &self.images.loaded,
-                )
-            }))
+        Ok(self
+            .stage
+            .as_ref()
+            .is_some_and(|view| self.virtual_popup_images_ready(bridge, root, view, &geometry)))
     }
     pub(crate) fn current_presentation_ready(&self) -> bool {
         !self.images_pending()
@@ -1175,28 +1126,21 @@ impl SessionUi {
             {
                 let mut view = candidate.clone();
                 view.resolve_metadata(&self.images);
-                bridge.edit_widget(root_id, |mut widget| {
-                    let mut widget = widget.downcast::<SessionWidget>();
-                    let this = &mut widget;
-                    let mut stage = this.ctx.get_mut(&mut this.widget.stage).unwrap();
-                    StageWidget::sync(&mut stage, &view);
+                bridge.edit_widget(Self::stage_widget(bridge, root_id).unwrap(), |mut stage| {
+                    StageWidget::sync(&mut stage.downcast::<StageWidget>(), &view);
                 });
                 self.stage = Some(view);
                 self.stage_dirty = true;
+                self.sync_popups(bridge, root_id);
                 let geometry = bridge
                     .layout_geometry()
                     .map_err(|error| format!("scroll layout geometry: {error:?}"))?;
-                self.virtual_images_ready = Self::stage_widget(bridge, root_id)
-                    .and_then(|id| bridge.root().get_widget(id))
-                    .and_then(|widget| widget.downcast::<StageWidget>())
-                    .is_some_and(|widget| {
-                        widget.virtual_images_visible_ready(
-                            bridge.root(),
-                            self.pending_stage.as_ref().unwrap(),
-                            &geometry,
-                            &self.images.loaded,
-                        )
-                    });
+                self.virtual_images_ready = self.virtual_popup_images_ready(
+                    bridge,
+                    root_id,
+                    self.pending_stage.as_ref().unwrap(),
+                    &geometry,
+                );
             }
             self.pause_dialogue();
             self.binding.borrow_mut().accepted = None;
@@ -1260,7 +1204,7 @@ impl SessionUi {
             let stage_id = bridge.edit_widget(root_id, |mut widget| {
                 let mut widget = widget.downcast::<SessionWidget>();
                 SessionWidget::sync(&mut widget, self);
-                widget.widget.stage.id()
+                widget.widget.stage
             });
             self.input_fallback = bridge
                 .root()
@@ -1270,6 +1214,7 @@ impl SessionUi {
             bridge.set_focus_fallback(Some(self.input_fallback.unwrap_or(root_id)));
             self.stage_dirty = false;
         }
+        self.sync_popups(bridge, root_id);
         Ok(())
     }
     fn prepare_tiles(
@@ -1282,19 +1227,36 @@ impl SessionUi {
             view.resolve_metadata(&self.images);
         }
         if let Some(view) = &candidate {
-            bridge.edit_widget(root_id, |mut widget| {
-                let mut widget = widget.downcast::<SessionWidget>();
-                let this = &mut widget;
-                let mut stage = this.ctx.get_mut(&mut this.widget.stage).unwrap();
-                StageWidget::sync(&mut stage, view);
+            bridge.edit_widget(Self::stage_widget(bridge, root_id).unwrap(), |mut stage| {
+                StageWidget::sync(&mut stage.downcast::<StageWidget>(), view);
             });
         }
-        let widgets = bridge.edit_widget(root_id, |mut widget| {
-            let mut widget = widget.downcast::<SessionWidget>();
-            let this = &mut widget;
-            let mut stage = this.ctx.get_mut(&mut this.widget.stage).unwrap();
-            StageWidget::image_widgets(&mut stage)
-        });
+        self.sync_popup_view(bridge, root_id, candidate.as_ref().or(self.stage.as_ref()));
+        let mut widgets = bridge
+            .edit_widget(Self::stage_widget(bridge, root_id).unwrap(), |mut stage| {
+                StageWidget::image_widgets(&mut stage.downcast::<StageWidget>())
+            });
+        let count = bridge
+            .root()
+            .get_widget(root_id)
+            .unwrap()
+            .downcast::<SessionWidget>()
+            .unwrap()
+            .popup_layers
+            .len();
+        for index in 0..count {
+            let stage = bridge
+                .root()
+                .get_widget(root_id)
+                .unwrap()
+                .downcast::<SessionWidget>()
+                .unwrap()
+                .popup_layers[index]
+                .stage;
+            widgets.extend(bridge.edit_widget(stage, |mut widget| {
+                StageWidget::image_widgets(&mut widget.downcast::<StageWidget>())
+            }));
+        }
         let geometry = bridge
             .layout_geometry()
             .map_err(|error| format!("image layout geometry: {error:?}"))?;
@@ -1856,7 +1818,7 @@ mod tests {
                 .unwrap();
             let mut output = Vec::new();
             labels(
-                bridge.root().get_widget(root_widget.stage.id()).unwrap(),
+                bridge.root().get_widget(root_widget.stage).unwrap(),
                 &mut output,
             );
             output

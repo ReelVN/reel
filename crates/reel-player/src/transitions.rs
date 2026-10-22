@@ -231,14 +231,14 @@ impl Transitions {
         &mut self,
         vm: &SessionVm,
         bridge: &mut PresentationBridge,
-        stage_widget: WidgetId,
+        root: WidgetId,
     ) -> Result<(), Error> {
         if let Some(gates) = self.release_gates.take() {
             self.gates = gates;
         }
         for view in vm.transition_views() {
             if let Some(widget) =
-                crate::session::SessionUi::transition_target(bridge, stage_widget, view.target)
+                crate::session::SessionUi::transition_target(bridge, root, view.target)
                 && !self.gates.contains(&widget)
             {
                 self.gates.push(widget);
@@ -251,18 +251,15 @@ impl Transitions {
         &self,
         vm: &SessionVm,
         bridge: &PresentationBridge,
-        stage_widget: WidgetId,
+        root: WidgetId,
         source: &RecordedSource,
         presentation_request: u64,
     ) -> Result<(TransitionReceipt, Vec<FrameTransition>), Error> {
         let mut receipt = TransitionReceipt::default();
         for request in &self.waiting {
             if presentation_request >= request.presentation_request
-                && let Some(widget) = crate::session::SessionUi::transition_target(
-                    bridge,
-                    stage_widget,
-                    request.target,
-                )
+                && let Some(widget) =
+                    crate::session::SessionUi::transition_target(bridge, root, request.target)
             {
                 receipt.retains.push((request.id, widget));
             }
@@ -270,7 +267,7 @@ impl Transitions {
         let mut frames = Vec::new();
         for view in vm.transition_views() {
             let Some(widget) =
-                crate::session::SessionUi::transition_target(bridge, stage_widget, view.target)
+                crate::session::SessionUi::transition_target(bridge, root, view.target)
             else {
                 continue;
             };

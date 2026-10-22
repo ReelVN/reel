@@ -7,7 +7,7 @@ use crate::{
     core::{
         AccessCtx, ChildrenIds, EventCtx, Layer, LayoutCtx, MeasureCtx, NewWidget, PaintCtx,
         PointerEvent, PropertiesMut, PropertiesRef, RegisterCtx, TextEvent, Update, UpdateCtx,
-        Widget, WidgetId, WidgetPod,
+        Widget, WidgetId, WidgetMut, WidgetPod,
         keyboard::{Key, NamedKey},
         pointer::PointerButton,
     },
@@ -116,14 +116,20 @@ impl Popup {
         }
     }
 
-    /// Classify an outside primary press using this context's accepted geometry.
-    /// A composing layer can reuse the same predicate and emit its own typed action.
-    pub fn outside_dismissal(ctx: &EventCtx<'_>, event: &PointerEvent) -> Option<PopupDismiss> {
+    fn outside_dismissal(ctx: &EventCtx<'_>, event: &PointerEvent) -> Option<PopupDismiss> {
         (ctx.input_configuration_is_current()
             && matches!(event, PointerEvent::Down(event)
                 if event.button.is_none_or(|button| button == PointerButton::Primary)
                 && !ctx.border_box().contains(ctx.local_position(event.state.position))))
         .then_some(PopupDismiss::Outside)
+    }
+
+    /// Updates the same modal focus scope used by ordinary layer input.
+    pub fn set_modal(this: &mut WidgetMut<'_, Self>, modal: bool) {
+        if this.widget.modal != modal {
+            this.widget.modal = modal;
+            this.ctx.set_modal(modal);
+        }
     }
 
     /// Nonmodal popups retain normal input routing to the underlying scene.

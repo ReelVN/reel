@@ -30,6 +30,7 @@ use std::sync::Arc;
 pub(crate) struct NavigationSelection(pub NodeChange);
 mod flow;
 mod input;
+pub(crate) mod popup;
 #[cfg(test)]
 mod projection_tests;
 mod selection;
@@ -46,6 +47,7 @@ pub(crate) struct StageView {
     pub feedback: bool,
     pub(crate) identity: Option<StageIdentity>,
     root: Option<Arc<SceneNode>>,
+    popups: Option<Arc<[popup::PopupSource]>>,
     pub resources: Vec<ResourceLease>,
 }
 #[derive(Clone, PartialEq)]
@@ -59,6 +61,7 @@ struct SceneSummary {
     image: bool,
     button: bool,
     input: bool,
+    popup: bool,
     modal: Option<NodeId>,
 }
 #[derive(Clone)]
@@ -101,6 +104,20 @@ impl PartialEq for SceneImages {
     }
 }
 impl SceneNode {
+    fn popup_branch(&self) -> bool {
+        matches!(self.node.kind, NodeKind::Popup(_)) || self.children_summary.popup
+    }
+    fn image_visible(&self, parent_visible: bool, parent_enabled: bool, has_parent: bool) -> bool {
+        parent_visible
+            && self.node.props.visible
+            && (!matches!(self.node.kind, NodeKind::Popup(_))
+                || (has_parent && parent_enabled && self.node.props.enabled))
+    }
+    fn physical_children(&self) -> impl DoubleEndedIterator<Item = &Arc<SceneNode>> {
+        self.children
+            .iter()
+            .filter(|child| !matches!(child.node.kind, NodeKind::Popup(_)))
+    }
     fn image_size(&self) -> Size {
         self.images
             .image_resource
@@ -240,7 +257,10 @@ impl StageView {
                         summary.image |= child.image_branch;
                         summary.button |= child.button_branch;
                         summary.input |= child.input_branch;
-                        summary.modal = child.modal.or(summary.modal);
+                        summary.popup |= child.popup_branch();
+                        if !matches!(child.node.kind, NodeKind::Popup(_)) {
+                            summary.modal = child.modal.or(summary.modal);
+                        }
                         summary
                     })
             };
@@ -283,22 +303,36 @@ impl StageView {
             })
         }
         let previous = previous.filter(|view| view.identity.as_ref() == Some(stage.identity()));
+        let root = stage
+            .root()
+            .map(|id| capture_node(stage, id, previous.and_then(|v| v.root.as_ref())));
+        let popups = popup::sources(root.as_ref(), previous, stage.has_popups());
         Self {
             revision: stage.revision(),
             identity: Some(stage.identity().clone()),
             button_revision: 0,
             presentation_request: 0,
             feedback: false,
-            root: stage
-                .root()
-                .map(|id| capture_node(stage, id, previous.and_then(|v| v.root.as_ref()))),
+            root,
+            popups,
             resources: Vec::new(),
         }
     }
     pub fn input_scope(&self) -> (Option<NodeId>, Option<NodeId>) {
         (
             self.root.as_ref().map(|root| root.node.id),
-            self.root.as_ref().and_then(|root| root.modal),
+            self.popups
+                .as_deref()
+                .unwrap_or_default()
+                .iter()
+                .rev()
+                .find_map(|popup| popup.root.modal)
+                .or_else(|| {
+                    self.root
+                        .as_ref()
+                        .filter(|root| !matches!(root.node.kind, NodeKind::Popup(_)))
+                        .and_then(|root| root.modal)
+                }),
         )
     }
     #[cfg(feature = "window")]
@@ -364,13 +398,23 @@ impl StageView {
         let mut requests = BTreeMap::new();
         let mut mounted = std::collections::BTreeSet::new();
         let mut encoded = BTreeMap::new();
-        let mut pending: Vec<_> = root.into_iter().map(|node| (node, true)).collect();
-        while let Some((node, parent_visible)) = pending.pop() {
+        let mut pending: Vec<_> = root
+            .into_iter()
+            .map(|node| (node, true, true, false))
+            .collect();
+        while let Some((node, parent_visible, parent_enabled, has_parent)) = pending.pop() {
             if !node.image_branch {
                 continue;
             }
-            let visible = parent_visible && node.node.props.visible;
-            pending.extend(node.children.iter().map(|child| (child, visible)));
+            let visible = node.image_visible(parent_visible, parent_enabled, has_parent);
+            let enabled = parent_enabled
+                && node.node.props.enabled
+                && !matches!(node.node.kind, NodeKind::Cursor);
+            pending.extend(
+                node.children
+                    .iter()
+                    .map(|child| (child, visible, enabled, true)),
+            );
             if let Some((source, _)) = image_source(&node.node.kind) {
                 mounted.insert(source.to_owned());
             }
@@ -475,6 +519,7 @@ impl StageView {
             }
             resolved
         });
+        self.refresh_popups();
     }
     pub fn resolve_metadata(&mut self, images: &crate::images::Images) {
         self.resources.clear();
@@ -522,6 +567,7 @@ impl StageView {
             }
             resolved
         });
+        self.refresh_popups();
     }
     pub fn resolve_tiles(
         &mut self,
@@ -540,6 +586,7 @@ impl StageView {
             }
             resolved
         });
+        self.refresh_popups();
         let mut handles: std::collections::BTreeSet<_> =
             self.resources.iter().map(ResourceLease::handle).collect();
         self.resources.extend(
@@ -560,19 +607,24 @@ fn resolve_image_nodes(
     fn visit(
         node: &Arc<SceneNode>,
         parent_visible: bool,
+        parent_enabled: bool,
+        has_parent: bool,
         resolve: &mut impl FnMut(&SceneNode, bool) -> SceneImages,
     ) -> Arc<SceneNode> {
         if !node.image_branch {
             return node.clone();
         }
-        let visible = parent_visible && node.node.props.visible;
+        let visible = node.image_visible(parent_visible, parent_enabled, has_parent);
+        let enabled = parent_enabled
+            && node.node.props.enabled
+            && !matches!(node.node.kind, NodeKind::Cursor);
         let images = resolve(node, visible);
         let mut children = None;
         for (index, child) in node.children.iter().enumerate() {
             if !child.image_branch {
                 continue;
             }
-            let next = visit(child, visible, resolve);
+            let next = visit(child, visible, enabled, true, resolve);
             if !Arc::ptr_eq(child, &next) {
                 children.get_or_insert_with(|| node.children.to_vec())[index] = next;
             }
@@ -595,7 +647,7 @@ fn resolve_image_nodes(
         })
     }
     if let Some(node) = root {
-        *node = visit(node, true, &mut resolve);
+        *node = visit(node, true, true, false, &mut resolve);
     }
 }
 
@@ -625,6 +677,7 @@ pub(crate) struct StageWidget {
     root_id: Option<NodeId>,
     pub(crate) identity: Option<StageIdentity>,
     root_props: reel_ui::stage::NodeProps,
+    portal: bool,
 }
 impl StageWidget {
     pub(crate) fn image_widgets(
@@ -664,7 +717,15 @@ impl StageWidget {
         out
     }
     pub fn new(view: Option<&StageView>) -> Self {
-        let root = view.and_then(|view| view.root.as_ref());
+        Self::project(view, false)
+    }
+    pub(crate) fn new_portal(view: &StageView) -> Self {
+        Self::project(Some(view), true)
+    }
+    fn project(view: Option<&StageView>, portal: bool) -> Self {
+        let root = view
+            .and_then(|view| view.root.as_ref())
+            .filter(|root| portal || !matches!(root.node.kind, NodeKind::Popup(_)));
         let mut nodes = BTreeMap::new();
         let root_pod = root.map(|node| SceneWidget::new_pod(node, &mut nodes));
         Self {
@@ -673,6 +734,7 @@ impl StageWidget {
             root_id: root.map(|node| node.node.id),
             identity: view.and_then(|view| view.identity.clone()),
             root_props: root.map(|node| node.node.props.clone()).unwrap_or_default(),
+            portal,
         }
     }
     pub(crate) fn node_widget(&self, node: NodeId) -> Option<WidgetId> {
@@ -714,20 +776,21 @@ impl StageWidget {
         visit(root, self.root.as_ref()?.id())
     }
     pub fn sync(this: &mut WidgetMut<'_, Self>, view: &StageView) {
-        let id = view.root.as_ref().map(|node| node.node.id);
+        let root = view
+            .root
+            .as_ref()
+            .filter(|root| this.widget.portal || !matches!(root.node.kind, NodeKind::Popup(_)));
+        let id = root.map(|node| node.node.id);
         if id != this.widget.root_id || this.widget.identity != view.identity {
             if let Some(root) = this.widget.root.take() {
                 this.ctx.remove_child(root);
             }
             this.widget.nodes.clear();
-            this.widget.root = view
-                .root
-                .as_ref()
-                .map(|node| SceneWidget::new_pod(node, &mut this.widget.nodes));
+            this.widget.root = root.map(|node| SceneWidget::new_pod(node, &mut this.widget.nodes));
             this.widget.root_id = id;
             this.widget.identity = view.identity.clone();
             this.ctx.children_changed();
-        } else if let (Some(pod), Some(node)) = (&mut this.widget.root, &view.root) {
+        } else if let (Some(pod), Some(node)) = (&mut this.widget.root, root) {
             let registered = if let Some(mut child) = this.ctx.get_mut(pod) {
                 SceneWidget::sync(&mut child, node, view.feedback, &mut this.widget.nodes);
                 true
@@ -738,11 +801,7 @@ impl StageWidget {
                 this.ctx.set_stashed(pod, !node.node.props.visible);
             }
         }
-        let props = view
-            .root
-            .as_ref()
-            .map(|node| node.node.props.clone())
-            .unwrap_or_default();
+        let props = root.map(|node| node.node.props.clone()).unwrap_or_default();
         if this.widget.root_props.visible != props.visible {
             this.ctx.request_layout();
         }
@@ -759,12 +818,17 @@ impl Widget for StageWidget {
     }
     fn measure(
         &mut self,
-        _: &mut MeasureCtx<'_>,
+        ctx: &mut MeasureCtx<'_>,
         _: &PropertiesRef<'_>,
-        _: Axis,
+        axis: Axis,
         request: LenReq,
-        _: Option<Length>,
+        cross: Option<Length>,
     ) -> Length {
+        if self.portal
+            && let Some(root) = &mut self.root
+        {
+            return ctx.redirect_measurement(root, axis, cross);
+        }
         match request {
             LenReq::FitContent(space) => space,
             _ => Length::ZERO,
@@ -782,7 +846,11 @@ impl Widget for StageWidget {
     }
     fn compose(&mut self, ctx: &mut ComposeCtx<'_>) {
         if let Some(root) = &mut self.root {
-            let transform = self.root_props.transform(ctx.child_size(root));
+            let transform = if self.portal {
+                reel_ui::kurbo::Affine::IDENTITY
+            } else {
+                self.root_props.transform(ctx.child_size(root))
+            };
             ctx.set_child_transform(root, transform);
         }
     }
@@ -984,7 +1052,7 @@ impl SceneWidget {
     }
     fn forget(view: &Arc<SceneNode>, nodes: &mut BTreeMap<NodeId, WidgetId>) {
         nodes.remove(&view.node.id);
-        for child in view.children.iter() {
+        for child in view.physical_children() {
             Self::forget(child, nodes);
         }
     }
@@ -1128,8 +1196,7 @@ impl SceneWidget {
             image: Self::image_widget(view),
             image_size: view.image_size(),
             children: view
-                .children
-                .iter()
+                .physical_children()
                 .map(|child| (child.node.clone(), Self::new_pod(child, nodes)))
                 .collect(),
             size: Size::ZERO,
@@ -1207,7 +1274,7 @@ impl SceneWidget {
                 .children
                 .iter()
                 .map(|(node, _)| node.id)
-                .eq(view.children.iter().map(|child| child.node.id));
+                .eq(view.physical_children().map(|child| child.node.id));
         let mut content_changed = this.widget.node.kind != view.node.kind
             || order_changed
             || this.widget.node.props.visible != view.node.props.visible
@@ -1325,7 +1392,8 @@ impl SceneWidget {
             this.ctx.set_disabled(!view.node.props.enabled);
         }
         if this.widget.node.props.modal != view.node.props.modal {
-            this.ctx.set_modal(view.node.props.modal);
+            this.ctx
+                .set_modal(view.node.props.modal && !matches!(view.node.kind, NodeKind::Popup(_)));
         }
         let has_image = matches!(view.node.kind, NodeKind::Image { .. })
             && (view.images.image.is_some()
@@ -1498,8 +1566,7 @@ impl SceneWidget {
                 .map(|(node, pod)| (node.id, (node, pod)))
                 .collect();
             this.widget.children = view
-                .children
-                .iter()
+                .physical_children()
                 .map(|next| {
                     retained
                         .remove(&next.node.id)
@@ -1526,7 +1593,12 @@ impl SceneWidget {
             this.ctx.request_cursor_icon_change();
         }
         if children_changed {
-            for ((node, pod), next) in this.widget.children.iter_mut().zip(view.children.iter()) {
+            for ((node, pod), next) in this
+                .widget
+                .children
+                .iter_mut()
+                .zip(view.physical_children())
+            {
                 if node.props.visible != next.node.props.visible
                     || node.props.flex != next.node.props.flex
                     || node.props.stretch != next.node.props.stretch
@@ -1999,7 +2071,7 @@ impl Widget for SceneWidget {
         }
         if matches!(event, Update::WidgetAdded) {
             ctx.set_disabled(!self.node.props.enabled);
-            ctx.set_modal(self.node.props.modal);
+            ctx.set_modal(self.node.props.modal && !matches!(self.node.kind, NodeKind::Popup(_)));
         }
         if matches!(event, Update::DescendantFocusChanged(_))
             && let Some(input) = &mut self.input
