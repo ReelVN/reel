@@ -2,6 +2,45 @@
 use super::*;
 
 impl Activities {
+    pub fn next_tick(&mut self, vm: &mut Vm, ticket: HostTicket) -> Result<(), AdapterError> {
+        let clock = vm.host_arguments(ticket)?[0];
+        tagged(vm.heap(), clock, ACTIVITY)?;
+        if action::kind(
+            vm.heap(),
+            root_get(vm.heap(), clock, RootSlot::Description)?,
+        )? != action::Kind::Clock
+        {
+            return Err(AdapterError::Input("next requires a clock"));
+        }
+        if terminal(state(vm.heap(), clock)?) {
+            vm.respond(ticket, HostResponse::Error(Self::tick_cancelled()))?;
+        } else {
+            let ticks = vm
+                .heap()
+                .host_property(PropertyId {
+                    host: clock,
+                    field: 0,
+                })?
+                .as_int()
+                .expect("clock ticks are integers");
+            self.waits
+                .try_reserve(1)
+                .map_err(|_| AdapterError::Allocation)?;
+            let wait = ticket.wait_id();
+            vm.respond(ticket, HostResponse::Pending(wait))?;
+            self.waits.push((wait, clock, Some(ticks)));
+        }
+        Ok(())
+    }
+
+    fn tick_cancelled() -> aside_vm::NewFault {
+        aside_vm::NewFault {
+            value: Value::NULL,
+            code: aside_vm::FaultCode::core(FaultKind::Cancelled),
+            cause: None,
+        }
+    }
+
     pub fn clock(
         &mut self,
         vm: &mut Vm,
@@ -349,7 +388,7 @@ impl Activities {
                 .try_reserve(1)
                 .map_err(|_| AdapterError::Allocation)?;
             vm.respond(ticket, HostResponse::Pending(wait))?;
-            self.waits.push((wait, activity));
+            self.waits.push((wait, activity, None));
         }
         Ok(())
     }
@@ -362,7 +401,7 @@ impl Activities {
         }
         let mut woke = false;
         let mut failure = None;
-        self.waits.retain(|&(wait, activity)| {
+        self.waits.retain(|&(wait, activity, tick)| {
             if failure.is_some() {
                 return true;
             }
@@ -370,7 +409,27 @@ impl Activities {
                 return false;
             }
             match (|| -> Result<bool, AdapterError> {
-                if terminal(state(vm.heap(), activity)?) {
+                let status = state(vm.heap(), activity)?;
+                if let Some(tick) = tick {
+                    let ticks = vm
+                        .heap()
+                        .host_property(PropertyId {
+                            host: activity,
+                            field: 0,
+                        })?
+                        .as_int()
+                        .expect("clock ticks are integers");
+                    let result = if terminal(status) {
+                        Completion::Error(Self::tick_cancelled())
+                    } else if ticks > tick {
+                        Completion::Ready(Value::int(ticks))
+                    } else {
+                        return Ok(true);
+                    };
+                    vm.complete(wait, result)?;
+                    woke = true;
+                    Ok(false)
+                } else if terminal(status) {
                     vm.complete(wait, Self::response(vm.heap(), activity)?)?;
                     woke = true;
                     Ok(false)

@@ -1,0 +1,129 @@
+use game::simulation;
+use reel::types::Node;
+
+pub fn play(parent: Node) -> table {
+    scope(
+        owner: parent,
+        body: |round| {
+            let state = model(
+                {
+                    paddle: 250.0, rival: 250.0, x: 480.0, y: 320.0, vx: 380.0, vy: 160.0, score: 0,
+                    opponent: 0, serving: true
+                }
+            );
+            let root = input(
+                width: 960, height: 640, modal: true, background: "#132035",
+                actions: {
+                    move_y: {
+                        bindings: [
+                            binding("KeyW", scale: -1), "KeyS", binding("ArrowUp", scale: -1),
+                            "ArrowDown", binding("LeftY", dead_zone: 0.2)
+                        ]
+                    },
+                    serve: {
+                        bindings: ["Space", "South", "PointerPrimary"],
+                        on_press: || {
+                            state.serving = false;
+                        }
+                    }
+                }
+            );
+            round.add(parent, root);
+            root.add(
+                text(
+                    derive(|| f"YOU  {state.score} : {state.opponent}  RIVAL"), x: 24, y: 16,
+                    width: 660, font_size: 28
+                )
+            );
+            root.add(
+                text(
+                    "W/S, arrows or left stick · Space / A / click to serve · First to 5", x: 24,
+                    y: 602, width: 900, font_size: 18
+                )
+            );
+            root.add(
+                stack(x: 24, y: bind(state.paddle), width: 14, height: 96, background: "#76e0d2")
+            );
+            root.add(
+                stack(x: 922, y: bind(state.rival), width: 14, height: 96, background: "#f59c87")
+            );
+            root.add(
+                stack(
+                    x: bind(state.x), y: bind(state.y), width: 12, height: 12, background: "#ffffff"
+                )
+            );
+            for index in 0 .. 20 {
+                root.add(
+                    stack(x: 478, y: 68 + index * 26, width: 4, height: 14, background: "#35506e")
+                );
+            }
+            let timer = simulation.start(
+                root,
+                |dt| {
+                    state.paddle = simulation.clamp(
+                        state.paddle + root.value("move_y") * 440 * dt, 68, 490
+                    );
+                    let target = state.y - 42;
+                    state.rival = simulation.clamp(
+                        state.rival + simulation.clamp(target - state.rival, -300 * dt, 300 * dt),
+                        68, 490
+                    );
+                    if state.serving {
+                        return;
+                    }
+                    state.x += state.vx * dt;
+                    state.y += state.vy * dt;
+                    if state.y < 68 {
+                        state.y = 68;
+                        state.vy = -state.vy;
+                    }
+                    if state.y > 574 {
+                        state.y = 574;
+                        state.vy = -state.vy;
+                    }
+                    if state.vx < 0 && state.x < 38 && state.x + 12 > 24
+                        && state.y + 12 > state.paddle && state.y < state.paddle + 96 {
+                        state.x = 38;
+                        state.vx = -state.vx;
+                        state.vy = (state.y + 6 - state.paddle - 48) * 7;
+                    }
+                    if state.vx > 0 && state.x + 12 > 922 && state.x < 936
+                        && state.y + 12 > state.rival && state.y < state.rival + 96 {
+                        state.x = 910;
+                        state.vx = -state.vx;
+                        state.vy = (state.y + 6 - state.rival - 48) * 7;
+                    }
+                    if state.x < -12 || state.x > 960 {
+                        if state.x > 960 {
+                            state.score += 1;
+                        } else {
+                            state.opponent += 1;
+                        }
+                        if state.score == 5 || state.opponent == 5 {
+                            round.finish(
+                                {
+                                    game: "Pong", score: state.score,
+                                    outcome: if state.score == 5 {
+                                        "won"
+                                    } else {
+                                        "lost"
+                                    }
+                                }
+                            );
+                        }
+                        state.x = 480;
+                        state.y = 320;
+                        state.serving = true;
+                    }
+                }
+            );
+            simulation.pause_menu(
+                root, timer,
+                || {
+                    round.finish({ game: "Pong", score: state.score, outcome: "left" });
+                }
+            );
+            await completion();
+        }
+    )
+}

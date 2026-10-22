@@ -713,6 +713,8 @@ entrance.resume();
 
 `clock(interval: 60, owner: panel)` 创建可绑定的周期时钟。只读 ticks 是 int 完整周期数，初值 0，可直接作为数组索引或字符串 slice 范围；elapsed 是这些周期的 float 总秒数，初值 0.0。用 derive 组合时钟、倒计时或进度显示；时间跨过多个周期时直接更新到最新值。一批时间更新触发的派生会共同完成后再提交画面；计算跨帧时合并期间的新时间，再计算下一批，避免一边计算一边被时钟反复打断。pause/resume/stop 和 await 沿用活动接口，暂停期间不计时，停止保留最后值，节点退休取消；clock 无终点，不能 finish。读档保留两者类型、已有计数和暂停状态，继续原周期。参见 [时钟示例](../../examples/author_clock/src/main.aside)。
 
+`timer.next()` 等待该时钟的下一次完整间隔，返回当前累计 ticks。连续玩法可从计数差计算固定步数，并限制每轮补步；暂停保留等待，停止或退休取消等待。
+
 等间隔帧动画可以直接用周期数选择图片来源。先保存帧数，再在派生中只做索引；同一个 image 节点持续更新来源。先暂停时钟，首帧呈现后再恢复，动画便从实际可见的第一帧开始：
 
 ```aside
@@ -1452,6 +1454,8 @@ scope(owner: root, body: |s| {
 长期组件可以保存当前 request，用 `request != null && request.pending` 判断是否已有请求。普通返回、错误、调用者取消和 owner 退休都由 scope 收起临时画面；等待者取消本身不会取消作用域外的共享结果。完整可重复打开的提示框见 [author_prompt.aside](../../examples/author_prompt/src/main.aside)。
 
 [author_embedded_puzzle.aside](../../examples/author_embedded_puzzle/src/main.aside) 将一个二维开关谜题嵌进自定义对白：点击图形或通过键盘/手柄焦点操作，暂停时同时停止组件时钟和提示动画，完成后将步数交回剧情；离开组件会取消未决结果并退休所属活动。谜题、对白和菜单都使用普通舞台节点。示例使用现有事件与活动，不提供物理或固定步进更新循环；运行前提供 fonts/body.ttf。
+
+[author_arcade](../../examples/author_arcade/src/main.aside) 将对白与完整的 Pong、打砖块游戏组合起来。两作使用键盘/手柄命名动作、普通节点，以及由 `Clock.next()` 驱动的共用固定步进循环。每个游戏在作用域内维护状态、暂停菜单和活动，结束后把分数与结果交回剧情；无需外部资源。
 
 choose、自定义 choice_view 和只读选择模型已实现。引擎不自动叠加对白或选择界面；作者将自己的组件挂到舞台，普通函数可封装并复用外观。完整 ADV/NVL 切换及选择示例见 [author_narrative.aside](../../examples/author_narrative/src/main.aside)。
 

@@ -1,0 +1,135 @@
+use game::simulation;
+use reel::types::Node;
+
+pub fn play(parent: Node) -> table {
+    scope(
+        owner: parent,
+        body: |round| {
+            let state = model(
+                {
+                    paddle: 420.0, x: 474.0, y: 530.0, vx: 210.0, vy: -360.0, lives: 3, score: 0,
+                    serving: true
+                }
+            );
+            let root = input(
+                width: 960, height: 640, modal: true, background: "#15222d",
+                actions: {
+                    move_x: {
+                        bindings: [
+                            binding("KeyA", scale: -1), "KeyD", binding("ArrowLeft", scale: -1),
+                            "ArrowRight", binding("LeftX", dead_zone: 0.2)
+                        ]
+                    },
+                    serve: {
+                        bindings: ["Space", "South", "PointerPrimary"],
+                        on_press: || {
+                            state.serving = false;
+                        }
+                    }
+                }
+            );
+            round.add(parent, root);
+            root.add(
+                text(
+                    derive(|| f"BRICKS  {state.score} / 50     BALLS  {state.lives}"), x: 24, y: 16,
+                    width: 660, font_size: 28
+                )
+            );
+            root.add(
+                text(
+                    "A/D, arrows or left stick · Space / A / click to serve · Clear the wall",
+                    x: 24, y: 602, width: 900, font_size: 18
+                )
+            );
+            let bricks = [];
+            let colors = ["#ef7f83", "#f6b16f", "#e7d37c", "#80cfa5", "#70b9da"];
+            for row in 0 .. 5 {
+                for column in 0 .. 10 {
+                    let brick = model({ x: 30 + column * 90, y: 90 + row * 28, alive: true });
+                    bricks.append(brick);
+                    root.add(
+                        stack(
+                            x: brick.x, y: brick.y, width: 84, height: 22, background: colors[row],
+                            visible: bind(brick.alive)
+                        )
+                    );
+                }
+            }
+            root.add(
+                stack(x: bind(state.paddle), y: 550, width: 120, height: 14, background: "#dceef4")
+            );
+            root.add(
+                stack(
+                    x: bind(state.x), y: bind(state.y), width: 12, height: 12, background: "#ffffff"
+                )
+            );
+            let timer = simulation.start(
+                root,
+                |dt| {
+                    state.paddle = simulation.clamp(
+                        state.paddle + root.value("move_x") * 500 * dt, 16, 824
+                    );
+                    if state.serving {
+                        state.x = state.paddle + 54;
+                        return;
+                    }
+                    let previous_y = state.y;
+                    state.x += state.vx * dt;
+                    state.y += state.vy * dt;
+                    if state.x < 16 {
+                        state.x = 16;
+                        state.vx = -state.vx;
+                    }
+                    if state.x > 932 {
+                        state.x = 932;
+                        state.vx = -state.vx;
+                    }
+                    if state.y < 68 {
+                        state.y = 68;
+                        state.vy = -state.vy;
+                    }
+                    if state.vy > 0 && state.y + 12 >= 550 && previous_y + 12 <= 550
+                        && state.x + 12 > state.paddle && state.x < state.paddle + 120 {
+                        state.y = 538;
+                        state.vy = -state.vy;
+                        state.vx = (state.x + 6 - state.paddle - 60) * 5;
+                    }
+                    for brick in bricks {
+                        if brick.alive && state.x + 12 > brick.x && state.x < brick.x + 84
+                            && state.y + 12 > brick.y && state.y < brick.y + 22 {
+                            brick.alive = false;
+                            state.score += 1;
+                            if previous_y + 12 <= brick.y || previous_y >= brick.y + 22 {
+                                state.vy = -state.vy;
+                            } else {
+                                state.vx = -state.vx;
+                            }
+                            if state.score == 50 {
+                                round.finish(
+                                    { game: "Bricks", score: state.score, outcome: "won" }
+                                );
+                            }
+                            break;
+                        }
+                    }
+                    if state.y > 590 {
+                        state.lives -= 1;
+                        if state.lives == 0 {
+                            round.finish({ game: "Bricks", score: state.score, outcome: "lost" });
+                        }
+                        state.y = 530;
+                        state.vy = -360;
+                        state.serving = true;
+                    }
+                }
+            );
+            simulation.pause_menu(
+                root, timer,
+                || {
+                    round.finish({ game: "Bricks", score: state.score, outcome: "left" });
+                }
+            );
+            await completion();
+        }
+    )
+}
