@@ -7,6 +7,37 @@ fn input(path: &str, source: &str) -> SourceModule {
         source: source.into(),
     }
 }
+
+#[test]
+fn type_only_dependencies_preserve_value_reexports_and_unused_imports() {
+    for (source, expected) in [
+        ("use z::{Item}; fn accept(x:Item){}", vec!["a", "z"]),
+        ("use z::{Item}; fn accept(x:Item){Item()}", vec!["z", "a"]),
+        ("pub use z::{Item}; fn accept(x:Item){}", vec!["z", "a"]),
+        ("use z::{Item};", vec!["z", "a"]),
+        (
+            "use z::{Item,make}; fn accept(x:Item){make()}",
+            vec!["z", "a"],
+        ),
+    ] {
+        let result = analyze_project(
+            &[
+                input("a", source),
+                input("z", "pub class Item{} pub fn make(){Item()}"),
+            ],
+            &AnalysisOptions::default(),
+            &mut NoModules,
+        )
+        .unwrap();
+        assert!(result.is_ok(), "{:?}", result.diagnostics);
+        assert_eq!(result.plan.initialization_order, expected, "{source}");
+        assert_eq!(
+            result.modules().unwrap().len(),
+            2,
+            "type sources remain linked"
+        );
+    }
+}
 #[test]
 fn exported_destructuring_projects_each_binding_type() {
     let inputs = [
