@@ -35,7 +35,7 @@ aside_host::native_documentation! {
 }
 
 pub(in crate::aside) fn contracts() -> Vec<NativeContract> {
-    ["select_bytes", "select_all", "undo", "redo"]
+    let mut contracts: Vec<_> = ["select_bytes", "select_all", "undo", "redo"]
         .into_iter()
         .map(|name| {
             let mut parameters = vec![NativeParameter {
@@ -65,10 +65,13 @@ pub(in crate::aside) fn contracts() -> Vec<NativeContract> {
                 required_capabilities: vec!["reel.stage".into()],
             }
         })
-        .collect()
+        .collect();
+    contracts.push(super::filter::contract());
+    contracts
 }
 
 pub(in crate::aside::stage) fn describe(api: &mut Api, members: &mut Vec<Member>) {
+    super::filter::describe(api);
     let owner = "reel::types::TextInputNode";
     for name in ["select_bytes", "select_all", "undo", "redo"] {
         let symbol = format!("reel::text_input::{name}");
@@ -134,7 +137,7 @@ fn defer(
 
 /// The editor uses the same per-call property proposal as node configuration.
 /// Its builder and plan remain ordinary continuation roots through GC and saving.
-fn publication<R>(
+pub(super) fn publication<R>(
     vm: &mut Vm,
     ticket: HostTicket,
     continuation: (u64, [Value; 4]),
@@ -202,7 +205,7 @@ fn publication<R>(
     Ok((if done { prepared } else { None }, used))
 }
 
-fn writes(
+pub(super) fn writes(
     host: Value,
     value: Option<Value>,
     selected: TextSelection,
@@ -247,6 +250,9 @@ pub(in crate::aside) fn dispatch(
     name: &str,
     budget: NativeBudget,
 ) -> Result<(NativeDispatch, Option<Change>), AdapterError> {
+    if name == "filter" {
+        return super::filter::dispatch(stage, vm, ticket, budget);
+    }
     let receiver = vm.host_arguments(ticket)?[0];
     let id = stage.id(vm.heap(), receiver)?;
     if !matches!(

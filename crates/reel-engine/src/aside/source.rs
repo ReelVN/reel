@@ -105,7 +105,12 @@ pub fn documentation() -> Vec<aside_host::NativeDocumentation> {
     markdown.insert("reel::when".into(), super::conditions::DOCUMENTATION);
     contracts()
         .iter()
-        .filter(|contract| contract.symbol != "reel::when::evaluate")
+        .filter(|contract| {
+            !matches!(
+                contract.symbol.as_str(),
+                "reel::when::evaluate" | super::stage::text_input::filter::SYMBOL
+            )
+        })
         .cloned()
         .map(|contract| {
             let documentation = markdown

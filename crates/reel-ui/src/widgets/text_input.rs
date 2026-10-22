@@ -153,6 +153,7 @@ pub struct TextInput {
     selection_revision: u64,
     initial_selection: Option<TextSelection>,
     pending_edit: bool,
+    filter_edits: bool,
     replaying: Option<TextInputReplayId>,
     last_replay: Option<TextInputReplayId>,
     initial_replay: Option<Arc<TextInputReplay>>,
@@ -228,6 +229,7 @@ impl TextInput {
             selection_revision: 0,
             initial_selection: None,
             pending_edit: false,
+            filter_edits: false,
             replaying: None,
             last_replay: None,
             initial_replay: None,
@@ -239,6 +241,18 @@ impl TextInput {
         self.initial_selection = Some(selection);
         self.selection_revision = revision;
         self
+    }
+
+    /// Defer subsequent input immediately after publishing a user replacement.
+    /// The host resolves that proposal before replaying the existing edit queue.
+    pub fn with_edit_filter(mut self, enabled: bool) -> Self {
+        self.filter_edits = enabled;
+        self
+    }
+
+    /// Configure pre-commit filtering without replacing text or selection.
+    pub fn set_edit_filter(this: &mut WidgetMut<'_, Self>, enabled: bool) {
+        this.widget.filter_edits = enabled;
     }
 
     /// Restores pending editor ownership; queued work waits for the first real layout.
@@ -701,6 +715,7 @@ impl TextInput {
                 }
             }
             let previous = std::mem::replace(&mut self.value, value.clone());
+            self.pending_edit |= self.filter_edits;
             ctx.submit_action::<TextInputEvent>(TextInputEvent::Changed {
                 previous,
                 value,

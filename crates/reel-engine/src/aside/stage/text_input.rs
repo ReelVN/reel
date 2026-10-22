@@ -4,6 +4,7 @@ use reel_ui::{
     stage::{NodeText, TextInputOptions},
     widgets::{TextInputEvent, TextSelection},
 };
+pub(in crate::aside) mod filter;
 mod history;
 mod queue;
 mod runtime;
@@ -125,6 +126,15 @@ pub(in crate::aside) enum TextInputField {
     /// Caret color in #rrggbb or #rrggbbaa form. Null follows the common color.
     #[aside(name = "caret_color", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::String), default = null, validate = validate_background)]
     CaretColor,
+    /// Filter one user replacement before publishing value, selection and undo history.
+    /// Receive a readonly TextEdit with previous/value/text and start/end UTF-8 byte
+    /// offsets into previous. Return replacement text, or null to reject the edit.
+    /// Returning the same text preserves selection; transformed text places the caret
+    /// after its replacement. IME preedit, undo/redo and script assignments bypass it.
+    /// Filtering may yield to the execution budget, but cannot wait. Faults commit
+    /// nothing. on_change runs once after an accepted transaction.
+    #[aside(name = "edit_filter", ty = Any, doc_type = filter::source_type(), default = null, validate = validate_callback)]
+    EditFilter,
 }
 
 fn validate_value(heap: &Heap, value: Value) -> Result<(), HeapError> {
@@ -240,6 +250,7 @@ pub(super) fn options(
         selection: Default::default(),
         selection_revision: 0,
         pending_edit: false,
+        filter_edits: get(TextInputField::EditFilter)?.tag() != ValueTag::Null,
         replay: None,
     })
 }
@@ -392,23 +403,7 @@ impl StageBinding {
                 if edit.revision != revision(heap, target)? {
                     return Ok(None);
                 }
-                let removed = baseline
-                    .get(edit.range.clone())
-                    .ok_or(HeapError::OutOfBounds)?;
-                let inserted_end = value
-                    .len()
-                    .checked_sub(baseline.len() - edit.range.end)
-                    .ok_or(HeapError::OutOfBounds)?;
-                let inserted = value
-                    .get(edit.range.start..inserted_end)
-                    .ok_or(HeapError::OutOfBounds)?;
-                if baseline[..edit.range.start] != value[..edit.range.start]
-                    || baseline[edit.range.end..] != value[inserted_end..]
-                {
-                    return Err(HeapError::TypeMismatch.into());
-                }
-                validate_selection(baseline, edit.before)?;
-                validate_selection(value, edit.after)?;
+                let (removed, inserted) = replacement(baseline, value, edit)?;
                 let value = crate::aside::text::alloc_string(heap, value, 1024)?;
                 let expected = heap.handle(current)?;
                 let binding = self.handles.get_mut(&input.node).unwrap();
@@ -469,4 +464,31 @@ fn validate_selection(value: &str, selection: TextSelection) -> Result<(), HeapE
     } else {
         Err(HeapError::OutOfBounds)
     }
+}
+
+/// Validate the single replacement emitted by the shared editor. Both filtered
+/// and immediate publication use these same UTF-8 and proposal checks.
+fn replacement<'a>(
+    baseline: &'a str,
+    value: &'a str,
+    edit: &reel_ui::widgets::TextEdit,
+) -> Result<(&'a str, &'a str), HeapError> {
+    let removed = baseline
+        .get(edit.range.clone())
+        .ok_or(HeapError::OutOfBounds)?;
+    let inserted_end = value
+        .len()
+        .checked_sub(baseline.len() - edit.range.end)
+        .ok_or(HeapError::OutOfBounds)?;
+    let inserted = value
+        .get(edit.range.start..inserted_end)
+        .ok_or(HeapError::OutOfBounds)?;
+    if baseline[..edit.range.start] != value[..edit.range.start]
+        || baseline[edit.range.end..] != value[inserted_end..]
+    {
+        return Err(HeapError::TypeMismatch);
+    }
+    validate_selection(baseline, edit.before)?;
+    validate_selection(value, edit.after)?;
+    Ok((removed, inserted))
 }

@@ -975,7 +975,8 @@ impl SessionVm {
             "reel::text_input::select_bytes"
             | "reel::text_input::select_all"
             | "reel::text_input::undo"
-            | "reel::text_input::redo" => {
+            | "reel::text_input::redo"
+            | stage::text_input::filter::SYMBOL => {
                 let name = symbol.rsplit("::").next().unwrap();
                 let (progress, change) = stage::text_input::dispatch(
                     &mut self.stage,
