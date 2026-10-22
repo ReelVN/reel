@@ -50,6 +50,7 @@ pub const SCENES: &[(&str, E)] = &[
     ("video startup", E::Block),
     ("temporary hint in story", E::Block),
     ("runnable button module", E::Module),
+    ("anchored popup", E::Block),
     ("modal menu module", E::Module),
     ("named input actions module", E::Module),
     ("picture button component", E::Module),

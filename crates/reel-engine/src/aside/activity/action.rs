@@ -263,6 +263,7 @@ pub(in crate::aside) fn tween(
                 (kind, node),
                 ("camera", NodeKind::Camera(_))
                     | ("scroll", NodeKind::Scroll { .. })
+                    | ("popup", NodeKind::Popup(_))
                     | ("flow", NodeKind::Row(_) | NodeKind::Column(_))
                     | ("grid", NodeKind::Grid(_))
             ) {

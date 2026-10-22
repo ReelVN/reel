@@ -981,6 +981,19 @@ Every shared node has a writable `modal` property, defaulting to false. A visibl
 
 Opening a menu focuses an eligible control inside it. Tab/Shift-Tab cycle within the menu; closing a nested menu restores the previous scope’s focus, and closing the last menu restores the original control if it remains eligible. The input scope changes when the new frame is actually presented and cancels dragging outside it. Run [author_modal.aside](../../examples/author_modal/src/main.aside) with the dev/build/run commands in the first section.
 
+In progress: `popup` floats ordinary content beside its parent for menus, option panels and hints. It defaults to modal input, follows the parent's layout, flips when necessary and stays within the viewport. Compose scroll and virtual list for long content. Dismissal events contain target and reason (outside/back); ordinary controls inside the menu choose values. Hiding, disabling or removing an ancestor withdraws the layer. It takes no space in its parent's layout.
+
+```aside
+trigger.add(popup(placement: "bottom-start", offset: 4,
+    on_dismiss: |event| event.target.remove()) {
+    column(width: 200, gap: 8, padding: 12) {
+        text("Choose a reading speed");
+        button("Slow", on_click: || { preferences.speed = 20; });
+        button("Fast", on_click: || { preferences.speed = 50; });
+    }
+});
+```
+
 Keyboard activation requires pressing and releasing Enter or Space on the same button. Changing focus, hiding, disabling, or losing window focus cancels an unfinished key press.
 
 ```aside

@@ -997,6 +997,19 @@ fn main() {
 
 进入菜单会选择其中可用的焦点，Tab/Shift-Tab 在菜单内循环；嵌套菜单关闭时恢复上一层焦点，关闭最后一层后恢复原控件仍有效的焦点。输入范围在新画面实际呈现后切换，并取消范围外的拖动。完整示例见 [author_modal.aside](../../examples/author_modal/src/main.aside)，可用第一节的 dev/build/run 命令运行。
 
+正在接入的 `popup` 把普通内容浮在父节点旁边，适合下拉菜单、选项面板和提示。它默认使用模态输入；定位随父节点布局，空间不足时翻转并限制在视口内，长内容可组合 scroll 和虚拟 list。关闭事件提供 target 和 reason（outside/back），选择值由菜单内的控件决定。隐藏、禁用或移除祖先会撤下浮层；父级布局不为它留空间。
+
+```aside
+trigger.add(popup(placement: "bottom-start", offset: 4,
+    on_dismiss: |event| event.target.remove()) {
+    column(width: 200, gap: 8, padding: 12) {
+        text("Choose a reading speed");
+        button("Slow", on_click: || { preferences.speed = 20; });
+        button("Fast", on_click: || { preferences.speed = 50; });
+    }
+});
+```
+
 键盘激活需要在同一个按钮上按下并松开 Enter 或空格；切换焦点、隐藏、禁用或窗口失焦会取消未完成的按键。
 
 ```aside

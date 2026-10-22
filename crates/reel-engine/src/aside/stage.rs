@@ -64,6 +64,12 @@ aside_host::native_documentation! {
         /// observable offsets. follow_end follows appended content while at the end.
         /// content_align positions content smaller than the viewport.
         "reel::scroll";
+        /// Float ordinary children beside this node's logical parent, above the scene.
+        /// The parent anchors placement without measuring the popup in its flow.
+        /// Defaults to modal:true. on_dismiss receives {target, reason}, where reason
+        /// is outside or back; removing target closes it. Hiding or disabling an
+        /// ancestor withdraws the layer. A popup without a parent stays unpresented.
+        "reel::popup";
         /// Create a clipped camera container. camera_x/y select the viewed world point;
         /// zoom and camera_rotation transform its ordinary children. Drawing and input
         /// use the same transform; the common x/y properties place the viewport.
@@ -82,19 +88,21 @@ pub(super) mod flow;
 pub(super) mod input;
 mod interaction;
 pub(super) mod overrides;
+pub(super) mod popup;
 pub(super) mod scroll;
 pub(super) mod snapshot;
 pub(super) mod source;
 pub(super) mod text_input;
 
 /// Specific numeric fields share one registration and dispatch order.
-pub(in crate::aside) fn animation_prefixes() -> [(&'static str, &'static [aside_host::Property]); 4]
+pub(in crate::aside) fn animation_prefixes() -> [(&'static str, &'static [aside_host::Property]); 5]
 {
     [
         ("camera", camera::CameraField::PROPERTIES),
         ("scroll", scroll::ScrollField::PROPERTIES),
         ("flow", flow::FlowField::PROPERTIES),
         ("grid", flow::GridField::PROPERTIES),
+        ("popup", popup::PopupField::PROPERTIES),
     ]
 }
 
@@ -486,6 +494,7 @@ impl StageBinding {
             NodeKind::Radio { .. } => controls::RadioField::PROPERTIES.len() as u32,
             NodeKind::Input { .. } => input::InputField::PROPERTIES.len() as u32,
             NodeKind::Scroll { .. } => scroll::ScrollField::PROPERTIES.len() as u32,
+            NodeKind::Popup(_) => popup::PopupField::PROPERTIES.len() as u32,
             NodeKind::Image { .. } => registry::IMAGE_PREFIX.len() as u32,
             NodeKind::Button { .. } => 2,
             _ => 0,
@@ -567,6 +576,7 @@ impl StageBinding {
                 | NodeKind::Column(_)
                 | NodeKind::Grid(_)
                 | NodeKind::Scroll { .. }
+                | NodeKind::Popup(_)
                 | NodeKind::Stack
                 | NodeKind::Cursor
                 | NodeKind::Button { .. }
@@ -827,6 +837,10 @@ impl StageBinding {
                 NodeKind::Scroll { .. } => (
                     scroll::kind(heap, fields)?,
                     scroll::ScrollField::PROPERTIES.len(),
+                ),
+                NodeKind::Popup(_) => (
+                    popup::kind(heap, fields)?,
+                    popup::PopupField::PROPERTIES.len(),
                 ),
                 NodeKind::Slider { .. } => (
                     controls::slider_kind(heap, fields)?,
@@ -1123,6 +1137,10 @@ impl StageBinding {
         let mut current = Some(id);
         let mut root = id;
         while let Some(id) = current {
+            let node = self.scene.node(id).unwrap();
+            if matches!(node.kind, NodeKind::Popup(_)) && node.parent.is_none() {
+                return Ok(false);
+            }
             in_scope |= modal == Some(id);
             let value = self.value(heap, id)?;
             let fields = heap.host_fields(value)?;
@@ -1151,6 +1169,11 @@ impl StageBinding {
     /// Reverse paint order stops at the first visible modal; no strings or full
     /// node properties are copied on the activation path.
     fn modal_scope(&self, heap: &Heap) -> Result<Option<NodeId>, AdapterError> {
+        if self.scene.has_popups()
+            && let Some(modal) = self.popup_modal_scope(heap)?
+        {
+            return Ok(Some(modal));
+        }
         let mut pending: Vec<_> = self
             .scene
             .root()
@@ -1158,6 +1181,9 @@ impl StageBinding {
             .into_iter()
             .collect();
         while let Some((id, children_visited)) = pending.pop() {
+            if matches!(self.scene.node(id).unwrap().kind, NodeKind::Popup(_)) {
+                continue;
+            }
             let value = self.value(heap, id)?;
             let fields = heap.host_fields(value)?;
             let offset = self.property_offset(heap, value)?;
@@ -1206,6 +1232,7 @@ impl StageBinding {
                     | NodeKind::Radio { .. }
                     | NodeKind::TextInput { .. } => true,
                     NodeKind::Button { listening, .. } => *listening,
+                    NodeKind::Popup(popup) => popup.listening,
                     NodeKind::Input {
                         bindings,
                         keyboard,

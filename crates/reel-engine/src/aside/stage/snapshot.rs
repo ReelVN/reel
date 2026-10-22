@@ -25,6 +25,7 @@ pub(in crate::aside) enum Shape {
     Cursor,
     TextArea,
     Grid,
+    Popup,
 }
 
 impl Shape {
@@ -44,6 +45,7 @@ impl Shape {
             "reel::particles" => Self::Particles,
             "reel::camera" => Self::Camera,
             "reel::scroll" => Self::Scroll,
+            "reel::popup" => Self::Popup,
             "reel::grid" => Self::Grid,
             "reel::row" => Self::Row,
             "reel::column" => Self::Column,
@@ -64,6 +66,7 @@ impl Shape {
             Self::Particles => super::super::particles::PREFIX.len(),
             Self::Camera => camera::CameraField::PROPERTIES.len(),
             Self::Scroll => scroll::ScrollField::PROPERTIES.len(),
+            Self::Popup => popup::PopupField::PROPERTIES.len(),
             Self::Row | Self::Column => flow::FlowField::PROPERTIES.len(),
             Self::Grid => flow::GridField::PROPERTIES.len(),
             Self::Stack | Self::VirtualList | Self::Cursor => 0,
@@ -123,6 +126,7 @@ impl Shape {
             }
             Self::Camera => camera::kind(heap, fields)?,
             Self::Scroll => scroll::kind(heap, fields)?,
+            Self::Popup => popup::kind(heap, fields)?,
             Self::Row | Self::Column => flow::flow_kind(heap, fields, self == Self::Row)?,
             Self::Grid => flow::grid_kind(heap, fields)?,
             Self::Stack => NodeKind::Stack,
@@ -151,6 +155,7 @@ impl Shape {
             Self::Particles => |h, host, i, v| super::super::particles::validate(h, host, i, v),
             Self::Camera => |h, _, i, v| camera::validate(h, i, v),
             Self::Scroll => |h, _, i, v| scroll::validate(h, i, v),
+            Self::Popup => |h, _, i, v| popup::validate(h, i, v),
             Self::Row | Self::Column => |h, _, i, v| flow::validate_flow(h, i, v),
             Self::Grid => |h, _, i, v| flow::validate_grid(h, i, v),
             Self::Stack | Self::VirtualList | Self::Cursor => {
@@ -186,6 +191,7 @@ impl StageBinding {
             ("reel.particles", Shape::Particles),
             ("reel.camera", Shape::Camera),
             ("reel.scroll", Shape::Scroll),
+            ("reel.popup", Shape::Popup),
             ("reel.flow", Shape::Row),
             ("reel.grid", Shape::Grid),
             ("reel.layout", Shape::Stack),

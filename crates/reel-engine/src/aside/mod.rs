@@ -978,6 +978,7 @@ impl SessionVm {
             | "reel::grid"
             | "reel::camera"
             | "reel::scroll"
+            | "reel::popup"
             | "reel::stack"
             | "reel::cursor"
             | "reel::stage::replace" => {
