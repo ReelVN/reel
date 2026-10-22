@@ -118,10 +118,7 @@ impl State {
                 .ok_or(
                     "user data directory is unavailable; set StoryWindowOptions.save_directory",
                 )?;
-            crate::saves::game_save_directory(
-                &data,
-                &options.assets.root.canonicalize()?.to_string_lossy(),
-            )
+            crate::saves::default_save_directory(&data, &options.assets.root)?
         };
         let save_bytes = options.save_bytes;
         let assets = driver.ui().assets();
