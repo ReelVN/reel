@@ -57,8 +57,9 @@ generation. Shutdown drops the surface before its native window.
 
 Temporary pressure retries after completion. Permanent refusal waits for a new
 state or size invalidation. Expose repaint uses the last accepted CPU frame and
-keeps its original input geometry. Actual target-device tests cover acquisition,
-presentation and loss; headless recording/readback cover their own paths.
+keeps its original input geometry. Acquisition, presentation and loss depend on
+the native surface, adapter and driver. Headless recording/readback cover their
+own paths; device results apply to the hardware and configuration measured.
 
 ## Checks
 

@@ -12,13 +12,13 @@ Reel 让创作者用代码组合画面、对白、UI、演出和嵌入的 2D 游
 
 | 领域 | 可用能力 | 后续工作 |
 | --- | --- | --- |
-| 语言与编辑器 | 模块、函数、类、可观察状态、宿主等待、执行快照；检查、格式化、补全与定义跳转 | [语言 #65](https://github.com/jhq223/reel/issues/65)、[编辑体验 #142](https://github.com/jhq223/reel/issues/142) |
+| 语言与编辑器 | 模块、函数、类、可观察状态、宿主等待、执行快照；检查、格式化、补全与定义跳转 | [类型推断、语言与 LSP #65](https://github.com/jhq223/reel/issues/65) |
 | 画面与交互 | 自定义 ADV/NVL、选择和历史；图片控件、Flex/Grid、虚拟列表、锚定浮层、文本编辑；键鼠、触摸和手柄动作 | [组合表达 #132](https://github.com/jhq223/reel/issues/132) |
-| 演出 | 组合动画、曲线、时钟、临时作用域、遮罩、转场、粒子、相机和分块大图 | [效果 #92](https://github.com/jhq223/reel/issues/92)、[2D 场景 #101](https://github.com/jhq223/reel/issues/101) |
-| 媒体与资源 | 短音效、流式长音轨、片段队列、视频节点、后台资源加载和分卷发布 | [音频 #67](https://github.com/jhq223/reel/issues/67)、[视频设备验收 #192](https://github.com/jhq223/reel/issues/192)、[运行成本 #152](https://github.com/jhq223/reel/issues/152) |
-| 项目与保存 | 固定项目入口、源码内翻译、开发与发布导出、执行快照和独立系统数据 | [保存与恢复 #91](https://github.com/jhq223/reel/issues/91)、[平台覆盖 #93](https://github.com/jhq223/reel/issues/93) |
+| 演出 | 组合动画、曲线、时钟、临时作用域、遮罩、转场、粒子、相机和分块大图 | [效果 #92](https://github.com/jhq223/reel/issues/92) |
+| 媒体与资源 | 短音效、流式长音轨、片段队列、视频节点、后台资源加载和分卷发布 | [音频 #67](https://github.com/jhq223/reel/issues/67)、[运行成本 #152](https://github.com/jhq223/reel/issues/152) |
+| 项目与保存 | 固定项目入口、源码内翻译、开发与发布导出、执行快照和独立系统数据 | [保存与恢复 #91](https://github.com/jhq223/reel/issues/91) |
 
-各项剩余范围和推进顺序见[总清单 #94](https://github.com/jhq223/reel/issues/94)。设备支持以对应平台的实际验收为准。
+当前优先完善类型推断；生成器保留在语言计划中，[2D 场景 #101](https://github.com/jhq223/reel/issues/101) 留到下一轮。各项范围和推进顺序见[总清单 #94](https://github.com/jhq223/reel/issues/94)。设备支持以对应平台的实际验证为准。
 
 ## 可运行示例
 

@@ -84,7 +84,7 @@ cargo test --locked -p reel-player --features window actual_window_retry_and_rec
 cargo run --locked -p reel-dev -- deps
 ```
 
-Native presentation, IME/clipboard and physical gamepad input require checks on
-the target device. System accessibility adapter integration remains open.
+Native presentation, IME/clipboard and physical gamepad behavior depend on the
+target window system and hardware. System accessibility adapters remain unimplemented.
 Headless source/ASB and accepted-frame routing checks use the same library paths. See [renderer ownership](../reel-render/README.md) and
 [author input](../../examples/author_input/src/main.aside).
