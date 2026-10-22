@@ -19,17 +19,18 @@ fn property(owner: &str, doc: PropertyDocumentation) -> Member {
     member
 }
 
+fn schema<T: PropertySchema>() -> Vec<PropertyDocumentation> {
+    T::PROPERTIES
+        .iter()
+        .enumerate()
+        .map(|(index, property)| PropertyDocumentation {
+            property,
+            markdown: T::documentation(index),
+        })
+        .collect()
+}
+
 pub(in crate::aside) fn properties(symbol: &str) -> Vec<PropertyDocumentation> {
-    fn schema<T: PropertySchema>() -> Vec<PropertyDocumentation> {
-        T::PROPERTIES
-            .iter()
-            .enumerate()
-            .map(|(index, property)| PropertyDocumentation {
-                property,
-                markdown: T::documentation(index),
-            })
-            .collect()
-    }
     let mut properties = match symbol {
         "reel::image" | "reel::video" => schema::<appearance::ImageField>(),
         "reel::text" => schema::<appearance::TextField>(),
@@ -110,10 +111,13 @@ pub(in crate::aside) fn describe(api: &mut Api) {
     for &(constructor, type_name) in registry::NODE_CONSTRUCTORS {
         let symbol = format!("reel::{constructor}");
         let property_docs = properties(&symbol);
-        api.native_mut(&symbol).property_parameters = property_docs
-            .iter()
-            .map(|doc| doc.property.name.to_owned())
-            .collect();
+        let prefix = registry::node_prefix(&symbol);
+        let declaration = api.native_mut(&symbol);
+        declaration.property_group(
+            &format!("{} properties", type_name.rsplit("::").next().unwrap()),
+            property_docs[..prefix.len()].iter(),
+        );
+        declaration.property_group("Node properties", property_docs[prefix.len()..].iter());
         let mut hints = property_docs
             .iter()
             .map(|doc| {
@@ -146,7 +150,6 @@ pub(in crate::aside) fn describe(api: &mut Api) {
         if type_name == node_name || api.types.iter().any(|ty| ty.name == type_name) {
             continue;
         }
-        let prefix = registry::node_prefix(&symbol);
         let mut members = property_docs
             .into_iter()
             .take(prefix.len())
@@ -210,10 +213,8 @@ pub(in crate::aside) fn describe(api: &mut Api) {
             .map(|property| (property.name, bindable(property.source_type())))
             .collect::<Vec<_>>();
         api.refine(symbol, result, &hints);
-        api.native_mut(symbol).property_parameters = NodeProperty::PROPERTIES
-            .iter()
-            .map(|property| property.name.to_owned())
-            .collect();
+        api.native_mut(symbol)
+            .property_group("Node properties", &schema::<NodeProperty>());
     }
     api.refine("reel::stage::replace", TypeHint::Null, &[("root", node)]);
 }

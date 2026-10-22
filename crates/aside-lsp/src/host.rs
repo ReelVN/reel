@@ -25,6 +25,27 @@ pub struct HostLocation {
 pub struct HostDocument {
     pub uri: Uri,
     pub text: Arc<str>,
+    /// Source ranges retain the original host identity, independently of the
+    /// declaration view's display syntax. Symbols are shared per declaration;
+    /// ranges are ordered by start, unique and non-overlapping.
+    pub references: Vec<HostDocumentReference>,
+}
+impl HostDocument {
+    pub(crate) fn reference_at(&self, offset: usize) -> Option<&HostDocumentReference> {
+        let index = self
+            .references
+            .partition_point(|reference| usize::from(reference.range.start()) <= offset)
+            .checked_sub(1)?;
+        let reference = &self.references[index];
+        (offset <= usize::from(reference.range.end())).then_some(reference)
+    }
+}
+
+/// One navigable symbol occurrence in a generated host document.
+#[derive(Debug, Clone)]
+pub struct HostDocumentReference {
+    pub range: TextRange,
+    pub symbol: Arc<ExternalSymbol>,
 }
 
 /// A displayable literal default or an optional parameter with no source value.
@@ -50,8 +71,21 @@ pub struct HostDeclaration {
     /// Parameters contributed by the real property schema. Hover may summarize
     /// optional entries; completion and signature help retain the full contract.
     pub property_parameters: Vec<String>,
+    /// English descriptions from the registered parameter or property declaration.
+    pub parameter_documentation: BTreeMap<String, Arc<str>>,
+    /// Readable groups retain their contributing property schema's names.
+    pub property_groups: Vec<PropertyParameterGroup>,
     /// A property's real registered default, when it has one.
     pub property_default: Option<String>,
+}
+
+/// Actual parameters contributed by one named property schema.
+#[derive(Debug, Clone)]
+pub struct PropertyParameterGroup {
+    /// Author-facing name of the contributing schema.
+    pub name: String,
+    /// Actual registered parameter names, in schema order.
+    pub parameters: Vec<String>,
 }
 
 /// Members of a real named host type used by annotations and return values.
