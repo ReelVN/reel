@@ -27,6 +27,14 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         );
     }
     api.refine("reel::saves::list", operation.clone(), &[]);
+    api.refine(
+        "reel::saves::copy",
+        operation.clone(),
+        &[
+            ("source", TypeHint::String),
+            ("destination", TypeHint::String),
+        ],
+    );
     for method in ["read", "write", "delete"] {
         api.refine(
             &format!("reel::persistent::{method}"),
@@ -82,6 +90,11 @@ pub enum SaveOperation {
     },
     Load {
         slot: String,
+    },
+    /// Copy a committed slot without capturing the running session.
+    Copy {
+        source: String,
+        destination: String,
     },
     Delete {
         slot: String,
@@ -298,6 +311,16 @@ impl SessionVm {
                     }
                 }
                 "reel::saves::load" => SaveOperation::Load { slot },
+                "reel::saves::copy" => {
+                    let destination = text::read_string(self.vm.heap(), args[1], self.read_limit)?;
+                    if destination.is_empty() {
+                        return Err(AdapterError::Input("save destination must not be empty"));
+                    }
+                    SaveOperation::Copy {
+                        source: slot,
+                        destination,
+                    }
+                }
                 "reel::saves::delete" => SaveOperation::Delete { slot },
                 "reel::saves::thumbnail" => SaveOperation::Thumbnail { slot },
                 _ => unreachable!(),
@@ -547,6 +570,14 @@ aside_host::native_documentation! {
         /// code after this request does not continue in the old session. Failure rejects
         /// the operation and remains catchable in the requesting session.
         "reel::saves::load";
+        /// Copy an existing committed slot to another nonempty slot identifier.
+        /// Preserves the saved execution state, title, timestamp and thumbnail and
+        /// atomically replaces the destination. The current session keeps running.
+        /// Returns a session-owned operation; awaiting yields null on success or
+        /// throws on missing source or storage failure. Equal identifiers validate
+        /// the source and succeed without writing. Accepted copies follow the same
+        /// storage ordering and lifetime as saves and deletes.
+        "reel::saves::copy";
         /// Delete a nonempty save slot identifier and return a session-owned operation.
         /// Awaiting yields null after deletion or throws on storage failure.
         /// This affects story save slots rather than persistent key/value records.

@@ -167,13 +167,15 @@ fn service_signatures_refine_known_inputs_and_preserve_dynamic_font_and_data_for
         );
         reel_engine::aside::source::compile_story(&source, "game::main", 1, "main").unwrap();
     }
-    let source = "fn main(){game.reading().set_auto(enabled:true,delay:1,condition:derive(||true));game.reading().set_skip(false);game.reading().pause(false);let operation=saves.save(\"slot\",title:\"Saved\",thumbnail:null);operation.status;operation.error;operation.restored;let data=persistent.read(\"key\",default:0);persistent.write(\"key\",{value:1});stage.transition(||null);}";
+    let source = "fn main(){game.reading().set_auto(enabled:true,delay:1,condition:derive(||true));game.reading().set_skip(false);game.reading().pause(false);let operation=saves.save(\"slot\",title:\"Saved\",thumbnail:null);operation.status;operation.error;operation.restored;let copied=saves.copy(source:\"slot\",destination:\"backup\");copied.status;copied.error;let data=persistent.read(\"key\",default:0);persistent.write(\"key\",{value:1});stage.transition(||null);}";
     reel_engine::aside::source::compile_story(source, "game::main", 1, "main").unwrap();
     for body in [
         "game.configure(title:12);",
         "game.configure(width:1.5);",
         "game.reading().set_auto(enabled:1);",
         "saves.save(1);",
+        "saves.copy(1,\"backup\");",
+        "saves.copy(\"slot\",1);",
         "persistent.read(1);",
         "stage.transition(1);",
     ] {

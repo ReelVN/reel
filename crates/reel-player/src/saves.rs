@@ -244,6 +244,9 @@ impl SaveStorage for DirectorySaves {
             return Ok(());
         }
         let metadata = postcard::to_allocvec(&(destination, &slot.title, slot.saved_at))?;
+        if metadata.len() as u64 > self.max_snapshot_bytes {
+            return Err("slot metadata exceeds storage budget".into());
+        }
         let published = reel_storage::publish(&self.path(destination), true, |output| {
             output.write_all(b"REELSLOT")?;
             output.write_all(&(metadata.len() as u64).to_le_bytes())?;
@@ -432,6 +435,11 @@ impl<W: Write> Write for LimitedWriter<W> {
 }
 
 pub enum StorageJob {
+    /// Stream an existing slot into an atomically published destination.
+    Copy {
+        source: String,
+        destination: String,
+    },
     Save {
         slot: String,
         title: String,
@@ -495,6 +503,13 @@ impl SaveService {
                         }
                         StorageJob::Load(slot) => {
                             StorageResult::Loaded(Box::new(storage.read(&slot)?))
+                        }
+                        StorageJob::Copy {
+                            source,
+                            destination,
+                        } => {
+                            storage.copy(&source, &destination)?;
+                            StorageResult::Saved
                         }
                         StorageJob::Delete(slot) => {
                             storage.delete(&slot)?;
@@ -696,6 +711,13 @@ mod tests {
         fs::write(storage.path("corrupt"), b"invalid slot").unwrap();
         assert!(storage.copy("corrupt", "backup").is_err());
         assert_eq!(fs::read(storage.path("backup")).unwrap(), copied);
+
+        let destination = "x".repeat(128);
+        storage.copy("backup", &destination).unwrap();
+        let original = fs::read(storage.path(&destination)).unwrap();
+        let constrained = DirectorySaves::new(&root, 64);
+        assert!(constrained.copy("backup", &destination).is_err());
+        assert_eq!(fs::read(storage.path(&destination)).unwrap(), original);
     }
 
     #[test]

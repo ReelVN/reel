@@ -381,7 +381,7 @@ fn build_api() -> Api {
         ),
         (
             "reel::saves",
-            "Save, load, list and delete story slots, and retrieve their captured thumbnails.",
+            "Save, load, copy, list and delete story slots, and retrieve their captured thumbnails.",
         ),
         (
             "reel::persistent",
