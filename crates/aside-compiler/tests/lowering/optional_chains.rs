@@ -465,9 +465,7 @@ fn defaults_initializer_and_forwarded_captures_use_the_existing_binding_model() 
     super::initializer_locals::assert_local_structure(&m, &c);
     let p = c.program.package();
     let f = function(p, "f");
-    let default = p.signatures[f.signature.index()].parameters[1]
-        .default
-        .unwrap();
+    let default = function_default(&p.signatures[f.signature.index()].parameters[1]);
     let d = &p.functions[default.index()];
     assert_eq!(d.context, bc::Context::NoWait);
     assert_eq!(pcs(d, bc::Opcode::BranchNull).len(), 1);

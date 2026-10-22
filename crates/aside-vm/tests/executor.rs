@@ -4095,13 +4095,13 @@ fn native_default_registry(closures: bool) -> RuntimeSupport {
                         name: SymbolId(14),
                         ty: TypeId(if closures { 0 } else { 1 }),
                         mutable: false,
-                        default: Some(FunctionId(1)),
+                        default: Some(ParameterDefault::Function(FunctionId(1))),
                     },
                     Parameter {
                         name: SymbolId(15),
                         ty: TypeId(if closures { 0 } else { 1 }),
                         mutable: true,
-                        default: Some(FunctionId(2)),
+                        default: Some(ParameterDefault::Function(FunctionId(2))),
                     },
                 ],
                 rest: Some(Parameter {

@@ -9,13 +9,19 @@ fn cancelled_preparation_stages_route_at_caller_without_entering_callee_pc_zero_
             "bind",
             "defaults",
             "default-call",
+            "default-constant",
             "parameter",
             "install",
         ] {
-            if function == 2 && target == "default-call" {
+            if function == 2 && matches!(target, "default-call" | "default-constant") {
                 continue;
             }
             let mut p = fixtures::parameter_cell_default();
+            if target == "default-constant" {
+                let id = ConstId(p.constants.len() as u32);
+                p.constants.push(Const::Tuple(vec![ConstId(1), ConstId(2)]));
+                p.signatures[1].parameters[1].default = Some(ParameterDefault::Constant(id));
+            }
             let f = &mut p.functions[function as usize];
             let i = Instruction::new;
             f.code = vec![
@@ -79,6 +85,7 @@ fn cancelled_preparation_stages_route_at_caller_without_entering_callee_pc_zero_
                         ScriptPhase::Bind(_) => "bind",
                         ScriptPhase::Defaults { .. } => "defaults",
                         ScriptPhase::DefaultCall { .. } => "default-call",
+                        ScriptPhase::DefaultConstant { .. } => "default-constant",
                         ScriptPhase::Parameter { .. } => "parameter",
                         ScriptPhase::Install { .. } => "install",
                         _ => "body/exit",

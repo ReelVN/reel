@@ -156,6 +156,7 @@ impl Vm {
                         | ScriptPhase::Bind(_)
                         | ScriptPhase::Defaults { .. }
                         | ScriptPhase::DefaultCall { .. }
+                        | ScriptPhase::DefaultConstant { .. }
                         | ScriptPhase::Parameter { .. }
                         | ScriptPhase::Install { .. }
                 );

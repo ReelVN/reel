@@ -268,10 +268,8 @@ fn defaults_and_initializer_captures_keep_member_operations_and_binding_identity
     let c = compiled("{let t={x:1};fn f(a=t.x){let c=||t.x;c()}f();t.x=2;}");
     let p = c.program.package();
     let f = function(p, "f");
-    let default = &p.functions[p.signatures[f.signature.index()].parameters[0]
-        .default
-        .unwrap()
-        .index()];
+    let default =
+        &p.functions[function_default(&p.signatures[f.signature.index()].parameters[0]).index()];
     assert_eq!(default.context, bc::Context::NoWait);
     assert_eq!(default.captures, f.captures);
     assert_eq!(pcs(default, bc::Opcode::MemberGet).len(), 1);
@@ -574,7 +572,7 @@ fn resolved_native_members_keep_trusted_linkage_for_calls_and_values() {
         assert_eq!(p.functions[0], seed.package().functions[0]);
         assert_eq!(
             p.signatures[1].parameters[0].default,
-            Some(bc::FunctionId(0))
+            Some(bc::ParameterDefault::Function(bc::FunctionId(0)))
         );
         let f = function(p, "f");
         assert!(pcs(f, bc::Opcode::MemberGet).is_empty());

@@ -138,7 +138,14 @@ pub struct Parameter {
     pub ty: TypeId,
     /// Rebinding permission. Passing a parameter always uses ordinary value semantics.
     pub mutable: bool,
-    pub default: Option<FunctionId>,
+    pub default: Option<ParameterDefault>,
+}
+/// An omitted argument either reads an immutable pool value or evaluates a
+/// function against the callee's preceding parameters and lexical captures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParameterDefault {
+    Constant(ConstId),
+    Function(FunctionId),
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Signature {

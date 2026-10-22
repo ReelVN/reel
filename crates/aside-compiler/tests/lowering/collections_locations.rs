@@ -367,7 +367,8 @@ fn defaults_closures_and_initializer_collection_captures_roundtrip() {
         .signatures
         .iter()
         .flat_map(|s| s.parameters.iter())
-        .filter_map(|p| p.default)
+        .filter(|p| p.default.is_some())
+        .map(function_default)
         .collect();
     assert_eq!(defaults.len(), 2);
     assert_eq!(

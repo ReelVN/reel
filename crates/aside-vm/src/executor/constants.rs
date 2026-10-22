@@ -11,6 +11,13 @@ pub(super) struct ConstantWork {
     pub index: u32,
 }
 
+pub(super) enum ConstantStep {
+    Blocked,
+    Pending,
+    Ready(Value),
+    Fault(FaultKind),
+}
+
 impl Vm {
     fn cached_constant(&self, id: ConstId) -> Option<Value> {
         match &self.program.package().constants[id.index()] {
@@ -44,18 +51,35 @@ impl Vm {
         Ok(Some(value))
     }
 
+    pub(super) fn constant_allocation_bytes(&self, id: ConstId) -> u64 {
+        if self.cached_constant(id).is_some() {
+            return 0;
+        }
+        self.heap.object_allocation_bytes(
+            if matches!(
+                self.program.package().constants[id.index()],
+                Const::Tuple(_)
+            ) {
+                2
+            } else {
+                1
+            },
+        )
+    }
+
     pub(super) fn constant_step(
         &mut self,
-        frame: &mut ScriptFrame,
-        work: ConstantWork,
+        roots: RootRangeToken,
+        slots: [u32; 2],
+        work: &mut ConstantWork,
         meter: &mut Meter,
-    ) -> Result<bool, VmError> {
-        let ConstantWork { id, index, .. } = work;
+    ) -> Result<ConstantStep, VmError> {
+        let ConstantWork { id, index, .. } = *work;
         let Const::Tuple(elements) = &self.program.package().constants[id.index()] else {
             unreachable!("tuple construction")
         };
         let next = elements.get(index as usize).copied();
-        let parents = self.value(frame.env, 2)?;
+        let parents = self.value(roots, slots[1])?;
         let depth = self.heap.info(parents)?.len;
         let nested = next.is_some_and(|child| {
             matches!(
@@ -64,9 +88,10 @@ impl Vm {
             ) && self.cached_constant(child).is_none()
         });
         let allocation = if nested {
-            Values::growth_bytes(depth.into(), 3)
+            Values::growth_bytes(depth.into(), 3) + self.heap.object_allocation_bytes(1)
         } else if next.is_some() {
             Values::growth_bytes(index.into(), 1)
+                + next.map_or(0, |id| self.constant_allocation_bytes(id))
         } else if next.is_none() && depth != 0 {
             let parent = self.heap.get_field(parents, depth - 3)?;
             Values::growth_bytes(self.heap.info(parent)?.len.into(), 1)
@@ -74,25 +99,28 @@ impl Vm {
             0
         };
         if !meter.take(0, 8, allocation) {
-            return Ok(false);
+            return Ok(ConstantStep::Blocked);
         }
-        let result = self.constant_step_inner(frame, work, next, nested);
-        if let Err(kind) = result {
-            self.collection_fault(frame, kind)?;
-        }
-        Ok(true)
+        Ok(
+            match self.constant_step_inner(roots, slots, work, next, nested) {
+                Ok(Some(value)) => ConstantStep::Ready(value),
+                Ok(None) => ConstantStep::Pending,
+                Err(kind) => ConstantStep::Fault(kind),
+            },
+        )
     }
 
     fn constant_step_inner(
         &mut self,
-        frame: &mut ScriptFrame,
-        work: ConstantWork,
+        roots: RootRangeToken,
+        slots: [u32; 2],
+        work: &mut ConstantWork,
         next: Option<ConstId>,
         nested: bool,
-    ) -> Result<(), FaultKind> {
-        let ConstantWork { dest, id, index } = work;
-        let builder = self.value(frame.env, 1).map_err(vm_fault)?;
-        let parents = self.value(frame.env, 2).map_err(vm_fault)?;
+    ) -> Result<Option<Value>, FaultKind> {
+        let ConstantWork { dest, id, index } = *work;
+        let builder = self.value(roots, slots[0]).map_err(vm_fault)?;
+        let parents = self.value(roots, slots[1]).map_err(vm_fault)?;
         if let Some(child) = next {
             if nested {
                 self.heap.array_push(parents, builder).map_err(heap_fault)?;
@@ -103,34 +131,30 @@ impl Vm {
                     .array_push(parents, Value::int(i64::from(index + 1)))
                     .map_err(heap_fault)?;
                 let nested = self.heap.alloc_array(&[]).map_err(heap_fault)?;
-                self.put(frame.env, 1, nested).map_err(vm_fault)?;
-                frame.phase = ScriptPhase::Constant(ConstantWork {
+                self.put(roots, slots[0], nested).map_err(vm_fault)?;
+                *work = ConstantWork {
                     dest,
                     id: child,
                     index: 0,
-                });
+                };
             } else {
                 let value = self
                     .constant_value(child)
                     .map_err(heap_fault)?
                     .expect("leaf or cached tuple");
                 self.heap.array_push(builder, value).map_err(heap_fault)?;
-                frame.phase = ScriptPhase::Constant(ConstantWork {
+                *work = ConstantWork {
                     dest,
                     id,
                     index: index + 1,
-                });
+                };
             }
-            return Ok(());
+            return Ok(None);
         }
         self.heap.seal_tuple(builder).map_err(heap_fault)?;
         self.constant_cache.data[id.index()] = builder;
         if self.heap.info(parents).map_err(heap_fault)?.len == 0 {
-            self.write(*frame, dest, builder)?;
-            self.clear(frame.env, 1).map_err(vm_fault)?;
-            self.clear(frame.env, 2).map_err(vm_fault)?;
-            frame.pc.0 += 1;
-            frame.phase = ScriptPhase::Body;
+            return Ok(Some(builder));
         } else {
             let index = self
                 .heap
@@ -153,9 +177,35 @@ impl Vm {
                 .map_err(heap_fault)?
                 .expect("constant parent cursor");
             self.heap.array_push(parent, builder).map_err(heap_fault)?;
-            self.put(frame.env, 1, parent).map_err(vm_fault)?;
-            frame.phase = ScriptPhase::Constant(ConstantWork { dest, id, index });
+            self.put(roots, slots[0], parent).map_err(vm_fault)?;
+            *work = ConstantWork { dest, id, index };
         }
-        Ok(())
+        Ok(None)
+    }
+
+    pub(super) fn finish_constant(
+        &mut self,
+        roots: RootRangeToken,
+        slots: [u32; 2],
+    ) -> Result<(), VmError> {
+        self.clear(roots, slots[0])?;
+        self.clear(roots, slots[1])
+    }
+
+    /// Only an uncached aggregate needs temporary roots and a construction cursor.
+    pub(super) fn start_constant(
+        &mut self,
+        id: ConstId,
+        roots: RootRangeToken,
+        slots: [u32; 2],
+    ) -> Result<Option<Value>, FaultKind> {
+        if let Some(value) = self.constant_value(id).map_err(heap_fault)? {
+            return Ok(Some(value));
+        }
+        let builder = self.heap.alloc_array(&[]).map_err(heap_fault)?;
+        self.put(roots, slots[0], builder).map_err(vm_fault)?;
+        let parents = self.heap.alloc_array(&[]).map_err(heap_fault)?;
+        self.put(roots, slots[1], parents).map_err(vm_fault)?;
+        Ok(None)
     }
 }

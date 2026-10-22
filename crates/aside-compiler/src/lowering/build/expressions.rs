@@ -713,59 +713,15 @@ impl FunctionBuilder<'_, '_> {
         Ok(())
     }
     pub(super) fn number(&mut self, text: &str, negative: bool) -> Result<bc::Const, Box<Error>> {
-        let mut bytes = Vec::new();
-        self.l.b.work(text.len() as u64)?;
-        self.l.b.reserve(&mut bytes, text.len())?;
-        bytes.extend(text.bytes().filter(|&c| c != b'_'));
-        let text = std::str::from_utf8(&bytes).expect("numeric source UTF-8");
-        let prefix = text.get(..2).unwrap_or("");
-        let (radix, digits) = match prefix {
-            "0x" | "0X" => (16, &text[2..]),
-            "0o" | "0O" => (8, &text[2..]),
-            "0b" | "0B" => (2, &text[2..]),
-            _ => (10, text),
-        };
-        let value = if radix == 10 && text.bytes().any(|c| matches!(c, b'.' | b'e' | b'E')) {
-            let float: f64 = text.parse().map_err(|_| {
-                self.l
-                    .b
-                    .error(ErrorKind::InvalidIr, "analyzed float literal")
-            })?;
-            bc::Const::FloatBits(if negative { -float } else { float }.to_bits())
-        } else {
-            let value = i128::from_str_radix(digits, radix).map_err(|_| {
-                self.l
-                    .b
-                    .error(ErrorKind::InvalidIr, "analyzed integer literal")
-            })?;
-            let value = if negative { -value } else { value };
-            bc::Const::Int(i64::try_from(value).map_err(|_| {
-                self.l
-                    .b
-                    .error(ErrorKind::InvalidIr, "integer literal exceeds int64")
-            })?)
-        };
-        self.l.b.release(bytes);
-        Ok(value)
+        self.l.number(text, negative)
     }
     fn string_value(&mut self, n: h::NodeId, depth: usize) -> Result<Option<bc::Reg>, Box<Error>> {
         use crate::strings::{StringLiteral, StringPart};
         let literal = StringLiteral::new(self.l.m.hir(), n).expect("analyzed string");
         let interpolated = self.l.m.hir().children(n).next().is_some();
         if !interpolated {
-            let mut bytes = Vec::new();
-            for part in literal.parts() {
-                let StringPart::Text(text) = part else {
-                    unreachable!("static string")
-                };
-                let piece = self.string_piece(text)?;
-                self.l.b.reserve(&mut bytes, piece.len())?;
-                self.l.b.work(piece.len() as u64)?;
-                bytes.extend_from_slice(piece.as_bytes());
-                self.l.b.release_bytes(piece.capacity());
-            }
-            let value = String::from_utf8(bytes).expect("decoded unicode");
-            return Ok(Some(self.constant(bc::Const::Utf8(value), n)?));
+            let value = self.l.literal_constant(n)?.expect("static string");
+            return Ok(Some(self.constant(value, n)?));
         }
         let out = self.temp()?;
         self.op(bc::Opcode::TextNew, out.0, 0, 0, n)?;
@@ -788,14 +744,6 @@ impl FunctionBuilder<'_, '_> {
         Ok(Some(out))
     }
     fn string_piece(&mut self, text: crate::strings::StringText<'_>) -> Result<String, Box<Error>> {
-        let mut bytes = Vec::new();
-        self.l.b.reserve(&mut bytes, text.text.len())?;
-        self.l.b.work(text.text.len() as u64)?;
-        text.append_to(&mut bytes).map_err(|_| {
-            self.l
-                .b
-                .error(ErrorKind::InvalidIr, "analyzed string escape")
-        })?;
-        Ok(String::from_utf8(bytes).expect("decoded unicode"))
+        self.l.string_piece(text)
     }
 }

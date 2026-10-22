@@ -512,7 +512,8 @@ Quirrel fixture 保留来源 commit/hash、原断言、构建参数和分类：p
 公共格式位于 aside-vm::bytecode，只包含程序数据、验证和反汇编；aside-compiler 单向依赖它，格式模块不引用 Rowan、parser 或 Reel。下列合同承载完整语言目标，各实现任务分别记录已运行的指令与行为。
 
 程序与验证
-BytecodePackage 保存格式/语言/宿主 ABI 版本、内容版本、符号、常量、模块、函数、能力和源码映射。ModuleDef 包含规范化路径、固定导入/导出、全局绑定与初始化入口；FunctionDef 包含 Plain/Async/Generator/Native 类别、统一 Signature、捕获布局、寄存器数、代码和异常/清理区域。Signature 保存参数名称/顺序/类型/可变性、缺省表达式入口、rest、返回契约和效果；缺省仍在每次调用时运行，并继承被调用闭包的定义处词法捕获和 ModuleInstance；前序参数作为额外输入。捕获分析包含缺省表达式。
+BytecodePackage 保存格式/语言/宿主 ABI 版本、内容版本、符号、常量、模块、函数、能力和源码映射。ModuleDef 包含规范化路径、固定导入/导出、全局绑定与初始化入口；FunctionDef 包含 Plain/Async/Generator/Native 类别、统一 Signature、捕获布局、寄存器数、代码和异常/清理区域。Signature 保存参数名称/顺序/类型/可变性、缺省、rest、返回契约和效果。ParameterDefault 区分 Constant(ConstId) 与 Function(FunctionId)：字面常量直接引用常量池，表达式入口继承被调用闭包的定义处词法捕获和 ModuleInstance，并接收前序参数。仅省略实参时求缺省值；捕获分析包含缺省表达式，数组和表构造保持逐次执行。
+脚本和 native 共用常量物化及参数类型检查。常量缺省复用不可变值，聚合常量的分片构造、临时根、取消与恢复沿普通常量加载协议；常量缺省不建立函数帧或前序参数副本。
 每次调用按参数顺序建立本次独立绑定，前序参数在后续缺省表达式开始前完成初始化。缺省表达式对前序参数的读写、其中产生的闭包与函数正文共享同一个词法绑定。需要共享可变身份的参数在这一步建立 Cell，正文入口复用它；捕获分析和 lowering 同时考虑缺省中的读写与闭包。已经初始化且身份无关的只读前缀可按值传递。全部调用实参仍先按源码顺序求值，再开始参数绑定。
 
 缺省函数由参数描述中的 default 入口选择。编译器为表达式/块尾结果生成的 Return 结束该缺省入口；源码中的显式 return 继续受缺省词法边界约束。只有 VM 内部的缺省前缀调用路径可以传递前序参数 Cell 身份；普通 CallTarget/Arguments 始终传递作者值并建立新的调用绑定。同一个缺省 FunctionDef 作为普通函数调用时也遵守普通规则。验证器允许 Parameter(i) 使用 Value(Reg(i)) 或 Cell(Reg(i))，并逐对核对被调用函数与其缺省入口的前缀名称、类型、可变性、存储布局及捕获布局。内部前缀路径验证真实 Cell 的初始化、内容和契约，Cell 句柄保持内部表示。缺省入口与正文共享的是本次调用绑定，定义处捕获仍来自被调用闭包的词法环境。
@@ -744,7 +745,7 @@ text、控件标签与 text_input 共用间距属性，支持构造、赋值和 
 
 Reel 舞台文字支持 `text_fit: "none" | "shrink"`、`min_font_size`、`text_outline` 与 `text_outline_color`，可直接赋值或 bind/derive。缩放与描边由共享文字布局/渲染处理，完整文本决定适配，未揭示字形不描边。这些是宿主属性，不引入新语言语法。
 
-共同宿主属性 `text_wrap` 是默认 true 的 bool，支持构造、直接赋值和 bind/derive。它只控制 text 节点的自动折行；false 保留显式换行，溢出沿 clip 裁剪。控件标签及文本编辑器不改变原有换行规则，`text_fit:"shrink"` 仍按完整的不自动折行文本适配。字段与同包执行快照一起恢复。
+共同宿主属性 `text_wrap` 是默认 true 的 bool，支持构造、直接赋值和 bind/derive，控制 text 与 text_area 的自动折行；false 保留显式换行，溢出沿裁剪或编辑框滚动处理。text_input 保持单行，控件标签保留自身换行规则；`text_fit:"shrink"` 仍按完整的不自动折行文本适配。字段与同包执行快照一起恢复。
 
 节点只读可观察 `focus_visible` 表示应显示导航焦点的节点或祖先，`focused` 仍表示实际接收焦点。使用 `derive(|| control.hover || control.focus_visible)` 组合指针与键盘/手柄外观；指针操作隐藏导航焦点外观但不移除键盘接收目标。
 

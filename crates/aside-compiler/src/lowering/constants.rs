@@ -88,6 +88,14 @@ pub(super) fn intern(package: &mut bc::BytecodePackage, b: &mut Budget) -> Resul
             }
         }
     }
+    for signature in &mut package.signatures {
+        b.work(signature.parameters.len() as u64)?;
+        for parameter in &mut signature.parameters {
+            if let Some(bc::ParameterDefault::Constant(id)) = &mut parameter.default {
+                *id = remap[id.index()];
+            }
+        }
+    }
     for function in &mut package.functions {
         b.work(function.code.len() as u64 + function.descriptors.len() as u64)?;
         for instruction in &mut function.code {

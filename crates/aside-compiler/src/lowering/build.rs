@@ -5,6 +5,7 @@ mod collections;
 mod composition;
 mod expansions;
 mod expressions;
+mod literals;
 mod locations;
 mod native_values;
 mod patterns;
@@ -750,8 +751,31 @@ impl Lowerer<'_> {
                     continue;
                 };
                 self.b.span = self.m.hir().node(node).span;
-                self.b.work(p as u64)?;
                 let body_signature = self.package.functions[self.outputs[i].index()].signature;
+                if let Some(value) = self.literal_constant(node)? {
+                    let mut existing = None;
+                    for (index, constant) in self.package.constants.iter().enumerate() {
+                        if source_constant_matches(constant, &value, &mut self.b)? {
+                            existing = Some(bc::ConstId(index as u32));
+                            break;
+                        }
+                    }
+                    let id = if let Some(id) = existing {
+                        self.b.release_bytes(match &value {
+                            bc::Const::Utf8(s) => s.capacity(),
+                            _ => 0,
+                        });
+                        id
+                    } else {
+                        let id = bc::ConstId(self.package.constants.len() as u32);
+                        self.b.push(&mut self.package.constants, value)?;
+                        id
+                    };
+                    self.package.signatures[body_signature.index()].parameters[p].default =
+                        Some(bc::ParameterDefault::Constant(id));
+                    continue;
+                }
+                self.b.work(p as u64)?;
                 let mut prefix = Vec::new();
                 self.b.reserve(&mut prefix, p)?;
                 for param in &self.package.signatures[body_signature.index()].parameters[..p] {
@@ -766,7 +790,7 @@ impl Lowerer<'_> {
                     self.empty_function("$default", signature, bc::Context::NoWait, captures)?;
                 self.defaults[i][p] = Some(default);
                 self.package.signatures[body_signature.index()].parameters[p].default =
-                    Some(default);
+                    Some(bc::ParameterDefault::Function(default));
             }
         }
         Ok(())

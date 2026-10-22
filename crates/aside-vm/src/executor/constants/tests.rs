@@ -298,3 +298,472 @@ fn external_text_binding_checks_identity_range_and_code_point_boundaries() {
     );
     assert!(TextPool::from_bytes(std::sync::Arc::from([0xff])).is_err());
 }
+
+fn default_package(
+    constants: Vec<Const>,
+    selected: usize,
+    native: bool,
+) -> (BytecodePackage, RuntimeSupport) {
+    let mut package = package(constants, selected);
+    let signature = &mut package.signatures[0];
+    signature.parameters = vec![Parameter {
+        name: SymbolId(4),
+        ty: TypeId(0),
+        mutable: false,
+        default: Some(ParameterDefault::Constant(ConstId(selected as u32))),
+    }];
+    let function = &mut package.functions[0];
+    function.code = vec![Instruction::new(Opcode::Return, 0, 0, 0)];
+    function.bindings = vec![BindingDef {
+        name: SymbolId(4),
+        ty: TypeId(0),
+        mutable: false,
+        storage: BindingStorage::Value(Reg(0)),
+        initialization: BindingInitialization::Parameter(0),
+    }];
+    let mut registered = support();
+    if native {
+        function.kind = FunctionKind::Native(NativeId(0));
+        function.name = SymbolId(3);
+        function.register_count = 0;
+        function.bindings.clear();
+        function.code.clear();
+        package.natives = vec![NativeDef {
+            symbol: SymbolId(3),
+            signature: SignatureId(0),
+            abi_version: 1,
+            capabilities: vec![],
+        }];
+        registered.natives = vec![NativeSupport {
+            symbol: "host::echo".into(),
+            abi_version: 1,
+            signature: package.signatures[0].clone(),
+            required_capabilities: vec![],
+        }];
+    }
+    (package, registered)
+}
+
+fn finish_default(vm: &mut Vm, task: TaskId) -> DeliveryId {
+    for _ in 0..20000 {
+        match tick(vm, task) {
+            RunOutcome::Returned(delivery) => return delivery,
+            RunOutcome::BudgetYield(_) => {}
+            RunOutcome::HostCall(ticket) => {
+                let value = vm.host_arguments(ticket).unwrap()[0];
+                vm.respond(ticket, HostResponse::Ready(value)).unwrap();
+            }
+            other => panic!("default construction: {other:?}"),
+        }
+    }
+    panic!("default constant did not settle")
+}
+
+fn assert_default_tuple_dag(vm: &Vm, value: Value, shared: bool) {
+    let mut pending = vec![(value, 60)];
+    let mut seen = std::collections::HashSet::new();
+    while let Some((value, depth)) = pending.pop() {
+        if !seen.insert((value.object_parts().unwrap(), depth)) {
+            continue;
+        }
+        if depth == 0 {
+            assert_eq!(vm.heap.info(value).unwrap().kind, ObjectKind::String);
+            assert_eq!(
+                vm.heap.byte_segment(value, 0).unwrap(),
+                "共用immutable😀".as_bytes()
+            );
+        } else {
+            let info = vm.heap.info(value).unwrap();
+            assert_eq!(info.kind, ObjectKind::Tuple);
+            assert_eq!(info.len, 2);
+            let a = vm.heap.get_field(value, 0).unwrap();
+            let b = vm.heap.get_field(value, 1).unwrap();
+            if shared {
+                assert!(
+                    a.same_bits(b),
+                    "the live constant cache shares DAG children"
+                );
+            }
+            pending.extend([(a, depth - 1), (b, depth - 1)]);
+        }
+    }
+    assert!(
+        seen.len() < 128,
+        "tuple DAG expanded as an exponential tree"
+    );
+    assert!(vm.heap.stats().live_objects < 128);
+}
+
+#[test]
+fn default_tuple_materialization_shares_the_cursor_through_source_asb_restore_gc_and_cancel() {
+    for native in [false, true] {
+        for encoded in [false, true] {
+            let mut constants = vec![Const::Utf8("共用immutable😀".into())];
+            for id in 0..60 {
+                constants.push(Const::Tuple(vec![ConstId(id), ConstId(id)]));
+            }
+            let (mut package, support) = default_package(constants, 60, native);
+            let pool = externalize_text(&mut package).unwrap();
+            let program = if encoded {
+                VerifiedProgram::decode(
+                    &encode(&package, Limits::default()).unwrap(),
+                    Limits::default(),
+                )
+                .unwrap()
+            } else {
+                verify(package, Limits::default()).unwrap()
+            }
+            .bind_text_pool(pool)
+            .unwrap();
+            let mut live = Vm::load(
+                program.clone(),
+                support.clone(),
+                VmLimits::default(),
+                SessionEpoch(1),
+            )
+            .unwrap();
+            let task = live
+                .start(FunctionId(0), &[], RootOwner(1), Context::Ordinary)
+                .unwrap();
+            let delivery = finish_default(&mut live, task);
+            assert_default_tuple_dag(&live, live.delivery_value(delivery).unwrap(), true);
+            live.discard_delivery(delivery).unwrap();
+            collect(&mut live);
+            assert_eq!(live.heap.stats().live_objects, u32::from(native));
+            let mut vm = Vm::load(
+                program.clone(),
+                support.clone(),
+                VmLimits::default(),
+                SessionEpoch(1),
+            )
+            .unwrap();
+            let task = vm
+                .start(FunctionId(0), &[], RootOwner(1), Context::Ordinary)
+                .unwrap();
+            let ranges = vm.slots.stats().active_ranges;
+            let paused = |vm: &Vm| match vm.active.frames.data.last() {
+                Some(Frame::Script(frame)) => matches!(
+                    frame.phase,
+                    ScriptPhase::DefaultConstant {
+                        work: ConstantWork {
+                            id: ConstId(20),
+                            index: 1,
+                            ..
+                        },
+                        ..
+                    }
+                ),
+                Some(Frame::Native(frame)) => matches!(
+                    frame.phase,
+                    NativePhase::DefaultConstant {
+                        work: ConstantWork {
+                            id: ConstId(20),
+                            index: 1,
+                            ..
+                        },
+                        ..
+                    }
+                ),
+                _ => false,
+            };
+            for _ in 0..2000 {
+                if paused(&vm) {
+                    break;
+                }
+                assert!(matches!(tick(&mut vm, task), RunOutcome::BudgetYield(_)));
+            }
+            assert!(paused(&vm));
+            assert_eq!(
+                vm.slots.stats().active_ranges,
+                ranges,
+                "aggregate defaults reuse the frame's roots"
+            );
+            let registry = SnapshotRegistry::default();
+            let mut capture = vm.snapshot_begin(&registry).unwrap();
+            while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+            let image = capture.finish().unwrap();
+            let mut restore = Vm::restore_begin(
+                &image,
+                program,
+                support,
+                VmLimits::default(),
+                SessionEpoch(2),
+                &registry,
+            )
+            .unwrap();
+            while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+            let (mut restored, map) = restore.finish().unwrap();
+            let delivery = finish_default(&mut restored, map.task(task).unwrap());
+            // Restoration rebuilds the weak cache. Tuple identity is not observable;
+            // validate every stored child and bound the DAG instead of requiring
+            // restored and subsequently materialized equal tuples to share storage.
+            assert_default_tuple_dag(&restored, restored.delivery_value(delivery).unwrap(), false);
+            restored.discard_delivery(delivery).unwrap();
+            collect(&mut restored);
+            assert_eq!(restored.heap.stats().live_objects, u32::from(native));
+            vm.cancel_task(task).unwrap();
+            loop {
+                match vm.run_slice(task, SliceBudget::default(), || 0) {
+                    Err(VmError::Idle) => break,
+                    Ok(RunOutcome::BudgetYield(_)) => {}
+                    other => panic!("{other:?}"),
+                }
+            }
+            collect(&mut vm);
+            assert_eq!(vm.heap.stats().live_objects, u32::from(native));
+        }
+    }
+}
+
+#[test]
+fn constant_default_type_failures_report_the_original_script_or_native_call() {
+    for native in [false, true] {
+        for aggregate in [false, true] {
+            for encoded in [false, true] {
+                let constants = if aggregate {
+                    vec![Const::Int(7), Const::Tuple(vec![ConstId(0)])]
+                } else {
+                    vec![Const::Utf8("wrong type".into())]
+                };
+                let selected = constants.len() - 1;
+                let (mut package, mut support) = default_package(constants, selected, native);
+                package.signatures[0].parameters[0].ty = TypeId(1);
+                if native {
+                    support.natives[0].signature = package.signatures[0].clone();
+                } else {
+                    package.functions[0].bindings[0].ty = TypeId(1);
+                }
+                let signature = SignatureId(package.signatures.len() as u32);
+                package.signatures.push(Signature {
+                    parameters: vec![],
+                    rest: None,
+                    return_type: TypeId(0),
+                    effects: Effects::ALL,
+                    property_bag_tail: None,
+                });
+                let source = SourceSpan {
+                    file: SourceId(0),
+                    start: 12,
+                    end: 22,
+                };
+                let mut caller = package.functions[0].clone();
+                caller.name = SymbolId(1);
+                caller.kind = FunctionKind::Plain;
+                caller.signature = signature;
+                caller.register_count = 1;
+                caller.bindings.clear();
+                caller.source_map = vec![SourceMapEntry {
+                    pc: Pc(0),
+                    span: source,
+                }];
+                caller.descriptors = vec![Descriptor::Call(CallDesc {
+                    target: CallTarget::Function(FunctionId(0)),
+                    arguments: Arguments::Window(RegWindow {
+                        start: Reg(0),
+                        len: 0,
+                    }),
+                    names: vec![],
+                })];
+                caller.code = vec![
+                    Instruction::new(Opcode::Call, 0, 0, 0),
+                    Instruction::new(Opcode::Return, 0, 0, 0),
+                ];
+                package.functions.push(caller);
+                let program = if encoded {
+                    VerifiedProgram::decode(
+                        &encode(&package, Limits::default()).unwrap(),
+                        Limits::default(),
+                    )
+                    .unwrap()
+                } else {
+                    verify(package, Limits::default()).unwrap()
+                };
+                let mut vm =
+                    Vm::load(program, support, VmLimits::default(), SessionEpoch(1)).unwrap();
+                let task = vm
+                    .start(FunctionId(1), &[], RootOwner(1), Context::Ordinary)
+                    .unwrap();
+                let delivery = loop {
+                    match tick(&mut vm, task) {
+                        RunOutcome::BudgetYield(_) => {}
+                        RunOutcome::Fault(delivery) => break delivery,
+                        other => panic!("wrong default type was accepted: {other:?}"),
+                    }
+                };
+                let fault = vm.delivery_fault(delivery).unwrap().unwrap();
+                assert_eq!(fault.kind, FaultKind::Type);
+                assert_eq!(fault.location.code.function, FunctionId(1));
+                assert_eq!(fault.location.pc, Pc(0));
+                assert_eq!(fault.location.source, Some(source));
+                assert_eq!(vm.native_entries, 0);
+                vm.discard_delivery(delivery).unwrap();
+                collect(&mut vm);
+                assert_eq!(vm.heap.stats().live_objects, u32::from(native));
+            }
+        }
+    }
+}
+
+#[test]
+fn default_cold_string_prepays_object_storage_and_reuses_the_live_pool_value() {
+    let (package, support) = default_package(vec![Const::Utf8("long😀".repeat(4096))], 0, false);
+    let program = verify(package, Limits::default()).unwrap();
+    let mut vm = Vm::load(program, support, VmLimits::default(), SessionEpoch(1)).unwrap();
+    let task = vm
+        .start(FunctionId(0), &[], RootOwner(1), Context::Ordinary)
+        .unwrap();
+    let before = vm.heap.stats();
+    let required = loop {
+        match vm
+            .run_slice(
+                task,
+                SliceBudget {
+                    instructions: 1,
+                    work: 10000,
+                    allocation_bytes: 0,
+                    ..Default::default()
+                },
+                || 0,
+            )
+            .unwrap()
+        {
+            RunOutcome::BudgetYield(usage) if usage.required_allocation > 0 => {
+                break usage.required_allocation;
+            }
+            RunOutcome::BudgetYield(_) => {}
+            other => panic!("{other:?}"),
+        }
+    };
+    assert_eq!(vm.heap.stats().live_objects, before.live_objects);
+    assert_eq!(vm.heap.stats().charged_bytes, before.charged_bytes);
+    assert_eq!(required, vm.constant_allocation_bytes(ConstId(0)));
+    let delivery = finish_default(&mut vm, task);
+    let value = vm.delivery_value(delivery).unwrap();
+    assert_eq!(
+        vm.heap.info(value).unwrap().len,
+        "long😀".repeat(4096).len() as u32
+    );
+    assert_eq!(
+        vm.heap.stats().payload_bytes,
+        0,
+        "text borrows the code pool"
+    );
+    assert_eq!(vm.constant_allocation_bytes(ConstId(0)), 0);
+    let task = vm
+        .start(FunctionId(0), &[], RootOwner(2), Context::Ordinary)
+        .unwrap();
+    let second = finish_default(&mut vm, task);
+    assert!(vm.delivery_value(second).unwrap().same_bits(value));
+}
+
+#[test]
+fn restore_rejects_forged_constant_default_phase_and_each_parent_triple() {
+    for native in [false, true] {
+        for forged in ["phase", "parent_id", "parent_index", "parent_builder"] {
+            let constants = vec![
+                Const::Int(7),
+                Const::Tuple(vec![ConstId(0); 2]),
+                Const::Tuple(vec![ConstId(1); 2]),
+                Const::Tuple(vec![ConstId(2); 2]),
+            ];
+            let (package, support) = default_package(constants, 3, native);
+            let program = verify(package, Default::default()).unwrap();
+            let mut vm = Vm::load(
+                program.clone(),
+                support.clone(),
+                Default::default(),
+                SessionEpoch(1),
+            )
+            .unwrap();
+            let task = vm
+                .start(FunctionId(0), &[], RootOwner(1), Context::Ordinary)
+                .unwrap();
+            let mut roots = None;
+            for _ in 0..200 {
+                roots = match vm.active.frames.data.last() {
+                    Some(Frame::Script(frame))
+                        if matches!(
+                            frame.phase,
+                            ScriptPhase::DefaultConstant {
+                                work: ConstantWork {
+                                    id: ConstId(1),
+                                    index: 0,
+                                    ..
+                                },
+                                ..
+                            }
+                        ) =>
+                    {
+                        Some((frame.env, [1, 2]))
+                    }
+                    Some(Frame::Native(frame))
+                        if matches!(
+                            frame.phase,
+                            NativePhase::DefaultConstant {
+                                work: ConstantWork {
+                                    id: ConstId(1),
+                                    index: 0,
+                                    ..
+                                },
+                                ..
+                            }
+                        ) =>
+                    {
+                        Some((frame.roots, [0, 1]))
+                    }
+                    _ => None,
+                };
+                if roots.is_some() {
+                    break;
+                }
+                assert!(matches!(tick(&mut vm, task), RunOutcome::BudgetYield(_)));
+            }
+            let (roots, slots) = roots.expect("paused in nested default");
+            let parents = vm.value(roots, slots[1]).unwrap();
+            match forged {
+                "phase" => match vm.active.frames.data.last_mut().unwrap() {
+                    Frame::Script(frame) => {
+                        if let ScriptPhase::DefaultConstant { parameter, .. } = &mut frame.phase {
+                            *parameter = 100;
+                        }
+                    }
+                    Frame::Native(frame) => {
+                        if let NativePhase::DefaultConstant { parameter, .. } = &mut frame.phase {
+                            *parameter = 100;
+                        }
+                    }
+                },
+                "parent_id" => vm.heap.set_field(parents, 1, Value::int(1)).unwrap(),
+                "parent_index" => vm.heap.set_field(parents, 2, Value::int(0)).unwrap(),
+                "parent_builder" => {
+                    let builder = vm.heap.get_field(parents, 0).unwrap();
+                    vm.heap.array_push(builder, Value::int(99)).unwrap();
+                }
+                _ => unreachable!(),
+            }
+            let registry = SnapshotRegistry::default();
+            let mut capture = vm.snapshot_begin(&registry).unwrap();
+            while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+            let image = capture.finish().unwrap();
+            let mut restore = Vm::restore_begin(
+                &image,
+                program,
+                support,
+                Default::default(),
+                SessionEpoch(2),
+                &registry,
+            )
+            .unwrap();
+            let error = loop {
+                match restore.step(SnapshotBudget { units: 1 }) {
+                    Ok(progress) => assert!(!progress.complete, "forged {forged} accepted"),
+                    Err(error) => break error,
+                }
+            };
+            assert!(
+                matches!(error, crate::snapshot::SnapshotError::Invalid(_)),
+                "{forged}: {error:?}"
+            );
+        }
+    }
+}

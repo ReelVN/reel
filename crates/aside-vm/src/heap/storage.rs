@@ -42,6 +42,30 @@ fn grow_index<K: Copy>(
 }
 
 impl Heap {
+    /// Prepare slice admission using the same slot/queue growth as allocation.
+    pub(crate) fn object_allocation_bytes(&self, additional: usize) -> u64 {
+        let additional = additional.min(
+            (self.limits.max_objects as usize)
+                .saturating_sub(self.objects.occupied() + self.objects.retired()),
+        );
+        let mut bytes = self.objects.allocation_bytes(additional);
+        for queue in [
+            &self.allocations,
+            &self.gray,
+            &self.release,
+            &self.reactive_queue,
+        ] {
+            let mut capacity = queue.capacity();
+            for index in 1..=additional {
+                let needed = self.objects.occupied() + index;
+                if capacity < needed {
+                    capacity = (capacity * 2).max(needed);
+                    bytes += (capacity * size_of::<HeapKey>()) as u64;
+                }
+            }
+        }
+        bytes
+    }
     pub(crate) fn remove_object(&mut self, key: HeapKey) {
         let before = self.objects.reserved_bytes();
         self.objects

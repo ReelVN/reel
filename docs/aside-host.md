@@ -17,7 +17,7 @@ let binding = add::binding();
 
 The macro preserves the Rust function and generates a same-named module with `SYMBOL`, `DOCUMENTATION`, `binding()` and `invoke()`. The binding contains a `NativeContract`, a direct function pointer and the function's English `///` documentation. Editor tooling can consume `NativeBinding::into_documentation()` to obtain the registered signature and Markdown together. Resumable bindings use `native_documentation!` beside their declaration. Write runnable `aside` fences in these comments; `aside_compiler::documentation::examples` supplies their source and line numbers to validation. The host builds the registry during compilation and loading, then dispatches each admitted `NativeId` to its handler. `invoke` reads the VM's bound arguments directly.
 
-`NativeContract::external()` supplies source-analysis metadata. `aside_host::lower()` generates bytecode native linkage and constant default functions. `aside_host::runtime_support()` resolves the host's contracts against the package; pass its result to `Vm::load`. The host selects which native calls a package may use.
+`NativeContract::external()` supplies source-analysis metadata. `aside_host::lower()` generates bytecode native linkage and constant-pool references for defaults. `aside_host::runtime_support()` resolves the host's contracts against the package; pass its result to `Vm::load`. The host selects which native calls a package may use.
 
 The editor integration generates signatures and read-only Aside declarations from this metadata. Parameters retain their registered names and literal defaults. Rust declarations can refine a dynamic runtime value with a source type, such as a named host object or a union; property declarations also supply their read and write types. This information feeds semantic member lookup, completion, hover and definition navigation. The generated declarations share the English source documentation and remain views of the host implementation.
 
@@ -81,7 +81,7 @@ spread and function-value calls and checks fresh outer-array ownership. The
 [bound native host](../crates/aside-host/tests/bound_native.rs) exercises rest
 with defaults, a bound receiver, host entry/callback calls and incremental GC.
 
-Functions are synchronous, safe, monomorphic free functions. Parameters must have identifier patterns. `#[aside(name = "script_name")]` changes the script parameter name. Defaults are literal integers, floats, booleans, strings or `null`, compiled as bytecode default functions. The `abi` option defaults to 1.
+Functions are synchronous, safe, monomorphic free functions. Parameters must have identifier patterns. `#[aside(name = "script_name")]` changes the script parameter name. Defaults are literal integers, floats, booleans, strings or `null`, stored in the bytecode constant pool. The `abi` option defaults to 1.
 
 An optional `#[aside(context)] context: &mut CallContext<'_, Host>` parameter supplies mutable host state, the VM and the current ticket. It is omitted from the script signature. For example:
 

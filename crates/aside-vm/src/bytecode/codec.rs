@@ -427,6 +427,7 @@ record!(Parameter {
     mutable,
     default
 });
+tuple_enum!(ParameterDefault{0=>Constant(id),1=>Function(id)});
 record!(Signature {
     parameters,
     rest,

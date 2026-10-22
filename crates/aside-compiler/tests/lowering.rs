@@ -196,10 +196,16 @@ fn scalar_string_arithmetic_and_defaults_roundtrip() {
     assert_eq!(f.bindings[0].storage.reg(), bc::Reg(0));
     assert_eq!(f.bindings[1].storage.reg(), bc::Reg(1));
     let signature = &p.signatures[f.signature.index()];
-    let default = &p.functions[signature.parameters[1].default.unwrap().index()];
-    assert_eq!(default.context, bc::Context::NoWait);
-    assert_eq!(default.bindings[0].name, f.bindings[0].name);
-    assert_eq!(default.bindings[0].storage, f.bindings[0].storage);
+    let Some(bc::ParameterDefault::Constant(id)) = signature.parameters[1].default else {
+        panic!("literal default must use the constant pool")
+    };
+    assert_eq!(p.constants[id.index()], bc::Const::Int(1));
+    assert_eq!(signature.parameters[1].ty, f.bindings[1].ty);
+    assert!(
+        p.functions
+            .iter()
+            .all(|f| p.symbols[f.name.index()] != "$default")
+    );
 }
 
 #[test]
@@ -569,9 +575,7 @@ fn default_block_tails_nested_returns_loops_and_throw_still_compile() {
         "throwing",
     ] {
         let f = function(p, name);
-        let default = p.signatures[f.signature.index()].parameters[0]
-            .default
-            .unwrap();
+        let default = function_default(&p.signatures[f.signature.index()].parameters[0]);
         let thunk = &p.functions[default.index()];
         assert_eq!(thunk.context, bc::Context::NoWait);
         assert!(
@@ -710,7 +714,7 @@ fn parameter_cell_defaults_use_body_prefix_and_definition_captures() {
     let f = function(p, "f");
     assert_eq!(f.bindings[0].storage, bc::BindingStorage::Cell(bc::Reg(0)));
     let s = &p.signatures[f.signature.index()];
-    let default = &p.functions[s.parameters[1].default.unwrap().index()];
+    let default = &p.functions[function_default(&s.parameters[1]).index()];
     assert_eq!(default.bindings[0], f.bindings[0]);
     assert_eq!(default.captures, f.captures);
     assert_eq!(default.module, f.module);
@@ -732,7 +736,7 @@ fn parameter_cell_defaults_use_body_prefix_and_definition_captures() {
         .metadata()
         .bindings
         .iter()
-        .find(|i| i.function == s.parameters[1].default.unwrap() && i.binding == bc::BindingId(0))
+        .find(|i| i.function == function_default(&s.parameters[1]) && i.binding == bc::BindingId(0))
         .unwrap();
     assert_eq!(body_identity.source, default_identity.source);
     assert_eq!(
@@ -744,7 +748,7 @@ fn parameter_cell_defaults_use_body_prefix_and_definition_captures() {
     assert!(ir.functions().iter().any(|f| matches!(
         f.origin,
         lowering::ir::Origin::Default { parameter: 1, .. }
-    ) && f.output == s.parameters[1].default.unwrap()));
+    ) && f.output == function_default(&s.parameters[1])));
     let result = ir.emit().unwrap();
     let encoded = bc::encode(result.program.package(), bc::Limits::default()).unwrap();
     let decoded = bc::decode(&encoded, bc::Limits::default()).unwrap();
@@ -781,7 +785,7 @@ fn native_seed() -> bc::VerifiedProgram {
                     name: bc::SymbolId(1),
                     ty: bc::TypeId(0),
                     mutable: false,
-                    default: Some(bc::FunctionId(0)),
+                    default: Some(bc::ParameterDefault::Function(bc::FunctionId(0))),
                 }],
                 rest: None,
                 return_type: bc::TypeId(0),
@@ -885,7 +889,7 @@ fn direct_native_uses_trusted_identity_abi_capabilities_and_real_default() {
     assert_eq!(p.functions[0], seed.package().functions[0]);
     assert_eq!(
         p.signatures[1].parameters[0].default,
-        Some(bc::FunctionId(0))
+        Some(bc::ParameterDefault::Function(bc::FunctionId(0)))
     );
     let f = function(p, "f");
     let calls: Vec<_> = f
@@ -1235,7 +1239,7 @@ fn mutable_prefix_write_without_a_closure_and_readonly_captured_prefix_roundtrip
     assert_eq!(f.bindings[0].storage, bc::BindingStorage::Cell(bc::Reg(0)));
     let f = function(result.program.package(), "readonly");
     let p = &result.program.package().signatures[f.signature.index()].parameters;
-    let default = &result.program.package().functions[p[1].default.unwrap().index()];
+    let default = &result.program.package().functions[function_default(&p[1]).index()];
     assert_eq!(default.bindings[0].storage, f.bindings[0].storage);
     assert!(matches!(
         f.bindings[0].storage,
@@ -1542,4 +1546,11 @@ fn assert_temporary_initialization(f: &bc::FunctionDef) {
             }
         }
     }
+}
+
+fn function_default(parameter: &bc::Parameter) -> bc::FunctionId {
+    let Some(bc::ParameterDefault::Function(function)) = parameter.default else {
+        panic!("expected dependent default function")
+    };
+    function
 }

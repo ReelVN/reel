@@ -717,7 +717,10 @@ fn validate_program(
         for (i, param) in s.parameters.iter().enumerate() {
             symbol(p, param.name)?;
             ty(p, param.ty)?;
-            if let Some(default) = param.default {
+            if let Some(ParameterDefault::Constant(id)) = param.default {
+                get(&p.constants, id.0, "parameter default constant")?;
+            }
+            if let Some(ParameterDefault::Function(default)) = param.default {
                 let f = get(&p.functions, default.0, "default expression function")?;
                 let ds = get(&p.signatures, f.signature.0, "default signature")?;
                 check(
@@ -785,7 +788,7 @@ fn validate_program(
         let parameters = &p.signatures[n.signature.index()].parameters;
         b.work(parameters.len() as u64)?;
         for param in parameters {
-            if let Some(default) = param.default {
+            if let Some(ParameterDefault::Function(default)) = param.default {
                 check(
                     p.functions[default.index()].captures.is_empty(),
                     ErrorKind::Signature,
@@ -1024,7 +1027,10 @@ fn native_parameter_cells(
             .iter()
             .enumerate()
             .rev()
-            .find_map(|(i, parameter)| parameter.default.map(|id| (i, id))))
+            .find_map(|(i, parameter)| match parameter.default {
+                Some(ParameterDefault::Function(id)) => Some((i, id)),
+                _ => None,
+            }))
     };
     let mut count = 0usize;
     b.work(signatures.len() as u64)?;
@@ -1058,7 +1064,7 @@ fn native_parameter_cells(
         let parameters = &p.signatures[signature as usize].parameters;
         b.work(parameters.len() as u64)?;
         for (i, parameter) in parameters.iter().enumerate() {
-            if let Some(default) = parameter.default {
+            if let Some(ParameterDefault::Function(default)) = parameter.default {
                 b.work(i as u64)?;
                 for index in 0..i {
                     let expected = layouts.cell(source.index(), index as u32, b)?;
@@ -1303,7 +1309,7 @@ fn validate_function(
     }
     b.work(s.parameters.len() as u64)?;
     for (i, param) in s.parameters.iter().enumerate() {
-        if let Some(default_id) = param.default {
+        if let Some(ParameterDefault::Function(default_id)) = param.default {
             let default = &p.functions[default_id.index()];
             b.work(default.captures.len() as u64)?;
             check(
