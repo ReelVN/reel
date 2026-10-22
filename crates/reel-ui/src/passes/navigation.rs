@@ -58,6 +58,15 @@ pub(crate) fn cancel_virtual(root: &mut RenderRoot) {
 }
 
 pub(super) fn follows_in_tree(root: &RenderRoot, anchor: WidgetId, candidate: WidgetId) -> bool {
+    if let crate::app::InputGeometrySource::Presented(Some(view)) =
+        &root.global_state.input_geometry_source
+    {
+        return view
+            .index(anchor)
+            .zip(view.index(candidate))
+            .is_some_and(|(a, b)| b > a);
+    }
+
     if root.is_descendant(candidate, anchor) {
         return true;
     }
@@ -83,6 +92,143 @@ pub(super) fn follows_in_tree(root: &RenderRoot, anchor: WidgetId, candidate: Wi
         current = parent;
     }
     false
+}
+
+/// Discover an intervening virtual list even when none of its mounted rows
+/// belongs to this group. The existing row request discovers unknown contents;
+/// no source-wide control index or row factory is evaluated here.
+pub(super) fn defer_group_gap(
+    root: &mut RenderRoot,
+    start: WidgetId,
+    candidate: WidgetId,
+    group: SelectionGroupId,
+    direction: NavigationAction,
+    wrapping: bool,
+    exhausted: bool,
+) -> bool {
+    let forward = matches!(direction, NavigationAction::Right | NavigationAction::Down);
+    let inspect = |root: &RenderRoot, owner| {
+        let contains = |child, ancestor| match &root.global_state.input_geometry_source {
+            crate::app::InputGeometrySource::Presented(Some(view)) => {
+                view.contains_in_scope(child, ancestor)
+            }
+            _ => root.is_descendant(child, ancestor),
+        };
+        owner != start
+            && !contains(start, owner)
+            && !(exhausted && contains(owner, start))
+            && root.focus_in_scope(owner)
+            && root
+                .widget_arena
+                .nodes
+                .find(owner)
+                .and_then(|node| node.item.widget.virtual_children())
+                .is_some_and(|list| list.total > 0)
+    };
+    let owner = if let crate::app::InputGeometrySource::Presented(Some(view)) =
+        &root.global_state.input_geometry_source
+    {
+        let start = view.index(start).unwrap();
+        let end = view.index(candidate).unwrap();
+        let ranges = if forward {
+            if wrapping {
+                [start + 1..view.len(), 0..end]
+            } else {
+                [start + 1..end, 0..0]
+            }
+        } else if wrapping {
+            [0..start, end + 1..view.len()]
+        } else {
+            [end + 1..start, 0..0]
+        };
+        ranges.into_iter().find_map(|range| {
+            let records = &view.records()[range];
+            if forward {
+                records
+                    .iter()
+                    .find(|record| inspect(root, record.id))
+                    .map(|record| record.id)
+            } else {
+                records
+                    .iter()
+                    .rev()
+                    .find(|record| inspect(root, record.id))
+                    .map(|record| record.id)
+            }
+        })
+    } else {
+        // Live widgets use the existing reusable navigation stack. Restrict the
+        // search to the same ordered interval as an accepted geometry snapshot.
+        let mut found = None;
+        for phase in 0..if wrapping { 2 } else { 1 } {
+            let mut walk = std::mem::take(&mut root.global_state.navigation_walk);
+            walk.clear();
+            walk.push(root.global_state.modal_scope.unwrap_or(root.root_id()));
+            while let Some(owner) = walk.pop() {
+                let after = follows_in_tree(root, start, owner);
+                let before = follows_in_tree(root, owner, candidate);
+                let in_range = if wrapping {
+                    if phase == 0 {
+                        after == forward
+                    } else {
+                        before == forward
+                    }
+                } else {
+                    after == forward && before == forward
+                };
+                if in_range && owner != candidate && inspect(root, owner) {
+                    found = Some(owner);
+                    break;
+                }
+                let children = root.widget_arena.get_node(owner).item.widget.children_ids();
+                if forward {
+                    walk.extend(children.into_iter().rev());
+                } else {
+                    walk.extend(children);
+                }
+            }
+            root.global_state.navigation_walk = walk;
+            if found.is_some() {
+                break;
+            }
+        }
+        found
+    };
+    let Some(owner) = owner else {
+        return false;
+    };
+    let list = root
+        .widget_arena
+        .get_node(owner)
+        .item
+        .widget
+        .virtual_children()
+        .unwrap();
+    if let crate::app::InputGeometrySource::Presented(view) =
+        &root.global_state.input_geometry_source
+        && view
+            .as_ref()
+            .and_then(|view| view.get(owner))
+            .and_then(|record| record.virtual_revision)
+            != Some(list.revision)
+    {
+        return true;
+    }
+    let index = if forward { 0 } else { list.total - 1 };
+    request_virtual(
+        root,
+        DeferredNavigation {
+            serial: 0,
+            revision: 0,
+            owner,
+            anchor: root.global_state.focused_widget,
+            index,
+            forward,
+            direction: Some(direction),
+            selection: Some(group),
+        },
+    );
+    true
 }
 
 /// A group's logical boundary is not the first/last row of the mounted window.

@@ -200,7 +200,7 @@ impl PresentedGeometryView {
             .iter()
             .map(|&index| self.records[index].id)
     }
-    fn index(&self, id: WidgetId) -> Option<usize> {
+    pub(crate) fn index(&self, id: WidgetId) -> Option<usize> {
         self.ids
             .binary_search_by_key(&id.to_raw(), |e| e.0.to_raw())
             .ok()

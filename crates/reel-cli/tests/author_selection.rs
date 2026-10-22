@@ -14,6 +14,7 @@ use reel_ui::{
 use support::*;
 
 const SOURCE: &str = r##"
+fn dynamic(value: any) -> any { value }
 fn main() {
     let data = model({enabled: false, language: "en", extra: "fr", modal: false});
     let count = text("changes", x: 0, y: 380);
@@ -37,9 +38,9 @@ fn main() {
     };
     let open = button("Modal", x: 300, y: 160, width: 220, height: 40, on_click: |e| { data.modal = true; });
     let mut rejected = 0;
-    try { checkbox(value: derive(|| data.enabled)); } catch e { rejected += 1; }
-    try { radio("en", value: derive(|| data.language)); } catch e { rejected += 1; }
-    try { enabled.value = 1; } catch e { rejected += 1; }
+    try { let _ = checkbox(value: derive(|| data.enabled)); } catch e { rejected += 1; }
+    try { let _ = radio("en", value: derive(|| data.language)); } catch e { rejected += 1; }
+    try { enabled.value = dynamic(1); } catch e { rejected += 1; }
     if rejected != 3 { throw "writable value contract"; }
     stage.replace(stack(children: [enabled, chinese, english, extra, disabled, reset, custom, retire, open, count, overlay]));
     narrator("Control input must not advance this line.");

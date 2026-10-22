@@ -153,6 +153,15 @@ pub(super) fn finish_virtual(
         }
     });
     if let Some(candidate) = after.or(wrap)
+        && !super::navigation::defer_group_gap(
+            root,
+            owner,
+            candidate,
+            group,
+            direction,
+            after.is_none(),
+            true,
+        )
         && !super::navigation::defer_group_entry(
             root,
             candidate,
@@ -179,6 +188,15 @@ pub(super) fn navigate(root: &mut RenderRoot, direction: NavigationAction) -> bo
     if super::navigation::defer_virtual(root, next, forward, Some(direction)) {
         super::navigation::select_deferred_member(root, group.id);
     } else if let Some(candidate) = next.or(wrap)
+        && !super::navigation::defer_group_gap(
+            root,
+            anchor,
+            candidate,
+            group.id,
+            direction,
+            next.is_none(),
+            false,
+        )
         && !super::navigation::defer_group_entry(
             root,
             candidate,
