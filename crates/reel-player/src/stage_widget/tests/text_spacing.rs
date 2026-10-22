@@ -71,6 +71,7 @@ fn text_spacing_moves_real_glyphs_and_keeps_stable_widget_layouts() {
         NodeKind::TextInput {
             multiline: false,
             value: "A A A".into(),
+            options: Default::default(),
         },
         NodeKind::Toggle {
             label: Some("A A A".into()),
@@ -224,6 +225,7 @@ fn text_spacing_negative_words_update_input_hit_and_caret() {
     let mut f = fixture(NodeKind::TextInput {
         multiline: false,
         value: "A A A".into(),
+        options: Default::default(),
     });
     let initial = f.record();
     f.accept(&initial);
@@ -281,6 +283,7 @@ fn text_area_wrap_scroll_and_caret_share_geometry_without_idle_layout() {
     let mut f = fixture(NodeKind::TextInput {
         value: "A A A A A A A A A A A A A A A A A A A A A A A A A A A A A A".into(),
         multiline: true,
+        options: Default::default(),
     });
     f.edit(f.blue, |props| {
         props.width = Some(100.);
@@ -387,6 +390,7 @@ fn text_area_stage_mode_updates_preserve_identity_and_change_enter_behavior() {
     let mut f = fixture(NodeKind::TextInput {
         value: "A".into(),
         multiline: false,
+        options: Default::default(),
     });
     let first = f.record();
     f.accept(&first);
@@ -417,6 +421,7 @@ fn text_area_stage_mode_updates_preserve_identity_and_change_enter_behavior() {
                         "A A".into()
                     },
                     multiline,
+                    options: Default::default(),
                 },
                 props,
             )
@@ -446,4 +451,156 @@ fn text_area_stage_mode_updates_preserve_identity_and_change_enter_behavior() {
             _ => false,
         }));
     }
+}
+
+#[test]
+fn editor_policy_dynamic_updates_keep_widget_layout_and_isolate_read_only_keys() {
+    use reel_ui::{
+        core::Ime,
+        stage::{InputBindings, TextInputOptions},
+        widgets::TextInputEvent,
+    };
+    let mut f = fixture(NodeKind::TextInput {
+        value: "".into(),
+        multiline: false,
+        options: TextInputOptions {
+            placeholder: Some("AAA".into()),
+            ..Default::default()
+        },
+    });
+    let props = f.stage.node(f.root).unwrap().props.clone();
+    f.stage
+        .update(
+            f.root,
+            NodeKind::Input {
+                bindings: InputBindings::new(vec![]).unwrap(),
+                listening: true,
+                keyboard: true,
+                pointer: false,
+                wheel: false,
+            },
+            props,
+        )
+        .unwrap();
+    let first = f.record();
+    f.accept(&first);
+    assert_eq!(letters(&first).len(), 3, "empty value paints its hint");
+    let scene_id = f.layouts()[&f.blue].0;
+    let scene = f
+        .bridge
+        .root()
+        .get_widget(scene_id)
+        .unwrap()
+        .downcast::<SceneWidget>()
+        .unwrap();
+    let editor = scene.editor.as_ref().unwrap().id();
+    let geometry = first.geometry().get(editor).unwrap();
+    let point = geometry.window_transform
+        * Point::new(geometry.size.width * 0.5, geometry.size.height * 0.5);
+    input_focus::press_pointer(&mut f, true, point.x, point.y);
+    input_focus::press_pointer(&mut f, false, point.x, point.y);
+    let focused = f.record();
+    f.accept(&focused);
+    f.edit(f.blue, |props| {
+        props.text_outline = 1.;
+        props.text_shadow_x = 2.;
+        props.text_shadow_y = 3.;
+    });
+    let props = f.stage.node(f.blue).unwrap().props.clone();
+    f.stage
+        .update(
+            f.blue,
+            NodeKind::TextInput {
+                value: "".into(),
+                multiline: false,
+                options: TextInputOptions {
+                    placeholder: Some("AAA".into()),
+                    read_only: true,
+                    selection_color: [1, 2, 3, 4],
+                    caret_color: Some([5, 6, 7, 8]),
+                },
+            },
+            props,
+        )
+        .unwrap();
+    let styled = f.record();
+    f.accept(&styled);
+    let stable = f.layouts();
+    assert_eq!(stable[&f.blue].0, scene_id);
+    assert_eq!(f.bridge.root().focused_widget(), Some(editor));
+    assert_eq!(
+        letters(&styled).len(),
+        12,
+        "hint uses shared foreground/outline/shadow glyphs"
+    );
+    for event in [
+        TextEvent::key_down(keyboard::Key::Character("A".into())),
+        TextEvent::key_down(keyboard::Key::Named(keyboard::NamedKey::Backspace)),
+        TextEvent::ClipboardPaste("paste".into()),
+        TextEvent::Ime(Ime::Commit("ime".into())),
+    ] {
+        let outcome = f.ui.handle_text(&mut f.bridge, event).unwrap();
+        assert!(
+            !outcome.events.iter().any(|e| matches!(
+                e,
+                NodeEvent::Text(_)
+                    | NodeEvent::Key(_)
+                    | NodeEvent::Action(_)
+                    | NodeEvent::Change(_)
+            )),
+            "read-only edit reached model or game keyboard callback: {:?}",
+            outcome.events
+        );
+    }
+    let submit =
+        f.ui.handle_text(
+            &mut f.bridge,
+            TextEvent::key_down(keyboard::Key::Named(keyboard::NamedKey::Enter)),
+        )
+        .unwrap();
+    assert!(submit.events.iter().any(|e| matches!(e, NodeEvent::Text(NodeText { event: TextInputEvent::Submitted(v), .. }) if v.is_empty())));
+    for _ in 0..8 {
+        let frame = f.record();
+        f.accept(&frame);
+    }
+    assert_eq!(
+        f.layouts(),
+        stable,
+        "paint-only policy/style changes preserve stable layouts"
+    );
+    let props = f.stage.node(f.blue).unwrap().props.clone();
+    f.stage
+        .update(
+            f.blue,
+            NodeKind::TextInput {
+                value: "AA".into(),
+                multiline: false,
+                options: TextInputOptions {
+                    read_only: true,
+                    ..Default::default()
+                },
+            },
+            props,
+        )
+        .unwrap();
+    let author = f.record();
+    f.accept(&author);
+    assert_eq!(
+        letters(&author).len(),
+        8,
+        "script assignment replaces the hint while read-only"
+    );
+    assert_eq!(f.bridge.root().focused_widget(), Some(editor));
+    f.ui.handle_text(
+        &mut f.bridge,
+        TextEvent::key_down(keyboard::Key::Named(keyboard::NamedKey::Tab)),
+    )
+    .unwrap();
+    let tabbed = f.record();
+    f.accept(&tabbed);
+    assert_ne!(
+        f.bridge.root().focused_widget(),
+        Some(editor),
+        "read-only must preserve ordinary Tab navigation"
+    );
 }

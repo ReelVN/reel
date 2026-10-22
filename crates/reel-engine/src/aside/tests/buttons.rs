@@ -481,7 +481,7 @@ fn text_area_restores_multiline_binding_and_owned_submit() {
             .nodes()
             .find(|n| {
                 matches!(&n.kind,
-            NodeKind::TextInput { value, multiline: true } if value.as_ref() == "first\nsecond")
+            NodeKind::TextInput { value, multiline: true, .. } if value.as_ref() == "first\nsecond")
             })
             .unwrap()
             .id;

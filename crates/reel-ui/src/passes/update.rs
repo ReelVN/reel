@@ -859,12 +859,15 @@ pub(crate) fn run_update_focus_pass(root: &mut RenderRoot) {
             root.global_state
                 .scroll_request_targets
                 .push((next_focused, widget_state.border_box()));
-            root.global_state.is_ime_active = widget_state.accepts_text_input;
-            if widget_state.accepts_text_input {
+            root.global_state.is_text_input_focused = widget_state.accepts_text_input;
+            root.global_state.is_ime_active =
+                widget_state.accepts_text_input && widget_state.ime_enabled;
+            if root.global_state.is_ime_active {
                 root.global_state.emit_signal(RenderRootSignal::StartIme);
             }
         } else {
             root.global_state.is_ime_active = false;
+            root.global_state.is_text_input_focused = false;
         }
     }
 

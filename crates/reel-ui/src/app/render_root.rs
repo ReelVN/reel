@@ -148,6 +148,8 @@ pub(crate) struct RenderRootState {
 
     /// Whether an IME session is active.
     pub(crate) is_ime_active: bool,
+    /// Text-keyboard isolation remains active for read-only editors.
+    pub(crate) is_text_input_focused: bool,
 
     /// The cursor area last sent to the platform.
     pub(crate) last_sent_ime_area: Rect,
@@ -384,6 +386,7 @@ impl RenderRoot {
                 mutate_callbacks: Vec::new(),
                 actions: Vec::new(),
                 is_ime_active: false,
+                is_text_input_focused: false,
                 last_sent_ime_area: INVALID_IME_AREA,
                 scene_cache: HashMap::new(),
                 widget_tags: HashMap::new(),

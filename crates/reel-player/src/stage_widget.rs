@@ -1051,33 +1051,45 @@ impl SceneWidget {
                 _ => None,
             },
             label,
-            editor: if let NodeKind::TextInput { value, multiline } = &view.node.kind {
+            editor: if let NodeKind::TextInput {
+                value,
+                multiline,
+                options,
+            } = &view.node.kind
+            {
+                let editor = TextInput::with_mode(value.clone(), *multiline)
+                    .with_read_only(options.read_only)
+                    .with_selection_color(color(options.selection_color))
+                    .with_caret_color(options.caret_color.map(color))
+                    .with_outline(text_outline(&view.node.props))
+                    .with_shadow(text_shadow(&view.node.props))
+                    .with_text_alignment(view.node.props.text_align)
+                    .with_text_wrap(view.node.props.text_wrap)
+                    .with_style(StyleProperty::LineHeight(
+                        reel_ui::reel_text::LineHeight::FontSizeRelative(
+                            view.node.props.line_height as f32,
+                        ),
+                    ))
+                    .with_style(StyleProperty::FontSize(view.node.props.font_size as f32))
+                    .with_style(StyleProperty::FontWeight(
+                        reel_ui::reel_text::FontWeight::new(view.node.props.font_weight as f32),
+                    ))
+                    .with_style(StyleProperty::LetterSpacing(
+                        view.node.props.letter_spacing as f32,
+                    ))
+                    .with_style(StyleProperty::WordSpacing(
+                        view.node.props.word_spacing as f32,
+                    ))
+                    .with_style(font_style(&view.node.props.font));
+                let editor = if let Some(hint) = &options.placeholder {
+                    editor.with_placeholder(hint.clone())
+                } else {
+                    editor
+                };
                 Some(
-                    NewWidget::new(
-                        TextInput::with_mode(value.clone(), *multiline)
-                            .with_text_alignment(view.node.props.text_align)
-                            .with_text_wrap(view.node.props.text_wrap)
-                            .with_style(StyleProperty::LineHeight(
-                                reel_ui::reel_text::LineHeight::FontSizeRelative(
-                                    view.node.props.line_height as f32,
-                                ),
-                            ))
-                            .with_style(StyleProperty::FontSize(view.node.props.font_size as f32))
-                            .with_style(StyleProperty::FontWeight(
-                                reel_ui::reel_text::FontWeight::new(
-                                    view.node.props.font_weight as f32,
-                                ),
-                            ))
-                            .with_style(StyleProperty::LetterSpacing(
-                                view.node.props.letter_spacing as f32,
-                            ))
-                            .with_style(StyleProperty::WordSpacing(
-                                view.node.props.word_spacing as f32,
-                            ))
-                            .with_style(font_style(&view.node.props.font)),
-                    )
-                    .with_props(ContentColor::new(color(view.node.props.color)))
-                    .to_pod(),
+                    NewWidget::new(editor)
+                        .with_props(ContentColor::new(color(view.node.props.color)))
+                        .to_pod(),
                 )
             } else {
                 None
@@ -1198,11 +1210,23 @@ impl SceneWidget {
             || order_changed
             || this.widget.node.props.visible != view.node.props.visible
             || this.widget.node.props.enabled != view.node.props.enabled;
-        if let (Some(pod), NodeKind::TextInput { value, multiline }) =
-            (&mut this.widget.editor, &view.node.kind)
+        if let (
+            Some(pod),
+            NodeKind::TextInput {
+                value,
+                multiline,
+                options,
+            },
+        ) = (&mut this.widget.editor, &view.node.kind)
             && let Some(mut editor) = this.ctx.get_mut(pod)
         {
+            TextInput::set_read_only(&mut editor, options.read_only);
             TextInput::set_multiline(&mut editor, *multiline);
+            TextInput::set_placeholder(&mut editor, options.placeholder.clone());
+            TextInput::set_selection_color(&mut editor, color(options.selection_color));
+            TextInput::set_caret_color(&mut editor, options.caret_color.map(color));
+            TextInput::set_outline(&mut editor, text_outline(&view.node.props));
+            TextInput::set_shadow(&mut editor, text_shadow(&view.node.props));
             TextInput::set_value(&mut editor, value.clone());
             TextInput::set_text_alignment(&mut editor, view.node.props.text_align);
             TextInput::set_text_wrap(&mut editor, view.node.props.text_wrap);

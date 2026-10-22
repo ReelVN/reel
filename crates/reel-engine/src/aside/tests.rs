@@ -35,6 +35,7 @@ mod source_inline;
 mod source_types;
 mod speech_flow;
 mod tasks;
+mod text_editing;
 mod text_fade;
 mod transitions;
 mod video;
