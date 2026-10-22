@@ -1010,6 +1010,8 @@ trigger.add(popup(placement: "bottom-start", offset: 4,
 });
 ```
 
+下拉选择可让 scope 返回确认的选项，调用方再更新业务值；返回键或外点让 scope 返回 null。按钮的 hover/focus_visible 表达临时高亮，关闭浮层恢复触发控件的焦点。长选项放进 scroll 和虚拟 list，禁用项沿普通按钮规则跳过。[完整组合示例](../../examples/author_popup/src/main.aside) 把这些行为放在同一个选择函数中，可在示例目录运行 `reel dev`。
+
 键盘激活需要在同一个按钮上按下并松开 Enter 或空格；切换焦点、隐藏、禁用或窗口失焦会取消未完成的按键。
 
 ```aside
