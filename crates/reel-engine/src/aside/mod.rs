@@ -785,7 +785,11 @@ impl SessionVm {
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::scope::cancel" => {
-                self.dispatch_scope_cancel(ticket)?;
+                self.dispatch_scope_exit(ticket, scopes::ScopeExit::Cancel)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
+            "reel::scope::finish" => {
+                self.dispatch_scope_exit(ticket, scopes::ScopeExit::Finish)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::scope::override" => {
