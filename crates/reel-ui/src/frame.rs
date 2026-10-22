@@ -235,6 +235,8 @@ pub struct FrameGlyphRun {
     pub glyph_transform: Option<Affine>,
     pub brush_transform: Option<Affine>,
     pub font_size: f32,
+    /// Total synthetic increase in stroke thickness along each logical axis.
+    /// Rasterizers convert this to per-side outline offsets after density scaling.
     pub font_embolden: Vec2,
     pub hint: bool,
     pub normalized_coords: Vec<imaging::NormalizedCoord>,

@@ -166,8 +166,8 @@ pub(crate) fn render_text_lines(
             let font_size = run.font_size();
             let synthesis = run.synthesis();
             let font_embolden = if synthesis.embolden() {
-                // One twenty-fourth of an em keeps synthesis proportional to
-                // each rich-text run, before its glyph transform and raster scale.
+                // The total stroke increase is one twenty-fourth of this run's
+                // em, before its glyph transform and raster scale.
                 Vec2::new(1., 1.) * (f64::from(font_size) / 24.)
             } else {
                 Vec2::ZERO
@@ -330,8 +330,8 @@ pub(crate) fn render_text_faded_lines(
             let font_size = run.font_size();
             let synthesis = run.synthesis();
             let font_embolden = if synthesis.embolden() {
-                // One twenty-fourth of an em keeps synthesis proportional to
-                // each rich-text run, before its glyph transform and raster scale.
+                // The total stroke increase is one twenty-fourth of this run's
+                // em, before its glyph transform and raster scale.
                 Vec2::new(1., 1.) * (f64::from(font_size) / 24.)
             } else {
                 Vec2::ZERO

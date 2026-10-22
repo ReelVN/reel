@@ -8,6 +8,8 @@ use swash::{
     zeno,
 };
 
+mod synthesis;
+
 #[derive(Default)]
 pub(super) struct Rasterizer {
     scale: ScaleContext,
@@ -99,7 +101,8 @@ pub fn rasterize(
         return Ok(None);
     }
     if run.font_embolden != kurbo::Vec2::ZERO {
-        outline.embolden(
+        synthesis::embolden(
+            outline,
             (run.font_embolden.x * density) as f32,
             (run.font_embolden.y * density) as f32,
         );
