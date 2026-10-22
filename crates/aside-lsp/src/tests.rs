@@ -141,7 +141,7 @@ fn callable_types_offer_real_signature_positions_without_inventing_parameter_nam
     );
 }
 
-fn project_options() -> ServerOptions {
+pub(crate) fn project_options() -> ServerOptions {
     ServerOptions {
         source_root: Some(|directory, exists| {
             directory
@@ -1418,6 +1418,91 @@ fn protocol_connection_initializes_edits_queries_closes_and_exits() {
         .send(Request::new(3.into(), "shutdown".into(), Value::Null).into())
         .unwrap();
     assert!(response(&client, 3).error.is_none());
+    client
+        .sender
+        .send(Notification::new("exit".into(), Value::Null).into())
+        .unwrap();
+    thread.join().unwrap();
+}
+
+#[test]
+fn queued_requests_cancel_or_retire_before_latest_version_queries_and_diagnostics() {
+    let (server, client) = Connection::memory();
+    client
+        .sender
+        .send(Request::new(1.into(), "initialize".into(), json!({"capabilities":{}})).into())
+        .unwrap();
+    client
+        .sender
+        .send(Notification::new("initialized".into(), json!({})).into())
+        .unwrap();
+    client
+        .sender
+        .send(
+            Notification::new(
+                "textDocument/didOpen".into(),
+                json!({"textDocument":{
+        "uri":uri(),"languageId":"aside","version":1,"text":"fn main(){missing;}"}}),
+            )
+            .into(),
+        )
+        .unwrap();
+    let at = json!({"textDocument":{"uri":uri()},"position":{"line":0,"character":24}});
+    client
+        .sender
+        .send(Request::new(2.into(), "textDocument/hover".into(), at.clone()).into())
+        .unwrap();
+    client
+        .sender
+        .send(Notification::new("$/cancelRequest".into(), json!({"id":2})).into())
+        .unwrap();
+    client
+        .sender
+        .send(Request::new(3.into(), "textDocument/completion".into(), at.clone()).into())
+        .unwrap();
+    for version in 2..=4 {
+        client
+            .sender
+            .send(
+                Notification::new(
+                    "textDocument/didChange".into(),
+                    json!({
+            "textDocument":{"uri":uri(),"version":version},
+            "contentChanges":[{"text":format!("fn main(){{let value={version};value;}}")}] }),
+                )
+                .into(),
+            )
+            .unwrap();
+    }
+    client
+        .sender
+        .send(Request::new(4.into(), "textDocument/hover".into(), at).into())
+        .unwrap();
+    let thread = std::thread::spawn(|| run_connection(server, ServerOptions::default()).unwrap());
+    response(&client, 1);
+    assert_eq!(
+        response(&client, 2).error.unwrap().code,
+        lsp_server::ErrorCode::RequestCanceled as i32
+    );
+    assert_eq!(
+        response(&client, 3).error.unwrap().code,
+        lsp_server::ErrorCode::ContentModified as i32
+    );
+    assert!(
+        response(&client, 4)
+            .result
+            .unwrap()
+            .to_string()
+            .contains("value: int")
+    );
+    let latest = diagnostics(&client);
+    assert_eq!(latest.version, Some(4));
+    assert!(latest.diagnostics.is_empty());
+    client
+        .sender
+        .send(Request::new(5.into(), "shutdown".into(), Value::Null).into())
+        .unwrap();
+    response(&client, 5);
     client
         .sender
         .send(Notification::new("exit".into(), Value::Null).into())

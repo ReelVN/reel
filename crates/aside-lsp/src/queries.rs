@@ -2021,11 +2021,9 @@ impl Workspace {
         {
             return Ok(Some(Location {
                 uri: definition.uri.clone(),
-                range: crate::position::LineIndex::new(&document.text).range(
-                    &document.text,
-                    definition.range,
-                    encoding,
-                ),
+                range: document
+                    .lines
+                    .range(&document.text, definition.range, encoding),
             }));
         }
         if let Some((module, source, node, _)) = source_member_reference(&snapshot, reference) {

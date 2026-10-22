@@ -248,6 +248,7 @@ fn nested_src_document_uses_the_project_source_root() {
         .send(Request::new(2.into(), "textDocument/hover".into(), query.clone()).into())
         .unwrap();
     let mut published = Vec::new();
+    let mut hover = None;
     let hover = loop {
         match client
             .receiver
@@ -262,9 +263,15 @@ fn nested_src_document_uses_the_project_source_root() {
             }
             Message::Response(response) if response.id == 2.into() => {
                 assert!(response.error.is_none(), "{:?}", response.error);
-                break response.result.unwrap();
+                hover = response.result;
             }
             _ => {}
+        }
+        if hover.is_some()
+            && published.contains(&json!(uri))
+            && published.contains(&json!(opening_uri))
+        {
+            break hover.unwrap();
         }
     };
     assert!(published.contains(&json!(uri)), "{published:?}");
