@@ -396,18 +396,22 @@ impl Workspace {
             let Some(snapshot) = &document.snapshot else {
                 continue;
             };
-            let Some((module, _)) = snapshot
+            if !snapshot
                 .sources
-                .iter()
-                .find(|(_, source)| source_key(&source.uri) == key)
-            else {
+                .values()
+                .any(|source| source_key(&source.uri) == key)
+            {
                 continue;
-            };
+            }
             let sources = refreshed
                 .entry(Arc::as_ptr(&snapshot.sources) as usize)
                 .or_insert_with(|| {
                     let mut sources = snapshot.sources.as_ref().clone();
-                    sources.insert(module.clone(), source.clone());
+                    for cached in sources.values_mut() {
+                        if source_key(&cached.uri) == key {
+                            *cached = source.clone();
+                        }
+                    }
                     Arc::new(sources)
                 })
                 .clone();
@@ -1119,7 +1123,8 @@ mod import_tests {
             .open(
                 main.clone(),
                 1,
-                "use game::helper::read; fn main(){let value:int=read();}".into(),
+                "use helper as plain; use game::helper::read; fn main(){let value:int=read();}"
+                    .into(),
             )
             .unwrap();
         let first = workspace.snapshot(&main).unwrap();
@@ -1134,6 +1139,8 @@ mod import_tests {
         assert_eq!(leaf.entry, "game::helper");
         assert_eq!(leaf.source().version, Some(7));
         assert_eq!(caller.sources["game::helper"].version, Some(7));
+        assert_eq!(caller.sources["helper"].version, Some(7));
+        assert_eq!(caller.sources["helper"].uri, helper);
         assert_eq!(workspace.analyses, 1);
         workspace
             .change(
