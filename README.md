@@ -1,19 +1,22 @@
 # Reel
 
-Reel 是面向视觉小说的跨平台游戏引擎，Aside 是其 Rust 实现的嵌入式语言。
+Reel 是面向视觉小说的跨平台游戏引擎，使用 Rust 实现的 Aside 语言创作。作者用普通函数串联剧情，用节点和有状态组件组合画面、交互与演出。
 
-Reel 支持 Aside 组件、对白与选择、图片、音视频、存档和源码/ASB 桌面运行，也提供资源打包与作品导出。当前能力、平台验证范围和示例见[能力表](docs/README.md#当前状态)，设计与创作接口见[文档](docs/README.md)。
+Reel is a cross-platform visual novel engine with Aside, an embedded language implemented in Rust. Authors compose story flow with functions and build scenes with nodes and stateful components.
 
-Reel is a cross-platform visual novel engine with Aside, an embedded language implemented in Rust. It supports component-based scenes, dialogue, choices, media, saves, source/ASB playback, resource packaging and project export. See the [capability table](docs/README.md#当前状态) for implementation and platform verification status, and [documentation](docs/README.md) for the architecture, language and bilingual creator guide.
+- [文档 / Documentation](docs/README.md)
+- [中文创作指南](docs/guide/zh-CN.md) · [English creator guide](docs/guide/en.md)
+- [架构](docs/engine-architecture.md) · [语言规范](docs/aside-language.md)
+- [作者舞台示例](examples/author_stage/src/main.aside)
 
-Reel 支持 Aside 组件组合、文字、PNG/JPEG 图片与行列/层叠布局、节点与整组组件的旋转/缩放/锚点、属性更新、对白和选择，以及源码/ASB 窗口运行。基础节点与剧情服务默认可用，无需逐文件导入。可从 [作者舞台示例](examples/author_stage/src/main.aside) 开始，在 main 中配置作品的字体文件；下列命令使用的临时资源目录按[中文指南](docs/guide/zh-CN.md)或 [English guide](docs/guide/en.md)准备。
+安装工具包并将其 `bin` 加入 PATH 后，在项目目录运行：
 
 ```sh
-cd examples/author_stage
 reel check
-reel dev --assets ../../target/reel-artifacts/author-assets
+reel dev
+reel build
 ```
 
-从源码构建工具使用 `cargo build --locked -p reel-cli --features window`；将 `target/debug` 加入 PATH 后可使用上述命令。
+从源码构建工具：`cargo build --locked -p reel-cli --features window`。将 `target/debug` 加入 PATH；项目资源和字体配置见创作指南。
 
-开发检查与第一方脚本覆盖迁移见 [reel-dev](crates/reel-dev/README.md)。UI 借用源码由 Reel 自主维护在单一 [reel-ui](crates/reel-ui/README.md) 中，按职责使用内部模块，共用根 workspace 和 lockfile；保留原始许可和必要版权；可再生成输出统一放入忽略的 `target/reel-artifacts/`。
+仓库检查工具见 [reel-dev](crates/reel-dev/README.md)。借用实现的许可和来源保存在对应 crate，生成输出放在忽略的 `target/reel-artifacts/`。

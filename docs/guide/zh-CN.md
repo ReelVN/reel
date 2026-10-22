@@ -3,12 +3,10 @@
 [English](en.md) · [文档目录 / Documentation index](../README.md)
 
 ## 阅读这份文档
-Reel 的目标是让你用 Aside 表达想象中的画面和交互，组合自己的对白、UI、演出和嵌入的 2D 游戏。当前已有多文件作品、统一舞台、存读档和打包发布链路；完整 2D 创作接口、长内容成本和设备覆盖仍在完善。先从[基本画面](../../examples/author_stage/src/main.aside)、[动画](../../examples/author_activities/src/main.aside)或[交互按钮](../../examples/author_buttons/src/main.aside)开始；[能力表](../README.md#当前状态)列出实际边界，[总清单 #94](https://github.com/jhq223/reel/issues/94)记录后续顺序。
 
-这份指南从作者想要的画面出发，说明如何用 Aside 写剧情、组合 UI、安排演出和扩展效果。已实现部分可以直接使用；其余章节描述目标设计，并标明尚未接通的能力。中文与英文共用相同示例和接口名称。《Reel 引擎架构设计》说明运行时，《Aside VM 与语言设计》定义语言规则。
-作者使用三个基本概念：函数组织可复用内容；节点树表达画面；活动表达随时间进行的变化。当前普通函数、基础节点组合与顺序剧情已经接通，活动及高级作者接口仍按各节状态区分。
+用 Aside 表达想象中的画面和交互：函数组织内容，节点树组成画面，活动描述随时间发生的变化。本指南从创建项目开始，逐步组合对白、UI、演出和嵌入的小游戏。中文与英文使用相同的代码示例。
 
-接口的参数、属性和用例由实现旁的英文源码文档维护；Aside 的 `///` 注释也可随声明查询。宿主声明提供可供编辑器读取的签名和说明，见 [host SDK](../aside-host.md)。本指南保留创作流程与组合示例。
+参数、属性与默认值见编辑器中的英文 API 文档；这些信息与 Rust 声明共同维护。语言规则见[语言规范](../aside-language.md)，当前能力与后续工作见[文档目录](../README.md)。
 
 ## 一 最小项目与共同写法
 
@@ -55,7 +53,7 @@ fn main() {
 
 ### 模块与共同写法
 
-Reel 自动提供当前已注册的基础节点与剧情服务：text、image、button、row、column、stack、stage、narrator 和 choose，每个源码文件都可直接使用。作者的模块声明、局部绑定和显式导入优先于这些默认名称。若定义了自己的 text 函数，可用 `use reel::prelude::text as reel_text;` 为 Reel 构造函数另取名称。显式 prelude 导入仍是有效的普通导入。这套默认环境由 Reel 提供，独立 Aside 不包含 Reel 名称。动作和完整业务服务仍按后文设计。作者用自己的函数构造页面和外观。所有文档统一使用 fn、let、let mut、|参数| 闭包和 use 导入。除完整模块与函数示例外，独立代码片段放在正在运行的函数内部，沿用前文变量。普通语句写分号，函数末尾表达式可直接返回；对象字面量写 {字段: 值}。以下导入使用已实现的模块组织；标题按钮中的 game.start 已实现。
+Reel 默认提供 `text`、`image`、`button`、`row`、`column`、`stack`、`stage`、`narrator` 和 `choose` 等基础名称。局部声明与显式导入优先；出现同名时，可用 `use reel::prelude::text as reel_text;` 另取名称。普通语句以分号结束，函数末尾表达式可以作为返回值，对象写成 `{field: value}`。下列模块用普通函数组合标题页与剧情：
 ```aside
 use game::ui::title::title;
 
@@ -76,9 +74,7 @@ pub fn title() {
 }
 ```
 src/story/opening.aside 中的 opening 见第三节。示例的相对文件位置与导入路径一致，根模块 src/main.aside 只负责启动。
-let 固定变量绑定，节点属性仍可修改；需要把变量改绑到另一个值时使用 let mut。普通表达式在执行时求值一次。bind(model.value) 连接可观察属性，derive(|| expression) 连接由其他属性计算的只读值。语言的完整规则见第二份文档。
-
-桌面播放器遇到可恢复的图形设备丢失会重建渲染设备并保留当前剧情状态；诊断包含后端给出的丢失原因。无法重建设备时报告错误并退出。
+let 固定变量绑定，节点属性仍可修改；需要把变量改绑到另一个值时使用 let mut。普通表达式在执行时求值一次。bind(model.value) 连接可观察属性，derive(|| expression) 连接由其他属性计算的只读值。完整规则见[语言规范](../aside-language.md)。
 
 ### 按创作单元组合项目
 
@@ -90,7 +86,6 @@ let 固定变量绑定，节点属性仍可修改；需要把变量改绑到另�
 
 ### 当前可用的检查、构建与运行
 
-编译与 ASB 加载默认不设置作品大小、累计记录、模块或指令数量配额；实际格式宽度和可用内存仍适用。嵌入宿主可通过 Rust Limits 显式设定配额。出现容量错误时，诊断会区分记录数和内存请求，避免把较长剧本误报为语法错误。
 桌面播放器等首个挂载场景的字体与图片就绪后再呈现；支持隐藏窗口的平台在首帧接受后显示窗口。需要自定义加载界面时，先用普通舞台节点挂载它，再安排后续任务。启动期间的错误仍报告原始源码位置。
 
 示例在 main 中配置 fonts/body.ttf。从仓库根目录运行下列 Windows 命令，将微软雅黑复制到临时资源目录供本机验证；发布作品时应提供有分发授权的字体。运行 dev 或 run 后关闭窗口，再继续下一条命令。
@@ -123,10 +118,6 @@ Pop-Location
 
 工程只读取入口实际导入的源码。`game::ui::scene` 对应 `src/ui/scene.aside`；共享代码复制到 `src/` 后沿普通 `use` 导入。函数循环引用允许链接，顶层读取未初始化绑定在读取处报 ModuleInitializationCycle。build 把完整模块图和入口放入同一 .asb，初始化设置由同一段 main 执行。开发运行使用项目的 `resources/`；`--assets` 可指定其他资源目录。导出包使用内嵌的资源清单。
 
-源码、完整源码定位文本和文字常量统一使用实际包预算。长文本和拼接按执行片推进，分片不会截断文字，也不规定台词长度。
-
-左结合运算和属性、调用链按书写顺序编译，不按链条长度消耗嵌套额度。括号、代码块和子表达式的真正嵌套仍使用宿主配置的编译资源预算。
-
 ### 导出开发工程和发布目录
 
 `reel export` 在同一次构建中组织代码和资源；默认导出开发工程，`--release` 导出发布目录。先按前面的示例准备字体，再执行：
@@ -155,6 +146,7 @@ Pop-Location
 发布默认关闭散文件覆盖；需要模组或调试覆盖时显式 `reel run game.asb --assets overrides`。清单里的包按顺序后者覆盖前者，散文件优先。`--overwrite` 会替换整个既有导出目录，旧存档与额外文件不复制到新导出；运行数据应单独保存。输出可位于项目的 `build/` 中，须避开实际源码文件与资源目录。
 
 ### 范围、容器与插值
+
 在函数里可以用范围循环生成内容，再用插值展示结果。范围不会先创建一个大数组；`..` 不含终点，`..=` 包含终点。数组支持 `append`、`pop` 和 `len`，表支持 `has_own`、`get`、`remove` 和 `len`。插值当前支持字符串、数字、布尔值和 null。
 ```aside
 let values = [];
@@ -200,22 +192,13 @@ stage.replace(stack {
 });
 ```
 
-### 无窗口示例
-
-通过[最小 Aside 剧情](../../crates/reel-engine/examples/story_contract.aside)及其[无窗口宿主](../../crates/reel-engine/examples/story_contract.rs)运行：
-
-```sh
-cargo run --locked -p reel-engine --example story_contract
-```
-
 ## 二 让代码表达整幅画面
+
 ### 画布与字体
 
-在 main 中调用 game.configure(title: "窗边", width: 960, height: 540) 设置标题与逻辑画布，参数可以使用普通表达式。省略项保留原值；未设置画布时沿用窗口空间，设置后按 contain 等比缩放并留边，绘制与输入使用同一换算。首设一个维度时，另一个维度采用 1920×1080 的对应值。桌面窗口默认匹配首次配置的画布尺寸；未配置画布时为 1280×720。Rust 宿主可用 StoryWindowOptions.logical_size 显式指定其他初始尺寸。首次应用画布后不再自动调整窗口，玩家改变窗口尺寸时仍按 contain 缩放。fonts 接受字体文件字符串或按优先顺序排列的数组，例如 game.configure(fonts: ["fonts/body.ttf", "fonts/cjk.ttf"])；路径相对资源根，作品须在首次呈现前提供至少一个字体文件。text 和 button 的 font 属性选择字体族或逗号分隔的回退列表，例如 text("标题", font: "Noto Serif SC, system-ui")，font_size 控制大小。`font_weight` 选择字重，默认为 400，接受 1 到 1000 的有限数值；例如 `text("标题", font: "HK Grotesk", font_weight: 600)` 从已配置的该字体族中选择合适字重。优先使用作品提供的对应字重；只有 Regular 字体时，请求粗体会使用合成加粗，普通文本、逐字显示及描边沿同一字形路径。text、控件标签和 text_input 共用该属性，可以直接赋值、bind 或 derive；更改后重新排版。富文本 `[b]` 将对应文字局部设为 700。字体文件共享加载；system-ui 表示配置的默认列表。播放器只使用作品提供的字体，不读取系统字体；未配置字体会报错。
+在 main 中调用 game.configure(title: "窗边", width: 960, height: 540) 设置标题与逻辑画布，参数可以使用普通表达式。省略项保留原值；未设置画布时沿用窗口空间，设置后按 contain 等比缩放并留边，绘制与输入使用同一换算。首设一个维度时，另一个维度采用 1920×1080 的对应值。桌面窗口默认匹配首次配置的画布尺寸；未配置画布时为 1280×720。首次应用画布后不再自动调整窗口，玩家改变窗口尺寸时仍按 contain 缩放。fonts 接受字体文件字符串或按优先顺序排列的数组，例如 game.configure(fonts: ["fonts/body.ttf", "fonts/cjk.ttf"])；路径相对资源根，作品须在首次呈现前提供至少一个字体文件。text 和 button 的 font 属性选择字体族或逗号分隔的回退列表，例如 text("标题", font: "Noto Serif SC, system-ui")，font_size 控制大小。`font_weight` 选择字重，默认为 400，接受 1 到 1000 的有限数值；例如 `text("标题", font: "HK Grotesk", font_weight: 600)` 从已配置的该字体族中选择合适字重。优先使用作品提供的对应字重；只有 Regular 字体时，请求粗体会使用合成加粗，普通文本、逐字显示及描边沿同一字形路径。text、控件标签和 text_input 共用该属性，可以直接赋值、bind 或 derive；更改后重新排版。富文本 `[b]` 将对应文字局部设为 700。字体文件共享加载；system-ui 表示配置的默认列表。播放器只使用作品提供的字体，不读取系统字体；未配置字体会报错。
 
 ### 组织组件数据
-
-读取或写入表的单个字段时，其他任务或控件可继续更新已有字段值；查找完成时使用当前槽。普通 table 和 model 遵循同一规则。增删字段会中断尚未完成的查找并报告 ConcurrentModification。复制、展开和删除等批量操作仍要求来源内容在操作期间保持一致。
 
 内存占用随仍存活的剧情数据和资源增长。及时释放已退休内容的引用，并限制长期缓存；嵌入宿主可显式设置资源预算。
 
@@ -269,7 +252,7 @@ to_ascii_lowercase()/to_ascii_uppercase() 只转换 ASCII 字母，保留中文�
 
 带尾随子节点块的组件调用作为独立语句时可省略结尾分号；块后换行结束该语句，下一行括号表达式不会被接到前一个调用上。普通调用和属性赋值仍使用分号。显式分号不改变子节点收集。
 
-已实现：text、image、row、column、stack 与 stage.replace 使用同一节点模型。普通函数可以返回节点；尾随 children 块、if 与 array/tuple 上的 for 可以组合节点。value、x/y、width/height、color/background、opacity、visible 和 clip 等属性直接修改原节点，挂载后的身份保持不变。替换舞台会退休旧树，释放旧节点的内容；随后读写旧节点属性会报告错误。完整代码见[作者舞台示例](../../examples/author_stage/src/main.aside)。
+text、image、row、column、stack 与 stage.replace 使用同一节点模型。普通函数可以返回节点；尾随 children 块、if 与 array/tuple 上的 for 可以组合节点。value、x/y、width/height、color/background、opacity、visible 和 clip 等属性直接修改原节点，挂载后的身份保持不变。替换舞台会退休旧树，释放旧节点的内容；随后读写旧节点属性会报告错误。完整代码见[作者舞台示例](../../examples/author_stage/src/main.aside)。
 
 组件函数用末尾表达式或 `return` 返回节点。普通函数里的 `text("Title");` 会丢弃构造结果，编译器在该调用处报错；改成末尾的 `text("Title")` 即可返回。children 块内的分号照常收集节点，返回 null 的可选组件照常省略。诊断识别静态已知的节点构造器及其不可变别名；动态调用和普通包装函数仍按各自的返回值处理。确实需要丢弃构造结果时写 `let _ = text("Title");`。
 
@@ -351,8 +334,6 @@ panel.add(pointer);
 完整示例：[author_image_patterns.aside](../../examples/author_image_patterns/src/main.aside)。准备 `fonts/body.ttf` 和 `images/pattern.png` 后运行 `reel dev`（在 `examples/author_image_patterns/` 中）；切换纹理比例复用同一张图片。
 
 图片本身不接收指针输入，作为轨道、滑块或其他控件皮肤时不会挡住下方控件。需要图片可点击或拖动时，将它放入 button 或 input，由容器处理鼠标和触摸。
-
-Rust 宿主可用 `ImageSource::empty()` 表示尚未到达的画面，再以 `ImageSource::resource(lease)` 更新同一个 image 节点。直接资源保留普通图片的 fit、裁剪、变换、颜色和透明度；同尺寸更新只重绘，不重新布局。`ResourceRegistry::register_yuv420` 接收生产者持有的 8 位 YUV420 平面及 BT.601/709、范围和传递函数，不复制为 RGBA。`release(handle)` 放弃注册表持有权后，已捕获画面仍保留其租约；播放时钟和解码由宿主负责。可运行的 CPU 合同检查：`cargo test -p reel-player --lib decoded_frames_preserve`。
 
 `layered_image` 将图片描述组合成一个普通舞台节点；模型依赖变化时才重新计算。数组位置是稳定图层槽，按从后向前的顺序叠放；null 隐藏槽内原有图片，缩短数组会退休尾部槽。每份描述可使用 source、位置、尺寸、fit、color、opacity 等图片属性；省略的属性恢复 image 默认值。描述中的 bind/derive 值作为读取依赖。未变化的属性保持不动，图片节点复用，因此切换表情不会重建身体图层。
 
@@ -498,7 +479,7 @@ fn main() {
 }
 ```
 
-完整的 [author_images.aside](../../examples/author_images/src/main.aside) 随附所需图片，可用前面的 dev 命令运行。dev 的资源路径相对于源码文件目录，run 相对于 ASB 文件目录；`--assets <directory>` 可另选资源根目录。例如构建到 target/reel-artifacts 后，运行时加 `--assets examples`。构建 ASB 不会复制图片文件。
+完整的 [author_images.aside](../../examples/author_images/src/main.aside) 随附所需图片，可用前面的 dev 命令运行。开发运行使用项目的 `resources/`；构建产物按内嵌清单相对于 ASB 解析资源位置。`--assets <directory>` 可另选资源根目录。单独 build 保留资源引用，export 负责组织分发所需的资源文件。
 
 图片与字体共用资源加载服务，文件读取和图片解码在后台执行，同一路径的图片节点共享像素。新场景所需图片与配置字体全部就绪前保留上一完整画面，并暂停剧情输入；换源也保留旧图片直至新资源就绪。文件缺失或损坏会报告文件路径及 image 构造位置（字体对应 game.configure），并结束本次窗口运行。属性类型错误和非法 fit 可在赋值处捕获。图片挂载并且祖先均可见时才读取文件；构造未挂载组件或 visible=false 子树不会产生图片 IO。已加载的隐藏图片可在仍挂载时复用，有新图片加载需求时让出闲置缓存；卸载组件释放其缓存，上一完整画面与在途帧继续持有各自租约。opacity=0 仍准备图片，可用于资源就绪后淡入。会话内文件热重载尚未实现。
 
@@ -609,9 +590,9 @@ narrator("The light is moving.", reveal_skippable: false);
 say([mio.line("One."), eri.line("Two.")], reveal_skippable: false);
 ```
 
-可绑定对白、作者 ADV/NVL 视图和自定义选择见 [author_narrative.aside](../../examples/author_narrative/src/main.aside)。语音与章节启动仍待实现；say 提交共享推进的行组，布局由作者视图决定。
+可绑定对白、作者 ADV/NVL 视图和自定义选择见 [author_narrative.aside](../../examples/author_narrative/src/main.aside)。say 提交共享推进的行组，布局由作者视图决定。
 
-对白行数、选项数量、单次交互文字和会话历史按内容增长。历史保留整个会话的记录；它不会因达到展示缓存容量而中断剧情或丢弃旧记录。实际内存不足会报告错误。
+对白行数、选项数量、单次交互文字和会话历史按内容增长。历史保留当前阅读上下文的记录；它不会因达到展示缓存容量而中断剧情或丢弃旧记录。实际内存不足会报告错误。
 
 角色在模块中定义一次。每句对白调用发言者对象，旁白调用 narrator。独立字符串仍是普通字符串。角色调用更新对话数据和历史，并等待当前句完成，普通函数调用沿同一执行顺序继续。
 
@@ -655,13 +636,13 @@ pub fn nvl_view(model) {
     }
 }
 ```
-game.dialogue().lines 是统一的可观察对白行列表。每行提供只读 id/speaker_id/speaker_name/content_id/text/reveal/read；speaker_id 区分同名角色，旁白为 null，content_id 标识用于已读记录的内容。speaker_id/content_id/speaker_name/text/reveal 是当前显示行组第一行的快捷投影；ADV 常用这些字段，NVL 和气泡使用完整行列表。行的 read 保存提交前是否已读，顶层 read 表示整组提交前是否均已读；交互结束后保留这些值，退出动画不会突然变色。用 `color: derive(|| if model.read { "#aaaaaa" } else { "#ffffff" })` 定义已读颜色，角色配色可按 speaker_id 查询作者的样式表。model.text 保存完整文本，reveal 控制显现范围，因此逐字显示保持稳定排版。对话视图更换、隐藏和重新显示都保留会话历史。语音参数尚未接入。多个角色同时发言也使用同一个推进交互：
+game.dialogue().lines 是统一的可观察对白行列表。每行提供只读 id/speaker_id/speaker_name/content_id/text/reveal/read；speaker_id 区分同名角色，旁白为 null，content_id 标识用于已读记录的内容。speaker_id/content_id/speaker_name/text/reveal 是当前显示行组第一行的快捷投影；ADV 常用这些字段，NVL 和气泡使用完整行列表。行的 read 保存提交前是否已读，顶层 read 表示整组提交前是否均已读；交互结束后保留这些值，退出动画不会突然变色。用 `color: derive(|| if model.read { "#aaaaaa" } else { "#ffffff" })` 定义已读颜色，角色配色可按 speaker_id 查询作者的样式表。model.text 保存完整文本，reveal 控制显现范围，因此逐字显示保持稳定排版。对话视图更换、隐藏和重新显示都保留阅读上下文的历史。多个角色同时发言也使用同一个推进交互：
 ```aside
 let eri = character("Eri");
 say([mio.line("你听见了吗？"), eri.line("在窗外。")]);
 ```
-`game.dialogue()` 返回会话的稳定模型。NVL 用上面的 nvl_view 组合累积行，`model.clear()` 同时清空 NVL 行和 ADV 的文字与姓名，历史及当前发言的等待保留。继续追加会显示当前发言更新后的全文；开始新对白会建立新页。ADV 使用第一行快捷字段。`current_line_ids` 标识当前发言组。逐字显现只更新 reveal，不重建 NVL 页；追加行或清页才重建 view 内容。位置、背景、行间距和气泡形状由普通布局决定。自定义对白中，未被控件消费的轻点推进当前句；触摸拖动只滚页。长菜单示例见 [author_scroll.aside](../../examples/author_scroll/src/main.aside)。
-换句时的上滚可封装在普通对白函数中：先等待角色对白，再 `await run(tween(...))` 移出旧文本，之后调用下一句。完整组件见 [author_dialogue_transition.aside](../../examples/author_dialogue_transition/src/main.aside)，包含裁剪、角色配色与已读配色；运行前提供 fonts/body.ttf。打字速度用 game.configure(text_speed:) 调整；逐字透明度使用 `reveal_fade`，逐字位移等效果仍属规划。
+`game.dialogue()` 返回当前阅读上下文的稳定模型。NVL 用上面的 nvl_view 组合累积行，`model.clear()` 同时清空 NVL 行和 ADV 的文字与姓名，历史及当前发言的等待保留。继续追加会显示当前发言更新后的全文；开始新对白会建立新页。ADV 使用第一行快捷字段。`current_line_ids` 标识当前发言组。逐字显现只更新 reveal，不重建 NVL 页；追加行或清页才重建 view 内容。位置、背景、行间距和气泡形状由普通布局决定。自定义对白中，未被控件消费的轻点推进当前句；触摸拖动只滚页。长菜单示例见 [author_scroll.aside](../../examples/author_scroll/src/main.aside)。
+换句时的上滚可封装在普通对白函数中：先等待角色对白，再 `await run(tween(...))` 移出旧文本，之后调用下一句。完整组件见 [author_dialogue_transition.aside](../../examples/author_dialogue_transition/src/main.aside)，包含裁剪、角色配色与已读配色；运行前提供 fonts/body.ttf。打字速度用 game.configure(text_speed:) 调整；逐字透明度使用 `reveal_fade`。
 
 句内样式用显式 `rich(markup)`：例如 `narrator(rich("仰望 [ruby=ほしぞら]星空[/ruby]，[color=#ffd580][b]记住这一刻[/b][/color]。"));`。text、角色调用、character.line 和 narrator 都接收普通字符串或富文本；对白模型和历史保留完整样式。普通字符串不解析标记；富文本的只读 `.plain` 取得不含标记的正文，`.markup` 取得原标记字符串，读取均不复制文字。组合历史条目时可用 `rich("[b]姓名：[/b] " + line.text.markup)` 保留样式；普通字符串使用 `rich_escape`。`model({text: rich("[b]初始内容[/b]")})` 可直接作为可观察状态；复制模型默认值时共享不可变富文本。可运行示例：[author_rich_text.aside](../../examples/author_rich_text/src/main.aside)。
 
@@ -677,7 +658,7 @@ text 默认按可用宽度自然换行；width、x/y、padding、scroll 决定 N
 
 `text(value: rich("查看 [link=star-map][u]星图[/u][/link]"), on_link: |event| show_glossary(event.id))` 把词条 ID 交给普通回调。event.target 是文字节点；链接完整显示后可以鼠标或触摸点击，焦点在文字上时左右方向选择链接，确认键激活。链接消费输入，不推进对白，不自动打开浏览器；节点移除后其回调任务按节点所有权取消。完整示例：[author_rich_text.aside](../../examples/author_rich_text/src/main.aside)，运行前提供 fonts/body.ttf。需要语言切换时使用 `derive(|| rich(tr(...)))`；传入翻译模板的玩家文字先 rich_escape。提交过的对白和历史保留原语言和样式。当前无障碍树提供正文标签，尚未提供逐链接语义子节点。
 
-`game.start(entry)` 使用当前 ASB 中无捕获、无必需参数的普通函数。接受请求后，旧脚本不再继续；新会话重新执行模块初始化，再调用 entry。旧对白、UI 回调和活动结束，脚本全局、历史、自动和快进状态重建；已读记录、game.configure 配置、宿主资源与存档服务保留。目标入口负责构造画面；调用后无需清空旧舞台。跨 ASB 的热更新入口解析与持久脚本全局尚未实现。可运行示例见 [author_game_start.aside](../../examples/author_game_start/src/main.aside)。
+`game.start(entry)` 使用当前 ASB 中无捕获、无必需参数的普通函数。接受请求后，旧脚本不再继续；新会话重新执行模块初始化，再调用 entry。旧对白、UI 回调和活动结束，脚本全局、历史、自动和快进状态重建；已读记录、game.configure 配置、宿主资源与存档服务保留。目标入口负责构造画面；调用后无需清空旧舞台。可运行示例见 [author_game_start.aside](../../examples/author_game_start/src/main.aside)。
 
 传 `wait: false` 开始一句可继续追加的对白。`line.append(text)` 追加下一段并等待推进，与普通角色发言一致。需要衔接音效、动画或延时时写 `line.append(text, wait: false)`，到下一个推进点再调用 `line.wait()`。等待之后仍可追加，显示前文和同一条历史会保留；下一句对白或选择开始后，旧句柄结束。正文可以换行，普通字符串和 rich 都支持。多角色 say 行组可以等待，追加用于单角色行组。完整示例为 [author_dialogue_append.aside](../../examples/author_dialogue_append/src/main.aside)。
 
@@ -691,7 +672,6 @@ line.append("\nWelcome back.");
 ```
 
 脚本在推进点之间执行时，输入可补全文字。等待型 append 与 line.wait 共用手动、自动和快进规则。追加保留已经显示的字素，append 的 history 参数与角色调用采用相同选择：true 追加显示正文、false 省略这一段、字符串或 rich 追加替代正文。原条目已省略或清除时继续保持省略。句柄只在主剧情使用，保存恢复继续当前段和等待位置。
-
 
 `line.revealed()` 等待这句文字与句内停顿完成，再衔接音效或演出。它保留当前推进点；`line.wait()` 等待玩家推进。`append`、`revealed` 和 `wait` 都返回原句柄，可以继续链式组合。自定义文字动画由作者组件组合自己的活动与对白等待。
 
@@ -913,7 +893,7 @@ fn closeable_scene() {
 }
 ```
 
-普通返回、异常和场景退出都触发同步、幂等的宿主清理。退场动画由正文主动等待。作用域可以嵌套；记录了当前调用位置、活动和临时子树的存档恢复后，继续同一段正文，再按相同规则释放。游戏变量的正常写入保持其业务含义，scope 只管理显式登记的临时效果。
+普通返回、异常和场景退出都按共同清理协议退休作用域拥有的工作。退场动画由正文主动等待。作用域可以嵌套；记录了当前调用位置、活动和临时子树的存档恢复后，继续同一段正文，再按相同规则释放。游戏变量的正常写入保持其业务含义，scope 只管理显式登记的临时效果。
 默认 scope 随当前任务存活。需要随某个节点结束时写 scope(owner: node, body: ...)。若该节点先结束，仅撤销 scope 区域并在外层调用点产生 ScopeCancelled，仍存活的主剧情可以在 scope 外捕获；区域内的失效节点代码结束，宿主完成清理。当前任务自身被撤销时，整个任务结束。
 visible=false 隐藏子树并退出命中与焦点；enabled=false 保留画面并禁用交互；opacity 只改变透明度。永久换景用 stage.replace(new_root)，局部永久替换用容器 clear() 后再 add(new_child)。
 
@@ -945,7 +925,7 @@ let hint = view.hud.add(button("查看照片",
 mio("桌上那张照片，你还记得吗？");
 hint.remove();
 ```
-photo_panel 是作者定义的组件控制对象，上例只演示与剧情交错的按钮寿命。事件回调沿所属节点调度。打开模态节点时，引擎统一处理下层输入隔离、焦点进入及关闭后的焦点恢复。回调需要接管主剧情时使用 game 提交入口操作；普通画面修改可直接执行。
+photo_panel 是作者定义的组件控制对象，上例只演示与剧情交错的按钮寿命。事件回调沿所属节点调度。打开模态节点时，引擎统一处理下层输入隔离、焦点进入及关闭后的焦点恢复。回调可通过 `page.finish(value)` 返回目标，再由主流程打开对应页面；普通画面修改可直接执行。
 
 ### 关闭作品
 
@@ -977,11 +957,9 @@ fn main() {
 
 点击把原按钮作为 event.target 传入闭包。回调可以 await 动画；同步代码执行到显式 await、普通调用实际等待或结束时切换其他脚本任务；await 已完成的对象也会给其他就绪任务运行机会。普通调用和引擎分片不会打断没有 await 的读改写。不同回调可以等待同一活动，取消一个等待者不会停止其他等待者共用的活动。
 
-回调默认属于发出事件的按钮，在其中启动的 run 也默认属于该按钮。移除按钮、清空父容器或替换舞台会取消相关回调及活动；回调移除了自己之后，后续语句不会继续执行。narrator/choose 当前只由主剧情调用，回调调用会产生可捕获的上下文错误。game.start 和节点属性绑定已实现；通用事件订阅仍待实现。
+回调默认属于发出事件的按钮，在其中启动的 run 也默认属于该按钮。移除按钮、清空父容器或替换舞台会取消相关回调及活动；回调移除了自己之后，后续语句不会继续执行。narrator/choose 当前只由主剧情调用，回调调用会产生可捕获的上下文错误。
 
 主入口返回后，挂载的按钮回调和活动继续工作；空闲时不反复执行 VM。所有回调与活动结束且画面不再有事件处理器后，会话自然结束并保留最后画面。按钮消费的点击不会同时推进对白。默认宿主支持鼠标和触摸点击、Tab 焦点导航与 Enter/空格激活。手柄十字键/左摇杆按当前画面位置导航，长选项列表会随焦点滚动，南侧按钮确认，东侧按钮与 Escape 向当前 UI 发送返回。确认在配对松开时生效；切换弹窗、失焦或断连会取消旧输入，返回不直接退出应用。多个触点可同时操作不同控件；拖出按钮后松开不触发点击，系统取消或窗口挂起会释放交互。已有按钮无需为触屏重写，可运行 [author_buttons.aside](../../examples/author_buttons/src/main.aside)。内置桌面宿主已接入系统 IME，系统可访问性尚待适配。
-
-用第一节的 dev/build/run 命令运行此文件。引擎的节点、输入和调度不依赖 Winit/WGPU；window feature 选择当前内置桌面组合，其他宿主可以复用同一会话和呈现接口。
 
 自定义平台宿主的接入方法见[播放器说明](../../crates/reel-player/README.md)。
 
@@ -1087,9 +1065,6 @@ actions 的每个键是动作名，每项含 bindings 数组。普通控制名�
 
 ## 七 设置页与图片风格控件
 
-button、slider、toggle 与节点 bind/unbind 已实现；页签、settings 与滑条外观槽位仍属于设计目标。
-
-拖动由控件完成捕获与数值换算，同一数值决定滑块位置和音量。作者提供轨道与滑块的绘制节点，控件按方向、范围和槽位布局它们。settings 属于全局设置，读剧情存档后继续使用当前设置。 普通移动、缩放和布局变化保持拖动，输入使用最近显示画面的几何。范围、步长、方向或轨道端点策略改变时，当前拖动结束，新配置显示后恢复交互；外部绑定值更新仍即时生效。
 图片按钮也是作者自己的普通函数。按钮提供交互状态，图片只根据状态选择资源。
 ```aside
 fn picture_button(normal, hovered, pressed, clicked) {
@@ -1102,7 +1077,7 @@ fn picture_button(normal, hovered, pressed, clicked) {
     return control;
 }
 ```
-bind 连接可观察属性，属性同时保留原来的读写权限；text 可以读取只读属性，slider 写回数值时要求可写属性。derive 计算只读外观。派生函数对实际读取的可观察属性建立依赖，条件变化后替换依赖；结果也可通过 `binding.value` 读取并继续派生。派生更新在同步脚本段结束后、舞台发布前集中完成，也可读取不可变捕获值；普通数据的内部变化保持普通语言语义。可观察属性变化仅更新相关节点。连续时钟和对白揭示按批更新；一批派生跨帧时保留上一完整画面，计算完成后一起提交，再处理期间合并的新值。派生内部再次读取 game.dialogue() 会取得同一批的对白投影，显式剧情命令仍按原顺序生效。标量写入可写绑定属性会写回绑定源并保留绑定；动画也保留和写入最终源属性，因此两个节点绑定同一源会发现真实写入冲突。源的显式改写停止相关根活动；被动投影更新属于读取。只读派生属性用 scope 覆盖做临时演出；重新绑定或 unbind 会先结束依赖旧绑定的活动，unbind 保留当前有效基础值。捕获存档的短暂期间，脚本派生与作者外观更新暂停，捕获完成后按最新状态恢复。普通 {...} 数据记录适合传参，持续变化的业务值用 model({...}) 创建可观察模型。循环依赖和派生计算中的写入、等待给出源码诊断。
+`bind` 连接可观察属性并保留读写权限；会写回数值的控件需要可写来源。`derive` 根据实际读取的可观察字段计算只读外观，包括条件分支中的依赖；用 `binding.value` 读取结果并继续派生。更新在当前同步脚本段结束后、画面呈现前统一完成。向可写绑定赋普通值或播放动画会写回来源，连接的控件共享该值及其约束。临时演出使用 scope 覆盖只读派生属性。重新绑定或 unbind 会结束依赖旧连接的活动；unbind 保留有效基础值。普通记录用于传参，`model` 用于可观察业务数据。派生中的循环依赖、写入和等待会给出源码诊断。
 派生计算跟踪实际读取的可观察字段，包括条件分支产生的依赖。虚拟列表减少存活的行节点，来源数据和 key 索引仍常驻；使用稳定 key，并使来源数据适合宿主预算。
 
 在 derive 或组件工厂中读取另一个派生值时，引擎先完成该来源的待重算，再继续这次读取；条件分支首次读取的新来源也如此。可以把数组范围判断与图片路径等消费分别写成派生，保持同一次模型更新的值一致。同步按钮回调或故事函数中的普通赋值仍在该段结束后统一更新派生。
@@ -1175,8 +1150,6 @@ fn main() {
     narrator("Settings remain interactive after the story function returns.");
 }
 ```
-
-Rust 宿主可通过 `SessionUi::handle_access` / `AsideSessionUi::handle_access` 投递 AccessKit ActionRequest，沿用接受帧和模态规则；原生屏幕阅读器接入由平台宿主提供。
 
 ### 窗口与呈现设置
 
@@ -1258,7 +1231,7 @@ fn main() {
 
 图片使用相同资源时由播放器共享。wgpu 后端复用已提交的 GPU 图片，界面文字或悬停状态变化不会要求重新上传整套图片；缓存会在资源退休或需要腾出空间时释放，作者无需管理 GPU 句柄。
 
-普通函数、样式展开、节点属性修改、变换、有限动画和临时 scope 覆盖已可用。节点的 `corner_radius` 设置背景和边框圆角，`border_width`、`border_color` 设置内描边；例如 `panel.with(background: "#182638", corner_radius: 12, border_width: 2, border_color: "#92a8c8")`。内容留白由 padding 控制，样式沿用节点的布局与命中矩形。输入框和多行笔记的组合见 [author_text_area](../../examples/author_text_area/src/main.aside)。
+用普通函数、样式展开、节点属性修改、变换、有限动画和临时 scope 覆盖组合风格与演出。节点的 `corner_radius` 设置背景和边框圆角，`border_width`、`border_color` 设置内描边；例如 `panel.with(background: "#182638", corner_radius: 12, border_width: 2, border_color: "#92a8c8")`。内容留白由 padding 控制，样式沿用节点的布局与命中矩形。输入框和多行笔记的组合见 [author_text_area](../../examples/author_text_area/src/main.aside)。
 
 常用风格就是普通数据，组件函数决定如何把它应用到自己的节点。先写默认值，再用变体与显式参数覆盖；字段缺失才采用默认值，false、0 和 null 都保留作者的明确含义。临时 scope 覆盖优先于节点底层属性。
 ```aside
@@ -1303,7 +1276,8 @@ scope(body: |s| {
 [author_scope.aside](../../examples/author_scope/src/main.aside) 展示一个按钮同时启动动画和后台任务，另一个按钮通过一个任务句柄停止整段演出。运行 `reel dev`（在 `examples/author_scope/` 中）。
 
 ## 九 遮罩 特效与自定义演出
-舞台支持分组透明度、裁剪、图像遮罩、混合及转场。源码和 ASB 通过 dev/run 使用同一舞台与资源加载器。blur 等效果仍待实现；平台验收范围见[窗口说明](../../crates/reel-player/README.md)。
+
+舞台支持分组透明度、裁剪、图像遮罩、混合及转场。源码和 ASB 通过 dev/run 使用同一舞台与资源加载器。可用效果通过普通舞台节点组合。
 
 `stage.transition` 保留目标当前画面，执行 change，再将旧画面过渡到继续运行的新内容。调用完成后返回 change 的结果；与 scope 一样直接调用。并发使用 spawn。
 
@@ -1367,9 +1341,7 @@ stage.replace(stack(width: 320, height: 180, background: "#204060") {
 });
 ```
 
-效果参数与节点属性采用同一动画规则。更复杂画面可以嵌套 group：背景单独模糊，人物保持清晰，图片按钮仍在最上方；再对整组使用遮罩或镜头变换。所有子节点的前后顺序由树结构决定。
-自定义效果通过版本化 Effect 描述输入图像、参数、输出范围和后端实现。高级作者可以开发宿主扩展，常用效果随后以普通 Aside 函数组合复用。shader 支持属于后端能力，项目检查列出缺少的能力。可移植效果应同时提供简化实现，游戏通过能力查询选择适合的平台版本。
-特效改变的像素与逻辑输入区域分别声明。普通仿射变换与几何裁剪自动映射命中；弯曲、扭曲和任意着色器的交互区域由作者提供逻辑形状或专用映射。为每次点击从 GPU 读回画面会增加延迟，因此基础接口使用可直接计算的区域。
+效果参数与节点属性采用同一动画规则。更复杂画面可以嵌套 group：背景单独遮罩，人物保持完整，图片按钮仍在最上方；再对整组使用镜头变换。所有子节点的前后顺序由树结构决定。
 
 ### 图片粒子
 
@@ -1433,7 +1405,7 @@ stage.replace(text("A long authored line without automatic wrapping.\nA second e
 
 独立演出或小游戏后台逻辑使用 `spawn(work, owner: root)`。work 是零参数函数、闭包或绑定方法，可以循环并等待动画/结果；`await task` 取得返回值或原错误，重复等待得到同一终态。`task.cancel()` 首次请求取消返回 true，之后返回 false；任务清理后等待者收到 Cancelled。取消不会执行脚本 finally，资源应交给节点所有权管理。节点移除自动取消所属任务，隐藏不取消；取消等待者不取消生产者。省略 owner 时继承回调/任务节点，在主剧情中归会话。正文在当前调用者等待或返回后开始调度，不占用主剧情的对白/选项权限；初始化、纯 derive 和 NoWait 中不能启动任务。见 [author_tasks.aside](../../examples/author_tasks/src/main.aside)。普通固定演出继续用 sequence/parallel/repeat；`tween` 可用 `quad_in`、`quad_out`、`quad_in_out` 表达二次曲线，in/out/in_out 表达三次曲线。
 
-任务容量随实际并发数量增长和复用。连续启动短任务会复用已结束的任务槽，每次启动按当前驻留情况准备执行空间。调用入栈时，VM 按当前执行片预算准备所需窗口；预算不足保留该调用，获得所需额度后继续。Rust 宿主可用 `VmLimits.max_tasks` 设置自己的准入配额；分配和执行空间整理计入堆预算。
+任务存储随实际并发数量增长，并复用已结束的任务槽。只保留游戏仍需使用的结果，通过 await 取得返回值或原错误。
 
 普通函数在当前任务内调用，内部等待完成后才返回。例如 `ask()` 内部已 `await result` 并返回 bool，调用者直接写 `if ask() { ... }`；只有返回活动或 completion 等可等待对象时才再写 await。对 bool 等普通值使用 await 会在该行报告 `NotAwaitable`。
 
@@ -1519,7 +1491,7 @@ let actions = if flag {
 
 ## 十一 存档 历史 路线与跳过
 
-历史、自动阅读和存读档接口已实现；路线切换与按章节跳转仍为设计目标。界面由作者组合，服务不生成固定页面。
+用普通节点组合存档槽、历史和阅读控制，用函数与显式状态组织路线和章节。
 
 跨章后不再需要之前的历史时，调用 `game.reading().clear_history()`；用 `game.reading().clear_history(keep_last: 37)` 保留最近 37 条实际历史行，较早记录被删除。数量按行计算，不按对白组计算，`history:false` 的行不计入；可以只保留最早一个保留组的尾部。剩余组和行保持原 ID、对象、内容及顺序，不重新编号，组 speaker_name/text 更新为剩余首行。顶层可观察数组和保留组的 lines 数组保持身份。缺省或 0 清空全部，数量不少于现有行数时不改动，负数或非整数报错。当前对白、NVL 显示页、推进权限、已读进度、偏好及存档槽不变；加载存档仍恢复保存时的历史，新组 ID 不复用。裁剪工作量随记录数增长，并释放会话持有的引用。脚本持有的行引用或界面缓存仍会保留内容，需要同时退休旧视图或依据历史数组刷新缓存。引擎不自动限制历史长度，无需脚本定时清理。见 [author_reading.aside](../../examples/author_reading/src/main.aside)。
 
@@ -1563,10 +1535,9 @@ fn save_slot(id: string) {
 stage.replace(button("Save", enabled: derive(|| !menu.busy), on_click: |e| save_slot("page1/slot1")));
 ```
 
-`game.start(entry)` 创建全新会话；`saves.load(slot)` 恢复保存时的变量、位置和画面。同会话的章节重启 `game.restart(story_id)` 属于规划接口，当前作者环境尚未注册。
+`game.start(entry)` 创建全新会话；`saves.load(slot)` 恢复保存时的变量、位置和画面。同一会话内直接调用阅读上下文中的章节函数组织流程。
 `game.reading()` 返回稳定的只读可观察 `auto/paused/delay` 状态。`game.reading().set_auto(enabled: null, delay: null, condition: null)` 控制自动阅读；delay 为全文实际呈现后等待的有限非负秒数，默认 2 秒，省略时保留原值。`game.reading().pause(paused)` 暂停文字显现、自动推进和对白/选项输入，普通 UI 控件仍可用于关闭回看页。自动阅读在选择处等待玩家操作，之后继续；失焦、挂起、模态界面、待加载资源和正在进行的输入手势均停止计时，恢复后重新等待完整 delay。模式、暂停和条件属于阅读上下文，在同一上下文更换 UI 时保留；新上下文默认手动、未暂停。delay 为共享偏好。有限演出和独立音频有各自控制，不随阅读暂停。按钮外观、布局、打开/关闭回看页的方式均由作者决定。 `condition` 接受 bool 或 `bind`/`derive` 引用；各参数为 null 时保留当前值及绑定，condition 为 true 时解除旧绑定。只读 `auto_ready` 显示条件的当前值，初值 true。false 只重置自动倒计时，文字显现、手动推进、快进与 `[next]` 保持原路径；恢复 true 后，全文实际呈现完毕再等待完整 delay。条件及绑定随快照恢复。
-`game.reading().set_skip(enabled, unread: false, after_choices: false)` 已实现。`game.reading().skipping/skip_unread/skip_after_choices` 可观察状态与策略，`game.dialogue().read` 表示整组提交前是否已读。默认遇未读对白或选择时关闭快进；unread: true 可跳过未读对白；after_choices: true 在选择时保留快进模式，等待玩家选择后继续，仍遵守已读策略。暂停、失焦和模态界面仍会取消该模式。快进沿正常控制流执行，跳过显现/停留，并完成主剧情拥有的运行中有限演出；无限、暂停、节点拥有的活动和独立音频继续按原控制工作。自动阅读与快进互斥。暂停阅读、失焦、挂起和模态界面会关闭快进；启动快进的 input 节点退休也会清除其保持状态。作者用 input 回调在 pressed 时开启，在 released/cancelled 时关闭，也可自制切换按钮。已读在对白推进完成后记录，取消或仅显现全文不算。新会话默认保留由宿主提供的已读进度。源码模块版本变化保守视为未读。
-按章节跳过 `game.skip_to(story_id)` 仍依赖后续章节注册服务。
+`game.reading().set_skip(enabled, unread: false, after_choices: false)` 控制快进。`game.reading().skipping/skip_unread/skip_after_choices` 可观察状态与策略，`game.dialogue().read` 表示整组提交前是否已读。默认遇未读对白或选择时关闭快进；unread: true 可跳过未读对白；after_choices: true 在选择时保留快进模式，等待玩家选择后继续，仍遵守已读策略。暂停、失焦和模态界面仍会取消该模式。快进沿正常控制流执行，跳过显现/停留，并完成主剧情拥有的运行中有限演出；无限、暂停、节点拥有的活动和独立音频继续按原控制工作。自动阅读与快进互斥。暂停阅读、失焦、挂起和模态界面会关闭快进；启动快进的 input 节点退休也会清除其保持状态。作者用 input 回调在 pressed 时开启，在 released/cancelled 时关闭，也可自制切换按钮。已读在对白推进完成后记录，取消或仅显现全文不算。新会话默认保留由宿主提供的已读进度。源码模块版本变化保守视为未读。
 
 重置已读进度使用 `game.clear_read_progress()`。当前等待对白的组与各行 `read` 立即变为 false，仅跳已读的快进停止；之后的对白重新算未读，正常推进后重新登记。历史和已完成 NVL 行保留原有样式，自动阅读与允许跳过未读的策略保持原值。读档时，当前等待对白也按最新已读记录重新判断。此操作释放旧已读记录，耗时随记录容量增长，不读写磁盘，也不删除游戏存档或 `persistent` 系统数据。运行示例见 [author_reading.aside](../../examples/author_reading/src/main.aside)。
 
@@ -1574,11 +1545,11 @@ stage.replace(button("Save", enabled: derive(|| !menu.busy), on_click: |e| save_
 stage.replace(button("Reset read progress", on_click: |event| game.clear_read_progress()));
 ```
 
-这些服务提供数据与操作，页面外观由作者组合。手动点击或确认对白会执行一次正常显现/推进，并关闭自动阅读和快进；无效输入不改变模式。存读档、历史与阅读控制已实现；路线和章节注册仍待补齐。
+这些服务提供数据与操作，页面外观由作者组合。手动点击或确认对白会执行一次正常显现/推进，并关闭自动阅读和快进；无效输入不改变模式。
 
 ## 十二 游戏变量与组件状态
 
-`model`、字段双向绑定、存档恢复和独立系统数据读写已实现；state、node.state 仍是设计目标。
+用 `model` 保存可观察业务数据，用剧情存档保存执行状态，用 `persistent` 保存独立系统数据。
 
 用 model 保存独立于画面节点的业务数据。多个控件可以共享同一字段，输入直接写回数据，连接的文字、可见性和样式随之更新。运行 [author_models.aside](../../examples/author_models/src/main.aside)：在 `examples/author_models/` 中执行 `reel dev --assets ../../target/reel-artifacts/author-assets`，使用第一节准备的字体。
 
@@ -1608,12 +1579,9 @@ await persistent.write("settings", preferences);
 ```
 
 读取结果是普通副本，修改后需显式 write。剧情读档不会改写系统文件，但局部副本会随快照恢复；在 `saves.save` 请求的 `restored` 分支重新读取并应用当前设置。新游戏入口也应读取系统数据。已交给后台服务的写入不因切换会话撤销；未提交的请求不会在读档后重放。业务数据升级由游戏根据自己保存的版本字段迁移。
-model/state 的默认数据图复制后建立可观察属性，复制保留内部别名和环。内嵌可变数组、table、Set、缓冲以及注册的可观察数据类型都通过统一变更钩子通知；取得内部别名后修改也会通知。随后赋入的会话对象保持普通共享身份，并被纳入可观察图。model 对象通过实际引用保活。组件临时状态可放入节点自己的状态槽。
 作者用 persistent 保存全局偏好，并在启动和剧情存档恢复后读取、应用当前设置。业务 state 的修改采用常规控制流，scope 临时效果结束也保留其业务结果。
 
 ## 十三 作者怎样扩展自己的积木
-
-普通节点函数、命名参数、缺省值、children 和闭包已可用。下方 arrive 示例使用已实现的有限动画接口。
 
 复用的最小单位是普通 fn。返回节点的函数用于画面，返回动作的函数用于演出，普通对象用于把需要操作的部分交给调用者。命名实参、children、闭包和模块导入共同组成这套方式。
 全部实际参数先完成求值，再按参数顺序求省略参数的缺省值。缺省中创建的数组和表在每次调用时独立创建。缺省可引用前序参数，以表达式或块尾值作为结果。显式 return 属于函数正文，不能写在该函数的参数缺省内，条件或短路分支也遵守这一规则；缺省内定义的嵌套函数按自己的正文返回。break 和 continue 只能指向缺省内部建立的循环，throw 则传播参数准备失败。
@@ -1642,11 +1610,7 @@ stage.replace(column(gap: 12) {
 
 需要用 Rust 扩展脚本接口的开发者可参阅 [Aside host SDK](../aside-host.md)。注册的宿主函数使用与普通 Aside 函数相同的命名参数、默认参数和错误位置规则。
 
-Rust 扩展也可以用 `#[aside(rest)]` 声明可变位置参数。作者按普通参数或 `...items` 调用；每次调用有独立的外层数组，元素保留通常的共享身份。默认参数与绑定方法使用相同规则。这项能力独立于 Reel，本身不代表动作组合已经实现。
-
-当前基础 text 使用真实文字布局；源码内翻译与响应式语言切换沿共同本地化服务运行。句内富文本与视频节点已实现；Aside 自定义绘制接口仍属规划。
-
-作者音频已接入后台资源读取、真实混音器和剧情等待，见[作者音频](#作者音频)。原生设备验证与离线混音验证分别记录于[音频验证范围](../../crates/reel-media/VERIFICATION.md)。视频与同一混音器的内容时钟已接入，见上文视频节点。
+音乐和语音使用[作者音频](#作者音频)中的播放控制；同步画面和声音使用视频节点。
 
 原文和译文写在同一个 `tr` 调用中。`reel check` 检查语言标签和插值，`dev` 直接运行源码，`build` 与 `export` 自动生成语言包。单语言作品直接写普通字符串。
 
@@ -1677,12 +1641,8 @@ column(gap: 6) {
 
 发布包按需读取当前语言及其基础语言，显式预热的语言继续保留。开发运行共享编译得到的译文文本，按需解析目录。完整写法见[翻译示例](../../examples/localization/src/main.aside)和[英文接口说明](../../crates/reel-engine/src/aside/localization.rs)。
 
-视频与音频播放返回可等待活动，所有权、控制及存档行为见各自章节。作者滤镜与同步组接口仍属规划。
-规划中的 `custom_node` 将开放 Aside 的 state、measure、record、route 和 event 回调：布局与绘制回调只读，路由先决定消费、捕获与焦点，再执行可暂停的事件任务。当前作者接口尚未注册；宿主扩展使用 [Aside host SDK](../aside-host.md)。
-透视舞台、Mesh、Material 与可编程 Effect 接口仍属规划；已实现的 `camera` 用于二维取景。Live2D、系统朗读、移动/Web 打包及外部服务适配需要分别实现并提供能力说明。
-网络/购买等外部写入使用独立操作记录与幂等策略；未知结果先查询确认，回放默认只读。它们与普通可回滚游戏变量的寿命区分明确。普通作者组件与脚本库始终可以扩展自己的画面、布局、演出和业务逻辑。
-
 ### 错误定位与恢复
+
 当前播放器会在源码文件、行列和错误种类后显示宿主接口的具体拒绝原因。在 catch 中可用 `f"{error}"` 显示 CoreError：优先使用字符串详情，否则使用固定错误说明；普通抛出值保持原有语义。
 
 用 try/catch 处理资源加载、媒体播放或自己抛出的错误。catch 取得原值：抛字符串就得到字符串，抛对象就得到原对象。需要原样继续报告时写 throw;；写 throw error; 表示在当前位置再次抛出，诊断同时保留前一次错误作为原因。
@@ -1721,8 +1681,6 @@ await music;
 
 图片、字体和音频共用宿主的资源读取容量。并发读取暂时占满容量时，后续读取等待已有任务释放输入；单个文件超过宿主配置的输入容量仍会报错，诊断包含路径和字节数。
 
-音频解码仅在缓冲扩容和最终共享存储转换时计入新旧存储重叠；普通包解码复用已有 PCM 容量。内存预算不足时会报告解码阶段所需字节。
-
 `audio.play("assets/chime.wav", start: 0.1, end: 0.2)` 只播放到素材的 0.2 秒之前，由音频混音器在终点完成；省略 end 使用素材结尾。play 与 queue 都接受 end，显式终点必须大于起点且位于素材内。start/position/seek 都使用素材的绝对秒数；起点不限制之后向前定位，非循环 seek 超过 end 时停在 end。起点和终点若量化到同一采样帧，片段会无声完成；存档保留每个片段的终点。
 
 `start` 指定从第几秒起播，`audio.position(sound)` 读取当前素材的内容位置秒数。把它放进 `derive`，位置更新就会驱动画面；加载中保持请求起点，暂停时保持，结束后保留最后位置。`looping: true` 可配合 `loop_start` 和 `loop_end` 指定循环区间，默认从 0 循环至 end（省略时为音轨结尾）。start 在 loop_start 之前会先播放前奏，达到 loop_end 后回到 loop_start；start 超过 loop_end 会折回循环区间。循环终点不包含在区间内，循环边界必须位于 end 以内并至少包含一帧。未开启 looping 时使用默认循环边界。
@@ -1748,17 +1706,9 @@ music = next;
 
 Windows 播放器向系统提交双声道音频，默认设备配置为多声道时同样可以使用。
 
-支持 WAV/PCM、Ogg/Vorbis、FLAC、MP3。音频自动准备：普通audio.play与audio.queue保持相同写法，宿主自动预解码短声音，以有界PCM窗读取长音轨；默认以双声道f32 PCM的8MiB作为静态阈值，作者无需按素材长度选择播放器。宿主可以配置阈值，音频分组仍只控制混音。补给不足时内容位置暂停，声音恢复后继续；保存恢复重新准备同一资源和位置。未知长度在EOF确定实际末尾，整曲循环使用该末尾，显式end/loop_end超过实际末尾时活动失败。指定起播位置、定区间循环、播放中定位与存档恢复沿同一活动合同。Completed 表示混音器消费完成，不能用于精确声卡同步。实体设备的验证范围见[音频验证](../../crates/reel-media/VERIFICATION.md)。
+支持 WAV/PCM、Ogg/Vorbis、FLAC、MP3。音频自动准备：普通audio.play与audio.queue保持相同写法，宿主自动预解码短声音，以有界PCM窗读取长音轨；默认以双声道f32 PCM的8MiB作为静态阈值，作者无需按素材长度选择播放器。宿主可以配置阈值，音频分组仍只控制混音。补给不足时内容位置暂停，声音恢复后继续；保存恢复重新准备同一资源和位置。未知长度在EOF确定实际末尾，整曲循环使用该末尾，显式end/loop_end超过实际末尾时活动失败。指定起播位置、定区间循环、播放中定位与存档恢复沿同一活动合同。Completed 表示混音器消费完成，不能用于精确声卡同步。设备支持见[媒体 crate](../../crates/reel-media/README.md)。
 
 完整例子：[author_audio.aside](../../examples/author_audio/src/main.aside)，使用第一节准备的字体与素材。示例 chime.wav 是仓库自制的短正弦提示音。
-
-可提供自行断言并结束的检查项目，入口仍为 `src/main.aside` 中的 `main`，通过下面的命令分别运行源码和 ASB。宿主使用项目资源根、独立临时存档、真实 CPU 布局与接受帧，并默认启用真实音频解码和混音；48 kHz 双声道 PCM 按单调经过时间离线消费，不发声。源码和 ASB 每轮默认最多 90 秒；长场景可用 `REEL_SCENARIO_TIMEOUT_SECS` 设置秒数上限，必须是大于 0 的 u64 整数，非法值直接报错。此变量只影响外部工程检查，内置测试固定 90 秒。宿主不自动点击、选择或快进。音频等待、位置、队列和恢复可在此检查，实机音画同步仍需在设备上验收。
-
-```powershell
-$env:REEL_SCENARIO = "path/to/project"
-$env:REEL_SCENARIO_TIMEOUT_SECS = "600"
-cargo test -p reel-cli --test project_scenarios external_project_scenario -- --ignored --nocapture
-```
 
 ```powershell
 Push-Location examples/author_audio
@@ -1766,14 +1716,6 @@ reel check
 reel dev --assets ../../target/reel-artifacts/author-assets
 Pop-Location
 ```
-
-### 规划接口
-
-- 具名 `state`、组件 `node.state`、页签与滑条外观槽位：[状态与样式设计](../engine-architecture.md#六-作用域-样式与状态)。
-- 章节注册、重启与按章跳过：[剧情交互设计](../engine-architecture.md#十-热重载)。
-- 自定义绘制、透视场景与外部适配：[扩展范围](../engine-architecture.md#十一-完整制作能力与扩展)。
-
-这些名称属于设计目标；当前作品使用普通函数、model 数据及已实现的控件组合。
 
 ## 十五 继续查阅
 

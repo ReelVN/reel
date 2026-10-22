@@ -1,59 +1,22 @@
-# reel-audio provenance
+# Reel audio provenance
 
-The audio implementation originated from Kira 0.12.5, imported from crates.io
-on 2026-10-08. Source repository: https://github.com/tesselode/kira;
-revision `74b3ef0fd8bd15f90e3b469208ee741f04374a62`, directory `crates/kira`.
-The MIT and Apache-2.0 license files are retained from that revision's repository
-root, together with source copyright notices.
+The implementation came from Kira 0.12.5, imported from crates.io on 2026-10-08.
+Source: [tesselode/kira](https://github.com/tesselode/kira), revision
+`74b3ef0fd8bd15f90e3b469208ee741f04374a62`, directory `crates/kira`.
+The original MIT/Apache-2.0 licenses and source copyright notices remain.
 
-Reel maintains this code as the workspace package `reel-audio`. It follows the
-workspace version, Rust edition and safe-code policy. There is no upstream
-package alias, patch, source-hash gate or synchronization requirement.
+Reel maintains the code as the `reel-audio` workspace package. Local changes
+include bounded ownership transfer of retired sounds, decoder reservation/
+cancellation checkpoints, pending seek publication, interpolation-preserving
+PCM queues and worker-backed frame windows. Native device output and physical
+PCM retirement are owned by `reel-media`.
 
-The sound arena checks retirement queue capacity before releasing a slot.
-Main-track and sub-track control expose bounded, pure ownership transfer of retired sounds;
-playing a new sound does not silently destroy old PCM. Deterministic scheduling
-checks remain in `src/backend/resources/reel_tests.rs`. Device output, callback
-lifecycle and deferred PCM destruction belong to `reel-media`; the duplicate
-CPAL backend was removed from this library. Optional decoding and serialization
-features remain opt-in, with ordinary dependencies pinned in the workspace lock.
-
-Static decoding exposes a PCM reservation/cancellation checkpoint, used by the
-media adapter before buffer growth and final Arc transfer. The same decoder
-continues to serve file and host-provided sources.
-Packet decoding counts the old PCM allocation twice only when it actually
-grows; packets that fit reuse the existing allocation and conversion scratch.
-
-Static sound seeks publish their pending position until the output confirms that
-request, discard the old interpolation history and keep pause/terminal state.
-Absolute loop seeks preserve the intro and wrap in constant time at the loop end.
-
-Static PCM queues use bounded incoming/retired rings and preserve the interpolation
-cursor across source boundaries, including sample-rate changes. A finite startup
-fence prepares same-turn segments before consumption. Up to three source segments
-are retained for interpolation lookahead so seek still targets the current source;
-ownership returns through the media adapter's existing background reclaimer.
-Announcements after the terminal tail return `QueueClosed`. A full incoming ring
-returns the original PCM and residency owner directly, so rejection requires no
-additional allocation or ownership transfer to the audio callback.
-
-Prepared frame storage now admits bounded worker-backed PCM windows through the
-existing static/queued transport. Missing frames freeze its content cursor; seeks
-clear interpolation and request source preparation without callback IO. The shared
-Symphonia packet decoder accepts host readers and publishes unknown length at EOF.
-Both storage forms preserve queue, resampling and background retirement behavior.
-
-The packet decoder consumes successful zero-frame codec output internally and
-returns an empty chunk only at container EOF. Every consumed audio packet keeps
-the reservation/cancellation checkpoint. `tests/fixtures/short-tone.mp3` is an
-original synthetic 660 Hz tone, distributed under this crate's license. It has
-encoder priming and padding packets with no decoded frames. Reproduce it with
-FFmpeg 9.0 and libmp3lame (no source media):
+`tests/fixtures/short-tone.mp3` is an original synthetic 660 Hz tone under the
+crate license. Its priming/padding packets exercise zero-frame decode and EOF.
+Reproduce it with FFmpeg 9.0/libmp3lame:
 
 ```sh
 ffmpeg -f lavfi -i "sine=frequency=660:sample_rate=22050:duration=0.08" -ac 2 -c:a libmp3lame -b:a 64k -map_metadata -1 short-tone.mp3
 ```
 
-Its decoder regression checks chunk and static output, real EOF, reservation
-failure and cancellation between a priming packet and the following PCM packet:
-`cargo test --locked --offline -p reel-audio --features mp3 mp3_ --lib`.
+Decoder coverage: `cargo test --locked --offline -p reel-audio --features mp3 mp3_ --lib`.
