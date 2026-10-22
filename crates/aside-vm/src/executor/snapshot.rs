@@ -255,6 +255,7 @@ impl Vm {
             task_headers: 0,
             expected_tasks: 0,
             range_values: 0,
+            constant_validation: None,
             complete: false,
         })
     }
@@ -392,12 +393,20 @@ pub struct VmRestore<'a> {
     task_headers: usize,
     expected_tasks: usize,
     range_values: u64,
+    constant_validation: Option<ConstantValidation>,
     complete: bool,
 }
 impl VmRestore<'_> {
     pub fn step(&mut self, budget: SnapshotBudget) -> Result<SnapshotProgress, SnapshotError> {
         let mut progress = SnapshotProgress::default();
         while !self.complete && progress.units < budget.units {
+            if let Some(validation) = &mut self.constant_validation {
+                if validation.step(&self.vm)? {
+                    self.constant_validation = None;
+                }
+                progress.units += 1;
+                continue;
+            }
             let Some(record) = self.image.records.get(self.cursor) else {
                 self.cursor = 0;
                 self.pass += 1;
@@ -522,7 +531,7 @@ impl VmRestore<'_> {
             RecordKind::Frame => {
                 let mut frame: Frame = record.read()?;
                 rebase_frame(&mut frame, &self.map)?;
-                validate_frame(&frame, &self.vm)?;
+                self.constant_validation = validate_frame(&frame, &self.vm)?;
                 append(&mut self.task_mut(record.key)?.frames, record.offset, frame)?;
             }
             RecordKind::Unwind => {
@@ -664,7 +673,7 @@ fn rebase_frame(frame: &mut Frame, map: &SnapshotMap) -> Result<(), SnapshotErro
     }
     Ok(())
 }
-fn validate_frame(frame: &Frame, vm: &Vm) -> Result<(), SnapshotError> {
+fn validate_frame(frame: &Frame, vm: &Vm) -> Result<Option<ConstantValidation>, SnapshotError> {
     match frame {
         Frame::Script(frame) => {
             let code = vm
@@ -680,6 +689,38 @@ fn validate_frame(frame: &Frame, vm: &Vm) -> Result<(), SnapshotError> {
             {
                 return Err(SnapshotError::Invalid("script frame code/registers".into()));
             }
+            match frame.phase {
+                ScriptPhase::Constant(work) => {
+                    let instruction = code
+                        .code
+                        .get(frame.pc.index())
+                        .ok_or_else(|| SnapshotError::Invalid("constant instruction".into()))?;
+                    if instruction.opcode != Opcode::LoadConst as u16
+                        || work.dest != Reg(instruction.operands[0])
+                    {
+                        return Err(SnapshotError::Invalid("constant destination".into()));
+                    }
+                    return validate_constant_cursor(
+                        vm,
+                        ConstId(instruction.operands[1]),
+                        work,
+                        frame.env,
+                        [1, 2],
+                    );
+                }
+                ScriptPhase::DefaultConstant { parameter, work } => {
+                    let signature = &vm.program.package().signatures[code.signature.index()];
+                    return validate_default_constant(
+                        vm,
+                        signature,
+                        parameter,
+                        work,
+                        frame.env,
+                        [1, 2],
+                    );
+                }
+                _ => {}
+            }
         }
         Frame::Native(frame) => {
             let native = vm
@@ -693,7 +734,127 @@ fn validate_frame(frame: &Frame, vm: &Vm) -> Result<(), SnapshotError> {
             {
                 return Err(SnapshotError::Invalid("native continuation schema".into()));
             }
+            if let NativePhase::DefaultConstant { parameter, work } = frame.phase {
+                return validate_default_constant(
+                    vm,
+                    &vm.program.package().signatures[frame.signature.index()],
+                    parameter,
+                    work,
+                    frame.roots,
+                    [0, 1],
+                );
+            }
         }
     }
-    Ok(())
+    Ok(None)
+}
+
+fn validate_default_constant(
+    vm: &Vm,
+    signature: &Signature,
+    parameter: u32,
+    work: constants::ConstantWork,
+    roots: RootRangeToken,
+    slots: [u32; 2],
+) -> Result<Option<ConstantValidation>, SnapshotError> {
+    let Some(ParameterDefault::Constant(origin)) = signature
+        .parameters
+        .get(parameter as usize)
+        .and_then(|p| p.default)
+    else {
+        return Err(SnapshotError::Invalid("constant default parameter".into()));
+    };
+    if work.dest != Reg(parameter) {
+        return Err(SnapshotError::Invalid(
+            "constant default destination".into(),
+        ));
+    }
+    validate_constant_cursor(vm, origin, work, roots, slots)
+}
+
+fn validate_constant_cursor(
+    vm: &Vm,
+    origin: ConstId,
+    work: constants::ConstantWork,
+    roots: RootRangeToken,
+    slots: [u32; 2],
+) -> Result<Option<ConstantValidation>, SnapshotError> {
+    let constants = &vm.program.package().constants;
+    let Some(Const::Tuple(elements)) = constants.get(work.id.index()) else {
+        return Err(SnapshotError::Invalid("constant tuple cursor".into()));
+    };
+    let builder = vm.value(roots, slots[0])?;
+    let parent_value = vm.value(roots, slots[1])?;
+    let builder = vm.heap.info(builder)?;
+    let parents = vm.heap.info(parent_value)?;
+    if !matches!(constants.get(origin.index()), Some(Const::Tuple(_)))
+        || work.id.0 > origin.0
+        || work.index as usize > elements.len()
+        || builder.kind != ObjectKind::Array
+        || builder.len != work.index
+        || parents.kind != ObjectKind::Array
+        || !parents.len.is_multiple_of(3)
+    {
+        return Err(SnapshotError::Invalid("constant construction state".into()));
+    }
+    if parents.len == 0 {
+        if origin != work.id {
+            return Err(SnapshotError::Invalid("constant cursor origin".into()));
+        }
+        Ok(None)
+    } else {
+        Ok(Some(ConstantValidation {
+            parents: parent_value,
+            next: parents.len,
+            child: work.id,
+            origin,
+        }))
+    }
+}
+
+/// Restore validates one suspended parent per budget unit; execution then uses
+/// the same checked internal cursor without repeated defensive checks.
+struct ConstantValidation {
+    parents: Value,
+    next: u32,
+    child: ConstId,
+    origin: ConstId,
+}
+impl ConstantValidation {
+    fn step(&mut self, vm: &Vm) -> Result<bool, SnapshotError> {
+        self.next -= 3;
+        let parent = vm.heap.get_field(self.parents, self.next)?;
+        let id = vm
+            .heap
+            .get_field(self.parents, self.next + 1)?
+            .as_int()
+            .and_then(|id| u32::try_from(id).ok())
+            .map(ConstId)
+            .ok_or_else(|| SnapshotError::Invalid("constant parent identity".into()))?;
+        let index = vm
+            .heap
+            .get_field(self.parents, self.next + 2)?
+            .as_int()
+            .and_then(|index| u32::try_from(index).ok())
+            .ok_or_else(|| SnapshotError::Invalid("constant parent index".into()))?;
+        let Some(Const::Tuple(elements)) = vm.program.package().constants.get(id.index()) else {
+            return Err(SnapshotError::Invalid("constant parent tuple".into()));
+        };
+        let parent = vm.heap.info(parent)?;
+        if id.0 <= self.child.0
+            || index == 0
+            || elements.get(index as usize - 1) != Some(&self.child)
+            || parent.kind != ObjectKind::Array
+            || parent.len != index - 1
+        {
+            return Err(SnapshotError::Invalid(
+                "constant parent construction".into(),
+            ));
+        }
+        self.child = id;
+        if self.next == 0 && self.child != self.origin {
+            return Err(SnapshotError::Invalid("constant parent origin".into()));
+        }
+        Ok(self.next == 0)
+    }
 }

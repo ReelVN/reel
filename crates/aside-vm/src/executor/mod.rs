@@ -162,6 +162,10 @@ enum ScriptPhase {
     },
     Body,
     Constant(constants::ConstantWork),
+    DefaultConstant {
+        parameter: u32,
+        work: constants::ConstantWork,
+    },
     Spread(collections::SpreadCapture),
     TableSpread(collections::TableSpread),
     KeyPath {
@@ -270,6 +274,10 @@ enum NativePhase {
     DefaultCall {
         parameter: u32,
         function: FunctionId,
+    },
+    DefaultConstant {
+        parameter: u32,
+        work: constants::ConstantWork,
     },
     Project {
         index: u32,
@@ -2413,10 +2421,19 @@ impl Vm {
             }
             ScriptPhase::Defaults { parameter } => {
                 let f = &self.program.package().functions[s.code.function.index()];
-                if !m.take(0, f.bindings.len() as u64 + 2, 0) {
+                let sig = &self.program.package().signatures[signature.index()];
+                let allocation = sig
+                    .parameters
+                    .get(parameter as usize)
+                    .filter(|_| self.slots.read(at(s.bound, parameter)).is_err())
+                    .and_then(|p| p.default)
+                    .map_or(0, |default| match default {
+                        ParameterDefault::Constant(id) => self.constant_allocation_bytes(id),
+                        _ => 0,
+                    });
+                if !m.take(0, f.bindings.len() as u64 + 2, allocation) {
                     return Ok(false);
                 }
-                let sig = &self.program.package().signatures[signature.index()];
                 if parameter as usize == sig.parameters.len() + usize::from(sig.rest.is_some()) {
                     s.phase = ScriptPhase::Install { binding: 0 };
                 } else if self.slots.read(at(s.bound, parameter)).is_ok() {
@@ -2427,10 +2444,32 @@ impl Vm {
                         .map_or(BindingStorage::Value(Reg(parameter)), |b| b.storage);
                     s.phase = ScriptPhase::Parameter { parameter, storage };
                 } else if let Some(default) = sig.parameters[parameter as usize].default {
-                    s.phase = ScriptPhase::DefaultCall {
-                        parameter,
-                        function: default,
-                    };
+                    match default {
+                        ParameterDefault::Function(function) => {
+                            s.phase = ScriptPhase::DefaultCall {
+                                parameter,
+                                function,
+                            }
+                        }
+                        ParameterDefault::Constant(id) => {
+                            match self.start_constant(id, s.env, [1, 2]) {
+                                Ok(Some(value)) => {
+                                    self.put(s.bound, parameter, value)?;
+                                }
+                                Ok(None) => {
+                                    s.phase = ScriptPhase::DefaultConstant {
+                                        parameter,
+                                        work: constants::ConstantWork {
+                                            dest: Reg(parameter),
+                                            id,
+                                            index: 0,
+                                        },
+                                    }
+                                }
+                                Err(kind) => self.preparation_fault(&mut s, kind)?,
+                            }
+                        }
+                    }
                 } else {
                     self.preparation_fault(&mut s, FaultKind::MissingArgument)?;
                 }
@@ -2689,9 +2728,43 @@ impl Vm {
                     }
                 }
             }
-            ScriptPhase::Constant(work) => {
-                if !self.constant_step(&mut s, work, m)? {
-                    return Ok(false);
+            ScriptPhase::Constant(mut work) | ScriptPhase::DefaultConstant { mut work, .. } => {
+                let parameter = match s.phase {
+                    ScriptPhase::DefaultConstant { parameter, .. } => Some(parameter),
+                    _ => None,
+                };
+                match self.constant_step(s.env, [1, 2], &mut work, m)? {
+                    constants::ConstantStep::Blocked => return Ok(false),
+                    constants::ConstantStep::Pending => {
+                        s.phase = if let Some(parameter) = parameter {
+                            ScriptPhase::DefaultConstant { parameter, work }
+                        } else {
+                            ScriptPhase::Constant(work)
+                        }
+                    }
+                    constants::ConstantStep::Ready(value) => {
+                        if let Some(parameter) = parameter {
+                            self.put(s.bound, parameter, value)?;
+                            self.finish_constant(s.env, [1, 2])?;
+                            s.phase = ScriptPhase::Defaults { parameter };
+                        } else {
+                            match self.write(s, work.dest, value) {
+                                Ok(()) => {
+                                    self.finish_constant(s.env, [1, 2])?;
+                                    s.pc.0 += 1;
+                                    s.phase = ScriptPhase::Body;
+                                }
+                                Err(kind) => self.collection_fault(&mut s, kind)?,
+                            }
+                        }
+                    }
+                    constants::ConstantStep::Fault(kind) => {
+                        if parameter.is_some() {
+                            self.preparation_fault(&mut s, kind)?;
+                        } else {
+                            self.collection_fault(&mut s, kind)?;
+                        }
+                    }
                 }
             }
             ScriptPhase::Spread(work) => {
@@ -2942,6 +3015,7 @@ impl Vm {
     ) -> Result<(u64, u64), VmError> {
         let f = &self.program.package().functions[s.code.function.index()];
         Ok(match op {
+            Opcode::LoadConst => (1, self.constant_allocation_bytes(ConstId(b))),
             Opcode::BindInit | Opcode::BindWrite => {
                 (1 + self.type_checks.extra(f.bindings[_a as usize].ty), 0)
             }
@@ -3543,13 +3617,9 @@ impl Vm {
                 self.sequence_set(object, index, value)?;
             }
             Opcode::LoadConst => {
-                if let Some(value) = self.constant_value(ConstId(b)).map_err(heap_fault)? {
+                if let Some(value) = self.start_constant(ConstId(b), s.env, [1, 2])? {
                     self.write(*s, r(a), value)?;
                 } else {
-                    let builder = self.heap.alloc_array(&[]).map_err(heap_fault)?;
-                    self.put(s.env, 1, builder).map_err(vm_fault)?;
-                    let parents = self.heap.alloc_array(&[]).map_err(heap_fault)?;
-                    self.put(s.env, 2, parents).map_err(vm_fault)?;
                     s.phase = ScriptPhase::Constant(constants::ConstantWork {
                         dest: r(a),
                         id: ConstId(b),
@@ -4628,6 +4698,7 @@ impl Vm {
             | NativePhase::Defaults { .. }
             | NativePhase::Parameter { .. }
             | NativePhase::DefaultCall { .. }
+            | NativePhase::DefaultConstant { .. }
             | NativePhase::Project { .. } => {
                 if !self.native_parameter_step(&mut n, m)? {
                     return Ok(Some(RunOutcome::BudgetYield(m.usage)));

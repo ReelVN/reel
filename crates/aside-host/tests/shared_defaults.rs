@@ -19,7 +19,7 @@ fn contract(name: &str, parameters: Vec<NativeParameter>) -> NativeContract {
         required_capabilities: vec![],
     }
 }
-fn default(program: &bc::VerifiedProgram, native: usize, index: usize) -> bc::FunctionId {
+fn default(program: &bc::VerifiedProgram, native: usize, index: usize) -> bc::ParameterDefault {
     let package = program.package();
     package.signatures[package.natives[native].signature.index()].parameters[index]
         .default
@@ -27,7 +27,7 @@ fn default(program: &bc::VerifiedProgram, native: usize, index: usize) -> bc::Fu
 }
 
 #[test]
-fn literal_sharing_preserves_constant_type_and_the_complete_prefix_contract() {
+fn literal_sharing_uses_pool_values_independently_of_prefix_and_preserves_native_types() {
     use bc::{BuiltinType as T, Const as C};
     let base = vec![
         parameter("x", T::Any, None),
@@ -58,11 +58,14 @@ fn literal_sharing_preserves_constant_type_and_the_complete_prefix_contract() {
     assert_eq!(
         shared,
         default(&seed, 6, 1),
-        "earlier defaults are not part of the thunk's input contract"
+        "earlier defaults do not change an immutable literal"
     );
-    for native in 2..6 {
-        assert_ne!(shared, default(&seed, native, 1));
+    for native in 2..5 {
+        assert_eq!(shared, default(&seed, native, 1));
     }
+    assert_ne!(shared, default(&seed, 5, 1));
+    assert!(matches!(shared, bc::ParameterDefault::Constant(_)));
+    assert_eq!(seed.package().functions.len(), contracts.len());
     assert_eq!(seed.package().constants, [C::Null, C::Int(7), C::Int(3)]);
     let support = aside_host::runtime_support(&seed, &contracts, &[], &[]).unwrap();
     Vm::load(seed.clone(), support, Default::default(), SessionEpoch(1)).unwrap();
@@ -76,12 +79,43 @@ fn literal_sharing_preserves_constant_type_and_the_complete_prefix_contract() {
         "a different registered constant cannot be substituted"
     );
     let mut forged = seed.package().clone();
-    let helper_signature = forged.functions[shared.index()].signature.index();
-    forged.signatures[helper_signature].effects = bc::Effects(bc::Effects::ALLOCATE);
+    let signature = forged.natives[0].signature.index();
+    let prefix = forged.signatures[signature].parameters[..1].to_vec();
+    let helper_signature = bc::SignatureId(forged.signatures.len() as u32);
+    forged.signatures.push(bc::Signature {
+        parameters: prefix,
+        rest: None,
+        return_type: forged.signatures[signature].return_type,
+        effects: bc::Effects(bc::Effects::ALLOCATE),
+        property_bag_tail: None,
+    });
+    let bc::ParameterDefault::Constant(id) = shared else {
+        unreachable!()
+    };
+    let function = bc::FunctionId(forged.functions.len() as u32);
+    forged.functions.push(bc::FunctionDef {
+        module: bc::ModuleId(0),
+        name: forged.natives[0].symbol,
+        kind: bc::FunctionKind::Plain,
+        signature: helper_signature,
+        context: bc::Context::NoWait,
+        captures: vec![],
+        register_count: 2,
+        bindings: vec![],
+        descriptors: vec![],
+        regions: vec![],
+        source_map: vec![],
+        code: vec![
+            bc::Instruction::new(bc::Opcode::LoadConst, 1, id.0, 0),
+            bc::Instruction::new(bc::Opcode::Return, 1, 0, 0),
+        ],
+    });
+    forged.signatures[signature].parameters[1].default =
+        Some(bc::ParameterDefault::Function(function));
     let forged = bc::verify(forged, Default::default()).unwrap();
     assert!(
         aside_host::runtime_support(&forged, &contracts, &[], &[]).is_err(),
-        "shared literal admission retains the effect-free contract"
+        "an executable default cannot replace a registered literal"
     );
 }
 
@@ -100,11 +134,14 @@ fn shared_literal_calls_and_dependent_script_defaults_survive_asb_gc_and_every_s
     let second = second::binding();
     let contracts = [first.contract.clone(), second.contract.clone()];
     let code = r#"fn dependent(a=4,b=a+1){a+b}
+        fn mutate(mut a=4,b=if true {a+=2;a} else {0}){a+b}
+        fn fresh(a=[],b={value:0}){a.append(1);b.value+=1;a.len()+b.value}
         fn main(){
             if first(7)!="7:shared" || second(receiver:8)!="8:shared" {throw "shared default";}
             let alias=first;
             if alias(9)!="9:shared" || second(10,"explicit")!="10:explicit" {throw "alias/default binding";}
             if dependent()!=9 || dependent(10)!=21 {throw "dependent script default";}
+            if mutate()!=12 || fresh()!=2 || fresh()!=2 {throw "default mutation/freshness";}
             42
         }"#;
     let module = aside_compiler::analyze_module(
@@ -199,5 +236,83 @@ fn shared_literal_calls_and_dependent_script_defaults_survive_asb_gc_and_every_s
                 }
             }
         }
+    }
+}
+
+#[test]
+fn wide_registered_defaults_retain_linear_metadata_and_use_no_default_frames() {
+    let mut last_owned = 0;
+    for width in [32, 64, 128] {
+        let contract = contract(
+            "wide",
+            (0..width)
+                .map(|i| {
+                    parameter(
+                        &format!("p{i}"),
+                        bc::BuiltinType::Any,
+                        Some(bc::Const::Null),
+                    )
+                })
+                .collect(),
+        );
+        let program = aside_host::seed(std::slice::from_ref(&contract), &[], &[], 1).unwrap();
+        assert_eq!(program.package().functions.len(), 1);
+        assert_eq!(program.package().signatures.len(), 1);
+        assert_eq!(program.package().constants, [bc::Const::Null]);
+        let owned = program.stats().owned_capacity_bytes;
+        if last_owned != 0 {
+            assert!(
+                owned < last_owned * 2,
+                "literal metadata must scale linearly"
+            );
+        }
+        last_owned = owned;
+        let support =
+            aside_host::runtime_support(&program, std::slice::from_ref(&contract), &[], &[])
+                .unwrap();
+        let mut vm = Vm::load(program, support, Default::default(), SessionEpoch(1)).unwrap();
+        let task = vm
+            .start(bc::FunctionId(0), &[], RootOwner(1), bc::Context::Ordinary)
+            .unwrap();
+        let roots = vm.stats().slots.active_ranges;
+        let mut budget = SliceBudget {
+            instructions: 1,
+            work: 1,
+            allocation_bytes: 0,
+            ..Default::default()
+        };
+        loop {
+            assert_eq!(
+                vm.stats().frames,
+                1,
+                "literal defaults do not execute helper frames"
+            );
+            assert_eq!(
+                vm.stats().slots.active_ranges,
+                roots,
+                "literal defaults do not add temporary root windows"
+            );
+            match vm.run_slice(task, budget, || 0).unwrap() {
+                RunOutcome::BudgetYield(usage) => {
+                    budget.work = usage.required_work.max(1);
+                    budget.allocation_bytes = usage.required_allocation;
+                }
+                RunOutcome::HostCall(ticket) => {
+                    assert_eq!(vm.host_arguments(ticket).unwrap().len(), width);
+                    assert!(
+                        vm.host_arguments(ticket)
+                            .unwrap()
+                            .iter()
+                            .all(|value| value.same_bits(aside_vm::Value::NULL))
+                    );
+                    assert_eq!(vm.host_provided_arguments(ticket).unwrap().len(), 0);
+                    vm.respond(ticket, HostResponse::Ready(aside_vm::Value::NULL))
+                        .unwrap();
+                    break;
+                }
+                result => panic!("{result:?}"),
+            }
+        }
+        eprintln!("wide_constant_defaults,width={width},owned={owned},roots={roots}");
     }
 }

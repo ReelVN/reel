@@ -47,8 +47,8 @@ fn default_registry() -> RuntimeSupport {
             signature: Signature {
                 parameters: vec![
                     parameter(4, true, None),
-                    parameter(14, false, Some(FunctionId(1))),
-                    parameter(15, true, Some(FunctionId(2))),
+                    parameter(14, false, Some(ParameterDefault::Function(FunctionId(1)))),
+                    parameter(15, true, Some(ParameterDefault::Function(FunctionId(2)))),
                 ],
                 rest: Some(Parameter {
                     name: SymbolId(18),

@@ -17,11 +17,9 @@ impl std::fmt::Display for DeclarationError {
 impl std::error::Error for DeclarationError {}
 /// Host-owned metadata, supplied independently of the package being admitted.
 /// No package Signature/TypeId/FunctionId can be imported as a trust assertion.
-/// Parameter defaults are ordinary bytecode default functions generated from these
-/// host-owned constants. Runtime admission resolves the same declarations.
-/// Identical literals share an implementation when their complete preceding
-/// parameter contracts and return types match; this internal identity is not a
-/// source-level callable or a replacement for dependent script defaults.
+/// Parameter defaults reference shared immutable bytecode constants. Runtime
+/// admission verifies these values against the same independent declarations.
+/// Dependent script defaults retain their ordinary lexical function semantics.
 #[derive(Clone, Debug)]
 pub struct NativeParameter {
     pub name: String,
@@ -307,7 +305,7 @@ pub fn runtime_support(
                     default: parameter
                         .default
                         .as_ref()
-                        .map(|value| default_function(program, declared, index, value))
+                        .map(|value| default_value(program, declared, index, value))
                         .transpose()?,
                 })
             })
@@ -344,41 +342,33 @@ pub fn runtime_support(
     })
 }
 
-fn default_function(
+fn default_value(
     program: &bc::VerifiedProgram,
     signature: &bc::Signature,
     index: usize,
     value: &bc::Const,
-) -> Result<bc::FunctionId, DeclarationError> {
+) -> Result<bc::ParameterDefault, DeclarationError> {
     let package = program.package();
-    let id = signature
+    let default = signature
         .parameters
         .get(index)
         .and_then(|p| p.default)
         .ok_or(DeclarationError("native default missing"))?;
-    let function = &package.functions[id.index()];
-    // A package cannot replace the registered constant default with script effects.
-    let valid = function.kind == bc::FunctionKind::Plain
-        && function.context == bc::Context::NoWait
-        && package.signatures[function.signature.index()].effects == bc::Effects(0)
-        && function.captures.is_empty()
-        && function.code.len() == 2
-        && function.code[0].opcode == bc::Opcode::LoadConst as u16
-        && function.code[1] == bc::Instruction::new(bc::Opcode::Return, index as u32, 0, 0)
-        && function.code[0].operands[0] == index as u32
-        && {
-            let id = bc::ConstId(function.code[0].operands[1]);
-            match (package.constants.get(id.index()), value) {
-                (Some(bc::Const::Utf8(_) | bc::Const::Text { .. }), bc::Const::Utf8(expected)) => {
-                    program.constant_bytes(id) == Some(expected.as_bytes())
-                }
-                (actual, _) => actual == Some(value),
-            }
-        };
+    let bc::ParameterDefault::Constant(id) = default else {
+        return Err(DeclarationError(
+            "native literal default must reference a constant",
+        ));
+    };
+    let valid = match (package.constants.get(id.index()), value) {
+        (Some(bc::Const::Utf8(_) | bc::Const::Text { .. }), bc::Const::Utf8(expected)) => {
+            program.constant_bytes(id) == Some(expected.as_bytes())
+        }
+        (actual, _) => actual == Some(value),
+    };
     if !valid {
         return Err(DeclarationError("native default differs from registry"));
     }
-    Ok(id)
+    Ok(default)
 }
 pub fn hint(ty: &bc::BuiltinType) -> TypeHint {
     match ty {
@@ -407,7 +397,7 @@ pub fn reference(contract: &NativeContract) -> SymbolReference {
     }
 }
 
-/// Build verified native defaults and canonical nominal types from trusted Rust
+/// Build shared constant defaults and canonical nominal types from trusted Rust
 /// declarations. Runtime loading validates nominal registration relationships.
 pub fn seed(
     contracts: &[NativeContract],
@@ -479,17 +469,13 @@ pub fn seed(
             version: content_version,
         });
     }
-    let mut defaults = crate::literal_defaults::LiteralDefaults::default();
     for contract in contracts {
         let mut parameters: Vec<bc::Parameter> = Vec::new();
         for parameter in &contract.parameters {
             let parameter_type = ty(&mut package, &parameter.ty);
-            let default = if let Some(value) = &parameter.default {
-                let function = defaults.intern(&mut package, &parameters, parameter_type, value);
-                Some(function)
-            } else {
-                None
-            };
+            let default = parameter.default.as_ref().map(|value| {
+                bc::ParameterDefault::Constant(crate::literal_defaults::intern(&mut package, value))
+            });
             parameters.push(bc::Parameter {
                 name: symbol(&mut package, &parameter.name),
                 ty: parameter_type,
@@ -545,6 +531,5 @@ pub fn seed(
         .iter()
         .map(|name| symbol(&mut package, name))
         .collect();
-    drop(defaults);
     bc::verify(package, bc::Limits::default())
 }

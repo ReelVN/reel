@@ -1427,7 +1427,8 @@ fn shared_defaults_cannot_hide_function_parameter_capture_product_work() {
         let mut signature = p.signatures[0].clone();
         signature.parameters = inputs[..i as usize].to_vec();
         p.signatures.push(signature);
-        p.signatures[0].parameters[i as usize].default = Some(FunctionId(FUNCTIONS + i));
+        p.signatures[0].parameters[i as usize].default =
+            Some(ParameterDefault::Function(FunctionId(FUNCTIONS + i)));
     }
     p.functions = (0..FUNCTIONS)
         .map(|_| budget_function(0, PARAMETERS, CAPTURES))
@@ -1805,12 +1806,29 @@ fn leave_cleanup_preserves_enclosing_catch_and_validates_destination() {
 }
 
 #[test]
+fn constant_defaults_validate_pool_indices_and_keep_rest_default_forbidden() {
+    let mut p = fixtures::helper_native();
+    p.signatures[0].parameters[0].default = Some(ParameterDefault::Constant(ConstId(u32::MAX)));
+    bad(p, ErrorKind::Index);
+
+    let mut p = fixtures::helper_native();
+    let mut rest = p.signatures[0].parameters[0].clone();
+    rest.name = SymbolId(13);
+    rest.default = Some(ParameterDefault::Constant(ConstId(0)));
+    p.signatures[0].rest = Some(rest);
+    bad(p, ErrorKind::Signature);
+}
+
+#[test]
 fn parameter_cell_default_is_an_internal_prefix_and_an_ordinary_call_target() {
     let p = fixtures::parameter_cell_default();
     let bytes = encode(&p, limits()).unwrap();
     let program = VerifiedProgram::decode(&bytes, limits()).unwrap();
     assert_eq!(program.package(), &p);
-    assert_eq!(p.signatures[1].parameters[1].default, Some(FunctionId(2)));
+    assert_eq!(
+        p.signatures[1].parameters[1].default,
+        Some(ParameterDefault::Function(FunctionId(2)))
+    );
     for function in [1, 2] {
         let binding = &p.functions[function].bindings[0];
         assert_eq!(binding.initialization, BindingInitialization::Parameter(0));
@@ -1963,7 +1981,8 @@ fn shared_default_prefix_layout_comparisons_are_precharged() {
         let mut s = p.signatures[0].clone();
         s.parameters = prefix[..i as usize].to_vec();
         p.signatures.push(s);
-        p.signatures[0].parameters[i as usize].default = Some(FunctionId(FUNCTIONS + i));
+        p.signatures[0].parameters[i as usize].default =
+            Some(ParameterDefault::Function(FunctionId(FUNCTIONS + i)));
     }
     p.functions = (0..FUNCTIONS)
         .map(|_| budget_function(0, PARAMETERS, 0))

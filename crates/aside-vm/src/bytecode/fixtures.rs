@@ -274,7 +274,7 @@ pub fn exception_regions() -> BytecodePackage {
 pub fn captured_default() -> BytecodePackage {
     let mut p = base();
     let mut param = parameter(4, 1, false);
-    param.default = Some(FunctionId(2));
+    param.default = Some(ParameterDefault::Function(FunctionId(2)));
     p.signatures = vec![
         signature(vec![], 0, Effects::ALL),
         signature(vec![param], 1, Effects::ALL),
@@ -501,7 +501,7 @@ pub fn parameter_cell_default() -> BytecodePackage {
     p.sources[0].text = "fn owner(mut x: int, y = { x += 1; || x }) { x += 1; (x,y) }\n".into();
     let x = parameter(4, 1, true);
     let mut y = parameter(14, 0, false);
-    y.default = Some(FunctionId(2));
+    y.default = Some(ParameterDefault::Function(FunctionId(2)));
     p.signatures = vec![
         signature(vec![], 0, Effects::ALL),
         signature(vec![x.clone(), y.clone()], 0, Effects::ALL),
@@ -629,9 +629,9 @@ pub fn native_parameter_defaults() -> BytecodePackage {
     p.sources[0].text = "host::parameter_defaults(41)\n".into();
     let x = parameter(4, 1, true);
     let mut y = parameter(14, 1, false);
-    y.default = Some(FunctionId(1));
+    y.default = Some(ParameterDefault::Function(FunctionId(1)));
     let mut z = parameter(15, 1, true);
-    z.default = Some(FunctionId(2));
+    z.default = Some(ParameterDefault::Function(FunctionId(2)));
     let mut native_signature = signature(vec![x.clone(), y.clone(), z], 0, Effects::ALL);
     native_signature.rest = Some(parameter(18, 0, true));
     let mut y_input = y;

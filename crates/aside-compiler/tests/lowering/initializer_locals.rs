@@ -34,7 +34,7 @@ fn creator(
                 c.program.package().signatures[body.signature.index()]
                     .parameters
                     .iter()
-                    .any(|p| p.default == Some(output))
+                    .any(|p| p.default == Some(bc::ParameterDefault::Function(output)))
             })
         })
         .inspect(|&id| {
@@ -437,7 +437,13 @@ fn definition_environment_is_forwarded_through_defaults_and_nested_closures() {
     );
     let outer = function(p, "outer");
     for param in &p.signatures[outer.signature.index()].parameters {
-        let default = param.default.unwrap();
+        let Some(bc::ParameterDefault::Function(default)) = param.default else {
+            assert!(matches!(
+                param.default,
+                Some(bc::ParameterDefault::Constant(_))
+            ));
+            continue;
+        };
         let thunk = &p.functions[default.index()];
         assert_eq!(thunk.captures, outer.captures);
         assert!(

@@ -152,7 +152,14 @@ fn rest_cells_default_prefixes_and_definition_captures_are_exact() {
                 .unwrap()
     }));
     for (index, param) in sig.parameters.iter().enumerate() {
-        let d = &p.functions[param.default.unwrap().index()];
+        let Some(bc::ParameterDefault::Function(default)) = param.default else {
+            assert!(matches!(
+                param.default,
+                Some(bc::ParameterDefault::Constant(_))
+            ));
+            continue;
+        };
+        let d = &p.functions[default.index()];
         let ds = &p.signatures[d.signature.index()];
         assert_eq!(ds.parameters.len(), index);
         assert!(ds.rest.is_none());

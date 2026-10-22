@@ -70,34 +70,6 @@ impl Vm {
             .checked_ilog2()
             .unwrap_or(0) as u64
     }
-    // Registered literal defaults use ordinary two-instruction functions. Their
-    // unused prefix parameters need no frame or parameter-copy pass. Dependent
-    // defaults and functions with effects retain the ordinary call path.
-    fn native_literal_default(&self, function: FunctionId) -> Option<(ConstId, TypeId)> {
-        let package = self.program.package();
-        let function = &package.functions[function.index()];
-        let signature = &package.signatures[function.signature.index()];
-        if function.kind != FunctionKind::Plain
-            || function.context != Context::NoWait
-            || !function.captures.is_empty()
-            || signature.effects.0 != 0
-            || function.code.len() != 2
-        {
-            return None;
-        }
-        let load = function.code[0];
-        let returned = function.code[1];
-        if load.opcode != Opcode::LoadConst as u16
-            || returned != Instruction::new(Opcode::Return, load.operands[0], 0, 0)
-        {
-            return None;
-        }
-        let constant = ConstId(load.operands[1]);
-        if matches!(package.constants[constant.index()], Const::Tuple(_)) {
-            return None;
-        }
-        Some((constant, signature.return_type))
-    }
     pub(super) fn native_parameter_step(
         &mut self,
         n: &mut NativeFrame,
@@ -123,15 +95,18 @@ impl Vm {
                     .parameters
                     .get(parameter as usize)
                     .filter(|_| self.slots.read(at(n.bound, parameter)).is_err())
-                    .and_then(|p| p.default)
-                    .and_then(|function| self.native_literal_default(function));
+                    .and_then(|p| match p.default {
+                        Some(ParameterDefault::Constant(id)) => Some((id, p.ty)),
+                        _ => None,
+                    });
                 let literal_work = literal.map_or(0, |(_, ty)| 2 + self.type_checks.extra(ty));
                 let layout_work = if n.bindings.is_some() {
                     self.native_layout_work()
                 } else {
                     0
                 };
-                if !m.take(0, layout_work + 8 + literal_work, 0) {
+                let allocation = literal.map_or(0, |(id, _)| self.constant_allocation_bytes(id));
+                if !m.take(0, layout_work + 8 + literal_work, allocation) {
                     return Ok(false);
                 }
                 if parameter == count + u32::from(sig.rest.is_some()) {
@@ -149,7 +124,7 @@ impl Vm {
                     .and_then(|p| p.default)
                 {
                     if let Some((constant, ty)) = literal {
-                        match self.constant_value(constant) {
+                        match self.start_constant(constant, n.roots, [0, 1]) {
                             Ok(Some(value)) => match self.check_type(ty, value) {
                                 Ok(()) => {
                                     self.put(n.bound, parameter, value)?;
@@ -161,13 +136,25 @@ impl Vm {
                                 }
                                 Err(kind) => self.native_fault(n, kind)?,
                             },
-                            Ok(None) => unreachable!("scalar literal default"),
-                            Err(error) => self.native_fault(n, heap_fault(error))?,
+                            Ok(None) => {
+                                n.phase = NativePhase::DefaultConstant {
+                                    parameter,
+                                    work: constants::ConstantWork {
+                                        dest: Reg(parameter),
+                                        id: constant,
+                                        index: 0,
+                                    },
+                                }
+                            }
+                            Err(kind) => self.native_fault(n, kind)?,
                         }
                     } else {
+                        let ParameterDefault::Function(function) = default else {
+                            unreachable!("constant default handled above")
+                        };
                         n.phase = NativePhase::DefaultCall {
                             parameter,
-                            function: default,
+                            function,
                         };
                     }
                 } else {
@@ -230,6 +217,21 @@ impl Vm {
                     Err(e) => self.native_fault(n, language_fault(e)?)?,
                 }
             }
+            NativePhase::DefaultConstant {
+                parameter,
+                mut work,
+            } => match self.constant_step(n.roots, [0, 1], &mut work, m)? {
+                constants::ConstantStep::Blocked => return Ok(false),
+                constants::ConstantStep::Pending => {
+                    n.phase = NativePhase::DefaultConstant { parameter, work }
+                }
+                constants::ConstantStep::Ready(value) => {
+                    self.put(n.bound, parameter, value)?;
+                    self.finish_constant(n.roots, [0, 1])?;
+                    n.phase = NativePhase::Defaults { parameter };
+                }
+                constants::ConstantStep::Fault(kind) => self.native_fault(n, kind)?,
+            },
             NativePhase::Project { index, input } => {
                 if !m.take(
                     0,
