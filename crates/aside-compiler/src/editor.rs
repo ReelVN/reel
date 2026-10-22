@@ -126,6 +126,8 @@ pub fn analyze_project(
 }
 
 /// Discover imports from an already parsed, possibly incomplete editor tree.
+/// Empty grouped paths retain their module as a discovery hint for completion;
+/// this does not introduce a bound name or change executable import semantics.
 pub fn imports(
     parsed: &Parse,
     module: &str,
@@ -137,6 +139,28 @@ pub fn imports(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn empty_groups_discover_editor_modules_without_executable_imports() {
+        for (source, path) in [
+            ("use local::api::{};", vec!["local", "api"]),
+            ("use local::{api::{ ", vec!["local", "api"]),
+        ] {
+            let parsed = crate::parse(source).unwrap();
+            let hints = imports(&parsed, "main", AnalysisLimits::default()).unwrap();
+            assert_eq!(hints.len(), 1);
+            assert_eq!(hints[0].0.path, path);
+            assert_eq!(hints[0].0.kind, ImportKind::NamespaceOrSymbol);
+        }
+        let source = "use local::api::{}; fn main(){}";
+        let strict =
+            crate::semantic::discover_imports(source, "main", AnalysisLimits::default()).unwrap();
+        assert!(strict.requests.is_empty());
+        let module = crate::analyze_module(source, &AnalysisOptions::default(), &mut NoModules)
+            .unwrap()
+            .into_module()
+            .unwrap();
+        assert!(module.imports().is_empty());
+    }
     #[test]
     fn partial_editor_facts_do_not_admit_invalid_executable_modules() {
         for source in [

@@ -1,7 +1,7 @@
 //! Editor queries consume compiler scopes, facts and canonical symbol references.
 use crate::{
     position::Encoding,
-    workspace::{HostIndex, Snapshot, Source, Workspace, reference_key},
+    workspace::{HostIndex, Snapshot, Source, Workspace, import_path_at, reference_key},
 };
 use aside_compiler::hir::SymbolKind;
 use aside_compiler::{
@@ -1814,6 +1814,17 @@ impl Workspace {
             .lines
             .offset(&source.text, position, encoding)
             .ok_or("invalid hover position")?;
+        if let Some(path) = import_path_at(source, offset)
+            && let Some(value) = self.module_hover(uri, &path)
+        {
+            return Ok(Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value,
+                }),
+                range: Some(source.lines.range(&source.text, path.range, encoding)),
+            }));
+        }
         if let Some(hover) = snapshot
             .features
             .get(&snapshot.entry)
@@ -1952,6 +1963,11 @@ impl Workspace {
             .lines
             .offset(&source.text, position, encoding)
             .ok_or("invalid definition position")?;
+        if let Some(path) = import_path_at(source, offset)
+            && let Some(location) = self.module_definition(uri, &path, encoding)
+        {
+            return Ok(Some(location));
+        }
         let Some(module) = snapshot.module() else {
             return Ok(None);
         };

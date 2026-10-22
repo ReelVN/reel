@@ -90,7 +90,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
     }
     api.types.push(NamedType::new(
         "reel::types::Action",
-        "An immutable action. Chain then, together and repeat; run starts an independent activity.",
+        "An immutable action description. Sequence, parallel and repeat compose actions; run starts an independent activity.",
         [
             ("then", "reel::action::then"),
             ("together", "reel::action::together"),

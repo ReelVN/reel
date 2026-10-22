@@ -31,10 +31,11 @@ impl FromValue for Number {
 macro_rules! unary {
     ($($(#[doc = $doc:tt])* $name:ident, $symbol:tt, $method:ident);* $(;)?) => {$ (
         $(#[doc = $doc])*
+        /// Accept int or float, converting integer input to float64. Return float.
         #[native(symbol = $symbol, abi = 1, effects = Effects(0))]
         fn $name(
             #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,
-            value: Number,
+            #[aside(doc_type = aside_host::source::number())] value: Number,
         ) -> Result<f64, NativeError> {
             Ok(value.0.$method())
         }
@@ -78,31 +79,34 @@ unary! {
 }
 
 /// Return the signed angle of `(x, y)` in radians, preserving the quadrant.
+/// Accept int or float inputs, converting integers to float64. Return float.
 #[native(symbol = "std::math::atan2", abi = 1, effects = Effects(0))]
 fn atan2(
     #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,
-    y: Number,
-    x: Number,
+    #[aside(doc_type = aside_host::source::number())] y: Number,
+    #[aside(doc_type = aside_host::source::number())] x: Number,
 ) -> Result<f64, NativeError> {
     Ok(y.0.atan2(x.0))
 }
 
 /// Return the Euclidean length of `(x, y)` with scaled intermediate arithmetic.
+/// Accept int or float inputs, converting integers to float64. Return float.
 #[native(symbol = "std::math::hypot", abi = 1, effects = Effects(0))]
 fn hypot(
     #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,
-    x: Number,
-    y: Number,
+    #[aside(doc_type = aside_host::source::number())] x: Number,
+    #[aside(doc_type = aside_host::source::number())] y: Number,
 ) -> Result<f64, NativeError> {
     Ok(x.0.hypot(y.0))
 }
 
 /// Raise `base` to `exponent`, returning a float.
+/// Accept int or float inputs, converting integers to float64.
 #[native(symbol = "std::math::pow", abi = 1, effects = Effects(0))]
 fn pow(
     #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,
-    base: Number,
-    exponent: Number,
+    #[aside(doc_type = aside_host::source::number())] base: Number,
+    #[aside(doc_type = aside_host::source::number())] exponent: Number,
 ) -> Result<f64, NativeError> {
     Ok(base.0.powf(exponent.0))
 }

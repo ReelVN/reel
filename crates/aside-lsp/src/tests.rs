@@ -12,6 +12,7 @@ use std::{str::FromStr, time::Duration};
 
 mod builtin_methods;
 mod editor_feedback;
+mod module_navigation;
 mod source_inference;
 
 #[test]

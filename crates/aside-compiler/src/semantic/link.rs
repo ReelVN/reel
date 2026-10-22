@@ -56,7 +56,7 @@ pub fn discover_imports(
             continue;
         };
         let mut imports = Vec::new();
-        import_requests(&hir, path, &[], false, module, &mut imports);
+        import_requests(&hir, path, &[], false, false, module, &mut imports);
         requests.extend(imports.into_iter().map(|(request, _)| (request, node.span)));
     }
     Ok(ImportDiscovery {
@@ -309,7 +309,7 @@ fn analyze_project_inner(
                 continue;
             };
             if let Some(use_path) = hir.children(import).next() {
-                import_requests(hir, use_path, &[], false, path, &mut module_requests);
+                import_requests(hir, use_path, &[], false, false, path, &mut module_requests);
             }
         }
         for (request, _) in &mut module_requests {
@@ -418,7 +418,7 @@ fn analyze_project_inner(
                 continue;
             };
             let mut imports = Vec::new();
-            import_requests(hir, import, &[], false, path, &mut imports);
+            import_requests(hir, import, &[], false, false, path, &mut imports);
             for (request, alias) in imports {
                 if let Ok(resolved) = (Overlay {
                     memory: &mut memory,
@@ -969,6 +969,7 @@ pub(super) fn import_requests(
     n: NodeId,
     prefix: &[String],
     grouped: bool,
+    discover_empty_groups: bool,
     from: &str,
     out: &mut Vec<(ImportRequest, Option<String>)>,
 ) {
@@ -995,8 +996,22 @@ pub(super) fn import_requests(
         .children(n)
         .find(|&n| hir.node(n).kind == H::ImportGroup)
     {
-        for child in hir.children(group) {
-            import_requests(hir, child, &path, true, from, out)
+        let mut children = hir.children(group).peekable();
+        if discover_empty_groups && children.peek().is_none() && !path.is_empty() {
+            // Editors need the module's real exports before its first grouped
+            // name is typed. This hint never creates a binding or runtime edge.
+            out.push((
+                ImportRequest {
+                    from: from.into(),
+                    path,
+                    kind: ImportKind::NamespaceOrSymbol,
+                },
+                None,
+            ));
+        } else {
+            for child in children {
+                import_requests(hir, child, &path, true, discover_empty_groups, from, out)
+            }
         }
         return;
     }
