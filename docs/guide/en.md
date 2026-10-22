@@ -3,12 +3,10 @@
 [中文](zh-CN.md) · [文档目录 / Documentation index](../README.md)
 
 ## Reading This Guide
-Reel aims to let you express the scenes and interactions you imagine in Aside, composing your own dialogue, UI, choreography and embedded 2D games. Multi-file projects, a shared stage, save/load and packaged exports are available; the full 2D authoring API, long-content costs and device coverage are still being developed. Start with the [basic scene](../../examples/author_stage/src/main.aside), [animation](../../examples/author_activities/src/main.aside), or [interactive buttons](../../examples/author_buttons/src/main.aside). The [capability table](../README.md#当前状态) states the actual boundaries, and [roadmap #94](https://github.com/jhq223/reel/issues/94) tracks implementation order.
 
-This guide starts with the scene you want to create and explains how to use Aside to write stories, compose UI, choreograph scenes, and extend effects. Implemented features are ready to use; the remaining sections describe the target design and identify capabilities that are not yet connected. The Chinese and English editions share the same examples and interface names. Reel Engine Architecture Design describes the runtime; Aside VM and Language Design defines the language rules.
-Authors work with three basic concepts: functions organize reusable content, node trees describe scenes, and activities represent changes over time. Ordinary functions, basic node composition and sequential stories now work together. Activities and advanced creator APIs retain their stated implementation status.
+Use Aside to express the scenes and interactions you imagine: functions organize content, node trees compose the scene, and activities describe changes over time. This guide starts with a project and builds dialogue, UI, choreography and embedded minigames. The Chinese and English editions use the same code examples.
 
-Interface parameters, properties and examples live in English documentation beside their implementation. Aside `///` comments are also available with their declarations. Host metadata exposes the same signatures and descriptions to editor tooling; see the [host SDK](../aside-host.md). This guide covers authoring workflows and composition.
+Use the editor's English API documentation for parameters, properties and defaults; it is maintained beside the Rust declarations. See the [language specification](../aside-language.md) for language rules and the [documentation index](../README.md) for available capabilities and remaining work.
 
 ## 1 A Minimal Project and Shared Conventions
 
@@ -55,7 +53,7 @@ The extension formats Aside files on save by default; VS Code's Format Document 
 
 ### Modules and common syntax
 
-Reel makes all currently registered basic nodes and story services available automatically: text, image, button, row, column, stack, stage, narrator and choose. Each source file can use them without an import. Your module declarations, local bindings and explicit imports take precedence over these defaults. If you define your own text function, `use reel::prelude::text as reel_text;` gives the Reel constructor a separate name. Explicit prelude imports remain ordinary valid imports. This default environment belongs to Reel; standalone Aside has no Reel names. Actions and complete application services retain the design status stated later. Authors build their pages and visual style with ordinary functions. All documents use fn, let, let mut, |parameters| closures and use imports. Except for complete module/function examples, standalone snippets belong inside a running function and reuse earlier variables. Ordinary statements end with semicolons; a function's final expression can be its return value. Object literals use {field: value}. The following imports use the implemented module layout; the title button's game.start call is implemented.
+Reel provides basic names such as `text`, `image`, `button`, `row`, `column`, `stack`, `stage`, `narrator` and `choose`. Local declarations and explicit imports take precedence; use an alias such as `use reel::prelude::text as reel_text;` when needed. Ordinary statements end with semicolons, a function can return its final expression, and objects use `{field: value}`. These modules compose a title page and story with ordinary functions:
 ```aside
 use game::ui::title::title;
 
@@ -76,9 +74,7 @@ pub fn title() {
 }
 ```
 See section 3 for opening in src/story/opening.aside. The examples' relative file locations match their import paths; the root module src/main.aside handles startup only.
-let fixes a variable's binding while leaving node properties mutable. Use let mut when the variable must be rebound to another value. Ordinary expressions are evaluated once when executed. bind(model.value) connects an observable property; derive(|| expression) connects a read-only value computed from other properties. See the second document for the complete language rules.
-
-The desktop player rebuilds a lost graphics device while retaining the current story state. Diagnostics include the backend's device-loss reason. If rebuilding fails, the player reports the error and exits.
+let fixes a variable's binding while leaving node properties mutable. Use let mut when the variable must be rebound to another value. Ordinary expressions are evaluated once when executed. bind(model.value) connects an observable property; derive(|| expression) connects a read-only value computed from other properties. See the [language specification](../aside-language.md) for the complete rules.
 
 ### Organizing Creative Units
 
@@ -89,6 +85,7 @@ A simple view returns a node; a component that needs ongoing control can return 
 Express flow with ordinary functions, conditions and loops. Call another page within the same session; use `game.start` when starting a fresh session. Prefer method chains for nodes, dialogue and actions, placing each operation of a long chain on its own line. Use `scope` to own an interaction's tasks, choreography and temporary nodes. Returning from its body ends that work; a button can also call `s.finish(result)` to end it early and return a result. Await saves and exit animations before finish, or perform them after scope returns. Extract shared components when actual reuse appears.
 
 ### Available Check, Build and Run Commands
+
 The desktop player waits for the first mounted scene's fonts and images before presenting it. Platforms that support hidden windows show the window after the first frame is accepted. To provide a loading screen, mount ordinary stage nodes first, then start subsequent tasks. Startup errors retain their source locations.
 
 The examples configure fonts/body.ttf in main. Run these Windows commands from the repository root to copy Microsoft YaHei into a temporary asset directory for local verification. Supply fonts with distribution rights when publishing your work. Close the window opened by dev or run before continuing.
@@ -121,11 +118,7 @@ The bundled player runs source and built packages with the real window, text lay
 
 Projects read only modules imported by the entry. `game::ui::scene` resolves to `src/ui/scene.aside`; copy shared code into `src/` and import it with ordinary `use`. Function cycles can link; top-level reads of uninitialized bindings report ModuleInitializationCycle at the read. build stores the complete graph and entry in one .asb, with initialization settings executed by the same main. Development uses the project's `resources/`; `--assets` selects another resource directory. Exported packages use their embedded resource manifest.
 
-Source files, embedded source text and string constants share the actual package budget. Long text and concatenation advance in execution slices; slicing never truncates text or imposes a dialogue length limit.
-
-Compilation and ASB loading do not impose default quotas on project size, aggregate records, modules or instruction counts. Format widths and available memory still apply; Rust embedders can set explicit Limits. Capacity diagnostics distinguish record counts from requested memory, so a longer story is not mistaken for invalid syntax.
-
-Left-associated operations and member or call chains compile in source order without consuming nesting allowance for each link. Actual nesting through parentheses, blocks and subexpressions uses the host's configured compiler resource budget.
+Memory use follows the project’s actual code, text and resources. Long text operations preserve complete content while yielding execution time to other work.
 
 ### Exporting Development and Release Directories
 
@@ -155,6 +148,7 @@ Release export moves original string constants into `game.rtp` and excludes comp
 Release disables loose-file overrides by default. Explicitly enable a mod or development overlay with `reel run game.asb --assets overrides`. Later packages in the manifest override earlier ones, and loose files take precedence. `--overwrite` replaces the whole previous export; saves and additional files are not copied into it. Store runtime data separately. Output can live in the project's `build/` directory and must avoid actual source files and resource directories.
 
 ### Available Ranges, Collections and Interpolation
+
 Inside a function, use ranges to build content and interpolation to display results. Ranges do not create an array first; `..` excludes the endpoint and `..=` includes it. Arrays support `append`, `pop` and `len`; tables support `has_own`, `get`, `remove` and `len`. Interpolation currently accepts strings, numbers, booleans and null.
 ```aside
 let values = [];
@@ -200,22 +194,13 @@ stage.replace(stack {
 });
 ```
 
-### Headless example
-
-Run the [minimal Aside story](../../crates/reel-engine/examples/story_contract.aside) with its [headless host](../../crates/reel-engine/examples/story_contract.rs):
-
-```sh
-cargo run --locked -p reel-engine --example story_contract
-```
-
 ## 2 Describing the Whole Scene in Code
+
 ### Canvas and fonts
 
-Call game.configure(title: "窗边", width: 960, height: 540) in main to set the title and logical canvas using ordinary expressions. Omitted fields keep their values. Without a canvas, coordinates follow the viewport; a configured canvas uses contain scaling and the same transform for drawing and input. When first setting one dimension, the other uses the corresponding value from 1920×1080. The desktop window initially matches the first configured canvas, or uses 1280×720 without a canvas. Rust hosts can explicitly override the initial size with StoryWindowOptions.logical_size. After the first canvas is applied, window size stays under player control and continues to use contain scaling. fonts accepts a font file string or an ordered array, such as game.configure(fonts: ["fonts/body.ttf", "fonts/cjk.ttf"]). Paths are relative to the asset root; provide at least one font file before the first presentation. The font property on text and button selects a family or comma-separated fallback list, for example text("标题", font: "Noto Serif SC, system-ui"); font_size controls size. `font_weight` selects a weight, defaults to 400, and accepts finite numbers from 1 to 1000. For example, `text("标题", font: "HK Grotesk", font_weight: 600)` selects a suitable weight from the configured family. Matching weights supplied by the work take priority. With only a Regular font, bold uses synthetic emboldening, consistently in ordinary text, progressive reveal, and outlines. Text, control labels and text_input share this property; assignment, bind and derive update it and trigger layout. Rich text `[b]` sets its span to weight 700. Font files share loaded data; system-ui denotes the configured default list. The player uses only fonts supplied by the work and reports missing font configuration.
+Call game.configure(title: "窗边", width: 960, height: 540) in main to set the title and logical canvas using ordinary expressions. Omitted fields keep their values. Without a canvas, coordinates follow the viewport; a configured canvas uses contain scaling and the same transform for drawing and input. When first setting one dimension, the other uses the corresponding value from 1920×1080. The desktop window initially matches the first configured canvas, or uses 1280×720 without a canvas. After the first canvas is applied, window size stays under player control and continues to use contain scaling. fonts accepts a font file string or an ordered array, such as game.configure(fonts: ["fonts/body.ttf", "fonts/cjk.ttf"]). Paths are relative to the asset root; provide at least one font file before the first presentation. The font property on text and button selects a family or comma-separated fallback list, for example text("标题", font: "Noto Serif SC, system-ui"); font_size controls size. `font_weight` selects a weight, defaults to 400, and accepts finite numbers from 1 to 1000. For example, `text("标题", font: "HK Grotesk", font_weight: 600)` selects a suitable weight from the configured family. Matching weights supplied by the work take priority. With only a Regular font, bold uses synthetic emboldening, consistently in ordinary text, progressive reveal, and outlines. Text, control labels and text_input share this property; assignment, bind and derive update it and trigger layout. Rich text `[b]` sets its span to weight 700. Font files share loaded data; system-ui denotes the configured default list. The player uses only fonts supplied by the work and reports missing font configuration.
 
 ### Organizing Component Data
-
-While a single table field is being read or written, other tasks or controls can update existing field values; lookup uses the current slot when it completes. Ordinary tables and models follow the same rule. Adding or removing fields interrupts an unfinished lookup with ConcurrentModification. Bulk operations such as copying, spreading and removal still require consistent source contents throughout the operation.
 
 Memory use grows with live story data and resources. Release references to retired content and keep long-lived caches bounded; embedding hosts can set explicit resource budgets.
 
@@ -269,7 +254,7 @@ For an immutable name, a successful `if node is ParticlesNode` makes particle in
 
 Component calls with a trailing children block may omit the ending semicolon when used as standalone statements. A newline after the block ends that statement, so a parenthesized expression on the next line does not continue the previous call. Ordinary calls and property assignments still use semicolons. An explicit semicolon does not change child collection.
 
-Implemented: text, image, row, column, stack and stage.replace use one shared node model. Ordinary functions can return nodes, composed through trailing children blocks, if and for over arrays/tuples. Properties such as value, x/y, width/height, color/background, opacity, visible and clip update the original node while its mounted identity stays unchanged. Replacing the stage retires the old tree and releases its contents; subsequent reads and writes of old node properties report errors. See the complete [author-stage example](../../examples/author_stage/src/main.aside).
+text, image, row, column, stack and stage.replace use one shared node model. Ordinary functions can return nodes, composed through trailing children blocks, if and for over arrays/tuples. Properties such as value, x/y, width/height, color/background, opacity, visible and clip update the original node while its mounted identity stays unchanged. Replacing the stage retires the old tree and releases its contents; subsequent reads and writes of old node properties report errors. See the complete [author-stage example](../../examples/author_stage/src/main.aside).
 
 Return a component's node with its final expression or `return`. In an ordinary function, `text("Title");` discards the constructed node and produces a compiler error at that call; use the final expression `text("Title")` to return it. Semicolons inside children blocks still collect nodes, and optional components returning null are still omitted. The diagnostic recognizes statically known node constructors and their immutable aliases; dynamic calls and ordinary wrapper functions retain their own return behavior. To deliberately discard a constructor result, write `let _ = text("Title");`.
 
@@ -351,8 +336,6 @@ An image's `color` multiplies its pixels: `image("assets/panels.png", color: "#f
 Complete example: [author_image_patterns.aside](../../examples/author_image_patterns/src/main.aside). Provide `fonts/body.ttf` and `images/pattern.png`, then run `reel dev` (from `examples/author_image_patterns/`); changing the tile scale reuses the same image.
 
 Images do not receive pointer input themselves, so track, thumb and other control skins do not block the underlying control. Place an image inside a button or input to make it clickable or draggable; the container handles mouse and touch input.
-
-A Rust host can use `ImageSource::empty()` before a picture arrives, then update the same image node with `ImageSource::resource(lease)`. Direct resources retain ordinary image fit, clipping, transforms, color and opacity; same-sized updates repaint without layout. `ResourceRegistry::register_yuv420` accepts producer-owned 8-bit YUV420 planes with BT.601/709, range and transfer metadata, without copying them into RGBA. After `release(handle)` relinquishes registry ownership, captured pictures still retain their leases; the host owns decoding and the playback clock. Run the CPU contract check with `cargo test -p reel-player --lib decoded_frames_preserve`.
 
 `layered_image` combines image descriptions into one ordinary stage node. The function runs when its model dependencies change. Array positions are stable slots, ordered from back to front; a null slot hides its previous image, and shortening the array retires trailing slots. Each description accepts image properties, including source, geometry, fit, color and opacity. Omitted properties reset to image defaults. bind/derive values in descriptions are read dependencies. Unchanged properties retain their values and image nodes are reused, so changing an expression does not rebuild the body.
 
@@ -498,7 +481,7 @@ fn main() {
 }
 ```
 
-The complete [author_images.aside](../../examples/author_images/src/main.aside) includes these image files. Run it with the earlier dev command. Paths are relative to the source file for dev and the ASB file for run; use `--assets <directory>` to select a different resource root. For example, after building into target/reel-artifacts, run with `--assets examples`. Building an ASB does not copy image files.
+The complete [author_images.aside](../../examples/author_images/src/main.aside) includes these image files. Run it with the earlier dev command. Development uses the project’s `resources/`; built packages resolve their embedded distribution manifest relative to the ASB. Use `--assets <directory>` for a different resource root. A standalone build retains resource references; export organizes the resource files for distribution.
 
 Images and fonts use the same resource loading service. File reads and image decoding happen in the background, and image nodes using the same path share pixels. The previous complete scene remains visible until all images and configured fonts in the new scene are ready; story input pauses during that preparation. Changing source keeps the previous picture until the replacement is ready. A missing or invalid file reports its path and the image constructor's source location (game.configure for fonts) and ends the window run. Property type errors and an invalid fit are catchable at assignment. Images load when mounted with visible ancestors; constructing unmounted components or a visible=false subtree does not read image files. Loaded hidden images may be reused while mounted, yielding idle cache storage when new images need loading. Unmounting releases that cache; the previous complete scene and submitted frames retain their own leases. opacity=0 still prepares images for a later fade-in. In-session file hot reload is not implemented.
 
@@ -609,9 +592,9 @@ narrator("The light is moving.", reveal_skippable: false);
 say([mio.line("One."), eri.line("Two.")], reveal_skippable: false);
 ```
 
-Bindable dialogue, custom ADV/NVL and choice views are available in [author_narrative.aside](../../examples/author_narrative/src/main.aside). Voice and chapter startup remain planned. say submits a group sharing one advance interaction; author views determine its layout.
+Bindable dialogue, custom ADV/NVL and choice views are available in [author_narrative.aside](../../examples/author_narrative/src/main.aside). say submits a group sharing one advance interaction; author views determine its layout.
 
-Dialogue lines, choices, interaction text and session history grow with the content. History preserves the whole session; reaching a display cache capacity does not interrupt the story or discard earlier records. Actual allocation failure is reported.
+Dialogue lines, choices, interaction text and session history grow with the content. History preserves the reading context; reaching a display cache capacity does not interrupt the story or discard earlier records. Actual allocation failure is reported.
 
 Define each character once in a module. Each line of dialogue calls the speaker object; narration calls narrator. A standalone string is still just a string. A character call updates the dialogue data and history, then waits for the current line to finish. Ordinary function calls continue along the same execution sequence.
 
@@ -655,15 +638,15 @@ pub fn nvl_view(model) {
     }
 }
 ```
-game.dialogue().lines is the shared observable list of dialogue lines. Each line exposes read-only id/speaker_id/speaker_name/content_id/text/reveal/read. speaker_id distinguishes characters with the same name and is null for narration; content_id identifies content in read progress. speaker_id/content_id/speaker_name/text/reveal project the first line in the displayed group. ADV views commonly use these fields; NVL and speech-bubble views use the complete line list. A line's read records whether it was read before submission; the top-level read records whether every line was previously read. These values survive interaction completion so an exit animation does not suddenly change colors. Use `color: derive(|| if model.read { "#aaaaaa" } else { "#ffffff" })` for read styling, and look up speaker_id in an author-defined palette for character colors. model.text holds the complete text, while reveal controls how much is visible, keeping the layout stable during character-by-character display. Replacing, hiding, or showing the dialogue view preserves the session history. Voice parameters are not connected yet. Multiple characters speaking at once also share a single advance interaction:
+game.dialogue().lines is the shared observable list of dialogue lines. Each line exposes read-only id/speaker_id/speaker_name/content_id/text/reveal/read. speaker_id distinguishes characters with the same name and is null for narration; content_id identifies content in read progress. speaker_id/content_id/speaker_name/text/reveal project the first line in the displayed group. ADV views commonly use these fields; NVL and speech-bubble views use the complete line list. A line's read records whether it was read before submission; the top-level read records whether every line was previously read. These values survive interaction completion so an exit animation does not suddenly change colors. Use `color: derive(|| if model.read { "#aaaaaa" } else { "#ffffff" })` for read styling, and look up speaker_id in an author-defined palette for character colors. model.text holds the complete text, while reveal controls how much is visible, keeping the layout stable during character-by-character display. Replacing, hiding, or showing the dialogue view preserves the reading context’s history. Multiple characters speaking at once also share a single advance interaction:
 ```aside
 let eri = character("Eri");
 say([mio.line("你听见了吗？"), eri.line("在窗外。")]);
 ```
-`game.dialogue()` returns the stable session model. The nvl_view above composes accumulated lines; `model.clear()` clears both NVL rows and ADV text and speaker names while preserving history and the current speech wait. Appending restores the updated full speech; starting new dialogue begins a new page. ADV uses the first-line shortcuts, and current_line_ids identifies the current group. Reveal changes update properties without rebuilding the NVL page; appending lines or clearing the page rebuilds the view content. Ordinary layouts determine placement, backgrounds, spacing and bubble shapes. In a custom dialogue view, taps not consumed by controls advance the current line; touch drags only scroll. See [author_scroll.aside](../../examples/author_scroll/src/main.aside) for a long menu.
-Compose an upward exit in an ordinary dialogue function: wait for the character's dialogue, then `await run(tween(...))` to move the old text out before starting the next line. [author_dialogue_transition.aside](../../examples/author_dialogue_transition/src/main.aside) contains a complete component with clipping, character colors and read colors; supply fonts/body.ttf before running. Adjust typing speed with game.configure(text_speed:). Use `reveal_fade` for per-glyph opacity; per-glyph displacement effects remain planned.
+`game.dialogue()` returns the active reading context’s stable model. The nvl_view above composes accumulated lines; `model.clear()` clears both NVL rows and ADV text and speaker names while preserving history and the current speech wait. Appending restores the updated full speech; starting new dialogue begins a new page. ADV uses the first-line shortcuts, and current_line_ids identifies the current group. Reveal changes update properties without rebuilding the NVL page; appending lines or clearing the page rebuilds the view content. Ordinary layouts determine placement, backgrounds, spacing and bubble shapes. In a custom dialogue view, taps not consumed by controls advance the current line; touch drags only scroll. See [author_scroll.aside](../../examples/author_scroll/src/main.aside) for a long menu.
+Compose an upward exit in an ordinary dialogue function: wait for the character's dialogue, then `await run(tween(...))` to move the old text out before starting the next line. [author_dialogue_transition.aside](../../examples/author_dialogue_transition/src/main.aside) contains a complete component with clipping, character colors and read colors; supply fonts/body.ttf before running. Adjust typing speed with game.configure(text_speed:). Use `reveal_fade` for per-glyph opacity.
 
-`game.start(entry)` accepts an ordinary function in the current ASB with no captures or required parameters. After acceptance, the old script does not continue. The new session reruns module initialization and then calls entry. Previous dialogue, UI callbacks and activities end; script globals, history, auto-play and skip state reset. Read progress, game.configure settings, host assets and save storage remain. The entry constructs its scene; do not clear the old stage after the call. Cross-ASB hot-reload entry resolution and persistent script globals are not implemented. See [author_game_start.aside](../../examples/author_game_start/src/main.aside).
+`game.start(entry)` accepts an ordinary function in the current ASB with no captures or required parameters. After acceptance, the old script does not continue. The new session reruns module initialization and then calls entry. Previous dialogue, UI callbacks and activities end; script globals, history, auto-play and skip state reset. Read progress, game.configure settings, host assets and save storage remain. The entry constructs its scene; do not clear the old stage after the call. See [author_game_start.aside](../../examples/author_game_start/src/main.aside).
 
 Pass `wait: false` to start a speech that you can extend. `line.append(text)` adds the next segment and waits for advance, just like an ordinary character call. Use `line.append(text, wait: false)` to continue with sounds, animation or delays, then call `line.wait()` at the next advance point. You can append again after waiting; the displayed prefix and history entry retain their identities. The next dialogue or choice retires the old handle. Strings, rich text and embedded newlines are accepted. A multi-speaker say group supports waiting; append targets single-speaker groups. The complete example is [author_dialogue_append.aside](../../examples/author_dialogue_append/src/main.aside).
 
@@ -677,7 +660,6 @@ line.append("\nWelcome back.");
 ```
 
 While the script is between advance points, input may reveal text. Both a waiting append and line.wait use the usual manual, automatic and skip rules. Append preserves revealed graphemes. Its history parameter follows character calls: true appends displayed text, false omits that segment, and a string or rich value appends replacement text. An omitted or cleared entry stays omitted. Handles belong to the main story; saves resume the current segment and wait.
-
 
 Use `line.revealed()` to wait for this speech's text and inline pauses before continuing sound or choreography. It preserves the current advance point; `line.wait()` waits for the player to advance. `append`, `revealed` and `wait` return the same handle for further chaining. Author components combine their own text animation activities with these dialogue waits.
 
@@ -853,7 +835,7 @@ fn show_cg(view) {
 ```
 The CG appears at the top of picture and is removed when the player advances and the scope exits. s.add(parent, node, index: 0) chooses an insertion position and returns the original node. Early page removal, scene replacement and exit after loading a save use the same retirement rules.
 s.add(parent, node) mounts a temporary subtree, and s.run(action) starts an activity owned by this scope. s.override(node, properties) creates an animatable override layer. s.offset(node, x: 0, y: 0) creates an independent additive x/y offset. Ordinary node.add continues to use the explicit parent node's lifetime; being inside a scope does not silently change its meaning.
-Normal return, exceptions, and scene exit all trigger synchronous, idempotent host cleanup. The body explicitly waits for any exit animation. Scopes can be nested. A save records the current call position, activities and temporary subtrees; after restoration, execution continues in the same body, then releases resources under the same rules. Ordinary writes to game variables retain their application meaning. scope manages only explicitly registered temporary effects.
+Normal return, exceptions and scene exit all retire the scope’s owned work through the shared cleanup protocol. The body explicitly waits for any exit animation. Scopes can be nested. A save records the current call position, activities and temporary subtrees; after restoration, execution continues in the same body, then releases resources under the same rules. Ordinary writes to game variables retain their application meaning. scope manages only explicitly registered temporary effects.
 Property overrides use a record so explicit null retains its meaning. Animate over a read-only derive without saving and writing back an old value:
 ```aside
 scope(body: |s| {
@@ -931,7 +913,7 @@ let hint = view.hud.add(button("查看照片",
 mio("桌上那张照片，你还记得吗？");
 hint.remove();
 ```
-photo_panel is an author-defined component control object. The example only demonstrates a button's lifetime interleaved with the story. Event callbacks are scheduled under their owning nodes. When a modal node opens, the engine consistently handles input isolation for underlying content, focus entry, and focus restoration after closing. A callback that needs to take over the main story submits an entry operation through game; ordinary scene changes can run directly.
+photo_panel is an author-defined component control object. The example only demonstrates a button's lifetime interleaved with the story. Event callbacks are scheduled under their owning nodes. When a modal node opens, the engine consistently handles input isolation for underlying content, focus entry, and focus restoration after closing. A callback can return a destination through `page.finish(value)`; the main flow then opens that page. Ordinary scene changes can run directly.
 
 ### Closing the work
 
@@ -963,7 +945,7 @@ fn main() {
 
 A click passes the original button as event.target. A callback can await an animation. Synchronous code runs until an explicit await, an ordinary call actually waits, or the task ends. Awaiting an already completed object also gives other ready tasks a turn. Ordinary calls and engine budget slices do not interrupt read-modify-write operations that contain no await. Multiple callbacks may await one activity; cancelling a consumer does not stop the shared producer.
 
-The emitting button owns its callbacks and is the default owner of run inside them. Removing the button, clearing its parent or replacing the stage cancels those callbacks and activities. A callback that removes itself does not execute subsequent statements. narrator/choose currently belong to the main story; calling them from a callback raises a catchable context error. game.start and direct node property bindings are implemented; general event subscriptions remain unimplemented.
+The emitting button owns its callbacks and is the default owner of run inside them. Removing the button, clearing its parent or replacing the stage cancels those callbacks and activities. A callback that removes itself does not execute subsequent statements. narrator/choose currently belong to the main story; calling them from a callback raises a catchable context error.
 
 Mounted button handlers and activities remain usable after the main entry returns; idle sessions do not repeatedly execute the VM. Once callbacks and activities have ended and no mounted handlers remain, the session finishes and preserves its final scene. A button click does not also advance dialogue. The built-in host supports mouse and touch activation, Tab focus navigation and Enter/Space activation. A gamepad D-pad or left stick navigates by the displayed positions of controls, and long choice lists scroll with focus; the south button confirms, while the east button and Escape send Back to the current UI. Confirmation activates on a paired release. Modal changes, focus loss and disconnection cancel old input; Back does not directly exit the application. Multiple contacts can operate separate controls at once. Releasing outside a button does not click it; system cancellation or suspension releases the interaction. Existing buttons work on touch screens without a separate implementation; run [author_buttons.aside](../../examples/author_buttons/src/main.aside). The built-in desktop host integrates the system IME; system accessibility adapters remain future work.
 
@@ -1075,8 +1057,6 @@ The input node receives keyboard and gamepad actions while it has focus. When a 
 
 ## 7 Settings Pages and Image-Based Controls
 
-button, slider, toggle and node bind/unbind are implemented; tabs, settings and slider appearance slots remain design targets.
-
 An image button is also the author's own ordinary function. The button provides interaction state, and the image selects a resource based on that state.
 ```aside
 fn picture_button(normal, hovered, pressed, clicked) {
@@ -1089,7 +1069,7 @@ fn picture_button(normal, hovered, pressed, clicked) {
     return control;
 }
 ```
-bind connects an observable property while preserving that property's existing read/write permissions. text can read a read-only property; slider requires a writable property when it writes a value back. derive computes read-only presentation values. A derived function establishes dependencies on the observable properties it reads and may also read immutable captured values. Internal changes to ordinary data retain ordinary language semantics. Observable property changes update only the relevant nodes. Continuous clocks and dialogue reveal publish in batches. When a batch spans frames, the previous complete picture remains visible until its derivations settle together; intervening updates are coalesced for the next batch. Calling game.dialogue() again inside a derivation reads the same batch of dialogue data. Explicit story commands still take effect in their original order. Writing a scalar to a writable bound property writes through to its binding source while preserving the binding. Animation also reserves and writes the ultimate source property, so two nodes bound to the same source reveal the actual write conflict. Explicitly changing the source stops the relevant root activities; passive projection updates are reads. Use scope overrides for temporary animation of read-only derived properties. Rebinding or unbind first ends activities that depend on the old binding; unbind preserves the current effective base value. During the brief save-capture period, script-derived computations and author-defined presentation updates pause, then resume using the latest state when capture finishes. Ordinary {...} data records are suitable for passing parameters; use model({...}) to create an observable model for application values that change over time. Cyclic dependencies, writes inside derived computations, and waits inside derived computations produce source-level diagnostics.
+`bind` connects an observable property and retains its read/write permissions; controls that write values need a writable source. `derive` computes read-only appearance from the observable fields actually read, including conditional dependencies. Read its result through `binding.value` to compose derivations. Updates settle after the current synchronous script segment and before presentation. Assigning a scalar or animating a writable binding writes through to its source; connected controls share that value and its constraints. Use scope overrides for temporary animation of read-only derived properties. Rebinding or unbind ends activities that depend on the old connection; unbind retains the effective base value. Use ordinary records for arguments and `model` for observable application data. Cycles, writes and waits inside derivations produce source diagnostics.
 A derivation tracks the observable fields it reads, including conditional dependencies. Virtual lists reduce live row nodes, while their source data and key indexes remain resident; use stable keys and keep the source data within the host budget.
 
 When a derive or component factory reads another derived value, the engine completes that source's pending recomputation before continuing the read, including sources first read in a new conditional branch. Array bounds checks and consumers such as image paths can be separate derivations while observing the same model update. Ordinary assignments in a synchronous button callback or story function still schedule derivations after that segment ends.
@@ -1245,7 +1225,7 @@ fn main() {
 
 ## 8 Styling and Moving Elements Together
 
-Images using the same resource are shared by the player. The wgpu backend reuses submitted GPU images, so changes to text or hover state do not require uploading the whole interface again. Cached images are released on resource retirement or when space is needed; authors do not manage GPU handles.
+Images using the same resource are shared by the player. The wgpu backend reuses submitted GPU images, so text and hover updates reuse unchanged images. Cached images are released on resource retirement or when space is needed; authors do not manage GPU handles.
 
 Ordinary functions, style spreading, node property updates, transforms, finite animation and temporary scope overrides are available. A node's `corner_radius` rounds its background and border; `border_width` and `border_color` draw an inside border. For example: `panel.with(background: "#182638", corner_radius: 12, border_width: 2, border_color: "#92a8c8")`. Padding controls the content inset; these styles retain the node's layout and hit rectangle. See [author_text_area](../../examples/author_text_area/src/main.aside) for a composed editor.
 
@@ -1293,7 +1273,8 @@ Stopping an ordinary animation leaves its properties at the current values. Scop
 [author_scope.aside](../../examples/author_scope/src/main.aside) uses one button to start animation and background work, and another to stop the whole effect through one task handle. Run `reel dev` (from `examples/author_scope/`).
 
 ## 9 Masks, Effects, and Custom Scene Choreography
-The stage supports group opacity, clipping, image masks, blending and transitions. Source and ASB use the same stage and resource loader through dev/run. Blur and other effects remain planned; see [window documentation](../../crates/reel-player/README.md) for platform verification.
+
+The stage supports group opacity, clipping, image masks, blending and transitions. Source and ASB use the same stage and resource loader through dev/run. Compose the available effects through ordinary stage nodes.
 
 `stage.transition` retains the target's current appearance, runs change, then blends the old picture into the continuing new content. The call returns change's result after completion; call it directly, like scope. Use spawn for concurrency.
 
@@ -1357,9 +1338,7 @@ stage.replace(stack(width: 320, height: 180, background: "#204060") {
 });
 ```
 
-Effect parameters follow the same animation rules as node properties. More complex scenes can nest group nodes: blur the background separately, keep characters sharp, and leave image buttons on top, then apply a mask or camera transform to the whole group. The tree structure determines the front-to-back order of all children.
-Custom effects use a versioned Effect description for input images, parameters, output bounds, and backend implementations. Advanced authors can develop host extensions, then compose and reuse common effects through ordinary Aside functions. Shader support is a backend capability; project checks list missing capabilities. Portable effects should also provide simplified implementations, letting the game select an appropriate platform version through capability queries.
-Pixels changed by an effect and logical input regions are declared separately. Ordinary affine transforms and geometric clipping automatically map hit tests. For bends, distortions, and arbitrary shaders, authors provide logical shapes or specialized mappings for interactive regions. Reading the rendered image back from the GPU for every click would add latency, so the base interface uses regions that can be computed directly.
+Effect parameters follow the same animation rules as node properties. More complex scenes can nest group nodes: mask the background separately, keep characters unobscured, and leave image buttons on top, then apply a camera transform to the whole group. The tree structure determines the front-to-back order of all children.
 
 ### Sprite particles
 
@@ -1509,7 +1488,7 @@ While a virtual list prepares offscreen rows, scrolling and dragging remain resp
 
 ## 11 Saves, History, Routes, and Skipping
 
-History, auto-reading and save/load interfaces are implemented; route switching and chapter jumping remain design targets. Authors compose the UI; services do not generate fixed screens.
+Compose save slots, history and reading controls with ordinary nodes. Use functions and explicit state to organize routes and chapters.
 
 Call `game.reading().clear_history()` when earlier history is no longer needed, or `game.reading().clear_history(keep_last: 37)` to retain the latest 37 recorded history lines. The count is in lines, not dialogue groups; lines with `history:false` do not count. The earliest retained group may keep only its trailing lines. Retained groups and lines keep their IDs, objects, contents and order without renumbering; the group's speaker_name/text update to its first remaining line. The observable history array and retained groups' lines arrays keep their identities. Omitting the argument or passing 0 clears everything; a count at least as large as the current line count changes nothing. Negative or non-integer counts are rejected. Current dialogue, NVL display, advancement, read progress, preferences and saved slots remain unchanged; loading a save restores its recorded history. New group IDs are not reused. Trimming takes work proportional to the record count and releases the session’s references. References or UI caches held by your script still retain their contents: retire those views or refresh them from the history array as well. History has no automatic length limit and needs no cleanup timer. See [author_reading.aside](../../examples/author_reading/src/main.aside).
 
@@ -1553,22 +1532,21 @@ fn save_slot(id: string) {
 stage.replace(button("Save", enabled: derive(|| !menu.busy), on_click: |e| save_slot("page1/slot1")));
 ```
 
-`game.start(entry)` creates a fresh session; `saves.load(slot)` restores the saved variables, position and scene. A same-session chapter restart through `game.restart(story_id)` is planned and is not registered in the current author API.
+`game.start(entry)` creates a fresh session; `saves.load(slot)` restores the saved variables, position and scene. Call an ordinary chapter function within its reading context for same-session flow.
 `game.reading()` returns stable read-only observable `auto/paused/delay` state. `game.reading().set_auto(enabled: null, delay: null, condition: null)` controls auto-reading; delay is a finite nonnegative number of seconds after the full text has actually been presented, defaults to 2 seconds, and is preserved when omitted. `game.reading().pause(paused)` pauses reveal, automatic advancement and dialogue/choice input; ordinary UI controls can still close a history page. Auto-reading waits for player input at choices and continues afterward. Focus loss, suspension, modal UI, pending resources and active input gestures stop timing; resuming starts a full delay again. Modes, pause and conditions belong to the reading context and survive UI replacement within it; each new context starts manual and unpaused. Delay remains a shared preference. Finite scene activities and independent audio have separate controls. Authors choose every control, layout and history-page interaction. `condition` accepts a bool or a `bind`/`derive` reference. Null preserves each argument, including the existing condition binding; true replaces that binding. The read-only `auto_ready` field reports the resolved condition (initially true). While false, only the automatic countdown resets: printing, manual advance, skip and `[next]` continue normally. When it becomes true, automatic advance waits a full delay after complete presentation. The condition and its binding survive snapshots.
-`game.reading().set_skip(enabled, unread: false, after_choices: false)` is implemented. Observe `game.reading().skipping/skip_unread/skip_after_choices` for mode and policy, and `game.dialogue().read` for whether the entire group was read before submission. By default, unread dialogue or a choice turns skipping off. unread: true also skips unread dialogue. after_choices: true preserves skip mode while waiting for the player to choose, then continues under the same read policy. Pause, focus loss and modal UI still cancel this mode. Skipping follows normal control flow, bypasses reveal/dwell, and finishes running finite activities owned by the main story. Infinite, paused, node-owned activities and independent audio retain their controls. Auto-reading and skipping are mutually exclusive. Reading pause, focus loss, suspension and modal UI turn skipping off. Retiring the input node that started skipping also clears its held mode. Authors can use input callbacks to enable on pressed and disable on released/cancelled, or compose toggle controls. Content is marked read when dialogue advancement completes, not on cancellation or full reveal alone. A changed source module version is conservatively unread.
+`game.reading().set_skip(enabled, unread: false, after_choices: false)` controls skipping. Observe `game.reading().skipping/skip_unread/skip_after_choices` for mode and policy, and `game.dialogue().read` for whether the entire group was read before submission. By default, unread dialogue or a choice turns skipping off. unread: true also skips unread dialogue. after_choices: true preserves skip mode while waiting for the player to choose, then continues under the same read policy. Pause, focus loss and modal UI still cancel this mode. Skipping follows normal control flow, bypasses reveal/dwell, and finishes running finite activities owned by the main story. Infinite, paused, node-owned activities and independent audio retain their controls. Auto-reading and skipping are mutually exclusive. Reading pause, focus loss, suspension and modal UI turn skipping off. Retiring the input node that started skipping also clears its held mode. Authors can use input callbacks to enable on pressed and disable on released/cancelled, or compose toggle controls. Content is marked read when dialogue advancement completes, not on cancellation or full reveal alone. A changed source module version is conservatively unread.
 
 Use `game.clear_read_progress()` to reset read progress. The current waiting dialogue group and its lines immediately report `read: false`, and skipping that is limited to read dialogue stops. Future dialogue is unread until normal advancement records it again. History and completed NVL lines retain their presentation; automatic reading and skipping that includes unread dialogue keep their policies. Loading a save also evaluates its waiting dialogue against the current read records. This operation releases the old records and takes time proportional to their capacity. It performs no disk IO and does not delete game saves or `persistent` system data. See the runnable [author_reading.aside](../../examples/author_reading/src/main.aside).
 
 ```aside
 stage.replace(button("Reset read progress", on_click: |event| game.clear_read_progress()));
 ```
-Chapter skipping via `game.skip_to(story_id)` still depends on the future chapter registry.
 
-These services provide data and operations; authors compose their pages. Manual dialogue confirmation reveals or advances once and disables auto-reading and fast-forward; rejected input does not change either mode. Saving, loading, history and reading controls are implemented; route and chapter registration remain pending.
+These services provide data and operations; authors compose their pages. Manual dialogue confirmation reveals or advances once and disables auto-reading and fast-forward; rejected input does not change either mode.
 
 ## 12 Game Variables and Component State
 
-`model`, two-way field bindings, save restoration and independent system data are implemented. state and node.state remain design targets.
+Use `model` for observable application data, story saves for execution state, and `persistent` for independent system data.
 
 Use model for application data independent of view nodes. Controls can share a field: input writes back to the data, and connected text, visibility and styling follow it. Run [author_models.aside](../../examples/author_models/src/main.aside) with `reel dev --assets ../../target/reel-artifacts/author-assets` from `examples/author_models/`, using the font prepared in section 1.
 
@@ -1598,12 +1576,9 @@ await persistent.write("settings", preferences);
 ```
 
 Reads return ordinary copies; mutations require an explicit write. Loading a story does not overwrite system files, but local copies restore with the snapshot. Reread and apply current settings in the `restored` branch of a `saves.save` request and in new-game entries. Writes already handed to the background service continue across session replacement; unsubmitted requests are not replayed after loading. Games manage data upgrades using their own stored version fields.
-model copies the default data graph and creates observable properties, preserving internal aliases and cycles in the copy. Nested mutable arrays, table values, Set values, buffers, and registered observable data types all notify through shared mutation hooks; changes made through an internal alias also notify. Session objects assigned later retain their ordinary shared identity and are incorporated into the observable graph. model objects are kept alive by actual references. Keep temporary component data in a model retained by the component closure.
 Store global preferences with persistent and read/apply current settings at startup and after restoring a story save. Changes to application state follow ordinary control flow, and their results are preserved when temporary scope effects end.
 
 ## 13 Extending Your Own Building Blocks
-
-Ordinary node functions, named arguments, defaults, children and closures are available. The arrive example below uses the implemented finite animation interface.
 
 The smallest unit of reuse is an ordinary fn. Functions returning nodes build scenes; functions returning actions choreograph them; ordinary objects expose parts that callers need to manipulate. Named arguments, children, closures, and module imports work together to support this approach.
 After every actual argument has been evaluated, defaults run in parameter order for omitted arguments. Arrays and tables created by defaults are fresh for each call. Defaults may refer to earlier parameters and use the expression or block's final value as their result. An explicit return belongs in a function body; it is invalid inside that function's parameter default, including conditional or short-circuit branches. A nested function defined within a default returns through its own body. break and continue may target only loops established inside the default, and throw propagates a parameter-preparation failure.
@@ -1646,11 +1621,7 @@ text wraps to its available width by default. width, x/y, padding and scroll det
 
 Developers extending script interfaces from Rust can refer to the [Aside host SDK](../aside-host.md). Registered host functions use the same named arguments, defaults and source-location rules as ordinary Aside functions.
 
-Rust extensions can also declare variadic positional arguments with `#[aside(rest)]`. Authors call them with ordinary arguments or `...items`; each call receives a fresh outer array while its elements retain their normal shared identity. Defaults and bound methods use the same rules. This facility is independent of Reel and does not by itself enable action combinators.
-
-Basic text uses real text layout; external catalogs and reactive language switching are implemented. Inline rich text and video nodes are implemented; Aside custom drawing remains a future capability.
-
-Author audio connects background resource loading, the real mixer and story waits; see [Author audio](#author-audio). Native-device and offline-mixing coverage are recorded separately in [audio verification](../../crates/reel-media/VERIFICATION.md). Video uses the same mixer content clock; see the video node section.
+Use the playback controls in [Author audio](#author-audio) for music and voices, or a video node for synchronized picture and sound.
 
 Keep source text and its translations in the same `tr` call. `reel check` checks language tags and interpolation; `dev` runs source directly, while `build` and `export` generate language packages. A single-language game uses ordinary strings.
 
@@ -1681,12 +1652,8 @@ column(gap: 6) {
 
 Release packages load the current language and its base on demand; explicitly preloaded languages remain available. Source runs share generated translation text and parse catalogs on demand. See the [translation example](../../examples/localization/src/main.aside) and [English API documentation](../../crates/reel-engine/src/aside/localization.rs).
 
-Video and audio playback return awaitable activities, with the ownership, controls and save behavior described in their sections. Filters and synchronization-group author APIs remain planned.
-Planned: `custom_node` will expose Aside state, measure, record, route and event callbacks. Its layout/render callbacks are read-only; routing decides consumption, capture and focus before a suspendable event task runs. This author interface is not registered yet; host extensions use the [Aside host SDK](../aside-host.md).
-Perspective stages, Mesh, Material and programmable Effect interfaces remain planned. The implemented `camera` is two-dimensional. Live2D, system speech, mobile/Web packaging and external-service adapters need separate implementations and capability documentation.
-External-service adapters and replay-safe operation records are planned; see [extension scope](../engine-architecture.md#十一-完整制作能力与扩展).
-
 ### Finding and Handling Errors
+
 The player reports the specific reason a host interface rejected a call, alongside its source file, line, column and error kind. In catch, use `f"{error}"` to display a CoreError: string details take precedence, otherwise it uses the fixed error message. Ordinary thrown values retain their original semantics.
 
 Use try/catch for resource loading, media playback, or errors you throw yourself. catch receives the original value: a thrown string remains a string, and a thrown object is the original object. Use throw; to propagate the same fault. Writing throw error; throws again at the current location, retaining the previous fault as a cause.
@@ -1725,8 +1692,6 @@ Supply your own three audio files for this example. Queue capacity and PCM resid
 
 Images, fonts and audio share the host's resource input capacity. When concurrent reads temporarily fill it, later reads wait for existing work to release its input. A single file larger than the configured input capacity still fails with its path and byte counts in the diagnostic.
 
-Audio decoding accounts for overlapping old and new storage only during buffer growth and the final transfer to shared storage. Ordinary packet decoding reuses existing PCM capacity. Insufficient memory reports the bytes needed by that decoding stage.
-
 `audio.play("assets/chime.wav", start: 0.1, end: 0.2)` plays only up to, but excluding, 0.2 seconds in the source; the mixer completes playback at that endpoint. Omitting end uses the source end. Both play and queue accept end; an explicit end must follow start and fit within the source. start/position/seek use absolute source seconds. The initial start does not restrict later backward seeks; a non-looping seek beyond end stops at end. If start and end round to the same source sample, the segment completes silently. Saves retain each segment's endpoint.
 
 `start` selects the starting position in seconds, and `audio.position(sound)` reads the current item’s content position. Read it inside `derive` to update visuals as playback advances. Loading holds the requested start, pausing holds the position, and a finished activity retains its final position. With `looping: true`, use `loop_start` and `loop_end` to choose a loop; the default runs from 0 to end (the source end when omitted). A start before loop_start plays the introduction first, then wraps from loop_end to loop_start. A start beyond loop_end wraps into the loop. The end is exclusive, and the interval must fit within end and contain at least one frame. Keep the default loop bounds when looping is disabled.
@@ -1752,32 +1717,12 @@ When owner is omitted, sound belongs to the innermost active scope, otherwise it
 
 The Windows player submits stereo audio to the system, including when the default output device uses multiple channels.
 
-Provide a self-checking project whose `main` in `src/main.aside` makes assertions and finishes, then run the command below to check both source and ASB. The host uses the project resource root, isolated temporary saves, real CPU layout and accepted frames, with actual audio decoding and mixing enabled by default. It consumes 48 kHz stereo PCM offline according to monotonic elapsed time, without audible output. Each source and ASB run defaults to a 90-second limit. For longer scenarios, set `REEL_SCENARIO_TIMEOUT_SECS` to a positive u64 integer in seconds; invalid values fail immediately. This variable affects external project checks only; built-in tests keep their fixed 90-second limit. The host supplies no automatic clicks, choices or skipping. This can check audio waits, positions, queues and restoration; audiovisual synchronization still requires device testing.
-
-```powershell
-$env:REEL_SCENARIO = "path/to/project"
-$env:REEL_SCENARIO_TIMEOUT_SECS = "600"
-cargo test -p reel-cli --test project_scenarios external_project_scenario -- --ignored --nocapture
-```
-
-WAV/PCM, Ogg/Vorbis, FLAC and MP3 are supported. Automatic audio preparation: ordinary audio.play and audio.queue keep the same author syntax, while the host predecodes short sounds and reads long tracks through a bounded PCM window. The default static threshold is 8MiB of stereo f32 PCM; authors do not choose a player based on track length. Hosts may configure the threshold; audio groups continue to control mixing. A supply underrun pauses content position until samples return. Save restoration prepares the same resource and position again. Unknown lengths become known at EOF: whole-track loops use that endpoint, while explicit end/loop_end values beyond it fail the activity. Starting positions, loop regions, seeking during playback and restoration follow the same activity contract. Completed means mixer consumption, so it cannot establish precise hardware synchronization. Physical-device coverage is recorded in [audio verification](../../crates/reel-media/VERIFICATION.md).
-
-Runnable example: [author_audio.aside](../../examples/author_audio/src/main.aside), using the font and assets prepared in section 1. Its chime.wav is an original short sine tone supplied by this repository.
-
 ```powershell
 Push-Location examples/author_audio
 reel check
 reel dev --assets ../../target/reel-artifacts/author-assets
 Pop-Location
 ```
-
-### Planned interfaces
-
-- Named `state` and component `node.state`, page tabs and slider skin slots: [state and style design](../engine-architecture.md#六-作用域-样式与状态).
-- Chapter registration, restart and skip-to: [story interaction design](../engine-architecture.md#十-热重载).
-- Custom drawing, perspective scenes and external adapters: [extension scope](../engine-architecture.md#十一-完整制作能力与扩展).
-
-These names are design targets; use ordinary functions, model data and the implemented controls for current projects.
 
 ## 15 Further references
 

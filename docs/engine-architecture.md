@@ -1,5 +1,4 @@
 # Reel 引擎架构设计
-接口实现状态与规划分别见正文。
 
 [文档目录](README.md) · [作者指南 中文](guide/zh-CN.md) · [Creator guide English](guide/en.md)
 
@@ -8,7 +7,7 @@
 Reel 的目标是让创作者直观地表达想象中的画面和交互，包括自定义对白、UI、演出和嵌入的 2D 游戏。统一舞台承载画面、文字、控件与效果，函数组织组件，状态和活动表达交互与时间顺序；低端设备的内存、帧成本和输入体验同时进入设计。引擎复用 Masonry 的控件能力和 Kira 的音频能力，配套语言 Aside 以 Quirrel 为参照，用 Rust 实现编译器和 VM。
 
 当前项目、接口和自有格式统一为 v1。快速迭代直接同步调用方、英文源码文档、规范和验证；必要校验集中在输入、资源和状态提交边界，内部遵循明确的不变量。
-本文规定运行时所有权、输入与渲染、媒体、持久化和开发顺序。《Aside VM 与完整语言规范》负责语法、值模型、执行帧、回收和语言兼容；《Reel 游戏开发指南》负责作者接口、组件组合与示例。跨文档的等待、绑定和恢复语义必须一致。性能目标与当前行为合同分别标注，实测结果保存在固定版本的报告中。
+本文规定运行时所有权、输入与渲染、媒体和持久化。《Aside VM 与完整语言规范》负责语法、值模型、执行帧、回收和宿主调用；《Reel 游戏开发指南》负责作者接口、组件组合与示例。跨文档的等待、绑定和恢复语义必须一致。性能目标与行为合同分别标注，实测输出保存在忽略的产物目录中。
 
 ## 一 产品范围与实现原则
 
@@ -22,17 +21,11 @@ Reel 的目标是让创作者直观地表达想象中的画面和交互，包括
 
 通用库由独立的 `aside-std` crate 维护，通过 Aside host SDK 向任意宿主提供声明、模块接口和 native 调度。Reel 注册标准库并默认导入其 prelude；舞台、对白、音频和资源仍归 Reel。已有文本、集合操作继续共用 VM 实现，不复制到标准库。
 
-`std::time` 提供 `now()`（UTC Unix 秒整数）、`parts(timestamp, timezone: null)`（year/month/day/hour/minute/second/weekday/offset_seconds 数据表，weekday 为周一 1 至周日 7）及 `format(timestamp, pattern: "%Y-%m-%d %H:%M", timezone: null)`。timezone 为 IANA 名称，null 使用系统时区；日期换算、夏令时和格式化复用固定版本 Jiff 0.2.38。无法识别系统时区时按 Jiff 的系统时区语义使用 UTC；显式无效时区、时间或格式抛带调用位置的错误。接口不启动计时器、不参与剧情时间或快进；作者按需要用已有活动更新界面。aside-std 保持独立，数据返回 VM 堆。
-
-首批接口 `std::random(seed: null)` 创建独立随机对象；`int(min, max)` 取左闭右开整数，`float()` 取 [0,1)，`pick(items)` 从非空 array/tuple 返回原元素。复用锁定的 fastrand 2.5.0，同版本下固定种子与相同调用顺序复现同一流；省略种子由库创建新流。状态保存在普通 VM 宿主载荷中，绑定方法保留原对象；每次抽取只读写常数个值，不复制集合或创建堆载荷。非法范围和空集合在推进状态前报错。构造声明宿主效果，抽取声明写入效果，沿现有初始化与纯 derive 边界执行。
-
-`std::math` 提供独立宿主的纯 float64 数学函数：sin/cos/tan/asin/acos/atan、atan2(y,x)、sqrt/hypot(x,y)、pow(base,exponent)、exp/ln/log2/log10、abs/floor/ceil/round，以及 radians/degrees。直接复用 Rust f64 运算，不持有状态、不分配 VM 对象，允许 derive 与初始化调用。三角角度为弧度，round 中点远离零；NaN/Infinity 沿 Aside float 语义返回，不伪造有效数值或隐式限幅；宿主节点继续在自己的属性边界要求有效范围。整数参数在标准库参数边界按 float64 转换，结果仍为 float；普通脚本的 float 参数与 host SDK 的 Rust f64 绑定保持严格浮点类型。
-`std::math::curve(keys)` 是由 VM 堆拥有的不可变标量曲线；`.sample(time)` 沿普通 native 调用返回 float64。关键帧记录含 time/value、可选 mode（linear/step/cubic）与 in_tangent/out_tangent；切线以值/秒表示，cubic 为 Hermite 插值。构造接受有序非空 array/tuple，复制有限数值并预计算区间；重复时刻按输入次序保留跳变，采样取该时刻最后一帧，外部时间保持端值。构造捕获与验证分片计入既有堆/工作额度，外层数组变化报 ConcurrentModification；每个关键帧记录在单步内读取并复制。未完成对象仅由原生续体持有，取消后沿 GC 回收。只读对象、数值载荷、绑定 sample 方法和续体使用共同快照，不持有平行 Rust 数据图。
-
-采样沿平衡树定位区间，再做固定标量计算，复杂度 O(log n)；每个关键帧使用现有八值内联载荷，读取无需外部索引。构造的临时关键帧数组沿 VM 分块索引寻址，建立树的总成本为 O(n log n)，结束后释放工作区引用。稳态采样不创建曲线存储或脚本轮询任务。构造允许初始化和纯派生，捕获模型字段沿同一依赖机制；在条件 derive 的隐藏分支省略 sample/time 读取即可撤销该来源订阅。曲线由引用决定生存期，调用者选择 clock、audio.position、滚动位置或任意有限标量作为采样时间。
+标准库的数值、时间、随机流与曲线合同见[语言规范](aside-language.md)及 [aside-std 源码文档](../crates/aside-std/src/lib.rs)。标准库值、随机状态和不可变曲线由 VM 堆追踪，使用同一类型登记、效果检查与快照协议。
 
 Reel 的脚本服务通过独立 [Aside host SDK](aside-host.md) 接入。节点、会话和活动业务留在 Reel；可复用的 Rust native 声明、编译链接、运行时准入和属性 schema 生成归 Aside 扩展层。绑定宏从同一声明产生元数据与调用包装，不复制舞台类型或引入第二套语言实现。
 工作区按职责划分，语言包可独立发布。
+
 - reel-core：平台无关的资源/请求身份、预算/结果类型、AssetIo、Clock 与 WorkExecutor 契约；只含共享数据和基础服务接口。
 - aside-vm：语言值、对象、调用帧、模块与执行接口。
 - aside-compiler：解析、分析、字节码及源码定位，依赖 VM 公共格式。
@@ -50,8 +43,7 @@ Reel 的脚本服务通过独立 [Aside host SDK](aside-host.md) 接入。节点
 aside-syntax 在所有权层通过原子引用计数取得唯一释放权，并迭代释放深树，覆盖独立节点克隆和跨线程最后引用。其继承的底层指针实现封装在语法树 crate 内；aside-compiler、reel-ui、reel-text 和 reel-audio 的生产代码保持 unsafe_code=forbid。语言仍使用单一递归下降/Pratt parser，长左结合运算和后缀链按显式工作表处理。
 通用库使用锁定的普通依赖，包括 winit、wgpu、image、serde、atomic-write-file、codespan-reporting 和 Logos；文本、集合与数学分别复用 Unicode 库与 glam，VM 对象槽使用 slotmap。视频适配器使用固定版本 OpenH264、mp4、h264-reader 与 Symphonia；资源归档保存原始条目并使用 BLAKE3 校验，具体格式见“字节码与资源分包发布”。借用的 UI 控件、布局与呈现几何只维护在 reel-ui；不引入重复的窗口、设备输出或 UI 类型实现。
 Quirrel 的 C++ 实现和独立兼容运行器退出工作区，完整原测试输入、预期输出与原 runner 参照保留在 aside-compiler 的测试 fixtures 中。迁移用例由同一 Aside 编译器生成 Aside 字节码，编码/解码后交给真实 VM，在普通工作片和极小工作片交错 GC 下分别核对原断言与输出。解析通过、原 Quirrel 通过和 Aside 执行通过分别记录；未迁移用例不能删除或计为通过。来源固定于提交 19f17df9b6ee43c91ef5c635fd45970ec76c5dbe。[6]
-UI 代码最初借用自 Masonry 基线 271a27a6d4a930f7878d404f9014e3c50a3a9b88。[5] 当前仅维护 crates/reel-ui 一个 UI crate，版本跟随 Reel workspace；原 masonry、masonry_core、tree_arena、reel-stage 的实现按职责合为内部模块，不保留兼容转发包。安全树为私有模块，文档截图直接引用，不再保留 include_doc_path 宏包。许可、版权及必要来源说明保留；不要求与上游目录、版本或源码哈希持续一致。reel-render/reel-player 分别承担后端与平台组装，UI 不反向依赖它们。
-借用实现由对应 workspace crate 自主维护，保留原许可证、版权及简洁来源说明。来源记录不构成持续同步源码、目录或哈希的约束；测试迁移保留原输入及 oracle，不把原编译器专属输出当作 Aside 必须模仿的 API。
+UI 代码源自 Masonry，按职责维护在单一 crates/reel-ui 中；安全树为私有模块。来源、许可与本地维护范围见 [ORIGIN](../crates/reel-ui/ORIGIN.md)。reel-render/reel-player 分别承担后端与平台组装。
 当前 reel-engine 直接依赖 aside-compiler；按 source feature 裁剪编译器属于后续构建目标。模块热替换协议属于规划；当前编译 feature 以各 crate 的 Cargo.toml 为准。编译器、监视器和对照运行时留在开发侧，精简构建检查实际依赖树。[7]
 
 ## 三 平台接口与移植边界
@@ -62,7 +54,7 @@ UI 代码最初借用自 Masonry 基线 271a27a6d4a930f7878d404f9014e3c50a3a9b88
 
 `video(source, ...image 节点属性)` 创建空的普通图片节点，`.play(looping:false, volume:1, start:0, end:null, owner:null)` 启动并返回可等待活动。一个节点同时一个播放，重播停止前一个；节点或显式 owner 退休取消播放，隐藏不暂停。pause/resume/stop 沿共同活动协议，video.seek/position 使用秒。有限视频支持 finish；循环视频须 stop。停止与自然结束保留最后显示帧，节点退休释放资源。存档只保存路径、播放区间、当前位置、暂停与归属，不序列化已解码帧或设备句柄；读档重开资源并重建首个适用帧。
 
-MediaBackend 统一音频和视频的设备工厂、维护、取消与退休；视频音轨进入同一 Music 总线，有声视频以实际消费的 PCM 为时钟，静音视频使用排除宿主挂起的会话时间。码流分段读取、解码和队列均在后台，显示采用已有舞台图片的资源租约和三平面 YUV 纹理；队列固定容量，旧帧租约持有期间不可覆盖其纹理。不在每帧复制整幅 RGBA 或重新创建纹理。CPU 验证覆盖实际解码、音频时钟、暂停、跳转、结束、取消、舞台退休与快照恢复；设备显示由目标平台另行验收。
+MediaBackend 统一音频和视频的设备工厂、维护、取消与退休；视频音轨进入同一 Music 总线，有声视频以实际消费的 PCM 为时钟，静音视频使用排除宿主挂起的会话时间。码流分段读取、解码和队列均在后台，显示采用已有舞台图片的资源租约和三平面 YUV 纹理；队列固定容量，旧帧租约持有期间不可覆盖其纹理。不在每帧复制整幅 RGBA 或重新创建纹理。设备显示与输出时限由目标平台验证。
 
 ### HAL 与公共呈现
 
@@ -142,19 +134,22 @@ pub trait WorkExecutor {
 }
 ```
 基础类型与结果约定
-以下字段规定接口的语义、单位、所有权与终态；结构体字段以所属模块定义为准。PlatformCaps 的完整平台服务能力集属于规划，当前可用能力由实际适配接口报告。
+以下字段规定接口的语义、单位、所有权与终态；结构体字段以所属模块定义为准。能力由各实际适配接口报告。
+
 - 身份：各类请求 ID、FrameId、表面代数使用相互独立的 u64 包装类型。Scope 为 Session(session_id, epoch, owner_id) 或 Process；保存写盘使用 Process。MonoTime 是单调纳秒 u64，UnixMillis 是可缺失的 UTC 毫秒 i64，均不含本机指针。
 - Rejected<T> 保存原始 request:T 与 reason。reason 至少区分 Busy、Unsupported、InvalidRequest、Unavailable、OutOfMemory 和服务故障，附拥有型诊断文字；只有 Busy/Unavailable 等明确可重试原因允许原请求重试。拒绝不产生已接受 ID 或业务副作用。已接受请求的终态为 Completed(payload)、Cancelled、Failed(error)，结果记录包含请求 ID 与 Scope。Cancelled 用于释放与记账，不重新唤醒已取消业务。
 - QueueLimits 含 max_requests:u32、max_bytes:u64；BudgetTicket 含预算类别和 bytes:u64，随拥有的数据转移，最终释放一次。接受请求时同时保障完成结果的队列容量。工作预算分别预留输入、最大输出、临时工作区和完成记录；解码大小尚未知时先有界探测头部，再在大分配前取得输出额度。CPU 输入、解码结果与 GPU 资源各自持有票据，上传过程中的重叠驻留分别计量。WorkBudget 含 max_units:u32、max_bytes:u64、deadline:Option<MonoTime>；WorkProgress 报告实际消耗与是否仍有工作。
-- PlatformCaps 含指针、触摸、手柄、文本输入、剪贴板、可访问性、挂起恢复、等待及唤醒支持位。TextInputState 含启用值和逻辑坐标的插入点矩形。输入事件带输入序号、设备身份和事件时间；尺寸事件同时携带物理像素、逻辑尺寸和缩放系数。
 - SurfaceInfo 含 physical_size:[u32;2]、scale_factor、surface_epoch、color_encoding 与 alpha_mode；零尺寸代表暂不能呈现。RenderCaps 含支持格式/效果集合、纹理与离屏尺寸上限和上传队列限制。UploadBatch 拥有资源版本、尺寸/stride/格式、像素或网格数据及预算票据；所有乘法和长度校验先于接受。
 - PresentOutcome 为 PresentAccepted(FrameId)、Skipped(reason)、SurfaceUnavailable(reason)。RenderEvent 至少有 UploadFinished(id,result)、ResourcesRetired(versions) 和 DeviceLost(error)；可选的实际呈现反馈另带 FrameId 与时间，不能替代资源回收通知。返回的 FrameId 必须对应本次提交帧。
 - ReadRequest 含资源身份与可选固定版本、offset:u64、len:u32、优先级、Scope 和预算票据；读取结果拥有 bytes 并返回确定版本，明确 eof，长度不得超过请求。SaveWrite 含槽位、提交序号、完整槽位数据、最低持久提交级别与预算票据。IoCaps 声明范围读取、读取/保存队列限制及可提供的提交级别；只保证可见替换、不保证持久性的实现不得报告持久保存成功。
 - WorkRequest 含 kind、拥有型输入、Scope、优先级及预算票据；kind 限于已注册的解码、编码、校验操作。WorkCaps 含 Threaded/Cooperative、支持种类和队列限制；不支持的 kind 在接受前拒绝。处理进度不算终态。
 ### 平台与时间
+
 PlatformHost 提供命令，原生事件循环转换输入后驱动公共会话与 Presentation，不要求平台提供阻塞的 pump_events。PointerEvent、TextEvent 和 WindowEvent 沿用 reel-ui 的共同数据；原生生命周期驱动 Presentation、RenderBackend 和 StoryRuntime 的挂起/恢复。Presentation 只接受严格递增的表面代数。组装方在恢复时先失效旧输入，再配置后端，成功后恢复剧情时钟；VM 截止时间不扣除挂起区间。桌面适配器已接入剪贴板、IME、触摸和 Gilrs 手柄输入；系统可访问性适配与各目标的实体设备验收继续独立推进。后台通知复用 reel-core::WakeSignal，实时音频的通知路径仍须单独验证；不把通用平台回调直接作为实时保证。
-完整平台能力集规划包含输入、文本服务、可访问性及等待/唤醒；重绘可合并。MonoTime 使用固定单位的 u64，不保存 std::time::Instant。会话逻辑时钟独立累计，可暂停与恢复；墙钟可缺失，只用于显示日期等。恢复后重设截止时间，系统睡眠不得变成巨大动画增量。
+重绘请求可合并。MonoTime 使用固定单位的 u64，不保存 std::time::Instant。会话逻辑时钟独立累计，可暂停与恢复；墙钟可缺失，只用于显示日期等。恢复后重设截止时间，系统睡眠不得变成巨大动画增量。
+
 ### 渲染与音频
+
 SurfaceInfo 只含尺寸、缩放和引擎颜色约定。RenderCaps 声明纹理/离屏上限、格式和效果支持集；RenderFrame 保留画序、分组、裁剪与颜色/alpha 语义，具体路径和字形转为可适配的几何、掩码或图集。效果以 ID 和纯参数表达，只有 WGSL 实现的效果不能宣称可跨后端使用。
 render_present 只在调用内借用帧；后端若保留命令，必须取得数据和资源引用所有权。上传批次包含资源版本与预算票据；接受后由后端持有直到完成或失败。retire 只禁止新引用，实际 GPU 使用结束后才回收。表面不可用或设备丢失须报告并重建，保留会话状态；不能继续使用旧 GPU 身份。
 呈现结果区分 PresentAccepted、Skipped、SurfaceUnavailable。PresentAccepted 表示交给呈现系统，不证明扫描显示或 GPU 使用完成。PresentAccepted 更新命中快照；提交成功、实际显示与 GPU 回收分别记录。平台可额外提供实际呈现时间。
@@ -163,15 +158,18 @@ AudioRequest 含首选采样率、允许的设备格式/布局与最大供给帧
 每次 PcmFill 接收 n 帧、恰好 2×n 个 f32，1≤n≤max_pull_frames，切片只在调用期间有效。设备块超过上限时分块供给；设备缓冲长度必须为设备声道数的整数倍。输出适配器预分配转换缓冲，每次先清零供给区，混音器覆盖完整样本；异常长度不得越界，须静音并报告设备契约错误。非有限样本替换为零，转换为整数格式时限幅。回调路径不分配、不读取文件、不等待主线程。
 PcmFill 仅拥有混音状态、预分配缓冲与有界控制队列，不捕获 VM 或舞台。start 在接受前完成设备准备；拒绝返回尚未调用过的原 fill 及原因，可在兼容格式下重试；格式变化必须重建 fill。接受后供给由唯一输出线程串行调用，后续设备失败只通过 AudioStatus 报告。AudioStatus 含 Stopped/Running/Suspended/Failed、欠载计数和最近设备错误。stop 无论返回成功或错误，都须先保证不再调用 fill；不得在 fill 内等待 stop。欠载填静音，断连与采样率变化先停止，再配置并重建混音供给；不在后台悄悄更改格式。
 音频状态转换按以下规则执行：configure 只用于 Stopped；start 只接受已配置的 Stopped，接受供给后进入 Running。suspend 成功时已等待当前供给结束，进入 Suspended，保留相同 fill/mixer 并冻结逻辑音频时间；resume 验证设备格式一致后复用它。suspend 或 resume 失败进入 Failed，保留旧供给所有权直到控制侧 stop。stop 在任何状态先停止后续供给并等待在途调用结束，再丢弃 fill，返回 Stopped；返回错误仍保证供给已停止。设备断开或格式变化进入 Failed，原因分别标为 DeviceFailure 或 ReconfigureRequired；状态变化触发 WakeSignal，主线程媒体协调器读取状态后安排恢复，实时供给只发布故障、停止调用 fill 或输出静音。此时暂停媒体逻辑时间，通过 stop、configure、新建 Kira manager 和 fill 恢复。媒体服务以稳定 MediaId 保存资源、位置、音量、循环与分组参数，重建原生音轨并重绑已有逻辑活动及等待；增加 MediaEpoch 过滤旧完成消息。成功重建保持活动身份并继续，恢复失败只把受影响活动结算 Failed 一次。重建期间允许短暂停音；普通挂起采用保留 mixer 的路径。原生 Kira 句柄始终留在媒体适配器内部。
+
 ### PCM 释放与主循环
+
 音频服务使用有界的非实时清理工作线程处理已接受 PCM 的最终释放。主控制线程先取得清理队列信用，再从 Kira 退休队列移交完整 Sound；队满时对象保持原位，后续维护继续推进。Sound、实际 PCM 与预算票据一起转移，物理释放完成后归还额度并唤醒等待者。接口分别记录已移交数量与已完成释放，申请解码预算通过异步等待完成通知，或返回 Busy 后由完成通知唤醒重试；主线程与实时音频供给持续推进。
 每个 mixer generation 创建时预留 Renderer、AudioManager 的一次性退出信用，普通退休任务使用独立额度。成功 play 持有的原 DecodedSound 引用也纳入有界后台移交，覆盖各个可能成为最后引用的路径。创建或重建先取得所需信用，旧 generation 的总数量受限。同步拒绝的请求按原接口返还调用者，由调用者安排其释放。
-stop 先关闭供给并等待在途调用结束，再销毁 fill 外壳；外壳与 mixer 将内部混音对象交给清理服务。Stopped 表示供给已停止，PCM 驻留以票据和清理完成记录为准。清理服务由宿主持有，跨越 mixer 寿命；宿主最终退出时显式 drain/join。验收分别测主侧移交、后台实际释放、原生 pause 与供给栅栏等待，0.5ms 主循环回收目标针对主侧工作。所有队列、在途清理对象与保留的旧 generation 都计入容量和驻留边界。
+stop 先关闭供给并等待在途调用结束，再销毁 fill 外壳；外壳与 mixer 将内部混音对象交给清理服务。Stopped 表示供给已停止，PCM 驻留以票据和清理完成记录为准。清理服务由宿主持有，跨越 mixer 寿命；宿主最终退出时显式 drain/join。主循环 0.5ms 回收目标针对主侧移交；后台释放、原生 pause 与供给栅栏等待分别计时。所有队列、在途清理对象与保留的旧 generation 都计入容量和驻留边界。
 
 ### 资源与工作执行
+
 作者图片与字体共用 AssetIo/WorkExecutor 装配。开发资源以 AssetSource（资源名与可选固定版本）请求；describe 返回长度与可用版本，read 返回本次不可变字节的确定 ContentVersion。没有预先版本索引的目录无需启动扫描；默认目录适配器在后台首次 describe 时分块计算内容版本，随后支持范围读取。发布/内存适配器可提前提供固定版本和范围读取。解码输入使用 Arc<OwnedBytes>，探测与解码共享同一份输入及预算，先后台探测尺寸，再取得输出/临时额度。普通后台队列复用同一终态和取消合同，不由图片节点创建线程；字体准备期间保持旧画面，完成后统一发布设置与舞台。
 
-默认窗口的资源验收包含实际 DPI 和裁剪所需临时目标。WGPU 准备帧前按完整组、裁剪、遮罩与转场计算同时存活的目标峰值，再在既有质量档位中选择能容纳整帧的档位；不以单张纹理能容纳就假定整帧可行。只有裁剪、没有独立遮罩的组，将覆盖率、组透明度和源图直接合成到父目标，不再构造中转纹理；保持原来的预乘色与 source-over 结果。此路径纳入 reel-render 的像素验收，沿用帧接口和预算，不增加作者参数。
+默认窗口的资源验收包含实际 DPI 和裁剪所需临时目标。WGPU 准备帧前按完整组、裁剪、遮罩与转场计算同时存活的目标峰值，再在既有质量档位中选择能容纳整帧的档位；不以单张纹理能容纳就假定整帧可行。只有裁剪、没有独立遮罩的组，将覆盖率、组透明度和源图直接合成到父目标，不再构造中转纹理；保持原来的预乘色与 source-over 结果。此路径沿用帧接口和预算。
 
 离屏目标按尺寸、质量和帧内分配槽复用，提交后才发布到同一 Renderer 的缓存。每次取用目标都清空，包括帧内回收后的再次使用；绘制和最终呈现/截图复制在同一命令缓冲内结束，同一 GPU 队列后续提交可以复用这些目标。Prepared、提交和缓存共享实际分配的预算所有权，不按引用重复计费；单帧需求仍独立计账。尺寸、质量或所需槽数变化时退休多余缓存，尚未完成的 GPU 引用保留预算。临时提交压力沿完成通知重试，不作为永久拒帧反复报错；不放大默认预算或增加主线程等待。
 
@@ -182,12 +180,15 @@ Aside 文本基础方法复用 Rust 标准库的 UTF-8 解码与标量迭代；�
 ReadRequest 使用 AssetKey、版本、offset:u64、受限 len:u32 和优先级，不要求路径、mmap 或文件监视器。AssetIo 可读包、内存或平台文件系统，接口须快速返回；真正可能阻塞的文件调用交给平台异步机制或 IO 工作者。SaveWrite 使用应用保存命名空间和独立进程请求身份；完成只表示该平台已验证的持久提交级别。缺少可靠原子替换的平台须采用经故障验证的双槽或版本日志，不能假定 rename/fsync 一定适用。
 WorkRequest 是图像解码、快照编码、包验证等有限工作描述，拥有输入、优先级、取消身份与预算票据，不接收脚本闭包。WorkCaps 声明线程或协作模式及支持种类。协作实现保留游标，在工作单位、字节或截止时间到达时让出；不能用一次阻塞整图解码冒充分片执行。无工作线程且无可分片实现时，明确不支持该工作或要求预转换资源。实时音频供给不能被普通协作任务饿死。
 所有队列同时限制数量和字节。拒绝返回原请求及原因，不丢数据、不暗中改为同步执行。完成消息拥有自身数据，包含请求身份、所有者或会话代数，最多一个终态。业务取消先撤销对应等待/订阅，再请求底层取消；结果路由始终核对等待仍有效及 Scope 匹配。服务尚未结算时取消产生唯一 Cancelled；已结算且排队的终态保持原结果，交付后只用于额度与进程账本结算，已取消业务保持终止。这样已发生的保存提交仍有准确记录，旧读取或工作结果也无法重新唤醒已取消任务。poll/drain 每次最多写入 limit 个事件，调用方预分配容量。IO 读取与保存各自保留容量；完成消息通过两路轮转等有限等待策略交付，持续读取也须让已完成的保存及时出队。
+
 ### 桌面与 PS Vita 目标
+
 首批桌面目标是 Windows、Linux、macOS，各组合完成构建和行为验证后才列为支持。移动端与 Web 需要另外适配生命周期、输入、媒体与存储。PS Vita 是未来移植目标，当前接口不代表已经可运行。
 Rust 的 armv7-sony-vita-newlibeabihf 目标为 Tier 3，依赖 VitaSDK，标准库部分支持且无预编译标准库；VitaSDK 是开源 homebrew 工具链。[10] 因此先验证锁定工具链和完整依赖树，不从 target 存在推导 reel-ui、Parley、Kira 等已兼容。
 Vita 的 GXM 有专门纹理布局、内存映射与同步要求，GPU 预算需按不同内存区域实测。[11][12] 音频提交可能阻塞，应由专用路径处理，输出适配器按实际端口把 f32 转换为所需 PCM，转换缓冲预分配。[13] 32 位构建不保存指针或 usize 布局；长度转换、stride×height 与对象索引做溢出检查，不假定 AtomicU64 可用。桌面 N100 的帧时间和资源预算不直接用于 Vita。
 
 ## 四 线程与帧调度
+
 主线程拥有窗口、舞台、UI 和 GPU 提交。VM 在主线程按预算执行，避免细粒度跨线程调用。默认桌面把读取、解码和存档编码交给工作线程，其他平台依所选 IO 与执行器契约推进；音频由独立输出路径保障。后台队列同时限制任务数和数据字节数，当前可见资源优先于预取。
 每帧固定执行：输入分发；预算内脚本与后台完成消息；动画采样；状态提交；必要布局与排版；命中几何与绘制计划更新；呈现。布局属性动画参加本帧布局，纯变换与透明度只影响合成和命中。静止画面等待输入、计时器或资源事件，活动动画才持续请求新帧。
 输入采用最后一次被呈现系统接受的帧几何，收到 PresentAccepted 才替换快照。单次输入固定使用同一份快照；获取表面、提交或呈现失败、过期，以及 Skipped 或表面不可用时都保留原快照。该规则不承诺屏幕已经扫描显示。命中后核验当前节点代际与交互有效性，已销毁节点不再接收事件。一次输入最多推进一次剧情。
@@ -205,7 +206,7 @@ reel-ui 的交互分发层是唯一控件输入入口。它使用冻结的 Prese
 
 `emit(node, burst:1, rate:0, duration:null, lifetime:5, lifetime_spread:0, velocity_x:0, velocity_y:80, spread_x:20, spread_y:20, acceleration_x:0, acceleration_y:0, size:12, size_spread:4, size_end:null, opacity_start:1, opacity_end:0, spin:0, spin_spread:30, x:0, y:0, owner:null)` 追加一个批次并返回独立活动；不会停止或清除此前批次。每次 emit 捕获节点 width/height 为发射矩形尺寸（缺省为零），x/y 是本批在节点本地坐标中的矩形原点，接受正负有限数，调用时固定。修改节点 x/y 仍整体移动所有批次；不同本地出生点无需拆成多个节点。duration 为非负有限发射秒数，null 连续发射。burst 粒在启动时刻同时出生，随后每 1/rate 秒出生一粒，有限发射在 duration 截止（含该时刻），最后一粒实际寿命结束后返回 Completed。rate:0 只产生瞬发粒子，是可 finish 的有限活动；rate 与 burst 均为零时立即完成。duration:0 仍产生 burst，有限时段内没有出生粒子时立即完成。pause/resume 只冻结/继续本批的发射与运动；stop 只清除本批并返回 Stopped；finish 只接受有限活动，清除本批并返回 Completed。目标退休取消全部批次，owner 退休取消属于它的批次；等待者取消不取消生产者。owner 缺省沿用作用域/任务/回调节点，主剧情归会话。终态独立于节点保存，可重复 await，结束后释放目标/owner 根。隐藏不暂停。
 
-速度单位为逻辑像素/秒，加速度为像素/秒²，spin 为度/秒；spread 是围绕基值的均匀半幅，size_spread 不超过 size，lifetime_spread 不超过 lifetime。lifetime 为正有限秒数；rate、size、显式 size_end 与各 spread 为非负有限数，burst 为非负整数，透明度在 [0,1]。每粒寿命在 lifetime±lifetime_spread 内确定性取样，零寿命立即结束；size_end:null 保留每粒随机出生宽度，显式终值使宽度在该粒寿命内线性变化，保留图片宽高比。每次调用在入口完整验证本批参数；失败保留已有批次及节点的下一发射序号。参数已从 particles 移到 emit，不保留旧构造参数；默认从 rate:60/burst:0 改为 rate:0/burst:1，即默认发射一粒。
+速度单位为逻辑像素/秒，加速度为像素/秒²，spin 为度/秒；spread 是围绕基值的均匀半幅，size_spread 不超过 size，lifetime_spread 不超过 lifetime。lifetime 为正有限秒数；rate、size、显式 size_end 与各 spread 为非负有限数，burst 为非负整数，透明度在 [0,1]。每粒寿命在 lifetime±lifetime_spread 内确定性取样，零寿命立即结束；size_end:null 保留每粒随机出生宽度，显式终值使宽度在该粒寿命内线性变化，保留图片宽高比。每次调用在入口完整验证本批参数；失败保留已有批次及节点的下一发射序号。
 
 每批配置和累计逻辑时间形成不可变投影，按出生序号解析位置、匀加速运动、旋转及寿命内线性尺寸与透明度。节点 seed、成功发射序号、批内出生序号与取样通道共同确定 SplitMix64 取样；同种子、调用顺序和时间得到同一效果，与分帧无关，追加的一滴不会反复使用第一滴的随机样本。出生 x/y、速度 x/y、尺寸、角速度使用六个通道，寿命使用第七通道。瞬发序号从 1 到 burst，后续定时出生沿其后递增。每批仅保存解析配置与时钟，不创建逐粒节点、任务、回调或逐粒状态数组。绘制按追加顺序枚举各批最大寿命窗口内的候选，再按实际寿命过滤；大时间跳跃直接跳过必然已死序号。有限活动逆序计算实际最大死亡时间，较早出生的最大可能死亡时间不超过已知终点时停止；这项一次性工作按候选纳入维护切片预算，固定寿命终点为常数工作。
 
@@ -229,7 +230,7 @@ owner 缺省继承当前作用域/任务。owner 或局部 target 退休、任�
 
 保存描述的遍历工作区、索引和数组扩容在分配前准入，工作区在描述完成后退款。`SavedRetainedScene::retained_size_steps()` 分项估量保存工作实际保留的描述与 CPU 资源，SessionCapture 按 SnapshotBudget 将其计入 SnapshotProgress.bytes，由原保存大小上限和队列额度准入；普通资产虽然只编码版本引用，现场描述继续持有的图像/字体内存仍计入。每份描述内部去重，共时多份描述之间按保守总量计账。
 
-运行时命令存储（已实现）：普通帧与遮罩使用连续 `Vec<FrameCommand>`，后端读取 `&[FrameCommand]`，不为每条命令创建 Arc。只有实际 RetainBuild 提取目标时，复制目标范围及可达遮罩的命令载荷；图片、字体与视频像素继续共享资源租约。整份独立 FrameDrawing、嵌套旧图和保存描述仍共享不可变所有权，提取完成即释放来源整帧，未选中兄弟的命令与资源不继续存活。复制按命令预付载荷字节与工作量；大型单条路径/字形命令通过 minimum_bytes/minimum_units 请求足够的单步额度，额度不足时尚不复制，不能把该最小额度误称为固定时间上限。取消释放已复制部分；恢复沿同一连续表示和现有资源重映射。范围仅 UI frame/retained/archive、共同 renderer 消费和相应测试文档；用既有 r01_measurements 的矩形/长路径负载比较普通帧运行时分配、录制/编译，并单列 retain 的复制耗时、源与目标重叠峰值和完成后存活量。复跑：`cargo test --release --locked -p reel-ui --test r01_measurements -- --ignored --nocapture --test-threads=1`；行为检查沿 `reel-ui --test r01`、`reel-ui --lib frame::archive`、`reel-render --features wgpu --test gpu_pixels retained_transition -- --ignored` 及原作者转场源码/ASB 检查。
+运行时命令存储：普通帧与遮罩使用连续 `Vec<FrameCommand>`，后端读取 `&[FrameCommand]`，不为每条命令创建 Arc。只有实际 RetainBuild 提取目标时，复制目标范围及可达遮罩的命令载荷；图片、字体与视频像素继续共享资源租约。整份独立 FrameDrawing、嵌套旧图和保存描述仍共享不可变所有权，提取完成即释放来源整帧，未选中兄弟的命令与资源不继续存活。复制按命令预付载荷字节与工作量；大型单条路径/字形命令通过 minimum_bytes/minimum_units 请求足够的单步额度，额度不足时尚不复制，不能把该最小额度误称为固定时间上限。取消释放已复制部分；恢复沿同一连续表示和现有资源重映射。
 
 绘制序列化使用 peniko 的 serde 功能和 serde 的共享引用支持。绘制提取和恢复按 StepBudget 推进；旧命令、资源引用、动态资源、两侧合成目标及保存暂存均纳入现有预算，最后租约与 GPU 使用结束后退款。普通帧使用连续命令，独立保留画面以 FrameDrawing 共享不可变内容；无转场帧沿原绘制路径，转场进度变化复用旧绘制、图片上传和遮罩程序，不重排旧文字或复制旧像素。设备丢失后的恢复仍需实机验收。可运行示例为 [author_transition.aside](../examples/author_transition/src/main.aside)。
 
@@ -253,11 +254,11 @@ Reel 会话调度显式选择 `SessionBudget::Exact(SliceBudget)` 或 `RetryMini
 
 `tween` 的 easing 另支持 `quad_in`、`quad_out`、`quad_in_out`，分别为二次加速、减速和先加速后减速；既有 in/out/in_out 为三次曲线。曲线枚举存入动作描述并由活动采样，不逐帧调用脚本。
 
-正弦曲线 `sine_in`、`sine_out`、`sine_in_out` 分别为 1−cos(πt/2)、sin(πt/2)、(1−cos(πt))/2；in 从慢到快，out 从快到慢，in_out 两端慢、中间快。t 为已归一化的时间，起止精确为 0/1。沿现有活动采样、所有权与取消执行，不增加脚本回调或逐帧分配。验证三条曲线的源码/ASB、起止点、中点及中间时刻，并检查采样不增加 VM 载荷块。
+正弦曲线 `sine_in`、`sine_out`、`sine_in_out` 分别为 1−cos(πt/2)、sin(πt/2)、(1−cos(πt))/2；in 从慢到快，out 从快到慢，in_out 两端慢、中间快。t 为已归一化的时间，起止精确为 0/1。沿现有活动采样、所有权与取消执行，不增加脚本回调或逐帧分配。
 
 对白的句内时序属于共享 Text 数据，与视觉样式分别存储。`rich` 支持成对的 `[speed=15]`（字素/秒）、`[speed=2x]`（玩家速度倍数）、`[speed=0]`（即时段），以及独立的 `[pause=0.5]`（秒）和 `[next]`（本组全部行均指定时自动接下一句）。结束 speed 恢复外层速度；节奏位置按完整 Unicode 字素边界执行。普通 text 和历史显示完整正文，不执行时序。全局速度 0、手动补全与快进越过剩余时序；暂停、失焦、模态和资源等待冻结剩余时间。自动续句须等待完整正文被接受呈现，尾部停顿也须完成，不使用全局自动阅读延迟。时钟推进按跨过的标记段计算，不逐字符分配或重新排版；等待按下一个字素或停顿截止时间调度。
 
-`game.exit()` 请求结束当前作品，不调用进程退出或持有平台句柄。请求一经接收便不再执行脚本；宿主沿既有关闭路径取消任务、活动和资源，增量完成清理后关闭作品窗口。嵌入宿主可读取 SessionVm::exit_requested，并决定其外层应用如何处理。验证主剧情和 UI 回调退出、未决等待清理及实际窗口关闭。
+`game.exit()` 请求结束当前作品，不调用进程退出或持有平台句柄。请求一经接收便不再执行脚本；宿主沿既有关闭路径取消任务、活动和资源，增量完成清理后关闭作品窗口。嵌入宿主可读取 SessionVm::exit_requested，并决定其外层应用如何处理。
 
 普通 UI 流程使用 `completion(owner: null)` 创建一次性结果，`await result` 等待，回调用 `result.resolve(value: null)`、`result.reject(error)` 或 `result.cancel()` 结算。owner 省略时沿用活动规则：主剧情归会话，回调归事件节点；显式节点退休使未结算结果取消。第一次结算返回 true，之后返回 false；null 也是合法结果。重复等待读取同一终态，resolve 原样返回值，不采用另一个可等待对象。结果不占用对白/选择权限，不记录剧情历史；组件可以返回 `{root, result}` 供主剧情或其他回调组合。
 
@@ -292,9 +293,9 @@ Rust 宿主内部弱登记复用 `Heap::peek_weakref`，在不运行 GC 的事�
 
 桌面播放器的初始客户区默认跟随作品首次配置的逻辑画布尺寸；未配置画布时使用 1280×720。Rust `StoryWindowOptions.logical_size: Option<[u32; 2]>` 可以显式覆盖窗口尺寸，`canvas_size` 仍只定义逻辑画布。首个画布应用后不再自动调整窗口，玩家主动缩放与后续画布变更继续沿 contain 绘制/输入变换处理。该策略仅属于窗口适配器。
 
-宿主对象退休时，依赖它的 derive 解除全部输入订阅并冻结在最后一次成功的值，已排队的计算同时失效；直接访问退休对象仍报 RetiredHost。移除最后一个属性消费者会递归解除其派生输入订阅，保留的派生引用再次绑定时恢复更新；仍有共享消费者的计算保持活跃，已退休输入的冻结值不再恢复计算。断开沿实际订阅边迭代执行，不扫描整个堆；测试覆盖条件外观、共享与重新绑定、排队后退休、GC 与源码/ASB。
+宿主对象退休时，依赖它的 derive 解除全部输入订阅并冻结在最后一次成功的值，已排队的计算同时失效；直接访问退休对象仍报 RetiredHost。移除最后一个属性消费者会递归解除其派生输入订阅，保留的派生引用再次绑定时恢复更新；仍有共享消费者的计算保持活跃，已退休输入的冻结值不再恢复计算。断开沿实际订阅边迭代执行，不扫描整个堆。
 
-派生读取的一致性：同步作者脚本段结束后，普通 observer 继续沿现有队列调度；在派生或组件工厂实际读取可观察属性时，绑定最终来源若是尚未稳定的派生输出，先在同一 VM 任务中调用该输出已有的 native/script 续体，完成后重试原读取。外层 PC、寄存器和 TableScan 保留，外层捕获通过既有 Parent 链恢复；消费者不重跑，条件分支首次读取的新上游也遵守此规则。普通脚本段中的读取继续使用最后成功发布值，写入不会在语句之间启动 observer。祖先有效性复用现有派生索引，不在每次 next_derived 排序或复制完整依赖图。读取自身或活动捕获祖先报告 BindingCycle，错误仍定位到作者读取/生产位置。准入沿原 Meter、FrameSlots 与 HeapReservation；从队列认领生产者的工作按现有队列长度计费，取消/故障/GC/中途快照复用同一 native 帧和对象图。VM 快照保存 ReactiveRead 返回位置，SessionSnapshot 直接拒绝旧格式；Aside 字节码/ASB 和作者 native 签名保持，验收包含反序队列、菱形及首次条件依赖、绑定转发、预算让出、原始错误、取消和刷新中保存恢复，并用图库连续打开/切图/返回链执行源码及 ASB。
+派生读取的一致性：同步作者脚本段结束后，普通 observer 继续沿现有队列调度；在派生或组件工厂实际读取可观察属性时，绑定最终来源若是尚未稳定的派生输出，先在同一 VM 任务中调用该输出已有的 native/script 续体，完成后重试原读取。外层 PC、寄存器和 TableScan 保留，外层捕获通过既有 Parent 链恢复；消费者不重跑，条件分支首次读取的新上游也遵守此规则。普通脚本段中的读取继续使用最后成功发布值，写入不会在语句之间启动 observer。祖先有效性复用现有派生索引，不在每次 next_derived 排序或复制完整依赖图。读取自身或活动捕获祖先报告 BindingCycle，错误仍定位到作者读取/生产位置。准入沿原 Meter、FrameSlots 与 HeapReservation；从队列认领生产者的工作按现有队列长度计费，取消/故障/GC/中途快照复用同一 native 帧和对象图。VM 快照保存 ReactiveRead 返回位置。
 
 ### 按业务身份复用的作者列表
 
@@ -302,13 +303,13 @@ Rust 宿主内部弱登记复用 `Heap::peek_weakref`，在不运行 GC 的事�
 
 key 接受任意 Aside 值，标量保留类型、字符串按内容、其他对象按完整堆身份比较；浮点正负零为同一 key，NaN 使用稳定的位模式顺序。不调用作者比较器或对象钩子。引擎返回的不透明选项 id 可直接作 key；列表保留原键的强引用，GC 与槽复用不改变行身份。
 
-隐藏滚动区域继续保留作者请求的位置与上次有效尺寸。恢复后重新创建的隐藏控件尚未布局时，合成阶段保留待应用偏移，并停止向 VM 发布滚动与虚拟列表几何反馈；重新显示并完成布局后，再按实际范围应用位置。复跑 `cargo test --locked -p reel-player --lib hidden_scroll`，并用源码/ASB 检查菜单中保存恢复的长诗页。
+隐藏滚动区域继续保留作者请求的位置与上次有效尺寸。恢复后重新创建的隐藏控件尚未布局时，合成阶段保留待应用偏移，并停止向 VM 发布滚动与虚拟列表几何反馈；重新显示并完成布局后，再按实际范围应用位置。
 
 来源函数与 key 函数沿既有 NoWait/reactive/native continuation 执行；每项构造可让出，候选数组、行与节点由 VM 根追踪。行工厂通过 VM 的 untracked capture 隔离外围 view 依赖，嵌套 derive/list 仍独立记录读取，故障和取消沿 NativeFrame 恢复上层捕获。稳定行公开只读可观察 key/value/index，保留 key 时只更新 value/index，局部订阅驱动外观。节点复用同一 Stage；子节点批量协调先验证单父、重复与环，再重排保留身份并退休移除的树。已呈现输入仍按实际接受帧和节点寿命判断。
 
 结构协调使用排序索引和二分查找，O(n log n)，不逐项线性搜索全表；只为新 key 执行组件工厂。普通行字段更新由 bind/derive 完成，列表无每帧扫描。排序及最后的树提交为同步批次；索引临时内存通过 Aside 的 HeapBudgetUsage::reserve 归入同一预算，HeapReservation 析构释放计账，持续状态全在 VM 堆。失败/取消不留下 Rust 侧工作副本或独立根。默认保留全部行实例；virtual:true 的组件寿命与窗口协调见下节。示例见 [author_list.aside](../examples/author_list/src/main.aside)。
 
-#### 虚拟列表（已实现）
+#### 虚拟列表
 
 `list(items, key:, build:, virtual:false, ...NodeProps)` 仍组合普通 `scroll`。virtual 为构造时固定的组件寿命选择：false 保留全部行；true 只保留视窗及有限缓冲中的行，离屏退休取消节点任务与活动，重新进入时重建组件。需长期保留的编辑值、选中状态和业务数据放在作者 model 中。正在聚焦或捕获指针的行在交互结束前保留。第一版要求列表是有限高度纵向 scroll 的唯一流内容；来源预先过滤，build 返回 Node；要求行的自然高度为正。列表本身保留自然高度，不设置 height/max_height、纵向 stretch 或局部 x/y/anchor/rotation/scale；整体变换放在外层 scroll，行内组件仍使用共同舞台能力。宽度、横向对齐、padding 和 gap 沿普通布局。无二维网格、横向虚拟化或作者测量/逐帧回调。
 
@@ -318,7 +319,7 @@ reel-ui Stage 只投影当前行、逻辑索引、位置、总估计高度及修
 
 快照保存来源、键/高度索引、已挂载行、锚点和工厂续体；最后提交的行投影独立于候选索引保存，恢复不会提前发布中途候选。不重跑已生效工厂，不保存 WidgetId 或布局缓存。VM 快照保存并重映射 active capture 的 Value，保留 evaluation 代数；NativeFrame 的根范围和 Continuation 仍由原快照重映射。SessionSnapshot 保存 reactive_ready 并重映射 derived_task，继续现有调度；属性提交 proposal 仍须先结束。恢复仍按会话合同清空悬停、按住与焦点。
 
-验证分别记录来源索引、首屏工厂/节点/文字布局、首次接受帧和内存；固定视窗的 1 千、1 万、10 万行负载中，首屏组件和排版不随总行数增长。覆盖变高富文本、宽度改变、key 增删重排、末端跟随、快速往返拖动、焦点与捕获保留、跨窗口导航、候选失败/取消及中途快照。缓冲区充足时纯滚动和空闲不得增加文字排版或列表脚本工作。默认图库逐帧检查为 `cargo test --locked -p reel-player --lib virtual_list_natural`；10万模型数据生成、索引、首窗、远跳及 VM 计账为 `cargo test --release --locked -p reel-engine --lib virtual_list_natural_height_cost -- --ignored --nocapture`。测量与报告存放 target/reel-artifacts；完整文本及翻译目录仍驻留。行为命令：`cargo test --locked -p reel-engine --lib virtual_list`、`cargo test --locked -p reel-player --lib virtual_list`、`cargo test --locked -p reel-cli --test author_lists --test author_reading`。成本命令：`cargo test --release --locked -p reel-engine --lib virtual_list_first_window_cost_against_full_materialization -- --ignored --nocapture`；引擎命令分离数据生成、来源/key 索引、首窗构造和 GC 后 VM 存活计账，不含设备呈现。设置 `REEL_SESSION_FONT` 后运行 `cargo test --release --locked -p reel-player --lib virtual_list_rich_text -- --ignored --nocapture` 验证实际富文本排版、宽度变化和 CPU 接受帧成本；这不是 GPU/实机验收。长菜单与过滤/重排/键盘选择见 [author_list.aside](../examples/author_list/src/main.aside)，历史见 [author_reading.aside](../examples/author_reading/src/main.aside)。
+固定视窗下，首屏组件和排版随窗口内容增长；缓冲区充足时，纯滚动和空闲复用已有排版。全文与来源索引仍占驻留空间。长菜单见 [author_list.aside](../examples/author_list/src/main.aside)，历史见 [author_reading.aside](../examples/author_reading/src/main.aside)。
 
 补窗期间的本地滚动反馈：虚拟窗构造与作者模型提交分开。仍挂载且可见的已提交行完整覆盖最新实际视口时，允许继续录制该已提交控件树的本地滚动/交互几何；此回执固定为 `current=false`。只准入完整行工厂返回、普通派生全部结算、仅余虚拟 Window 输出排队的协作边界；已发布来源的 SourceRevision 须等于已提交 projection 的值，无 scroll_to/导航目标、无其他活动/转场/粒子提交。已挂载属性须先按既有版本同步，Stage/UI 的节点、种类、子序及可见性、启用与模态范围保持同一次提交；scroll 的 offset 和完成的普通布局/外观派生可继续同步。覆盖检查复用当前真实布局及已驻留图片，不生成第二份场景或索引。未结算普通派生、未同步属性、来源删除/重排/同数组内容更新、隐藏/模态变化或覆盖不足继续等待。反馈帧可更新真实控件输入几何，不能完成 stage.presented、geometry、scroll_to 或新的 capture；完整提交且被接受后才兑现这些屏障。完整模型回执 `current=true` 要求派生全部结算。
 
@@ -326,17 +327,17 @@ reel-ui Stage 只投影当前行、逻辑索引、位置、总估计高度及修
 
 完整新行工厂返回后，窗口 Work 保存到同一 VM 状态图，结束本次 observer 并排到现有 FIFO 队尾，让已排队的普通派生先结算；宿主在该边界同步已挂载属性，候选子树继续未挂载，全部行完成后只 reconcile 一次。原 owner 取消、行工厂失败、来源更新及快照恢复继续使用同一候选/已提交图。私有 projection 保存来源修订，状态图保存候选 Work 与约束。
 
-#### 按 key 定位（已实现）
+#### 按 key 定位
 
 `let row = await items.scroll_to(key, align: "nearest")` 对虚拟 list 返回可取消、可重复等待的结果，完成值为真实行根节点，不自动聚焦或延长行寿命。align 支持 start/center/end/nearest；nearest 在整行可见或大行包含视口时保持位置，否则取较近边缘，最终夹取滚动范围。owner 是列表。每个列表只有一个目标，新定位、用户滚动、脚本位置写入或新导航覆盖旧目标；目标缺失/过滤、列表退休及 `.cancel()` 以 Cancelled 结算，取消等待者不撤销生产请求。重排按 key 追踪。
 
 定位与边缘导航共用目标、窗口需求和候选；key 索引及高度前缀直接定位目标窗口，不构造中间行，不重新执行来源/key。布局返回真实目标高度及宽度修订、位置校准和窗口提交后才安装呈现屏障；下一完整实际接受帧才完成。变化使旧屏障失效并重新安装，录制、拒帧及旧帧不完成。NodeScroll 的 input 标志区分玩家滚动/焦点导航与布局夹取；新输入撤销未决定位，旧布局反馈仍按 requested 位置校验。复用 stage.presented 的 Results 生产根队列及请求序号，允许完成值是 Node，不新增调度器、脚本帧回调或布局估计参数。
 
-视口高度变化和当前 requested 所接受的布局夹取保留定位目标，重新校准并等待新帧；被拒绝的旧布局不改目标预期位置。来源或其上游 derive 已失效、正在重算时，旧屏障不能完成，即使来源索引续体尚未开始或尚未结束。安装屏障时检查派生来源；Results 在既有每片最多 64 个生产结果的轮转内，对准备完成且身份匹配当前定位请求的结果再检查。普通 stage.presented/geometry 即使 owner 是该列表，也保持各自语义；无关列表或派生更新不阻塞稳定结果。Aside 的 freshness 查询不执行脚本或改变调度。已提交依赖保存可重建的派生祖先条目索引；普通 model 字段的写入沿原精确订阅直接置脏，稳定查询不再反复扫描这些端点，仅检查输出及派生祖先的脏状态、正在求值和未完成捕获。bind/解绑改变连接拓扑时使索引失效，包括值未变的重绑；条件求值提交新的依赖载荷，不复用旧索引。拓扑变化或快照恢复后的首次查询从当前强边重建，仍为 O(n)；稳定查询随派生祖先图增长，来源生成、订阅提交及索引也不因此成为常数成本。冷查询、稳定查询、提交和额外计账分别测量，不新增逐帧全列表扫描。独立成本命令为 `cargo test --release --locked -p reel-engine --lib virtual_list_scroll_to_model_key_dependency_cost -- --ignored --nocapture`，分别报告已建好来源后的有效性检查和完整远跳 CPU 路径；数据生成和来源索引不计入这两个时间。
+视口高度变化和当前 requested 所接受的布局夹取保留定位目标，重新校准并等待新帧；被拒绝的旧布局不改目标预期位置。来源或其上游 derive 已失效、正在重算时，旧屏障不能完成，即使来源索引续体尚未开始或尚未结束。安装屏障时检查派生来源；Results 在既有每片最多 64 个生产结果的轮转内，对准备完成且身份匹配当前定位请求的结果再检查。普通 stage.presented/geometry 即使 owner 是该列表，也保持各自语义；无关列表或派生更新不阻塞稳定结果。Aside 的 freshness 查询不执行脚本或改变调度。已提交依赖保存可重建的派生祖先条目索引；普通 model 字段的写入沿原精确订阅直接置脏，稳定查询不再反复扫描这些端点，仅检查输出及派生祖先的脏状态、正在求值和未完成捕获。bind/解绑改变连接拓扑时使索引失效，包括值未变的重绑；条件求值提交新的依赖载荷，不复用旧索引。拓扑变化或快照恢复后的首次查询从当前强边重建，仍为 O(n)；稳定查询随派生祖先图增长，来源生成、订阅提交及索引也不因此成为常数成本。冷查询、稳定查询、提交和额外计账分别测量，不新增逐帧全列表扫描。
 
-快照保留目标 key、请求身份、结果及构造续体，未决定位恢复后重新测量并等待新接受帧；候选仍不提前发布。验证远跳 10 万行的工厂/节点/文字布局有界且来源/key 不重算，变高/宽度/重排、快速覆盖、删除/退休/取消、旧帧及未测量/构造中/已安装屏障三阶段快照。 行为命令：`cargo test --locked -p reel-engine --lib virtual_list_scroll_to`、`cargo test --locked -p reel-cli --test author_lists`。定位成本命令：`cargo test --release --locked -p reel-engine --lib virtual_list_scroll_to_far_window_is_bounded_without_reindexing -- --nocapture`；设置 `REEL_SESSION_FONT` 后运行 `cargo test --release --locked -p reel-player --lib virtual_scroll_to_far_target_has_bounded_actual_text_layout -- --ignored --nocapture` 验证 1 千/1 万/10 万项的真实文字排版与接受帧 CPU 路径，均不包含 GPU 呈现。交互示例 [author_list.aside](../examples/author_list/src/main.aside) 的 Item 998 按钮演示按业务 key 定位。
+快照保留目标 key、请求身份、结果及构造续体，未决定位恢复后重新测量并等待新接受帧；候选仍不提前发布。
 
-### 当前作者舞台实现合同
+### 作者舞台合同
 
 文字渐变显现采用共同标量属性 `reveal_fade:null|finite`、`reveal_fade_from:byte=0`、`reveal_fade_step:nonnegative finite=0`，在硬reveal范围内按逻辑字素序号k施加 `clamp(reveal_fade-k*step,0,1)`。起点之前保持原透明度；连字与ruby base/注音共享完整范围的最小透明度，文字、描边、强调及线条装饰使用同一绘制系数。指针和键盘沿原完整链接显现规则，并要求每个字素透明度大于0。fade与step沿普通绑定/动画；from沿普通赋值/绑定，保存、取消和owner退休复用节点与活动合同。
 
@@ -366,9 +367,9 @@ Aside 浮层接口：`popup(placement: "bottom-start", offset: 0, on_dismiss: nu
 
 选择控件复用共同舞台：`checkbox(label: null, value: false, on_change: null, ...)` 与 toggle 共用布尔值、双向绑定及按钮激活，仅装饰和可访问性角色不同。`radio(option, label: null, value: null, on_change: null, ...)` 将选项绑定到一个业务值；同组各项的 value 连接同一模型字段，激活时写入 option，重复选择不回调，也不取消选择。option 可更新或绑定，旧选项画面的激活不能选择更新后的 option。比较沿用 list 的业务 key 规则，允许标量、字符串及对象身份；未匹配值表示无项选中。导航使用共同方向/Tab 焦点与确认输入，禁用、模态和退休沿共同生命周期。两者支持 children 与 decorated，自定义外观读取 value/option 和既有交互状态。验收源码/ASB 双向绑定、互斥、动态选项、输入消费和取消；值变化保留控件身份，不重新排版未变文字。
 
-单选组导航（已实现）：radio 的 value 最终连接同一可写属性身份时组成导航组，不增加专用容器或作者参数。当前模态范围内 Tab/Shift-Tab 将整组作为一个停靠点，进入选中的可用项，否则进入树顺序首项；组在 Tab 顺序中的位置取其第一个可用节点；离开时跳过该组其余项。方向键及手柄方向按树顺序前后选择，跳过隐藏/禁用项，列表逻辑边缘优先挂载下一行并等待接受帧，确认没有后续可导航项后才回到组的逻辑首项/末项；虚拟列表首尾循环或进入另一列表时，请求该列表的逻辑端点并等待接受帧，不把当前挂载窗口当成组边界。另一列表的挂载窗口尚无同组选项时，从其逻辑端点逐行查找，直到找到同组项或走完列表；查找复用窗口构造与接受帧，节点只保留当前窗口和交互保留行。Tab 离开组时不为寻找下一停靠点构造虚拟行；跨窗口访问选项使用方向键。新行沿同一选择提交和 on_change 入口。脚本改值只更新下一次停靠位置，不抢焦点；指针与确认仍可选择任一可用项，重复选择不回调。组身份和选中状态投影到共同 UI，旧帧、当前禁用/隐藏、模态和配置修订仍共同准入。延后选择只由当前导航请求在接受帧校验后生成播放器内部 NavigationSelection，复用 NodeChange 和原回调提交；不会放宽普通控件输入门禁。失焦、新模态、绑定身份变化、节点退休或清除呈现会取消旧请求。绑定身份恢复后重建，焦点与按住状态遵循已有恢复规则。已挂载项之间的导航只遍历挂载节点；查找未知行的工作随经过的逻辑行增长，并包含正常窗口缓冲构造。空闲和普通值回显不添加扫描或文字排版。验证命令为 `cargo test --locked -p reel-cli --test author_radio_navigation --test author_selection` 和 `cargo test --locked -p reel-player --lib radio_group`。检查源码/ASB 实际键盘及规范化手柄输入、单一停靠、模态/禁用/隐藏、程序赋值、回调次数、动态绑定/选项、窗口边缘和保存恢复；一万行同组选项按 Tab 离开后节点构造数不增加；逻辑首尾循环只构造端点窗口，多个虚拟列表共享绑定时保持树顺序。
+单选组导航：radio 的 value 最终连接同一可写属性身份时组成导航组，不增加专用容器或作者参数。当前模态范围内 Tab/Shift-Tab 将整组作为一个停靠点，进入选中的可用项，否则进入树顺序首项；组在 Tab 顺序中的位置取其第一个可用节点；离开时跳过该组其余项。方向键及手柄方向按树顺序前后选择，跳过隐藏/禁用项，列表逻辑边缘优先挂载下一行并等待接受帧，确认没有后续可导航项后才回到组的逻辑首项/末项；虚拟列表首尾循环或进入另一列表时，请求该列表的逻辑端点并等待接受帧，不把当前挂载窗口当成组边界。另一列表的挂载窗口尚无同组选项时，从其逻辑端点逐行查找，直到找到同组项或走完列表；查找复用窗口构造与接受帧，节点只保留当前窗口和交互保留行。Tab 离开组时不为寻找下一停靠点构造虚拟行；跨窗口访问选项使用方向键。新行沿同一选择提交和 on_change 入口。脚本改值只更新下一次停靠位置，不抢焦点；指针与确认仍可选择任一可用项，重复选择不回调。组身份和选中状态投影到共同 UI，旧帧、当前禁用/隐藏、模态和配置修订仍共同准入。延后选择只由当前导航请求在接受帧校验后生成播放器内部 NavigationSelection，复用 NodeChange 和原回调提交；不会放宽普通控件输入门禁。失焦、新模态、绑定身份变化、节点退休或清除呈现会取消旧请求。绑定身份恢复后重建，焦点与按住状态遵循已有恢复规则。已挂载项之间的导航只遍历挂载节点；查找未知行的工作随经过的逻辑行增长，并包含正常窗口缓冲构造。空闲和普通值回显不添加扫描或文字排版。
 
-`input(actions: null, on_key: null, ...NodeProps)` 可在现有输入节点订阅逐次键盘事件。on_key 收到 target、code（物理键）、key（逻辑键）、phase（pressed/repeated/released/cancelled）、shift/ctrl/alt/meta；每个按键单独配对，系统重复不丢弃。null actions 表示没有动作映射。聚焦控件优先消费自己的输入，未消费的事件沿祖先输入节点查找动作映射及 on_key；最近的匹配节点消费事件，不广播给兄弟或模态范围之外。文本编辑控件保留全部键盘与 IME，未消费的编辑按键也不进入游戏回调。根输入仍作为无焦点时的兜底。焦点改变、隐藏、禁用、模态替换与节点退休撤销旧按键及动作；事件沿接受帧准入与节点任务所有权交付。宿主注入使用公共 KeyboardEvent，无原生依赖；空闲不轮询。此变更覆盖 reel-ui/stage、reel-player 输入路由与 reel-engine 属性/回调，不增加依赖；验证多键交错、重复、焦点取消和编辑控件隔离。
+`input(actions: null, on_key: null, ...NodeProps)` 可在现有输入节点订阅逐次键盘事件。on_key 收到 target、code（物理键）、key（逻辑键）、phase（pressed/repeated/released/cancelled）、shift/ctrl/alt/meta；每个按键单独配对，系统重复不丢弃。null actions 表示没有动作映射。聚焦控件优先消费自己的输入，未消费的事件沿祖先输入节点查找动作映射及 on_key；最近的匹配节点消费事件，不广播给兄弟或模态范围之外。文本编辑控件保留全部键盘与 IME，未消费的编辑按键也不进入游戏回调。根输入仍作为无焦点时的兜底。焦点改变、隐藏、禁用、模态替换与节点退休撤销旧按键及动作；事件沿接受帧准入与节点任务所有权交付。宿主注入使用公共 KeyboardEvent，无原生依赖；空闲不轮询。
 
 `text_input(value: "", on_change: null, on_submit: null, ...NodeProps)` 是共同舞台的单行文本编辑节点，value 支持可写 bind。编辑复用 reel-text 的 PlainEditor；提交文本与 IME 预编辑分别管理，预编辑只存在于控件，提交才写回模型。on_change/on_submit 收到 target/value，Enter 提交而不推进剧情；失焦、隐藏和禁用撤销预编辑。外部值替换结束当前预编辑，普通值回显保留光标和选区。输入事件携带编辑前值，避免用旧呈现覆盖脚本已修改的文本。控件按需布局，空闲不定时轮询。字体、颜色、背景、尺寸、变换和输入范围沿共同节点；不规定字符数量上限。作者赋值须为单行字符串；玩家粘贴或输入的换行转换为空格。平台适配器转发公共 IME 事件和候选框区域，系统负责转换与候选词；原生窗口类型不进入 UI 或 Aside。桌面复制、剪切和粘贴由可选适配器复用固定版本 arboard 3.6.1。
 
@@ -413,8 +414,6 @@ Winit 适配器把原生触摸位置、压力和设备/触点身份转为公共 
 
 按钮复用 reel-ui Button 的指针、焦点、键盘和可访问性激活行为；该行为提取为共享实现，普通 Rust Button 与作者按钮共同调用。接受的 click 通过原有 UI 输入槽交付，包含稳定 NodeId；仅最后接受的呈现和仍可交互的活节点可触发，控件消费的输入不继续推进对白。回调可声明零个参数（闭包、普通函数或绑定方法）以忽略事件，或声明事件参数接收普通事件对象；rest 回调也接收该事件。宿主只对确实没有未绑定参数且没有 rest 的回调省略事件，绑定方法的 receiver 不算事件参数；其他参数/类型检查仍使用普通调用规则，不改变 Aside 调用的严格参数语义。`event.target` 为原节点；on_click 可赋新闭包或 null。回调不在控件分发或 Rust native 栈中执行。
 
-行为检查覆盖源码/ASB、零参数与绑定方法、默认参数/rest、普通调用严格检查，以及嵌入小游戏的暂停、保存恢复、完成和退休取消。
-
 键盘激活由同一个按钮配对 Enter/空格的按下与松开；失焦、窗口失焦、禁用和隐藏取消尚未完成的按键。切换模态作用域后的孤立松开或重复按下不能激活新焦点按钮，激活键的两端均由按钮消费。
 
 会话适配层在显式 await 的首次宿主入口、普通调用真正等待或任务结束后选择下一可运行任务，复用 VM start_closure、NativeFrame、等待、故障与 GC。已完成的可等待对象也结束当前同步段，使其他就绪任务获得运行机会。边界由 HostTicket 的 await_activation 与 Entry 标记识别，不按活动类型或 WAIT 效果推断；同一次 await 的 native continuation 不重复产生边界。同步脚本段连续执行；普通 HostCall 和预算耗尽只让出宿主线程，恢复后仍执行原任务，避免属性读改写在无显式等待处相互覆盖。每次接受的事件创建受 VM 资源预算管理的任务和可复用存储的会话 owner，成功返回后释放交付并退休 owner；没有固定作者事件数量限制，也不累积历史任务。任务可等待活动；活动等待维护多个消费者，消费者取消不取消共享活动，结算保留订阅顺序且用线性压缩移除失效等待。回调中省略 owner 的 run 默认归事件节点，主任务仍默认归会话。节点退休在下一次脚本推进前硬撤销所属回调，取消等待并分片清理任务，不能执行退休后的下一条脚本。关闭会话显式汇总主任务及所有回调的清理义务。narrator/choose 仍由主剧情拥有，回调调用它们报告可捕获的上下文错误，不夺取当前对白。
@@ -437,7 +436,7 @@ Stage 的内部投影按舞台实例、节点身份及属性/后代修订复用�
 
 窗口调度交替推进 VM 和增量 GC；已失效对象仍有载荷等待释放时，先推进有额度的 GC 片，再恢复脚本分配。GC 片同样服从窗口截止时间，不通过增加堆预算掩盖释放积压，也不在一次调用中强制完成整轮回收。
 
-绑定 native 方法直接进入既有 NativeFrame，接收者是受 GC 跟踪的首参数，具名/默认参数、等待与效果检查复用普通调用。结构修改的工作和临时存储随受影响兄弟/子树增长；呈现端按 NodeId 保留原控件，只建立新增子树、删除退休控件和更新顺序。未改变的文字不重新整形，不用全场景替换模拟局部修改。节点操作已进入统一执行快照，scope 临时子树复用同一退休路径；跨父移动与通用事件订阅继续实现。
+绑定 native 方法直接进入既有 NativeFrame，接收者是受 GC 跟踪的首参数，具名/默认参数、等待与效果检查复用普通调用。结构修改的工作和临时存储随受影响兄弟/子树增长；呈现端按 NodeId 保留原控件，只建立新增子树、删除退休控件和更新顺序。未改变的文字不重新整形，不用全场景替换模拟局部修改。节点操作进入统一执行快照，scope 临时子树复用同一退休路径。
 
 Reel 源码编译入口将当前注册的 reel::prelude 接口放入外围宿主名称环境，作者无需逐文件导入。模块声明、局部绑定及显式导入优先；普通 use 与别名可取得被遮蔽的接口。名称绑定来自同一宿主注册描述，check/build/dev 与构建出的 ASB 使用同一链接合同；不向源码注入前缀，诊断保留原 UTF-8 范围与行列位置。Aside 的默认宿主环境为空，不依赖 Reel；该默认由 reel-engine 的 AnalysisOptions.hosts 配置提供，不改变语言、VM 或 Aside 字节码/ASB。
 
@@ -450,15 +449,15 @@ image 的既有 color 属性是像素乘色，默认白色；sRGB 颜色先转�
 
 player 使用锁定 image crate 的 PNG/JPEG 解码器、已有 Image 控件和 ResourceLease。Assets 共用 AssetIo 与 WorkExecutor，默认组装后台 DirectoryIo 和 ImageExecutor；宿主可通过 with_assets 注入自己的适配器。重复 source 共享不可变像素；加载请求随最新舞台更新，过期结果不发布。新舞台所需图片与配置字体全部就绪后整体发布，其间保留上一完整画面并禁用其剧情输入；后台完成唤醒窗口，不通过连续轮询驱动绘制。visible=false 的子树不发起图片、粒子贴图或遮罩加载；已加载且仍挂载的隐藏资源可复用，出现未缓存的可见资源需求时先驱逐不属于当前需求和上一已发布画面的缓存。隐藏子控件不保留像素引用，缓存沿原有 resident 预算计账，不另设缓存额度；组件卸载释放缓存所有权，已接受帧的租约按原有提交寿命释放。opacity=0 仍准备资源，便于淡入演出。关闭不等待文件 IO/解码，撤销接收端及请求，后台任务持有的内存预算随退出释放。文件读取和解码不进入绘制热路径，不逐帧复制像素。
 
-虚拟列表补充缓存行时，图片请求按现有资源队列槽数有界接续，读取与解码共用原有输入、临时、驻留预算；同轮领取完成项，撤销整个过期请求集合。播放器使用同一当前候选布局与输入树：已准备的连续虚拟行覆盖视口、所有实际绘入视口的行子树资源完整时，滚轮和拖动可在离屏行补图期间继续呈现当前画面。布局前要求缺图只属于虚拟行内的普通 image，且 width 与 height 已明确；未知自然尺寸、未齐遮罩或粒子纹理沿完整资源准备门。资源租约按当前已加载来源解析，当前按钮、文本和悬停属性直接呈现。可见性使用真实变换后的子树绘制边界，包含新行、行变换、子节点溢出与裁切；连续覆盖也按同一布局的实测行位置核对。首次显示、新舞台或模态范围、分块图片及转场继续完整帧门控。资源未全齐时接受帧只更新真实输入几何，新的呈现、几何查询和截图请求等候完整候选接受；按钮仍校验当前生命周期及行为版本。复跑 `cargo test --locked -p reel-player --lib virtual_images`；外部实景用 `REEL_SCROLL_ASB`、`REEL_SCROLL_ASSETS`、`REEL_SESSION_FONT` 指定资源，以 `REEL_SCROLL_FRAME_MS=16.666667`（60 Hz）、`8.333333`（120 Hz）或 `1`（压力）运行 `cargo test --locked --release -p reel-player --lib virtual_list_natural_external -- --ignored --nocapture --test-threads=1`。帧间继续推进资源完成与 VM 反馈，记录资源准备时长、期间完整可见帧接受数及最长接受帧间隔。
+虚拟列表补充缓存行时，图片请求按现有资源队列槽数有界接续，读取与解码共用原有输入、临时、驻留预算；同轮领取完成项，撤销整个过期请求集合。播放器使用同一当前候选布局与输入树：已准备的连续虚拟行覆盖视口、所有实际绘入视口的行子树资源完整时，滚轮和拖动可在离屏行补图期间继续呈现当前画面。布局前要求缺图只属于虚拟行内的普通 image，且 width 与 height 已明确；未知自然尺寸、未齐遮罩或粒子纹理沿完整资源准备门。资源租约按当前已加载来源解析，当前按钮、文本和悬停属性直接呈现。可见性使用真实变换后的子树绘制边界，包含新行、行变换、子节点溢出与裁切；连续覆盖也按同一布局的实测行位置核对。首次显示、新舞台或模态范围、分块图片及转场继续完整帧门控。资源未全齐时接受帧只更新真实输入几何，新的呈现、几何查询和截图请求等候完整候选接受；按钮仍校验当前生命周期及行为版本。
 
-资源路径默认相对于 dev 的源码文件或 run 的 ASB 文件所在目录；`--assets <directory>` 显式选择根目录，库宿主通过 AssetOptions 配置，并通过 AsideSessionUi::set_image_waker 安装后台完成通知。同一路径在驻留期间代表同一不可变资源版本，退休后重新挂载会重新读取；不监视磁盘文件变化。加载失败结束本次窗口运行，并报告图片路径和该 image 节点构造位置；它属于异步宿主资源错误，属性类型/fit 错误仍在赋值处同步抛出。嵌入 ASB 的源码位置只用于诊断，不决定运行机器的资源目录。
+开发和普通构建按所在项目定位 resources/，导出包按 Distribution 定位资源；`--assets <directory>` 显式选择根目录，库宿主通过 AssetOptions 配置，并通过 AsideSessionUi::set_image_waker 安装后台完成通知。同一路径在驻留期间代表同一不可变资源版本，退休后重新挂载会重新读取；不监视磁盘文件变化。加载失败结束本次窗口运行，并报告图片路径和该 image 节点构造位置；它属于异步宿主资源错误，属性类型/fit 错误仍在赋值处同步抛出。嵌入 ASB 的源码位置只用于诊断，不决定运行机器的资源目录。
 
 显式取消清空当前作者舞台并撤销图片请求，随后同步发布取消状态；这条路径不再请求已关闭的加载器。自然结束保留最后画面，直到宿主关闭。库宿主与窗口使用同一生命周期。
 
 GPU 回放在一次帧准备内复用已经完成合成的离屏目标；复用前清空，仍在父组、遮罩或交叉淡化中使用的目标不得回收。预算按实际分配的纹理峰值计费，并保留到 GPU 提交完成，不能在记录完绘制命令时提前退还。同级裁剪与分组不再逐项累积整窗纹理；这一内部变更不改变帧格式、采样质量或默认预算。
 
-图片实现遵循 reel-ui 舞台/资源快照、reel-engine 宿主绑定、reel-player 平台组装与 reel-cli 作者工具的模块边界。图片使用可配置的驻留像素预算与单次解码工作预算，无额外作者节点数量上限；当前解码任务独占临时额度，供像素转换、图片元数据和编解码工作区使用，额度预留不分配等大的缓冲。像素所需空间在解码前检查，解码器私有暂存由 image 的 limits 约束，不能声称为逐字节引擎预算。验收覆盖源码/ASB 的真实图片帧、PNG/JPEG、固有尺寸/fit、共享与换源退休、加载错误及关闭后迟到结果；成本检查关注解码次数、共享像素、空闲时无加载/轮询与最终预算释放。
+图片实现遵循 reel-ui 舞台/资源快照、reel-engine 宿主绑定、reel-player 平台组装与 reel-cli 作者工具的模块边界。图片使用可配置的驻留像素预算与单次解码工作预算，无额外作者节点数量上限；当前解码任务独占临时额度，供像素转换、图片元数据和编解码工作区使用，额度预留不分配等大的缓冲。像素所需空间在解码前检查，解码器私有暂存由 image 的 limits 约束，不能声称为逐字节引擎预算。
 
 `reel-ui::stage` 持有唯一的作者节点模型，engine 管理脚本值和会话寿命，player 将同一模型投影到既有控件、呈现桥和渲染器。`text`、`image`、`row`、`column`、`stack` 返回具有稳定身份的未挂载节点；`stage.replace(root)` 挂载新根并结束旧子树。普通函数可返回节点，尾随 children、条件和集合循环按语言的收集规则组合子树。可运行源码为 [author_stage.aside](../examples/author_stage/src/main.aside)。
 
@@ -470,23 +469,19 @@ GPU 回放在一次帧准备内复用已经完成合成的离屏目标；复用�
 
 共同节点 `font_weight` 选择字体族内的字重，默认 400，接受 1..1000 的有限整数或浮点数。构造、赋值和 bind/derive 经同一宿主字段验证；实际变化使 text、button、toggle、radio 和 text_input 重新整形及布局，并保留控件身份。字体家族由 font 指定，具体 face 和可变字体轴沿 reel-text/fontique 匹配；富文本局部粗体样式继续覆盖所在范围的字重。该字段作为文字样式属性保存，恢复后按原字重重新建立布局。
 
-共同节点构造器（含 list/view/layered_image）native ABI 各递增 1，节点宿主字段验证器递增 1；复用现有依赖与字体资源，每节点增加一个数值字段；稳定字重沿现有文字布局缓存，实际改字重时支付重新整形和布局成本。验证同族不同 face、动态绑定/赋值、非法写入保持原值，以及同包快照恢复。运行 `cargo test --locked -p reel-engine -p reel-player --lib font_weight`，使用项目原创的三份同族微型字体检查实际绘制所选 face、局部富文本覆盖和稳定布局缓存。
-
 共同节点 `letter_spacing`、`word_spacing` 默认 0，使用逻辑舞台像素表示附加推进量，接受可表示为有限 float32 的整数或浮点数。player 将两值传入 reel-text 的 LetterSpacing/WordSpacing 样式：每个整形 cluster（含末 cluster）增加 letter_spacing，U+0020/U+00A0 额外增加 word_spacing，负值允许字形重叠。整形、换行、命中和编辑器光标使用相同的推进量。富文本区间及 ruby 注音继承节点间距，注音自身字号减半而逻辑间距保持；text_fit 的缩放统一作用于字体和间距。
 
-构造、直接赋值及 bind/derive 走共同宿主验证；实际变化清除 Label 布局缓存或更新 TextInput 编辑样式，保留控件身份，稳定值复用已有缓存。NodeProps 增加两个 f64 字段，稳定同步沿现有版本与字段比较路径；变化成本为现有整形与布局工作。VM 宿主字段保存间距与绑定，恢复重建投影和布局。共同节点构造器（含 list/view/layered_image）及字段验证器 ABI 各递增 1，SessionSnapshot、VM/ASB。运行 `cargo test --locked -p reel-engine -p reel-player --lib text_spacing`，覆盖源码/ASB属性和恢复、实际 glyph 位置、负间距换行/光标/命中及稳定布局缓存。
-
-共同节点的 `stretch: "none" | "x" | "y" | "both"` 默认 none；所选轴不贡献父节点的内容测量，父节点尺寸确定后沿该轴填满父 padding 内的可用尺寸，并覆盖该轴显式 width/height。x/y 和 anchor 仍是布局完成后的局部变换。row/column 流轴上拉伸的子节点作为覆盖层，不消耗流位置或 gap；仅跨轴拉伸仍参与正常流排。scroll 使用视口内框作为拉伸尺寸，该轴不计入滚动内容范围。父布局一次确定尺寸，不通过脚本回写测量值，不引入下一帧反馈。验收覆盖内容撑高背景、顺序容器覆盖层、滚动范围、动态修改与存档恢复。
+共同节点的 `stretch: "none" | "x" | "y" | "both"` 默认 none；所选轴不贡献父节点的内容测量，父节点尺寸确定后沿该轴填满父 padding 内的可用尺寸，并覆盖该轴显式 width/height。x/y 和 anchor 仍是布局完成后的局部变换。row/column 流轴上拉伸的子节点作为覆盖层，不消耗流位置或 gap；仅跨轴拉伸仍参与正常流排。scroll 使用视口内框作为拉伸尺寸，该轴不计入滚动内容范围。父布局一次确定尺寸，不通过脚本回写测量值，不引入下一帧反馈。
 
 节点变换合同：所有基础节点共同提供 rotation、scale_x/scale_y、anchor_x/anchor_y。rotation 使用顺时针角度，默认 0；缩放默认 1，负数翻转，0 可折叠；锚点按节点布局宽高的比例取值，默认左上角 (0,0)，(0.5,0.5) 表示中心。锚点不限制在节点内部。布局位置加 x/y 表示锚点所在的父坐标位置；变换为 T(layout + x/y) × R(rotation) × S(scale_x,scale_y) × T(-anchor × size)。角度、缩放、锚点均要求有限数值；角度不钳制在一圈内。width/height 与容器排布使用变换前尺寸，变换作用于整棵子树、裁剪和呈现几何。奇异变换沿现有几何规则不参与命中；零缩放不退休节点。
 
-实现复用 Kurbo Affine 和 reel-ui 的 compose/呈现几何，不增加第二套变换或命中系统。ComposeCtx 提供基于完成布局尺寸设置子控件变换的接口；x/y、rotation、scale、anchor 和 opacity 更新保留控件身份，不重新执行布局/文字整形。内容、尺寸、padding/gap、字体大小、显隐及裁剪更新按实际影响请求布局。验收覆盖源码/ASB、嵌套矩阵、锚点随尺寸变化、负/零缩放、裁剪/呈现几何、错误位置及实际 GPU 读回，并记录纯合成编辑期间布局次数不增长。
+实现复用 Kurbo Affine 和 reel-ui 的 compose/呈现几何，不增加第二套变换或命中系统。ComposeCtx 提供基于完成布局尺寸设置子控件变换的接口；x/y、rotation、scale、anchor 和 opacity 更新保留控件身份，不重新执行布局/文字整形。内容、尺寸、padding/gap、字体大小、显隐及裁剪更新按实际影响请求布局。
 
 ### 二维取景
 
 `camera(camera_x: 0, camera_y: 0, zoom: 1, camera_rotation: 0, ...) { ... }` 是共享舞台的普通叠放容器。camera_x/y 是取景中心的世界坐标，默认世界原点；zoom 为严格正的有限倍率，camera_rotation 为有限顺时针角度。子树的视图矩阵为 T(视口内框中心) × S(zoom) × R(-camera_rotation) × T(-camera_x,-camera_y)，随后乘子节点既有变换；padding 留在视口坐标。节点自身的 x/y、rotation、scale 和 anchor 仍定位整个视口。width/height 定义视口，省略时沿用普通内容布局。clip 默认 true，可显式关闭；裁剪在视口坐标，不随取景移动。子节点采用未缩放的布局尺寸，正常叠放和单父生命周期不变。
 
-四个取景属性支持普通赋值、bind/derive 与 tween；活动按现有接管、取消与 owner 规则执行。取景运动只请求 compose，保留文字布局、图片资源和控件身份；绘制、裁剪与已接受帧输入均消费同一累计 Affine，没有第二套场景图或逐帧脚本回调。验证源码/ASB、非法赋值原位失败、动画接管与退休、旋转裁剪下已接受帧局部坐标以及连续取景期间布局次数不增长。二维实现不意味着透视相机已支持。
+四个取景属性支持普通赋值、bind/derive 与 tween；活动按现有接管、取消与 owner 规则执行。取景运动只请求 compose，保留文字布局、图片资源和控件身份；绘制、裁剪与已接受帧输入均消费同一累计 Affine，没有第二套场景图或逐帧脚本回调。
 
 窗口入口为 `reel_player::shell::run_story(CompiledStory, StoryWindowOptions)`。选项包含标题、资源来源、locale、可选的原生窗口 logical_size 和逻辑 canvas_size；字体由作品的 game.configure 提供。窗口复用 SessionUi、PresentationBridge 和现有渲染路径，交替推进 VM 与增量 GC 工作片；等待玩家输入时完成当前回收周期后休眠，输入完成后继续。正常剧情结束保留画面；关闭执行任务取消及清理后退出。ResourceBlocked 保留执行状态，允许 GC 后重试，持续阻塞时停止忙等。源码和 ASB 入口共用编译/注册描述及运行宿主。新能力使用已有资源所有权和预算，不再叠加仅为演示设定的行数、选项或节点上限。
 
@@ -496,7 +491,7 @@ GPU 回放在一次帧准备内复用已经完成合成的离屏目标；复用�
 
 节点组件的父子私有引用双向保活：持有任一节点都保持其未挂载组件有效，GC 不改变仍被作者持有节点的行为。显式替换舞台或撤销会话仍整体退休旧树，并清除全部私有强边。Host 属性通过只读堆的同步纯验证器在原赋值提交前验证，失败从作者赋值位置抛可捕获错误，原属性保持不变；呈现同步只解码并发布已验证值，不承担作者错误的延迟检测。
 
-RenderRootOptions.default_font 是正式默认字体输入，注册其字体族为 SystemUi 默认族，适用于字体实际覆盖的全部文字；它不再使用仅限 Latin 的测试回退。字体资源拥有整份字体文件或集合，FrameGlyphRun 单独携带 face 索引，各个 face 共享同一资源和内存；默认族按文件中的索引顺序选取，不受哈希遍历顺序影响。
+RenderRootOptions.default_font 是正式默认字体输入，注册其字体族为 SystemUi 默认族，适用于字体实际覆盖的全部文字。字体资源拥有整份字体文件或集合，FrameGlyphRun 单独携带 face 索引，各个 face 共享同一资源和内存；默认族按文件中的索引顺序选取，不受哈希遍历顺序影响。
 
 剧情按阅读顺序运行，在对话和选择处等待；角色身份、历史记录与显示组件分开。画面和 UI 共用节点、资源、布局、变换、裁剪和效果组。长期存在的节点通过属性更新，避免每次输入重建整个界面。参考 Ren’Py 的交互与屏幕复用经验。[1][2][3]
 核心提供存档、设置、历史、对话与选择的数据模型及操作接口。标题页、设置页和存档页由作者组合；项目脚手架只生成配置和入口，不附带一套完整内置 UI。用针对性契约用例验证这些能力，作者文档中的片段用于说明组合方式。
@@ -508,30 +503,29 @@ RenderRootOptions.default_font 是正式默认字体输入，注册其字体族�
 
 文本节点的 text_end 为完整正文末尾插入光标下端的 `{x,y}`，与 bounds 使用同一参考空间，包含换行、对齐、富文本和 ruby 的实际排版及节点内边距；逐字显示进度不改变该位置。空正文及其他节点返回 null。宿主按请求读取该帧已有的文字布局，将坐标保存在同一几何回执中。
 
-Rust 宿主通过 `SessionUi/AsideSessionUi::record(&mut bridge, root, frame_id)` 一次取得 RecordedSource 与 RecordedProjection；root 显式传入与 sync 相同的 SessionWidget ID，不依赖 sync 的副作用，纯 SessionUi 可录制实际已挂载树；AsideSessionUi::record 返回 Result<Option<(RecordedSource,RecordedProjection)>>，运行中 stage_ready 为 false 时，只有符合虚拟列表本地反馈合同的已提交树可返回 current=false 回执；其余返回 None（Pending），不创建候选或回执。sync 可能因测量反馈重新产生派生工作，record 必须重新检查实际覆盖与同树条件。窗口保留上次 accepted_frame 和对应输入几何，准备状态 Preparing 区别于 GPU Waiting 和永久 Blocked；VM 预算推进后，可完整录制或可录制本地反馈的判据从 false→true 时请求新帧，即使投影水位未改变也不能漏掉唤醒。系统要求重绘时可重绘旧接受帧，不忙循环构建。CPU 宿主遵守同一 Pending 合同；不暴露接受旧 source 再生成回执的入口。回执的水位来自实际 SessionWidget.current_stamp，舞台身份来自它的 StageWidget，尚未 sync 的模型不得给旧控件树盖新水位。只从确切 CandidateKey 的已接受几何结算；候选布局、拒帧、旧帧重绘和过期表面/会话不得完成请求。目标或参考在接受帧中未挂载、隐藏则拒绝 `GeometryUnavailable`，透明且正常布局可测量。owner、目标或参考退休，以及显式 cancel，取消未决结果；不取消其他等待者或暂停动画。复用唯一 Results 呈现生产根队列及 list.scroll_to 的 create/arm/disarm 屏障，节点守卫存 VM payload，终态释放；恢复后未决查询重新等待新接受帧，已完成数字快照保持原值。不新增逐帧脚本绑定、全树布局反馈或几何/纹理副本。仅遍历同一呈现队列的未决请求，按需查找已挂载节点；不会按场景节点数量逐帧反馈。数值回复的 Vec 扩容峰值和候选帧持有期通过 VM HeapReservation 计入宿主堆预算；恢复每条 Presentation 记录时清除未决旧值，不在恢复结尾追加全队列扫描。验证兄弟/祖先坐标、变换、资源等待、隐藏到显现、取消、过期帧与同包恢复。示例：[author_geometry.aside](../examples/author_geometry/src/main.aside)。
+Rust 宿主通过 `SessionUi/AsideSessionUi::record(&mut bridge, root, frame_id)` 一次取得 RecordedSource 与 RecordedProjection；root 显式传入与 sync 相同的 SessionWidget ID，不依赖 sync 的副作用，纯 SessionUi 可录制实际已挂载树；AsideSessionUi::record 返回 Result<Option<(RecordedSource,RecordedProjection)>>，运行中 stage_ready 为 false 时，只有符合虚拟列表本地反馈合同的已提交树可返回 current=false 回执；其余返回 None（Pending），不创建候选或回执。sync 可能因测量反馈重新产生派生工作，record 必须重新检查实际覆盖与同树条件。窗口保留上次 accepted_frame 和对应输入几何，准备状态 Preparing 区别于 GPU Waiting 和永久 Blocked；VM 预算推进后，可完整录制或可录制本地反馈的判据从 false→true 时请求新帧，即使投影水位未改变也不能漏掉唤醒。系统要求重绘时可重绘旧接受帧，不忙循环构建。CPU 宿主遵守同一 Pending 合同；不暴露接受旧 source 再生成回执的入口。回执的水位来自实际 SessionWidget.current_stamp，舞台身份来自它的 StageWidget，尚未 sync 的模型不得给旧控件树盖新水位。只从确切 CandidateKey 的已接受几何结算；候选布局、拒帧、旧帧重绘和过期表面/会话不得完成请求。目标或参考在接受帧中未挂载、隐藏则拒绝 `GeometryUnavailable`，透明且正常布局可测量。owner、目标或参考退休，以及显式 cancel，取消未决结果；不取消其他等待者或暂停动画。复用唯一 Results 呈现生产根队列及 list.scroll_to 的 create/arm/disarm 屏障，节点守卫存 VM payload，终态释放；恢复后未决查询重新等待新接受帧，已完成数字快照保持原值。不新增逐帧脚本绑定、全树布局反馈或几何/纹理副本。仅遍历同一呈现队列的未决请求，按需查找已挂载节点；不会按场景节点数量逐帧反馈。数值回复的 Vec 扩容峰值和候选帧持有期通过 VM HeapReservation 计入宿主堆预算；恢复每条 Presentation 记录时清除未决旧值，不在恢复结尾追加全队列扫描。
 
 普通图片提供 `repeat: "none" | "x" | "y" | "both"`（默认 none）和正数 `tile_scale: 1`。重复轴按源像素乘 tile_scale 铺满节点，非重复轴保留一份同尺度图像；重复模式不应用 fit，与 slice 互斥。`.reel-image` 是按视窗驻留的完整大图，重复模式在其资源类型边界明确拒绝。四角 `corner_colors: null | [左上,右上,右下,左下]` 在节点内容框内按线性预乘 RGBA 双线性插值，再乘 color 和节点透明度；普通图、九宫格与分块图共用该坐标域。重复图通过共享 sampler 和单矩形绘制，四角颜色通过常量参数参与原绘制，不复制像素、不增加离屏通道。
 
 作者播放器只呈现显式挂载的舞台，不自动创建对白/选择控件或复制内置视图投影。game.dialogue()/game.choice() 保持数据与交互服务。Rust 会话诊断的预览由诊断入口显式创建，不参与 Aside 作品设置。
 
-共同节点增加 `max_width/max_height: null` 和 `align_x/align_y: 0`。上限为非负有限逻辑像素，限制自然尺寸和显式尺寸；内容按上限换行，stretch 对应轴仍由父内框决定。对齐值在 [0,1] 内，按父 padding 内剩余空间定位；stack 两轴生效，row/column 只在非流轴生效，scroll 只在非滚动轴生效。x/y 和 anchor 保留独立变换语义。测量与定位复用现有布局遍历，无脚本测量回调、逐帧节点重建或额外资源队列。行为检查覆盖内容伸缩、对齐、换行、滚动范围与快照恢复。
+共同节点提供 `max_width/max_height: null` 和 `align_x/align_y: 0`。上限为非负有限逻辑像素，限制自然尺寸和显式尺寸；内容按上限换行，stretch 对应轴仍由父内框决定。对齐值在 [0,1] 内，按父 padding 内剩余空间定位；stack 两轴生效，row/column 只在非流轴生效，scroll 只在非滚动轴生效。x/y 和 anchor 保留独立变换语义。测量与定位复用现有布局遍历，无脚本测量回调、逐帧节点重建或额外资源队列。
 
-`scroll` 在非滚动轴以可用内框作为测量空间，保留子节点的显式尺寸和 max 上限；只有对应 stretch 轴强制填满。普通与虚拟 list 的有限宽度因此可在纵向 scroll 中按 align_x 对齐。定向验证：`cargo test --locked -p reel-player --lib scroll_cross_axis`；稳定滚动仍复用原布局。
+`scroll` 在非滚动轴以可用内框作为测量空间，保留子节点的显式尺寸和 max 上限；只有对应 stretch 轴强制填满。普通与虚拟 list 的有限宽度因此可在纵向 scroll 中按 align_x 对齐。
 
-动态 `view` 的稳定容器按 stack 布局其唯一内容，保留两轴对齐。无焦点时，舞台从前至后选择最内层可见、启用且有键盘/手柄处理的 input 作为键盘/手柄默认目标；已聚焦控件、文本编辑和模态边界仍优先。仅修改文字速度或标题不清理已接受输入，字体与画布变更才失效呈现。WGPU 字形栅格按最终变换的最大放大倍率选择不小于 1 的二次幂密度；缓存区分密度，绘制还原逻辑字形尺寸，轮廓、描边和合成粗体一起缩放。动画同档复用字形，沿既有图集预算和回收，无逐帧全量重排。检查覆盖动态居中、嵌套输入、焦点丢失和 CPU 字形栅格尺寸；设备画质由目标平台确认。
-按钮接受状态按节点及其内容子树管理；其他分支的动画或文字更新不使它失效。自身内容替换须先呈现，旧按下不能激活新内容；几何变化沿既有呈现命中/捕获规则处理。只读可观察 `focus_visible` 区分导航焦点外观与 `focused` 的输入接收身份：键盘/手柄导航显示焦点，实际指针移动、按下或滚动切回指针外观但保留接收目标；隐藏、禁用和窗口失焦时为 false。它与 hover 可组合，输入模式转换按事件发布，不逐帧执行脚本。
+动态 `view` 的稳定容器按 stack 布局其唯一内容，保留两轴对齐。无焦点时，舞台从前至后选择最内层可见、启用且有键盘/手柄处理的 input 作为键盘/手柄默认目标；已聚焦控件、文本编辑和模态边界仍优先。仅修改文字速度或标题不清理已接受输入，字体与画布变更才失效呈现。WGPU 字形栅格按最终变换的最大放大倍率选择不小于 1 的二次幂密度；缓存区分密度，绘制还原逻辑字形尺寸，轮廓、描边和合成粗体一起缩放。动画同档复用字形，沿既有图集预算和回收，无逐帧全量重排。
 
 StageGraph 唯一拥有作者可见节点、稳定 NodeId、父子结构、声明属性与寿命。reel-ui 的控件模块负责对应控件的布局、焦点、捕获、输入法、可访问性和临时交互状态；复合控件内部节点保持私有。两者通过 NodeId 到 WidgetId 映射连接。业务值和控件瞬态不得成为两份互相覆盖的状态。
 舞台变更由 Stage 的节点编辑与属性提交入口处理，支持创建、移除、挂载、脱离、替换场景、属性修改、绑定和订阅。提交前统一验证身份、单父与无环约束；失败保留原舞台，成功后才释放旧场景。属性存储是唯一权威，同一事务同一属性采用最后一次有效写入，范围约束先执行，随后静默更新投影。属性绑定保留被引用属性的读写权限，slider 写回需要可写属性；只读派生绑定跟踪实际读取的可观察属性；派生函数不得写入或等待，循环依赖给出源码诊断。
 
-节点公开只读可观察 `hover`、`pressed`、`focused`、`disabled`。hover/focused 汇总节点及后代；pressed 汇总指针捕获，并包含按钮自身的键盘/手柄确认按住状态。disabled 反映继承祖先禁用后的有效值。隐藏、禁用、失焦及退休清除交互中的状态；状态在调度业务回调前发布，展示节点可以直接 bind，无需回调或逐帧脚本。`decorated: false` 关闭按钮默认焦点框、开关默认指标及其留白，保留交互和普通 children；作者用文字、图片、背景、变换及绑定组合外观。仅由交互状态驱动的外观更新保留按钮的在途激活；业务内容变化仍要求接受新画面，新手势不得使用未接受的内容。
+节点提供只读可观察 `hover`、`pressed`、`focused`、`disabled`。hover/focused 汇总节点及后代；pressed 汇总指针捕获，并包含按钮自身的键盘/手柄确认按住状态。disabled 反映继承祖先禁用后的有效值。隐藏、禁用、失焦及退休清除交互中的状态；状态在调度业务回调前发布，展示节点可以直接 bind，无需回调或逐帧脚本。`decorated: false` 关闭按钮默认焦点框、开关默认指标及其留白，保留交互和普通 children；作者用文字、图片、背景、变换及绑定组合外观。仅由交互状态驱动的外观更新保留按钮的在途激活；业务内容变化仍要求接受新画面，新手势不得使用未接受的内容。
 
-所有舞台节点提供可赋值的 `on_interaction: null | callback`，默认 null，用于悬停选中、聚焦演出等业务变化。复用 NodeEvent::Interaction：仅五个交互状态中至少一项实际改变才产生回调；先发布整批只读状态，再按事件顺序调度节点拥有的普通任务。事件是不可变记录 `{target, hover, pressed, focused, disabled, focus_visible}`，状态值固定为该次变化，target 仍是原节点；回调可等待，节点退休取消任务，隐藏或禁用产生的清理状态仍可交付。注册或更换回调不合成初始事件。未注册的节点不分配事件对象或任务，不逐帧轮询；纯外观仍使用 bind/derive。回调及等待任务进入既有快照对象图。行为核对点为整批可见性、重复状态静默、不可变事件、等待与退休、动态换绑及存档恢复。
+所有舞台节点提供可赋值的 `on_interaction: null | callback`，默认 null，用于悬停选中、聚焦演出等业务变化。复用 NodeEvent::Interaction：仅五个交互状态中至少一项实际改变才产生回调；先发布整批只读状态，再按事件顺序调度节点拥有的普通任务。事件是不可变记录 `{target, hover, pressed, focused, disabled, focus_visible}`，状态值固定为该次变化，target 仍是原节点；回调可等待，节点退休取消任务，隐藏或禁用产生的清理状态仍可交付。注册或更换回调不合成初始事件。未注册的节点不分配事件对象或任务，不逐帧轮询；纯外观仍使用 bind/derive。回调及等待任务进入既有快照对象图。
 
 节点内容与交互行为分开。图片可以具备按钮行为，容器可以整体变换；按钮外观读取 hover、pressed、focused、disabled 等状态，滑条提供轨道与滑块槽位。作者组件与内建组件使用同一舞台能力，具体调用形式见 DSL 文档。节点移除注销绑定、订阅并取消所属任务与活动；隐藏保留身份，脱离必须由显式所有者接管。visible=false 隐藏子树并退出命中与焦点；enabled=false 保留画面并禁用子树交互。两者使捕获失效时统一释放捕获；opacity=0 不自动禁用输入。
 仿射变换、裁剪和命中使用同一几何，命中经逆变换计算。非线性视觉变形默认采用作者指定的逻辑命中区，扩展映射另行提供。适配必须验证变换后控件的捕获、焦点与命中一致性。
 便携的 RenderFrame 与绘制命令定义于 reel-ui::frame，帧资源由 reel-ui::resources 管理，基础资源身份定义于 reel-core；UI 从不反向依赖 render。Mesh、Material 等扩展类型按既定功能范围逐步实现。RenderFrame 包含帧号、画布与输出尺寸、资源引用以及有层次的绘制计划。计划保留 BeginGroup、EndGroup、裁剪、组透明度和效果参数。组内绘制连续，子节点排序受组边界约束；跨组覆盖由显式 overlay 容器表达。组透明度对合成结果应用一次，效果外扩计入离屏范围，再遵守对应裁剪语义。
-普通容器直接合成，遮罩与后处理按需使用离屏目标。先实现相邻兼容绘制合批、排版与字形缓存、离屏目标复用；逐字显示复用完整文本排版，只改变显现范围。属性变化区分布局、内容、合成和命中；淡化不使排版失效，资源版本变化传播到依赖缓存。GPU 资源在实际使用结束后释放。低端模式可降低效果分辨率和采样数，逻辑坐标保持一致。
+普通容器直接合成，遮罩与后处理按需使用离屏目标。相邻兼容绘制合批，排版、字形缓存及离屏目标复用；逐字显示复用完整文本排版，只改变显现范围。属性变化区分布局、内容、合成和命中；淡化不使排版失效，资源版本变化传播到依赖缓存。GPU 资源在实际使用结束后释放。低端模式可降低效果分辨率和采样数，逻辑坐标保持一致。
 
 可写绑定的标量写入与 tween 均沿引用链写入最终源 PropertyId，保留绑定。run 解析并保留真实源身份；被动投影只读取结果，外部源写入按统一规则停止根活动。只读派生属性拒绝直接写入，可用独立 override 层作演出。binding replacement/unbind 先停止依赖旧链的活动；unbind 固定当前基础值。override token 拥有独立属性存储，也遵循读写能力与保留规则。
 
@@ -543,7 +537,7 @@ StageGraph 唯一拥有作者可见节点、稳定 NodeId、父子结构、声�
 
 滚动偏移使用同一活动机制：`tween(viewport, scroll_x: 120, scroll_y: 400, duration: 0.5)` 仅接受 scroll 节点，起点来自激活时的当前偏移或 from，目标值在布局时按真实内容范围限制。暂停、停止、节点所有权和执行快照沿用普通 tween。
 
-组合动作的宿主声明先接通普通可变参数：NativeContract 的 rest 名称和 Rust `#[aside(rest)]` 映射为既有 Aside 字节码 array rest。sequence/parallel 等库接口使用这条通路，不新增 Reel 专用编译语法或另一套参数收集器。范围和验收见 Aside host SDK 文档；动作组合运行器共用下面的活动合同。
+组合动作使用普通可变参数：NativeContract 的 rest 名称和 Rust `#[aside(rest)]` 映射为既有 Aside 字节码 array rest。sequence/parallel 等库接口使用这条通路，不新增 Reel 专用编译语法或另一套参数收集器。声明见 [Aside host SDK](aside-host.md)；动作组合运行器共用下面的活动合同。
 
 `tween(..., easing: curve)` 接受 `std::math::curve` 创建的不可变曲线。时间归一化为 0..1，采样值作为起值到终值的插值比例；构造时要求 sample(0)=0、sample(1)=1，允许中途超调，属性约束保持原规则。零时长、正常终点与 finish 精确提交终值。沿用标准库的 O(log n) 曲线采样和 VM 追踪引用，多个动作可共享一条曲线；采样不建立脚本任务或逐帧对象。暂停、取消、属性写入冲突、重复与快照沿现有 tween 协议。
 
@@ -568,13 +562,9 @@ scope 管理任务、活动、等待、临时节点、属性覆盖和加性偏�
 `s.add(parent, node, index:null)` 挂载临时子树：要求与 node.add 相同的未挂载节点，返回原 node，index 省略时追加。普通 node.add 保持父节点寿命。注册发生在同一挂载边界，挂载失败不转交所有权；作用域退出按登记逆序移除仍存活的子树，提前 remove、clear、stage.replace 和嵌套作用域不会重复退休。节点拥有的输入任务、活动与呈现等待沿原退休路径结束，已接受输入几何仍由呈现协议更新。登记数组进入现有 VM 对象图，恢复后只继续等待和清理，不重跑构造。登记与退休按实际节点规模处理；子树移除仍使用舞台同步退休，当前不承诺大型临时树单帧完成。
 属性覆盖：`let effect = s.override(node, {opacity: 0.4, width: null})` 创建独立可观察 token，记录参数保留显式 null。允许共同节点布局和外观属性，不包含 on_interaction、控件业务值、只读交互状态或 camera/scroll 专属字段；未知名与类型错误在调用处诊断。token 只公开本次提供的属性和 remove 方法，可直接赋值、bind/derive 或作为 tween 的目标。`node.x` 始终读写基础值，`effect.x` 读写本层值；几何、绘制和输入读取有效值。同字段取最后建立且仍存活的层，修改或重绑不提升优先序。基础绑定在遮挡期间继续更新。`effect.remove()`、scope 正常返回/错误/取消以及目标退休移除覆盖，不把旧值写回基础字段；嵌套与非顶层移除沿同一规则。
 
-基础字段与各层使用真实独立 PropertyId，动画只在实际写同一层或同一绑定源时冲突；隐藏层的动画照常计时。目标退休也退休其全部 token，未完成活动沿原退休路径取消。节点 VM payload 保存有序层与预分配的按字段选择槽，创建/移除才维护优先序；清理不创建引用或订阅，不依赖新分配。token 的绑定、目标、选择引用及 scope 登记都在既有 VM 对象图内，强边保活和退休断开遵循原属性协议；无另一调度器。未覆盖节点保留原版本快路径；有覆盖节点同步检查固定共同属性数的选中层字段版本，成本不随隐藏层数量增长。创建/移除按提供字段与现存层数处理，VM 图和宿主版本缓存计入堆预算。恢复重建投影缓存，保留层序、绑定、活动时间和原 scope 续体，不重跑正文。检查基础 derive 更新、显式 null、嵌套和同 scope 多层、非顶层提前移除、独立动画/真实源冲突、节点先退休、取消/故障/恢复及取消无新增分配。可运行示例为 [author_scope.aside](../examples/author_scope/src/main.aside)，Start 覆盖只读透明度、Stop 恢复持续变化的基础绑定。验证命令：`cargo test --locked -p reel-engine scope_override`、`cargo test --locked -p reel-cli --test author_scopes`；release 成本命令为 `cargo test --release --locked -p reel-engine --lib scope_override_cancellation_uses_existing_storage_and_idle_cost_ignores_layer_count -- --nocapture`。
-加性偏移：`let shake = s.offset(node, x: 0, y: 0)` 创建固定含 x/y 和 remove 的可观察属性层；初始化参数接受有限数值或既有 bind/derive，并在发布前验证。token 与 override 共用构建、属性验证、动画目标、scope 登记和退休路径。每个轴取当前基础值或最后存活的 override 值，再按建立次序加上全部 offset；偏移在父坐标系中，node.x/y 仍读写基础值，token.x/y 读写本层。普通 run 在作用域内继承 scope，基础动画可在外层继续；独立层可同时运动，实际同 PropertyId 或最终绑定源的写入仍按原冲突规则处理。remove、正常退出、故障、取消及目标退休撤销本层，不保存或回写旧坐标。最终偏移进入现有 NodeProps 变换，绘制、geometry 与命中共用矩阵，行列测量和原布局尺寸保持不变。旋转和缩放继续通过有序变换及组节点表达。
+基础字段与各层使用真实独立 PropertyId，动画只在实际写同一层或同一绑定源时冲突；隐藏层的动画照常计时。目标退休也退休其全部 token，未完成活动沿原退休路径取消。节点 VM payload 保存有序层与预分配的按字段选择槽，创建/移除才维护优先序；清理不创建引用或订阅，不依赖新分配。token 的绑定、目标、选择引用及 scope 登记都在既有 VM 对象图内，强边保活和退休断开遵循原属性协议；无另一调度器。未覆盖节点保留原版本快路径；有覆盖节点同步检查固定共同属性数的选中层字段版本，成本不随隐藏层数量增长。创建/移除按提供字段与现存层数处理，VM 图和宿主版本缓存计入堆预算。恢复重建投影缓存，保留层序、绑定、活动时间和原 scope 续体，不重跑正文。
 
-节点 VM payload 分别保存 override 与 offset 层，仍复用同一 scope 拥有列表。覆盖选择槽与全部偏移 token 都由 VM 图保活，宿主只缓存字段版本；无 offset 的节点保持现有路径。稳定同步对 offset 数量线性检查，变化时线性求和，覆盖检查仍为固定共同字段数；创建预留缓存容量，稳定赋值/动画推进及移除不新增逐帧层存储或 VM 分配。缓存和创建期间新旧存储重叠计入 HeapReservation。快照保存全部 token、绑定、活动和作用域续体，恢复重建同一投影缓存。复跑 `cargo test --locked -p reel-engine --lib scope_`、`cargo test --locked -p reel-cli --test author_scopes`，成本命令为 `cargo test --locked --release -p reel-engine --test scope_offsets_allocations -- --nocapture`；检查包含既有遍历/原生分发分配的同负载基线，不将零新增层分配写成整个同步零分配。示例：[author_offsets.aside](../examples/author_offsets/src/main.aside)。
-样式复用由普通组件函数、记录与参数完成。组件默认值、变体、显式参数按序合并；显式缺失与 null/false/0 区分，scope 覆盖最高。运行期样式通过可观察属性绑定，布局/绘制失效分类保持一致。引擎提供通用属性和控件槽位，作者决定视觉风格。
-model(defaults) 复制默认图并保持其中的别名/环，所有可变内嵌数据对象使用观察变更钩子，读取与结构操作记录对应依赖；后续会话对象赋值保留共享身份并纳入观察，别名修改同样通知。原输入默认图保持独立。对象按可达性保活。规划中的 state(id,defaults) 是会话内的具名状态根，随保存/回滚恢复，新游戏初始化。规划中的 node.state(key,defaults) 属于具体节点实例的状态槽，在节点 key 与槽 key 同时匹配时重载复用；同名不同实例互相独立。组件销毁后保留的普通脚本引用按正常 GC 规则决定对象是否继续存活。
-`model` 的数据图复制由原生 continuation 分片执行，工作对象随 NativeFrame 取消释放，不把复制循环塞进单帧。model table 复用普通 table 身份、方法与属性连接图，新字段可以追加；clear 断开旧字段连接并冻结消费者，旧 PropertyRef 不得指向后来同位置的新字段。后续赋入的数据保持共享身份，嵌套 table 同样可 bind。Reel 在这些同步 continuation 之间保持当前任务，复制不会与其它脚本任务交错。
+节点 VM payload 分别保存 override 与 offset 层，仍复用同一 scope 拥有列表。覆盖选择槽与全部偏移 token 都由 VM 图保活，宿主只缓存字段版本；无 offset 的节点保持现有路径。稳定同步对 offset 数量线性检查，变化时线性求和，覆盖检查仍为固定共同字段数；创建预留缓存容量，稳定赋值/动画推进及移除不新增逐帧层存储或 VM 分配。缓存和创建期间新旧存储重叠计入 HeapReservation。快照保存全部 token、绑定、活动和作用域续体，恢复重建同一投影缓存。
 
 model table 的 `remove(key)` 保留其余字段的稳定 PropertyId；首次结构删除才建立“当前位置到字段身份”和“字段身份到当前位置”的映射，未删除过字段的表继续直接使用位置。删除字段的身份留下退休标记，同名重插获得新身份，clear 释放整套映射。删除按预算复制剩余键值及位置映射，临时副本由原调用帧保活；工作量与当前条目数和已分配字段身份数成正比，数组块增长先计入 VM 预算。提交先冻结并断开被删字段的连接、释放其活动 claim，再从原表接入最新属性元数据与写入版本，保留复制期间建立的同值绑定及活动。位置变化后的读取、写回、派生依赖和动画写入版本使用同一稳定身份。属性退休及反向依赖通知沿既有同步图遍历，提交成本还随受影响连接规模增长。VM 快照保存新映射及未完成 remove 的原续体；恢复重映射对象身份，继续原操作。
 
@@ -583,9 +573,8 @@ model table 的 `remove(key)` 保留其余字段的稳定 PropertyId；首次结
 作者可用固定 tuple 解构遍历系统记录：`for (key, value) in record.entries()`。编译器在建立任一绑定前完成结构检查和元素准备，按普通 VM 指令预算执行；循环捕获保留各轮值，不为解构复制容器。
 系统数据通过 `persistent.read(key, default: null)`、`persistent.write(key, value)`、`persistent.delete(key)` 独立读写。它们返回与 saves 相同的可等待请求；缺失记录返回 default，已存的 null/false/0 不视为缺失。write 在调用返回前按预算捕获纯数据，后台发布完成才结算；read 按预算重建独立数据副本。支持 null/bool/int/float、string/Bytes、array/table/tuple 和已完成构造的实例，保留图内别名与环。table 保存自有字段；实例按字段布局逐项读取，包括继承字段，写成普通 table，不保存类身份、静态字段、方法或模型绑定。读取结果由游戏的构造函数转换为业务类型。捕获在读取字段或容器时登记内容版本，遍历完成后分片校验，得到该时刻的一致数据图；已读取数据的冲突修改使写入失败，尚未读取字段的修改可被捕获。实例字段直接读取现有 cell，字段名复用代码符号，不构造中间 VM table。可执行闭包、可变缓冲、节点和任务须由作者转换为数据。文件不含 ASB 身份，业务版本迁移由游戏处理。
 系统记录与剧情槽共用有序存储服务，使用独立文件命名空间，存于宿主指定的 save-directory；不出现在 saves.list 中。会话退出前已交给存储服务的写入继续提交；未交付请求取消。读档不重放系统写入，也不覆盖系统文件。read 返回的副本是普通会话数据，会随剧情快照恢复；作者在恢复分支重新读取当前系统设置后应用，不能把副本当作跨会话共享代理。数据捕获、重建和队列均使用现有内存/工作预算，文件 IO 在后台线程执行。
-规划中的 state/node.state 调用原子补充缺失默认字段，下一语句可见。InitSafe 的 story.register、state 及组件状态默认补充先登记候选变更，候选读视图可见拟加入字段而活会话不可见，ModuleSet 提交时才一起生效；失败不修改旧注册表。
 
-舞台控件通过 bind 写回模型时，可与 VM 的分片字段查找交错。单键读取、写入、has_own 和属性引用按键结构校验，在完成时操作当前槽；普通 table、model 与宿主字段共用此规则。覆盖字段值保持进行中的查找，增删或重排键报告 ConcurrentModification；复制、展开、删除仍保留完整内容校验。实际读取时登记派生依赖，更新结果沿现有反应批次提交。VM 快照保存查找续体的结构版本，旧格式因版本语义不同而明确拒绝；并校验嵌入的 VM 版本。独立 persistent 系统数据沿原格式保存。
+舞台控件通过 bind 写回模型时，可与 VM 的分片字段查找交错。单键读取、写入、has_own 和属性引用按键结构校验，在完成时操作当前槽；普通 table、model 与宿主字段共用此规则。覆盖字段值保持进行中的查找，增删或重排键报告 ConcurrentModification；复制、展开、删除仍保留完整内容校验。实际读取时登记派生依赖，更新结果沿现有反应批次提交。VM 快照保存查找续体的结构版本，并校验嵌入的 VM 版本。persistent 系统数据独立保存。
 
 ## 七 VM 与会话接口
 
@@ -631,29 +620,29 @@ VM 对象的代际身份与实体存储分离：slotmap 保存小型位置记录
 
 播放器只在 VM 分配压力达到阈值、集合清空请求回收，或执行遇到资源阻塞时启动新一轮 GC；普通脚本切片结束不再单独触发。进行中的 GC 继续按原切片预算推进，新分配和清理请求保留给下一轮。Aside 提供常数成本的压力查询和回收请求，具体计账见语言规范；显式 GC 保持原语义。
 
-`game.start(entry)` 已实现为新会话入口：entry 是当前 ASB 中不捕获局部状态、无必需参数的普通函数。调用位置先验证入口；请求接收后旧脚本不再继续，宿主结束旧任务、对白、活动和音频，重新执行模块初始化，再调用 entry。已读记录与 game.configure 配置保留；脚本全局、历史、自动/快进状态重建。资源源和存档服务由宿主复用，音频工厂独立于存档安装。替换等待上一会话清理和已提交存储操作完成，避免无限堆积退休会话；清理仍按片推进，程序共享已验证字节码，不重新编译。尚未提供跨 ASB 热更新入口解析或持久脚本全局。
+`game.start(entry)` 创建新会话：entry 是当前 ASB 中不捕获局部状态、无必需参数的普通函数。调用位置先验证入口；请求接收后旧脚本不再继续，宿主结束旧任务、对白、活动和音频，重新执行模块初始化，再调用 entry。已读记录与 game.configure 配置保留；脚本全局、历史、自动/快进状态重建。资源源和存档服务由宿主复用，音频工厂独立于存档安装。替换等待上一会话清理和已提交存储操作完成，避免无限堆积退休会话；清理仍按片推进，程序共享已验证字节码，不重新编译。
 
 宿主 Awaitable 复用 Aside 的 native 等待帧，不另建引擎专用 VM 等待系统。共享活动由 adapter 保存一次终态及登记顺序；每个消费者拥有独立 WaitId，取消消费者只解除其订阅。活动目标/owner 的取消由活动自身账本负责，再向仍有效的消费者交付结果。Await 的对象、返回槽、继续位置和故障源都由既有 VM 根持有。Reel run/tween 与逻辑时钟通过该协议接入。
 
 宿主函数也是可保存、传递、返回和可选调用的普通函数值。编译器保留可信注册身份，VM 在模块常量根区持有函数对象，重复取值不分配、不增加作者全局变量。动态调用直接进入 NativeFrame，与直接调用共享参数、缺省 Cell、效果和等待处理；不插入脚本转发帧。`text` 可作为组件工厂参数，`narrator` 经变量调用仍产生原来的交互等待，完整源码与 ASB 示例见 [function_values.aside](../examples/function_values/src/main.aside)。
-会话管理主剧情、UI 回调任务、交互数据和活动所有权。启动与主剧情任务归会话所有，UI 回调归发出事件的节点所有；替换场景结束旧节点及其活动，主剧情任务继续。主剧情同一时刻只有一个交互。game 服务身份稳定，game.dialogue 属于当前会话，作者可用 model 定义设置字段并通过 persistent 服务持久化。发言更新完整文本与显现范围并追加一次历史，再等待推进；文字未显示完时首次推进只完成文字，后续推进才结束等待。choose 将输入普通表复制成引擎拥有的只读可观察选项行，id、key 与 label 均可读，id 是 InteractionId 加 key 的不透明稳定标识，列表用 id 区分连续选择；select 接收带 InteractionId 的 option.id，验证后返回业务 key。入口与剧情 helper 均为普通 fn，剧情元数据按需附加；具体语法见语言与 DSL 文档。
+会话管理主剧情、UI 回调任务、交互数据和活动所有权。启动与主剧情任务归会话所有，UI 回调归发出事件的节点所有；替换场景结束旧节点及其活动，主剧情任务继续。主剧情同一时刻只有一个交互。game 服务身份稳定，game.dialogue 属于当前活动阅读上下文，作者可用 model 定义设置字段并通过 persistent 服务持久化。发言更新完整文本与显现范围并追加一次历史，再等待推进；文字未显示完时首次推进只完成文字，后续推进才结束等待。choose 将输入普通表复制成引擎拥有的只读可观察选项行，id、key 与 label 均可读，id 是 InteractionId 加 key 的不透明稳定标识，列表用 id 区分连续选择；select 接收带 InteractionId 的 option.id，验证后返回业务 key。入口与剧情 helper 均为普通 fn，剧情元数据按需附加；具体语法见语言与 DSL 文档。
 VM 的 run_slice 接收指令、内部工作、分配和计时检查额度，返回 Returned、BudgetYield、HostCall、Waiting、Fault 或 ResourceBlocked。ResourceBlocked 保留帧、根和中间故障阶段；不能把它视为普通可丢弃错误，也不能假定 GC 会释放仍活跃的 catch/展开记录。宿主调用携带任务身份、参数和源码位置，返回 Ready、Pending、CallScript、Continue、Error(NewFault) 或 ForwardFault(FaultId)。Continue 保存 native 算法状态并于同 Task 下一预算片继续，无外部等待。CallScript 保存纯数据 native continuation，退出原生栈后在同一 Task 压入脚本回调帧；回调可按其效果上下文挂起，返回/异常恢复 continuation。Pending 先退出 Rust 调用，再建立显式恢复记录；恢复记录保留操作、可恢复参数、返回目的槽与下一指令位置。禁止把原生调用栈当作可保存续体。同步原生重入 VM 不得跨边界挂起，异步宿主算法使用显式状态机。
 SessionEpoch 在新游戏、读档和回滚时更新；任务、等待、节点、回调和活动各用独立代际身份。后台完成结果只有与仍存活的 SessionId/Epoch 及等待匹配时才交付一次。取消、节点销毁和会话替换使旧结果失效。
 ActivityHandle 本身实现 Awaitable，支持暂停、继续、停止和到终值完成。stop 保留当前值返回 Stopped；finish 对有限活动执行到终态返回 Completed；无限重复没有完成终点，由 stop 或 owner 结束。终态为 Completed、Stopped、Cancelled、Failed，只提交一次；前两者返回相应结果，后两者在等待位置产生取消或脚本错误。所有者取消任务时直接终止该等待。所有 VM 任务遵循同一可等待对象契约，恢复身份进入快照。主剧情输入权限仍由会话管理，与函数声明形式分离。
 演出描述先纯构造，再由 run 在显式所有者下启动；顺序组合不接收已运行句柄。动作激活时读取起值。活动只在动作段激活时取得写入权，新段从当前值接管并停止冲突的旧根活动，暂停活动亦如此。sequence 内重复属性按顺序使用；parallel 各分支的写集合必须互斥。直接给正在由活动写入的属性赋值会停止对应根活动，包含同值赋值，不影响其他属性的活动。显式 stop 使根活动及余下子动作返回 Stopped；任一子动作 Failed 则结束整组并返回错误。节点与效果目标使用有稳定身份的引用，run 校验目标有效；活动保活脚本对象，不延长显式舞台所有权，任一目标销毁使整个根活动 Cancelled，释放全部保留并向仍存活的等待者交付取消错误。所有终态只提交一次，均释放保留。持久活动图包含子活动、进度与等待关系，并提供可序列化恢复描述。描述中不保存闭包，事件回调排入普通任务。接口见 DSL 文档。
-已读标记按稳定语句 ID 记录。按住快进由输入保持状态驱动，松开、失焦、进入菜单和读档时清除；自动播放属于会话状态，文字速度和音量属于全局设置。更换 UI 不改变历史。
+已读标记按逻辑调用路径记录。按住快进由输入保持状态驱动，松开、失焦、进入菜单和读档时清除；自动播放属于阅读上下文，文字速度和音量沿会话设置保存。更换 UI 不改变历史。
 
 作者对白与选项使用 `game.dialogue()` / `game.choice()` 稳定服务对象。会话交互变更时发布行组/选项，显现时仅发布当前行的 reveal；已完成行保留到显式清页，历史独立保存。通用 view 容器沿用派生依赖队列与 native continuation 执行组件工厂，成功才替换内容，退休旧子树沿现有节点所有权取消任务。对白与选项界面由作者挂载，使用共同舞台和已呈现输入协议。
 
-作者阅读服务提供稳定的只读可观察 `game.history()` 列表与 `game.reading()` 状态；`game.reading().set_auto(enabled: null, delay: null, condition: null)` 修改自动阅读及全文呈现后的停留秒数（默认 2 秒），`game.reading().pause(paused)` 暂停对白显现与对白/选择输入，普通作者控件继续工作。状态属于会话，UI 更换不重置；新会话默认手动、未暂停。自动阅读仅推进已完整呈现的对白，选项等待玩家操作。失焦、挂起、模态界面、资源未就绪或输入手势期间不累计阅读时间，恢复后重新等待完整停留时间。有限演出与独立音频不因阅读暂停而停止。 `condition` 接受 bool 或 `bind`/`derive` 引用；各参数为 null 时保留当前值及绑定，condition 为 true 时解除旧绑定。只读 `auto_ready` 显示条件的当前值，初值 true。false 只重置自动倒计时，文字显现、手动推进、快进与 `[next]` 保持原路径；恢复 true 后，全文实际呈现完毕再等待完整 delay。条件及绑定随快照恢复。
+作者阅读服务提供稳定的只读可观察 `game.history()` 列表与 `game.reading()` 状态；`game.reading().set_auto(enabled: null, delay: null, condition: null)` 修改自动阅读及全文呈现后的停留秒数（默认 2 秒），`game.reading().pause(paused)` 暂停对白显现与对白/选择输入，普通作者控件继续工作。状态属于当前阅读上下文，普通 UI 更换保留状态；新阅读上下文默认手动、未暂停。自动阅读仅推进已完整呈现的对白，选项等待玩家操作。失焦、挂起、模态界面、资源未就绪或输入手势期间不累计阅读时间，恢复后重新等待完整停留时间。有限演出与独立音频不因阅读暂停而停止。 `condition` 接受 bool 或 `bind`/`derive` 引用；各参数为 null 时保留当前值及绑定，condition 为 true 时解除旧绑定。只读 `auto_ready` 显示条件的当前值，初值 true。false 只重置自动倒计时，文字显现、手动推进、快进与 `[next]` 保持原路径；恢复 true 后，全文实际呈现完毕再等待完整 delay。条件及绑定随快照恢复。
 
-历史组提供 `group_id/interaction_id/locale/lines/speaker_name/text`，行提供 `id/speaker_id/speaker_name/content_id/text`。行 ID 与对白模型一致，在同一会话中稳定。历史全文在提交时记录一次；清页和界面替换不删除历史。首次访问按已有历史建立投影，之后只追加新增组，显现更新不扫描历史、不复制全文。数据/控制服务不创建 UI，作者用通用组件组合回看和阅读控件，示例见 [author_reading.aside](../examples/author_reading/src/main.aside)。恢复点、语音重播和已读跳过依赖各自后续服务，不在历史记录内提供占位字段。
+历史组提供 `group_id/interaction_id/locale/lines/speaker_name/text`，行提供 `id/speaker_id/speaker_name/content_id/text`。行 ID 与对白模型一致，在同一会话中稳定。历史全文在提交时记录一次；清页和界面替换不删除历史。首次访问按已有历史建立投影，之后只追加新增组，显现更新不扫描历史、不复制全文。数据/控制服务不创建 UI，作者用通用组件组合回看和阅读控件，示例见 [author_reading.aside](../examples/author_reading/src/main.aside)。
 
-`game.reading().clear_history(keep_last: int = 0)` 删除较早历史并返回 null；Rust 宿主使用 `Session::clear_history(keep_last: usize)`。0 清空全部，正数按实际记录的历史行保留末尾至多指定数量，`history:false` 行不计数；数量不少于当前行数时不改动，负数或非整数在原调用位置拒绝。边界可以落在一个组内：只删除该组较早的行，保留组 ID、locale、剩余行的 ID、内容、对象身份及顺序，不重新编号；组 speaker_name/text 更新为剩余首行。顶层历史数组、保留组及其 lines 数组保持身份，变更通知沿现有观察协议发布。完整保留组不重建；后续新记录正常追加，组 ID 不复用。当前对白、NVL 显示页、推进权限、已读进度、阅读设置及系统数据不变，不重新记录已裁掉的当前对白行；已保存槽位不改写，加载它仍恢复保存时的历史。裁剪是同步线性工作，不按 VM 预算自动拆分；只移动保留引用，不复制正文，释放前段容器和内容强边并请求增量 GC。作者持有的行、富文本与界面缓存继续有效，应按需移除或刷新；不强制收集整个 VM，也不默认截断历史。验证覆盖跨组/组内保留、稳定对象和通知、继续追加、正文推进、1 万/10 万行裁剪成本、GC 释放及快照恢复。
+`game.reading().clear_history(keep_last: int = 0)` 删除较早历史并返回原 Reading；Rust 宿主使用 `Session::clear_history(keep_last: usize)`。0 清空全部，正数按实际记录的历史行保留末尾至多指定数量，`history:false` 行不计数；数量不少于当前行数时不改动，负数或非整数在原调用位置拒绝。边界可以落在一个组内：只删除该组较早的行，保留组 ID、locale、剩余行的 ID、内容、对象身份及顺序，不重新编号；组 speaker_name/text 更新为剩余首行。顶层历史数组、保留组及其 lines 数组保持身份，变更通知沿现有观察协议发布。完整保留组不重建；后续新记录正常追加，组 ID 不复用。当前对白、NVL 显示页、推进权限、已读进度、阅读设置及系统数据不变，不重新记录已裁掉的当前对白行；已保存槽位不改写，加载它仍恢复保存时的历史。裁剪是同步线性工作，不按 VM 预算自动拆分；只移动保留引用，不复制正文，释放前段容器和内容强边并请求增量 GC。作者持有的行、富文本与界面缓存继续有效，应按需移除或刷新；不强制收集整个 VM，也不默认截断历史。
 
 历史投影复用 `Heap::commit_collection` 受信宿主提交入口：只将同种集合的私有准备载荷交换进原对象，不改变原身份和元数据，完成后只失效通知一次。历史路径限定 Array→Array，原对象和准备对象都必须有强根，准备对象不可泄露给脚本；全部保留引用复制完毕才提交；若准备过程跨越可修改边界，调用方需验证源 content_version，种类检查失败不交换。旧载荷留在准备对象供增量 GC 回收，调用方释放准备根并请求收集；不逐项移动可观察数组，也不增加第二套批量实现。
 
-`game.reading().set_skip(enabled, unread: false, after_choices: false)` 控制快进，`game.reading().skipping/skip_unread/skip_after_choices` 可观察当前状态/策略，`game.dialogue().read` 表示当前整组在本次提交前已读。默认在未读组和选项处停止；unread: true 允许略过未读对白。after_choices: true 在选择处保留模式，仍等待玩家选择，选择后继续按已读策略快进。快进沿原控制流执行，略过文字显现和停留，并让主剧情拥有的运行中有限演出按既有 finish 语义到终值；无限、暂停或节点拥有的活动与独立音频保留原控制。自动阅读与快进互斥。暂停阅读、失焦、挂起或出现模态界面清除快进；键盘/手柄保持通过 input 回调在 pressed 启用、released/cancelled 关闭，不添加固定快捷键。input 发起的快进登记节点身份，退休时清除保持状态；普通按钮与主剧情设置的模式属于会话。
+`game.reading().set_skip(enabled, unread: false, after_choices: false)` 控制快进，`game.reading().skipping/skip_unread/skip_after_choices` 可观察当前状态/策略，`game.dialogue().read` 表示当前整组在本次提交前已读。默认在未读组和选项处停止；unread: true 允许略过未读对白。after_choices: true 在选择处保留模式，仍等待玩家选择，选择后继续按已读策略快进。快进沿原控制流执行，略过文字显现和停留，并让主剧情拥有的运行中有限演出按既有 finish 语义到终值；无限、暂停或节点拥有的活动与独立音频保留原控制。自动阅读与快进互斥。暂停阅读、失焦、挂起或出现模态界面清除快进；键盘/手柄保持通过 input 回调在 pressed 启用、released/cancelled 关闭，不添加固定快捷键。input 发起的快进登记节点身份，退休时清除保持状态；普通按钮与主剧情设置的模式属于其 Reading 上下文。
 
 实际接受的手动对白推进（指针、键盘、手柄或无障碍确认）执行通常的显现/推进，并关闭自动阅读与快进；过期或未接受的输入不改变模式，内部计时推进不触发此规则。选择确认继续保留自动阅读策略。
 
@@ -665,21 +654,19 @@ ActivityHandle 本身实现 Awaitable，支持暂停、继续、停止和到终�
 
 `game.record(text, speaker: null)` 直接记录一条历史；speaker 可为 character。它不显示对白、不占用主剧情等待、不标记已读，普通剧情、任务和控件回调都可调用，纯派生和初始化不能产生记录。作者可在启动背景语音时记录文本，并自行决定是否等待音频。记录使用同一历史组身份、语言快照和存档，不创建第二种日志；成本与新增文本长度成正比。
 
-`tr(source, id: null, params: null, locale: null)` 可为单次求值指定语言，不切换全局语言。查找指定语言、基础语言、原文，参数模板按所选语言格式化；现有语言包与缓存共享，不复制目录。作者用普通布局展示双语，并选择各行的揭示方式。locale 省略时行为不变。
+`tr(source, translations: null, params: null, locale: null)` 可为单次求值指定语言，不切换全局语言。查找指定语言、基础语言、原文，参数模板按所选语言格式化；现有语言包与缓存共享，不复制目录。作者用普通布局展示双语，并选择各行的揭示方式。locale 省略时行为不变。
 
 ### Owner 撤销与执行器整合边界
 
 宿主协调完整 owner 撤销。先将 owner 标为 Revoked，禁止新增任务、根、等待注册和过期完成交付；Vm::cancel(owner) 只取消匹配任务并使硬取消票据失效，后续按预算清理任务。Idle 仅表示没有匹配 Task，不能解释为宿主根或适配器已释放。宿主生命周期记录在 owner 创建时预留有界退休容量，撤销时保存 cursor=0 与 end=heap.root_slots()，每个主线程预算 turn 推进 release_owner_step，传入 slots=min(剩余 work, end-cursor)，该 API 不直接接收 end，以 cursor>=end 判定扫描完成；按游标实际增量计费，空洞同样消耗工作。没有 Task 也必须推进根扫描。该扫描仅释放单根，宿主持有的非任务 RootRange 需独立有界释放游标，不能遗漏。任务清理、根扫描和外部资源释放全部完成才进入 Retired，随后对象由预算 GC 回收；宿主根记录同步失效，避免重复释放或继续使用旧 FaultRoot。
 
-源码贯通检查执行普通调用、缺省与闭包、异常/finally、索引/成员、可选链、spread/rest、模块链接和类，覆盖微小预算与交错 GC。narrator/choose 的真实等待、原 key 根交付、取消及播放器终态沿同一执行器处理；同包快照检查等待、任务和宿主状态恢复。property-bag、delegate/hooks、剩余结构模式与原生 async/generator 仍待实现；平台设备和性能采用各自的实际负载验收。
-
-### Rust 会话宿主实现状态
+### Rust 会话宿主
 
 reel-engine 管理 Session/Epoch/owner、唯一主交互、完整文本与字素揭示、稳定选项、过期和重复输入过滤、历史及终态一次交付。Session::new(SessionId, Epoch) 不接受人为行数、选项数、历史组数、owner 数量或文本长度上限。所有会话存储按实际内容使用可失败的内存申请，历史完整保留，不在容量阈值处截断或逐出。DialogueLineId 的进程内索引使用 usize；owner 的完整身份仍单调生成，只有完成退休后才可复用其存储槽。提交前完成文本复制、字素索引、历史/owner 容量申请及选择 key 去重，失败不发布半个交互或消耗身份；选择去重使用借用原 key 的哈希集合。已接受交互的揭示、输入和终态交付仍不分配。会话投影按实际内容高度布局并滚动；滚动后须等待新几何被呈现接受，旧 Down/Up 不能选择新位置。
 
 owner 退休记录在创建时预留，单根游标、任务和外部资源分别设完成门；游标按实际推进含空洞计费。真实适配器仍需调用 Heap/VM 清理，非任务 RootRange 独立释放；纯 Rust 零义务取消不能代替 VM owner teardown。只有被呈现接受的投影才能路由点击，Down/Up 绑定同一投影；领取 Resume 后仍需在实际交付时复核存活 owner 和真实等待身份。
 
-宿主值读取使用公开 sequence_len/get 与 table_own_string_lookup/step。own-string 游标按条目、字节和完成工作计费，区分缺失与 null，不调用 delegate/hook；调用方用真实 native ticket 或显式 root 保活 table，游标本身不持根，跨轮检查存活与完整内容版本。返回 Value 跨借用期保存仍需显式 root。原始 alloc_record(Table) 存储 schema 不是语言 table，适配器不得猜布局。线性查找复杂度和同步常量加载限制见 VM README；owner/RootRange/外部资源的有界退休责任不变。
+宿主值读取使用公开 sequence_len/get 与 table_own_string_lookup/step。own-string 游标按条目、字节和完成工作计费，区分缺失与 null，不调用 delegate/hook；调用方用真实 native ticket 或显式 root 保活 table，游标本身不持根，跨轮检查存活与完整内容版本。返回 Value 跨借用期保存仍需显式 root。原始 alloc_record(Table) 存储 schema 不是语言 table，适配器不得猜布局。线性查找与分片常量物化见 [VM README](../crates/aside-vm/README.md)；owner/RootRange/外部资源的有界退休责任不变。
 
 ### Aside 会话适配
 
@@ -687,7 +674,7 @@ owner 退休记录在创建时预留，单根游标、任务和外部资源分�
 
 交互先暂存并验证配置的会话资源额度；VM 接受 Pending 后才提交可见 Session 状态。实际恢复时复核 interaction、owner、task 和完整 wait 身份；选择的原始 key 保持显式根到交付。owner 撤销分别推进冻结高水位的单根扫描与任务清理，空洞也计费；无任务不等于无根。GC 经过 VM provider。
 
-host_work 仅计选择查找工作，文本复制及发布同步，读取按块推进且不另设总文字长度门。作者文本仍须符合 VM 的实际堆内存预算；会话复制通过可失败的内存申请处理真实分配失败。内容身份由模块路径、版本、源区间或函数/PC 后备组成，不宣称是本地化或跨保存稳定身份。
+host_work 仅计选择查找工作，文本复制及发布同步，读取按块推进且不另设总文字长度门。作者文本仍须符合 VM 的实际堆内存预算；会话复制通过可失败的内存申请处理真实分配失败。对白已读身份使用本节定义的逻辑调用路径。
 
 ### 集合展开的执行与成本
 
@@ -720,7 +707,7 @@ wgpu 图片缓存按完整 ResourceHandle 复用已提交的纹理；准备失�
 
 `VideoOptions` 的默认队列是 3 个已解码画面和 8192 个音频采样帧，可由宿主配置；另有一个解码中的输出。画面 lease 与 PCM ring 按实际容量持有 `BudgetTicket`，消费者保留的 lease 继续占额度。MP4 索引随 sample table 大小增长，原生解码器的参考帧/内部工作区由解码器管理；队列预算不等同于进程总内存。PCM 回调只消费预分配环并发布内容时钟，不分配、读取文件、取得互斥锁或唤醒任意宿主回调。音轨通过现有 Music 总线和后台回收服务播放；音轨早于视频结束时由会话时间推进尾段。单视频 `set_volume` 与 Music 总线音量相乘，不修改内容时钟。暂停保持位置，stop/cancel 立即撤销供给并唤醒 worker；宿主等待 `worker_finished` 完成后台退休。恢复/seek 新建播放代数，撤销旧 reader；`start/end` 表示精确的源内容区间，end 是开端点。
 
-`Assets::stream` 将 worker 的 Read/Seek 请求转交共享 AssetIo，主控仍调用 Assets::maintain；没有第二条文件读取路径。DirectoryIo 首次 describe 在 IO worker 用 64 KiB scratch 流式计算内容 digest，缓存打开的文件与 digest，后续 range read 不重复扫描；散文件首开成本与文件大小成正比。具有已知内容 digest 的资源包直接提供该版本。取消/服务关闭唤醒挂起的 reader。当前 Rust 解码/音轨契约见 [video_playback.rs](../crates/reel-media/tests/video_playback.rs)；舞台视频节点和 Aside 接线在独立呈现变更中完成，本段不宣称图形设备已经验收。
+`Assets::stream` 将 worker 的 Read/Seek 请求转交共享 AssetIo，主控仍调用 Assets::maintain；没有第二条文件读取路径。DirectoryIo 首次 describe 在 IO worker 用 64 KiB scratch 流式计算内容 digest，缓存打开的文件与 digest，后续 range read 不重复扫描；散文件首开成本与文件大小成正比。具有已知内容 digest 的资源包直接提供该版本。取消/服务关闭唤醒挂起的 reader。当前 Rust 解码/音轨契约见 [video_playback.rs](../crates/reel-media/tests/video_playback.rs)；舞台视频节点沿相同媒体身份和资源租约呈现。
 
 ### 作者音频活动
 
@@ -736,13 +723,13 @@ Windows CPAL/WASAPI 输出协商客户端 Mono/Stereo，使用共享音频引擎
 
 新音频在创建任务的同步执行段结束前保持静音，后台读取和解码可以提前进行。任务开始显式 await、普通调用真正 Waiting 或任务 Returned 时通过 MediaBackend::commit_audio(id) 冻结当时已知片段作为首批，等待这些片段完成准备；BudgetYield 和普通 HostCall 不封口，后续追加不延长已封口首批。任务故障或取消撤销尚未提交的声音，不短暂起播。未提交声音的 TaskId 随会话快照重映射，恢复后继续等待原任务边界；已提交声音在恢复其完整队列后重新提交。队列请求、待解码、PCM 和退休都有界：沿宿主现有 mixer.max_sounds 限制未退休片段与队列描述符，PCM 与解码继续使用 pcm_bytes、queue_bytes 及其 BudgetTicket；原生队列固定存储按 mixer 的实际容量计入 AudioActivityService::slot_bytes(slots, mixer)，不假设活动槽数等于混音容量。没有作者容量参数。回调只消费预分配队列、切换播放游标和移交退休载荷，不分配、执行 IO、等待或析构 PCM。当前片段身份、实际位置、循环退出状态、待播片段和暂停状态进入 AudioPlayback，会话快照使用当前 v1 格式。
 
-音频终点（已实现）：start、非 null 的 end 与循环边界使用有限非负秒，显式 end 必须大于初始 start；null end 使用资源结尾。end 是排他内容终点，后台按现有 round 规则量化到源采样帧并检查位于资源内且至少一帧，通过 StaticSoundData 的 [0,end) 视图共享原 PCM。[0,end) 视图至少一帧不要求量化后的 [start,end) 非空：两端落入同一源帧时无声自然完成；恢复位置恰好为 end 沿同一规则完成。start 仍是初始绝对位置，不是 seek 下界；position/seek 始终使用当前素材的绝对内容秒数。looping:true 时循环区间为 [loop_start, loop_end)，null loop_end 使用 end；循环区间须位于该视图内、量化后至少一帧。start 小于 loop_start 时先播前奏，超过循环终点时按区间取模。looping:false 仅接受默认循环边界，seek 达到 end 后自然完成；加载中可先定位，解码后按最新起点钳取。混音传输在终点完成或接续队列，沿同一重采样历史和退休路径，不用主线程定时 stop，也不复制 PCM。每个队列条目保存自己的 end，恢复保留当前条目实际位置与待播边界。检查源帧排他边界、44.1/48k 重采样、已准备队列连续样本、暂停/seek/循环退出、终态和源码/ASB存恢复；实际声卡呈现另验。复跑 `cargo test --locked -p reel-media --test audio_contracts playback_end`、`cargo test --locked -p reel-player --lib media::tests`、`cargo test --locked -p reel-engine --lib aside::tests::snapshots::audio`，以及 `cargo run --locked -p reel-dev -- audio-probe`。
+音频终点：start、非 null 的 end 与循环边界使用有限非负秒，显式 end 必须大于初始 start；null end 使用资源结尾。end 是排他内容终点，后台按现有 round 规则量化到源采样帧并检查位于资源内且至少一帧，通过 StaticSoundData 的 [0,end) 视图共享原 PCM。[0,end) 视图至少一帧不要求量化后的 [start,end) 非空：两端落入同一源帧时无声自然完成；恢复位置恰好为 end 沿同一规则完成。start 仍是初始绝对位置，不是 seek 下界；position/seek 始终使用当前素材的绝对内容秒数。looping:true 时循环区间为 [loop_start, loop_end)，null loop_end 使用 end；循环区间须位于该视图内、量化后至少一帧。start 小于 loop_start 时先播前奏，超过循环终点时按区间取模。looping:false 仅接受默认循环边界，seek 达到 end 后自然完成；加载中可先定位，解码后按最新起点钳取。混音传输在终点完成或接续队列，沿同一重采样历史和退休路径，不用主线程定时 stop，也不复制 PCM。每个队列条目保存自己的 end，恢复保留当前条目实际位置与待播边界。
 
 `audio.position(activity)` 返回最后观察到的内容位置秒数，加载中为请求起点，暂停或输出挂起时保持，循环时回到区间起点；终态保留最后位置而不保留 PCM。在 derive 内读取会订阅同一内部只读位置，普通读取返回最后发布值；无 IO、解码或完整快照复制。切换同进度音轨可用 `audio.play(next, start: audio.position(current), group:"music", looping:true, fade_in:2)` 与 `audio.stop(current, fade:2)` 组合，淡入从新音轨实际起播时开始。该组合不承诺两个后台加载音轨的采样级同步。
 
 `audio.at(activity, seconds)` 和 `video.at(activity, seconds)` 返回可重复等待的位置条件。seconds 必须有限非负；同一活动发布的位置达到或超过目标时返回 true，目标前正常 Completed/Stopped 返回 false。终态先按最终位置判断，取消和失败沿原错误传播。已结算结果保留，后续 seek 回退也保持；取消等待者只撤销该等待。loop/queue 使用当前片段的内容位置，回绕后继续观察，取样间隔中经过的区间由下一次观察决定。seek 立即发布宿主报告的位置并结算满足的条件；此显式操作按全部待决位置条件线性扫描，维护采样按 64 路轮转。位置条件归创建时的默认 scope/回调节点，所属范围退休会取消条件并保留声音自己的 owner。音频和视频共享位置、条件和快照路径。
 
-媒体后台维护收集最新位置；SessionVm 在同一响应式采样批次内发布媒体位置与普通活动时间。尚有派生计算时保留最新后端样本，终态、取消和视频帧继续维护。位置采样沿 64 路轮转；条件结算使用复用队列，创建和恢复的容量通过既有 HeapReservation 计账，关闭后释放容量并退款；批次中的条件检查完成后再发布下一批位置。首加载、暂停和输出挂起沿后端内容位置保持。软件观察位置表示内容消费进度，设备实际呈现时间仍取决于输出端能力。SessionSnapshot 保存内部位置、未决条件和已结算结果，共享媒体身份随 VM 图恢复。position ABI 是读取已发布 VM 状态的纯 native，at ABI 创建可等待对象； 定向行为命令：`cargo test --locked -p reel-engine --lib media_positions`、`cargo test --locked -p reel-cli --test project_scenarios project_scenario_media_position_cue`。稳态采样及实际派生读取的成本对照：`cargo test --locked -p reel-engine --test media_position_allocations -- --nocapture`，分别记录采样发布与观察者执行，并与相同数量的 clock 订阅比较。
+媒体后台维护收集最新位置；SessionVm 在同一响应式采样批次内发布媒体位置与普通活动时间。尚有派生计算时保留最新后端样本，终态、取消和视频帧继续维护。位置采样沿 64 路轮转；条件结算使用复用队列，创建和恢复的容量通过既有 HeapReservation 计账，关闭后释放容量并退款；批次中的条件检查完成后再发布下一批位置。首加载、暂停和输出挂起沿后端内容位置保持。软件观察位置表示内容消费进度，设备实际呈现时间仍取决于输出端能力。SessionSnapshot 保存内部位置、未决条件和已结算结果，共享媒体身份随 VM 图恢复。position ABI 是读取已发布 VM 状态的纯 native，at ABI 创建可等待对象。
 
 `audio.seek(activity,seconds)` 提交绝对内容位置并返回 null，复用原活动和播放终态。加载/解码中更新起点，解码结果按最新请求配置，不重新读取或复制 PCM；播放中使用合并命令槽，源帧量化和循环规则与 start 一致。暂停或输出挂起仍可定位，非循环超尾夹到末尾，已终态不重启。控制端在 seek 命令被消费前报告最新目标，混音器先清空重采样历史、发布新位置再确认该命令序号，旧确认不得覆盖后续目标；紧接保存使用此逻辑位置。音频供给无新增分配、IO 或等待。
 
@@ -762,7 +749,7 @@ AudioGroup 位于 reel-core 的平台无关契约；media 与 engine 使用同�
 
 reel-media 的 AudioActivityService 在 Kira 之上保存有界活动账本。请求拥有固定 ResourceVersion、注册 AudioOwner（包含完整 Scope）、MediaEpoch、分组元数据及 DecodedSound；原生句柄不跨模块暴露。接纳前同时保留播放槽和终态槽，拒绝返还原请求，终态保留槽直到排出。MediaId 在服务实例内不重复；替换实例时由宿主提供新的 MediaEpoch。分组映射到宿主混音总线，循环取自输入声音配置。
 
-DecodedSound 不设置独立 PCM 帧数或时长上限；调用方的真实 BudgetTicket 覆盖输入 capacity 与转换存储，并随 Sound 整个生命周期保留至退休。回收量不从固定 64 MiB 假定推导 PCM 上界。
+DecodedSound 不设置独立 PCM 帧数或时长上限；调用方的真实 BudgetTicket 覆盖输入 capacity 与转换存储，并随 Sound 整个生命周期保留至退休。
 
 Completed 表示通过 Playback 观察到内容消费结束，不是设备实际呈现，也不表示 PCM 已释放。Stopped 表示停止命令的逻辑结算；供给停止仍由 AudioOutput 的 fence/stop 协议保证，物理 PCM 回收仍经后台服务和预算票据。播放器将该终态交付 SessionVm 的媒体等待；作者 Completed 表示内容消费结束，声卡实际呈现沿前文设备时钟合同。
 
@@ -784,17 +771,15 @@ owner 注册与活动凭据各有 max_requests 容量上限，保留已完成凭
 
 共同节点的 `capture_included` 默认为 true。false 排除该子树的捕获输出，录制时冻结并归并平衡的命令区间；普通显示和输入沿原舞台行为。捕获读取最近已呈现帧，保留转场的旧、新画面各自携带排除区间，显式目标及祖先的 false 同时排除整段转场。绘制数据共享，捕获重放跳过区间，并据此计算图片上传与离屏目标需求。
 
-
-
-当前自有协议统一使用 v1：Aside 字节码、VM 快照、SessionSnapshot、宿主 native ABI 与 ASB 1.0。新增能力继续维护 v1 声明，版本升级由明确的 2.0 发布决定；加载按实际声明核对格式、签名和代码身份。
+当前自有协议统一使用 v1：Aside 字节码、VM 快照、SessionSnapshot、宿主 native ABI 与 ASB 1.0。新增能力继续维护 v1 声明，加载按实际声明核对格式、签名和代码身份。
 
 存档路径属于宿主配置。`reel run` / `reel dev` 的 `--save-directory <directory>` 直接设置 `StoryWindowOptions.save_directory`；相对路径以启动时工作目录解析。便携启动器可传入游戏目录内的 `saves`，安装目录只读的平台由宿主选择系统可写目录。未指定时继续使用平台用户数据目录；目录配置不进入脚本或 ASB。
 
 捕获期间未按键的鼠标移动合并为最新位置，捕获结束后按已接受画面重放悬停；不因轻微移动取消保存，也不积累移动事件队列。点击、拖动、键盘或焦点变化仍按会话修改入口处理，并清除此前排队的悬停。
 
-VM 快照底层已实现：`Vm::snapshot_begin` / `Vm::restore_begin` 返回按 `SnapshotBudget` 推进的捕获器与隔离恢复器；完成的 `VmSnapshot` 可送到工作线程编码。当前 VM 格式版本为 1，使用独立的 `ASIDSN01` 标记与 Serde/Postcard 记录，代码身份在验证编译包时计算一次，恢复要求精确匹配。`SnapshotRegistry` 按名称和版本重接宿主属性验证器，`SnapshotMap` 重接宿主保存的对象、根与等待身份。单步处理一个元数据项、64 个值或 1024 字节载荷；分配器增长不构成硬实时保证。对象图、执行帧、异常、取消和中途指令状态的恢复验证见 `cargo test -p aside-compiler --test host_awaitables --test classes`。`SessionVm::snapshot_begin` / `restore_begin` 在同一快照中接入会话、舞台、活动、任务结果、粒子与随机状态；舞台从 VM 属性重建，悬停、按住与焦点清空。历史正文与字素边界在捕获时共享不可变存储，编码在工作线程进行。音频后端以 `AudioPlayback` 提供内容位置和逻辑播放参数，所有音频按当前条目实际位置与待播队列恢复，已结束活动保持终态；候选音频先暂停输出。翻译目录保存资源路径并通过宿主加载器重建。Rust 会话恢复检查见 `cargo test -p reel-engine --lib snapshots`；槽位接口为 `saves.save(slot, title: null)`、`load(slot)`、`delete(slot)` 和 `list()`；请求立即返回可等待的只读对象，`status` 为 pending/succeeded/failed，`error` 在失败时保存错误。list 的等待结果是已占用槽位摘要数组，字段为 id、title、saved_at（UTC Unix 秒）。页码、快速槽和空槽由游戏组合，槽位名不作为文件路径。桌面存储使用独立用户数据目录，Rust 宿主可指定目录、快照预算和 SaveStorage 实现。
+VM 快照使用 `Vm::snapshot_begin` / `Vm::restore_begin` 返回按 `SnapshotBudget` 推进的捕获器与隔离恢复器；完成的 `VmSnapshot` 可送到工作线程编码。当前 VM 格式版本为 1，使用独立的 `ASIDSN01` 标记与 Serde/Postcard 记录，代码身份在验证编译包时计算一次，恢复要求精确匹配。`SnapshotRegistry` 按名称和版本重接宿主属性验证器，`SnapshotMap` 重接宿主保存的对象、根与等待身份。单步处理一个元数据项、64 个值或 1024 字节载荷；分配器增长不构成硬实时保证。`SessionVm::snapshot_begin` / `restore_begin` 在同一快照中接入会话、舞台、活动、任务结果、粒子与随机状态；舞台从 VM 属性重建，悬停、按住与焦点清空。历史正文与字素边界在捕获时共享不可变存储，编码在工作线程进行。音频后端以 `AudioPlayback` 提供内容位置和逻辑播放参数，所有音频按当前条目实际位置与待播队列恢复，已结束活动保持终态；候选音频先暂停输出。翻译目录保存资源路径并通过宿主加载器重建。槽位接口为 `saves.save(slot, title: null)`、`load(slot)`、`delete(slot)` 和 `list()`；请求立即返回可等待的只读对象，`status` 为 pending/succeeded/failed，`error` 在失败时保存错误。list 的等待结果是已占用槽位摘要数组，字段为 id、title、saved_at（UTC Unix 秒）。页码、快速槽和空槽由游戏组合，槽位名不作为文件路径。桌面存储使用独立用户数据目录，Rust 宿主可指定目录、快照预算和 SaveStorage 实现。
 
-存档在所有可修改持久状态的任务停在合法指令或等待边界，且舞台、绑定和资源切换已提交后捕获。保存、读档提交与热重载提交互斥。保存接口立即返回请求，进度由服务模型提供；发起保存的任务返回或停在普通可恢复指令/等待边界后即可捕获，因而允许等待自己的 SaveRequest。当前存档副本内将该请求及其 Future 记为 Succeeded；活会话保持实际写入状态，只有可靠提交完成才成功。读取这份已提交存档时，恢复请求从已保存的后继指令继续，等待者在下一调度步按登记顺序收到成功，保存调用执行一次。此规范化只作用于被持久提交的该存档副本，既不修改活会话，也不适用于内存回滚快照。已结算的进程请求直接恢复保存的终态与结果。其他尚未结算的进程写请求只有匹配精确进程和请求身份及完成记录才重接，否则结算 OperationInterrupted 并保留可处理错误，避免重新写入外部目标。
+存档在所有可修改持久状态的任务停在合法指令或等待边界，且舞台、绑定和资源切换已提交后捕获。保存与读档提交互斥。保存接口立即返回请求，进度由服务模型提供；发起保存的任务返回或停在普通可恢复指令/等待边界后即可捕获，因而允许等待自己的 SaveRequest。当前存档副本内将该请求及其 Future 记为 Succeeded；活会话保持实际写入状态，只有可靠提交完成才成功。读取这份已提交存档时，恢复请求从已保存的后继指令继续，等待者在下一调度步按登记顺序收到成功，保存调用执行一次。此规范化只作用于被持久提交的该存档副本，既不修改活会话，也不适用于内存回滚快照。已结算的进程请求直接恢复保存的终态与结果。其他尚未结算的进程写请求只有匹配精确进程和请求身份及完成记录才重接，否则结算 OperationInterrupted 并保留可处理错误，避免重新写入外部目标。
 快照包含引用模块版本、全部存活任务及其调用帧与恢复位置、返回槽、异常状态、寄存器与中间值、闭包和共享 cell、全局对象图、待交付结果、当前交互、组件数据、舞台逻辑状态、时钟、随机数及媒体描述。generator、thread 与其他可等待对象按语言定义保存。对象 ID 保留共享、环、弱引用和类关系；脚本回调及捕获进入同一对象图。
 设备句柄通过资源描述重建。每种可达宿主值必须有版本化恢复描述；缺失时报告对象路径，保存失败且保留原槽位。系统服务恢复为同一服务身份。读取在隔离候选会话中先创建身份、再连接引用与订阅，成功后一次切换；失败保留当前会话。
 捕获固定会话时钟和媒体逻辑状态，按对象与边游标分片复制到独立快照，窗口保留上一个已接受画面。播放器使用持有会话的捕获器，业务写入在此期间暂停；若实际输入或窗口状态变化需要修改会话，取消当前捕获、以 CaptureBusy 结算保存请求，再处理输入，原槽位保持不变。捕获完成后业务恢复，后台结果继续交付。后台以 Postcard 流式编码并压缩到临时文件，不建立另一份完整编码缓冲。
@@ -803,39 +788,11 @@ VM 快照底层已实现：`Vm::snapshot_begin` / `Vm::restore_begin` 返回按 
 全局设置、已读和解锁记录独立于剧情快照。恢复设置绑定时以当前全局设置为准。回滚先使用完整交互快照和共享不可变资源，规划中的回滚历史预算起点为 32 MiB，超限移除最旧快照；活动 cell、属性和等待状态必须独立复制。增量记录等真实成本明确后再做。
 每个闭包和挂起调用绑定确定代码版本；旧模块保留自己的全局环境与导入绑定，最后引用退出才释放。发行存档由匹配游戏包提供代码；开发存档嵌入无法从匹配固定包取得的全部所需模块，包括活动版本。缺失版本进入明确迁移流程，不自动改用新代码。
 
-## 十 热重载
+## 十 开发运行
 
-以下为规划合同。当前播放器尚未实现模块集合的热替换、story.register、state/node.state 或 game.restart；现有 game.start 的新会话切换与开发工具重新启动沿当前入口合同执行。
+当前开发流程由 CLI 编译项目并启动会话；`game.start` 在当前代码包中创建新会话。模块热替换及交互调试的后续工作由[总清单 #94](https://github.com/jhq223/reel/issues/94)协调。
 
-开发工具合并变更事件，编译并验证候选模块；失败显示源码诊断，继续运行原版本。新版本只在安全点提交。资源也先准备新版本，再替换引用。[8]
-发布更改模块及其全部反向依赖的新 ModuleSet，固定各实例的导入绑定。候选初始化只可修改候选对象，宿主副作用要求 InitSafe；失败保留旧会话与全局设置。普通调用及当前剧情继续使用原模块集合。game.start 接收模块级零必需参数函数的稳定符号身份，独立于可选的 story 注册表，在替换会话前于最新已发布集合验证符号与签名，然后创建全新的模块全局。game.restart(story_id) 使用当前会话的主剧情模块集合并保留其变量。显式组件重建可采用新集合和调用者传入的旧模型；组件私有全局采用新实例初始化值。组件依稳定 key 和局部数据重建，替换订阅后释放旧订阅。拖动中更新推迟至手势结束或明确取消，业务状态与控件瞬态分别处理。
-切换当前剧情属于显式开发操作，按命名段落与交互点检查状态结构；从段落入口重跑必须提示会重新执行该段动作。普通读档和回滚始终恢复完整快照。候选组件构造沿用初始化副作用限制：可分配候选节点和模型，只读已有业务对象；修改现有业务对象或启动外部操作会在构造处报错。候选模块与舞台替换完整准备后统一提交，失败保留旧版本。开发热重载不承担任意旧发行存档的自动迁移。
-
-## 十一 完整制作能力与扩展
-最终能力以 Ren’Py 的制作能力覆盖并进一步提升组合自由度为目标。本节同时列出当前合同与规划方向。拖放、可注册文本标签、TTS、3D Mesh/Material、custom_node、Live2D、音频滤镜/同步组、隔离回放、回滚/前滚和平台购买属于规划；其余能力的具体实现状态以对应章节为准。构建 feature 用于发行裁剪。每项必须有真实接口、对应实现和作者用例，统一节点或扩展接口的存在本身只是承载机制。
-剧情阅读：ADV、NVL、气泡及多角色发言共用一个 DialogueInteraction。character.line 创建纯对白数据，say(lines) 把一组行提交到 game.dialogue.lines 并共享一次推进；character 的普通 _call 是单行快捷调用。当前每行保存角色、文本与揭示范围；逐行语音和位置属于后续扩展，NVL 可累积到显式清页。历史记录保存行组与内容身份。文本尚未揭示完时推进先完成本组，随后推进结束等待。回放使用隔离会话，退出恢复暂停的原会话；全局持久写入默认只读，作者需显式选择允许。
-UI 交互：按钮、图片按钮、滑条、输入框、滚动、虚拟列表/网格、热点、拖放、工具提示、快捷键与模态。拖放有 DragId，记录源、载荷、捕获、候选目标与接受条件；按下/移动/释放/取消分别交付一次，失焦或 owner 撤销转 Cancelled，落点以同一呈现几何计算。文本输入区分编辑值、选区与 IME 组合串，组合期间保持平台候选框定位。组件公开语义角色、名称、值、操作与焦点顺序。
-文字：文本服务接入 Parley 和字体回退，统一布局普通文本、样式 span、内嵌图片、链接、ruby 与双向/CJK 文本。富文本解析产生有源码位置的结构 span，文本标签/处理器可由作者注册。reveal 按字素映射到完整布局 cluster，速度/暂停标记属于交互时间线，快速完成保留最终排版。文字效果取得字形/cluster 标识与纯参数，复用 Effect 管线。
-本地化：`tr(source, translations: null, params: null, locale: null)` 将原文和语言到译文的静态 table 写在同一调用中，返回普通 string。编译器按绑定身份识别 Reel 的 tr，宿主通过通用调用展开生成内部消息键、原文及参数；原文/译文包的内容决定身份。插值使用现有 Aside 格式化，原文表达式按书写顺序各求值一次，译文重用这些结果。译文可以重排、重复或省略原文中的值；存在歧义时在原表达式处报告，作者可以用局部绑定明确对应关系。字面模板配合显式 params 保留 Fluent 数值选择能力。
-
-编译产物统一携带 CatalogProducts；源码会话消费产物并共享未解析的译文文本，按需解析所选语言。build/export 将生成目录写入既有文本归档，发布播放器按语言索引读取。Release 移除源码及编辑信息后，未选译文留在归档；Debug 保留完整作者源码。LSP 复用同一只读提取与验证逻辑，检查语言标签、插值对应和调用形式。 编辑器缓存同一语义快照产生的诊断、原文与译文预览及语种补全；插值表达式继续使用普通名称和类型查询。
-
-`localization.set_locale(locale)` 准备目标语言及其可用的基础语言，成功后一起提交目录与可观察选择；失败或取消保持原状态。`localization.load(locale)` 显式预热并保留目录，带 source 时使用指定资源。查询依次使用精确语言、基础语言和原文。UI 的 derive 订阅语言变化，普通调用、已提交对白和历史保留已有字符串。目录解析和静态模板缓存归同一本地化服务，稳态读取复用现有数据。
-
-可访问性：统一语义树驱动键盘/手柄导航、屏幕阅读器、TTS 与剪贴板辅助输出。作者设置替代文本、分组和朗读顺序；TTS 朗读当前已提交交互，与语音策略和自动推进服务协调。字号、对比和揭示速度可作为设置模型绑定，布局按实际文本尺寸更新。
-图像与二维演出：分层立绘由条件资源子节点与共享参数组成；变换、遮罩、颜色矩阵、曲线、顺序/并行动作和粒子/精灵节点共用活动协议。stage.transition 保留旧目标的绘制数据，新目标继续由当前舞台生成；取消保留当前作者舞台并释放过渡资源，完整规则见“保留画面的舞台转场”。差分选择与动态资源版本都进入保存状态。
-节点图像遮罩使用公共属性 `mask: null|string|MaskExpression`、`mask_progress: 1`、`mask_softness: 0.06`、`mask_invert: false`、`mask_x: 0`、`mask_y: 0`。字符串快捷形式使用普通 PNG/JPEG 资源路径，按节点局部布局矩形拉伸覆盖整个子树；不接受分块 .reel-image。progress 在 0..1，softness 为有限非负数，两个数值可派生及动画。字符串形式在 0 全隐藏、1 全显示并跳过额外遮罩合成；中间覆盖率为 alpha × clamp((progress × (1 + softness) − gray) / softness, 0, 1)，softness=0 使用硬阈值。gray 使用素材编码灰度而非线性化后的色值，invert 对 gray 取 1−gray。遮罩不更改布局、裁剪或逻辑命中，交互使用 visible/enabled 显式控制。组合表达式的构造、采样与参数见[可组合图像蒙版表达式](#可组合图像蒙版表达式)。VM 保存表达式图、资源路径与普通属性，恢复复用图片服务；无 GPU 句柄或截图进入脚本状态。渲染使用具名 Rust 元数据传递遮罩参数，复用帧资源租约和组离屏目标池，不逐帧解码、上传或 CPU 读回。
-透视与可编程渲染：场景组可带 Camera 与 3D Transform，RenderFrame 支持版本化 Mesh、Material、纹理、uniform、混合/深度设置及效果输入。普通节点生成二维平面网格，透视后仍参与统一组顺序；显式深度组使用自己的深度缓冲规则。交互几何可以是二维逆变换、投影平面射线映射或注册的自定义映射。着色器改变形状时作者提供匹配命中策略。WGSL 是默认后端实现语言，Effect/Material 身份和参数独立于后端。
-作者自定义节点：custom_node 注册可保存 state、measure(constraints)、record(draw_context)、event(event_context) 与显式重绘请求。绘制回调记录有资源身份的绘制命令，布局与绘制阶段只读并保持有界；异步加载由正常任务完成后标脏。作者可以增加小游戏、图形和输入行为而沿用同一布局、变换、焦点与恢复协议。Live2D 通过格式/SDK 适配节点提供模型、动作、表情及可恢复参数，SDK 许可与目标构建随适配器明确列出。
-共同节点的 `blend: "normal" | "add" | "multiply" | "screen"` 对完成的整个子树与后方画面合成，默认 normal；构造、赋值、绑定和同包快照共用属性 schema。opacity、反色与遮罩先作用于子树，再执行混合；布局和命中不变。颜色运算在线性预乘 RGBA 中进行：add 对颜色和 alpha 的和分别限到 1；multiply/screen 使用透明度正确的 source-over 混合。复用现有绘制组和目标池，normal 路径保持原成本；其余模式用一个按现有预算租用的背景副本，不在逐帧创建 shader/pipeline。
-
-节点 `invert: 0..1` 对完成合成的整个子树做 sRGB 反色，默认 0；1 将非预乘的编码 RGB 变为 1−RGB，中间值在编码 RGB 中插值，alpha 保持不变，再转回线性预乘值。嵌套节点按树由内到外应用，兄弟节点不受影响；反色先于该组的遮罩与透明度，不改变布局和输入。沿用普通属性写入、derive、tween 与快照，不新增语言语法。UI 的具名组元数据将参数传到帧与 GPU，在既有组离屏目标上一次合成，和 opacity/mask 共用目标；默认值不产生额外组，无截图、CPU 读回或新依赖。验证覆盖组合后的像素、半透明、嵌套与兄弟、遮罩、动态属性和保存恢复，并按设备标明像素验证范围。可运行示例为 examples/author_invert/src/main.aside。
-
-音频视频：音轨可排队、定区间循环、淡化、声像、滤镜与同步组起播；语音支持逐句关联和历史重播。各操作对应可恢复媒体描述，队列/滤镜状态与逻辑位置进入快照。视频支持普通节点、全屏、循环、跳过、seek、音画同步与遮罩。错误、设备恢复和取消遵守媒体身份与唯一终态。
-存档与历史控制：普通/快速/自动槽位、回滚、前滚、选择锁定、回放和持久解锁共用服务。前滚只复用仍匹配代码/状态版本的已记录交互与选择；分支改变使后续记录失效。作者可建立显式回滚边界。发行升级保存代码版本清单，构建工具保留所需历史编译产物；迁移在隔离候选中验证后切换，运行位置只通过声明的恢复映射改变。
-平台与发行：桌面 Windows/Linux/macOS、Android/iOS/Web 以及额外 PS Vita 目标分别实现窗口、输入、音频、存储与生命周期适配。发布清单记录能力与后备策略，实际支持按平台验证。移动签名与 SDK、商店服务和受限平台编码能力由对应构建适配器处理。
-外部服务：文件、HTTP、下载、更新、成就和平台购买使用版本化宿主服务。读取可按描述重发；外部写入带请求身份、幂等键及结果记录，保存/回滚遵守已定义的进程写恢复规则。native 模块默认静态注册，支持动态链接的平台可用版本化 C ABI；句柄为不透明 ID，资源与错误均有明确释放规则。生产发行能力与权限在构建时声明。
-工具：当前 reel check/dev/build/export/run 提供检查、资源组织与构建；以下交互调试器、通用测试命令和演出编辑能力属于规划。节点、样式、属性绑定、资源、活动及任务可检查；工具模式的表达式默认纯读。测试驱动输入、截图及行为结果可自动对照，演出编辑辅助输出可维护源码。语言 LSP 与 debugger 使用同一签名和源映射元数据。
+## 十一 编辑器与扩展
 
 `reel-lsp` 将 Reel 注册的默认环境、宿主声明和属性文档提供给 `aside-lsp`，采用 stdio 启动。VS Code 客户端负责文件关联、高亮、进程管理及只读内置定义的显示。内置类型和方法的编辑信息随 Rust 声明维护，具名参数与默认值来自运行时注册；共同节点属性逐项参与补全。编辑查询只读取源码和声明，不创建游戏会话。
 
@@ -845,13 +802,13 @@ UI 交互：按钮、图片按钮、滑条、输入框、滚动、虚拟列表/�
 
 `mask.alpha(source, x:0, y:0, scale_x:1, scale_y:1, repeat:"none")` 和 `mask.gray(...)` 返回不可变标量表达式，按节点局部矩形归一化 UV 采样 PNG/JPEG；UV 为原坐标乘 scale 后加偏移，repeat 为 none/x/y/both，未重复轴夹到纹理边缘。alpha 读取线性 alpha；gray 将已采样的线性预乘 RGB 还原为编码 sRGB 后按 0.2126/0.7152/0.0722 加权，透明样本返回 0。图片通过现有资源服务加载和退休。UV 参数接受数值或表达式，负 scale 可以翻转。
 
-`mask.param(name)` 读取所属节点的 progress/softness/x/y，分别对应 mask_progress/mask_softness/mask_x/mask_y。新增 mask_x/mask_y 为有限可表示 f32 的数值，默认 0，使用普通赋值、绑定和 tween；原 progress/softness 约束不变。`mask.add/subtract/multiply(a,b)`、`mask.pow(value,power)`、`mask.clamp(value,min:0,max:1)`、`mask.smoothstep(edge0,edge1,value)` 组合标量。普通有限可表示 f32 数值可作为输入；pow 指数为有限非负常数，底数先夹到 0，0^0=1；clamp 的常量边界有限且有序。smoothstep 倒序边界给出反向过渡，相等时按 value>=edge 的硬阶跃。最后覆盖率夹到 0..1，再乘子树透明度；不隐式乘任一输入 alpha。
+`mask.param(name)` 读取所属节点的 progress/softness/x/y，分别对应 mask_progress/mask_softness/mask_x/mask_y。mask_x/mask_y 为有限可表示 f32 的数值，默认 0，使用普通赋值、绑定和 tween；原 progress/softness 约束不变。`mask.add/subtract/multiply(a,b)`、`mask.pow(value,power)`、`mask.clamp(value,min:0,max:1)`、`mask.smoothstep(edge0,edge1,value)` 组合标量。普通有限可表示 f32 数值可作为输入；pow 指数为有限非负常数，底数先夹到 0，0^0=1；clamp 的常量边界有限且有序。smoothstep 倒序边界给出反向过渡，相等时按 value>=edge 的硬阶跃。最后覆盖率夹到 0..1，再乘子树透明度；不隐式乘任一输入 alpha。
 
 表达式只包含上述纯原语，没有作者 shader 字符串、循环、IO 或脚本回调。构造边界验证类型和常量，挂载时编译并共享不可变 DAG；参数变更只更新数值，不复制像素、重建表达式或编译管线。字符串 mask 在同一入口降低为已有灰度阈值语义，保留 0/1 端点、softness=0 硬边和 mask_invert；仅该快捷形式的 progress=1 跳过合成。表达式始终按其结果执行。mask=null 解除蒙版；布局、逻辑命中和普通节点变换保持共同舞台规则。
 
 执行选用结构编译的单个覆盖函数，避免每像素解释循环和固定操作数上限；GPU 管线按表达式结构/质量/设备缓存，缓存只弱持有程序，退休程序清理相应登记。纹理资源按设备采样绑定上限准入；VM 表达式和投影构建工作使用已有堆预算；投影完成后的 CPU DAG 沿用源 Scene/RenderFrame 的共享驻留模型，不宣称跨线程镜像受 VM 堆硬上限约束。生成代码、渲染结构副本、缓存登记和纹理准入使用既有 renderer resources 账目；驱动私有编译空间单列。共享 DAG 子表达式只生成一次。整段蒙版和普通子树组复用现有离屏目标，不逐原语分配纹理。
 
-检查源码/ASB、动画/绑定、快照、隐藏/替换/退休、单图旧语义及双图实际 GPU 像素，测量暖帧上传和管线复用。公开示例 [author_composed_mask.aside](../examples/author_composed_mask/src/main.aside) 使用项目自带的两张 alpha 图片。
+组合示例见 [author_composed_mask.aside](../examples/author_composed_mask/src/main.aside)。
 
 ## 十二 字节码与资源分包发布
 
@@ -912,26 +869,24 @@ VM 按实际使用物化字符串与 tuple；字符串视图共享程序中的�
 运行启动只加载索引与打开包句柄。PackIo 与 DirectoryIo 共用有界 worker、取消、范围读取和完成票据；包条目直接 seek 到 offset+请求偏移，不重新哈希整包。视频 Read/Seek 也经过同一资源桥，音频实时线程不读取归档。内存、IO、解码与上传预算由宿主配置，与作品总文件大小无固定关系。
 
 ## 十三 性能目标与可观测性
+
 固定 720p、1080p 验证场景记录冷启动、包加载、输入响应、CPU/GPU 帧时间、分配、内存与纹理峰值。首阶段以 Windows x64 作低端体验基准，Linux 与 macOS 各自验证窗口、输入、渲染、音频和持久化。低端参考档为 N100 级集成显卡、8 GiB 内存、720p；每份结果注明实际硬件与构建配置。
 目标为控件可见响应 p95 小于 50ms，基础动画 CPU 帧工作 p95 小于 8ms，GPU p95 小于 12ms，呈现间隔 p99 小于 33.3ms。60Hz 稳态同时要求间隔中位数小于 17.5ms、超过 25ms 的比例低于 1%。这些均待实测验证。
 主线程起始调度配额为脚本 2ms、后台结果与资源安装 1ms、回收 0.5ms、快照捕获 1ms；VM 至少每 256 个工作单位检查时间，分配与释放另计。单次不可分割操作同样测量，超限不能只靠总额度掩盖。GPU 上传按帧字节预算分批。快照暂停造成的业务排队时间单独记录，小场景目标一帧内完成。
 资源预算起点为 VM 堆 32 MiB、CPU 解码驻留 64 MiB、GPU 纹理 128 MiB、桌面离屏工作目标 128 MiB；峰值包括待释放对象、候选模块和快照副本。超限先逐出可选缓存、延后预取，再报告具体资源需求。队列与回收积压纳入背压，不能无限增长。
-每阶段必验：静止场景无无效脚本、布局和呈现；单滑条不更新无关布局；纯音量变化只通知音频；单节点淡化复用排版。开发运行和 release 都测体验，优化由同一工作负载的前后数据证明。
+稳定场景复用脚本结果、布局与已接受画面；属性变化只使相关消费者失效，音量更新交给音频服务，节点淡化复用文字排版。
 
-## 十四 开发顺序与验收
+## 十四 开发检查
 
-调度与清理行为检查为 `cargo test --locked -p aside-vm --test gc_scheduling` 和 `cargo test --locked -p reel-player --test runtime_cost`。CPU 成本测量为 `cargo test --locked --release -p reel-player --test runtime_cost runtime_cost -- --ignored --nocapture --test-threads=1`，`REEL_COST_ROWS` 控制常驻数据行数，默认 10000。输出分别记录脚本更新、定时唤醒、捕获及候选恢复；快照内存是逐片观察的新增存活分配，不是进程 RSS 或瞬时分配峰值。窗口、字体、渲染、磁盘和设备成本需另外测量。
-当前能力与剩余工作集中在[文档入口](README.md#当前状态)和[引擎总清单 #94](https://github.com/jhq223/reel/issues/94)。实施按作者可用的成果推进：组件表达与常用控件、演出与资源起点、长内容运行成本、同包恢复及设备覆盖。语言和标准库沿同一能力清单补齐，已实现的子集与完整目标分别标注。每次变更以现有公共舞台、所有权和资源账本为基础，同步接口与消费者。
-验收采用最小宿主夹具和针对性 UI 片段，不要求制作完整可玩流程。NullPlatform、记录型渲染器、假时钟和内存 IO 验证无隐式设备、时间或文件系统依赖；关闭 winit/wgpu 后检查核心及传递依赖。用例覆盖单次输入消费、配对按下与释放、拖动失焦、模态隔离、嵌套合成、保存后切场景、读档后旧结果、重载已有回调及节点销毁后的异步完成。音频、恢复与帧预算分别提供可重复的负载和观察值。协作执行器测单步最大耗时、满队列、取消与过期完成；表面丢失及挂起恢复测时钟和资源身份。Vita 承诺前先做 32 位交叉构建，再依次验证启动、输入、图片/字形、音频、可靠保存与效果，不承诺未经实测的帧率。
-每个代理任务写明目标、允许目录、冻结的接口版本、已有代码、禁止扩大的范围、行为场景与性能预算。Issue 按可验收成果组织，PR 保持独立可审查；提交包含实际改动、相关用例、运行命令、观察结果与未解决项。不得以测试数量、模拟成功或完成报告代替实际契约验证。接口或依赖变更先提交设计修改，经负责人确认后继续。负责人亲自审输入、所有权、保存、音频和平台关键路径，重跑关键验证并处理跨模块冲突。性能计数器从第一阶段建立，协议变更同步三份设计。各后端的构建、设备和尾延迟验证属于对应实现任务。代码与文档以同一能力清单记录结果。
+运行入口见 [reel-dev](../crates/reel-dev/README.md) 与各 crate README；当前缺口和推进顺序见[总清单 #94](https://github.com/jhq223/reel/issues/94)。协作、审查及文档维护要求见 [AGENTS.md](../AGENTS.md)。
 
 ## 十五 UI 模块与呈现桥接合同
 
-舞台指针（已实现）：`stage.pointer()` 返回最近真实鼠标输入在已接受逻辑舞台中的 `{x,y}` 快照；无接受画面、离窗、失焦或触摸/键盘手柄导航时返回 null。位置不随执行快照恢复，返回的普通数据值照常保存。`await stage.move_pointer(x,y,owner:node)` 请求真实宿主定位；owner 必须是挂载、可用且在当前模态范围内的节点。请求归该节点所有，与窗口配置共用单个有界在途槽，取消/会话替换撤销未执行请求。宿主按接受的舞台变换与 DPI 转换，目标须在客户区；当前输入/呈现/节点无效或不支持返回 false，执行成功经普通 Move 更新命中与悬停。非法参数及宿主执行错误给出诊断。能力为 `window.info().capabilities.pointer_move`，定位句柄留在平台适配器。检查源码/ASB、取消/恢复、接受坐标、模态/隐藏/输入方式；`cargo test --locked -p reel-engine --lib aside::tests::window`、`cargo test --locked -p reel-player --lib pointer_` 与 `cargo test --locked -p reel-cli --test author_pointer` 可复跑。坐标检查覆盖非单位舞台缩放、DPI、黑边和未接受的新布局；实际系统定位仍按设备分别验收。
-本节规定 reel-ui 的模块与行为边界。UI 结构整合不改变已验收的控件、CPU 帧记录、呈现几何和资源契约；后端与设备仍按各自用例验收。工作区采用 Rust 1.96.0 工具链。
+舞台指针：`stage.pointer()` 返回最近真实鼠标输入在已接受逻辑舞台中的 `{x,y}` 快照；无接受画面、离窗、失焦或触摸/键盘手柄导航时返回 null。位置不随执行快照恢复，返回的普通数据值照常保存。`await stage.move_pointer(x,y,owner:node)` 请求真实宿主定位；owner 必须是挂载、可用且在当前模态范围内的节点。请求归该节点所有，与窗口配置共用单个有界在途槽，取消/会话替换撤销未执行请求。宿主按接受的舞台变换与 DPI 转换，目标须在客户区；当前输入/呈现/节点无效或不支持返回 false，执行成功经普通 Move 更新命中与悬停。非法参数及宿主执行错误给出诊断。能力为 `window.info().capabilities.pointer_move`，定位句柄留在平台适配器。
 
-自定义光标（已实现）
-`cursor(children: [], ...)` 是普通舞台容器，挂载父节点拥有其寿命。整个子树不参与指针、焦点或父容器流布局；可用图片、文字、变换、透明度、遮罩和普通活动构成外观。容器局部原点跟随鼠标，x/y 是相对热点的偏移；子 image 的 anchor 或 x/y 定义图像热点。外观使用窗口逻辑坐标，在完整场景之后绘制，祖先相机、变换、裁剪和合成不影响此窗口层；cursor 本身及后代的合成仍沿唯一绘制流和资源预算。最近鼠标输入的接受命中路径决定 owner；禁用控件不接收 hover，但仍可选择该路径上可用的祖先光标，按压捕获期间使用捕获路径；从深到浅选首个具有可用 cursor 的 owner，同父以树顺序最后者优先。祖先 visibility/enabled、退休和当前模态范围决定资格，旧接受帧不能复活已隐藏或退休的节点。可见空容器隐藏系统光标；visible=false 或移除让回祖先 cursor 或系统光标。离窗、失焦、切换触摸、清空接受视图和会话切换撤销自定义光标；再次真实鼠标输入按当前画面恢复。指针坐标和平台句柄不保存，普通节点、资源和动画沿现有快照恢复，恢复后等待真实指针输入。移动只更新 UI 呈现位置，不回写 VM 坐标、不增加脚本逐帧任务，也不重新排版未变外观。检查入口为 `cargo test --locked -p reel-cli --test author_cursor`、`cargo test --locked -p reel-cli --test author_images cursor_source` 和 `cargo test --locked -p reel-player --features window --lib cursor_`。GPU 像素检查加 `cursor_offscreen -- --ignored --nocapture`；隐藏原生窗口检查为 `actual_cursor_window -- --ignored --nocapture`，需设置真实字体路径 `REEL_SESSION_FONT`。原生检查使用宿主生成的 move/leave 事件与实际 GPU 表面，不代表物理鼠标、触屏或各平台图形体验已经验收。示例：[author_cursor.aside](../examples/author_cursor/src/main.aside)。
+自定义光标
+`cursor(children: [], ...)` 是普通舞台容器，挂载父节点拥有其寿命。整个子树不参与指针、焦点或父容器流布局；可用图片、文字、变换、透明度、遮罩和普通活动构成外观。容器局部原点跟随鼠标，x/y 是相对热点的偏移；子 image 的 anchor 或 x/y 定义图像热点。外观使用窗口逻辑坐标，在完整场景之后绘制，祖先相机、变换、裁剪和合成不影响此窗口层；cursor 本身及后代的合成仍沿唯一绘制流和资源预算。最近鼠标输入的接受命中路径决定 owner；禁用控件不接收 hover，但仍可选择该路径上可用的祖先光标，按压捕获期间使用捕获路径；从深到浅选首个具有可用 cursor 的 owner，同父以树顺序最后者优先。祖先 visibility/enabled、退休和当前模态范围决定资格，旧接受帧不能复活已隐藏或退休的节点。可见空容器隐藏系统光标；visible=false 或移除让回祖先 cursor 或系统光标。离窗、失焦、切换触摸、清空接受视图和会话切换撤销自定义光标；再次真实鼠标输入按当前画面恢复。指针坐标和平台句柄不保存，普通节点、资源和动画沿现有快照恢复，恢复后等待真实指针输入。移动只更新 UI 呈现位置，不回写 VM 坐标、不增加脚本逐帧任务，也不重新排版未变外观。
+示例：[author_cursor.aside](../examples/author_cursor/src/main.aside)。
 
 呈现几何与上下文
 reel-ui::app/core 导出几何、选择输入源并分发事件；bridge 管理 FrameId、surface epoch、呈现接受门和 NodeId↔WidgetId 的代际映射，沿用 reel-core 的共享预算。输入源明确为 Live 或 Presented，Presented 内可尚无接受视图。Reel 使用 Presented；首帧前几何命中为空，宿主关闭/挂起等平台命令照常处理。
@@ -972,7 +927,7 @@ GeometryLimits 仅保留 max_bytes；几何导出使用显式 DFS，按实际登
 
 图片、字体和外部内容先在有界资源登记表中建立 ResourceVersion 与拥有型租约。复用 reel-core 的 AssetKey、ContentVersion，紧凑运行时句柄包含登记表代数及完整槽身份。源 Blob ID 只作为查找线索，登记时同时核对内容对象/版本，避免把碰撞身份当成相同内容。内容版本在资源准备阶段固定，导出只查表；缺少登记给出具体资源需求，由准备工作完成后重新构建候选。
 
-登记表持有共享不可变数据，帧保存资源引用/租约，上传和在途提交各自取得其所需拥有权。同一图片或字体在多次绘制中复用数据。缓冲、索引表、候选副本、等待上传、图形在途与退休空间均计费；物理释放完成后退账。retire 停止取得新租约并移除登记表自己的保留；已有租约仍可用于提交，包括暂停构建、完整帧和已接受上传。全部租约释放且最后一次图形使用完成之后才归还实际存储，槽复用更新完整代数。导出的字节预算约束新增帧、映射与登记存储；工作额度只限制每个执行片，不限制整幅画面的累计工作。源 Scene 私有表容量、未被 command 引用的 mask 与共享 Blob 的底层分配属于生产者记录/缓存，公共 command visitor 只提供内容访问。R01 对这些源驻留分别测量 record、暂停构建、完成和取消时的实际分配/进程峰值及源清理耗时，明确标识源租约保留期；不以命令长度冒充精确源分配账本。需要进一步细化源驻留计账或分片析构时，增加真正的 owned-parts/drain/storage 接口后验证。
+登记表持有共享不可变数据，帧保存资源引用/租约，上传和在途提交各自取得其所需拥有权。同一图片或字体在多次绘制中复用数据。缓冲、索引表、候选副本、等待上传、图形在途与退休空间均计费；物理释放完成后退账。retire 停止取得新租约并移除登记表自己的保留；已有租约仍可用于提交，包括暂停构建、完整帧和已接受上传。全部租约释放且最后一次图形使用完成之后才归还实际存储，槽复用更新完整代数。导出的字节预算约束新增帧、映射与登记存储；工作额度只限制每个执行片，不限制整幅画面的累计工作。源 Scene 私有表容量、未被 command 引用的 mask 与共享 Blob 的底层分配属于生产者记录/缓存，公共 command visitor 只提供内容访问。源租约覆盖记录、构建及清理；源私有容量按生产者自身的分配计量。
 
 等待上传字节额度累计约束全部未完成批次的 payload 容量票据，与上传加驻留总额度独立检查；拒绝返回原批次。选定无强租约的资源槽后，先释放登记表自己的过期弱描述符票据再预留替代项，外部弱别名继续保留相应责任。
 
@@ -988,7 +943,7 @@ paint/append 边界另存连续命令的实际绘制者范围，普通 Inline �
 
 组明确保存效果坐标空间、效果参数和保守 ink bounds。imaging Group 本身缺少整体效果变换，因此 paint/append 边界为组保存保证存在的 owner 与效果空间元数据；组的来源不能靠某个子绘制或可选诊断上下文猜测。bounds 包括笔画、字形外延、抗锯齿与滤镜扩张，布局盒仅用于布局。mask 自己的记录流、变换、alpha/亮度模式和采样规则随组保留。
 
-### 默认后端方向
+### 默认后端
 
 默认使用 wgpu 的常规几何与合成管线：图片四边形、缓存路径网格和字形图集四边形相邻兼容时合批。路径细分复用 lyon_tessellation，字形栅格化复用 Swash scale；保留现有 Parley 整形结果。固定依赖版本分别为 1.0.22、0.2.10。Swash 的 shaping 路径不进入此适配器。
 
@@ -1004,19 +959,18 @@ GPU clip/group/mask 执行使用按实际存储计账的显式工作栈，不设
 
 设备建立时确定并公开精度、采样数与效果能力。桌面质量档以 RGBA16Float 中间目标和 4x MSAA 为首选；受限档显式使用线性 RGBA8 与 1x 采样，字形覆盖继续保留。具体选择由设备能力与已配置内存档共同决定，创建后保持稳定；变更质量档触发缓存/目标版本更新。桌面离屏起始池为 128 MiB，与普通资源驻留分别限制并汇总峰值。1080p RGBA16Float 的 4x 附件加 resolve 已占 82,944,000 字节，深度、mask 与在途重叠另计；64 MiB 等更小配置在设备/尺寸协商时选择明确的受限档，或报告所请求质量的最小资源量。目标池按实际格式、sample count、resolve、深度/覆盖和同时在途数量预先计量，空间不足时保持既有画面并报告资源需求。质量和内存默认值最终以同一基础场景的实际目标设备数据确认。
 
-Vello 0.8 的编码/渐变与 blend 路径采用 sRGB，imaging_vello 0.0.1 对 alpha mask/filter 另有缺失；因此它不是本合同的默认生产光栅器。CPU replay 可作结构与几何参考，线性颜色期望另用明确公式验证。
-
-设备适配实施合同见 [R02-INTERFACE](../crates/reel-render/R02-INTERFACE.md)；该文档区分 device generation 与 SurfaceEpoch、实际队列完成和表面接受，以及独立目标/资源/临时预算。实现与设备验证状态以 R02 报告为准。
+设备适配入口见 [renderer](../crates/reel-render/README.md)，具体合同区分 device generation 与 SurfaceEpoch、实际队列完成和表面接受，以及独立目标/资源/临时预算。设备覆盖见 [#93](https://github.com/jhq223/reel/issues/93)。
 
 WGPU 适配器使用锁定的 wgpu 30.0.1。设备丢失保留后端提供的 reason/message；已丢失设备上的帧获取、丢弃与呈现统一进入设备恢复，不将清理失败变成进程 panic。帧准备先于交换链获取，提交后仍检查设备错误，只有成功呈现才接受输入几何。恢复只替换 GPU、表面与其缓存，保留剧情 VM 和 CPU 资源；旧设备的 prepared 不能提交到新设备。
 
-### 实施验收
+### 后端接口
 
 帧、资源租约、可恢复导出和外部内容顺序沿本章合同实现。wgpu 后端在同一合同上验证实际像素、alpha/亮度 mask、嵌套透明组、crossfade、字形与图片缓存、resize/挂起/设备丢失以及上传/回收边界。每份结果区分源码审查、CPU/null 和具体图形设备；完整帧、导出、光栅、合成、提交与物理完成分开计时。
 
-R01 实施接口与边界见 [R01-INTERFACE](../crates/reel-ui/R01-INTERFACE.md)，真实控件、U02 回归与导出/驻留/清理测量见 [R01-REPORT](https://github.com/jhq223/reel/blob/355571b18bd4024914438a7ac6bd94ebf3c7826f/crates/reel-ui/R01-REPORT.md)。自有图片/字体以 core OwnedBytes 将全 capacity 票据绑定到 Blob 底层，生产者缓存别名继续保留该账目；公开 API 导入的不透明源分配仍归生产者单独计量。输出、映射与登记表有硬额度，源 Scene 私有容量不由 command 长度推算。逐元素复制、映射和容量信用可跨 step 推进；实际容量分配与源 Drop 仍是原子操作，分别报告耗时。已知几何外延包含按冻结 DPI 计算的 AA；有限值运算溢出、本地 mask 的采样外延、Gaussian cutoff、字形轮廓与滤镜未知外延明确记为 Unbounded 并要求后端按真实输出目标裁限。记录型 PresentAccepted 是模拟接口结果，null 明确 Skipped，均不代表设备像素或 GPU 性能通过。
+帧导出及资源入口见 [reel-ui](../crates/reel-ui/README.md)。自有图片/字体以 core OwnedBytes 将全 capacity 票据绑定到 Blob 底层，生产者缓存别名继续保留该账目；公开 API 导入的不透明源分配仍归生产者单独计量。输出、映射与登记表有硬额度，源 Scene 私有容量不由 command 长度推算。逐元素复制、映射和容量信用可跨 step 推进；实际容量分配与源 Drop 仍是原子操作，分别报告耗时。已知几何外延包含按冻结 DPI 计算的 AA；有限值运算溢出、本地 mask 的采样外延、Gaussian cutoff、字形轮廓与滤镜未知外延明确记为 Unbounded 并要求后端按真实输出目标裁限。记录型 PresentAccepted 是模拟接口结果，null 明确 Skipped，均不代表设备像素或 GPU 性能通过。
 
 主要依据：
+
 - imaging 0.0.1 公开记录：https://github.com/forest-rs/imaging/blob/eea0e47503fdab1c4159a939797ba74acab19876/imaging/src/record.rs
 - 对应 Vello 适配：https://github.com/forest-rs/imaging/blob/eea0e47503fdab1c4159a939797ba74acab19876/imaging_vello/src/scene_sink.rs
 - Vello blend 约定：https://github.com/linebender/vello/blob/302fa902ebc5a7605b6664393d43abaf369eee29/vello_shaders/shader/shared/blend.wgsl
@@ -1024,6 +978,7 @@ R01 实施接口与边界见 [R01-INTERFACE](../crates/reel-ui/R01-INTERFACE.md)
 - Swash 栅格接口：https://docs.rs/swash/latest/swash/scale/index.html
 
 ## 参考来源
+
 [1] Ren’Py 保存与回滚 https://www.renpy.org/doc/html/save_load_rollback.html
 [2] Ren’Py Screens https://www.renpy.org/doc/html/screens.html
 [3] Ren’Py Screen 优化 https://www.renpy.org/doc/html/screen_optimization.html
