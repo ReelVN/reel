@@ -234,7 +234,7 @@ fn speech_literal_wait_results_and_bound_methods_execute_from_source_and_asb() {
         fn opening() {
             let styled:RichText=rich("[b]hello[/b]");
             if styled.plain!="hello" {throw "RichText";}
-            let who:Character=character("Lucy",id:"lucy");
+            let who:Character=character("Ada",id:"ada");
             let line:CharacterLine=who.line("composed");
             let speech:Speech=narrator(styled,wait:false);
             speech.append(" more",wait:false);

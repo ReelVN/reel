@@ -97,7 +97,7 @@ fn calls_fill_short_arguments_and_chains_share_one_continuation_indent() {
         "let hint = text(\n    \"Choose a word\", x: 24, y: 30, width: 480, height: 60, font_size: 24, color: \"#ffffff\",\n    text_align: \"center\", visible: bind(state.ready)\n);\n"
     );
     let chain = checked(
-        "let view = presentation.configure(width:960,height:540).background(\"images/the-sunlit-classroom.png\").portrait(\"Lucy\",position:\"center\").show();",
+        "let view = presentation.configure(width:960,height:540).background(\"images/background.png\").portrait(\"Ada\",position:\"center\").show();",
     );
     assert!(chain.contains("\n    .background("), "{chain}");
     assert!(chain.contains("\n    .portrait("), "{chain}");

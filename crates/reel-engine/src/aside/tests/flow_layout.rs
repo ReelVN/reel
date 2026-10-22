@@ -7,7 +7,7 @@ fn flow_layout_binding_configuration_and_restore_share_registered_schemas() {
     fn opening() {
         let state=model({columns:4,weight:1,gap:8});
         let body=text("A remaining-width paragraph",flex:bind(state.weight));
-        let line=row(width:640,gap:12){ text("Lucy",width:120); body; };
+        let line=row(width:640,gap:12){ text("Ada",width:120); body; };
         let cards=grid(columns:bind(state.columns),column_width:140,row_height:80,row_gap:bind(state.gap)) {
             for slot in 0..12 { button(f"{slot+1}"); }
         };

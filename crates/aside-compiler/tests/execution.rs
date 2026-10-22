@@ -157,17 +157,17 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
         ),
         (
             r#"fn main() {
-                let record = {name:"Lucy"};
-                let values = [null, 0, 42, 42.0, "露西", (1, ("中文", record)), record];
+                let record = {name:"Ada"};
+                let values = [null, 0, 42, 42.0, "文字", (1, ("中文", record)), record];
                 if values.find(42.0)!=2 || !values.contains(value:42) {throw "numeric equality";}
                 if values.find(false)!=null || values.find(null)!=0 {throw "null or boolean";}
                 if values.find((1.0,("中文",record)))!=5 {throw "tuple equality";}
-                if values.contains({name:"Lucy"}) || values.find(record)!=6 {throw "record identity";}
+                if values.contains({name:"Ada"}) || values.find(record)!=6 {throw "record identity";}
                 if [].contains(null) || [].find(null)!=null {throw "empty array";}
                 if (1,"two").find("two")!=1 || !(1,"two").contains(1.0) {throw "tuple receiver";}
                 let find = values.find;
                 let contains = values.contains;
-                if find(value:"露西")!=4 || !contains(null) {throw "bound methods";}
+                if find(value:"文字")!=4 || !contains(null) {throw "bound methods";}
                 let nan = (1e308*1e308)-(1e308*1e308);
                 if [nan].contains(nan) || [(nan,)].contains((nan,)) {throw "nan equality";}
                 if [9007199254740993].contains(9007199254740992.0) {throw "exact integer comparison";}
