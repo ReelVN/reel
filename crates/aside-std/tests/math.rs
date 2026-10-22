@@ -1,3 +1,4 @@
+mod support;
 use aside_host::{FromValue, aside_compiler, aside_vm};
 use aside_vm::{RootOwner, SessionEpoch, Value, bytecode as bc, executor::*};
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
@@ -41,10 +42,7 @@ fn drive(
 #[test]
 fn math_accepts_int_and_float_at_native_boundary_with_float_results_and_source_errors() {
     let contracts = aside_std::contracts();
-    let mut resolver = aside_compiler::semantic::MemoryResolver::default();
-    for module in aside_std::modules() {
-        resolver.insert(module);
-    }
+    let mut resolver = support::resolver();
     assert!(
         aside_compiler::analyze_module(
             "fn strict(value:float){value} fn main(){strict(1);}",
@@ -60,8 +58,15 @@ fn math_accepts_int_and_float_at_native_boundary_with_float_results_and_source_e
         .into_module()
         .unwrap();
     for encoded in [false, true] {
-        let compiled =
-            aside_host::lower(&module, &contracts, &[], &[], &[], Default::default()).unwrap();
+        let compiled = aside_host::lower(
+            &module,
+            &contracts,
+            &aside_std::api().functions,
+            aside_std::types(),
+            &[],
+            Default::default(),
+        )
+        .unwrap();
         let initializer = compiled.entry;
         let program = if encoded {
             bc::VerifiedProgram::decode(
@@ -84,7 +89,8 @@ fn math_accepts_int_and_float_at_native_boundary_with_float_results_and_source_e
         };
         let main = function("main");
         let invalid = function("invalid");
-        let support = aside_host::runtime_support(&program, &contracts, &[], &[]).unwrap();
+        let support =
+            aside_host::runtime_support(&program, &contracts, aside_std::types(), &[]).unwrap();
         let mut library = aside_std::StandardLibrary::new(&program);
         let mut vm = Vm::load(program, support, VmLimits::default(), SessionEpoch(1)).unwrap();
         assert_eq!(<f64 as FromValue>::TYPE, bc::BuiltinType::Float);

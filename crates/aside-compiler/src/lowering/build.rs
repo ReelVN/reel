@@ -553,6 +553,7 @@ impl Lowerer<'_> {
             h::Type::Future => Some(B::Future),
             h::Type::Generator => Some(B::Generator),
             h::Type::Named(name) if self.m.hir().name(*name) == "Binding" => Some(B::PropertyRef),
+            h::Type::Named(name) if self.m.hir().name(*name) == "tuple" => Some(B::Tuple),
             h::Type::Class(_) => Some(B::Class),
             h::Type::Closure | h::Type::Function(_) | h::Type::BoundMethod(_) => Some(B::Closure),
             _ => None,
@@ -1771,6 +1772,7 @@ fn hint_matches(
         T::Future => Some(B::Future),
         T::Generator => Some(B::Generator),
         T::Named(name) if name == "Binding" => Some(B::PropertyRef),
+        T::Named(name) if name == "tuple" => Some(B::Tuple),
         _ => None,
     };
     let actual = &p.types[id.index()];

@@ -15,7 +15,9 @@ mod arguments;
 use arguments::{ArgumentBinding, ArgumentStep, ParameterNames};
 mod awaitables;
 mod builtins;
+mod call_sites;
 mod calls;
+pub use call_sites::{HostCallSite, HostCallSites};
 mod classes;
 use calls::NativeSite;
 #[cfg(test)]
@@ -99,6 +101,19 @@ enum ReturnTo {
         call: Pc,
     },
 }
+impl ReturnTo {
+    fn caller(self) -> Option<(FrameId, Option<Pc>)> {
+        match self {
+            Self::Delivery => None,
+            Self::Register { frame, call, .. }
+            | Self::Default { frame, call, .. }
+            | Self::Class { frame, call }
+            | Self::Sort { frame, call }
+            | Self::ReactiveRead { frame, call } => Some((frame, Some(call))),
+            Self::Native { frame } | Self::NativeDefault { frame, .. } => Some((frame, None)),
+        }
+    }
+}
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum ArgSource {
     Sort {
@@ -122,6 +137,7 @@ enum ArgSource {
 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum ScriptPhase {
+    Search(builtins::SearchWork),
     Sort(builtins::SortWork),
     Class(classes::ClassStep),
     Copy {
@@ -153,6 +169,10 @@ enum ScriptPhase {
     },
     TableValidate,
     TableScan,
+    HostMethod {
+        object: Reg,
+        dest: Reg,
+    },
     Builtin(builtins::BuiltinCall),
     Bulk(builtins::BulkWork),
     TextBuiltin(builtins::TextWork),
@@ -1678,6 +1698,9 @@ impl Vm {
     }
     fn ticket(&self, ticket: HostTicket) -> Result<NativeFrame, VmError> {
         let task = self.task(ticket.task).map_err(|_| VmError::InvalidTicket)?;
+        self.ticket_frame(task, ticket)
+    }
+    fn ticket_frame(&self, task: &TaskState, ticket: HostTicket) -> Result<NativeFrame, VmError> {
         if ticket.heap != self.heap.id() || ticket.epoch != self.heap.epoch() || task.cancelling {
             return Err(VmError::InvalidTicket);
         }
@@ -2691,6 +2714,11 @@ impl Vm {
                     return Ok(false);
                 }
             }
+            ScriptPhase::HostMethod { object, dest } => {
+                if !self.host_method_step(&mut s, object, dest, m)? {
+                    return Ok(false);
+                }
+            }
             ScriptPhase::Sequence {
                 dest,
                 window,
@@ -2717,6 +2745,11 @@ impl Vm {
             }
             ScriptPhase::Builtin(_) => {
                 if !self.builtin_step(&mut s, m)? {
+                    return Ok(false);
+                }
+            }
+            ScriptPhase::Search(work) => {
+                if !self.search_step(&mut s, work, m)? {
                     return Ok(false);
                 }
             }
@@ -3420,7 +3453,15 @@ impl Vm {
                 }
                 let host = self.is_text(object, ObjectKind::Host);
                 let object = if host {
-                    self.heap.host_fields(object).map_err(heap_fault)?
+                    match self.heap.host_fields(object) {
+                        Ok(fields) => fields,
+                        Err(HeapError::RetiredHost) if op == Opcode::MemberGet => {
+                            let key = self.value(self.constants, c).map_err(vm_fault)?;
+                            self.start_host_method(s, r(b), r(a), key)?;
+                            return Ok(false);
+                        }
+                        Err(error) => return Err(heap_fault(error)),
+                    }
                 } else {
                     object
                 };
@@ -3452,7 +3493,14 @@ impl Vm {
                 let object = self.read(*s, r(b))?;
                 let index = self.read(*s, r(c))?;
                 if self.is_text(object, ObjectKind::Host) {
-                    let fields = self.heap.host_fields(object).map_err(heap_fault)?;
+                    let fields = match self.heap.host_fields(object) {
+                        Ok(fields) => fields,
+                        Err(HeapError::RetiredHost) => {
+                            self.start_host_method(s, r(b), r(a), index)?;
+                            return Ok(false);
+                        }
+                        Err(error) => return Err(heap_fault(error)),
+                    };
                     self.start_table(
                         s,
                         fields,
@@ -4063,6 +4111,17 @@ impl Vm {
             };
             return Ok(());
         }
+        if let Some(result) = self.equality_compare_step()? {
+            s.phase = ScriptPhase::EqualityCleanup {
+                dest,
+                negated,
+                result,
+            };
+        }
+        Ok(())
+    }
+
+    fn equality_compare_step(&mut self) -> Result<Option<Result<bool, FaultKind>>, VmError> {
         let depth = self.active.equality_cursors.data.len() as u32 - 1;
         let offset = self.active.equality_cursors.data[depth as usize];
         let left = self.value(self.active.equality_roots.unwrap(), depth * 2)?;
@@ -4097,12 +4156,7 @@ impl Vm {
                             if self.active.equality_cursors.data.len()
                                 == self.limits.max_unwinds as usize
                             {
-                                s.phase = ScriptPhase::EqualityCleanup {
-                                    dest,
-                                    negated,
-                                    result: Err(FaultKind::Resource),
-                                };
-                                return Ok(());
+                                return Ok(Some(Err(FaultKind::Resource)));
                             }
                             let a = self.heap.get_field(left, offset)?;
                             let b = self.heap.get_field(right, offset)?;
@@ -4126,25 +4180,17 @@ impl Vm {
         };
         if let Some(equal) = result {
             if !equal {
-                s.phase = ScriptPhase::EqualityCleanup {
-                    dest,
-                    negated,
-                    result: Ok(false),
-                };
+                return Ok(Some(Ok(false)));
             } else {
                 self.clear(self.active.equality_roots.unwrap(), depth * 2)?;
                 self.clear(self.active.equality_roots.unwrap(), depth * 2 + 1)?;
                 self.active.equality_cursors.data.pop();
                 if self.active.equality_cursors.data.is_empty() {
-                    s.phase = ScriptPhase::EqualityCleanup {
-                        dest,
-                        negated,
-                        result: Ok(true),
-                    };
+                    return Ok(Some(Ok(true)));
                 }
             }
         }
-        Ok(())
+        Ok(None)
     }
     fn select_exit_handler(
         &self,

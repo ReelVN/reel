@@ -162,6 +162,7 @@ impl Vm {
                 self.active.abort_equality |= matches!(
                     s.phase,
                     ScriptPhase::Equality { .. }
+                        | ScriptPhase::Search(_)
                         | ScriptPhase::EqualityCleanup { .. }
                         | ScriptPhase::TableValidate
                         | ScriptPhase::KeyPath { .. }

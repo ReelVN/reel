@@ -76,6 +76,63 @@ pub(super) fn drive(vm: &mut SessionVm, session: &mut Session, collect_copies: b
 }
 
 #[test]
+fn sequence_search_tracks_content_and_source_replacement_in_derived_properties() {
+    let code = r#"fn opening() {
+        let data=model({values:[1,2]});
+        let position=text("position",x:derive(|| data.values.find(42) ?? -1));
+        let present=text("present",width:derive(|| if data.values.contains(42) {10} else {0}));
+        let original=data.values;
+        stage.replace(column(){
+            position;present;
+            button("element",on_click:|event| {data.values[1]=42;});
+            button("first",on_click:|event| {data.values.insert(0,42);});
+            button("replace",on_click:|event| {data.values=[7];});
+            button("append",on_click:|event| {data.values.append(42);});
+            button("clear",on_click:|event| {data.values.clear();});
+            button("old source",on_click:|event| {original.append(42);});
+        });
+        narrator("ready");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = prepared(code, encoded);
+        drive(&mut vm, &mut session, true);
+        let find = |vm: &SessionVm, name: &str| {
+            vm.stage()
+                .nodes()
+                .find(|node| node.kind == NodeKind::Text(name.into()))
+                .unwrap()
+                .id
+        };
+        let position = find(&vm, "position");
+        let present = find(&vm, "present");
+        for (action, x, width) in [
+            (None, -1., 0.),
+            (Some("element"), 1., 10.),
+            (Some("first"), 0., 10.),
+            (Some("replace"), -1., 0.),
+            (Some("append"), 1., 10.),
+            (Some("clear"), -1., 0.),
+            (Some("old source"), -1., 0.),
+        ] {
+            if let Some(label) = action {
+                let button = vm.stage().nodes().find(|node| {
+                    matches!(&node.kind, NodeKind::Button {label: Some(value), ..} if value == label)
+                }).unwrap().id;
+                assert!(vm.click(&mut session, button).unwrap());
+                drive(&mut vm, &mut session, true);
+                collect(&mut vm);
+            }
+            assert_eq!(vm.stage().node(position).unwrap().props.x, x, "{action:?}");
+            assert_eq!(
+                vm.stage().node(present).unwrap().props.width,
+                Some(width),
+                "{action:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn table_remove_preserves_model_bindings_and_recomputes_derived_lookup_from_source_and_asb() {
     let code = r#"fn opening() {
         let data=model({removed:1, middle:2, last:3});

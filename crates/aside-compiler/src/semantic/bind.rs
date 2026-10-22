@@ -1404,6 +1404,11 @@ impl Binder<'_> {
             (Type::Tuple(a), Type::Tuple(b)) => {
                 a.len() == b.len() && a.iter().zip(b).all(|(&a, &b)| self.compatible(a, b))
             }
+            (Type::Tuple(_), Type::Named(name)) | (Type::Named(name), Type::Tuple(_))
+                if self.out.hir.name(*name) == "tuple" =>
+            {
+                true
+            }
             (Type::Function(f) | Type::BoundMethod(f), Type::Callable(p, r)) => {
                 let bound = matches!(self.out.types[actual.0 as usize], Type::BoundMethod(_));
                 let f = &self.out.functions[f.0 as usize];
@@ -1419,6 +1424,12 @@ impl Binder<'_> {
                 true
             }
             (Type::Class(_), Type::Named(name)) if self.out.hir.name(*name) == "class" => true,
+            (Type::Named(actual), Type::Named(expected))
+                if self.out.hir.name(*actual) == "tuple"
+                    || self.out.hir.name(*expected) == "tuple" =>
+            {
+                actual == expected
+            }
             (Type::Named(actual), Type::Named(expected)) => self
                 .resolver
                 .is_named_subtype(self.out.hir.name(*actual), self.out.hir.name(*expected))
@@ -2215,6 +2226,22 @@ impl Binder<'_> {
             .name(n)
             .map(|t| self.out.hir.name(t.name.unwrap()).to_owned());
         if let (Some(&base), Some(key)) = (children.first(), key) {
+            if let Some(group) = super::builtin_members(&self.out.hir, &self.out.types, object)
+                // A table's own named entry wins over a builtin method. Its
+                // dynamic shape cannot promise this fallback's call contract.
+                && group.receiver != TypeHint::Table
+                && let Some(member) = group.members.iter().find(|member| member.symbol.name == key)
+            {
+                let symbol = member.symbol.clone();
+                let ty = self.hint(&symbol.ty);
+                self.member_write_types.insert(n, None);
+                self.external_nodes
+                    .insert(n, ExternalDescriptor::metadata(symbol));
+                if matches!(self.out.types[object.0 as usize], Type::Union(_)) {
+                    self.check(n, RuntimeChecks::TYPE);
+                }
+                return ty;
+            }
             if let Some(class) = self
                 .external_nodes
                 .get(&base)

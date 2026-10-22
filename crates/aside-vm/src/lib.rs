@@ -1,6 +1,8 @@
 //! Aside storage, verified bytecode and a budgeted resumable execution core.
 #![forbid(unsafe_code)]
+mod builtin_methods;
 pub mod bytecode;
+pub use builtin_methods::{BuiltinDeclaration, BuiltinMethod, BuiltinParameter};
 mod cell;
 mod class;
 mod dependencies;

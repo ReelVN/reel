@@ -316,7 +316,9 @@ impl Heap {
         host: Value,
         name: SymbolId,
     ) -> Result<Option<FunctionId>, HeapError> {
-        self.host_fields(host)?;
+        // Retirement clears instance fields, while the trusted nominal identity
+        // remains available. Each native decides whether its operation needs a
+        // live receiver; cleanup methods can therefore remain idempotent.
         let Some(index) = self.host_type_index(host)? else {
             return Ok(None);
         };

@@ -1,3 +1,4 @@
+mod support;
 use aside_host::{aside_compiler, aside_vm};
 use aside_vm::{GcBudget, GcPhase, RootOwner, SessionEpoch, bytecode as bc, executor::*};
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
@@ -9,10 +10,16 @@ static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
 const SOURCE: &str = r#"
 use std::random;
+use std::Random;
+fn unknown(value) {value}
+fn typed(value:Random)->Random {value}
 fn detached() { random(seed: 19).int }
 fn main() {
-    let rng = random(seed: -42);
+    let rng:Random = typed(random(seed: -42));
+    if !(rng is Random) {throw "nominal identity";}
     let draw = rng.int;
+    let alias = draw;
+    if alias != draw {throw "bound identity";}
     let values = [];
     for index in 0..32 {
         values.append(draw(-9223372036854775807, 9223372036854775807));
@@ -22,9 +29,9 @@ fn main() {
     try { draw(3, 3); } catch error { rejected += 1; }
     try { draw(4, -4); } catch error { rejected += 1; }
     try { rng.pick([]); } catch error { rejected += 1; }
-    try { rng.pick("text"); } catch error { rejected += 1; }
-    try { random(seed: "text"); } catch error { rejected += 1; }
-    try { rng.int = null; } catch error { rejected += 1; }
+    try { rng.pick(unknown("text")); } catch error { rejected += 1; }
+    try { random(seed: unknown("text")); } catch error { rejected += 1; }
+    try { unknown(rng).int = null; } catch error { rejected += 1; }
     if rejected != 6 { throw "random error boundaries"; }
     let item = {count: 0};
     let pick = rng.pick;
@@ -89,10 +96,7 @@ fn drive(vm: &mut Vm, library: &mut aside_std::StandardLibrary, task: TaskId) ->
 #[test]
 fn independent_library_preserves_streams_methods_and_faults_across_bytecode_and_gc() {
     let contracts = aside_std::contracts();
-    let mut resolver = aside_compiler::semantic::MemoryResolver::default();
-    for module in aside_std::modules() {
-        resolver.insert(module);
-    }
+    let mut resolver = support::resolver();
     let module = aside_compiler::analyze_module(
         SOURCE,
         &aside_compiler::AnalysisOptions::default(),
@@ -102,8 +106,15 @@ fn independent_library_preserves_streams_methods_and_faults_across_bytecode_and_
     .into_module()
     .unwrap();
     for encoded in [false, true] {
-        let compiled =
-            aside_host::lower(&module, &contracts, &[], &[], &[], Default::default()).unwrap();
+        let compiled = aside_host::lower(
+            &module,
+            &contracts,
+            &aside_std::api().functions,
+            aside_std::types(),
+            &[],
+            Default::default(),
+        )
+        .unwrap();
         let initializer = compiled.entry;
         let program = if encoded {
             let bytes = bc::encode(compiled.program.package(), bc::Limits::default()).unwrap();
@@ -125,7 +136,8 @@ fn independent_library_preserves_streams_methods_and_faults_across_bytecode_and_
         let forbidden = function("forbidden");
         let invalid = function("invalid");
         let resume = function("resume");
-        let support = aside_host::runtime_support(&program, &contracts, &[], &[]).unwrap();
+        let support =
+            aside_host::runtime_support(&program, &contracts, aside_std::types(), &[]).unwrap();
         let mut library = aside_std::StandardLibrary::new(&program);
         let mut vm = Vm::load(program, support, VmLimits::default(), SessionEpoch(1)).unwrap();
         let task = vm

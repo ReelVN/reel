@@ -1,3 +1,4 @@
+mod support;
 use aside_host::{aside_compiler, aside_vm};
 use aside_vm::{RootOwner, SessionEpoch, bytecode as bc, executor::*};
 
@@ -15,10 +16,7 @@ fn source_documentation_examples_execute_against_registered_signatures() {
                 "{} documentation line {}",
                 entry.contract.symbol, example.line
             );
-            let mut resolver = aside_compiler::semantic::MemoryResolver::default();
-            for module in aside_std::modules() {
-                resolver.insert(module);
-            }
+            let mut resolver = support::resolver();
             let analyzed = aside_compiler::analyze_module(
                 example.source,
                 &aside_compiler::AnalysisOptions {
@@ -31,8 +29,15 @@ fn source_documentation_examples_execute_against_registered_signatures() {
             let module = analyzed
                 .into_module()
                 .unwrap_or_else(|error| panic!("{context}: {error:?}"));
-            let compiled =
-                aside_host::lower(&module, &contracts, &[], &[], &[], Default::default()).unwrap();
+            let compiled = aside_host::lower(
+                &module,
+                &contracts,
+                &aside_std::api().functions,
+                aside_std::types(),
+                &[],
+                Default::default(),
+            )
+            .unwrap();
             let initializer = compiled.entry;
             let bytes = bc::encode(compiled.program.package(), bc::Limits::default()).unwrap();
             let program = bc::VerifiedProgram::decode(&bytes, bc::Limits::default()).unwrap();
@@ -44,7 +49,8 @@ fn source_documentation_examples_execute_against_registered_signatures() {
                     .position(|function| program.package().symbols[function.name.index()] == "main")
                     .expect("documentation examples declare main") as u32,
             );
-            let support = aside_host::runtime_support(&program, &contracts, &[], &[]).unwrap();
+            let support =
+                aside_host::runtime_support(&program, &contracts, aside_std::types(), &[]).unwrap();
             let mut library = aside_std::StandardLibrary::new(&program);
             let mut vm = Vm::load(program, support, VmLimits::default(), SessionEpoch(1)).unwrap();
             for function in [initializer, main] {

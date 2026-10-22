@@ -1,6 +1,7 @@
-//! Aside's reusable native library. Embedders register [`contracts`] for linking
-//! and admission, install [`modules`] in their resolver, and dispatch calls through
-//! one [`StandardLibrary`] per loaded program. [`prelude`] may be imported by default.
+//! Aside's reusable native library. Embedders use [`api`] for source declarations,
+//! register [`contracts`] and [`types`] for linking and admission, and install
+//! [`modules`] in their resolver. Calls dispatch through one [`StandardLibrary`]
+//! per loaded program. [`prelude`] may be imported by default.
 //! Script values and mutable random state belong to the VM heap, not this adapter.
 #![forbid(unsafe_code)]
 
@@ -9,12 +10,13 @@ mod curve;
 pub use curve::sample_curve;
 mod math;
 mod random;
+mod source;
 mod time;
 
 use aside_host::aside_compiler::semantic::{ExternalSymbol, ModuleInterface};
 use aside_host::aside_vm::{
     FaultCode, HeapError, NewFault,
-    bytecode::{FunctionId, FunctionKind, VerifiedProgram},
+    bytecode::VerifiedProgram,
     executor::{FaultKind, HostResponse, HostTicket, Vm, VmError},
 };
 use aside_host::{Error, NativeBinding, NativeContract, NativeHandler};
@@ -53,6 +55,35 @@ pub fn documentation() -> Vec<aside_host::NativeDocumentation> {
         .collect()
 }
 
+/// Precise standard declarations, nominal types and modules for compiler and editor hosts.
+pub fn api() -> &'static aside_host::source::Api {
+    source::api()
+}
+
+/// Merge standard type declarations into an embedding host's existing native schema.
+pub fn describe(target: &mut aside_host::source::Api) {
+    target.types.extend(api().types.iter().cloned());
+    for declaration in &api().functions {
+        let symbol = aside_host::source::canonical(&declaration.symbol);
+        if let Some(existing) = target
+            .functions
+            .iter_mut()
+            .find(|existing| aside_host::source::canonical(&existing.symbol) == symbol)
+        {
+            *existing = declaration.clone();
+        } else {
+            target.functions.push(declaration.clone());
+        }
+    }
+}
+
+/// Runtime registrations derived from the same standard nominal declarations.
+pub fn types() -> &'static [aside_host::HostTypeSupport] {
+    static TYPES: std::sync::OnceLock<Vec<aside_host::HostTypeSupport>> =
+        std::sync::OnceLock::new();
+    TYPES.get_or_init(|| api().registrations())
+}
+
 /// Reconnect the library's heap-owned state when restoring an execution snapshot.
 pub fn register_snapshots(
     registry: &mut aside_host::aside_vm::snapshot::SnapshotRegistry,
@@ -62,41 +93,12 @@ pub fn register_snapshots(
 
 /// Public names only; bound method implementations are not free functions.
 pub fn prelude() -> Vec<ExternalSymbol> {
-    vec![random::random::binding().contract.external()]
+    api().globals.clone()
 }
 
+/// Public standard module exports, retaining the same precise native and type identities.
 pub fn modules() -> Vec<ModuleInterface> {
-    let mut modules: Vec<_> = ["std", "std::prelude"]
-        .into_iter()
-        .map(|path| ModuleInterface {
-            canonical_path: path.into(),
-            version: "1".into(),
-            exports: prelude(),
-        })
-        .collect();
-    modules.push(ModuleInterface {
-        canonical_path: "std::core".into(),
-        version: "1".into(),
-        exports: vec![core::error_info::binding().contract.external()],
-    });
-    modules.push(ModuleInterface {
-        canonical_path: "std::time".into(),
-        version: "1".into(),
-        exports: bindings()[4..7]
-            .iter()
-            .map(|binding| binding.contract.external())
-            .collect(),
-    });
-    modules.push(ModuleInterface {
-        canonical_path: "std::math".into(),
-        version: "1".into(),
-        exports: math::bindings()
-            .into_iter()
-            .chain([curve::binding()])
-            .map(|binding| binding.contract.external())
-            .collect(),
-    });
-    modules
+    api().modules.clone()
 }
 
 /// A program's resolved native handlers. This holds code identities only; it
@@ -104,8 +106,6 @@ pub fn modules() -> Vec<ModuleInterface> {
 /// different program, just as with the host's other linked native functions.
 pub struct StandardLibrary {
     handlers: Vec<Option<NativeHandler<Self, NativeError>>>,
-    random_methods: [Option<FunctionId>; 3],
-    curve_sample: Option<FunctionId>,
     curve_constructor: Option<aside_host::aside_vm::bytecode::NativeId>,
 }
 
@@ -125,28 +125,13 @@ impl StandardLibrary {
                     .map(|binding| binding.invoke)
             })
             .collect();
-        let mut random_methods = [None; 3];
-        let mut curve_sample = None;
-        let mut curve_constructor = None;
-        for (index, function) in package.functions.iter().enumerate() {
-            if let FunctionKind::Native(native) = function.kind {
-                let symbol = &package.symbols[package.natives[native.index()].symbol.index()];
-                if symbol == "std::math::curve::sample" {
-                    curve_sample = Some(FunctionId(index as u32));
-                } else if symbol == "std::math::curve" {
-                    curve_constructor = Some(native);
-                }
-                for (slot, binding) in random_methods.iter_mut().zip(&bindings[1..4]) {
-                    if *symbol == binding.contract.symbol {
-                        *slot = Some(FunctionId(index as u32));
-                    }
-                }
-            }
-        }
+        let curve_constructor = package
+            .natives
+            .iter()
+            .position(|native| package.symbols[native.symbol.index()] == "std::math::curve")
+            .map(|index| aside_host::aside_vm::bytecode::NativeId(index as u32));
         Self {
             handlers,
-            random_methods,
-            curve_sample,
             curve_constructor,
         }
     }

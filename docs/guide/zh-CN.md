@@ -35,6 +35,8 @@ Aside 扩展提供语义着色、诊断、补全、参数提示、悬停说明�
 
 内置节点的共同类型是 `Node`，具体节点保留自己的成员提示。`bind` 和 `derive` 返回 `Binding`；属性提示分别显示读取的值类型和允许赋入的类型。
 
+数组、tuple 和字符串的方法也提供参数与返回类型提示，F12 打开同一份内置声明。保存方法再调用时，参数提示和类型检查继续有效。
+
 项目从 `src/main.aside` 的 `main` 启动。check/build/dev/export 从当前目录及祖先查找项目，run 执行已经构建的 .asb。可运行多文件工程见 [author_project](../../examples/author_project/src/main.aside)。标题页可用 game.start 切换到全新剧情会话。
 
 保存为 `src/main.aside`，并提供 `resources/fonts/body.ttf`。下文命令会准备本地验证字体并运行工程。
@@ -176,6 +178,8 @@ settings.wallpaper = "new.png";
 
 `array.sort(compare: null)` 稳定原地排序并返回原数组。缺省按数值（可混合 int/float）或字符串排序；记录使用返回负数、零、正数 int 的比较器。同序元素保留原来的顺序。比较器不能等待。排序按 VM 执行预算推进，成功后才提交；异常、取消或来源数组被修改时不发布工作副本。见 [collections.aside](../../examples/collections/src/main.aside)。
 
+数组和 tuple 用 `items.find(value)` 查找首个相等元素的索引，未找到返回 null；只需判断存在时用 `items.contains(value)`。比较规则与 `==` 相同，记录按对象身份比较。查找期间修改来源数组会报告 ConcurrentModification。见 [collections.aside](../../examples/collections/src/main.aside)。
+
 ```aside
 let cuts = [180, 20, 90];
 cuts.sort();
@@ -263,7 +267,7 @@ to_ascii_lowercase()/to_ascii_uppercase() 只转换 ASCII 字母，保留中文�
 
 带尾随子节点块的组件调用作为独立语句时可省略结尾分号；块后换行结束该语句，下一行括号表达式不会被接到前一个调用上。普通调用和属性赋值仍使用分号。显式分号不改变子节点收集。
 
-已实现：text、image、row、column、stack 与 stage.replace 使用同一节点模型。普通函数可以返回节点；尾随 children 块、if 与 array/tuple 上的 for 可以组合节点。value、x/y、width/height、color/background、opacity、visible 和 clip 等属性直接修改原节点，挂载后的身份保持不变。替换舞台会退休旧树，仍持有的旧节点不能继续读写，也不会因此保活整棵旧树。完整代码见[作者舞台示例](../../examples/author_stage/src/main.aside)。
+已实现：text、image、row、column、stack 与 stage.replace 使用同一节点模型。普通函数可以返回节点；尾随 children 块、if 与 array/tuple 上的 for 可以组合节点。value、x/y、width/height、color/background、opacity、visible 和 clip 等属性直接修改原节点，挂载后的身份保持不变。替换舞台会退休旧树，释放旧节点的内容；随后读写旧节点属性会报告错误。完整代码见[作者舞台示例](../../examples/author_stage/src/main.aside)。
 
 组件函数用末尾表达式或 `return` 返回节点。普通函数里的 `text("Title");` 会丢弃构造结果，编译器在该调用处报错；改成末尾的 `text("Title")` 即可返回。children 块内的分号照常收集节点，返回 null 的可选组件照常省略。诊断识别静态已知的节点构造器及其不可变别名；动态调用和普通包装函数仍按各自的返回值处理。确实需要丢弃构造结果时写 `let _ = text("Title");`。
 
@@ -347,6 +351,8 @@ Rust 宿主可用 `ImageSource::empty()` 表示尚未到达的画面，再以 `I
 `use std::math::{sin, cos};` 后可用 `cos(angle) * speed` 和 `sin(angle) * speed` 计算二维速度；angle 使用弧度。还提供 tan/asin/acos/atan、atan2(y,x)、sqrt/hypot(x,y)、pow(base,exponent)、exp/ln/log2/log10、abs/floor/ceil/round、radians/degrees。它们是可用于 derive 的纯 float64 运算，不创建脚本对象；round 中点远离零，无效数学定义域按浮点规则得到 NaN，溢出可得到 Infinity。示例见 [author_math.aside](../../examples/author_math/src/main.aside)。
 
 `random` 来自独立的 Aside 标准库，Reel 自动导入，也支持显式 `use std::random;`。在 main 或事件函数中创建随机流；模块初始化与 derive 沿用现有副作用约束。固定种子的复现范围为同一标准库版本。
+
+随机流的类型是 `std::Random`，曲线的类型是 `std::math::Curve`，可用在组件的参数与字段中。编辑器会补全其真实方法并提供英文说明。接受数组或任意 tuple 的参数可标为 `array | tuple`；需要固定结构时使用 `(int, string)` 等具体类型。
 
 ### 用类组织有行为的数据
 
@@ -433,7 +439,7 @@ scene.move(back, index: 1);
 
 完整的 [author_reorder.aside](../../examples/author_reorder/src/main.aside) 展示重叠卡片置前，同时保留正在运行的动画。不支持跨父级移动。
 
-`node.remove()` 移除并退休该节点及其全部后代，也可用于舞台根；`container.clear()` 只退休子节点，保留容器自身的属性和身份。两者返回 null。退休使相关动画取消并释放舞台对图片的请求；旧节点不能重新挂载或继续读写。需要再次展示的组件应由函数重新构造。方法可以保存和传递，始终保留原接收者；已保存的 remove 可重复调用。
+`node.remove()` 移除并退休该节点及其全部后代，也可用于舞台根；`container.clear()` 只退休子节点，保留容器自身的属性和身份。两者返回 null。退休使相关动画取消并释放舞台对图片的请求；旧节点的属性读写和重新挂载会报告错误。需要再次展示的组件由函数重新构造。方法可以保存和传递，始终保留原接收者；`node.remove()` 及已保存的 remove 都可重复调用，清理已退休节点会立即完成。
 
 ```aside
 fn main() {
@@ -644,6 +650,8 @@ say([mio.line("你听见了吗？"), eri.line("在窗外。")]);
 句内样式用显式 `rich(markup)`：例如 `narrator(rich("仰望 [ruby=ほしぞら]星空[/ruby]，[color=#ffd580][b]记住这一刻[/b][/color]。"));`。text、角色调用、character.line 和 narrator 都接收普通字符串或富文本；对白模型和历史保留完整样式。普通字符串不解析标记；富文本的只读 `.plain` 取得不含标记的正文，`.markup` 取得原标记字符串，读取均不复制文字。组合历史条目时可用 `rich("[b]姓名：[/b] " + line.text.markup)` 保留样式；普通字符串使用 `rich_escape`。`model({text: rich("[b]初始内容[/b]")})` 可直接作为可观察状态；复制模型默认值时共享不可变富文本。可运行示例：[author_rich_text.aside](../../examples/author_rich_text/src/main.aside)。
 
 `game.dialogue().ready` 表示当前整组对白的正文和全部时序（包括尾部 pause）已完成；没有当前对白时为 false。`lines` 中每行也有独立的 `ready`，已完成的旧行保留 true。它不受自动、快进或暂停策略改变；例如提示光标使用 `visible: derive(|| dialogue.ready && !reading.auto && !reading.skipping && !reading.paused)`，其中 reading 是 `game.reading()`。光标可用普通 text/image、布局和动画定制，不需要比较正文长度。见 [句内时序示例](../../examples/author_dialogue_timing/src/main.aside)。
+
+对白完成推进后标记已读。引擎用剧情的函数调用路径识别对白，因此不同位置调用同一个自定义对白组件，仍各自记录已读；重复执行同一路径沿用记录。切换译文不改变身份。同一循环位置用数据驱动的多句对白共享该位置的记录。
 
 句内节奏也写在 rich 中：`[speed=15]慢慢说[/speed]` 按每秒 15 个字素显示，`[speed=2x]快一些[/speed]` 使用玩家速度的两倍，`[speed=0]立即出现[/speed]` 显示即时段，`[pause=0.5]` 在当前位置停半秒。speed 可以嵌套，关闭时恢复外层速度。`[next]` 使本句播完并呈现后自动续句，不改变全局自动阅读；同时对白要求每行都有该标记。末尾停顿会先执行。手动补全、快进或全局 text_speed: 0 越过剩余节奏；打开菜单或挂起保留剩余停顿。标记不进入正文、历史或字数，普通 text 显示完整内容。完整示例见 [author_dialogue_timing.aside](../../examples/author_dialogue_timing/src/main.aside)。
 

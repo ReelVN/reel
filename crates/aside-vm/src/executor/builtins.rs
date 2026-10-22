@@ -4,160 +4,12 @@ mod bulk;
 pub(super) use bulk::BulkWork;
 mod sort;
 pub(super) use sort::SortWork;
+mod search;
+pub(super) use search::SearchWork;
 mod strings;
 pub(super) use strings::TextWork;
 
-#[derive(Clone, Copy, Debug)]
-#[repr(i64)]
-#[derive(serde::Serialize, serde::Deserialize)]
-pub(super) enum Builtin {
-    Len,
-    Append,
-    Pop,
-    HasOwn,
-    Slice,
-    Insert,
-    Remove,
-    Resize,
-    Reverse,
-    Extend,
-    Clear,
-    Top,
-    Swap,
-    Keys,
-    Values,
-    Entries,
-    ByteLen,
-    ScalarCount,
-    SliceBytes,
-    SliceScalars,
-    StartsWith,
-    EndsWith,
-    Join,
-    AsciiLowercase,
-    AsciiUppercase,
-    Trim,
-    TrimStart,
-    TrimEnd,
-    Get,
-    Split,
-    Sort,
-    TableRemove,
-}
-impl Builtin {
-    pub(super) fn lookup(kind: ObjectKind, name: &str) -> Option<Self> {
-        use ObjectKind::*;
-        match (kind, name) {
-            (Array | Tuple | Table, "len") => Some(Self::Len),
-            (Array, "append") => Some(Self::Append),
-            (Array, "pop") => Some(Self::Pop),
-            (Table, "has_own") => Some(Self::HasOwn),
-            (Table, "get") => Some(Self::Get),
-            (Table, "remove") => Some(Self::TableRemove),
-            (Array | Tuple, "slice") => Some(Self::Slice),
-            (Array, "insert") => Some(Self::Insert),
-            (Array, "remove") => Some(Self::Remove),
-            (Array, "resize") => Some(Self::Resize),
-            (Array, "sort") => Some(Self::Sort),
-            (Array, "reverse") => Some(Self::Reverse),
-            (Array, "extend") => Some(Self::Extend),
-            (Array | Table, "clear") => Some(Self::Clear),
-            (Array, "top") => Some(Self::Top),
-            (Array, "swap") => Some(Self::Swap),
-            (Table, "keys") => Some(Self::Keys),
-            (Table, "values") => Some(Self::Values),
-            (Table, "entries") => Some(Self::Entries),
-            (String, "byte_len") => Some(Self::ByteLen),
-            (String, "scalar_count") => Some(Self::ScalarCount),
-            (String, "slice_bytes") => Some(Self::SliceBytes),
-            (String, "slice_scalars") => Some(Self::SliceScalars),
-            (String, "starts_with") => Some(Self::StartsWith),
-            (String, "ends_with") => Some(Self::EndsWith),
-            (String, "join") => Some(Self::Join),
-            (String, "split") => Some(Self::Split),
-            (String, "to_ascii_lowercase") => Some(Self::AsciiLowercase),
-            (String, "to_ascii_uppercase") => Some(Self::AsciiUppercase),
-            (String, "trim") => Some(Self::Trim),
-            (String, "trim_start") => Some(Self::TrimStart),
-            (String, "trim_end") => Some(Self::TrimEnd),
-            _ => None,
-        }
-    }
-    fn decode(id: i64) -> Result<Self, FaultKind> {
-        const METHODS: &[Builtin] = &[
-            Builtin::Len,
-            Builtin::Append,
-            Builtin::Pop,
-            Builtin::HasOwn,
-            Builtin::Slice,
-            Builtin::Insert,
-            Builtin::Remove,
-            Builtin::Resize,
-            Builtin::Reverse,
-            Builtin::Extend,
-            Builtin::Clear,
-            Builtin::Top,
-            Builtin::Swap,
-            Builtin::Keys,
-            Builtin::Values,
-            Builtin::Entries,
-            Builtin::ByteLen,
-            Builtin::ScalarCount,
-            Builtin::SliceBytes,
-            Builtin::SliceScalars,
-            Builtin::StartsWith,
-            Builtin::EndsWith,
-            Builtin::Join,
-            Builtin::AsciiLowercase,
-            Builtin::AsciiUppercase,
-            Builtin::Trim,
-            Builtin::TrimStart,
-            Builtin::TrimEnd,
-            Builtin::Get,
-            Builtin::Split,
-            Builtin::Sort,
-            Builtin::TableRemove,
-        ];
-        usize::try_from(id)
-            .ok()
-            .and_then(|i| METHODS.get(i))
-            .copied()
-            .ok_or(FaultKind::Type)
-    }
-    pub(super) fn parameters(self) -> (&'static [&'static str], usize) {
-        match self {
-            Self::HasOwn | Self::TableRemove => (&["key"], 1),
-            Self::Get => (&["key", "default"], 1),
-            Self::Slice | Self::SliceBytes | Self::SliceScalars => (&["range"], 1),
-            Self::Insert => (&["index", "value"], 2),
-            Self::Remove => (&["index"], 1),
-            Self::Resize => (&["length", "value"], 1),
-            Self::Extend | Self::Join => (&["items"], 1),
-            Self::Sort => (&["compare"], 0),
-            Self::Split => (&["separator"], 1),
-            Self::Swap => (&["a", "b"], 2),
-            Self::StartsWith => (&["prefix"], 1),
-            Self::EndsWith => (&["suffix"], 1),
-            _ => (&[], 0),
-        }
-    }
-    fn mutates(self) -> bool {
-        matches!(
-            self,
-            Self::Append
-                | Self::Pop
-                | Self::Insert
-                | Self::Remove
-                | Self::Resize
-                | Self::Reverse
-                | Self::Extend
-                | Self::Clear
-                | Self::Swap
-                | Self::Sort
-                | Self::TableRemove
-        )
-    }
-}
+pub(super) use crate::BuiltinMethod as Builtin;
 
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub(super) struct BuiltinCall {
@@ -317,7 +169,7 @@ impl Vm {
                         return Ok(false);
                     }
                     ArgumentStep::Ready(result) => result.and_then(|position| {
-                        if matches!(call.method, Builtin::Append) && name.as_int() == Some(-1) {
+                        if call.method.declaration().rest.is_some() && name.as_int() == Some(-1) {
                             return Ok(());
                         }
                         match Some(position as usize).filter(|p| *p < parameters.len()) {
@@ -363,6 +215,10 @@ impl Vm {
             return Ok(false);
         }
         let result = match call.method {
+            Builtin::Find | Builtin::Contains => {
+                self.start_search(s, call)?;
+                return Ok(true);
+            }
             Builtin::Sort => {
                 if let Err(kind) = self.start_sort(s, call) {
                     self.collection_fault(s, kind)?;

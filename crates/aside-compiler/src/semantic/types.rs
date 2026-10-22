@@ -30,7 +30,7 @@ builtin_types! {
         "Future" => TypeHint::Future,
         "generator" => TypeHint::Generator,
         "Bytes" | "TextBuffer" | "ByteBuffer" | "Set" | "Range" | "Iterator" | "AsyncIterator"
-        | "thread" | "weakref" | "class" | "instance" | "Binding" => TypeHint::Named(name.into()),
+        | "thread" | "weakref" | "class" | "instance" | "Binding" | "tuple" => TypeHint::Named(name.into()),
 }
 
 pub(super) fn signature_hint(hir: &Hir, node: NodeId) -> Option<ExternalSignature> {

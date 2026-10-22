@@ -49,6 +49,7 @@ fn x(vm: &SessionVm) -> f64 {
 fn scalar_curves_interpolation_discontinuities_copy_and_invalid_inputs_source_asb() {
     let source = r#"
     use std::math::{curve,pow};
+    fn untyped(value) {value}
     let initialized=curve([{time:-2,value:4},{time:2,value:8}]);
     fn near(a,b) { if a-b>0.000000001 || b-a>0.000000001 {throw "curve sample";} }
     fn opening() {
@@ -76,7 +77,7 @@ fn scalar_curves_interpolation_discontinuities_copy_and_invalid_inputs_source_as
             try {curve(invalid);} catch error {rejected+=1;}
         }
         try {sample(pow(10.0,1000.0));} catch error {rejected+=1;}
-        try {value.sample=null;} catch error {rejected+=1;}
+        try {untyped(value).sample=null;} catch error {rejected+=1;}
         if rejected!=13 {throw "curve argument boundary";}
         narrator("done");
     }"#;

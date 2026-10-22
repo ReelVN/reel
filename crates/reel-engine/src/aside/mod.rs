@@ -15,6 +15,7 @@ pub mod capture;
 mod game;
 pub use game::GameSettings;
 mod choice;
+mod content_identity;
 pub mod data;
 mod dialogue;
 mod keys;
@@ -910,14 +911,14 @@ impl SessionVm {
                 }
                 Ok(NativeDispatch::Ready { work: 1 })
             }
-            "reel::character::speak" => self.character_speak(session, ticket, locale),
+            "reel::character::speak" => self.character_speak(session, ticket, locale, budget),
             "reel::speech::append" | "reel::speech::wait" | "reel::speech::revealed" => {
                 let command = match symbol.as_str() {
                     "reel::speech::append" => dialogue::SpeechCommand::Append,
                     "reel::speech::wait" => dialogue::SpeechCommand::Wait,
                     _ => dialogue::SpeechCommand::Revealed,
                 };
-                self.dispatch_speech(session, ticket, command)
+                self.dispatch_speech(session, ticket, command, budget)
             }
             "reel::unbind" => {
                 let reference = self.vm.host_arguments(ticket)?[0];
@@ -926,18 +927,9 @@ impl SessionVm {
                 self.issued = None;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
-            "reel::say" => self.dispatch_say(session, ticket, locale, work),
-            "reel::game::record" => {
-                self.record_history(session, ticket, locale)?;
-                Ok(NativeDispatch::Ready { work: 1 })
-            }
-            "reel::narrator" => {
-                self.dispatch_narrator(session, ticket, locale)
-                    .map(|interaction| NativeDispatch::Published {
-                        interaction,
-                        work: 0,
-                    })
-            }
+            "reel::say" => self.dispatch_say(session, ticket, locale, budget),
+            "reel::game::record" => self.record_history(session, ticket, locale, budget),
+            "reel::narrator" => self.dispatch_narrator(session, ticket, locale, budget),
             stage::add::SYMBOL
             | stage::remove::SYMBOL
             | stage::clear::SYMBOL
@@ -1169,20 +1161,31 @@ impl SessionVm {
         Ok(())
     }
 
-    /// Content identity is tied to module/code version and
-    /// source byte span (or PC without a source map), never a localization key.
+    /// Publish a narrator line using its complete logical caller path as the
+    /// content identity. The identity is independent of locale and source maps.
+    /// An insufficient exact budget retains the native ticket without publishing.
     pub fn dispatch_narrator(
         &mut self,
         session: &mut Session,
         ticket: HostTicket,
         locale: &str,
-    ) -> Result<InteractionId, AdapterError> {
+        budget: NativeBudget,
+    ) -> Result<NativeDispatch, AdapterError> {
         self.check_story_wait(session, ticket)?;
         let p = self.vm.program().package();
         let native = &p.natives[ticket.native.index()];
         if p.symbols[native.symbol.index()] != "reel::narrator" {
             return Err(AdapterError::Input("not narrator"));
         }
+        let (content_id, work) = match self.prepare_content_id(ticket, budget)? {
+            content_identity::Preparation::Ready { id, work } => (id, work),
+            content_identity::Preparation::BudgetYield { required_work } => {
+                return Ok(NativeDispatch::BudgetYield {
+                    work: 0,
+                    required_work,
+                });
+            }
+        };
         let arguments = self.vm.host_arguments(ticket)?;
         let [text, history, reveal_skippable, wait] = arguments else {
             return Err(AdapterError::Input("narrator arity"));
@@ -1195,8 +1198,7 @@ impl SessionVm {
             .ok_or(AdapterError::Input("wait must be bool"))?;
         let text = rich_text::read(self.vm.heap(), *text, self.read_limit)?;
         let history = dialogue::HistoryText::read(self.vm.heap(), *history, self.read_limit)?;
-        let content_id = self.dialogue_content_id(ticket);
-        self.publish_say(
+        let interaction = self.publish_say(
             session,
             ticket,
             &[DialogueLineInput {
@@ -1209,32 +1211,8 @@ impl SessionVm {
             locale,
             reveal_skippable,
             wait,
-        )
-    }
-
-    fn dialogue_content_id(&self, ticket: HostTicket) -> String {
-        let p = self.vm.program().package();
-        let function = &p.functions[ticket.location.code.function.index()];
-        let module = &p.symbols[p.modules[function.module.index()].path.index()];
-        match ticket.location.source {
-            Some(span) => format!(
-                "source:{}:{}:v{}:file{}:{}..{}",
-                module.len(),
-                module,
-                ticket.location.code.version,
-                span.file.0,
-                span.start,
-                span.end
-            ),
-            None => format!(
-                "source:{}:{}:v{}:fn{}:pc{}",
-                module.len(),
-                module,
-                ticket.location.code.version,
-                ticket.location.code.function.0,
-                ticket.location.pc.0
-            ),
-        }
+        )?;
+        Ok(NativeDispatch::Published { interaction, work })
     }
 
     /// Publish already decoded ADV lines from a trusted native implementation.

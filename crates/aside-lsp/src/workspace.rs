@@ -43,7 +43,38 @@ pub(crate) struct HostIndex {
     pub documents: BTreeMap<String, HostDocument>,
 }
 impl From<HostContext> for HostIndex {
-    fn from(host: HostContext) -> Self {
+    fn from(mut host: HostContext) -> Self {
+        let catalog = builtin_catalog();
+        let builtin_uri = Uri::from_str("aside-native://builtins/v1.aside").unwrap();
+        host.documents.push(HostDocument {
+            uri: builtin_uri.clone(),
+            text: catalog.source.clone(),
+        });
+        for group in &catalog.types {
+            for member in &group.members {
+                host.declarations.push(HostDeclaration {
+                    reference: member.symbol.reference.as_deref().unwrap().clone(),
+                    signature: member.symbol.signature.clone(),
+                    markdown: member.documentation.into(),
+                    definition: Some(crate::HostLocation {
+                        uri: builtin_uri.clone(),
+                        range: member.definition,
+                    }),
+                    parameter_defaults: member
+                        .parameter_defaults
+                        .iter()
+                        .map(|(name, value)| {
+                            (
+                                (*name).into(),
+                                crate::ParameterDefault::Value((*value).into()),
+                            )
+                        })
+                        .collect(),
+                    property_parameters: Vec::new(),
+                    property_default: None,
+                });
+            }
+        }
         let bases = host
             .named_types
             .iter()

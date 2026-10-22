@@ -394,6 +394,7 @@ pub fn hint(ty: &bc::BuiltinType) -> TypeHint {
         bc::BuiltinType::Future => TypeHint::Future,
         bc::BuiltinType::Generator => TypeHint::Generator,
         bc::BuiltinType::PropertyRef => TypeHint::Named("Binding".into()),
+        bc::BuiltinType::Tuple => TypeHint::Named("tuple".into()),
         _ => TypeHint::Any,
     }
 }
