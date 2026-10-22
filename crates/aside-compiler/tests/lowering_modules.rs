@@ -236,3 +236,49 @@ fn initialization_cycle_fault_points_to_the_imported_read_in_its_source_file() {
     assert_eq!(package.symbols[source.path.index()], "a.aside");
     assert_eq!(&source.text[span.start as usize..span.end as usize], "b");
 }
+
+#[test]
+fn type_only_import_cycles_allow_inheritance_independent_of_module_names() {
+    for base in ["a", "z"] {
+        for (import, annotation) in [
+            ("use c::Scene;", "Scene"),
+            ("use c::{Scene as Context};", "Context"),
+            ("use c as types;", "types::Scene"),
+        ] {
+            let base_source = "use b::accept; pub class Picture {} pub fn check(){accept(null)}";
+            let helper = format!("{import} pub fn accept(value:({annotation}|null)){{true}}");
+            let scene = format!("use {base}::Picture; pub class Scene:Picture{{}}");
+            let main = format!(
+                "use {base}::check; use c::Scene; use b::accept; fn main(){{check() && accept(Scene())}}"
+            );
+            let compilation = compile(&[
+                (base, base_source),
+                ("b", &helper),
+                ("c", &scene),
+                ("main", &main),
+            ]);
+            let p = compilation.program.package();
+            let entry = bc::FunctionId(
+                p.functions
+                    .iter()
+                    .position(|f| p.symbols[f.name.index()] == "main")
+                    .unwrap() as u32,
+            );
+            let encoded = bc::encode(p, bc::Limits::default()).unwrap();
+            for program in [
+                compilation.program,
+                bc::VerifiedProgram::decode(&encoded, bc::Limits::default()).unwrap(),
+            ] {
+                let mut vm = Vm::load(
+                    program,
+                    bc::RuntimeSupport::default(),
+                    VmLimits::default(),
+                    SessionEpoch(4),
+                )
+                .unwrap();
+                value(&mut vm, compilation.initializer);
+                assert_eq!(value(&mut vm, entry).as_bool(), Some(true));
+            }
+        }
+    }
+}
