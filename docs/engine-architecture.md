@@ -775,7 +775,7 @@ owner 注册与活动凭据各有 max_requests 容量上限，保留已完成凭
 
 当前自有协议统一使用 v1：Aside 字节码、VM 快照、SessionSnapshot、宿主 native ABI 与 ASB 1.0。新增能力继续维护 v1 声明，加载按实际声明核对格式、签名和代码身份。
 
-存档路径属于宿主配置。`reel run` / `reel dev` 的 `--save-directory <directory>` 直接设置 `StoryWindowOptions.save_directory`；相对路径以启动时工作目录解析。便携启动器可传入游戏目录内的 `saves`，安装目录只读的平台由宿主选择系统可写目录。未指定时继续使用平台用户数据目录；目录配置不进入脚本或 ASB。
+存档路径属于宿主配置。`reel run` / `reel dev` 的 `--save-directory <directory>` 直接设置 `StoryWindowOptions.save_directory`；相对路径以启动时工作目录解析。便携启动器可传入游戏目录内的 `saves`，安装目录只读的平台由宿主选择系统可写目录。未指定时继续使用平台用户数据目录；默认存档身份由资源根的规范路径确定，允许资源目录尚未创建；目录配置不进入脚本或 ASB。
 
 捕获期间未按键的鼠标移动合并为最新位置，捕获结束后按已接受画面重放悬停；不因轻微移动取消保存，也不积累移动事件队列。点击、拖动、键盘或焦点变化仍按会话修改入口处理，并清除此前排队的悬停。
 

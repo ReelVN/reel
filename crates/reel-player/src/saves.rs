@@ -523,3 +523,100 @@ pub fn game_save_directory(user_data: &Path, game_id: &str) -> PathBuf {
         .join(blake3::hash(game_id.as_bytes()).to_hex().as_str())
         .join("saves")
 }
+
+/// Resolve a game's default save directory from its asset-root identity.
+/// Existing roots retain their canonical identity. Missing path components are
+/// appended to the nearest existing canonical ancestor without creating them;
+/// other filesystem errors are returned to the caller.
+pub fn default_save_directory(user_data: &Path, asset_root: &Path) -> io::Result<PathBuf> {
+    let mut ancestor = std::path::absolute(asset_root)?;
+    let mut missing = Vec::new();
+    loop {
+        match ancestor.canonicalize() {
+            Ok(mut identity) => {
+                if !missing.is_empty() && !fs::metadata(&identity)?.is_dir() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotADirectory,
+                        "asset root ancestor is not a directory",
+                    ));
+                }
+                for component in missing.iter().rev() {
+                    identity.push(component);
+                }
+                return Ok(game_save_directory(user_data, &identity.to_string_lossy()));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let Some(component) = ancestor.file_name() else {
+                    return Err(error);
+                };
+                missing.push(component.to_os_string());
+                ancestor.pop();
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temporary() -> PathBuf {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/reel-artifacts/save-path-tests")
+            .join(format!(
+                "{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn missing_asset_root_keeps_default_save_identity_when_created() {
+        let root = temporary();
+        let assets = root.join("project/resources");
+        let user_data = root.join("user-data");
+        let before = default_save_directory(&user_data, &assets).unwrap();
+        assert!(!assets.exists());
+        assert!(!user_data.exists());
+
+        fs::create_dir_all(&assets).unwrap();
+        let expected = game_save_directory(
+            &user_data,
+            &assets.canonicalize().unwrap().to_string_lossy(),
+        );
+        assert_eq!(before, expected);
+        assert_eq!(default_save_directory(&user_data, &assets).unwrap(), before);
+        assert!(!user_data.exists());
+    }
+
+    #[test]
+    fn existing_asset_root_retains_canonical_save_identity() {
+        let root = temporary();
+        let assets = root.join("resources");
+        fs::create_dir(&assets).unwrap();
+        let user_data = root.join("user-data");
+        assert_eq!(
+            default_save_directory(&user_data, &assets.join(".")).unwrap(),
+            game_save_directory(
+                &user_data,
+                &assets.canonicalize().unwrap().to_string_lossy()
+            )
+        );
+    }
+
+    #[test]
+    fn asset_root_below_file_reports_not_a_directory() {
+        let root = temporary();
+        let file = root.join("file");
+        fs::write(&file, b"asset").unwrap();
+        let error =
+            default_save_directory(&root.join("user-data"), &file.join("resources")).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotADirectory);
+    }
+}
