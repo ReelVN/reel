@@ -509,3 +509,73 @@ fn text_editor_policy_fields_share_typed_constructor_and_with_declarations() {
     );
     server.stop();
 }
+
+#[test]
+fn input_transactions_keep_typed_chain_hover_navigation_completion_and_readonly_outputs() {
+    let source = r#"fn main() {
+        let editor = text_area(value: "Draft");
+        let same:TextInputNode = editor.select_bytes(0, focus: 5).select_all().undo().redo();
+        let anchor:int = same.selection_anchor;
+        let focus:int = same.selection_focus;
+        let undoable:bool = same.can_undo;
+        let redoable:bool = same.can_redo;
+    }"#;
+    let (mut server, initialized) = open(source);
+    let mut id = 2;
+    for (expression, method) in [
+        ("select_bytes(0", "select_bytes"),
+        ("select_all().undo", "select_all"),
+        ("undo().redo", "undo"),
+        ("redo();", "redo"),
+    ] {
+        assert_method(
+            &mut server,
+            &mut id,
+            source,
+            expression,
+            method,
+            "TextInputNode",
+        );
+    }
+    let tokens = server.request(
+        id,
+        "textDocument/semanticTokens/full",
+        json!({"textDocument":{"uri":URI}}),
+    );
+    id += 1;
+    for expression in [
+        "select_bytes(0",
+        "select_all().undo",
+        "undo().redo",
+        "redo();",
+    ] {
+        assert_method_token(&tokens, &initialized, source, expression);
+    }
+    let completions = server.request(id, "textDocument/completion", query(source, "same.", true));
+    let items = completions["items"]
+        .as_array()
+        .or_else(|| completions.as_array())
+        .unwrap();
+    for name in [
+        "select_bytes",
+        "select_all",
+        "undo",
+        "redo",
+        "selection_anchor",
+        "selection_focus",
+        "can_undo",
+        "can_redo",
+    ] {
+        assert!(
+            items.iter().any(|item| item["label"] == name),
+            "{name}: {items:?}"
+        );
+    }
+    server.notify("textDocument/didChange",json!({"textDocument":{"uri":URI,"version":2},"contentChanges":[{"text":source.replace("let anchor:int = same.selection_anchor;","same.selection_anchor = 1;")}]}));
+    let diagnostics = server.diagnostics(URI, 2);
+    assert!(
+        !diagnostics.as_array().unwrap().is_empty(),
+        "readonly selection must be rejected"
+    );
+    server.stop();
+}

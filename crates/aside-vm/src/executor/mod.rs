@@ -1369,6 +1369,25 @@ impl Vm {
         )?)
     }
 
+    /// Bind a registered shared method of a live host receiver. Own fields are
+    /// excluded: this host API selects the trusted nominal type's method.
+    /// A missing method returns `None`; invalid or retired receivers fail through
+    /// ordinary heap validation. Name lookup reuses the loaded symbol index.
+    pub fn bind_host_method(
+        &mut self,
+        receiver: Value,
+        name: &str,
+    ) -> Result<Option<Value>, VmError> {
+        self.heap.host_fields(receiver)?;
+        let Some(symbol) = self.type_checks.symbol_str(self.program.package(), name) else {
+            return Ok(None);
+        };
+        self.heap
+            .shared_host_method(receiver, symbol)?
+            .map(|function| self.bind_native(receiver, function))
+            .transpose()
+    }
+
     fn validate_native_receiver(
         &self,
         receiver: Value,

@@ -123,6 +123,7 @@ pub fn documentation() -> Vec<aside_host::NativeDocumentation> {
                 .or_else(|| super::rich_text::documentation(&contract.symbol))
                 .or_else(|| super::particles::documentation(&contract.symbol))
                 .or_else(|| super::stage::documentation(&contract.symbol))
+                .or_else(|| super::stage::text_input::documentation(&contract.symbol))
                 .or_else(|| super::stage::configure::documentation(&contract.symbol))
                 .or_else(|| super::game::documentation(&contract.symbol))
                 .or_else(|| super::transitions::documentation(&contract.symbol))

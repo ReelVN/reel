@@ -1058,6 +1058,8 @@ impl SceneWidget {
             } = &view.node.kind
             {
                 let editor = TextInput::with_mode(value.clone(), *multiline)
+                    .with_selection(options.selection, options.selection_revision)
+                    .with_editing(options.pending_edit, options.replay.clone())
                     .with_read_only(options.read_only)
                     .with_selection_color(color(options.selection_color))
                     .with_caret_color(options.caret_color.map(color))
@@ -1228,6 +1230,7 @@ impl SceneWidget {
             TextInput::set_outline(&mut editor, text_outline(&view.node.props));
             TextInput::set_shadow(&mut editor, text_shadow(&view.node.props));
             TextInput::set_value(&mut editor, value.clone());
+            TextInput::set_selection(&mut editor, options.selection, options.selection_revision);
             TextInput::set_text_alignment(&mut editor, view.node.props.text_align);
             TextInput::set_text_wrap(&mut editor, view.node.props.text_wrap);
             if this.widget.node.props.line_height != view.node.props.line_height {
@@ -1270,6 +1273,7 @@ impl SceneWidget {
             if this.widget.node.props.color != view.node.props.color {
                 editor.insert_prop(ContentColor::new(color(view.node.props.color)));
             }
+            TextInput::set_editing(&mut editor, options.pending_edit, options.replay.as_deref());
         }
         if let (Some(pod), NodeKind::Slider { range, value, .. }) =
             (&mut this.widget.slider, &view.node.kind)

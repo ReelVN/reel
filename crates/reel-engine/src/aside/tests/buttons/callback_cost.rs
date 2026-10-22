@@ -181,12 +181,12 @@ fn dispatch(vm: &mut SessionVm, session: &mut Session, input: Input) {
             &NodeText {
                 node,
                 event: if matches!(input, Input::TextEdit) {
-                    TextInputEvent::Changed {
-                        previous: "initial".into(),
-                        value: "updated".into(),
-                    }
+                    TextInputEvent::replace_all("initial", "updated")
                 } else {
-                    TextInputEvent::Submitted("initial".into())
+                    TextInputEvent::Submitted {
+                        value: "initial".into(),
+                        replay: None,
+                    }
                 },
             },
         ),

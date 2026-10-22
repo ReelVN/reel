@@ -356,7 +356,10 @@ fn text_area_wrap_scroll_and_caret_share_geometry_without_idle_layout() {
     let end = preedit.len();
     f.ui.handle_text(
         &mut f.bridge,
-        TextEvent::Ime(reel_ui::core::Ime::Preedit(preedit, Some((end, end)))),
+        TextEvent::Ime(reel_ui::core::Ime::Preedit(
+            preedit.into(),
+            Some((end, end)),
+        )),
     )
     .unwrap();
     let composing = f.record();
@@ -445,7 +448,7 @@ fn text_area_stage_mode_updates_preserve_identity_and_change_enter_behavior() {
                 ..
             }) => multiline,
             NodeEvent::Text(NodeText {
-                event: reel_ui::widgets::TextInputEvent::Submitted(_),
+                event: reel_ui::widgets::TextInputEvent::Submitted { .. },
                 ..
             }) => !multiline,
             _ => false,
@@ -558,7 +561,7 @@ fn editor_policy_dynamic_updates_keep_widget_layout_and_isolate_read_only_keys()
             TextEvent::key_down(keyboard::Key::Named(keyboard::NamedKey::Enter)),
         )
         .unwrap();
-    assert!(submit.events.iter().any(|e| matches!(e, NodeEvent::Text(NodeText { event: TextInputEvent::Submitted(v), .. }) if v.is_empty())));
+    assert!(submit.events.iter().any(|e| matches!(e, NodeEvent::Text(NodeText { event: TextInputEvent::Submitted { value: v, .. }, .. }) if v.is_empty())));
     for _ in 0..8 {
         let frame = f.record();
         f.accept(&frame);

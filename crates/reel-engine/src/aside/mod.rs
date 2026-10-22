@@ -67,6 +67,7 @@ pub enum AdapterError {
     Heap(HeapError),
     Session(SessionError),
     Input(&'static str),
+    InputQueue(reel_core::result::RejectReason),
     Markup(reel_core::text::MarkupError),
     Allocation,
     Stage(reel_ui::stage::StageError),
@@ -130,6 +131,7 @@ impl AdapterError {
     pub fn native_fault_kind(&self) -> Option<FaultKind> {
         match self {
             Self::Vm(VmError::Effect) => Some(FaultKind::Effect),
+            Self::InputQueue(_) => Some(FaultKind::Resource),
             Self::Input(_) | Self::Markup(_) => Some(FaultKind::Type),
             Self::Stage(_) => Some(FaultKind::Type),
             Self::Allocation | Self::Session(SessionError::AllocationFailed) => {
@@ -268,6 +270,15 @@ pub struct SessionVm {
 }
 
 impl SessionVm {
+    /// Bounds only accepted input waiting for an asynchronous editor operation.
+    /// Ordinary typing/paste retain their usual text capacity. Existing accepted
+    /// queues keep their admission limits until drained; new queues use this value.
+    pub fn set_text_input_editing_limits(
+        &mut self,
+        limits: reel_ui::widgets::TextInputEditingLimits,
+    ) {
+        self.stage.editing_limits = limits;
+    }
     /// Admit a source compilation with its generated locale catalogs through
     /// one loading boundary. Catalog text is shared, parsed only when requested,
     /// and remains available when the host selects another asset loader.
@@ -961,6 +972,24 @@ impl SessionVm {
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::choose" => self.dispatch_choose(session, ticket, work),
+            "reel::text_input::select_bytes"
+            | "reel::text_input::select_all"
+            | "reel::text_input::undo"
+            | "reel::text_input::redo" => {
+                let name = symbol.rsplit("::").next().unwrap();
+                let (progress, change) = stage::text_input::dispatch(
+                    &mut self.stage,
+                    &mut self.vm,
+                    ticket,
+                    name,
+                    budget,
+                )?;
+                self.issued = None;
+                if let Some((node, target, closure, value)) = change {
+                    self.start_text_callback(session, node, target, closure, value)?;
+                }
+                Ok(progress)
+            }
             "reel::text"
             | "reel::text_input"
             | "reel::text_area"

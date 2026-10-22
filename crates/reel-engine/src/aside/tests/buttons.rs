@@ -388,10 +388,7 @@ fn text_input_commits_bindings_rejects_stale_edits_and_retires_callbacks() {
         .id;
     let change = |previous: &str, value: &str| NodeText {
         node,
-        event: TextInputEvent::Changed {
-            previous: previous.into(),
-            value: value.into(),
-        },
+        event: TextInputEvent::replace_all(previous, value),
     };
     assert!(vm.text_input(&mut session, &change("old", "中文")).unwrap());
     pump(&mut vm, &mut session);
@@ -401,7 +398,10 @@ fn text_input_commits_bindings_rejects_stale_edits_and_retires_callbacks() {
             &mut session,
             &NodeText {
                 node,
-                event: TextInputEvent::Submitted("中文".into())
+                event: TextInputEvent::Submitted {
+                    value: "中文".into(),
+                    replay: None
+                }
             }
         )
         .unwrap()
@@ -487,10 +487,7 @@ fn text_area_restores_multiline_binding_and_owned_submit() {
             .id;
         let edit = |previous: &str, value: &str| NodeText {
             node: editor,
-            event: TextInputEvent::Changed {
-                previous: previous.into(),
-                value: value.into(),
-            },
+            event: TextInputEvent::replace_all(previous, value),
         };
         assert!(
             vm.text_input(&mut session, &edit("first\nsecond", "edited\ntext"))
@@ -503,7 +500,10 @@ fn text_area_restores_multiline_binding_and_owned_submit() {
                 &mut session,
                 &NodeText {
                     node: editor,
-                    event: TextInputEvent::Submitted("edited\ntext".into())
+                    event: TextInputEvent::Submitted {
+                        value: "edited\ntext".into(),
+                        replay: None
+                    }
                 }
             )
             .unwrap()

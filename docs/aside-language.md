@@ -695,6 +695,8 @@ text_input 的显式高度内文字、选区、光标和 IME 位置共同垂直�
 
 Reel 的 `text_area` 与 `text_input` 使用相同的 value/on_change/on_submit 参数、可写 bind 和节点所有权；多行编辑复用普通宿主字段与输入事件，不新增语言语法。换行、提交和选区规则见架构及双语指南。
 
+`TextInputNode.select_bytes(anchor: int, focus: int | null = null)`、`select_all()`、`undo()`、`redo()` 返回同一节点；选区以 UTF-8 字节端点表达并沿共享编辑器规范化，非法边界在原调用处报错。selection_anchor/selection_focus 与 can_undo/can_redo 为只读可观察字段。撤销仅保留编辑 delta，连续同向编辑合并，IME 提交独立成组；值与选区共同提交，journal 和已提交选区随节点保存恢复，临时预编辑和编辑视口重建。此接口沿普通 native 调用、绑定、取消与恢复协议，不增加语言语法或平台句柄。
+
 Reel tween 的 easing 还可传 std::math::curve 不可变值，使用普通参数绑定与 VM 引用；内置字符串保持原语义。曲线在归一化时间 0..1 上采样，端值须为 0 和 1。不新增 Aside 语法、VM 指令或平行曲线实现。
 
 Reel 共同节点字段 `font_weight` 默认 400，接受 1..1000 的有限数值，可在构造时给出、直接赋值或 bind/derive。文字、控件标签和文本输入使用同一字体匹配与布局通路，实际变化时重新排版；富文本局部粗体保留所在范围的样式覆盖。该样式字段随节点宿主对象保存恢复。

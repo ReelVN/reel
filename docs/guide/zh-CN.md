@@ -1200,7 +1200,21 @@ stage.replace(text_input(value: bind(profile.name), width: 280, height: 40,
 
 `placeholder: "Your name"` 在 value 为空且没有 IME 预编辑时显示提示。`read_only: true` 保留选区、复制、导航和提交，同时阻止玩家编辑；脚本仍可赋值。两者支持直接赋值与绑定。`selection_color` 默认为 "#3c78dc5f"；`caret_color: null` 沿用 color。文字描边和阴影复用编辑器的同一排版。切为只读撤销预编辑并关闭系统 IME，保留正文与选区。
 
-多行笔记或留言使用 `text_area`，参数与 text_input 相同。两者使用 `text_align` 设置水平对齐，`line_height` 设置字号倍率行高。text_area 默认按宽度自动换行，`text_wrap: false` 保留显式换行并允许横向滚动；正文从顶部开始。Enter 换行，Ctrl+Enter（macOS 为 Command+Enter）触发 on_submit，Tab 切换焦点。上下方向键移动光标，配合 Shift 扩展选区；Home/End 定位当前显示行，配合 Ctrl/Command 定位全文首尾。滚轮查看溢出内容，编辑时自动将光标滚入可见区域。粘贴的 CRLF/CR 转为 LF；IME 预编辑在确认后才写回 value。保存恢复保留正文和绑定，选区及内部滚动位置随输入控件重建。可运行示例：[author_text_area.aside](../../examples/author_text_area/src/main.aside)。
+多行笔记或留言使用 `text_area`，参数与 text_input 相同。两者使用 `text_align` 设置水平对齐，`line_height` 设置字号倍率行高。text_area 默认按宽度自动换行，`text_wrap: false` 保留显式换行并允许横向滚动；正文从顶部开始。Enter 换行，Ctrl+Enter（macOS 为 Command+Enter）触发 on_submit，Tab 切换焦点。上下方向键移动光标，配合 Shift 扩展选区；Home/End 定位当前显示行，配合 Ctrl/Command 定位全文首尾。滚轮查看溢出内容，编辑时自动将光标滚入可见区域。粘贴的 CRLF/CR 转为 LF；IME 预编辑在确认后才写回 value。保存恢复保留正文、绑定、已提交选区和撤销事务；预编辑及内部滚动位置重建。可运行示例：[author_text_area.aside](../../examples/author_text_area/src/main.aside)。
+
+`select_bytes(anchor, focus: null)` 放置光标或有方向的选区，保持原键盘焦点。端点为 UTF-8 字节位置；非法边界在调用处报错，编辑器将显示位置定位到所在文字簇的起点。`select_all()`、`undo()`、`redo()` 返回原输入节点，可以继续链式组合；derive 可读取 selection_anchor、selection_focus、can_undo 和 can_redo。Ctrl/Command+Z 撤销，Ctrl/Command+Shift+Z 重做，Windows/Linux 也支持 Ctrl+Y。连续键入和同向删除合并；移动选区、粘贴、剪切、换行与 IME 确认分别形成事务边界。脚本替换正文会清除 delta 历史。
+
+<!-- aside: editing transactions -->
+```aside
+let notes = text_area(value: "Draft", width: 360, height: 180);
+let toolbar = row {
+    button("Undo", enabled: derive(|| notes.can_undo), on_click: || notes.undo());
+    button("Redo", enabled: derive(|| notes.can_redo), on_click: || notes.redo());
+    button("Select all", on_click: || notes.select_all());
+};
+stage.replace(column { toolbar; notes; });
+notes.select_bytes(0, focus: 5);
+```
 
 按键打字演出或键盘小游戏使用 `input(on_key: |event| { ... })`。事件提供 code、key、phase 和 shift/ctrl/alt/meta，phase 为 pressed/repeated/released/cancelled；多键分别交付，失焦会取消旧按键。聚焦按钮先处理自己的确认键，其余未消费的键向祖先 on_key 冒泡，因此点击语言按钮后仍能继续按键打字。聚焦的文本编辑控件保留全部键盘和系统输入法事件。actions 可省略，命名动作可同时用于手柄或鼠标映射，动作映射仍遵守焦点所有权。示例：[author_keyboard.aside](../../examples/author_keyboard/src/main.aside)。
 

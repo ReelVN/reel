@@ -302,6 +302,7 @@ pub(super) struct StageBinding {
     // Schema names are immutable and shared by live nodes. Weak handles let
     // unused schemas disappear with their last node and require no save roots.
     property_keys: super::observable::SchemaKeys,
+    pub(super) editing_limits: reel_ui::widgets::TextInputEditingLimits,
 }
 struct NodeBinding {
     shape: snapshot::Shape,
@@ -312,6 +313,7 @@ struct NodeBinding {
     projection_dirty: bool,
     overrides: Option<Box<overrides::Cache>>,
     input: Option<Box<input::State>>,
+    text_history: Option<Box<text_input::History>>,
     text_source: Option<HeapHandle>,
     mask_source: Option<HeapHandle>,
     text_listening: bool,
@@ -366,6 +368,7 @@ impl StageBinding {
             handles: BTreeMap::new(),
             root: None,
             property_keys: Default::default(),
+            editing_limits: Default::default(),
         })
     }
 
@@ -614,6 +617,29 @@ impl StageBinding {
         }
         heap.observe_host_properties(value, field_count as u32, interaction::FIELDS.len() as u32)?;
         let extra_fields = interaction::FIELDS.len();
+        if matches!(
+            shape,
+            snapshot::Shape::TextInput | snapshot::Shape::TextArea
+        ) {
+            for (i, name) in text_input::METRICS.into_iter().enumerate() {
+                let key = self.property_key(heap, name)?;
+                heap.table_store(
+                    fields,
+                    text_input::metrics() + i as u32,
+                    key,
+                    if i < 2 {
+                        Value::int(0)
+                    } else {
+                        Value::bool(false)
+                    },
+                )?;
+            }
+            heap.observe_host_properties(
+                value,
+                text_input::metrics(),
+                text_input::METRICS.len() as u32,
+            )?;
+        }
         if symbol == "reel::scroll" {
             for (i, name) in scroll::METRICS.into_iter().enumerate() {
                 let key = self.property_key(heap, name)?;
@@ -669,6 +695,7 @@ impl StageBinding {
             None
         };
         controls::project_group(heap, value, &mut kind)?;
+        text_input::project(heap, value, &mut kind)?;
         self.scene.create(kind, props, children)?;
         // Keeping any part of a component keeps its ancestors and siblings
         // alive. Explicit retirement clears both directions of these edges.
@@ -689,6 +716,7 @@ impl StageBinding {
                 projection_dirty: false,
                 overrides: None,
                 input,
+                text_history: None,
                 text_source: if matches!(
                     symbol,
                     "reel::text"
@@ -879,15 +907,37 @@ impl StageBinding {
                     options,
                 } => {
                     let source = heap.table_entry(fields, 0)?.1;
+                    let projected = if binding.text_source == Some(heap.handle(source)?) {
+                        value.clone()
+                    } else {
+                        Arc::from(read_text(heap, source, read_limit)?)
+                    };
+                    if binding.text_source != Some(heap.handle(source)?)
+                        && binding
+                            .text_history
+                            .as_ref()
+                            .is_none_or(|h| Some(h.expected) != heap.handle(source).ok())
+                    {
+                        let host = heap.import_handle(binding.handle)?;
+                        let text = &projected;
+                        let mut selected = text_input::selection(heap, host)?;
+                        let boundary = |mut offset: usize| {
+                            offset = offset.min(text.len());
+                            while !text.is_char_boundary(offset) {
+                                offset -= 1;
+                            }
+                            offset
+                        };
+                        selected.anchor = boundary(selected.anchor);
+                        selected.focus = boundary(selected.focus);
+                        text_input::publish(heap, host, None, selected, false, false)?;
+                        binding.text_history = None;
+                    }
                     (
                         NodeKind::TextInput {
                             multiline: *multiline,
                             options: text_input::options(heap, fields, Some(options), read_limit)?,
-                            value: if binding.text_source == Some(heap.handle(source)?) {
-                                value.clone()
-                            } else {
-                                read_text(heap, source, read_limit)?.into()
-                            },
+                            value: projected,
                         },
                         text_input::TextInputField::PROPERTIES.len(),
                     )
@@ -939,9 +989,30 @@ impl StageBinding {
                 validate_virtual_props(&props)?;
             }
             let mask_source = mask_handle(heap, fields, offset, selected)?;
+            let version = if matches!(kind, NodeKind::TextInput { .. }) {
+                heap.info(fields)?.content_version
+            } else {
+                version
+            };
             updates.push((id, kind, props, version, mask_source));
         }
         for (id, kind, props, version, mask_source) in updates {
+            let mut kind = kind;
+            let host = heap.import_handle(self.handles[&id].handle)?;
+            text_input::project(heap, host, &mut kind)?;
+            if let NodeKind::TextInput { options, .. } = &mut kind
+                && let Some(queue) = self.handles[&id]
+                    .text_history
+                    .as_ref()
+                    .and_then(|h| h.queue.as_ref())
+            {
+                options.pending_edit = queue.pending();
+                options.replay = queue
+                    .active
+                    .is_none()
+                    .then(|| queue.entries.front().cloned())
+                    .flatten();
+            }
             if matches!(kind, NodeKind::Radio { .. }) {
                 let value = heap.import_handle(self.handles[&id].handle)?;
                 self.handles.get_mut(&id).unwrap().radio_option = Some(

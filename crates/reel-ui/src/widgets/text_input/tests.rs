@@ -443,7 +443,7 @@ fn read_only_cancels_composition_preserves_selection_and_retains_keyboard_owners
             !signals
                 .borrow()
                 .iter()
-                .any(|s| matches!(s, RenderRootSignal::Action(..)))
+                .any(|s| matches!(s, RenderRootSignal::Action(a, _) if matches!(a.downcast_ref::<TextInputEvent>(), Some(TextInputEvent::Changed { .. }))))
         );
         root.handle_text_event(TextEvent::key_down(Key::Named(NamedKey::End)));
         let mut submit = TextEvent::key_down(Key::Named(NamedKey::Enter));
@@ -454,7 +454,7 @@ fn read_only_cancels_composition_preserves_selection_and_retains_keyboard_owners
                 !signals
                     .borrow()
                     .iter()
-                    .any(|s| matches!(s, RenderRootSignal::Action(..)))
+                    .any(|s| matches!(s, RenderRootSignal::Action(a, _) if matches!(a.downcast_ref::<TextInputEvent>(), Some(TextInputEvent::Changed { .. }))))
             );
             let TextEvent::Keyboard(event) = &mut submit else {
                 unreachable!()
@@ -466,7 +466,7 @@ fn read_only_cancels_composition_preserves_selection_and_retains_keyboard_owners
             };
         }
         root.handle_text_event(submit);
-        assert!(signals.borrow().iter().any(|s| matches!(s, RenderRootSignal::Action(a, _) if matches!(a.downcast_ref::<TextInputEvent>(), Some(TextInputEvent::Submitted(v)) if v.as_ref() == "AAA"))));
+        assert!(signals.borrow().iter().any(|s| matches!(s, RenderRootSignal::Action(a, _) if matches!(a.downcast_ref::<TextInputEvent>(), Some(TextInputEvent::Submitted { value: v, .. }) if v.as_ref() == "AAA"))));
         root.edit_widget(id, |mut widget| {
             let mut field = widget.downcast::<TextInput>();
             TextInput::set_value(&mut field, "author".into());
