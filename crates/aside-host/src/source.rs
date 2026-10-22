@@ -7,6 +7,7 @@ use aside_compiler::{
     },
 };
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// A source-visible default value or a parameter handled only when supplied.
 /// Native ABI defaults remain on the independently registered contract.
@@ -36,6 +37,18 @@ pub struct Declaration {
     pub property_default: Option<aside_vm::bytecode::Const>,
     /// Parameter names expanded from the implementation's registered property schema.
     pub property_parameters: Vec<String>,
+    /// English parameter descriptions from the same registered property schemas.
+    pub parameter_documentation: BTreeMap<String, Arc<str>>,
+    /// Preserve the contributing schema's grouping without changing argument order.
+    pub property_groups: Vec<PropertyParameterGroup>,
+}
+/// A named group contributed by one actual property schema.
+#[derive(Clone, Debug)]
+pub struct PropertyParameterGroup {
+    /// Author-facing name of the contributing schema.
+    pub name: String,
+    /// Actual registered parameter names, in schema order.
+    pub parameters: Vec<String>,
 }
 impl Declaration {
     /// Describe a registered module using the compiler's namespace table semantics.
@@ -57,6 +70,8 @@ impl Declaration {
             parameter_defaults: BTreeMap::new(),
             property_default: None,
             property_parameters: Vec::new(),
+            parameter_documentation: BTreeMap::new(),
+            property_groups: Vec::new(),
         }
     }
 
@@ -76,6 +91,8 @@ impl Declaration {
                 .collect(),
             property_default: None,
             property_parameters: Vec::new(),
+            parameter_documentation: BTreeMap::new(),
+            property_groups: Vec::new(),
         }
     }
     /// Override only known source types on the existing registered signature.
@@ -106,8 +123,36 @@ impl Declaration {
             signature.result_parameter = None;
         }
         self.parameter_defaults.remove(&receiver.name);
+        self.parameter_documentation.remove(&receiver.name);
         self.symbol.name = name.into();
         self
+    }
+
+    /// Attach a contributing property schema's parameter names and source docs.
+    /// The native signature remains the authority for argument order and defaults.
+    pub fn property_group<'a>(
+        &mut self,
+        name: &str,
+        properties: impl IntoIterator<Item = &'a PropertyDocumentation>,
+    ) {
+        let parameters = properties
+            .into_iter()
+            .map(|doc| {
+                let name = doc.property.name.to_owned();
+                self.property_parameters.push(name.clone());
+                if !doc.markdown.trim().is_empty() {
+                    self.parameter_documentation
+                        .insert(name.clone(), Arc::from(doc.markdown.trim()));
+                }
+                name
+            })
+            .collect::<Vec<_>>();
+        if !parameters.is_empty() {
+            self.property_groups.push(PropertyParameterGroup {
+                name: name.into(),
+                parameters,
+            });
+        }
     }
 
     /// Retain the actual argument's type when this native returns that same value.
@@ -207,6 +252,8 @@ impl Member {
                 parameter_defaults: BTreeMap::new(),
                 property_default: default,
                 property_parameters: Vec::new(),
+                parameter_documentation: BTreeMap::new(),
+                property_groups: Vec::new(),
             },
             write_type,
         }
@@ -329,7 +376,8 @@ pub struct Api {
 pub struct Document {
     pub uri: String,
     pub text: String,
-    /// Exact source references into the same generated declaration catalog.
+    /// Exact source references into the same generated declaration catalog,
+    /// ordered by range with unique, non-overlapping identifier spans.
     pub references: Vec<Reference>,
 }
 /// A displayed symbol refers to one original declaration without copying its signature.
@@ -458,6 +506,8 @@ impl Api {
                     parameter_defaults: BTreeMap::new(),
                     property_default: None,
                     property_parameters: Vec::new(),
+                    parameter_documentation: BTreeMap::new(),
+                    property_groups: Vec::new(),
                 },
                 uri: uri.clone(),
                 range: range(start + 10, name.len()),
@@ -644,6 +694,12 @@ impl Api {
                         })
                     },
                 ));
+            document
+                .references
+                .sort_by_key(|reference| (reference.range.start(), reference.range.end()));
+            document
+                .references
+                .dedup_by_key(|reference| reference.range);
         }
         result
     }
@@ -712,14 +768,16 @@ fn append_declaration(
         for (index, p) in signature.parameters.iter().enumerate() {
             if multiline {
                 text.push('\n');
-                let property = declaration.property_parameters.contains(&p.name);
+                let group = declaration
+                    .property_groups
+                    .iter()
+                    .find(|group| group.parameters.contains(&p.name));
+                let property = group.map_or("Call parameters", |group| group.name.as_str());
                 if !declaration.property_parameters.is_empty() && property_group != Some(property) {
                     text.push_str(indent);
-                    text.push_str(if property {
-                        "    // Registered node properties.\n"
-                    } else {
-                        "    // Call parameters.\n"
-                    });
+                    text.push_str("    // ");
+                    text.push_str(property);
+                    text.push_str(".\n");
                     property_group = Some(property);
                 }
                 text.push_str(indent);

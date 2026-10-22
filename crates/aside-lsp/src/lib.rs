@@ -11,6 +11,6 @@ pub use server::{run_connection, run_stdio};
 mod tests;
 pub use host::{
     HostContext, HostDeclaration, HostDocument, HostDocumentReference, HostLocation, HostMember,
-    NamedType, ParameterDefault, ServerOptions, SourceAnalysis, SourceCompletions, SourceFeatures,
-    SourceHover, SourceRootQuery,
+    NamedType, ParameterDefault, PropertyParameterGroup, ServerOptions, SourceAnalysis,
+    SourceCompletions, SourceFeatures, SourceHover, SourceRootQuery,
 };

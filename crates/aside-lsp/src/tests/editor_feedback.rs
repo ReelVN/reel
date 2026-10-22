@@ -465,6 +465,8 @@ fn hover_summarizes_only_optional_schema_properties_and_uses_verified_type_alias
                 definition: None,
                 parameter_defaults: BTreeMap::new(),
                 property_parameters: Vec::new(),
+                parameter_documentation: BTreeMap::new(),
+                property_groups: Vec::new(),
                 property_default: None,
             },
             HostDeclaration {
@@ -485,6 +487,8 @@ fn hover_summarizes_only_optional_schema_properties_and_uses_verified_type_alias
                 )
                 .collect(),
                 property_parameters: std::iter::once("value".into()).chain(properties).collect(),
+                parameter_documentation: BTreeMap::new(),
+                property_groups: Vec::new(),
                 property_default: None,
             },
         ],

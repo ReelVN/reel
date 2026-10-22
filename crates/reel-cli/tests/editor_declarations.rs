@@ -76,7 +76,8 @@ fn host_type_imports_and_generated_signatures_keep_complete_navigation() {
     let constructor = definition(&mut server, &mut id, uri, source, "text(\"标题\")");
     let (constructor_uri, constructor_text) = document(&mut server, &mut id, &constructor);
     assert!(constructor_text.contains("pub fn text(\n"));
-    assert!(constructor_text.contains("// Registered node properties."));
+    assert!(constructor_text.contains("// TextNode properties."));
+    assert!(constructor_text.contains("// Node properties."));
     assert!(constructor_text.contains("    x: "));
     assert!(constructor_text.contains("    opacity: "));
     let text_type = definition(
@@ -107,5 +108,68 @@ fn host_type_imports_and_generated_signatures_keep_complete_navigation() {
     assert!(module_text.contains("pub use reel::types::TextNode;"));
     let exported_type = definition(&mut server, &mut id, &module_uri, &module_text, "TextNode;");
     assert_eq!(exported_type, text_type);
+    server.stop();
+}
+
+#[test]
+fn node_schema_groups_and_parameter_help_describe_the_actual_properties() {
+    let mut server = Server::start(env!("CARGO_BIN_EXE_reel-lsp"));
+    server.request(1, "initialize", json!({"capabilities":{}}));
+    server.notify("initialized", json!({}));
+    let uri = "untitled:property-parameter-help.aside";
+    let source = "fn main() { let editor = text_input(value: \"Name\", password: true); editor.with(password: false, x: 12); }";
+    open(&mut server, uri, source);
+    let mut id = 1;
+    for (call, argument, native) in [
+        ("text_input(", "password: true", "reel::text_input"),
+        ("with(", "password: false", "reel::text_input::with"),
+    ] {
+        id += 1;
+        let hover = server.request(id, "textDocument/hover", query(uri, source, call));
+        let markdown = hover["contents"]["value"].as_str().unwrap();
+        assert!(markdown.contains("TextInputNode properties:"), "{markdown}");
+        assert!(markdown.contains("Node properties:"), "{markdown}");
+        assert!(
+            markdown.contains("`password`") && markdown.contains("`x`"),
+            "{markdown}"
+        );
+        id += 1;
+        let signature = server.request(
+            id,
+            "textDocument/signatureHelp",
+            query(uri, source, argument),
+        );
+        let active = signature["activeParameter"].as_u64().unwrap() as usize;
+        let parameters = signature["signatures"][0]["parameters"].as_array().unwrap();
+        let expected = if native.ends_with("::with") {
+            "password?:"
+        } else {
+            "password:"
+        };
+        assert!(
+            parameters[active]["label"]
+                .as_str()
+                .unwrap()
+                .starts_with(expected),
+            "{signature}"
+        );
+        let documentation = parameters[active]["documentation"]["value"]
+            .as_str()
+            .unwrap();
+        assert!(
+            documentation.contains("Display one bullet per Unicode grapheme"),
+            "{documentation}"
+        );
+        let registered = reel_engine::aside::source::api()
+            .native(native)
+            .symbol
+            .signature
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            parameters.len(),
+            registered.parameters.len() - usize::from(native.ends_with("::with"))
+        );
+    }
     server.stop();
 }

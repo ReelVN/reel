@@ -20,6 +20,16 @@ const SERVICES: [&str; 8] = [
 fn every_registered_module_and_global_service_has_a_generated_root_declaration() {
     let api = reel_engine::aside::source::api();
     let context = reel_cli::editor::host_context(api);
+    for document in &context.documents {
+        assert!(
+            document
+                .references
+                .windows(2)
+                .all(|references| references[0].range.end() <= references[1].range.start()),
+            "overlapping references in {}",
+            document.uri.as_str()
+        );
+    }
     let mut services = api
         .globals
         .iter()

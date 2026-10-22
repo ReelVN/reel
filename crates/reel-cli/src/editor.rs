@@ -67,6 +67,15 @@ pub fn host_context(api: &Api) -> HostContext {
                     .collect(),
                 property_default: declaration.property_default.as_ref().map(constant),
                 property_parameters: declaration.property_parameters,
+                parameter_documentation: declaration.parameter_documentation,
+                property_groups: declaration
+                    .property_groups
+                    .into_iter()
+                    .map(|group| aside_lsp::PropertyParameterGroup {
+                        name: group.name,
+                        parameters: group.parameters,
+                    })
+                    .collect(),
             }
         })
         .collect();

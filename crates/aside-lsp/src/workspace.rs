@@ -75,6 +75,8 @@ impl From<HostContext> for HostIndex {
                         })
                         .collect(),
                     property_parameters: Vec::new(),
+                    parameter_documentation: BTreeMap::new(),
+                    property_groups: Vec::new(),
                     property_default: None,
                 });
             }

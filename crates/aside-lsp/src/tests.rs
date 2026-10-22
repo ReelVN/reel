@@ -819,6 +819,8 @@ fn native_types_keep_nominal_members_readonly_defaults_and_definition_documents(
             }),
             parameter_defaults: BTreeMap::new(),
             property_parameters: Vec::new(),
+            parameter_documentation: BTreeMap::new(),
+            property_groups: Vec::new(),
             property_default: Some("12".into()),
         }],
         documents: vec![HostDocument {
