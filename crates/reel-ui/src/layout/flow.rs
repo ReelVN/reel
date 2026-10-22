@@ -7,7 +7,7 @@ use crate::kurbo::{Axis, Point, Size};
 use crate::layout::{LayoutSize, LenDef, LenReq, Length, SizeDef};
 use crate::stage::{FlowOptions, GridOptions, Justify, NodeKind, NodeProps};
 use taffy::style::*;
-use taffy::style_helpers::{TaffyAuto, fr, length};
+use taffy::style_helpers::{TaffyAuto, fr, length, minmax};
 use taffy::{Layout, LayoutInput, LayoutOutput, NodeId, RunMode, SizingMode};
 
 /// Immediate children of a layout container. Measurements use the host's existing cache.
@@ -38,6 +38,40 @@ pub fn measure_flow(
     request: LenReq,
     cross: Option<Length>,
 ) -> Length {
+    if let NodeKind::Grid(grid) = kind {
+        let fixed = if axis == Axis::Horizontal {
+            grid.column_width.map(|width| {
+                (
+                    usize::from(grid.columns),
+                    width,
+                    grid.column_gap,
+                    props.max_width,
+                )
+            })
+        } else {
+            grid.row_height.map(|height| {
+                let cells = (0..children.len())
+                    .filter(|&index| {
+                        let (kind, props) = children.node(index);
+                        props.visible && !matches!(kind, NodeKind::Cursor)
+                    })
+                    .count();
+                (
+                    cells.div_ceil(usize::from(grid.columns)),
+                    height,
+                    grid.row_gap,
+                    props.max_height,
+                )
+            })
+        };
+        if let Some((tracks, extent, gap, maximum)) = fixed {
+            // Fixed tracks need no child measurements or algorithm workspace.
+            let value = tracks as f64 * f64::from(extent)
+                + tracks.saturating_sub(1) as f64 * gap.map_or(props.gap, f64::from)
+                + 2. * props.padding;
+            return Length::px(maximum.map_or(value, |max| value.min(max)));
+        }
+    }
     let available = match request {
         LenReq::MinContent => AvailableSpace::MinContent,
         LenReq::MaxContent => AvailableSpace::MaxContent,
@@ -380,7 +414,9 @@ impl GridContainerStyle for StyleRef<'_> {
     }
     fn grid_template_columns(&self) -> Option<Self::TemplateTrackList<'_>> {
         let grid = self.grid();
-        let track = grid.column_width.map_or_else(|| fr(1.), length);
+        let track = grid
+            .column_width
+            .map_or_else(|| minmax(length(0.), fr(1.)), length);
         Some(std::iter::repeat_n(
             GenericGridTemplateComponent::Single(track),
             usize::from(grid.columns),
@@ -504,8 +540,10 @@ impl<C: FlowChildren> taffy::LayoutPartialTree for Tree<'_, C> {
         if self.style(id).box_generation_mode() == BoxGenerationMode::None {
             return LayoutOutput::HIDDEN;
         }
-        let dimension = |known: Option<f32>, space: AvailableSpace| match (known, space) {
+        let props = self.children.node(usize::from(id) - 1).1;
+        let dimension = |axis, known: Option<f32>, space: AvailableSpace| match (known, space) {
             (Some(v), _) => LenDef::Fixed(Length::px(v.into())),
+            (None, _) if props.stretch.axis(axis) => LenDef::Fixed(Length::ZERO),
             (_, AvailableSpace::Definite(v)) => LenDef::FitContent(Length::px(v.max(0.).into())),
             (_, AvailableSpace::MinContent) => LenDef::MinContent,
             (_, AvailableSpace::MaxContent) => LenDef::MaxContent,
@@ -513,8 +551,16 @@ impl<C: FlowChildren> taffy::LayoutPartialTree for Tree<'_, C> {
         let size = self.children.measure(
             usize::from(id) - 1,
             SizeDef::new(
-                dimension(input.known_dimensions.width, input.available_space.width),
-                dimension(input.known_dimensions.height, input.available_space.height),
+                dimension(
+                    Axis::Horizontal,
+                    input.known_dimensions.width,
+                    input.available_space.width,
+                ),
+                dimension(
+                    Axis::Vertical,
+                    input.known_dimensions.height,
+                    input.available_space.height,
+                ),
             ),
             match (input.parent_size.width, input.parent_size.height) {
                 (Some(w), Some(h)) => LayoutSize::new(Length::px(w.into()), Length::px(h.into())),

@@ -1636,22 +1636,19 @@ impl SceneWidget {
     fn sequential(&self, axis: Axis) -> bool {
         matches!(
             (&self.node.kind, axis),
-            (NodeKind::Row(_), Axis::Horizontal)
-                | (NodeKind::Column(_), Axis::Vertical)
-                | (
-                    NodeKind::Scroll {
-                        axis: ScrollAxis::Horizontal,
-                        ..
-                    },
-                    Axis::Horizontal
-                )
-                | (
-                    NodeKind::Scroll {
-                        axis: ScrollAxis::Vertical | ScrollAxis::Both,
-                        ..
-                    },
-                    Axis::Vertical
-                )
+            (
+                NodeKind::Scroll {
+                    axis: ScrollAxis::Horizontal,
+                    ..
+                },
+                Axis::Horizontal
+            ) | (
+                NodeKind::Scroll {
+                    axis: ScrollAxis::Vertical | ScrollAxis::Both,
+                    ..
+                },
+                Axis::Vertical
+            )
         )
     }
 }
@@ -2333,8 +2330,7 @@ impl Widget for SceneWidget {
                 Point::new(0., row.offset)
             } else {
                 match self.node.kind {
-                    NodeKind::Row(_)
-                    | NodeKind::Scroll {
+                    NodeKind::Scroll {
                         axis: ScrollAxis::Horizontal,
                         ..
                     } if !node.props.stretch.axis(Axis::Horizontal) => {
@@ -2342,8 +2338,7 @@ impl Widget for SceneWidget {
                         cursor += chosen.width + self.node.props.gap;
                         offset
                     }
-                    NodeKind::Column(_)
-                    | NodeKind::Scroll {
+                    NodeKind::Scroll {
                         axis: ScrollAxis::Vertical | ScrollAxis::Both,
                         ..
                     } if !node.props.stretch.axis(Axis::Vertical) => {
@@ -2355,8 +2350,7 @@ impl Widget for SceneWidget {
                 }
             };
             let (flow_x, flow_y) = match self.node.kind {
-                NodeKind::Row(_) => (true, false),
-                NodeKind::Column(_) | NodeKind::VirtualList(_) => (false, true),
+                NodeKind::VirtualList(_) => (false, true),
                 NodeKind::Scroll { axis, .. } => (axis.horizontal(), axis.vertical()),
                 _ => (false, false),
             };

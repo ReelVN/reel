@@ -63,22 +63,34 @@ fn flow_remaining_width_wraps_real_text_and_reuses_shaping() {
 fn flow_grid_runtime_cost() {
     use stats_alloc::{INSTRUMENTED_SYSTEM, Region};
     use std::time::Instant;
-    for count in [12, 120] {
+    for (count, automatic) in [(12, false), (12, true), (120, false), (120, true)] {
         let mut f = Fixture::new(None);
         let cells = (0..count)
             .map(|_| cell(&mut f, Some(120.), 40., 0.))
             .collect::<Vec<_>>();
+        let kind = if automatic {
+            NodeKind::Grid(GridOptions {
+                columns: 4,
+                column_width: Some(120.),
+                row_height: Some(40.),
+                ..Default::default()
+            })
+        } else {
+            for (index, &cell) in cells.iter().enumerate() {
+                f.edit(cell, |p| {
+                    p.x = (index % 4) as f64 * 128.;
+                    p.y = (index / 4) as f64 * 48.;
+                });
+            }
+            NodeKind::Stack
+        };
         let root = f
             .stage
             .create(
-                NodeKind::Grid(GridOptions {
-                    columns: 4,
-                    column_width: Some(120.),
-                    row_height: Some(40.),
-                    ..Default::default()
-                }),
+                kind,
                 NodeProps {
                     width: Some(520.),
+                    height: (!automatic).then_some(f64::from(count / 4) * 48. - 8.),
                     gap: 8.,
                     ..Default::default()
                 },
@@ -127,7 +139,7 @@ fn flow_grid_runtime_cost() {
         assert_eq!(f.layouts().len(), 1);
         let retired = region.change();
         eprintln!(
-            "grid cells={count} node_props_bytes={} mounted_us={mount_us} mounted_allocations={} mounted_bytes={} idle_120_us={idle_us} idle_allocations={} idle_bytes={} resize_60_us={resize_us} resize_allocations={} resize_bytes={} retired_net_bytes={}",
+            "grid automatic={automatic} cells={count} node_props_bytes={} mounted_us={mount_us} mounted_allocations={} mounted_bytes={} idle_120_us={idle_us} idle_allocations={} idle_bytes={} resize_60_us={resize_us} resize_allocations={} resize_bytes={} retired_net_bytes={}",
             size_of::<NodeProps>(),
             mounted.allocations,
             mounted.bytes_allocated,
@@ -165,6 +177,54 @@ fn bounds(f: &Fixture, frame: &TestFrame, id: NodeId) -> (Size, Point) {
 }
 
 #[test]
+fn flow_intrinsic_size_and_grid_columns_follow_the_authored_container() {
+    let mut f = Fixture::new(None);
+    let a = cell(&mut f, Some(80.), 20., 0.);
+    let b = cell(&mut f, Some(40.), 30., 0.);
+    let row = f
+        .stage
+        .create(
+            NodeKind::Row(FlowOptions::default()),
+            NodeProps {
+                gap: 10.,
+                padding: 5.,
+                ..Default::default()
+            },
+            vec![a, b],
+        )
+        .unwrap();
+    f.stage.replace(row).unwrap();
+    let frame = f.record();
+    f.accept(&frame);
+    assert_eq!(bounds(&f, &frame, row).0, Size::new(140., 40.));
+    let wide = cell(&mut f, Some(300.), 20., 0.);
+    let wrapper = f
+        .stage
+        .create(NodeKind::Stack, NodeProps::default(), vec![wide])
+        .unwrap();
+    let second = cell(&mut f, None, 20., 0.);
+    let grid = f
+        .stage
+        .create(
+            NodeKind::Grid(GridOptions {
+                columns: 2,
+                ..Default::default()
+            }),
+            NodeProps {
+                width: Some(200.),
+                ..Default::default()
+            },
+            vec![wrapper, second],
+        )
+        .unwrap();
+    f.stage.replace(grid).unwrap();
+    let frame = f.record();
+    f.accept(&frame);
+    assert_eq!(bounds(&f, &frame, wrapper).0.width, 100.);
+    assert_eq!(bounds(&f, &frame, second).1.x, 100.);
+}
+
+#[test]
 fn flow_stretch_preserves_overlay_measurement_and_cross_axis_fill() {
     use reel_ui::stage::Stretch;
     let mut f = Fixture::new(None);
@@ -177,7 +237,6 @@ fn flow_stretch_preserves_overlay_measurement_and_cross_axis_fill() {
     });
     f.edit(stretched, |p| {
         p.stretch = Stretch::Y;
-        p.max_height = Some(10.);
     });
     let root = f
         .stage
@@ -204,6 +263,10 @@ fn flow_stretch_preserves_overlay_measurement_and_cross_axis_fill() {
         bounds(&f, &frame, stretched),
         (Size::new(40., 60.), Point::new(95., 5.))
     );
+    f.edit(stretched, |p| p.max_height = Some(10.));
+    let frame = f.record();
+    f.accept(&frame);
+    assert_eq!(bounds(&f, &frame, stretched).0.height, 60.);
 }
 
 #[test]
@@ -342,4 +405,13 @@ fn flow_grid_tracks_resize_hide_and_reorder_existing_nodes() {
     let frame = f.record();
     f.accept(&frame);
     assert_eq!(bounds(&f, &frame, children[5]).0.width, 100.);
+    let target = children[5];
+    let before = bounds(&f, &frame, target).1;
+    input_focus::press_pointer(&mut f, true, before.x + 20., before.y + 10.);
+    let events = input_focus::press_pointer(&mut f, false, before.x + 20., before.y + 10.);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, NodeEvent::Click(click) if click.node == target))
+    );
 }
