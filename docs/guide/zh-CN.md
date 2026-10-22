@@ -836,6 +836,22 @@ fn main() {
 
 scope 统一管理任务、活动、等待、临时节点、属性覆盖和加性偏移。
 
+剧情页面使用 `reading(body:, owner: null)`，让对白、选择、历史和阅读控制归这次页面所有。正文使用同一个 Scope 接口，按钮可通过 `page.finish(value)` 返回目标。新阅读上下文初始手动、未暂停、自动条件为 true；退出释放本页自动条件并恢复父上下文的原对象，auto delay、偏好和已读进度继续共享。普通 UI scope 继承当前上下文，适合临时菜单。在主剧情流程中进入 reading，前面的普通等待可以照常完成。
+
+```aside
+fn story_page(root) {
+    reading(body: |page| {
+        let controls = game.reading();
+        page.add(root, button("Title", on_click: || page.finish("title")));
+        controls.set_auto(condition: true).pause(false);
+        narrator("The story continues here.");
+        "completed"
+    })
+}
+```
+
+组件构造时捕获 `game.reading()`、`game.dialogue()`、`game.choice()` 和 `game.history()`，回调和绑定使用这些对象；之后重新调用 getter 会选择当时活动的上下文。Reading 的 `set_auto`、`set_skip`、`pause`、`clear_history` 返回原 Reading，操作该对象所属上下文，也可操作挂起的父上下文。退出后，仍被脚本持有的模型保留终态读取，控制方法报错。在 derive 内直接调用 getter 会跟随上下文切换，捕获对象保持原归属；这些对象与挂起父上下文的身份随存档恢复。
+
 scope 在当前剧情调用链执行普通闭包；正文可以对白、等待、调用其他函数，退出时退休本次作用域拥有的工作。临时画面按下面的形式加入同一寿命管理：
 ```aside
 fn show_cg(view) {
@@ -1472,18 +1488,18 @@ let actions = if flag {
 
 历史、自动阅读和存读档接口已实现；路线切换与按章节跳转仍为设计目标。界面由作者组合，服务不生成固定页面。
 
-跨章后不再需要之前的历史时，调用 `game.clear_history()`；用 `game.clear_history(keep_last: 37)` 保留最近 37 条实际历史行，较早记录被删除。数量按行计算，不按对白组计算，`history:false` 的行不计入；可以只保留最早一个保留组的尾部。剩余组和行保持原 ID、对象、内容及顺序，不重新编号，组 speaker_name/text 更新为剩余首行。顶层可观察数组和保留组的 lines 数组保持身份。缺省或 0 清空全部，数量不少于现有行数时不改动，负数或非整数报错。当前对白、NVL 显示页、推进权限、已读进度、偏好及存档槽不变；加载存档仍恢复保存时的历史，新组 ID 不复用。裁剪工作量随记录数增长，并释放会话持有的引用。脚本持有的行引用或界面缓存仍会保留内容，需要同时退休旧视图或依据历史数组刷新缓存。引擎不自动限制历史长度，无需脚本定时清理。见 [author_reading.aside](../../examples/author_reading/src/main.aside)。
+跨章后不再需要之前的历史时，调用 `game.reading().clear_history()`；用 `game.reading().clear_history(keep_last: 37)` 保留最近 37 条实际历史行，较早记录被删除。数量按行计算，不按对白组计算，`history:false` 的行不计入；可以只保留最早一个保留组的尾部。剩余组和行保持原 ID、对象、内容及顺序，不重新编号，组 speaker_name/text 更新为剩余首行。顶层可观察数组和保留组的 lines 数组保持身份。缺省或 0 清空全部，数量不少于现有行数时不改动，负数或非整数报错。当前对白、NVL 显示页、推进权限、已读进度、偏好及存档槽不变；加载存档仍恢复保存时的历史，新组 ID 不复用。裁剪工作量随记录数增长，并释放会话持有的引用。脚本持有的行引用或界面缓存仍会保留内容，需要同时退休旧视图或依据历史数组刷新缓存。引擎不自动限制历史长度，无需脚本定时清理。见 [author_reading.aside](../../examples/author_reading/src/main.aside)。
 
 ```aside
 game.dialogue().clear();
-game.clear_history();
+game.reading().clear_history();
 narrator("A new chapter begins.");
 ```
 
 `game.dialogue().advance_requested` 与当前活动行的同名字段是只读可观察的逐段手动推进请求。有效手动 Advance 在允许跳过显现或正文已经 ready 时置 true；尚未完成且禁止跳显时保持 false。自动阅读与快进驱动不会设置它。新对白、append 新段和清页重置；快照保留当前值。互动结束后根字段为 false，仍展示的旧行保留最后一次投影值；用 `current_line_ids` 确定描述当前段的行。作者可用它结束自定义文字演出，输入仍由共同对白服务接受和推进。
 
 ```aside
-game.clear_history(keep_last: 37);
+game.reading().clear_history(keep_last: 37);
 ```
 
 `saves.save(slot, title: null, thumbnail: null)`、`saves.load(slot)`、`saves.delete(slot)`、`saves.thumbnail(slot)` 和 `saves.list()` 立即返回可等待请求，具有只读的 `status`（pending、succeeded、failed）与 `error`。失败会在 await 处抛出错误；成功保存意味着完整文件已原子发布。`await saves.list()` 返回已占用槽位摘要，包含字符串 id、title、saved_at（UTC Unix 秒）与 has_thumbnail，不加载图片。槽位名是逻辑标识；作者决定页面与空槽，用 `"quick"` 等固定标识组合快速保存。
@@ -1515,8 +1531,8 @@ stage.replace(button("Save", enabled: derive(|| !menu.busy), on_click: |e| save_
 ```
 
 `game.start(entry)` 创建全新会话；`saves.load(slot)` 恢复保存时的变量、位置和画面。同会话的章节重启 `game.restart(story_id)` 属于规划接口，当前作者环境尚未注册。
-`game.reading()` 返回稳定的只读可观察 `auto/paused/delay` 状态。`game.set_auto(enabled: null, delay: null, condition: null)` 控制自动阅读；delay 为全文实际呈现后等待的有限非负秒数，默认 2 秒，省略时保留原值。`game.pause_reading(paused)` 暂停文字显现、自动推进和对白/选项输入，普通 UI 控件仍可用于关闭回看页。自动阅读在选择处等待玩家操作，之后继续；失焦、挂起、模态界面、待加载资源和正在进行的输入手势均停止计时，恢复后重新等待完整 delay。设置属于会话，更换 UI 保留，新会话默认手动、未暂停。有限演出和独立音频有各自控制，不随阅读暂停。按钮外观、布局、打开/关闭回看页的方式均由作者决定。 `condition` 接受 bool 或 `bind`/`derive` 引用；各参数为 null 时保留当前值及绑定，condition 为 true 时解除旧绑定。只读 `auto_ready` 显示条件的当前值，初值 true。false 只重置自动倒计时，文字显现、手动推进、快进与 `[next]` 保持原路径；恢复 true 后，全文实际呈现完毕再等待完整 delay。条件及绑定随快照恢复。
-`game.set_skip(enabled, unread: false, after_choices: false)` 已实现。`game.reading().skipping/skip_unread/skip_after_choices` 可观察状态与策略，`game.dialogue().read` 表示整组提交前是否已读。默认遇未读对白或选择时关闭快进；unread: true 可跳过未读对白；after_choices: true 在选择时保留快进模式，等待玩家选择后继续，仍遵守已读策略。暂停、失焦和模态界面仍会取消该模式。快进沿正常控制流执行，跳过显现/停留，并完成主剧情拥有的运行中有限演出；无限、暂停、节点拥有的活动和独立音频继续按原控制工作。自动阅读与快进互斥。暂停阅读、失焦、挂起和模态界面会关闭快进；启动快进的 input 节点退休也会清除其保持状态。作者用 input 回调在 pressed 时开启，在 released/cancelled 时关闭，也可自制切换按钮。已读在对白推进完成后记录，取消或仅显现全文不算。新会话默认保留由宿主提供的已读进度。源码模块版本变化保守视为未读。
+`game.reading()` 返回稳定的只读可观察 `auto/paused/delay` 状态。`game.reading().set_auto(enabled: null, delay: null, condition: null)` 控制自动阅读；delay 为全文实际呈现后等待的有限非负秒数，默认 2 秒，省略时保留原值。`game.reading().pause(paused)` 暂停文字显现、自动推进和对白/选项输入，普通 UI 控件仍可用于关闭回看页。自动阅读在选择处等待玩家操作，之后继续；失焦、挂起、模态界面、待加载资源和正在进行的输入手势均停止计时，恢复后重新等待完整 delay。模式、暂停和条件属于阅读上下文，在同一上下文更换 UI 时保留；新上下文默认手动、未暂停。delay 为共享偏好。有限演出和独立音频有各自控制，不随阅读暂停。按钮外观、布局、打开/关闭回看页的方式均由作者决定。 `condition` 接受 bool 或 `bind`/`derive` 引用；各参数为 null 时保留当前值及绑定，condition 为 true 时解除旧绑定。只读 `auto_ready` 显示条件的当前值，初值 true。false 只重置自动倒计时，文字显现、手动推进、快进与 `[next]` 保持原路径；恢复 true 后，全文实际呈现完毕再等待完整 delay。条件及绑定随快照恢复。
+`game.reading().set_skip(enabled, unread: false, after_choices: false)` 已实现。`game.reading().skipping/skip_unread/skip_after_choices` 可观察状态与策略，`game.dialogue().read` 表示整组提交前是否已读。默认遇未读对白或选择时关闭快进；unread: true 可跳过未读对白；after_choices: true 在选择时保留快进模式，等待玩家选择后继续，仍遵守已读策略。暂停、失焦和模态界面仍会取消该模式。快进沿正常控制流执行，跳过显现/停留，并完成主剧情拥有的运行中有限演出；无限、暂停、节点拥有的活动和独立音频继续按原控制工作。自动阅读与快进互斥。暂停阅读、失焦、挂起和模态界面会关闭快进；启动快进的 input 节点退休也会清除其保持状态。作者用 input 回调在 pressed 时开启，在 released/cancelled 时关闭，也可自制切换按钮。已读在对白推进完成后记录，取消或仅显现全文不算。新会话默认保留由宿主提供的已读进度。源码模块版本变化保守视为未读。
 按章节跳过 `game.skip_to(story_id)` 仍依赖后续章节注册服务。
 
 重置已读进度使用 `game.clear_read_progress()`。当前等待对白的组与各行 `read` 立即变为 false，仅跳已读的快进停止；之后的对白重新算未读，正常推进后重新登记。历史和已完成 NVL 行保留原有样式，自动阅读与允许跳过未读的策略保持原值。读档时，当前等待对白也按最新已读记录重新判断。此操作释放旧已读记录，耗时随记录容量增长，不读写磁盘，也不删除游戏存档或 `persistent` 系统数据。运行示例见 [author_reading.aside](../../examples/author_reading/src/main.aside)。

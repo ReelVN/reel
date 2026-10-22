@@ -289,6 +289,77 @@ fn node_with_chain_retains_the_actual_text_subtype_and_property_schema() {
 }
 
 #[test]
+fn reading_receiver_chains_keep_context_type_and_removed_globals_stay_absent() {
+    let source = r#"use reel::types::Reading;
+fn main() {
+    let controls:Reading=game.reading();
+    controls.set_auto(true,delay:3).pause(false).set_skip(false).clear_history(keep_last:10);
+    reading(body:|page| {page.finish("title");});
+}"#;
+    let (mut server, initialized) = open(source);
+    let mut id = 2;
+    for (expression, method) in [
+        ("set_auto(true", "set_auto"),
+        ("pause(false", "pause"),
+        ("set_skip(false", "set_skip"),
+        ("clear_history(keep_last", "clear_history"),
+    ] {
+        assert_method(&mut server, &mut id, source, expression, method, "Reading");
+    }
+    let methods = server.request(
+        id,
+        "textDocument/completion",
+        query(source, "controls.", true),
+    );
+    id += 1;
+    for name in [
+        "auto",
+        "paused",
+        "auto_ready",
+        "delay",
+        "set_auto",
+        "set_skip",
+        "pause",
+        "clear_history",
+    ] {
+        assert!(
+            methods
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["label"] == name),
+            "{methods}"
+        );
+    }
+    let globals = server.request(id, "textDocument/completion", query(source, "game.", true));
+    id += 1;
+    for name in ["set_auto", "set_skip", "pause_reading", "clear_history"] {
+        assert!(
+            !globals
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["label"] == name),
+            "{globals}"
+        );
+    }
+    let tokens = server.request(
+        id,
+        "textDocument/semanticTokens/full",
+        json!({"textDocument":{"uri":URI}}),
+    );
+    for expression in [
+        "set_auto(true",
+        "pause(false",
+        "set_skip(false",
+        "clear_history(keep_last",
+    ] {
+        assert_method_token(&tokens, &initialized, source, expression);
+    }
+    server.stop();
+}
+
+#[test]
 fn standard_random_and_curve_types_offer_real_method_signatures_and_navigation() {
     let source = r#"use std::{random, Random};
 use std::math::{curve, Curve};

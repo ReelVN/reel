@@ -545,6 +545,10 @@ scope 管理任务、活动、等待、临时节点、属性覆盖和加性偏�
 
 `s.finish(value:null)` 正常结束作用域，使原 `scope` 调用返回 value。finish 与 cancel 共用首次结算规则；后续请求返回 false。请求先完成自身调用，再由共同 native 边界退休正文、嵌套作用域、任务和临时节点；区域内尚未执行的语句及 finally 被跳过。必须完成的保存或退场动画应在 finish 前等待，或在 scope 返回后执行。返回值保留原身份，随既有 VM 根及快照保存；区域退休按执行预算推进。页面按钮可直接交回选择，外层流程据此继续。
 
+`reading(body:, owner:null)` 在主剧情 Task 中建立阅读上下文，复用同一个 Scope 及其 finish/cancel、节点和活动退休。普通 scope 继承阅读上下文。子阅读上下文以手动、未暂停、条件为 true 的状态开始，拥有自己的对白、选择和历史；父数据按移动挂起，退出恢复原模型对象与 open Speech 身份。尚未交付的阻塞对白/选择不能进入子上下文；已完成的普通 await 不阻止进入。阅读退出先断开自动条件，再退休场景；内层 scope 先于外层退休。delay、已读进度、游戏设置和系统数据由会话共享，退出不清除它们。历史与正文沿现有逐行快照保存，普通 scope 不建立额外阅读状态或复制历史。
+
+`game.reading()/dialogue()/choice()/history()` 获取调用时活动阅读上下文的稳定对象。组件构造时捕获这些对象，事件与 derive 使用捕获对象以保持原上下文；接收者方法按对象归属操作；退出后的控制方法报错，脚本仍持有的模型保留终态读取。getter 在 derive 内直接调用时订阅唯一的活动上下文选择信号，随前台切换重新求值。Reading 的 `set_auto(enabled:null, delay:null, condition:null)`、`set_skip(enabled, unread:false, after_choices:false)`、`pause(paused)` 和 `clear_history(keep_last:0)` 返回原 Reading；控制、暂停和条件绑定属于其上下文，delay 更新会话共享设置。临时模态界面沿既有呈现/输入门暂停当前阅读，不另建阅读上下文。
+
 `s.add(parent, node, index:null)` 挂载临时子树：要求与 node.add 相同的未挂载节点，返回原 node，index 省略时追加。普通 node.add 保持父节点寿命。注册发生在同一挂载边界，挂载失败不转交所有权；作用域退出按登记逆序移除仍存活的子树，提前 remove、clear、stage.replace 和嵌套作用域不会重复退休。节点拥有的输入任务、活动与呈现等待沿原退休路径结束，已接受输入几何仍由呈现协议更新。登记数组进入现有 VM 对象图，恢复后只继续等待和清理，不重跑构造。登记与退休按实际节点规模处理；子树移除仍使用舞台同步退休，当前不承诺大型临时树单帧完成。
 属性覆盖：`let effect = s.override(node, {opacity: 0.4, width: null})` 创建独立可观察 token，记录参数保留显式 null。允许共同节点布局和外观属性，不包含 on_interaction、控件业务值、只读交互状态或 camera/scroll 专属字段；未知名与类型错误在调用处诊断。token 只公开本次提供的属性和 remove 方法，可直接赋值、bind/derive 或作为 tween 的目标。`node.x` 始终读写基础值，`effect.x` 读写本层值；几何、绘制和输入读取有效值。同字段取最后建立且仍存活的层，修改或重绑不提升优先序。基础绑定在遮挡期间继续更新。`effect.remove()`、scope 正常返回/错误/取消以及目标退休移除覆盖，不把旧值写回基础字段；嵌套与非顶层移除沿同一规则。
 
@@ -625,15 +629,15 @@ ActivityHandle 本身实现 Awaitable，支持暂停、继续、停止和到终�
 
 作者对白与选项使用 `game.dialogue()` / `game.choice()` 稳定服务对象。会话交互变更时发布行组/选项，显现时仅发布当前行的 reveal；已完成行保留到显式清页，历史独立保存。通用 view 容器沿用派生依赖队列与 native continuation 执行组件工厂，成功才替换内容，退休旧子树沿现有节点所有权取消任务。对白与选项界面由作者挂载，使用共同舞台和已呈现输入协议。
 
-作者阅读服务提供稳定的只读可观察 `game.history()` 列表与 `game.reading()` 状态；`game.set_auto(enabled: null, delay: null, condition: null)` 修改自动阅读及全文呈现后的停留秒数（默认 2 秒），`game.pause_reading(paused)` 暂停对白显现与对白/选择输入，普通作者控件继续工作。状态属于会话，UI 更换不重置；新会话默认手动、未暂停。自动阅读仅推进已完整呈现的对白，选项等待玩家操作。失焦、挂起、模态界面、资源未就绪或输入手势期间不累计阅读时间，恢复后重新等待完整停留时间。有限演出与独立音频不因阅读暂停而停止。 `condition` 接受 bool 或 `bind`/`derive` 引用；各参数为 null 时保留当前值及绑定，condition 为 true 时解除旧绑定。只读 `auto_ready` 显示条件的当前值，初值 true。false 只重置自动倒计时，文字显现、手动推进、快进与 `[next]` 保持原路径；恢复 true 后，全文实际呈现完毕再等待完整 delay。条件及绑定随快照恢复。
+作者阅读服务提供稳定的只读可观察 `game.history()` 列表与 `game.reading()` 状态；`game.reading().set_auto(enabled: null, delay: null, condition: null)` 修改自动阅读及全文呈现后的停留秒数（默认 2 秒），`game.reading().pause(paused)` 暂停对白显现与对白/选择输入，普通作者控件继续工作。状态属于会话，UI 更换不重置；新会话默认手动、未暂停。自动阅读仅推进已完整呈现的对白，选项等待玩家操作。失焦、挂起、模态界面、资源未就绪或输入手势期间不累计阅读时间，恢复后重新等待完整停留时间。有限演出与独立音频不因阅读暂停而停止。 `condition` 接受 bool 或 `bind`/`derive` 引用；各参数为 null 时保留当前值及绑定，condition 为 true 时解除旧绑定。只读 `auto_ready` 显示条件的当前值，初值 true。false 只重置自动倒计时，文字显现、手动推进、快进与 `[next]` 保持原路径；恢复 true 后，全文实际呈现完毕再等待完整 delay。条件及绑定随快照恢复。
 
 历史组提供 `group_id/interaction_id/locale/lines/speaker_name/text`，行提供 `id/speaker_id/speaker_name/content_id/text`。行 ID 与对白模型一致，在同一会话中稳定。历史全文在提交时记录一次；清页和界面替换不删除历史。首次访问按已有历史建立投影，之后只追加新增组，显现更新不扫描历史、不复制全文。数据/控制服务不创建 UI，作者用通用组件组合回看和阅读控件，示例见 [author_reading.aside](../examples/author_reading/src/main.aside)。恢复点、语音重播和已读跳过依赖各自后续服务，不在历史记录内提供占位字段。
 
-`game.clear_history(keep_last: int = 0)` 删除较早历史并返回 null；Rust 宿主使用 `Session::clear_history(keep_last: usize)`。0 清空全部，正数按实际记录的历史行保留末尾至多指定数量，`history:false` 行不计数；数量不少于当前行数时不改动，负数或非整数在原调用位置拒绝。边界可以落在一个组内：只删除该组较早的行，保留组 ID、locale、剩余行的 ID、内容、对象身份及顺序，不重新编号；组 speaker_name/text 更新为剩余首行。顶层历史数组、保留组及其 lines 数组保持身份，变更通知沿现有观察协议发布。完整保留组不重建；后续新记录正常追加，组 ID 不复用。当前对白、NVL 显示页、推进权限、已读进度、阅读设置及系统数据不变，不重新记录已裁掉的当前对白行；已保存槽位不改写，加载它仍恢复保存时的历史。裁剪是同步线性工作，不按 VM 预算自动拆分；只移动保留引用，不复制正文，释放前段容器和内容强边并请求增量 GC。作者持有的行、富文本与界面缓存继续有效，应按需移除或刷新；不强制收集整个 VM，也不默认截断历史。验证覆盖跨组/组内保留、稳定对象和通知、继续追加、正文推进、1 万/10 万行裁剪成本、GC 释放及快照恢复。
+`game.reading().clear_history(keep_last: int = 0)` 删除较早历史并返回 null；Rust 宿主使用 `Session::clear_history(keep_last: usize)`。0 清空全部，正数按实际记录的历史行保留末尾至多指定数量，`history:false` 行不计数；数量不少于当前行数时不改动，负数或非整数在原调用位置拒绝。边界可以落在一个组内：只删除该组较早的行，保留组 ID、locale、剩余行的 ID、内容、对象身份及顺序，不重新编号；组 speaker_name/text 更新为剩余首行。顶层历史数组、保留组及其 lines 数组保持身份，变更通知沿现有观察协议发布。完整保留组不重建；后续新记录正常追加，组 ID 不复用。当前对白、NVL 显示页、推进权限、已读进度、阅读设置及系统数据不变，不重新记录已裁掉的当前对白行；已保存槽位不改写，加载它仍恢复保存时的历史。裁剪是同步线性工作，不按 VM 预算自动拆分；只移动保留引用，不复制正文，释放前段容器和内容强边并请求增量 GC。作者持有的行、富文本与界面缓存继续有效，应按需移除或刷新；不强制收集整个 VM，也不默认截断历史。验证覆盖跨组/组内保留、稳定对象和通知、继续追加、正文推进、1 万/10 万行裁剪成本、GC 释放及快照恢复。
 
 历史投影复用 `Heap::commit_collection` 受信宿主提交入口：只将同种集合的私有准备载荷交换进原对象，不改变原身份和元数据，完成后只失效通知一次。历史路径限定 Array→Array，原对象和准备对象都必须有强根，准备对象不可泄露给脚本；全部保留引用复制完毕才提交；若准备过程跨越可修改边界，调用方需验证源 content_version，种类检查失败不交换。旧载荷留在准备对象供增量 GC 回收，调用方释放准备根并请求收集；不逐项移动可观察数组，也不增加第二套批量实现。
 
-`game.set_skip(enabled, unread: false, after_choices: false)` 控制快进，`game.reading().skipping/skip_unread/skip_after_choices` 可观察当前状态/策略，`game.dialogue().read` 表示当前整组在本次提交前已读。默认在未读组和选项处停止；unread: true 允许略过未读对白。after_choices: true 在选择处保留模式，仍等待玩家选择，选择后继续按已读策略快进。快进沿原控制流执行，略过文字显现和停留，并让主剧情拥有的运行中有限演出按既有 finish 语义到终值；无限、暂停或节点拥有的活动与独立音频保留原控制。自动阅读与快进互斥。暂停阅读、失焦、挂起或出现模态界面清除快进；键盘/手柄保持通过 input 回调在 pressed 启用、released/cancelled 关闭，不添加固定快捷键。input 发起的快进登记节点身份，退休时清除保持状态；普通按钮与主剧情设置的模式属于会话。
+`game.reading().set_skip(enabled, unread: false, after_choices: false)` 控制快进，`game.reading().skipping/skip_unread/skip_after_choices` 可观察当前状态/策略，`game.dialogue().read` 表示当前整组在本次提交前已读。默认在未读组和选项处停止；unread: true 允许略过未读对白。after_choices: true 在选择处保留模式，仍等待玩家选择，选择后继续按已读策略快进。快进沿原控制流执行，略过文字显现和停留，并让主剧情拥有的运行中有限演出按既有 finish 语义到终值；无限、暂停或节点拥有的活动与独立音频保留原控制。自动阅读与快进互斥。暂停阅读、失焦、挂起或出现模态界面清除快进；键盘/手柄保持通过 input 回调在 pressed 启用、released/cancelled 关闭，不添加固定快捷键。input 发起的快进登记节点身份，退休时清除保持状态；普通按钮与主剧情设置的模式属于会话。
 
 实际接受的手动对白推进（指针、键盘、手柄或无障碍确认）执行通常的显现/推进，并关闭自动阅读与快进；过期或未接受的输入不改变模式，内部计时推进不触发此规则。选择确认继续保留自动阅读策略。
 

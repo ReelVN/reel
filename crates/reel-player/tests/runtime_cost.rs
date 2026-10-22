@@ -50,7 +50,7 @@ fn live_delta(region: &Region<'_, System>) -> i128 {
 
 #[test]
 fn history_and_script_collection_clear_reclaim_before_sleeping() {
-    for clear in ["game.clear_history();", "history.clear();"] {
+    for clear in ["game.reading().clear_history();", "history.clear();"] {
         let source = if clear.starts_with("game") {
             format!(
                 r#"

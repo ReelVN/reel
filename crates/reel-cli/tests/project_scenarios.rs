@@ -495,7 +495,7 @@ fn project_scenario_retains_transition_assets_across_playing_save_restore() {
         ("mask.png", [128, 128, 128, 255]),
     ] {
         image::RgbaImage::from_pixel(16, 16, image::Rgba(color))
-            .save(project.path().join(name))
+            .save(project.path().join("resources").join(name))
             .unwrap();
     }
     let source = project.path().join("src/main.aside");
@@ -559,7 +559,7 @@ fn project_scenario_gpu_transition_keeps_ancestor_opacity_and_restores_old_drawi
     let project = scenario_project();
     for (name, color) in [("old.png", [255, 0, 0, 255]), ("new.png", [0, 0, 255, 255])] {
         image::RgbaImage::from_pixel(16, 16, image::Rgba(color))
-            .save(project.path().join(name))
+            .save(project.path().join("resources").join(name))
             .unwrap();
     }
     let source = project.path().join("src/main.aside");
@@ -755,8 +755,8 @@ fn segmented_dialogue_resumes_after_deferred_skip_and_auto_advance() {
             let owner = stack(width:64, height:64);
             stage.replace(owner);
             for skipping in [true, false] {
-                if skipping {game.set_skip(true, unread:true);}
-                else {game.set_auto(true, delay:0.01);}
+                if skipping {game.reading().set_skip(true, unread:true);}
+                else {game.reading().set_auto(true, delay:0.01);}
                 let line = narrator("Deferred advance", wait:false);
                 await stage.presented(owner:owner);
                 await run(delay(0.02), owner:owner);
@@ -773,8 +773,8 @@ fn segmented_dialogue_resumes_after_deferred_skip_and_auto_advance() {
                 }
                 if !game.dialogue().active {throw "open dialogue was retired";}
             }
-            game.set_auto(false);
-            game.set_skip(false);
+            game.reading().set_auto(false);
+            game.reading().set_skip(false);
             let timed=narrator(rich("Timed[next]"),wait:false,reveal_skippable:false);
             timed.wait();
             timed.append(rich(" continuation[pause=0.01][next]"));

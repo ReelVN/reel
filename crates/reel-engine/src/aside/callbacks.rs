@@ -492,7 +492,7 @@ impl SessionVm {
         index: usize,
     ) -> Result<(), AdapterError> {
         self.cancel_task_transitions(self.tasks[index].task, None)?;
-        self.cancel_task_scopes(self.tasks[index].task)?;
+        self.cancel_task_scopes(session, self.tasks[index].task)?;
         let callback = &mut self.tasks[index];
         if !callback.cancelling {
             callback.minimum = SliceMinimum::default();

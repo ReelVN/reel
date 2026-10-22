@@ -13,36 +13,41 @@ impl Publication {
         session: &mut Session,
         prepare: impl FnOnce(&mut Session) -> Result<InteractionId, SessionError>,
     ) -> Result<Self, SessionError> {
-        let history_len = session.history.len();
+        let history_len = session.reading_data.history.len();
         let old_next = session.next_interaction;
-        let previous = if matches!(&session.active, Some(Interaction::Dialogue(d)) if d.open && !d.awaiting_advance)
+        let previous = if matches!(&session.reading_data.active, Some(Interaction::Dialogue(d)) if d.open && !d.awaiting_advance)
         {
-            session.active.take()
+            session.reading_data.active.take()
         } else {
             None
         };
         if let Err(error) = prepare(session) {
             if previous.is_some() {
-                session.active = previous;
+                session.reading_data.active = previous;
             }
             return Err(error);
         }
         let publication = Self {
-            interaction: session.active.take().expect("successful admission"),
-            history: (session.history.len() > history_len).then(|| session.history.pop().unwrap()),
+            interaction: session
+                .reading_data
+                .active
+                .take()
+                .expect("successful admission"),
+            history: (session.reading_data.history.len() > history_len)
+                .then(|| session.reading_data.history.pop().unwrap()),
             next: session.next_interaction,
         };
         session.next_interaction = old_next;
-        session.active = previous;
+        session.reading_data.active = previous;
         Ok(publication)
     }
     pub fn id(&self) -> InteractionId {
         self.interaction.id()
     }
     pub fn commit(self, session: &mut Session) {
-        session.active = Some(self.interaction);
+        session.reading_data.active = Some(self.interaction);
         if let Some(history) = self.history {
-            session.history.push(history);
+            session.reading_data.history.push(history);
         }
         session.next_interaction = self.next;
     }

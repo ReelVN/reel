@@ -39,7 +39,7 @@ fn joined(prefix: &Text, suffix: &Text) -> Result<Text, SessionError> {
 
 impl Session {
     pub(crate) fn clear_dialogue_advance_request(&mut self) {
-        if let Some(Interaction::Dialogue(dialogue)) = &mut self.active {
+        if let Some(Interaction::Dialogue(dialogue)) = &mut self.reading_data.active {
             for line in &mut dialogue.lines {
                 line.advance_requested = false;
             }
@@ -58,7 +58,7 @@ impl Session {
             pending.push(copy_text(line.content_id)?);
         }
         let id = self.begin_say(owner, lines, locale, reveal_skippable)?;
-        let Some(Interaction::Dialogue(dialogue)) = &mut self.active else {
+        let Some(Interaction::Dialogue(dialogue)) = &mut self.reading_data.active else {
             unreachable!()
         };
         dialogue.open = true;
@@ -72,7 +72,7 @@ impl Session {
         id: InteractionId,
     ) -> Result<&DialogueInteraction, SessionError> {
         self.ensure_running()?;
-        match &self.active {
+        match &self.reading_data.active {
             Some(Interaction::Dialogue(d)) if d.id == id && d.open && !d.awaiting_advance => Ok(d),
             _ => Err(SessionError::InvalidDialogueHandle),
         }
@@ -87,10 +87,10 @@ impl Session {
             return Err(SessionError::MainOwnerRequired);
         }
         self.open_dialogue(id)?;
-        if self.completion.is_some() {
+        if self.reading_data.completion.is_some() {
             return Err(SessionError::CompletionPending);
         }
-        let Some(Interaction::Dialogue(d)) = &mut self.active else {
+        let Some(Interaction::Dialogue(d)) = &mut self.reading_data.active else {
             unreachable!()
         };
         d.awaiting_advance = true;
@@ -135,11 +135,12 @@ impl Session {
         // whole grapheme visible rather than hiding its already displayed base.
         let revealed = boundaries.partition_point(|&b| b < line.reveal().visible_bytes.end);
         let history_index = self
+            .reading_data
             .history
             .binary_search_by_key(&id.generation, |g| g.interaction_id.generation)
             .ok();
         let history_text = if let Some(index) = history_index {
-            if let Some(previous) = self.history[index].lines.first() {
+            if let Some(previous) = self.reading_data.history[index].lines.first() {
                 match history {
                     HistoryInput::Omit => None,
                     HistoryInput::Display if previous.content.styled() == line.content.styled() => {
@@ -171,7 +172,7 @@ impl Session {
                     .ok_or(SessionError::AllocationFailed)?,
             )
             .map_err(|_| SessionError::AllocationFailed)?;
-        let Some(Interaction::Dialogue(d)) = &mut self.active else {
+        let Some(Interaction::Dialogue(d)) = &mut self.reading_data.active else {
             unreachable!()
         };
         d.pending_read_ids
@@ -192,7 +193,7 @@ impl Session {
         line.advance_requested = false;
         d.revision = d.revision.wrapping_add(1);
         if let (Some(index), Some(text)) = (history_index, history_text) {
-            self.history[index].lines[0].content.fallback = text;
+            self.reading_data.history[index].lines[0].content.fallback = text;
         }
         d.text_revision = d.text_revision.wrapping_add(1);
         self.check_skip_boundary();
