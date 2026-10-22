@@ -66,6 +66,8 @@ aside_host::native_documentation! {
         "reel::scroll";
         /// Float ordinary children beside this node's logical parent, above the scene.
         /// The parent anchors placement without measuring the popup in its flow.
+        /// The floating layer uses its own opacity, blend, mask and transforms;
+        /// ancestor clipping and compositing stay in the underlying layer.
         /// Defaults to modal:true. on_dismiss receives {target, reason}, where reason
         /// is outside or back; removing target closes it. Hiding or disabling an
         /// ancestor withdraws the layer. A popup without a parent stays unpresented.
