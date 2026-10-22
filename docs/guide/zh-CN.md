@@ -331,6 +331,8 @@ panel.add(pointer);
 
 `image("assets/pattern.png", width: 1280, height: 720, repeat: "both", tile_scale: 1)` 以图片原始像素大小平铺。repeat 可选 none、x、y、both；重复时不使用 fit，不能同时指定 slice，也不能使用分块 `.reel-image`。tile_scale 必须为正数。`corner_colors: ["#ffffff", "#ffffff", "#ffaaaa", "#ffaaaa"]` 为左上、右上、右下、左下颜色，在节点内容框内双线性渐变并乘以 color；可与普通、九宫格或分块图片组合，不复制纹理。
 
+图片和视频也接受 `saturation: 0` 变为灰度、`brightness: 1.2` 设置 sRGB 倍数、`color_offset: 0.1` 设置 sRGB 偏移。倍数和偏移还可使用 RGB 三元组。这些调整在乘色后执行并保留 alpha；饱和度和倍数须非负，全部分量须有限且可表示为 float32 绘制参数。默认值依次为 1、1、0。在原节点上绑定或修改这些属性即可共享同一纹理。
+
 完整示例：[author_image_patterns.aside](../../examples/author_image_patterns/src/main.aside)。准备 `fonts/body.ttf` 和 `images/pattern.png` 后运行 `reel dev`（在 `examples/author_image_patterns/` 中）；切换纹理比例复用同一张图片。
 
 图片本身不接收指针输入，作为轨道、滑块或其他控件皮肤时不会挡住下方控件。需要图片可点击或拖动时，将它放入 button 或 input，由容器处理鼠标和触摸。

@@ -1,5 +1,5 @@
 use super::{GpuError, mesh, renderer::reserve, replay::Context, resources, targets::Target};
-use reel_ui::frame::{FrameDraw, FrameDrawing, ImageColorGradient, RecordLocation};
+use reel_ui::frame::{FrameDraw, FrameDrawing, ImageAppearance, RecordLocation};
 use reel_ui::{
     imaging::record::Clip,
     kurbo::{Affine, Rect},
@@ -135,7 +135,7 @@ impl Context<'_> {
         };
         self.composite_supported(composite, at)?;
         let mut mesh = mesh::tessellate(shape, fill, stroke, at, self.mesh_allocation())?;
-        let (image, uv, color, repeat, gradient) = match brush {
+        let (image, uv, color, repeat, appearance) = match brush {
             Brush::Solid(c) => {
                 let color = c
                     .convert::<LinearSrgb>()
@@ -176,8 +176,8 @@ impl Context<'_> {
                     ],
                     brush
                         .image
-                        .gradient
-                        .map(|gradient| gradient.transformed(outer)),
+                        .appearance
+                        .map(|appearance| appearance.transformed(outer)),
                 )
             }
             Brush::Gradient(_) => {
@@ -188,7 +188,7 @@ impl Context<'_> {
             }
         };
         mesh::transform(&mut mesh, outer * transform, self.size, uv, color, at)?;
-        self.paint_resource(target, &mesh, &image, repeat, gradient)
+        self.paint_resource(target, &mesh, &image, repeat, appearance)
     }
     pub(super) fn image_resource(
         &self,
@@ -325,14 +325,14 @@ impl Context<'_> {
         mesh: &mesh::Mesh,
         image: &super::resources::Image,
         repeat: [bool; 2],
-        gradient: Option<ImageColorGradient>,
+        appearance: Option<ImageAppearance>,
     ) -> Result<(), GpuError> {
         self.paint_image(
             target,
             mesh,
             &image.view,
             repeat,
-            gradient,
+            appearance,
             image.yuv.as_ref(),
         )
     }
@@ -343,12 +343,14 @@ impl Context<'_> {
         mesh: &mesh::Mesh,
         image: &wgpu::TextureView,
         repeat: [bool; 2],
-        gradient: Option<ImageColorGradient>,
+        appearance: Option<ImageAppearance>,
         yuv: Option<&super::video::Planes>,
     ) -> Result<(), GpuError> {
         if mesh.indices.is_empty()
             || self.scissor.empty()
-            || gradient.is_some_and(|gradient| gradient.transform.determinant() == 0.)
+            || appearance
+                .and_then(|appearance| appearance.gradient)
+                .is_some_and(|gradient| gradient.transform.determinant() == 0.)
         {
             return Ok(());
         }
@@ -360,18 +362,14 @@ impl Context<'_> {
         self.transient(
             (mesh.vertices.len() * size_of::<mesh::Vertex>() + mesh.indices.len() * 4) as u64,
         )?;
-        if gradient.is_some() {
-            self.transient(96)?;
+        if appearance.is_some() {
+            self.transient(128)?;
         }
         let device = &self.gpu.device;
-        let gradient_buffer = gradient.map(|gradient| {
-            let inverse = gradient.transform.inverse().as_coeffs();
-            let mut values = [[0f32; 4]; 6];
-            values[..4].copy_from_slice(&gradient.colors);
-            values[4] = [inverse[0] as f32, inverse[2] as f32, inverse[4] as f32, 1.];
-            values[5] = [inverse[1] as f32, inverse[3] as f32, inverse[5] as f32, 0.];
+        let appearance_buffer = appearance.map(|appearance| {
+            let values = appearance_uniform(appearance);
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("image corner colors"),
+                label: Some("image appearance"),
                 contents: bytemuck::cast_slice(&values),
                 usage: wgpu::BufferUsages::UNIFORM,
             })
@@ -398,9 +396,9 @@ impl Context<'_> {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         let sampler = &self.pipelines.samplers[usize::from(repeat[0]) + 2 * usize::from(repeat[1])];
-        let gradient = gradient_buffer
+        let appearance = appearance_buffer
             .as_ref()
-            .unwrap_or(&self.pipelines.plain_gradient);
+            .unwrap_or(&self.pipelines.plain_appearance);
         let base = [
             wgpu::BindGroupEntry {
                 binding: 0,
@@ -412,7 +410,7 @@ impl Context<'_> {
             },
             wgpu::BindGroupEntry {
                 binding: 2,
-                resource: gradient.as_entire_binding(),
+                resource: appearance.as_entire_binding(),
             },
         ];
         let group = if let Some(yuv) = yuv {
@@ -463,5 +461,78 @@ impl Context<'_> {
         pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
         Ok(())
+    }
+}
+
+fn appearance_uniform(appearance: ImageAppearance) -> [[f32; 4]; 8] {
+    let mut values = [[0.; 4]; 8];
+    // The ordinary shader path keeps its first branch and reads no other fields.
+    values[4][3] = 1.;
+    if let Some(gradient) = appearance.gradient {
+        let inverse = gradient.transform.inverse().as_coeffs();
+        values[..4].copy_from_slice(&gradient.colors);
+        values[4] = [inverse[0] as f32, inverse[2] as f32, inverse[4] as f32, 1.];
+        values[5] = [inverse[1] as f32, inverse[3] as f32, inverse[5] as f32, 1.];
+    }
+    let color = appearance.adjustment;
+    values[6] = [
+        color.gain[0],
+        color.gain[1],
+        color.gain[2],
+        color.saturation,
+    ];
+    values[7] = [
+        color.offset[0],
+        color.offset[1],
+        color.offset[2],
+        f32::from(!color.is_identity()),
+    ];
+    values
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reel_ui::{
+        frame::{FrameImage, ImageColorAdjustment, ImageColorGradient},
+        resources::ResourceHandle,
+    };
+
+    #[test]
+    fn image_appearance_uniform_and_frame_wire_preserve_one_value() {
+        let adjustment = ImageColorAdjustment {
+            saturation: 0.4,
+            gain: [1.2, 0.8, 0.5],
+            offset: [0.1, -0.2, 0.],
+        };
+        let gradient = ImageColorGradient {
+            colors: [[0.5; 4]; 4],
+            transform: Affine::translate((10., 20.)) * Affine::scale_non_uniform(20., 40.),
+        };
+        for corners in [None, Some(gradient)] {
+            let appearance = ImageAppearance::new(corners, adjustment).unwrap();
+            let uniform = appearance_uniform(appearance);
+            assert_eq!(size_of_val(&uniform), 128);
+            assert_eq!(uniform[4][3], 1.);
+            assert_eq!(uniform[5][3], f32::from(corners.is_some()));
+            assert_eq!(uniform[6], [1.2, 0.8, 0.5, 0.4]);
+            assert_eq!(uniform[7], [0.1, -0.2, 0., 1.]);
+            if corners.is_some() {
+                assert_eq!(uniform[4], [0.05, 0., -0.5, 1.]);
+                assert_eq!(uniform[5], [0., 0.025, -0.5, 1.]);
+            }
+            let image = FrameImage {
+                resource: ResourceHandle {
+                    registry: 1,
+                    slot: 2,
+                    generation: 3,
+                },
+                color: [1.; 4],
+                appearance: Some(appearance),
+            };
+            let encoded = postcard::to_allocvec(&image).unwrap();
+            let decoded = postcard::from_bytes::<FrameImage>(&encoded).unwrap();
+            assert_eq!(decoded, image);
+        }
     }
 }

@@ -20,6 +20,11 @@ const STEP: StepBudget = StepBudget {
     max_bytes: 64 << 10,
 };
 const LIMITS: BuildLimits = BuildLimits { max_bytes: 8 << 20 };
+const ADJUSTMENT: reel_ui::frame::ImageColorAdjustment = reel_ui::frame::ImageColorAdjustment {
+    saturation: 0.25,
+    gain: [1.2, 0.5, 1.],
+    offset: [0.1, 0., -0.1],
+};
 
 #[derive(Debug)]
 struct Planes {
@@ -51,6 +56,7 @@ fn kind(lease: ResourceLease) -> NodeKind {
         repeat: [false; 2],
         tile_scale: 1.,
         corner_colors: None,
+        adjustment: ADJUSTMENT,
     }
 }
 fn picture(first: ResourceLease, second: ResourceLease, pool: &BudgetPool) -> RetainedScene {
@@ -59,6 +65,8 @@ fn picture(first: ResourceLease, second: ResourceLease, pool: &BudgetPool) -> Re
         let props = fixture.stage.node(id).unwrap().props.clone();
         fixture.stage.update(id, kind(lease), props).unwrap();
     }
+    let recorded = fixture.record();
+    fixture.accept(&recorded);
     let recorded = fixture.record();
     fixture.accept(&recorded);
     let resources =
@@ -79,7 +87,30 @@ fn picture(first: ResourceLease, second: ResourceLease, pool: &BudgetPool) -> Re
     let frame = frame.finish().unwrap();
     let mut retain = RetainBuild::new(&frame, None, LIMITS, pool).unwrap();
     while !retain.step(STEP).unwrap().complete {}
-    retain.finish().unwrap()
+    let retained = retain.finish().unwrap();
+    let images = retained
+        .drawing()
+        .commands()
+        .iter()
+        .filter_map(|command| {
+            if let reel_ui::frame::FrameOp::Draw(reel_ui::frame::FrameDraw::Fill {
+                brush: reel_ui::peniko::Brush::Image(image),
+                ..
+            }) = &command.op
+            {
+                Some(image)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(images.len(), 2);
+    assert!(
+        images
+            .iter()
+            .all(|image| image.image.appearance.unwrap().adjustment == ADJUSTMENT)
+    );
+    retained
 }
 fn restore_inline(saved: &SavedRetainedScene, pool: &BudgetPool) -> RetainedScene {
     let mut restore = saved.restore_begin(LIMITS, pool).unwrap();

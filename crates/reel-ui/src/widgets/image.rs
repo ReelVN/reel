@@ -52,6 +52,7 @@ pub struct Image {
     repeat: [bool; 2],
     tile_scale: f64,
     corner_colors: Option<[Color; 4]>,
+    adjustment: crate::frame::ImageColorAdjustment,
 }
 
 /// One resident tile. The image includes its sampling gutter; `clip` is the
@@ -85,6 +86,7 @@ impl Image {
             repeat: [false; 2],
             tile_scale: 1.,
             corner_colors: None,
+            adjustment: Default::default(),
         }
     }
 
@@ -104,6 +106,7 @@ impl Image {
             repeat: [false; 2],
             tile_scale: 1.,
             corner_colors: None,
+            adjustment: Default::default(),
         }
     }
 
@@ -159,6 +162,14 @@ impl Image {
         self
     }
 
+    /// Adjust unpremultiplied sRGB after ordinary and corner tint multiplication.
+    /// The adjustment uses the shared source texture and preserves alpha.
+    /// Values must satisfy [`crate::frame::ImageColorAdjustment::is_valid`].
+    pub fn with_color_adjustment(mut self, adjustment: crate::frame::ImageColorAdjustment) -> Self {
+        self.adjustment = adjustment;
+        self
+    }
+
     /// Stretch a whole image as nine slices, preserving corner proportions.
     /// Insets are source pixels; scale maps border pixels to logical pixels.
     /// Both must be finite and nonnegative. `None` restores ordinary object fit.
@@ -199,6 +210,17 @@ impl Image {
 
 // --- MARK: WIDGETMUT
 impl Image {
+    /// Change image color adjustment, invalidating paint without changing layout.
+    pub fn set_color_adjustment(
+        this: &mut WidgetMut<'_, Self>,
+        adjustment: crate::frame::ImageColorAdjustment,
+    ) {
+        if this.widget.adjustment != adjustment {
+            this.widget.adjustment = adjustment;
+            this.ctx.request_render();
+        }
+    }
+
     pub fn set_pattern(
         this: &mut WidgetMut<'_, Self>,
         repeat: [bool; 2],
@@ -473,7 +495,7 @@ impl Widget for Image {
             },
         }));
         let content_box = ctx.content_box();
-        ctx.set_image_corner_colors(self.corner_colors, content_box);
+        ctx.set_image_appearance(self.corner_colors, self.adjustment, content_box);
         if self.repeat != [false; 2] {
             if self.image_data.is_some() || self.resource.is_some() {
                 let image_size = self.preferred_size();

@@ -116,6 +116,7 @@ impl Shape {
                 tile_scale: positive(get(5)?)?,
                 corner_colors: read_corner_colors(heap, get(6)?)?,
                 slice_center: boolean(get(7)?)?,
+                adjustment: read_image_adjustment(heap, fields)?,
                 origin,
             },
             Self::Particles => {

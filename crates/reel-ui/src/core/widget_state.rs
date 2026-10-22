@@ -217,7 +217,7 @@ pub(crate) struct WidgetState {
     pub(crate) subtree_invert: f32,
     pub(crate) subtree_blend: peniko::BlendMode,
     pub(crate) image_color: [f32; 4],
-    pub(crate) image_gradient: Option<crate::frame::ImageColorGradient>,
+    pub(crate) image_appearance: Option<crate::frame::ImageAppearance>,
     pub(crate) image_resource: Option<crate::resources::ResourceImageBrush>,
     pub(crate) image_sampling_transform: bool,
 
@@ -353,7 +353,7 @@ impl WidgetState {
             subtree_invert: 0.,
             subtree_blend: Default::default(),
             image_color: [1.; 4],
-            image_gradient: None,
+            image_appearance: None,
             image_resource: None,
             image_sampling_transform: false,
             request_accessibility: true,

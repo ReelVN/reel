@@ -662,6 +662,7 @@ fn popup_whole_and_prepared_images_share_resources_and_retire_with_their_logical
                     repeat: [false; 2],
                     tile_scale: 1.,
                     corner_colors: None,
+                    adjustment: Default::default(),
                 },
             )
         };
@@ -735,6 +736,7 @@ fn ineligible_popup_images_do_not_block_visible_content_or_load_resources() {
                     repeat: [false; 2],
                     tile_scale: 1.,
                     corner_colors: None,
+                    adjustment: Default::default(),
                 },
                 NodeProps::default(),
                 vec![],

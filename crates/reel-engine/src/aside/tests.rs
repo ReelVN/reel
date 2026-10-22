@@ -21,6 +21,7 @@ mod flow_layout;
 mod frame_animation;
 mod geometry;
 mod host_budget;
+mod image_colors;
 mod localization;
 mod masks;
 mod media_positions;

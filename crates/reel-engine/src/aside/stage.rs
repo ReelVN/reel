@@ -1016,6 +1016,7 @@ impl StageBinding {
                         tile_scale: positive(heap.table_entry(fields, 5)?.1)?,
                         corner_colors: read_corner_colors(heap, heap.table_entry(fields, 6)?.1)?,
                         slice_center: boolean(heap.table_entry(fields, 7)?.1)?,
+                        adjustment: read_image_adjustment(heap, fields)?,
                         origin: origin.clone(),
                     },
                     registry::IMAGE_PREFIX.len(),
@@ -1671,6 +1672,53 @@ fn read_corner_colors(
     Ok(Some(colors))
 }
 
+fn drawing_component(value: Value, nonnegative: bool) -> Result<f32, AdapterError> {
+    let value = value
+        .as_float()
+        .or_else(|| value.as_int().map(|v| v as f64))
+        .ok_or(AdapterError::Input(
+            "image color adjustment requires numbers",
+        ))?;
+    let component = value as f32;
+    if !component.is_finite() || nonnegative && value < 0. {
+        return Err(AdapterError::Input(
+            "image color adjustment requires finite float32 values; saturation and brightness must be nonnegative",
+        ));
+    }
+    Ok(component)
+}
+
+fn drawing_rgb(heap: &Heap, value: Value, nonnegative: bool) -> Result<[f32; 3], AdapterError> {
+    if matches!(value.tag(), ValueTag::Int | ValueTag::Float) {
+        return Ok([drawing_component(value, nonnegative)?; 3]);
+    }
+    if !matches!(
+        heap.info(value)?.kind,
+        ObjectKind::Array | ObjectKind::Tuple
+    ) || heap.sequence_len(value)? != 3
+    {
+        return Err(AdapterError::Input(
+            "image color adjustment requires a number or [red, green, blue]",
+        ));
+    }
+    let mut rgb = [0.; 3];
+    for (index, component) in rgb.iter_mut().enumerate() {
+        *component = drawing_component(heap.sequence_get(value, index as u32)?, nonnegative)?;
+    }
+    Ok(rgb)
+}
+
+fn read_image_adjustment(
+    heap: &Heap,
+    fields: Value,
+) -> Result<reel_ui::frame::ImageColorAdjustment, AdapterError> {
+    Ok(reel_ui::frame::ImageColorAdjustment {
+        saturation: drawing_component(heap.table_entry(fields, 8)?.1, true)?,
+        gain: drawing_rgb(heap, heap.table_entry(fields, 9)?.1, true)?,
+        offset: drawing_rgb(heap, heap.table_entry(fields, 10)?.1, false)?,
+    })
+}
+
 pub(super) fn validate_image_property(
     heap: &Heap,
     index: u32,
@@ -1702,6 +1750,12 @@ pub(super) fn validate_image_property(
             .map(|_| ())
             .map_err(|_| HeapError::TypeMismatch),
         7 => boolean(value)
+            .map(|_| ())
+            .map_err(|_| HeapError::TypeMismatch),
+        8 => drawing_component(value, true)
+            .map(|_| ())
+            .map_err(|_| HeapError::TypeMismatch),
+        9 | 10 => drawing_rgb(heap, value, index == 9)
             .map(|_| ())
             .map_err(|_| HeapError::TypeMismatch),
         _ => validate_layout_property(heap, index - registry::IMAGE_PREFIX.len() as u32, value),

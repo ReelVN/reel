@@ -2482,10 +2482,16 @@ impl PaintCtx<'_> {
             .components;
     }
 
-    /// Bilinear image tint in this widget's content coordinates. Cached paints
-    /// retain the value; child images keep their own tint.
-    pub fn set_image_corner_colors(&mut self, colors: Option<[peniko::Color; 4]>, bounds: Rect) {
-        self.widget_state.image_gradient = colors.map(|colors| crate::frame::ImageColorGradient {
+    /// Bilinear tint and sRGB adjustment for this widget's image brushes.
+    /// Cached paints retain the value; children keep their own appearance.
+    /// Identity adjustment without corner colors uses the ordinary draw path.
+    pub fn set_image_appearance(
+        &mut self,
+        colors: Option<[peniko::Color; 4]>,
+        adjustment: crate::frame::ImageColorAdjustment,
+        bounds: Rect,
+    ) {
+        let gradient = colors.map(|colors| crate::frame::ImageColorGradient {
             colors: colors.map(|color| {
                 color
                     .convert::<peniko::color::LinearSrgb>()
@@ -2495,6 +2501,8 @@ impl PaintCtx<'_> {
             transform: Affine::translate(bounds.origin().to_vec2())
                 * Affine::scale_non_uniform(bounds.width(), bounds.height()),
         });
+        self.widget_state.image_appearance =
+            crate::frame::ImageAppearance::new(gradient, adjustment);
     }
 
     /// Controls how this widget subtree is recorded in the current paint pass.

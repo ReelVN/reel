@@ -333,6 +333,8 @@ An image's `color` multiplies its pixels: `image("assets/panels.png", color: "#f
 
 `image("assets/pattern.png", width: 1280, height: 720, repeat: "both", tile_scale: 1)` repeats a pattern at its original pixel size. repeat accepts none, x, y or both; repeating ignores fit and cannot be combined with slice or a prepared `.reel-image`. tile_scale must be positive. `corner_colors: ["#ffffff", "#ffffff", "#ffaaaa", "#ffaaaa"]` specifies top-left, top-right, bottom-right and bottom-left colors, interpolated bilinearly across the node's content box and multiplied by color. It works with ordinary, nine-slice and prepared images without copying textures.
 
+Images and video also accept `saturation: 0` for grayscale, `brightness: 1.2` for an sRGB multiplier, and `color_offset: 0.1` for an sRGB offset. Brightness and offset also accept RGB triples. These run after tint multiplication and preserve alpha; saturation and brightness must be nonnegative, and all components must be finite float32 drawing values. Defaults are 1, 1 and 0. Bind or update these properties on the existing node to share its texture.
+
 Complete example: [author_image_patterns.aside](../../examples/author_image_patterns/src/main.aside). Provide `fonts/body.ttf` and `images/pattern.png`, then run `reel dev` (from `examples/author_image_patterns/`); changing the tile scale reuses the same image.
 
 Images do not receive pointer input themselves, so track, thumb and other control skins do not block the underlying control. Place an image inside a button or input to make it clickable or draggable; the container handles mouse and touch input.

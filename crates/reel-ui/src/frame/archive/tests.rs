@@ -461,3 +461,92 @@ fn capture_exclusions_restore_and_reject_unbalanced_intervals() {
         );
     }
 }
+
+#[test]
+fn image_color_appearance_restores_with_one_shared_resource() {
+    use crate::peniko::{ImageAlphaType, ImageFormat};
+    use reel_core::{
+        budget::OwnedBytes,
+        identity::{AssetKey, ContentVersion},
+    };
+    let pool = pool();
+    let mut registry = ResourceRegistry::new(1, 64 << 10).unwrap();
+    let handle = registry
+        .register_image(
+            ResourceVersion {
+                key: AssetKey("shared.png".into()),
+                version: ContentVersion([7; 32]),
+            },
+            OwnedBytes::new(vec![255; 4], pool.reserve(4).unwrap()).unwrap(),
+            [1, 1],
+            ImageFormat::Rgba8,
+            ImageAlphaType::Alpha,
+            ColorEncoding::Srgb,
+        )
+        .unwrap();
+    let adjustment = ImageColorAdjustment {
+        saturation: 0.25,
+        gain: [1.5, 0.5, 1.],
+        offset: [0., 0.1, -0.1],
+    };
+    let appearance = ImageAppearance::new(
+        Some(ImageColorGradient {
+            colors: [[0.5; 4]; 4],
+            transform: Affine::scale(40.),
+        }),
+        adjustment,
+    );
+    let commands = [None, appearance]
+        .into_iter()
+        .map(|appearance| {
+            command(FrameOp::Draw(FrameDraw::Fill {
+                transform: Affine::IDENTITY,
+                fill_rule: Default::default(),
+                brush: Brush::Image(ImageBrush {
+                    image: FrameImage {
+                        resource: handle,
+                        color: [1.; 4],
+                        appearance,
+                    },
+                    sampler: Default::default(),
+                }),
+                brush_transform: None,
+                shape: Geometry::Rect(Rect::new(0., 0., 40., 40.)),
+                composite: Default::default(),
+            }))
+        })
+        .collect::<Vec<_>>();
+    let bytes =
+        (size_of::<FrameDrawing>() + commands.capacity() * size_of::<FrameCommand>()) as u64;
+    let scene = RetainedScene {
+        drawing: Arc::new(FrameDrawing {
+            commands,
+            capture_exclusions: Vec::new(),
+            masks: BTreeMap::new(),
+            transitions: Vec::new(),
+            resources: ResourceSnapshot::capture(
+                [Ok(registry.acquire(handle).unwrap())].into_iter(),
+                &pool,
+            )
+            .unwrap(),
+            accounted_bytes: bytes,
+            _ticket: pool.reserve(bytes).unwrap(),
+        }),
+        to_parent: Affine::IDENTITY,
+        pool: pool.clone(),
+    };
+    let saved = scene.snapshot(|_| None).unwrap();
+    assert_eq!(saved.0.resources.len(), 1);
+    let restored = restore(&saved).unwrap();
+    assert_eq!(restored.drawing().resources().leases().len(), 1);
+    for (command, expected) in restored.drawing().commands().iter().zip([None, appearance]) {
+        let FrameOp::Draw(FrameDraw::Fill {
+            brush: Brush::Image(image),
+            ..
+        }) = &command.op
+        else {
+            panic!()
+        };
+        assert_eq!(image.image.appearance, expected);
+    }
+}

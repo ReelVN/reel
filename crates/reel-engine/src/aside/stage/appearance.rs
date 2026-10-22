@@ -27,6 +27,13 @@ fn colors() -> TypeHint {
         TypeHint::Tuple(vec![TypeHint::String; 4]),
     ]))
 }
+fn rgb() -> TypeHint {
+    TypeHint::Union(vec![
+        number(),
+        TypeHint::Array,
+        TypeHint::Tuple(vec![number(); 3]),
+    ])
+}
 
 #[derive(Properties)]
 #[expect(
@@ -58,6 +65,19 @@ pub(in crate::aside) enum ImageField {
     /// Draw the center of the nine-slice image.
     #[aside(name="slice_center",ty=Bool,default=true)]
     SliceCenter,
+    /// Nonnegative Rec.709 sRGB saturation after tint multiplication; 1 preserves color.
+    /// The drawing value must be finite and representable as float32.
+    #[aside(name="saturation",ty=Any,doc_type=number(),default=1)]
+    Saturation,
+    /// Nonnegative sRGB multiplier, as a number or [red, green, blue]; defaults to 1.
+    /// Applied after saturation. Components must be finite float32 drawing values.
+    #[aside(name="brightness",ty=Any,doc_type=rgb(),default=1)]
+    Brightness,
+    /// sRGB offset, as a number or [red, green, blue]; defaults to 0.
+    /// Applied after brightness and clamped to 0..1. Alpha stays unchanged.
+    /// Components must be finite float32 drawing values.
+    #[aside(name="color_offset",ty=Any,doc_type=rgb(),default=0)]
+    ColorOffset,
 }
 #[derive(Properties)]
 #[expect(
