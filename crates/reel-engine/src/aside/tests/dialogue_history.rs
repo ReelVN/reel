@@ -38,15 +38,15 @@ fn retaining_history_rows_preserves_partial_groups_views_and_restored_aliases() 
             text(value: derive(|| f"first {group.text}; rows {lines.len()}"));
             button("retain", on_click: || {
                 let mut errors = 0;
-                try { game.clear_history(-1); } catch e { errors += 1; }
-                try { game.clear_history(dynamic(1.5)); } catch e { errors += 1; }
-                try { game.clear_history(dynamic(true)); } catch e { errors += 1; }
+                try { game.reading().clear_history(-1); } catch e { errors += 1; }
+                try { game.reading().clear_history(dynamic(1.5)); } catch e { errors += 1; }
+                try { game.reading().clear_history(dynamic(true)); } catch e { errors += 1; }
                 if errors != 3 || history.len() != 3 || lines.len() != 3 {
                     throw "invalid retention changed history";
                 }
-                game.clear_history(keep_last: 3);
-                game.clear_history(999);
-                game.clear_history(3);
+                game.reading().clear_history(keep_last: 3);
+                game.reading().clear_history(999);
+                game.reading().clear_history(3);
             });
         });
         narrator("waiting", history: false);
@@ -154,8 +154,8 @@ fn clear_history_preserves_observers_display_and_saved_continuations() {
         stage.replace(column() {
             text(value: derive(|| f"groups {history.len()}"));
             button("clear", on_click: |event| {
-                game.clear_history();
-                game.clear_history();
+                game.reading().clear_history();
+                game.reading().clear_history();
                 if history != game.history() || history.len() != 0
                     || kept.text.markup != "[b]previous chapter[/b]" {
                     throw "clear changed identity or retained row";
@@ -294,9 +294,9 @@ fn successive_retention_within_the_same_group_preserves_its_projection() {
             let group = history[0];
             let lines = group.lines;
             let last = lines[2];
-            game.clear_history(2);
+            game.reading().clear_history(2);
             if group.text != "two" || lines.len() != 2 { throw "first trim"; }
-            game.clear_history(1);
+            game.reading().clear_history(1);
             if history.len() != 1 || history[0] != group || group.lines != lines
                 || lines.len() != 1 || lines[0] != last || group.text != "three" {
                 throw "same group trim lost identity";

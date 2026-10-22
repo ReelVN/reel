@@ -31,10 +31,10 @@ fn history_page() {
                 gap: 24
             );
         }
-        button("Close history", x: 40, y: 20, on_click: |event| game.pause_reading(false));
-        button("Clear history", x: 300, y: 20, on_click: |event| game.clear_history());
+        button("Close history", x: 40, y: 20, on_click: |event| game.reading().pause(false));
+        button("Clear history", x: 300, y: 20, on_click: |event| game.reading().clear_history());
         button(
-            "Keep last 37 lines", x: 560, y: 20, on_click: |event| game.clear_history(keep_last: 37)
+            "Keep last 37 lines", x: 560, y: 20, on_click: |event| game.reading().clear_history(keep_last: 37)
         );
     }
 }
@@ -47,8 +47,8 @@ pub fn main() {
             actions: {
                 skip: {
                     bindings: ["ControlLeft", "RightShoulder"],
-                    on_press: || game.set_skip(true, after_choices: preferences.after_choices),
-                    on_release: || game.set_skip(false), on_cancel: || game.set_skip(false),
+                    on_press: || game.reading().set_skip(true, after_choices: preferences.after_choices),
+                    on_release: || game.reading().set_skip(false), on_cancel: || game.reading().set_skip(false),
                 }
             }
         ) {
@@ -65,7 +65,7 @@ pub fn main() {
                     );
                 }
                 row(x: 40, y: 20, gap: 24) {
-                    button(on_click: |event| game.set_auto(!reading.auto, delay: 2.0)) {
+                    button(on_click: |event| game.reading().set_auto(!reading.auto, delay: 2.0)) {
                         text(
                             value: derive(
                                 || if reading.auto {
@@ -77,7 +77,7 @@ pub fn main() {
                         );
                     }
                     button(
-                        on_click: |event| game.set_skip(
+                        on_click: |event| game.reading().set_skip(
                             !reading.skipping, after_choices: preferences.after_choices
                         )
                     ) {
@@ -91,7 +91,7 @@ pub fn main() {
                             )
                         );
                     }
-                    button("History", on_click: |event| game.pause_reading(true));
+                    button("History", on_click: |event| game.reading().pause(true));
                     button("Reset read progress", on_click: |event| game.clear_read_progress());
                 }
                 checkbox(

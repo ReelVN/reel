@@ -10,16 +10,16 @@ fn auto_condition_binding_replacement_and_snapshot_preserve_reading_policy() {
         fn dynamic(value) {value}
         fn opening() {
             if !reading.auto_ready { throw "default condition"; }
-            game.set_auto(true, delay: 2, condition: derive(|| !state.playing));
+            game.reading().set_auto(true, delay: 2, condition: derive(|| !state.playing));
             let mut errors = 0;
-            try { game.set_auto(false, delay: 4, condition: dynamic(5)); } catch e { errors += 1; }
-            try { game.set_auto(false, delay: 4, condition: bind(reading.delay)); } catch e { errors += 1; }
+            try { game.reading().set_auto(false, delay: 4, condition: dynamic(5)); } catch e { errors += 1; }
+            try { game.reading().set_auto(false, delay: 4, condition: bind(reading.delay)); } catch e { errors += 1; }
             try { reading.auto_ready = true; } catch e { errors += 1; }
             if errors != 3 || !reading.auto || reading.delay != 2 { throw "invalid gate mutated policy"; }
-            game.set_auto();
+            game.reading().set_auto();
             stage.replace(column() {
                 button("toggle", on_click: |e| { state.playing = !state.playing; });
-                button("detach", on_click: |e| { game.set_auto(condition: true); });
+                button("detach", on_click: |e| { game.reading().set_auto(condition: true); });
             });
             narrator("voice line");
         }
