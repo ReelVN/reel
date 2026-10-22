@@ -358,8 +358,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ("reel::game::history", vec![], Effects::ALLOCATE),
         ("reel::game::reading", vec![], Effects::ALLOCATE),
         (
-            "reel::game::pause_reading",
-            vec!["paused"],
+            "reel::reading::pause",
+            vec!["reading", "paused"],
             Effects::ALLOCATE | Effects::WRITE | Effects::HOST,
         ),
         (
@@ -778,8 +778,11 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     for (symbol, parameters) in [
         ("reel::game::clear_read_progress", vec![]),
         (
-            "reel::game::clear_history",
-            vec![parameter("keep_last", Some(bc::Const::Int(0)))],
+            "reel::reading::clear_history",
+            vec![
+                parameter("reading", None),
+                parameter("keep_last", Some(bc::Const::Int(0))),
+            ],
         ),
     ] {
         contracts.push(NativeContract {
@@ -787,34 +790,40 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             symbol: symbol.into(),
             abi_version: 1,
             parameters,
-            result: BuiltinType::Null,
+            result: if symbol == "reel::reading::clear_history" {
+                BuiltinType::Any
+            } else {
+                BuiltinType::Null
+            },
             effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
             required_capabilities: vec![],
         });
     }
     contracts.push(NativeContract {
         rest: None,
-        symbol: "reel::game::set_auto".into(),
+        symbol: "reel::reading::set_auto".into(),
         abi_version: 1,
         parameters: vec![
+            parameter("reading", None),
             parameter("enabled", Some(bc::Const::Null)),
             parameter("delay", Some(bc::Const::Null)),
             parameter("condition", Some(bc::Const::Null)),
         ],
-        result: BuiltinType::Null,
+        result: BuiltinType::Any,
         effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
         required_capabilities: vec![],
     });
     contracts.push(NativeContract {
         rest: None,
-        symbol: "reel::game::set_skip".into(),
+        symbol: "reel::reading::set_skip".into(),
         abi_version: 1,
         parameters: vec![
+            parameter("reading", None),
             parameter("enabled", None),
             parameter("unread", Some(bc::Const::Bool(false))),
             parameter("after_choices", Some(bc::Const::Bool(false))),
         ],
-        result: BuiltinType::Null,
+        result: BuiltinType::Any,
         effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
         required_capabilities: vec![],
     });
@@ -869,6 +878,14 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ),
         (
             "scope",
+            vec![
+                parameter("body", None),
+                parameter("owner", Some(bc::Const::Null)),
+            ],
+            true,
+        ),
+        (
+            "reading",
             vec![
                 parameter("body", None),
                 parameter("owner", Some(bc::Const::Null)),

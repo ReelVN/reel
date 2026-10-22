@@ -572,6 +572,7 @@ pub enum SessionError {
     InvalidDialogueHandle,
     InvalidTextComposition,
     InvalidTextSpeed,
+    InvalidReadingContext,
     SessionNotRunning,
     ForeignOwner,
     OwnerNotLive,
@@ -706,8 +707,9 @@ impl Interaction {
     }
 }
 
-/// One host owns exactly one main interaction, plus a reserved terminal slot.
+/// One host selects one reading context and its reserved terminal slot.
 ///
+/// Suspended parents retain their original data without copying history.
 /// Owner and history storage grows with its contents. An interaction
 /// prepares all copied data and grapheme boundaries before publication. Its
 /// completion is moved into a single in-struct slot without allocation; the
@@ -720,10 +722,11 @@ pub struct Session {
     next_owner: Option<u64>,
     next_interaction: Option<u64>,
     last_input_sequence: Option<InputSequence>,
-    active: Option<Interaction>,
-    completion: Option<Completion>,
-    history: Vec<HistoryGroup>,
-    reading: ReadingState,
+    reading_data: reading::ReadingData,
+    reading_id: reading::ReadingId,
+    next_reading: Option<u64>,
+    parked_readings: Vec<reading::ParkedReading>,
+    auto_delay: std::time::Duration,
     #[serde(skip)]
     read_progress: ReadProgress,
 }
@@ -759,10 +762,11 @@ impl Session {
             next_owner: Some(2),
             next_interaction: Some(1),
             last_input_sequence: None,
-            active: None,
-            completion: None,
-            history: Vec::new(),
-            reading: ReadingState::default(),
+            reading_data: reading::ReadingData::default(),
+            reading_id: reading::ReadingId::default(),
+            next_reading: Some(1),
+            parked_readings: Vec::new(),
+            auto_delay: std::time::Duration::from_secs(2),
             read_progress,
         })
     }
@@ -785,143 +789,180 @@ impl Session {
     /// This explicit operation synchronously releases discarded storage.
     pub fn clear_history(&mut self, keep_last: usize) {
         if keep_last == 0 {
-            self.history = Vec::new();
+            self.reading_data.history = Vec::new();
             return;
         }
-        let count: usize = self.history.iter().map(|group| group.lines.len()).sum();
+        let count: usize = self
+            .reading_data
+            .history
+            .iter()
+            .map(|group| group.lines.len())
+            .sum();
         if keep_last >= count {
             return;
         }
         let mut remaining = keep_last;
-        let mut first = self.history.len();
+        let mut first = self.reading_data.history.len();
         while first != 0 {
             first -= 1;
-            let count = self.history[first].lines.len();
+            let count = self.reading_data.history[first].lines.len();
             if count >= remaining {
-                self.history[first].lines.drain(..count - remaining);
-                self.history[first].lines.shrink_to_fit();
+                self.reading_data.history[first]
+                    .lines
+                    .drain(..count - remaining);
+                self.reading_data.history[first].lines.shrink_to_fit();
                 break;
             }
             remaining -= count;
         }
-        self.history.drain(..first);
-        self.history.shrink_to_fit();
+        self.reading_data.history.drain(..first);
+        self.reading_data.history.shrink_to_fit();
     }
 
     /// Forget content-read records while preserving the currently displayed text.
     /// Completing the waiting group can still register its IDs without allocating.
     pub fn clear_read_progress(&mut self) -> Result<(), SessionError> {
         let mut progress = ReadProgress::default();
-        if let Some(Interaction::Dialogue(dialogue)) = &self.active {
-            progress
-                .ids
-                .try_reserve(dialogue.lines.len())
-                .map_err(|_| SessionError::AllocationFailed)?;
-        }
+        let contexts =
+            std::iter::once(&self.reading_data).chain(self.parked_readings.iter().map(|p| &p.data));
+        let reserve = contexts
+            .filter_map(|data| match &data.active {
+                Some(Interaction::Dialogue(d)) => Some(d.lines.len().max(d.pending_read_ids.len())),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        progress
+            .ids
+            .try_reserve(reserve)
+            .map_err(|_| SessionError::AllocationFailed)?;
         self.read_progress = progress;
-        if let Some(Interaction::Dialogue(dialogue)) = &mut self.active {
-            dialogue.previously_read = false;
-            for line in &mut dialogue.lines {
-                line.previously_read = false;
+        for data in std::iter::once(&mut self.reading_data)
+            .chain(self.parked_readings.iter_mut().map(|p| &mut p.data))
+        {
+            if let Some(Interaction::Dialogue(dialogue)) = &mut data.active {
+                dialogue.previously_read = false;
+                for line in &mut dialogue.lines {
+                    line.previously_read = false;
+                }
             }
-        }
-        if self.reading.skipping() && !self.reading.skip_unread() {
-            self.reading.set_skip(false, false, false);
+            if data.control.skipping() && !data.control.skip_unread() {
+                data.control.set_skip(false, false, false);
+            }
         }
         Ok(())
     }
 
     pub fn set_skip_reading(&mut self, enabled: bool, unread: bool, after_choices: bool) {
-        self.reading.set_skip(enabled, unread, after_choices);
+        self.reading_data
+            .control
+            .set_skip(enabled, unread, after_choices);
         self.check_skip_boundary();
     }
 
     fn check_skip_boundary(&mut self) {
-        if (matches!(&self.active, Some(Interaction::Choice(_)))
-            && !self.reading.skip_after_choices())
-            || matches!(&self.active, Some(Interaction::Dialogue(d)) if !d.previously_read && !self.reading.skip_unread())
+        if (matches!(&self.reading_data.active, Some(Interaction::Choice(_)))
+            && !self.reading_data.control.skip_after_choices())
+            || matches!(&self.reading_data.active, Some(Interaction::Dialogue(d)) if !d.previously_read && !self.reading_data.control.skip_unread())
         {
-            self.reading.set_skip(false, false, false);
+            self.reading_data.control.set_skip(false, false, false);
         }
     }
 
     pub fn reading(&self) -> ReadingState {
-        self.reading
+        ReadingState::new(self.reading_data.control, self.auto_delay)
     }
 
     pub fn set_auto_reading(&mut self, enabled: bool, delay: Option<std::time::Duration>) {
-        self.reading.set_auto(enabled, delay);
+        if let Some(delay) = delay
+            && self.auto_delay != delay
+        {
+            self.auto_delay = delay;
+            for data in std::iter::once(&mut self.reading_data)
+                .chain(self.parked_readings.iter_mut().map(|p| &mut p.data))
+            {
+                data.control.changed();
+            }
+        }
+        self.reading_data.control.set_auto(enabled);
     }
 
     /// Set the resolved author condition without changing reveal or manual input.
     pub fn set_auto_condition(&mut self, ready: bool) {
-        self.reading.set_auto_condition(ready);
+        self.reading_data.control.set_auto_condition(ready);
     }
 
     pub fn pause_reading(&mut self, paused: bool) {
-        self.reading.pause(paused);
+        self.reading_data.control.pause(paused);
     }
 
     /// Inspect allocated backing capacity outside the input/render hot path.
     pub fn storage_usage(&self) -> StorageUsage {
         let mut bytes = vector_capacity_bytes(&self.owners)
-            + vector_capacity_bytes(&self.history)
+            + vector_capacity_bytes(&self.parked_readings)
             + self.read_progress.storage_bytes();
         let mut history_text_bytes = 0;
-        for history in &self.history {
-            bytes += vector_capacity_bytes(&history.lines) + history.page_locale.capacity();
-            history_text_bytes += history.page_locale.len();
-            for line in &history.lines {
-                bytes += line.speaker_id.as_ref().map_or(0, String::capacity)
-                    + line.speaker_name.capacity()
-                    + line.content.id.capacity()
-                    + line.content.fallback.storage_bytes();
-                history_text_bytes += line.speaker_id.as_ref().map_or(0, String::len)
-                    + line.speaker_name.len()
-                    + line.content.id.len()
-                    + line.content.fallback.len();
-            }
-        }
         let mut active_grapheme_boundary_slots = 0;
-        match &self.active {
-            Some(Interaction::Dialogue(dialogue)) => {
-                bytes += vector_capacity_bytes(&dialogue.lines)
-                    + vector_capacity_bytes(&dialogue.current_line_ids)
-                    + vector_capacity_bytes(&dialogue.pending_read_ids)
-                    + dialogue
-                        .pending_read_ids
-                        .iter()
-                        .map(String::capacity)
-                        .sum::<usize>()
-                    + dialogue.page_locale.capacity();
-                for line in &dialogue.lines {
+        let mut reserved_history_slots = 0;
+        for data in
+            std::iter::once(&self.reading_data).chain(self.parked_readings.iter().map(|p| &p.data))
+        {
+            bytes += vector_capacity_bytes(&data.history);
+            reserved_history_slots += data.history.capacity();
+            for history in &data.history {
+                bytes += vector_capacity_bytes(&history.lines) + history.page_locale.capacity();
+                history_text_bytes += history.page_locale.len();
+                for line in &history.lines {
                     bytes += line.speaker_id.as_ref().map_or(0, String::capacity)
                         + line.speaker_name.capacity()
                         + line.content.id.capacity()
-                        + line.content.fallback.storage_bytes()
-                        + line.grapheme_boundaries.len() * size_of::<usize>();
-                    active_grapheme_boundary_slots += line.grapheme_boundaries.len();
+                        + line.content.fallback.storage_bytes();
+                    history_text_bytes += line.speaker_id.as_ref().map_or(0, String::len)
+                        + line.speaker_name.len()
+                        + line.content.id.len()
+                        + line.content.fallback.len();
                 }
             }
-            Some(Interaction::Choice(choice)) => {
-                bytes += vector_capacity_bytes(&choice.options);
-                for option in &choice.options {
-                    bytes += option.id.key.capacity() + option.label.capacity();
+            match &data.active {
+                Some(Interaction::Dialogue(dialogue)) => {
+                    bytes += vector_capacity_bytes(&dialogue.lines)
+                        + vector_capacity_bytes(&dialogue.current_line_ids)
+                        + vector_capacity_bytes(&dialogue.pending_read_ids)
+                        + dialogue
+                            .pending_read_ids
+                            .iter()
+                            .map(String::capacity)
+                            .sum::<usize>()
+                        + dialogue.page_locale.capacity();
+                    for line in &dialogue.lines {
+                        bytes += line.speaker_id.as_ref().map_or(0, String::capacity)
+                            + line.speaker_name.capacity()
+                            + line.content.id.capacity()
+                            + line.content.fallback.storage_bytes()
+                            + line.grapheme_boundaries.len() * size_of::<usize>();
+                        active_grapheme_boundary_slots += line.grapheme_boundaries.len();
+                    }
                 }
+                Some(Interaction::Choice(choice)) => {
+                    bytes += vector_capacity_bytes(&choice.options);
+                    for option in &choice.options {
+                        bytes += option.id.key.capacity() + option.label.capacity();
+                    }
+                }
+                None => {}
             }
-            None => {}
-        }
-        if let Some(Completion {
-            outcome: CompletionOutcome::Selected(key),
-            ..
-        }) = &self.completion
-        {
-            bytes += key.capacity();
+            if let Some(Completion {
+                outcome: CompletionOutcome::Selected(key),
+                ..
+            }) = &data.completion
+            {
+                bytes += key.capacity();
+            }
         }
         StorageUsage {
             allocated_capacity_bytes: bytes,
             reserved_owner_slots: self.owners.capacity(),
-            reserved_history_slots: self.history.capacity(),
+            reserved_history_slots,
             active_grapheme_boundary_slots,
             retained_history_text_bytes: history_text_bytes,
             reserved_retirement_records: self.owners.capacity(),
@@ -1145,11 +1186,15 @@ impl Session {
         SessionView {
             identity: self.identity,
             status: self.status,
-            interaction: self.active.as_ref().map(|active| match active {
-                Interaction::Dialogue(dialogue) => InteractionView::Dialogue(dialogue),
-                Interaction::Choice(choice) => InteractionView::Choice(choice),
-            }),
-            history: &self.history,
+            interaction: self
+                .reading_data
+                .active
+                .as_ref()
+                .map(|active| match active {
+                    Interaction::Dialogue(dialogue) => InteractionView::Dialogue(dialogue),
+                    Interaction::Choice(choice) => InteractionView::Choice(choice),
+                }),
+            history: &self.reading_data.history,
         }
     }
 
@@ -1246,16 +1291,17 @@ impl Session {
             lines: history_lines,
             page_locale: copy_text(page_locale)?,
         };
-        self.history
+        self.reading_data
+            .history
             .try_reserve(1)
             .map_err(|_| SessionError::AllocationFailed)?;
         // Everything fallible is complete. Both publications use reserved storage.
-        self.active = Some(Interaction::Dialogue(dialogue));
+        self.reading_data.active = Some(Interaction::Dialogue(dialogue));
         self.check_skip_boundary();
         // Preserve the Rust empty-group operation, but omit groups whose authored
         // lines explicitly opted out of history.
         if !history.lines.is_empty() || lines.is_empty() {
-            self.history.push(history);
+            self.reading_data.history.push(history);
         }
         self.next_interaction = id.generation.checked_add(1);
         Ok(id)
@@ -1313,7 +1359,8 @@ impl Session {
             lines: records,
             page_locale: copy_text(locale)?,
         };
-        self.history
+        self.reading_data
+            .history
             .try_reserve(1)
             .map_err(|_| SessionError::AllocationFailed)?;
         Ok(group)
@@ -1322,7 +1369,7 @@ impl Session {
     fn commit_history_record(&mut self, group: HistoryGroup) {
         if !group.lines.is_empty() {
             self.next_interaction = group.interaction_id.generation.checked_add(1);
-            self.history.push(group);
+            self.reading_data.history.push(group);
         }
     }
 
@@ -1357,7 +1404,7 @@ impl Session {
                 label: copy_text(option.label)?,
             });
         }
-        self.active = Some(Interaction::Choice(ChoiceInteraction {
+        self.reading_data.active = Some(Interaction::Choice(ChoiceInteraction {
             id,
             options: copied,
         }));
@@ -1375,7 +1422,7 @@ impl Session {
         id: InteractionId,
         graphemes_per_line: usize,
     ) -> Result<bool, SessionError> {
-        let paused = self.reading.paused();
+        let paused = self.reading_data.control.paused();
         let dialogue = self.reveal_dialogue_mut(owner, id)?;
         if paused {
             return Ok(false);
@@ -1405,7 +1452,7 @@ impl Session {
         if !player_speed.is_finite() || player_speed < 0. {
             return Err(SessionError::InvalidTextSpeed);
         }
-        let paused = self.reading.paused();
+        let paused = self.reading_data.control.paused();
         let dialogue = self.reveal_dialogue_mut(owner, id)?;
         if paused {
             return Ok(false);
@@ -1433,6 +1480,7 @@ impl Session {
             return Err(SessionError::MainOwnerRequired);
         }
         let active = self
+            .reading_data
             .active
             .as_mut()
             .ok_or(SessionError::NoActiveInteraction)?;
@@ -1528,10 +1576,11 @@ impl Session {
             return Err(InputRejection::DuplicateOrOutOfOrder);
         }
         self.last_input_sequence = Some(event.sequence);
-        if self.reading.paused() {
+        if self.reading_data.control.paused() {
             return Err(InputRejection::ReadingPaused);
         }
         let active = self
+            .reading_data
             .active
             .as_mut()
             .ok_or(InputRejection::NoActiveInteraction)?;
@@ -1586,12 +1635,12 @@ impl Session {
 
     /// Whether a terminal interaction record is ready for its waiting task.
     pub fn completion_pending(&self) -> bool {
-        self.completion.is_some()
+        self.reading_data.completion.is_some()
     }
 
     /// Claim the single terminal record once. This does not execute or resume a task.
     pub fn take_completion(&mut self) -> Option<Completion> {
-        self.completion.take()
+        self.reading_data.completion.take()
     }
 
     /// End a successfully idle pure-Rust session after its result was claimed.
@@ -1599,17 +1648,17 @@ impl Session {
     /// external cleanup. Previously declared revoked records remain pending.
     pub fn end(&mut self) -> Result<(), SessionError> {
         self.ensure_running()?;
-        if self.active.as_ref().is_some_and(|active| {
+        if self.reading_data.active.as_ref().is_some_and(|active| {
             !matches!(active,
             Interaction::Dialogue(d) if d.open && !d.awaiting_advance)
         }) {
             return Err(SessionError::InteractionActive);
         }
-        if self.completion.is_some() {
+        if self.reading_data.completion.is_some() {
             return Err(SessionError::CompletionPending);
         }
         self.status = SessionStatus::Ended;
-        self.active = None;
+        self.reading_data.active = None;
         self.retire_live_owners_without_obligations();
         Ok(())
     }
@@ -1647,13 +1696,13 @@ impl Session {
         if owner != self.root_owner() {
             return Err(SessionError::MainOwnerRequired);
         }
-        if self.active.as_ref().is_some_and(|active| {
+        if self.reading_data.active.as_ref().is_some_and(|active| {
             !matches!(active,
             Interaction::Dialogue(d) if d.open && !d.awaiting_advance)
         }) {
             return Err(SessionError::InteractionActive);
         }
-        if self.completion.is_some() {
+        if self.reading_data.completion.is_some() {
             return Err(SessionError::CompletionPending);
         }
         Ok(InteractionId {
@@ -1666,6 +1715,7 @@ impl Session {
 
     fn complete(&mut self, outcome: CompletionOutcome) {
         let mut interaction = self
+            .reading_data
             .active
             .take()
             .expect("active interaction reserves completion");
@@ -1689,10 +1739,10 @@ impl Session {
             }
         }
         if matches!(&interaction, Interaction::Dialogue(d) if d.open) {
-            self.active = Some(interaction);
+            self.reading_data.active = Some(interaction);
         }
-        debug_assert!(self.completion.is_none());
-        self.completion = Some(Completion {
+        debug_assert!(self.reading_data.completion.is_none());
+        self.reading_data.completion = Some(Completion {
             interaction_id,
             owner: self.root_owner(),
             outcome,
@@ -1701,15 +1751,15 @@ impl Session {
     }
 
     fn cancel_interaction(&mut self, reason: CancellationReason) {
-        if let Some(interaction) = self.active.take() {
-            debug_assert!(self.completion.is_none());
-            self.completion = Some(Completion {
+        if let Some(interaction) = self.reading_data.active.take() {
+            debug_assert!(self.reading_data.completion.is_none());
+            self.reading_data.completion = Some(Completion {
                 interaction_id: interaction.id(),
                 owner: self.root_owner(),
                 outcome: CompletionOutcome::Cancelled(reason),
                 delivery: CompletionDelivery::CleanupOnly,
             });
-        } else if let Some(completion) = &mut self.completion {
+        } else if let Some(completion) = &mut self.reading_data.completion {
             // A result already committed stays the unique terminal result. Its
             // dead owner makes it cleanup-only, regardless of the original result.
             completion.delivery = CompletionDelivery::CleanupOnly;

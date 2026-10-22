@@ -237,7 +237,7 @@ impl SessionVm {
                 || args[3]
                     .as_bool()
                     .ok_or(AdapterError::Input("wait must be bool"))?;
-            if wait && session.completion.is_some() {
+            if wait && session.reading_data.completion.is_some() {
                 return Err(crate::SessionError::CompletionPending.into());
             }
             if matches!(command, SpeechCommand::Append) {

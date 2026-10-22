@@ -261,6 +261,7 @@ pub struct SessionVm {
     translations: localization::Translations,
     game: std::sync::Arc<GameSettings>,
     narrative: Option<narrative::Narrative>,
+    narrative_contexts: narrative::Contexts,
     skip_input: Option<reel_ui::stage::NodeId>,
     exit_requested: bool,
     start_requested: Option<source::StoryFunction>,
@@ -348,6 +349,7 @@ impl SessionVm {
             translations: localization::Translations::default(),
             game: std::sync::Arc::new(GameSettings::default()),
             narrative: None,
+            narrative_contexts: narrative::Contexts::default(),
             skip_input: None,
             exit_requested: false,
             start_requested: None,
@@ -691,12 +693,12 @@ impl SessionVm {
             "reel::game::dialogue"
             | "reel::game::choice"
             | "reel::game::history"
-            | "reel::game::clear_history"
+            | "reel::reading::clear_history"
             | "reel::game::reading"
             | "reel::game::clear_read_progress"
-            | "reel::game::set_auto"
-            | "reel::game::set_skip"
-            | "reel::game::pause_reading"
+            | "reel::reading::set_auto"
+            | "reel::reading::set_skip"
+            | "reel::reading::pause"
             | "reel::dialogue::clear"
             | "reel::choice::select" => {
                 self.dispatch_narrative(session, ticket, &symbol)?;
@@ -780,8 +782,8 @@ impl SessionVm {
                 self.issued = None;
                 Ok(NativeDispatch::Ready { work })
             }
-            "reel::scope" => {
-                self.dispatch_scope(ticket)?;
+            "reel::scope" | "reel::reading" => {
+                self.dispatch_scope(session, ticket, symbol == "reel::reading")?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::scope::cancel" => {
@@ -1476,7 +1478,7 @@ impl SessionVm {
         }
         if let Some(task) = self.task {
             self.cancel_task_transitions(task, None)?;
-            self.cancel_task_scopes(task)?;
+            self.cancel_task_scopes(session, task)?;
         }
         for index in 0..session.owners.len() {
             let peer = session.owners[index].handle;

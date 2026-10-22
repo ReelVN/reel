@@ -338,6 +338,8 @@ try {...} catch error {...} finally {...} 至少含 catch/finally 一个。throw
 
 宿主可通过 `finish_host_callback(task, frame, value)` 结束一个仍活动的 native 回调区域。它与取消共用分片帧退休路径，跳过区域内脚本 finally，并在边界交付 CallbackReturned 与原 value；外层任务继续执行。返回值使用该 native frame 的既有结果根，随 GC 和执行快照保留。Reel 的 `scope.finish(value)` 使用此协议交回页面或交互结果。
 
+Reel 的 `reading(body:, owner:null)` 复用 Scope 的同 Task 回调与退休协议，显式拥有对白、选择、历史和临时阅读控制；普通 scope 继承。嵌套上下文移动挂起父数据并在退出恢复原对象，delay、已读与系统设置共享。Reading 接收者提供 set_auto/set_skip/pause/clear_history；组件捕获对象后，其事件和派生读取保持该对象的上下文。上下文退出后，仍被脚本持有的模型保留终态读取，控制方法报错。game 的阅读模型 getter 获取调用时活动对象，派生 getter 通过一个可观察的活动选择信号跟随前台。此服务不增加 Aside 语法或隐式任务局部状态。
+
 不可外部等待的边界包括同步宿主重入、缺省参数、模块初始化、构造、非 _call 元方法、派生求值、finally、children 和同步 iterator/thread 协议。静态可知时提前诊断，动态调用继续检查；“不可等待”不等于“不可按预算暂停”，invoke_sync 的特殊硬预算规则见下节。
 
 ## 十五 VM 与可恢复宿主调用
@@ -668,11 +670,11 @@ Reel 作者窗口在首个挂载场景的字体、图片准备好后提交首帧
 
 `game.dialogue()` 与 `game.choice()` 返回当前会话的稳定只读可观察服务对象。前者提供累积 `lines`、`current_line_ids`、当前组第一行 `speaker_name/text/reveal` 和 `active`；每行提供 `id/speaker_name/text/reveal`。`reveal` 是完整 UTF-8 文本的可见字节终点，`text(reveal: ...)` 只改变绘制范围，保留完整文本排版。`dialogue.clear()` 同时清空累积行、当前显示行 ID 和 ADV 的文字、姓名、显示身份及揭示位置，保留会话历史及当前发言的等待和推进权限。清空状态随快照保存；后续追加重新显示当前发言更新后的全文，新对白开始新页。后者提供 `options` 与 `select(id)`。服务列表和行由引擎拥有，脚本不可修改；过期/重复 select 返回 false，成功返回 true，choose 返回原业务 key。对白和选择不会自动创建界面；作者显式把读取这些服务的组件挂到舞台。桌面播放器默认用首次画布尺寸初始化窗口；未设置画布时为 1280×720，显式 Rust 窗口尺寸优先。这是宿主呈现策略，不改变 Aside 的执行或等待语义。未消费的对白推进输入仍由会话处理。
 
-`game.history()` 返回会话稳定的只读可观察历史数组；历史组的 `lines` 和行字段同样只读。`game.clear_history(keep_last: int = 0)` 使用 native ABI，返回 null；0 全部清空，正数保留末尾至多指定数量的实际历史行（不是组，`history:false` 不计），超长无改变，负数或非整数拒绝。允许只保留首组尾部行：保留原组/行 ID、对象、内容与顺序，组 speaker_name/text 更新为剩余首行，顶层数组和保留组 lines 数组身份不变并通知观察者。正文、NVL、已读记录与作者已持有的行引用不变，新组 ID 不复用；裁剪后快照保存相同结果。调用同步线性执行并请求增量 GC，不增加自动历史上限、数组脚本写权限、VM 指令或快照格式。`game.reading()` 提供只读可观察 `auto/paused/delay`，可以 bind/derive 到任意作者控件。`game.set_auto(enabled: null, delay: null, condition: null)` enabled 接受 bool 或 null，省略 delay 保留当前值，显式 delay 为有限非负秒数；`game.pause_reading(paused)` 接受 bool。这些变更通过既有宿主属性通知发布，不引入语言特殊语法；赋值只读服务字段或修改历史集合会报错。 `condition` 接受 bool 或 `bind`/`derive` 引用；各参数为 null 时保留当前值及绑定，condition 为 true 时解除旧绑定。只读 `auto_ready` 显示条件的当前值，初值 true。false 只重置自动倒计时，文字显现、手动推进、快进与 `[next]` 保持原路径；恢复 true 后，全文实际呈现完毕再等待完整 delay。条件及绑定随快照恢复。
+`game.history()` 返回会话稳定的只读可观察历史数组；历史组的 `lines` 和行字段同样只读。`game.reading().clear_history(keep_last: int = 0)` 使用 native ABI，返回 null；0 全部清空，正数保留末尾至多指定数量的实际历史行（不是组，`history:false` 不计），超长无改变，负数或非整数拒绝。允许只保留首组尾部行：保留原组/行 ID、对象、内容与顺序，组 speaker_name/text 更新为剩余首行，顶层数组和保留组 lines 数组身份不变并通知观察者。正文、NVL、已读记录与作者已持有的行引用不变，新组 ID 不复用；裁剪后快照保存相同结果。调用同步线性执行并请求增量 GC，不增加自动历史上限、数组脚本写权限、VM 指令或快照格式。`game.reading()` 提供只读可观察 `auto/paused/delay`，可以 bind/derive 到任意作者控件。`game.reading().set_auto(enabled: null, delay: null, condition: null)` enabled 接受 bool 或 null，省略 delay 保留当前值，显式 delay 为有限非负秒数；`game.reading().pause(paused)` 接受 bool。这些变更通过既有宿主属性通知发布，不引入语言特殊语法；赋值只读服务字段或修改历史集合会报错。 `condition` 接受 bool 或 `bind`/`derive` 引用；各参数为 null 时保留当前值及绑定，condition 为 true 时解除旧绑定。只读 `auto_ready` 显示条件的当前值，初值 true。false 只重置自动倒计时，文字显现、手动推进、快进与 `[next]` 保持原路径；恢复 true 后，全文实际呈现完毕再等待完整 delay。条件及绑定随快照恢复。
 
 `game.dialogue().advance_requested` 与当前活动行的同名字段是只读可观察的逐段手动推进请求。有效手动 Advance 在允许跳过显现或正文已经 ready 时置 true；尚未完成且禁止跳显时保持 false。自动阅读与快进驱动不会设置它。新对白、append 新段和清页重置；快照保留当前值。互动结束后根字段为 false，仍展示的旧行保留最后一次投影值；用 `current_line_ids` 确定描述当前段的行。作者可用它结束自定义文字演出，输入仍由共同对白服务接受和推进。
 
-`game.set_skip(enabled, unread: false, after_choices: false)` 的参数均为 bool；`game.reading().skipping/skip_unread` 与 `game.dialogue().read` 为只读可观察属性。快进与自动阅读互斥，模式切换复用既有属性通知，不引入 VM 跳转或特殊语法。播放器接受手动对白推进后关闭这两种模式；内部自动推进及无效输入不触发此切换。
+`game.reading().set_skip(enabled, unread: false, after_choices: false)` 的参数均为 bool；`game.reading().skipping/skip_unread` 与 `game.dialogue().read` 为只读可观察属性。快进与自动阅读互斥，模式切换复用既有属性通知，不引入 VM 跳转或特殊语法。播放器接受手动对白推进后关闭这两种模式；内部自动推进及无效输入不触发此切换。
 
 Reel 的 `rich(markup)` 返回普通不可变宿主值，只读 `.plain` 是去掉标记后的正文；rich_escape(text) 为显式富文本插值转义左方括号。它们不改变 Aside 字符串、插值或类型系统。text.value、narrator、角色调用与 character.line 接受 string 或此宿主值，bind/derive 保留通常语义；game.dialogue 和 game.history 的 text 字段保留提交值的样式。`text(..., on_link: callback)` 交付只读 `{target, id}` 事件，回调归文字节点所有。富文本也可携带句内速度、停顿与自动续句标记，由共享对白播放器解释，不增加 VM 指令。标记、排版和输入语义见架构规范与创作者指南。 `[font=family]...[/font]` 为片段选择游戏已配置的字体族，族名须非空；成对嵌套关闭时恢复外层字体。字体选择随不可变样式片段保存，包含空行的字体度量，并应用于 ruby 基文及其注音。`[weight=400]` 设置 1..1000 内的有限字重，`[b]` 设置 700；内层设置覆盖外层，关闭标签恢复外层字重。`[line_height=46]` 设置有限非负的绝对逻辑行高，参与该片段所在行的最大行高计算。
 

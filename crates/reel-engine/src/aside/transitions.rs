@@ -278,7 +278,7 @@ impl SessionVm {
             let state = &self.transitions.live[index].state;
             let (task, frame) = (state.task, state.frame);
             self.cancel_native_region(session, task, frame)?;
-            self.cancel_inner_scopes(task, frame)?;
+            self.cancel_inner_scopes(session, task, frame)?;
             self.close_transition(index)?;
         }
         Ok(())

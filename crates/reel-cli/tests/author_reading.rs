@@ -160,9 +160,9 @@ fn source_and_asb_reading_controls_wait_for_presentation_and_preserve_choices() 
         game.configure(text_speed: 0);
         stage.replace(stack(width: 640, height: 420) {
             button("History", x: 10, y: 10, width: 120, height: 40,
-                   on_click: |e| game.pause_reading(true));
+                   on_click: |e| game.reading().pause(true));
             button("Auto", x: 150, y: 10, width: 120, height: 40,
-                   on_click: |e| game.set_auto(!r.auto));
+                   on_click: |e| game.reading().set_auto(!r.auto));
             button("Menu", x: 290, y: 10, width: 120, height: 40,
                    on_click: |e| { menu.open = true; });
             text(value: bind(d.text), reveal: bind(d.reveal), x: 10, y: 160, width: 600);
@@ -174,14 +174,14 @@ fn source_and_asb_reading_controls_wait_for_presentation_and_preserve_choices() 
                 if !r.paused && !menu.open { return null; }
                 stack(modal: true, width: 640, height: 420) {
                     button("Close", x: 10, y: 10, width: 120, height: 40,
-                           on_click: |e| { game.pause_reading(false); menu.open = false; });
+                           on_click: |e| { game.reading().pause(false); menu.open = false; });
                     scroll(x: 10, y: 80, width: 600, height: 300) {
                         column() { for group in game.history() { for line in group.lines { text(line.text); } } }
                     }
                 }
             });
         });
-        game.set_auto(true, delay: 0.5);
+        game.reading().set_auto(true, delay: 0.5);
         narrator("first");
         d.clear();
         narrator("second");
@@ -370,22 +370,25 @@ fn source_and_asb_skip_actions_follow_read_boundaries_release_and_choices() {
         stage.replace(input(width: 640, height: 420,
             actions: {skip: {
                 bindings: ["ControlLeft", "RightShoulder"],
-                on_press: || game.set_skip(true),
-                on_release: || game.set_skip(false),
-                on_cancel: || game.set_skip(false),
+                on_press: || game.reading().set_skip(true),
+                on_release: || game.reading().set_skip(false),
+                on_cancel: || game.reading().set_skip(false),
             }}) {
             moving;
             text(value: derive(|| if r.skipping { "skip:on" } else { "skip:off" }), y: 60);
             button("Skip all", x: 10, y: 10, width: 140, height: 40,
-                   on_click: |e| game.set_skip(true, unread: true));
+                   on_click: |e| game.reading().set_skip(true, unread: true));
         });
-        game.set_auto(true, delay: 0);
-        repeated();
-        game.set_auto(false);
-        repeated();
-        if await run(sequence(tween(moving, x: 20, duration: 100), tween(moving, x: 40, duration: 100))) != "Completed"
-           || moving.x != 40 { throw "fast-forward finite scene"; }
-        repeated();
+        game.reading().set_auto(true, delay: 0);
+        // Revisit one author call path; distinct wrapper calls have distinct read identities.
+        for visit in 0..3 {
+            repeated();
+            if visit==0 {game.reading().set_auto(false);}
+            if visit==1 {
+                if await run(sequence(tween(moving, x: 20, duration: 100), tween(moving, x: 40, duration: 100))) != "Completed"
+                   || moving.x != 40 { throw "fast-forward finite scene"; }
+            }
+        }
         narrator("unread");
         choose([{key: "ok", label: "Continue"}]);
         narrator("last");

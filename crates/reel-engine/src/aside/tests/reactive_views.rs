@@ -775,21 +775,21 @@ fn reading_controls_are_observable_transactional_and_gate_narrative_input() {
     fn dynamic(value) {value}
     fn opening() {
         if r != game.reading() || r.auto || r.paused || r.delay != 2.0 { throw "reading defaults"; }
-        game.set_auto(true, delay: 0.5);
+        game.reading().set_auto(true, delay: 0.5);
         let mut errors = 0;
-        try { game.set_auto(false, delay: -1); } catch e { errors += 1; }
-        try { game.set_auto(dynamic(2)); } catch e { errors += 1; }
+        try { game.reading().set_auto(false, delay: -1); } catch e { errors += 1; }
+        try { game.reading().set_auto(dynamic(2)); } catch e { errors += 1; }
         try { r.auto = false; } catch e { errors += 1; }
         if errors != 3 || !r.auto || r.delay != 0.5 { throw "invalid settings changed state"; }
         stage.replace(column() {
             text(value: derive(|| if r.paused { "paused" } else { "reading" }));
-            button("resume", on_click: |e| { game.pause_reading(false); game.set_auto(false); });
+            button("resume", on_click: |e| { game.reading().pause(false); game.reading().set_auto(false); });
         });
-        game.pause_reading(true);
+        game.reading().pause(true);
         narrator("waiting");
         if r.paused || r.auto || r.delay != 0.5 { throw "resume settings"; }
         let choices = game.choice();
-        game.pause_reading(true);
+        game.reading().pause(true);
         choose([{key: "ok", label: "OK"}]);
     }"#;
     for encoded in [false, true] {
@@ -844,7 +844,7 @@ fn retiring_the_input_scope_clears_skipping_even_when_its_cancel_callback_cannot
     };
     let code = r#"fn opening() {
         stage.replace(input(actions: {skip: {bindings: ["ControlLeft"],
-            on_action: |e| game.set_skip(e.phase == "pressed", unread: true)}}));
+            on_action: |e| game.reading().set_skip(e.phase == "pressed", unread: true)}}));
         narrator("before");
         stage.replace(text("new scene"));
         narrator("after");
