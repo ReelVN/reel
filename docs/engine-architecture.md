@@ -953,6 +953,8 @@ paint/append 边界另存连续命令的实际绘制者范围，普通 Inline �
 
 颜色在合成前转为线性并预乘 alpha，输出到表面时按 SurfaceInfo 编码一次。图片准备按源编码/alpha 描述转换；纹理过滤采用线性预乘数据。渐变保留声明的插值规则，产生的采样颜色进入同一线性合成约定。灰度字形覆盖率与颜色分开，彩色字体图像按自己的编码转换。
 
+图片颜色调整作为保留图片绘制的值传递：`saturation` 默认 1；`brightness` 默认 1，`color_offset` 默认 0，后二者接受标量或 RGB 三元组。饱和度和倍数须非负，全部分量须有限且可表示为 float32 绘制参数。普通颜色与四角颜色相乘后，在未预乘的 sRGB 通道依次应用 Rec.709 加权饱和度、RGB 倍数与偏移，裁剪至 0..1，再转回线性预乘颜色，alpha 保持。恒等值沿原绘制路径；调整共用原纹理、图片批次及帧/恢复协议，无图片副本或新增离屏目标。
+
 普通绘制直接进入当前目标；需要独立组结果、mask 或 transition 时才使用离屏目标。EndGroup 对完整组结果应用一次 mask 与组透明度。alpha mask 使用覆盖率；亮度 mask 的覆盖率为 clamp(dot(linear_premultiplied_rgb, [0.2126, 0.7152, 0.0722]), 0, 1)，alpha 已包含在预乘值中。crossfade 对两份冻结输入的线性预乘结果按进度混合，遮罩转场沿用相同覆盖率与组机制。矩形裁剪可优化为 scissor，变换/path clip 使用真正的几何覆盖或 stencil，并保持跨片段、外部内容和离屏组的继承关系。
 
 CPU 实色、文字与图像转换复用 Peniko 导出的 color 类型，按输入的 sRGB/linear 和 straight/premultiplied 标记转换为统一线性预乘值；独立公式仅作为测试 oracle。虚线由 Kurbo 处理偏移、奇数项模式、曲线长度和闭合接缝，再流式交给 Lyon 细分，不维护另一套虚线算法或完整中间路径。全零虚线模式按实线处理。Bevel/Round 不受无关 miter 参数限制；Miter 的非负小于 1 限制等价于 Bevel，不因底层断言拒绝合法帧。网格仍按实际 transient 预算与设备表示能力计量；Kurbo/Lyon 内部临时存储另属依赖工作空间。

@@ -123,7 +123,7 @@ pub struct Pipelines {
     pub paint_layout: wgpu::BindGroupLayout,
     pub composite_layout: wgpu::BindGroupLayout,
     pub samplers: [wgpu::Sampler; 4],
-    pub plain_gradient: wgpu::Buffer,
+    pub plain_appearance: wgpu::Buffer,
     pub masks: super::mask::Cache,
 }
 pub(super) fn texture(binding: u32) -> wgpu::BindGroupLayoutEntry {
@@ -283,9 +283,9 @@ impl Pipelines {
                 ..Default::default()
             })
         });
-        let plain_gradient = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("plain image tint"),
-            contents: &[0u8; 96],
+        let plain_appearance = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("plain image appearance"),
+            contents: &[0u8; 128],
             usage: wgpu::BufferUsages::UNIFORM,
         });
         Self {
@@ -297,7 +297,7 @@ impl Pipelines {
             paint_layout,
             composite_layout,
             samplers,
-            plain_gradient,
+            plain_appearance,
             masks: super::mask::Cache::default(),
         }
     }

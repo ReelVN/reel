@@ -100,9 +100,9 @@ impl LayerCollector {
             start,
             owner,
             crate::frame::ImagePaint {
-                gradient: image
-                    .gradient
-                    .map(|gradient| gradient.transformed(transform)),
+                appearance: image
+                    .appearance
+                    .map(|appearance| appearance.transformed(transform)),
                 ..image
             },
         );
@@ -144,7 +144,7 @@ impl LayerCollector {
     fn record_owner(&mut self, start: usize, owner: WidgetId, image: crate::frame::ImagePaint) {
         let crate::frame::ImagePaint {
             color: image_color,
-            gradient: image_gradient,
+            appearance: image_appearance,
             resource: image_resource,
             sampling_transform: image_sampling_transform,
         } = image;
@@ -155,7 +155,7 @@ impl LayerCollector {
         if let Some(last) = self.command_owners.last_mut()
             && last.owner == owner
             && last.image_color == image_color
-            && last.image_gradient == image_gradient
+            && last.image_appearance == image_appearance
             && last.image_resource == image_resource
             && last.image_sampling_transform == image_sampling_transform
             && last.commands.end == start
@@ -166,7 +166,7 @@ impl LayerCollector {
                 commands: start..end,
                 owner,
                 image_color,
-                image_gradient,
+                image_appearance,
                 image_resource,
                 image_sampling_transform,
             });
@@ -437,7 +437,7 @@ fn paint_widget(
             id,
             crate::frame::ImagePaint {
                 color: state.image_color,
-                gradient: state.image_gradient,
+                appearance: state.image_appearance,
                 resource: state.image_resource,
                 sampling_transform: state.image_sampling_transform,
             },
@@ -469,7 +469,7 @@ fn paint_widget(
                 id,
                 crate::frame::ImagePaint {
                     color: state.image_color,
-                    gradient: state.image_gradient,
+                    appearance: state.image_appearance,
                     resource: state.image_resource,
                     sampling_transform: state.image_sampling_transform,
                 },
@@ -547,7 +547,7 @@ fn paint_widget(
             id,
             crate::frame::ImagePaint {
                 color: state.image_color,
-                gradient: state.image_gradient,
+                appearance: state.image_appearance,
                 resource: state.image_resource,
                 sampling_transform: state.image_sampling_transform,
             },

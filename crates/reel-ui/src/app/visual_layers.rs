@@ -16,7 +16,7 @@ pub struct CommandOwnerRange {
     pub owner: WidgetId,
     /// Linear premultiplied multiplier for image brushes in this range only.
     pub image_color: [f32; 4],
-    pub image_gradient: Option<crate::frame::ImageColorGradient>,
+    pub image_appearance: Option<crate::frame::ImageAppearance>,
     pub image_resource: Option<crate::resources::ResourceImageBrush>,
     /// Image brush matrices already map local coordinates to source pixels.
     pub image_sampling_transform: bool,

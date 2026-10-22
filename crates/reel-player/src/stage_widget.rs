@@ -981,6 +981,7 @@ impl SceneWidget {
             repeat,
             tile_scale,
             corner_colors,
+            adjustment,
             slice_center,
             ..
         } = &view.node.kind
@@ -1007,7 +1008,8 @@ impl SceneWidget {
                     image
                         .with_color(color(view.node.props.color))
                         .with_slice(*slice, *slice_scale, *slice_center)
-                        .with_pattern(*repeat, *tile_scale, *corner_colors),
+                        .with_pattern(*repeat, *tile_scale, *corner_colors)
+                        .with_color_adjustment(*adjustment),
                 )
                 .with_props(*fit)
                 .to_pod()
@@ -1474,6 +1476,7 @@ impl SceneWidget {
                     repeat,
                     tile_scale,
                     corner_colors,
+                    adjustment,
                     slice_center,
                     ..
                 },
@@ -1486,6 +1489,7 @@ impl SceneWidget {
             // This also clears slicing when a whole image switches to tiles.
             Image::set_slice(&mut image, *slice, *slice_scale, *slice_center);
             Image::set_pattern(&mut image, *repeat, *tile_scale, *corner_colors);
+            Image::set_color_adjustment(&mut image, *adjustment);
         }
         let caption_changed = match (&this.widget.node.kind, &view.node.kind) {
             (NodeKind::Text(a), NodeKind::Text(b)) => a != b,

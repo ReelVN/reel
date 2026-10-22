@@ -377,6 +377,7 @@ fn image_resolution_and_removal_invalidate_only_the_resource_branch() {
                 repeat: [false; 2],
                 tile_scale: 1.,
                 corner_colors: None,
+                adjustment: Default::default(),
             },
             NodeProps {
                 mask: Some(reel_ui::stage::MaskProgram::image("mask.png".into())),

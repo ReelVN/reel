@@ -64,7 +64,7 @@ impl Context<'_> {
             if quad.brush.image.resource != handle
                 || quad.brush.sampler.x_extend != first.brush.sampler.x_extend
                 || quad.brush.sampler.y_extend != first.brush.sampler.y_extend
-                || quad.brush.image.gradient != first.brush.image.gradient
+                || quad.brush.image.appearance != first.brush.image.appearance
             {
                 break;
             }
@@ -106,8 +106,8 @@ impl Context<'_> {
             first
                 .brush
                 .image
-                .gradient
-                .map(|gradient| gradient.transformed(outer)),
+                .appearance
+                .map(|appearance| appearance.transformed(outer)),
         )?;
         Ok(count)
     }

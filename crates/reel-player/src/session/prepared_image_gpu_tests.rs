@@ -71,6 +71,7 @@ fn scene(
                 repeat: [false; 2],
                 tile_scale: 1.,
                 corner_colors: None,
+                adjustment: Default::default(),
                 slice_center: true,
                 origin: Some("camera-tiles.aside:3:9".into()),
             },

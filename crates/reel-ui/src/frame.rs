@@ -178,15 +178,18 @@ pub struct FrameGroup {
     pub effect_to_target: Affine,
     pub ink_bounds: InkBounds,
 }
-/// One use of shared image pixels. Multiplication is carried by draw vertices,
-/// never by a separate colored texture or an offscreen composition.
+/// One use of shared image pixels. Uniform tint travels in draw vertices;
+/// appearance uses the same texture without an offscreen composition.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FrameImage {
     pub resource: ResourceHandle,
     /// Linear premultiplied RGBA multiplier, including its own alpha once.
     pub color: [f32; 4],
-    pub gradient: Option<ImageColorGradient>,
+    /// Optional corner tint and sRGB adjustment; None uses the shared plain uniform.
+    pub appearance: Option<ImageAppearance>,
 }
+mod image_color;
+pub use image_color::{ImageAppearance, ImageColorAdjustment};
 /// Four linear premultiplied colors and their unit square in frame coordinates.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ImageColorGradient {
@@ -1156,10 +1159,10 @@ impl Building {
         } else {
             [1.; 4]
         };
-        let image_gradient = if c.stream.is_none() {
+        let image_appearance = if c.stream.is_none() {
             layer.command_owners[c.owner_range]
-                .image_gradient
-                .map(|gradient| gradient.transformed(transform))
+                .image_appearance
+                .map(|appearance| appearance.transformed(transform))
         } else {
             None
         };
@@ -1171,7 +1174,7 @@ impl Building {
             mask,
             ImagePaint {
                 color: image_color,
-                gradient: image_gradient,
+                appearance: image_appearance,
                 sampling_transform: c.stream.is_none()
                     && layer.command_owners[c.owner_range].image_sampling_transform,
                 resource: if c.stream.is_none() {
@@ -1397,8 +1400,12 @@ fn valid_brush(b: &FrameBrush) -> bool {
         Brush::Solid(c) => valid_color(c.components),
         Brush::Image(i) => {
             valid_color(i.image.color)
-                && i.image.gradient.is_none_or(|gradient| {
-                    gradient.colors.into_iter().all(valid_color) && finite(gradient.transform)
+                && i.image.appearance.is_none_or(|appearance| {
+                    appearance.adjustment.is_valid()
+                        && appearance.gradient.is_none_or(|gradient| {
+                            gradient.colors.into_iter().all(valid_color)
+                                && finite(gradient.transform)
+                        })
                 })
                 && i.sampler.alpha.is_finite()
                 && (0.0..=1.).contains(&i.sampler.alpha)
@@ -1595,7 +1602,7 @@ fn empty_stroke(s: &Stroke) -> Stroke {
 #[derive(Clone, Copy)]
 pub(crate) struct ImagePaint {
     pub(crate) color: [f32; 4],
-    pub(crate) gradient: Option<ImageColorGradient>,
+    pub(crate) appearance: Option<ImageAppearance>,
     pub(crate) resource: Option<crate::resources::ResourceImageBrush>,
     pub(crate) sampling_transform: bool,
 }
@@ -1603,7 +1610,7 @@ impl Default for ImagePaint {
     fn default() -> Self {
         Self {
             color: [1.; 4],
-            gradient: None,
+            appearance: None,
             resource: None,
             sampling_transform: false,
         }
@@ -1638,7 +1645,7 @@ fn empty_brush(
 ) -> Result<FrameBrush, BuildErrorKind> {
     let ImagePaint {
         color: image_color,
-        gradient: image_gradient,
+        appearance: image_appearance,
         resource: image_resource,
         ..
     } = paint;
@@ -1653,7 +1660,7 @@ fn empty_brush(
             image: FrameImage {
                 resource: binding.resource,
                 color: image_color,
-                gradient: image_gradient,
+                appearance: image_appearance,
             },
             sampler: binding.sampler,
         }));
@@ -1680,7 +1687,7 @@ fn empty_brush(
                         blob_id: i.image.data.id(),
                     })?,
                 color: image_color,
-                gradient: image_gradient,
+                appearance: image_appearance,
             },
             sampler: i.sampler,
         }),
