@@ -1,4 +1,5 @@
 //! Native callback lifetimes share the ordinary host-owner and task protocols.
+//! Nominal methods are shared; each handle retains only its lifetime state.
 use super::*;
 
 pub(super) fn describe(api: &mut aside_host::source::Api) {
@@ -192,7 +193,6 @@ pub(super) enum ScopeExit {
 
 #[derive(Default)]
 pub(super) struct Scopes {
-    pub methods: Option<[FunctionId; 8]>,
     pub live: VecDeque<Scope>,
     charge: Option<HeapReservation>,
 }
@@ -444,36 +444,6 @@ impl SessionVm {
                 args[1]
             };
             validate_owner(self.vm.heap(), &self.stage, owner)?;
-            if self.scopes.methods.is_none() {
-                let package = self.vm.program().package();
-                let find = |symbol: &str| {
-                    package
-                        .functions
-                        .iter()
-                        .enumerate()
-                        .find_map(|(i, f)| {
-                            if let aside_vm::bytecode::FunctionKind::Native(n) = f.kind
-                                && package.symbols[package.natives[n.index()].symbol.index()]
-                                    == symbol
-                            {
-                                Some(FunctionId(i as u32))
-                            } else {
-                                None
-                            }
-                        })
-                        .ok_or(AdapterError::Input("scope adapter missing"))
-                };
-                self.scopes.methods = Some([
-                    find("reel::scope::run")?,
-                    find("reel::scope::spawn")?,
-                    find("reel::scope::add")?,
-                    find("reel::scope::override")?,
-                    find("reel::scope::offset")?,
-                    find("reel::override::remove")?,
-                    find("reel::scope::cancel")?,
-                    find("reel::scope::finish")?,
-                ]);
-            }
             results::reserve_queue(
                 self.vm.heap(),
                 &mut self.scopes.live,
@@ -493,18 +463,6 @@ impl SessionVm {
                 Some(results::readonly),
             )?;
             self.stage.types.mark(heap, object, "reel::types::Scope")?;
-            for (i, (name, function)) in [
-                "run", "spawn", "add", "override", "offset", "cancel", "finish",
-            ]
-            .into_iter()
-            .zip([0, 1, 2, 3, 4, 6, 7].map(|index| self.scopes.methods.unwrap()[index]))
-            .enumerate()
-            {
-                let method = self.vm.bind_native(object, function)?;
-                let heap = self.vm.heap_mut();
-                let key = heap.alloc_string(name)?;
-                heap.table_store(fields, i as u32, key, method)?;
-            }
             let root = self
                 .vm
                 .heap_mut()
@@ -583,9 +541,8 @@ impl SessionVm {
             return Err(AdapterError::Input("override requires a scope"));
         }
         let token = self.stage.create_override(
-            &mut self.vm,
+            self.vm.heap_mut(),
             [scope, node, properties],
-            self.scopes.methods.unwrap()[5],
             self.read_limit,
         )?;
         self.vm.respond(ticket, HostResponse::Ready(token))?;
@@ -600,9 +557,7 @@ impl SessionVm {
         if !is_scope(self.vm.heap(), arguments[0]) {
             return Err(AdapterError::Input("offset requires a scope"));
         }
-        let token =
-            self.stage
-                .create_offset(&mut self.vm, arguments, self.scopes.methods.unwrap()[5])?;
+        let token = self.stage.create_offset(self.vm.heap_mut(), arguments)?;
         self.vm.respond(ticket, HostResponse::Ready(token))?;
         self.issued = None;
         Ok(())

@@ -605,7 +605,22 @@ fn scope_cancel_rejects_non_scope_native_arguments() {
             } else {
                 Value::int(12)
             };
-            let function = vm.scopes.methods.unwrap()[6];
+            let package = vm.vm.program().package();
+            let function = package
+                .functions
+                .iter()
+                .enumerate()
+                .find_map(|(index, function)| {
+                    if let bc::FunctionKind::Native(native) = function.kind
+                        && package.symbols[package.natives[native.index()].symbol.index()]
+                            == "reel::scope::cancel"
+                    {
+                        Some(FunctionId(index as u32))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap();
             let task = vm
                 .vm
                 .start(function, &[object], vm.root_owner, bc::Context::Ordinary)
@@ -622,6 +637,154 @@ fn scope_cancel_rejects_non_scope_native_arguments() {
             vm.vm
                 .respond(ticket, HostResponse::Ready(Value::NULL))
                 .unwrap();
+        }
+    }
+}
+
+#[test]
+#[ignore = "isolated live-scope construction and retirement storage measurement"]
+fn scope_storage_cost() {
+    fn settle(vm: &mut SessionVm, session: &mut Session) {
+        for _ in 0..100_000 {
+            match vm
+                .step(
+                    session,
+                    SessionBudget::RetryMinimum(SliceBudget {
+                        instructions: 7,
+                        ..Default::default()
+                    }),
+                    || 0,
+                )
+                .unwrap()
+            {
+                SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
+                    vm.dispatch(session, ticket, "en", NativeBudget::RetryMinimum(32))
+                        .unwrap();
+                }
+                SessionStep::Vm(RunOutcome::Returned(_)) => vm.discard_delivery(session).unwrap(),
+                SessionStep::Vm(RunOutcome::Fault(id)) => {
+                    panic!("scope cost fault: {:?}", vm.vm.delivery_fault(id).unwrap())
+                }
+                SessionStep::Vm(RunOutcome::ResourceBlocked(error)) => {
+                    panic!("scope cost resource: {error:?}")
+                }
+                SessionStep::Idle | SessionStep::Vm(RunOutcome::Waiting(_))
+                    if !vm.has_runnable_tasks() && !vm.activities_pending() =>
+                {
+                    return;
+                }
+                _ => {}
+            }
+        }
+        panic!("scope storage probe did not settle");
+    }
+    let code = r#"fn nested(depth) {
+        scope(body: |s| {
+            if depth == 0 { narrator("mounted", history: false); }
+            else { nested(depth - 1); }
+        });
+    }
+    fn opening() {
+        narrator("baseline", history: false);
+        nested(31);
+        narrator("retired", history: false);
+    }"#;
+    let (mut session, mut vm) = prepared(code, false);
+    settle(&mut vm, &mut session);
+    collect(&mut vm);
+    let baseline = vm.vm.heap().stats();
+    let advance = |vm: &mut SessionVm, session: &mut Session| {
+        let interaction = session.view().interaction.unwrap().id();
+        for _ in 0..2 {
+            session
+                .handle_local_input(session.root_owner(), InputAction::Advance(interaction))
+                .unwrap();
+        }
+        settle(vm, session);
+    };
+    let started = std::time::Instant::now();
+    advance(&mut vm, &mut session);
+    let constructed = started.elapsed();
+    collect(&mut vm);
+    let live = vm.vm.heap().stats();
+    assert_eq!(vm.scopes.live.len(), 32);
+    let object = vm.current_scope(vm.task.unwrap()).unwrap().unwrap();
+    let fields = vm
+        .vm
+        .heap()
+        .table_len(vm.vm.heap().host_fields(object).unwrap())
+        .unwrap();
+    advance(&mut vm, &mut session);
+    collect(&mut vm);
+    let retired = vm.vm.heap().stats();
+    assert!(vm.scopes.live.is_empty());
+    println!(
+        "scopes,count=32,construction_ns={},owned_method_fields_per_scope={fields},baseline_bytes={},live_bytes={},retired_bytes={},baseline_objects={},live_objects={},retired_objects={}",
+        constructed.as_nanos(),
+        baseline.charged_bytes,
+        live.charged_bytes,
+        retired.charged_bytes,
+        baseline.live_objects,
+        live.live_objects,
+        retired.live_objects
+    );
+}
+
+#[test]
+fn scope_and_override_shared_methods_keep_receivers_through_gc_restore_and_retirement() {
+    let code = r#"fn opening() {
+        let root=stack();stage.replace(root);
+        let saved={finish:null,cancel:null,remove:null,node:null};
+        let result=scope(body: |s| {
+            let add=s.add;let run=s.run;let spawn=s.spawn;
+            let cover=s.override;let offset=s.offset;
+            saved.finish=s.finish;saved.cancel=s.cancel;
+            saved.node=add(root,text("owned"));
+            if await spawn(||42)!=42 {throw "shared spawn receiver";}
+            await run(delay(0));
+            let tint=cover(saved.node,{opacity:0.4});
+            let shift=offset(saved.node,x:7,y:3);
+            saved.remove=tint.remove;
+            narrator("checkpoint");
+            saved.remove();shift.remove();
+            if saved.node.opacity!=1 || saved.node.x!=0 {throw "shared layer receiver";}
+            saved.finish(saved.node);await completion();
+            throw "finished scope resumed";
+        });
+        if result!=saved.node || saved.finish(null) || saved.cancel() {throw "retired shared scope";}
+        saved.remove();
+        stage.replace(text("shared complete"));
+    }"#;
+    for encoded in [false, true] {
+        for restore in [false, true] {
+            let (mut session, mut vm) = prepared(code, encoded);
+            drive(&mut vm, &mut session, true);
+            collect(&mut vm);
+            let object = vm.current_scope(vm.task.unwrap()).unwrap().unwrap();
+            assert_eq!(
+                vm.vm
+                    .heap()
+                    .table_len(vm.vm.heap().host_fields(object).unwrap())
+                    .unwrap(),
+                0
+            );
+            if restore {
+                (session, vm) = restored(&mut vm, &session);
+            }
+            let interaction = session.view().interaction.unwrap().id();
+            for _ in 0..2 {
+                session
+                    .handle_local_input(session.root_owner(), InputAction::Advance(interaction))
+                    .unwrap();
+            }
+            drive(&mut vm, &mut session, true);
+            assert!(vm.scopes.live.is_empty());
+            assert_eq!(vm.stage().nodes().count(), 1);
+            assert!(
+                vm.stage()
+                    .nodes()
+                    .any(|n| n.kind == NodeKind::Text("shared complete".into()))
+            );
         }
     }
 }
