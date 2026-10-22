@@ -20,6 +20,7 @@ mod type_checks;
 mod value;
 
 pub use cell::{CellContract, CellInfo};
+pub use class::InstanceField;
 pub use fault::{
     CauseInfo, CauseKind, CloseKind, CoreErrorInfo, FaultCauseCursor, FaultCode, FaultGraphCursor,
     FaultGraphStep, FaultId, FaultInfo, FaultRoot, FaultStackCursor, NewFault, ReplacedExit,

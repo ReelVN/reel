@@ -51,6 +51,7 @@ const PRELUDE: &[&str] = &[
     "tween",
     "run",
     "scope",
+    "reading",
     "mask",
     "bind",
     "unbind",

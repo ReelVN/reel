@@ -1546,10 +1546,16 @@ settings.palette.accent = "#ffd580";
 Defaults are copied with their internal aliases and cycles preserved; the original objects remain independent. Data can contain fully constructed class instances, tables, arrays, tuples, strings, byte strings and mutable buffers; closures and host resources such as nodes cannot be defaults. Objects assigned later retain shared identity. Aliases obtained through nested instances, tables or array elements can still expose bindable fields. Ordinary table methods remain available. clear freezes existing connections at their last value and invalidates old references; bind again after adding a field with the same name. Copying advances within a work budget, and cancellation leaves no partial model.
 
 In the language, let/let mut determines whether a binding can be reassigned, model determines whether properties are observable, and state ownership determines how state is saved and released. Each serves a separate purpose.
-Use `persistent.read(key, default: null)`, `persistent.write(key, value)` and `persistent.delete(key)` for system data. Operations return awaitable requests; catch handles failure, and successful writing means the file has been published. Only a missing record uses default; stored null/false/0 remain intact. Supported data includes null/bool/int/float, string/Bytes, array/table/tuple, preserving aliases and cycles. Tables store own fields only. Convert class instances, nodes, tasks and closures to data first. Records are independent of story slots and ASB versions, live in the same save-directory, and do not appear in saves.list. See [author_persistent.aside](../../examples/author_persistent/src/main.aside).
+Use `persistent.read(key, default: null)`, `persistent.write(key, value)` and `persistent.delete(key)` for system data. Operations return awaitable requests; catch handles failure, and successful writing means the file has been published. Only a missing record uses default; stored null/false/0 remain intact. Supported data includes null/bool/int/float, string/Bytes, array/table/tuple and fully constructed instances, preserving aliases and cycles. Tables store own fields. Instances store their data fields, including inherited fields, as ordinary tables; static fields, methods and class identity stay in code. Pass a loaded record to your state constructor to restore its business type. Convert nodes, tasks and closures to data first. Records are independent of story slots and ASB versions, live in the same save-directory, and do not appear in saves.list. See [author_persistent.aside](../../examples/author_persistent/src/main.aside).
 
 ```aside
-let preferences = await persistent.read("settings", default: {volume: 0.8});
+class Preferences {
+    let mut volume: float = 0.8;
+    fn init(self, record: table | null = null) {
+        if record != null { self.volume = record.volume; }
+    }
+}
+let preferences = model(Preferences(await persistent.read("settings")));
 preferences.volume = 0.6;
 await persistent.write("settings", preferences);
 ```
