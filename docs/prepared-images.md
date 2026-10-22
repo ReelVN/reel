@@ -6,8 +6,8 @@ and its adjacent `.tiles` directory. Ship both.
 
 Run [author_large_image.aside](../examples/author_large_image/src/main.aside) with a wide
 original and the font preparation from the creator guide. It pans, zooms out/in,
-then revisits the panorama using common stage transforms. Preparation is currently
-explicit; ASB build does not prepare or package image assets automatically.
+then revisits the panorama using common stage transforms. Prepare the image before building; include the manifest and tile directory in
+the resources collected by export.
 
 The 24-byte little-endian manifest contains `REELIMG1`, original width, original
 height, interior tile edge, and level count (four u32 values). Dimensions and tile
@@ -41,17 +41,13 @@ adjacent antialiased edges must share rasterization before group compositing.
 
 The format lives in reel-core, preparation in reel-cli, loading and layout in
 reel-player, and image painting in reel-ui.
-Checks cover malformed manifests, odd-size pyramids/gutters, transformed visibility,
-cold/warm pan and zoom, cancellation, residency release and actual byte/load counts.
-GPU pixel and device-limit verification is target-specific and reported separately.
 
-Run the contracts with `cargo test --locked -p reel-core --lib prepared_image`,
-`cargo test --locked -p reel-cli --lib prepare_image -- --nocapture`, and
-`cargo test --locked -p reel-player --lib image -- --nocapture`.
-On a graphics target, run
-`cargo test --locked -p reel-player --features window --lib prepared_tiles_match_contiguous_image_through_rotated_camera -- --ignored --nocapture`.
-It compares adjoining tiles against a contiguous image through real rotated camera
-views and reports decoded working-set bytes, GPU residency/upload reservation and
-warm reuse. The synthetic two-dimensional source exceeds the tested device limit;
-only a local tile neighborhood is generated for this check.
-Generated originals, pyramids and logs belong under ignored `target/reel-artifacts`.
+## Checks
+
+```sh
+cargo test --locked -p reel-core --lib prepared_image
+cargo test --locked -p reel-cli --lib prepare_image
+cargo test --locked -p reel-player --lib prepared_image_tests
+```
+
+Device-specific rendering and recovery are tracked in [#190](https://github.com/jhq223/reel/issues/190).

@@ -1,22 +1,20 @@
 # Reel text
 
-`reel-text` provides text shaping, Unicode analysis, line breaking, alignment and
-editing for Reel. It produces reusable layouts and positioned glyph runs;
-`reel-ui` owns widgets and the renderer consumes those glyph runs.
+`reel-text` provides shaping, Unicode analysis, line breaking, alignment and
+editing. It produces reusable layouts and positioned glyph runs; `reel-ui`
+composes them into widgets and the renderer consumes the glyph runs.
 
-Share a `FontContext` and `LayoutContext` across layouts. Build styled text with
-`ranged_builder`, `tree_builder` or `style_run_builder`, then call
-`Layout::break_all_lines` and `Layout::align`. A layout can be wrapped again at a
-new width without rebuilding its text. Changing text or styles requires a new
-layout. The crate documentation includes a complete example using `reel_text`.
+Share `FontContext` and `LayoutContext` across layouts. Build styled text with
+`ranged_builder`, `tree_builder` or `style_run_builder`, then break lines and
+align. Changing width/wrap/alignment can reuse shaping; changing text/styles
+rebuilds the layout. `PlainEditor` owns selections, composition and caret geometry.
+The [crate source documentation](src/lib.rs) includes a complete layout example.
 
-The default `system` feature enables system font discovery and `std`. Enable
-`accesskit` for accessibility integration. For environments without `std`,
-disable default features and enable `libm`; font data must be supplied by the
-caller. ICU's cached automatic segmentation supports Chinese/Japanese words and
-complex-script line breaking. The existing normal, break-all and keep-all modes
-remain available.
+The default `system` feature enables system font discovery and `std`.
+`accesskit` adds accessibility integration. For `no_std`, select `libm` with
+default features disabled and supply font bytes. Cached ICU segmenters support
+Chinese/Japanese words and complex-script line breaking.
 
-The crate follows the workspace Rust version and forbids unsafe code. Its source
-and license history are described in [PROVENANCE.md](PROVENANCE.md). It is licensed
-under [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT).
+The crate follows the workspace toolchain and forbids unsafe code. Source and
+local changes are recorded in [PROVENANCE.md](PROVENANCE.md), with retained
+[Apache-2.0](LICENSE-APACHE) and [MIT](LICENSE-MIT) licenses.

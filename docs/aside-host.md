@@ -105,7 +105,7 @@ fn decorate(
 
 Declare the function's effects and required capabilities explicitly when it touches external state. The default effect is `ALLOCATE`; it suits a value conversion/computation without host mutation or waiting. A synchronous wrapper must not respond to its ticket itself: the wrapper sends the successful return value. `Result<T, E>` propagates errors to the host dispatcher; `E` must accept the conversion, heap and VM errors via `From`. The dispatcher decides whether to reject the pending call with a language fault at its source location or report an internal host failure. Reel uses its existing `AdapterError` mapping and rejection path.
 
-Built-in conversions cover `i64`, `f64`, `bool`, `String`, `Value` and `Option<T>`; `()` returns `null`, and `&str` can be returned as a string. Numbers retain their declared integer/float type. `Option<T>` declares `Any`, maps `null` to `None` and validates non-null values through `T`. Implement `FromValue` and `IntoValue` for additional owned Rust types.
+Built-in conversions cover `i64`, `f64`, `bool`, `String`, `Value` and `Option<T>`; `()` returns `null`, and `&str` can be returned as a string. Numbers retain their declared integer/float type. `Option<T>` exposes `T | null` in generated source declarations; its runtime ABI accepts `Any`, maps `null` to `None` and validates non-null values through `T`. Implement `FromValue` and `IntoValue` for additional owned Rust types.
 
 `String` copies UTF-8 into owned Rust memory in linear time; this memory belongs to the host. String results allocate in the VM's accounted heap. `Value` copies only a VM identity; keeping it after the native call requires an explicit VM root. The context is borrowed for one call. Native code must root any new temporary values it retains across a manually requested collection. Large or asynchronous operations use handwritten resumable natives with the same `NativeContract`, `HostTicket` and NativeFrame protocol, so scheduling and cancellation remain explicit.
 
@@ -143,7 +143,7 @@ enum Field {
 
 The fieldless enum defines property identity. Declaration order determines `Field::index()` and `Field::PROPERTIES`. Each descriptor supplies its name, builtin type, default, writability and animation flag. Explicit `name` values are recommended for multiword variants; the implicit name is the lowercase variant name. The implicit type is `Any`, and the implicit default is `null`.
 
-`Property::parameter()` builds a constructor parameter from the same declaration. `Field::validate_host` can be passed directly to `Heap::alloc_host` as its write validator. The host validator receives `(&Heap, receiver: Value, index: u32, value: Value)`, so cross-field constraints can inspect current fields before mutation; `Field::validate` checks an individual field. An optional `validate = function` supplies a complete property validator with signature `fn(&Heap, Value) -> Result<(), HeapError>`; without one, the declared builtin type is checked. Readonly writes are rejected before validation. Constructors still own initial values, private traced edges and host identity. Rust addresses are never embedded in script values. The runnable host example constructs a host object and checks script reads, accepted writes, readonly rejection and custom numeric validation.
+`Property::parameter()` builds a constructor parameter from the same declaration. `Field::validate_host` can be passed directly to `Heap::alloc_host` as its write validator. The host validator receives `(&PropertyRead, receiver: Value, index: u32, value: Value)`, so cross-field constraints inspect the complete proposed update before publication; `Field::validate` checks an individual field. An optional `validate = function` supplies a complete property validator with signature `fn(&Heap, Value) -> Result<(), HeapError>`; without one, the declared builtin type is checked. Readonly writes are rejected before validation. Constructors still own initial values, private traced edges and host identity. Rust addresses are never embedded in script values. The runnable host example constructs a host object and checks script reads, accepted writes, readonly rejection and custom numeric validation.
 
 Reel uses this schema for common node constructor parameters, property writes and tween fields. Projection uses typed field identities and `reel-ui::stage::NodeProps`.
 
@@ -159,14 +159,10 @@ For bounded preparation, `begin_host_publication()` creates the same rooted `Pro
 
 `PropertySchema::documentation(index)` reads each variant's English `///` comment for property hovers. Documentation stays in static metadata; node values and saved sessions contain the declared properties.
 
-## Validation and cost
+## Runnable host checks
 
-Scalar and `Value` wrappers convert directly; property metadata is static. Registry and default construction happens during compilation and loading.
+The [extension host](../crates/aside-host/tests/extension.rs) and [bound native host](../crates/aside-host/tests/bound_native.rs) demonstrate registration, value conversion, properties and callbacks.
 
 ```sh
 cargo test --locked -p aside-host -p aside-host-macros
-cargo test --locked --workspace --features reel-player/window,reel-cli/window,reel-render/wgpu
-cargo clippy --locked --workspace --all-targets --features reel-player/window,reel-cli/window,reel-render/wgpu -- -D warnings
 ```
-
-The host tests cover generated Rust calls, named/default parameters, UTF-8, mutable context, property writes and mismatched declarations. Reel tests additionally cover source/ASB loading, node identity, activity control, terminal results and cancellation.

@@ -1,35 +1,35 @@
 # Repository validation
 
-Run from the repository root with the workspace Rust toolchain. All generated
-logs, probes and measurements belong under ignored `target/reel-artifacts/`.
+Run from the repository root with the workspace toolchain and Cargo.lock.
+Generated logs, probes and measurements belong under ignored
+`target/reel-artifacts/`.
 
-```sh
-cargo run --locked -p reel-dev -- check
-cargo run --locked -p reel-dev -- deps
-cargo run --locked -p reel-dev -- audit-ui
-cargo run --locked -p reel-dev -- audio-regression
-cargo run --locked -p reel-dev -- audio-regression --release
-cargo run --locked -p reel-dev -- audio-probe
-cargo run --locked -p reel-dev -- root-negative
-cargo run --locked -p reel-dev -- compiler-probe frontend
-cargo run --locked -p reel-dev -- compiler-probe semantic
-cargo run --locked -p reel-dev -- compiler-probe lowering
+| Command after `cargo run --locked -p reel-dev --` | Purpose |
+| --- | --- |
+| `check` | Retained Quirrel assertion mappings and real VM execution |
+| `deps` | Workspace dependency boundaries |
+| `audit-ui` | UI source ownership, license and provenance |
+| `audio-regression [--release]` | Workspace audio-library tests |
+| `audio-probe` | PCM allocation and background release probes |
+| `root-negative` | Root-accounting negative controls |
+| `compiler-probe frontend/semantic/lowering [MODE]` | Compiler work and allocation measurements |
+| `measure BUILD_JSON contracts/r01_measurements [TEST_ARGS]` | Resolve exact UI measurement executables from Cargo JSON |
+
+For `r01_measurements`, select ignored cases with `--ignored` or
+`--include-ignored` in TEST_ARGS. The tool checks that the named tests completed.
+Original fixture sources and oracles are documented
+[with the compiler inputs](../aside-compiler/tests/fixtures/quirrel/README.md).
+
+## Self-checking projects
+
+Put executable assertions in the project's `src/main.aside` and return when the
+scenario completes. Set `REEL_SCENARIO` to the project directory, then run:
+
+```powershell
+$env:REEL_SCENARIO = "D:/path/to/project"
+cargo test --locked -p reel-cli --test project_scenarios external_project_scenario -- --ignored --nocapture
 ```
 
-`check` verifies retained Quirrel assertion mappings and executes the registered
-Aside migrations through bytecode and the real VM. `deps` verifies module boundaries;
-`audit-ui` verifies one owned UI implementation and its package license/provenance.
-Retain attribution in borrowed code; new Reel files do not require source headers.
-`audio-regression` runs the workspace reel-audio tests directly. `audio-probe`
-checks real PCM mixing and background release; it does not verify an audio device.
-`root-negative` verifies root-accounting controls. Compiler probes record work
-and allocation costs; their optional MODE is passed to the selected probe.
-
-For UI/render measurements, capture Cargo JSON for the desired profile, then run
-`cargo run --locked -p reel-dev -- measure BUILD_JSON TARGET [TEST_ARGS]`.
-TARGET is `contracts` or `r01_measurements`; the latter requires `--ignored`
-or `--include-ignored` in TEST_ARGS. The tool resolves the exact artifact from
-Cargo output and verifies that the named measurement tests completed.
-
-Borrowed runtime code is maintained in workspace crates with provenance and
-license records. Original Quirrel inputs and output oracles remain in [compiler fixtures](../aside-compiler/tests/fixtures/quirrel/README.md).
+The host executes source and ASB with independent temporary storage, CPU layout
+and offline audio. `REEL_SCENARIO_TIMEOUT_SECS` optionally changes the default
+90-second wall-time limit; for example, set it to `600` for a longer scenario.

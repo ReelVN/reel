@@ -29,6 +29,19 @@ enum AnchorBase {
 }
 
 impl Selection {
+    pub(crate) fn map_indices(mut self, mut map: impl FnMut(usize) -> usize) -> Self {
+        self.anchor.index = map(self.anchor.index);
+        self.focus.index = map(self.focus.index);
+        match &mut self.anchor_base {
+            AnchorBase::Word(start, end) | AnchorBase::Line(start, end) => {
+                start.index = map(start.index);
+                end.index = map(end.index);
+            }
+            AnchorBase::Cluster => {}
+        }
+        self
+    }
+
     /// Creates a new selection from the given anchor and focus cursors.
     pub fn new(anchor: Cursor, focus: Cursor) -> Self {
         Self {

@@ -1,107 +1,40 @@
 # Reel shared contracts
 
-`reel-core` defines identities, owned bytes and budget reservations, service
-results, asset IO, work execution, clocks and wake notifications. Engine and
-platform services share these types. Its pinned Serde dependency serializes the
-shared data used by snapshots and packages.
+`reel-core` defines the identities, owned bytes, budgets and service results
+shared by the engine and platform adapters. The
+[architecture](../../docs/engine-architecture.md) defines their composition.
 
-See the [architecture](../../docs/engine-architecture.md) for service contracts
-and the [creator guides](../../docs/README.md) for author-facing APIs implemented
-by the engine and player.
+| Source | Responsibility |
+| --- | --- |
+| [identity](src/identity.rs) | Session/owner/request identity, asset keys and exact content versions |
+| [request IDs](src/request_ids.rs) | Shared admission counters across replacement adapters |
+| [budget](src/budget.rs) | Shared pools and unique transferable reservations |
+| [result](src/result.rs) | Owned rejection, completion, cancellation and failure |
+| [IO](src/io.rs), [work](src/work.rs) | Bounded requests, storage capabilities and explicit work reservations |
+| [clock](src/clock.rs), [wake](src/wake.rs) | Monotonic time and coalesced host notification |
 
-## Public ownership
+`OwnedBytes` retains a reservation for the entire vector capacity until physical
+release. Consumer-held output and committed saves keep their tickets.
+`BudgetTicket::resize` reserves growth atomically before allocation. Rejection
+preserves the original request and its reservations. Accepted terminal records
+keep capacity until drained; the host revokes business waits before cancellation
+and validates session/owner identity at delivery.
 
-- `identity.rs`: independent fixed-width IDs, the three-field session scope, process request identity, and owned asset names with an opaque 32-byte content version. Version lookup never falls back to a newer release. Assigning fresh process/session/owner identities remains the owning service's responsibility.
-- `request_ids.rs`: a typed, shareable service counter. Share it across replacement adapters in the same request domain. Admission is serialized; rejection returns the original request without consuming an ID. The final `u64` value can be accepted once; exhaustion returns `ServiceFault` without wrapping. The admission callback must not reenter that ID stream.
-- `budget.rs`: `BudgetPool` clones share an account. `BudgetTicket` cannot be cloned, and transfers with `OwnedBytes`. Entire `Vec` capacity is charged. Output retained by a consumer and saved data retained by a store keep their own tickets; draining an event does not release those bytes. Accounting uses a mutex, not `AtomicU64`, and is a control-side facility.
-  `BudgetTicket::resize` adjusts a reservation atomically before storage grows;
-  rejected growth preserves its previous charge and ticket count.
-- `result.rs`: owning rejection reasons and `Completed / Cancelled / Failed`. Only `Busy` and `Unavailable` are retryable. An accepted event carries its ID, original scope, and completion ticket. A save event also retains the exact process request identity, including on cancellation or failure.
-- `io.rs`, `work.rs`, `clock.rs`: service traits and owned descriptions, bounded ranges, explicit IO storage capabilities, separate work input/output/temporary/completion reservations, monotonic nanoseconds and optional UTC milliseconds. `SaveWrite` is process-owned by construction. There is no universal `Send + Sync` constraint on these traits.
-- `wake.rs`: clones coalesce platform notifications. The loop acknowledges before draining sources, and rechecks `is_pending` before sleeping. The injected callback must be short and nonblocking; this general callback is not certified for realtime audio.
+Acknowledge a wake before draining its sources and recheck pending work before
+sleeping. The generic wake callback executes short control-side work. Real-time
+audio uses its adapter's dedicated notification path.
 
-The `test-support` feature exposes executable fixtures, excluded from the normal core build:
-
-- `MemoryAssetIo` has independent read/describe and save queues. `complete_next_read` and `complete_next_save` explicitly drive memory operations; `poll` only appends completed events. Ready read/save lanes alternate, so a ready save is delivered within two `poll(limit=1)` calls even when each call is preceded by a new completed read. Exact resource versions are immutable. Reads can reach EOF or fail for an unavailable version. Same-slot saves commit in submission order, reject non-increasing sequence numbers, and move the entire data buffer into the store only on success. Injected failure and cancellation preserve the previous slot. The fixture advertises only `Visible`; requesting `Durable` is rejected before acceptance. It makes no filesystem, crash-recovery, or durable-ledger claim.
-- `CooperativeExecutor` registers only fixture copy encoding and XOR-packet verification. These are cursor-based operations using at most 256 source bytes per work unit, preallocated output and scratch storage, and a clock check before each unit. `WorkProgress.bytes` counts logical input bytes once, even when copied through scratch to output; resident output/temporary bytes are separately reserved. A packet with nonzero aggregate XOR actually fails validation. This is not a production codec or integrity algorithm. Three fixed priority deques require at most three head checks to select a chunk, independent of queue size. Visible work precedes normal work, which precedes prefetch; equal priority jobs round-robin across slices.
-- The shared fixture queue preallocates a terminal slot before publishing acceptance. A non-cloneable completion slot is consumed on settlement. Pending and undrained terminal records share the request-count limit; charged bytes conservatively include input, maximum output, scratch, completion and request metadata until drain. Cancellation of pending work settles once and releases its data; later driver calls cannot produce a business result. Once completion has been enqueued, it has already won settlement, and later cancellation is a no-op. The business layer first revokes its wait/subscription, then calls service cancellation; engine routing checks both wait activity and Scope before resuming business. An already settled result remains for resources and the process ledger, preserving an actual save commit. `poll`/`drain` append at most the supplied limit, including across IO lanes; callers preallocate the output vector.
-
-Each private `WorkBuffer` owns its vector followed by its ticket, matching `OwnedBytes`' field-order invariant. Output and scratch own their reservations independently of the `WorkRequest`. Whole-job destruction frees each buffer before returning its reservation. Completion and failure drop owned scratch/input, failure drops owned output, cancellation drops all owned buffers, and admission rejection reconstructs the original request only after disposing the new output/scratch allocations. These paths preserve accounting until actual deallocation, including partial moves.
-
-Fixture constructors accept explicit `QueueLimits`; their convenience `new` creates an isolated ID domain. Use `with_ids` for replacement/shared-service checks. `DEFAULT_COOPERATIVE_QUEUE_LIMITS` is a small fixture configuration: 32 requests / 4 MiB. Tight limits in other contract scenarios are test settings, not platform defaults. Target adapter tasks choose actual queue capacities and independently verified storage levels.
-
-## Behavioral evidence and commands
-
-Run from the repository root with Rust 1.96.0:
+The `test-support` feature provides `MemoryAssetIo` with independent read/save
+queues and `CooperativeExecutor` with sliced copy/XOR fixtures. Their explicit
+limits and injected completion drive service ownership checks.
 
 ```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo test -p reel-core --all-features --locked
-cargo test -p reel-core --all-features --release --locked
-cargo check -p reel-core --no-default-features --locked
-cargo check -p reel-core --all-targets --all-features --locked --target i686-unknown-linux-gnu
-cargo tree -p reel-core --all-features --locked
-cargo tree -p reel-core --no-default-features --locked
+cargo test --locked -p reel-core --all-features
+cargo check --locked -p reel-core --no-default-features
 cargo run --locked -p reel-core --release --features test-support --example cooperative_probe
-rustfmt --edition 2024 --check crates/reel-core/tests/support/dealloc_probe.rs
-bash -n crates/reel-core/tests/support/run_dealloc_probe.sh
 bash crates/reel-core/tests/support/run_dealloc_probe.sh
-git diff --check
 ```
 
-`tests/contracts.rs` exercises original buffer/key-pointer preservation on rejection and retry, byte and request exhaustion, undrained terminal backpressure, repeated cancellation, output and completion-ticket residency, fixed versions/EOF/errors, stale epochs released without business delivery, process-owned saves under a saturated read lane, commit order, failure preserving the old slot, and rejection of unprovided durability. A continuous-read scenario confirms a ready save is delivered within two single-event polls. Work scenarios check partial progress, byte/unit/deadline limits using a fake clock, priority selection, cancellation after partial processing, real validation failure, empty work, missing output/scratch reservations, and payload delivery with the default request queue completely full. Shared IO counters are exercised across adapter replacement and both IO lanes at the end of the `u64` range. Ticket ownership is also moved across a thread; wake coalescing is driven from worker threads.
-
-`tests/support/run_dealloc_probe.sh` builds the production crate with its unchanged `unsafe_code=forbid`, then compiles `dealloc_probe.rs` separately with rustc in a fresh temporary directory. No allocator dependency or production lint exception is added. This manual regression is not part of `cargo test`; run the explicit command above. Its small `GlobalAlloc` wrapper observes the exact input/output/scratch pointers immediately before forwarding `dealloc` to `System`; callbacks use integer addresses, never dereference pointers, and record data without assertions or logging inside the allocator. It also tries to reserve each entire pool while that buffer is still live. The tracker observes completion, genuine XOR failure, partial-work cancellation, pending executor destruction, and ID-exhaustion rejection after both admission buffers have been allocated.
-
-## Historical measurements
-
-The measurements below describe the stated 2026-10-08 revisions and environments.
-The [fixed validation record](https://github.com/jhq223/reel/blob/f916ffedceb91465633fd549e4db1084c070edf3/crates/reel-core/README.md)
-retains their original context. Current validation uses the commands above and
-the current Cargo.lock.
-
-The observer failed against the old implementation: four live allocations already had zero charge and permitted a full-pool reservation. With the structural fix on 1.96, debug and release both observed `scratch bytes_still_live=256, charged=256, reserve_blocked=true` on every exit. Input remained charged 65,537 bytes at its own deallocation; output remained charged 65,537 bytes for copy paths or 1 byte for the failed verifier. All three allocations were actually observed on each path, and all pools returned to zero afterward.
-
-The release probe actually copies and verifies 1 MiB, with four units / 1024 logical input bytes allowed per advance. It runs both a single request and a full default queue of 32 requests, each owning 32 KiB. Historical observations on this Linux x86_64 KVM environment, AMD EPYC 9V74, rustc 1.90.0 / LLVM 20.1.8, before the residency fix:
-
-```text
-case=single configured_requests=1
-max_submit_ns=5959
-bytes=1048576 slices=1024 p50_ns=330 p99_ns=1983 max_ns=93851
-peaks: input=1048576 output=1048576 temporary=256 completion=512 queue=2098188
-after_drain: output=1048576 completion=512 queue=0
-after_output_drop: all tickets and resident bytes returned
-case=full configured_requests=32
-max_submit_ns=3585
-bytes=1048576 slices=1024 p50_ns=311 p99_ns=2323 max_ns=17045
-peaks: input=1048576 output=1048576 temporary=8192 completion=16384 queue=2130304
-after_drain: output=1048576 completion=16384 queue=0
-after_output_drop: all tickets and resident bytes returned
-```
-
-A separate run after the fix on Rust 1.96.0 / LLVM 22.1.2 observed:
-
-```text
-case=single configured_requests=1
-max_submit_ns=5248
-bytes=1048576 slices=1024 p50_ns=401 p99_ns=1752 max_ns=26079
-peaks: input=1048576 output=1048576 temporary=256 completion=512 queue=2098180
-after_drain: output=1048576 completion=512 queue=0
-after_output_drop: all tickets and resident bytes returned
-case=full configured_requests=32
-max_submit_ns=4286
-bytes=1048576 slices=1024 p50_ns=431 p99_ns=2874 max_ns=58709
-peaks: input=1048576 output=1048576 temporary=8192 completion=16384 queue=2130048
-after_drain: output=1048576 completion=16384 queue=0
-after_output_drop: all tickets and resident bytes returned
-```
-
-These observations include the final slice's terminal bookkeeping and input release. The probe separately times admission/preallocation and verifies every returned byte. They describe this fixture in a virtualized environment; they do not establish codec, device, low-end hardware, or frame-rate performance. Pool/queue peaks are logical reserved-byte counters, not RSS measurements.
-
-## Service scope
-
-The in-memory fixtures implement their declared storage and scheduling behavior.
-Production session routing, snapshot restoration and durable platform storage are
-implemented by their owning services. See [reel-engine](../reel-engine/README.md)
-and [reel-player](../reel-player/README.md) for those integrations and their checks.
+The deallocation probe observes input/output/scratch release while the owning
+reservation remains charged. Generated measurements belong under ignored
+`target/reel-artifacts/`.

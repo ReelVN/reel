@@ -579,10 +579,11 @@ fn main() {
 #[test]
 fn text_editor_policy_fields_share_typed_constructor_and_with_declarations() {
     let source = r##"fn main() {
-    let editor = text_input(placeholder: "Name", read_only: true,
+    let editor = text_input(placeholder: "Name", read_only: true, password: true,
         selection_color: "#10203040", caret_color: null);
     editor.with(placeholder: "New hint", read_only: false, caret_color: "#aabbcc");
     editor.read_only = false;
+    editor.password = false;
     let notes = text_area(placeholder: "Notes", read_only: true);
     notes.with(caret_color: null);
     let label = text("Label");
@@ -617,6 +618,7 @@ fn text_editor_policy_fields_share_typed_constructor_and_with_declarations() {
         for name in [
             "placeholder:",
             "read_only:",
+            "password:",
             "selection_color:",
             "caret_color:",
         ] {
@@ -637,17 +639,31 @@ fn text_editor_policy_fields_share_typed_constructor_and_with_declarations() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|i| i["label"] == "read_only:"),
+            .any(|i| matches!(i["label"].as_str(), Some("read_only:" | "password:"))),
         "{items}"
     );
-    let hover = server.request(
-        id,
-        "textDocument/hover",
-        query(source, "read_only =", false),
-    );
+    let hover = server.request(id, "textDocument/hover", query(source, "password =", false));
     let markdown = hover["contents"]["value"].as_str().unwrap();
     assert!(markdown.contains("bool"), "{markdown}");
-    let invalid = source.replace("editor.read_only = false", "editor.read_only = 42");
+    id += 1;
+    let definition = server.request(
+        id,
+        "textDocument/definition",
+        query(source, "password =", false),
+    );
+    id += 1;
+    let document = server.request(id, "aside/nativeDocument", json!({"uri":definition["uri"]}));
+    let text = document["text"].as_str().unwrap();
+    let declaration = text
+        .lines()
+        .nth(definition["range"]["start"]["line"].as_u64().unwrap() as usize)
+        .unwrap();
+    assert!(declaration.contains("password: bool"), "{declaration}");
+    assert!(
+        text.contains("Display one bullet per Unicode grapheme"),
+        "{text}"
+    );
+    let invalid = source.replace("editor.password = false", "editor.password = 42");
     server.notify(
         "textDocument/didChange",
         json!({"textDocument":{"uri":URI,"version":2}, "contentChanges":[{"text":invalid}]}),

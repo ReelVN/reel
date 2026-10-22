@@ -1,165 +1,108 @@
 # Aside compiler
 
-One Logos scanner and recursive descent/Pratt parser produce a lossless
-`aside-syntax` tree. Semantic analysis produces source-owned typed HIR with
-lexical/module binding, initialization-aware captures and type/effect checks.
-Lowering turns `AnalyzedModule` into register IR and the shared verified bytecode.
-The bytecode model, codec, verifier and executor live in `aside-vm`; the compiler
-remains independent of Reel and platform libraries.
+`aside-compiler` scans and parses source into lossless `aside-syntax` trees,
+binds source-owned typed HIR, then lowers it to register IR and verified
+`aside-vm` bytecode. The [language specification](../../docs/aside-language.md)
+defines syntax and execution semantics; the [host SDK](../../docs/aside-host.md)
+defines trusted native declarations.
 
-Current execution covers ordinary functions and closures, defaults, exceptions,
-collection literals and spreads, index/member writes, optional value chains,
-class construction/inheritance/static members, script module imports and linking,
-host waits, fixed tuple destructuring, and executable children composition. Named table spreads use the same
-argument capture path as positional spreads. Remaining array/object/rest and match structural patterns, native
-async/generator execution, delegates/hooks and property-bag tails remain open.
-See [lowering](LOWERING.md), [semantics](SEMANTICS.md) and the
-[language specification](../../docs/aside-language.md) for precise boundaries.
+## Frontend and diagnostics
 
-[INTERFACE.md](INTERFACE.md) describes lossless syntax and diagnostics.
-Historical compiler increments and their original acceptance are preserved in the
-[fixed earlier README](https://github.com/jhq223/reel/blob/f916ffedceb91465633fd549e4db1084c070edf3/crates/aside-compiler/README.md).
+[`lex`, `parse` and `parse_with_options`](src/lib.rs) accept UTF-8 source.
+`EntryPoint::{Module, Block, Expression, Pattern, Type}` shares one parser;
+fragment ranges remain relative to the supplied text. The tree preserves all
+admitted source bytes, including whitespace, comments and error tails. Missing
+tokens produce empty-range diagnostics. `SourceMap` provides byte, scalar and
+UTF-16 coordinates; the caller supplies file and module identity.
 
-```rust
-use aside_compiler::{parse, lex, EntryPoint, ParseOptions, parse_with_options};
-let source = "let 中文 = (1, 2); // preserved\n";
-let parsed = parse(source)?;
-assert!(parsed.is_ok());
-assert_eq!(parsed.syntax().text().to_string(), source);
-let tokens = lex(source)?;
-let expression = parse_with_options("|| ({name: \"Mio\"})", ParseOptions {
-    entry: EntryPoint::Expression, ..Default::default()
-})?;
-# Ok::<(), aside_compiler::SourceTooLarge>(())
-```
+Source/token capacities follow the u32 representation. Recursive depth and
+diagnostic limits default to 128; hosts can set quotas. Exhaustion reports
+`ASR001` and retains the remaining source. Flat binary/postfix chains use
+iterative traversal. Pattern trials borrow the same tokens, share a work budget
+and select destructuring only after a complete pattern followed by `=`.
+See [`parser`](src/parser.rs) and [`diagnostic`](src/diagnostic.rs).
 
-`EntryPoint::Block` parses a function-body fragment (no artificial wrapper or
-shifted ranges). Module entry requires ordinary expression statements to have
-semicolons; blocks may return a final expression. `Parse::green()/syntax()`
-expose reusable immutable and navigable trees. `Diagnostic` and `to_codespan`
-provide structured and human output. `SourceMap` gives zero-based line and
-byte/scalar/UTF-16 columns without rounding invalid UTF-8 boundaries. Callers
-attach file/module-version identity to these source-local results.
+## Binding and effects
 
-All leaves include source text and half-open byte ranges; whitespace, comments
-and malformed bytes in valid UTF-8 source are preserved. Missing tokens produce
-empty-range diagnostics/fixes instead of invented source text. Error recovery
-retains delimiters and continues through following declarations. Logos scans
-ordinary tokens; iterative scanner modes handle nested comments/strings/holes.
-Identifiers are checked with the pinned unicode-ident XID tables (exported
-`UNICODE_VERSION`, currently 18.0.0). Identifier scanning uses that table
-for ASCII continuations and non-ASCII scalars, avoiding mismatched regex-table
-versions; no normalization changes the spelling.
+[`semantic`](src/semantic) exposes `analyze`, `analyze_module` and
+`analyze_project`. `AnalysisOptions` supplies execution context, host symbols and
+enclosing bindings; `ModuleResolver` supplies canonical module/version identity.
+Successful analysis produces the `AnalyzedModule` required by lowering.
 
-Default source and token admission use the u32 format capacity; recursive/syntax
-levels and diagnostics each default to 128.
-Source length defaults to the u32 byte-offset format capacity, with no smaller
-8 MiB author limit; hosts may explicitly set a source admission budget. Ordinary token emission is capped exactly; one separate error-tail
-leaf may exceed that count to preserve unprocessed text. Source above admission limits returns `SourceTooLarge` before
-allocation. Other exhaustion marks `exhausted()`, emits `ASR001`, and preserves
-the remaining source as an error subtree. Recursive and structural depth default
-to 128; hosts can change these budgets without an implicit maximum clamp.
-Unwind and the lossless error tail may add enclosing nodes after exhaustion.
-Flat binary and postfix chains use iterative processing and do not consume one
-nesting level per operation. Parentheses, blocks, and nested operands retain
-their depth accounting. O(source + tokens)
-space is required by lossless ownership; exhaustion is not constant-space input
-streaming. A truncated UTF-8 byte stream must first be decoded by the caller;
-this API accepts valid `&str`, including every valid-boundary source prefix.
+- Read-only function bindings and pending declarations are predeclared; source
+  execution initializes them in order. Same-frame reads before initialization
+  diagnose; deferred captures retain a runtime initialization check.
+- `BindingOrigin` distinguishes module globals, initializer locals, function
+  locals and external metadata. Mutable, forward and recursive captures share
+  Cells across every user. Reentered loop scopes create fresh captured storage.
+- Defaults see preceding parameters and definition-site captures. Own/later
+  parameters remain unavailable. Explicit `return` crossing a default boundary
+  diagnoses; its expression or block tail supplies the value.
+- Class methods have explicit `self`; `super` retains its lexical base. Stored
+  table closures use ordinary function calls. Imported class/type identities
+  remain canonical through aliases and reexports.
+- `NoWait`, `Init` and `Derived` restrictions accumulate along actual calls and
+  host callbacks. A call that completes synchronously is valid under NoWait;
+  actual suspension is rejected. Explicit awaits in finally diagnose even on
+  conditional paths. Nested function bodies have their own declared context.
+- Known type/signature conflicts diagnose at source spans; dynamic facts retain
+  runtime checks. Named function contracts are prepared before body analysis.
+  Unannotated parameters and return contracts are dynamic.
+- Module linking preserves legal cycles and deterministic initialization order.
+  Reads of uninitialized imports retain runtime checks.
 
-Run (Rust 1.96.0):
+The binding implementation is in [`semantic/bind`](src/semantic/bind.rs), with
+shared signature projection in [`semantic/types`](src/semantic/types.rs) and
+module resolution in [`semantic/link`](src/semantic/link.rs).
+
+## Lowering and execution
+
+[`lowering::lower`](src/lowering/mod.rs) consumes analyzed HIR and trusted
+`Linkage`; `IrModule::emit` returns verified bytecode, source metadata, entry and
+statistics. Native linkage checks canonical identity, signature, ABI and
+capabilities. Compiler-generated PCs retain the author's source ranges.
+
+- Calls evaluate the callee and actual arguments once in source order. The VM
+  binder runs defaults after argument capture. Literal defaults use
+  `ParameterDefault::Constant`; expression defaults use `Function` with the
+  exact preceding Value/Cell layout and definition captures.
+- Assignments prepare locations left to right, evaluate the RHS once and write
+  in reverse order. Compound assignments retain their original receiver/key,
+  read once before the RHS and write back through that saved location.
+- Fixed collection elements and table key/value expressions evaluate in source
+  order. Spreads capture at their written position. Arrays/tuples supply
+  positional call arguments; own string-keyed table entries supply named ones.
+  Rest receives a fresh outer array of surplus positional values.
+- Optional chains branch to one null result before evaluating skipped keys or
+  arguments. Grouping ends propagation. Same-chain assignment targets reject.
+- Return/leave/throw use shared exception regions and finally cleanup. Finally
+  runs inner to outer; terminal paths omit later construction and writes.
+- Children blocks collect composable host values, ignoring null, through normal
+  block/loop flow. Nested collectors are independent. Helpers inherit NoWait.
+- Ordinary functions, closures, classes, modules, collections, fixed tuple
+  destructuring, scalar/type/OR match arms, host awaits and callbacks execute on
+  the common VM. Array/object/rest structural patterns, destructuring assignment,
+  structural match patterns, native async/generators/threads, delegates/hooks
+  and property-bag tails retain explicit unsupported diagnostics/admission.
+- External fragment bindings require a Value/Cell environment link; lowering
+  rejects an absent link at the source range.
+
+Implementation is split across [`lowering/build`](src/lowering/build),
+[`registers`](src/lowering/registers.rs), [`constants`](src/lowering/constants.rs)
+and [`project`](src/lowering/project.rs). Work and retained/scratch capacity are
+admitted before traversal and allocation; errors retain source spans and stats.
+
+## Checks
 
 ```sh
-cargo fmt -p aside-compiler --check
-cargo clippy -p aside-compiler --all-targets --locked -- -D warnings
-cargo test -p aside-compiler --locked
-cargo test -p aside-compiler --release --locked
+cargo test --locked -p aside-compiler
+cargo clippy --locked -p aside-compiler --all-targets -- -D warnings
 cargo run --locked -p aside-compiler --example check -- path/to/file.aside module
-cargo build -p aside-compiler --example frontend_probe --release --locked
-cargo run --locked -p reel-dev -- compiler-probe frontend parse
-cargo run --locked -p reel-dev -- compiler-probe frontend lex
-cargo run --locked -p reel-dev -- compiler-probe frontend named
+cargo run --locked -p reel-dev -- compiler-probe lowering
 ```
 
-`ASIDE_DUMP_TREE=1` prints the actual CST in the check example. Source diagnostics
-cause exit status 1; source-admission/IO errors return failure.
-
-[tests/guide.rs](tests/guide.rs) uses the named scene registry in
-[guide_scenes.rs](tests/support/guide_scenes.rs) to select each actual module or
-story-body context. It extracts both live guides with line numbers, checks exact
-bilingual Aside source equality, and parses both editions. [tests/frontend.rs](tests/frontend.rs) checks
-tree nesting/ambiguity pairs, malformed literals, Chinese/emoji ranges, recovery,
-every UTF-8 truncation of representative forms, seeded arbitrary input at every
-entry, and deep/flat budget cases. Else-if chains are additionally tested in an isolated
-child process, protecting the test runner from a stack-overflow regression.
-The 100,000-name argument case preserves the first duplicate range using a
-HashMap rather than repeated linear search. Performance evidence is in
-[the fixed frontend measurements](https://github.com/jhq223/reel/blob/f916ffedceb91465633fd549e4db1084c070edf3/crates/aside-compiler/PERFORMANCE.md).
-
-Semantic source use (host/module policy is explicit):
-
-```rust
-use aside_compiler::{analyze, AnalysisOptions, semantic::NoModules};
-let parsed = aside_compiler::parse("fn add(a: int, b: int = 1) -> int { a+b } add(2);")?;
-let result = analyze(&parsed, &AnalysisOptions::default(), &mut NoModules);
-let module = result.into_module().expect("source must have no unresolved diagnostics");
-assert_eq!(module.functions().len(), 1);
-# Ok::<(), aside_compiler::SourceTooLarge>(())
-```
-
-`AnalysisOptions` supplies versioned module identity, real execution context,
-explicit host registrations and lexical enclosing bindings for fragments.
-`ModuleResolver` accepts logical import requests; `MemoryResolver` and
-`analyze_project` support in-memory module fixtures and legal SCC initialization
-plans. The resolver supplies filesystem policy; lowering uses the shared aside-vm bytecode model.
-
-Source checks live in `tests/semantics.rs`, `semantic_modules.rs`,
-`semantic_guides.rs`, `semantic_quirrel.rs`, and `semantic_depth.rs`.
-The same named bilingual scenes are analyzed with actual module/story contexts, explicit
-native symbols, and source enclosing bindings (including capture of story `view`).
-Reviewed Quirrel migrations retain original assertion tokens, source maps, licenses and output:
-
-```sh
-cargo run --locked -p reel-dev -- check
-cargo test -p aside-compiler --test semantic_quirrel -- --nocapture
-```
-
-`quirrel_vm.rs` executes every migration registered in
-[the fixture catalog](tests/fixtures/quirrel/README.md) through bytecode and the
-real VM, normally and with tiny slices interleaved with GC. It checks original
-stdout; `semantic_quirrel.rs` verifies the retained assertion call sites.
-The complete original corpus remains available for further migration.
-[The fixed semantic measurements](https://github.com/jhq223/reel/blob/f916ffedceb91465633fd549e4db1084c070edf3/crates/aside-compiler/SEMANTIC_PERFORMANCE.md) records large-module timing,
-allocation/retained storage, named-signature scaling and bounded diagnostics.
-
-## Source execution
-
-`tests/execution.rs` compiles source, round-trips bytecode, initializes a module
-and runs its entry on the real VM, including tiny slices with interleaved GC.
-It checks arithmetic, shared captures, defaults, finally, prepared index targets,
-members, optional short-circuiting, spread/rest and loops against scalar results.
-Trailing children execute with independent nested collectors, ordinary helper
-functions, and array/tuple `for` loops. Each iteration has its own captured binding.
-Only host values registered for composition are collected; null is ignored,
-declarations and assignments do not contribute children. Shared host fields retain
-identity through collection, calls and later property writes.
-
-```sh
-cargo test --locked -p aside-compiler --test execution
-cargo test --locked -p aside-compiler --test execution --release
-```
-
-Class and module execution have dedicated `classes` and `lowering_modules` tests.
-The remaining Quirrel corpus is tracked separately from this execution matrix.
-
-## Call spread/rest
-
-Expanded calls emit source-order ArgsNew/Push/Named/Spread followed by a
-single Packed Call with no CallDesc names. Calls without spread retain Window.
-Script rest occupies Signature.rest and its proper Parameter slot, preserving
-Cell/default-prefix/capture identity. Rest receives only surplus positional
-arguments as a fresh outer array; its annotation constrains that array, not each
-element. A named argument cannot supply rest. Known invalid spread sources and
-incompatible rest annotations diagnose; unknown sources retain runtime checks.
-See [the contract](LOWERING.md#call-spread-and-rest). Collection spread and
-native function values have their own checks in the source execution matrix.
+[`tests/execution.rs`](tests/execution.rs) executes source and decoded bytecode
+with interleaved GC. Class/module/host-awaitable tests cover their own execution
+boundaries; lowering tests inspect operands, liveness and source maps.
+[Bilingual guide checks](tests/guide.rs) use registered execution contexts.
+[Quirrel fixtures](tests/fixtures/quirrel/README.md) retain original oracles.
