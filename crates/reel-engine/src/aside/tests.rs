@@ -8,6 +8,7 @@ mod buttons;
 mod clock_batches;
 mod component_cost;
 mod conditions;
+mod content_identity;
 mod curves;
 mod dialogue_append;
 mod dialogue_history;
@@ -24,6 +25,7 @@ mod particles;
 mod property_configuration;
 mod result_use;
 mod results;
+mod retired_nodes;
 mod rich_text;
 mod scopes;
 mod snapshots;
@@ -458,7 +460,10 @@ fn effective_no_wait_has_no_history_or_interaction_publication() {
         let (mut s, mut vm) = setup(STORY, context);
         match next(&mut vm, &mut s) {
             RunOutcome::HostCall(ticket) if matches!(context, Context::NoWait | Context::Init) => {
-                assert!(vm.dispatch_narrator(&mut s, ticket, "en").is_err());
+                assert!(
+                    vm.dispatch_narrator(&mut s, ticket, "en", NativeBudget::Exact(32))
+                        .is_err()
+                );
             }
             RunOutcome::Fault(id) if context == Context::Derived => {
                 assert_eq!(
@@ -484,11 +489,21 @@ fn narrator_wait_maps_exact_task_and_resumes_once_across_gc() {
         let RunOutcome::HostCall(ticket) = next(&mut vm, &mut s) else {
             panic!("native ticket")
         };
-        let id = vm.dispatch_narrator(&mut s, ticket, "en").unwrap();
+        let NativeDispatch::Published {
+            interaction: id, ..
+        } = vm
+            .dispatch_narrator(&mut s, ticket, "en", NativeBudget::Exact(32))
+            .unwrap()
+        else {
+            panic!("narrator publication");
+        };
         assert_eq!(vm.pending.as_ref().unwrap().task, ticket.task);
         assert_eq!(vm.pending.as_ref().unwrap().wait, ticket.wait_id());
         assert_eq!(vm.pending.as_ref().unwrap().interaction, id);
-        assert!(vm.dispatch_narrator(&mut s, ticket, "en").is_err());
+        assert!(
+            vm.dispatch_narrator(&mut s, ticket, "en", NativeBudget::Exact(32))
+                .is_err()
+        );
         collect(&mut vm);
         let owner = s.root_owner();
         s.handle_local_input(owner, InputAction::Advance(id))
@@ -505,7 +520,8 @@ fn narrator_wait_maps_exact_task_and_resumes_once_across_gc() {
                 .complete(ticket.wait_id(), VmCompletion::Ready(Value::NULL))
                 .is_err()
         );
-        vm.dispatch_narrator(&mut s, second, "en").unwrap();
+        vm.dispatch_narrator(&mut s, second, "en", NativeBudget::Exact(32))
+            .unwrap();
         assert_eq!(s.view().history.len(), 2);
     }
 }
@@ -592,7 +608,8 @@ fn revoked_wait_never_resumes_and_cleanup_only_is_not_a_result() {
     let RunOutcome::HostCall(ticket) = next(&mut vm, &mut s) else {
         panic!("native ticket")
     };
-    vm.dispatch_narrator(&mut s, ticket, "en").unwrap();
+    vm.dispatch_narrator(&mut s, ticket, "en", NativeBudget::Exact(32))
+        .unwrap();
     vm.revoke(&mut s).unwrap();
     assert!(
         vm.vm

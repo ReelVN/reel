@@ -20,7 +20,8 @@ aside_host::native_documentation! {
     /// Construct an immutable scalar curve from time-ordered keys.
     /// Each key has `time` and `value`; `mode` selects `linear` (default), `step`,
     /// or `cubic`. Cubic keys accept `in_tangent` and `out_tangent` slopes.
-    /// Times must strictly increase. Sampling outside the key range returns the
+    /// Times must be nondecreasing; repeated times keep the last key's value.
+    /// Sampling outside the key range returns the
     /// nearest endpoint. The curve owns its keys and can be shared by tweens.
     ///
     /// ```aside
@@ -52,10 +53,8 @@ pub(super) fn binding() -> NativeBinding<StandardLibrary, NativeError> {
         invoke: |host, vm, ticket| construct(host, vm, ticket, 1).map(|_| ()),
         source_signature: |contract| {
             let mut signature = contract.external().signature.expect("curve signature");
-            signature.result = aside_host::aside_compiler::semantic::TypeHint::Callable(
-                vec![aside_host::source::number()],
-                Box::new(aside_host::aside_compiler::semantic::TypeHint::Float),
-            );
+            signature.result = aside_host::source::named(crate::source::CURVE);
+            signature.parameters[0].ty = crate::source::sequence();
             signature
         },
     }
@@ -140,7 +139,7 @@ fn number(heap: &Heap, keys: Value, index: u32) -> Result<f64, HeapError> {
 }
 
 pub(super) fn construct(
-    host: &mut StandardLibrary,
+    _host: &mut StandardLibrary,
     vm: &mut Vm,
     ticket: HostTicket,
     work: u32,
@@ -250,16 +249,14 @@ pub(super) fn construct(
         used += 1;
     }
     if !pending.same_bits(Value::NULL) && vm.heap().sequence_len(pending)? == 0 {
-        let function = host.curve_sample.ok_or(aside_host::Error::Arguments)?;
         let root = vm.heap().sequence_get(keys, info.len / 2)?;
         let first = vm.heap().sequence_get(keys, 0)?;
         let fields = vm.heap_mut().alloc_table()?;
         let curve = vm
             .heap_mut()
             .alloc_immutable_host(fields, &[Value::int(TAG), root, first])?;
-        let method = vm.bind_native(curve, function)?;
-        let name = vm.heap_mut().alloc_string("sample")?;
-        vm.heap_mut().table_store(fields, 0, name, method)?;
+        let ty = vm.heap().host_type(crate::source::CURVE)?;
+        vm.heap_mut().set_host_type(curve, ty)?;
         vm.respond(ticket, HostResponse::Ready(curve))?;
     } else {
         vm.respond(
@@ -285,8 +282,8 @@ pub(super) fn construct(
 #[native(symbol = "std::math::curve::sample", effects = Effects(0))]
 pub(super) fn sample(
     #[aside(context)] context: &mut CallContext<'_, StandardLibrary>,
-    receiver: Value,
-    time: Value,
+    #[aside(doc_type = aside_host::source::named(crate::source::CURVE))] receiver: Value,
+    #[aside(doc_type = aside_host::source::number())] time: Value,
 ) -> Result<f64, NativeError> {
     let time = finite(time)?;
     Ok(sample_curve(context.vm.heap(), receiver, time)?)

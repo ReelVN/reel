@@ -341,7 +341,9 @@ fn missing_readonly_and_retired_methods_report_language_faults() {
             "let kept=object.read;retire(object);kept()",
             FaultKind::InvalidState,
         ),
-        ("retire(object);object.read", FaultKind::InvalidState),
+        ("retire(object);object.read()", FaultKind::InvalidState),
+        ("retire(object);object.missing", FaultKind::InvalidState),
+        ("retire(object);object.read=1;", FaultKind::InvalidState),
     ] {
         let fixture = fixture(&format!(
             "fn erased(value){{value}} fn main(){{let object=erased(make());{operation}}}"
@@ -364,6 +366,52 @@ fn missing_readonly_and_retired_methods_report_language_faults() {
             drive(&mut vm, main, &fixture, true, false).unwrap_err(),
             expected,
             "{operation}"
+        );
+    }
+}
+
+#[test]
+fn retired_receivers_keep_shared_method_identity_without_exposing_instance_fields() {
+    let fixture = fixture(
+        r#"
+        fn main() {
+            let object=make();
+            let kept=object.identity;
+            retire(object);
+            let cleanup=object.identity;
+            let dynamic=object["identity"];
+            if kept()!=object || cleanup()!=object || dynamic()!=object {throw "retired method receiver";}
+            42
+        }
+    "#,
+    );
+    for encoded in [false, true] {
+        let program = if encoded {
+            bc::VerifiedProgram::decode(
+                &bc::encode(fixture.program.package(), bc::Limits::default()).unwrap(),
+                bc::Limits::default(),
+            )
+            .unwrap()
+        } else {
+            fixture.program.clone()
+        };
+        let mut vm = Vm::load(
+            program,
+            fixture.support.clone(),
+            VmLimits::default(),
+            SessionEpoch(1),
+        )
+        .unwrap();
+        let init = vm
+            .start(fixture.init, &[], RootOwner(1), bc::Context::Init)
+            .unwrap();
+        drive(&mut vm, init, &fixture, true, true).unwrap();
+        let main = vm
+            .start(fixture.main, &[], RootOwner(1), bc::Context::Ordinary)
+            .unwrap();
+        assert_eq!(
+            drive(&mut vm, main, &fixture, true, true).unwrap().as_int(),
+            Some(42)
         );
     }
 }

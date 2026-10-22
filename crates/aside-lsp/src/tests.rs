@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
 use std::{str::FromStr, time::Duration};
 
+mod builtin_methods;
 mod editor_feedback;
 
 fn project_options() -> ServerOptions {

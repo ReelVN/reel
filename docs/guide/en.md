@@ -35,6 +35,8 @@ The extension prefers `reel-lsp` on PATH; the Windows extension package also inc
 
 Built-in nodes share the `Node` type, and concrete nodes retain their own member suggestions. `bind` and `derive` return `Binding`; property hints distinguish the value read from a property from the types it accepts on assignment.
 
+Array, tuple and string methods also provide parameter and return type hints, with F12 opening their shared built-in declarations. Saving a method for later calls preserves its parameter hints and type checks.
+
 Projects start from `main` in `src/main.aside`. check/build/dev/export find the project from the current directory and its ancestors; run executes the built .asb. See the runnable multi-file [author_project](../../examples/author_project/src/main.aside). The title screen can use game.start to enter a fresh story session.
 
 Save this as `src/main.aside` and provide `resources/fonts/body.ttf`. The commands below prepare a local font and run the project.
@@ -176,6 +178,8 @@ settings.wallpaper = "new.png";
 
 `array.sort(compare: null)` stably sorts in place and returns the same array. The default orders numbers (including mixed int/float values) or strings; use a comparator returning a negative, zero or positive int for records. Equal items keep their original order. Comparators cannot wait. Sorting advances within the VM execution budget and commits only after success; an exception, cancellation or modification of the source array leaves the working copy unpublished. See [collections.aside](../../examples/collections/src/main.aside).
 
+Use `items.find(value)` on an array or tuple to find the first equal element's index, or null if absent. Use `items.contains(value)` when you only need to know whether it exists. Both follow `==`, including identity comparison for records. Changing the source array during a search reports ConcurrentModification. See [collections.aside](../../examples/collections/src/main.aside).
+
 ```aside
 let cuts = [180, 20, 90];
 cuts.sort();
@@ -263,7 +267,7 @@ Registered functions can be stored and passed as values, for example `let say = 
 
 Component calls with a trailing children block may omit the ending semicolon when used as standalone statements. A newline after the block ends that statement, so a parenthesized expression on the next line does not continue the previous call. Ordinary calls and property assignments still use semicolons. An explicit semicolon does not change child collection.
 
-Implemented: text, image, row, column, stack and stage.replace use one shared node model. Ordinary functions can return nodes, composed through trailing children blocks, if and for over arrays/tuples. Properties such as value, x/y, width/height, color/background, opacity, visible and clip update the original node while its mounted identity stays unchanged. Replacing the stage retires the old tree. Retained old nodes cannot be read or written afterward, and do not keep the entire old tree alive. See the complete [author-stage example](../../examples/author_stage/src/main.aside).
+Implemented: text, image, row, column, stack and stage.replace use one shared node model. Ordinary functions can return nodes, composed through trailing children blocks, if and for over arrays/tuples. Properties such as value, x/y, width/height, color/background, opacity, visible and clip update the original node while its mounted identity stays unchanged. Replacing the stage retires the old tree and releases its contents; subsequent reads and writes of old node properties report errors. See the complete [author-stage example](../../examples/author_stage/src/main.aside).
 
 Return a component's node with its final expression or `return`. In an ordinary function, `text("Title");` discards the constructed node and produces a compiler error at that call; use the final expression `text("Title")` to return it. Semicolons inside children blocks still collect nodes, and optional components returning null are still omitted. The diagnostic recognizes statically known node constructors and their immutable aliases; dynamic calls and ordinary wrapper functions retain their own return behavior. To deliberately discard a constructor result, write `let _ = text("Title");`.
 
@@ -347,6 +351,8 @@ Animate and position the returned node as a group. The selected layers and depen
 After `use std::math::{sin, cos};`, use `cos(angle) * speed` and `sin(angle) * speed` for a two-dimensional velocity; angle is in radians. The module also provides tan/asin/acos/atan, atan2(y,x), sqrt/hypot(x,y), pow(base,exponent), exp/ln/log2/log10, abs/floor/ceil/round, and radians/degrees. These pure float64 operations work in derive without allocating script objects. round breaks midpoint ties away from zero; invalid mathematical domains produce NaN and overflow may produce Infinity. See [author_math.aside](../../examples/author_math/src/main.aside).
 
 `random` comes from the independent Aside standard library and is imported automatically by Reel; `use std::random;` is also supported. Create streams in main or an event handler; module initialization and derive are effect-restricted. Seeded sequences are reproducible within the same library version.
+
+Random streams have type `std::Random`, and curves have type `std::math::Curve`; use these types for component parameters and fields. The editor completes their actual methods and displays English documentation. An `array | tuple` parameter accepts either sequence, while a concrete type such as `(int, string)` checks a fixed structure.
 
 ### Organizing data and behavior with classes
 
@@ -433,7 +439,7 @@ scene.move(back, index: 1);
 
 See [author_reorder.aside](../../examples/author_reorder/src/main.aside) for overlapping cards that move to the front while their animation continues. Cross-parent moves are not supported.
 
-`node.remove()` removes and retires that node and all descendants, including when called on the stage root. `container.clear()` retires only the children, preserving the container's properties and identity. Both return null. Retirement cancels associated animations and releases the stage's image requests; retired nodes cannot be remounted, read or written. Call your component function again to create another instance. Methods can be stored and passed while retaining their original receiver; a saved remove method can be called repeatedly.
+`node.remove()` removes and retires that node and all descendants, including when called on the stage root. `container.clear()` retires only the children, preserving the container's properties and identity. Both return null. Retirement cancels associated animations and releases the stage's image requests; reading or writing retired properties and remounting retired nodes report errors. Call your component function again to create another instance. Methods can be stored and passed while retaining their original receiver; both `node.remove()` and a saved remove method can be called repeatedly, completing immediately for an already retired node.
 
 ```aside
 fn main() {
@@ -1552,6 +1558,8 @@ stage.replace(column(gap: 12) {
 Use explicit `rich(markup)` for inline styles: `narrator(rich("仰望 [ruby=ほしぞら]星空[/ruby]，[color=#ffd580][b]记住这一刻[/b][/color]。"));`. text, character calls, character.line and narrator accept plain strings or rich text; dialogue models and history retain all styles. Plain strings remain literal. A rich value's read-only `.plain` property returns its body without tags; `.markup` returns the original markup string. Neither read copies the text. Use `rich("[b]姓名：[/b] " + line.text.markup)` to compose a history entry while retaining its styles; escape ordinary strings with `rich_escape`. `model({text: rich("[b]初始内容[/b]")})` works directly as observable state; copying model defaults shares immutable rich values. Runnable example: [author_rich_text.aside](../../examples/author_rich_text/src/main.aside).
 
 `game.dialogue().ready` means the current dialogue group has finished its text and all timing cues, including trailing pauses; it is false without an active dialogue. Each row in `lines` also exposes its own `ready`, which stays true for completed rows. Auto, skip and pause policies do not change this state. For example, a cue can use `visible: derive(|| dialogue.ready && !reading.auto && !reading.skipping && !reading.paused)`, where reading is `game.reading()`. Use ordinary text/image nodes, layout and animation to style the cue without comparing text lengths. See the [sentence timing example](../../examples/author_dialogue_timing/src/main.aside).
+
+Dialogue becomes read after the player advances it. The engine identifies dialogue by its story function call path: separate calls to the same custom dialogue component keep separate read records, while repeating the same path reuses its record. Changing the translation preserves that identity. Data-driven lines at one loop position share its record.
 
 Write sentence timing in rich text too: `[speed=15]慢慢说[/speed]` reveals 15 graphemes per second, `[speed=2x]快一些[/speed]` uses twice the player's speed, `[speed=0]立即出现[/speed]` reveals an immediate segment, and `[pause=0.5]` pauses for half a second at that position. Speed tags can nest; closing one restores its enclosing speed. `[next]` continues after this line finishes and is presented, without changing global auto reading; grouped dialogue requires the marker on every line. Trailing pauses run first. Manual completion, skip, or global text_speed: 0 consumes remaining timing; menus and suspension preserve remaining pauses. Tags are absent from the body, history display and character count; ordinary text controls display the complete body. See [author_dialogue_timing.aside](../../examples/author_dialogue_timing/src/main.aside).
 

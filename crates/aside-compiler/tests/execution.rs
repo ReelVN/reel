@@ -148,6 +148,41 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
         .into();
     let mut cases = vec![
         (
+            r#"class Ordering {fn compare(self,a,b){a-b}}
+                fn main(){let values=[3,1,2];values.sort(compare:Ordering().compare);
+                if values[0]!=1 || values[1]!=2 || values[2]!=3 {throw "callable comparator";}
+                let mut rejected=false;try {values.sort(compare:Ordering());} catch error {rejected=true;}
+                if !rejected {throw "instance without a callable adapter";}42}"#,
+            42,
+        ),
+        (
+            r#"fn main() {
+                let record = {name:"Lucy"};
+                let values = [null, 0, 42, 42.0, "露西", (1, ("中文", record)), record];
+                if values.find(42.0)!=2 || !values.contains(value:42) {throw "numeric equality";}
+                if values.find(false)!=null || values.find(null)!=0 {throw "null or boolean";}
+                if values.find((1.0,("中文",record)))!=5 {throw "tuple equality";}
+                if values.contains({name:"Lucy"}) || values.find(record)!=6 {throw "record identity";}
+                if [].contains(null) || [].find(null)!=null {throw "empty array";}
+                if (1,"two").find("two")!=1 || !(1,"two").contains(1.0) {throw "tuple receiver";}
+                let find = values.find;
+                let contains = values.contains;
+                if find(value:"露西")!=4 || !contains(null) {throw "bound methods";}
+                let nan = (1e308*1e308)-(1e308*1e308);
+                if [nan].contains(nan) || [(nan,)].contains((nan,)) {throw "nan equality";}
+                if [9007199254740993].contains(9007199254740992.0) {throw "exact integer comparison";}
+                let mut rejected=0;
+                fn unknown(value){value}
+                let dynamic=unknown(values);
+                try {dynamic.find();} catch e {rejected+=1;}
+                try {dynamic.contains(other:1);} catch e {rejected+=1;}
+                try {dynamic.find(1,2);} catch e {rejected+=1;}
+                if rejected!=3 {throw "argument contracts";}
+                42
+            }"#,
+            42,
+        ),
+        (
             r#"fn options(flag) {
                 if flag { {accept: [40]} } else { {back: [2]} }
             }
@@ -298,6 +333,8 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
         (
             r#"fn main() {
                 let a=[1,2]; let resize=a.resize;
+                fn unknown(value){value}
+                let dynamic=unknown(a);
                 resize(...{value:8,length:4});
                 if a.len()!=4 || a[3]!=8 {throw "bound builtin";}
                 a.insert(index:1,...{value:3});
@@ -305,9 +342,9 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
                 if !"中文🙂".starts_with(...{prefix:"中文"}) {throw "string builtin";}
                 if !({key:1}).has_own(...{key:"key"}) {throw "table builtin";}
                 let mut caught=0;
-                try {a.resize(...{length:6},...{length:8});} catch e {caught+=1;}
-                try {a.insert(...{value:1},0);} catch e {caught+=1;}
-                try {a.append(...{value:1});} catch e {caught+=1;}
+                try {dynamic.resize(...{length:6},...{length:8});} catch e {caught+=1;}
+                try {dynamic.insert(...{value:1},0);} catch e {caught+=1;}
+                try {dynamic.append(...{value:1});} catch e {caught+=1;}
                 if caught==3 && a.len()==4 {42} else {0}
             }"#,
             42,
@@ -337,19 +374,21 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
         (
             r#"fn main() {
             let s="A中🙂é\0"; let mut caught=0;
-            try {s.slice_bytes(2..4);} catch e {caught+=1;}
-            try {s.slice_bytes(1..2);} catch e {caught+=1;}
-            try {s.slice_bytes(0..13);} catch e {caught+=1;}
-            try {s.slice_scalars(0..7);} catch e {caught+=1;}
-            try {s.slice_scalars(3..2);} catch e {caught+=1;}
-            try {s.slice_bytes(-1..0);} catch e {caught+=1;}
-            try {s.slice_scalars(0..=6);} catch e {caught+=1;}
-            try {s.starts_with(null);} catch e {caught+=1;}
-            try {s.join(["a",1]);} catch e {caught+=1;}
-            try {s.join(null);} catch e {caught+=1;}
-            try {s.starts_with(suffix:"A");} catch e {caught+=1;}
-            try {s.join();} catch e {caught+=1;}
-            try {s.starts_with("A",prefix:"A");} catch e {caught+=1;}
+            fn unknown(value){value}
+            let dynamic=unknown(s);
+            try {dynamic.slice_bytes(2..4);} catch e {caught+=1;}
+            try {dynamic.slice_bytes(1..2);} catch e {caught+=1;}
+            try {dynamic.slice_bytes(0..13);} catch e {caught+=1;}
+            try {dynamic.slice_scalars(0..7);} catch e {caught+=1;}
+            try {dynamic.slice_scalars(3..2);} catch e {caught+=1;}
+            try {dynamic.slice_bytes(-1..0);} catch e {caught+=1;}
+            try {dynamic.slice_scalars(0..=6);} catch e {caught+=1;}
+            try {dynamic.starts_with(null);} catch e {caught+=1;}
+            try {dynamic.join(["a",1]);} catch e {caught+=1;}
+            try {dynamic.join(null);} catch e {caught+=1;}
+            try {dynamic.starts_with(suffix:"A");} catch e {caught+=1;}
+            try {dynamic.join();} catch e {caught+=1;}
+            try {dynamic.starts_with("A",prefix:"A");} catch e {caught+=1;}
             if caught==13 && s=="A中🙂é\0" {42} else {0}
         }"#,
             42,
@@ -378,17 +417,19 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
         (
             r#"fn main() {
             let a=[1,2]; let mut caught=0; let mut evaluated=0;
+            fn unknown(value){value}
+            let dynamic=unknown(a);
             fn effect(){evaluated+=1; 9}
-            try {a.insert(0,index:effect(),value:3);} catch e {caught+=1;}
-            try {a.insert(value:3);} catch e {caught+=1;}
-            try {a.resize(length:3,unknown:effect());} catch e {caught+=1;}
-            try {a.insert(index:3,value:0);} catch e {caught+=1;}
-            try {a.remove(-1);} catch e {caught+=1;}
-            try {a.slice(0..3);} catch e {caught+=1;}
-            try {a.slice(1..0);} catch e {caught+=1;}
-            try {a.extend(null);} catch e {caught+=1;}
+            try {dynamic.insert(0,index:effect(),value:3);} catch e {caught+=1;}
+            try {dynamic.insert(value:3);} catch e {caught+=1;}
+            try {dynamic.resize(length:3,unknown:effect());} catch e {caught+=1;}
+            try {dynamic.insert(index:3,value:0);} catch e {caught+=1;}
+            try {dynamic.remove(-1);} catch e {caught+=1;}
+            try {dynamic.slice(0..3);} catch e {caught+=1;}
+            try {dynamic.slice(1..0);} catch e {caught+=1;}
+            try {dynamic.extend(null);} catch e {caught+=1;}
             try {[].top();} catch e {caught+=1;}
-            try {a.swap(0,7);} catch e {caught+=1;}
+            try {dynamic.swap(0,7);} catch e {caught+=1;}
             if caught==10 && evaluated==2 && a.len()==2 && a[0]==1 && a[1]==2 {42} else {0}
         }"#,
             42,
@@ -606,7 +647,9 @@ fn source_contracts_survive_codec_tiny_slices_and_interleaved_gc() {
             if {separator:?}.join(parts)!={text:?} {{throw "split/join";}}
             parts.append("mutable result");
             let mut rejected=false;
-            try {{split(null);}} catch error {{rejected=true;}}
+            fn unknown(value){{value}}
+            let dynamic=unknown(split);
+            try {{dynamic(null);}} catch error {{rejected=true;}}
             if rejected {{42}} else {{0}}
         }}"#,
             expected.len()

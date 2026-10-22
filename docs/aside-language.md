@@ -87,6 +87,10 @@ CellContract 的 type_id 为 Option<TypeId>：语言绑定保存 Some(包内类�
 
 array 为可变有序序列，索引只接受非负 int，越界报错，不把 float 截断或把负数解释为倒数索引。标准操作包括 len、append、extend、insert、remove、pop、clear、slice、find、稳定 sort、浅 clone 与显式 deep_clone。普通 slice 创建新的外层序列、共享元素引用。
 
+array/tuple 的 `find(value)` 返回首个按 `==` 相等元素的从零开始索引，未找到返回 null；`contains(value)` 返回是否存在相等元素。两者按顺序查找，使用相同的数值、文本、tuple 和对象身份相等规则。查找及嵌套比较按执行预算推进，不复制来源；数组在查找期间发生内容修改时报告 ConcurrentModification。方法可保存后调用，支持 `value:` 具名参数，derive 追踪来源的内容读取。
+
+内置集合与字符串方法的参数、返回类型和英文说明由 VM 声明生成，供编译检查、补全、悬停和定义跳转共同使用。已知 array、tuple 和 string 的方法调用检查具名参数及类型；table 的自有字段优先于同名内置方法，其调用继续按实际字段值解析。
+
 `array.sort(compare: null)` 已实现：稳定升序排序，成功后原子更新原数组并返回它，等序元素保留原有顺序。缺省比较接受 int/float 的精确混合数值顺序或字符串的 UTF-8 字节序；NaN 和无法相互排序的类型报 Type。自定义比较器 `compare(a, b)` 返回负数、零或正数 int，分别表示小于、相等或大于；它沿用普通函数、闭包、绑定方法及 native 调用，处于 NoWait 上下文。排序使用分片归并、线性额外工作空间及 O(n log n) 次比较/元素移动，长字符串比较同样分片。比较器异常、取消或来源数组被修改时不提交工作副本；比较器自身已发生的写入不会回滚。工作游标和正在执行的比较器随 VM 快照恢复，不重放已完成调用。
 
 table 为按插入顺序迭代的动态关联对象；点访问等价于字符串键读取。当前读取检查自有槽；delegate 链与缺失钩子的目标规则见第九节。普通 table 的 = 总在自身插入或覆盖槽，不修改 delegate；覆盖不改变原位置，删除再插入移到末尾。remove 删除自有槽；规划中的 set_existing 要求自有槽存在，define 要求自有槽不存在，raw 操作绕过动态钩子。
@@ -124,6 +128,8 @@ tuple 是浅层不可变值，例中两项保持同一个 array。赋值、传�
 所有元素递归可散列时 tuple 才可作为普通键；长度、顺序与元素 hash 共同参与。可缓存不可变内容的内部 hash，但不得将其当跨进程稳定身份。包含 array、table、instance、closure、Future 或 NaN 时拒绝散列并给出路径。
 
 t[i] 使用从零起的 int 索引，负数及越界报错；t.len() 返回固定长度；slice(range) 返回 tuple；遍历按位置顺序。所有读取和切片继续共享内部对象引用。
+
+`tuple` 类型注解接受任意长度和元素类型的 tuple；`(int, string)` 等结构注解继续检查精确长度与逐项类型。两者都可用于参数、返回值、绑定及 `is`，`array | tuple` 表示接受两种序列。
 
 let (a,b) = value 只匹配 tuple 且默认精确数量；let [a,b] 只匹配 array。当前支持固定 tuple 的嵌套、名称、_ 与类型标记；array 与尾部 ...rest 模式属于规划，tuple rest 是 tuple，array rest 是 array。tuple 不用缺省值补不存在的位置，需可选值时显式返回 null，需可变长度时用 array。
 
@@ -276,7 +282,7 @@ Reel 的 `slider` / `toggle` 是普通宿主构造函数。可写 `value` 保存
 
 当前执行器实现普通 Task、宿主 Awaitable、硬撤销和可恢复等待。下文 async fn、语言 Future/adoption、TaskGroup 与组合等待为规划合同，Reel completion/spawn 是已实现的宿主接口。
 
-独立 `aside-std` 提供 `std` 与 `std::prelude` 模块，宿主通过 Aside host SDK 注册同一份接口与实现；Reel 默认导入该 prelude。首批 `random(seed: null)` 及其 int/float/pick 绑定方法使用普通 native 调用和共享身份，随机状态在 VM 堆中保存。构造有宿主效果，抽取有写入效果，不能用于模块初始化或纯派生表达式；在主函数或事件中创建并保存随机流。没有新增语言语法、VM 指令或 Aside 字节码/ASB 编码，Aside 不依赖 Reel。
+独立 `aside-std` 提供 `std` 与 `std::prelude` 模块，宿主通过 Aside host SDK 注册同一份接口与实现；Reel 默认导入该 prelude。`random(seed: null)` 返回 `std::Random`，提供 `int(min: int, max: int) -> int`、`float() -> float` 和 `pick(items: array | tuple) -> any`；随机状态在 VM 堆中保存。构造有宿主效果，抽取有写入效果，不能用于模块初始化或纯派生表达式。`std::math::curve(keys: array | tuple)` 返回 `std::math::Curve`，其 `sample(time: int | float) -> float` 方法采样曲线。类型与方法声明供编译器、LSP 和执行时共同使用，绑定方法保留原接收者；方法实现按类型共享，快照保存实例状态。
 
 `model(defaults)` 接受已完成构造的实例及其数据图。复制保留类身份、字段契约、内部别名与环，不执行构造或复制类定义；方法读取复制后的接收者。`bind(instance.field)` 解析可观察实例的现有字段 cell；只读字段提供单向引用，可写字段支持双向回写，派生读取记录同一字段依赖。后续替换字段中的对象保留赋入身份并观察其数据子图。所有写入沿共享属性事务验证完整的字段类型和连接控件约束，失败保持原值。正在构造或失败的实例不能进入 model；静态字段和方法闭包不复制进实例数据。
 

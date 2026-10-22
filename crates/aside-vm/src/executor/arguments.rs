@@ -56,7 +56,7 @@ impl ParameterNames {
                     &program.package().signatures[id.index()].parameters[index as usize];
                 &program.package().symbols[parameter.name.index()]
             }
-            Self::Builtin(method) => method.parameters().0[index as usize],
+            Self::Builtin(method) => method.parameters().0[index as usize].name,
         }
     }
 }
@@ -99,7 +99,7 @@ impl Vm {
                     .package()
                     .symbols
                     .get(symbol as usize)
-                    .and_then(|name| method.parameters().0.iter().position(|p| *p == name)),
+                    .and_then(|name| method.parameters().0.iter().position(|p| p.name == name)),
             };
             binding.resolved = position.map(|p| p as u32);
             return Ok(Ready(binding.resolved.ok_or(FaultKind::UnknownArgument)));

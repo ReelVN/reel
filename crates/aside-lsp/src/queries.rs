@@ -711,12 +711,15 @@ fn call_at(module: EditorModule<'_>, offset: usize) -> Option<(NodeId, Option<No
         })
 }
 fn member_base(snapshot: &Snapshot, module: EditorModule<'_>, offset: usize) -> Option<NodeId> {
-    let token = snapshot
+    let mut token = snapshot
         .source()
         .parsed
         .syntax()
         .token_at_offset(TextSize::from(offset as u32))
         .left_biased()?;
+    while token.kind().is_trivia() {
+        token = token.prev_token()?;
+    }
     let member = token
         .parent_ancestors()
         .find(|node| node.kind() == K::MemberExpr)?;
@@ -1569,6 +1572,21 @@ impl Workspace {
                         })
                         .collect());
                 }
+            }
+            if let Some(group) = builtin_members(
+                module.hir(),
+                module.types(),
+                module.facts()[base.0 as usize].ty,
+            ) {
+                return Ok(group
+                    .members
+                    .iter()
+                    .map(|member| {
+                        let mut item = completion(&member.symbol, &snapshot, &self.host);
+                        item.kind = Some(CompletionItemKind::METHOD);
+                        item
+                    })
+                    .collect());
             }
         }
         let mut items: Vec<_> = visible(module, offset)

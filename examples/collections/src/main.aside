@@ -7,6 +7,7 @@ fn main() {
         { ...base, message: "数组组合顺序，表组合内容。", y: 132 },
     ];
     captions.sort(compare: |a, b| a.y - b.y);
+    let opening_index = captions.find(base);
     captions[1].remove("color");
     stage.replace(
         stack() {
@@ -18,5 +19,5 @@ fn main() {
             }
         }
     );
-    narrator(f"{captions.len()} 句文字，共用一份布局起点。");
+    narrator(f"{captions.len()} 句文字，起点位于索引 {opening_index}。");
 }

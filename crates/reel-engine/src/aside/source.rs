@@ -259,6 +259,7 @@ fn build_api() -> Api {
             .collect(),
         ..Default::default()
     };
+    aside_std::describe(&mut api);
     super::stage::source::describe(&mut api);
     super::dialogue::describe(&mut api);
     super::results::describe(&mut api);
@@ -424,11 +425,23 @@ fn build_api() -> Api {
             .push(symbol);
     }
     for (canonical_path, exports) in type_modules {
-        resolver.insert(ModuleInterface {
-            canonical_path,
-            version: "1".into(),
-            exports,
-        });
+        if let Some(module) = resolver.modules.get_mut(&canonical_path) {
+            for symbol in exports {
+                if !module
+                    .exports
+                    .iter()
+                    .any(|existing| existing.name == symbol.name)
+                {
+                    module.exports.push(symbol);
+                }
+            }
+        } else {
+            resolver.insert(ModuleInterface {
+                canonical_path,
+                version: "1".into(),
+                exports,
+            });
+        }
     }
     for symbol in prelude.iter_mut().chain(
         resolver

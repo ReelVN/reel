@@ -19,17 +19,7 @@ impl Vm {
         effects: Effects,
         ret: ReturnTo,
     ) -> Result<NativeSite, VmError> {
-        let caller = match ret {
-            ReturnTo::Delivery => None,
-            ReturnTo::Register { frame, call, .. }
-            | ReturnTo::Default { frame, call, .. }
-            | ReturnTo::Class { frame, call }
-            | ReturnTo::Sort { frame, call }
-            | ReturnTo::ReactiveRead { frame, call } => Some((frame, Some(call))),
-            ReturnTo::Native { frame } | ReturnTo::NativeDefault { frame, .. } => {
-                Some((frame, None))
-            }
-        };
+        let caller = ret.caller();
         let (module, location) = if let Some((frame, call)) = caller {
             match self.active.frames.data[self.index(frame)?] {
                 Frame::Script(s) => (s.module, self.loc(s, call.unwrap_or(s.pc))),

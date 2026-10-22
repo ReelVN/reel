@@ -1,5 +1,7 @@
 //! Character values and grouped ADV dialogue use the existing session wait.
-use super::{AdapterError, NativeDispatch, PendingInteractionKind, SessionVm, rich_text, text};
+use super::{
+    AdapterError, NativeBudget, NativeDispatch, PendingInteractionKind, SessionVm, rich_text, text,
+};
 use crate::{DialogueLineInput, HistoryInput, Session};
 use aside_vm::bytecode::{FunctionId, FunctionKind};
 use aside_vm::executor::{
@@ -183,6 +185,7 @@ impl SessionVm {
         session: &mut Session,
         ticket: HostTicket,
         command: SpeechCommand,
+        budget: NativeBudget,
     ) -> Result<NativeDispatch, AdapterError> {
         if matches!(ticket.input, NativeInput::WaitingFault) {
             let fault = self.vm.host_callback_fault(ticket)?.unwrap();
@@ -192,6 +195,21 @@ impl SessionVm {
             return Ok(NativeDispatch::Ready { work: 1 });
         }
         self.check_story_wait(session, ticket)?;
+        let identity = if matches!(ticket.input, NativeInput::Entry)
+            && matches!(command, SpeechCommand::Append)
+        {
+            match self.prepare_content_id(ticket, budget)? {
+                super::content_identity::Preparation::Ready { id, work } => Some((id, work)),
+                super::content_identity::Preparation::BudgetYield { required_work } => {
+                    return Ok(NativeDispatch::BudgetYield {
+                        work: 0,
+                        required_work,
+                    });
+                }
+            }
+        } else {
+            None
+        };
         let args = self.vm.host_arguments(ticket)?;
         let heap = self.vm.heap();
         if heap.host_payload_len(args[0])? != 1 {
@@ -225,8 +243,8 @@ impl SessionVm {
             if matches!(command, SpeechCommand::Append) {
                 let text = rich_text::read(heap, args[1], self.read_limit)?;
                 let history = HistoryText::read(heap, args[2], self.read_limit)?;
-                let content_id = self.dialogue_content_id(ticket);
-                session.append_dialogue(self.owner, id, &text, &content_id, history.input())?;
+                let content_id = &identity.as_ref().expect("append identity admitted").0;
+                session.append_dialogue(self.owner, id, &text, content_id, history.input())?;
                 self.sync_narrative(session)?;
             }
             if !wait {
@@ -245,7 +263,9 @@ impl SessionVm {
                 )?;
             }
             self.issued = None;
-            return Ok(NativeDispatch::Ready { work: 1 });
+            return Ok(NativeDispatch::Ready {
+                work: identity.map_or(1, |(_, work)| work),
+            });
         }
         if !matches!(ticket.input, NativeInput::Continue { .. }) {
             return Err(AdapterError::Input("invalid speech continuation"));
@@ -313,7 +333,17 @@ impl SessionVm {
         session: &mut Session,
         ticket: HostTicket,
         locale: &str,
-    ) -> Result<(), AdapterError> {
+        budget: NativeBudget,
+    ) -> Result<NativeDispatch, AdapterError> {
+        let (content_id, work) = match self.prepare_content_id(ticket, budget)? {
+            super::content_identity::Preparation::Ready { id, work } => (id, work),
+            super::content_identity::Preparation::BudgetYield { required_work } => {
+                return Ok(NativeDispatch::BudgetYield {
+                    work: 0,
+                    required_work,
+                });
+            }
+        };
         let args = self.vm.host_arguments(ticket)?;
         let text = rich_text::read(self.vm.heap(), args[0], self.read_limit)?;
         let speaker = if args[1].tag() == ValueTag::Null {
@@ -326,7 +356,6 @@ impl SessionVm {
             ))
         };
         let locale = self.locale().unwrap_or_else(|| locale.into());
-        let content_id = self.dialogue_content_id(ticket);
         let record = session.prepare_history_record(
             &[DialogueLineInput {
                 speaker_id: speaker.as_ref().map(|s| s.0.as_str()),
@@ -343,7 +372,7 @@ impl SessionVm {
         self.sync_narrative(session)?;
         self.vm.respond(ticket, HostResponse::Ready(Value::NULL))?;
         self.issued = None;
-        Ok(())
+        Ok(NativeDispatch::Ready { work })
     }
 
     pub(super) fn character(&mut self, ticket: HostTicket) -> Result<(), AdapterError> {
@@ -417,8 +446,18 @@ impl SessionVm {
         session: &mut Session,
         ticket: HostTicket,
         locale: &str,
+        budget: NativeBudget,
     ) -> Result<NativeDispatch, AdapterError> {
         self.check_story_wait(session, ticket)?;
+        let (content_id, work) = match self.prepare_content_id(ticket, budget)? {
+            super::content_identity::Preparation::Ready { id, work } => (id, work),
+            super::content_identity::Preparation::BudgetYield { required_work } => {
+                return Ok(NativeDispatch::BudgetYield {
+                    work: 0,
+                    required_work,
+                });
+            }
+        };
         let args = self.vm.host_arguments(ticket)?;
         let [id, name] = character_values(self.vm.heap(), args[0])?;
         let read = |value| text::read_string(self.vm.heap(), value, self.read_limit);
@@ -431,7 +470,6 @@ impl SessionVm {
         let wait = args[4]
             .as_bool()
             .ok_or(AdapterError::Input("wait must be bool"))?;
-        let content_id = self.dialogue_content_id(ticket);
         let interaction = self.publish_say(
             session,
             ticket,
@@ -446,10 +484,7 @@ impl SessionVm {
             reveal_skippable,
             wait,
         )?;
-        Ok(NativeDispatch::Published {
-            interaction,
-            work: 1,
-        })
+        Ok(NativeDispatch::Published { interaction, work })
     }
 
     pub(super) fn dispatch_say(
@@ -457,9 +492,20 @@ impl SessionVm {
         session: &mut Session,
         ticket: HostTicket,
         locale: &str,
-        budget: u32,
+        budget: NativeBudget,
     ) -> Result<NativeDispatch, AdapterError> {
         self.check_story_wait(session, ticket)?;
+        // Reserve the path hash before decoding. Even an already complete
+        // reader is retained unchanged when the caller supplies too little work.
+        let identity_work = self.content_id_required_work(ticket)?;
+        let required_work = identity_work.saturating_add(1);
+        let budget = budget.with_minimum(required_work);
+        if budget < required_work {
+            return Ok(NativeDispatch::BudgetYield {
+                work: 0,
+                required_work,
+            });
+        }
         let reveal_skippable = self.vm.host_arguments(ticket)?[1]
             .as_bool()
             .ok_or(AdapterError::Input("reveal_skippable must be bool"))?;
@@ -472,13 +518,19 @@ impl SessionVm {
             let lines = self.vm.host_arguments(ticket)?[0];
             DialogueReader::new(self.vm.heap_mut(), lines, self.root_owner)?
         };
-        match reader.step(self.vm.heap_mut(), budget, self.read_limit) {
+        match reader.step(self.vm.heap_mut(), budget - identity_work, self.read_limit) {
             Ok((false, work)) => {
                 self.dialogue_reader = Some(reader);
                 Ok(NativeDispatch::Decoding { work })
             }
             Ok((true, work)) => {
-                let base = self.dialogue_content_id(ticket);
+                let super::content_identity::Preparation::Ready {
+                    id: base,
+                    work: id_work,
+                } = self.prepare_content_id(ticket, NativeBudget::Exact(identity_work))?
+                else {
+                    unreachable!("the unchanged caller path was admitted before decoding");
+                };
                 let ids: Vec<_> = (0..reader.rows.len())
                     .map(|i| format!("{base}:line{i}"))
                     .collect();
@@ -497,7 +549,10 @@ impl SessionVm {
                 let result =
                     self.publish_say(session, ticket, &inputs, locale, reveal_skippable, wait);
                 reader.release(self.vm.heap_mut())?;
-                result.map(|interaction| NativeDispatch::Published { interaction, work })
+                result.map(|interaction| NativeDispatch::Published {
+                    interaction,
+                    work: work + id_work,
+                })
             }
             Err(error) => {
                 reader.release(self.vm.heap_mut())?;

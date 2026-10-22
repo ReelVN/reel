@@ -275,3 +275,66 @@ fn node_with_chain_retains_the_actual_text_subtype_and_property_schema() {
     );
     server.stop();
 }
+
+#[test]
+fn standard_random_and_curve_types_offer_real_method_signatures_and_navigation() {
+    let source = r#"use std::{random, Random};
+use std::math::{curve, Curve};
+fn draw(value: Random) -> int { value.int(min: 0, max: 10) }
+fn sample(value: Curve) -> float { value.sample(time: 0.25) }
+fn main() {
+    let rng: Random = random(seed: 42);
+    let number = rng.float();
+    let item = rng.pick(items: (1, 2));
+    let path: Curve = curve([{time: 0, value: 0}, {time: 1, value: 10}]);
+    path.sample(0.5);
+}"#;
+    let (mut server, initialized) = open(source);
+    let mut id = 2;
+    for (expression, method, result) in [
+        ("int(min:", "int", "int"),
+        ("float();", "float", "float"),
+        ("pick(items:", "pick", "any"),
+        ("sample(time:", "sample", "float"),
+    ] {
+        assert_method(&mut server, &mut id, source, expression, method, result);
+    }
+    for (expression, names) in [
+        ("rng.", &["int", "float", "pick"][..]),
+        ("path.", &["sample"][..]),
+    ] {
+        let items = server.request(
+            id,
+            "textDocument/completion",
+            query(source, expression, true),
+        );
+        id += 1;
+        for name in names {
+            assert!(
+                items
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|item| item["label"] == *name && item["kind"] == 2),
+                "{expression}: {items}"
+            );
+        }
+    }
+    let hover = server.request(
+        id,
+        "textDocument/hover",
+        query(source, "pick(items:", false),
+    );
+    id += 1;
+    let markdown = hover["contents"]["value"].as_str().unwrap();
+    assert!(markdown.contains("items: array | tuple"), "{markdown}");
+    let tokens = server.request(
+        id,
+        "textDocument/semanticTokens/full",
+        json!({"textDocument":{"uri":URI}}),
+    );
+    for expression in ["int(min:", "float();", "pick(items:", "sample(time:"] {
+        assert_method_token(&tokens, &initialized, source, expression);
+    }
+    server.stop();
+}

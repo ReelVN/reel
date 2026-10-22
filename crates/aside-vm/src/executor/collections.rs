@@ -7,6 +7,75 @@ mod spread;
 pub(super) use spread::{CaptureKind, SpreadCapture, TableFinish, TableSpread};
 
 impl Vm {
+    pub(super) fn start_host_method(
+        &mut self,
+        frame: &mut ScriptFrame,
+        object: Reg,
+        dest: Reg,
+        key: Value,
+    ) -> Result<(), FaultKind> {
+        self.put(frame.env, 2, key).map_err(vm_fault)?;
+        frame.phase = ScriptPhase::HostMethod { object, dest };
+        Ok(())
+    }
+
+    pub(super) fn host_method_step(
+        &mut self,
+        frame: &mut ScriptFrame,
+        object: Reg,
+        dest: Reg,
+        meter: &mut Meter,
+    ) -> Result<bool, VmError> {
+        let host = self.value(frame.regs, object.0)?;
+        let key = self.value(frame.env, 2)?;
+        let bytes = if key.tag() == ValueTag::Object {
+            self.heap.info(key)?.len
+        } else {
+            0
+        };
+        let lookup = 1 + self.type_checks.symbol_work(bytes) + self.heap.host_method_work(host)?;
+        if !meter.admits(0, lookup, 0) {
+            return Ok(false);
+        }
+        let function = match self.shared_host_method(host, key) {
+            Ok(Some(function)) => function,
+            result => {
+                assert!(meter.take(0, lookup, 0));
+                let kind = match result {
+                    Err(error) => heap_fault(error),
+                    _ => FaultKind::InvalidState,
+                };
+                self.collection_fault(frame, kind)?;
+                return Ok(true);
+            }
+        };
+        let signature = self.program.package().functions[function.index()].signature;
+        let receiver = self.program.package().signatures[signature.index()].parameters[0].ty;
+        if !meter.take(
+            0,
+            lookup + 4 + self.type_checks.extra(receiver),
+            Values::allocation_bytes(4),
+        ) {
+            meter.usage.work += lookup;
+            return Ok(false);
+        }
+        let result = if frame.effects.0 & Effects::ALLOCATE == 0 {
+            Err(FaultKind::Effect)
+        } else {
+            self.bind_native(host, function).map_err(vm_fault)
+        };
+        match result {
+            Ok(value) => {
+                self.put(frame.regs, dest.0, value)?;
+                self.clear(frame.env, 2)?;
+                frame.pc.0 += 1;
+                frame.phase = ScriptPhase::Body;
+            }
+            Err(kind) => self.collection_fault(frame, kind)?,
+        }
+        Ok(true)
+    }
+
     pub(super) fn concat_step(
         &mut self,
         s: &mut ScriptFrame,

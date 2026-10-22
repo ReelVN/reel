@@ -1,3 +1,4 @@
+mod support;
 use aside_host::{aside_compiler, aside_vm};
 use aside_vm::{RootOwner, SessionEpoch, bytecode as bc, executor::*};
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
@@ -38,16 +39,20 @@ fn independent_curves_construct_and_sample_without_native_allocations() {
         }}"#
         );
         let contracts = aside_std::contracts();
-        let mut resolver = aside_compiler::semantic::MemoryResolver::default();
-        for module in aside_std::modules() {
-            resolver.insert(module);
-        }
+        let mut resolver = support::resolver();
         let module = aside_compiler::analyze_module(&source, &Default::default(), &mut resolver)
             .unwrap()
             .into_module()
             .unwrap();
-        let compiled =
-            aside_host::lower(&module, &contracts, &[], &[], &[], Default::default()).unwrap();
+        let compiled = aside_host::lower(
+            &module,
+            &contracts,
+            &aside_std::api().functions,
+            aside_std::types(),
+            &[],
+            Default::default(),
+        )
+        .unwrap();
         let initializer = compiled.entry;
         let bytes = bc::encode(compiled.program.package(), bc::Limits::default()).unwrap();
         let program = bc::VerifiedProgram::decode(&bytes, bc::Limits::default()).unwrap();
@@ -63,7 +68,8 @@ fn independent_curves_construct_and_sample_without_native_allocations() {
         };
         let main = function("main");
         let samples = function("samples");
-        let support = aside_host::runtime_support(&program, &contracts, &[], &[]).unwrap();
+        let support =
+            aside_host::runtime_support(&program, &contracts, aside_std::types(), &[]).unwrap();
         let mut library = aside_std::StandardLibrary::new(&program);
         let mut vm = Vm::load(program, support, VmLimits::default(), SessionEpoch(1)).unwrap();
         let init = vm
