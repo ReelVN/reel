@@ -10,11 +10,15 @@ impl StageView {
         fn visit(
             node: &SceneNode,
             visible: bool,
+            enabled: bool,
+            has_parent: bool,
             in_list: bool,
             found: &mut bool,
             images: &BTreeMap<String, ResourceLease>,
         ) -> bool {
-            let visible = visible && node.node.props.visible;
+            let visible = node.image_visible(visible, enabled, has_parent);
+            let enabled =
+                enabled && node.node.props.enabled && !matches!(node.node.kind, NodeKind::Cursor);
             let in_list = in_list || matches!(node.node.kind, NodeKind::VirtualList(_));
             *found |= matches!(node.node.kind, NodeKind::VirtualList(_));
             if visible {
@@ -37,12 +41,12 @@ impl StageView {
             }
             node.children
                 .iter()
-                .all(|child| visit(child, visible, in_list, found, images))
+                .all(|child| visit(child, visible, enabled, true, in_list, found, images))
         }
         let mut found = false;
         self.root
             .as_ref()
-            .is_some_and(|root| visit(root, true, false, &mut found, images))
+            .is_some_and(|root| visit(root, true, true, false, false, &mut found, images))
             && found
     }
 }
@@ -148,8 +152,7 @@ impl StageWidget {
                     return false;
                 }
             }
-            node.children
-                .iter()
+            node.physical_children()
                 .all(|child| visit(stage, root, child, geometry, images))
         }
         candidate

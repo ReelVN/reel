@@ -86,6 +86,8 @@ pub(crate) struct RenderRootState {
     pub(crate) input_geometry_source: super::InputGeometrySource,
     pub(crate) max_input_path: usize,
     pub(crate) pointer_route: Vec<WidgetId>,
+    pub(crate) input_layers: Vec<WidgetId>,
+    pub(crate) input_layer_order_dirty: bool,
     pub(crate) pointer_hover_spare: Vec<WidgetId>,
     pub(crate) pointer_active_spare: Vec<WidgetId>,
 
@@ -354,6 +356,8 @@ impl RenderRoot {
                 input_geometry_source: super::InputGeometrySource::Live,
                 max_input_path: 128,
                 pointer_route: Vec::with_capacity(128),
+                input_layers: Vec::new(),
+                input_layer_order_dirty: false,
                 pointer_hover_spare: Vec::with_capacity(128),
                 pointer_active_spare: Vec::with_capacity(128),
                 focused_widget: None,
@@ -870,6 +874,17 @@ impl RenderRoot {
             LayerStack::reposition_layer(&mut layer_stack, root_id, new_origin);
         });
 
+        self.run_rewrite_passes();
+    }
+
+    /// Move a mounted overlay within painter order while retaining its widgets,
+    /// focus and editing state. The base layer occupies index zero and cannot move.
+    /// Accepted frames retain their original ordering until replaced.
+    pub fn move_layer(&mut self, root_id: WidgetId, index: usize) {
+        mutate_widget(self, self.root_id(), |mut stack| {
+            let mut stack = stack.downcast::<LayerStack>();
+            LayerStack::move_layer(&mut stack, root_id, index);
+        });
         self.run_rewrite_passes();
     }
 

@@ -113,6 +113,7 @@ pub struct PresentedGeometryView {
     records: Vec<GeometryRecord>,
     children: Vec<usize>,
     ids: Vec<(WidgetId, usize)>,
+    input_layers: Vec<WidgetId>,
     scale_factor: f64,
     root: usize,
     modal_scope: Option<WidgetId>,
@@ -143,6 +144,7 @@ impl PresentedGeometryView {
             + self.records.capacity() * size_of::<GeometryRecord>()
             + self.children.capacity() * size_of::<usize>()
             + self.ids.capacity() * size_of::<(WidgetId, usize)>()
+            + self.input_layers.capacity() * size_of::<WidgetId>()
     }
     /// Peak explicit traversal stack and temporary child-ID heap storage during export.
     pub fn scratch_peak_bytes(&self) -> usize {
@@ -155,6 +157,9 @@ impl PresentedGeometryView {
     /// Root identity.
     pub(crate) fn navigation_ids(&self) -> impl Iterator<Item = WidgetId> + '_ {
         self.records.iter().map(|record| record.id)
+    }
+    pub(crate) fn input_layers(&self) -> &[WidgetId] {
+        &self.input_layers
     }
     pub fn root_id(&self) -> WidgetId {
         self.records[self.root].id
@@ -428,8 +433,16 @@ impl RenderRoot {
             depth: usize,
         }
         let registered = self.widget_arena.nodes.len();
-        let snapshot_bytes =
-            PresentedGeometryView::bytes_for_nodes(registered).ok_or(GeometryError::Bytes)?;
+        let snapshot_bytes = PresentedGeometryView::bytes_for_nodes(registered)
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    self.global_state
+                        .input_layers
+                        .len()
+                        .checked_mul(size_of::<WidgetId>())?,
+                )
+            })
+            .ok_or(GeometryError::Bytes)?;
         let stack_bytes = registered
             .checked_mul(size_of::<Visit<'_>>())
             .ok_or(GeometryError::Bytes)?;
@@ -443,6 +456,7 @@ impl RenderRoot {
             records: Vec::with_capacity(registered),
             children: Vec::with_capacity(registered - 1),
             ids: Vec::with_capacity(registered),
+            input_layers: self.global_state.input_layers.clone(),
             scale_factor: self.global_state.scale_factor,
             root: 0,
             modal_scope: None,
@@ -672,7 +686,7 @@ impl RenderRoot {
     }
 }
 impl PresentedGeometryView {
-    /// Exact requested vector storage plus header for n nodes.
+    /// Requested node/index storage plus header, before registered layer IDs.
     pub fn bytes_for_nodes(n: usize) -> Option<usize> {
         n.checked_mul(size_of::<GeometryRecord>() + size_of::<(WidgetId, usize)>())?
             .checked_add(n.saturating_sub(1).checked_mul(size_of::<usize>())?)?

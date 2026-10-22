@@ -24,6 +24,7 @@ pub(super) const NODE_CONSTRUCTORS: &[(&str, &str)] = &[
     ("checkbox", "reel::types::ToggleNode"),
     ("radio", "reel::types::RadioNode"),
     ("scroll", "reel::types::ScrollNode"),
+    ("popup", "reel::types::PopupNode"),
     ("camera", "reel::types::CameraNode"),
 ];
 
@@ -49,6 +50,7 @@ pub(super) fn node_prefix(symbol: &str) -> &'static [&'static str] {
         "reel::grid" => super::stage::flow::GridField::NAMES,
         "reel::camera" => super::stage::camera::CameraField::NAMES,
         "reel::scroll" => super::stage::scroll::ScrollField::NAMES,
+        "reel::popup" => super::stage::popup::PopupField::NAMES,
         "reel::text" => super::stage::appearance::TextField::NAMES,
         "reel::text_input" | "reel::text_area" => super::stage::text_input::TextInputField::NAMES,
         "reel::particles" => super::particles::PREFIX,
@@ -270,6 +272,12 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                     .iter()
                     .map(|p| p.parameter()),
             );
+        } else if name == "popup" {
+            parameters.extend(
+                super::stage::popup::PopupField::PROPERTIES
+                    .iter()
+                    .map(|p| p.parameter()),
+            );
         } else if name == "input" {
             parameters.extend(
                 super::stage::input::InputField::PROPERTIES
@@ -312,6 +320,13 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             }
         }
         parameters.extend(NodeProperty::PROPERTIES.iter().map(|p| p.parameter()));
+        if name == "popup" {
+            parameters
+                .iter_mut()
+                .find(|p| p.name == "modal")
+                .unwrap()
+                .default = Some(bc::Const::Bool(true));
+        }
         if name == "camera" {
             parameters
                 .iter_mut()
@@ -339,6 +354,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 | "checkbox"
                 | "radio"
                 | "scroll"
+                | "popup"
                 | "camera"
         ) {
             parameters.push(NativeParameter {

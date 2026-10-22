@@ -230,6 +230,25 @@ impl SessionVm {
         })
     }
 
+    /// Route a presented popup's close request through its normal node lifetime.
+    pub fn dismiss_popup(
+        &mut self,
+        session: &mut Session,
+        input: &reel_ui::stage::NodePopupDismiss,
+    ) -> Result<bool, AdapterError> {
+        self.live(session)?;
+        let Some((target, callback)) = self.stage.dismiss_popup(self.vm.heap(), input.node)? else {
+            return Ok(false);
+        };
+        self.start_callback_with_event(session, input.node, callback, |heap| {
+            let reason = heap.alloc_string(match input.reason {
+                reel_ui::widgets::PopupDismiss::Outside => "outside",
+                reel_ui::widgets::PopupDismiss::Back => "back",
+            })?;
+            super::observable::record(heap, &[("target", target), ("reason", reason)], &[])
+        })
+    }
+
     pub fn text_link(
         &mut self,
         session: &mut Session,

@@ -6,6 +6,7 @@
 mod cursor;
 mod input_scope;
 mod layer_stack;
+pub use layer_stack::LayerStack;
 mod pointer;
 mod presented_geometry;
 pub(crate) use presented_geometry::{ContextGeometry, GeometryRef, GeometryView};
@@ -26,3 +27,6 @@ pub use visual_layers::{
 };
 
 pub(crate) use render_root::{MutateCallback, RenderRootState};
+
+#[cfg(test)]
+mod nested_layer_tests;

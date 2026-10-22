@@ -252,15 +252,8 @@ pub(crate) fn run_on_pointer_event_with_view(
     }
 
     let layer_ids: smallvec::SmallVec<[WidgetId; 16]> = match view {
-        GeometryView::Live => root
-            .widget_arena
-            .get_node(root.root_id())
-            .item
-            .widget
-            .children_ids()
-            .into_iter()
-            .collect(),
-        GeometryView::Presented(Some(v)) => v.child_ids(0).collect(),
+        GeometryView::Live => root.global_state.input_layers.iter().copied().collect(),
+        GeometryView::Presented(Some(v)) => v.input_layers().iter().copied().collect(),
         GeometryView::Presented(None) => smallvec::SmallVec::new(),
     };
     for layer_id in layer_ids {

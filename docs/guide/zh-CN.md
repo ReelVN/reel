@@ -997,6 +997,19 @@ fn main() {
 
 进入菜单会选择其中可用的焦点，Tab/Shift-Tab 在菜单内循环；嵌套菜单关闭时恢复上一层焦点，关闭最后一层后恢复原控件仍有效的焦点。输入范围在新画面实际呈现后切换，并取消范围外的拖动。完整示例见 [author_modal.aside](../../examples/author_modal/src/main.aside)，可用第一节的 dev/build/run 命令运行。
 
+`popup` 把普通内容浮在父节点旁边，适合下拉菜单、选项面板和提示。它默认使用模态输入；定位随父节点布局，空间不足时翻转并限制在视口内，长内容可组合 scroll 和虚拟 list。关闭事件提供 target 和 reason（outside/back），选择值由菜单内的控件决定。隐藏、禁用或移除祖先会撤下浮层；父级布局不为它留空间。透明度、遮罩和变换由浮层自身及其内容设置；祖先的裁剪与合成效果留在下层画面。
+
+```aside
+trigger.add(popup(placement: "bottom-start", offset: 4,
+    on_dismiss: |event| event.target.remove()) {
+    column(width: 200, gap: 8, padding: 12) {
+        text("Choose a reading speed");
+        button("Slow", on_click: || { preferences.speed = 20; });
+        button("Fast", on_click: || { preferences.speed = 50; });
+    }
+});
+```
+
 键盘激活需要在同一个按钮上按下并松开 Enter 或空格；切换焦点、隐藏、禁用或窗口失焦会取消未完成的按键。
 
 ```aside
@@ -1303,7 +1316,7 @@ stage.transition(target: scene, duration: 0.6, change: || {
 });
 ```
 
-省略 target 可在 change 中用 stage.replace 更换整个逻辑舞台。指定 target 时保留节点本身，修改属性或子节点。image 可以直接更新 source，text 可以直接更新 value；游标仍按窗口独立呈现。默认淡化；mask 接受下文的图像路径或组合表达式，mask_softness、mask_invert、mask_x/y 沿已有规则，easing 使用 tween 的内置具名曲线，转场进度始终夹在 0..1；弹性超调仍等到 duration 结束。图像路径按进度推进阈值；组合表达式通过 mask.param("progress") 表达随时间变化的覆盖率。duration 为零直接换景并等待呈现。图片和字体准备好后才开始计时。
+省略 target 可在 change 中用 stage.replace 更换整个逻辑舞台，浮层也一起过渡。指定 target 时保留节点本身，修改属性或子节点，转场范围限于它所在的呈现层；浮层单独作为 target 可独立过渡。image 可以直接更新 source，text 可以直接更新 value；游标仍按窗口独立呈现。默认淡化；mask 接受下文的图像路径或组合表达式，mask_softness、mask_invert、mask_x/y 沿已有规则，easing 使用 tween 的内置具名曲线，转场进度始终夹在 0..1；弹性超调仍等到 duration 结束。图像路径按进度推进阈值；组合表达式通过 mask.param("progress") 表达随时间变化的覆盖率。duration 为零直接换景并等待呈现。图片和字体准备好后才开始计时。
 
 转场会保留实际粒子、文字和视频画面，作者负责构造新内容。目标的输入暂停到最终画面接受，外部菜单继续工作；change 可以等待，交互等待放在转场返回后。互不重叠的子树可同时过渡；相同或相互包含的目标会报告冲突。取消解除过渡并显示当前舞台，已经执行的 change 写入保留。播放中存档恢复旧画面和进度，继续原调用。
 

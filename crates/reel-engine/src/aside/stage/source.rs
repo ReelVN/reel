@@ -38,6 +38,7 @@ pub(in crate::aside) fn properties(symbol: &str) -> Vec<PropertyDocumentation> {
         "reel::grid" => schema::<flow::GridField>(),
         "reel::camera" => schema::<camera::CameraField>(),
         "reel::scroll" => schema::<scroll::ScrollField>(),
+        "reel::popup" => schema::<popup::PopupField>(),
         "reel::input" => schema::<input::InputField>(),
         "reel::slider" => schema::<controls::SliderField>(),
         "reel::toggle" | "reel::checkbox" => schema::<controls::ToggleField>(),

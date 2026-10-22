@@ -217,7 +217,7 @@ reel-ui 的交互分发层是唯一控件输入入口。它使用冻结的 Prese
 
 ### 保留画面的舞台转场
 
-`stage.transition(change:, target:null, duration:0.3, easing:"linear", mask:null, mask_softness:0.06, mask_invert:false, mask_x:0, mask_y:0, owner:null)` 在当前任务执行完整转场并返回零参数 change 回调的原返回值，调用本身等待完成，不再在外面 await。并发沿用 spawn；初始化、纯派生及 NoWait 边界拒绝调用。target 为仍挂载的舞台正文节点时仅过渡该节点及其子树，null 为整个逻辑舞台正文，窗口光标保持独立。目标节点应保持身份，通过 change 修改其属性或子节点；image 可直接更新 source，text 可直接更新 value；整个舞台的 change 可 stage.replace。duration 有限且非负，easing 使用 tween 的内置具名曲线，mask 使用已有字符串或 MaskExpression，参数沿已有节点遮罩规则；null 用统一进度混合。duration 为零直接执行变更并等待新画面接受，省去旧图保留和计时。
+`stage.transition(change:, target:null, duration:0.3, easing:"linear", mask:null, mask_softness:0.06, mask_invert:false, mask_x:0, mask_y:0, owner:null)` 在当前任务执行完整转场并返回零参数 change 回调的原返回值，调用本身等待完成，不再在外面 await。并发沿用 spawn；初始化、纯派生及 NoWait 边界拒绝调用。target 为仍挂载的舞台正文节点时过渡该节点在所在呈现层内的子树；popup 使用独立层，可直接作为目标。null 一次过渡整个逻辑舞台正文及浮层，窗口光标保持独立。目标节点应保持身份，通过 change 修改其属性或子节点；image 可直接更新 source，text 可直接更新 value；整个舞台的 change 可 stage.replace。duration 有限且非负，easing 使用 tween 的内置具名曲线，mask 使用已有字符串或 MaskExpression，参数沿已有节点遮罩规则；null 用统一进度混合。duration 为零直接执行变更并等待新画面接受，省去旧图保留和计时。
 
 阶段为 OldPending → Changing → NewPending → Playing → FinalPending。先等待稳定舞台实际接受，按这份画面的真正子树边界保留旧绘制与资源，再执行 change；回调可等待，其普通活动与新侧内容沿原所有权继续运行。新资源、布局和零进度合成帧接受后才开始时间；最终进度为一的帧接受后返回并释放旧画面。相同或相互包含的目标在已有转场期间请求另一转场会在执行新 change 前报告目标冲突；独立子树可并行。change 中的交互等待应放到转场返回后：转场目标的输入、焦点和确认准入在整个过程暂停，外部 UI 照常；此门控属于宿主呈现状态，保留作者 enabled/visible 值及绑定。取消后按当前真实舞台的下一接受帧恢复准入。
 
@@ -355,6 +355,10 @@ Label在启用淡显或正文改变时建立逻辑字素起始byte索引，每�
 文字 GPU 绘制按字体资源、字体索引、字号、hint、变体坐标和字形 ID 复用字形图集，使用 guillotiere 分配图集矩形；同页连续字形合批，位置和颜色不进入字形缓存键。未提交上传仅在当前 preparation 可见，提交后发布；图集矩形由 prepared/in-flight/cache 共同保活，最后引用释放后才能复用。页面与上传分别计入现有资源预算，压力时回收无使用者缓存，字体退休解除缓存。
 
 单行 text_input 在给定高度内垂直居中，文字、选区、光标、点击及 IME 候选位置使用同一偏移。文本节点的自动高度按其显式宽度换行测量，滚动末端以完整排版高度为准。text_input 与 text_area 共用 text_align 和 line_height；text_area 的 text_wrap 控制软折行并保留显式换行，text_input 固定为单行。编辑器始终取得内容宽度用于对齐，换行模式交给 reel-text；属性变化保留正文、选区与预编辑，稳定值复用布局。
+
+Rust UI 的 `Popup` 在现有层栈中容纳普通子控件，默认使用模态焦点范围。层外主指针按下和完整的 Back 按下/松开只发出关闭请求，由所有者移除该层；命中使用已接受帧，失焦取消未完成手势，移除沿共同焦点规则恢复原控件。定位按请求的边与对齐计算，空间不足且对侧可容纳时翻转，再约束于视口；保持内容尺寸，长内容由普通滚动容器承载。
+
+Aside 浮层接口：`popup(placement: "bottom-start", offset: 0, on_dismiss: null, ...共同属性)` 是父节点锚定的普通子树，默认 modal 为 true。它不参与父级尺寸测量，在共同画布缩放下以独立层呈现，按逻辑树的深度优先顺序叠在普通画面上。浮层与其内容应用自身透明度、混合、反相、遮罩和局部变换；祖先裁剪与合成效果留在原层，父级提供布局锚点与生命周期。父级不可见、禁用、退休或缺少可布局锚点时撤下浮层，恢复可用后按当前父级重建投影。候选画面使用同次布局中的锚点，输入使用已接受画面的几何。关闭请求只提供 target 和 reason（outside/back），业务选择由内容中的普通控件完成。保存沿共同节点树与任务协议；播放器复用层栈和输入分发，位置未变不请求额外布局，长内容复用 scroll/list。
 
 共同节点的 border_width、border_color 与 corner_radius 绘制内描边和圆角背景，默认分别为 0、#ffffff、0。宽度与半径为有限非负逻辑像素，支持构造、with、赋值、绑定和数值动画；沿共同宿主字段保存。描边位于节点矩形内，可用厚度受矩形短边一半限制；padding 决定内容留白，描边和圆角沿用原布局与命中矩形。播放器复用 reel-ui 的边框和背景绘制，样式变化只请求重绘。
 

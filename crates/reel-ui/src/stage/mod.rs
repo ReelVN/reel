@@ -68,6 +68,7 @@ pub struct NodeAction {
 pub enum NodeEvent {
     Link(NodeLink),
     Click(NodeClick),
+    PopupDismiss(NodePopupDismiss),
     Action(NodeAction),
     Change(NodeChange),
     Interaction(NodeInteraction),
@@ -83,6 +84,20 @@ pub struct NodeLink {
     pub node: NodeId,
     pub id: Arc<str>,
     pub text: reel_core::text::Text,
+}
+/// A dismissal request routed through the popup's accepted presentation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NodePopupDismiss {
+    pub node: NodeId,
+    pub reason: crate::widgets::PopupDismiss,
+}
+
+/// Floating presentation policy; the ordinary logical parent supplies the anchor.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PopupView {
+    pub placement: crate::widgets::PopupPlacement,
+    pub offset: f64,
+    pub listening: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NodeScroll {
@@ -313,6 +328,7 @@ pub enum NodeKind {
         offset: Vec2,
     },
     Camera(CameraView),
+    Popup(PopupView),
     Row(FlowOptions),
     Column(FlowOptions),
     Grid(GridOptions),
@@ -571,8 +587,13 @@ pub struct Stage {
     next_id: u64,
     revision: u64,
     identity: StageIdentity,
+    popup_count: usize,
 }
 impl Stage {
+    /// Whether floating nodes exist; ordinary stages keep the direct modal traversal.
+    pub fn has_popups(&self) -> bool {
+        self.popup_count != 0
+    }
     pub fn root(&self) -> Option<NodeId> {
         self.root
     }
@@ -652,6 +673,7 @@ impl Stage {
             return Err(StageError::DuplicateChild);
         }
         self.next_id = id.0;
+        self.popup_count += usize::from(matches!(kind, NodeKind::Popup(_)));
         self.nodes.insert(
             id,
             StageNode {
@@ -734,6 +756,7 @@ impl Stage {
         for child in &children {
             self.nodes.get_mut(child).unwrap().parent = Some(id);
         }
+        self.popup_count += usize::from(matches!(kind, NodeKind::Popup(_)));
         self.nodes.insert(
             id,
             StageNode {
@@ -756,6 +779,8 @@ impl Stage {
     ) -> Result<(), StageError> {
         let node = self.nodes.get_mut(&id).ok_or(StageError::RetiredNode)?;
         if node.kind != kind || node.props != props {
+            self.popup_count -= usize::from(matches!(node.kind, NodeKind::Popup(_)));
+            self.popup_count += usize::from(matches!(kind, NodeKind::Popup(_)));
             node.kind = kind;
             node.props = props;
             self.changed(id, false);
@@ -769,6 +794,7 @@ impl Stage {
         if !matches!(
             container.kind,
             NodeKind::Camera(_)
+                | NodeKind::Popup(_)
                 | NodeKind::Row(_)
                 | NodeKind::Column(_)
                 | NodeKind::Grid(_)
@@ -815,6 +841,7 @@ impl Stage {
         if !matches!(
             container.kind,
             NodeKind::Camera(_)
+                | NodeKind::Popup(_)
                 | NodeKind::Row(_)
                 | NodeKind::Column(_)
                 | NodeKind::Grid(_)
@@ -903,6 +930,7 @@ impl Stage {
         if !matches!(
             node.kind,
             NodeKind::Camera(_)
+                | NodeKind::Popup(_)
                 | NodeKind::Row(_)
                 | NodeKind::Column(_)
                 | NodeKind::Grid(_)
@@ -969,6 +997,7 @@ impl Stage {
         let mut retired = Vec::new();
         while let Some(id) = pending.pop() {
             if let Some(node) = self.nodes.remove(&id) {
+                self.popup_count -= usize::from(matches!(node.kind, NodeKind::Popup(_)));
                 pending.extend(node.node.children);
                 retired.push(id);
             }

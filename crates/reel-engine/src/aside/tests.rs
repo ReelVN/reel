@@ -25,6 +25,7 @@ mod media_positions;
 mod models;
 mod particles;
 mod persistent;
+mod popups;
 mod property_configuration;
 mod reading_contexts;
 mod result_use;

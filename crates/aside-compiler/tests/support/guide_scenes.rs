@@ -50,6 +50,7 @@ pub const SCENES: &[(&str, E)] = &[
     ("video startup", E::Block),
     ("temporary hint in story", E::Block),
     ("runnable button module", E::Module),
+    ("anchored popup", E::Block),
     ("modal menu module", E::Module),
     ("named input actions module", E::Module),
     ("picture button component", E::Module),
@@ -114,6 +115,7 @@ pub fn snippets(doc: &str) -> Vec<(usize, String)> {
 pub fn enclosing(scene: &str) -> &[&str] {
     match scene {
         "segmented dialogue in story" => &["mio"],
+        "anchored popup" => &["trigger", "preferences"],
         "accelerating scalar curve" | "chained entrance" => &["portrait"],
         "opening module" => &["show_cg"],
         "value match expressions" => &["mode"],

@@ -76,22 +76,21 @@ impl SessionUi {
                 .root()
                 .get_widget(root)?
                 .downcast::<SessionWidget>()?
-                .stage
-                .id(),
+                .stage,
         )
     }
     pub(crate) fn transition_target(
         bridge: &PresentationBridge,
-        stage_widget: WidgetId,
+        root: WidgetId,
         target: Option<reel_ui::stage::NodeId>,
     ) -> Option<WidgetId> {
-        let stage = bridge
-            .root()
-            .get_widget(stage_widget)?
-            .downcast::<StageWidget>()?;
         match target {
-            Some(node) => stage.node_widget(node),
-            None => Some(stage_widget),
+            Some(node) => Self::projected_node(bridge, root, node),
+            None => bridge
+                .root()
+                .get_widget(root)?
+                .downcast::<SessionWidget>()
+                .map(|widget| widget.content.id()),
         }
     }
     #[cfg(any(feature = "window", test))]
@@ -105,7 +104,7 @@ impl SessionUi {
             .root()
             .get_widget(root)?
             .downcast::<SessionWidget>()?;
-        let stage_id = widget.stage.id();
+        let stage_id = widget.stage;
         let stage = bridge
             .root()
             .get_widget(stage_id)?
@@ -141,12 +140,11 @@ impl SessionUi {
         position: [f64; 2],
     ) -> Option<[f64; 2]> {
         bridge.root().mouse_position()?;
-        let (stage_id, transform) = self.accepted_stage(bridge, root)?;
-        let stage = bridge
+        let (_, transform) = self.accepted_stage(bridge, root)?;
+        if !bridge
             .root()
-            .get_widget(stage_id)?
-            .downcast::<StageWidget>()?;
-        if !bridge.root().permits_input(stage.node_widget(owner)?) {
+            .permits_input(Self::projected_node(bridge, root, owner)?)
+        {
             return None;
         }
         let point = transform * reel_ui::kurbo::Point::new(position[0], position[1]);
@@ -168,7 +166,7 @@ impl SessionUi {
             .get_widget(root)
             .and_then(|widget| widget.downcast::<SessionWidget>())
             .ok_or("recorded session widget is unavailable")?;
-        let stage_widget = widget.stage.id();
+        let stage_widget = widget.stage;
         let stage = bridge
             .root()
             .get_widget(stage_widget)
@@ -190,16 +188,17 @@ impl SessionUi {
         &self,
         bridge: &PresentationBridge,
         source: &RecordedSource,
+        root: WidgetId,
         stage_widget: WidgetId,
         query: GeometryQuery,
     ) -> Option<NodeGeometry> {
         let stage = bridge
             .root()
-            .get_widget(stage_widget)?
+            .get_widget(Self::stage_for_node(bridge, root, query.node)?)?
             .downcast::<StageWidget>()?;
-        let node = stage.node_widget(query.node)?;
+        let node = Self::projected_node(bridge, root, query.node)?;
         let relative = match query.relative_to {
-            Some(node) => stage.node_widget(node)?,
+            Some(node) => Self::projected_node(bridge, root, node)?,
             None => stage_widget,
         };
         let view = source.geometry();

@@ -981,6 +981,19 @@ Every shared node has a writable `modal` property, defaulting to false. A visibl
 
 Opening a menu focuses an eligible control inside it. Tab/Shift-Tab cycle within the menu; closing a nested menu restores the previous scope’s focus, and closing the last menu restores the original control if it remains eligible. The input scope changes when the new frame is actually presented and cancels dragging outside it. Run [author_modal.aside](../../examples/author_modal/src/main.aside) with the dev/build/run commands in the first section.
 
+`popup` floats ordinary content beside its parent for menus, option panels and hints. It defaults to modal input, follows the parent's layout, flips when necessary and stays within the viewport. Compose scroll and virtual list for long content. Dismissal events contain target and reason (outside/back); ordinary controls inside the menu choose values. Hiding, disabling or removing an ancestor withdraws the layer. It takes no space in its parent's layout. Set opacity, masks and transforms on the popup or its content; ancestor clipping and compositing stay in the underlying layer.
+
+```aside
+trigger.add(popup(placement: "bottom-start", offset: 4,
+    on_dismiss: |event| event.target.remove()) {
+    column(width: 200, gap: 8, padding: 12) {
+        text("Choose a reading speed");
+        button("Slow", on_click: || { preferences.speed = 20; });
+        button("Fast", on_click: || { preferences.speed = 50; });
+    }
+});
+```
+
 Keyboard activation requires pressing and releasing Enter or Space on the same button. Changing focus, hiding, disabling, or losing window focus cancels an unfinished key press.
 
 ```aside
@@ -1287,7 +1300,7 @@ stage.transition(target: scene, duration: 0.6, change: || {
 });
 ```
 
-Omit target to replace the whole logical stage with stage.replace inside change. With a target, keep the node and modify its properties or children. Images can update source directly and text nodes can update value; cursors retain their independent window presentation. The default is a dissolve; mask accepts an image path or the expressions below. mask_softness, mask_invert and mask_x/y follow the existing rules, and easing uses tween's built-in named curves, with transition progress clamped to 0..1; elastic overshoot still waits for the full duration. An image path advances its threshold with progress; expressions use mask.param("progress") to vary coverage over time. A zero duration changes the scene and waits for presentation. Timing begins after images and fonts are ready.
+Omit target to replace the whole logical stage with stage.replace inside change, transitioning its popups together with the scene. With a target, keep the node and modify its properties or children within its presentation layer; target a popup directly to transition it independently. Images can update source directly and text nodes can update value; cursors retain their independent window presentation. The default is a dissolve; mask accepts an image path or the expressions below. mask_softness, mask_invert and mask_x/y follow the existing rules, and easing uses tween's built-in named curves, with transition progress clamped to 0..1; elastic overshoot still waits for the full duration. An image path advances its threshold with progress; expressions use mask.param("progress") to vary coverage over time. A zero duration changes the scene and waits for presentation. Timing begins after images and fonts are ready.
 
 The transition retains actual particles, text and video content while the author constructs the new scene. Target input pauses until the final frame is accepted; external menus continue working. change may wait, with interactive waits placed after the transition call. Disjoint subtrees can transition concurrently; identical or overlapping targets report a conflict. Cancellation reveals the current stage and preserves writes already made by change. Saving during playback restores the old picture and progress and continues the original call.
 

@@ -69,6 +69,7 @@ fn accepts(schema: &Schema, shape: Shape) -> bool {
         "reel::types::ToggleNode" => matches!(shape, Shape::Switch | Shape::Checkbox),
         "reel::types::RadioNode" => shape == Shape::Radio,
         "reel::types::ScrollNode" => shape == Shape::Scroll,
+        "reel::types::PopupNode" => shape == Shape::Popup,
         "reel::types::CameraNode" => shape == Shape::Camera,
         _ => false,
     }
