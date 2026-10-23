@@ -20,6 +20,9 @@ mod nine_slice;
 #[path = "glyph/synthesis_tests.rs"]
 mod synthesis;
 
+#[path = "glyph_gradient_tests.rs"]
+mod glyph_gradient;
+
 fn renderer(limits: super::super::GpuLimits) -> Renderer {
     Renderer::new(
         pollster::block_on(Gpu::request(

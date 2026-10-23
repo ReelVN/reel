@@ -81,7 +81,10 @@ pub(super) fn uniform(
         0.,
     ];
     values[6] = [from.offset, to.offset, 0., 0.];
-    if from.offset > to.offset || values.iter().flatten().any(|v| !v.is_finite()) {
+    if !(0. ..=1.).contains(&from.offset)
+        || !(from.offset..=1.).contains(&to.offset)
+        || values.iter().flatten().any(|v| !v.is_finite())
+    {
         return Err(GpuError::Unsupported {
             at,
             record: "invalid linear gradient parameters",

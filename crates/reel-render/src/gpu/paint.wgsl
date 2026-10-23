@@ -45,6 +45,7 @@ fn linear_paint(position: vec2<f32>) -> vec4<f32> {
     }
     let color = mix(appearance.top_left, appearance.top_right, u);
     if color.a == 0.0 { return vec4<f32>(0.0); }
+    if appearance.y.y == 0.0 && appearance.y.z != 0.0 { return color; }
     var rgb = color.rgb;
     if appearance.y.z != 0.0 { rgb /= color.a; }
     if appearance.y.y != 0.0 {
