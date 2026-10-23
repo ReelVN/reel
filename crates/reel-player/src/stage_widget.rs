@@ -119,6 +119,13 @@ impl SceneNode {
             .filter(|child| !matches!(child.node.kind, NodeKind::Popup(_)))
     }
     fn image_size(&self) -> Size {
+        if let NodeKind::Image {
+            source_rect: Some(rect),
+            ..
+        } = &self.node.kind
+        {
+            return rect.size();
+        }
         self.images
             .image_resource
             .as_ref()
@@ -172,7 +179,7 @@ impl StageView {
                         ..
                     },
                 ) => a == x && b == y && c == z,
-                (a, b) => a == b,
+                (a, b) => !SceneWidget::content_changed(a, b),
             };
             old.node.id == id
                 && same_kind
@@ -366,7 +373,7 @@ impl StageView {
                     continue;
                 }
                 if a.node.id != b.node.id
-                    || a.node.kind != b.node.kind
+                    || SceneWidget::content_changed(&a.node.kind, &b.node.kind)
                     || a.node.props.visible != b.node.props.visible
                     || a.node.props.enabled != b.node.props.enabled
                     || a.children.len() != b.children.len()
@@ -430,6 +437,19 @@ impl StageView {
                 {
                     return Err(format!(
                         "{}: particle image {source:?}: particles require a whole PNG or JPEG sprite; prepared .reel-image sources are supported by image nodes",
+                        origin.as_deref().unwrap_or("stage")
+                    ));
+                }
+                if matches!(
+                    &node.node.kind,
+                    NodeKind::Image {
+                        source_rect: Some(_),
+                        ..
+                    }
+                ) && source.ends_with(".reel-image")
+                {
+                    return Err(format!(
+                        "{}: image {source:?}: source_rect requires a whole PNG or JPEG image",
                         origin.as_deref().unwrap_or("stage")
                     ));
                 }
@@ -983,6 +1003,7 @@ impl SceneWidget {
             corner_colors,
             adjustment,
             slice_center,
+            source_rect,
             ..
         } = &view.node.kind
         else {
@@ -1006,6 +1027,7 @@ impl SceneWidget {
             .map(|image| {
                 NewWidget::new(
                     image
+                        .with_source_rect(*source_rect)
                         .with_color(color(view.node.props.color))
                         .with_slice(*slice, *slice_scale, *slice_center)
                         .with_pattern(*repeat, *tile_scale, *corner_colors)
@@ -1014,6 +1036,65 @@ impl SceneWidget {
                 .with_props(*fit)
                 .to_pod()
             })
+    }
+    fn content_changed(old: &NodeKind, new: &NodeKind) -> bool {
+        match (old, new) {
+            (
+                NodeKind::Image {
+                    source: a,
+                    source_rect: ar,
+                    fit: af,
+                    slice: aslice,
+                    slice_scale: ascale,
+                    repeat: arep,
+                    tile_scale: atile,
+                    corner_colors: acol,
+                    adjustment: aadj,
+                    slice_center: acenter,
+                    ..
+                },
+                NodeKind::Image {
+                    source: b,
+                    source_rect: br,
+                    fit: bf,
+                    slice: bslice,
+                    slice_scale: bscale,
+                    repeat: brep,
+                    tile_scale: btile,
+                    corner_colors: bcol,
+                    adjustment: badj,
+                    slice_center: bcenter,
+                    ..
+                },
+            ) => {
+                // A moving sampling window is paint feedback, not replacement
+                // of a surrounding button's authored content or input owner.
+                (
+                    a,
+                    ar.map(|r| [r.width() as f32, r.height() as f32]),
+                    af,
+                    aslice,
+                    ascale,
+                    arep,
+                    atile,
+                    acol,
+                    aadj,
+                    acenter,
+                ) != (
+                    b,
+                    br.map(|r| [r.width() as f32, r.height() as f32]),
+                    bf,
+                    bslice,
+                    bscale,
+                    brep,
+                    btile,
+                    bcol,
+                    badj,
+                    bcenter,
+                )
+            }
+            _ => old != new,
+        }
     }
     fn caption(kind: &NodeKind) -> Option<&str> {
         match kind {
@@ -1279,7 +1360,7 @@ impl SceneWidget {
                 .iter()
                 .map(|(node, _)| node.id)
                 .eq(view.physical_children().map(|child| child.node.id));
-        let mut content_changed = this.widget.node.kind != view.node.kind
+        let mut content_changed = Self::content_changed(&this.widget.node.kind, &view.node.kind)
             || order_changed
             || this.widget.node.props.visible != view.node.props.visible
             || this.widget.node.props.enabled != view.node.props.enabled;
@@ -1452,12 +1533,11 @@ impl SceneWidget {
                     .image
                     .as_ref()
                     .map(|image| image.data.id())
-                    != Some(data.data.id())
-                || this.widget.image_size != Size::new(data.width.into(), data.height.into()))
+                    != Some(data.data.id()))
             && let Some(mut image) = this.ctx.get_mut(pod)
         {
             Image::set_image_data(&mut image, data.clone());
-            this.widget.image_size = Size::new(data.width.into(), data.height.into());
+            this.widget.image_size = view.image_size();
         }
         if let (Some(pod), Some(size)) = (&mut this.widget.image, view.images.tiled_size)
             && this.widget.projection.images != view.images
@@ -1478,6 +1558,7 @@ impl SceneWidget {
                     corner_colors,
                     adjustment,
                     slice_center,
+                    source_rect,
                     ..
                 },
             ) = (&mut this.widget.image, &view.node.kind)
@@ -1487,9 +1568,19 @@ impl SceneWidget {
                 image.insert_prop(*fit);
             }
             // This also clears slicing when a whole image switches to tiles.
+            Image::set_source_rect(&mut image, *source_rect);
             Image::set_slice(&mut image, *slice, *slice_scale, *slice_center);
             Image::set_pattern(&mut image, *repeat, *tile_scale, *corner_colors);
             Image::set_color_adjustment(&mut image, *adjustment);
+        }
+        let old_size = this.widget.image_size;
+        let new_size = view.image_size();
+        if has_image
+            && [old_size.width as f32, old_size.height as f32]
+                != [new_size.width as f32, new_size.height as f32]
+        {
+            this.widget.image_size = new_size;
+            this.ctx.request_layout();
         }
         let caption_changed = match (&this.widget.node.kind, &view.node.kind) {
             (NodeKind::Text(a), NodeKind::Text(b)) => a != b,

@@ -43,6 +43,7 @@ pub struct Image {
     resource: Option<ResourceLease>,
     tiles: Vec<ImageTile>,
     tiled_size: Size,
+    source_rect: Option<Rect>,
     slice: Option<Insets>,
     slice_scale: f64,
     slice_center: bool,
@@ -77,6 +78,7 @@ impl Image {
             resource: None,
             tiles: Vec::new(),
             tiled_size: Size::ZERO,
+            source_rect: None,
             slice: None,
             slice_scale: 1.,
             slice_center: true,
@@ -97,6 +99,7 @@ impl Image {
             resource: None,
             tiles,
             tiled_size: size,
+            source_rect: None,
             slice: None,
             slice_scale: 1.,
             slice_center: true,
@@ -135,12 +138,12 @@ impl Image {
     pub fn set_resource(this: &mut WidgetMut<'_, Self>, lease: ResourceLease) {
         let [w, h] = lease.data().image_size().expect("image resource");
         let size = Size::new(w.into(), h.into());
-        let layout_changed = this.widget.preferred_size() != size;
+        let old_size = this.widget.preferred_size();
         this.widget.image_data = None;
         this.widget.tiles.clear();
         this.widget.tiled_size = size;
         this.widget.resource = Some(lease);
-        if layout_changed {
+        if this.widget.preferred_size() != old_size {
             this.ctx.request_layout();
         } else {
             this.ctx.request_render();
@@ -167,6 +170,14 @@ impl Image {
     /// Values must satisfy [`crate::frame::ImageColorAdjustment::is_valid`].
     pub fn with_color_adjustment(mut self, adjustment: crate::frame::ImageColorAdjustment) -> Self {
         self.adjustment = adjustment;
+        self
+    }
+
+    /// Select source pixels without changing the shared image resource.
+    /// None uses the whole source. Finite endpoints and positive dimensions are
+    /// required; out-of-texture coordinates pad the texture's edges.
+    pub fn with_source_rect(mut self, rect: Option<Rect>) -> Self {
+        self.source_rect = rect;
         self
     }
 
@@ -210,6 +221,24 @@ impl Image {
 
 // --- MARK: WIDGETMUT
 impl Image {
+    /// Change the source window. Moving a same-sized window invalidates only paint.
+    pub fn set_source_rect(this: &mut WidgetMut<'_, Self>, rect: Option<Rect>) {
+        if this.widget.source_rect != rect {
+            let old_size = this.widget.preferred_size();
+            this.widget.source_rect = rect;
+            let new_size = this.widget.preferred_size();
+            // Endpoint subtraction may differ by a float64 rounding bit when
+            // only the origin moved. Layout follows drawing-size precision.
+            if [old_size.width as f32, old_size.height as f32]
+                != [new_size.width as f32, new_size.height as f32]
+            {
+                this.ctx.request_layout();
+            } else {
+                this.ctx.request_render();
+            }
+        }
+    }
+
     /// Change image color adjustment, invalidating paint without changing layout.
     pub fn set_color_adjustment(
         this: &mut WidgetMut<'_, Self>,
@@ -315,6 +344,9 @@ impl Image {
     /// This takes into account [`IMAGE_SCALE`], so a high-resolution resource can
     /// have a stable preferred logical size.
     fn preferred_size(&self) -> Size {
+        if let Some(rect) = self.source_rect {
+            return rect.size() / IMAGE_SCALE;
+        }
         let Some(image_data) = &self.image_data else {
             return self.tiled_size;
         };
@@ -351,8 +383,21 @@ impl Image {
                 (left + right) * self.slice_scale,
                 (top + bottom) * self.slice_scale,
             );
-        let source_x = [0., left, width - right, width];
-        let source_y = [0., top, height - bottom, height];
+        let origin = self
+            .source_rect
+            .map_or(crate::kurbo::Point::ZERO, |rect| rect.origin());
+        let source_x = [
+            origin.x,
+            origin.x + left,
+            origin.x + width - right,
+            origin.x + width,
+        ];
+        let source_y = [
+            origin.y,
+            origin.y + top,
+            origin.y + height - bottom,
+            origin.y + height,
+        ];
         let target_x = [
             bounds.x0,
             bounds.x0 + left * target_scale,
@@ -477,7 +522,8 @@ impl Widget for Image {
         painter: &mut Painter<'_>,
     ) {
         ctx.set_image_color(self.color);
-        ctx.set_image_sampling_transform(self.slice.is_some());
+        ctx.set_image_sampling_transform(self.slice.is_some() || self.source_rect.is_some());
+        ctx.set_image_source_rect(self.source_rect);
         ctx.set_image_resource(self.resource.as_ref().map(|lease| ResourceImageBrush {
             resource: lease.handle(),
             sampler: crate::peniko::ImageSampler {
@@ -510,8 +556,14 @@ impl Widget for Image {
                         .y1
                         .min(bounds.y0 + image_size.height * self.tile_scale);
                 }
-                let transform = Affine::translate(content_box.origin().to_vec2())
-                    * Affine::scale(self.tile_scale);
+                let transform = if let Some(rect) = self.source_rect {
+                    Affine::translate(rect.origin().to_vec2())
+                        * Affine::scale(1. / self.tile_scale)
+                        * Affine::translate(-content_box.origin().to_vec2())
+                } else {
+                    Affine::translate(content_box.origin().to_vec2())
+                        * Affine::scale(self.tile_scale)
+                };
                 self.fill(painter, bounds, transform);
             }
             return;
@@ -527,6 +579,36 @@ impl Widget for Image {
         let image_size = self.preferred_size();
         let transform = object_fit.affine(content_box, image_size.to_rect());
 
+        if let Some(rect) = self.source_rect {
+            // Object-fit is axis-aligned in the image's local coordinates.
+            // Trim geometry there instead of opening a per-image clip layer;
+            // consecutive regions of one texture remain consecutive quads.
+            if transform.determinant() == 0. {
+                return;
+            }
+            let bounds = transform
+                .inverse()
+                .transform_rect_bbox(content_box)
+                .intersect(image_size.to_rect());
+            if bounds.width() <= 0. || bounds.height() <= 0. {
+                return;
+            }
+            let sampling = Affine::translate(rect.origin().to_vec2());
+            if let Some(image) = &self.image_data {
+                painter
+                    .fill(bounds, image)
+                    .transform(transform)
+                    .brush_transform(Some(sampling))
+                    .draw();
+            } else if self.resource.is_some() {
+                painter
+                    .fill(bounds, Color::WHITE)
+                    .transform(transform)
+                    .brush_transform(Some(sampling))
+                    .draw();
+            }
+            return;
+        }
         painter.with_fill_clip(content_box, |painter| {
             if let Some(image) = &self.image_data {
                 painter.draw_image(image, transform);

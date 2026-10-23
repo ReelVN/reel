@@ -187,6 +187,13 @@ impl Context<'_> {
                 });
             }
         };
+        if let Brush::Image(brush) = brush {
+            mesh.set_image_sampling(mesh::ImageSampling::new(
+                brush.image.source_rect,
+                image.size,
+                repeat,
+            ));
+        }
         mesh::transform(&mut mesh, outer * transform, self.size, uv, color, at)?;
         self.paint_resource(target, &mesh, &image, repeat, appearance)
     }
@@ -529,6 +536,7 @@ mod tests {
                 },
                 color: [1.; 4],
                 appearance: Some(appearance),
+                source_rect: None,
             };
             let encoded = postcard::to_allocvec(&image).unwrap();
             let decoded = postcard::from_bytes::<FrameImage>(&encoded).unwrap();

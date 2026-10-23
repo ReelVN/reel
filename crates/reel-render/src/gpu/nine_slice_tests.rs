@@ -6,11 +6,11 @@ use reel_core::{
 };
 use reel_ui::{
     core::NewWidget,
-    frame::{FrameTransition, RetainBuild, SavedRetainedScene},
+    frame::{FrameDraw, FrameOp, FrameTransition, RetainBuild, SavedRetainedScene},
     kurbo::{Insets, Point, Size},
     peniko::{ImageAlphaType, ImageBrush, ImageFormat},
     properties::ObjectFit,
-    resources::{ColorEncoding, ResourceData, ResourceRegistry},
+    resources::{ColorEncoding, ResourceData, ResourceRegistry, ResourceSnapshot},
     widgets::{Image, ImageTile},
 };
 
@@ -249,5 +249,99 @@ fn zero_span_nine_slice_samples_lines_points_and_restored_pictures() {
     assert_eq!(
         pixels, restored_pixels,
         "serialized retained mapping changed pixels"
+    );
+}
+
+#[test]
+fn image_windows_repeat_and_zero_span_slices_keep_shared_frame_maps_without_device() {
+    let pool = pool();
+    let sliced = sliced_frame(&pool);
+    let source_maps = sliced
+        .commands()
+        .iter()
+        .filter_map(|command| match &command.op {
+            FrameOp::Draw(FrameDraw::Fill {
+                brush: Brush::Image(_),
+                brush_transform: Some(map),
+                ..
+            }) => Some(*map),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        source_maps
+            .iter()
+            .any(|map| map.as_coeffs()[0] == 0. && map.as_coeffs()[4] == 10.),
+        "collapsed horizontal slice retains source x=10"
+    );
+    assert!(
+        source_maps
+            .iter()
+            .any(|map| map.as_coeffs()[3] == 0. && map.as_coeffs()[5] == 36.5),
+        "collapsed vertical slice retains source y=36.5"
+    );
+    let lease = sliced.resources().leases()[0].clone();
+    let handle = lease.handle();
+    let mut widget = RecordWidget::new(Scene::new());
+    for (index, rect, repeat) in [
+        (0, None, [true; 2]),
+        (1, Some(Rect::new(10., 0., 20., 73.)), [true; 2]),
+        (2, Some(Rect::new(0., 0., 10., 73.)), [false; 2]),
+    ] {
+        widget.inner.add(
+            NewWidget::new(
+                Image::from_resource(lease.clone())
+                    .with_source_rect(rect)
+                    .with_pattern(repeat, 2., None),
+            )
+            .with_props(ObjectFit::Stretch),
+            Point::new(f64::from(index) * 100., 0.),
+            Size::new(20., 146.),
+        );
+    }
+    let mut bridge = widget_bridge(widget, Affine::IDENTITY);
+    let frame = build(
+        bridge.record(FrameId(1)).unwrap(),
+        ResourceSnapshot::capture([Ok(lease)].into_iter(), &pool).unwrap(),
+        &pool,
+    );
+    let images = frame
+        .commands()
+        .iter()
+        .enumerate()
+        .filter_map(|(index, command)| match &command.op {
+            FrameOp::Draw(FrameDraw::Fill {
+                brush: Brush::Image(image),
+                brush_transform: Some(map),
+                ..
+            }) => Some((index, image, *map)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(images.len(), 3);
+    assert_eq!(frame.resources().leases().len(), 1);
+    assert!(
+        images
+            .iter()
+            .all(|(_, image, _)| image.image.resource == handle)
+    );
+    assert_eq!(
+        images[0].2,
+        Affine::scale(0.5),
+        "ordinary repeat retains its original transform convention"
+    );
+    assert_eq!(
+        images[1].2,
+        Affine::translate((10., 0.)) * Affine::scale(0.5)
+    );
+    assert_eq!(images[2].2, Affine::IDENTITY);
+    assert_eq!(
+        images[2].0,
+        images[1].0 + 1,
+        "image regions add no clip/material boundary between shared-texture quads"
+    );
+    assert_eq!(
+        images[1].1.image.source_rect,
+        Some(Rect::new(10., 0., 20., 73.))
     );
 }

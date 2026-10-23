@@ -20,6 +20,8 @@ pub struct CommandOwnerRange {
     pub image_resource: Option<crate::resources::ResourceImageBrush>,
     /// Image brush matrices already map local coordinates to source pixels.
     pub image_sampling_transform: bool,
+    /// Source-pixel window retained by this widget's cached image paint.
+    pub image_source_rect: Option<Rect>,
 }
 
 /// Reliable provenance captured when a widget's cached paint is appended.

@@ -368,6 +368,7 @@ fn image_resolution_and_removal_invalidate_only_the_resource_branch() {
     let picture = stage
         .create(
             NodeKind::Image {
+                source_rect: None,
                 source: "sprite.png".into(),
                 origin: None,
                 fit: Default::default(),

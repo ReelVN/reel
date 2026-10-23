@@ -2466,6 +2466,12 @@ impl PaintCtx<'_> {
         self.widget_state.image_sampling_transform = sampling;
     }
 
+    /// Restrict this widget's image sampling to a source-pixel window.
+    /// Cached paints retain the window without changing the shared resource.
+    pub fn set_image_source_rect(&mut self, rect: Option<Rect>) {
+        self.widget_state.image_source_rect = rect;
+    }
+
     /// Bind this widget's filled image geometry to a decoded resource. The
     /// recording retains its identity, sampler, transform and tint; the frame
     /// resource snapshot must retain its lease. Children and masks are separate.

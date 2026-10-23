@@ -104,6 +104,7 @@ fn fixture_with_overflow(descendant: Option<bool>) -> (Fixture, NodeId, NodeId, 
                 corner_colors: None,
                 adjustment: Default::default(),
                 slice_center: true,
+                source_rect: None,
                 origin: Some("retained.aside:8:5".into()),
             },
             NodeProps {

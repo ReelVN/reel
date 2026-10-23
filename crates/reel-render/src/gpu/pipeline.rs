@@ -438,7 +438,8 @@ pub(super) fn pipeline_entry(
         bind_group_layouts: &[Some(layout)],
         immediate_size: 0,
     });
-    let attributes = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4];
+    let attributes =
+        wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4];
     let buffers = [Some(wgpu::VertexBufferLayout {
         array_stride: size_of::<Vertex>() as u64,
         step_mode: wgpu::VertexStepMode::Vertex,

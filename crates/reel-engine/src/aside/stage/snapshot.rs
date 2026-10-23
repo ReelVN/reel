@@ -117,6 +117,7 @@ impl Shape {
                 corner_colors: read_corner_colors(heap, get(6)?)?,
                 slice_center: boolean(get(7)?)?,
                 adjustment: read_image_adjustment(heap, fields)?,
+                source_rect: read_source_rect(heap, get(11)?)?,
                 origin,
             },
             Self::Particles => {

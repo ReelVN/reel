@@ -47,6 +47,7 @@ fn pool() -> BudgetPool {
 }
 fn kind(lease: ResourceLease) -> NodeKind {
     NodeKind::Image {
+        source_rect: None,
         source: ImageSource::resource(lease),
         origin: None,
         fit: Default::default(),

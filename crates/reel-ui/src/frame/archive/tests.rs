@@ -504,6 +504,7 @@ fn image_color_appearance_restores_with_one_shared_resource() {
                 fill_rule: Default::default(),
                 brush: Brush::Image(ImageBrush {
                     image: FrameImage {
+                        source_rect: Some(Rect::new(16., 8., 32., 24.)),
                         resource: handle,
                         color: [1.; 4],
                         appearance,
@@ -548,5 +549,6 @@ fn image_color_appearance_restores_with_one_shared_resource() {
             panic!()
         };
         assert_eq!(image.image.appearance, expected);
+        assert_eq!(image.image.source_rect, Some(Rect::new(16., 8., 32., 24.)));
     }
 }

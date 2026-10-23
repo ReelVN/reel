@@ -1017,6 +1017,7 @@ impl StageBinding {
                         corner_colors: read_corner_colors(heap, heap.table_entry(fields, 6)?.1)?,
                         slice_center: boolean(heap.table_entry(fields, 7)?.1)?,
                         adjustment: read_image_adjustment(heap, fields)?,
+                        source_rect: read_source_rect(heap, heap.table_entry(fields, 11)?.1)?,
                         origin: origin.clone(),
                     },
                     registry::IMAGE_PREFIX.len(),
@@ -1584,6 +1585,55 @@ fn read_fit(heap: &Heap, value: Value) -> Result<reel_ui::properties::ObjectFit,
     }
 }
 
+fn read_source_rect(
+    heap: &Heap,
+    value: Value,
+) -> Result<Option<reel_ui::kurbo::Rect>, AdapterError> {
+    if value.tag() == ValueTag::Null {
+        return Ok(None);
+    }
+    let invalid = || {
+        AdapterError::Input(
+            "image source_rect requires null or a finite (x, y, width, height) tuple with positive dimensions and finite float32 endpoints",
+        )
+    };
+    if heap.info(value)?.kind != ObjectKind::Tuple || heap.sequence_len(value)? != 4 {
+        return Err(invalid());
+    }
+    let mut values = [0.; 4];
+    for (index, output) in values.iter_mut().enumerate() {
+        let value = heap.sequence_get(value, index as u32)?;
+        *output = value
+            .as_float()
+            .or_else(|| value.as_int().map(|n| n as f64))
+            .ok_or_else(invalid)?;
+        if !(*output as f32).is_finite() {
+            return Err(invalid());
+        }
+    }
+    let [x, y, width, height] = values;
+    let rect = reel_ui::kurbo::Rect::new(x, y, x + width, y + height);
+    if width <= 0. || height <= 0. || !valid_source_rect(rect) {
+        return Err(invalid());
+    }
+    Ok(Some(rect))
+}
+
+fn valid_source_rect(rect: reel_ui::kurbo::Rect) -> bool {
+    (rect.width() as f32) > 0.
+        && (rect.height() as f32) > 0.
+        && [
+            rect.x0,
+            rect.y0,
+            rect.x1,
+            rect.y1,
+            rect.width(),
+            rect.height(),
+        ]
+        .iter()
+        .all(|n| (*n as f32).is_finite())
+}
+
 fn read_slice(heap: &Heap, value: Value) -> Result<Option<reel_ui::kurbo::Insets>, AdapterError> {
     use reel_ui::kurbo::Insets;
     if value.tag() == ValueTag::Null {
@@ -1756,6 +1806,9 @@ pub(super) fn validate_image_property(
             .map(|_| ())
             .map_err(|_| HeapError::TypeMismatch),
         9 | 10 => drawing_rgb(heap, value, index == 9)
+            .map(|_| ())
+            .map_err(|_| HeapError::TypeMismatch),
+        11 => read_source_rect(heap, value)
             .map(|_| ())
             .map_err(|_| HeapError::TypeMismatch),
         _ => validate_layout_property(heap, index - registry::IMAGE_PREFIX.len() as u32, value),

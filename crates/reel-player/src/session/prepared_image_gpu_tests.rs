@@ -73,6 +73,7 @@ fn scene(
                 corner_colors: None,
                 adjustment: Default::default(),
                 slice_center: true,
+                source_rect: None,
                 origin: Some("camera-tiles.aside:3:9".into()),
             },
             NodeProps {

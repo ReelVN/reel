@@ -653,6 +653,7 @@ fn popup_whole_and_prepared_images_share_resources_and_retire_with_their_logical
                 root,
                 Stage::default(),
                 NodeKind::Image {
+                    source_rect: None,
                     source: ImageSource::from("assets/panels.png"),
                     origin: None,
                     fit: Default::default(),
@@ -727,6 +728,7 @@ fn ineligible_popup_images_do_not_block_visible_content_or_load_resources() {
         let image = stage
             .create(
                 NodeKind::Image {
+                    source_rect: None,
                     source: ImageSource::from("missing.png"),
                     origin: None,
                     fit: Default::default(),
