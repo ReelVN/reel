@@ -42,6 +42,8 @@ struct Header {
     delivery_task: Option<TaskId>,
     result_root: Option<RootToken>,
     game: std::sync::Arc<GameSettings>,
+    // Preserve the dependency identity, never the ephemeral pointer coordinates.
+    pointer_revision: Option<RootToken>,
 }
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub(super) enum Part {
@@ -206,6 +208,7 @@ impl SessionVm {
                             delivery_task: self.delivery_task,
                             result_root: self.result_root,
                             game: self.game.clone(),
+                            pointer_revision: self.window.pointer_revision,
                         },
                     )
                 })
@@ -587,6 +590,8 @@ impl SessionRestore<'_> {
                         runtime.result_root =
                             header.result_root.map(|r| map.root(r)).transpose()?;
                         runtime.game = header.game;
+                        runtime.window.pointer_revision =
+                            header.pointer_revision.map(|r| map.root(r)).transpose()?;
                     }
                     Part::Task => {
                         let mut task: callbacks::ScriptTask = record.read()?;
@@ -729,6 +734,8 @@ impl SessionRestore<'_> {
             if !runtime.stage.text_history_restore_complete() {
                 return Err(AdapterError::Input("incomplete text input history"));
             }
+            // Restored bindings must observe the new host's null position before presentation.
+            runtime.invalidate_pointer_observation()?;
             if runtime.reactive_ready && runtime.derived_task.is_none() {
                 runtime.sync_narrative(self.session.as_ref().unwrap())?;
             }

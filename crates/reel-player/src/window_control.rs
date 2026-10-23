@@ -12,10 +12,13 @@ impl State {
                 .driver()
                 .ui()
                 .pointer_position(&self.presentation.bridge, self.root_id);
-            story
+            if story
                 .driver_mut()?
                 .adapter_mut()
-                .set_pointer_position(position);
+                .set_pointer_position(position)?
+            {
+                story.wake_input();
+            }
         }
         Ok(())
     }

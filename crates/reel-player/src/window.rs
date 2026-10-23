@@ -430,6 +430,7 @@ impl State {
             session.ui_mut()?.clear_presented();
             session.sync(&mut self.presentation.bridge, self.root_id)?;
         }
+        self.publish_pointer_info()?;
         Ok(())
     }
     pub(crate) fn invalidate(&mut self) {
@@ -723,6 +724,9 @@ impl State {
                 self.presentation.accepted_frame.as_ref().unwrap(),
             )?;
         }
+        if result.accepted {
+            self.publish_pointer_info()?;
+        }
         if result.accepted && self.first_frame_pending {
             self.first_frame_pending = false;
             self.window.set_visible(true);
@@ -819,6 +823,7 @@ impl State {
             session.ui_mut()?.clear_presented();
             session.suspend(self.host.monotonic_now().0)?;
         }
+        self.publish_pointer_info()?;
         Ok(())
     }
     pub(crate) fn is_suspended(&self) -> bool {

@@ -155,9 +155,8 @@ pub(super) fn contracts() -> Vec<NativeContract> {
             result: BuiltinType::Any,
             effects: Effects(
                 Effects::ALLOCATE
-                    | Effects::HOST
                     | if name == "move_pointer" {
-                        Effects::WRITE
+                        Effects::WRITE | Effects::HOST
                     } else {
                         0
                     },
