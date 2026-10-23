@@ -1,16 +1,276 @@
 //! Project compilation and artifact publication for automatic game exploration.
 use crate::commands::Test;
+use anyhow::Context;
 use aside_compiler::{SourceMap, semantic::SourceModule};
 use reel_dev::{
     headless::{self, RunEnvironment, RunOptions},
-    testing::{self, ReplayTrace, RunPair, TestStatus},
+    testing::{self, ExplorationEvent, ExplorationPass, ReplayTrace, RunPair, TestStatus},
 };
 use serde_json::{Value, json};
 use std::{
     fs,
-    io::{self, Write},
-    path::Path,
+    io::{self, BufWriter, Write},
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
+
+struct ProgressJournal {
+    writer: BufWriter<fs::File>,
+    artifacts: PathBuf,
+    project: PathBuf,
+    source_digest: Option<String>,
+    environment: Option<RunEnvironment>,
+    assets: Option<PathBuf>,
+    started: Instant,
+    last_display: Option<Instant>,
+    stage: String,
+    decisions: u64,
+    source_terminals: u64,
+    asb_terminals: u64,
+    failures: u64,
+    incomplete: u64,
+    latest: Value,
+    latest_progress: Value,
+    complete: bool,
+    final_status: Option<String>,
+}
+
+impl ProgressJournal {
+    fn new(project: &Path, artifacts: &Path) -> io::Result<Self> {
+        Ok(Self {
+            writer: BufWriter::new(fs::File::create(artifacts.join("progress.jsonl"))?),
+            artifacts: artifacts.to_path_buf(),
+            project: project.to_path_buf(),
+            source_digest: None,
+            environment: None,
+            assets: None,
+            started: Instant::now(),
+            last_display: None,
+            stage: "loading".into(),
+            decisions: 0,
+            source_terminals: 0,
+            asb_terminals: 0,
+            failures: 0,
+            incomplete: 0,
+            latest: Value::Null,
+            latest_progress: Value::Null,
+            complete: false,
+            final_status: None,
+        })
+    }
+
+    fn append(&mut self, value: &impl serde::Serialize) -> io::Result<()> {
+        serde_json::to_writer(&mut self.writer, value)?;
+        self.writer.write_all(b"\n")?;
+        self.writer.flush()
+    }
+
+    fn stage(&mut self, stage: &str) -> io::Result<()> {
+        self.stage = stage.into();
+        self.append(&json!({"event":"stage", "stage":stage}))?;
+        eprintln!("reel test: {stage}");
+        self.write_partial()
+    }
+
+    fn write_partial(&self) -> io::Result<()> {
+        let partial = json!({
+            "schema_version": 1, "complete": self.complete,
+            "status": self.final_status.as_deref().unwrap_or(if self.failures != 0 { "failed" } else { "incomplete" }),
+            "project": self.project, "source_digest": self.source_digest,
+            "environment": self.environment, "stage": self.stage,
+            "elapsed_seconds": self.started.elapsed().as_secs_f64(),
+            "decisions": self.decisions, "source_terminals": self.source_terminals,
+            "asb_terminals": self.asb_terminals, "failures": self.failures,
+            "incomplete_paths": self.incomplete, "latest": self.latest,
+            "latest_progress": self.latest_progress,
+            "progress": "build/test/progress.jsonl",
+        });
+        fs::write(
+            self.artifacts.join("partial.json"),
+            serde_json::to_vec_pretty(&partial)?,
+        )
+    }
+
+    fn event(&mut self, event: &ExplorationEvent<'_>) -> anyhow::Result<()> {
+        if let ExplorationEvent::Terminal {
+            pass,
+            requested_prefix,
+            reached_prefix,
+            report,
+            boundary,
+        } = event
+        {
+            self.append(&json!({"event":"terminal", "pass":pass,
+                "requested_prefix":requested_prefix,"reached_prefix":reached_prefix,
+                "outcome":report.outcome,"actions":report.actions.len(),
+                "steps":report.steps,"diagnostic":report.diagnostic,
+                "boundary":boundary}))?;
+        } else {
+            self.append(event)?;
+        }
+        let display = self
+            .last_display
+            .is_none_or(|last| last.elapsed() >= Duration::from_secs(1));
+        match event {
+            ExplorationEvent::PassStarted { pass } => {
+                self.stage = pass_name(*pass).into();
+                eprintln!("reel test: {} execution", self.stage);
+                self.last_display = Some(Instant::now());
+                self.write_partial()?;
+            }
+            ExplorationEvent::Progress {
+                pass,
+                steps,
+                logical_ns,
+                accepted_frames,
+                interaction,
+                interaction_generation,
+                content_id,
+                read_content,
+            } => {
+                self.latest_progress = json!({"pass":pass,"steps":steps,"logical_ns":logical_ns,
+                    "accepted_frames":accepted_frames,"interaction":interaction,
+                    "interaction_generation": interaction_generation,
+                    "content_id": content_id, "read_content": read_content});
+                if display {
+                    eprintln!(
+                        "reel test: {} steps={steps} virtual_seconds={:.3} frames={accepted_frames} read={read_content} interaction={} generation={interaction_generation:?}",
+                        pass_name(*pass),
+                        *logical_ns as f64 / 1_000_000_000.,
+                        interaction.unwrap_or("none")
+                    );
+                    self.last_display = Some(Instant::now());
+                }
+                self.write_partial()?;
+            }
+            ExplorationEvent::Decision {
+                pass,
+                prefix,
+                depth,
+                kind: _,
+                input_state: _,
+                option_keys,
+                observed_states,
+                frontier,
+            } => {
+                self.decisions += 1;
+                if display {
+                    eprintln!(
+                        "reel test: {} prefix={prefix} depth={depth} options={} observed={observed_states} checkpoints={frontier}",
+                        pass_name(*pass),
+                        option_keys.len()
+                    );
+                    self.last_display = Some(Instant::now());
+                    self.write_partial()?;
+                }
+            }
+            ExplorationEvent::Branch { .. } => {}
+            ExplorationEvent::Terminal {
+                pass,
+                requested_prefix,
+                reached_prefix,
+                report,
+                boundary,
+            } => {
+                match pass {
+                    ExplorationPass::Source => self.source_terminals += 1,
+                    ExplorationPass::Asb => self.asb_terminals += 1,
+                }
+                let failed = matches!(
+                    report.outcome,
+                    headless::RunOutcome::RuntimeFailure
+                        | headless::RunOutcome::ResourceFailure
+                        | headless::RunOutcome::ReplayMismatch
+                );
+                if failed {
+                    self.failures += 1;
+                }
+                if !failed && report.outcome != headless::RunOutcome::Finished {
+                    self.incomplete += 1;
+                }
+                let replay = if failed {
+                    let number = self.source_terminals + self.asb_terminals;
+                    let name = format!("replay-partial-{}-{number:06}.json", pass_name(*pass));
+                    let trace = ReplayTrace {
+                        schema_version: testing::SCHEMA_VERSION,
+                        source_digest: self
+                            .source_digest
+                            .clone()
+                            .context("progress source digest")?,
+                        environment: self
+                            .environment
+                            .clone()
+                            .context("progress host environment")?,
+                        assets: self.assets.clone(),
+                        actions: report.actions.iter().cloned().collect(),
+                        boundary: boundary.cloned(),
+                    };
+                    fs::write(
+                        self.artifacts.join(&name),
+                        serde_json::to_vec_pretty(&trace)?,
+                    )?;
+                    Some(format!("build/test/{name}"))
+                } else {
+                    None
+                };
+                self.latest = json!({"pass":pass, "requested_prefix":requested_prefix,
+                    "reached_prefix":reached_prefix, "outcome":report.outcome,
+                    "actions":report.actions.len(), "diagnostic":report.diagnostic, "replay":replay});
+                if failed || display {
+                    eprintln!(
+                        "reel test: {} {:?} at prefix {reached_prefix} ({} actions)",
+                        pass_name(*pass),
+                        report.outcome,
+                        report.actions.len()
+                    );
+                    if failed && let Some(diagnostic) = &report.diagnostic {
+                        eprintln!("  {}", diagnostic.message);
+                        if let Some(path) = replay {
+                            eprintln!("  Replay: reel test --replay \"{path}\"");
+                        }
+                    }
+                    self.last_display = Some(Instant::now());
+                }
+                self.write_partial()?;
+            }
+        }
+        Ok(())
+    }
+
+    fn finish(&mut self, report: &Value) -> io::Result<()> {
+        self.complete = true;
+        self.final_status = report["status"].as_str().map(str::to_owned);
+        self.stage = "complete".into();
+        if report["status"] == "failed" && self.failures == 0 {
+            self.failures = 1;
+        }
+        if let Some(diagnostics) = report.get("diagnostics") {
+            self.latest = diagnostics.clone();
+        }
+        self.append(&json!({"event":"complete", "status":report["status"]}))?;
+        self.write_partial()
+    }
+}
+
+fn pass_name(pass: ExplorationPass) -> &'static str {
+    match pass {
+        ExplorationPass::Source => "source",
+        ExplorationPass::Asb => "asb",
+    }
+}
+
+fn run_trace(
+    story: reel_engine::aside::source::CompiledStory,
+    assets: &Path,
+    options: &RunOptions,
+    trace: &ReplayTrace,
+) -> anyhow::Result<headless::RunReport> {
+    if let Some(boundary) = &trace.boundary {
+        headless::run_to_boundary(story, assets, options, &trace.actions, boundary)
+    } else {
+        headless::run(story, assets, options, &trace.actions)
+    }
+}
 
 fn compilation_failure(sources: &[SourceModule], failure: reel_cli::Failure) -> Value {
     let diagnostics: Vec<_> = failure
@@ -56,18 +316,23 @@ fn execute(
     assets: Option<&Path>,
     replay: Option<&ReplayTrace>,
     artifacts: &Path,
+    progress: &mut ProgressJournal,
 ) -> io::Result<Value> {
+    progress.stage("loading")?;
     let loaded = match reel_cli::project::load(root) {
         Ok(loaded) => loaded,
         Err(error) => return Ok(load_failure(error)),
     };
+    progress.stage("checking")?;
     let checked = match loaded.check() {
         Ok(checked) => checked,
         Err(error) => return Ok(compilation_failure(&loaded.sources, error)),
     };
+    progress.stage("localization")?;
     if let Err(error) = reel_cli::localization::check_project(root, &checked.catalogs) {
         return Ok(setup_failure("localization", error.to_string()));
     }
+    progress.stage("building")?;
     let artifact = match reel_cli::build(&checked, Some(reel_cli::project::ENTRY)) {
         Ok(artifact) => artifact,
         Err(error) => return Ok(compilation_failure(&loaded.sources, error)),
@@ -94,20 +359,61 @@ fn execute(
     let assets = recorded_assets.clone().unwrap_or_else(|| loaded.assets());
     let environment =
         replay.map_or_else(RunEnvironment::capture, |trace| trace.environment.clone());
+    progress.source_digest = Some(source_digest.clone());
+    progress.environment = Some(environment.clone());
+    progress.assets = recorded_assets.clone();
     drop(loaded);
     let exploration = if let Some(replay) = replay {
         let options = RunOptions {
             strict_replay: true,
             environment: environment.clone(),
         };
-        headless::run(source, &assets, &options, &replay.actions)
-            .and_then(|source| {
-                headless::run(asb, &assets, &options, &source.actions)
-                    .map(|asb| RunPair { source, asb })
+        progress
+            .event(&ExplorationEvent::PassStarted {
+                pass: ExplorationPass::Source,
             })
-            .map(|pair| testing::replay(&replay.actions, pair))
+            .map_err(io::Error::other)?;
+        run_trace(source, &assets, &options, replay)
+            .and_then(|source| {
+                progress.event(&ExplorationEvent::Terminal {
+                    pass: ExplorationPass::Source,
+                    requested_prefix: 0,
+                    reached_prefix: 0,
+                    report: &source,
+                    boundary: replay
+                        .boundary
+                        .as_ref()
+                        .filter(|boundary| boundary.outcome == source.outcome),
+                })?;
+                progress.event(&ExplorationEvent::PassStarted {
+                    pass: ExplorationPass::Asb,
+                })?;
+                run_trace(asb, &assets, &options, replay).and_then(|asb| {
+                    progress.event(&ExplorationEvent::Terminal {
+                        pass: ExplorationPass::Asb,
+                        requested_prefix: 0,
+                        reached_prefix: 0,
+                        report: &asb,
+                        boundary: replay
+                            .boundary
+                            .as_ref()
+                            .filter(|boundary| boundary.outcome == asb.outcome),
+                    })?;
+                    Ok(RunPair { source, asb })
+                })
+            })
+            .map(|pair| {
+                let mut report = testing::replay(&replay.actions, pair);
+                report.runs[0].boundary = replay
+                    .boundary
+                    .clone()
+                    .filter(|boundary| boundary.outcome == report.runs[0].source.outcome);
+                report
+            })
     } else {
-        headless::explore_with_environment(source, asb, &assets, &environment)
+        headless::explore_with_observer(source, asb, &assets, &environment, |event| {
+            progress.event(event)
+        })
     };
     let exploration = match exploration {
         Ok(report) => report,
@@ -118,6 +424,11 @@ fn execute(
     report["environment"] = json!(environment);
     report["replays"] = json!([]);
     for (index, run) in exploration.runs.iter().enumerate() {
+        if run.source.outcome == headless::RunOutcome::CheckpointUnavailable
+            && run.boundary.is_none()
+        {
+            continue;
+        }
         if run.source.outcome == headless::RunOutcome::Finished
             && run.asb.outcome == headless::RunOutcome::Finished
             && run.replay_mismatch.is_none()
@@ -129,7 +440,8 @@ fn execute(
             source_digest: source_digest.clone(),
             environment: environment.clone(),
             assets: recorded_assets.clone(),
-            actions: run.source.actions.clone(),
+            actions: run.source.actions.iter().cloned().collect(),
+            boundary: run.boundary.clone(),
         };
         let replay_number = report["replays"].as_array().unwrap().len() + 1;
         let relative = format!("build/test/replay-{replay_number:03}.json");
@@ -215,7 +527,8 @@ fn publish_report(
     artifacts: &Path,
 ) -> io::Result<Value> {
     fs::create_dir_all(artifacts)?;
-    let mut report = execute(root, assets, replay, artifacts)?;
+    let mut progress = ProgressJournal::new(root, artifacts)?;
+    let mut report = execute(root, assets, replay, artifacts, &mut progress)?;
     report["schema_version"] = json!(1);
     report["source"] = json!("src/main.aside");
     report["scope"] = json!("headless-source-asb-input-paths");
@@ -225,6 +538,7 @@ fn publish_report(
         artifacts.join("report.json"),
         serde_json::to_vec_pretty(&report)?,
     )?;
+    progress.finish(&report)?;
     Ok(report)
 }
 

@@ -5,9 +5,15 @@
 //! Only a naturally completed story (including an authored exit) passes. Mounted
 //! interactive pages are explored through their accepted input geometry.
 mod audio;
+mod capture;
 mod explore;
 mod presentation;
-pub use explore::{explore, explore_with_environment};
+mod trace;
+mod window;
+pub use explore::{explore, explore_with_environment, explore_with_observer, run_to_boundary};
+pub use trace::ActionTrace;
+#[cfg(test)]
+mod boundary_tests;
 #[cfg(test)]
 mod tests;
 
@@ -98,19 +104,25 @@ impl reel_engine::aside::HostEnvironment for DeterministicEnvironment {
     }
 }
 
-/// Kind of interaction submitted through the ordinary host input path.
+/// Kind of narrative or accepted control boundary selected by the check host.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActionKind {
     Choice,
+    /// Accepted controls, including an optional reserved finite-wait option.
     Controls,
 }
 
-/// Ordered business keys and the selected zero-based option at one choice.
+/// Ordered target keys and the selected zero-based option at one boundary.
+/// The reserved `@wait:finite-activities` control option advances only the finite
+/// activity waits present at that observation, without submitting author input.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionSelection {
     pub kind: ActionKind,
-    pub option_keys: Vec<String>,
+    /// Shared ordered identities; serialized as an ordinary string array.
+    pub option_keys: Arc<[String]>,
+    /// Digest of accepted editable values; narrative choices use null.
+    pub input_state: Option<Arc<str>>,
     pub selected: usize,
 }
 
@@ -154,7 +166,7 @@ pub struct RunDiagnostic {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RunReport {
     pub outcome: RunOutcome,
-    pub actions: Vec<ActionSelection>,
+    pub actions: ActionTrace,
     pub steps: u64,
     pub elapsed: Duration,
     pub diagnostic: Option<RunDiagnostic>,
@@ -212,7 +224,8 @@ type DriveFailure = (RunOutcome, RunDiagnostic);
 
 struct Decision {
     kind: ActionKind,
-    option_keys: Vec<String>,
+    option_keys: Arc<[String]>,
+    input_state: Option<Arc<str>>,
     actions: Vec<DecisionAction>,
 }
 
@@ -221,12 +234,107 @@ enum DecisionAction {
     Control {
         position: [f64; 2],
         text: Option<&'static str>,
+        submit: bool,
+        binding: Option<(reel_ui::input::Binding, f32)>,
     },
+    WaitForActivities(Vec<aside_vm::executor::WaitId>),
+}
+
+const WAIT_FINITE: &str = "@wait:finite-activities";
+
+fn control_input_state(targets: &[reel_player::session::InputTarget]) -> Arc<str> {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write as _;
+    let mut hash = Sha256::new();
+    for target in targets {
+        for value in [&target.key, &target.state] {
+            hash.update((value.len() as u64).to_le_bytes());
+            hash.update(value.as_bytes());
+        }
+    }
+    let mut encoded = String::with_capacity(64);
+    for byte in hash.finalize() {
+        write!(encoded, "{byte:02x}").expect("formatting into String");
+    }
+    encoded.into()
 }
 
 enum PhysicalInput {
     Pointer(reel_ui::core::PointerEvent),
     Text(reel_ui::core::TextEvent),
+}
+
+/// A deterministic virtual keyboard uses the ordinary desktop event path.
+/// Physical codes remain authoritative for bindings; character keys use US layout.
+fn keyboard_event(
+    code: reel_ui::core::keyboard::Code,
+    state: reel_ui::core::keyboard::KeyState,
+) -> reel_ui::core::keyboard::KeyboardEvent {
+    use reel_ui::core::keyboard::*;
+    let name = code.to_string();
+    let logical = match name.as_str() {
+        "Space" => " ",
+        "NumpadEnter" => "Enter",
+        "ControlLeft" | "ControlRight" => "Control",
+        "ShiftLeft" | "ShiftRight" => "Shift",
+        "AltLeft" | "AltRight" => "Alt",
+        "MetaLeft" | "MetaRight" => "Meta",
+        "Backquote" => "`",
+        "Backslash" | "IntlBackslash" => "\\",
+        "BracketLeft" => "[",
+        "BracketRight" => "]",
+        "Comma" => ",",
+        "Equal" => "=",
+        "Minus" | "NumpadSubtract" => "-",
+        "Period" | "NumpadDecimal" => ".",
+        "Quote" => "'",
+        "Semicolon" => ";",
+        "Slash" | "NumpadDivide" => "/",
+        "NumpadAdd" => "+",
+        "NumpadMultiply" => "*",
+        "NumpadEqual" => "=",
+        other => other.strip_prefix("Digit").unwrap_or(other),
+    };
+    let key = if let Some(letter) = name.strip_prefix("Key").filter(|letter| letter.len() == 1) {
+        Key::Character(letter.to_ascii_lowercase())
+    } else if let Some(number) = name
+        .strip_prefix("Numpad")
+        .filter(|number| number.len() == 1 && number.as_bytes()[0].is_ascii_digit())
+    {
+        Key::Character(number.into())
+    } else {
+        logical
+            .parse()
+            .unwrap_or(Key::Named(NamedKey::Unidentified))
+    };
+    let modifier = match logical {
+        "Control" => Modifiers::CONTROL,
+        "Shift" => Modifiers::SHIFT,
+        "Alt" => Modifiers::ALT,
+        "Meta" => Modifiers::META,
+        _ => Modifiers::empty(),
+    };
+    KeyboardEvent {
+        state,
+        key,
+        code,
+        location: if !modifier.is_empty() && name.ends_with("Left") {
+            Location::Left
+        } else if !modifier.is_empty() && name.ends_with("Right") {
+            Location::Right
+        } else if name.starts_with("Numpad") {
+            Location::Numpad
+        } else {
+            Location::Standard
+        },
+        modifiers: if state.is_down() {
+            modifier
+        } else {
+            Modifiers::empty()
+        },
+        repeat: false,
+        is_composing: false,
+    }
 }
 
 struct Runner {
@@ -236,11 +344,26 @@ struct Runner {
     saves: tempfile::TempDir,
     wake: WakeSignal,
     host: Rc<DeterministicEnvironment>,
+    window: window::VirtualWindow,
     steps: u64,
     logical_ns: u64,
     started: Instant,
-    actions: Vec<ActionSelection>,
+    actions: ActionTrace,
     pending_input: VecDeque<PhysicalInput>,
+    pending_target: Option<String>,
+    settling_waits: Option<Vec<aside_vm::executor::WaitId>>,
+    waiting_activities: Vec<aside_vm::executor::WaitId>,
+    progress_at: Option<Instant>,
+}
+
+struct DriveProgress {
+    steps: u64,
+    logical_ns: u64,
+    accepted_frames: u64,
+    interaction: Option<&'static str>,
+    interaction_generation: Option<u64>,
+    content_id: Option<String>,
+    read_content: usize,
 }
 
 impl Runner {
@@ -275,6 +398,8 @@ impl Runner {
         .map_err(|error| anyhow::anyhow!("media setup: {error}"))?;
         let resource_wake = wake.clone();
         driver.set_resource_waker(Arc::new(move || resource_wake.wake()));
+        let mut window = window::VirtualWindow::new();
+        window.publish(&mut driver);
         let storage = SaveService::new(
             Arc::new(DirectorySaves::new(saves.path(), 256 << 20)),
             QueueLimits {
@@ -283,10 +408,12 @@ impl Runner {
             },
             wake.clone(),
         );
-        let runtime = StoryRuntime::new(driver)
+        let mut runtime = StoryRuntime::new(driver)
             .with_saves(RuntimeSaves::new(storage, 256 << 20))
             .with_media_factory(media);
-        let presentation = presentation::Presentation::new(runtime.driver())
+        runtime.set_frame_capture_enabled(true);
+        runtime.set_window_control_enabled(true);
+        let presentation = presentation::Presentation::new(runtime.driver(), wake.clone())
             .map_err(|error| anyhow::anyhow!(error))?;
         Ok(Self {
             runtime,
@@ -295,11 +422,16 @@ impl Runner {
             saves,
             wake,
             host,
+            window,
             steps: 0,
             logical_ns: 0,
             started: Instant::now(),
-            actions: Vec::new(),
+            actions: ActionTrace::default(),
             pending_input: VecDeque::new(),
+            pending_target: None,
+            settling_waits: None,
+            waiting_activities: Vec::new(),
+            progress_at: None,
         })
     }
 
@@ -308,29 +440,217 @@ impl Runner {
     }
 
     fn reset_presentation(&mut self) -> Result<(), DriveFailure> {
-        let frames = self.presentation.frames;
-        self.presentation = presentation::Presentation::new(self.runtime.driver())
+        self.presentation
+            .reset(self.runtime.driver())
             .map_err(|error| self.failure(RunOutcome::ResourceFailure, error))?;
-        self.presentation.frames = frames;
         self.pending_input.clear();
+        self.pending_target = None;
+        self.settling_waits = None;
+        self.waiting_activities.clear();
         Ok(())
+    }
+
+    /// Rebuild the saved accepted input boundary without executing its successor.
+    fn restored_decision(&mut self) -> Result<Option<Decision>, DriveFailure> {
+        loop {
+            self.steps += 1;
+            let driver = self.runtime.driver_mut().map_err(|error| {
+                (
+                    RunOutcome::RuntimeFailure,
+                    RunDiagnostic {
+                        message: error.to_string(),
+                        stack: Vec::new(),
+                    },
+                )
+            })?;
+            self.window.publish(driver);
+            self.presentation.set_viewport(self.window.size());
+            let ready = driver
+                .prepare_restored(SliceBudget::default())
+                .map_err(|error| {
+                    (
+                        RunOutcome::RuntimeFailure,
+                        RunDiagnostic {
+                            message: error.to_string(),
+                            stack: Vec::new(),
+                        },
+                    )
+                })?;
+            if !ready {
+                if driver.ui().assets().pending_io() && !self.wake.acknowledge() {
+                    std::thread::park();
+                }
+                continue;
+            }
+            let stamp = driver.projection_stamp();
+            let presented = self
+                .presentation
+                .present(driver, self.steps)
+                .map_err(|error| {
+                    (
+                        RunOutcome::ResourceFailure,
+                        RunDiagnostic {
+                            message: error,
+                            stack: Vec::new(),
+                        },
+                    )
+                })?;
+            if !presented {
+                if driver.ui().assets().pending_io() {
+                    if !self.wake.acknowledge() {
+                        std::thread::park();
+                    }
+                    continue;
+                }
+                let ready = driver
+                    .prepare_restored(SliceBudget::default())
+                    .map_err(|error| {
+                        (
+                            RunOutcome::RuntimeFailure,
+                            RunDiagnostic {
+                                message: error.to_string(),
+                                stack: Vec::new(),
+                            },
+                        )
+                    })?;
+                if !ready || driver.projection_stamp() != stamp {
+                    continue;
+                }
+                return Err(self.failure(
+                    RunOutcome::CheckpointUnavailable,
+                    "restored input presentation remains unavailable after projection preparation",
+                ));
+            }
+            if driver.narrative_input_ready()
+                && let Some(InteractionView::Choice(choice)) =
+                    driver.ui().session().view().interaction
+            {
+                return Ok(Some(Decision {
+                    kind: ActionKind::Choice,
+                    input_state: None,
+                    option_keys: choice
+                        .options()
+                        .iter()
+                        .map(|option| option.key().to_owned())
+                        .collect(),
+                    actions: choice
+                        .options()
+                        .iter()
+                        .map(|option| {
+                            DecisionAction::Choice(InputAction::Select(option.id().clone()))
+                        })
+                        .collect(),
+                }));
+            }
+            let targets = driver.input_targets(&self.presentation.bridge, self.presentation.root);
+            return Self::control_decision(driver, targets);
+        }
+    }
+
+    fn control_decision(
+        driver: &AsideSessionUi,
+        targets: Vec<reel_player::session::InputTarget>,
+    ) -> Result<Option<Decision>, DriveFailure> {
+        if targets.is_empty() {
+            return Ok(None);
+        }
+        let mut decision = Decision {
+            kind: ActionKind::Controls,
+            input_state: Some(control_input_state(&targets)),
+            option_keys: targets.iter().map(|target| target.key.clone()).collect(),
+            actions: targets
+                .into_iter()
+                .map(|target| DecisionAction::Control {
+                    position: target.position,
+                    text: target.accepts_text.then_some("Player"),
+                    submit: target.submits_text,
+                    binding: target
+                        .binding
+                        .map(|binding| (binding, target.binding_value)),
+                })
+                .collect(),
+        };
+        let waits = driver.adapter().finite_activity_waits().map_err(|error| {
+            (
+                RunOutcome::RuntimeFailure,
+                RunDiagnostic {
+                    message: error.to_string(),
+                    stack: Vec::new(),
+                },
+            )
+        })?;
+        if !waits.is_empty() {
+            decision.option_keys = std::iter::once(WAIT_FINITE.into())
+                .chain(decision.option_keys.iter().cloned())
+                .collect();
+            decision
+                .actions
+                .insert(0, DecisionAction::WaitForActivities(waits));
+        }
+        Ok(Some(decision))
     }
 
     /// Run ordinary VM slices at the current virtual instant. Advance time only
     /// when the scheduler reaches a timed wait, and park only for real asset IO.
     fn drive(&mut self) -> Result<Option<Decision>, DriveFailure> {
+        self.drive_inner(None)
+    }
+
+    fn drive_observed(
+        &mut self,
+        mut observer: impl FnMut(DriveProgress) -> Result<(), DriveFailure>,
+    ) -> Result<Option<Decision>, DriveFailure> {
+        self.drive_inner(Some(&mut observer))
+    }
+
+    fn drive_inner(
+        &mut self,
+        mut observer: Option<&mut dyn FnMut(DriveProgress) -> Result<(), DriveFailure>>,
+    ) -> Result<Option<Decision>, DriveFailure> {
         loop {
-            if !self.runtime.capturing() && self.runtime.driver().adapter().has_capture_requests() {
-                let pending = self
-                    .runtime
-                    .frame_capture_pending()
-                    .map_err(|error| self.failure(RunOutcome::RuntimeFailure, error.to_string()))?;
-                if pending {
-                    return Err(self.failure(
-                        RunOutcome::Blocked,
-                        "stage.capture requires a rendering backend; this CPU check stopped at the capture request",
-                    ));
-                }
+            if let Some(observer) = observer.as_mut()
+                && self
+                    .progress_at
+                    .is_none_or(|at| at.elapsed() >= Duration::from_secs(1))
+            {
+                self.progress_at = Some(Instant::now());
+                let session = self.runtime.driver().ui().session();
+                let (interaction, interaction_generation, content_id) =
+                    match session.view().interaction.as_ref() {
+                        Some(InteractionView::Dialogue(dialogue)) => (
+                            Some("dialogue"),
+                            Some(dialogue.id().generation()),
+                            dialogue
+                                .lines()
+                                .last()
+                                .map(|line| line.content_id().to_owned()),
+                        ),
+                        Some(InteractionView::Choice(choice)) => {
+                            (Some("choice"), Some(choice.id().generation()), None)
+                        }
+                        None => (None, None, None),
+                    };
+                observer(DriveProgress {
+                    steps: self.steps,
+                    logical_ns: self.logical_ns,
+                    accepted_frames: self.presentation.frames,
+                    interaction,
+                    interaction_generation,
+                    content_id,
+                    read_content: session.read_progress().len(),
+                })?;
+            }
+            if !self.runtime.capturing() {
+                let driver = self.runtime.driver_mut().map_err(|error| {
+                    (
+                        RunOutcome::RuntimeFailure,
+                        RunDiagnostic {
+                            message: error.to_string(),
+                            stack: Vec::new(),
+                        },
+                    )
+                })?;
+                self.window.publish(driver);
             }
             if self.wake.acknowledge() {
                 self.runtime.wake_input();
@@ -355,10 +675,11 @@ impl Runner {
             if identity != self.runtime.driver().ui().session().identity() {
                 self.reset_presentation()?;
             }
-            let mut submitted_input = false;
+            let vm = self.runtime.driver().adapter().vm();
+            self.waiting_activities
+                .retain(|&wait| vm.wait_is_pending(wait));
+            let waiting_for_activities = !self.waiting_activities.is_empty();
             if !self.runtime.capturing() {
-                let idle = !self.runtime.needs_tick();
-                let checkpoint_ready = self.runtime.checkpoint_ready();
                 let driver = self.runtime.driver_mut().map_err(|error| {
                     (
                         RunOutcome::RuntimeFailure,
@@ -368,6 +689,40 @@ impl Runner {
                         },
                     )
                 })?;
+                let capture = self.presentation.drive_capture(driver).map_err(|error| {
+                    (
+                        RunOutcome::ResourceFailure,
+                        RunDiagnostic {
+                            message: error,
+                            stack: Vec::new(),
+                        },
+                    )
+                })?;
+                if capture.changed {
+                    self.runtime.wake_input();
+                }
+                if capture.busy {
+                    self.presentation
+                        .wait_capture()
+                        .map_err(|error| self.failure(RunOutcome::ResourceFailure, error))?;
+                    continue;
+                }
+            }
+            let mut submitted_input = false;
+            if !self.runtime.capturing() {
+                let idle = !self.runtime.needs_tick();
+                let checkpoint_ready = self.runtime.checkpoint_ready()
+                    && !self.runtime.driver().adapter().has_capture_requests();
+                let driver = self.runtime.driver_mut().map_err(|error| {
+                    (
+                        RunOutcome::RuntimeFailure,
+                        RunDiagnostic {
+                            message: error.to_string(),
+                            stack: Vec::new(),
+                        },
+                    )
+                })?;
+                self.presentation.set_viewport(self.window.size());
                 let presented = self
                     .presentation
                     .present(driver, self.steps)
@@ -381,10 +736,77 @@ impl Runner {
                         )
                     })?;
                 if presented {
+                    if self
+                        .window
+                        .drive(
+                            driver,
+                            &mut self.presentation.bridge,
+                            self.presentation.root,
+                        )
+                        .map_err(|error| {
+                            (
+                                RunOutcome::RuntimeFailure,
+                                RunDiagnostic {
+                                    message: error,
+                                    stack: Vec::new(),
+                                },
+                            )
+                        })?
+                    {
+                        self.runtime.wake_input();
+                        continue;
+                    }
                     if driver.state() == StoryState::Finished && idle {
                         return Ok(None);
                     }
-                    if let Some(input) = self.pending_input.pop_front() {
+                    if let Some(mut input) = self.pending_input.pop_front() {
+                        if matches!(input, PhysicalInput::Text(_))
+                            && self.pending_target.as_ref().is_some_and(|key| {
+                                !driver
+                                    .input_targets(
+                                        &self.presentation.bridge,
+                                        self.presentation.root,
+                                    )
+                                    .iter()
+                                    .any(|target| &target.key == key)
+                            })
+                        {
+                            self.pending_input.clear();
+                            self.runtime.wake_input();
+                            continue;
+                        }
+                        if let PhysicalInput::Pointer(event) = &mut input
+                            && let Some(key) = &self.pending_target
+                        {
+                            use reel_ui::{core::PointerEvent, dpi::PhysicalPosition};
+                            let target = driver
+                                .input_targets(&self.presentation.bridge, self.presentation.root)
+                                .into_iter()
+                                .find(|target| &target.key == key);
+                            if let Some(target) = target {
+                                let position =
+                                    PhysicalPosition::new(target.position[0], target.position[1]);
+                                match event {
+                                    PointerEvent::Move(update) => {
+                                        update.current.position = position
+                                    }
+                                    PointerEvent::Down(button) | PointerEvent::Up(button) => {
+                                        button.state.position = position
+                                    }
+                                    _ => {}
+                                }
+                            } else {
+                                let pointer = match event {
+                                    PointerEvent::Move(update) => update.pointer,
+                                    PointerEvent::Down(button) | PointerEvent::Up(button) => {
+                                        button.pointer
+                                    }
+                                    _ => unreachable!("queued click event"),
+                                };
+                                *event = PointerEvent::Cancel(pointer);
+                                self.pending_input.clear();
+                            }
+                        }
                         match input {
                             PhysicalInput::Pointer(event) => {
                                 driver.handle_pointer(&mut self.presentation.bridge, event)
@@ -402,16 +824,32 @@ impl Runner {
                                 },
                             )
                         })?;
+                        driver
+                            .publish_pointer_position(
+                                &self.presentation.bridge,
+                                self.presentation.root,
+                            )
+                            .map_err(|error| {
+                                (
+                                    RunOutcome::RuntimeFailure,
+                                    RunDiagnostic {
+                                        message: error.to_string(),
+                                        stack: Vec::new(),
+                                    },
+                                )
+                            })?;
                         submitted_input = true;
                     } else if checkpoint_ready
+                        && !waiting_for_activities
                         && !driver.has_runnable_tasks()
                         && !driver.activities_pending()
                     {
                         if driver.narrative_input_ready() {
                             match driver.ui().session().view().interaction {
                                 Some(InteractionView::Choice(choice)) => {
-                                    return Ok(Some(Decision {
+                                    let decision = Decision {
                                         kind: ActionKind::Choice,
+                                        input_state: None,
                                         option_keys: choice
                                             .options()
                                             .iter()
@@ -426,11 +864,24 @@ impl Runner {
                                                 ))
                                             })
                                             .collect(),
-                                    }));
+                                    };
+                                    if self.runtime.checkpoint_ready()
+                                        && !self.runtime.driver().adapter().has_capture_requests()
+                                    {
+                                        return Ok(Some(decision));
+                                    }
+                                    continue;
                                 }
                                 Some(InteractionView::Dialogue(dialogue))
-                                    if dialogue.reveal_skippable()
-                                        || dialogue.awaiting_advance() =>
+                                    if (dialogue.reveal_skippable()
+                                        && dialogue.lines().iter().any(|line| {
+                                            !line.playback_complete() || !line.advance_requested()
+                                        }))
+                                        || (dialogue.awaiting_advance()
+                                            && dialogue
+                                                .lines()
+                                                .iter()
+                                                .all(|line| line.playback_complete())) =>
                                 {
                                     let action = InputAction::Advance(dialogue.id());
                                     submitted_input = driver
@@ -444,32 +895,60 @@ impl Runner {
                                                 },
                                             )
                                         })?
-                                        .is_some();
+                                        .is_some_and(|outcome| {
+                                            outcome != reel_engine::InputOutcome::Pending
+                                        });
                                 }
                                 _ => {}
                             }
                         }
                         if !submitted_input
                             && (!driver.narrative_input_ready()
-                                || driver.ui().session().view().interaction.is_none())
+                                || driver.ui().session().view().interaction.is_none()
+                                || matches!(driver.ui().session().view().interaction,
+                                    Some(InteractionView::Dialogue(dialogue))
+                                        if !dialogue.awaiting_advance() && dialogue.lines().iter().all(|line|
+                                            line.playback_complete() && (!dialogue.reveal_skippable() || line.advance_requested()))))
                         {
                             let targets = driver
                                 .input_targets(&self.presentation.bridge, self.presentation.root);
-                            if !targets.is_empty() {
-                                return Ok(Some(Decision {
-                                    kind: ActionKind::Controls,
-                                    option_keys: targets
-                                        .iter()
-                                        .map(|target| target.key.clone())
-                                        .collect(),
-                                    actions: targets
-                                        .into_iter()
-                                        .map(|target| DecisionAction::Control {
-                                            position: target.position,
-                                            text: target.accepts_text.then_some("Player"),
+                            if let Some(decision) = Self::control_decision(driver, targets)? {
+                                let repeated = self.actions.last().is_some_and(|action| {
+                                    action.kind == ActionKind::Controls
+                                        && action.option_keys == decision.option_keys
+                                        && action.option_keys[action.selected] != WAIT_FINITE
+                                });
+                                let settling =
+                                    if repeated {
+                                        if self.settling_waits.is_none() {
+                                            self.settling_waits = Some(
+                                                driver.adapter().finite_activity_waits().map_err(
+                                                    |error| {
+                                                        (
+                                                            RunOutcome::RuntimeFailure,
+                                                            RunDiagnostic {
+                                                                message: error.to_string(),
+                                                                stack: Vec::new(),
+                                                            },
+                                                        )
+                                                    },
+                                                )?,
+                                            );
+                                        }
+                                        self.settling_waits.as_ref().unwrap().iter().any(|&wait| {
+                                            driver.adapter().vm().wait_is_pending(wait)
                                         })
-                                        .collect(),
-                                }));
+                                    } else {
+                                        false
+                                    };
+                                if !settling {
+                                    if self.runtime.checkpoint_ready()
+                                        && !self.runtime.driver().adapter().has_capture_requests()
+                                    {
+                                        return Ok(Some(decision));
+                                    }
+                                    continue;
+                                }
                             }
                         }
                     }
@@ -521,6 +1000,9 @@ impl Runner {
         let Some(action) = decision.actions.get(selected) else {
             return Err(self.failure(RunOutcome::ReplayMismatch, "selected action is unavailable"));
         };
+        self.settling_waits = None;
+        self.pending_target = None;
+        self.waiting_activities.clear();
         match action {
             DecisionAction::Choice(action) => {
                 let outcome = self
@@ -544,49 +1026,111 @@ impl Runner {
                     ));
                 }
             }
+            DecisionAction::WaitForActivities(waits) => {
+                self.waiting_activities.clone_from(waits);
+            }
             DecisionAction::Control {
                 position: [x, y],
                 text,
+                submit,
+                binding,
             } => {
+                self.pending_target = Some(decision.option_keys[selected].clone());
                 use reel_ui::{core::*, dpi::PhysicalPosition};
-                let pointer = PointerInfo {
-                    pointer_id: Some(PointerId::PRIMARY),
-                    persistent_device_id: None,
-                    pointer_type: PointerType::Mouse,
-                };
-                let state = PointerState {
-                    position: PhysicalPosition::new(*x, *y),
-                    ..Default::default()
-                };
-                self.pending_input.extend([
-                    PhysicalInput::Pointer(PointerEvent::Move(PointerUpdate {
-                        pointer,
-                        current: state.clone(),
-                        coalesced: vec![],
-                        predicted: vec![],
-                    })),
-                    PhysicalInput::Pointer(PointerEvent::Down(PointerButtonEvent {
-                        pointer,
-                        state: state.clone(),
-                        button: Some(PointerButton::Primary),
-                    })),
-                    PhysicalInput::Pointer(PointerEvent::Up(PointerButtonEvent {
-                        pointer,
-                        state,
-                        button: Some(PointerButton::Primary),
-                    })),
-                ]);
+                if let Some((binding, value)) = binding
+                    && !matches!(binding.control, reel_ui::input::Control::Pointer(_))
+                {
+                    use reel_ui::input::{Control, InputDeviceId, InputEvent};
+                    let device = if matches!(binding.control, Control::Key(_)) {
+                        InputDeviceId::Keyboard
+                    } else {
+                        InputDeviceId::Gamepad(1)
+                    };
+                    for value in [*value, 0.] {
+                        let event = if let Control::Key(code) = binding.control {
+                            TextEvent::Keyboard(keyboard_event(
+                                code,
+                                if value == 0. {
+                                    keyboard::KeyState::Up
+                                } else {
+                                    keyboard::KeyState::Down
+                                },
+                            ))
+                        } else {
+                            TextEvent::Input(InputEvent::Value {
+                                device,
+                                control: binding.control,
+                                value,
+                            })
+                        };
+                        self.pending_input.push_back(PhysicalInput::Text(event));
+                    }
+                } else {
+                    let button = binding
+                        .and_then(|(binding, _)| {
+                            if let reel_ui::input::Control::Pointer(button) = binding.control {
+                                Some(button)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(PointerButton::Primary);
+                    let pointer = PointerInfo {
+                        pointer_id: Some(PointerId::PRIMARY),
+                        persistent_device_id: None,
+                        pointer_type: PointerType::Mouse,
+                    };
+                    let state = PointerState {
+                        position: PhysicalPosition::new(*x, *y),
+                        ..Default::default()
+                    };
+                    self.pending_input.extend([
+                        PhysicalInput::Pointer(PointerEvent::Move(PointerUpdate {
+                            pointer,
+                            current: state.clone(),
+                            coalesced: vec![],
+                            predicted: vec![],
+                        })),
+                        PhysicalInput::Pointer(PointerEvent::Down(PointerButtonEvent {
+                            pointer,
+                            state: state.clone(),
+                            button: Some(button),
+                        })),
+                        PhysicalInput::Pointer(PointerEvent::Up(PointerButtonEvent {
+                            pointer,
+                            state,
+                            button: Some(button),
+                        })),
+                    ]);
+                }
                 if let Some(text) = text {
                     self.pending_input
                         .push_back(PhysicalInput::Text(TextEvent::ClipboardPaste(
                             (*text).into(),
                         )));
                 }
+                if *submit {
+                    for state in [keyboard::KeyState::Down, keyboard::KeyState::Up] {
+                        self.pending_input
+                            .push_back(PhysicalInput::Text(TextEvent::Keyboard(
+                                keyboard::KeyboardEvent {
+                                    state,
+                                    key: keyboard::Key::Named(keyboard::NamedKey::Enter),
+                                    code: keyboard::Code::Enter,
+                                    location: keyboard::Location::Standard,
+                                    modifiers: keyboard::Modifiers::empty(),
+                                    repeat: false,
+                                    is_composing: false,
+                                },
+                            )));
+                    }
+                }
             }
         }
         self.actions.push(ActionSelection {
             kind: decision.kind,
             option_keys: decision.option_keys.clone(),
+            input_state: decision.input_state.clone(),
             selected,
         });
         self.runtime.wake_input();
@@ -648,6 +1192,7 @@ pub fn run(
         let selected = if let Some(expected) = prefix.get(runner.actions.len()) {
             if expected.kind != decision.kind
                 || expected.option_keys != decision.option_keys
+                || expected.input_state != decision.input_state
                 || expected.selected >= decision.actions.len()
             {
                 break Err(runner.failure(

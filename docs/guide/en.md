@@ -107,7 +107,7 @@ Check compiles the source and reports errors without running the story. Add `--f
 `reel test` starts the current game, operates menus, advances dialogue and explores choices. Virtual time accelerates waits, and branch checkpoints reuse execution state. Source and compiled artifacts run separately with isolated temporary storage. `build/test/report.json` records the paths actually visited and runtime errors; failing paths can be replayed. Use `--assets` to select a resource directory or `--format json` for a machine-readable report.
 
 Reports mark runtime, resource or replay errors as `failed`. Observed menu cycles, input the host cannot operate and interrupted checkpoints produce `incomplete` with unresolved paths retained.
-The check uses CPU layout and resource loading. A `stage.capture` request marks its path `incomplete`; execution after that request requires a host with a rendering backend.
+Progress is appended to `build/test/progress.jsonl`, with the current summary in `partial.json`; discovered failures produce replay files immediately. During entrance activities, the checker explores both waiting for completion and operating the current controls. Authored `stage.capture` requests render offscreen on demand, and window operations use virtual window state.
 
 ```powershell
 reel test

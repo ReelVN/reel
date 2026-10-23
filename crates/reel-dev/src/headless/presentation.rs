@@ -2,10 +2,12 @@
 use reel_core::{
     budget::{BudgetCategory, BudgetPool, QueueLimits},
     identity::{FrameId, SurfaceEpoch},
+    wake::WakeSignal,
 };
 use reel_player::{
     aside_session::AsideSessionUi,
     assets::{AssetKind, LoadId},
+    session::InputFocus,
 };
 use reel_ui::{
     app::{RenderRoot, RenderRootOptions, WindowSizePolicy},
@@ -14,19 +16,25 @@ use reel_ui::{
     },
     core::{DefaultProperties, Widget, WidgetId, WindowEvent},
     dpi::PhysicalSize,
-    frame::{BuildLimits, FrameBuild, FrameInfo, StepBudget},
+    frame::{BuildLimits, FrameBuild, FrameInfo, RenderFrame, StepBudget},
     resources::{ResourceData, ResourceLease, ResourceSnapshot},
 };
 use std::{collections::BTreeMap, sync::Arc};
+
+use super::capture::{CaptureProgress, FrameCapture};
 
 pub(super) struct Presentation {
     pub bridge: PresentationBridge,
     pub root: WidgetId,
     pool: BudgetPool,
     size: Option<[u32; 2]>,
+    viewport_size: Option<[u32; 2]>,
     fonts: BTreeMap<String, ResourceLease>,
     requests: BTreeMap<String, LoadId>,
     active_fonts: Vec<String>,
+    accepted: Option<RenderFrame>,
+    capture: FrameCapture,
+    restored_focus: Option<InputFocus>,
     pub frames: u64,
 }
 
@@ -34,7 +42,7 @@ impl Presentation {
     pub fn fonts_ready(&self) -> bool {
         self.requests.is_empty()
     }
-    pub fn new(driver: &AsideSessionUi) -> Result<Self, String> {
+    pub fn new(driver: &AsideSessionUi, wake: WakeSignal) -> Result<Self, String> {
         let widget = driver.widget().prepare();
         let root = widget.id();
         let tree = RenderRoot::new(
@@ -71,16 +79,52 @@ impl Presentation {
                 },
             ),
             size: None,
+            viewport_size: None,
             fonts: BTreeMap::new(),
             requests: BTreeMap::new(),
             active_fonts: Vec::new(),
+            accepted: None,
+            capture: FrameCapture::new(wake),
+            restored_focus: None,
             frames: 0,
         })
     }
 
+    pub fn reset(&mut self, driver: &AsideSessionUi) -> Result<(), String> {
+        let mut next = Self::new(driver, self.capture.wake())?;
+        self.capture.reset()?;
+        std::mem::swap(&mut next.capture, &mut self.capture);
+        next.frames = self.frames;
+        next.viewport_size = self.viewport_size;
+        *self = next;
+        Ok(())
+    }
+
+    pub fn drive_capture(
+        &mut self,
+        driver: &mut AsideSessionUi,
+    ) -> Result<CaptureProgress, String> {
+        self.capture.drive(driver, self.accepted.as_ref())
+    }
+
+    pub fn wait_capture(&mut self) -> Result<(), String> {
+        self.capture.wait()
+    }
+
+    pub fn set_viewport(&mut self, size: [u32; 2]) {
+        self.viewport_size = Some(size);
+    }
+
+    pub fn restore_focus(&mut self, focus: InputFocus) {
+        self.restored_focus = Some(focus);
+    }
+
     fn configure(&mut self, driver: &AsideSessionUi) -> Result<bool, String> {
         let settings = driver.adapter().game_settings();
-        let size = settings.canvas_size.unwrap_or([640, 420]);
+        let size = self
+            .viewport_size
+            .or(settings.canvas_size)
+            .unwrap_or([640, 420]);
         if self.size != Some(size) {
             self.bridge
                 .handle_window_event(WindowEvent::Resize(PhysicalSize::new(size[0], size[1])));
@@ -139,6 +183,11 @@ impl Presentation {
         driver
             .sync(&mut self.bridge, self.root)
             .map_err(|error| error.to_string())?;
+        if let Some(focus) = &self.restored_focus
+            && !driver.restore_input_focus(&mut self.bridge, self.root, focus)
+        {
+            return Ok(false);
+        }
         let Some((source, receipt)) = driver
             .record(&mut self.bridge, self.root, FrameId(frame))
             .map_err(|error| error.to_string())?
@@ -210,9 +259,16 @@ impl Presentation {
         {
             return Err("CPU frame acceptance was rejected".into());
         }
+        if let Some(focus) = &self.restored_focus {
+            driver
+                .restore_input_pointer(&mut self.bridge, focus)
+                .map_err(|error| error.to_string())?;
+        }
         driver
             .presented_frame(&self.bridge, &receipt, &drawing)
             .map_err(|error| error.to_string())?;
+        self.accepted = Some(drawing);
+        self.restored_focus = None;
         self.frames += 1;
         Ok(true)
     }

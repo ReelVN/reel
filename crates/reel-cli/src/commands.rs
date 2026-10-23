@@ -27,7 +27,7 @@ pub enum Command {
     PrepareImage(PrepareImage),
     /// Format every Aside source file in the current project's src directory.
     Fmt(Fmt),
-    /// Explore the current game through the real headless source and ASB runtime.
+    /// Explore the game, writing live progress and partial replay traces to build/test.
     Test(Test),
 }
 

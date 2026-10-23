@@ -3,15 +3,99 @@
 //! Prefixes share parent links. Reports retain action identities and diagnostics;
 //! runtime checkpoints and their storage stay in the execution backend.
 
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 
-use crate::headless::{ActionSelection, RunEnvironment, RunOutcome, RunReport};
+use crate::headless::{ActionKind, ActionSelection, RunEnvironment, RunOutcome, RunReport};
 
 /// Current report and playback trace format.
 pub const SCHEMA_VERSION: u32 = 1;
+
+/// Independent execution pass supplying an exploration event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExplorationPass {
+    /// Source-compiled program discovering accepted input paths.
+    Source,
+    /// Independently loaded ASB following the source's exact input paths.
+    Asb,
+}
+
+/// Incremental observations emitted before a complete exploration report exists.
+///
+/// An observer may persist these borrowed values immediately. Terminal reports
+/// contain their exact action paths; decisions describe accepted input only.
+#[derive(Debug, Serialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum ExplorationEvent<'a> {
+    /// A fresh independent runtime is about to start this pass.
+    PassStarted {
+        /// Runtime and playback mode.
+        pass: ExplorationPass,
+    },
+    /// Bounded progress sample during a long stretch without input decisions.
+    Progress {
+        /// Runtime and playback mode.
+        pass: ExplorationPass,
+        /// Execution steps on the currently running path.
+        steps: u64,
+        /// Current virtual host-clock sample, in nanoseconds.
+        logical_ns: u64,
+        /// CPU frames accepted during this runtime pass.
+        accepted_frames: u64,
+        /// Active narrative interaction protocol, without narrative text.
+        interaction: Option<&'a str>,
+        /// Generation of the active interaction in its current session.
+        interaction_generation: Option<u64>,
+        /// Stable content ID of the last active dialogue line.
+        content_id: Option<&'a str>,
+        /// Distinct completed content IDs on the current path.
+        read_content: usize,
+    },
+    /// Execution reached an accepted input boundary.
+    Decision {
+        /// Runtime and playback mode.
+        pass: ExplorationPass,
+        /// Current node in the exploration's shared prefix table.
+        prefix: usize,
+        /// Number of submitted actions leading to this boundary.
+        depth: usize,
+        /// Input protocol whose ordered targets follow.
+        kind: ActionKind,
+        /// Exact accepted editable values used to validate this action boundary.
+        input_state: Option<&'a str>,
+        /// Complete ordered identities offered by the accepted frame.
+        option_keys: &'a [String],
+        /// Distinct control observations retained across source branches.
+        observed_states: usize,
+        /// Saved boundaries with alternatives awaiting execution.
+        frontier: usize,
+    },
+    /// One source action extends the shared prefix table without copying a path.
+    Branch {
+        /// Accepted boundary supplying this action's kind and ordered targets.
+        parent_prefix: usize,
+        /// Shared prefix produced by submitting this action.
+        prefix: usize,
+        /// Index into the parent decision's ordered target keys.
+        selected: usize,
+    },
+    /// One exact execution path reached a terminal classification.
+    Terminal {
+        /// Runtime and playback mode.
+        pass: ExplorationPass,
+        /// Prefix selected when this execution resumed from a checkpoint.
+        requested_prefix: usize,
+        /// Last submitted prefix before the terminal classification.
+        reached_prefix: usize,
+        /// Actual path, terminal result and original source diagnostic.
+        report: &'a RunReport,
+        /// Exact observed boundary for an incomplete route, when available.
+        boundary: Option<&'a ReplayBoundary>,
+    },
+}
 
 /// Stable playback inputs for the current game.
 ///
@@ -31,6 +115,23 @@ pub struct ReplayTrace {
     pub environment: RunEnvironment,
     /// Narrative choices and UI control activations, in execution order.
     pub actions: Vec<ActionSelection>,
+    /// Accepted input observation at which this incomplete trace stops.
+    pub boundary: Option<ReplayBoundary>,
+}
+
+/// A recorded input boundary that remains explicitly incomplete on replay.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplayBoundary {
+    /// Incomplete result observed at this boundary.
+    pub outcome: RunOutcome,
+    /// Input protocol used by the accepted frame.
+    pub kind: ActionKind,
+    /// Complete ordered identities offered at the stopping point.
+    pub option_keys: Arc<[String]>,
+    /// Fingerprint of controls, reading progress, host window and isolated storage.
+    pub fingerprint: String,
+    /// Original observation or checkpoint limitation.
+    pub reason: String,
 }
 
 impl ReplayTrace {
@@ -53,6 +154,37 @@ impl ReplayTrace {
             ensure!(
                 action.selected < action.option_keys.len(),
                 "replay action {index} selects an unavailable target"
+            );
+            ensure!(
+                action.kind == ActionKind::Choice || action.input_state.is_some(),
+                "replay control action {index} has no accepted input state"
+            );
+            if let Some(state) = &action.input_state {
+                ensure!(
+                    state.len() == 64 && state.bytes().all(|byte| byte.is_ascii_hexdigit()),
+                    "replay action {index} has an invalid input state digest"
+                );
+            }
+        }
+        if let Some(boundary) = &self.boundary {
+            ensure!(
+                matches!(
+                    boundary.outcome,
+                    RunOutcome::UiCycle | RunOutcome::CheckpointUnavailable
+                ),
+                "replay boundary must describe an observed incomplete result"
+            );
+            ensure!(
+                !boundary.option_keys.is_empty(),
+                "replay boundary has no input targets"
+            );
+            ensure!(
+                boundary.fingerprint.len() == 64
+                    && boundary
+                        .fingerprint
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit()),
+                "invalid replay boundary fingerprint"
             );
         }
         Ok(())
@@ -116,6 +248,8 @@ pub struct ExplorationRun {
     pub asb: RunReport,
     /// Requested-prefix or source/ASB identity mismatch, independent of timing.
     pub replay_mismatch: Option<String>,
+    /// Exact source observation at which an incomplete execution stopped.
+    pub boundary: Option<ReplayBoundary>,
 }
 
 /// Versioned report of observed action routes in the current game.
@@ -211,9 +345,21 @@ impl ExplorationRecorder {
 
     /// Records one actual source/ASB route and returns its reached prefix ID.
     pub fn record(&mut self, requested_id: usize, pair: RunPair) -> Result<usize> {
+        self.record_boundary(requested_id, pair, None)
+    }
+
+    /// Records an exact incomplete boundary together with its source/ASB results.
+    pub fn record_boundary(
+        &mut self,
+        requested_id: usize,
+        pair: RunPair,
+        boundary: Option<ReplayBoundary>,
+    ) -> Result<usize> {
         let requested = self.report.prefix(requested_id)?;
         let mut mismatch = compare_replay(&pair);
-        for (index, (expected, actual)) in requested.iter().zip(&pair.source.actions).enumerate() {
+        for (index, (expected, actual)) in
+            requested.iter().zip(pair.source.actions.iter()).enumerate()
+        {
             if expected != actual {
                 mismatch = Some(format!(
                     "source diverged from requested prefix at action {index}"
@@ -248,6 +394,7 @@ impl ExplorationRecorder {
             source: pair.source,
             asb: pair.asb,
             replay_mismatch: mismatch,
+            boundary,
         });
         Ok(reached)
     }
@@ -309,7 +456,7 @@ pub fn compare_replay(pair: &RunPair) -> Option<String> {
         .source
         .actions
         .iter()
-        .zip(&pair.asb.actions)
+        .zip(pair.asb.actions.iter())
         .enumerate()
     {
         if source.kind != asb.kind {
@@ -318,6 +465,11 @@ pub fn compare_replay(pair: &RunPair) -> Option<String> {
         if source.option_keys != asb.option_keys {
             return Some(format!(
                 "source/ASB offered target identities differ at action {index}"
+            ));
+        }
+        if source.input_state != asb.input_state {
+            return Some(format!(
+                "source/ASB editable input states differ at action {index}"
             ));
         }
         if source.selected != asb.selected {
@@ -370,7 +522,8 @@ mod tests {
     fn action(kind: ActionKind, selected: usize) -> ActionSelection {
         ActionSelection {
             kind,
-            option_keys: vec!["left".into(), "right".into()],
+            option_keys: vec!["left".into(), "right".into()].into(),
+            input_state: (kind == ActionKind::Controls).then(|| "cd".repeat(32).into()),
             selected,
         }
     }
@@ -383,7 +536,7 @@ mod tests {
         let source = RunReport {
             outcome,
             steps: actions.len() as u64 + 1,
-            actions,
+            actions: actions.into(),
             elapsed: Duration::ZERO,
             diagnostic: None,
             accepted_frames: 0,
@@ -437,13 +590,15 @@ mod tests {
     #[test]
     fn source_asb_target_kind_and_terminal_mismatches_fail() {
         let mut changed_options = pair(vec![choice(0)], RunOutcome::Finished);
-        changed_options.asb.actions[0].option_keys.swap(0, 1);
+        let mut changed = choice(0);
+        Arc::make_mut(&mut changed.option_keys).swap(0, 1);
+        changed_options.asb.actions = vec![changed].into();
         assert_eq!(
             replay(&[choice(0)], changed_options).status,
             TestStatus::Failed
         );
         let mut changed_kind = pair(vec![choice(0)], RunOutcome::Finished);
-        changed_kind.asb.actions[0].kind = ActionKind::Controls;
+        changed_kind.asb.actions = vec![action(ActionKind::Controls, 0)].into();
         assert_eq!(
             replay(&[choice(0)], changed_kind).status,
             TestStatus::Failed
@@ -508,6 +663,7 @@ mod tests {
                 unix_seconds: 1_700_000_000,
             },
             actions: vec![action(ActionKind::Controls, 1), choice(0)],
+            boundary: None,
         };
         trace.validate()?;
         let decoded: ReplayTrace = serde_json::from_slice(&serde_json::to_vec(&trace)?)?;
