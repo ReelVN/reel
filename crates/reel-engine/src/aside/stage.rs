@@ -197,6 +197,10 @@ pub(super) enum NodeProperty {
     /// Foreground text color as a CSS hex color.
     #[aside(name = "color", ty = String, default = "#ffffff", validate = validate_color)]
     Color,
+    /// Optional two-color paint for text and control captions. Explicit rich-text
+    /// colors override it. Changing paint retains the shaped layout.
+    #[aside(name = "text_gradient", ty = Any, doc_type = aside_host::source::nullable(aside_host::source::named("reel::types::LinearGradient")), default = null, validate = super::gradients::validate)]
+    TextGradient,
     /// Node background color; null leaves the background transparent.
     #[aside(name = "background", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::String), default = null, validate = validate_background)]
     Background,
@@ -1897,7 +1901,7 @@ fn boolean(value: Value) -> Result<bool, AdapterError> {
         .as_bool()
         .ok_or(AdapterError::Input("node property requires bool"))
 }
-fn color(heap: &Heap, value: Value) -> Result<[u8; 4], AdapterError> {
+pub(super) fn color(heap: &Heap, value: Value) -> Result<[u8; 4], AdapterError> {
     let info = heap.info(value)?;
     if info.kind != ObjectKind::String || !matches!(info.len, 7 | 9) {
         return Err(AdapterError::Input("color requires #rrggbb or #rrggbbaa"));
@@ -2087,6 +2091,11 @@ fn validate_background(heap: &Heap, value: Value) -> Result<(), HeapError> {
     }
 }
 fn validate_text_fade(kind: &NodeKind, props: &NodeProps) -> Result<(), AdapterError> {
+    if matches!(kind, NodeKind::TextInput { .. }) && props.text_gradient.is_some() {
+        return Err(AdapterError::Input(
+            "text_gradient applies to text and control captions",
+        ));
+    }
     let source = match kind {
         NodeKind::Text(text) => Some(text.as_ref()),
         NodeKind::Button { label, .. }
@@ -2272,6 +2281,7 @@ fn read_props(
         text_shadow_y: number(get(NodeProperty::TextShadowY)?)?,
         text_shadow_color: color(heap, get(NodeProperty::TextShadowColor)?)?,
         color: color(heap, get(NodeProperty::Color)?)?,
+        text_gradient: super::gradients::project(heap, get(NodeProperty::TextGradient)?)?,
         background: if background.tag() == ValueTag::Null {
             None
         } else {

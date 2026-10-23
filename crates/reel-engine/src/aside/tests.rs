@@ -19,6 +19,7 @@ mod dynamic_stage;
 mod flow_layout;
 mod frame_animation;
 mod geometry;
+mod gradients;
 mod host_budget;
 mod image_colors;
 mod localization;

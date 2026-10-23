@@ -5,7 +5,7 @@ use crate::{
         render_text_lines,
     },
     imaging::Painter,
-    kurbo::{Affine, Point, Rect},
+    kurbo::{Affine, Point, Rect, Vec2},
     peniko::{Brush, Color},
     reel_text::{self, FontContext, Layout, LayoutContext, PositionedLayoutItem},
 };
@@ -421,6 +421,7 @@ impl Paragraph {
             &[],
             1.,
             None,
+            None,
         );
     }
     #[expect(
@@ -440,7 +441,10 @@ impl Paragraph {
         graphemes: &[usize],
         inherited_alpha: f32,
         brush_override: Option<&Brush>,
+        gradient: Option<crate::core::TextGradientPaint>,
     ) {
+        let gradient =
+            gradient.filter(|_| self.default_color.is_none() && brush_override.is_none());
         self.brushes[0] = self.default_color.clone().unwrap_or_else(|| color.clone());
         let range = self.position(visible.start)..self.position(visible.end);
         let lines = self.visible_lines(viewport, transform, outline);
@@ -458,6 +462,7 @@ impl Paragraph {
                 outline,
                 lines.clone(),
                 brush_override,
+                gradient,
             );
         } else {
             let opacity = |range: Range<usize>| {
@@ -479,6 +484,7 @@ impl Paragraph {
                 lines.clone(),
                 Some(&opacity),
                 brush_override,
+                gradient,
             );
         }
         if self.emphasis {
@@ -568,6 +574,7 @@ impl Paragraph {
                     graphemes,
                     inherited_alpha,
                     brush_override,
+                    gradient.map(|g| g.translated(Vec2::new(base_x as f64, base_y as f64))),
                 );
                 if visible.start <= item.range.start && item.range.end <= visible.end {
                     let note_x = position.x + (item.width - item.note.width()) / 2.;
@@ -584,6 +591,7 @@ impl Paragraph {
                         inherited_alpha
                             * fade.map_or(1., |fade| fade.alpha(graphemes, item.range.clone())),
                         brush_override,
+                        gradient.map(|g| g.translated(Vec2::new(note_x as f64, position.y as f64))),
                     );
                 }
             }

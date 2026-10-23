@@ -427,6 +427,8 @@ pub struct NodeProps {
     pub text_shadow_y: f64,
     pub text_shadow_color: [u8; 4],
     pub color: [u8; 4],
+    /// Immutable foreground paint; explicit inline colors take precedence.
+    pub text_gradient: Option<crate::core::TextGradient>,
     pub background: Option<[u8; 4]>,
     /// Nonnegative inside-border width in logical pixels; painting clamps it to half the short edge.
     /// Decorations retain the layout and hit rectangle; padding controls the content inset.
@@ -494,6 +496,7 @@ impl Default for NodeProps {
             text_shadow_y: 0.,
             text_shadow_color: [0, 0, 0, 255],
             color: [255; 4],
+            text_gradient: None,
             background: None,
             border_width: 0.,
             border_color: [255; 4],

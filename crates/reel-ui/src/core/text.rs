@@ -80,6 +80,135 @@ pub struct TextShadow {
     pub color: peniko::Color,
 }
 
+/// Coordinates in which a text gradient repeats.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextGradientSpace {
+    Bounds,
+    Glyph,
+}
+
+/// Compact two-color foreground paint. Angles follow CSS clockwise degrees.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextGradient {
+    pub from: [u8; 4],
+    pub to: [u8; 4],
+    pub angle: f64,
+    pub space: TextGradientSpace,
+}
+impl TextGradient {
+    pub(crate) fn brush(self, bounds: kurbo::Rect) -> Brush {
+        let rgba = |c: [u8; 4]| peniko::Color::from_rgba8(c[0], c[1], c[2], c[3]);
+        crate::properties::types::Gradient::new_linear(self.angle.to_radians())
+            .with_stops([rgba(self.from), rgba(self.to)])
+            .get_peniko_gradient_for_rect(bounds)
+            .into()
+    }
+}
+
+/// Root paragraph bounds expressed in the current ruby paragraph's coordinates.
+#[derive(Clone, Copy)]
+pub(crate) struct TextGradientPaint {
+    pub gradient: TextGradient,
+    pub bounds: kurbo::Rect,
+}
+impl TextGradientPaint {
+    pub fn translated(self, offset: Vec2) -> Self {
+        Self {
+            bounds: self.bounds - offset,
+            ..self
+        }
+    }
+}
+
+fn paint_glyph_fill(
+    paint: Option<TextGradientPaint>,
+    fallback: &Brush,
+    glyphs: &[Glyph],
+    em: f32,
+    ascent: f32,
+    mut draw: impl FnMut(&Brush, &[Glyph]),
+) {
+    let Some(paint) = paint else {
+        draw(fallback, glyphs);
+        return;
+    };
+    if paint.gradient.space == TextGradientSpace::Bounds {
+        draw(&paint.gradient.brush(paint.bounds), glyphs);
+    } else if let Some(first) = glyphs.first() {
+        let bounds = |glyph: &Glyph| {
+            kurbo::Rect::new(
+                glyph.x as f64,
+                (glyph.y - ascent) as f64,
+                (glyph.x + em) as f64,
+                (glyph.y - ascent + em) as f64,
+            )
+        };
+        // A cross-line gradient shares one brush and one draw for a whole baseline.
+        if paint.gradient.angle.to_radians().sin().abs() < 1e-12
+            && glyphs.iter().all(|glyph| glyph.y == first.y)
+        {
+            draw(&paint.gradient.brush(bounds(first)), glyphs);
+        } else {
+            for glyph in glyphs {
+                draw(
+                    &paint.gradient.brush(bounds(glyph)),
+                    std::slice::from_ref(glyph),
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod gradient_tests {
+    use super::*;
+
+    #[test]
+    fn text_gradient_batches_baselines_and_repeats_oblique_em_cells() {
+        let glyphs = [
+            Glyph {
+                id: 1,
+                x: 0.,
+                y: 20.,
+            },
+            Glyph {
+                id: 2,
+                x: 24.,
+                y: 20.,
+            },
+        ];
+        let mut paint = TextGradientPaint {
+            gradient: TextGradient {
+                from: [255; 4],
+                to: [128, 128, 128, 255],
+                angle: 180.,
+                space: TextGradientSpace::Glyph,
+            },
+            bounds: kurbo::Rect::new(0., 0., 48., 24.),
+        };
+        let fallback = Brush::Solid(peniko::Color::BLACK);
+        let mut counts = Vec::new();
+        paint_glyph_fill(Some(paint), &fallback, &glyphs, 24., 20., |brush, group| {
+            assert!(matches!(brush, Brush::Gradient(_)));
+            counts.push(group.len());
+        });
+        assert_eq!(counts, [2]);
+        paint.gradient.angle = 90.;
+        let mut brushes = Vec::new();
+        paint_glyph_fill(Some(paint), &fallback, &glyphs, 24., 20., |brush, group| {
+            assert_eq!(group.len(), 1);
+            brushes.push(brush.clone());
+        });
+        assert_ne!(brushes[0], brushes[1]);
+        paint.gradient.space = TextGradientSpace::Bounds;
+        counts.clear();
+        paint_glyph_fill(Some(paint), &fallback, &glyphs, 24., 20., |_, group| {
+            counts.push(group.len())
+        });
+        assert_eq!(counts, [2]);
+    }
+}
+
 use accesskit::{TextDecoration, TextDecorationStyle};
 use kurbo::{Affine, Line, Stroke, Vec2};
 use peniko::{Brush, Fill};
@@ -109,6 +238,7 @@ pub fn render_text(
         outline,
         0..layout.len(),
         None,
+        None,
     );
 }
 
@@ -122,6 +252,7 @@ pub(crate) fn render_text_lines(
     outline: Option<TextOutline>,
     lines: std::ops::Range<usize>,
     brush_override: Option<&Brush>,
+    gradient: Option<TextGradientPaint>,
 ) {
     for index in lines {
         let line = layout.get(index).unwrap();
@@ -177,6 +308,7 @@ pub(crate) fn render_text_lines(
                 .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
             let coords = run.normalized_coords();
             let brush = brush_override.unwrap_or(&brushes[style.brush.0]);
+            let gradient = gradient.filter(|_| brush_override.is_none() && style.brush.0 == 0);
             let glyphs: SmallVec<[Glyph; 16]> = glyph_run
                 .glyphs()
                 .map(|glyph| {
@@ -204,15 +336,24 @@ pub(crate) fn render_text_lines(
                         &glyphs,
                     );
             }
-            painter
-                .glyphs(font, brush)
-                .hint(hint)
-                .transform(transform)
-                .glyph_transform(glyph_xform)
-                .font_embolden(font_embolden)
-                .font_size(font_size)
-                .normalized_coords(coords)
-                .draw(&peniko::Style::Fill(Fill::NonZero), &glyphs);
+            paint_glyph_fill(
+                gradient,
+                brush,
+                &glyphs,
+                font_size,
+                run.metrics().ascent,
+                |brush, glyphs| {
+                    painter
+                        .glyphs(font, brush)
+                        .hint(hint)
+                        .transform(transform)
+                        .glyph_transform(glyph_xform)
+                        .font_embolden(font_embolden)
+                        .font_size(font_size)
+                        .normalized_coords(coords)
+                        .draw(&peniko::Style::Fill(Fill::NonZero), glyphs);
+                },
+            );
 
             if let Some(strikethrough) = &style.strikethrough {
                 let strikethrough_brush = brush_override.unwrap_or(&brushes[strikethrough.brush.0]);
@@ -295,6 +436,7 @@ pub(crate) fn render_text_revealed_lines(
         lines,
         None,
         None,
+        None,
     );
 }
 #[expect(
@@ -312,6 +454,7 @@ pub(crate) fn render_text_faded_lines(
     lines: std::ops::Range<usize>,
     alpha: Option<&dyn Fn(std::ops::Range<usize>) -> f32>,
     brush_override: Option<&Brush>,
+    gradient: Option<TextGradientPaint>,
 ) {
     for index in lines {
         let line = layout.get(index).unwrap();
@@ -341,6 +484,7 @@ pub(crate) fn render_text_faded_lines(
                 .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
             let coords = run.normalized_coords();
             let brush = brush_override.unwrap_or(&brushes[style.brush.0]);
+            let gradient = gradient.filter(|_| brush_override.is_none() && style.brush.0 == 0);
             let cluster_range = run.cluster_range();
             if last_run.as_ref() != Some(&cluster_range) {
                 glyph_start = 0;
@@ -432,19 +576,28 @@ pub(crate) fn render_text_faded_lines(
                             glyphs,
                         );
                 }
-                painter
-                    .glyphs(font, brush)
-                    .composite(crate::imaging::Composite {
-                        alpha,
-                        ..Default::default()
-                    })
-                    .hint(hint)
-                    .transform(transform)
-                    .glyph_transform(glyph_xform)
-                    .font_embolden(font_embolden)
-                    .font_size(font_size)
-                    .normalized_coords(coords)
-                    .draw(&peniko::Style::Fill(Fill::NonZero), glyphs);
+                paint_glyph_fill(
+                    gradient,
+                    brush,
+                    glyphs,
+                    font_size,
+                    run.metrics().ascent,
+                    |brush, glyphs| {
+                        painter
+                            .glyphs(font, brush)
+                            .composite(crate::imaging::Composite {
+                                alpha,
+                                ..Default::default()
+                            })
+                            .hint(hint)
+                            .transform(transform)
+                            .glyph_transform(glyph_xform)
+                            .font_embolden(font_embolden)
+                            .font_size(font_size)
+                            .normalized_coords(coords)
+                            .draw(&peniko::Style::Fill(Fill::NonZero), glyphs);
+                    },
+                );
             }
 
             if let Some(strikethrough) = &style.strikethrough {

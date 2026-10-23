@@ -1613,6 +1613,8 @@ fn arrive(node, destination_x, seconds = 0.5) {
 
 ## 十四 文字 媒体与扩展入口
 
+文字和按钮标题可以设置 `text_gradient: linear_gradient("#ffffff", "#999999")`。默认渐变覆盖段落；`space: "glyph"` 在各字形内重复。颜色与角度变化保留现有布局。
+
 ### 字体排版
 
 `letter_spacing` 和 `word_spacing` 分别调整字簇间距和空格宽度，默认 0，单位为逻辑舞台像素。正值拉开、负值收紧；词距作用于普通空格和不换行空格，与字距叠加。字距按整形后的字簇增加 advance，包含末字簇，组合字符和连字保留字体整形。text、控件标签和 text_input 共用这两个属性，支持直接赋值、bind/derive；实际变化时更新换行、光标和命中位置。富文本和 ruby 注音继承间距，text_fit: "shrink" 将间距与字号一起缩放。示例：[author_text_spacing.aside](../../examples/author_text_spacing/src/main.aside)。

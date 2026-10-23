@@ -168,6 +168,9 @@ pub(super) fn validate(
     multiline: bool,
 ) -> Result<(), HeapError> {
     let count = TextInputField::PROPERTIES.len() as u32;
+    if index == count + NodeProperty::TextGradient.index() as u32 && value.tag() != ValueTag::Null {
+        return Err(HeapError::TypeMismatch);
+    }
     if (metrics()..metrics() + 4).contains(&index) {
         if index < metrics() + 2 {
             if value.as_int().is_some_and(|n| n >= 0) {
@@ -198,6 +201,17 @@ pub(super) fn kind(
     limit: usize,
     multiline: bool,
 ) -> Result<NodeKind, AdapterError> {
+    let gradient = heap
+        .table_entry(
+            fields,
+            (TextInputField::PROPERTIES.len() + NodeProperty::TextGradient.index()) as u32,
+        )?
+        .1;
+    if gradient.tag() != ValueTag::Null {
+        return Err(AdapterError::Input(
+            "text_gradient applies to text and control captions",
+        ));
+    }
     for index in 0..TextInputField::PROPERTIES.len() as u32 {
         validate(heap, index, heap.table_entry(fields, index)?.1, multiline)?;
     }

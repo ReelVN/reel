@@ -58,6 +58,7 @@ pub struct Label {
     text_fit: TextFit,
     outline: Option<TextOutline>,
     shadow: Option<TextShadow>,
+    gradient: Option<crate::core::TextGradient>,
     pressed_link: Option<usize>,
     hovered_link: Option<usize>,
     focused_link: usize,
@@ -220,6 +221,7 @@ impl Label {
             text_fit: TextFit::None,
             outline: None,
             shadow: None,
+            gradient: None,
             pressed_link: None,
             hovered_link: None,
             focused_link: 0,
@@ -317,7 +319,24 @@ impl Label {
         self.text_fit = fit;
         self
     }
-    /// Paint one local-offset shadow using the same shaped paragraph and glyphs.
+    /// Paint the base foreground with a gradient; explicit inline colors take precedence.
+    pub fn with_gradient(mut self, gradient: Option<crate::core::TextGradient>) -> Self {
+        self.gradient = gradient;
+        self
+    }
+
+    /// Set foreground paint without invalidating the shaped text layout.
+    pub fn set_gradient(
+        this: &mut WidgetMut<'_, Self>,
+        gradient: Option<crate::core::TextGradient>,
+    ) {
+        if this.widget.gradient != gradient {
+            this.widget.gradient = gradient;
+            this.ctx.request_paint_only();
+        }
+    }
+
+    /// Set the independent text shadow.
     pub fn with_shadow(mut self, shadow: Option<TextShadow>) -> Self {
         self.shadow = shadow;
         self
@@ -1046,8 +1065,20 @@ impl Widget for Label {
                 &self.fade_graphemes,
                 1.,
                 Some(&brush),
+                None,
             );
         }
+        let gradient = self
+            .gradient
+            .map(|gradient| crate::core::TextGradientPaint {
+                gradient,
+                bounds: Rect::new(
+                    0.,
+                    0.,
+                    layout.layout.width() as f64,
+                    layout.layout.height() as f64,
+                ),
+            });
         layout.layout.paint_faded(
             painter,
             Affine::IDENTITY,
@@ -1060,6 +1091,7 @@ impl Widget for Label {
             &self.fade_graphemes,
             1.,
             None,
+            gradient,
         );
         if let Some(index) = self
             .hovered_link

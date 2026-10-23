@@ -1167,6 +1167,7 @@ impl SceneWidget {
                         .with_text_fit(view.node.props.text_fit)
                         .with_outline(text_outline(&view.node.props))
                         .with_shadow(text_shadow(&view.node.props))
+                        .with_gradient(view.node.props.text_gradient)
                         .with_style(StyleProperty::LineHeight(
                             reel_ui::reel_text::LineHeight::FontSizeRelative(
                                 view.node.props.line_height as f32,
@@ -1659,6 +1660,7 @@ impl SceneWidget {
             Label::set_text_fit(&mut label, view.node.props.text_fit);
             Label::set_outline(&mut label, text_outline(&view.node.props));
             Label::set_shadow(&mut label, text_shadow(&view.node.props));
+            Label::set_gradient(&mut label, view.node.props.text_gradient);
             if this.widget.node.props.line_height != view.node.props.line_height {
                 Label::insert_style(
                     &mut label,

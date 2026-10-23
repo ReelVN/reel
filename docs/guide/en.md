@@ -1604,6 +1604,8 @@ The same arrive function can be used for characters, title-screen buttons, or en
 
 ## 14 Text, Media, and Extension Entry Points
 
+Text and button captions accept `text_gradient: linear_gradient("#ffffff", "#999999")`. The gradient covers the paragraph by default; `space: "glyph"` repeats it inside each glyph. Color and angle changes preserve the existing layout.
+
 ### Typography
 
 `letter_spacing` and `word_spacing` adjust cluster advances and space widths, defaulting to 0 logical stage pixels. Positive values spread text out; negative values tighten it. Word spacing applies to ordinary and non-breaking spaces and adds to letter spacing. Letter spacing adds advance to each shaped cluster, including the last; combining characters and ligatures retain font shaping. Text, control labels and text_input share both properties through assignment, bind and derive. Changes update wrapping, caret positions and hit testing. Rich text and ruby annotations inherit spacing; text_fit: "shrink" scales spacing together with font size. Example: [author_text_spacing.aside](../../examples/author_text_spacing/src/main.aside).
