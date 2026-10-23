@@ -88,7 +88,7 @@ pub fn main() {
                                 ) * extent;
                             }
                         }
-                        if event.phase == "moved" {
+                        if event.phase == "moved" && event.dragging {
                             // Apply motion to the current reading anchor: measuring new
                             // rows may have corrected both the range and scroll_y.
                             let delta = event.y - grab.pointer;

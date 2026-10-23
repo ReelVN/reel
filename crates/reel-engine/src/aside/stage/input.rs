@@ -24,6 +24,8 @@ pub(in crate::aside) enum InputField {
     /// `released`, or `cancelled`). Movement follows accepted hit geometry;
     /// primary-button and touch drags stay captured until release or cancellation.
     /// Hover movement leaves focus and pointer capture unchanged.
+    /// `dragging` is true during this node's primary-button or touch drag,
+    /// including `pressed`, and false for hover, release, and cancellation.
     #[aside(name = "on_pointer", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnPointer,
     #[aside(name = "on_wheel", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]

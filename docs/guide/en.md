@@ -759,7 +759,7 @@ fn main() {
 
 Named actions map keyboard, mouse and gamepad controls to one behavior. Update continuous motion from a clock while input callbacks update intent. A focused text editor handles its keyboard and IME events.
 
-For pointer positions, use `input(on_pointer: |event| ...)` to read local `event.x`, `event.y`, and `event.phase`. Hover and drag movement produce `moved`; primary-button and touch gestures produce `pressed`, `released`, and `cancelled`.
+For pointer positions, use `input(on_pointer: |event| ...)` to read local `event.x`, `event.y`, and `event.phase`. Hover and drag movement produce `moved`; primary-button and touch gestures produce `pressed`, `released`, and `cancelled`. Custom drag controls use `event.dragging` to check whether the node owns an active drag.
 
 ```aside
 fn main() {
