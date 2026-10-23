@@ -16,12 +16,13 @@ fn datetime(timestamp: i64, timezone: Option<String>) -> Result<Zoned, NativeErr
     Ok(timestamp.to_zoned(timezone))
 }
 
-/// Return the current UTC Unix timestamp in whole seconds.
+/// Return UTC Unix time in whole seconds from the embedding host's environment.
+/// The ordinary environment reads the system clock.
 #[native(symbol = "std::time::now", effects = Effects(Effects::HOST))]
 pub(super) fn now(
-    #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,
+    #[aside(context)] context: &mut CallContext<'_, StandardLibrary>,
 ) -> Result<i64, NativeError> {
-    Ok(Timestamp::now().as_second())
+    Ok(context.host.environment.unix_seconds())
 }
 
 /// Split a Unix timestamp into civil time fields. `timezone` is an IANA name

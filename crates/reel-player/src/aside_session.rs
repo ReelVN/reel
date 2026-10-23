@@ -239,7 +239,10 @@ impl AsideSessionUi {
         Ok(self)
     }
     /// Supply host entropy and civil time before the initializer executes.
-    pub fn with_host_environment(mut self, environment: std::rc::Rc<dyn reel_engine::aside::HostEnvironment>) -> Self {
+    pub fn with_host_environment(
+        mut self,
+        environment: std::rc::Rc<dyn reel_engine::aside::HostEnvironment>,
+    ) -> Self {
         self.vm.set_host_environment(environment);
         self
     }

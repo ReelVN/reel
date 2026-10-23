@@ -20,7 +20,8 @@ pub(super) fn readonly(
 
 /// Create an independent random stream. Supplying an integer seed makes its
 /// sequence repeatable; omitting the seed chooses a new sequence. Saving and
-/// restoring the VM preserves each stream's position.
+/// restoring the VM preserves each stream's position. The embedding host supplies
+/// omitted seeds through its standard-library environment.
 ///
 /// ```aside
 /// fn main() {
@@ -34,7 +35,7 @@ pub(super) fn random(
     #[aside(context)] context: &mut CallContext<'_, StandardLibrary>,
     #[aside(default = null)] seed: Option<i64>,
 ) -> Result<Value, NativeError> {
-    let state = seed.unwrap_or_else(|| fastrand::Rng::new().get_seed() as i64);
+    let state = seed.unwrap_or_else(|| context.host.environment.random_seed() as i64);
     let vm = &mut context.vm;
     let fields = vm.heap_mut().alloc_table()?;
     let object = vm.heap_mut().alloc_host(
