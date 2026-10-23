@@ -33,7 +33,13 @@ fn platform_snapshot_and_configure_use_current_host_from_source_and_asb() {
             },
             ..Default::default()
         }));
-        vm.set_pointer_position(Some([12., 34.]));
+        assert!(vm.window.pointer_revision.is_none());
+        let roots = vm.vm.heap().root_slots();
+        assert!(vm.set_pointer_position(Some([12., 34.])).unwrap());
+        assert!(!vm.set_pointer_position(Some([12., 34.])).unwrap());
+        assert_eq!(vm.vm.heap().root_slots(), roots);
+        assert!(vm.window.pointer_revision.is_none());
+        assert!(!vm.has_runnable_tasks());
         advance(&mut session);
         models::drive(&mut vm, &mut session, false);
         let request = vm.take_window_request().unwrap().unwrap();
@@ -54,26 +60,7 @@ fn platform_snapshot_and_configure_use_current_host_from_source_and_asb() {
         assert!(
             matches!(session.view().interaction, Some(crate::InteractionView::Dialogue(d)) if d.text() == "save")
         );
-        let program = vm.vm.program().clone();
-        let mut capture = vm.snapshot_begin(&session).unwrap();
-        while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
-        let bytes = capture.finish().unwrap().encode().unwrap();
-        let mut image = snapshot::SessionSnapshot::decode(&bytes).unwrap();
-        let mut restore = SessionVm::restore_begin(
-            &mut image,
-            program,
-            VmLimits::default(),
-            SessionIdentity {
-                session_id: SessionId(41),
-                epoch: Epoch(20),
-            },
-            crate::ReadProgress::default(),
-            None,
-            None,
-        )
-        .unwrap();
-        while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
-        let (mut session, mut vm) = restore.finish().unwrap();
+        let (mut session, mut vm) = restore_session(&session, &vm);
         assert_eq!(vm.window_info().platform, WindowPlatform::Unknown);
         vm.set_window_info(Arc::new(WindowInfo {
             platform: WindowPlatform::Linux,
@@ -153,6 +140,90 @@ fn pointer_requests_have_owned_results_and_one_pending_slot_from_source_and_asb(
         assert!(vm.take_window_request().unwrap().is_none());
         assert!(
             matches!(session.view().interaction, Some(crate::InteractionView::Dialogue(d)) if d.text()=="done")
+        );
+    }
+}
+
+fn restore_session(session: &Session, vm: &SessionVm) -> (Session, SessionVm) {
+    let program = vm.vm.program().clone();
+    let mut capture = vm.snapshot_begin(session).unwrap();
+    while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+    let bytes = capture.finish().unwrap().encode().unwrap();
+    let mut image = snapshot::SessionSnapshot::decode(&bytes).unwrap();
+    let mut restore = SessionVm::restore_begin(
+        &mut image,
+        program,
+        VmLimits::default(),
+        SessionIdentity {
+            session_id: SessionId(41),
+            epoch: Epoch(20),
+        },
+        crate::ReadProgress::default(),
+        None,
+        None,
+    )
+    .unwrap();
+    while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+    restore.finish().unwrap()
+}
+
+#[test]
+fn pointer_derives_track_changes_restore_null_and_release_retired_consumers() {
+    let code = r#"fn opening() {
+        narrator("attach");
+        let snapshot = stage.pointer();
+        let marker = text("tracker",
+            x: derive(|| { let p = stage.pointer(); if p == null { -1 } else { p.x } }),
+            y: derive(|| { let p = stage.pointer(); if p == null { -1 } else { p.y } }));
+        stage.replace(marker);
+        narrator("tracking");
+        if snapshot.x != 12 || snapshot.y != 34 { throw "pointer snapshot changed"; }
+        marker.remove();
+        narrator("closed");
+    }"#;
+    let coordinates = |vm: &SessionVm| {
+        let root = vm.stage().node(vm.stage().root().unwrap()).unwrap();
+        [root.props.x, root.props.y]
+    };
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, false);
+        assert!(vm.set_pointer_position(Some([12., 34.])).unwrap());
+        assert!(vm.window.pointer_revision.is_none());
+        advance(&mut session);
+        models::drive(&mut vm, &mut session, false);
+        assert_eq!(coordinates(&vm), [12., 34.]);
+        assert!(vm.window.pointer_revision.is_some());
+        assert!(vm.set_pointer_position(Some([20., 30.])).unwrap());
+        assert!(vm.set_pointer_position(Some([40., 50.])).unwrap());
+        assert!(vm.has_runnable_tasks());
+        models::drive(&mut vm, &mut session, false);
+        assert_eq!(coordinates(&vm), [40., 50.]);
+        assert!(!vm.set_pointer_position(Some([40., 50.])).unwrap());
+        assert!(!vm.has_runnable_tasks());
+        assert!(vm.set_pointer_position(None).unwrap());
+        models::drive(&mut vm, &mut session, false);
+        assert_eq!(coordinates(&vm), [-1., -1.]);
+        assert!(vm.set_pointer_position(Some([60., 70.])).unwrap());
+        models::drive(&mut vm, &mut session, false);
+        let (mut session, mut vm) = restore_session(&session, &vm);
+        assert!(
+            vm.has_runnable_tasks(),
+            "restore must refresh the ephemeral dependency"
+        );
+        models::drive(&mut vm, &mut session, false);
+        assert_eq!(coordinates(&vm), [-1., -1.]);
+        assert!(vm.set_pointer_position(Some([90., 100.])).unwrap());
+        models::drive(&mut vm, &mut session, false);
+        assert_eq!(coordinates(&vm), [90., 100.]);
+        advance(&mut session);
+        models::drive(&mut vm, &mut session, false);
+        collect(&mut vm);
+        assert!(vm.stage().root().is_none());
+        assert!(vm.set_pointer_position(Some([110., 120.])).unwrap());
+        assert!(
+            !vm.has_runnable_tasks(),
+            "retired consumers must not be retained by the source"
         );
     }
 }

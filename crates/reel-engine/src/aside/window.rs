@@ -1,5 +1,5 @@
 //! One serialized native-window request, with portable state supplied by its host.
-use super::{AdapterError, HostResponse, HostTicket, SessionVm, results, stage, text};
+use super::{AdapterError, HostResponse, HostTicket, SessionVm, observable, results, stage, text};
 use aside_vm::{Heap, RootKind, RootToken, Value, ValueTag};
 use reel_core::window::{WindowConfiguration, WindowInfo};
 use reel_ui::stage::NodeId;
@@ -34,6 +34,7 @@ struct Pending {
 pub(super) struct Window {
     info: Arc<WindowInfo>,
     pointer: Option<[f64; 2]>,
+    pub(super) pointer_revision: Option<RootToken>,
     serial: u64,
     pending: Option<Pending>,
 }
@@ -97,9 +98,44 @@ impl SessionVm {
     pub fn window_info(&self) -> &Arc<WindowInfo> {
         &self.window.info
     }
-    /// Host-only, ephemeral accepted stage coordinates. Never restored from a save.
-    pub fn set_pointer_position(&mut self, position: Option<[f64; 2]>) {
+    /// Publish ephemeral accepted stage coordinates. Returns whether the position changed.
+    /// Host updates compare coordinates and notify existing subscriptions;
+    /// the first derived read creates the source.
+    pub fn set_pointer_position(
+        &mut self,
+        position: Option<[f64; 2]>,
+    ) -> Result<bool, AdapterError> {
+        if self.window.pointer == position {
+            return Ok(false);
+        }
+        self.invalidate_pointer_observation()?;
         self.window.pointer = position;
+        Ok(true)
+    }
+    pub(super) fn invalidate_pointer_observation(&mut self) -> Result<(), AdapterError> {
+        if let Some(root) = self.window.pointer_revision {
+            let heap = self.vm.heap_mut();
+            let host = heap.root_value(root)?;
+            let previous = heap
+                .host_property(aside_vm::PropertyId { host, field: 0 })?
+                .as_bool()
+                .unwrap();
+            observable::publish(heap, host, 0, Value::bool(!previous))?;
+        }
+        Ok(())
+    }
+    fn observe_pointer(&mut self) -> Result<(), AdapterError> {
+        let heap = self.vm.heap_mut();
+        let host = if let Some(root) = self.window.pointer_revision {
+            heap.root_value(root)?
+        } else {
+            let host = observable::record(heap, &[("revision", Value::bool(false))], &[])?;
+            self.window.pointer_revision =
+                Some(heap.add_root(self.root_owner, RootKind::Host, host)?);
+            host
+        };
+        heap.observe_read(host, Some(0))?;
+        Ok(())
     }
     pub fn has_window_requests(&self) -> bool {
         !self.revoked && self.window.pending.as_ref().is_some_and(|p| !p.claimed)
@@ -119,6 +155,9 @@ impl SessionVm {
             return Ok(());
         }
         if symbol == "reel::stage::pointer" {
+            if self.vm.heap().reactive_evaluating() {
+                self.observe_pointer()?;
+            }
             let state = match self.window.pointer {
                 Some([x, y]) => table(
                     self.vm.heap_mut(),
@@ -311,8 +350,10 @@ aside_host::native_documentation! {
         /// request is not reversed by cancelling its result.
         "reel::window::configure";
         /// Return the last accepted stage-space pointer position as {x, y}, or null when
-        /// the host has no pointer position. This ephemeral input state is not restored
-        /// from a story save and is not a request to move the operating-system pointer.
+        /// the host has no pointer position. Inside derive, tracks actual position changes,
+        /// including transitions to or from null; ordinary calls return independent snapshots.
+        /// Updates run when the host publishes a changed position. Restored bindings read
+        /// null until the host publishes current input; returned snapshots save normally.
         "reel::stage::pointer";
         /// Request a host pointer move to finite stage-space x/y coordinates.
         /// `owner` is a required node and must still be permitted to receive input when the
