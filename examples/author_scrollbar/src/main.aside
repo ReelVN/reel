@@ -35,7 +35,7 @@ fn scrollbar(viewport, x, height) {
                     thumb_height.value / 2
                 };
             }
-            if event.phase == "pressed" || event.phase == "moved" {
+            if event.dragging {
                 if viewport.content_height > height {
                     viewport.scroll_y = clamp(
                         (event.y - drag.grab) / (height - thumb_height.value), 0, 1

@@ -139,6 +139,7 @@ fn dispatch(vm: &mut SessionVm, session: &mut Session, input: Input) {
                 node,
                 position: Point::new(12., 8.),
                 phase: PointerPhase::Moved,
+                dragging: false,
             },
         ),
         Input::Key => vm.input_key(

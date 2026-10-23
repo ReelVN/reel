@@ -128,6 +128,7 @@ impl NodeInput {
                 node,
                 position,
                 phase: PointerPhase::Cancelled,
+                dragging: false,
             }));
         }
         self.update(node, &InputEvent::Cancel, emit);
@@ -226,6 +227,7 @@ impl NodeInput {
             node,
             position: next.0,
             phase: next.1,
+            dragging: self.drag.is_some(),
         }));
         ctx.set_handled();
         true

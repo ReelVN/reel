@@ -167,6 +167,8 @@ pub struct NodePointer {
     pub node: NodeId,
     pub position: Point,
     pub phase: PointerPhase,
+    /// The node owns an active primary-button or touch drag after this event.
+    pub dragging: bool,
 }
 
 /// Unconsumed wheel input: local accepted position and logical window-axis pixels.

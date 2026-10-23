@@ -76,6 +76,7 @@ impl SessionVm {
                 let heap = self.vm.heap_mut();
                 super::observable::publish(heap, event, 1, Value::float(input.position.x))?;
                 super::observable::publish(heap, event, 2, Value::float(input.position.y))?;
+                super::observable::publish(heap, event, 4, Value::bool(input.dragging))?;
             }
             return Ok(true);
         }
@@ -95,6 +96,7 @@ impl SessionVm {
                     ("x", Value::float(input.position.x)),
                     ("y", Value::float(input.position.y)),
                     ("phase", phase),
+                    ("dragging", Value::bool(input.dragging)),
                 ],
                 &[],
             )?;

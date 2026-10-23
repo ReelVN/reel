@@ -2272,6 +2272,7 @@ fn camera_accepted_frame_pointer_clip_and_composition_cost() {
     let focused = f.bridge.root().focused_widget();
     let event = hover(&mut f, 200., 160.).expect("camera hover input");
     assert_eq!(event.node, f.red);
+    assert!(!event.dragging);
     assert!((event.position - Point::new(10., 10.)).hypot() < 1e-9);
     assert_eq!(f.bridge.root().focused_widget(), focused);
     assert!(
@@ -2290,6 +2291,7 @@ fn camera_accepted_frame_pointer_clip_and_composition_cost() {
     );
     let event = press(&mut f, 200., 160.).expect("camera input");
     assert_eq!(event.node, f.red);
+    assert!(event.dragging);
     assert!((event.position - Point::new(10., 10.)).hypot() < 1e-9);
     assert!(
         press(&mut f, 200., -40.).is_none(),

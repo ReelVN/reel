@@ -964,7 +964,7 @@ fn pending_pointer_moves_coalesce_across_gc_with_and_without_event_arguments() {
     use reel_ui::stage::{NodePointer, PointerPhase};
     for handler in [
         "|| { output.x += 1; }",
-        "|event| { output.x += 1; output.y = event.x; let initial = event.x; await run(delay(1)); if event.x != initial { throw \"started argument changed\"; } output.width = event.x; }",
+        "|event| { output.x += 1; output.y = event.x; output.height = if event.dragging {1} else {0}; let initial = event.x; let dragging = event.dragging; await run(delay(1)); if event.x != initial || event.dragging != dragging { throw \"started argument changed\"; } output.width = event.x; }",
     ] {
         for encoded in [false, true] {
             let code = format!(
@@ -986,12 +986,25 @@ fn pending_pointer_moves_coalesce_across_gc_with_and_without_event_arguments() {
                 node: input,
                 phase: PointerPhase::Moved,
                 position: reel_ui::kurbo::Point::new(x, 0.),
+                dragging: x == 20.,
             };
             assert!(vm.input_pointer(&mut session, &moved(10.)).unwrap());
             collect(&mut vm);
             assert!(vm.input_pointer(&mut session, &moved(20.)).unwrap());
             pump(&mut vm, &mut session);
             assert_eq!(text_x(&vm, "pointer"), 1., "pending moves share one task");
+            if handler.starts_with("|event|") {
+                let output = vm
+                    .stage()
+                    .nodes()
+                    .find(|n| n.kind == NodeKind::Text("pointer".into()))
+                    .unwrap();
+                assert_eq!(
+                    output.props.height,
+                    Some(1.),
+                    "coalescing updates drag state"
+                );
+            }
             assert!(vm.input_pointer(&mut session, &moved(30.)).unwrap());
             collect(&mut vm);
             pump(&mut vm, &mut session);
@@ -1010,6 +1023,7 @@ fn pending_pointer_moves_coalesce_across_gc_with_and_without_event_arguments() {
                     .unwrap();
                 assert_eq!(output.props.y, 30.);
                 assert_eq!(output.props.width, Some(30.));
+                assert_eq!(output.props.height, Some(0.));
             }
         }
     }
