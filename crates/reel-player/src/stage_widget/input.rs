@@ -202,7 +202,7 @@ impl NodeInput {
                 ctx.capture_pointer();
                 (ctx.local_position(e.state.position), PointerPhase::Pressed)
             }
-            PointerEvent::Move(e) if self.drag.is_some_and(|(owner, _)| owner == info) => {
+            PointerEvent::Move(e) if self.drag.is_none_or(|(owner, _)| owner == info) => {
                 (ctx.local_position(e.current.position), PointerPhase::Moved)
             }
             PointerEvent::Up(e)
@@ -217,8 +217,11 @@ impl NodeInput {
             }
             _ => return false,
         };
-        self.drag =
-            matches!(next.1, PointerPhase::Pressed | PointerPhase::Moved).then_some((info, next.0));
+        self.drag = match next.1 {
+            PointerPhase::Pressed => Some((info, next.0)),
+            PointerPhase::Moved => self.drag.map(|(owner, _)| (owner, next.0)),
+            PointerPhase::Released | PointerPhase::Cancelled => None,
+        };
         ctx.submit_action::<NodeEvent>(NodeEvent::Pointer(NodePointer {
             node,
             position: next.0,

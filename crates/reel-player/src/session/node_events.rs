@@ -70,7 +70,9 @@ pub(super) fn admit(
             if matches!(
                 input.phase,
                 reel_ui::stage::PointerPhase::Released | reel_ui::stage::PointerPhase::Cancelled
-            ) || binding.borrow().permits_control() =>
+            ) || input.phase == reel_ui::stage::PointerPhase::Moved
+                && binding.borrow().control_accepted.is_some()
+                || binding.borrow().permits_control() =>
         {
             events.borrow_mut().push(NodeEvent::Pointer(*input))
         }

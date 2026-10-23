@@ -2256,6 +2256,38 @@ fn camera_accepted_frame_pointer_clip_and_composition_cost() {
             _ => None,
         })
     };
+    let hover = |f: &mut Fixture, x, y| {
+        f.ui.handle_pointer(
+            &mut f.bridge,
+            cursor::pointer(PointerType::Mouse, (x, y), None),
+        )
+        .unwrap()
+        .events
+        .into_iter()
+        .find_map(|event| match event {
+            NodeEvent::Pointer(event) if event.phase == PointerPhase::Moved => Some(event),
+            _ => None,
+        })
+    };
+    let focused = f.bridge.root().focused_widget();
+    let event = hover(&mut f, 200., 160.).expect("camera hover input");
+    assert_eq!(event.node, f.red);
+    assert!((event.position - Point::new(10., 10.)).hypot() < 1e-9);
+    assert_eq!(f.bridge.root().focused_widget(), focused);
+    assert!(
+        hover(&mut f, 200., -40.).is_none(),
+        "hover respects the viewport clip"
+    );
+    assert!(
+        !f.ui
+            .handle_pointer(&mut f.bridge, pointer(false, 200., 160.))
+            .unwrap()
+            .events
+            .iter()
+            .any(|event| matches!(event,
+                NodeEvent::Pointer(event) if event.phase == PointerPhase::Released)),
+        "hover does not begin a drag"
+    );
     let event = press(&mut f, 200., 160.).expect("camera input");
     assert_eq!(event.node, f.red);
     assert!((event.position - Point::new(10., 10.)).hypot() < 1e-9);
@@ -2277,12 +2309,16 @@ fn camera_accepted_frame_pointer_clip_and_composition_cost() {
         )
         .unwrap();
     let pending = f.record();
+    let event = hover(&mut f, 200., 160.).expect("old accepted camera hover");
+    assert!((event.position - Point::new(10., 10.)).hypot() < 1e-9);
     let event = press(&mut f, 200., 160.).expect("old accepted camera input");
     assert!(
         (event.position - Point::new(10., 10.)).hypot() < 1e-9,
         "unaccepted camera motion cannot alter input coordinates"
     );
     f.accept(&pending);
+    let event = hover(&mut f, 200., 160.).expect("new accepted camera hover");
+    assert!((event.position - Point::new(30., 10.)).hypot() < 1e-9);
     let event = press(&mut f, 200., 160.).expect("new accepted camera input");
     assert!((event.position - Point::new(30., 10.)).hypot() < 1e-9);
     assert_eq!(f.layouts(), before);
