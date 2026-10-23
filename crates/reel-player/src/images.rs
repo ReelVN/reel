@@ -1,6 +1,6 @@
 //! Stage image subscriptions over the host's shared resource service.
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 use crate::assets::{AssetKind, Assets, LoadId};
 use reel_core::prepared_image::PreparedImage;
 use reel_ui::{

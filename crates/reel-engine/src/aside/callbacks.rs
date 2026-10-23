@@ -192,7 +192,7 @@ impl SessionVm {
         }
         if changed {
             self.feedback_only = self.reactive_ready && !pending && self.derived_task.is_none();
-            self.stage.sync(self.vm.heap_mut(), self.read_limit)?;
+            self.sync_stage_properties(self.feedback_only)?;
         }
         // Each callback sees the complete batch's current node state and its
         // own immutable transition. No events or tasks are made without a handler.
@@ -312,7 +312,7 @@ impl SessionVm {
         let Some((target, closure, value)) = self.stage.change(self.vm.heap_mut(), change)? else {
             return Ok(false);
         };
-        self.stage.sync(self.vm.heap_mut(), self.read_limit)?;
+        self.sync_stage_properties(false)?;
         if closure.tag() != ValueTag::Null {
             self.start_callback_with_event(session, change.node, closure, |heap| {
                 let event = heap.alloc_table()?;
@@ -346,7 +346,7 @@ impl SessionVm {
             reel_ui::widgets::TextInputEvent::CompositionCancelled
         ) {
             self.stage.cancel_text_composition(input.node);
-            self.stage.sync(self.vm.heap_mut(), self.read_limit)?;
+            self.sync_stage_properties(false)?;
             return Ok(true);
         }
         if let reel_ui::widgets::TextInputEvent::Deferred { intent, revision } = &input.event {
@@ -370,12 +370,12 @@ impl SessionVm {
             }
             queue.push(intent.clone())?;
             self.stage.mark_text_projection(input.node);
-            self.stage.sync(self.vm.heap_mut(), self.read_limit)?;
+            self.sync_stage_properties(false)?;
             return Ok(true);
         }
         if let reel_ui::widgets::TextInputEvent::ReplayCompleted(sequence) = input.event {
             self.stage.complete_text_replay(input.node, sequence);
-            self.stage.sync(self.vm.heap_mut(), self.read_limit)?;
+            self.sync_stage_properties(false)?;
             return Ok(true);
         }
         if let reel_ui::widgets::TextInputEvent::Undo {
@@ -411,7 +411,7 @@ impl SessionVm {
             queue.active = Some(task);
             queue.active_replay = *replay;
             self.stage.mark_text_projection(input.node);
-            self.stage.sync(self.vm.heap_mut(), self.read_limit)?;
+            self.sync_stage_properties(false)?;
             return Ok(true);
         }
         if let Some(accepted) = self.start_filtered_edit(session, input)? {
@@ -421,7 +421,7 @@ impl SessionVm {
         else {
             return Ok(false);
         };
-        self.stage.sync(self.vm.heap_mut(), self.read_limit)?;
+        self.sync_stage_properties(false)?;
         self.start_text_callback(session, input.node, target, closure, value)?;
         Ok(true)
     }

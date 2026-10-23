@@ -215,7 +215,7 @@ impl SessionVm {
         queue.active = Some(task);
         queue.active_replay = edit.replay;
         self.stage.mark_text_projection(input.node);
-        self.stage.sync(self.vm.heap_mut(), self.read_limit)?;
+        self.sync_stage_properties(false)?;
         Ok(Some(true))
     }
 }

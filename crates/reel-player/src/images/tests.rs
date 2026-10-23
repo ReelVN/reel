@@ -173,7 +173,9 @@ fn worker_errors_keep_constructor_location_and_cancelled_completions_cannot_resu
     assert_eq!(working.usage().bytes, 0);
 }
 
-struct ControlledIo(std::rc::Rc<std::cell::RefCell<reel_core::test_support::MemoryAssetIo>>);
+pub(crate) struct ControlledIo(
+    pub(crate) std::rc::Rc<std::cell::RefCell<reel_core::test_support::MemoryAssetIo>>,
+);
 impl reel_core::io::AssetIo for ControlledIo {
     fn capabilities(&self) -> reel_core::io::IoCaps {
         self.0.borrow().capabilities()

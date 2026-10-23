@@ -88,6 +88,7 @@ pub struct AsideSessionUi {
     state: StoryState,
     host_failure: Option<HostFailure>,
     transitions: crate::transitions::Transitions,
+    authored_stage_revision: u64,
 }
 
 impl AsideSessionUi {
@@ -121,6 +122,7 @@ impl AsideSessionUi {
             state: StoryState::Running,
             host_failure: None,
             transitions: Default::default(),
+            authored_stage_revision: 0,
         })
     }
     pub(crate) fn locale(&self) -> &str {
@@ -226,6 +228,7 @@ impl AsideSessionUi {
             state: StoryState::Running,
             host_failure: None,
             transitions: Default::default(),
+            authored_stage_revision: 0,
         })
     }
     pub fn with_media(
@@ -485,11 +488,13 @@ impl AsideSessionUi {
             {
                 return Ok(());
             }
-            if feedback || self.vm.stage_is_input_feedback() {
+            let authored_revision = self.vm.stage_authored_revision();
+            if authored_revision == self.authored_stage_revision {
                 self.ui.set_feedback_stage(self.vm.stage());
             } else {
                 self.ui.set_stage(self.vm.stage());
             }
+            self.authored_stage_revision = authored_revision;
             if !feedback {
                 self.ui.request_presentation(self.vm.presentation_request());
             }
