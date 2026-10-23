@@ -1,4 +1,23 @@
 //! Immutable prepared-image format shared by author tooling and resource consumers.
+//!
+//! Format v1 is a 24-byte little-endian manifest: `REELIMG1`, followed by four
+//! `u32` values for original width, original height, interior tile edge and
+//! level count. Dimensions and tile edge are positive. Each level halves both
+//! dimensions, rounding up, until the pyramid reaches 1 by 1.
+//!
+//! A manifest named `panorama.reel-image` uses adjacent tile files at
+//! `panorama.reel-image.tiles/N/X-Y.png`. Tiles include one neighboring pixel
+//! on every edge, clamped at image boundaries. The tile dimensions are the
+//! interior dimensions plus two gutter pixels, which must fit the device's
+//! texture limit. Preparation filters linear premultiplied colors and stores
+//! ordinary sRGB PNGs.
+//!
+//! Tooling decodes the original offline. Runtime consumers select levels and
+//! tiles from the composed viewport and physical scale, sharing resource leases
+//! between nodes. Required tiles hold presentation until ready; optional
+//! prefetch yields to required resources. Accepted and pending frames retain
+//! their actual leases. Tile interiors paint into the shared target, with the
+//! gutter providing bilinear samples across boundaries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PreparedImage {
     pub width: u32,

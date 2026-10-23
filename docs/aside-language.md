@@ -268,7 +268,13 @@ Rust 宿主内部弱登记复用 `Heap::peek_weakref`，在不运行 GC 的事�
 
 ## 十三 迭代
 
-当前 `for` 支持 array、tuple 和整数区间。每轮捕获的局部名称建立独立绑定。生成器保留为后续语言能力；语言级 Future、协作 thread、异步迭代及任务组尚未接入执行器。当前异步流程使用普通函数、宿主 Awaitable 和宿主任务接口。
+`for` 支持 array、tuple、整数区间和生成器。每轮捕获的局部名称建立独立绑定。
+
+`gen fn` 调用时按普通函数规则绑定参数和求值缺省值，返回生成器。第一次推进才执行正文；`yield value` 交付一个值并保留局部状态，下次推进从该处继续，`yield` 表达式的结果为 `null`。返回注解 `-> T` 约束最终返回值，逐项产出的类型由 `yield` 推断。
+
+`next()` 返回 `(done, value)`：产出时为 `(false, value)`，结束时交付一次 `(true, 最终返回值)`，以后返回 `(true, null)`。`for` 只消费产出值，结束、`break`、`return` 或异常退出时关闭迭代器。`close()` 返回 `null`，执行已进入的 `finally` 并关闭生成器；尚未开始或已经结束的生成器直接关闭。
+
+生成器恢复期间使用调用方的执行预算、效果和等待权限；正文及其调用链处于 `NoWait`。正在运行的生成器再次推进或关闭时报告 `InvalidState`。逃出正文的异常关闭生成器并在调用处传播。GC 和任务硬取消释放状态；显式关闭沿普通异常清理执行 `finally`。暂停状态、捕获和故障上下文参与同一 GC 与快照系统。
 
 ## 十四 异常 退出与资源
 
@@ -413,7 +419,7 @@ Value 使用显式标签，完整保留 int64、float64 和对象身份。布局
 公共格式位于 [aside-vm::bytecode](../crates/aside-vm/src/bytecode/FORMAT.md)，包含程序数据、验证和反汇编；aside-compiler 单向依赖它，格式模块不引用 Rowan、parser 或 Reel。下列合同规定编译结果与执行器的共同约束。
 
 程序与验证
-BytecodePackage 保存格式/语言/宿主 ABI 版本、内容版本、符号、常量、模块、函数、能力和源码映射。ModuleDef 包含规范化路径、固定导入/导出、全局绑定与初始化入口；FunctionDef 包含 Plain/Async/Generator/Native 类别、统一 Signature、捕获布局、寄存器数、代码和异常/清理区域。当前编码枚举中包含 Async，lowering 与执行准入尚未接通；Generator 对应尚未实现的生成器规划。Signature 保存参数名称/顺序/类型/可变性、缺省、rest、返回契约和效果。ParameterDefault 区分 Constant(ConstId) 与 Function(FunctionId)：字面常量直接引用常量池，表达式入口继承被调用闭包的定义处词法捕获和 ModuleInstance，并接收前序参数。仅省略实参时求缺省值；捕获分析包含缺省表达式，数组和表构造保持逐次执行。
+BytecodePackage 保存格式/语言/宿主 ABI 版本、内容版本、符号、常量、模块、函数、能力和源码映射。ModuleDef 包含规范化路径、固定导入/导出、全局绑定与初始化入口；FunctionDef 包含 Plain/Async/Generator/Native 类别、统一 Signature、捕获布局、寄存器数、代码和异常/清理区域。Generator 使用延迟正文和 Yield；Async 编码保留，lowering 与执行准入尚未接通。Signature 保存参数名称/顺序/类型/可变性、缺省、rest、返回契约和效果。ParameterDefault 区分 Constant(ConstId) 与 Function(FunctionId)：字面常量直接引用常量池，表达式入口继承被调用闭包的定义处词法捕获和 ModuleInstance，并接收前序参数。仅省略实参时求缺省值；捕获分析包含缺省表达式，数组和表构造保持逐次执行。
 脚本和 native 共用常量物化及参数类型检查。常量缺省复用不可变值，聚合常量的分片构造、临时根、取消与恢复沿普通常量加载协议；常量缺省不建立函数帧或前序参数副本。
 每次调用按参数顺序建立本次独立绑定，前序参数在后续缺省表达式开始前完成初始化。缺省表达式对前序参数的读写、其中产生的闭包与函数正文共享同一个词法绑定。需要共享可变身份的参数在这一步建立 Cell，正文入口复用它；捕获分析和 lowering 同时考虑缺省中的读写与闭包。已经初始化且身份无关的只读前缀可按值传递。全部调用实参仍先按源码顺序求值，再开始参数绑定。
 

@@ -71,6 +71,26 @@ let latest = values.pop();
 stage.replace(text(f"剩余 {values.len()} 项，最后一项 {latest}"));
 ```
 
+需要逐项计算内容时，用 `gen fn` 和 `yield`。调用创建生成器，`for` 每取一项才继续正文；提前退出循环会执行生成器的 `finally`。下面按需生成位置，避免建立中间数组。
+
+```aside
+gen fn positions(count: int) {
+    for index in 0..count {
+        yield (24 + index * 120, 40);
+    }
+}
+
+fn main() {
+    stage.replace(stack {
+        for (x, y) in positions(4) {
+            text("★", x: x, y: y);
+        }
+    });
+}
+```
+
+手动推进使用 `let (done, value) = items.next()`，`done` 区分结束与产出的 `null`；结束时返回一次最终结果。`items.close()` 提前结束生成器。生成器负责按需产生数据，等待对白与动画的流程继续使用普通函数。
+
 `get` 在键缺失时返回默认值，保留已存的 `null`、`false` 和 `0`。默认值按普通实参求值。
 
 ```aside
@@ -314,7 +334,13 @@ fn main() {
 }
 ```
 
-`camera` 把世界中的一个区域映射到视口。HUD 放在相机外的兄弟节点中保持固定。大图可先用 `reel prepare-image` 转为[分块图片](../prepared-images.md)。
+`camera` 把世界中的一个区域映射到视口。HUD 放在相机外的兄弟节点中保持固定。大图可以预先准备为分块图片，运行时只加载视口所需的层级和瓦片：
+
+```sh
+reel prepare-image original.png --output resources/panorama.reel-image
+```
+
+用 `image("panorama.reel-image")` 显示。将生成的清单及相邻 `.tiles` 目录一起放在资源目录，构建和导出会收集它们。`--tile-size` 默认 512；加上两像素边缘后须在设备纹理尺寸限制内。准备过程需要解码原图，运行时内存随可见区域分配。完整用法见 [author_large_image](../../examples/author_large_image/src/main.aside)。
 
 ```aside
 let view = camera(width: 960, height: 540, camera_x: 480, camera_y: 270) {
