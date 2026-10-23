@@ -294,12 +294,6 @@ impl<L: Language> SyntaxToken<L> {
     }
 
     /// Iterator over all the ancestors of this token excluding itself.
-    #[deprecated = "use `SyntaxToken::parent_ancestors` instead"]
-    pub fn ancestors(&self) -> impl Iterator<Item = SyntaxNode<L>> {
-        self.parent_ancestors()
-    }
-
-    /// Iterator over all the ancestors of this token excluding itself.
     pub fn parent_ancestors(&self) -> impl Iterator<Item = SyntaxNode<L>> {
         self.raw.ancestors().map(SyntaxNode::from)
     }

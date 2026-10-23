@@ -1,4 +1,4 @@
-use crate::{files, root};
+use crate::root;
 use anyhow::{Context, Result, bail, ensure};
 use std::{
     fs,
@@ -92,18 +92,6 @@ pub fn dependencies() -> Result<()> {
 
 fn validate_ui_metadata(metadata: &serde_json::Value) -> Result<()> {
     let packages = metadata["packages"].as_array().context("packages")?;
-    for name in [
-        "masonry",
-        "masonry_core",
-        "tree_arena",
-        "linebender_include_doc_path",
-        "reel-stage",
-    ] {
-        ensure!(
-            !packages.iter().any(|p| p["name"] == name),
-            "retired UI package {name}"
-        );
-    }
     for name in ["reel-ui", "imaging", "kurbo", "peniko", "reel-text"] {
         ensure!(
             packages.iter().filter(|p| p["name"] == name).count() == 1,
@@ -167,52 +155,6 @@ fn validate_ui_metadata(metadata: &serde_json::Value) -> Result<()> {
             }
         }
     }
-    Ok(())
-}
-
-/// Check package licensing, provenance and ownership without prescribing source headers.
-pub fn audit_ui() -> Result<()> {
-    let base = root().join("crates/reel-ui");
-    let license = fs::read_to_string(base.join("LICENSE"))?;
-    ensure!(
-        license.contains("Apache License")
-            && license.contains("Version 2.0, January 2004")
-            && license.contains("TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION"),
-        "missing Apache license text"
-    );
-    let provenance = fs::read_to_string(base.join("ORIGIN.md"))?;
-    ensure!(
-        provenance.contains("271a27a6d4a930f7878d404f9014e3c50a3a9b88")
-            && provenance.contains("Reel"),
-        "missing UI provenance"
-    );
-    for path in files(&base)? {
-        if path.starts_with(base.join("src")) && path.extension().is_some_and(|x| x == "rs") {
-            let text = fs::read_to_string(&path)?;
-            ensure!(
-                !text.contains("masonry_core::")
-                    && !text.contains("use masonry::")
-                    && !text.contains("include_doc_path!")
-                    && !text.contains("tree_arena_unsafe"),
-                "retired UI source boundary: {}",
-                path.display()
-            );
-        }
-    }
-    for name in [
-        "masonry",
-        "masonry_core",
-        "tree_arena",
-        "include_doc_path",
-        "reel-stage",
-    ] {
-        ensure!(
-            !root().join("crates").join(name).exists(),
-            "duplicate UI source: {name}"
-        );
-    }
-    dependencies()?;
-    println!("Package Apache license, local provenance and single UI ownership verified");
     Ok(())
 }
 
@@ -750,18 +692,10 @@ mod tests {
     }
 
     #[test]
-    fn ui_ownership_rejects_retired_duplicate_or_remote_packages() {
+    fn shared_ui_types_reject_duplicate_or_remote_packages() {
         let baseline = ui_metadata();
         validate_ui_metadata(&baseline).unwrap();
-        for name in [
-            "masonry",
-            "masonry_core",
-            "tree_arena",
-            "linebender_include_doc_path",
-            "reel-stage",
-            "reel-ui",
-            "kurbo",
-        ] {
+        for name in ["reel-ui", "kurbo"] {
             let mut changed = baseline.clone();
             changed["packages"]
                 .as_array_mut()

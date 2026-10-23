@@ -3,9 +3,50 @@ use aside_vm::snapshot::SnapshotBudget;
 use reel_ui::stage::NodeKind;
 
 #[test]
-fn text_spacing_public_example_updates_from_source_and_asb() {
-    let code = include_str!("../../../../../examples/author_text_spacing/src/main.aside")
-        .replace("fn main()", "fn opening()");
+fn text_spacing_updates_from_source_and_asb() {
+    let code = r#"fn main() {
+    game.configure(title: "Text spacing", width: 960, height: 640, fonts: "fonts/body.ttf");
+    let style = model({ letters: 2, words: -2, entry: "make some space" });
+    stage.replace(
+        column(x: 60, y: 60, width: 840, gap: 24) {
+            text("CHAPTER ONE", font_size: 32, letter_spacing: bind(style.letters));
+            text("made with love", font_size: 28, word_spacing: bind(style.words));
+            text(
+                rich("One [b]shared[/b] text style."), width: 360,
+                letter_spacing: bind(style.letters), word_spacing: bind(style.words)
+            );
+            text_input(
+                value: bind(style.entry), width: 600, letter_spacing: bind(style.letters),
+                word_spacing: bind(style.words)
+            );
+            row(gap: 12) {
+                button(
+                    "Tighter",
+                    on_click: || {
+                        style.letters -= 0.5;
+                    },
+                    letter_spacing: bind(style.letters)
+                );
+                button(
+                    "Wider",
+                    on_click: || {
+                        style.letters += 0.5;
+                    },
+                    letter_spacing: bind(style.letters)
+                );
+                button(
+                    "Reset",
+                    on_click: || {
+                        style.letters = 0;
+                        style.words = 0;
+                    }
+                );
+            };
+        }
+    );
+}
+"#
+    .replace("fn main()", "fn opening()");
     for encoded in [false, true] {
         let (mut session, mut vm) = models::prepared(&code, encoded);
         models::drive(&mut vm, &mut session, true);

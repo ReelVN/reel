@@ -85,6 +85,7 @@ pub const SCENES: &[(&str, E)] = &[
     ("persistent settings", E::Block),
     ("arrive helper", E::Module),
     ("text spacing", E::Block),
+    ("vertical text layout", E::Block),
     ("bilingual dialogue", E::Block),
     ("inline translations in story", E::Block),
     ("author audio", E::Module),
@@ -147,28 +148,3 @@ pub fn enclosing(scene: &str) -> &[&str] {
 pub fn mutable(scene: &str, name: &str) -> bool {
     scene == "queued audio continuation" && name == "music"
 }
-
-// Kept as syntax/recovery inputs; these are not implemented author interfaces.
-#[allow(dead_code)]
-pub const PLANNED_SOURCES: &[(&str, &str, E)] = &[
-    (
-        "story registration",
-        include_str!("../fixtures/guide-planned/story_registration.aside"),
-        E::Module,
-    ),
-    (
-        "preferences component",
-        include_str!("../fixtures/guide-planned/preferences_component.aside"),
-        E::Module,
-    ),
-    (
-        "game variables in story",
-        include_str!("../fixtures/guide-planned/game_variables_in_story.aside"),
-        E::Block,
-    ),
-    (
-        "settings component",
-        include_str!("../fixtures/guide-planned/settings_component.aside"),
-        E::Module,
-    ),
-];

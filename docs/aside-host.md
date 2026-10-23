@@ -82,7 +82,7 @@ the operation needs its elements. The `#[aside(context)]` parameter does not
 count toward the script parameter order and may follow the rest parameter.
 The [extension host](../crates/aside-host/tests/extension.rs) executes empty,
 spread and function-value calls and checks fresh outer-array ownership. The
-[bound native host](../crates/aside-host/tests/bound_native.rs) exercises rest
+[bound native host](../crates/aside-host/tests/extension.rs) exercises rest
 with defaults, a bound receiver, host entry/callback calls and incremental GC.
 
 Functions are synchronous, safe, monomorphic free functions. Parameters must have identifier patterns. `#[aside(name = "script_name")]` changes the script parameter name. Defaults are literal integers, floats, booleans, strings or `null`, stored in the bytecode constant pool. The `abi` option defaults to 1.
@@ -121,10 +121,10 @@ The first parameter is already bound. Remaining positional, named and default ar
 
 For a host object with properties that should also be callable, use `Vm::bind_callable(object, function)`. It binds the object itself as the required first parameter. The trusted registration is separate from script-visible fields; argument preparation, entry calls, callbacks, GC and waiting use the same paths as bound methods.
 
-The runnable [bound_native.rs](../crates/aside-host/tests/bound_native.rs) host verifies these call paths with interleaved GC and bytecode encoding/decoding:
+The runnable [bound_native.rs](../crates/aside-host/tests/extension.rs) host verifies these call paths with interleaved GC and bytecode encoding/decoding:
 
 ```sh
-cargo test --locked -p aside-host --test bound_native
+cargo test --locked -p aside-host --test extension
 ```
 
 Reel exposes `add`, `remove` and `clear` on nodes through this mechanism. Extracting a method retains that specific node; retirement clears its private tree edges.
@@ -165,7 +165,7 @@ For bounded preparation, `begin_host_publication()` creates the same rooted `Pro
 
 ## Runnable host checks
 
-The [extension host](../crates/aside-host/tests/extension.rs) and [bound native host](../crates/aside-host/tests/bound_native.rs) demonstrate registration, value conversion, properties and callbacks.
+The [extension host](../crates/aside-host/tests/extension.rs) and [bound native host](../crates/aside-host/tests/extension.rs) demonstrate registration, value conversion, properties and callbacks.
 
 ```sh
 cargo test --locked -p aside-host -p aside-host-macros

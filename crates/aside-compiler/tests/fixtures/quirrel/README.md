@@ -8,8 +8,7 @@ commit `19f17df9b6ee43c91ef5c635fd45970ec76c5dbe`. See [LICENSE](LICENSE).
 `semantic_quirrel.rs` checks original assertion tokens and mapped spans.
 `quirrel_vm.rs` compiles registered cases, round-trips bytecode and executes them
 with normal/tiny slices and interleaved GC, comparing unchanged stdout oracles.
-Line comparison follows the original runner's boundaries and accepts either final
-line-ending form. Interpolation-prefix changes retain explicit source mappings.
+Line comparison uses the original runner's line-ending rules. Interpolation-prefix changes retain explicit source mappings.
 
 ```sh
 cargo test --locked -p aside-compiler --test semantic_quirrel --test quirrel_vm

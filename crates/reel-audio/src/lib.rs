@@ -1,4 +1,12 @@
-#![doc = include_str!("../README.md")]
+//! Host-driven mixing for sounds, tracks, effects and clocks.
+//!
+//! Create an [`AudioManager`] with a [`backend::Backend`]. The default backend is
+//! manually driven; Reel's media adapter supplies native output and background
+//! PCM retirement. Mixing uses preallocated storage, and control transfers
+//! retired sounds before their physical destruction.
+//!
+//! Enable the required Symphonia format features when loading encoded sounds.
+//! The `serde` feature adds serialization for supported values and settings.
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::collapsible_else_if)]
 #![allow(clippy::doc_lazy_continuation)]

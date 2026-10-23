@@ -1,4 +1,9 @@
-//! AudioOutput and the Kira bridge, architecture contract 1.1.
+//! Device audio output, media activities, decoding and background PCM retirement.
+//!
+//! Configure an output before constructing its mixer. The callback uses
+//! preallocated buffers and bounded queues; [`AudioReclaimService`] retains
+//! retired PCM until physical release. Native output uses the `cpal-output`
+//! feature, encoded sounds use `decode`, and movie decoding uses `video`.
 #![allow(clippy::result_large_err)]
 
 mod activity;
