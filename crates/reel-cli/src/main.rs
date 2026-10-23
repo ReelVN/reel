@@ -313,9 +313,9 @@ fn compilation_report(
     if json_format {
         report_json(
             &json!({"schema_version": 1, "status": if built.is_some() { "built" } else { "verified" }, "source": path,
-            "scope": if built.is_some() { "static-compilation-asb-b01-roundtrip" } else { "static-compilation-b01-roundtrip" },
+            "scope": if built.is_some() { "static-compilation-asb" } else { "static-compilation" },
             "executed": false, "runtime_admitted": false, "release_package": false, "diagnostics": [],
-            "encoded_bytes": built.map_or(checked.bytes.len(), |(a, _)| a.bytecode_bytes),
+            "encoded_bytes": built.map_or(checked.compilation.program.stats().encoded_bytes, |(a, _)| a.bytecode_bytes),
             "entry": {"kind": "project-initializer", "function_id": checked.compilation.initializer.0},
             "modules": checked.modules.iter().map(|m| json!({"module": m.canonical_path, "source_version": m.source_version})).collect::<Vec<_>>(),
             "limits": package_limits_json(),

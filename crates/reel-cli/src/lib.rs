@@ -54,13 +54,12 @@ fn error(
 
 pub struct Checked {
     pub compilation: lowering::ProjectCompilation,
-    pub bytes: Vec<u8>,
     pub modules: Vec<reel_package::ModuleMetadata>,
     pub catalogs: std::sync::Arc<source::CatalogProducts>,
 }
 
-/// Run the complete supported static pipeline, retaining entry and metadata
-/// beside the raw B01 bytes. No on-disk release format is implied.
+/// Compile and verify source, retaining the program, entry and module metadata.
+/// Artifact builders encode the selected profile when an output is requested.
 pub fn check(source: &str, source_path: &str) -> Result<Checked, Failure> {
     check_sources(
         &[aside_compiler::semantic::SourceModule {
@@ -92,29 +91,6 @@ pub fn check_sources(
         }
         failure
     })?;
-    let limits = bc::Limits::default();
-    let convert = |e: bc::Error| {
-        let span = e
-            .source
-            .map(|s| TextRange::new(s.start.into(), s.end.into()))
-            .unwrap_or_else(|| TextRange::empty(0.into()));
-        error(
-            "bytecode",
-            aside_compiler::DiagnosticCode::InvalidHir,
-            span,
-            e.to_string(),
-        )
-    };
-    let bytes = bc::encode(compilation.program.package(), limits).map_err(convert)?;
-    let decoded = bc::VerifiedProgram::decode(&bytes, limits).map_err(convert)?;
-    if decoded.package() != compilation.program.package() {
-        return Err(error(
-            "bytecode",
-            aside_compiler::DiagnosticCode::InvalidHir,
-            TextRange::empty(0.into()),
-            "B01 round trip changed program data".into(),
-        ));
-    }
     let metadata = modules
         .iter()
         .map(|module| {
@@ -128,7 +104,6 @@ pub fn check_sources(
         .collect::<Result<Vec<_>, _>>()?;
     Ok(Checked {
         compilation,
-        bytes,
         modules: metadata,
         catalogs,
     })
@@ -297,7 +272,11 @@ mod tests {
             checked.compilation.program.package().modules[module.index()].initializer,
             Some(checked.compilation.initializer)
         );
-        assert!(!checked.bytes.is_empty());
+        let program = &checked.compilation.program;
+        let bytes = bc::encode(program.package(), bc::Limits::default()).unwrap();
+        assert_eq!(bytes.len(), program.stats().encoded_bytes);
+        let decoded = bc::VerifiedProgram::decode(&bytes, bc::Limits::default()).unwrap();
+        assert_eq!(decoded.package(), program.package());
     }
     #[test]
     fn rejects_parse_semantic_import_and_lowering_failures() {

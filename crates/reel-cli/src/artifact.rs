@@ -260,22 +260,18 @@ fn build_inner(
         )
     };
     let game_entry = select_entry(checked, entry)?;
-    let mut release;
-    let release_bytes;
+    let mut release = (profile == BuildProfile::Release).then(|| without_debug(p));
     let mut text_pool = None;
-    let (p, bytecode) = match profile {
-        BuildProfile::Debug => (p, checked.bytes.as_slice()),
-        BuildProfile::Release => {
-            release = without_debug(p);
+    let p = match release.as_mut() {
+        None => p,
+        Some(release) => {
             if external_text {
-                text_pool =
-                    Some(bc::externalize_text(&mut release).map_err(|e| fail(e.to_string()))?);
+                text_pool = Some(bc::externalize_text(release).map_err(|e| fail(e.to_string()))?);
             }
-            release_bytes =
-                bc::encode(&release, bc::Limits::default()).map_err(|e| fail(e.to_string()))?;
-            (&release, release_bytes.as_slice())
+            release
         }
     };
+    let bytecode = bc::encode(p, bc::Limits::default()).map_err(|e| fail(e.to_string()))?;
     let mut modules = checked.modules.clone();
     if profile == BuildProfile::Release {
         for module in &mut modules {
@@ -284,7 +280,7 @@ fn build_inner(
     }
     let metadata = rp::Metadata {
         schema_version: 1,
-        bytecode_blake3: rp::digest(bytecode),
+        bytecode_blake3: rp::digest(&bytecode),
         language_version: p.language_version,
         bytecode_version: p.format_version,
         host_abi_version: p.host_abi_version,
@@ -297,12 +293,9 @@ fn build_inner(
         },
         game_entry: game_entry.clone(),
     };
+    drop(release);
     let limits = rp::Limits::default();
-    let bytes = rp::encode(bytecode, &metadata, None, limits).map_err(|e| fail(e.to_string()))?;
-    let verified = rp::decode(&bytes, limits).map_err(|e| fail(e.to_string()))?;
-    if verified.metadata() != &metadata || verified.program().package() != p {
-        return Err(fail("ASB round trip changed program/metadata".into()));
-    }
+    let bytes = rp::encode(&bytecode, &metadata, None, limits).map_err(|e| fail(e.to_string()))?;
     Ok(Artifact {
         blake3: rp::digest(&bytes),
         bytes,

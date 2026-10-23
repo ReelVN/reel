@@ -80,7 +80,6 @@ fn rehashed_nonordinary_entries_are_rejected_by_cli_and_reader() {
         let encoded = assemble(&bytes, &serde_json::to_vec(&metadata).unwrap());
         let error = rp::decode(&encoded, Limits::default()).unwrap_err();
         assert!(error.detail.contains("Ordinary"), "{context:?}: {error}");
-        checked.bytes = bytes;
         checked.compilation.program = bc::verify(p, bc::Limits::default()).unwrap();
         checked.modules[0].functions[0].declared_context = rp::DeclaredContext {
             no_wait: declared.no_wait,

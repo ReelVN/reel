@@ -97,6 +97,17 @@ macro_rules! instructions {
                 unwind: match Flow::$flow { Flow::Throw=>Unwind::Raise, Flow::Return|Flow::Leave=>Unwind::Exit, Flow::EndFinally=>Unwind::ResumeActive, _=>Unwind::None },
                 semantic_rule: semantic_rule(Opcode::$name) },
         )+];
+        const OPCODE_SPEC_INDEX: [u8; 256] = {
+            let opcodes = [$($number,)+];
+            assert!(opcodes.len() <= u8::MAX as usize);
+            let mut index = [u8::MAX; 256];
+            let mut position = 0;
+            while position < opcodes.len() {
+                index[opcodes[position]] = position as u8;
+                position += 1;
+            }
+            index
+        };
         impl Opcode { pub fn spec(self) -> &'static InstructionSpec { instruction_spec(self as u16).expect("declared opcode") } }
     };
 }
@@ -194,11 +205,11 @@ instructions! {
     ThreadSuspend = 0x0086 => [WriteReg, ReadReg, Unused], Next, true, Thread;
     ThreadClose = 0x0087 => [ReadReg, Unused, Unused], Next, true, None;
 }
+/// Finds a specification through the frozen opcode domain in constant time.
+/// Unknown values and unused opcode slots return `None`.
+#[inline]
 pub fn instruction_spec(opcode: u16) -> Option<&'static InstructionSpec> {
-    INSTRUCTION_SPECS
-        .binary_search_by_key(&opcode, |s| s.opcode as u16)
-        .ok()
-        .map(|i| &INSTRUCTION_SPECS[i])
+    INSTRUCTION_SPECS.get(*OPCODE_SPEC_INDEX.get(opcode as usize)? as usize)
 }
 const fn semantic_rule(op: Opcode) -> SemanticRule {
     match op {
