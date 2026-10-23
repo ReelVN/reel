@@ -16,8 +16,13 @@ impl Activities {
     pub fn poll_after(&self) -> Option<std::time::Duration> {
         let (&key, _) = self.events.first_key_value()?;
         let seconds = (f64::from_bits(key.0) - self.time).max(0.);
-        let deadline =
+        let mut deadline =
             std::time::Duration::try_from_secs_f64(seconds).unwrap_or(std::time::Duration::MAX);
+        // Host clocks use whole nanoseconds. Preserve a future activity deadline
+        // when its floating-point remainder rounds below that clock resolution.
+        if deadline.as_secs_f64() < seconds {
+            deadline = deadline.saturating_add(std::time::Duration::from_nanos(1));
+        }
         Some(if self.sampling == 0 {
             deadline
         } else {
@@ -855,7 +860,9 @@ impl Activities {
             woke = progress.woke;
         }
         if self.round.is_none() {
-            if !self.has_active() {
+            // Commands and script writes explicitly start maintenance rounds.
+            // Once those settle, an unchanged clock must yield to script work.
+            if !self.has_active() || seconds == self.time {
                 self.time = seconds;
                 return Ok(ActivityProgress {
                     work,

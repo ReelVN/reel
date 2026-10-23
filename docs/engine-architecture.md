@@ -38,6 +38,8 @@ Reel 的脚本服务通过独立 [Aside host SDK](aside-host.md) 接入。节点
 - reel-engine：会话、剧情任务、宿主绑定、资源与持久化协调。
 - reel-player：平台适配、窗口与事件循环，组装引擎、渲染和媒体输出。
 - reel-cli：检查、开发运行和构建，调用编译器与播放器库入口。
+- reel-dev：通用开发检查宿主；`reel test` 直接执行游戏入口，复用 StoryRuntime、资源服务、CPU 布局呈现与离线媒体，操作已接受画面中的菜单控件、对白和选项。虚拟时间推进等待，编译结果共享；探索在分支处复用执行检查点，顺序运行源码与 ASB。检查点沿用 SessionSnapshot，包含已读状态与逻辑时间，存放在临时文件；恢复同时恢复该分支的隔离存储及宿主随机源位置。检查使用固定的随机根种子和起始民用时间，通过标准库宿主环境注入；显式种子的随机流继续由 VM 保存位置。报告与重放文件写入项目 `build/test/`，包含源码指纹、宿主环境、交互路径及错误位置。自然结束、运行失败与已观察的交互回环分别记录；CPU 检查的验证范围为运行、资源与布局协议。
+
 依赖方向固定为 ui→core，render→ui/core，media→core，player→ui/render/core；engine→aside-vm/aside-compiler/aside-std/ui/core，player→engine，cli→compiler/player，compiler→aside-vm。Aside 保持独立于所有 reel 包。语言包不依赖窗口、舞台或媒体。业务数据类型只在所属模块定义一次，跨线程传递拥有自身数据的消息或线程安全只读缓冲，不传 VM 堆引用。渲染器通过资源 ID 与版本取得内容。
 
 动态画面沿用 image 节点、ResourceLease 与普通 FrameImage 绘制。reel-core::image 定义 Yuv420Image、Yuv420Storage 和显式 YuvColor（BT.601/709 矩阵、完整或有限范围、BT.709 或 sRGB 传递函数）；8 位 Y/U/V 平面由生产者 Arc 与预算票据共同保活，UI 不依赖媒体解码器。每张帧资源不可变并拥有独立版本；舞台接受直接资源引用，跳过路径解码。录制的图像资源绑定进入既有绘制命令所有权元数据，保持裁剪、变换、透明度和层序。GPU 直接上传三个 R8 平面并在采样时转成线性 RGB；仅在旧资源与在途/已准备画面均已释放后复用纹理，不通过重写仍被旧画面引用的纹理发布新帧。注册表 release 仅放弃自身持有和新 acquire，允许已有租约进入尚未编译的画面；retire 仍用于显式失效。首帧未到使用 ImageSource::empty，不读取占位路径。帧截止时间、PTS 和播放终态由媒体协调器负责，不进入 UI 的像素协议。
@@ -148,7 +150,7 @@ pub trait WorkExecutor {
 ### 平台与时间
 
 PlatformHost 提供命令，原生事件循环转换输入后驱动公共会话与 Presentation，不要求平台提供阻塞的 pump_events。PointerEvent、TextEvent 和 WindowEvent 沿用 reel-ui 的共同数据；原生生命周期驱动 Presentation、RenderBackend 和 StoryRuntime 的挂起/恢复。Presentation 只接受严格递增的表面代数。组装方在恢复时先失效旧输入，再配置后端，成功后恢复剧情时钟；VM 截止时间不扣除挂起区间。桌面适配器已接入剪贴板、IME、触摸和 Gilrs 手柄输入；系统可访问性适配尚未实现，实体设备行为受对应窗口系统和硬件约束。后台通知复用 reel-core::WakeSignal，通用平台回调本身没有实时音频时限保证。
-重绘请求可合并。MonoTime 使用固定单位的 u64，不保存 std::time::Instant。会话逻辑时钟独立累计，可暂停与恢复；墙钟可缺失，只用于显示日期等。恢复后重设截止时间，系统睡眠不得变成巨大动画增量。
+重绘请求可合并。MonoTime 使用固定单位的 u64，不保存 std::time::Instant。会话逻辑时钟独立累计，可暂停与恢复；墙钟可缺失，只用于显示日期等。恢复后重设截止时间，系统睡眠不得变成巨大动画增量。活动在同一逻辑时刻完成一次时钟采样，后续同刻调度继续执行脚本；作者命令及脚本修改通过显式维护批次更新活动。浮点秒截止时间转换为宿主整数纳秒时向上取整，保留未来截止点。
 
 ### 渲染与音频
 
@@ -776,6 +778,8 @@ AudioActivityRequest 使用服务注册的 AudioOwner 代替裸 Scope；凭据�
 owner 注册与活动凭据各有 max_requests 容量上限，保留已完成凭据仍占槽；克隆共享同一登记。相同 Scope 的现存关闭登记不会重开，所有引用消亡后的重新注册是新身份，Session 宿主不能把已退休 Scope 重用为原 owner。播放器媒体后端使用 AudioOwner::is_retired 作为物理退休条件；作者等待通过同一媒体后端连接会话。实体设备与回收时限按目标分别验收。
 
 ## 九 存档与回滚
+
+存档的 `saved_at` 取自宿主环境，随保存请求送入存储队列；普通宿主使用系统 UTC 时间，自动检查使用重放记录中的时间。
 
 共同节点的 `capture_included` 默认为 true。false 排除该子树的捕获输出，录制时冻结并归并平衡的命令区间；普通显示和输入沿原舞台行为。捕获读取最近已呈现帧，保留转场的旧、新画面各自携带排除区间，显式目标及祖先的 false 同时排除整段转场。绘制数据共享，捕获重放跳过区间，并据此计算图片上传与离屏目标需求。
 

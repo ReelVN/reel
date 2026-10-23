@@ -10,7 +10,7 @@ use std::{
 #[command(
     name = "reel",
     version,
-    about = "Check, build, export and play Aside stories"
+    about = "Check, test, build, export and play Aside stories"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -27,6 +27,20 @@ pub enum Command {
     PrepareImage(PrepareImage),
     /// Format every Aside source file in the current project's src directory.
     Fmt(Fmt),
+    /// Explore the current game through the real headless source and ASB runtime.
+    Test(Test),
+}
+
+#[derive(Args)]
+pub struct Test {
+    /// Replay a previously recorded test input trace.
+    #[arg(long, value_name = "FILE")]
+    pub replay: Option<PathBuf>,
+    /// Override the project's resources directory.
+    #[arg(long, value_name = "DIRECTORY")]
+    pub assets: Option<PathBuf>,
+    #[arg(long, value_enum, default_value = "human")]
+    pub format: Format,
 }
 
 #[derive(Args)]

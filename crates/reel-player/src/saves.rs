@@ -17,7 +17,6 @@ use std::{
     io::{self, BufWriter, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 type CaptureCursor<'a> = Option<SessionCapture<'a>>;
@@ -443,6 +442,8 @@ pub enum StorageJob {
     Save {
         slot: String,
         title: String,
+        /// UTC Unix seconds sampled from the host environment before submission.
+        saved_at: i64,
         thumbnail: Option<Arc<DataDocument>>,
         snapshot: Box<SessionSnapshot>,
     },
@@ -484,11 +485,12 @@ impl SaveService {
                         StorageJob::Save {
                             slot,
                             title,
+                            saved_at,
                             thumbnail,
                             mut snapshot,
                         } => {
                             snapshot.commit_save(request)?;
-                            let saved_at = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+                            let saved_at = u64::try_from(saved_at)?;
                             storage.write(
                                 SaveSlot {
                                     id: slot,
@@ -545,6 +547,10 @@ impl SaveService {
             wake,
         }
     }
+    #[allow(
+        clippy::result_large_err,
+        reason = "Return rejected job ownership without allocating when the queue is full."
+    )]
     pub fn submit(
         &mut self,
         request: SaveRequestId,
@@ -609,6 +615,7 @@ pub fn default_save_directory(user_data: &Path, asset_root: &Path) -> io::Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temporary() -> PathBuf {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))

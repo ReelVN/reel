@@ -1,10 +1,12 @@
 //! Event-loop scheduling for the existing Aside session driver, without native handles.
 use crate::aside_session::{AsideSessionUi, StoryProgress, StoryState};
 use reel_engine::aside::{GcBudget, RunOutcome, SliceBudget};
+mod checkpoints;
 #[cfg(test)]
 mod save_cost;
 mod saves;
 mod start;
+pub use checkpoints::RuntimeCheckpoint;
 
 type Error = Box<dyn std::error::Error>;
 
@@ -25,6 +27,7 @@ pub struct StoryRuntime {
     gc_turn: bool,
     retry_after_collection: bool,
     retried_collection: bool,
+    resource_blocked: Option<String>,
     closing: bool,
     logical_ns: u64,
     time_offset_ns: u64,
@@ -49,6 +52,7 @@ impl StoryRuntime {
             gc_turn: false,
             retry_after_collection: false,
             retried_collection: false,
+            resource_blocked: None,
             closing: false,
             logical_ns: 0,
             time_offset_ns: 0,
@@ -64,6 +68,20 @@ impl StoryRuntime {
     }
     pub fn capturing(&self) -> bool {
         self.capture.is_some()
+    }
+    /// Reports live frame-capture work after retiring cancelled requests.
+    /// Hosts can inspect required rendering work before executing another slice.
+    pub fn frame_capture_pending(&mut self) -> Result<bool, Error> {
+        let Some(driver) = self.driver.as_mut() else {
+            return Ok(false);
+        };
+        driver.adapter_mut().maintain_capture_results(0)?;
+        Ok(driver.adapter().has_capture_requests())
+    }
+    /// Inspect a resource block that persisted after the scheduler's GC retry.
+    /// The blocked task stays owned by this runtime until cancellation.
+    pub fn resource_blocked(&self) -> Option<&str> {
+        self.resource_blocked.as_deref()
     }
     pub fn driver_mut(&mut self) -> Result<&mut AsideSessionUi, Error> {
         self.interrupt_capture()?;
@@ -462,6 +480,7 @@ impl StoryRuntime {
                 if self.retried_collection {
                     // Active catch/unwind capacity cannot be reclaimed by repeated GC.
                     // Keep the complete VM state available for cancellation, without spinning.
+                    self.resource_blocked = Some(format!("{blocked:?}"));
                     eprintln!("story resource blocked: {blocked:?}; close the window to cancel");
                 } else {
                     if !self.collecting {
@@ -473,7 +492,10 @@ impl StoryRuntime {
                 }
                 return Ok(());
             }
-            _ => self.retried_collection = false,
+            _ => {
+                self.retried_collection = false;
+                self.resource_blocked = None;
+            }
         }
         if self.driver().state() == StoryState::Running {
             self.start_collection_if_due()?;
@@ -573,6 +595,66 @@ mod tests {
             }
             assert_eq!(story.driver().state(), StoryState::Finished);
         }
+    }
+
+    #[test]
+    fn repeated_same_time_ticks_finish_activity_maintenance_and_run_callbacks() {
+        let mut story = runtime(
+            r#"
+            fn main() {
+                let node = stack();
+                stage.replace(node);
+                for index in 0 .. 40 { delay(10).run(owner: node); }
+                let gate = completion();
+                spawn(|| gate.resolve("done"), owner: node);
+                if await gate != "done" { throw "callback result"; }
+                narrator("callback resumed");
+            }
+            "#,
+        );
+        for _ in 0..10_000 {
+            story.tick(SliceBudget::default(), || 0).unwrap();
+            if story.driver().ui().session().view().interaction.is_some() {
+                break;
+            }
+        }
+        assert_eq!(story.logical_ns, 0);
+        assert!(matches!(
+            story.driver().ui().session().view().interaction,
+            Some(InteractionView::Dialogue(_))
+        ));
+    }
+
+    #[test]
+    fn fractional_activity_deadlines_round_up_to_the_host_clock() {
+        use reel_core::clock::MonoTime;
+        let mut story = runtime(
+            "fn main() { await run(delay(0.1)); await run(delay(0.2)); narrator(\"ready\"); }",
+        );
+        let settle = |story: &mut StoryRuntime, time| {
+            for _ in 0..10_000 {
+                if !story.needs_work() {
+                    return;
+                }
+                story.tick(SliceBudget::default(), || time).unwrap();
+            }
+            panic!("fractional delay did not reach a timed wait");
+        };
+        settle(&mut story, 0);
+        assert_eq!(
+            story.wake_deadline(MonoTime(0)),
+            Some(MonoTime(100_000_000))
+        );
+        story.tick(SliceBudget::default(), || 100_000_000).unwrap();
+        settle(&mut story, 100_000_000);
+        let deadline = story.wake_deadline(MonoTime(100_000_000)).unwrap();
+        assert_eq!(deadline, MonoTime(300_000_001));
+        story.tick(SliceBudget::default(), || deadline.0).unwrap();
+        settle(&mut story, deadline.0);
+        assert!(matches!(
+            story.driver().ui().session().view().interaction,
+            Some(InteractionView::Dialogue(_))
+        ));
     }
 
     #[test]
