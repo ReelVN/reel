@@ -5,6 +5,7 @@
 //! wait association and all independently retained result/key roots. It never
 //! interprets bytecode or assumes a table's private storage layout.
 mod activity;
+mod assets;
 mod media;
 pub use activity::ActivityProgress;
 mod budget;
@@ -68,6 +69,7 @@ pub enum AdapterError {
     Heap(HeapError),
     Session(SessionError),
     Input(&'static str),
+    Asset(String),
     InputQueue(reel_core::result::RejectReason),
     Markup(reel_core::text::MarkupError),
     Allocation,
@@ -120,6 +122,7 @@ impl std::fmt::Display for AdapterError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Input(message) => f.write_str(message),
+            Self::Asset(message) => f.write_str(message),
             Self::Snapshot(error) => write!(f, "{error}"),
             _ => write!(f, "{self:?}"),
         }
@@ -260,6 +263,7 @@ pub struct SessionVm {
     results: results::Results,
     saves: saves::Saves,
     captures: capture::Captures,
+    asset_reads: assets::AssetReads,
     window: window::Window,
     particles: particles::Particles,
     standard: aside_std::StandardLibrary,
@@ -359,6 +363,7 @@ impl SessionVm {
             results: results::Results::default(),
             saves: saves::Saves::default(),
             captures: capture::Captures::default(),
+            asset_reads: assets::AssetReads::default(),
             window: window::Window::default(),
             particles: particles::Particles::default(),
             standard,
@@ -639,6 +644,10 @@ impl SessionVm {
             | "reel::stage::pointer"
             | "reel::stage::move_pointer" => {
                 self.dispatch_window(ticket, &symbol)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
+            "reel::assets::read" => {
+                self.dispatch_asset_read(ticket)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::saves::save"
@@ -1571,6 +1580,7 @@ impl SessionVm {
         self.results.clear();
         self.saves.clear();
         self.captures = capture::Captures::default();
+        self.asset_reads.close();
         self.transitions = transitions::Transitions::default();
         self.window = window::Window::default();
         self.particles.clear();

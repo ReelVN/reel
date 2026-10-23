@@ -140,6 +140,7 @@ pub fn documentation() -> Vec<aside_host::NativeDocumentation> {
                 .or_else(|| super::saves::documentation(&contract.symbol))
                 .or_else(|| super::window::documentation(&contract.symbol))
                 .or_else(|| super::capture::documentation(&contract.symbol))
+                .or_else(|| super::assets::documentation(&contract.symbol))
                 .or_else(|| super::stage::input::documentation(&contract.symbol))
                 .unwrap_or("");
             aside_host::NativeDocumentation {
@@ -280,6 +281,7 @@ fn build_api() -> Api {
     super::masks::describe(&mut api);
     super::gradients::describe(&mut api);
     super::capture::describe(&mut api);
+    super::assets::describe(&mut api);
     super::window::describe(&mut api);
     super::particles::describe(&mut api);
     super::activity::describe_controls(&mut api);
@@ -366,6 +368,10 @@ fn build_api() -> Api {
         aside_compiler::semantic::Intrinsic::Bind,
     ));
     for (module, documentation) in [
+        (
+            "reel::assets",
+            "Read immutable data through the same packaged or loose resource namespace as images and media.",
+        ),
         (
             "reel::stage",
             "Mount, inspect and capture the common stage, and query or request pointer movement.",

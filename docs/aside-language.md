@@ -51,6 +51,8 @@ if condition { ... } else { ... }、while condition { ... }、for pattern in val
 
 当前值包括 null、bool、int64、float64、不可变 UTF-8 string、Bytes、tuple、array、table、class、instance、closure、weakref 及注册宿主值。可变缓冲、集合和宿主类型通过对应注册接口构造。
 
+`Bytes.len()` 返回字节数，`bytes[index]` 读取从零开始的非负整数索引，结果为 0 到 255 的整数。越界读取报告 `OutOfBounds`；字节数据保持不可变。读取直接访问已有存储，复制值继续共享同一份数据。
+
 let 只禁止重绑名称，不冻结对象；let mut 允许重绑。参数默认不可重绑，mut 参数允许重绑。词法作用域允许内层遮蔽；未声明或尚未初始化的名称读取报错。可变捕获由所有闭包和原作用域共享 CellId；不可变捕获可按值保存，所指对象身份继续共享。array/table/instance 等身份对象的赋值和传参不隐式复制。
 
 ```aside
@@ -70,7 +72,9 @@ int 加减乘、负号及整数除法溢出报错；MIN/-1 报错。int/int 的 
 
 编辑器从已绑定的表达式和返回路径推断函数结果、table 的已知字段及 array 元素类型，并保留字段的原始声明位置，供跨模块悬停、补全与定义跳转使用。显式类型注解仍决定运行时检查；可变值的类型无法确认时保持动态。
 
-`std::math` 为宿主可安装的纯浮点标准库，复用 Rust f64 数学函数，支持弧度三角函数、atan2、sqrt/hypot、pow、指数/对数、abs/floor/ceil/round 与 radians/degrees。入参允许 int 在标准库调用边界按 float64 转换，结果为 float；其他类型在调用处报告错误。NaN/Infinity 遵循上述浮点值规则。它不引入 VM 指令或 Reel 依赖。
+`std::math` 为宿主可安装的数学标准库，复用 Rust f64 数学函数，支持弧度三角函数、atan2、sqrt/hypot、pow、指数/对数、abs/floor/ceil/round 与 radians/degrees。这些函数允许 int 入参在调用边界按 float64 转换，结果为 float；其他类型在调用处报告错误。NaN/Infinity 遵循上述浮点值规则。
+
+`std::math::to_int(value)` 保留整数原值，将浮点数向零截断后转为 int。NaN、Infinity 和超出 int64 范围的值在调用处报告 `Type` 错误。
 
 `std::math::curve(keys)` 构造不可变标量曲线，`curve.sample(time)` 返回指定时间的 float64 值。keys 为非空 array/tuple，元素为 `{time, value, mode: "linear", in_tangent: 0, out_tangent: 0}`；time/value 必需，其余字段可省略。所有数值及采样时间须有限，时间允许负值并按非递减顺序提供。mode 描述从该关键帧出发的区间：linear 线性插值，step 保持左值，cubic 使用左帧 out_tangent 与右帧 in_tangent 作三次 Hermite 插值，切线单位为值/秒。重复时刻表示瞬时跳变，恰在该时刻取最后一帧；到达该时刻之前的区间以第一帧为右端。首尾以外保持端值，单帧曲线为常量。插值保留超出端值的结果；中间运算遵循 float64 规则。
 

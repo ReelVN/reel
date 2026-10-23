@@ -16,6 +16,7 @@ fn main() {
 }
 fn untyped(value) {value}
 fn invalid() {pow(untyped("wrong"),2)}
+fn convert(value) -> int {to_int(value)}
 "#;
 
 fn drive(
@@ -41,7 +42,7 @@ fn drive(
 }
 
 #[test]
-fn math_accepts_int_and_float_at_native_boundary_with_float_results_and_source_errors() {
+fn math_preserves_numeric_contracts_without_allocation_and_reports_source_errors() {
     let contracts = aside_std::contracts();
     let mut resolver = support::resolver();
     assert!(
@@ -100,6 +101,7 @@ fn math_accepts_int_and_float_at_native_boundary_with_float_results_and_source_e
         };
         let main = function("main");
         let invalid = function("invalid");
+        let convert = function("convert");
         let support =
             aside_host::runtime_support(&program, &contracts, aside_std::types(), &[]).unwrap();
         let mut library = aside_std::StandardLibrary::new(&program);
@@ -154,6 +156,56 @@ fn math_accepts_int_and_float_at_native_boundary_with_float_results_and_source_e
             );
         }
         vm.discard_delivery(id).unwrap();
+        for (input, expected) in [
+            (Value::int(i64::MIN), Some(i64::MIN)),
+            (Value::int(i64::MAX), Some(i64::MAX)),
+            (
+                Value::int(9_007_199_254_740_993),
+                Some(9_007_199_254_740_993),
+            ),
+            (Value::float(2.9), Some(2)),
+            (Value::float(-2.9), Some(-2)),
+            (Value::float(-0.0), Some(0)),
+            (Value::float(i64::MIN as f64), Some(i64::MIN)),
+            (
+                Value::float(9_223_372_036_854_774_784.0),
+                Some(9_223_372_036_854_774_784),
+            ),
+            (Value::float(i64::MAX as f64), None),
+            (
+                Value::float(f64::from_bits((i64::MIN as f64).to_bits() + 1)),
+                None,
+            ),
+            (Value::float(f64::NAN), None),
+            (Value::float(f64::INFINITY), None),
+            (Value::float(f64::NEG_INFINITY), None),
+            (Value::bool(true), None),
+        ] {
+            let task = vm
+                .start(convert, &[input], RootOwner(1), bc::Context::Ordinary)
+                .unwrap();
+            let outcome = drive(&mut vm, &mut library, task, expected.is_some());
+            let id = match (outcome, expected) {
+                (RunOutcome::Returned(id), Some(expected)) => {
+                    assert_eq!(vm.delivery_value(id).unwrap().as_int(), Some(expected));
+                    id
+                }
+                (RunOutcome::Fault(id), None) => {
+                    let fault = vm.delivery_fault(id).unwrap().unwrap();
+                    assert_eq!(fault.code, aside_vm::FaultCode::core(FaultKind::Type));
+                    let span = fault.location.source.unwrap();
+                    assert_eq!(
+                        &SOURCE[span.start as usize..span.end as usize],
+                        "to_int(value)"
+                    );
+                    id
+                }
+                (outcome, expected) => {
+                    panic!("conversion {input:?}: {outcome:?}, expected {expected:?}")
+                }
+            };
+            vm.discard_delivery(id).unwrap();
+        }
         let task = vm
             .start(invalid, &[], RootOwner(1), bc::Context::Ordinary)
             .unwrap();

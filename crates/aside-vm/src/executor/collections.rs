@@ -224,8 +224,8 @@ impl Vm {
         let info = self.heap.info(object).map_err(heap_fault)?;
         match info.kind {
             ObjectKind::Array => {}
-            ObjectKind::Tuple if write => return Err(FaultKind::ReadOnly),
-            ObjectKind::Tuple => {}
+            ObjectKind::Tuple | ObjectKind::Bytes if write => return Err(FaultKind::ReadOnly),
+            ObjectKind::Tuple | ObjectKind::Bytes => {}
             _ => return Err(FaultKind::Type),
         }
         let index = index.as_int().ok_or(FaultKind::Type)?;
@@ -238,7 +238,15 @@ impl Vm {
     pub(super) fn sequence_get(&mut self, object: Value, index: Value) -> Result<Value, FaultKind> {
         self.heap.observe_read(object, None).map_err(heap_fault)?;
         let index = self.sequence_index(object, index, false)?;
-        self.heap.get_field(object, index).map_err(heap_fault)
+        if self.heap.info(object).map_err(heap_fault)?.kind == ObjectKind::Bytes {
+            let mut byte = [0];
+            self.heap
+                .read_bytes(object, index, &mut byte)
+                .map_err(heap_fault)?;
+            Ok(Value::int(i64::from(byte[0])))
+        } else {
+            self.heap.get_field(object, index).map_err(heap_fault)
+        }
     }
     pub(super) fn sequence_set(
         &mut self,

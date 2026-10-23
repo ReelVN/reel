@@ -111,6 +111,37 @@ fn pow(
     Ok(base.0.powf(exponent.0))
 }
 
+/// Convert a number to int, truncating fractional values toward zero.
+/// Integer inputs retain all 64 bits. Non-finite or out-of-range floats raise
+/// Type at the call site. The conversion allocates no script data.
+///
+/// ```aside
+/// use std::math::to_int;
+/// fn main() {
+///     let index: int = to_int(1.25 * 20);
+///     if index != 25 || to_int(-2.9) != -2 { throw "conversion"; }
+/// }
+/// ```
+#[native(symbol = "std::math::to_int", abi = 1, effects = Effects(0))]
+fn to_int(
+    #[aside(context)] _context: &mut CallContext<'_, StandardLibrary>,
+    #[aside(doc_type = aside_host::source::number())] value: Value,
+) -> Result<i64, NativeError> {
+    if let Some(integer) = value.as_int() {
+        return Ok(integer);
+    }
+    let value = value
+        .as_float()
+        .ok_or(NativeError::Input("to_int requires int or float"))?;
+    // The upper endpoint is exclusive: i64::MAX rounds up when converted to f64.
+    if !(-((1_u64 << 63) as f64)..(1_u64 << 63) as f64).contains(&value) {
+        return Err(NativeError::Input(
+            "to_int requires a finite value in int64 range",
+        ));
+    }
+    Ok(value as i64)
+}
+
 pub(super) fn bindings() -> Vec<NativeBinding<StandardLibrary, NativeError>> {
     vec![
         sin::binding(),
@@ -133,5 +164,6 @@ pub(super) fn bindings() -> Vec<NativeBinding<StandardLibrary, NativeError>> {
         round::binding(),
         radians::binding(),
         degrees::binding(),
+        to_int::binding(),
     ]
 }

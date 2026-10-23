@@ -146,6 +146,7 @@ impl StoryRuntime {
     fn needs_work(&self) -> bool {
         self.runnable
             || self.driver().adapter().capture_results_pending()
+            || self.driver().adapter().asset_reads_need_work()
             || self.driver().transitions_pending()
             || self.collecting
             || self.driver().cleanup_pending()
@@ -229,6 +230,7 @@ impl StoryRuntime {
     pub fn wake_input(&mut self) {
         if self.driver().state() == StoryState::Running
             && (self.driver().has_runnable_tasks()
+                || self.driver().adapter().asset_reads_pending()
                 || self.driver().ui().session().view().interaction.is_none())
         {
             self.runnable = true;
@@ -310,6 +312,12 @@ impl StoryRuntime {
         }
         if self.driver.as_mut().unwrap().maintain_media()?
             | self.driver.as_mut().unwrap().maintain_localization()?
+            | self
+                .driver
+                .as_mut()
+                .unwrap()
+                .adapter_mut()
+                .maintain_asset_reads(64)?
             || (self.driver().adapter().task().is_none()
                 && !self.driver().adapter().has_live_work()
                 && self.driver().state() == StoryState::Running)

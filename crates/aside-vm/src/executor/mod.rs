@@ -3751,6 +3751,7 @@ impl Vm {
                             | ObjectKind::Tuple
                             | ObjectKind::String
                             | ObjectKind::Generator
+                            | ObjectKind::Bytes
                     ) {
                         let method =
                             Builtin::lookup(kind, &self.program.package().symbols[c as usize])

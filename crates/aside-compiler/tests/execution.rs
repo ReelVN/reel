@@ -47,6 +47,79 @@ fn finish(vm: &mut Vm, task: TaskId, tiny: bool) -> Value {
 }
 
 #[test]
+fn bytes_annotations_check_real_values_and_survive_bytecode() {
+    let source = r#"
+        fn keep(value: Bytes) -> Bytes { value }
+        fn invalid(value: any) -> Bytes { value }
+        fn main(value: Bytes) -> int {
+            let retained: Bytes|null = keep(value);
+            if !(retained is Bytes) || retained is string { throw "byte kind"; }
+            let wrong: any = "bytes";
+            let mut rejected = 0;
+            try { keep(wrong); } catch error { rejected += 1; }
+            try { invalid(wrong); } catch error { rejected += 1; }
+            40 + rejected
+        }
+    "#;
+    let module = analyze_module(source, &AnalysisOptions::default(), &mut NoModules)
+        .unwrap()
+        .into_module()
+        .unwrap();
+    let compiled = lowering::compile(
+        &module,
+        &lowering::Linkage::default(),
+        lowering::Options::default(),
+    )
+    .unwrap();
+    let package = compiled.program.package();
+    assert!(
+        package
+            .types
+            .contains(&bc::TypeDef::Builtin(bc::BuiltinType::Bytes))
+    );
+    let entry = bc::FunctionId(
+        package
+            .functions
+            .iter()
+            .position(|function| package.symbols[function.name.index()] == "main")
+            .unwrap() as u32,
+    );
+    let bytes = bc::encode(package, bc::Limits::default()).unwrap();
+    for serialized in [false, true] {
+        let program = if serialized {
+            bc::VerifiedProgram::decode(&bytes, bc::Limits::default()).unwrap()
+        } else {
+            compiled.program.clone()
+        };
+        let mut vm = Vm::load(
+            program,
+            bc::RuntimeSupport {
+                host_types: vec![],
+                opcodes: vec![],
+                natives: vec![],
+                capabilities: vec![],
+            },
+            VmLimits::default(),
+            SessionEpoch(1),
+        )
+        .unwrap();
+        let task = vm
+            .start(compiled.entry, &[], RootOwner(1), bc::Context::Init)
+            .unwrap();
+        finish(&mut vm, task, false);
+        let value = vm.heap_mut().alloc_bytes(b"PNG").unwrap();
+        let task = vm
+            .start(entry, &[value], RootOwner(1), bc::Context::Ordinary)
+            .unwrap();
+        assert_eq!(
+            finish(&mut vm, task, true).as_int(),
+            Some(42),
+            "serialized={serialized}"
+        );
+    }
+}
+
+#[test]
 fn table_remove_preserves_order_results_and_key_contracts_with_gc() {
     let source = r#"fn main() {
         let item={n:42};

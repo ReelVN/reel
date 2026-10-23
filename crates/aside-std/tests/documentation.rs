@@ -89,7 +89,12 @@ fn generated_declarations_keep_validated_numbers_and_known_table_results_precise
         if symbol.starts_with("std::math::") && !symbol.starts_with("std::math::curve") {
             math_functions += 1;
             let source = declaration.symbol.signature.as_ref().unwrap();
-            assert_eq!(source.result, TypeHint::Float, "{symbol}");
+            let result = if symbol == "std::math::to_int" {
+                TypeHint::Int
+            } else {
+                TypeHint::Float
+            };
+            assert_eq!(source.result, result, "{symbol}");
             let runtime = contracts
                 .iter()
                 .find(|contract| contract.symbol == symbol)
@@ -114,7 +119,7 @@ fn generated_declarations_keep_validated_numbers_and_known_table_results_precise
             }
         }
     }
-    assert_eq!(math_functions, 20);
+    assert_eq!(math_functions, 21);
     assert_eq!(
         api.native("std::time::parts")
             .symbol

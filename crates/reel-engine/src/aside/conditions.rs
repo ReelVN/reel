@@ -75,7 +75,7 @@ impl SessionVm {
                     let checked = self.vm.bind_native(predicate, evaluator)?;
                     let output = self.vm.heap_mut().alloc_derived(checked)?;
                     self.vm.heap_mut().set_derived_state(output, result)?;
-                    results::Results::attach_condition(self.vm.heap_mut(), result, output)?;
+                    results::attach(self.vm.heap_mut(), result, output)?;
                     (output, result)
                 };
                 let checked = self.vm.heap().derived_closure(output)?;

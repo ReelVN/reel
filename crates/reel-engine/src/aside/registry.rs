@@ -609,6 +609,18 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
         required_capabilities: vec!["reel.stage".into()],
     });
+    contracts.push(NativeContract {
+        rest: None,
+        symbol: "reel::assets::read".into(),
+        abi_version: 1,
+        parameters: vec![
+            parameter("path", None),
+            parameter("owner", Some(bc::Const::Null)),
+        ],
+        result: BuiltinType::Any,
+        effects: Effects(Effects::ALLOCATE | Effects::WRITE | Effects::HOST),
+        required_capabilities: vec!["reel.assets".into()],
+    });
     for (name, parameters) in [
         (
             "save",
@@ -1179,5 +1191,6 @@ pub(super) fn capabilities() -> Vec<String> {
         "reel.session".into(),
         "reel.stage".into(),
         "reel.audio".into(),
+        "reel.assets".into(),
     ]
 }
