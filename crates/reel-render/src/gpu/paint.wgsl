@@ -25,8 +25,39 @@ struct ImageAppearance {
     offset_enabled: vec4<f32>,
 }
 @group(0) @binding(2) var<uniform> appearance: ImageAppearance;
+// Stops interpolate in their declared space before entering linear composition.
+fn linear_paint(position: vec2<f32>) -> vec4<f32> {
+    var t = dot(appearance.x.xyz, vec3<f32>(position, 1.0));
+    if appearance.y.x == 1.0 {
+        t = fract(t);
+    } else if appearance.y.x == 2.0 {
+        t = 1.0 - abs((t - 2.0 * floor(t * 0.5)) - 1.0);
+    } else {
+        t = clamp(t, 0.0, 1.0);
+    }
+    let start = appearance.gain_saturation.x;
+    let end = appearance.gain_saturation.y;
+    var u: f32;
+    if start == end {
+        u = select(0.0, 1.0, t >= end);
+    } else {
+        u = clamp((t - start) / (end - start), 0.0, 1.0);
+    }
+    let color = mix(appearance.top_left, appearance.top_right, u);
+    if color.a == 0.0 { return vec4<f32>(0.0); }
+    if appearance.y.y == 0.0 && appearance.y.z != 0.0 { return color; }
+    var rgb = color.rgb;
+    if appearance.y.z != 0.0 { rgb /= color.a; }
+    if appearance.y.y != 0.0 {
+        let magnitude = abs(rgb);
+        rgb = sign(rgb) * select(pow((magnitude + 0.055) / 1.055, vec3<f32>(2.4)),
+            magnitude / 12.92, magnitude <= vec3<f32>(0.04045));
+    }
+    return vec4<f32>(rgb * color.a, color.a);
+}
 fn tint(v: VertexOut, pixel: vec4<f32>) -> vec4<f32> {
     if appearance.x.w == 0.0 { return pixel; }
+    if appearance.x.w == 2.0 { return pixel * linear_paint(v.position.xy); }
     var tinted = pixel;
     if appearance.y.w != 0.0 {
         let position = vec3<f32>(v.position.xy, 1.0);

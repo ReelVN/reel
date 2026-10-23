@@ -13,6 +13,7 @@ pub use renderer::{Prepared, Renderer, Usage};
 mod capture;
 mod glyph;
 mod glyph_cache;
+mod gradient;
 mod present;
 mod readback;
 pub use capture::GpuCapture;
