@@ -82,3 +82,98 @@ fn change_sample_rate() {
 	backend.process();
 	assert_eq!(effect_handle.dt_consumer.pop(), Ok(1.0 / 200.0));
 }
+
+mod sync_send {
+	use reel_audio::{
+		AudioManager,
+		backend::mock::MockBackend,
+		clock::ClockHandle,
+		effect::{
+			compressor::CompressorHandle, delay::DelayHandle, distortion::DistortionHandle,
+			eq_filter::EqFilterHandle, filter::FilterHandle, panning_control::PanningControlHandle,
+			reverb::ReverbHandle, volume_control::VolumeControlHandle,
+		},
+		listener::ListenerHandle,
+		modulator::{lfo::LfoHandle, tweener::TweenerHandle},
+		sound::{static_sound::StaticSoundHandle, streaming::StreamingSoundHandle},
+		track::{MainTrackHandle, SendTrackHandle, SpatialTrackHandle, TrackHandle},
+	};
+
+	#[test]
+	fn handles_are_send_and_sync() {
+		sync_send::<AudioManager<MockBackend>>();
+		sync_send::<LfoHandle>();
+		sync_send::<ClockHandle>();
+		sync_send::<DelayHandle>();
+		sync_send::<TrackHandle>();
+		sync_send::<FilterHandle>();
+		sync_send::<ReverbHandle>();
+		sync_send::<TweenerHandle>();
+		sync_send::<EqFilterHandle>();
+		sync_send::<ListenerHandle>();
+		sync_send::<MainTrackHandle>();
+		sync_send::<SendTrackHandle>();
+		sync_send::<CompressorHandle>();
+		sync_send::<DistortionHandle>();
+		sync_send::<StaticSoundHandle>();
+		sync_send::<SpatialTrackHandle>();
+		sync_send::<VolumeControlHandle>();
+		sync_send::<PanningControlHandle>();
+		sync_send::<StreamingSoundHandle<std::io::Error>>();
+	}
+
+	fn sync_send<T: Sync + Send>() {}
+}
+
+mod streaming_sound_stops_on_error {
+	use std::time::Duration;
+
+	use reel_audio::{
+		AudioManager, AudioManagerSettings, Frame,
+		backend::mock::MockBackend,
+		sound::{
+			PlaybackState,
+			streaming::{Decoder, StreamingSoundData},
+		},
+	};
+
+	struct MockDecoder;
+
+	#[derive(Debug, PartialEq, Eq)]
+	struct MockDecoderError;
+
+	impl Decoder for MockDecoder {
+		type Error = MockDecoderError;
+
+		fn sample_rate(&self) -> u32 {
+			1
+		}
+
+		fn num_frames(&self) -> usize {
+			1
+		}
+
+		fn decode(&mut self) -> Result<Vec<Frame>, Self::Error> {
+			Err(MockDecoderError)
+		}
+
+		fn seek(&mut self, _index: usize) -> Result<usize, Self::Error> {
+			Ok(0)
+		}
+	}
+
+	#[test]
+	fn streaming_sound_stops_on_error() {
+		let mut manager =
+			AudioManager::<MockBackend>::new(AudioManagerSettings::default()).unwrap();
+		let data = StreamingSoundData::from_decoder(MockDecoder);
+		let mut sound = manager.play(data).unwrap();
+		manager.backend_mut().on_start_processing();
+		std::thread::sleep(Duration::from_secs(1));
+		manager.backend_mut().process();
+		manager.backend_mut().on_start_processing();
+		assert_eq!(sound.state(), PlaybackState::Stopped);
+		assert_eq!(sound.pop_error(), Some(MockDecoderError));
+		assert_eq!(manager.main_track().num_sounds(), 0);
+	}
+}

@@ -1,4 +1,10 @@
-//! Reel's platform-independent shared contracts, design baseline 1.1.
+//! Shared identities, owned bytes, budgets, resource IO and background work.
+//!
+//! [`budget::OwnedBytes`] retains its reservation through physical release.
+//! Service results transfer the original request or a completed owned result.
+//! Acknowledge [`wake::WakeSignal`] before draining its sources, then recheck
+//! pending work before sleeping. The `test-support` feature provides in-memory
+//! IO and a cooperative executor for exercising these contracts.
 // Returning a large *original* request is an intentional ownership contract.
 #![allow(clippy::result_large_err)]
 

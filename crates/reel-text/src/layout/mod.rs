@@ -35,10 +35,6 @@ pub use run::{Run, RunMetrics};
 pub(crate) use data::{LayoutData, LayoutItem, LayoutItemKind, LineData, LineItemData};
 pub(crate) use line::LineItem;
 
-// TODO - Deprecation not yet active to ease internal code migration.
-#[deprecated(since = "TBD", note = "Access from the `editing` module instead.")]
-pub use crate::editing::{Cursor, Selection};
-
 // TODO - Move the following to `style` module and submodules.
 
 use crate::style::Brush;

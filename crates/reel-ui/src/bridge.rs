@@ -116,8 +116,6 @@ pub struct RecordedSource {
     pub(super) geometry: Arc<PresentedGeometryView>,
     reference_scene: OnceLock<Result<Scene, crate::frame::BuildError>>,
 }
-/// U02 source-compatible name. scene() is an explicit, lazy structural reference.
-pub type RecordedCandidate = RecordedSource;
 impl RecordedSource {
     pub fn key(&self) -> CandidateKey {
         self.key.clone()

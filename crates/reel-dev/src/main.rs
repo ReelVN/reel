@@ -26,7 +26,6 @@ fn main() -> Result<()> {
         ["audio-regression"] => audio::regression(false)?,
         ["audio-regression", "--release"] => audio::regression(true)?,
         ["audio-probe"] => audio::probes()?,
-        ["audit-ui"] => maintenance::audit_ui()?,
         ["root-negative"] => maintenance::negative_controls()?,
         ["compiler-probe", probe, mode] => maintenance::compiler_probe(probe, Some(mode))?,
         ["compiler-probe", probe] => maintenance::compiler_probe(probe, None)?,
@@ -34,7 +33,7 @@ fn main() -> Result<()> {
             maintenance::measure(Path::new(build), target, &args[3..])?
         }
         _ => bail!(
-            "Usage: cargo run -p reel-dev -- <check|deps|audit-ui|audio-regression [--release]|audio-probe|root-negative|compiler-probe frontend/semantic/lowering [MODE]|measure BUILD_JSON contracts/r01_measurements [TEST_ARGS]>\nRepository: {}",
+            "Usage: cargo run -p reel-dev -- <check|deps|audio-regression [--release]|audio-probe|root-negative|compiler-probe frontend/semantic/lowering [MODE]|measure BUILD_JSON contracts/r01_measurements [TEST_ARGS]>\nRepository: {}",
             root().display()
         ),
     }

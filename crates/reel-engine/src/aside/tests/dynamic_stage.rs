@@ -241,10 +241,53 @@ fn same_parent_move_preserves_identity_bindings_activities_and_ownership() {
 }
 
 #[test]
-fn same_parent_reorder_public_example_callbacks_keep_the_animation() {
+fn same_parent_reorder_callbacks_keep_the_animation() {
     use reel_ui::stage::NodeKind;
-    let source = include_str!("../../../../../examples/author_reorder/src/main.aside")
-        .replace("fn main()", "fn opening()");
+    let source = r##"// Supply fonts/body.ttf relative to the asset root. No artwork is required.
+fn main() {
+    game.configure(title: "Keep the same card", width: 800, height: 500, fonts: ["fonts/body.ttf"]);
+    let cards = stack(width: 800, height: 360);
+    let left = button(
+        "Blue card", x: 160, y: 70, width: 300, height: 240, decorated: false,
+        background: "#3b6594",
+        on_click: |event| {
+            cards.move(event.target, index: 1);
+        }
+    );
+    let right = button(
+        "Red card", x: 330, y: 100, width: 300, height: 240, decorated: false,
+        background: "#ab5b62",
+        on_click: |event| {
+            cards.move(event.target, index: 1);
+        }
+    );
+    cards.add(left);
+    cards.add(right);
+    stage.replace(
+        stack(width: 800, height: 500, background: "#142335") {
+            cards;
+            column(x: 80, y: 390, gap: 10) {
+                text("Click the exposed part of a card to bring it forward.", font_size: 22);
+                text(
+                    "The blue card keeps moving, with the same callback and identity.",
+                    font_size: 18
+                );
+            }
+        }
+    );
+    await stage.presented(owner: cards);
+    run(
+        repeat(
+            sequence(
+                tween(left, y: 50, duration: 1.5, easing: "in_out"),
+                tween(left, y: 90, duration: 1.5, easing: "in_out")
+            )
+        ),
+        owner: left
+    );
+}
+"##
+    .replace("fn main()", "fn opening()");
     for encoded in [false, true] {
         let (mut session, mut vm) = models::prepared(&source, encoded);
         assert!(matches!(

@@ -1,10 +1,9 @@
-//! The Rust session host, design baseline 1.1, host interface 0.1.
+//! Sessions, reading contexts, interactions, history and author activities.
 //!
-//! This owns ADV dialogue, copied choice rows, input permission and one terminal
-//! record. The separate [`aside`] adapter binds this model to actual VM tickets
-//! and rooted waits, covered by real compiler/VM execution checks.
-//! `CleanupOnly` never grants resume permission. A claimed `Resume` record must
-//! still be checked against session/epoch, owner liveness and the actual wait.
+//! [`Session`] owns dialogue admission, choice keys, input permissions and
+//! completion records. The [`aside`] adapter binds this state to VM tasks,
+//! rooted waits and the shared stage. Completion delivery validates the session,
+//! epoch, live owner and actual wait; owner reuse follows completed retirement.
 
 use std::{collections::HashSet, ops::Range};
 

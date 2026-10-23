@@ -342,10 +342,10 @@ fn bridge_limits() -> BridgeLimits {
         max_snapshot_bytes: 20 * 1024 * 1024 + 4096,
     }
 }
-fn accept(c: &RecordedCandidate) -> PresentationNotice {
+fn accept(c: &RecordedSource) -> PresentationNotice {
     notice(c, PresentationOutcome::Accepted(c.key().frame_id()))
 }
-fn notice(c: &RecordedCandidate, outcome: PresentationOutcome) -> PresentationNotice {
+fn notice(c: &RecordedSource, outcome: PresentationOutcome) -> PresentationNotice {
     PresentationNotice::new(c.key(), c.key().surface_epoch(), outcome)
 }
 

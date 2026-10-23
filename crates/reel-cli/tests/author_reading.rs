@@ -337,28 +337,6 @@ fn source_and_asb_reading_controls_wait_for_presentation_and_preserve_choices() 
 }
 
 #[test]
-fn creator_reading_example_builds_as_source_and_asb() {
-    let source = include_str!("../../../examples/author_reading/src/main.aside");
-    let checked = reel_cli::check(source, "author_reading.aside").unwrap();
-    let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
-    for compiled in [
-        reel_cli::into_story(checked, "main::main").unwrap(),
-        reel_cli::decode_story(&artifact.bytes).unwrap(),
-    ] {
-        let mut driver = AsideSessionUi::from_compiled(
-            Session::new(SessionId(2), Epoch(1)).unwrap(),
-            compiled,
-            "zh-CN",
-            VmLimits::default(),
-        )
-        .unwrap();
-        settle(&mut driver);
-        assert!(driver.ui().session().view().interaction.is_some());
-        assert!(!driver.ui().session().reading().automatic());
-    }
-}
-
-#[test]
 fn source_and_asb_skip_actions_follow_read_boundaries_release_and_choices() {
     use reel_ui::input::{Control, InputDeviceId, InputEvent};
     let source = r#"

@@ -1,8 +1,0 @@
-fn settings_panel() {
-    let root = column(key: "settings", gap: 16);
-    let local = root.state("ui", {tab: "audio"});
-    root.add(button("声音", on_click: |event| { local.tab = "audio"; }));
-    root.add(button("阅读", on_click: |event| { local.tab = "reading"; }));
-    // Bind the page container's selected property to local.tab.
-    return root;
-}

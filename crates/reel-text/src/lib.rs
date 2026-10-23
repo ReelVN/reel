@@ -119,9 +119,3 @@ pub use layout::Layout;
 pub use editing::*;
 pub use layout::*;
 pub use style::*;
-
-#[deprecated(
-    note = "Old name for this type, use `reel_text::FontData` instead.",
-    since = "0.6.0"
-)]
-pub type Font = FontData;
