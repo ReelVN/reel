@@ -147,6 +147,7 @@ impl StoryRuntime {
                 }
                 let (session, mut vm) = saves.restore.take().unwrap().finish()?;
                 let live = self.driver.as_ref().unwrap();
+                vm.set_host_environment(live.adapter().host_environment());
                 vm.set_window_info(live.adapter().window_info().clone());
                 saves.candidate = Some(Candidate::new(AsideSessionUi::restored(
                     session,
@@ -244,6 +245,13 @@ impl StoryRuntime {
                         StorageJob::Save {
                             slot: slot.clone(),
                             title: title.clone(),
+                            saved_at: self
+                                .driver
+                                .as_ref()
+                                .unwrap()
+                                .adapter()
+                                .host_environment()
+                                .unix_seconds(),
                             thumbnail: thumbnail.clone(),
                             snapshot: Box::new(snapshot),
                         },

@@ -40,6 +40,8 @@ impl StoryRuntime {
         next.adapter_mut()
             .set_source_catalogs(old.adapter().source_catalogs())?;
         next.adapter_mut()
+            .set_host_environment(old.adapter().host_environment());
+        next.adapter_mut()
             .inherit_game_settings(old.adapter().game_settings().clone());
         next.adapter_mut()
             .set_window_info(old.adapter().window_info().clone());
@@ -63,6 +65,7 @@ impl StoryRuntime {
         self.gc_turn = false;
         self.retry_after_collection = false;
         self.retried_collection = false;
+        self.resource_blocked = None;
         Ok(())
     }
 }

@@ -238,6 +238,14 @@ impl AsideSessionUi {
         self.vm.set_media(backend)?;
         Ok(self)
     }
+    /// Supply host entropy and civil time before the initializer executes.
+    pub fn with_host_environment(
+        mut self,
+        environment: std::rc::Rc<dyn reel_engine::aside::HostEnvironment>,
+    ) -> Self {
+        self.vm.set_host_environment(environment);
+        self
+    }
     pub fn maintain_media(&mut self) -> Result<bool, Error> {
         Ok(self.vm.maintain_media()?)
     }
@@ -313,6 +321,16 @@ impl AsideSessionUi {
     }
     pub fn ui(&self) -> &SessionUi {
         &self.ui
+    }
+    /// Inspect controls that can receive pointer input in the accepted frame.
+    /// Hosts dispatch the returned points through `handle_pointer` and retain
+    /// normal modal, gesture, callback and input ownership semantics.
+    pub fn input_targets(
+        &self,
+        bridge: &PresentationBridge,
+        root: WidgetId,
+    ) -> Vec<crate::session::InputTarget> {
+        self.ui.input_targets(bridge, root)
     }
     pub(crate) fn ui_mut(&mut self) -> &mut SessionUi {
         &mut self.ui
@@ -542,6 +560,28 @@ impl AsideSessionUi {
     ) -> Result<Handled, Error> {
         let result = self.ui.handle_access(bridge, event)?;
         self.accept_ui_input(result)
+    }
+    /// Drive the current accepted narrative interaction through its session owner.
+    /// This host action follows dialogue/choice sequencing and reading controls;
+    /// it does not perform pointer hit testing. Returns `None` while presentation,
+    /// focus, a modal, a gesture or reading pause prevents submission, or when the
+    /// action no longer identifies the current interaction.
+    pub fn handle_input(
+        &mut self,
+        action: reel_engine::InputAction,
+    ) -> Result<Option<reel_engine::InputOutcome>, Error> {
+        if self.state != StoryState::Running {
+            return Ok(None);
+        }
+        let outcome = self.ui.handle_semantic_input(action)?;
+        let events = self.ui.take_events();
+        self.accept_events(events)?;
+        Ok(outcome)
+    }
+    /// Whether the current narrative projection has accepted input permission.
+    /// Individual actions still validate their interaction and option identities.
+    pub fn narrative_input_ready(&self) -> bool {
+        self.state == StoryState::Running && self.ui.narrative_input_ready()
     }
     fn accept_ui_input(&mut self, result: crate::session::UiDispatch) -> Result<Handled, Error> {
         self.accept_events(result.events)?;

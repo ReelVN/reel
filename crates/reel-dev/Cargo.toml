@@ -7,8 +7,17 @@ publish = false
 
 [dependencies]
 anyhow = "=1.0.104"
+aside-vm = { path = "../aside-vm" }
+fastrand = "=2.5.0"
+reel-core = { path = "../reel-core" }
+reel-engine = { path = "../reel-engine" }
+reel-media = { path = "../reel-media", default-features = false }
+reel-player = { path = "../reel-player", default-features = false, features = ["video"] }
+reel-ui.workspace = true
+serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
 sha2 = "=0.11.1"
+tempfile = "=3.27.0"
 
 [lints]
 workspace = true
