@@ -44,6 +44,7 @@ pub struct Image {
     tiles: Vec<ImageTile>,
     tiled_size: Size,
     source_rect: Option<Rect>,
+    alpha_layout: crate::frame::ImageAlphaLayout,
     slice: Option<Insets>,
     slice_scale: f64,
     slice_center: bool,
@@ -79,6 +80,7 @@ impl Image {
             tiles: Vec::new(),
             tiled_size: Size::ZERO,
             source_rect: None,
+            alpha_layout: Default::default(),
             slice: None,
             slice_scale: 1.,
             slice_center: true,
@@ -100,6 +102,7 @@ impl Image {
             tiles,
             tiled_size: size,
             source_rect: None,
+            alpha_layout: Default::default(),
             slice: None,
             slice_scale: 1.,
             slice_center: true,
@@ -181,6 +184,13 @@ impl Image {
         self
     }
 
+    /// Interpret packed alpha while sharing the original image or video resource.
+    /// TopBottom halves the natural height; source windows use visible color pixels.
+    pub fn with_alpha_layout(mut self, layout: crate::frame::ImageAlphaLayout) -> Self {
+        self.alpha_layout = layout;
+        self
+    }
+
     /// Stretch a whole image as nine slices, preserving corner proportions.
     /// Insets are source pixels; scale maps border pixels to logical pixels.
     /// Both must be finite and nonnegative. `None` restores ordinary object fit.
@@ -221,6 +231,17 @@ impl Image {
 
 // --- MARK: WIDGETMUT
 impl Image {
+    /// Change packed alpha interpretation and update the natural image dimensions.
+    pub fn set_alpha_layout(
+        this: &mut WidgetMut<'_, Self>,
+        layout: crate::frame::ImageAlphaLayout,
+    ) {
+        if this.widget.alpha_layout != layout {
+            this.widget.alpha_layout = layout;
+            this.ctx.request_layout();
+        }
+    }
+
     /// Change the source window. Moving a same-sized window invalidates only paint.
     pub fn set_source_rect(this: &mut WidgetMut<'_, Self>, rect: Option<Rect>) {
         if this.widget.source_rect != rect {
@@ -337,6 +358,17 @@ impl Image {
 }
 
 impl Image {
+    fn color_rect(&self) -> Option<Rect> {
+        self.source_rect.or_else(|| {
+            (self.alpha_layout == crate::frame::ImageAlphaLayout::TopBottom).then(|| {
+                let size = self.image_data.as_ref().map_or(self.tiled_size, |image| {
+                    Size::new(image.image.width.into(), image.image.height.into())
+                });
+                self.alpha_layout.size(size).to_rect()
+            })
+        })
+    }
+
     /// Returns the preferred size of the image.
     ///
     /// The returned size is in logical pixels.
@@ -344,7 +376,7 @@ impl Image {
     /// This takes into account [`IMAGE_SCALE`], so a high-resolution resource can
     /// have a stable preferred logical size.
     fn preferred_size(&self) -> Size {
-        if let Some(rect) = self.source_rect {
+        if let Some(rect) = self.color_rect() {
             return rect.size() / IMAGE_SCALE;
         }
         let Some(image_data) = &self.image_data else {
@@ -384,7 +416,7 @@ impl Image {
                 (top + bottom) * self.slice_scale,
             );
         let origin = self
-            .source_rect
+            .color_rect()
             .map_or(crate::kurbo::Point::ZERO, |rect| rect.origin());
         let source_x = [
             origin.x,
@@ -522,8 +554,9 @@ impl Widget for Image {
         painter: &mut Painter<'_>,
     ) {
         ctx.set_image_color(self.color);
-        ctx.set_image_sampling_transform(self.slice.is_some() || self.source_rect.is_some());
-        ctx.set_image_source_rect(self.source_rect);
+        let source_rect = self.color_rect();
+        ctx.set_image_sampling_transform(self.slice.is_some() || source_rect.is_some());
+        ctx.set_image_source_rect(source_rect);
         ctx.set_image_resource(self.resource.as_ref().map(|lease| ResourceImageBrush {
             resource: lease.handle(),
             sampler: crate::peniko::ImageSampler {
@@ -541,7 +574,12 @@ impl Widget for Image {
             },
         }));
         let content_box = ctx.content_box();
-        ctx.set_image_appearance(self.corner_colors, self.adjustment, content_box);
+        ctx.set_image_appearance(
+            self.corner_colors,
+            self.adjustment,
+            self.alpha_layout,
+            content_box,
+        );
         if self.repeat != [false; 2] {
             if self.image_data.is_some() || self.resource.is_some() {
                 let image_size = self.preferred_size();
@@ -556,7 +594,7 @@ impl Widget for Image {
                         .y1
                         .min(bounds.y0 + image_size.height * self.tile_scale);
                 }
-                let transform = if let Some(rect) = self.source_rect {
+                let transform = if let Some(rect) = source_rect {
                     Affine::translate(rect.origin().to_vec2())
                         * Affine::scale(1. / self.tile_scale)
                         * Affine::translate(-content_box.origin().to_vec2())
@@ -579,7 +617,7 @@ impl Widget for Image {
         let image_size = self.preferred_size();
         let transform = object_fit.affine(content_box, image_size.to_rect());
 
-        if let Some(rect) = self.source_rect {
+        if let Some(rect) = source_rect {
             // Object-fit is axis-aligned in the image's local coordinates.
             // Trim geometry there instead of opening a per-image clip layer;
             // consecutive regions of one texture remain consecutive quads.

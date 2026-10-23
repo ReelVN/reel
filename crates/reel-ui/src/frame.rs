@@ -186,14 +186,15 @@ pub struct FrameImage {
     pub resource: ResourceHandle,
     /// Linear premultiplied RGBA multiplier, including its own alpha once.
     pub color: [f32; 4],
-    /// Optional corner tint and sRGB adjustment; None uses the shared plain uniform.
+    /// Optional corner tint, sRGB adjustment and packed alpha layout.
+    /// None uses the shared plain uniform.
     pub appearance: Option<ImageAppearance>,
     /// Optional source-pixel sampling window. Per-fragment padding preserves the
     /// original UV mapping while preventing bilinear reads from adjacent regions.
     pub source_rect: Option<Rect>,
 }
 mod image_color;
-pub use image_color::{ImageAppearance, ImageColorAdjustment};
+pub use image_color::{ImageAlphaLayout, ImageAppearance, ImageColorAdjustment};
 /// Four linear premultiplied colors and their unit square in frame coordinates.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ImageColorGradient {

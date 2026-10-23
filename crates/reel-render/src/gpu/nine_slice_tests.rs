@@ -14,6 +14,192 @@ use reel_ui::{
     widgets::{Image, ImageTile},
 };
 
+fn packed_alpha_frame(
+    pool: &BudgetPool,
+    video: bool,
+    transfer: reel_core::image::YuvTransfer,
+    layout: reel_ui::frame::ImageAlphaLayout,
+    crop: Option<Rect>,
+) -> RenderFrame {
+    use reel_core::image::{Yuv420Image, Yuv420Storage, YuvColor, YuvMatrix};
+    use std::sync::Arc;
+    #[derive(Debug)]
+    struct Planes([Vec<u8>; 3]);
+    impl Yuv420Storage for Planes {
+        fn plane(&self, index: usize) -> &[u8] {
+            &self.0[index]
+        }
+    }
+    let mut registry = ResourceRegistry::new(1, 64 << 10).unwrap();
+    let version = ResourceVersion {
+        key: AssetKey("packed-alpha".into()),
+        version: ContentVersion([3; 32]),
+    };
+    let handle = if video {
+        let full_range = transfer == reel_core::image::YuvTransfer::Srgb;
+        let mut y = vec![if full_range { 255 } else { 235 }; 64];
+        y[32..].fill(if full_range { 128 } else { 126 });
+        registry
+            .register_yuv420(
+                version,
+                Yuv420Image::new(
+                    [8, 8],
+                    YuvColor {
+                        matrix: YuvMatrix::Bt709,
+                        full_range,
+                        transfer,
+                    },
+                    Arc::new(Planes([y, vec![128; 16], vec![128; 16]])),
+                )
+                .unwrap(),
+            )
+            .unwrap()
+    } else {
+        let pixels = (0..64)
+            .flat_map(|i| {
+                if i < 32 {
+                    [255, 255, 255, 64]
+                } else {
+                    [128, 0, 255, 255]
+                }
+            })
+            .collect::<Vec<_>>();
+        registry
+            .register_image(
+                version,
+                OwnedBytes::new(pixels, pool.reserve(256).unwrap()).unwrap(),
+                [8, 8],
+                ImageFormat::Rgba8,
+                ImageAlphaType::Alpha,
+                if transfer == reel_core::image::YuvTransfer::Srgb {
+                    ColorEncoding::Srgb
+                } else {
+                    ColorEncoding::Linear
+                },
+            )
+            .unwrap()
+    };
+    let mut widget = RecordWidget::new(Scene::new());
+    widget.inner.add(
+        NewWidget::new(
+            Image::from_resource(registry.acquire(handle).unwrap())
+                .with_alpha_layout(layout)
+                .with_source_rect(crop),
+        )
+        .with_props(ObjectFit::Contain),
+        Point::ZERO,
+        Size::new(200., 200.),
+    );
+    let mut bridge = widget_bridge(widget, Affine::IDENTITY);
+    build(
+        bridge.record(FrameId(1)).unwrap(),
+        registry.freeze(&[handle], pool).unwrap(),
+        pool,
+    )
+}
+
+#[test]
+fn packed_alpha_natural_size_crop_and_retained_appearance_share_one_source() {
+    use reel_ui::frame::ImageAlphaLayout;
+    let pool = pool();
+    assert_eq!(
+        ImageAlphaLayout::TopBottom.size(Size::new(960., 1024.)),
+        Size::new(960., 512.)
+    );
+    for crop in [None, Some(Rect::new(2., 1., 6., 3.))] {
+        let frame = packed_alpha_frame(
+            &pool,
+            true,
+            reel_core::image::YuvTransfer::Bt709,
+            ImageAlphaLayout::TopBottom,
+            crop,
+        );
+        assert_eq!(frame.resources().leases().len(), 1);
+        let image = frame
+            .commands()
+            .iter()
+            .find_map(|command| match &command.op {
+                FrameOp::Draw(FrameDraw::Fill {
+                    brush: Brush::Image(brush),
+                    transform,
+                    shape: Geometry::Rect(bounds),
+                    ..
+                }) => Some((brush.image, *transform, *bounds)),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            image.0.source_rect,
+            crop.or(Some(Rect::new(0., 0., 8., 4.)))
+        );
+        assert_eq!(
+            image.1.transform_rect_bbox(image.2),
+            Rect::new(0., 50., 200., 150.)
+        );
+        assert_eq!(
+            image.0.appearance.unwrap().alpha_layout,
+            ImageAlphaLayout::TopBottom
+        );
+        let bytes = postcard::to_allocvec(&image.0).unwrap();
+        assert_eq!(
+            postcard::from_bytes::<reel_ui::frame::FrameImage>(&bytes).unwrap(),
+            image.0
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter"]
+fn packed_alpha_uses_encoded_half_coverage_and_preserves_native_pixels() {
+    use reel_core::image::YuvTransfer;
+    use reel_ui::frame::ImageAlphaLayout;
+    let pool = pool();
+    let mut renderer = renderer(Default::default());
+    eprintln!("packed alpha adapter={:?}", renderer.gpu.adapter.get_info());
+    for video in [false, true] {
+        for transfer in [YuvTransfer::Srgb, YuvTransfer::Bt709] {
+            for crop in [None, Some(Rect::new(2., 1., 6., 3.))] {
+                let frame =
+                    packed_alpha_frame(&pool, video, transfer, ImageAlphaLayout::TopBottom, crop);
+                let textures = renderer
+                    .gpu
+                    .upload_creations
+                    .textures
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let pixels = renderer
+                    .readback(renderer.prepare(&frame).unwrap())
+                    .unwrap();
+                let created = renderer
+                    .gpu
+                    .upload_creations
+                    .textures
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    - textures;
+                assert!(created <= if video { 3 } else { 1 });
+                for y in [50, 75, 125, 149] {
+                    let pixel = pixels[y * 400 + 100];
+                    assert!(
+                        pixel.iter().all(|v| (*v - 128. / 255.).abs() < 0.006),
+                        "video={video}, transfer={transfer:?}, crop={crop:?}: {pixel:?}"
+                    );
+                }
+                assert_eq!(pixels[25 * 400 + 100], [0.; 4]);
+                assert_eq!(pixels[175 * 400 + 100], [0.; 4]);
+            }
+            let frame = packed_alpha_frame(&pool, video, transfer, ImageAlphaLayout::Native, None);
+            let pixels = renderer
+                .readback(renderer.prepare(&frame).unwrap())
+                .unwrap();
+            let expected = if video { 1. } else { 64. / 255. };
+            assert!(
+                pixels[25 * 400 + 100]
+                    .iter()
+                    .all(|v| (*v - expected).abs() < 0.006)
+            );
+        }
+    }
+}
+
 fn sliced_frame(pool: &BudgetPool) -> RenderFrame {
     // Exact 20x73 source with a split at x=10. Bilinear sampling of that
     // boundary must remain half red/half blue across a collapsed center.

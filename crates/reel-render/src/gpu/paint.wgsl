@@ -19,6 +19,7 @@ struct ImageAppearance {
     top_right: vec4<f32>,
     bottom_right: vec4<f32>,
     bottom_left: vec4<f32>,
+    // x.w: plain=0, image=1, gradient paint=2, packed alpha=3, linear-channel packed alpha=4.
     x: vec4<f32>,
     y: vec4<f32>,
     gain_saturation: vec4<f32>,
@@ -85,20 +86,53 @@ fn source_uv(v: VertexOut, dimensions: vec2<u32>) -> vec2<f32> {
     let low = v.source_window.xy;
     let span = abs(v.source_window.zw);
     let high = low + span;
-    if any(span <= vec2<f32>(0.0)) { return v.uv; }
+    let packed_alpha = appearance.x.w >= 3.0;
+    let half_texel = 0.5 / vec2<f32>(dimensions);
+    let texture_high = vec2<f32>(1.0, select(1.0, 0.5, packed_alpha)) - half_texel;
+    if any(span <= vec2<f32>(0.0)) {
+        if packed_alpha { return clamp(v.uv, half_texel, texture_high); }
+        return v.uv;
+    }
     var uv = v.uv;
     if any(v.source_window.zw < vec2<f32>(0.0)) {
         let wrapped = low + fract((uv - low) / span) * span;
         uv = select(uv, wrapped, v.source_window.zw < vec2<f32>(0.0));
     }
-    let half_texel = 0.5 / vec2<f32>(dimensions);
     let inset = min(half_texel, span * 0.5);
     // Regional repetition is already resolved above. Even a repeating sampler
     // must pad the physical texture when the authored region crosses its edge.
-    return clamp(clamp(uv, low + inset, high - inset), half_texel, vec2<f32>(1.0) - half_texel);
+    return clamp(clamp(uv, low + inset, high - inset), half_texel, texture_high);
+}
+// RGBA textures store linear premultiplied pixels. Recover each mask texel's
+// encoded red before interpolation so coverage keeps its original linear scale.
+fn encoded_red(pixel: vec4<f32>) -> f32 {
+    if pixel.a == 0.0 { return 0.0; }
+    let red = max(pixel.r / pixel.a, 0.0);
+    if appearance.x.w == 4.0 { return clamp(red, 0.0, 1.0); }
+    return clamp(select(1.055 * pow(red, 1.0 / 2.4) - 0.055, 12.92 * red, red <= 0.0031308), 0.0, 1.0);
+}
+fn image_alpha(uv: vec2<f32>) -> f32 {
+    let size = vec2<i32>(textureDimensions(image));
+    let pixel = uv * vec2<f32>(size) - 0.5;
+    let base = vec2<i32>(floor(pixel));
+    let low = clamp(base, vec2<i32>(0), size - 1);
+    let high = clamp(base + 1, vec2<i32>(0), size - 1);
+    let t = fract(pixel);
+    return mix(mix(encoded_red(textureLoad(image, low, 0)),
+                   encoded_red(textureLoad(image, vec2<i32>(high.x, low.y), 0)), t.x),
+               mix(encoded_red(textureLoad(image, vec2<i32>(low.x, high.y), 0)),
+                   encoded_red(textureLoad(image, high, 0)), t.x), t.y);
 }
 @fragment fn fragment(v: VertexOut) -> @location(0) vec4<f32> {
-    return tint(v, textureSample(image, image_sampler, source_uv(v, textureDimensions(image))) * v.color);
+    let uv = source_uv(v, textureDimensions(image));
+    var pixel = textureSample(image, image_sampler, uv);
+    if appearance.x.w >= 3.0 {
+        let alpha = image_alpha(uv + vec2<f32>(0.0, 0.5));
+        var color = vec3<f32>(0.0);
+        if pixel.a > 0.0 { color = pixel.rgb / pixel.a; }
+        pixel = vec4<f32>(color * alpha, alpha);
+    }
+    return tint(v, pixel * v.color);
 }
 @group(0) @binding(3) var chroma_u: texture_2d<f32>;
 @group(0) @binding(4) var chroma_v: texture_2d<f32>;
@@ -117,5 +151,16 @@ struct VideoColor {
     } else {
         linear = select(pow((rgb + 0.099) / 1.099, vec3<f32>(1.0 / 0.45)), rgb / 4.5, rgb < vec3<f32>(0.081));
     }
-    return tint(v, vec4<f32>(linear, 1.0) * v.color);
+    var alpha = 1.0;
+    if appearance.x.w == 3.0 {
+        let offset = vec2<f32>(0.0, 0.5);
+        let y = textureSample(image, image_sampler, source_uv(v, textureDimensions(image)) + offset).r;
+        let red_v = textureSample(chroma_v, image_sampler, source_uv(v, textureDimensions(chroma_v)) + offset).r;
+        var red_u = 0.0;
+        if video_color.r.y != 0.0 {
+            red_u = textureSample(chroma_u, image_sampler, source_uv(v, textureDimensions(chroma_u)) + offset).r;
+        }
+        alpha = clamp(dot(video_color.r, vec4<f32>(y, red_u, red_v, 1.0)), 0.0, 1.0);
+    }
+    return tint(v, vec4<f32>(linear * alpha, alpha) * v.color);
 }

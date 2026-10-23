@@ -380,6 +380,7 @@ fn image_resolution_and_removal_invalidate_only_the_resource_branch() {
                 repeat: [false; 2],
                 tile_scale: 1.,
                 corner_colors: None,
+                alpha_layout: Default::default(),
                 adjustment: Default::default(),
             },
             NodeProps {

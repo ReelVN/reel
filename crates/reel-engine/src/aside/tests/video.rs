@@ -162,7 +162,7 @@ impl MediaBackend for Backend {
 }
 fn pump(vm: &mut SessionVm, session: &mut Session) {
     for _ in 0..50 {
-        models::drive(vm, session, false);
+        box_style::drive(vm, session);
         let media = vm.maintain_media().unwrap();
         let sampled = vm.advance_time(session, vm.logical_time(), 64).unwrap();
         if !media && !sampled.woke {
@@ -231,6 +231,58 @@ fn terminal_video_collected_before_publication_restores_its_picture() {
         assert!(
             matches!(session.view().interaction,Some(crate::InteractionView::Dialogue(d)) if d.text()=="done")
         );
+    }
+}
+
+#[test]
+fn video_alpha_layout_binds_configures_and_restores_from_source_and_asb() {
+    use reel_ui::frame::ImageAlphaLayout;
+    let source = r#"fn opening() {
+        let settings = model({alpha: "top_bottom"});
+        let movie = video("movie.mp4", alpha_layout: bind(settings.alpha), source_rect: (0, 0, 1, 1));
+        stage.replace(movie);
+        let playing = movie.play(looping: true);
+        narrator("packed");
+        settings.alpha = "native";
+        narrator("native");
+        let _ = movie.with(alpha_layout: "top_bottom");
+        let mut rejected = false;
+        try { movie.alpha_layout = "invalid"; } catch error { rejected = true; }
+        if !rejected || movie.alpha_layout != "top_bottom" { throw "alpha validation"; }
+        narrator("configured");
+    }"#;
+    let layout = |vm: &SessionVm| {
+        vm.stage()
+            .nodes()
+            .find_map(|node| match &node.kind {
+                NodeKind::Image {
+                    alpha_layout,
+                    source_rect,
+                    source,
+                    ..
+                } => {
+                    assert_eq!(
+                        *source_rect,
+                        Some(reel_ui::kurbo::Rect::new(0., 0., 1., 1.))
+                    );
+                    assert!(source.lease().is_some());
+                    Some(*alpha_layout)
+                }
+                _ => None,
+            })
+            .unwrap()
+    };
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(source, encoded);
+        vm.set_media(Box::new(Backend::new())).unwrap();
+        pump(&mut vm, &mut session);
+        assert_eq!(layout(&vm), ImageAlphaLayout::TopBottom);
+        restore(&mut vm, &mut session);
+        assert_eq!(layout(&vm), ImageAlphaLayout::TopBottom);
+        advance(&mut vm, &mut session);
+        assert_eq!(layout(&vm), ImageAlphaLayout::Native);
+        advance(&mut vm, &mut session);
+        assert_eq!(layout(&vm), ImageAlphaLayout::TopBottom);
     }
 }
 #[test]

@@ -57,6 +57,7 @@ fn kind(lease: ResourceLease) -> NodeKind {
         repeat: [false; 2],
         tile_scale: 1.,
         corner_colors: None,
+        alpha_layout: Default::default(),
         adjustment: ADJUSTMENT,
     }
 }

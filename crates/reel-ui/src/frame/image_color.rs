@@ -1,5 +1,26 @@
 //! Shared image appearance values retained by widgets, frame commands and archives.
 use super::*;
+use crate::kurbo::Size;
+
+/// How color and alpha share an image or video texture.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ImageAlphaLayout {
+    /// Preserve the resource's native alpha; YUV video is opaque.
+    #[default]
+    Native,
+    /// Top-half color and bottom-half encoded red coverage, before transfer decoding.
+    /// The visible image has the source width and half its height.
+    TopBottom,
+}
+impl ImageAlphaLayout {
+    /// Visible color dimensions in source pixels.
+    pub fn size(self, size: Size) -> Size {
+        match self {
+            Self::Native => size,
+            Self::TopBottom => Size::new(size.width, size.height * 0.5),
+        }
+    }
+}
 
 /// Color adjustment after uniform and bilinear tint multiplication.
 /// Channels are unpremultiplied sRGB: Rec.709 saturation, then RGB gain and
@@ -45,6 +66,8 @@ impl ImageColorAdjustment {
 /// An absent appearance is the ordinary uniform-tint path.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ImageAppearance {
+    /// Packed alpha interpretation; independent of tint and color adjustment.
+    pub alpha_layout: ImageAlphaLayout,
     /// Optional bilinear corner multiplication in frame coordinates.
     pub gradient: Option<ImageColorGradient>,
     /// Adjustment after all tint multiplication.
@@ -55,11 +78,16 @@ impl ImageAppearance {
     pub fn new(
         gradient: Option<ImageColorGradient>,
         adjustment: ImageColorAdjustment,
+        alpha_layout: ImageAlphaLayout,
     ) -> Option<Self> {
-        (gradient.is_some() || !adjustment.is_identity()).then_some(Self {
-            gradient,
-            adjustment,
-        })
+        (gradient.is_some()
+            || !adjustment.is_identity()
+            || alpha_layout != ImageAlphaLayout::Native)
+            .then_some(Self {
+                alpha_layout,
+                gradient,
+                adjustment,
+            })
     }
 
     /// Move only the corner gradient's coordinate system; adjustment is unchanged.

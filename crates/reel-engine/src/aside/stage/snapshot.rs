@@ -119,6 +119,7 @@ impl Shape {
                 slice_center: boolean(get(7)?)?,
                 adjustment: read_image_adjustment(heap, fields)?,
                 source_rect: read_source_rect(heap, get(11)?)?,
+                alpha_layout: read_alpha_layout(heap, get(12)?)?,
                 origin,
             },
             Self::Particles => {

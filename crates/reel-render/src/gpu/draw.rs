@@ -353,7 +353,7 @@ impl Context<'_> {
         mesh: &mesh::Mesh,
         image: &wgpu::TextureView,
     ) -> Result<(), GpuError> {
-        self.paint_image(target, mesh, image, [false; 2], None, None)
+        self.paint_mesh(target, mesh, image, [false; 2], None, None)
     }
 
     pub(super) fn paint_resource(
@@ -364,25 +364,6 @@ impl Context<'_> {
         repeat: [bool; 2],
         appearance: Option<ImageAppearance>,
     ) -> Result<(), GpuError> {
-        self.paint_image(
-            target,
-            mesh,
-            &image.view,
-            repeat,
-            appearance,
-            image.yuv.as_ref(),
-        )
-    }
-
-    fn paint_image(
-        &mut self,
-        target: &Target,
-        mesh: &mesh::Mesh,
-        image: &wgpu::TextureView,
-        repeat: [bool; 2],
-        appearance: Option<ImageAppearance>,
-        yuv: Option<&super::video::Planes>,
-    ) -> Result<(), GpuError> {
         if appearance
             .and_then(|appearance| appearance.gradient)
             .is_some_and(|gradient| gradient.transform.determinant() == 0.)
@@ -392,10 +373,19 @@ impl Context<'_> {
         self.paint_mesh(
             target,
             mesh,
-            image,
+            &image.view,
             repeat,
-            appearance.map(appearance_uniform),
-            yuv,
+            appearance.map(|appearance| {
+                let mut uniform = appearance_uniform(appearance);
+                if uniform[4][3] == 3.
+                    && image.yuv.is_none()
+                    && image.encoding == reel_ui::resources::ColorEncoding::Linear
+                {
+                    uniform[4][3] = 4.;
+                }
+                uniform
+            }),
+            image.yuv.as_ref(),
         )
     }
 
@@ -523,11 +513,21 @@ impl Context<'_> {
 fn appearance_uniform(appearance: ImageAppearance) -> [[f32; 4]; 8] {
     let mut values = [[0.; 4]; 8];
     // The ordinary shader path keeps its first branch and reads no other fields.
-    values[4][3] = 1.;
+    let mode = if appearance.alpha_layout == reel_ui::frame::ImageAlphaLayout::TopBottom {
+        3.
+    } else {
+        1.
+    };
+    values[4][3] = mode;
     if let Some(gradient) = appearance.gradient {
         let inverse = gradient.transform.inverse().as_coeffs();
         values[..4].copy_from_slice(&gradient.colors);
-        values[4] = [inverse[0] as f32, inverse[2] as f32, inverse[4] as f32, 1.];
+        values[4] = [
+            inverse[0] as f32,
+            inverse[2] as f32,
+            inverse[4] as f32,
+            mode,
+        ];
         values[5] = [inverse[1] as f32, inverse[3] as f32, inverse[5] as f32, 1.];
     }
     let color = appearance.adjustment;
@@ -566,7 +566,7 @@ mod tests {
             transform: Affine::translate((10., 20.)) * Affine::scale_non_uniform(20., 40.),
         };
         for corners in [None, Some(gradient)] {
-            let appearance = ImageAppearance::new(corners, adjustment).unwrap();
+            let appearance = ImageAppearance::new(corners, adjustment, Default::default()).unwrap();
             let uniform = appearance_uniform(appearance);
             assert_eq!(size_of_val(&uniform), 128);
             assert_eq!(uniform[4][3], 1.);

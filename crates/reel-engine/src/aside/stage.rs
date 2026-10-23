@@ -1053,6 +1053,7 @@ impl StageBinding {
                         slice_center: boolean(heap.table_entry(fields, 7)?.1)?,
                         adjustment: read_image_adjustment(heap, fields)?,
                         source_rect: read_source_rect(heap, heap.table_entry(fields, 11)?.1)?,
+                        alpha_layout: read_alpha_layout(heap, heap.table_entry(fields, 12)?.1)?,
                         origin: origin.clone(),
                     },
                     registry::IMAGE_PREFIX.len(),
@@ -1620,6 +1621,20 @@ fn read_fit(heap: &Heap, value: Value) -> Result<reel_ui::properties::ObjectFit,
     }
 }
 
+fn read_alpha_layout(
+    heap: &Heap,
+    value: Value,
+) -> Result<reel_ui::frame::ImageAlphaLayout, AdapterError> {
+    use reel_ui::frame::ImageAlphaLayout;
+    match text::read_string(heap, value, 32)?.as_str() {
+        "native" => Ok(ImageAlphaLayout::Native),
+        "top_bottom" => Ok(ImageAlphaLayout::TopBottom),
+        _ => Err(AdapterError::Input(
+            "alpha_layout must be native or top_bottom",
+        )),
+    }
+}
+
 fn read_source_rect(
     heap: &Heap,
     value: Value,
@@ -1844,6 +1859,9 @@ pub(super) fn validate_image_property(
             .map(|_| ())
             .map_err(|_| HeapError::TypeMismatch),
         11 => read_source_rect(heap, value)
+            .map(|_| ())
+            .map_err(|_| HeapError::TypeMismatch),
+        12 => read_alpha_layout(heap, value)
             .map(|_| ())
             .map_err(|_| HeapError::TypeMismatch),
         _ => validate_layout_property(heap, index - registry::IMAGE_PREFIX.len() as u32, value),

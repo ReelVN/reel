@@ -2490,11 +2490,12 @@ impl PaintCtx<'_> {
 
     /// Bilinear tint and sRGB adjustment for this widget's image brushes.
     /// Cached paints retain the value; children keep their own appearance.
-    /// Identity adjustment without corner colors uses the ordinary draw path.
+    /// Native alpha with identity adjustment and no corner colors uses the ordinary draw path.
     pub fn set_image_appearance(
         &mut self,
         colors: Option<[peniko::Color; 4]>,
         adjustment: crate::frame::ImageColorAdjustment,
+        alpha_layout: crate::frame::ImageAlphaLayout,
         bounds: Rect,
     ) {
         let gradient = colors.map(|colors| crate::frame::ImageColorGradient {
@@ -2508,7 +2509,7 @@ impl PaintCtx<'_> {
                 * Affine::scale_non_uniform(bounds.width(), bounds.height()),
         });
         self.widget_state.image_appearance =
-            crate::frame::ImageAppearance::new(gradient, adjustment);
+            crate::frame::ImageAppearance::new(gradient, adjustment, alpha_layout);
     }
 
     /// Controls how this widget subtree is recorded in the current paint pass.

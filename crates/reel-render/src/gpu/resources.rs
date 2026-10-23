@@ -39,6 +39,8 @@ pub struct Image {
     pub view: wgpu::TextureView,
     pub(super) texture: wgpu::Texture,
     pub size: [u32; 2],
+    /// Original channel encoding, retained for packed alpha coverage.
+    pub(super) encoding: ColorEncoding,
     pub(super) yuv: Option<super::video::Planes>,
     pub(super) residency: Option<reel_core::budget::BudgetTicket>,
     pub(super) source: Option<ImageSource>,
@@ -180,6 +182,7 @@ pub(super) fn create_image(gpu: &Gpu, size: [u32; 2]) -> Result<Image, GpuError>
         view: texture.create_view(&Default::default()),
         texture,
         size,
+        encoding: ColorEncoding::Linear,
         yuv: None,
         residency: None,
         source: None,

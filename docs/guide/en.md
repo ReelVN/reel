@@ -678,6 +678,14 @@ stage.replace(button(width: 1280, height: 720, decorated: false,
 await playing;
 ```
 
+For an asset with color in the top half and a grayscale alpha mask in the bottom half, select `alpha_layout: "top_bottom"`. Its natural height is half the encoded height; cropping uses pixels in the visible color half. The default `"native"` preserves ordinary image transparency and opaque video. Images and videos share this property.
+
+```aside
+let overlay = video("assets/overlay.mp4", alpha_layout: "top_bottom", width: 960, height: 512);
+stage.replace(overlay);
+await overlay.play();
+```
+
 Add temporary controls during a story. Keep their node reference and remove them when that interaction ends.
 
 ```aside

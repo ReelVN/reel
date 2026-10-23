@@ -308,7 +308,9 @@ pub enum NodeKind {
     },
     Image {
         source: ImageSource,
-        /// Source-pixel sampling window; None selects the whole image.
+        /// Native resource alpha or top-half color with bottom-half encoded red coverage.
+        alpha_layout: crate::frame::ImageAlphaLayout,
+        /// Visible-color pixel window; None selects the alpha layout's whole color region.
         source_rect: Option<crate::kurbo::Rect>,
         fit: ObjectFit,
         /// Nine-slice borders in source pixels, or ordinary object-fit drawing.
