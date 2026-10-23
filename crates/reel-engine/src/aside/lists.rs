@@ -10,7 +10,8 @@ aside_host::native_documentation! {
         /// objects compare by identity. Stable keys retain mounted rows through reordering.
         /// With `virtual: true`, mount the scroll view's requested window and navigation
         /// targets, retiring rows outside that window. Keep persistent row state in the
-        /// item model because remounting creates fresh row nodes.
+        /// item model because remounting creates fresh row nodes. The returned
+        /// VirtualListNode exposes scroll_to(key, align: "nearest").
         "reel::list";
         /// Locate a keyed virtual row, scroll it into view, then return its mounted node
         /// after presentation. Align accepts nearest, start, center or end. Removing the
@@ -25,6 +26,45 @@ use aside_vm::executor::{Continuation, FaultRetention};
 use aside_vm::{Heap, ObjectKind, ValueTag};
 use std::cmp::Ordering;
 pub(super) mod virtualized;
+
+pub(super) fn describe(api: &mut aside_host::source::Api) {
+    use aside_compiler::semantic::TypeHint;
+    use aside_host::source::{Member, NamedType, named};
+    let type_name = "reel::types::VirtualListNode";
+    api.refine(
+        "reel::list::scroll_to",
+        named("reel::types::Presentation"),
+        &[("list", named(type_name)), ("align", TypeHint::String)],
+    );
+    let base = api
+        .types
+        .iter()
+        .find(|ty| ty.name == "reel::types::Node")
+        .unwrap();
+    let descriptor = NamedType::new(
+        type_name,
+        "A keyed virtual list with mounted-row scrolling and the shared node properties.",
+        vec![Member::method(
+            api.native("reel::list::scroll_to")
+                .clone()
+                .bound("scroll_to"),
+        )],
+    )
+    .extends(base);
+    api.types.push(descriptor);
+    api.native_mut("reel::list").result_cases(&[
+        (
+            "virtual",
+            aside_vm::bytecode::Const::Bool(true),
+            named(type_name),
+        ),
+        (
+            "virtual",
+            aside_vm::bytecode::Const::Bool(false),
+            named("reel::types::Node"),
+        ),
+    ]);
+}
 
 #[derive(Clone, Copy)]
 #[repr(u32)]

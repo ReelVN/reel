@@ -35,6 +35,8 @@ Aside 扩展提供语义着色、诊断、补全、参数提示、悬停说明�
 
 数组、tuple 和字符串的方法也提供参数与返回类型提示，F12 打开同一份内置声明。保存方法再调用时，参数提示和类型检查继续有效。
 
+已知类型上的成员拼写错误会在编辑器和 `reel check` 中标出，例如 `items.apend(1)`。普通 table 的字段可以动态添加；使用类或内置类型的参数注解，可让工具检查对应成员。
+
 项目从 `src/main.aside` 的 `main` 启动。check/build/dev/export 从当前目录及祖先查找项目，run 执行已经构建的 .asb。可运行多文件工程见 [author_project](../../examples/author_project/src/main.aside)。标题页可用 game.start 切换到全新剧情会话。
 
 保存为 `src/main.aside`，并提供 `resources/fonts/body.ttf`。下文命令会准备本地验证字体并运行工程。
@@ -1509,7 +1511,7 @@ let actions = if flag {
 
 可运行的自动测量图库及自定义滚动条见 [author_list_gallery.aside](../../examples/author_list_gallery/src/main.aside)。准备 fonts/body.ttf 后运行 `reel dev --assets ../../target/reel-artifacts/author-assets`（在 `examples/author_list_gallery/` 中）。行内按普通布局表达内容，不需要另传行高。拖动以指针位移更新当前阅读位置，避免总高度修正时静止指针再次改变位置。补充缓冲行的图片在后台并发加载；已准备的连续行覆盖视口、实际可见内容的资源完整时，滚轮和拖动可以继续推进，按钮、文本和悬停状态沿当前画面更新。离屏缺图使用已明确的 width 与 height 排版；需要图片自然尺寸时会等待资源。远处窗口构造、测量期间保留上一完整画面，准备就绪后发布；新的 stage.presented、geometry 和截图等待新画面接受。
 
-按 key 定位：`let row = await items.scroll_to(key, align: "nearest")` 先构造和测量目标附近的行，在实际呈现后返回该行节点。align 可选 start、center、end、nearest，默认只做必要滚动。重排仍跟随同一 key；过滤掉目标、移除列表或新的滚动/定位会取消旧请求，可用 try/catch 处理。返回节点仍遵循普通离屏退休规则，持久状态保存在 model。
+`list(..., virtual: true)` 返回 `VirtualListNode`，可用于字段及参数注解。按 key 定位：`let row = await items.scroll_to(key, align: "nearest")` 先构造和测量目标附近的行，在实际呈现后返回该行节点。align 可选 start、center、end、nearest，默认只做必要滚动。重排仍跟随同一 key；过滤掉目标、移除列表或新的滚动/定位会取消旧请求，可用 try/catch 处理。返回节点仍遵循普通离屏退休规则，持久状态保存在 model。
 等待期间改变视口尺寸会重新校准目标；自动夹取滚动范围不会取消请求。来源重算后，会等待新位置的实际呈现再返回。
 
 虚拟列表补充屏外行时，已有行仍覆盖画面就继续响应滚轮和拖动。每个新行完成后，滚动条和悬停外观的派生先结算，再继续构造；补窗的小位移保留构造进度。来源、布局宽度或定位目标改变时重新准备。stage.presented、stage.geometry、list.scroll_to 和截图继续等待完整提交的画面；行工厂与普通组件使用相同的取消和保存规则。

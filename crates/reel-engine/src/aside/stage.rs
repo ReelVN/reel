@@ -572,6 +572,27 @@ impl StageBinding {
             return Ok(Value::NULL);
         }
 
+        self.create(
+            vm,
+            (
+                symbol,
+                registry::node_type(symbol).expect("node constructor type"),
+            ),
+            args,
+            read_limit,
+            origin,
+        )
+    }
+
+    pub(super) fn create(
+        &mut self,
+        vm: &mut Vm,
+        (symbol, type_name): (&str, &str),
+        args: &[Value],
+        read_limit: usize,
+        origin: Option<String>,
+    ) -> Result<Value, AdapterError> {
+        let heap = vm.heap_mut();
         let raw_args = args;
         let resolved = args
             .iter()
@@ -649,11 +670,7 @@ impl StageBinding {
             Value::NULL,
         ];
         let value = heap.alloc_composable_host(fields, &payload, Some(shape.validator()))?;
-        self.types.mark(
-            heap,
-            value,
-            registry::node_type(symbol).expect("node constructor type"),
-        )?;
+        self.types.mark(heap, value, type_name)?;
         for (offset, name) in interaction::FIELDS.into_iter().enumerate() {
             let key = self.property_key(heap, name)?;
             let state = name == "disabled" && !props.enabled;

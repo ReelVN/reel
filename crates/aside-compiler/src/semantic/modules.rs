@@ -336,6 +336,11 @@ impl std::fmt::Display for ResolveError {
 }
 impl std::error::Error for ResolveError {}
 pub trait ModuleResolver {
+    /// Whether this type has a complete, fixed member contract. A failed
+    /// member lookup is a source error only when this returns true.
+    fn has_closed_members(&self, _type_name: &str) -> bool {
+        false
+    }
     /// Resolve a real host type member without synthesizing a dynamic fallback.
     /// Source-only resolvers keep their existing module behavior by default.
     fn resolve_type_member(&mut self, _type_name: &str, _member: &str) -> Option<ExternalMember> {

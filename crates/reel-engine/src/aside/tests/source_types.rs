@@ -2,6 +2,26 @@ use super::*;
 use aside_compiler::semantic::TypeHint;
 
 #[test]
+fn registered_host_types_reject_missing_members_during_compilation() {
+    for code in [
+        "fn main(){let label=text(\"Hello\");label.font_szie=24;}",
+        "use reel::types::TextNode; fn edit(label:TextNode|null){label?.missing();}",
+    ] {
+        let error = source::compile_module(code, "main", "src/main.aside", 1)
+            .err()
+            .expect("missing members must fail compilation");
+        assert!(error.to_string().contains("unknown member"), "{error}");
+    }
+    source::compile_module(
+        "fn main(){let label=text(\"Hello\");label.font_size=24;}",
+        "main",
+        "src/main.aside",
+        1,
+    )
+    .unwrap();
+}
+
+#[test]
 fn geometry_fields_are_readonly_in_source_and_have_no_constructor_defaults() {
     let api = source::api();
     for (record, fields) in [

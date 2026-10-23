@@ -1,6 +1,5 @@
 //! Programmatic positioning and edge navigation own one keyed target per list.
 use super::*;
-use aside_vm::bytecode::{FunctionId, FunctionKind};
 #[repr(u32)]
 enum T {
     Key,
@@ -131,29 +130,6 @@ impl SessionVm {
                 .heap_mut()
                 .set_field(t, T::Expected as u32, Value::NULL)?;
         }
-        Ok(())
-    }
-    pub(super) fn bind_list_scroll_to(&mut self, host: Value) -> Result<(), AdapterError> {
-        let p = self.vm.program().package();
-        let function = p
-            .functions
-            .iter()
-            .enumerate()
-            .find_map(|(i, f)| match f.kind {
-                FunctionKind::Native(n)
-                    if p.symbols[p.natives[n.index()].symbol.index()]
-                        == "reel::list::scroll_to" =>
-                {
-                    Some(FunctionId(i as u32))
-                }
-                _ => None,
-            })
-            .ok_or(AdapterError::Input("list scroll_to binding missing"))?;
-        let method = self.vm.bind_native(host, function)?;
-        let h = self.vm.heap_mut();
-        let fields = h.host_fields(host)?;
-        let key = h.alloc_string("scroll_to")?;
-        h.table_store(fields, h.table_len(fields)?, key, method)?;
         Ok(())
     }
     pub(in crate::aside) fn dispatch_list_scroll_to(

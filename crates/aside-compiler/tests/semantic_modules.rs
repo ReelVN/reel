@@ -9,6 +9,25 @@ fn input(path: &str, source: &str) -> SourceModule {
 }
 
 #[test]
+fn imported_class_member_diagnostics_share_the_export_contract() {
+    let code = "use model::Item; fn inspect(item:Item){item.missing();}";
+    let result = analyze_project(
+        &[
+            input("main", code),
+            input("model", "pub class Item{fn read(self){1}}"),
+        ],
+        &AnalysisOptions::default(),
+        &mut NoModules,
+    )
+    .unwrap();
+    assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+    let diagnostic = &result.diagnostics[0];
+    assert_eq!(diagnostic.module, "main");
+    assert_eq!(diagnostic.diagnostic.code, DiagnosticCode::UnknownMember);
+    assert_eq!(&code[diagnostic.diagnostic.range], "missing");
+}
+
+#[test]
 fn type_only_dependencies_preserve_value_reexports_and_unused_imports() {
     for (source, expected) in [
         ("use z::{Item}; fn accept(x:Item){}", vec!["a", "z"]),
