@@ -33,7 +33,8 @@ fn setup_source(n: usize, encoded: bool, upstream: bool) -> (Session, SessionVm)
     fn opening(){{
         let mut i=0; while i<{n} {{state.items.append(i);i+=1;}}
         {declaration}
-        let items=list(||{{sources+=1;{source}}},key:|x|{{keys+=1;x}},virtual:true,build:|row|{{builds+=1;column(height:20+(row.value%3)*20){{button(f"row {{row.value}}");}}}});
+        let items:VirtualListNode=list(||{{sources+=1;{source}}},key:|x|{{keys+=1;x}},virtual:true,build:|row|{{builds+=1;column(height:20+(row.value%3)*20){{button(f"row {{row.value}}");}}}});
+        if !(items is VirtualListNode) {{throw "virtual list type";}}
         let viewport=scroll(width:320,height:120){{items}};
         stage.replace(column{{
             viewport;text(value:derive(||state.status));text(value:derive(||state.frame));

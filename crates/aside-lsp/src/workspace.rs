@@ -188,6 +188,9 @@ struct HostResolver<'a> {
     host: &'a HostIndex,
 }
 impl ModuleResolver for HostResolver<'_> {
+    fn has_closed_members(&self, type_name: &str) -> bool {
+        self.host.types.contains_key(type_name)
+    }
     fn resolve(&mut self, request: &ImportRequest) -> Result<ResolvedImport, ResolveError> {
         self.host.modules.resolve_import(request)
     }

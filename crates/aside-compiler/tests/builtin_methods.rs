@@ -68,3 +68,33 @@ fn dynamic_table_fields_keep_their_own_function_contracts_and_primitive_locals_r
     let analysis = analyze_module(code, &AnalysisOptions::default(), &mut NoModules).unwrap();
     assert!(analysis.is_ok(), "{:?}", analysis.diagnostics);
 }
+
+#[test]
+fn misspelled_builtin_members_report_the_member_name() {
+    for (parameter, access) in [
+        ("value:array", "value.apend(1)"),
+        ("value:string", "value.strats_with(\"a\")"),
+        ("value:tuple", "value.lenght()"),
+        ("value:array|null", "value?.apend(1)"),
+    ] {
+        let code = format!("fn main({parameter}){{{access};}}");
+        let analysis = analyze_module(&code, &AnalysisOptions::default(), &mut NoModules).unwrap();
+        assert_eq!(analysis.diagnostics.len(), 1, "{:?}", analysis.diagnostics);
+        let diagnostic = &analysis.diagnostics[0];
+        assert_eq!(
+            diagnostic.code,
+            aside_compiler::DiagnosticCode::UnknownMember
+        );
+        assert_eq!(
+            &code[diagnostic.range],
+            access.split('.').nth(1).unwrap().split('(').next().unwrap()
+        );
+    }
+    let code =
+        "fn main(value:table, dynamic:any){value.apend=||null; value.apend(); dynamic.apend();}";
+    assert!(
+        analyze_module(code, &AnalysisOptions::default(), &mut NoModules)
+            .unwrap()
+            .is_ok()
+    );
+}

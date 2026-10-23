@@ -286,6 +286,7 @@ fn build_api() -> Api {
     super::localization::describe(&mut api);
     super::transitions::describe(&mut api);
     super::stage::configure::describe(&mut api);
+    super::lists::describe(&mut api);
     api.refine(
         "reel::derive",
         aside_host::source::named("Binding"),
@@ -474,6 +475,9 @@ fn build_api() -> Api {
 
 struct SourceEnvironment(MemoryResolver);
 impl aside_compiler::semantic::ModuleResolver for SourceEnvironment {
+    fn has_closed_members(&self, ty: &str) -> bool {
+        api().types.iter().any(|named| named.name == ty)
+    }
     fn resolve_type_call(&mut self, ty: &str) -> Option<ExternalSymbol> {
         api()
             .types

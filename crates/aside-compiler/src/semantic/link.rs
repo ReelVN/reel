@@ -102,6 +102,29 @@ struct Overlay<'a> {
     fallback: &'a mut dyn ModuleResolver,
 }
 impl ModuleResolver for Overlay<'_> {
+    fn has_closed_members(&self, type_name: &str) -> bool {
+        let mut pending = VecDeque::from([type_name]);
+        let mut visited = BTreeSet::new();
+        while let Some(name) = pending.pop_front() {
+            if !visited.insert(name) {
+                continue;
+            }
+            let class =
+                name.rsplit_once("::")
+                    .and_then(|(module, name)| {
+                        self.memory.modules.get(module).and_then(|module| {
+                            module.exports.iter().find(|symbol| symbol.name == name)
+                        })
+                    })
+                    .and_then(|symbol| symbol.class.as_ref());
+            if let Some(class) = class {
+                pending.extend(class.bases.iter().map(String::as_str));
+            } else if !self.fallback.has_closed_members(name) {
+                return false;
+            }
+        }
+        true
+    }
     fn resolve_type_member(&mut self, type_name: &str, member: &str) -> Option<ExternalMember> {
         let mut pending = VecDeque::from([type_name.to_owned()]);
         let mut visited = BTreeSet::new();

@@ -25,6 +25,24 @@ fn rejects(source: &str, code: DiagnosticCode) {
     );
     assert!(r.module().is_none());
 }
+
+#[test]
+fn closed_class_members_include_inheritance_and_guards() {
+    valid(
+        "class Base{let value=1;} class Child:Base{fn read(self){self.value}} fn main(){let item=Child(); item.read(); item.value;}",
+    );
+    valid(
+        "class Base{} class Child:Base{fn read(self){1}} fn inspect(item:Base){if item is Child{item.read();}}",
+    );
+    for code in [
+        "class Item{} fn main(){Item().missing();}",
+        "class Item{} fn main(){Item.missing();}",
+        "class Base{} class Child:Base{} fn main(){Child().missing=1;}",
+    ] {
+        rejects(code, DiagnosticCode::UnknownMember);
+    }
+    valid("fn make(base){class Child:base{} Child().dynamic();}");
+}
 fn symbols<'a>(m: &'a AnalyzedModule, name: &str) -> Vec<(SymbolId, &'a Symbol)> {
     m.symbols()
         .iter()

@@ -317,6 +317,8 @@ key 接受任意 Aside 值，标量保留类型、字符串按内容、其他对
 
 #### 虚拟列表
 
+`list(..., virtual: true)` 返回具有共同 Node 属性的 `VirtualListNode`。`scroll_to` 从该类型的共享方法表解析；编译器、编辑器、执行和快照使用同一类型登记。
+
 `list(items, key:, build:, virtual:false, ...NodeProps)` 仍组合普通 `scroll`。virtual 为构造时固定的组件寿命选择：false 保留全部行；true 只保留视窗及有限缓冲中的行，离屏退休取消节点任务与活动，重新进入时重建组件。需长期保留的编辑值、选中状态和业务数据放在作者 model 中。正在聚焦或捕获指针的行在交互结束前保留。第一版要求列表是有限高度纵向 scroll 的唯一流内容；来源预先过滤，build 返回 Node；要求行的自然高度为正。列表本身保留自然高度，不设置 height/max_height、纵向 stretch 或局部 x/y/anchor/rotation/scale；整体变换放在外层 scroll，行内组件仍使用共同舞台能力。宽度、横向对齐、padding 和 gap 沿普通布局。无二维网格、横向虚拟化或作者测量/逐帧回调。
 
 数据来源与 key 的响应式索引和视窗协调是同一个 list native 的两个 observer。滚动不重跑来源和 key；VM 的 `begin_reactive(ticket, output, pure, continuation)` 提取既有 call_reactive 的元数据、NoWait、捕获与恢复规则，宿主维护不需先执行脚本。窗口组件继续通过原生续体调用 build，所有持久和候选脚本值留在 VM 图中。来源和键索引仍为 O(n) 存储及 O(n log n) 协调，不宣称端到端开页成本与总条目数无关。

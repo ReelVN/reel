@@ -2283,8 +2283,15 @@ impl Binder<'_> {
                 // A table's own named entry wins over a builtin method. Its
                 // dynamic shape cannot promise this fallback's call contract.
                 && group.receiver != TypeHint::Table
-                && let Some(member) = group.members.iter().find(|member| member.symbol.name == key)
             {
+                let Some(member) = group
+                    .members
+                    .iter()
+                    .find(|member| member.symbol.name == key)
+                else {
+                    self.unknown_member(n, &key);
+                    return ANY;
+                };
                 let symbol = member.symbol.clone();
                 let ty = self.hint(&symbol.ty);
                 self.member_write_types.insert(n, None);
@@ -2313,6 +2320,9 @@ impl Binder<'_> {
                         .insert(n, ExternalDescriptor::metadata(member.symbol));
                     return ty;
                 }
+                if class.bases.is_empty() {
+                    self.unknown_member(n, &key);
+                }
                 self.check(n, RuntimeChecks::TYPE);
                 return ANY;
             }
@@ -2337,6 +2347,12 @@ impl Binder<'_> {
                     }
                 }
                 return ty;
+            }
+            if let Some(name) = named
+                && self.resolver.has_closed_members(self.out.hir.name(name))
+            {
+                self.unknown_member(n, &key);
+                return ANY;
             }
             if let Some(namespace) = self
                 .external_nodes
@@ -2400,10 +2416,34 @@ impl Binder<'_> {
                     }
                     return self.ty(d);
                 }
+                if self.class_has_closed_members(class) {
+                    self.unknown_member(n, &key);
+                }
             }
         }
         self.check(n, RuntimeChecks::TYPE);
         ANY
+    }
+    fn unknown_member(&mut self, node: NodeId, name: &str) {
+        let range = self.name(node).map_or(self.span(node), |token| token.span);
+        self.error(
+            D::UnknownMember,
+            range,
+            format!("unknown member `{name}` on this type"),
+        );
+    }
+    fn class_has_closed_members(&self, mut class: NodeId) -> bool {
+        for _ in 0..self.options.limits.max_depth.max(1) {
+            if let Some(base) = self.class_bases.get(&class) {
+                class = *base;
+            } else {
+                return matches!(
+                    self.out.hir.node(class).form,
+                    Form::Class { base: None, .. }
+                );
+            }
+        }
+        false
     }
     fn find_class_member(
         &self,

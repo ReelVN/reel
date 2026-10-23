@@ -8,6 +8,35 @@ use support::Server;
 const URI: &str = "untitled:creator-chains.aside";
 
 #[test]
+fn virtual_list_methods_complete_and_navigate_the_registered_declaration() {
+    let source = r#"fn main(){let items=list(||[1],key:|item|item,build:|row|text("Row"),virtual:true); let request=items.scroll_to(1);}"#;
+    let (mut server, initialized) = open(source);
+    let mut id = 2;
+    assert_method(
+        &mut server,
+        &mut id,
+        source,
+        "scroll_to(1)",
+        "scroll_to",
+        "Presentation",
+    );
+    let completion = server.request(id, "textDocument/completion", query(source, "items.", true));
+    id += 1;
+    let items = completion["items"]
+        .as_array()
+        .or_else(|| completion.as_array())
+        .unwrap();
+    assert!(items.iter().any(|item| item["label"] == "scroll_to"));
+    let tokens = server.request(
+        id,
+        "textDocument/semanticTokens/full",
+        json!({"textDocument":{"uri":URI}}),
+    );
+    assert_method_token(&tokens, &initialized, source, "scroll_to(1)");
+    server.stop();
+}
+
+#[test]
 fn geometry_await_infers_records_and_navigates_generated_readonly_fields() {
     let source = r#"use reel::types::Point;
         fn main() {

@@ -16,6 +16,41 @@ mod module_navigation;
 mod source_inference;
 
 #[test]
+fn missing_members_report_utf16_ranges_and_clear_after_editing() {
+    let source = "fn main(items:array){let title=\"中文🎮\";items.apend(1);}";
+    let mut workspace = Workspace::new(ServerOptions::default());
+    workspace.open(uri(), 1, source.into()).unwrap();
+    let params = workspace.diagnostics(&uri(), Encoding::Utf16).unwrap();
+    let diagnostics: Vec<_> = params.iter().flat_map(|p| &p.diagnostics).collect();
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    let diagnostic = diagnostics[0];
+    assert_eq!(
+        diagnostic.code,
+        Some(NumberOrString::String("ASS017".into()))
+    );
+    let start = source.find("apend").unwrap();
+    let lines = LineIndex::new(source);
+    assert_eq!(
+        diagnostic.range.start,
+        lines.position(source, start, Encoding::Utf16).unwrap()
+    );
+    assert_eq!(
+        diagnostic.range.end,
+        lines.position(source, start + 5, Encoding::Utf16).unwrap()
+    );
+    workspace
+        .open(uri(), 2, source.replace("apend", "append"))
+        .unwrap();
+    assert!(
+        workspace
+            .diagnostics(&uri(), Encoding::Utf16)
+            .unwrap()
+            .iter()
+            .all(|p| p.diagnostics.is_empty())
+    );
+}
+
+#[test]
 fn is_guard_updates_hover_members_and_definition_in_captured_branch() {
     let source = "class Base{} class Child:Base{fn answer(self)->int{42}} fn inspect(value:Base){if value is Child{let callback=||value.answer();} let outside=value;}";
     let mut workspace = Workspace::new(ServerOptions::default());

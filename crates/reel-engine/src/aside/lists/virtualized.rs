@@ -246,10 +246,9 @@ impl SessionVm {
                 let mut layout = args[4..].to_vec();
                 layout.push(Value::NULL);
                 let origin = self.stage_origin(t);
-                let host = self.stage.dispatch(
+                let host = self.stage.create(
                     &mut self.vm,
-                    self.root_owner,
-                    "reel::stack",
+                    ("reel::stack", "reel::types::VirtualListNode"),
                     &layout,
                     self.read_limit,
                     origin,
@@ -305,7 +304,6 @@ impl SessionVm {
                 self.vm.heap_mut().set_derived_state(window, s)?;
                 self.vm.heap_mut().set_host_payload(host, 3, window)?;
                 self.stage.make_virtual(self.vm.heap(), host)?;
-                self.bind_list_scroll_to(host)?;
                 (output, s)
             };
             self.virtual_target_invalidate(s)?;
