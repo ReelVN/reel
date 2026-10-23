@@ -216,10 +216,17 @@ impl WindowSession {
         }
     }
 
-    pub(crate) fn tick_interval(&self) -> std::time::Duration {
+    pub(crate) fn wake_deadline(
+        &self,
+        now: reel_core::clock::MonoTime,
+    ) -> Option<reel_core::clock::MonoTime> {
         match self {
-            Self::Aside { story, .. } => story.tick_interval(),
-            Self::Diagnostic(host) => host.ui.dialogue_interval(30.),
+            Self::Aside { story, .. } => story.wake_deadline(now),
+            Self::Diagnostic(host) => self.needs_tick().then(|| {
+                reel_core::clock::MonoTime(now.0.saturating_add(
+                    u64::try_from(host.ui.dialogue_interval(30.).as_nanos()).unwrap_or(u64::MAX),
+                ))
+            }),
         }
     }
 

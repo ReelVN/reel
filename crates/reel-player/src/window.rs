@@ -445,10 +445,11 @@ impl State {
         if self.captures.busy() {
             return Some(Instant::now() + std::time::Duration::from_millis(8));
         }
-        self.session
-            .as_ref()
-            .filter(|session| session.needs_tick())
-            .and_then(|session| Instant::now().checked_add(session.tick_interval()))
+        let now = self.host.monotonic_now();
+        let deadline = self.session.as_ref()?.wake_deadline(now)?;
+        Instant::now().checked_add(std::time::Duration::from_nanos(
+            deadline.0.saturating_sub(now.0),
+        ))
     }
     pub(crate) fn tick_story(&mut self) -> Result<(), Error> {
         self.publish_pointer_info()?;

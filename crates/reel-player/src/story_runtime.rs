@@ -152,30 +152,31 @@ impl StoryRuntime {
             || self.driver().activities_pending()
     }
 
-    pub fn tick_interval(&self) -> std::time::Duration {
-        if self.starting.is_some()
+    fn short_poll(&self) -> bool {
+        self.starting.is_some()
             || self.retiring.is_some()
             || self.capture.is_some()
             || self.saves.as_ref().is_some_and(|s| s.busy())
-        {
-            return std::time::Duration::from_millis(1);
-        }
-        if self.needs_work() {
-            return std::time::Duration::from_millis(1);
-        }
+            || self.needs_work()
+    }
+
+    fn media_interval(&self) -> Option<std::time::Duration> {
         let media = self.driver().adapter().media_poll_after();
-        let media = if self.driver().adapter().localization_pending() {
+        if self.driver().adapter().localization_pending() {
             Some(media.map_or(std::time::Duration::from_millis(10), |t| {
                 t.min(std::time::Duration::from_millis(10))
             }))
         } else {
             media
-        };
+        }
+    }
+
+    fn time_interval(&self) -> std::time::Duration {
         let reveal = self
             .driver()
             .ui()
             .dialogue_interval(self.driver().adapter().game_settings().text_speed);
-        let interval = if let Some(interval) = self.driver().activities_poll_after() {
+        if let Some(interval) = self.driver().activities_poll_after() {
             if self.driver().ui().dialogue_needs_time() {
                 reveal.min(interval)
             } else {
@@ -183,8 +184,46 @@ impl StoryRuntime {
             }
         } else {
             reveal
+        }
+    }
+
+    /// Remaining delay at the latest story-time sample. Hosts should schedule
+    /// [`Self::wake_deadline`] so execution and recording time do not rearm timers.
+    pub fn tick_interval(&self) -> std::time::Duration {
+        if self.short_poll() {
+            return std::time::Duration::from_millis(1);
+        }
+        let interval = self.time_interval();
+        self.media_interval()
+            .map_or(interval, |media| media.min(interval))
+    }
+
+    /// Next absolute host-clock wake, or `None` while idle or suspended.
+    /// Story timers remain anchored to the latest logical-time sample; media
+    /// polling and runnable work keep their relative maintenance intervals.
+    pub fn wake_deadline(
+        &self,
+        now: reel_core::clock::MonoTime,
+    ) -> Option<reel_core::clock::MonoTime> {
+        use reel_core::clock::MonoTime;
+        let after = |base: u64, interval: std::time::Duration| {
+            base.saturating_add(u64::try_from(interval.as_nanos()).unwrap_or(u64::MAX))
         };
-        media.map_or(interval, |media| media.min(interval))
+        if !self.needs_tick() {
+            return None;
+        }
+        if self.short_poll() {
+            return Some(MonoTime(after(now.0, std::time::Duration::from_millis(1))));
+        }
+        let sample = self
+            .logical_ns
+            .saturating_add(self.suspended_ns)
+            .saturating_sub(self.time_offset_ns);
+        let story = after(sample, self.time_interval());
+        let deadline = self
+            .media_interval()
+            .map_or(story, |interval| story.min(after(now.0, interval)));
+        Some(MonoTime(deadline.max(now.0)))
     }
 
     pub fn wake_input(&mut self) {
@@ -538,6 +577,7 @@ mod tests {
 
     #[test]
     fn pure_delays_sleep_at_deadlines_and_suspension_preserves_remaining_time() {
+        use reel_core::clock::MonoTime;
         let mut story = runtime("fn main() { await run(delay(2)); }");
         for _ in 0..10_000 {
             if !story.needs_work() {
@@ -547,21 +587,47 @@ mod tests {
         }
         assert!(!story.needs_work());
         assert_eq!(story.tick_interval(), std::time::Duration::from_secs(2));
+        assert_eq!(
+            story.wake_deadline(MonoTime(0)),
+            Some(MonoTime(2_000_000_000))
+        );
+        // Time spent executing or recording after a tick consumes the same wait.
+        assert_eq!(
+            story.wake_deadline(MonoTime(500_000_000)),
+            Some(MonoTime(2_000_000_000))
+        );
         story.tick(SliceBudget::default(), || 500_000_000).unwrap();
         assert_eq!(
             story.tick_interval(),
             std::time::Duration::from_millis(1500)
         );
+        assert_eq!(
+            story.wake_deadline(MonoTime(750_000_000)),
+            Some(MonoTime(2_000_000_000))
+        );
         story.suspend(500_000_000).unwrap();
         assert!(!story.needs_tick());
+        assert_eq!(story.wake_deadline(MonoTime(20_000_000_000)), None);
         story
             .tick(SliceBudget::default(), || panic!("suspended timer polled"))
             .unwrap();
         story.resume(20_500_000_000);
+        assert_eq!(
+            story.wake_deadline(MonoTime(20_500_000_000)),
+            Some(MonoTime(22_000_000_000))
+        );
         story
             .tick(SliceBudget::default(), || 21_000_000_000)
             .unwrap();
         assert_eq!(story.tick_interval(), std::time::Duration::from_secs(1));
+        assert_eq!(
+            story.wake_deadline(MonoTime(21_900_000_000)),
+            Some(MonoTime(22_000_000_000))
+        );
+        assert_eq!(
+            story.wake_deadline(MonoTime(22_100_000_000)),
+            Some(MonoTime(22_100_000_000))
+        );
         for _ in 0..10_000 {
             if !story.needs_tick() {
                 break;
@@ -572,6 +638,7 @@ mod tests {
         }
         assert_eq!(story.driver().state(), StoryState::Finished);
         assert!(!story.needs_tick());
+        assert_eq!(story.wake_deadline(MonoTime(22_000_000_000)), None);
     }
 
     #[test]
