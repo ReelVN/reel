@@ -46,10 +46,18 @@ struct Annotation {
 }
 impl Annotation {
     fn base_offset(&self, mode: reel_text::WritingMode) -> f32 {
-        if mode == reel_text::WritingMode::VerticalLr { 0. } else { self.note.height() }
+        if mode == reel_text::WritingMode::VerticalLr {
+            0.
+        } else {
+            self.note.height()
+        }
     }
     fn note_offset(&self, mode: reel_text::WritingMode) -> f32 {
-        if mode == reel_text::WritingMode::VerticalLr { self.base.height() } else { 0. }
+        if mode == reel_text::WritingMode::VerticalLr {
+            self.base.height()
+        } else {
+            0.
+        }
     }
 }
 impl std::ops::Deref for Paragraph {
@@ -97,6 +105,10 @@ impl Paragraph {
         Some(Point::new(caret.x0, caret.y1))
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "shared paragraph construction inputs and physical writing axes"
+    )]
     pub fn build(
         fonts: &mut FontContext,
         context: &mut LayoutContext<BrushIndex>,
@@ -214,10 +226,13 @@ impl Paragraph {
             if let Some(color) = text.style_at(unit.start).and_then(|s| s.color) {
                 note.default_color = Some(brush(color));
             }
-            let baseline = if writing_mode == reel_text::WritingMode::VerticalLr { 0. } else { note.height() }
-                + base
-                    .get(0)
-                    .map_or(base.height(), |line| line.metrics().baseline);
+            let baseline = if writing_mode == reel_text::WritingMode::VerticalLr {
+                0.
+            } else {
+                note.height()
+            } + base
+                .get(0)
+                .map_or(base.height(), |line| line.metrics().baseline);
             let height = note.height() + base.height();
             let width = base.width().max(note.width());
             out.boxes.push(Annotation {
@@ -299,10 +314,14 @@ impl Paragraph {
                                 let y = glyphs.baseline() + glyph.y;
                                 let (minimum, maximum) = if run.is_upright() {
                                     match self.layout.writing_mode() {
-                                        reel_text::WritingMode::VerticalRl => (-bounds.x_max, -bounds.x_min),
+                                        reel_text::WritingMode::VerticalRl => {
+                                            (-bounds.x_max, -bounds.x_min)
+                                        }
                                         _ => (bounds.x_min, bounds.x_max),
                                     }
-                                } else if self.layout.writing_mode() == reel_text::WritingMode::VerticalLr {
+                                } else if self.layout.writing_mode()
+                                    == reel_text::WritingMode::VerticalLr
+                                {
                                     (bounds.y_min, bounds.y_max)
                                 } else {
                                     (-bounds.y_max, -bounds.y_min)
@@ -343,8 +362,14 @@ impl Paragraph {
                     PositionedLayoutItem::InlineBox(position) => {
                         let annotation = &self.boxes[position.id as usize];
                         for (paragraph, y) in [
-                            (&annotation.note, position.y + annotation.note_offset(self.layout.writing_mode())),
-                            (&annotation.base, position.y + annotation.base_offset(self.layout.writing_mode())),
+                            (
+                                &annotation.note,
+                                position.y + annotation.note_offset(self.layout.writing_mode()),
+                            ),
+                            (
+                                &annotation.base,
+                                position.y + annotation.base_offset(self.layout.writing_mode()),
+                            ),
                         ] {
                             if let Some(&(first, _)) = paragraph.paint_lines.first() {
                                 top = top.min(y + first);
@@ -602,9 +627,10 @@ impl Paragraph {
                 );
                 if visible.start <= item.range.start && item.range.end <= visible.end {
                     let note_x = position.x + (item.width - item.note.width()) / 2.;
+                    let note_y = position.y + item.note_offset(self.layout.writing_mode());
                     item.note.paint_faded(
                         painter,
-                        transform * Affine::translate((note_x as f64, (position.y + item.note_offset(self.layout.writing_mode())) as f64)),
+                        transform * Affine::translate((note_x as f64, note_y as f64)),
                         color.clone(),
                         hint,
                         0..usize::MAX,
@@ -615,7 +641,7 @@ impl Paragraph {
                         inherited_alpha
                             * fade.map_or(1., |fade| fade.alpha(graphemes, item.range.clone())),
                         brush_override,
-                        gradient.map(|g| g.translated(Vec2::new(note_x as f64, position.y as f64))),
+                        gradient.map(|g| g.translated(Vec2::new(note_x as f64, note_y as f64))),
                     );
                 }
             }
@@ -692,8 +718,12 @@ impl Paragraph {
                 let b = &self.boxes[p.id as usize];
                 let base_y = p.y + b.base_offset(self.layout.writing_mode());
                 let note_y = p.y + b.note_offset(self.layout.writing_mode());
-                if y >= note_y && y < note_y + b.note.height() { return Some(b.range.start); }
-                return b.base.hit(x - p.x - (b.width - b.base.width()) / 2., y - base_y);
+                if y >= note_y && y < note_y + b.note.height() {
+                    return Some(b.range.start);
+                }
+                return b
+                    .base
+                    .hit(x - p.x - (b.width - b.base.width()) / 2., y - base_y);
             }
         }
         let (cluster, _) = reel_text::Cluster::from_point_exact(&self.layout, x, y)?;

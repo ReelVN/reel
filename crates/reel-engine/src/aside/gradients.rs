@@ -8,13 +8,16 @@ const TAG: i64 = -1110;
 aside_host::native_documentation! {
     pub(super) fn documentation {
         /// Create a two-color text gradient. Colors use #rrggbb or #rrggbbaa.
-        /// Angle is clockwise in degrees: 0 points up and 180 points down.
+        /// Angle is clockwise in the horizontal paragraph plane: 0 points up and
+        /// 180 points down. The paint follows the paragraph's writing_mode.
         /// Space is bounds for the complete paragraph or glyph for each em square.
         /// Assign to text_gradient on text or control captions. Explicit rich-text
         /// colors override it; outlines and shadows keep their own colors.
         ///
         /// ```aside
-        /// text("Morning", text_gradient: linear_gradient("#ffffff", "#999999"));
+        /// fn main() {
+        ///     stage.replace(text("Morning", text_gradient: linear_gradient("#ffffff", "#999999")));
+        /// }
         /// ```
         "reel::linear_gradient";
     }

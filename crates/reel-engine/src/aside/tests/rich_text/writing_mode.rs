@@ -3,23 +3,36 @@ use aside_vm::snapshot::SnapshotBudget;
 
 fn drive(vm: &mut SessionVm, session: &mut Session) {
     for _ in 0..100_000 {
-        match vm.step(session, SessionBudget::RetryMinimum(SliceBudget {
-            instructions: 7, ..Default::default()
-        }), || 0).unwrap() {
+        match vm
+            .step(
+                session,
+                SessionBudget::RetryMinimum(SliceBudget {
+                    instructions: 7,
+                    ..Default::default()
+                }),
+                || 0,
+            )
+            .unwrap()
+        {
             SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
-                if let Err(error) = vm.dispatch(session, ticket, "en", NativeBudget::RetryMinimum(32)) {
+                if let Err(error) =
+                    vm.dispatch(session, ticket, "en", NativeBudget::RetryMinimum(32))
+                {
                     vm.reject_native(session, ticket, error).unwrap();
                 }
             }
             SessionStep::Vm(RunOutcome::Returned(_)) => vm.discard_delivery(session).unwrap(),
-            SessionStep::Vm(RunOutcome::Fault(id)) => panic!("writing mode fault: {:?}, value: {:?}",
+            SessionStep::Vm(RunOutcome::Fault(id)) => panic!(
+                "writing mode fault: {:?}, value: {:?}",
                 vm.vm.delivery_fault(id).unwrap(),
-                text::read_string(vm.vm.heap(), vm.vm.delivery_value(id).unwrap(), 4096)),
+                text::read_string(vm.vm.heap(), vm.vm.delivery_value(id).unwrap(), 4096)
+            ),
             SessionStep::Idle | SessionStep::Vm(RunOutcome::Waiting(_))
-                if !vm.has_runnable_tasks() && !vm.activities_pending() => {
-                    vm.sync_stage(session).unwrap();
-                    return;
-                }
+                if !vm.has_runnable_tasks() && !vm.activities_pending() =>
+            {
+                vm.sync_stage(session).unwrap();
+                return;
+            }
             _ => {}
         }
     }
@@ -64,12 +77,22 @@ fn writing_mode_source_asb_validation_bindings_configuration_and_snapshot() {
     let assert_modes = |vm: &SessionVm, mode| {
         for node in vm.stage().nodes() {
             match &node.kind {
-                NodeKind::Text(text) if text.as_ref() == "星空" || text.as_ref() == "bound" || text.as_ref() == "derived" => {
+                NodeKind::Text(text)
+                    if text.as_ref() == "星空"
+                        || text.as_ref() == "bound"
+                        || text.as_ref() == "derived" =>
+                {
                     assert_eq!(node.props.writing_mode, mode);
                 }
-                NodeKind::TextInput { .. } => assert_eq!(node.props.writing_mode, reel_ui::WritingMode::HorizontalTb),
-                NodeKind::Button { .. } | NodeKind::Radio { .. } => assert_eq!(node.props.writing_mode, reel_ui::WritingMode::VerticalRl),
-                NodeKind::Toggle { .. } => assert_eq!(node.props.writing_mode, reel_ui::WritingMode::VerticalLr),
+                NodeKind::TextInput { .. } => {
+                    assert_eq!(node.props.writing_mode, reel_ui::WritingMode::HorizontalTb)
+                }
+                NodeKind::Button { .. } | NodeKind::Radio { .. } => {
+                    assert_eq!(node.props.writing_mode, reel_ui::WritingMode::VerticalRl)
+                }
+                NodeKind::Toggle { .. } => {
+                    assert_eq!(node.props.writing_mode, reel_ui::WritingMode::VerticalLr)
+                }
                 _ => {}
             }
         }
@@ -81,18 +104,43 @@ fn writing_mode_source_asb_validation_bindings_configuration_and_snapshot() {
         let program = vm.vm.program().clone();
         let mut capture = vm.snapshot_begin(&session).unwrap();
         while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
-        let mut image = snapshot::SessionSnapshot::decode(&capture.finish().unwrap().encode().unwrap()).unwrap();
-        let mut restore = SessionVm::restore_begin(&mut image, program, VmLimits::default(),
-            SessionIdentity {session_id: SessionId(41), epoch: Epoch(20)},
-            crate::ReadProgress::default(), None, None).unwrap();
+        let mut image =
+            snapshot::SessionSnapshot::decode(&capture.finish().unwrap().encode().unwrap())
+                .unwrap();
+        let mut restore = SessionVm::restore_begin(
+            &mut image,
+            program,
+            VmLimits::default(),
+            SessionIdentity {
+                session_id: SessionId(41),
+                epoch: Epoch(20),
+            },
+            crate::ReadProgress::default(),
+            None,
+            None,
+        )
+        .unwrap();
         while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
         let (mut restored_session, mut restored) = restore.finish().unwrap();
-        for (session, vm) in [(&mut session, &mut vm), (&mut restored_session, &mut restored)] {
+        for (session, vm) in [
+            (&mut session, &mut vm),
+            (&mut restored_session, &mut restored),
+        ] {
             drive(vm, session);
             assert_modes(vm, reel_ui::WritingMode::VerticalRl);
-            let button = vm.stage().nodes().find(|node| matches!(&node.kind,
-                NodeKind::Button {label: Some(label), ..} if label == "toggle")).unwrap().id;
-            for mode in [reel_ui::WritingMode::VerticalLr, reel_ui::WritingMode::VerticalRl] {
+            let button = vm
+                .stage()
+                .nodes()
+                .find(|node| {
+                    matches!(&node.kind,
+                NodeKind::Button {label: Some(label), ..} if label == "toggle")
+                })
+                .unwrap()
+                .id;
+            for mode in [
+                reel_ui::WritingMode::VerticalLr,
+                reel_ui::WritingMode::VerticalRl,
+            ] {
                 assert!(vm.click(session, button).unwrap());
                 drive(vm, session);
                 assert_modes(vm, mode);

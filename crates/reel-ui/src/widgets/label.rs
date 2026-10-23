@@ -410,7 +410,11 @@ impl Label {
     /// Returns the lower endpoint of the complete text's final insertion caret
     /// in label coordinates, using the active layout. Empty or unlaid text has no endpoint.
     pub fn text_end(&self) -> Option<Point> {
-        self.layouts.get(self.active_layout)?.layout.text_end().map(|point| self.axes() * point)
+        self.layouts
+            .get(self.active_layout)?
+            .layout
+            .text_end()
+            .map(|point| self.axes() * point)
     }
 }
 
@@ -735,12 +739,18 @@ impl Label {
     fn axes(&self) -> Affine {
         match self.writing_mode {
             crate::WritingMode::HorizontalTb => Affine::IDENTITY,
-            crate::WritingMode::VerticalRl => Affine::new([0., 1., -1., 0., self.physical_size.width, 0.]),
+            crate::WritingMode::VerticalRl => {
+                Affine::new([0., 1., -1., 0., self.physical_size.width, 0.])
+            }
             crate::WritingMode::VerticalLr => Affine::new([0., 1., 1., 0., 0., 0.]),
         }
     }
     fn inline_axis(&self) -> Axis {
-        if self.writing_mode.is_vertical() { Axis::Vertical } else { Axis::Horizontal }
+        if self.writing_mode.is_vertical() {
+            Axis::Vertical
+        } else {
+            Axis::Horizontal
+        }
     }
     fn link_at(&self, point: Point) -> Option<usize> {
         let point = self.axes().inverse() * point;
@@ -1051,11 +1061,10 @@ impl Widget for Label {
     fn set_paint_viewport(&mut self, viewport: Option<Rect>) -> bool {
         self.paint_viewport = viewport;
         let axes = self.axes();
-        let mut range = self.layouts[self.active_layout].layout.visible_lines(
-            viewport,
-            axes,
-            self.outline,
-        );
+        let mut range =
+            self.layouts[self.active_layout]
+                .layout
+                .visible_lines(viewport, axes, self.outline);
         if let Some(shadow) = self.shadow.filter(|s| s.offset != crate::kurbo::Vec2::ZERO) {
             let shadow_range = self.layouts[self.active_layout].layout.visible_lines(
                 viewport,
@@ -1165,7 +1174,10 @@ impl Widget for Label {
             return;
         }
 
-        if self.visible_bytes.is_some() || self.text.markup().is_some() || self.writing_mode.is_vertical() {
+        if self.visible_bytes.is_some()
+            || self.text.markup().is_some()
+            || self.writing_mode.is_vertical()
+        {
             let range = self.visible_bytes.clone().unwrap_or(0..self.text.len());
             node.set_label(&self.text[range]);
             return;

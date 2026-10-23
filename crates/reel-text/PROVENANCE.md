@@ -8,5 +8,6 @@ The original Apache-2.0/MIT licenses and source copyright notices are retained.
 Reel maintains this implementation as `reel-text`. Local changes include cached
 ICU word/line segmentation, public ICU bidi classes, shared HarfRust font
 instances and shaping buffers, baseline-aware inline boxes, style-run line
-metrics, and editor wrapping/alignment/overflow geometry. UI paragraph markup
+metrics, logical writing axes with Unicode vertical orientation and HarfRust
+vertical shaping, and editor wrapping/alignment/overflow geometry. UI paragraph markup
 and controls compose these layouts in `reel-ui`.

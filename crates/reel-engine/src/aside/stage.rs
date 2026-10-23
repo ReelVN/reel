@@ -2104,7 +2104,9 @@ fn validate_text_props(kind: &NodeKind, props: &NodeProps) -> Result<(), Adapter
         ));
     }
     if matches!(kind, NodeKind::TextInput { .. }) && props.writing_mode.is_vertical() {
-        return Err(AdapterError::Input("writing_mode for editable text must be horizontal-tb"));
+        return Err(AdapterError::Input(
+            "writing_mode for editable text must be horizontal-tb",
+        ));
     }
     let source = match kind {
         NodeKind::Text(text) => Some(text.as_ref()),
@@ -2147,7 +2149,9 @@ fn validate_reveal(_: &Heap, value: Value) -> Result<(), HeapError> {
 
 fn writing_mode(heap: &Heap, value: Value) -> Result<reel_ui::WritingMode, HeapError> {
     let info = heap.info(value)?;
-    if info.kind != ObjectKind::String || info.len > 13 { return Err(HeapError::TypeMismatch); }
+    if info.kind != ObjectKind::String || info.len > 13 {
+        return Err(HeapError::TypeMismatch);
+    }
     let mut bytes = [0; 13];
     heap.read_bytes(value, 0, &mut bytes[..info.len as usize])?;
     match &bytes[..info.len as usize] {

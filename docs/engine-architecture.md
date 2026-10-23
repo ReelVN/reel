@@ -19,8 +19,6 @@ Reel 的目标是让创作者直观地表达想象中的画面和交互，包括
 
 通用节点参数可用 `is` 检查具体类型；编译器与 LSP 在成立路径及其不可变捕获中使用细化后的类型。执行继续传递原节点，所有权、活动和输入归属沿用共同舞台协议。
 
-文字和控件标题的 `text_gradient` 接受不可变 `linear_gradient(from, to, angle:180, space:"bounds")`。角度以度为单位，零度向上、顺时针递增；`bounds` 覆盖完整段落，`glyph` 在每个字形的 em 方格重新取样。显式富文本颜色覆盖渐变，描边与阴影保持独立颜色。渐变只改变绘制，复用整形、布局和现有画刷，不创建中间纹理。
-
 ## 二 模块职责与依赖
 
 通用库由独立的 `aside-std` crate 维护，通过 Aside host SDK 向任意宿主提供声明、模块接口和 native 调度。Reel 注册标准库并默认导入其 prelude；舞台、对白、音频和资源仍归 Reel。已有文本、集合操作继续共用 VM 实现，不复制到标准库。
@@ -241,6 +239,10 @@ owner 缺省继承当前作用域/任务。owner 或局部 target 退休、任�
 作者窗口在首个已挂载舞台投影及其字体、图片准备好后才提交首帧；作品直接正常结束时也允许呈现其最终空舞台。支持隐藏窗口的平台在首帧实际接受后显示窗口，Wayland 沿首次提交映射窗口的原生规则；不以窗口可见性查询驱动渲染。启动仍由有界 VM 执行片和资源完成通知推进，隐藏窗口不能依赖原生重绘事件才能完成首帧。显示后沿既有按需呈现、旧帧保留、输入验收与设备恢复路径。
 
 共享舞台文字属性 `text_fit` 默认 `none`；`shrink` 按完整、不自动折行的文本与可用宽度等比缩小，保留显式换行，最高为作者字号，最低为 `min_font_size`（默认 0）。富文本字号和 ruby 一起缩放，打字机揭示不改变适配结果；最低字号仍不足时允许溢出，裁剪由节点 clip 决定。布局缓存区分字体缩放与换行宽度，输入链接和无障碍几何使用同一布局。`text_outline` 默认 0，表示字形向外描边的逻辑宽度；`text_outline_color` 默认黑色。描边复用字形 stroke，先描边再填色，并服从完整 cluster 揭示。`text_shadow_x/y` 是有限的逻辑偏移，默认均为 0，双零关闭阴影；`text_shadow_color` 默认黑色。阴影在正文之前绘制，统一使用阴影色，并沿用正文的排版、硬揭示和逐字透明度；偏移与颜色更新复用已排版字形。文字属性应用于 text 与控件标签，输入编辑器保持自己的布局语义。
+
+文字和控件标题的 `text_gradient` 接受不可变 `linear_gradient(from, to, angle:180, space:"bounds")`。角度在段落逻辑平面内以度为单位，零度向上、顺时针递增，并随 writing_mode 变换；`bounds` 覆盖完整段落，`glyph` 在每个字形的 em 方格重新取样。显式富文本颜色覆盖渐变，描边与阴影保持独立颜色。渐变只改变绘制，复用整形、布局和现有画刷，不创建中间纹理。
+
+文字段落的 `writing_mode` v1 默认为 `horizontal-tb`；`vertical-rl` 与 `vertical-lr` 沿 height 换列，列依次向左或向右。适用于 text 与按钮、开关、单选控件的非编辑标签；text_input/text_area 的竖排值在现有字段验证与投影边界诊断。竖排复用 reel-text 的字体回退、HarfRust 整形与逻辑 inline/block 断行。固定 ICU 2.3 的 Unicode Vertical_Orientation 按字素决定方向（含 enclosing mark 的字素直立）；U/Tu 直立，R 顺时针侧转，Tr 优先竖排替换并在缺少替换时侧转。直立段使用 TopToBottom 与 vert/vrt2，侧向段沿原 LTR/RTL 整形。reveal、ruby、描边、阴影与链接命中使用同一段落轴变换；ruby 位于物理右侧，`line_height` 表示字号倍率列距，text_align 沿 inline 轴对齐。属性赋值、绑定和快照沿用共同节点状态；颜色、reveal 和阴影更新复用已缓存布局。绘制按可见列裁剪，布局缓存保持现有上限，额外方向分析为字素数线性成本。
 
 字体匹配请求合成粗体时，共同文字绘制将每个字形 run 的 synthesis.embolden 传入已有 font_embolden 绘制字段；横纵笔画的总增厚量均为该 run 字号的 1/24，随既有变换和 GPU 栅格密度缩放，栅格化时换算为每侧偏移量。轮廓方向按各自闭合边界的面积之和确定，保持孔洞与外轮廓的相反方向。真实粗体字面或变量字体轴由字体匹配优先选择，未请求合成的 run 保持零扩张。完整文字、逐字揭示、描边与填色使用同一扩张量，保留整形的字形 ID、推进宽度、位置和可见 cluster；字形缓存沿既有 embolden 键区分。
 
@@ -1005,5 +1007,3 @@ WGPU 适配器使用锁定的 wgpu 30.0.1。设备丢失保留后端提供的 re
 [13] VitaSDK 音频 https://docs.vitasdk.org/group__SceAudioUser.html
 [14] Kira Backend https://docs.rs/kira/latest/kira/backend/trait.Backend.html
 [15] Kira Frame https://docs.rs/kira/latest/kira/struct.Frame.html
-
-文字段落的 `writing_mode` v1 默认为 `horizontal-tb`；`vertical-rl` 与 `vertical-lr` 沿 height 换列，列依次向左或向右。适用于 text 与按钮、开关、单选控件的非编辑标签；text_input/text_area 的竖排值在现有字段验证与投影边界诊断。竖排复用 reel-text 的字体回退、HarfRust 整形与逻辑 inline/block 断行。固定 ICU 2.3 的 Unicode Vertical_Orientation 按字素决定方向（含 enclosing mark 的字素直立）；U/Tu 直立，R 顺时针侧转，Tr 优先竖排替换并在缺少替换时侧转。直立段使用 TopToBottom 与 vert/vrt2，侧向段沿原 LTR/RTL 整形。reveal、ruby、描边、阴影与链接命中使用同一段落轴变换；ruby 位于物理右侧，`line_height` 表示字号倍率列距，text_align 沿 inline 轴对齐。属性赋值、绑定和快照沿用共同节点状态；颜色、reveal 和阴影更新复用已缓存布局。绘制按可见列裁剪，布局缓存保持现有上限，额外方向分析为字素数线性成本。

@@ -87,7 +87,8 @@ pub enum TextGradientSpace {
     Glyph,
 }
 
-/// Compact two-color foreground paint. Angles follow CSS clockwise degrees.
+/// Compact two-color foreground paint. Angles use clockwise degrees in the
+/// paragraph's logical plane and follow its physical writing-mode transform.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextGradient {
     pub from: [u8; 4],
@@ -159,56 +160,6 @@ fn paint_glyph_fill(
     }
 }
 
-#[cfg(test)]
-mod gradient_tests {
-    use super::*;
-
-    #[test]
-    fn text_gradient_batches_baselines_and_repeats_oblique_em_cells() {
-        let glyphs = [
-            Glyph {
-                id: 1,
-                x: 0.,
-                y: 20.,
-            },
-            Glyph {
-                id: 2,
-                x: 24.,
-                y: 20.,
-            },
-        ];
-        let mut paint = TextGradientPaint {
-            gradient: TextGradient {
-                from: [255; 4],
-                to: [128, 128, 128, 255],
-                angle: 180.,
-                space: TextGradientSpace::Glyph,
-            },
-            bounds: kurbo::Rect::new(0., 0., 48., 24.),
-        };
-        let fallback = Brush::Solid(peniko::Color::BLACK);
-        let mut counts = Vec::new();
-        paint_glyph_fill(Some(paint), &fallback, &glyphs, 24., 20., |brush, group| {
-            assert!(matches!(brush, Brush::Gradient(_)));
-            counts.push(group.len());
-        });
-        assert_eq!(counts, [2]);
-        paint.gradient.angle = 90.;
-        let mut brushes = Vec::new();
-        paint_glyph_fill(Some(paint), &fallback, &glyphs, 24., 20., |brush, group| {
-            assert_eq!(group.len(), 1);
-            brushes.push(brush.clone());
-        });
-        assert_ne!(brushes[0], brushes[1]);
-        paint.gradient.space = TextGradientSpace::Bounds;
-        counts.clear();
-        paint_glyph_fill(Some(paint), &fallback, &glyphs, 24., 20., |_, group| {
-            counts.push(group.len())
-        });
-        assert_eq!(counts, [2]);
-    }
-}
-
 use accesskit::{TextDecoration, TextDecorationStyle};
 use kurbo::{Affine, Line, Stroke, Vec2};
 use peniko::{Brush, Fill};
@@ -220,7 +171,10 @@ use crate::imaging::{PaintSink, Painter, record::Glyph};
 // Paragraph coordinates stay inline/block. Compensate glyph outlines for the
 // physical axis map, while retaining font synthesis and the shared paint path.
 fn run_glyph_transform(run: &reel_text::Run<'_, BrushIndex>) -> Option<Affine> {
-    let synthesis = run.synthesis().skew().map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
+    let synthesis = run
+        .synthesis()
+        .skew()
+        .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
     let axes = match run.writing_mode() {
         reel_text::WritingMode::HorizontalTb => return synthesis,
         reel_text::WritingMode::VerticalRl => Affine::new([0., -1., 1., 0., 0., 0.]),
@@ -323,7 +277,7 @@ pub(crate) fn render_text_lines(
             } else {
                 Vec2::ZERO
             };
-            let glyph_xform = run_glyph_transform(&run);
+            let glyph_xform = run_glyph_transform(run);
             let coords = run.normalized_coords();
             let brush = brush_override.unwrap_or(&brushes[style.brush.0]);
             let gradient = gradient.filter(|_| brush_override.is_none() && style.brush.0 == 0);
@@ -497,7 +451,7 @@ pub(crate) fn render_text_faded_lines(
             } else {
                 Vec2::ZERO
             };
-            let glyph_xform = run_glyph_transform(&run);
+            let glyph_xform = run_glyph_transform(run);
             let coords = run.normalized_coords();
             let brush = brush_override.unwrap_or(&brushes[style.brush.0]);
             let gradient = gradient.filter(|_| brush_override.is_none() && style.brush.0 == 0);
@@ -1237,5 +1191,55 @@ mod reveal_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod gradient_tests {
+    use super::*;
+
+    #[test]
+    fn text_gradient_batches_baselines_and_repeats_oblique_em_cells() {
+        let glyphs = [
+            Glyph {
+                id: 1,
+                x: 0.,
+                y: 20.,
+            },
+            Glyph {
+                id: 2,
+                x: 24.,
+                y: 20.,
+            },
+        ];
+        let mut paint = TextGradientPaint {
+            gradient: TextGradient {
+                from: [255; 4],
+                to: [128, 128, 128, 255],
+                angle: 180.,
+                space: TextGradientSpace::Glyph,
+            },
+            bounds: kurbo::Rect::new(0., 0., 48., 24.),
+        };
+        let fallback = Brush::Solid(peniko::Color::BLACK);
+        let mut counts = Vec::new();
+        paint_glyph_fill(Some(paint), &fallback, &glyphs, 24., 20., |brush, group| {
+            assert!(matches!(brush, Brush::Gradient(_)));
+            counts.push(group.len());
+        });
+        assert_eq!(counts, [2]);
+        paint.gradient.angle = 90.;
+        let mut brushes = Vec::new();
+        paint_glyph_fill(Some(paint), &fallback, &glyphs, 24., 20., |brush, group| {
+            assert_eq!(group.len(), 1);
+            brushes.push(brush.clone());
+        });
+        assert_ne!(brushes[0], brushes[1]);
+        paint.gradient.space = TextGradientSpace::Bounds;
+        counts.clear();
+        paint_glyph_fill(Some(paint), &fallback, &glyphs, 24., 20., |_, group| {
+            counts.push(group.len())
+        });
+        assert_eq!(counts, [2]);
     }
 }

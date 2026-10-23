@@ -1604,8 +1604,6 @@ The same arrive function can be used for characters, title-screen buttons, or en
 
 ## 14 Text, Media, and Extension Entry Points
 
-Text and button captions accept `text_gradient: linear_gradient("#ffffff", "#999999")`. The gradient covers the paragraph by default; `space: "glyph"` repeats it inside each glyph. Color and angle changes preserve the existing layout.
-
 ### Typography
 
 `letter_spacing` and `word_spacing` adjust cluster advances and space widths, defaulting to 0 logical stage pixels. Positive values spread text out; negative values tighten it. Word spacing applies to ordinary and non-breaking spaces and adds to letter spacing. Letter spacing adds advance to each shaped cluster, including the last; combining characters and ligatures retain font shaping. Text, control labels and text_input share both properties through assignment, bind and derive. Changes update wrapping, caret positions and hit testing. Rich text and ruby annotations inherit spacing; text_fit: "shrink" scales spacing together with font size. Example: [author_text_spacing.aside](../../examples/author_text_spacing/src/main.aside).
@@ -1634,9 +1632,11 @@ Use `writing_mode: "vertical-rl"` for a sidebar that reads top to bottom with co
 ```aside
 let sidebar = text(rich("[ruby=ほし]星[/ruby]を見上げる。"),
     writing_mode: "vertical-rl", height: 690,
-    font_size: 26, line_height: 40 / 26);
+    font_size: 26, line_height: 40 / 26.0);
 stage.replace(sidebar);
 ```
+
+Text and button captions accept `text_gradient: linear_gradient("#ffffff", "#999999")`. The gradient covers the paragraph by default; `space: "glyph"` repeats it inside each glyph. Color and angle changes preserve the existing layout.
 
 `text(value: rich("查看 [link=star-map][u]星图[/u][/link]"), on_link: |event| show_glossary(event.id))` passes the link ID to an ordinary callback; event.target is the text node. Fully revealed links accept mouse and touch clicks. With text focused, left/right selects a link and confirm activates it. Link input is consumed without advancing dialogue or opening a browser. Removing the node cancels callbacks under its ownership. Runnable example: [author_rich_text.aside](../../examples/author_rich_text/src/main.aside); supply fonts/body.ttf first. Use `derive(|| rich(tr(...)))` for reactive language switching and rich_escape for player text passed into translated markup. Submitted dialogue and history preserve their original language and styles. Accessibility currently exposes the body label, without separate semantic link children.
 

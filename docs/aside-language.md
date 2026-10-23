@@ -584,5 +584,3 @@ Rust 声明、类型、参数和英文文档通过 [host SDK](aside-host.md) 供
 - slotmap 键契约：https://docs.rs/slotmap/1.1.1/slotmap/struct.KeyData.html
 - slotmap 实现：https://docs.rs/slotmap/1.1.1/src/slotmap/basic.rs.html
 - 增量回收参考：https://github.com/kyren/gc-arena
-
-Reel text 与非编辑控件标签通过普通属性 `writing_mode: "horizontal-tb" | "vertical-rl" | "vertical-lr"` 选择文字流向，默认 horizontal-tb。竖排按 height 换列，vertical-rl 向左、vertical-lr 向右，按 line_height 字号倍率设置列距；text_align 沿竖向 inline 轴对齐。Unicode 混排保持 CJK 直立、拉丁词顺时针侧转，字体提供竖排替换；文本字节位置与 reveal 保持源字符串顺序，ruby 位于右侧，链接沿同一排版结果命中。属性支持赋值、bind/derive 和快照恢复；text_input/text_area 的竖排值在现有字段验证与投影边界报错。

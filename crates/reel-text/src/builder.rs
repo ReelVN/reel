@@ -237,7 +237,15 @@ impl<B: Brush> TreeBuilder<'_, B> {
             .finish(&mut self.lcx.style_table, &mut self.lcx.style_runs);
 
         // Call generic layout builder method
-        build_into_layout(layout, self.scale, self.quantize, crate::WritingMode::HorizontalTb, &text, self.lcx, self.fcx);
+        build_into_layout(
+            layout,
+            self.scale,
+            self.quantize,
+            crate::WritingMode::HorizontalTb,
+            &text,
+            self.lcx,
+            self.fcx,
+        );
 
         text
     }

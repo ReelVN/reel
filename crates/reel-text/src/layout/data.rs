@@ -796,7 +796,11 @@ fn process_clusters<I: Iterator<Item = (usize, char)>>(
         let glyph = Glyph {
             id: glyph_info.glyph_id,
             style_index: char_info.1,
-            x: if upright { -glyph_pos.y_offset as f32 } else { glyph_pos.x_offset as f32 } * scale_factor,
+            x: if upright {
+                -glyph_pos.y_offset as f32
+            } else {
+                glyph_pos.x_offset as f32
+            } * scale_factor,
             // Preserve one logical inline/block coordinate system for the line breaker.
             y: if upright {
                 writing_mode.block_sign() * glyph_pos.x_offset as f32 * scale_factor
@@ -805,7 +809,11 @@ fn process_clusters<I: Iterator<Item = (usize, char)>>(
             } else {
                 -glyph_pos.y_offset as f32 * scale_factor
             },
-            advance: if upright { -glyph_pos.y_advance as f32 } else { glyph_pos.x_advance as f32 } * scale_factor,
+            advance: if upright {
+                -glyph_pos.y_advance as f32
+            } else {
+                glyph_pos.x_advance as f32
+            } * scale_factor,
         };
         cluster_advance += glyph.advance;
         // Push any pending glyph. If it was a zero-offset, single glyph cluster, it would

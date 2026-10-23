@@ -665,9 +665,11 @@ text 默认按可用宽度自然换行；width、x/y、padding、scroll 决定 N
 ```aside
 let sidebar = text(rich("[ruby=ほし]星[/ruby]を見上げる。"),
     writing_mode: "vertical-rl", height: 690,
-    font_size: 26, line_height: 40 / 26);
+    font_size: 26, line_height: 40 / 26.0);
 stage.replace(sidebar);
 ```
+
+文字和按钮标题可以设置 `text_gradient: linear_gradient("#ffffff", "#999999")`。默认渐变覆盖段落；`space: "glyph"` 在各字形内重复。颜色与角度变化保留现有布局。
 
 `text(value: rich("查看 [link=star-map][u]星图[/u][/link]"), on_link: |event| show_glossary(event.id))` 把词条 ID 交给普通回调。event.target 是文字节点；链接完整显示后可以鼠标或触摸点击，焦点在文字上时左右方向选择链接，确认键激活。链接消费输入，不推进对白，不自动打开浏览器；节点移除后其回调任务按节点所有权取消。完整示例：[author_rich_text.aside](../../examples/author_rich_text/src/main.aside)，运行前提供 fonts/body.ttf。需要语言切换时使用 `derive(|| rich(tr(...)))`；传入翻译模板的玩家文字先 rich_escape。提交过的对白和历史保留原语言和样式。当前无障碍树提供正文标签，尚未提供逐链接语义子节点。
 
@@ -1621,8 +1623,6 @@ fn arrive(node, destination_x, seconds = 0.5) {
 同一个 arrive 可以用于人物、标题按钮或整组文字。更换图片、布局和动作参数即可形成自己的组件库。自定义节点通过宿主注册参与相同的属性、输入、绘制与恢复协议。新增语言关键字只用于普通组合确实难以表达、且多个创作场景共同需要的规则。
 
 ## 十四 文字 媒体与扩展入口
-
-文字和按钮标题可以设置 `text_gradient: linear_gradient("#ffffff", "#999999")`。默认渐变覆盖段落；`space: "glyph"` 在各字形内重复。颜色与角度变化保留现有布局。
 
 ### 字体排版
 

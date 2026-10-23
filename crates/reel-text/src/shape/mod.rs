@@ -18,7 +18,10 @@ use crate::lru_cache::LruCache;
 use crate::util::nearly_eq;
 use crate::{FontData, convert};
 use fontique::Language;
-use icu_properties::{CodePointMapData, props::{GeneralCategory, Script, VerticalOrientation}};
+use icu_properties::{
+    CodePointMapData,
+    props::{GeneralCategory, Script, VerticalOrientation},
+};
 
 use fontique::{self, Query, QueryFamily, QueryFont};
 
@@ -325,8 +328,13 @@ fn shape_item<'a, B: Brush>(
 
     // Main segmentation loop (based on swash shape_clusters) - only within current item
     while let Some(font) = current_font.take() {
-        let orientation = if vertical { cluster_orientation(char_cluster) } else { VerticalOrientation::Rotated };
-        let transformed_rotated = vertical && orientation == VerticalOrientation::TransformedRotated;
+        let orientation = if vertical {
+            cluster_orientation(char_cluster)
+        } else {
+            VerticalOrientation::Rotated
+        };
+        let transformed_rotated =
+            vertical && orientation == VerticalOrientation::TransformedRotated;
         let mut upright = vertical && orientation != VerticalOrientation::Rotated;
         // Collect all clusters for this font and Unicode orientation segment
         let cluster_range = char_cluster.range();
@@ -346,10 +354,17 @@ fn shape_item<'a, B: Brush>(
 
             if let Some(next_font) = font_selector.select_font(char_cluster, analysis_data_sources)
             {
-                let next_orientation = if vertical { cluster_orientation(char_cluster) } else { VerticalOrientation::Rotated };
+                let next_orientation = if vertical {
+                    cluster_orientation(char_cluster)
+                } else {
+                    VerticalOrientation::Rotated
+                };
                 let next_upright = vertical && next_orientation != VerticalOrientation::Rotated;
-                if next_font != font || next_upright != upright || transformed_rotated
-                    || (vertical && next_orientation == VerticalOrientation::TransformedRotated) {
+                if next_font != font
+                    || next_upright != upright
+                    || transformed_rotated
+                    || (vertical && next_orientation == VerticalOrientation::TransformedRotated)
+                {
                     current_font = Some(next_font);
                     break;
                 } else {
@@ -412,7 +427,8 @@ fn shape_item<'a, B: Brush>(
         if upright {
             // HarfRust enables vert for vertical directions; also allow fonts
             // whose full vertical alternates are registered under vrt2.
-            scx.features.push(harfrust::Feature::new(harfrust::Tag::new(b"vrt2"), 1, ..));
+            scx.features
+                .push(harfrust::Feature::new(harfrust::Tag::new(b"vrt2"), 1, ..));
         }
         for feature in rcx.features(item.features).unwrap_or(&[]) {
             scx.features.push(harfrust::Feature::new(
@@ -481,23 +497,56 @@ fn shape_item<'a, B: Brush>(
         // that horizontal result sideways. Scratch buffers retain allocations.
         if transformed_rotated {
             let fallback = &mut scx.fallback_buffer;
-            let direction = if item.level & 1 != 0 { harfrust::Direction::RightToLeft } else { harfrust::Direction::LeftToRight };
+            let direction = if item.level & 1 != 0 {
+                harfrust::Direction::RightToLeft
+            } else {
+                harfrust::Direction::LeftToRight
+            };
             fallback.clear();
-            for (index, ch) in segment_text.chars().enumerate() { fallback.push(ch as u32, index as u32); }
+            for (index, ch) in segment_text.chars().enumerate() {
+                fallback.push(ch as u32, index as u32);
+            }
             fallback.set_direction(direction);
             fallback.set_script(Some(hb_script));
             fallback.set_language(language.clone());
             // Remove the automatic vrt2 entry while preserving author features.
             let features = &scx.features[1..];
-            let plan = scx.shape_plan_cache.entry(cache::ShapePlanKey::new(
-                font.font.blob.id(), font.font.index, &font.font.synthesis, direction,
-                hb_script, language.clone(), features, rcx.variations(item.variations),
-            ), || harfrust::ShapePlan::new(instance, direction, Some(hb_script), language.as_ref(), features));
-            harfrust::shape(&harf_shaper, fallback, harfrust::ShapeOptions::new()
-                .plan(Some(plan)).point_size(Some(item.size)).features(features))
-                .expect("fallback buffer and plan have matching horizontal properties");
-            if buffer.glyph_infos().iter().map(|g| g.glyph_id)
-                .eq(fallback.glyph_infos().iter().map(|g| g.glyph_id)) {
+            let plan = scx.shape_plan_cache.entry(
+                cache::ShapePlanKey::new(
+                    font.font.blob.id(),
+                    font.font.index,
+                    &font.font.synthesis,
+                    direction,
+                    hb_script,
+                    language.clone(),
+                    features,
+                    rcx.variations(item.variations),
+                ),
+                || {
+                    harfrust::ShapePlan::new(
+                        instance,
+                        direction,
+                        Some(hb_script),
+                        language.as_ref(),
+                        features,
+                    )
+                },
+            );
+            harfrust::shape(
+                &harf_shaper,
+                fallback,
+                harfrust::ShapeOptions::new()
+                    .plan(Some(plan))
+                    .point_size(Some(item.size))
+                    .features(features),
+            )
+            .expect("fallback buffer and plan have matching horizontal properties");
+            if buffer
+                .glyph_infos()
+                .iter()
+                .map(|g| g.glyph_id)
+                .eq(fallback.glyph_infos().iter().map(|g| g.glyph_id))
+            {
                 upright = false;
                 core::mem::swap(buffer, fallback);
             }
@@ -531,34 +580,17 @@ fn shape_item<'a, B: Brush>(
 
 fn cluster_orientation(cluster: &CharCluster) -> VerticalOrientation {
     if cluster.chars.iter().any(|character| {
-        CodePointMapData::<GeneralCategory>::new().get(character.ch) == GeneralCategory::EnclosingMark
+        CodePointMapData::<GeneralCategory>::new().get(character.ch)
+            == GeneralCategory::EnclosingMark
     }) {
         return VerticalOrientation::Upright;
     }
-    cluster.chars.first().map_or(VerticalOrientation::Upright,
-        |character| CodePointMapData::<VerticalOrientation>::new().get(character.ch))
-}
-
-#[cfg(test)]
-mod vertical_orientation_tests {
-    use super::*;
-
-    #[test]
-    fn uax50_uses_grapheme_base_with_enclosing_mark_override() {
-        for (text, expected) in [
-            ("星", VerticalOrientation::Upright),
-            ("A", VerticalOrientation::Rotated),
-            ("e\u{301}", VerticalOrientation::Rotated),
-            ("ー", VerticalOrientation::TransformedRotated),
-            ("。", VerticalOrientation::TransformedUpright),
-            ("A\u{20dd}", VerticalOrientation::Upright),
-            ("1\u{fe0f}\u{20e3}", VerticalOrientation::Upright),
-        ] {
-            let mut cluster = CharCluster::default();
-            cluster.chars.extend(text.chars().map(|ch| Char { ch, ..Default::default() }));
-            assert_eq!(cluster_orientation(&cluster), expected, "{text}");
-        }
-    }
+    cluster
+        .chars
+        .first()
+        .map_or(VerticalOrientation::Upright, |character| {
+            CodePointMapData::<VerticalOrientation>::new().get(character.ch)
+        })
 }
 
 fn real_script(script: Script) -> bool {
@@ -730,5 +762,30 @@ struct SelectedFont {
 impl PartialEq for SelectedFont {
     fn eq(&self, other: &Self) -> bool {
         self.font.family == other.font.family && self.font.synthesis == other.font.synthesis
+    }
+}
+
+#[cfg(test)]
+mod vertical_orientation_tests {
+    use super::*;
+
+    #[test]
+    fn uax50_uses_grapheme_base_with_enclosing_mark_override() {
+        for (text, expected) in [
+            ("星", VerticalOrientation::Upright),
+            ("A", VerticalOrientation::Rotated),
+            ("e\u{301}", VerticalOrientation::Rotated),
+            ("ー", VerticalOrientation::TransformedRotated),
+            ("。", VerticalOrientation::TransformedUpright),
+            ("A\u{20dd}", VerticalOrientation::Upright),
+            ("1\u{fe0f}\u{20e3}", VerticalOrientation::Upright),
+        ] {
+            let mut cluster = CharCluster::default();
+            cluster.chars.extend(text.chars().map(|ch| Char {
+                ch,
+                ..Default::default()
+            }));
+            assert_eq!(cluster_orientation(&cluster), expected, "{text}");
+        }
     }
 }
