@@ -113,6 +113,75 @@ fn sequence(opcode: Opcode, len: u32) -> BytecodePackage {
         len + 1,
     )
 }
+
+#[test]
+fn packed_clears_charge_each_slot_and_release_only_the_named_roots() {
+    for (opcode, count) in [(Opcode::Clear2, 2), (Opcode::Clear3, 3)] {
+        let mut vm = load(package(
+            vec![Const::Int(41)],
+            vec![
+                op(Opcode::LoadConst, 1, 0, 0),
+                op(Opcode::MakeArray, 0, 0, 0),
+                op(Opcode::MakeArray, 2, 0, 0),
+                op(Opcode::MakeArray, 3, 0, 0),
+                op(opcode, 0, 2, if count == 3 { 3 } else { 0 }),
+                op(Opcode::Return, 1, 0, 0),
+            ],
+            vec![Descriptor::Sequence(RegWindow {
+                start: Reg(0),
+                len: 0,
+            })],
+            4,
+        ));
+        let task = vm
+            .start(FunctionId(0), &[], RootOwner(9), Context::Ordinary)
+            .unwrap();
+        let frame = loop {
+            if let Some(Frame::Script(frame)) = vm.active.frames.data.last().copied()
+                && frame.pc == Pc(4)
+            {
+                break frame;
+            }
+            assert!(matches!(tick(&mut vm, task), RunOutcome::BudgetYield(_)));
+        };
+        let objects = [0, 2, 3].map(|register| vm.slots.read(at(frame.regs, register)).unwrap());
+        for work in [count - 1, count] {
+            let outcome = vm
+                .run_slice(
+                    task,
+                    SliceBudget {
+                        instructions: 1,
+                        work,
+                        allocation_bytes: 0,
+                        deadline_ns: None,
+                    },
+                    || 0,
+                )
+                .unwrap();
+            assert!(matches!(outcome, RunOutcome::BudgetYield(_)));
+            for (index, register) in [0, 2, 3].into_iter().enumerate() {
+                if work == count && index < count as usize {
+                    assert!(matches!(
+                        vm.slots.read(at(frame.regs, register)),
+                        Err(HeapError::UninitializedSlot)
+                    ));
+                } else {
+                    assert!(
+                        vm.slots
+                            .read(at(frame.regs, register))
+                            .unwrap()
+                            .same_bits(objects[index])
+                    );
+                }
+            }
+        }
+        super::review_tests::collect(&mut vm);
+        for (index, object) in objects.into_iter().enumerate() {
+            assert_eq!(vm.heap().info(object).is_err(), index < count as usize);
+        }
+        assert_eq!(returned(&mut vm, task).as_int(), Some(41));
+    }
+}
 #[test]
 fn long_sequences_publish_only_after_budgeted_copy_and_survive_gc() {
     for opcode in [Opcode::MakeTuple, Opcode::MakeArray] {

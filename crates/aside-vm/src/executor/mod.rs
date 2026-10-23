@@ -3229,6 +3229,8 @@ impl Vm {
         let f = &self.program.package().functions[s.code.function.index()];
         Ok(match op {
             Opcode::LoadConst => (1, self.constant_allocation_bytes(ConstId(b))),
+            Opcode::Clear2 => (2, 0),
+            Opcode::Clear3 => (3, 0),
             Opcode::BindInit | Opcode::BindWrite => {
                 (1 + self.type_checks.extra(f.bindings[_a as usize].ty), 0)
             }
@@ -3869,10 +3871,18 @@ impl Vm {
                 let v = self.read(*s, r(b))?;
                 self.write(*s, r(a), v)?;
             }
-            Opcode::Clear => self
-                .slots
-                .clear(&mut self.heap, at(s.regs, a))
-                .map_err(heap_fault)?,
+            Opcode::Clear | Opcode::Clear2 | Opcode::Clear3 => {
+                let count = match op {
+                    Opcode::Clear => 1,
+                    Opcode::Clear2 => 2,
+                    _ => 3,
+                };
+                for register in [a, b, c].into_iter().take(count) {
+                    self.slots
+                        .clear(&mut self.heap, at(s.regs, register))
+                        .map_err(heap_fault)?;
+                }
+            }
             Opcode::CellNew => {
                 let binding = f.bindings[a as usize].clone();
                 let cell = self

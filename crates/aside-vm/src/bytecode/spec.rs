@@ -128,6 +128,8 @@ instructions! {
     GlobalRead = 0x000b => [WriteReg, Descriptor(D::Global), Unused], Next, true, None;
     GlobalInit = 0x000c => [ReadReg, Descriptor(D::Global), Unused], Next, true, None;
     GlobalWrite = 0x000d => [ReadReg, Descriptor(D::Global), Unused], Next, true, None;
+    Clear2 = 0x000e => [WriteReg, WriteReg, Unused], Next, false, None;
+    Clear3 = 0x000f => [WriteReg, WriteReg, WriteReg], Next, false, None;
     Add = 0x0010 => [WriteReg, ReadReg, ReadReg], Next, true, None;
     Sub = 0x0011 => [WriteReg, ReadReg, ReadReg], Next, true, None;
     Mul = 0x0012 => [WriteReg, ReadReg, ReadReg], Next, true, None;
