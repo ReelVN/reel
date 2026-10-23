@@ -311,10 +311,15 @@ fn invert_is_a_validated_reactive_node_property() {
 
 #[test]
 fn blend_is_a_validated_reactive_node_property() {
-    use reel_ui::peniko::{BlendMode, Compose, Mix};
+    use reel_ui::frame::BlendMode;
+    use reel_ui::peniko::{Compose, Mix};
     for (name, expected) in [
         ("normal", BlendMode::default()),
-        ("add", BlendMode::new(Mix::Normal, Compose::PlusLighter)),
+        (
+            "add",
+            reel_ui::peniko::BlendMode::new(Mix::Normal, Compose::PlusLighter).into(),
+        ),
+        ("subtract", BlendMode::Subtract),
         ("multiply", Mix::Multiply.into()),
         ("screen", Mix::Screen.into()),
     ] {

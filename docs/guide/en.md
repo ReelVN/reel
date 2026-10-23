@@ -1336,7 +1336,7 @@ await run(tween(scene, invert: 1, duration: 0.4), owner: scene);
 
 Runnable example: [author_invert.aside](../../examples/author_invert/src/main.aside). Inversion shares the group target with opacity/mask; set it to 0 when finished to remove the need for a separate inversion target.
 
-Images, text, UI and effects share `blend`, which composites the completed subtree: `normal` uses source-over, `add` adds light, `multiply` darkens, and `screen` lightens. Opacity, masks and inversion apply before blending with the backdrop. Layout and input stay the same; color calculations use linear space. The light layer below can also contain images, particles or components. See [author_blend.aside](../../examples/author_blend/src/main.aside).
+Images, text, UI and effects share `blend`, which composites the completed subtree: `normal` uses source-over, `add` adds light, `subtract` removes the source light from the backdrop, `multiply` darkens, and `screen` lightens. Subtract clamps each linear premultiplied RGB channel to `max(backdrop - source, 0)` and preserves backdrop alpha; source opacity and masks apply once before subtraction. Opacity, masks and inversion apply before blending with the backdrop. Layout and input stay the same; color calculations use linear space. The light layer below can also contain images, particles or components. See [author_blend.aside](../../examples/author_blend/src/main.aside).
 
 ```aside
 stage.replace(stack(width: 320, height: 180, background: "#204060") {

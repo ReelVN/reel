@@ -93,7 +93,7 @@ pub fn groups() {
                 }
             }
         }
-        plan.replay_into(&mut scene);
+        plan.replay_into(&mut scene).unwrap();
         scene
             .validate()
             .expect("flattened scene must preserve group and clip balance");
@@ -140,7 +140,7 @@ pub fn groups() {
         .unwrap();
         let candidate = bridge.record(reel_core::identity::FrameId(1)).unwrap();
         let rendered = VelloCpuRenderer::new(400, 300)
-            .render_scene(candidate.scene(), 400, 300)
+            .render_scene(candidate.scene().unwrap(), 400, 300)
             .unwrap();
         assert_eq!(
             rendered.data, img.data,
@@ -310,7 +310,7 @@ pub fn base_layer_boundary() {
     let (mut root, _) = root(group.prepare().with_transform(transform()));
     let (plan, _) = root.redraw();
     let mut scene = Scene::new();
-    plan.replay_into(&mut scene);
+    plan.replay_into(&mut scene).unwrap();
     let img = VelloCpuRenderer::new(400, 300)
         .render_scene(&scene, 400, 300)
         .unwrap();
@@ -328,7 +328,7 @@ pub fn base_layer_boundary() {
     )
     .unwrap();
     let candidate = bridge.record(reel_core::identity::FrameId(1)).unwrap();
-    assert!(candidate.scene().validate().is_ok());
+    assert!(candidate.scene().unwrap().validate().is_ok());
     assert_eq!(bridge.pending_count(), 1);
 }
 #[test]

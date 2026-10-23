@@ -25,7 +25,7 @@ pub struct RecordWidget {
     pub clip: bool,
     pub opacity: f32,
     pub invert: f32,
-    pub blend: reel_ui::peniko::BlendMode,
+    pub blend: reel_ui::frame::BlendMode,
     pub mask: Option<PaintImageMask>,
     pub capture_included: bool,
 }

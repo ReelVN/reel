@@ -215,7 +215,7 @@ pub(crate) struct WidgetState {
     pub(crate) subtree_image_mask: Option<Box<PaintImageMask>>,
     pub(crate) subtree_opacity: f32,
     pub(crate) subtree_invert: f32,
-    pub(crate) subtree_blend: peniko::BlendMode,
+    pub(crate) subtree_blend: crate::frame::BlendMode,
     pub(crate) image_color: [f32; 4],
     pub(crate) image_appearance: Option<crate::frame::ImageAppearance>,
     pub(crate) image_resource: Option<crate::resources::ResourceImageBrush>,

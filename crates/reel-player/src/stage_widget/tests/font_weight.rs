@@ -10,7 +10,7 @@ fn fonts() -> [reel_ui::peniko::Blob<u8>; 3] {
     .map(|bytes| reel_ui::peniko::Blob::new(Arc::new(bytes.to_vec())))
 }
 fn selected_fonts(frame: &TestFrame) -> std::collections::BTreeSet<u64> {
-    let scene = frame.scene();
+    let scene = frame.scene().unwrap();
     scene
         .commands()
         .iter()
@@ -165,7 +165,7 @@ fn font_weight_600_uses_available_regular_face_when_family_has_no_semibold() {
     f.bridge.set_default_fonts(&fonts[..1]);
     let frame = f.record();
     assert_eq!(selected_fonts(&frame), [fonts[0].id()].into());
-    let scene = frame.scene();
+    let scene = frame.scene().unwrap();
     for command in scene.commands() {
         if let Command::Draw(id) = command
             && let Draw::GlyphRun(run) = scene.draw_op(*id)

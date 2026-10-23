@@ -28,3 +28,6 @@ mod backend;
 mod surface;
 pub use backend::WgpuBackend;
 pub use surface::ContractError as SurfaceContractError;
+
+#[cfg(test)]
+mod blend_tests;

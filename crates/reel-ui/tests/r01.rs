@@ -1168,15 +1168,16 @@ fn retained_subtree_is_balanced_independent_of_candidate_and_sibling_resources()
     let mut parent = RecordWidget::new(image_scene(sibling_image));
     let mut child = RecordWidget::new(image_scene(old_image));
     child.opacity = 0.5;
+    child.blend = BlendMode::Subtract;
     let child_id = parent
         .inner
         .add(child.prepare(), Point::new(25., 30.), Size::new(70., 60.));
     let mut bridge = widget_bridge(parent, Affine::scale(1.5));
-    let frame = build(
-        bridge.record(FrameId(1)).unwrap(),
-        registry.freeze(&handles, &pool).unwrap(),
-        &pool,
-    );
+    let source = bridge.record(FrameId(1)).unwrap();
+    let unsupported = source.scene().unwrap_err();
+    assert_eq!(unsupported.kind, BuildErrorKind::UnsupportedRecord);
+    assert_eq!(unsupported.at.owner, child_id);
+    let frame = build(source, registry.freeze(&handles, &pool).unwrap(), &pool);
     let mut retaining = RetainBuild::new(&frame, Some(child_id), limits(), &pool).unwrap();
     for handle in &handles {
         registry.retire(*handle);
@@ -1233,6 +1234,15 @@ fn retained_subtree_is_balanced_independent_of_candidate_and_sibling_resources()
         1
     );
     assert_eq!(retained.to_parent(), Affine::scale(1. / 1.5));
+    let saved = retained.snapshot(|_| None).unwrap();
+    let mut restoring = saved.restore_begin(limits(), &pool).unwrap();
+    while !restoring.step(step_budget()).unwrap().build.complete {}
+    let restored = restoring.finish().unwrap();
+    let FrameOp::PushGroup(group) = &restored.drawing().commands()[0].op else {
+        panic!("retained subtree must keep its group");
+    };
+    assert_eq!(group.composite.blend, BlendMode::Subtract);
+    assert_eq!(group.composite.alpha, 0.5);
 }
 
 #[test]

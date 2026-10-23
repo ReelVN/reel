@@ -37,6 +37,8 @@ pub struct GroupMetadata {
     pub image_mask: Option<PaintImageMask>,
     /// sRGB inversion of the completed subtree before coverage and opacity.
     pub invert: f32,
+    /// Subtree blend retained when the Imaging record cannot express it.
+    pub blend: Option<crate::frame::BlendMode>,
 }
 
 /// A balanced widget paint range; coordinates identify gaps between commands.
@@ -66,17 +68,35 @@ pub struct VisualLayerPlan {
 impl VisualLayerPlan {
     /// Replay all layers into a sink in window coordinate space.
     ///
-    /// This preserves current flattened rendering behavior for hosts that do not yet realize
-    /// layers differently.
-    pub fn replay_into<S>(&self, sink: &mut S)
+    /// Return UnsupportedRecord before writing when Imaging cannot represent a subtree blend.
+    /// Production FrameBuild reads the original plan and preserves every Reel blend.
+    pub fn replay_into<S>(&self, sink: &mut S) -> Result<(), crate::frame::BuildError>
     where
         S: PaintSink + ?Sized,
     {
+        for (fragment, layer) in self.layers.iter().enumerate() {
+            if let Some(group) = layer
+                .groups
+                .iter()
+                .find(|group| group.blend.is_some_and(|blend| blend.imaging().is_none()))
+            {
+                return Err(crate::frame::BuildError {
+                    kind: crate::frame::BuildErrorKind::UnsupportedRecord,
+                    at: crate::frame::RecordLocation {
+                        fragment,
+                        command: group.command,
+                        mask_depth: 0,
+                        owner: group.owner,
+                    },
+                });
+            }
+        }
         for layer in &self.layers {
             if let VisualLayerKind::Scene(scene) = &layer.kind {
                 replay_transformed(scene, sink, layer.transform);
             }
         }
+        Ok(())
     }
 
     /// The first scene layer, if one exists.
@@ -197,7 +217,7 @@ mod tests {
         };
 
         let mut actual = Scene::new();
-        plan.replay_into(&mut actual);
+        plan.replay_into(&mut actual).unwrap();
 
         let mut expected = Scene::new();
         replay_transformed(&root_scene, &mut expected, Affine::IDENTITY);

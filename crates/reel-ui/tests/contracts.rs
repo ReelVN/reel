@@ -361,8 +361,8 @@ fn real_record_gate_first_frame_failures_identity_order_clear_and_epoch() {
         .unwrap();
     assert_eq!(bridge.root().pointer_capture_target(), None);
     let first = bridge.record(FrameId(1)).unwrap();
-    assert!(!first.scene().is_empty());
-    first.scene().validate().unwrap();
+    assert!(!first.scene().unwrap().is_empty());
+    first.scene().unwrap().validate().unwrap();
     assert_eq!(
         bridge.resolve(notice(&first, PresentationOutcome::Accepted(FrameId(99)))),
         NoticeResult::StaleOrForeign

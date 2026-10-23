@@ -34,7 +34,7 @@ struct Position {
     y: f32,
 }
 fn letters(frame: &TestFrame) -> Vec<Position> {
-    let scene = frame.scene();
+    let scene = frame.scene().unwrap();
     scene
         .commands()
         .iter()

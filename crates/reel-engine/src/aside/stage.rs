@@ -165,7 +165,9 @@ pub(super) enum NodeProperty {
     /// Color inversion strength, from 0 to 1.
     #[aside(name = "invert", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_invert, animatable)]
     Invert,
-    /// Blend mode for compositing this subtree with the scene behind it.
+    /// Blend the completed subtree: normal, add, subtract, multiply, or screen.
+    /// Subtract clamps linear premultiplied backdrop RGB minus source RGB to zero
+    /// and preserves backdrop alpha. Opacity and masks scale the source once.
     #[aside(name = "blend", ty = String, default = "normal", validate = validate_blend)]
     Blend,
     /// Show this subtree and include it in input hit testing.
@@ -1973,8 +1975,9 @@ fn invert(value: Value) -> Result<f64, AdapterError> {
 fn validate_invert(_: &Heap, value: Value) -> Result<(), HeapError> {
     validation(invert(value))
 }
-fn blend(heap: &Heap, value: Value) -> Result<reel_ui::peniko::BlendMode, HeapError> {
-    use reel_ui::peniko::{BlendMode, Compose, Mix};
+fn blend(heap: &Heap, value: Value) -> Result<reel_ui::frame::BlendMode, HeapError> {
+    use reel_ui::frame::BlendMode;
+    use reel_ui::peniko::{Compose, Mix};
     let info = heap.info(value)?;
     if info.kind != ObjectKind::String || info.len > 8 {
         return Err(HeapError::TypeMismatch);
@@ -1983,7 +1986,8 @@ fn blend(heap: &Heap, value: Value) -> Result<reel_ui::peniko::BlendMode, HeapEr
     heap.read_bytes(value, 0, &mut bytes[..info.len as usize])?;
     Ok(match &bytes[..info.len as usize] {
         b"normal" => BlendMode::default(),
-        b"add" => BlendMode::new(Mix::Normal, Compose::PlusLighter),
+        b"add" => reel_ui::peniko::BlendMode::new(Mix::Normal, Compose::PlusLighter).into(),
+        b"subtract" => BlendMode::Subtract,
         b"multiply" => Mix::Multiply.into(),
         b"screen" => Mix::Screen.into(),
         _ => return Err(HeapError::TypeMismatch),

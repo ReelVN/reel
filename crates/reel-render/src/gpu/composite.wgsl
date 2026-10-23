@@ -48,11 +48,16 @@ fn covered_source(v: Varying) -> vec4<f32> {
     return s * coverage * params.opacity * expression_coverage(v.pos.xy);
 }
 
+fn subtract(s: vec4<f32>, d: vec4<f32>) -> vec4<f32> {
+    return vec4(max(d.rgb - s.rgb, vec3(0.0)), d.a);
+}
+
 @fragment fn fragment(v: Varying) -> @location(0) vec4<f32> {
     let s = covered_source(v);
     if params.blend == 0u { return s; }
     let d = textureSample(backdrop, linear_sampler, v.uv);
     if params.blend == 1u { return min(s + d, vec4(1.0)); }
+    if params.blend == 4u { return subtract(s, d); }
     let alpha = s.a + d.a * (1.0 - s.a);
     if params.blend == 2u {
         return vec4(s.rgb * d.rgb + s.rgb * (1.0 - d.a) + d.rgb * (1.0 - s.a), alpha);

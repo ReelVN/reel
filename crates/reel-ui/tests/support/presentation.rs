@@ -457,7 +457,7 @@ pub fn topology_and_skin() {
         });
         let (plan, _) = root.redraw();
         let mut scene = Scene::new();
-        plan.replay_into(&mut scene);
+        plan.replay_into(&mut scene).unwrap();
         let img = VelloCpuRenderer::new(400, 300)
             .render_scene(&scene, 400, 300)
             .unwrap();
