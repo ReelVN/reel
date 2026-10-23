@@ -66,6 +66,7 @@ pub(super) fn upload(
             view: textures[0].create_view(&Default::default()),
             texture: textures[0].clone(),
             size,
+            encoding: reel_ui::resources::ColorEncoding::Linear,
             yuv: Some(Planes {
                 textures,
                 chroma,
@@ -182,6 +183,20 @@ mod tests {
         assert_eq!(resident, 1920 * 1080 * 3 / 2 + 64);
         assert_eq!(staging, 2048 * 1080 + 2 * 1024 * 540 + 64);
         assert!(resident + staging < 7 << 20);
+        let packed = Yuv420Image::new(
+            [960, 1024],
+            image.color(),
+            Arc::new(Planes([
+                vec![0; 960 * 1024],
+                vec![128; 480 * 512],
+                vec![128; 480 * 512],
+            ])),
+        )
+        .unwrap();
+        assert_eq!(
+            costs(&packed),
+            (1_474_560 + 64, 1024 * 1024 + 2 * 512 * 512 + 64)
+        );
         let module = wgpu::naga::front::wgsl::parse_str(include_str!("paint.wgsl")).unwrap();
         wgpu::naga::valid::Validator::new(
             wgpu::naga::valid::ValidationFlags::all(),

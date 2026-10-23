@@ -678,6 +678,14 @@ stage.replace(button(width: 1280, height: 720, decorated: false,
 await playing;
 ```
 
+资源将颜色放在上半帧、灰度透明度放在下半帧时，设置 `alpha_layout: "top_bottom"`。自然高度为编码高度的一半，裁剪坐标使用可见颜色区域的像素。默认 `"native"` 保留普通图片透明度和视频的不透明画面。图片和视频共用此属性。
+
+```aside
+let overlay = video("assets/overlay.mp4", alpha_layout: "top_bottom", width: 960, height: 512);
+stage.replace(overlay);
+await overlay.play();
+```
+
 剧情运行中可随时加入临时控件。保留节点引用，在这段交互结束后移除。
 
 ```aside

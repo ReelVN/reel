@@ -495,6 +495,7 @@ fn image_color_appearance_restores_with_one_shared_resource() {
             transform: Affine::scale(40.),
         }),
         adjustment,
+        Default::default(),
     );
     let commands = [None, appearance]
         .into_iter()

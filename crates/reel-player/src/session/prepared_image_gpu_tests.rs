@@ -71,6 +71,7 @@ fn scene(
                 repeat: [false; 2],
                 tile_scale: 1.,
                 corner_colors: None,
+                alpha_layout: Default::default(),
                 adjustment: Default::default(),
                 slice_center: true,
                 source_rect: None,

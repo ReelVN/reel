@@ -2509,6 +2509,7 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
                 repeat: [false; 2],
                 tile_scale: 1.,
                 corner_colors: None,
+                alpha_layout: Default::default(),
                 adjustment: Default::default(),
                 slice_center: true,
             },
@@ -2646,6 +2647,7 @@ fn decoded_frames_preserve_geometry_skip_asset_io_and_release_pixels_with_last_v
         repeat: [false; 2],
         tile_scale: 1.,
         corner_colors: None,
+        alpha_layout: Default::default(),
         adjustment: Default::default(),
     };
     let mut f = Fixture::new(None);

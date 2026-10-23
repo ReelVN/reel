@@ -172,7 +172,11 @@ impl ImageCache {
                 });
                 break;
             }
-            if let ResourceData::Image { image: source, .. } = item.source.data() {
+            if let ResourceData::Image {
+                image: source,
+                encoding,
+            } = item.source.data()
+            {
                 if let Entry::Vacant(entry) = partial.entry(handle) {
                     let storage = reserve(
                         &budgets.transient,
@@ -183,6 +187,7 @@ impl ImageCache {
                     )?;
                     let residency = reserve_gpu(item.resident)?;
                     let mut image = resources::create_image(gpu, [source.width, source.height])?;
+                    image.encoding = *encoding;
                     image.residency = Some(residency);
                     image.source = Some(resources::ImageSource {
                         version: item.source.version().clone(),

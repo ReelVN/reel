@@ -126,7 +126,8 @@ impl SceneNode {
         {
             return rect.size();
         }
-        self.images
+        let size = self
+            .images
             .image_resource
             .as_ref()
             .and_then(|r| r.data().image_size())
@@ -138,7 +139,11 @@ impl SceneNode {
                     .map(|i| Size::new(i.width.into(), i.height.into()))
             })
             .or(self.images.tiled_size)
-            .unwrap_or(Size::ZERO)
+            .unwrap_or(Size::ZERO);
+        match &self.node.kind {
+            NodeKind::Image { alpha_layout, .. } => alpha_layout.size(size),
+            _ => size,
+        }
     }
 }
 pub(crate) struct ImageRequests {
@@ -450,6 +455,19 @@ impl StageView {
                 {
                     return Err(format!(
                         "{}: image {source:?}: source_rect requires a whole PNG or JPEG image",
+                        origin.as_deref().unwrap_or("stage")
+                    ));
+                }
+                if matches!(
+                    &node.node.kind,
+                    NodeKind::Image {
+                        alpha_layout: reel_ui::frame::ImageAlphaLayout::TopBottom,
+                        ..
+                    }
+                ) && source.ends_with(".reel-image")
+                {
+                    return Err(format!(
+                        "{}: image {source:?}: alpha_layout top_bottom requires a whole PNG or JPEG image",
                         origin.as_deref().unwrap_or("stage")
                     ));
                 }
@@ -1004,6 +1022,7 @@ impl SceneWidget {
             adjustment,
             slice_center,
             source_rect,
+            alpha_layout,
             ..
         } = &view.node.kind
         else {
@@ -1028,6 +1047,7 @@ impl SceneWidget {
                 NewWidget::new(
                     image
                         .with_source_rect(*source_rect)
+                        .with_alpha_layout(*alpha_layout)
                         .with_color(color(view.node.props.color))
                         .with_slice(*slice, *slice_scale, *slice_center)
                         .with_pattern(*repeat, *tile_scale, *corner_colors)
@@ -1050,6 +1070,7 @@ impl SceneWidget {
                     tile_scale: atile,
                     corner_colors: acol,
                     adjustment: aadj,
+                    alpha_layout: aalpha,
                     slice_center: acenter,
                     ..
                 },
@@ -1063,6 +1084,7 @@ impl SceneWidget {
                     tile_scale: btile,
                     corner_colors: bcol,
                     adjustment: badj,
+                    alpha_layout: balpha,
                     slice_center: bcenter,
                     ..
                 },
@@ -1079,6 +1101,7 @@ impl SceneWidget {
                     atile,
                     acol,
                     aadj,
+                    aalpha,
                     acenter,
                 ) != (
                     b,
@@ -1090,6 +1113,7 @@ impl SceneWidget {
                     btile,
                     bcol,
                     badj,
+                    balpha,
                     bcenter,
                 )
             }
@@ -1573,6 +1597,7 @@ impl SceneWidget {
                     adjustment,
                     slice_center,
                     source_rect,
+                    alpha_layout,
                     ..
                 },
             ) = (&mut this.widget.image, &view.node.kind)
@@ -1583,6 +1608,7 @@ impl SceneWidget {
             }
             // This also clears slicing when a whole image switches to tiles.
             Image::set_source_rect(&mut image, *source_rect);
+            Image::set_alpha_layout(&mut image, *alpha_layout);
             Image::set_slice(&mut image, *slice, *slice_scale, *slice_center);
             Image::set_pattern(&mut image, *repeat, *tile_scale, *corner_colors);
             Image::set_color_adjustment(&mut image, *adjustment);
