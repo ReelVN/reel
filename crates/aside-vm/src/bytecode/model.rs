@@ -1,5 +1,3 @@
-use super::{Error, ErrorKind};
-
 macro_rules! indices {
     ($($name:ident),+ $(,)?) => { $(
         #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -268,7 +266,7 @@ pub struct FunctionDef {
     pub regions: Vec<ExceptionRegion>,
     pub source_map: Vec<SourceMapEntry>,
 }
-/// The in-memory struct happens to be 16 bytes; the wire codec still writes fields.
+/// Fixed-width execution record; the wire codec stores only declared operands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Instruction {
     pub opcode: u16,
@@ -282,30 +280,6 @@ impl Instruction {
             flags: 0,
             operands: [a, b, c],
         }
-    }
-    pub fn to_le_bytes(self) -> [u8; 16] {
-        let mut bytes = [0; 16];
-        bytes[..2].copy_from_slice(&self.opcode.to_le_bytes());
-        bytes[2..4].copy_from_slice(&self.flags.to_le_bytes());
-        for (i, value) in self.operands.iter().enumerate() {
-            bytes[4 + i * 4..8 + i * 4].copy_from_slice(&value.to_le_bytes());
-        }
-        bytes
-    }
-    pub fn from_le_bytes(bytes: [u8; 16]) -> Result<Self, Error> {
-        let instruction = Self {
-            opcode: u16::from_le_bytes([bytes[0], bytes[1]]),
-            flags: u16::from_le_bytes([bytes[2], bytes[3]]),
-            operands: std::array::from_fn(|i| {
-                u32::from_le_bytes(bytes[4 + i * 4..8 + i * 4].try_into().expect("fixed field"))
-            }),
-        };
-        let spec = super::instruction_spec(instruction.opcode)
-            .ok_or_else(|| Error::new(ErrorKind::Opcode, "unknown opcode"))?;
-        if instruction.flags & !spec.allowed_flags != 0 {
-            return Err(Error::new(ErrorKind::Flags, "undeclared flags"));
-        }
-        Ok(instruction)
     }
 }
 const _: () = assert!(std::mem::size_of::<Instruction>() == 16);

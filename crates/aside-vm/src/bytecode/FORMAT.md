@@ -86,8 +86,11 @@ requirements; runtime admission selects supported capabilities.
 
 ## Instructions
 
-Each Instruction is exactly 16 bytes: opcode:u16, flags:u16 and operands:[u32;3].
-Flags and unused operands are zero. All instructions may yield at VM safe points.
+An encoded instruction starts with its u8 opcode, followed by the operands
+declared in the instruction table. Operands use canonical unsigned LEB128 with
+at most five bytes per u32. Flags and unused operands are zero and occupy no
+encoded bytes. The decoded instruction retains a 16-byte fixed layout for
+execution. All instructions may yield at VM safe points.
 The table's suspension column describes language suspension: W external wait,
 Y generator yield, T thread suspend. Calls inherit cumulative context/effect
 restrictions; synchronous calls are valid under NoWait.
@@ -203,6 +206,11 @@ the descriptor digest, UTF-8 and character boundaries before execution. Strings
 share inline or pool storage. The host binds the full immutable pool. Weak caches
 reuse live constant objects; snapshots retain constant IDs for pool-backed text
 and bytes for dynamic strings. Tuple constants materialize incrementally.
+
+`TextPool::from_bytes` takes ownership of a `Vec<u8>` without copying its byte
+allocation. Pools share one immutable `Arc<Vec<u8>>`; cloning retains the same
+backing. Its allocation ledger includes the vector's full capacity, vector header
+and shared ownership header, including unused capacity supplied by the host.
 
 Array/TableSpread capture at their written source position with content-version
 checks across pauses. Destinations remain private builders until publication.

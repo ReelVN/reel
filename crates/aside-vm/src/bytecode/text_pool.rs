@@ -1,23 +1,29 @@
 use super::{BytecodePackage, Const, Error, ErrorKind, TextPoolDescriptor};
 use std::sync::Arc;
 
-/// Host-owned, resident UTF-8 text. Binding and cloning do not copy its bytes.
+/// Resident UTF-8 text with shared immutable ownership of its byte allocation.
+/// Construction takes the host's vector; binding and cloning retain its backing.
 /// File IO, decompression and storage policy remain outside Aside.
 #[derive(Clone, Debug)]
 pub struct TextPool {
-    bytes: Arc<[u8]>,
+    bytes: Arc<Vec<u8>>,
     descriptor: TextPoolDescriptor,
 }
 
 impl TextPool {
-    pub fn from_bytes(bytes: Arc<[u8]>) -> Result<Self, Error> {
+    /// Takes ownership of the vector without copying or shrinking its backing.
+    /// The package allocation ledger includes its full capacity and shared header.
+    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self, Error> {
         std::str::from_utf8(&bytes)
             .map_err(|_| Error::new(ErrorKind::Encoding, "text pool is not UTF-8"))?;
         let descriptor = TextPoolDescriptor {
             byte_len: bytes.len() as u64,
             digest: *blake3::hash(&bytes).as_bytes(),
         };
-        Ok(Self { bytes, descriptor })
+        Ok(Self {
+            bytes: Arc::new(bytes),
+            descriptor,
+        })
     }
 
     pub fn descriptor(&self) -> TextPoolDescriptor {
@@ -35,7 +41,7 @@ impl TextPool {
     }
 
     pub(crate) fn capacity_bytes(&self) -> usize {
-        self.bytes.len() + 2 * std::mem::size_of::<usize>()
+        self.bytes.capacity() + std::mem::size_of::<Vec<u8>>() + 2 * std::mem::size_of::<usize>()
     }
 
     pub(crate) fn text(&self, offset: u64, len: u32) -> Result<&[u8], Error> {
@@ -95,7 +101,7 @@ pub fn externalize_text(package: &mut BytecodePackage) -> Result<TextPool, Error
             bytes.extend_from_slice(text.as_bytes());
         }
     }
-    let pool = TextPool::from_bytes(bytes.into())?;
+    let pool = TextPool::from_bytes(bytes)?;
     let mut offset = 0;
     for constant in &mut package.constants {
         if let Const::Utf8(text) = constant {

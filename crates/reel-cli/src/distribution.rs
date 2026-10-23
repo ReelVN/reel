@@ -11,7 +11,6 @@ use std::{
     io::{self, Read, Seek, SeekFrom, Write},
     num::NonZeroU64,
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
 pub const TEXT_POOL_ENTRY: &str = "__reel/text.pool";
@@ -437,6 +436,8 @@ pub fn load(path: &Path) -> io::Result<LoadedDistribution> {
         .canonicalize()?;
     let bytes = fs::read(path)?;
     let mut package = reel_package::decode(&bytes, Default::default()).map_err(io::Error::other)?;
+    // The decoded package owns its fields; release the ASB before loading text.
+    drop(bytes);
     let manifest = package
         .distribution()
         .cloned()
@@ -472,7 +473,7 @@ pub fn load(path: &Path) -> io::Result<LoadedDistribution> {
             bytes.try_reserve_exact(len).map_err(io::Error::other)?;
             file.seek(SeekFrom::Start(entry.offset))?;
             file.take(entry.length).read_to_end(&mut bytes)?;
-            let pool = TextPool::from_bytes(Arc::from(bytes)).map_err(io::Error::other)?;
+            let pool = TextPool::from_bytes(bytes).map_err(io::Error::other)?;
             package = package.bind_text_pool(pool).map_err(io::Error::other)?;
         }
     } else if package.program().package().text_pool.is_some() {
