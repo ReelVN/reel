@@ -513,6 +513,94 @@ fn persisted_save_resumes_its_wait_once_and_interrupts_other_external_operations
 }
 
 #[test]
+fn development_restore_keeps_focus_waits_pending_until_real_focus_changes() {
+    let code = r#"
+    fn opening() {
+        let gate = button("gate");
+        let marker = text("marker", x:0);
+        stage.replace(column() { gate; marker; });
+        spawn(|| {
+            await when(|| gate.focused);
+            await when(|| !gate.focused);
+            marker.x = 1;
+        });
+        narrator("ready");
+    }
+    "#;
+    for encoded in [false, true] {
+        let (mut session, mut runtime) = models::prepared(code, encoded);
+        models::drive(&mut runtime, &mut session, false);
+        let button = runtime
+            .stage()
+            .nodes()
+            .find(|node| matches!(node.kind, NodeKind::Button { .. }))
+            .unwrap()
+            .id;
+        runtime
+            .stage
+            .interaction(
+                runtime.vm.heap_mut(),
+                &NodeInteraction {
+                    node: button,
+                    state: InteractionState {
+                        focused: true,
+                        hover: true,
+                        ..Default::default()
+                    },
+                },
+            )
+            .unwrap();
+        models::drive(&mut runtime, &mut session, false);
+        let program = runtime.vm.program().clone();
+        let mut capture = runtime.snapshot_begin(&session).unwrap();
+        while !capture.step(SnapshotBudget { units: 64 }).unwrap().complete {}
+        let mut image = capture.finish().unwrap();
+        let mut restore = SessionVm::restore_begin(
+            &mut image,
+            program,
+            VmLimits::default(),
+            SessionIdentity {
+                session_id: SessionId(41),
+                epoch: Epoch(10),
+            },
+            crate::ReadProgress::default(),
+            None,
+            None,
+        )
+        .unwrap()
+        .with_preserved_interactions()
+        .unwrap();
+        while !restore.step(SnapshotBudget { units: 64 }).unwrap().complete {}
+        let (mut session, mut restored) = restore.finish().unwrap();
+        models::drive(&mut restored, &mut session, false);
+        let marker_x = |runtime: &SessionVm| {
+            runtime
+                .stage()
+                .nodes()
+                .find(|node| {
+                    matches!(&node.kind, NodeKind::Text(text) if text.plain().as_ref() == "marker")
+                })
+                .unwrap()
+                .props
+                .x
+        };
+        assert_eq!(marker_x(&restored), 0.);
+        restored
+            .stage
+            .interaction(
+                restored.vm.heap_mut(),
+                &NodeInteraction {
+                    node: button,
+                    state: InteractionState::default(),
+                },
+            )
+            .unwrap();
+        models::drive(&mut restored, &mut session, false);
+        assert_eq!(marker_x(&restored), 1.);
+    }
+}
+
+#[test]
 fn restore_real_story_stage_callbacks_narrative_random_and_concurrent_activities() {
     let code = r##"
     let mut entries = 0;

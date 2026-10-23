@@ -135,6 +135,8 @@ impl StoryRuntime {
     /// The host must first restore this branch's isolated save-storage files.
     /// Candidate preparation completes before replacing the live session. The
     /// host clock stays monotonic; its offset maps to captured story time.
+    /// Interaction observables retain their saved values. The host restores
+    /// matching pointer and focus state before resuming input or story work.
     pub fn restore_checkpoint(
         &mut self,
         checkpoint: RuntimeCheckpoint,
@@ -169,7 +171,8 @@ impl StoryRuntime {
             self.media_factory.as_ref().map(|factory| factory()),
             Some(live.catalog_loader()),
         )?
-        .with_source_catalogs(live.adapter().source_catalogs())?;
+        .with_source_catalogs(live.adapter().source_catalogs())?
+        .with_preserved_interactions()?;
         while !restore.step(SnapshotBudget { units: 256 })?.complete {}
         let (session, mut vm) = restore.finish()?;
         vm.set_host_environment(live.adapter().host_environment());

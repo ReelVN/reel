@@ -222,6 +222,7 @@ impl StageBinding {
         map: &SnapshotMap,
         saved: SavedNode,
         limit: usize,
+        preserve_interactions: bool,
     ) -> Result<Option<NodeId>, AdapterError> {
         // Detached stage entries do not keep otherwise unreachable author nodes alive.
         let Ok(handle) = map.handle(saved.handle) else {
@@ -269,15 +270,17 @@ impl StageBinding {
             Some(cache)
         };
         let interaction_offset = (saved.shape.prefix() + NodeProperty::PROPERTIES.len()) as u32;
-        interaction::publish(
-            heap,
-            value,
-            interaction_offset,
-            reel_ui::stage::InteractionState {
-                disabled: !props.enabled,
-                ..Default::default()
-            },
-        )?;
+        if !preserve_interactions {
+            interaction::publish(
+                heap,
+                value,
+                interaction_offset,
+                reel_ui::stage::InteractionState {
+                    disabled: !props.enabled,
+                    ..Default::default()
+                },
+            )?;
+        }
         let id = NodeId(saved.id);
         if heap.host_payload(value, 0)?.as_int() != Some(saved.id as i64) {
             return Err(AdapterError::Input("saved node identity"));

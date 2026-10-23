@@ -1043,6 +1043,16 @@ impl RenderRoot {
         self.global_state.focused_widget
     }
 
+    /// Returns the remembered keyboard navigation anchor.
+    pub fn focus_anchor(&self) -> Option<WidgetId> {
+        self.global_state.focus_anchor
+    }
+
+    /// Whether the host currently displays keyboard/controller focus feedback.
+    pub fn focus_visible(&self) -> bool {
+        self.global_state.focus_visible
+    }
+
     /// Returns the [`WidgetId`] of the widget which [captures pointer events](crate::doc::concepts#pointer-capture).
     pub fn pointer_capture_target(&self) -> Option<WidgetId> {
         self.global_state.pointer.pointer_capture_target
@@ -1062,6 +1072,24 @@ impl RenderRoot {
         self.global_state.focus_anchor = id;
         self.run_rewrite_passes();
         true
+    }
+
+    /// Reinstates host focus after rebuilding the same widget tree.
+    /// Widget feedback notifications are emitted normally; checkpoint hosts must
+    /// reconcile those notifications without replaying application callbacks.
+    pub fn restore_focus(
+        &mut self,
+        focused: Option<WidgetId>,
+        anchor: Option<WidgetId>,
+        visible: bool,
+    ) -> bool {
+        if !self.focus_on(focused) {
+            return false;
+        }
+        crate::passes::event::set_focus_visible(self, visible);
+        self.run_rewrite_passes();
+        self.global_state.focus_anchor = anchor.filter(|&id| self.is_still_interactive(id));
+        self.global_state.focused_widget == focused
     }
 
     /// Sets the [focus fallback](crate::doc::concepts#focus-fallback).

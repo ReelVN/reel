@@ -369,6 +369,7 @@ impl SessionVm {
             media,
             catalogs,
             source_catalogs: None,
+            preserve_interactions: false,
             limits,
             complete: false,
         })
@@ -386,6 +387,16 @@ self_cell::self_cell! {
 /// Movable restoration state for event loops; each step uses the same work budget.
 pub struct OwnedSessionRestore(RestoreCell);
 impl OwnedSessionRestore {
+    /// Retains saved interaction observables for a host that restores its input
+    /// state alongside this checkpoint. Select this before restoring adapters.
+    /// Ordinary save loading clears hover, pressed and focus state.
+    pub fn with_preserved_interactions(mut self) -> Result<Self, AdapterError> {
+        self.0.with_dependent_mut(|_, cursor| {
+            cursor.as_mut().unwrap().select_preserved_interactions()
+        })?;
+        Ok(self)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         mut image: SessionSnapshot,
@@ -505,10 +516,28 @@ pub struct SessionRestore<'a> {
     media: Option<Box<dyn crate::media::MediaBackend>>,
     catalogs: Option<Box<dyn crate::localization::CatalogLoader>>,
     source_catalogs: Option<super::localization::SourceCatalogs>,
+    preserve_interactions: bool,
     limits: VmLimits,
     complete: bool,
 }
 impl SessionRestore<'_> {
+    /// Retains interaction observables while the host reconstructs matching input
+    /// ownership. Select this before restoring adapters or running reactive work.
+    pub fn with_preserved_interactions(mut self) -> Result<Self, AdapterError> {
+        self.select_preserved_interactions()?;
+        Ok(self)
+    }
+
+    fn select_preserved_interactions(&mut self) -> Result<(), AdapterError> {
+        if self.candidate.is_some() {
+            return Err(AdapterError::Input(
+                "select interaction restoration before restoring adapter state",
+            ));
+        }
+        self.preserve_interactions = true;
+        Ok(())
+    }
+
     /// Supply the source compilation's shared catalogs before restoring adapter
     /// records. The same source index remains available after restoration.
     pub fn with_source_catalogs(
@@ -693,6 +722,7 @@ impl SessionRestore<'_> {
                             map,
                             record.read()?,
                             runtime.read_limit,
+                            self.preserve_interactions,
                         )? {
                             runtime.restore_virtual_presentation(node)?;
                             self.children.push(node);

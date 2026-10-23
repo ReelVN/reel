@@ -29,6 +29,7 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub(crate) struct NavigationSelection(pub NodeChange);
 mod flow;
+mod focus;
 mod input;
 mod inspection;
 pub(crate) mod popup;
@@ -38,6 +39,7 @@ mod selection;
 #[cfg(test)]
 mod tests;
 mod virtual_images;
+pub(crate) use focus::FocusPath;
 use input::NodeInput;
 
 #[derive(Clone, Default)]

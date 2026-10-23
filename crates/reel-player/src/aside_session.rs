@@ -336,6 +336,32 @@ impl AsideSessionUi {
     ) -> Vec<crate::session::InputTarget> {
         self.ui.input_targets(bridge, root)
     }
+    /// Captures accepted authored host focus for a development checkpoint.
+    pub fn input_focus(
+        &self,
+        bridge: &PresentationBridge,
+        root: WidgetId,
+    ) -> Option<crate::session::InputFocus> {
+        self.ui.input_focus(bridge, root)
+    }
+    /// Reinstates checkpoint host focus without replaying author callbacks.
+    /// Call after syncing the rebuilt tree and before its first presentation.
+    pub fn restore_input_focus(
+        &self,
+        bridge: &mut PresentationBridge,
+        root: WidgetId,
+        focus: &crate::session::InputFocus,
+    ) -> bool {
+        self.ui.restore_input_focus(bridge, root, focus)
+    }
+    /// Rebuilds accepted checkpoint hover ownership without author callbacks.
+    pub fn restore_input_pointer(
+        &self,
+        bridge: &mut PresentationBridge,
+        focus: &crate::session::InputFocus,
+    ) -> Result<(), Error> {
+        self.ui.restore_input_pointer(bridge, focus)
+    }
     pub(crate) fn ui_mut(&mut self) -> &mut SessionUi {
         &mut self.ui
     }

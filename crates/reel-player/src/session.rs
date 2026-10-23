@@ -11,7 +11,7 @@ mod popup_tests;
 mod popups;
 use crate::stage_widget::{StageView, StageWidget};
 pub use geometry::RecordedProjection;
-pub use inspection::InputTarget;
+pub use inspection::{InputFocus, InputTarget};
 use playback::{dialogue_complete, dialogue_revision};
 #[cfg(test)]
 mod button_tests;
