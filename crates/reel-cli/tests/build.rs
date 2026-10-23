@@ -409,6 +409,23 @@ mod build_profiles {
             build_with_profile(&checked, Some("main::main"), BuildProfile::Release).unwrap();
         let d = decode_story(&debug.bytes).unwrap();
         let r = decode_story(&release.bytes).unwrap();
+        assert_eq!(d.program.package(), checked.compilation.program.package());
+        let encoded = reel_package::decode(&debug.bytes, Default::default()).unwrap();
+        assert_eq!(encoded.metadata().modules, checked.modules);
+        assert_eq!(encoded.metadata().game_entry, debug.game_entry);
+        let mut expected = checked.compilation.program.package().clone();
+        expected.sources.clear();
+        for function in &mut expected.functions {
+            function.source_map.clear();
+        }
+        assert_eq!(r.program.package(), &expected);
+        let encoded = reel_package::decode(&release.bytes, Default::default()).unwrap();
+        let mut expected_modules = checked.modules.clone();
+        for module in &mut expected_modules {
+            module.debug = None;
+        }
+        assert_eq!(encoded.metadata().modules, expected_modules);
+        assert_eq!(encoded.metadata().game_entry, release.game_entry);
         assert_eq!(d.program.package().sources[0].text, source);
         assert!(r.program.package().sources.is_empty());
         assert!(

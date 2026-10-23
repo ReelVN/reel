@@ -930,6 +930,16 @@ fn gallery(op: Opcode) -> BytecodePackage {
 }
 #[test]
 fn every_opcode_and_descriptor_family_has_a_real_wire_and_disassembly_contract() {
+    for opcode in 0..=u16::MAX {
+        let declared = INSTRUCTION_SPECS
+            .iter()
+            .find(|spec| spec.opcode as u16 == opcode);
+        assert_eq!(
+            instruction_spec(opcode).map(std::ptr::from_ref),
+            declared.map(std::ptr::from_ref),
+            "opcode {opcode:#06x}"
+        );
+    }
     let mut previous = 0;
     for spec in INSTRUCTION_SPECS {
         assert!((spec.opcode as u16) > previous);

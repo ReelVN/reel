@@ -29,6 +29,7 @@ pub fn encode(
     let program = bc::VerifiedProgram::decode(bytecode, limits.bytecode)
         .map_err(|e| Error::new(ErrorKind::Bytecode, e.to_string()))?;
     metadata.validate(&program, bytecode, limits, &mut budget)?;
+    drop(program);
     let json = json_bytes(metadata, limits)?;
     budget.charge(json.len())?;
     let distribution = distribution
