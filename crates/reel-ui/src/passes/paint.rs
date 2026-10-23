@@ -334,6 +334,12 @@ fn paint_widget(
     // TODO - Handle damage regions
     // https://github.com/linebender/xilem/issues/789
 
+    if is_stashed && (state.request_pre_paint || state.request_paint || state.request_post_paint) {
+        // Invalidated hidden content must release cached brushes and resources.
+        // Already recorded frames retain their own immutable drawing leases.
+        scene_cache.remove(&id);
+    }
+
     if (state.request_pre_paint || state.request_paint || state.request_post_paint) && !is_stashed {
         if trace {
             trace!("Painting widget '{}' {}", widget.short_type_name(), id);
@@ -355,7 +361,13 @@ fn paint_widget(
 
         // TODO - Reserve scene
         // https://github.com/linebender/xilem/issues/524
-        let (pre_scene, scene, post_scene) = scene_cache.entry(id).or_default();
+        let (pre_scene, scene, post_scene) = scene_cache.entry(id).or_insert_with(|| {
+            // Restoring an evicted drawing also rebuilds decorations on either side.
+            ctx.widget_state.request_pre_paint = true;
+            ctx.widget_state.request_paint = true;
+            ctx.widget_state.request_post_paint = true;
+            Default::default()
+        });
         if ctx.widget_state.request_pre_paint {
             pre_scene.clear();
             let sink_dyn: &mut dyn PaintSink = pre_scene;
