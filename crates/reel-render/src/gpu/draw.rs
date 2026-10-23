@@ -180,11 +180,25 @@ impl Context<'_> {
                         .map(|appearance| appearance.transformed(outer)),
                 )
             }
-            Brush::Gradient(_) => {
-                return Err(GpuError::Unsupported {
+            Brush::Gradient(gradient) => {
+                let Some(paint) = super::gradient::uniform(
+                    gradient,
+                    outer * transform * brush_transform.unwrap_or(Affine::IDENTITY),
                     at,
-                    record: "gradient",
-                });
+                )?
+                else {
+                    return Ok(());
+                };
+                mesh::transform(
+                    &mut mesh,
+                    outer * transform,
+                    self.size,
+                    Affine::IDENTITY,
+                    [composite.alpha; 4],
+                    at,
+                )?;
+                let white = self.white()?;
+                return self.paint_mesh(target, &mesh, &white.view, [false; 2], Some(paint), None);
             }
         };
         if let Brush::Image(brush) = brush {
@@ -219,17 +233,33 @@ impl Context<'_> {
         at: RecordLocation,
     ) -> Result<(), GpuError> {
         self.composite_supported(run.composite, at)?;
-        let Brush::Solid(color) = &run.brush else {
-            return Err(GpuError::Unsupported {
-                at,
-                record: "non-solid glyph brush",
-            });
+        let (color, paint) = match &run.brush {
+            Brush::Solid(color) => (
+                color
+                    .convert::<LinearSrgb>()
+                    .premultiply()
+                    .components
+                    .map(|x| x * run.composite.alpha),
+                None,
+            ),
+            Brush::Gradient(gradient) => {
+                let Some(paint) = super::gradient::uniform(
+                    gradient,
+                    outer * run.transform * run.brush_transform.unwrap_or(Affine::IDENTITY),
+                    at,
+                )?
+                else {
+                    return Ok(());
+                };
+                ([run.composite.alpha; 4], Some(paint))
+            }
+            Brush::Image(_) => {
+                return Err(GpuError::Unsupported {
+                    at,
+                    record: "image glyph brush",
+                });
+            }
         };
-        let color = color
-            .convert::<LinearSrgb>()
-            .premultiply()
-            .components
-            .map(|x| x * run.composite.alpha);
         let mut page: Option<Arc<super::glyph_cache::Page>> = None;
         let mut batch = mesh::Mesh::new(self.mesh_allocation());
         let density = super::glyph::raster_density(outer * run.transform);
@@ -279,7 +309,7 @@ impl Context<'_> {
                 && !Arc::ptr_eq(previous, glyph_page)
             {
                 mesh::transform_glyphs(&mut batch, outer * run.transform, self.size, color, at)?;
-                self.paint(target, &batch, &previous.view)?;
+                self.paint_mesh(target, &batch, &previous.view, [false; 2], paint, None)?;
                 batch = mesh::Mesh::new(self.mesh_allocation());
             }
             page = Some(glyph_page.clone());
@@ -313,7 +343,7 @@ impl Context<'_> {
         }
         if let Some(page) = page {
             mesh::transform_glyphs(&mut batch, outer * run.transform, self.size, color, at)?;
-            self.paint(target, &batch, &page.view)?;
+            self.paint_mesh(target, &batch, &page.view, [false; 2], paint, None)?;
         }
         Ok(())
     }
@@ -353,12 +383,32 @@ impl Context<'_> {
         appearance: Option<ImageAppearance>,
         yuv: Option<&super::video::Planes>,
     ) -> Result<(), GpuError> {
-        if mesh.indices.is_empty()
-            || self.scissor.empty()
-            || appearance
-                .and_then(|appearance| appearance.gradient)
-                .is_some_and(|gradient| gradient.transform.determinant() == 0.)
+        if appearance
+            .and_then(|appearance| appearance.gradient)
+            .is_some_and(|gradient| gradient.transform.determinant() == 0.)
         {
+            return Ok(());
+        }
+        self.paint_mesh(
+            target,
+            mesh,
+            image,
+            repeat,
+            appearance.map(appearance_uniform),
+            yuv,
+        )
+    }
+
+    fn paint_mesh(
+        &mut self,
+        target: &Target,
+        mesh: &mesh::Mesh,
+        image: &wgpu::TextureView,
+        repeat: [bool; 2],
+        appearance: Option<super::gradient::Uniform>,
+        yuv: Option<&super::video::Planes>,
+    ) -> Result<(), GpuError> {
+        if mesh.indices.is_empty() || self.scissor.empty() {
             return Ok(());
         }
         #[cfg(test)]
@@ -373,10 +423,9 @@ impl Context<'_> {
             self.transient(128)?;
         }
         let device = &self.gpu.device;
-        let appearance_buffer = appearance.map(|appearance| {
-            let values = appearance_uniform(appearance);
+        let appearance_buffer = appearance.map(|values| {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("image appearance"),
+                label: Some("brush appearance"),
                 contents: bytemuck::cast_slice(&values),
                 usage: wgpu::BufferUsages::UNIFORM,
             })
