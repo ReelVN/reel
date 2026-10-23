@@ -44,6 +44,14 @@ struct Annotation {
     baseline: f32,
     height: f32,
 }
+impl Annotation {
+    fn base_offset(&self, mode: reel_text::WritingMode) -> f32 {
+        if mode == reel_text::WritingMode::VerticalLr { 0. } else { self.note.height() }
+    }
+    fn note_offset(&self, mode: reel_text::WritingMode) -> f32 {
+        if mode == reel_text::WritingMode::VerticalLr { self.base.height() } else { 0. }
+    }
+}
 impl std::ops::Deref for Paragraph {
     type Target = Layout<BrushIndex>;
     fn deref(&self) -> &Self::Target {
@@ -97,6 +105,7 @@ impl Paragraph {
         width: Option<f32>,
         scale: f32,
         quantize: bool,
+        writing_mode: reel_text::WritingMode,
     ) -> Self {
         Self::fragment(
             fonts,
@@ -109,6 +118,7 @@ impl Paragraph {
             width,
             scale,
             quantize,
+            writing_mode,
         )
     }
     #[allow(clippy::too_many_arguments)]
@@ -123,6 +133,7 @@ impl Paragraph {
         width: Option<f32>,
         scale: f32,
         quantize: bool,
+        writing_mode: reel_text::WritingMode,
     ) -> Self {
         let mut out = Self {
             plain: range.clone(),
@@ -154,6 +165,7 @@ impl Paragraph {
                 None,
                 scale,
                 quantize,
+                writing_mode,
             );
             let mut note_styles = styles.clone();
             let base_size = text
@@ -197,11 +209,12 @@ impl Paragraph {
                 None,
                 scale,
                 quantize,
+                writing_mode,
             );
             if let Some(color) = text.style_at(unit.start).and_then(|s| s.color) {
                 note.default_color = Some(brush(color));
             }
-            let baseline = note.height()
+            let baseline = if writing_mode == reel_text::WritingMode::VerticalLr { 0. } else { note.height() }
                 + base
                     .get(0)
                     .map_or(base.height(), |line| line.metrics().baseline);
@@ -220,6 +233,7 @@ impl Paragraph {
         }
         out.append(text, cursor..range.end);
         let mut builder = context.ranged_builder(fonts, &out.text, scale, quantize);
+        builder.set_writing_mode(writing_mode);
         for property in styles.inner().values() {
             builder.push_default(property.clone());
         }
@@ -283,8 +297,18 @@ impl Paragraph {
                         if let Some(bounds) = font_bounds {
                             for glyph in glyphs.glyphs() {
                                 let y = glyphs.baseline() + glyph.y;
-                                top = top.min(y - bounds.y_max);
-                                bottom = bottom.max(y - bounds.y_min);
+                                let (minimum, maximum) = if run.is_upright() {
+                                    match self.layout.writing_mode() {
+                                        reel_text::WritingMode::VerticalRl => (-bounds.x_max, -bounds.x_min),
+                                        _ => (bounds.x_min, bounds.x_max),
+                                    }
+                                } else if self.layout.writing_mode() == reel_text::WritingMode::VerticalLr {
+                                    (bounds.y_min, bounds.y_max)
+                                } else {
+                                    (-bounds.y_max, -bounds.y_min)
+                                };
+                                top = top.min(y + minimum);
+                                bottom = bottom.max(y + maximum);
                             }
                         } else {
                             top = f32::NEG_INFINITY;
@@ -319,8 +343,8 @@ impl Paragraph {
                     PositionedLayoutItem::InlineBox(position) => {
                         let annotation = &self.boxes[position.id as usize];
                         for (paragraph, y) in [
-                            (&annotation.note, position.y),
-                            (&annotation.base, position.y + annotation.note.height()),
+                            (&annotation.note, position.y + annotation.note_offset(self.layout.writing_mode())),
+                            (&annotation.base, position.y + annotation.base_offset(self.layout.writing_mode())),
                         ] {
                             if let Some(&(first, _)) = paragraph.paint_lines.first() {
                                 top = top.min(y + first);
@@ -561,7 +585,7 @@ impl Paragraph {
                 };
                 let item = &mut self.boxes[position.id as usize];
                 let base_x = position.x + (item.width - item.base.width()) / 2.;
-                let base_y = position.y + item.note.height();
+                let base_y = position.y + item.base_offset(self.layout.writing_mode());
                 item.base.paint_faded(
                     painter,
                     transform * Affine::translate((base_x as f64, base_y as f64)),
@@ -580,7 +604,7 @@ impl Paragraph {
                     let note_x = position.x + (item.width - item.note.width()) / 2.;
                     item.note.paint_faded(
                         painter,
-                        transform * Affine::translate((note_x as f64, position.y as f64)),
+                        transform * Affine::translate((note_x as f64, (position.y + item.note_offset(self.layout.writing_mode())) as f64)),
                         color.clone(),
                         hint,
                         0..usize::MAX,
@@ -636,7 +660,7 @@ impl Paragraph {
                         transform
                             * Affine::translate((
                                 (p.x + (b.width - b.base.width()) / 2.) as f64,
-                                (p.y + b.note.height()) as f64,
+                                (p.y + b.base_offset(self.layout.writing_mode())) as f64,
                             )),
                         range.clone(),
                         color.clone(),
@@ -666,13 +690,10 @@ impl Paragraph {
                     continue;
                 }
                 let b = &self.boxes[p.id as usize];
-                if y < p.y + b.note.height() {
-                    return Some(b.range.start);
-                }
-                return b.base.hit(
-                    x - p.x - (b.width - b.base.width()) / 2.,
-                    y - p.y - b.note.height(),
-                );
+                let base_y = p.y + b.base_offset(self.layout.writing_mode());
+                let note_y = p.y + b.note_offset(self.layout.writing_mode());
+                if y >= note_y && y < note_y + b.note.height() { return Some(b.range.start); }
+                return b.base.hit(x - p.x - (b.width - b.base.width()) / 2., y - base_y);
             }
         }
         let (cluster, _) = reel_text::Cluster::from_point_exact(&self.layout, x, y)?;
@@ -815,6 +836,7 @@ mod viewport_tests {
             None,
             1.,
             false,
+            reel_text::WritingMode::HorizontalTb,
         );
         let runs: Vec<_> = layout
             .lines()
@@ -838,6 +860,7 @@ mod viewport_tests {
             None,
             1.,
             false,
+            reel_text::WritingMode::HorizontalTb,
         );
         assert!(
             (layout.get(0).unwrap().metrics().line_height - 46.).abs() < 0.01,
@@ -877,6 +900,7 @@ mod viewport_tests {
             Some(840.),
             1.,
             true,
+            reel_text::WritingMode::HorizontalTb,
         )
     }
 

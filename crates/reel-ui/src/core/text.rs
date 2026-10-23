@@ -217,6 +217,26 @@ use smallvec::SmallVec;
 
 use crate::imaging::{PaintSink, Painter, record::Glyph};
 
+// Paragraph coordinates stay inline/block. Compensate glyph outlines for the
+// physical axis map, while retaining font synthesis and the shared paint path.
+fn run_glyph_transform(run: &reel_text::Run<'_, BrushIndex>) -> Option<Affine> {
+    let synthesis = run.synthesis().skew().map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
+    let axes = match run.writing_mode() {
+        reel_text::WritingMode::HorizontalTb => return synthesis,
+        reel_text::WritingMode::VerticalRl => Affine::new([0., -1., 1., 0., 0., 0.]),
+        reel_text::WritingMode::VerticalLr => Affine::new([0., 1., 1., 0., 0., 0.]),
+    };
+    let orientation = if run.is_upright() {
+        // Glyph transforms operate on font y-up outlines before rasterization
+        // flips Y. Conjugate the inverse paragraph axes by that flip.
+        let flip = Affine::scale_non_uniform(1., -1.);
+        flip * axes * flip
+    } else {
+        axes * Affine::new([0., 1., -1., 0., 0., 0.])
+    };
+    Some(orientation * synthesis.unwrap_or(Affine::IDENTITY))
+}
+
 /// A function that renders laid out glyphs through imaging's [`Painter`].
 ///
 /// The `BrushIndex` values of the runs are indices into `brushes`.
@@ -303,9 +323,7 @@ pub(crate) fn render_text_lines(
             } else {
                 Vec2::ZERO
             };
-            let glyph_xform = synthesis
-                .skew()
-                .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
+            let glyph_xform = run_glyph_transform(&run);
             let coords = run.normalized_coords();
             let brush = brush_override.unwrap_or(&brushes[style.brush.0]);
             let gradient = gradient.filter(|_| brush_override.is_none() && style.brush.0 == 0);
@@ -479,9 +497,7 @@ pub(crate) fn render_text_faded_lines(
             } else {
                 Vec2::ZERO
             };
-            let glyph_xform = synthesis
-                .skew()
-                .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
+            let glyph_xform = run_glyph_transform(&run);
             let coords = run.normalized_coords();
             let brush = brush_override.unwrap_or(&brushes[style.brush.0]);
             let gradient = gradient.filter(|_| brush_override.is_none() && style.brush.0 == 0);

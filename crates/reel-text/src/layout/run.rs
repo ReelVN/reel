@@ -71,6 +71,16 @@ impl<'a, B: Brush> Run<'a, B> {
             .unwrap_or(&[])
     }
 
+    /// Paragraph flow shared by the line breaker and renderer.
+    pub fn writing_mode(&self) -> crate::WritingMode {
+        self.layout.writing_mode()
+    }
+
+    /// Whether glyph outlines stay upright when mapping a vertical paragraph.
+    pub fn is_upright(&self) -> bool {
+        self.data.upright
+    }
+
     /// Returns metrics for the run.
     pub fn metrics(&self) -> &RunMetrics {
         &self.data.metrics

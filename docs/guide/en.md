@@ -1629,6 +1629,15 @@ Paired, nested tags include `[b]`, `[i]`, `[u]`, `[s]` (bold, italic, underline,
 
 text wraps to its available width by default. width, x/y, padding and scroll determine NVL page placement and bounds; list gap controls paragraph spacing. `text_align` accepts start/end/left/right/center/justify and defaults to start. `line_height` is a font-size multiplier, defaulting to 1.2. Mixed sizes, ruby and emphasis dots participate in line height; reveal changes painting without reshaping. Node color supplies the base color, while explicit inline colors override their spans. Omit inline color to inherit speaker or read-state coloring.
 
+Use `writing_mode: "vertical-rl"` for a sidebar that reads top to bottom with columns progressing leftward. `"vertical-lr"` advances columns rightward; the default `"horizontal-tb"` writes horizontally. height limits each column's length and line_height sets column spacing relative to font size; this example uses a 26 pixel font with 40 pixel column spacing. CJK glyphs remain upright, Latin words turn sideways and ruby appears on the right. Rich links and reveal share the paragraph's geometry. Control labels also accept writing_mode; text_input/text_area accept horizontal-tb.
+
+```aside
+let sidebar = text(rich("[ruby=ほし]星[/ruby]を見上げる。"),
+    writing_mode: "vertical-rl", height: 690,
+    font_size: 26, line_height: 40 / 26);
+stage.replace(sidebar);
+```
+
 `text(value: rich("查看 [link=star-map][u]星图[/u][/link]"), on_link: |event| show_glossary(event.id))` passes the link ID to an ordinary callback; event.target is the text node. Fully revealed links accept mouse and touch clicks. With text focused, left/right selects a link and confirm activates it. Link input is consumed without advancing dialogue or opening a browser. Removing the node cancels callbacks under its ownership. Runnable example: [author_rich_text.aside](../../examples/author_rich_text/src/main.aside); supply fonts/body.ttf first. Use `derive(|| rich(tr(...)))` for reactive language switching and rich_escape for player text passed into translated markup. Submitted dialogue and history preserve their original language and styles. Accessibility currently exposes the body label, without separate semantic link children.
 
 Developers extending script interfaces from Rust can refer to the [Aside host SDK](../aside-host.md). Registered host functions use the same named arguments, defaults and source-location rules as ordinary Aside functions.

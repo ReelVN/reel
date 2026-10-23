@@ -22,7 +22,7 @@
 
 pub use imaging;
 pub use peniko::color::palette;
-pub use reel_text::{Alignment as TextAlign, AlignmentOptions as TextAlignOptions};
+pub use reel_text::{Alignment as TextAlign, AlignmentOptions as TextAlignOptions, WritingMode};
 pub use {accesskit, anymore, dpi, kurbo, peniko, reel_text, ui_events};
 
 pub mod doc;

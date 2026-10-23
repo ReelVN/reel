@@ -1163,6 +1163,7 @@ impl SceneWidget {
                         .with_style(StyleProperty::WordSpacing(
                             view.node.props.word_spacing as f32,
                         ))
+                        .with_writing_mode(view.node.props.writing_mode)
                         .with_text_alignment(view.node.props.text_align)
                         .with_text_fit(view.node.props.text_fit)
                         .with_outline(text_outline(&view.node.props))
@@ -1651,6 +1652,9 @@ impl SceneWidget {
             if this.widget.node.props.font != view.node.props.font {
                 Label::insert_style(&mut label, font_style(&view.node.props.font));
             }
+            if this.widget.node.props.writing_mode != view.node.props.writing_mode {
+                Label::set_writing_mode(&mut label, view.node.props.writing_mode);
+            }
             if this.widget.node.props.text_align != view.node.props.text_align {
                 Label::set_text_alignment(&mut label, view.node.props.text_align);
             }
@@ -1764,6 +1768,7 @@ impl SceneWidget {
                 || old.letter_spacing != new.letter_spacing
                 || old.word_spacing != new.word_spacing
                 || old.font != new.font
+                || old.writing_mode != new.writing_mode
                 || old.text_fit != new.text_fit
                 || text_line_breaking(&this.widget.node) != text_line_breaking(&view.node)
                 || old.clip != new.clip
@@ -2307,10 +2312,19 @@ impl Widget for SceneWidget {
             return Length::px(bounded(length + padding.get()));
         }
         let available = LenDef::from(request).reduce(padding);
-        let cross = if axis == Axis::Vertical && !props.stretch.axis(Axis::Horizontal) {
-            props
-                .width
-                .map(|width| Length::px(props.max_width.map_or(width, |max| width.min(max))))
+        let block = if self.label.is_some() && props.writing_mode.is_vertical() {
+            Axis::Horizontal
+        } else {
+            Axis::Vertical
+        };
+        let cross = if axis == block && !props.stretch.axis(axis.cross()) {
+            let (fixed, maximum) = if axis == Axis::Vertical {
+                (props.width, props.max_width)
+            } else {
+                (props.height, props.max_height)
+            };
+            fixed
+                .map(|value| Length::px(maximum.map_or(value, |max| value.min(max))))
                 .or(cross)
         } else {
             cross

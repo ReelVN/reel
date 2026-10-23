@@ -192,6 +192,11 @@ pub(super) fn validate(
     } else if index < count {
         TextInputField::validate(heap, index, value)
     } else {
+        if index - count == NodeProperty::WritingMode.index() as u32
+            && super::writing_mode(heap, value)?.is_vertical()
+        {
+            return Err(HeapError::TypeMismatch);
+        }
         validate_layout_property(heap, index - count, value)
     }
 }

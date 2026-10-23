@@ -10,6 +10,8 @@ use smallvec::SmallVec;
 use tracing::{Span, trace_span};
 use unicode_segmentation::UnicodeSegmentation;
 mod paragraph;
+#[cfg(test)]
+mod writing_mode_tests;
 use paragraph::Paragraph;
 
 use crate::core::{
@@ -55,6 +57,8 @@ pub struct Label {
     paint_line_range: std::ops::Range<usize>,
     styles: StyleSet,
     text_alignment: TextAlign,
+    writing_mode: crate::WritingMode,
+    physical_size: Size,
     text_fit: TextFit,
     outline: Option<TextOutline>,
     shadow: Option<TextShadow>,
@@ -218,6 +222,8 @@ impl Label {
             paint_line_range: 0..0,
             styles,
             text_alignment: TextAlign::Start,
+            writing_mode: crate::WritingMode::HorizontalTb,
+            physical_size: Size::ZERO,
             text_fit: TextFit::None,
             outline: None,
             shadow: None,
@@ -315,6 +321,12 @@ impl Label {
         self
     }
 
+    /// Select paragraph inline and block axes; vertical glyph orientation is mixed Unicode.
+    pub fn with_writing_mode(mut self, writing_mode: crate::WritingMode) -> Self {
+        self.writing_mode = writing_mode;
+        self
+    }
+
     pub fn with_text_fit(mut self, fit: TextFit) -> Self {
         self.text_fit = fit;
         self
@@ -398,7 +410,7 @@ impl Label {
     /// Returns the lower endpoint of the complete text's final insertion caret
     /// in label coordinates, using the active layout. Empty or unlaid text has no endpoint.
     pub fn text_end(&self) -> Option<Point> {
-        self.layouts.get(self.active_layout)?.layout.text_end()
+        self.layouts.get(self.active_layout)?.layout.text_end().map(|point| self.axes() * point)
     }
 }
 
@@ -495,6 +507,15 @@ impl Label {
     pub fn set_text_alignment(this: &mut WidgetMut<'_, Self>, text_alignment: TextAlign) {
         this.widget.text_alignment = text_alignment;
         this.ctx.request_layout();
+    }
+
+    /// Change paragraph axes and invalidate only the affected label's layout cache.
+    pub fn set_writing_mode(this: &mut WidgetMut<'_, Self>, writing_mode: crate::WritingMode) {
+        if this.widget.writing_mode != writing_mode {
+            this.widget.writing_mode = writing_mode;
+            this.widget.clear_cache();
+            this.ctx.request_layout();
+        }
     }
 
     pub fn set_text_fit(this: &mut WidgetMut<'_, Self>, fit: TextFit) {
@@ -658,6 +679,7 @@ impl Label {
             max_advance,
             scale,
             self.text_fit == TextFit::None,
+            self.writing_mode,
         );
 
         // Check if the layout result matches an existing cache entry.
@@ -710,7 +732,18 @@ pub struct LinkActivated {
     pub text: Text,
 }
 impl Label {
+    fn axes(&self) -> Affine {
+        match self.writing_mode {
+            crate::WritingMode::HorizontalTb => Affine::IDENTITY,
+            crate::WritingMode::VerticalRl => Affine::new([0., 1., -1., 0., self.physical_size.width, 0.]),
+            crate::WritingMode::VerticalLr => Affine::new([0., 1., 1., 0., 0., 0.]),
+        }
+    }
+    fn inline_axis(&self) -> Axis {
+        if self.writing_mode.is_vertical() { Axis::Vertical } else { Axis::Horizontal }
+    }
     fn link_at(&self, point: Point) -> Option<usize> {
+        let point = self.axes().inverse() * point;
         let offset = self
             .layouts
             .get(self.active_layout)?
@@ -893,9 +926,7 @@ impl Widget for Label {
         len_req: LenReq,
         cross_length: Option<Length>,
     ) -> Length {
-        // Currently we only support the common horizontal-tb writing mode,
-        // so we hardcode the assumption that inline axis is horizontal.
-        let inline = Axis::Horizontal;
+        let inline = self.inline_axis();
 
         let cache = ctx.property_cache();
         let line_break_mode = props.get::<LineBreaking>(cache);
@@ -964,9 +995,8 @@ impl Widget for Label {
     }
 
     fn layout(&mut self, ctx: &mut LayoutCtx<'_>, props: &PropertiesRef<'_>, size: Size) {
-        // Currently we only support the common horizontal-tb writing mode,
-        // so we hardcode the assumption that inline axis is horizontal.
-        let inline = Axis::Horizontal;
+        self.physical_size = size;
+        let inline = self.inline_axis();
 
         let cache = ctx.property_cache();
         let line_break_mode = props.get::<LineBreaking>(cache);
@@ -1000,7 +1030,7 @@ impl Widget for Label {
         );
 
         let line_count = layout.layout.len();
-        if line_count > 0 {
+        if line_count > 0 && !self.writing_mode.is_vertical() {
             let line_first = layout.layout.get(0).unwrap();
             let line_last = layout.layout.get(line_count - 1).unwrap();
             let first_baseline = line_first.metrics().baseline as f64;
@@ -1020,15 +1050,16 @@ impl Widget for Label {
 
     fn set_paint_viewport(&mut self, viewport: Option<Rect>) -> bool {
         self.paint_viewport = viewport;
+        let axes = self.axes();
         let mut range = self.layouts[self.active_layout].layout.visible_lines(
             viewport,
-            Affine::IDENTITY,
+            axes,
             self.outline,
         );
         if let Some(shadow) = self.shadow.filter(|s| s.offset != crate::kurbo::Vec2::ZERO) {
             let shadow_range = self.layouts[self.active_layout].layout.visible_lines(
                 viewport,
-                Affine::translate(shadow.offset),
+                Affine::translate(shadow.offset) * axes,
                 self.outline,
             );
             range = range.start.min(shadow_range.start)..range.end.max(shadow_range.end);
@@ -1047,12 +1078,13 @@ impl Widget for Label {
         let cache = ctx.property_cache();
         let text_color = props.get::<ContentColor>(cache);
 
+        let axes = self.axes();
         let layout = &mut self.layouts[self.active_layout];
         if let Some(shadow) = self.shadow.filter(|s| s.offset != crate::kurbo::Vec2::ZERO) {
             let brush = crate::peniko::Brush::Solid(shadow.color);
             layout.layout.paint_faded(
                 painter,
-                Affine::translate(shadow.offset),
+                Affine::translate(shadow.offset) * axes,
                 brush.clone(),
                 self.hint,
                 self.visible_bytes.clone().unwrap_or(0..self.text.len()),
@@ -1081,7 +1113,7 @@ impl Widget for Label {
             });
         layout.layout.paint_faded(
             painter,
-            Affine::IDENTITY,
+            axes,
             text_color.color.into(),
             self.hint,
             self.visible_bytes.clone().unwrap_or(0..self.text.len()),
@@ -1107,7 +1139,7 @@ impl Widget for Label {
         {
             layout.layout.paint_focus(
                 painter,
-                Affine::IDENTITY,
+                axes,
                 link.range.clone(),
                 text_color.color.into(),
                 self.paint_viewport.map(|rect| {
@@ -1133,7 +1165,7 @@ impl Widget for Label {
             return;
         }
 
-        if self.visible_bytes.is_some() || self.text.markup().is_some() {
+        if self.visible_bytes.is_some() || self.text.markup().is_some() || self.writing_mode.is_vertical() {
             let range = self.visible_bytes.clone().unwrap_or(0..self.text.len());
             node.set_label(&self.text[range]);
             return;

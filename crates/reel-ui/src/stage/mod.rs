@@ -415,6 +415,8 @@ pub struct NodeProps {
     /// Shared font-family list; presentation clones retain the same immutable text.
     pub font: Arc<str>,
     pub text_align: crate::TextAlign,
+    /// Physical paragraph axes; displayed text uses mixed Unicode orientation.
+    pub writing_mode: crate::WritingMode,
     /// Soft wrapping for text and text-area nodes; explicit newlines are retained.
     /// Text-input nodes remain single-line.
     pub text_wrap: bool,
@@ -487,6 +489,7 @@ impl Default for NodeProps {
             word_spacing: 0.,
             font: FONT.clone(),
             text_align: crate::TextAlign::Start,
+            writing_mode: crate::WritingMode::HorizontalTb,
             text_wrap: true,
             line_height: 1.2,
             text_fit: crate::core::TextFit::None,

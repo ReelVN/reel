@@ -100,6 +100,7 @@ impl<B: Brush> LayoutContext<B> {
         fcx.source_cache.prune(128, false);
 
         RangedBuilder {
+            writing_mode: crate::WritingMode::HorizontalTb,
             scale,
             quantize,
             lcx: self,

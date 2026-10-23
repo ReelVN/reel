@@ -1005,3 +1005,5 @@ WGPU 适配器使用锁定的 wgpu 30.0.1。设备丢失保留后端提供的 re
 [13] VitaSDK 音频 https://docs.vitasdk.org/group__SceAudioUser.html
 [14] Kira Backend https://docs.rs/kira/latest/kira/backend/trait.Backend.html
 [15] Kira Frame https://docs.rs/kira/latest/kira/struct.Frame.html
+
+文字段落的 `writing_mode` v1 默认为 `horizontal-tb`；`vertical-rl` 与 `vertical-lr` 沿 height 换列，列依次向左或向右。适用于 text 与按钮、开关、单选控件的非编辑标签；text_input/text_area 的竖排值在现有字段验证与投影边界诊断。竖排复用 reel-text 的字体回退、HarfRust 整形与逻辑 inline/block 断行。固定 ICU 2.3 的 Unicode Vertical_Orientation 按字素决定方向（含 enclosing mark 的字素直立）；U/Tu 直立，R 顺时针侧转，Tr 优先竖排替换并在缺少替换时侧转。直立段使用 TopToBottom 与 vert/vrt2，侧向段沿原 LTR/RTL 整形。reveal、ruby、描边、阴影与链接命中使用同一段落轴变换；ruby 位于物理右侧，`line_height` 表示字号倍率列距，text_align 沿 inline 轴对齐。属性赋值、绑定和快照沿用共同节点状态；颜色、reveal 和阴影更新复用已缓存布局。绘制按可见列裁剪，布局缓存保持现有上限，额外方向分析为字素数线性成本。
