@@ -70,6 +70,7 @@ fn setup() -> (Fixture, NodeId) {
                 NodeKind::Button {
                     label: None,
                     listening: true,
+                    focus_on_pointer: true,
                 },
                 NodeProps {
                     y,

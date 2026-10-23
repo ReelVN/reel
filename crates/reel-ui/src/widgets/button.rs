@@ -115,13 +115,23 @@ impl ButtonBehavior {
     pub fn is_pressed(&self) -> bool {
         self.pressed_key.is_some() || self.pressed_navigation
     }
-    pub fn pointer(ctx: &mut EventCtx<'_>, event: &PointerEvent) -> Option<ButtonPress> {
+    /// Handle pointer activation, optionally moving keyboard focus to this button.
+    /// Keeping focus leaves ordinary Tab/controller focus navigation unchanged.
+    pub fn pointer(
+        ctx: &mut EventCtx<'_>,
+        event: &PointerEvent,
+        focus_on_pointer: bool,
+    ) -> Option<ButtonPress> {
         if !ctx.input_configuration_is_current() {
             return None;
         }
         match event {
             PointerEvent::Down(e) if e.button.is_none_or(|b| b == PointerButton::Primary) => {
-                ctx.request_focus();
+                if focus_on_pointer {
+                    ctx.request_focus();
+                } else if let Some(focus) = ctx.focus_target_id() {
+                    ctx.set_focus(focus);
+                }
                 ctx.capture_pointer_for_click();
                 ctx.request_paint_only();
                 trace!("Button {:?} pressed", ctx.widget_id());
@@ -214,7 +224,7 @@ impl Widget for Button {
         _props: &mut PropertiesMut<'_>,
         event: &PointerEvent,
     ) {
-        if let Some(press) = ButtonBehavior::pointer(ctx, event) {
+        if let Some(press) = ButtonBehavior::pointer(ctx, event, true) {
             ctx.submit_action::<Self::Action>(press);
         }
     }

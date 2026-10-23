@@ -121,4 +121,9 @@ pub(in crate::aside) enum ButtonField {
     /// Callback invoked when an enabled button is confirmed.
     #[aside(name="on_click",ty=Any,doc_type=callback(),default=null)]
     OnClick,
+    /// Request keyboard focus on a primary pointer press; defaults to true.
+    /// Set false for HUD or toolbar clicks that preserve the current focus.
+    /// Tab, controller navigation and focused confirmation remain available.
+    #[aside(name="focus_on_pointer",ty=Bool,default=true)]
+    FocusOnPointer,
 }

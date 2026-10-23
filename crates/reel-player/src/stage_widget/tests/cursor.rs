@@ -41,6 +41,7 @@ fn fixture() -> (Fixture, NodeId, NodeId, NodeId, Rc<RefCell<Vec<bool>>>) {
             NodeKind::Button {
                 label: None,
                 listening: true,
+                focus_on_pointer: true,
             },
             NodeProps {
                 width: Some(70.),
@@ -73,6 +74,7 @@ fn fixture() -> (Fixture, NodeId, NodeId, NodeId, Rc<RefCell<Vec<bool>>>) {
             NodeKind::Button {
                 label: None,
                 listening: true,
+                focus_on_pointer: true,
             },
             NodeProps {
                 x: 100.,

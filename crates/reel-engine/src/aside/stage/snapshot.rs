@@ -56,7 +56,8 @@ impl Shape {
     }
     fn prefix(self) -> usize {
         match self {
-            Self::Text | Self::Button => 2,
+            Self::Text => 2,
+            Self::Button => appearance::ButtonField::PROPERTIES.len(),
             Self::Image | Self::Video => registry::IMAGE_PREFIX.len(),
             Self::TextInput | Self::TextArea => text_input::TextInputField::PROPERTIES.len(),
             Self::Slider => controls::SliderField::PROPERTIES.len(),
@@ -85,7 +86,7 @@ impl Shape {
             Self::TextInput | Self::TextArea => {
                 text_input::kind(heap, fields, limit, self == Self::TextArea)?
             }
-            Self::Button => button_kind(heap, get(0)?, get(1)?, limit)?,
+            Self::Button => button_kind(heap, get(0)?, get(1)?, get(2)?, limit)?,
             Self::Slider => controls::slider_kind(heap, fields)?,
             Self::Switch | Self::Checkbox => controls::toggle_kind(
                 heap,

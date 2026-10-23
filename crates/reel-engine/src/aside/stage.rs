@@ -49,6 +49,8 @@ aside_host::native_documentation! {
         "reel::cursor";
         /// Create a button with optional label and on_click callback. Authored children
         /// can supply its appearance; decorated:false disables built-in decoration.
+        /// focus_on_pointer:false preserves keyboard focus on pointer presses;
+        /// Tab, controller navigation and focused confirmation remain available.
         /// The callback receives an event with this node as target.
         "reel::button";
         /// Create a numeric control with min, max and step. Bind value to a writable
@@ -523,7 +525,7 @@ impl StageBinding {
             NodeKind::Scroll { .. } => scroll::ScrollField::PROPERTIES.len() as u32,
             NodeKind::Popup(_) => popup::PopupField::PROPERTIES.len() as u32,
             NodeKind::Image { .. } => registry::IMAGE_PREFIX.len() as u32,
-            NodeKind::Button { .. } => 2,
+            NodeKind::Button { .. } => appearance::ButtonField::PROPERTIES.len() as u32,
             _ => 0,
         })
     }
@@ -924,9 +926,10 @@ impl StageBinding {
                         heap,
                         heap.table_entry(fields, 0)?.1,
                         heap.table_entry(fields, 1)?.1,
+                        heap.table_entry(fields, 2)?.1,
                         read_limit,
                     )?,
-                    2,
+                    appearance::ButtonField::PROPERTIES.len(),
                 ),
                 NodeKind::Text(text) => {
                     let source = heap.table_entry(fields, 0)?.1;
@@ -1821,6 +1824,7 @@ fn button_kind(
     heap: &Heap,
     label: Value,
     callback: Value,
+    focus_on_pointer: Value,
     read_limit: usize,
 ) -> Result<NodeKind, AdapterError> {
     validate_button_property(heap, 1, callback)?;
@@ -1831,6 +1835,9 @@ fn button_kind(
             Some(read_text(heap, label, read_limit)?)
         },
         listening: callback.tag() != ValueTag::Null,
+        focus_on_pointer: focus_on_pointer
+            .as_bool()
+            .ok_or(AdapterError::Input("focus_on_pointer must be boolean"))?,
     })
 }
 fn validate_button_property(heap: &Heap, index: u32, value: Value) -> Result<(), HeapError> {
@@ -1839,7 +1846,12 @@ fn validate_button_property(heap: &Heap, index: u32, value: Value) -> Result<(),
         0 if heap.accepts_builtin(aside_vm::bytecode::BuiltinType::String, value)? => Ok(()),
         1 if heap.accepts_builtin(aside_vm::bytecode::BuiltinType::Closure, value)? => Ok(()),
         0 | 1 => Err(HeapError::TypeMismatch),
-        _ => validate_layout_property(heap, index - 2, value),
+        2 => value.as_bool().map(|_| ()).ok_or(HeapError::TypeMismatch),
+        _ => validate_layout_property(
+            heap,
+            index - appearance::ButtonField::PROPERTIES.len() as u32,
+            value,
+        ),
     }
 }
 

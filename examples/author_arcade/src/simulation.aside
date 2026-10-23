@@ -52,7 +52,12 @@ pub fn pause_menu(root: InputNode, timer: Clock, leave: fn() -> null) {
     root.actions = {
         ...root.actions, pause: { bindings: ["Escape", "KeyP", "Start"], on_release: toggle }
     };
-    root.add(button("Pause  [P / Start]", x: 728, y: 16, width: 208, on_click: toggle));
+    root.add(
+        button(
+            "Pause  [P / Start]", x: 728, y: 16, width: 208, focus_on_pointer: false,
+            on_click: toggle
+        )
+    );
     root.add(
         input(
             width: 960, height: 640, modal: true, visible: bind(state.paused),
