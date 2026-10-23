@@ -33,6 +33,7 @@ mod scopes;
 pub mod transitions;
 pub use results::geometry::{GeometryQuery, GeometryReplies, GeometryReply, NodeGeometry};
 mod conditions;
+mod gradients;
 mod masks;
 mod rich_text;
 pub mod saves;
@@ -653,6 +654,16 @@ impl SessionVm {
                 self.vm.respond(ticket, HostResponse::Ready(Value::NULL))?;
                 self.issued = None;
                 self.exit_requested = true;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
+            "reel::linear_gradient" => {
+                let args = self.vm.host_arguments(ticket)?.to_vec();
+                let value = gradients::create(self.vm.heap_mut(), &args, self.read_limit)?;
+                self.stage
+                    .types
+                    .mark(self.vm.heap_mut(), value, "reel::types::LinearGradient")?;
+                self.vm.respond(ticket, HostResponse::Ready(value))?;
+                self.issued = None;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             name if name.starts_with("reel::mask::") => {

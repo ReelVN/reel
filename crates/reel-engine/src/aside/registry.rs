@@ -1170,6 +1170,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     });
     contracts.extend(aside_std::contracts());
     contracts.extend(super::masks::contracts());
+    contracts.extend(super::gradients::contracts());
     contracts
 }
 

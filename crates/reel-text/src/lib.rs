@@ -97,6 +97,8 @@ mod inline_box;
 mod lru_cache;
 mod resolve;
 mod shape;
+mod writing_mode;
+pub use writing_mode::WritingMode;
 mod util;
 
 pub mod editing;

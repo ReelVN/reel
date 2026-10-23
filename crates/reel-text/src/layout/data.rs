@@ -119,6 +119,8 @@ const fn to_whitespace(c: char) -> Whitespace {
 pub(crate) struct RunData {
     /// Index of the font for the run.
     pub(crate) font_index: usize,
+    /// Upright vertical glyphs require compensation for the paragraph axis map.
+    pub(crate) upright: bool,
     /// Font size.
     pub(crate) font_size: f32,
     /// Font attributes, needed for accessibility.
@@ -265,6 +267,7 @@ pub(crate) struct LayoutItem {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct LayoutData<B: Brush> {
+    pub(crate) writing_mode: crate::WritingMode,
     pub(crate) scale: f32,
     pub(crate) quantize: bool,
     pub(crate) base_level: u8,
@@ -307,6 +310,7 @@ pub(crate) struct LayoutData<B: Brush> {
 impl<B: Brush> Default for LayoutData<B> {
     fn default() -> Self {
         Self {
+            writing_mode: crate::WritingMode::HorizontalTb,
             scale: 1.,
             quantize: true,
             base_level: 0,
@@ -375,6 +379,7 @@ impl<B: Brush> LayoutData<B> {
         font_attrs: fontique::Attributes,
         synthesis: fontique::Synthesis,
         glyph_buffer: &harfrust::Buffer,
+        upright: bool,
         bidi_level: u8,
         style_index: u16,
         word_spacing: f32,
@@ -432,6 +437,7 @@ impl<B: Brush> LayoutData<B> {
             };
 
             RunMetrics {
+                font_ascent: metrics.ascent,
                 ascent: metrics.ascent,
                 descent: -metrics.descent,
                 leading: metrics.leading,
@@ -447,8 +453,16 @@ impl<B: Brush> LayoutData<B> {
 
         let cluster_range = self.clusters.len()..self.clusters.len();
 
+        let cross_shift = (metrics.ascent - metrics.descent) / 2.;
+        let mut metrics = metrics;
+        if self.writing_mode.is_vertical() {
+            metrics.ascent = font_size / 2.;
+            metrics.descent = font_size / 2.;
+            metrics.leading = 0.;
+        }
         let mut run = RunData {
             font_index,
+            upright,
             font_size,
             font_attrs,
             synthesis,
@@ -480,6 +494,9 @@ impl<B: Brush> LayoutData<B> {
                 &mut self.clusters,
                 &mut self.glyphs,
                 scale_factor,
+                self.writing_mode,
+                upright,
+                cross_shift,
                 glyph_infos,
                 glyph_positions,
                 char_infos,
@@ -491,6 +508,9 @@ impl<B: Brush> LayoutData<B> {
                 &mut self.clusters,
                 &mut self.glyphs,
                 scale_factor,
+                self.writing_mode,
+                upright,
+                cross_shift,
                 glyph_infos,
                 glyph_positions,
                 char_infos,
@@ -645,6 +665,9 @@ fn process_clusters<I: Iterator<Item = (usize, char)>>(
     clusters: &mut Vec<ClusterData>,
     glyphs: &mut Vec<Glyph>,
     scale_factor: f32,
+    writing_mode: crate::WritingMode,
+    upright: bool,
+    cross_shift: f32,
     glyph_infos: &[harfrust::GlyphInfo],
     glyph_positions: &[harfrust::GlyphPosition],
     char_infos: &[(CharInfo, u16)],
@@ -774,10 +797,24 @@ fn process_clusters<I: Iterator<Item = (usize, char)>>(
         let glyph = Glyph {
             id: glyph_info.glyph_id,
             style_index: char_info.1,
-            x: (glyph_pos.x_offset as f32) * scale_factor,
-            // Convert from font space (Y-up) to layout space (Y-down)
-            y: -(glyph_pos.y_offset as f32) * scale_factor,
-            advance: (glyph_pos.x_advance as f32) * scale_factor,
+            x: if upright {
+                -glyph_pos.y_offset as f32
+            } else {
+                glyph_pos.x_offset as f32
+            } * scale_factor,
+            // Preserve one logical inline/block coordinate system for the line breaker.
+            y: if upright {
+                writing_mode.block_sign() * glyph_pos.x_offset as f32 * scale_factor
+            } else if writing_mode.is_vertical() {
+                writing_mode.block_sign() * (glyph_pos.y_offset as f32 * scale_factor - cross_shift)
+            } else {
+                -glyph_pos.y_offset as f32 * scale_factor
+            },
+            advance: if upright {
+                -glyph_pos.y_advance as f32
+            } else {
+                glyph_pos.x_advance as f32
+            } * scale_factor,
         };
         cluster_advance += glyph.advance;
         // Push any pending glyph. If it was a zero-offset, single glyph cluster, it would

@@ -660,6 +660,17 @@ say([mio.line("你听见了吗？"), eri.line("在窗外。")]);
 
 text 默认按可用宽度自然换行；width、x/y、padding、scroll 决定 NVL 页面的位置与边界，列表 gap 决定段落间距。`text_align` 支持 start/end/left/right/center/justify，默认 start；`line_height` 是字号倍率，默认 1.2。不同字号、ruby 与着重号共同决定行高，逐字显示只改变绘制范围。节点 color 是基础颜色，显式句内颜色覆盖对应片段；省略句内颜色即可沿用角色或已读配色。
 
+侧栏文字用 `writing_mode: "vertical-rl"` 从上到下书写、从右向左换列；`"vertical-lr"` 向右换列，默认 `"horizontal-tb"` 横排。height 限制每列长度，line_height 设置字号倍率列距；下面用 26 字号与 40 列距。CJK 保持直立，拉丁词侧转，ruby 显示在右侧；富文本链接与逐字显示沿用同一段落。按钮等控件的标签也接受 writing_mode，text_input/text_area 接受 horizontal-tb。
+
+```aside
+let sidebar = text(rich("[ruby=ほし]星[/ruby]を見上げる。"),
+    writing_mode: "vertical-rl", height: 690,
+    font_size: 26, line_height: 40 / 26.0);
+stage.replace(sidebar);
+```
+
+文字和按钮标题可以设置 `text_gradient: linear_gradient("#ffffff", "#999999")`。默认渐变覆盖段落；`space: "glyph"` 在各字形内重复。颜色与角度变化保留现有布局。
+
 `text(value: rich("查看 [link=star-map][u]星图[/u][/link]"), on_link: |event| show_glossary(event.id))` 把词条 ID 交给普通回调。event.target 是文字节点；链接完整显示后可以鼠标或触摸点击，焦点在文字上时左右方向选择链接，确认键激活。链接消费输入，不推进对白，不自动打开浏览器；节点移除后其回调任务按节点所有权取消。完整示例：[author_rich_text.aside](../../examples/author_rich_text/src/main.aside)，运行前提供 fonts/body.ttf。需要语言切换时使用 `derive(|| rich(tr(...)))`；传入翻译模板的玩家文字先 rich_escape。提交过的对白和历史保留原语言和样式。当前无障碍树提供正文标签，尚未提供逐链接语义子节点。
 
 `game.start(entry)` 使用当前 ASB 中无捕获、无必需参数的普通函数。接受请求后，旧脚本不再继续；新会话重新执行模块初始化，再调用 entry。旧对白、UI 回调和活动结束，脚本全局、历史、自动和快进状态重建；已读记录、game.configure 配置、宿主资源与存档服务保留。目标入口负责构造画面；调用后无需清空旧舞台。可运行示例见 [author_game_start.aside](../../examples/author_game_start/src/main.aside)。

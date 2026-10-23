@@ -21,6 +21,11 @@ pub struct Layout<B: Brush> {
 }
 
 impl<B: Brush> Layout<B> {
+    /// Paragraph writing mode. Width/height and line coordinates use logical axes.
+    pub fn writing_mode(&self) -> crate::WritingMode {
+        self.data.writing_mode
+    }
+
     /// Creates an empty layout.
     pub fn new() -> Self {
         Self::default()

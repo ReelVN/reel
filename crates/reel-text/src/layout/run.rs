@@ -71,6 +71,16 @@ impl<'a, B: Brush> Run<'a, B> {
             .unwrap_or(&[])
     }
 
+    /// Paragraph flow shared by the line breaker and renderer.
+    pub fn writing_mode(&self) -> crate::WritingMode {
+        self.layout.writing_mode()
+    }
+
+    /// Whether glyph outlines stay upright when mapping a vertical paragraph.
+    pub fn is_upright(&self) -> bool {
+        self.data.upright
+    }
+
     /// Returns metrics for the run.
     pub fn metrics(&self) -> &RunMetrics {
         &self.data.metrics
@@ -222,6 +232,10 @@ impl<'a, B: Brush> Iterator for Clusters<'a, B> {
 /// Metrics information for a run.
 #[derive(Copy, Clone, Default, Debug, PartialEq)]
 pub struct RunMetrics {
+    /// Typographic ascent from the physical font's em baseline, before the
+    /// paragraph's writing-mode transform. Retained for glyph paint geometry;
+    /// `ascent` instead follows the logical inline/block layout axes.
+    pub font_ascent: f32,
     /// Typographic ascent.
     pub ascent: f32,
     /// Typographic descent.

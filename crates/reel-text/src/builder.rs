@@ -18,6 +18,7 @@ use crate::resolve::{ResolvedStyle, StyleRun, tree::ItemKind};
 /// Builder for constructing a text layout with ranged attributes.
 #[must_use]
 pub struct RangedBuilder<'a, B: Brush> {
+    pub(crate) writing_mode: crate::WritingMode,
     pub(crate) scale: f32,
     pub(crate) quantize: bool,
     pub(crate) lcx: &'a mut LayoutContext<B>,
@@ -25,6 +26,11 @@ pub struct RangedBuilder<'a, B: Brush> {
 }
 
 impl<B: Brush> RangedBuilder<'_, B> {
+    /// Set paragraph flow before shaping. All positions remain logical inline/block.
+    pub fn set_writing_mode(&mut self, writing_mode: crate::WritingMode) {
+        self.writing_mode = writing_mode;
+    }
+
     pub fn push_default<'a>(&mut self, property: impl Into<StyleProperty<'a, B>>) {
         let resolved = self
             .lcx
@@ -60,6 +66,7 @@ impl<B: Brush> RangedBuilder<'_, B> {
             layout,
             self.scale,
             self.quantize,
+            self.writing_mode,
             text.as_ref(),
             self.lcx,
             self.fcx,
@@ -150,6 +157,7 @@ impl<B: Brush> StyleRunBuilder<'_, B> {
             layout,
             self.scale,
             self.quantize,
+            crate::WritingMode::HorizontalTb,
             text.as_ref(),
             self.lcx,
             self.fcx,
@@ -229,7 +237,15 @@ impl<B: Brush> TreeBuilder<'_, B> {
             .finish(&mut self.lcx.style_table, &mut self.lcx.style_runs);
 
         // Call generic layout builder method
-        build_into_layout(layout, self.scale, self.quantize, &text, self.lcx, self.fcx);
+        build_into_layout(
+            layout,
+            self.scale,
+            self.quantize,
+            crate::WritingMode::HorizontalTb,
+            &text,
+            self.lcx,
+            self.fcx,
+        );
 
         text
     }
@@ -246,6 +262,7 @@ fn build_into_layout<B: Brush>(
     layout: &mut Layout<B>,
     scale: f32,
     quantize: bool,
+    writing_mode: crate::WritingMode,
     text: &str,
     lcx: &mut LayoutContext<B>,
     fcx: &mut FontContext,
@@ -267,6 +284,7 @@ fn build_into_layout<B: Brush>(
     layout.data.clear();
     layout.data.scale = scale;
     layout.data.quantize = quantize;
+    layout.data.writing_mode = writing_mode;
     layout.data.base_level = lcx.bidi.base_level();
     layout.data.text_len = text.len();
 

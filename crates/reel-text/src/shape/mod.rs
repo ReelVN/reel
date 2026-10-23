@@ -18,7 +18,10 @@ use crate::lru_cache::LruCache;
 use crate::util::nearly_eq;
 use crate::{FontData, convert};
 use fontique::Language;
-use icu_properties::props::Script;
+use icu_properties::{
+    CodePointMapData,
+    props::{GeneralCategory, Script, VerticalOrientation},
+};
 
 use fontique::{self, Query, QueryFamily, QueryFont};
 
@@ -29,6 +32,7 @@ pub(crate) struct ShapeContext {
     shape_instance_cache: LruCache<cache::ShapeInstanceId, harfrust::Font>,
     shape_plan_cache: LruCache<cache::ShapePlanId, harfrust::ShapePlan>,
     buffer: harfrust::Buffer,
+    fallback_buffer: harfrust::Buffer,
     features: Vec<harfrust::Feature>,
     char_cluster: CharCluster,
 }
@@ -41,6 +45,7 @@ impl Default for ShapeContext {
             shape_instance_cache: LruCache::new(MAX_ENTRIES),
             shape_plan_cache: LruCache::new(MAX_ENTRIES),
             buffer: harfrust::Buffer::new(),
+            fallback_buffer: harfrust::Buffer::new(),
             features: Vec::new(),
             char_cluster: CharCluster::default(),
         }
@@ -318,10 +323,20 @@ fn shape_item<'a, B: Brush>(
     );
 
     let mut current_font = font_selector.select_font(char_cluster, analysis_data_sources);
+    let mut segment_char_start = 0;
+    let vertical = layout.data.writing_mode.is_vertical();
 
     // Main segmentation loop (based on swash shape_clusters) - only within current item
     while let Some(font) = current_font.take() {
-        // Collect all clusters for this font segment
+        let orientation = if vertical {
+            cluster_orientation(char_cluster)
+        } else {
+            VerticalOrientation::Rotated
+        };
+        let transformed_rotated =
+            vertical && orientation == VerticalOrientation::TransformedRotated;
+        let mut upright = vertical && orientation != VerticalOrientation::Rotated;
+        // Collect all clusters for this font and Unicode orientation segment
         let cluster_range = char_cluster.range();
         let segment_start_offset = cluster_range.start as usize - text_range.start;
         let mut segment_end_offset = cluster_range.end as usize - text_range.start;
@@ -339,7 +354,17 @@ fn shape_item<'a, B: Brush>(
 
             if let Some(next_font) = font_selector.select_font(char_cluster, analysis_data_sources)
             {
-                if next_font != font {
+                let next_orientation = if vertical {
+                    cluster_orientation(char_cluster)
+                } else {
+                    VerticalOrientation::Rotated
+                };
+                let next_upright = vertical && next_orientation != VerticalOrientation::Rotated;
+                if next_font != font
+                    || next_upright != upright
+                    || transformed_rotated
+                    || (vertical && next_orientation == VerticalOrientation::TransformedRotated)
+                {
                     current_font = Some(next_font);
                     break;
                 } else {
@@ -386,7 +411,9 @@ fn shape_item<'a, B: Brush>(
             },
         );
 
-        let direction = if item.level & 1 != 0 {
+        let direction = if upright {
+            harfrust::Direction::TopToBottom
+        } else if item.level & 1 != 0 {
             harfrust::Direction::RightToLeft
         } else {
             harfrust::Direction::LeftToRight
@@ -397,6 +424,12 @@ fn shape_item<'a, B: Brush>(
             .as_ref()
             .and_then(|lang| lang.language().parse::<harfrust::Language>().ok());
         scx.features.clear();
+        if upright {
+            // HarfRust enables vert for vertical directions; also allow fonts
+            // whose full vertical alternates are registered under vrt2.
+            scx.features
+                .push(harfrust::Feature::new(harfrust::Tag::new(b"vrt2"), 1, ..));
+        }
         for feature in rcx.features(item.features).unwrap_or(&[]) {
             scx.features.push(harfrust::Feature::new(
                 harfrust::Tag::new(&feature.tag.to_bytes()),
@@ -447,7 +480,7 @@ fn shape_item<'a, B: Brush>(
         buffer.set_direction(direction);
 
         buffer.set_script(Some(hb_script));
-        buffer.set_language(language);
+        buffer.set_language(language.clone());
 
         harfrust::shape(
             &harf_shaper,
@@ -459,9 +492,67 @@ fn shape_item<'a, B: Brush>(
         )
         .expect("fresh buffer and cached plan have matching segment properties");
 
+        // Compare complete graphemes, including combining marks, against normal
+        // horizontal shaping. A Tr grapheme without a vertical alternate uses
+        // that horizontal result sideways. Scratch buffers retain allocations.
+        if transformed_rotated {
+            let fallback = &mut scx.fallback_buffer;
+            let direction = if item.level & 1 != 0 {
+                harfrust::Direction::RightToLeft
+            } else {
+                harfrust::Direction::LeftToRight
+            };
+            fallback.clear();
+            for (index, ch) in segment_text.chars().enumerate() {
+                fallback.push(ch as u32, index as u32);
+            }
+            fallback.set_direction(direction);
+            fallback.set_script(Some(hb_script));
+            fallback.set_language(language.clone());
+            // Remove the automatic vrt2 entry while preserving author features.
+            let features = &scx.features[1..];
+            let plan = scx.shape_plan_cache.entry(
+                cache::ShapePlanKey::new(
+                    font.font.blob.id(),
+                    font.font.index,
+                    &font.font.synthesis,
+                    direction,
+                    hb_script,
+                    language.clone(),
+                    features,
+                    rcx.variations(item.variations),
+                ),
+                || {
+                    harfrust::ShapePlan::new(
+                        instance,
+                        direction,
+                        Some(hb_script),
+                        language.as_ref(),
+                        features,
+                    )
+                },
+            );
+            harfrust::shape(
+                &harf_shaper,
+                fallback,
+                harfrust::ShapeOptions::new()
+                    .plan(Some(plan))
+                    .point_size(Some(item.size))
+                    .features(features),
+            )
+            .expect("fallback buffer and plan have matching horizontal properties");
+            if buffer
+                .glyph_infos()
+                .iter()
+                .map(|g| g.glyph_id)
+                .eq(fallback.glyph_infos().iter().map(|g| g.glyph_id))
+            {
+                upright = false;
+                core::mem::swap(buffer, fallback);
+            }
+        }
+
         // Extract relevant CharInfo slice for this segment
-        let char_start = char_range.start + item_text[..segment_start_offset].chars().count();
-        let segment_char_start = char_start - char_range.start;
         let segment_char_count = segment_text.chars().count();
         let segment_infos =
             &item_infos[segment_char_start..(segment_char_start + segment_char_count)];
@@ -473,7 +564,8 @@ fn shape_item<'a, B: Brush>(
             font.attrs,
             font.font.synthesis,
             buffer,
-            item.level,
+            upright,
+            if upright { 0 } else { item.level },
             item.style_index,
             item.word_spacing,
             item.letter_spacing,
@@ -482,7 +574,23 @@ fn shape_item<'a, B: Brush>(
             (text_range.start + segment_start_offset)..(text_range.start + segment_end_offset),
             instance.normalized_coords(),
         );
+        segment_char_start += segment_char_count;
     }
+}
+
+fn cluster_orientation(cluster: &CharCluster) -> VerticalOrientation {
+    if cluster.chars.iter().any(|character| {
+        CodePointMapData::<GeneralCategory>::new().get(character.ch)
+            == GeneralCategory::EnclosingMark
+    }) {
+        return VerticalOrientation::Upright;
+    }
+    cluster
+        .chars
+        .first()
+        .map_or(VerticalOrientation::Upright, |character| {
+            CodePointMapData::<VerticalOrientation>::new().get(character.ch)
+        })
 }
 
 fn real_script(script: Script) -> bool {
@@ -654,5 +762,30 @@ struct SelectedFont {
 impl PartialEq for SelectedFont {
     fn eq(&self, other: &Self) -> bool {
         self.font.family == other.font.family && self.font.synthesis == other.font.synthesis
+    }
+}
+
+#[cfg(test)]
+mod vertical_orientation_tests {
+    use super::*;
+
+    #[test]
+    fn uax50_uses_grapheme_base_with_enclosing_mark_override() {
+        for (text, expected) in [
+            ("星", VerticalOrientation::Upright),
+            ("A", VerticalOrientation::Rotated),
+            ("e\u{301}", VerticalOrientation::Rotated),
+            ("ー", VerticalOrientation::TransformedRotated),
+            ("。", VerticalOrientation::TransformedUpright),
+            ("A\u{20dd}", VerticalOrientation::Upright),
+            ("1\u{fe0f}\u{20e3}", VerticalOrientation::Upright),
+        ] {
+            let mut cluster = CharCluster::default();
+            cluster.chars.extend(text.chars().map(|ch| Char {
+                ch,
+                ..Default::default()
+            }));
+            assert_eq!(cluster_orientation(&cluster), expected, "{text}");
+        }
     }
 }

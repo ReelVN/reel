@@ -197,6 +197,10 @@ pub(super) enum NodeProperty {
     /// Foreground text color as a CSS hex color.
     #[aside(name = "color", ty = String, default = "#ffffff", validate = validate_color)]
     Color,
+    /// Optional two-color paint for text and control captions. Explicit rich-text
+    /// colors override it. Changing paint retains the shaped layout.
+    #[aside(name = "text_gradient", ty = Any, doc_type = aside_host::source::nullable(aside_host::source::named("reel::types::LinearGradient")), default = null, validate = super::gradients::validate)]
+    TextGradient,
     /// Node background color; null leaves the background transparent.
     #[aside(name = "background", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::String), default = null, validate = validate_background)]
     Background,
@@ -325,6 +329,13 @@ pub(super) enum NodeProperty {
     /// Uniform shadow color, independent of rich span colors and subject to text reveal.
     #[aside(name = "text_shadow_color", ty = String, default = "#000000", validate = validate_color)]
     TextShadowColor,
+    /// Paragraph flow: horizontal-tb (default), vertical-rl or vertical-lr.
+    /// Vertical text wraps at height, uses line_height for column spacing and
+    /// keeps source-order reveal, right-side ruby and link geometry. CJK glyphs
+    /// stay upright; Latin words rotate clockwise. text_align follows the inline
+    /// axis. text_input and text_area accept only horizontal-tb.
+    #[aside(name = "writing_mode", ty = String, default = "horizontal-tb", validate = validate_writing_mode)]
+    WritingMode,
 }
 
 pub(super) struct StageBinding {
@@ -596,7 +607,7 @@ impl StageBinding {
             None,
             mask_origin,
         )?;
-        validate_text_fade(&kind, &props)?;
+        validate_text_props(&kind, &props)?;
         let mask_source = mask_handle(heap, fields, prefix.len(), Value::NULL)?;
         let mut children = Vec::new();
         let references = heap.alloc_array(&[])?;
@@ -1042,7 +1053,7 @@ impl StageBinding {
                 node.props.mask_origin.clone(),
             )?;
             overrides::apply_offsets(heap, value, &mut props)?;
-            validate_text_fade(&kind, &props)?;
+            validate_text_props(&kind, &props)?;
             if matches!(kind, NodeKind::VirtualList(_)) {
                 validate_virtual_props(&props)?;
             }
@@ -1897,7 +1908,7 @@ fn boolean(value: Value) -> Result<bool, AdapterError> {
         .as_bool()
         .ok_or(AdapterError::Input("node property requires bool"))
 }
-fn color(heap: &Heap, value: Value) -> Result<[u8; 4], AdapterError> {
+pub(super) fn color(heap: &Heap, value: Value) -> Result<[u8; 4], AdapterError> {
     let info = heap.info(value)?;
     if info.kind != ObjectKind::String || !matches!(info.len, 7 | 9) {
         return Err(AdapterError::Input("color requires #rrggbb or #rrggbbaa"));
@@ -2086,7 +2097,17 @@ fn validate_background(heap: &Heap, value: Value) -> Result<(), HeapError> {
         validate_color(heap, value)
     }
 }
-fn validate_text_fade(kind: &NodeKind, props: &NodeProps) -> Result<(), AdapterError> {
+fn validate_text_props(kind: &NodeKind, props: &NodeProps) -> Result<(), AdapterError> {
+    if matches!(kind, NodeKind::TextInput { .. }) && props.text_gradient.is_some() {
+        return Err(AdapterError::Input(
+            "text_gradient applies to text and control captions",
+        ));
+    }
+    if matches!(kind, NodeKind::TextInput { .. }) && props.writing_mode.is_vertical() {
+        return Err(AdapterError::Input(
+            "writing_mode for editable text must be horizontal-tb",
+        ));
+    }
     let source = match kind {
         NodeKind::Text(text) => Some(text.as_ref()),
         NodeKind::Button { label, .. }
@@ -2124,6 +2145,24 @@ fn validate_reveal(_: &Heap, value: Value) -> Result<(), HeapError> {
     } else {
         Err(HeapError::TypeMismatch)
     }
+}
+
+fn writing_mode(heap: &Heap, value: Value) -> Result<reel_ui::WritingMode, HeapError> {
+    let info = heap.info(value)?;
+    if info.kind != ObjectKind::String || info.len > 13 {
+        return Err(HeapError::TypeMismatch);
+    }
+    let mut bytes = [0; 13];
+    heap.read_bytes(value, 0, &mut bytes[..info.len as usize])?;
+    match &bytes[..info.len as usize] {
+        b"horizontal-tb" => Ok(reel_ui::WritingMode::HorizontalTb),
+        b"vertical-rl" => Ok(reel_ui::WritingMode::VerticalRl),
+        b"vertical-lr" => Ok(reel_ui::WritingMode::VerticalLr),
+        _ => Err(HeapError::TypeMismatch),
+    }
+}
+fn validate_writing_mode(heap: &Heap, value: Value) -> Result<(), HeapError> {
+    writing_mode(heap, value).map(|_| ())
 }
 
 fn text_align(heap: &Heap, value: Value) -> Result<reel_ui::TextAlign, HeapError> {
@@ -2257,6 +2296,7 @@ fn read_props(
         word_spacing: text_spacing(get(NodeProperty::WordSpacing)?)?,
         font: text::read_shared_string(heap, get(NodeProperty::Font)?, read_limit, font)?,
         text_align: text_align(heap, get(NodeProperty::TextAlign)?)?,
+        writing_mode: writing_mode(heap, get(NodeProperty::WritingMode)?)?,
         text_wrap: boolean(get(NodeProperty::TextWrap)?)?,
         line_height: nonnegative(get(NodeProperty::LineHeight)?)?,
         text_fit: if shrink_text(heap, get(NodeProperty::TextFit)?)? {
@@ -2272,6 +2312,7 @@ fn read_props(
         text_shadow_y: number(get(NodeProperty::TextShadowY)?)?,
         text_shadow_color: color(heap, get(NodeProperty::TextShadowColor)?)?,
         color: color(heap, get(NodeProperty::Color)?)?,
+        text_gradient: super::gradients::project(heap, get(NodeProperty::TextGradient)?)?,
         background: if background.tag() == ValueTag::Null {
             None
         } else {
