@@ -24,6 +24,10 @@ use calls::NativeSite;
 mod collection_tests;
 mod collections;
 mod constants;
+mod generators;
+use generators::GeneratorAction;
+#[cfg(test)]
+mod generator_tests;
 mod iterators;
 mod models;
 mod reactive;
@@ -72,6 +76,11 @@ struct FaultBuild {
 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum ReturnTo {
+    Generator {
+        frame: FrameId,
+        call: Pc,
+        action: GeneratorAction,
+    },
     Sort {
         frame: FrameId,
         call: Pc,
@@ -112,6 +121,7 @@ impl ReturnTo {
             | Self::Class { frame, call }
             | Self::Sort { frame, call }
             | Self::ReactiveRead { frame, call } => Some((frame, Some(call))),
+            Self::Generator { frame, call, .. } => Some((frame, Some(call))),
             Self::Native { frame } | Self::NativeDefault { frame, .. } => Some((frame, None)),
         }
     }
@@ -144,6 +154,21 @@ enum ArgSource {
 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum ScriptPhase {
+    GeneratorCreate,
+    GeneratorCapture {
+        part: u32,
+        index: u32,
+        created: bool,
+    },
+    GeneratorStart {
+        action: GeneratorAction,
+        call: Pc,
+    },
+    GeneratorRestore {
+        part: u32,
+        index: u32,
+        closing: bool,
+    },
     Search(builtins::SearchWork),
     Sort(builtins::SortWork),
     Class(classes::ClassStep),
@@ -237,6 +262,7 @@ enum ScriptPhase {
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum ExitReason {
     Return,
+    GeneratorClose { logical_id: u64, activation: u64 },
     Throw(FaultSeed),
     Leave(Pc),
 }
@@ -262,6 +288,7 @@ struct ScriptFrame {
     ret: ReturnTo,
     phase: ScriptPhase,
     table_work: Option<TableWork>,
+    generator: bool,
 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum NativePhase {
@@ -559,13 +586,15 @@ impl Vm {
             }
         }
         for f in &p.functions {
-            if !matches!(f.kind, FunctionKind::Plain | FunctionKind::Native(_)) {
-                return Err(VmError::Contract(
-                    "async/generator handler is not connected",
-                ));
+            if !matches!(
+                f.kind,
+                FunctionKind::Plain | FunctionKind::Generator | FunctionKind::Native(_)
+            ) {
+                return Err(VmError::Contract("async handler is not connected"));
             }
             if f.register_count > limits.slots.max_window_len
-                || f.regions.len() as u64 * 2 + 4 > limits.slots.max_window_len as u64
+                || f.regions.len() as u64 * 2 + 4 + u64::from(f.kind == FunctionKind::Generator)
+                    > limits.slots.max_window_len as u64
             {
                 return Err(VmError::Limit);
             }
@@ -912,6 +941,12 @@ impl Vm {
                         _ => self.loc(current, current.pc),
                     };
                 }
+                ReturnTo::Generator { frame, call, .. } => {
+                    return match index.checked_sub(1).map(|i| self.active.frames.data[i]) {
+                        Some(Frame::Script(parent)) if parent.id == frame => self.loc(parent, call),
+                        _ => self.loc(current, current.pc),
+                    };
+                }
                 ReturnTo::Native { frame } | ReturnTo::NativeDefault { frame, .. } => {
                     return match index.checked_sub(1).map(|i| self.active.frames.data[i]) {
                         Some(Frame::Native(n)) if n.id == frame => n.location,
@@ -1008,6 +1043,7 @@ impl Vm {
         }
         let values = f.register_count as u64
             + 4
+            + u64::from(f.kind == FunctionKind::Generator)
             + 2 * f.regions.len() as u64
             + count as u64 * 2
             + self.program.package().signatures[f.signature.index()]
@@ -1069,6 +1105,7 @@ impl Vm {
         let parameters = &self.program.package().signatures[f.signature.index()];
         let values = u64::from(f.register_count)
             + 4
+            + u64::from(f.kind == FunctionKind::Generator)
             + 2 * f.regions.len() as u64
             + u64::from(count) * 2
             + parameters.parameters.len() as u64
@@ -1081,7 +1118,7 @@ impl Vm {
         }
         let f = &self.program.package().functions[function.index()];
         let registers = f.register_count;
-        let env_len = 4 + f.regions.len() as u32 * 2;
+        let env_len = 4 + f.regions.len() as u32 * 2 + u32::from(f.kind == FunctionKind::Generator);
         let sig = &self.program.package().signatures[f.signature.index()];
         let n = sig.parameters.len() as u32 + u32::from(sig.rest.is_some());
         let context = inherit(context, f.context);
@@ -1159,6 +1196,7 @@ impl Vm {
             ret,
             phase: ScriptPhase::Copy { source, index: 0 },
             table_work: None,
+            generator: false,
         };
         self.active.frames.data.push(Frame::Script(s));
         Ok(())
@@ -2404,6 +2442,9 @@ impl Vm {
     fn release_frame(&mut self, f: Frame) -> Result<(), VmError> {
         match f {
             Frame::Script(s) => {
+                if s.generator {
+                    self.generator_abandon(s)?;
+                }
                 self.abort_class(s)?;
                 for r in [s.regs, s.env, s.args, s.bound] {
                     self.slots.release(&mut self.heap, r)?;
@@ -2464,6 +2505,38 @@ impl Vm {
         let top = self.active.frames.data.len() - 1;
         let signature = self.program.package().functions[s.code.function.index()].signature;
         match s.phase {
+            ScriptPhase::GeneratorCreate => {
+                if !self.generator_create_step(&mut s, m)? {
+                    return Ok(false);
+                }
+            }
+            ScriptPhase::GeneratorCapture {
+                part,
+                index,
+                created,
+            } => {
+                if !self.generator_capture_step(&mut s, part, index, created, m)? {
+                    return Ok(false);
+                }
+                if self.active.frames.data.len() <= top {
+                    return Ok(true);
+                }
+            }
+            ScriptPhase::GeneratorStart { action, call } => {
+                self.active.frames.data[top] = Frame::Script(s);
+                if !self.generator_start_step(&mut s, action, call, m)? {
+                    return Ok(false);
+                }
+            }
+            ScriptPhase::GeneratorRestore {
+                part,
+                index,
+                closing,
+            } => {
+                if !self.generator_restore_step(&mut s, part, index, closing, m)? {
+                    return Ok(false);
+                }
+            }
             ScriptPhase::Class(step) => {
                 if !self.class_step(&mut s, step, m)? {
                     return Ok(false);
@@ -2692,7 +2765,13 @@ impl Vm {
                         binding: binding + 1,
                     };
                 } else {
-                    s.phase = ScriptPhase::Body;
+                    s.phase = if self.program.package().functions[s.code.function.index()].kind
+                        == FunctionKind::Generator
+                    {
+                        ScriptPhase::GeneratorCreate
+                    } else {
+                        ScriptPhase::Body
+                    };
                 }
             }
             ScriptPhase::Body => {
@@ -3118,15 +3197,16 @@ impl Vm {
                     ExitReason::Throw(info) if info.fault.is_some() => Some(self.value(s.env, 2)?),
                     _ => None,
                 };
-                if !self.commit(
-                    s.ret,
-                    value,
-                    cause,
-                    match reason {
-                        ExitReason::Throw(info) => Some(info),
-                        _ => None,
-                    },
-                )? {
+                let error = match reason {
+                    ExitReason::Throw(info) => Some(info),
+                    _ => None,
+                };
+                let committed = if s.generator {
+                    self.generator_release(s, value, cause, error)?
+                } else {
+                    self.commit(s.ret, value, cause, error)?
+                };
+                if !committed {
                     self.active.frames.data[top] = Frame::Script(s);
                     return Ok(true);
                 }
@@ -3524,11 +3604,26 @@ impl Vm {
             }
             Opcode::IterNext => {
                 let iterator = self.read(*s, r(b))?;
+                if self.is_text(iterator, ObjectKind::Generator) {
+                    self.generator_begin(s, iterator, GeneratorAction::Pair(r(a)))?;
+                    return Ok(false);
+                }
                 let value = self.iterator_next(iterator).map_err(heap_fault)?;
                 self.write(*s, r(a), value)?;
             }
             Opcode::IterAdvance => {
                 let iterator = self.read(*s, r(b))?;
+                if self.is_text(iterator, ObjectKind::Generator) {
+                    self.generator_begin(
+                        s,
+                        iterator,
+                        GeneratorAction::Advance {
+                            done: r(a),
+                            value: r(c),
+                        },
+                    )?;
+                    return Ok(false);
+                }
                 let step = self.iterator_peek(iterator).map_err(heap_fault)?;
                 self.write(*s, r(a), Value::bool(step.done))?;
                 self.write(*s, r(c), step.value)?;
@@ -3536,6 +3631,10 @@ impl Vm {
             }
             Opcode::IterClose => {
                 let iterator = self.read(*s, r(a))?;
+                if self.is_text(iterator, ObjectKind::Generator) {
+                    self.generator_begin(s, iterator, GeneratorAction::Close(None))?;
+                    return Ok(false);
+                }
                 if self.heap.info(iterator).map_err(heap_fault)?.kind != ObjectKind::Iterator {
                     return Err(FaultKind::Type);
                 }
@@ -3648,7 +3747,10 @@ impl Vm {
                     let kind = self.heap.info(object).map_err(heap_fault)?.kind;
                     if matches!(
                         kind,
-                        ObjectKind::Array | ObjectKind::Tuple | ObjectKind::String
+                        ObjectKind::Array
+                            | ObjectKind::Tuple
+                            | ObjectKind::String
+                            | ObjectKind::Generator
                     ) {
                         let method =
                             Builtin::lookup(kind, &self.program.package().symbols[c as usize])
@@ -4197,6 +4299,10 @@ impl Vm {
                 self.start_await(s, r(a), r(b))?;
                 return Ok(true);
             }
+            Opcode::Yield => {
+                self.generator_yield(s, r(a), r(b))?;
+                return Ok(false);
+            }
             Opcode::Return => {
                 let v = self.read(*s, r(a))?;
                 let signature = self.program.package().functions[s.code.function.index()].signature;
@@ -4433,12 +4539,9 @@ impl Vm {
                 self.program
                     .exception_handler(s.code.function, origin, skip)?
             }
-            ExitReason::Return => self.program.cleanup_handler(
-                s.code.function,
-                origin,
-                CleanupDestination::Return,
-                skip,
-            )?,
+            ExitReason::Return | ExitReason::GeneratorClose { .. } => self
+                .program
+                .cleanup_handler(s.code.function, origin, CleanupDestination::Return, skip)?,
             ExitReason::Leave(target) => self.program.cleanup_handler(
                 s.code.function,
                 origin,
@@ -4498,6 +4601,18 @@ impl Vm {
                         CauseKind::ReplacedExit(ReplacedExit::Return),
                         None,
                         self.value(u.value, 0)?,
+                    ),
+                    ExitReason::GeneratorClose {
+                        logical_id,
+                        activation,
+                    } => (
+                        CauseKind::ReplacedExit(ReplacedExit::Close {
+                            kind: CloseKind::Generator,
+                            logical_id,
+                            activation,
+                        }),
+                        None,
+                        Value::NULL,
                     ),
                     ExitReason::Leave(target) => (
                         CauseKind::ReplacedExit(ReplacedExit::Leave {
@@ -4671,6 +4786,9 @@ impl Vm {
             }
         }
         match ret {
+            ReturnTo::Generator { .. } => {
+                return self.generator_commit_error(ret, value, cause, error);
+            }
             ReturnTo::Delivery => {
                 self.put(self.active.delivery.unwrap(), 0, value)?;
                 if let Some(c) = cause {

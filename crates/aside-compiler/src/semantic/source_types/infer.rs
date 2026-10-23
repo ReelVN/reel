@@ -56,6 +56,7 @@ struct State {
     objects: Vec<Object>,
     cache: Vec<Option<(usize, Arc<SourceType>)>>,
     returns: Vec<Arc<SourceType>>,
+    yields: Vec<Arc<SourceType>>,
     live: bool,
     imports: HashMap<(String, String), Value>,
     imported_graph: HashMap<usize, Value>,
@@ -70,6 +71,7 @@ impl State {
             objects: Vec::new(),
             cache: Vec::new(),
             returns: Vec::new(),
+            yields: Vec::new(),
             live: true,
             imports: HashMap::new(),
             imported_graph: HashMap::new(),
@@ -449,9 +451,16 @@ impl Inference<'_> {
                     }
                 }
                 let element = element.unwrap_or_else(|| self.unknown.clone());
-                SourceShape::Array {
-                    element,
-                    values: exact.then(|| items.into()),
+                if exact
+                    && (matches!(&value.info.ty, TypeHint::Tuple(_))
+                        || matches!(&value.info.ty, TypeHint::Named(name) if name == "tuple"))
+                {
+                    SourceShape::Tuple(items.into())
+                } else {
+                    SourceShape::Array {
+                        element,
+                        values: exact.then(|| items.into()),
+                    }
                 }
             }
             Object::Alternatives(values) => {
@@ -544,7 +553,26 @@ impl Inference<'_> {
                     },
                 )
             }
-            None => Value::plain(info.clone()),
+            Some(SourceShape::Tuple(values)) => {
+                if !self.charge(values.len()) {
+                    return Value::plain(self.unknown.clone());
+                }
+                let mut items = Vec::with_capacity(values.len());
+                for value in values.iter() {
+                    items.push(self.materialize_shared(value.clone(), state, memo, depth + 1));
+                    if self.exhausted {
+                        return Value::plain(self.unknown.clone());
+                    }
+                }
+                state.object(
+                    info.clone(),
+                    Object::Array {
+                        values: items,
+                        exact: true,
+                    },
+                )
+            }
+            Some(SourceShape::Generator { .. }) | None => Value::plain(info.clone()),
         };
         if let Some(id) = value.object {
             if info.escaped {
@@ -613,6 +641,30 @@ impl Inference<'_> {
                 element: self.join_at(a.clone(), b.clone(), depth + 1),
                 values: None,
             }),
+            (Some(SourceShape::Tuple(a)), Some(SourceShape::Tuple(b))) if a.len() == b.len() => {
+                if !self.charge(a.len()) {
+                    return self.unknown.clone();
+                }
+                Some(SourceShape::Tuple(
+                    a.iter()
+                        .zip(b.iter())
+                        .map(|(a, b)| self.join_at(a.clone(), b.clone(), depth + 1))
+                        .collect(),
+                ))
+            }
+            (
+                Some(SourceShape::Generator {
+                    element: a,
+                    result: ar,
+                }),
+                Some(SourceShape::Generator {
+                    element: b,
+                    result: br,
+                }),
+            ) => Some(SourceShape::Generator {
+                element: self.join_at(a.clone(), b.clone(), depth + 1),
+                result: self.join_at(ar.clone(), br.clone(), depth + 1),
+            }),
             _ => None,
         };
         let call_result = a
@@ -633,12 +685,17 @@ impl Inference<'_> {
         }
         let f = &self.modules[m].functions[id.0 as usize];
         let body = f.body;
+        let generator = f.kind == FunctionKind::Generator;
         let declared = self.type_info[m][f.return_type.0 as usize].clone();
         if self.active.len() + self.active_globals.len() >= self.limits.max_depth
             || !self.active.insert((m, id))
             || self.exhausted
         {
-            return declared;
+            return if generator {
+                self.leaf(TypeHint::Generator)
+            } else {
+                declared
+            };
         }
         let previous = std::mem::replace(&mut self.current_module, m);
         let mut state = State::new();
@@ -662,6 +719,28 @@ impl Inference<'_> {
             inferred
         } else {
             declared
+        };
+        let result = if generator {
+            let mut element = None;
+            for value in state.yields {
+                element = Some(match element {
+                    Some(old) => self.join(old, value),
+                    None => value,
+                });
+                if self.exhausted {
+                    break;
+                }
+            }
+            Arc::new(SourceType {
+                ty: TypeHint::Generator,
+                shape: Some(SourceShape::Generator {
+                    element: element.unwrap_or_else(|| self.unknown.clone()),
+                    result,
+                }),
+                ..SourceType::new(TypeHint::Generator)
+            })
+        } else {
+            result
         };
         self.facts[m].functions[id.0 as usize] = Some(result.clone());
         self.active.remove(&(m, id));
@@ -1090,6 +1169,35 @@ impl Inference<'_> {
                 } else {
                     result.receiver = value.object;
                 }
+                if module.hir.text(key.span) == "next"
+                    && let Some(SourceShape::Generator {
+                        element,
+                        result: returned,
+                    }) = &info.shape
+                {
+                    let item = self.join(element.clone(), returned.clone());
+                    let item = self.join(item, self.leaf(TypeHint::Null));
+                    let done = self.leaf(TypeHint::Bool);
+                    let pair = Arc::new(SourceType {
+                        ty: TypeHint::Tuple(vec![TypeHint::Bool, item.ty.clone()]),
+                        shape: Some(SourceShape::Tuple(vec![done, item].into())),
+                        ..SourceType::new(TypeHint::Any)
+                    });
+                    result.info = Arc::new(SourceType {
+                        call_result: Some(pair),
+                        ..(*result.info).clone()
+                    });
+                    if let Some(external) = self.facts[m]
+                        .external
+                        .get(&n)
+                        .cloned()
+                        .or_else(|| self.external(m, n))
+                    {
+                        let mut external = (*external).clone();
+                        external.source_type = Some(result.info.clone());
+                        self.facts[m].external.insert(n, Arc::new(external));
+                    }
+                }
             }
             Form::Index { object, index, .. } => {
                 let value = self.visit(m, object, state, depth + 1);
@@ -1104,11 +1212,18 @@ impl Inference<'_> {
                             .member_value(&value, &key, state, 0)
                             .unwrap_or_else(|| self.materialize(field.value.clone(), state));
                     }
-                } else if info.element().is_some() {
+                } else if matches!(info.shape, Some(SourceShape::Tuple(_)))
+                    || info.element().is_some()
+                {
                     result = self
                         .subscript(&value, self.array_index(m, index), state)
                         .unwrap_or_else(|| {
-                            self.materialize(info.element().unwrap().clone(), state)
+                            self.materialize(
+                                info.element()
+                                    .cloned()
+                                    .unwrap_or_else(|| self.unknown.clone()),
+                                state,
+                            )
                         });
                 }
             }
@@ -1181,7 +1296,10 @@ impl Inference<'_> {
                     }
                     state.globals_dirty = true;
                 }
-                if base.ty != TypeHint::Any && result.info.ty != base.ty {
+                if base.ty != TypeHint::Any
+                    && result.info.ty != base.ty
+                    && !matches!(result.info.shape, Some(SourceShape::Tuple(_)))
+                {
                     result.info = Arc::new(SourceType {
                         ty: base.ty.clone(),
                         ..(*result.info).clone()
@@ -1196,7 +1314,14 @@ impl Inference<'_> {
                     let value = self.snapshot(&value, state);
                     state.returns.push(value);
                 }
-                state.live = false;
+                if kind == HirKind::Yield {
+                    let info = self.snapshot(&value, state);
+                    state.yields.push(info);
+                    self.invalidated(&value, state);
+                    result = Value::plain(self.leaf(TypeHint::Null));
+                } else {
+                    state.live = false;
+                }
             }
             Form::Binary {
                 left,
@@ -1403,7 +1528,7 @@ impl Inference<'_> {
                 }
                 result = state.object(self.leaf(TypeHint::Table), Object::Record(fields));
             }
-            _ if kind == HirKind::Array => {
+            _ if matches!(kind, HirKind::Array | HirKind::Tuple) => {
                 let mut values = Vec::new();
                 let mut exact = true;
                 for child in children {
@@ -1431,7 +1556,14 @@ impl Inference<'_> {
                         values.push(value);
                     }
                 }
-                result = state.object(self.leaf(TypeHint::Array), Object::Array { values, exact });
+                let ty = if kind == HirKind::Tuple {
+                    // The shape is a shared DAG. An owned TypeHint tuple tree
+                    // would expand aliases such as t=(previous,previous).
+                    TypeHint::Named("tuple".into())
+                } else {
+                    TypeHint::Array
+                };
+                result = state.object(self.leaf(ty), Object::Array { values, exact });
             }
             _ if kind == HirKind::Assignment => {
                 if let Some((&target, rest)) = children.split_first() {
@@ -1624,8 +1756,14 @@ impl Inference<'_> {
             self.facts[m].values[n.0 as usize] = Some(info);
             state.bindings.insert(id, value);
         } else {
-            for child in self.modules[m].hir.children(n) {
-                self.bind_pattern(m, child, Value::plain(self.unknown.clone()), state);
+            for (index, child) in self.modules[m].hir.children(n).enumerate() {
+                let item = if self.modules[m].hir.node(n).kind == HirKind::TuplePattern {
+                    self.subscript(&value, Some(index), state)
+                        .unwrap_or_else(|| Value::plain(self.unknown.clone()))
+                } else {
+                    Value::plain(self.unknown.clone())
+                };
+                self.bind_pattern(m, child, item, state);
             }
         }
     }
@@ -1761,6 +1899,7 @@ impl Inference<'_> {
         let slots = state.bindings.len()
             + state.cache.len()
             + state.returns.len()
+            + state.yields.len()
             + state.imports.len()
             + state.imported_graph.len()
             + state.opaque.len()
@@ -1947,7 +2086,14 @@ impl Inference<'_> {
             };
             into.objects[id] = merged;
         }
-        if !self.charge(a.bindings.len() + b.bindings.len() + a.returns.len() + b.returns.len()) {
+        if !self.charge(
+            a.bindings.len()
+                + b.bindings.len()
+                + a.returns.len()
+                + b.returns.len()
+                + a.yields.len()
+                + b.yields.len(),
+        ) {
             return;
         }
         let symbols: HashSet<_> = a
@@ -1983,6 +2129,17 @@ impl Inference<'_> {
         for value in b.returns {
             if seen.insert(Arc::as_ptr(&value) as usize) {
                 into.returns.push(value);
+            }
+        }
+        into.yields = a.yields;
+        let mut seen: HashSet<_> = into
+            .yields
+            .iter()
+            .map(|v| Arc::as_ptr(v) as usize)
+            .collect();
+        for value in b.yields {
+            if seen.insert(Arc::as_ptr(&value) as usize) {
+                into.yields.push(value);
             }
         }
         if !self.charge(a.opaque.len() + b.opaque.len()) {

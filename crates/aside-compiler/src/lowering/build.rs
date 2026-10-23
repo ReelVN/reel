@@ -292,7 +292,10 @@ pub(super) fn lower_prepared<'a>(
     }
     lower.check_links()?;
     lower.check_imports()?;
-    let entry = if m.entry_context() == crate::semantic::AnalysisContext::Function {
+    let entry = if matches!(
+        m.entry_context(),
+        crate::semantic::AnalysisContext::Function | crate::semantic::AnalysisContext::Generator
+    ) {
         let id = m
             .functions()
             .iter()
@@ -680,10 +683,10 @@ impl Lowerer<'_> {
     fn prepare_functions(&mut self) -> Result<(), Box<Error>> {
         for f in self.m.functions() {
             self.b.span = self.m.hir().node(f.node).span;
-            if f.kind != h::FunctionKind::Plain {
+            if f.kind == h::FunctionKind::Async {
                 return Err(self.b.error(
                     ErrorKind::Unsupported,
-                    "async/generator functions belong to later lowering",
+                    "async functions belong to later lowering",
                 ));
             }
             let mut parameters = Vec::new();
@@ -748,6 +751,9 @@ impl Lowerer<'_> {
             };
             let captures = self.captures(f)?;
             let output = self.empty_function(name, signature, context, captures)?;
+            if f.kind == h::FunctionKind::Generator {
+                self.package.functions[output.index()].kind = bc::FunctionKind::Generator;
+            }
             self.b.push(&mut self.outputs, output)?;
             self.b.push(&mut self.defaults, defaults)?;
         }
@@ -807,15 +813,14 @@ impl Lowerer<'_> {
             crate::semantic::AnalysisContext::Module => bc::Context::Init,
             crate::semantic::AnalysisContext::Function => bc::Context::Ordinary,
             crate::semantic::AnalysisContext::NoWait => bc::Context::NoWait,
-            crate::semantic::AnalysisContext::Generator => {
-                return Err(self.b.error(
-                    ErrorKind::Unsupported,
-                    "generator fragment lowering belongs to later task work",
-                ));
-            }
+            crate::semantic::AnalysisContext::Generator => bc::Context::NoWait,
         };
         let signature = self.signature(Vec::new(), result, context)?;
-        self.empty_function("$module", signature, context, Vec::new())
+        let output = self.empty_function("$module", signature, context, Vec::new())?;
+        if self.m.entry_context() == crate::semantic::AnalysisContext::Generator {
+            self.package.functions[output.index()].kind = bc::FunctionKind::Generator;
+        }
+        Ok(output)
     }
     fn check_links(&mut self) -> Result<(), Box<Error>> {
         self.b.work(self.links.natives.len() as u64)?;
@@ -1160,6 +1165,7 @@ struct LoopTarget {
     next: BlockId,
     end: BlockId,
     protected_depth: usize,
+    next_protected_depth: usize,
     has_break: bool,
 }
 
@@ -1904,7 +1910,7 @@ fn preflight(
         b.span = node.span;
         if matches!(
             node.kind,
-            H::Yield | H::ArrayPattern | H::ObjectPattern | H::PatternField | H::RestPattern
+            H::ArrayPattern | H::ObjectPattern | H::PatternField | H::RestPattern
         ) {
             return Err(b.error(
                 ErrorKind::Unsupported,

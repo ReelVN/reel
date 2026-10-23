@@ -147,6 +147,20 @@ impl FunctionBuilder<'_, '_> {
             (H::Match, Form::Match { value }) => self.match_value(n, value, depth),
             (H::Call, Form::Call { chain: false, .. }) => self.flat_chain(n, depth),
             (H::Return, Form::Transfer { value, .. }) => self.return_value(n, value, depth),
+            (H::Yield, Form::Transfer { value, .. }) => {
+                let input = if let Some(value) = value {
+                    let Some(value) = self.value(value, depth)? else {
+                        return Ok(None);
+                    };
+                    value
+                } else {
+                    self.constant(bc::Const::Null, n)?
+                };
+                let result = self.temp()?;
+                self.op(bc::Opcode::Yield, result.0, input.0, 0, n)?;
+                self.release(input)?;
+                Ok(Some(result))
+            }
             (H::Throw, Form::Transfer { value, .. }) => self.throw_value(n, value, depth),
             (
                 H::Try,
@@ -438,7 +452,11 @@ impl FunctionBuilder<'_, '_> {
                     .b
                     .error(ErrorKind::InvalidIr, "analyzed loop target not active")
             })?;
-        let loop_depth = target.protected_depth;
+        let loop_depth = if kind == H::Break {
+            target.protected_depth
+        } else {
+            target.next_protected_depth
+        };
         let target = if kind == H::Break {
             target.has_break = true;
             target.end
@@ -578,6 +596,7 @@ impl FunctionBuilder<'_, '_> {
                 next: head,
                 end,
                 protected_depth: self.protected_depth,
+                next_protected_depth: self.protected_depth,
                 has_break: false,
             },
         )?;

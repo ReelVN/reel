@@ -6,7 +6,6 @@ Reel 用代码组合画面、对白、UI、演出和嵌入的 2D 游戏。
 - [引擎架构](engine-architecture.md)：模块职责、执行、所有权、输入、呈现和媒体。
 - [Aside 语言规范](aside-language.md)：语法、求值、类型、执行与恢复。
 - [Rust 宿主接口](aside-host.md)：注册函数、属性、类型和编辑器文档。
-- [分块图片](prepared-images.md)：大图准备与运行时加载。
 
 编辑器中的悬停、参数提示与 F12 使用声明旁的英文 API 文档。
 

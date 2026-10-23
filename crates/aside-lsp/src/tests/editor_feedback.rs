@@ -1,6 +1,42 @@
 use super::*;
 
 #[test]
+fn generator_keywords_follow_function_and_cleanup_boundaries() {
+    for (source, yielded, awaited) in [
+        ("gen fn values(){let item = ", true, false),
+        (
+            "gen fn values(){try {yield 1;} finally {let item = ",
+            false,
+            false,
+        ),
+        ("gen fn values(first = ", false, false),
+        ("gen fn values(){let inner = || {let item = ", false, true),
+        ("fn main(){let item = ", false, true),
+    ] {
+        let mut workspace = Workspace::new(ServerOptions::default());
+        workspace.open(uri(), 1, source.into()).unwrap();
+        let end = LineIndex::new(source)
+            .position(source, source.len(), Encoding::Utf16)
+            .unwrap();
+        let items = workspace.complete(&uri(), end, Encoding::Utf16).unwrap();
+        assert_eq!(
+            items.iter().any(|item| item.label == "yield"),
+            yielded,
+            "{source}: {items:?}"
+        );
+        assert_eq!(
+            items.iter().any(|item| item.label == "await"),
+            awaited,
+            "{source}: {items:?}"
+        );
+        assert!(
+            !items.iter().any(|item| item.label == "async"),
+            "{source}: {items:?}"
+        );
+    }
+}
+
+#[test]
 fn hover_selects_import_identifiers_and_preserves_source_declarations() {
     let (_project, root) = project_sources();
     let declarations = "/// A documented counter.\npub class Counter {fn init(self, start:int=4){}}\n/// A documented greeting.\npub fn greet(name:string=\"World\")->string {name}\n/// A documented value.\npub let answer:int=42;\n/// A narrator value.\npub let 旁白:string=\"Narrator\";";

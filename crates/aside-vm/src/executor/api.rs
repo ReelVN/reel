@@ -391,6 +391,7 @@ pub const SUPPORTED_OPCODES: &[Opcode] = &[
     Opcode::IterInit,
     Opcode::IterNext,
     Opcode::IterAdvance,
+    Opcode::Yield,
     Opcode::IterClose,
     Opcode::Return,
     Opcode::ArgsNew,

@@ -1524,11 +1524,16 @@ fn validate_descriptor(
                 let ms = get(&p.signatures, mf.signature.0, "method signature")?;
                 validate_captures(p, f, method.function, &method.captures, b)?;
                 if !method.is_static {
-                    b.work(5)?; // Equality with the four-byte receiver name.
+                    b.work(10)?; // Four-byte receiver and initializer names.
                     check(
                         !ms.parameters.is_empty() && symbol(p, ms.parameters[0].name)? == "self",
                         ErrorKind::Signature,
                         "instance method explicit self",
+                    )?;
+                    check(
+                        symbol(p, method.name)? != "init" || mf.kind != FunctionKind::Generator,
+                        ErrorKind::Signature,
+                        "generator initializer",
                     )?;
                 }
                 b.work(c.fields.len() as u64)?;
@@ -1945,7 +1950,9 @@ fn validate_instruction(
     }
     if spec.opcode == Opcode::Yield {
         check(
-            f.kind == FunctionKind::Generator && f.context == Context::Ordinary && !in_finally,
+            f.kind == FunctionKind::Generator
+                && matches!(f.context, Context::Ordinary | Context::NoWait)
+                && !in_finally,
             ErrorKind::ControlFlow,
             "Yield outside generator or in restricted context",
         )?;

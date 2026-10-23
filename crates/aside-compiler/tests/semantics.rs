@@ -751,6 +751,51 @@ fn async_generator_yield_and_for_await_keep_distinct_function_roles() {
 }
 
 #[test]
+fn generators_keep_final_return_types_and_resume_yields_with_null() {
+    valid("gen fn values() -> int { let resumed: null = yield 1; yield; return 7; }");
+    valid("class Source { gen fn values(self) { yield 1; } } let items = Source().values();");
+    rejects(
+        "class Source { gen fn init(self) { yield 1; } }",
+        DiagnosticCode::InvalidControl,
+    );
+    valid(
+        "gen fn values() -> int { yield 1; return 7; } let factory: fn() -> generator = values; let items: generator = factory();",
+    );
+    rejects(
+        "gen fn values() -> int { yield 1; return 7; } let factory: fn() -> int = values;",
+        DiagnosticCode::TypeMismatch,
+    );
+    rejects(
+        "gen fn values() -> int { yield 1; return \"wrong\"; }",
+        DiagnosticCode::TypeMismatch,
+    );
+    rejects(
+        "gen fn values(value = yield 1) { yield value; }",
+        DiagnosticCode::InvalidControl,
+    );
+    rejects(
+        "gen fn values() { try {} finally { if true { yield 1; } } }",
+        DiagnosticCode::InvalidControl,
+    );
+    rejects(
+        "gen fn values(p) { if true { await p; } }",
+        DiagnosticCode::NoWait,
+    );
+    rejects(
+        "gen fn values(p, flag: bool) { if flag { await p; } }",
+        DiagnosticCode::NoWait,
+    );
+    rejects(
+        "gen fn values(p) { if false { await p; } }",
+        DiagnosticCode::NoWait,
+    );
+    rejects(
+        "gen fn values(p, flag: bool) { if flag { for await item in p { yield item; } } }",
+        DiagnosticCode::NoWait,
+    );
+}
+
+#[test]
 fn contract_preparation_preserves_default_visibility_and_method_order() {
     rejects("fn f(x=||later,later=1){}", DiagnosticCode::UnknownName);
     rejects("fn f(x=||x){}", DiagnosticCode::UnknownName);

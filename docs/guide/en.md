@@ -71,6 +71,26 @@ let latest = values.pop();
 stage.replace(text(f"剩余 {values.len()} 项，最后一项 {latest}"));
 ```
 
+Use `gen fn` and `yield` to calculate items on demand. Calling the function creates a generator; each item requested by `for` resumes its body. Leaving the loop early runs the generator's `finally` blocks. This example produces positions without an intermediate array.
+
+```aside
+gen fn positions(count: int) {
+    for index in 0..count {
+        yield (24 + index * 120, 40);
+    }
+}
+
+fn main() {
+    stage.replace(stack {
+        for (x, y) in positions(4) {
+            text("★", x: x, y: y);
+        }
+    });
+}
+```
+
+Use `let (done, value) = items.next()` to advance manually. `done` distinguishes completion from a yielded `null`; completion delivers the final result once. `items.close()` ends the generator early. Generators produce data on demand; use ordinary functions for flows that wait for dialogue or animation.
+
 `get` returns the default for a missing key and preserves stored `null`, `false` and `0`. The default is evaluated as an ordinary argument.
 
 ```aside
@@ -314,7 +334,13 @@ fn main() {
 }
 ```
 
-`camera` maps a world region into a viewport. Keep a fixed HUD in a sibling outside the camera. Prepare large images with `reel prepare-image`; see [prepared images](../prepared-images.md).
+`camera` maps a world region into a viewport. Keep a fixed HUD in a sibling outside the camera. Prepare large images as tiles so runtime loading follows the visible area and required pyramid level:
+
+```sh
+reel prepare-image original.png --output resources/panorama.reel-image
+```
+
+Display it with `image("panorama.reel-image")`. Keep the manifest and adjacent `.tiles` directory together in resources; build and export collect both. `--tile-size` defaults to 512; the tile plus two gutter pixels must fit the device's texture limit. Preparation decodes the original, while runtime memory follows the visible area. See [author_large_image](../../examples/author_large_image/src/main.aside) for a complete example.
 
 ```aside
 let view = camera(width: 960, height: 540, camera_x: 480, camera_y: 270) {

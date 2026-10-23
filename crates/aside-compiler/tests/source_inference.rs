@@ -72,6 +72,93 @@ fn main() { let ui=parts(); let n=number(true); ui.root.label; ui.captions[0]; n
 }
 
 #[test]
+fn generators_keep_yielded_fields_separate_from_final_return_contracts() {
+    let analysis = module(
+        r#"
+gen fn rows() -> string {
+    yield {title: "First", count: 1};
+    yield {title: "Second", count: 2};
+    return "done";
+}
+fn main() {
+    let items = rows();
+    for row in items { row.title; row.count; }
+    let (done, value) = items.next();
+    done; value;
+    items.next()[0];
+}
+"#,
+    );
+    assert_eq!(expression(&analysis, "row.title").ty, TypeHint::String);
+    assert_eq!(expression(&analysis, "row.count").ty, TypeHint::Int);
+    assert_eq!(expression(&analysis, "done").ty, TypeHint::Bool);
+    assert_eq!(expression(&analysis, "items.next()[0]").ty, TypeHint::Bool);
+    let TypeHint::Union(types) = &expression(&analysis, "value").ty else {
+        panic!("next value must include yielded, returned and completed values");
+    };
+    assert_eq!(types, &[TypeHint::Table, TypeHint::String, TypeHint::Null]);
+    let Some(SourceShape::Generator { element, result }) = &expression(&analysis, "rows()").shape
+    else {
+        panic!("generator call lost its source shape");
+    };
+    assert_eq!(element.member("title").unwrap().value.ty, TypeHint::String);
+    assert_eq!(result.ty, TypeHint::String);
+    let module = analysis.module().unwrap();
+    let next = module
+        .hir()
+        .nodes
+        .iter()
+        .enumerate()
+        .find_map(|(index, node)| {
+            (node.kind == HirKind::Member && module.hir().text(node.span) == "items.next")
+                .then_some(NodeId(index as u32))
+        })
+        .unwrap();
+    let inferred = module
+        .source_types()
+        .external(next)
+        .unwrap()
+        .source_type
+        .as_ref()
+        .unwrap()
+        .call_result
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        inferred.ty,
+        TypeHint::Tuple(vec![
+            TypeHint::Bool,
+            TypeHint::Union(vec![TypeHint::Table, TypeHint::String, TypeHint::Null]),
+        ])
+    );
+}
+
+#[test]
+fn generator_yields_join_branches_and_exclude_nested_function_bodies() {
+    let analysis = module(
+        r#"
+gen fn values(flag: bool) {
+    gen fn nested() { yield "nested"; }
+    if flag { yield 1; } else { yield 2; }
+    yield;
+    return false;
+}
+fn main() { let items = values(true); for item in items { item; } }
+"#,
+    );
+    let Some(SourceShape::Generator { element, result }) =
+        &expression(&analysis, "values(true)").shape
+    else {
+        panic!("generator call lost its source shape");
+    };
+    assert_eq!(
+        element.ty,
+        TypeHint::Union(vec![TypeHint::Int, TypeHint::Null])
+    );
+    assert_eq!(result.ty, TypeHint::Bool);
+}
+
+#[test]
 fn alias_writes_and_dynamic_keys_do_not_keep_stale_field_types() {
     let module = module(
         r#"

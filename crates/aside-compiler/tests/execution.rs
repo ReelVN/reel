@@ -2,6 +2,9 @@
 use aside_compiler::{AnalysisOptions, analyze_module, lowering, semantic::NoModules};
 use aside_vm::{GcBudget, GcPhase, RootOwner, SessionEpoch, Value, bytecode as bc, executor::*};
 
+#[path = "execution/generators.rs"]
+mod generators;
+
 fn finish(vm: &mut Vm, task: TaskId, tiny: bool) -> Value {
     let mut budget = if tiny {
         SliceBudget {

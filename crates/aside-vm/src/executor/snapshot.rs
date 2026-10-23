@@ -262,6 +262,7 @@ impl Vm {
             range_values: 0,
             constant_validation: None,
             callback_validation: None,
+            generator_validation: None,
             complete: false,
         })
     }
@@ -401,6 +402,7 @@ pub struct VmRestore<'a> {
     range_values: u64,
     constant_validation: Option<ConstantValidation>,
     callback_validation: Option<CallbackValidation>,
+    generator_validation: Option<generators::GeneratorValidation>,
     complete: bool,
 }
 impl VmRestore<'_> {
@@ -417,6 +419,13 @@ impl VmRestore<'_> {
             if let Some(validation) = &mut self.callback_validation {
                 if validation.step(&self.vm)? {
                     self.callback_validation = None;
+                }
+                progress.units += 1;
+                continue;
+            }
+            if let Some(validation) = &mut self.generator_validation {
+                if validation.step(&self.vm)? {
+                    self.generator_validation = None;
                 }
                 progress.units += 1;
                 continue;
@@ -460,6 +469,17 @@ impl VmRestore<'_> {
                 2 => self.restore_control(record)?,
                 3 => {
                     graph::validate(&self.vm.heap, &self.map, record)?;
+                    if record.kind == RecordKind::Object {
+                        let object = *self
+                            .map
+                            .objects
+                            .get(&record.key)
+                            .ok_or(HeapError::InvalidHandle)?;
+                        if self.vm.heap.info(object)?.kind == ObjectKind::Generator {
+                            self.generator_validation =
+                                Some(generators::GeneratorValidation::new(&self.vm, object)?);
+                        }
+                    }
                     self.validate_task(record)?;
                 }
                 _ => unreachable!(),
@@ -750,6 +770,7 @@ fn validate_frame(frame: &Frame, vm: &Vm) -> Result<Option<ConstantValidation>, 
             {
                 return Err(SnapshotError::Invalid("script frame code/registers".into()));
             }
+            generators::validate_generator_frame(vm, *frame)?;
             match frame.phase {
                 ScriptPhase::Constant(work) => {
                     let instruction = code

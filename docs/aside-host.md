@@ -80,10 +80,6 @@ Rust receives an array value through `FromValue`; use `Value` or an owned
 conversion that accepts an array. Read it through `Heap::sequence_len/get` when
 the operation needs its elements. The `#[aside(context)]` parameter does not
 count toward the script parameter order and may follow the rest parameter.
-The [extension host](../crates/aside-host/tests/extension.rs) executes empty,
-spread and function-value calls and checks fresh outer-array ownership. The
-[bound native host](../crates/aside-host/tests/extension.rs) exercises rest
-with defaults, a bound receiver, host entry/callback calls and incremental GC.
 
 Functions are synchronous, safe, monomorphic free functions. Parameters must have identifier patterns. `#[aside(name = "script_name")]` changes the script parameter name. Defaults are literal integers, floats, booleans, strings or `null`, stored in the bytecode constant pool. The `abi` option defaults to 1.
 
@@ -120,12 +116,6 @@ Built-in conversions cover `i64`, `f64`, `bool`, `String`, `Value` and `Option<T
 The first parameter is already bound. Remaining positional, named and default arguments use the VM binder; explicitly supplying the receiver again reports a duplicate argument. The value can be stored in a host property, passed to script, invoked through `start_closure`, or used by a native `CallScript` callback. These paths enter a NativeFrame that enforces the declared effects and waiting permissions. Root the method when retaining it across collection from Rust.
 
 For a host object with properties that should also be callable, use `Vm::bind_callable(object, function)`. It binds the object itself as the required first parameter. The trusted registration is separate from script-visible fields; argument preparation, entry calls, callbacks, GC and waiting use the same paths as bound methods.
-
-The runnable [bound_native.rs](../crates/aside-host/tests/extension.rs) host verifies these call paths with interleaved GC and bytecode encoding/decoding:
-
-```sh
-cargo test --locked -p aside-host --test extension
-```
 
 Reel exposes `add`, `remove` and `clear` on nodes through this mechanism. Extracting a method retains that specific node; retirement clears its private tree edges.
 
@@ -165,7 +155,7 @@ For bounded preparation, `begin_host_publication()` creates the same rooted `Pro
 
 ## Runnable host checks
 
-The [extension host](../crates/aside-host/tests/extension.rs) and [bound native host](../crates/aside-host/tests/extension.rs) demonstrate registration, value conversion, properties and callbacks.
+The [extension host](../crates/aside-host/tests/extension.rs) demonstrates registration, value conversion, properties and callbacks, including GC and bytecode restoration.
 
 ```sh
 cargo test --locked -p aside-host -p aside-host-macros

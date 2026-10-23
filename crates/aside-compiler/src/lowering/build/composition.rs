@@ -1,4 +1,4 @@
-//! Lexical children collection and ordinary sequence loops.
+//! Lexical children collection and sequential iteration with owned cleanup.
 use super::*;
 
 impl FunctionBuilder<'_, '_> {
@@ -59,18 +59,30 @@ impl FunctionBuilder<'_, '_> {
         let iterator = self.temp()?;
         self.op(bc::Opcode::IterInit, iterator.0, source.0, 0, node)?;
         self.release(source)?;
+        let region = bc::RegionId(self.ir.regions.len() as u32);
+        self.l.b.push(
+            &mut self.ir.regions,
+            Region {
+                protected: 0..0,
+                catch: None,
+                finally: None,
+            },
+        )?;
         let head = self.block()?;
         let body_block = self.block()?;
+        let exhausted = self.block()?;
         let end = self.block()?;
         self.terminate(Terminator::Jump(head), node)?;
+        let begin = self.ir.layout.len() as u32;
         self.start(head)?;
+        self.protected_depth += 1;
         let done = self.temp()?;
         let value = self.temp()?;
         self.op(bc::Opcode::IterAdvance, done.0, iterator.0, value.0, node)?;
         self.terminate(
             Terminator::BranchBool {
                 value: done,
-                yes: end,
+                yes: exhausted,
                 no: body_block,
             },
             node,
@@ -85,7 +97,8 @@ impl FunctionBuilder<'_, '_> {
                 node,
                 next: head,
                 end,
-                protected_depth: self.protected_depth,
+                protected_depth: self.protected_depth - 1,
+                next_protected_depth: self.protected_depth,
                 has_break: false,
             },
         )?;
@@ -96,8 +109,17 @@ impl FunctionBuilder<'_, '_> {
             self.terminate(Terminator::Jump(head), node)?;
         }
         self.loops.pop();
-        self.start(end)?;
+        self.start(exhausted)?;
+        self.terminate(Terminator::Leave(end), node)?;
+        self.protected_depth -= 1;
+        self.ir.regions[region.index()].protected = begin..self.ir.layout.len() as u32;
+        let cleanup = self.block()?;
+        let begin = self.ir.layout.len() as u32;
+        self.start(cleanup)?;
         self.op(bc::Opcode::IterClose, iterator.0, 0, 0, node)?;
+        self.terminate(Terminator::EndFinally(region), node)?;
+        self.ir.regions[region.index()].finally = Some(begin..self.ir.layout.len() as u32);
+        self.start(end)?;
         self.release(iterator)?;
         Ok(())
     }
