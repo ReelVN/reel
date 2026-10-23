@@ -125,8 +125,7 @@ fn paint_glyph_fill(
     paint: Option<TextGradientPaint>,
     fallback: &Brush,
     glyphs: &[Glyph],
-    em: f32,
-    ascent: f32,
+    em_bounds: kurbo::Rect,
     mut draw: impl FnMut(&Brush, &[Glyph]),
 ) {
     let Some(paint) = paint else {
@@ -136,14 +135,7 @@ fn paint_glyph_fill(
     if paint.gradient.space == TextGradientSpace::Bounds {
         draw(&paint.gradient.brush(paint.bounds), glyphs);
     } else if let Some(first) = glyphs.first() {
-        let bounds = |glyph: &Glyph| {
-            kurbo::Rect::new(
-                glyph.x as f64,
-                (glyph.y - ascent) as f64,
-                (glyph.x + em) as f64,
-                (glyph.y - ascent + em) as f64,
-            )
-        };
+        let bounds = |glyph: &Glyph| em_bounds + Vec2::new(glyph.x as f64, glyph.y as f64);
         // A cross-line gradient shares one brush and one draw for a whole baseline.
         if paint.gradient.angle.to_radians().sin().abs() < 1e-12
             && glyphs.iter().all(|glyph| glyph.y == first.y)
@@ -157,6 +149,25 @@ fn paint_glyph_fill(
                 );
             }
         }
+    }
+}
+
+// Map the unrotated font's em square back into the paragraph's logical plane.
+// The brush follows paragraph axes, while upright outlines compensate for them.
+fn glyph_em_bounds(
+    writing_mode: reel_text::WritingMode,
+    upright: bool,
+    em: f32,
+    font_ascent: f32,
+) -> kurbo::Rect {
+    use reel_text::WritingMode::{HorizontalTb, VerticalLr, VerticalRl};
+    let em = f64::from(em);
+    let ascent = f64::from(font_ascent);
+    match (writing_mode, upright) {
+        (HorizontalTb, _) | (VerticalRl, false) => kurbo::Rect::new(0., -ascent, em, em - ascent),
+        (VerticalRl, true) => kurbo::Rect::new(-ascent, -em, em - ascent, 0.),
+        (VerticalLr, true) => kurbo::Rect::new(-ascent, 0., em - ascent, em),
+        (VerticalLr, false) => kurbo::Rect::new(0., ascent - em, em, ascent),
     }
 }
 
@@ -312,8 +323,12 @@ pub(crate) fn render_text_lines(
                 gradient,
                 brush,
                 &glyphs,
-                font_size,
-                run.metrics().ascent,
+                glyph_em_bounds(
+                    run.writing_mode(),
+                    run.is_upright(),
+                    font_size,
+                    run.metrics().font_ascent,
+                ),
                 |brush, glyphs| {
                     painter
                         .glyphs(font, brush)
@@ -550,8 +565,12 @@ pub(crate) fn render_text_faded_lines(
                     gradient,
                     brush,
                     glyphs,
-                    font_size,
-                    run.metrics().ascent,
+                    glyph_em_bounds(
+                        run.writing_mode(),
+                        run.is_upright(),
+                        font_size,
+                        run.metrics().font_ascent,
+                    ),
                     |brush, glyphs| {
                         painter
                             .glyphs(font, brush)
@@ -1223,23 +1242,65 @@ mod gradient_tests {
         };
         let fallback = Brush::Solid(peniko::Color::BLACK);
         let mut counts = Vec::new();
-        paint_glyph_fill(Some(paint), &fallback, &glyphs, 24., 20., |brush, group| {
-            assert!(matches!(brush, Brush::Gradient(_)));
-            counts.push(group.len());
-        });
+        let em_bounds = glyph_em_bounds(reel_text::WritingMode::HorizontalTb, false, 24., 20.);
+        paint_glyph_fill(
+            Some(paint),
+            &fallback,
+            &glyphs,
+            em_bounds,
+            |brush, group| {
+                assert!(matches!(brush, Brush::Gradient(_)));
+                counts.push(group.len());
+            },
+        );
         assert_eq!(counts, [2]);
         paint.gradient.angle = 90.;
         let mut brushes = Vec::new();
-        paint_glyph_fill(Some(paint), &fallback, &glyphs, 24., 20., |brush, group| {
-            assert_eq!(group.len(), 1);
-            brushes.push(brush.clone());
-        });
+        paint_glyph_fill(
+            Some(paint),
+            &fallback,
+            &glyphs,
+            em_bounds,
+            |brush, group| {
+                assert_eq!(group.len(), 1);
+                brushes.push(brush.clone());
+            },
+        );
         assert_ne!(brushes[0], brushes[1]);
         paint.gradient.space = TextGradientSpace::Bounds;
         counts.clear();
-        paint_glyph_fill(Some(paint), &fallback, &glyphs, 24., 20., |_, group| {
+        paint_glyph_fill(Some(paint), &fallback, &glyphs, em_bounds, |_, group| {
             counts.push(group.len())
         });
         assert_eq!(counts, [2]);
+    }
+
+    #[test]
+    fn glyph_gradient_em_bounds_follow_physical_font_orientation() {
+        use reel_text::WritingMode::{HorizontalTb, VerticalLr, VerticalRl};
+
+        let font_em = kurbo::Rect::new(0., -20., 24., 4.);
+        let clockwise = Affine::new([0., 1., -1., 0., 0., 0.]);
+        let origin = Vec2::new(31., 47.);
+        for (mode, upright, axes) in [
+            (HorizontalTb, false, Affine::IDENTITY),
+            (VerticalRl, true, clockwise),
+            (VerticalLr, true, Affine::new([0., 1., 1., 0., 0., 0.])),
+            (VerticalRl, false, clockwise),
+            (VerticalLr, false, Affine::new([0., 1., 1., 0., 0., 0.])),
+        ] {
+            let bounds = glyph_em_bounds(mode, upright, 24., 20.);
+            let physical_origin = (axes * origin.to_point()).to_vec2();
+            let physical_em = if mode == HorizontalTb || upright {
+                font_em
+            } else {
+                clockwise.transform_rect_bbox(font_em)
+            };
+            assert_eq!(
+                axes.transform_rect_bbox(bounds + origin),
+                physical_em + physical_origin,
+                "{mode:?}, upright={upright}",
+            );
+        }
     }
 }

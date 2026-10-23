@@ -437,6 +437,7 @@ impl<B: Brush> LayoutData<B> {
             };
 
             RunMetrics {
+                font_ascent: metrics.ascent,
                 ascent: metrics.ascent,
                 descent: -metrics.descent,
                 leading: metrics.leading,

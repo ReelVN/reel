@@ -232,6 +232,10 @@ impl<'a, B: Brush> Iterator for Clusters<'a, B> {
 /// Metrics information for a run.
 #[derive(Copy, Clone, Default, Debug, PartialEq)]
 pub struct RunMetrics {
+    /// Typographic ascent from the physical font's em baseline, before the
+    /// paragraph's writing-mode transform. Retained for glyph paint geometry;
+    /// `ascent` instead follows the logical inline/block layout axes.
+    pub font_ascent: f32,
     /// Typographic ascent.
     pub ascent: f32,
     /// Typographic descent.
