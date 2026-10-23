@@ -1490,10 +1490,22 @@ impl SceneWidget {
             this.widget.image = Self::image_widget(view);
             this.widget.image_size = view.image_size();
             this.ctx.children_changed();
-        } else if !has_image && let Some(image) = this.widget.image.take() {
+        } else if !matches!(view.node.kind, NodeKind::Image { .. })
+            && let Some(image) = this.widget.image.take()
+        {
             this.ctx.remove_child(image);
             this.widget.image_size = Size::ZERO;
             this.ctx.children_changed();
+        } else if !has_image
+            && this.widget.projection.images != view.images
+            && let Some(pod) = &mut this.widget.image
+            && let Some(mut image) = this.ctx.get_mut(pod)
+        {
+            // Keep the mounted widget while releasing pixels from hidden views.
+            // The image service can still evict idle resources under pressure.
+            Image::set_tiles(&mut image, view.image_size(), Vec::new());
+            image.ctx.request_render();
+            this.widget.image_size = view.image_size();
         }
         if this.widget.node.props.color != view.node.props.color
             && let Some(pod) = &mut this.widget.image

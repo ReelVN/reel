@@ -413,8 +413,10 @@ fn image_resolution_and_removal_invalidate_only_the_resource_branch() {
     let previous = view.clone();
     let (mut root, widget) = mount(&view);
     assert!(painted_images(&mut root).contains(&image.data.id()));
+    let pixels = Arc::new(vec![0; 16]);
+    let released_pixels = Arc::downgrade(&pixels);
     let replacement = ImageData {
-        data: Blob::new(Arc::new(vec![0; 16])),
+        data: Blob::new(pixels),
         ..image.clone()
     };
     resolve_image_nodes(&mut view.root, |node, _| {
@@ -455,9 +457,50 @@ fn image_resolution_and_removal_invalidate_only_the_resource_branch() {
         replacement.data.id()
     );
     assert_eq!(image_widget.syncs, 1);
+    let image_id = image_widget.image.as_ref().unwrap().id();
     assert!(
         painted_images(&mut root).contains(&replacement.data.id()),
         "same-size resource completion must replace cached image paint"
+    );
+    for visible in [false, true, false] {
+        let node = stage.node(picture).unwrap();
+        let mut props = node.props.clone();
+        props.visible = visible;
+        stage.update(picture, node.kind.clone(), props).unwrap();
+        let mut next = StageView::update(&stage, Some(&view));
+        if visible {
+            resolve_image_nodes(&mut next.root, |node, _| {
+                if node.node.id == picture {
+                    SceneImages {
+                        image: Some(replacement.clone()),
+                        mask_images: vec![image.clone()].into(),
+                        ..Default::default()
+                    }
+                } else {
+                    SceneImages::default()
+                }
+            });
+        } else {
+            next.resolve_images(&BTreeMap::new());
+        }
+        sync(&mut root, widget, &next);
+        let parent = scene(&root, widget);
+        let picture_widget = root
+            .get_widget(parent.children[1].1.id())
+            .unwrap()
+            .downcast::<SceneWidget>()
+            .unwrap();
+        assert_eq!(picture_widget.image.as_ref().unwrap().id(), image_id);
+        assert_eq!(
+            painted_images(&mut root).contains(&replacement.data.id()),
+            visible
+        );
+        view = next;
+    }
+    drop(replacement);
+    assert!(
+        released_pixels.upgrade().is_none(),
+        "hidden widget and invalidated drawing cache release idle pixels"
     );
     stage
         .update(picture, NodeKind::Stack, NodeProps::default())
