@@ -46,7 +46,10 @@ pub(super) fn assert_cleared(f: &bc::FunctionDef, reg: u32, after: usize) {
     let next = (after + 1..f.code.len())
         .find(|&pc| writes(f, pc, reg))
         .unwrap();
-    assert_eq!(f.code[next].opcode, bc::Opcode::Clear as u16);
+    assert!(matches!(
+        bc::instruction_spec(f.code[next].opcode).unwrap().opcode,
+        bc::Opcode::Clear | bc::Opcode::Clear2 | bc::Opcode::Clear3
+    ));
 }
 fn sequence(f: &bc::FunctionDef, pc: usize) -> bc::RegWindow {
     let bc::Descriptor::Sequence(window) = f.descriptors[f.code[pc].operands[1] as usize] else {

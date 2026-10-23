@@ -27,6 +27,7 @@ pub(super) fn write(ir: &mut IrModule) -> Result<(), Box<Error>> {
         b.span = f.span;
         let definition = &ir.package.functions[f.output.index()];
         direct_destinations(&mut f, definition, b)?;
+        pack_clears(&mut f, b)?;
         let mut pcs = b.filled(f.blocks.len(), None)?;
         let mut boundaries = Vec::new();
         b.reserve(&mut boundaries, f.layout.len() + 1)?;
@@ -213,6 +214,45 @@ fn direct_destinations(
         block.operations.truncate(write);
     }
     b.release(empty);
+    Ok(())
+}
+
+/// Pack adjacent root releases within a block before assigning PCs. Each
+/// register is still cleared before the next computation or control-flow edge.
+fn pack_clears(function: &mut Function, b: &mut super::budget::Budget) -> Result<(), Box<Error>> {
+    for block in &mut function.blocks {
+        let mut read = 0;
+        let mut write = 0;
+        while read < block.operations.len() {
+            b.span = block.operations[read].span;
+            b.work(1)?;
+            let mut operation = Operation {
+                instruction: block.operations[read].instruction,
+                span: block.operations[read].span,
+            };
+            let mut count = 1;
+            if operation.instruction.opcode == bc::Opcode::Clear as u16 {
+                while count < 3
+                    && let Some(next) = block.operations.get(read + count)
+                    && next.instruction.opcode == bc::Opcode::Clear as u16
+                    && next.span == operation.span
+                {
+                    b.work(1)?;
+                    operation.instruction.operands[count] = next.instruction.operands[0];
+                    count += 1;
+                }
+                operation.instruction.opcode = match count {
+                    2 => bc::Opcode::Clear2,
+                    3 => bc::Opcode::Clear3,
+                    _ => bc::Opcode::Clear,
+                } as u16;
+            }
+            block.operations[write] = operation;
+            write += 1;
+            read += count;
+        }
+        block.operations.truncate(write);
+    }
     Ok(())
 }
 

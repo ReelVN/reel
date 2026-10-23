@@ -330,6 +330,8 @@ pub const SUPPORTED_OPCODES: &[Opcode] = &[
     Opcode::LoadConst,
     Opcode::Move,
     Opcode::Clear,
+    Opcode::Clear2,
+    Opcode::Clear3,
     Opcode::BindInit,
     Opcode::BindRead,
     Opcode::BindWrite,

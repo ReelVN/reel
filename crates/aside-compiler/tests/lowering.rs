@@ -6,6 +6,16 @@ use aside_compiler::{
 };
 use aside_vm::bytecode as bc;
 
+fn clears(instruction: &bc::Instruction, register: u32) -> bool {
+    let count = match bc::instruction_spec(instruction.opcode).unwrap().opcode {
+        bc::Opcode::Clear => 1,
+        bc::Opcode::Clear2 => 2,
+        bc::Opcode::Clear3 => 3,
+        _ => 0,
+    };
+    instruction.operands[..count].contains(&register)
+}
+
 #[path = "lowering/call_arguments.rs"]
 mod call_arguments;
 #[path = "lowering/collections_locations.rs"]
@@ -139,7 +149,10 @@ fn source_runs_preserve_computation_and_control_flow_locations() {
                                 bc::instruction_spec(operation.instruction.opcode)
                                     .unwrap()
                                     .opcode,
-                                bc::Opcode::Move | bc::Opcode::Clear
+                                bc::Opcode::Move
+                                    | bc::Opcode::Clear
+                                    | bc::Opcode::Clear2
+                                    | bc::Opcode::Clear3
                             )
                         })
                         .map(|operation| operation.span)
@@ -166,7 +179,7 @@ fn source_runs_preserve_computation_and_control_flow_locations() {
             .filter(|(_, instruction)| {
                 !matches!(
                     bc::instruction_spec(instruction.opcode).unwrap().opcode,
-                    bc::Opcode::Move | bc::Opcode::Clear
+                    bc::Opcode::Move | bc::Opcode::Clear | bc::Opcode::Clear2 | bc::Opcode::Clear3
                 )
             })
             .collect();
@@ -427,13 +440,11 @@ fn forward_readonly_cells_and_mutual_recursion_keep_binding_identity() {
             .unwrap();
         assert_eq!(init_pc < first_read_pc, initialized);
         assert!(f.code.iter().any(|i| {
-            i.opcode
-                == if cell {
-                    bc::Opcode::CellNew as u16
-                } else {
-                    bc::Opcode::Clear as u16
-                }
-                && i.operands[0] == binding as u32
+            if cell {
+                i.opcode == bc::Opcode::CellNew as u16 && i.operands[0] == binding as u32
+            } else {
+                clears(i, binding as u32)
+            }
         }));
     }
     let later = outer
@@ -1603,7 +1614,10 @@ fn assert_temporary_initialization(f: &bc::FunctionDef) {
             }
             spec.visit_registers(f, &i, |reg, access| {
                 if matches!(access, bc::Access::Write | bc::Access::ReadWrite) {
-                    state[reg.index()] = i.opcode != bc::Opcode::Clear as u16;
+                    state[reg.index()] = !matches!(
+                        spec.opcode,
+                        bc::Opcode::Clear | bc::Opcode::Clear2 | bc::Opcode::Clear3
+                    );
                 }
             })
             .unwrap();

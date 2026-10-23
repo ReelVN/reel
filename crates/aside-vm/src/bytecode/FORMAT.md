@@ -116,6 +116,8 @@ begin at register_count.
 | 000b | GlobalRead | d,q:Global(module,global) | next | yes | - |
 | 000c | GlobalInit | x,q:Global | next | yes | - |
 | 000d | GlobalWrite | x,q:Global | next | yes | - |
+| 000e | Clear2 | d,d | next (sets both slots uninitialized) | no | - |
+| 000f | Clear3 | d,d,d | next (sets all three slots uninitialized) | no | - |
 | 0010–001e | Add,Sub,Mul,Div,Rem,BitAnd,BitOr,BitXor,Shl,Shr,Eq,Ne,Lt,Le,Gt | d,x,y (codes in order) | next | yes | - |
 | 001f | Ge | d,x,y | next | yes | - |
 | 0020–0023 | Neg,Pos,Not,BitNot | d,x | next | yes | - |

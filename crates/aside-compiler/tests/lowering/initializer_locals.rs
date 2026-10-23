@@ -186,7 +186,13 @@ pub(super) fn assert_local_structure(m: &hir::AnalyzedModule, c: &lowering::Comp
                 .code
                 .iter()
                 .enumerate()
-                .filter(|(_, i)| i.opcode == reset as u16 && i.operands[0] == operand)
+                .filter(|(_, i)| {
+                    if reset == bc::Opcode::Clear {
+                        clears(i, operand)
+                    } else {
+                        i.opcode == reset as u16 && i.operands[0] == operand
+                    }
+                })
                 .map(|(pc, _)| pc)
                 .collect();
             // Tests here use reachable declarations. One static reset site is
@@ -327,8 +333,7 @@ fn root_exports_shadowing_forward_recursion_and_shared_capture_sources() {
             .code
             .iter()
             .position(|i| {
-                (i.opcode == bc::Opcode::CellNew as u16 || i.opcode == bc::Opcode::Clear as u16)
-                    && i.operands[0] == b.0
+                (i.opcode == bc::Opcode::CellNew as u16 && i.operands[0] == b.0) || clears(i, b.0)
             })
             .unwrap();
         assert!(
