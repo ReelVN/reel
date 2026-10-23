@@ -56,6 +56,7 @@ fn virtual_fixture_with_font(
             NodeKind::Button {
                 label: None,
                 listening: true,
+                focus_on_pointer: true,
             },
             NodeProps {
                 height: Some(40.),
@@ -304,6 +305,7 @@ fn virtual_list_navigation_waits_for_accepted_rows_and_cancels_old_confirmation(
                 NodeKind::Button {
                     label: None,
                     listening: true,
+                    focus_on_pointer: true,
                 },
                 NodeProps {
                     height: Some(40.),
@@ -472,6 +474,7 @@ fn virtual_list_navigation_finds_controls_beyond_initial_nonfocusable_rows() {
                 NodeKind::Button {
                     label: None,
                     listening: true,
+                    focus_on_pointer: true,
                 }
             };
             let child = f
@@ -1885,6 +1888,7 @@ fn text_wrap_keeps_control_labels_on_their_existing_overflow_path() {
             NodeKind::Button {
                 label: Some("A control label keeps its existing layout".into()),
                 listening: true,
+                focus_on_pointer: true,
             },
             NodeProps {
                 width: Some(120.),
@@ -2402,6 +2406,7 @@ fn same_parent_reorder_preserves_widgets_focus_and_presented_hit_order() {
                 NodeKind::Button {
                     label: Some(label.into()),
                     listening: true,
+                    focus_on_pointer: true,
                 },
                 NodeProps {
                     width: Some(160.),
@@ -2649,6 +2654,7 @@ fn decoded_frames_preserve_geometry_skip_asset_io_and_release_pixels_with_last_v
             NodeKind::Button {
                 label: None,
                 listening: true,
+                focus_on_pointer: true,
             },
             f.stage.node(f.root).unwrap().props.clone(),
         )

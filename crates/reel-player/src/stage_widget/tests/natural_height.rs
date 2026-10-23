@@ -73,6 +73,7 @@ fn virtual_list_natural_first_frame_packs_measured_neighbors_and_keeps_actual_hi
                 NodeKind::Button {
                     label: None,
                     listening: true,
+                    focus_on_pointer: true,
                 },
                 NodeProps {
                     height: Some(height),

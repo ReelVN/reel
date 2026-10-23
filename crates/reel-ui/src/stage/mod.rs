@@ -284,6 +284,9 @@ pub enum NodeKind {
     Button {
         label: Option<String>,
         listening: bool,
+        /// Request keyboard focus on pointer press; false preserves its current owner.
+        /// Tab and controller focus navigation remain enabled.
+        focus_on_pointer: bool,
     },
     Slider {
         value: f64,

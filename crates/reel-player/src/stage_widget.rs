@@ -1992,7 +1992,14 @@ impl Widget for SceneWidget {
         if self.is_button() {
             let consumes = matches!(event, PointerEvent::Down(e) if e.button.is_none_or(|b| b == PointerButton::Primary))
                 || matches!(event, PointerEvent::Up(_)) && ctx.is_active();
-            if ButtonBehavior::pointer(ctx, event).is_some() {
+            let focus_on_pointer = !matches!(
+                self.node.kind,
+                NodeKind::Button {
+                    focus_on_pointer: false,
+                    ..
+                }
+            );
+            if ButtonBehavior::pointer(ctx, event, focus_on_pointer).is_some() {
                 ctx.submit_action::<Self::Action>(self.activate());
                 ctx.request_render();
             }

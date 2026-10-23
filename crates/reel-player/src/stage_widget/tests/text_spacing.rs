@@ -67,6 +67,7 @@ fn text_spacing_moves_real_glyphs_and_keeps_stable_widget_layouts() {
         NodeKind::Button {
             label: Some("A A A".into()),
             listening: false,
+            focus_on_pointer: true,
         },
         NodeKind::TextInput {
             multiline: false,
