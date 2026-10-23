@@ -588,6 +588,14 @@ impl SessionVm {
                 || self.transitions.needs_time())
     }
 
+    /// Inspect current waits for running finite activities without advancing them.
+    /// Paused producers, periodic ticks and unbounded repeats are excluded. The
+    /// returned identities expire with their actual VM waits and are not restored
+    /// across session checkpoints.
+    pub fn finite_activity_waits(&self) -> Result<Vec<WaitId>, AdapterError> {
+        self.activities.finite_waits(&self.vm)
+    }
+
     pub fn activities_poll_after(&self) -> Option<std::time::Duration> {
         if self.revoked {
             return None;

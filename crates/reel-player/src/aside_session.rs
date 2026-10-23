@@ -1,4 +1,5 @@
 //! Compiler/VM-to-SessionUi assembly shared by library hosts and the native window.
+mod window;
 use crate::session::{ProjectionStamp, RecordedProjection, SessionUi, SessionWidget};
 use reel_engine::aside::{
     DeliveryId, FaultInfo, GcBudget, GcProgress, NativeDispatch, RunOutcome, SessionBudget,
@@ -147,7 +148,10 @@ impl AsideSessionUi {
     pub(crate) fn await_initial_stage(&mut self) {
         self.awaiting_stage = true;
     }
-    pub(crate) fn prepare_restored(&mut self, budget: SliceBudget) -> Result<bool, Error> {
+    /// Rebuilds a restored projection while keeping story continuations and time fixed.
+    /// Hosts repeat this after layout feedback or resource IO until the saved stage
+    /// is ready to present, then resume ordinary execution from that boundary.
+    pub fn prepare_restored(&mut self, budget: SliceBudget) -> Result<bool, Error> {
         self.transitions.maintain(&mut self.vm, &self.ui.assets())?;
         if !self.transitions.ready() {
             return Ok(false);

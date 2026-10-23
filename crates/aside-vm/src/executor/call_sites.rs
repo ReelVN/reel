@@ -70,6 +70,20 @@ impl Iterator for HostCallSites<'_> {
 }
 
 impl Vm {
+    /// Borrows the logical caller path of a pending native wait without allocating.
+    /// Completed, cancelled and stale waits return `None`. Locations identify
+    /// program positions; task, frame and wait identities are omitted.
+    pub fn wait_call_sites(&self, wait: WaitId) -> Option<HostCallSites<'_>> {
+        if !self.wait_is_pending(wait) {
+            return None;
+        }
+        let task = self.task(wait.task).ok()?;
+        Some(HostCallSites {
+            frames: &task.frames.data,
+            next: 0,
+        })
+    }
+
     /// Borrow the complete logical caller path of this live, issued native.
     /// Source locations remain available separately on the ticket for diagnostics.
     pub fn host_call_sites(&self, ticket: HostTicket) -> Result<HostCallSites<'_>, VmError> {
@@ -104,6 +118,26 @@ mod tests {
                 other => panic!("expected native: {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn pending_waits_borrow_call_sites_and_retire_with_their_continuation() {
+        let (mut vm, ticket) = issued();
+        let expected = vm.host_call_sites(ticket).unwrap().collect::<Vec<_>>();
+        let wait = ticket.wait_id();
+        assert!(vm.wait_call_sites(wait).is_none());
+        vm.respond(ticket, HostResponse::Pending(wait)).unwrap();
+        let objects = vm.heap.stats().live_objects;
+        assert_eq!(vm.wait_call_sites(wait).unwrap().collect::<Vec<_>>(), expected);
+        assert_eq!(vm.heap.stats().live_objects, objects);
+        vm.complete(wait, Completion::Ready(Value::int(42))).unwrap();
+        assert!(vm.wait_call_sites(wait).is_none());
+
+        let (mut vm, ticket) = issued();
+        vm.respond(ticket, HostResponse::Pending(ticket.wait_id())).unwrap();
+        vm.cancel_task(ticket.task).unwrap();
+        assert!(vm.wait_call_sites(ticket.wait_id()).is_none());
+        assert!(vm.wait_call_sites(wait).is_none());
     }
 
     #[test]

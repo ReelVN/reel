@@ -2,6 +2,23 @@
 use super::*;
 
 impl Activities {
+    pub(in crate::aside) fn finite_waits(&self, vm: &Vm) -> Result<Vec<WaitId>, AdapterError> {
+        let mut waits = Vec::new();
+        for &(wait, activity, tick) in &self.waits {
+            if tick.is_some()
+                || !vm.wait_is_pending(wait)
+                || state(vm.heap(), activity)? != State::Running
+            {
+                continue;
+            }
+            let description = root_get(vm.heap(), activity, RootSlot::Description)?;
+            if action::duration(vm.heap(), description)?.is_finite() {
+                waits.push(wait);
+            }
+        }
+        Ok(waits)
+    }
+
     pub fn next_tick(&mut self, vm: &mut Vm, ticket: HostTicket) -> Result<(), AdapterError> {
         let clock = vm.host_arguments(ticket)?[0];
         tagged(vm.heap(), clock, ACTIVITY)?;

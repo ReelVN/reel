@@ -8,14 +8,9 @@ impl State {
             if story.capturing() {
                 return Ok(());
             }
-            let position = story
-                .driver()
-                .ui()
-                .pointer_position(&self.presentation.bridge, self.root_id);
             if story
                 .driver_mut()?
-                .adapter_mut()
-                .set_pointer_position(position)?
+                .publish_pointer_position(&self.presentation.bridge, self.root_id)?
             {
                 story.wake_input();
             }
@@ -74,20 +69,12 @@ impl State {
         let configuration = match request.command {
             WindowCommand::Configure(configuration) => configuration,
             WindowCommand::MovePointer { position, owner } => {
-                let destination = if story
-                    .driver()
-                    .adapter()
-                    .pointer_owner_permits_input(owner)?
-                {
-                    story.driver().ui().pointer_destination(
-                        &self.presentation.bridge,
-                        self.root_id,
-                        owner,
-                        position,
-                    )
-                } else {
-                    None
-                };
+                let destination = story.driver().pointer_destination(
+                    &self.presentation.bridge,
+                    self.root_id,
+                    owner,
+                    position,
+                )?;
                 let logical = self
                     .window
                     .inner_size()
