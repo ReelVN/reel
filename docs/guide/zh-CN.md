@@ -159,6 +159,21 @@ let opening = caption.slice_scalars(0..2);
 let has_opening = caption.starts_with(prefix: "第二章");
 ```
 
+二进制数据放在 `resources/` 中，用 `assets.read` 按需载入。读取结果是不可变 `Bytes`，支持长度和字节索引。
+
+```aside
+let cells = await assets.read("data/cells.bin");
+let count = cells.len();
+let first = cells[0];
+```
+
+连续数值用于索引前，使用 `std::math::to_int` 转为整数。它保留整数输入，并将浮点输入向零截断。
+
+```aside
+use std::math::to_int;
+let frame = to_int(1.25 * 20);
+```
+
 ## 3 组合画面与布局
 
 函数返回节点，尾随子节点块组合它们。块内可使用条件、循环和局部变量；返回 `null` 表示这一处省略节点。位置、背景与交互都沿用同一棵舞台树。

@@ -103,13 +103,14 @@ impl AsideSessionUi {
     }
     pub(crate) fn restored(
         session: Session,
-        vm: SessionVm,
+        mut vm: SessionVm,
         locale: String,
         assets: crate::assets::Assets,
         initializer: source::StoryFunction,
         catalogs: crate::localization::CatalogIndex,
     ) -> Result<Self, Error> {
         let mut ui = SessionUi::new(session)?.with_assets(assets);
+        vm.set_asset_loader(Box::new(crate::assets::AssetDataLoader::new(ui.assets())))?;
         ui.set_stage(vm.stage());
         Ok(Self {
             ui,
@@ -210,6 +211,7 @@ impl AsideSessionUi {
         let entry = story.entry;
         let mut ui = SessionUi::new(session)?;
         let mut vm = SessionVm::load_story(ui.session(), story, limits)?;
+        vm.set_asset_loader(Box::new(crate::assets::AssetDataLoader::new(ui.assets())))?;
         let catalogs = crate::localization::CatalogIndex::default();
         vm.set_catalog_loader(Box::new(crate::localization::AssetCatalogLoader::new(
             ui.assets(),
@@ -281,6 +283,11 @@ impl AsideSessionUi {
         catalogs: crate::localization::CatalogIndex,
     ) {
         self.ui.set_assets(assets);
+        self.vm
+            .set_asset_loader(Box::new(crate::assets::AssetDataLoader::new(
+                self.ui.assets(),
+            )))
+            .expect("select assets before driving the story");
         self.catalogs = catalogs;
         self.vm
             .set_catalog_loader(Box::new(crate::localization::AssetCatalogLoader::new(

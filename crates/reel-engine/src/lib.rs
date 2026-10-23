@@ -8,6 +8,7 @@
 use std::{collections::HashSet, ops::Range};
 
 pub mod aside;
+pub mod assets;
 pub mod audio;
 mod dialogue_stream;
 pub mod localization;

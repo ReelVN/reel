@@ -578,6 +578,7 @@ impl SessionVm {
             || self.media.active()
             || self.saves.active()
             || self.captures.active()
+            || self.asset_reads.active()
             || self.transitions.active()
             || self.stage.has_handlers()
     }
@@ -725,6 +726,7 @@ impl SessionVm {
         }
         self.maintain_media()?;
         self.maintain_localization()?;
+        self.maintain_asset_reads(64)?;
         self.activities.maintain(&mut self.vm)?;
         self.maintain_particles(64)?;
         if self.particles.needs_work(self.stage.retirement_revision) {

@@ -53,6 +53,7 @@ pub fn builtin_members(
         Type::String => ObjectKind::String,
         Type::Tuple(_) => ObjectKind::Tuple,
         Type::Generator => ObjectKind::Generator,
+        Type::Named(name) if hir.name(*name) == "Bytes" => ObjectKind::Bytes,
         Type::Named(name) if hir.name(*name) == "tuple" => ObjectKind::Tuple,
         Type::Union(members) => {
             let mut selected: Option<&BuiltinTypeMembers> = None;
@@ -82,6 +83,7 @@ fn receiver_name(kind: ObjectKind) -> &'static str {
         ObjectKind::Tuple => "tuple",
         ObjectKind::Table => "table",
         ObjectKind::String => "string",
+        ObjectKind::Bytes => "Bytes",
         ObjectKind::Generator => "generator",
         _ => unreachable!("VM builtin receiver declaration"),
     }

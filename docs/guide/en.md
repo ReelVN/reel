@@ -159,6 +159,21 @@ let opening = caption.slice_scalars(0..2);
 let has_opening = caption.starts_with(prefix: "第二章");
 ```
 
+Keep binary data in `resources/` and load it on demand with `assets.read`. The result is immutable `Bytes`, with length and byte indexing.
+
+```aside
+let cells = await assets.read("data/cells.bin");
+let count = cells.len();
+let first = cells[0];
+```
+
+Use `std::math::to_int` to turn a continuous value into an integer index. It preserves integer input and truncates floating-point input toward zero.
+
+```aside
+use std::math::to_int;
+let frame = to_int(1.25 * 20);
+```
+
 ## 3 Compose scenes and layout
 
 Functions return nodes, and trailing child blocks compose them. Use conditions, loops and local variables inside a block; returning `null` omits a node at that position. Placement, backgrounds and interaction share the same stage tree.

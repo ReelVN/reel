@@ -1,5 +1,7 @@
 //! Shared author-resource IO and decoding. Adapters own platform work; consumers own waits.
+mod data;
 mod decode;
+pub use data::AssetDataLoader;
 mod io;
 mod stream;
 pub use stream::{AssetStream, StreamControl};

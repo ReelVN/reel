@@ -78,6 +78,7 @@ pub(super) enum Part {
     SaveRequest,
     Transitions,
     Transition,
+    AssetRead,
 }
 #[derive(Serialize, Deserialize)]
 pub(super) struct Record {
@@ -190,7 +191,7 @@ pub struct SessionCapture<'a> {
 impl SessionVm {
     fn snapshot_records(&self) -> RecordStream<'_> {
         use std::iter::once_with;
-        let streams: [RecordStream<'_>; 13] = [
+        let streams: [RecordStream<'_>; 14] = [
             Box::new(
                 once_with(|| {
                     Record::new(
@@ -245,6 +246,7 @@ impl SessionVm {
             self.activities.snapshot_records(),
             self.results.snapshot_records(),
             self.saves.snapshot_records(),
+            self.asset_reads.snapshot_records(),
             self.media.snapshot_records(),
             self.translations.snapshot_records(),
             Box::new(once_with(|| {
@@ -568,6 +570,11 @@ impl SessionRestore<'_> {
                     }
                     Part::Saves | Part::SaveRequest => {
                         runtime.restore_save_record(record, map, self.committed_save)?;
+                    }
+                    Part::AssetRead => {
+                        runtime
+                            .asset_reads
+                            .restore_record(record, map, runtime.vm.heap_mut())?;
                     }
                     Part::Header => {
                         let mut header: Header = record.read()?;

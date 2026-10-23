@@ -59,8 +59,8 @@ macro_rules! methods {
 }
 
 methods! {
-    Len: "len" [Array,Tuple,Table] (), None => "int", false,
-        "Return the number of sequence elements or table entries.";
+    Len: "len" [Array,Tuple,Table,Bytes] (), None => "int", false,
+        "Return the number of sequence elements, table entries or immutable bytes.";
     Append: "append" [Array] (), Some(BuiltinParameter {name:"values",ty:"any",default:None}) => "array", true,
         "Append positional values in order and return this array. An empty call preserves it.";
     Pop: "pop" [Array] (), None => "any", true,

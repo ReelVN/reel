@@ -34,6 +34,26 @@ fn expression_in<'a>(module: EditorModule<'a>, text: &str) -> &'a SourceType {
 }
 
 #[test]
+fn byte_indexing_and_length_use_the_vm_declarations() {
+    let module = module(
+        "fn main(bytes: Bytes, index: int) { let count=bytes.len(); let sample=bytes[index]; }",
+    );
+    assert_eq!(expression(&module, "bytes.len()").ty, TypeHint::Int);
+    assert_eq!(expression(&module, "bytes[index]").ty, TypeHint::Int);
+    let members = builtin_catalog()
+        .types
+        .iter()
+        .find(|group| group.receiver == TypeHint::Named("Bytes".into()))
+        .unwrap();
+    assert!(
+        members
+            .members
+            .iter()
+            .any(|member| member.symbol.name == "len")
+    );
+}
+
+#[test]
 fn ordinary_returns_parts_and_arrays_preserve_source_fields() {
     let module = module(
         r#"

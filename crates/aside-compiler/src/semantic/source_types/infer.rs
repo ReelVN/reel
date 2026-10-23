@@ -1212,6 +1212,8 @@ impl Inference<'_> {
                             .member_value(&value, &key, state, 0)
                             .unwrap_or_else(|| self.materialize(field.value.clone(), state));
                     }
+                } else if matches!(&info.ty, TypeHint::Named(name) if name == "Bytes") {
+                    result = self.materialize(self.leaf(TypeHint::Int), state);
                 } else if matches!(info.shape, Some(SourceShape::Tuple(_)))
                     || info.element().is_some()
                 {

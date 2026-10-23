@@ -28,6 +28,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         ("Task", true, &["cancel"][..]),
         ("Presentation", false, &["cancel"][..]),
         ("Capture", false, &["cancel"][..]),
+        ("AssetRead", false, &["cancel"][..]),
         ("WindowOperation", false, &["cancel"][..]),
         ("Condition", true, &["cancel"][..]),
         ("ParticleActivity", false, &[][..]),
@@ -59,7 +60,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
             members,
         );
         descriptor.await_result = Some(match name {
-            "Capture" => named("Bytes"),
+            "Capture" | "AssetRead" => named("Bytes"),
             "WindowOperation" => TypeHint::Union(vec![TypeHint::Table, TypeHint::Bool]),
             "Condition" => TypeHint::Bool,
             "ParticleActivity" => TypeHint::String,
@@ -122,6 +123,7 @@ pub(super) enum Kind {
     Capture = -1106,
     Window = -1107,
     Condition = -1108,
+    AssetRead = -1109,
 }
 
 #[repr(u32)]
@@ -182,7 +184,7 @@ pub(super) fn reserve_queue<T>(
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(super) struct Results {
     #[serde(skip)]
-    type_ids: [Option<aside_vm::HostTypeId>; 8],
+    type_ids: [Option<aside_vm::HostTypeId>; 9],
     #[serde(skip)]
     geometry_keys: super::observable::SchemaKeys,
     methods: Option<Methods>,
@@ -337,6 +339,7 @@ pub(super) fn kind(heap: &Heap, object: Value) -> Result<Kind, AdapterError> {
         Some(-1106) => Ok(Kind::Capture),
         Some(-1107) => Ok(Kind::Window),
         Some(-1108) => Ok(Kind::Condition),
+        Some(-1109) => Ok(Kind::AssetRead),
         _ => Err(AdapterError::Input("expected completion or task")),
     }
 }
@@ -376,6 +379,26 @@ pub(super) fn pending(heap: &mut Heap, object: Value) -> Result<bool, AdapterErr
 }
 pub(super) fn owner(heap: &Heap, object: Value) -> Result<Value, AdapterError> {
     Ok(heap.host_payload(object, Slot::Owner as u32)?)
+}
+pub(super) fn attach(heap: &mut Heap, result: Value, value: Value) -> Result<(), AdapterError> {
+    heap.set_host_payload(result, Slot::Attachment as u32, value)?;
+    Ok(())
+}
+pub(super) fn attached(heap: &Heap, result: Value) -> Result<Value, AdapterError> {
+    Ok(heap.host_payload(result, Slot::Attachment as u32)?)
+}
+pub(super) fn asset_path(heap: &Heap, result: Value) -> Result<Value, AdapterError> {
+    if kind(heap, result)? != Kind::AssetRead {
+        return Err(AdapterError::Input("expected asset read result"));
+    }
+    let value = heap.host_payload(result, Slot::Target as u32)?;
+    if heap.info(value)?.kind != aside_vm::ObjectKind::String {
+        return Err(AdapterError::Input("asset read source requires string"));
+    }
+    Ok(value)
+}
+pub(super) fn asset_error(heap: &Heap, result: Value) -> Result<Value, AdapterError> {
+    Ok(heap.host_payload(result, Slot::Value as u32)?)
 }
 fn response(heap: &mut Heap, object: Value) -> Result<Option<Completion>, AdapterError> {
     let state = state(heap, object)?;
@@ -434,14 +457,6 @@ impl Results {
             self.changed();
             self.owners_changed();
         }
-        Ok(())
-    }
-    pub(super) fn attach_condition(
-        heap: &mut Heap,
-        result: Value,
-        output: Value,
-    ) -> Result<(), AdapterError> {
-        heap.set_host_payload(result, Slot::Attachment as u32, output)?;
         Ok(())
     }
     /// One producer root per result, including while its presentation is disarmed.
@@ -506,6 +521,28 @@ impl Results {
     ) -> Result<Value, AdapterError> {
         self.create(vm, owner, Kind::Capture)
     }
+    pub(super) fn create_asset_read(
+        &mut self,
+        vm: &mut Vm,
+        owner: Value,
+        path: Value,
+        chunk: usize,
+    ) -> Result<Value, AdapterError> {
+        let result = self.create(vm, owner, Kind::AssetRead)?;
+        vm.heap_mut()
+            .set_host_payload(result, Slot::Target as u32, path)?;
+        // A transfer can exhaust VM capacity. Preserve a catchable terminal
+        // message before IO begins, while constructing this result can fail
+        // through the ordinary native admission boundary.
+        let fallback = super::text::alloc_string(
+            vm.heap_mut(),
+            "asset data could not be retained within the VM budget",
+            chunk,
+        )?;
+        vm.heap_mut()
+            .set_host_payload(result, Slot::Value as u32, fallback)?;
+        Ok(result)
+    }
     fn create(&mut self, vm: &mut Vm, owner: Value, kind: Kind) -> Result<Value, AdapterError> {
         self.create_typed(vm, owner, kind, None)
     }
@@ -558,7 +595,7 @@ impl Results {
         ];
         let object = heap.alloc_host(
             fields,
-            &slots[..if matches!(kind, Kind::Presentation | Kind::Condition) {
+            &slots[..if matches!(kind, Kind::Presentation | Kind::Condition | Kind::AssetRead) {
                 6
             } else if kind == Kind::Particle {
                 5
@@ -584,6 +621,7 @@ impl Results {
                 Kind::Capture => "Capture",
                 Kind::Window => "WindowOperation",
                 Kind::Condition => "Condition",
+                Kind::AssetRead => "AssetRead",
             };
             let id = heap.host_type(&format!("reel::types::{name}"))?;
             self.type_ids[type_index] = Some(id);
@@ -981,7 +1019,11 @@ impl SessionVm {
                 if kind != Kind::Completion
                     && !(matches!(
                         kind,
-                        Kind::Presentation | Kind::Capture | Kind::Window | Kind::Condition
+                        Kind::Presentation
+                            | Kind::Capture
+                            | Kind::Window
+                            | Kind::Condition
+                            | Kind::AssetRead
                     ) && symbol == "reel::completion::cancel")
                 {
                     return Err(AdapterError::Input("expected completion"));
