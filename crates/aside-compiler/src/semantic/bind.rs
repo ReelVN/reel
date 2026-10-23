@@ -894,6 +894,17 @@ impl Binder<'_> {
         if self.signature_ready.contains(&f) {
             return self.set_ty(n, ty);
         }
+        if receiver == Receiver::ExplicitSelf
+            && self.out.functions[f.0 as usize].kind == FunctionKind::Generator
+            && let Some(name) = self.name(n)
+            && self.out.hir.name(name.name.unwrap()) == "init"
+        {
+            self.error(
+                D::InvalidControl,
+                name.span,
+                "class initializers cannot be generators",
+            );
+        }
         let previous = self.scope;
         self.scope = self.new_scope(Some(previous), Some(f), self.span(n));
         self.out.facts[n.0 as usize].scope = Some(self.scope);
@@ -1428,12 +1439,17 @@ impl Binder<'_> {
                     .iter()
                     .take_while(|parameter| !parameter.rest)
                     .count();
+                let result = match f.kind {
+                    FunctionKind::Plain => f.return_type,
+                    FunctionKind::Async => FUTURE,
+                    FunctionKind::Generator => GENERATOR,
+                };
                 (p.len() <= fixed || parameters.last().is_some_and(|parameter| parameter.rest))
                     && parameters
                         .iter()
                         .skip(p.len())
                         .all(|parameter| parameter.default.is_some() || parameter.rest)
-                    && self.compatible(f.return_type, *r)
+                    && self.compatible(result, *r)
                     && parameters
                         .iter()
                         .take(fixed)
@@ -1870,7 +1886,7 @@ impl Binder<'_> {
                 for c in children {
                     self.visit(c, ctx);
                 }
-                ANY
+                NULL
             }
             H::Class => self.class_node(n, &children, ctx),
             H::NamedType | H::TupleType | H::UnionType | H::FunctionType | H::GroupType => {
@@ -2021,7 +2037,9 @@ impl Binder<'_> {
         let op = self.tokens(n).first().map(|t| t.kind);
         match op {
             Some(K::Await) => {
-                if ctx.no_wait && (!ctx.conditional || ctx.cleanup_boundary.is_some()) {
+                if ctx.no_wait
+                    && (!ctx.conditional || ctx.generator || ctx.cleanup_boundary.is_some())
+                {
                     self.error(
                         D::NoWait,
                         self.span(n),
@@ -2779,7 +2797,8 @@ impl Binder<'_> {
         };
         let value = source.map_or(ANY, |c| self.visit(c, ctx));
         if asynchronous {
-            if ctx.no_wait && (!ctx.conditional || ctx.cleanup_boundary.is_some()) {
+            if ctx.no_wait && (!ctx.conditional || ctx.generator || ctx.cleanup_boundary.is_some())
+            {
                 self.error(
                     D::NoWait,
                     self.span(n),

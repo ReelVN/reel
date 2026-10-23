@@ -240,6 +240,17 @@ impl Vm {
             return Ok(false);
         }
         let result = match call.method {
+            Builtin::GeneratorNext | Builtin::GeneratorClose => {
+                let action = if call.method == Builtin::GeneratorNext {
+                    GeneratorAction::Pair(call.dest)
+                } else {
+                    GeneratorAction::Close(Some(call.dest))
+                };
+                if let Err(kind) = self.generator_begin(s, receiver, action) {
+                    self.collection_fault(s, kind)?;
+                }
+                return Ok(true);
+            }
             Builtin::Find | Builtin::Contains => {
                 self.start_search(s, call)?;
                 return Ok(true);

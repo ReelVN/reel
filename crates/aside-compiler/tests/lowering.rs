@@ -52,6 +52,66 @@ fn compiled(source: &str) -> lowering::Compilation {
     }
     result
 }
+
+#[test]
+fn generators_lower_yield_destinations_defaults_and_owned_for_cleanup() {
+    let result = compiled(
+        r#"
+gen fn items(value: int = 3) -> bool {
+    try { let resumed = yield value; yield; return resumed == null; }
+    finally { let finished = true; }
+}
+fn consume() {
+    outer: for value in items() {
+        for nested in items(value) {
+            if nested == 0 { continue; }
+            if nested == 1 { continue outer; }
+            if nested == 2 { break outer; }
+            if nested == 3 { return nested; }
+            throw nested;
+        }
+    }
+    0
+}
+"#,
+    );
+    let package = result.program.package();
+    let generator = package
+        .functions
+        .iter()
+        .find(|function| package.symbols[function.name.index()] == "items")
+        .unwrap();
+    assert_eq!(generator.kind, bc::FunctionKind::Generator);
+    assert_eq!(generator.context, bc::Context::NoWait);
+    assert_eq!(
+        generator
+            .code
+            .iter()
+            .filter(|op| op.opcode == bc::Opcode::Yield as u16)
+            .count(),
+        2
+    );
+    let consumer = package
+        .functions
+        .iter()
+        .find(|function| package.symbols[function.name.index()] == "consume")
+        .unwrap();
+    assert_eq!(consumer.regions.len(), 2);
+    for region in &consumer.regions {
+        let cleanup = region.finally.unwrap();
+        let code = &consumer.code[cleanup.start.index()..cleanup.end.index()];
+        assert_eq!(
+            code.iter()
+                .filter(|op| op.opcode == bc::Opcode::IterClose as u16)
+                .count(),
+            1
+        );
+        assert!(
+            code.iter()
+                .any(|op| op.opcode == bc::Opcode::EndFinally as u16)
+        );
+    }
+}
 fn source_span(f: &bc::FunctionDef, pc: usize) -> bc::SourceSpan {
     f.source_map[f.source_map.partition_point(|entry| entry.pc.index() <= pc) - 1].span
 }
@@ -598,6 +658,7 @@ fn source_entry_context_and_fragment_identity_survive_lowering() {
     use aside_compiler::{AnalysisContext, EntryPoint, ParseOptions, analyze_source};
     for context in [
         AnalysisContext::Function,
+        AnalysisContext::Generator,
         AnalysisContext::NoWait,
         AnalysisContext::Module,
     ] {
@@ -607,10 +668,10 @@ fn source_entry_context_and_fragment_identity_survive_lowering() {
             version: "revision-7".into(),
             ..Default::default()
         };
-        let source = if context == AnalysisContext::Function {
-            "let x=7; return x;"
-        } else {
-            "7;"
+        let source = match context {
+            AnalysisContext::Function => "let x=7; return x;",
+            AnalysisContext::Generator => "let x=7; yield x; return x;",
+            _ => "7;",
         };
         let analysis = analyze_source(
             source,
@@ -633,7 +694,7 @@ fn source_entry_context_and_fragment_identity_survive_lowering() {
             entry.context,
             match context {
                 AnalysisContext::Function => bc::Context::Ordinary,
-                AnalysisContext::NoWait => bc::Context::NoWait,
+                AnalysisContext::NoWait | AnalysisContext::Generator => bc::Context::NoWait,
                 _ => bc::Context::Init,
             }
         );
@@ -643,8 +704,19 @@ fn source_entry_context_and_fragment_identity_survive_lowering() {
                 .is_some(),
             context == AnalysisContext::Module
         );
-        if context == AnalysisContext::Function {
+        if matches!(
+            context,
+            AnalysisContext::Function | AnalysisContext::Generator
+        ) {
             assert!(!entry.bindings.is_empty());
+            assert_eq!(
+                entry.kind,
+                if context == AnalysisContext::Generator {
+                    bc::FunctionKind::Generator
+                } else {
+                    bc::FunctionKind::Plain
+                }
+            );
         } else {
             // Module fragments use initializer locals; NoWait alone supplies
             // no author frame/environment and still rejects declarations.
@@ -1489,16 +1561,6 @@ fn assert_temporary_initialization(f: &bc::FunctionDef) {
     let mut incoming: Vec<Option<Vec<bool>>> = vec![None; f.code.len()];
     let entry = vec![false; f.register_count as usize];
     incoming[0] = Some(entry.clone());
-    for region in &f.regions {
-        if let Some(catch) = &region.catch {
-            let mut state = entry.clone();
-            state[catch.exception.index()] = true;
-            incoming[catch.range.start.index()] = Some(state);
-        }
-        if let Some(finally) = region.finally {
-            incoming[finally.start.index()] = Some(entry.clone());
-        }
-    }
     let mut changed = true;
     while changed {
         changed = false;
@@ -1508,20 +1570,37 @@ fn assert_temporary_initialization(f: &bc::FunctionDef) {
             };
             let i = f.code[pc];
             let spec = bc::instruction_spec(i.opcode).unwrap();
-            spec.visit_registers(f, &i, |reg, access| {
-                if reg.index() >= f.bindings.len()
-                    && matches!(access, bc::Access::Read | bc::Access::ReadWrite)
+            // Cleanup inherits registers at the exiting instruction. In
+            // particular, an owned for iterator was initialized before entering
+            // its region and remains live in the synthetic finally.
+            let mut handlers = Vec::new();
+            for region in &f.regions {
+                let position = bc::Pc(pc as u32);
+                if region.protected.contains(position) {
+                    if spec.may_throw {
+                        if let Some(catch) = &region.catch {
+                            let mut caught = state.clone();
+                            caught[catch.exception.index()] = true;
+                            handlers.push((catch.range.start.index(), caught));
+                        } else if let Some(finally) = region.finally {
+                            handlers.push((finally.start.index(), state.clone()));
+                        }
+                    }
+                    if matches!(spec.flow, bc::Flow::Return | bc::Flow::Leave)
+                        && let Some(finally) = region.finally
+                    {
+                        handlers.push((finally.start.index(), state.clone()));
+                    }
+                } else if region
+                    .catch
+                    .as_ref()
+                    .is_some_and(|catch| catch.range.contains(position))
+                    && (spec.may_throw || matches!(spec.flow, bc::Flow::Return | bc::Flow::Leave))
+                    && let Some(finally) = region.finally
                 {
-                    assert!(
-                        state[reg.index()],
-                        "temporary r{} not initialized at PC {} {:?}",
-                        reg.0,
-                        pc,
-                        spec.opcode
-                    );
+                    handlers.push((finally.start.index(), state.clone()));
                 }
-            })
-            .unwrap();
+            }
             spec.visit_registers(f, &i, |reg, access| {
                 if matches!(access, bc::Access::Write | bc::Access::ReadWrite) {
                     state[reg.index()] = i.opcode != bc::Opcode::Clear as u16;
@@ -1534,7 +1613,11 @@ fn assert_temporary_initialization(f: &bc::FunctionDef) {
                 bc::Flow::Branch => vec![i.operands[1] as usize, i.operands[2] as usize],
                 _ => vec![],
             };
-            for target in targets {
+            for (target, state) in targets
+                .into_iter()
+                .map(|target| (target, state.clone()))
+                .chain(handlers)
+            {
                 let next = match &incoming[target] {
                     Some(old) => old.iter().zip(&state).map(|(a, b)| *a && *b).collect(),
                     None => state.clone(),
@@ -1545,6 +1628,27 @@ fn assert_temporary_initialization(f: &bc::FunctionDef) {
                 }
             }
         }
+    }
+    for (pc, state) in incoming.iter().enumerate() {
+        let Some(state) = state else {
+            continue;
+        };
+        let instruction = f.code[pc];
+        let spec = bc::instruction_spec(instruction.opcode).unwrap();
+        spec.visit_registers(f, &instruction, |reg, access| {
+            if reg.index() >= f.bindings.len()
+                && matches!(access, bc::Access::Read | bc::Access::ReadWrite)
+            {
+                assert!(
+                    state[reg.index()],
+                    "temporary r{} not initialized at PC {} {:?}",
+                    reg.0,
+                    pc,
+                    spec.opcode
+                );
+            }
+        })
+        .unwrap();
     }
 }
 

@@ -12,6 +12,9 @@ impl Vm {
     pub(super) fn iterator_new(&mut self, source: Value) -> Result<Value, HeapError> {
         self.heap.observe_read(source, None)?;
         let info = self.heap.info(source)?;
+        if info.kind == ObjectKind::Generator {
+            return Ok(source);
+        }
         let cursor = if matches!(info.kind, ObjectKind::FaultStack | ObjectKind::FaultCause) {
             self.heap.fault_sequence_head(source)?
         } else if info.kind == ObjectKind::Range {

@@ -25,15 +25,22 @@ pub struct SourceMember {
     pub definition: SourceDefinition,
 }
 
-/// Additional information retained for a source container without changing its
-/// table/array representation or the permissions of an explicit annotation.
+/// Additional information retained for source values without changing runtime
+/// representation or the permissions of an explicit annotation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceShape {
     Record(Vec<SourceMember>),
+    /// Fixed slots preserve element summaries, including iterator result pairs.
+    Tuple(Arc<[Arc<SourceType>]>),
     Array {
         element: Arc<SourceType>,
         /// Literal slots preserve shallow aliases. None means only the element summary is known.
         values: Option<Arc<[Arc<SourceType>]>>,
+    },
+    /// The yielded element and final return value belong to separate contracts.
+    Generator {
+        element: Arc<SourceType>,
+        result: Arc<SourceType>,
     },
 }
 
@@ -64,7 +71,9 @@ impl SourceType {
     }
     pub fn element(&self) -> Option<&Arc<Self>> {
         match &self.shape {
-            Some(SourceShape::Array { element, .. }) => Some(element),
+            Some(SourceShape::Array { element, .. } | SourceShape::Generator { element, .. }) => {
+                Some(element)
+            }
             _ => None,
         }
     }

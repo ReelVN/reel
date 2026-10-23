@@ -4,6 +4,7 @@ pub const SCENES: &[(&str, E)] = &[
     ("main module", E::Module),
     ("title module", E::Module),
     ("ranges, collections and interpolation", E::Block),
+    ("generator positions", E::Module),
     ("table lookup defaults", E::Block),
     ("stable array sorting", E::Block),
     ("ordered array and table spreads", E::Block),

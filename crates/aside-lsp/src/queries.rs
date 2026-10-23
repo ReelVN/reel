@@ -118,6 +118,7 @@ fn inferred_builtin_members(ty: &TypeHint) -> Option<&'static BuiltinTypeMembers
 }
 
 struct Signature {
+    prefix: &'static str,
     label: String,
     name: String,
     result: String,
@@ -127,6 +128,13 @@ struct Signature {
 }
 fn host_signature(symbol: &ExternalSymbol, host: &HostIndex) -> Option<Signature> {
     let signature = symbol.signature.as_ref()?;
+    let result = symbol
+        .source_type
+        .as_ref()
+        .and_then(|info| info.call_result.as_ref())
+        .map(|info| &info.ty)
+        .filter(|ty| **ty != TypeHint::Any)
+        .unwrap_or(&signature.result);
     let declaration = host.declaration(symbol);
     let parameters: Vec<_> = signature
         .parameters
@@ -157,11 +165,12 @@ fn host_signature(symbol: &ExternalSymbol, host: &HostIndex) -> Option<Signature
         })
         .collect();
     Some(Signature {
+        prefix: "fn",
         parameter_documentation: declaration
             .map(|declaration| declaration.parameter_documentation.clone())
             .unwrap_or_default(),
         name: symbol.name.clone(),
-        result: hint_label(&signature.result),
+        result: hint_label(result),
         label: format!(
             "fn {}({}) -> {}",
             symbol.name,
@@ -170,7 +179,7 @@ fn host_signature(symbol: &ExternalSymbol, host: &HostIndex) -> Option<Signature
                 .map(|(_, label)| label.as_str())
                 .collect::<Vec<_>>()
                 .join(", "),
-            hint_label(&signature.result)
+            hint_label(result)
         ),
         parameters,
         markdown: declaration
@@ -229,6 +238,7 @@ fn value_signature(
             .collect();
         let result = type_label(module, *result);
         return Some(Signature {
+            prefix: "fn",
             parameter_documentation: Default::default(),
             label: format!(
                 "fn {name}({}) -> {result}",
@@ -279,9 +289,18 @@ fn function_signature(
     let result = (!annotated)
         .then(|| module.source_types().function_result(function))
         .flatten()
+        .map(|info| match &info.shape {
+            Some(SourceShape::Generator { result, .. }) => result,
+            _ => info,
+        })
         .filter(|info| info.ty != TypeHint::Any)
         .map(|info| inferred_label(module, &info.ty));
     let function = &module.functions()[function.0 as usize];
+    let prefix = match function.kind {
+        FunctionKind::Generator => "gen fn",
+        FunctionKind::Async => "async fn",
+        FunctionKind::Plain => "fn",
+    };
     let result = result.unwrap_or_else(|| type_label(module, function.return_type));
     let parameters: Vec<_> = function
         .parameters
@@ -305,11 +324,12 @@ fn function_signature(
         })
         .collect();
     Signature {
+        prefix,
         parameter_documentation: Default::default(),
         name: name.into(),
         result: result.clone(),
         label: format!(
-            "fn {name}({}) -> {}",
+            "{prefix} {name}({}) -> {}",
             parameters
                 .iter()
                 .map(|(_, label)| label.as_str())
@@ -498,6 +518,7 @@ fn external_signature(
                 })
             })
             .unwrap_or(Signature {
+                prefix: "fn",
                 parameter_documentation: Default::default(),
                 label: String::new(),
                 name: symbol.name.clone(),
@@ -1084,7 +1105,8 @@ fn hover_signature(signature: &Signature, summarized: &BTreeSet<&str>) -> String
         .map(|(_, label)| label.as_str())
         .collect();
     let label = format!(
-        "fn {}({}) -> {}",
+        "{} {}({}) -> {}",
+        signature.prefix,
         signature.name,
         parameters.join(", "),
         signature.result
@@ -1093,7 +1115,8 @@ fn hover_signature(signature: &Signature, summarized: &BTreeSet<&str>) -> String
         return label;
     }
     format!(
-        "fn {}(\n    {},\n) -> {}",
+        "{} {}(\n    {},\n) -> {}",
+        signature.prefix,
         signature.name,
         parameters.join(",\n    "),
         signature.result
@@ -1386,6 +1409,10 @@ fn keyword_completions(source: &Source, offset: usize) -> Vec<CompletionItem> {
             .children_with_tokens()
             .any(|element| element.kind() == K::Gen)
     });
+    let synchronous_region = ancestors
+        .iter()
+        .take(function_boundary.unwrap_or(ancestors.len()))
+        .any(|node| matches!(node.kind(), K::FinallyClause | K::Param));
     let followup = previous_token
         .as_ref()
         .filter(|token| token.kind() == K::RBrace)
@@ -1427,6 +1454,9 @@ fn keyword_completions(source: &Source, offset: usize) -> Vec<CompletionItem> {
     K::KEYWORDS
         .iter()
         .filter(|(kind, _)| match previous {
+            _ if *kind == K::Async => false,
+            _ if *kind == K::Yield && (!generator || synchronous_region) => false,
+            _ if *kind == K::Await && (generator || synchronous_region) => false,
             Some(K::Let) => *kind == K::Mut,
             Some(K::Fn | K::Class | K::As | K::Mut) => false,
             _ if *kind == K::Else && !expression && !type_position => followup == Some(K::IfExpr),

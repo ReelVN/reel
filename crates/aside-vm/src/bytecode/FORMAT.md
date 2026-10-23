@@ -37,9 +37,9 @@ Records follow model.rs field order, with these prefixes:
 | ParameterDefault | 0 Constant(u32 ConstId), 1 Function(u32 FunctionId), within the parameter's Option |
 | TableSources entry | 0 Pair([Reg;2]), 1 Spread(Reg) |
 
-The current FunctionKind encoding includes Async; compiler lowering and runtime
-admission do not support this kind. Generator and thread protocols remain planned.
-These format records do not imply runtime support; see execution admission below.
+Execution admission accepts Plain, Generator and Native functions. The Async tag
+is reserved. Generator functions bind arguments and defaults at call time, then
+return a lazy generator.
 
 Tuple constants and structural tuple/union/function types reference earlier
 records, forming finite DAGs. Named types carry recursive nominal identity.
@@ -164,7 +164,7 @@ begin at register_count.
 | 0071 | Rethrow | — | throw (catch only) | yes | - |
 | 0072 | Leave | p | unwind cleanup then target | yes | - |
 | 0073 | EndFinally | RegionId | resume saved unwind | yes | - |
-| 0080 | Yield | d,x | next on send; Generator only | yes | Y |
+| 0080 | Yield | d,x | yields x; resumes at next instruction with null in d; Generator only | yes | Y |
 | 0081 | Await | d,x | next scheduling step | yes | W |
 | 0082 | Spawn | d,q:Spawn(call,owner Reg) | next (task Future) | yes | - |
 | 0083 | Cancel | x,y | next (cooperative request) | yes | - |
@@ -216,6 +216,12 @@ TextPush appends scalars/strings in charged chunks. TextFinish validates and sea
 UTF-8 while retaining roots and detecting concurrent mutation. Ranges use int64
 endpoints and +1 steps; reversed ranges are empty, and MAX terminates safely.
 IterAdvance writes done/value directly; IterNext returns their explicit tuple.
+For generators, completion supplies the final return value once with done=true;
+later reads supply (true, null). A yielded null has done=false. IterInit preserves
+generator identity. IterClose closes it through ordinary finally unwinding;
+an unstarted generator closes without entering its body. An escaping fault closes
+the generator before propagating its original envelope. Generator execution
+inherits the no-wait boundary; its internal work remains budget resumable.
 Array iteration permits element replacement and rejects structural mutation.
 ChildrenPush collects composable Host values and ignores null. CallNoWait extends
 the restriction through ordinary helpers.

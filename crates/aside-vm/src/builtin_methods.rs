@@ -127,6 +127,10 @@ methods! {
         "Return the first index equal to value, or null when absent. Comparisons use ordinary Aside equality.";
     Contains: "contains" [Array,Tuple] ("value":"any"=None), None => "bool", false,
         "Return whether any element equals value using ordinary Aside equality.";
+    GeneratorNext: "next" [Generator] (), None => "(bool, any)", true,
+        "Resume this generator and return (done, value). A yielded null has done=false. Completion returns its final value once; later calls return (true, null). Escaped errors close the generator and retain their original source location. Reentry raises InvalidState.";
+    GeneratorClose: "close" [Generator] (), None => "null", true,
+        "Close this generator and synchronously run finally blocks entered before its last yield. Closing an unstarted or finished generator returns null. Cleanup may yield its execution budget and cannot wait externally.";
 }
 
 impl BuiltinMethod {
