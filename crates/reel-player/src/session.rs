@@ -3,6 +3,7 @@
 //! This layer never executes Aside. The optional native diagnostic below drives
 //! explicit host requests and must not be described as a source story runner.
 mod geometry;
+mod inspection;
 mod node_events;
 mod playback;
 #[cfg(test)]
@@ -10,6 +11,7 @@ mod popup_tests;
 mod popups;
 use crate::stage_widget::{StageView, StageWidget};
 pub use geometry::RecordedProjection;
+pub use inspection::InputTarget;
 use playback::{dialogue_complete, dialogue_revision};
 #[cfg(test)]
 mod button_tests;
@@ -1388,6 +1390,47 @@ impl SessionUi {
         let handled = bridge.handle_access_event(event);
         self.binding.borrow_mut().non_pointer = false;
         self.finish_input(handled)
+    }
+    pub(crate) fn handle_semantic_input(
+        &mut self,
+        action: InputAction,
+    ) -> Result<Option<reel_engine::InputOutcome>, Error> {
+        if !self.narrative_input_ready() {
+            return Ok(None);
+        }
+        let owner = match (&action, self.session.view().interaction) {
+            (InputAction::Advance(id), Some(InteractionView::Dialogue(dialogue)))
+                if *id == dialogue.id() =>
+            {
+                self.source_owner
+            }
+            (InputAction::Select(id), Some(InteractionView::Choice(choice)))
+                if choice.options().iter().any(|option| option.id() == id) =>
+            {
+                self.source_owner
+            }
+            _ => return Ok(None),
+        };
+        let advance = matches!(action, InputAction::Advance(_));
+        let outcome = self.session.handle_local_input(owner, action)?;
+        if advance {
+            self.session.set_skip_reading(false, false, false);
+            self.session.set_auto_reading(false, None);
+        }
+        self.pause_dialogue();
+        Ok(Some(outcome))
+    }
+    pub(crate) fn narrative_input_ready(&self) -> bool {
+        !(self.images_pending()
+            || self.reading_modal
+            || !self.reading_focused
+            || self.session.reading().paused()
+            || self.gesture_active()
+            || !self
+                .binding
+                .borrow()
+                .accepted
+                .is_some_and(|stamp| stamp.same_advance(self.projection_stamp())))
     }
     fn finish_input(&mut self, handled: Handled) -> Result<UiDispatch, Error> {
         if let Some(UiInput::Session { owner, action }) = self.inputs.borrow_mut().take() {
