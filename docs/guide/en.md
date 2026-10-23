@@ -104,17 +104,6 @@ Pop-Location
 
 Check compiles the source and reports errors without running the story. Add `--format json` for diagnostics with UTF-8 ranges and line/column positions. Build produces one .asb containing bytecode, module initialization and the selected entry. Both commands provide the same default Reel names, registered native functions and host default arguments as the player.
 
-`reel test` starts the current game, operates menus, advances dialogue and explores choices. Virtual time accelerates waits, and branch checkpoints reuse execution state. Source and compiled artifacts run separately with isolated temporary storage. `build/test/report.json` records the paths actually visited and runtime errors; failing paths can be replayed. Use `--assets` to select a resource directory or `--format json` for a machine-readable report.
-
-Reports mark runtime, resource or replay errors as `failed`. Observed menu cycles, input the host cannot operate and interrupted checkpoints produce `incomplete` with unresolved paths retained.
-The check uses CPU layout and resource loading. A `stage.capture` request marks its path `incomplete`; execution after that request requires a host with a rendering backend.
-
-```powershell
-reel test
-reel test --format json
-reel test --replay build/test/replay-001.json
-```
-
 The entry is `main` in `src/main.aside`. Checking reports a missing or invalid entry. The entry may be private and must be callable without arguments. Run loads the package initializer and entry directly without recompiling source. Default build outputs are updated by each build; use --overwrite to replace an explicit output.
 
 Build defaults to Debug, retaining complete source and mappings so runtime errors can point to the original .aside file. Add `--release` for publication: the ASB omits source, instruction mappings and declaration locations, reducing its size and resident debug data. Both modes use the same language behavior and runtime checks. Release still reports the error kind, function and instruction position, and retains runtime symbols and text constants. A standalone build retains story text inside the ASB. Execution saves belong to the actual ASB, so Debug and Release builds of the same source do not exchange saves.

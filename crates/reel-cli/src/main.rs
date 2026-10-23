@@ -1,6 +1,5 @@
 mod commands;
 mod formatting;
-mod testing;
 use aside_compiler::{SourceMap, semantic::SourceModule};
 use clap::Parser;
 use codespan_reporting::{files::SimpleFile, term};
@@ -50,7 +49,6 @@ fn run() -> io::Result<u8> {
         Command::Run(args) => run_package(args),
         Command::PrepareImage(args) => prepare_image_command(args),
         Command::Fmt(args) => formatting::run(args.check),
-        Command::Test(args) => testing::run(args),
     }
 }
 

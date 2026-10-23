@@ -51,7 +51,6 @@ use crate::{
     InteractionId, OwnerHandle, OwnerRetirementRequirements, Session, SessionError,
     SessionIdentity,
 };
-pub use aside_std::HostEnvironment;
 pub use aside_vm::executor::{
     DeliveryId, FaultKind, HostTicket, RunOutcome, SliceBudget, TaskId, VmError, VmLimits,
 };
@@ -275,14 +274,6 @@ pub struct SessionVm {
 }
 
 impl SessionVm {
-    /// Install host entropy and civil-time services before executing script.
-    pub fn set_host_environment(&mut self, environment: std::rc::Rc<dyn HostEnvironment>) {
-        self.standard.set_host_environment(environment);
-    }
-    /// Services shared by replacement and restored sessions.
-    pub fn host_environment(&self) -> std::rc::Rc<dyn HostEnvironment> {
-        self.standard.host_environment()
-    }
     /// Bounds only accepted input waiting for an asynchronous editor operation.
     /// Ordinary typing/paste retain their usual text capacity. Existing accepted
     /// queues keep their admission limits until drained; new queues use this value.

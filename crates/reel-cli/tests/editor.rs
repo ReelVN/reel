@@ -292,11 +292,11 @@ fn nested_src_document_uses_the_project_source_root() {
             }
             _ => {}
         }
-        if published.contains(&json!(uri))
+        if hover.is_some()
+            && published.contains(&json!(uri))
             && published.contains(&json!(opening_uri))
-            && let Some(hover) = hover.take()
         {
-            break hover;
+            break hover.unwrap();
         }
     };
     assert!(published.contains(&json!(uri)), "{published:?}");

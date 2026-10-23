@@ -30,7 +30,6 @@ use std::sync::Arc;
 pub(crate) struct NavigationSelection(pub NodeChange);
 mod flow;
 mod input;
-mod inspection;
 pub(crate) mod popup;
 #[cfg(test)]
 mod projection_tests;

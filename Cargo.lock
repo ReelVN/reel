@@ -3307,7 +3307,6 @@ dependencies = [
  "lsp-types",
  "pollster",
  "reel-core",
- "reel-dev",
  "reel-engine",
  "reel-media",
  "reel-package",
@@ -3332,17 +3331,8 @@ name = "reel-dev"
 version = "1.0.0"
 dependencies = [
  "anyhow",
- "aside-vm",
- "fastrand",
- "reel-core",
- "reel-engine",
- "reel-media",
- "reel-player",
- "reel-ui",
- "serde",
  "serde_json",
  "sha2",
- "tempfile",
 ]
 
 [[package]]

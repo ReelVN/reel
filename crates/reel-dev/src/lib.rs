@@ -1,9 +1,7 @@
 //! Repository validation and reproducible measurement commands.
 pub mod audio;
-pub mod headless;
 pub mod maintenance;
 pub mod process;
-pub mod testing;
 
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
