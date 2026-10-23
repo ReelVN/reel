@@ -973,7 +973,7 @@ impl SessionUi {
             }
             let buttons = view.button_changes(
                 self.pending_stage.as_ref().or(self.stage.as_ref()),
-                feedback,
+                view.feedback,
             );
             if buttons.iter().any(|(_, changed)| *changed) {
                 binding.button_revision = binding.button_revision.wrapping_add(1);

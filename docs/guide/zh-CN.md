@@ -1096,7 +1096,7 @@ fn picture_button(normal, hovered, pressed, clicked) {
 
 所有节点的 `hover`、`pressed`、`focused`、`disabled` 都可直接读取或用 `bind` 连接。它们由输入系统发布，脚本不可赋值，也不能绑定为 slider/toggle 的可写 value。hover/focused 包含后代；pressed 包含指针捕获与按钮自身的键盘、手柄确认按住；disabled 包含祖先禁用。取消、隐藏、禁用和失焦会清理交互状态。节点退休后，读取该节点的 derive 停止更新并保留最后成功值。移除最后一个消费者会停止其派生外观更新；共享消费者继续更新，重新绑定保留引用会恢复更新，但不能恢复已退休的输入。按钮和开关使用 `decorated: false` 关闭默认焦点框及开关指标/留白，再用普通 children 构成完整外观。实例见 [author_control_states.aside](../../examples/author_control_states/src/main.aside)。
 
-悬停或聚焦需要改变业务状态时使用 `on_interaction`，例如鼠标离开后仍保留图库选中项。所有节点都接受这个回调或 null，构造后也可赋值。不可变事件包含 `target`、`hover`、`pressed`、`focused`、`disabled`、`focus_visible`；即使回调等待，其中的布尔值也保留该次变化的值。只有状态实际变化才触发回调，并先发布整批事件的只读状态。注册回调不会发送初始事件。等待中的回调属于节点，节点退休时取消。没有回调时不分配事件对象或任务；纯外观继续使用 `bind`/`derive`。
+悬停或聚焦需要改变业务状态时使用 `on_interaction`，例如鼠标离开后仍保留图库选中项。所有节点都接受这个回调或 null，构造后也可赋值。不可变事件包含 `target`、`hover`、`pressed`、`focused`、`disabled`、`focus_visible`；即使回调等待，其中的布尔值也保留该次变化的值。只有状态实际变化才触发回调，并先发布整批事件的只读状态。注册回调不会发送初始事件。等待中的回调属于节点，节点退休时取消。没有回调时不分配事件对象或任务；纯外观继续使用 `bind`/`derive`。状态驱动的按钮图片在加载资源和执行回调期间保留在途按压。替换业务内容仍取消旧按压，并要求接受新画面。
 
 ```aside
 let gallery = model({selected: null});

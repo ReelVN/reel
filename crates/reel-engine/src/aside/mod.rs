@@ -236,6 +236,9 @@ pub struct SessionVm {
     derived_minimum: SliceMinimum,
     reactive_ready: bool,
     feedback_only: bool,
+    // Source of the projected version survives subsequent task scheduling.
+    projected_stage_revision: u64,
+    authored_stage_revision: u64,
     issued: Option<HostTicket>,
     pending: Option<PendingInteraction>,
     choice_reader: Option<choice::ChoiceReader>,
@@ -334,6 +337,8 @@ impl SessionVm {
             derived_minimum: SliceMinimum::default(),
             reactive_ready: true,
             feedback_only: false,
+            projected_stage_revision: 0,
+            authored_stage_revision: 0,
             issued: None,
             pending: None,
             choice_reader: None,
@@ -431,8 +436,16 @@ impl SessionVm {
     pub fn task(&self) -> Option<TaskId> {
         self.task
     }
-    pub fn stage_is_input_feedback(&self) -> bool {
-        self.feedback_only
+    /// Last projected stage revision containing an application update.
+    /// Compare with the host's consumed watermark before merging stage versions.
+    /// Revisions produced without a projection boundary are application updates.
+    pub fn stage_authored_revision(&self) -> u64 {
+        let revision = self.stage.scene.revision();
+        if revision == self.projected_stage_revision {
+            self.authored_stage_revision
+        } else {
+            revision
+        }
     }
     pub fn stage(&self) -> &reel_ui::stage::Stage {
         &self.stage.scene
@@ -472,7 +485,22 @@ impl SessionVm {
         if !self.reactive_settled() && !self.virtual_feedback_boundary() {
             return Ok(());
         }
-        self.stage.sync(self.vm.heap_mut(), self.read_limit)
+        self.sync_stage_properties(self.feedback_only)
+    }
+
+    pub(super) fn sync_stage_properties(&mut self, feedback: bool) -> Result<(), AdapterError> {
+        let before = self.stage.scene.revision();
+        self.stage.sync(self.vm.heap_mut(), self.read_limit)?;
+        let revision = self.stage.scene.revision();
+        // Native topology edits precede property projection and are authored.
+        if before != self.projected_stage_revision {
+            self.authored_stage_revision = before;
+        }
+        if revision != before && !feedback {
+            self.authored_stage_revision = revision;
+        }
+        self.projected_stage_revision = revision;
+        Ok(())
     }
     /// Reactive factories must settle before a host acknowledges their narrative frame.
     pub fn stage_ready(&self) -> bool {

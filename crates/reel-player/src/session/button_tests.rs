@@ -994,6 +994,180 @@ fn control_acceptance_tracks_its_content_and_cancels_replaced_press_pairs() {
 }
 
 #[test]
+fn state_images_keep_press_origin_across_callbacks_and_delayed_resources() {
+    use reel_core::{
+        budget::{BudgetCategory, BudgetPool, OwnedBytes, QueueLimits},
+        identity::{AssetKey, ContentVersion, ResourceVersion},
+        test_support::{MemoryAsset, MemoryAssetIo},
+    };
+    use std::{cell::RefCell, rc::Rc, sync::Arc, time::Duration};
+    const PNG: &[u8] = include_bytes!("../../../../examples/assets/panels.png");
+    for encoded in [false, true] {
+        for replace_content in [false, true] {
+            let mut host = None;
+            let assets = crate::assets::Assets::with_adapters(Default::default(), |wake| {
+                let limits = QueueLimits {
+                    max_requests: 8,
+                    max_bytes: 768 << 20,
+                };
+                let storage = BudgetPool::new(BudgetCategory::CpuInput, limits);
+                let mut io = MemoryAssetIo::new(limits, limits, wake.clone());
+                for (index, name) in ["off.png", "over.png", "down.png"].into_iter().enumerate() {
+                    io.insert_asset(
+                        ResourceVersion {
+                            key: AssetKey(name.into()),
+                            version: ContentVersion([index as u8; 32]),
+                        },
+                        MemoryAsset {
+                            bytes: OwnedBytes::new(
+                                PNG.to_vec(),
+                                storage.reserve(PNG.len() as u64).unwrap(),
+                            )
+                            .unwrap(),
+                            media_type: None,
+                        },
+                    )
+                    .unwrap();
+                }
+                let io = Rc::new(RefCell::new(io));
+                host = Some(io.clone());
+                (
+                    Box::new(crate::images::tests::ControlledIo(io)),
+                    Box::new(crate::assets::ImageExecutor::new(limits, wake)),
+                )
+            });
+            let source = r#"fn main() {
+                let state=model({hover:false,calls:0});
+                let caption=text("first",y:40);
+                let control=button(width:180,height:60,decorated:false,padding:0,
+                    on_click:||{state.calls+=1;});
+                control.on_interaction=||{
+                    state.hover=control.hover;
+                    if REPLACE && control.pressed {caption.value="replacement";}
+                };
+                control.add(image(source:derive(||if control.pressed {"down.png"}
+                    else if control.hover {"over.png"} else {"off.png"}),
+                    width:180,height:40));
+                control.add(caption);
+                stage.replace(stack{control;text(derive(||f"calls:{state.calls}"),y:100);});
+                await completion();
+            }"#
+            .replace("REPLACE", if replace_content { "true" } else { "false" });
+            let mut compiled =
+                reel_engine::aside::source::compile_story(&source, "state_images", 1, "main")
+                    .unwrap();
+            if encoded {
+                use aside_vm::bytecode as bc;
+                let bytes = bc::encode(compiled.program.package(), bc::Limits::default()).unwrap();
+                compiled.program = bc::verify(
+                    bc::decode(&bytes, bc::Limits::default()).unwrap(),
+                    bc::Limits::default(),
+                )
+                .unwrap();
+            }
+            let driver =
+                AsideSessionUi::from_compiled(session(), compiled, "en", VmLimits::default())
+                    .unwrap()
+                    .with_assets(assets);
+            let mut runtime = StoryRuntime::new(driver);
+            let host = host.unwrap();
+            let (send, receive) = std::sync::mpsc::channel();
+            runtime
+                .driver_mut()
+                .unwrap()
+                .set_resource_waker(Arc::new(move || {
+                    let _ = send.send(());
+                }));
+            drain(&mut runtime);
+            let (mut bridge, root) = mount(runtime.driver().ui());
+            let finish_images = |runtime: &mut StoryRuntime, bridge: &mut PresentationBridge| {
+                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                loop {
+                    while host.borrow_mut().complete_next_read() {}
+                    runtime.driver_mut().unwrap().sync(bridge, root).unwrap();
+                    runtime.wake_input();
+                    drain(runtime);
+                    runtime.driver_mut().unwrap().sync(bridge, root).unwrap();
+                    if !runtime.driver().ui().images_pending()
+                        && runtime.driver().adapter().stage_ready()
+                    {
+                        break;
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "state image did not load: queued={:?}, state={:?}, ready={}, source={:?}",
+                        host.borrow().read_usage(),
+                        runtime.driver().state(),
+                        runtime.driver().adapter().stage_ready(),
+                        runtime.driver().adapter().stage().nodes().find_map(|node| {
+                            if let NodeKind::Image { source, .. } = &node.kind {
+                                Some(source)
+                            } else {
+                                None
+                            }
+                        })
+                    );
+                    let _ = receive.recv_timeout(Duration::from_millis(1));
+                }
+            };
+            finish_images(&mut runtime, &mut bridge);
+            present(&mut runtime, &mut bridge, root, 1);
+            for (index, kind) in ["move", "down"].into_iter().enumerate() {
+                runtime
+                    .driver_mut()
+                    .unwrap()
+                    .handle_pointer(&mut bridge, mouse(kind, (50., 20.)))
+                    .unwrap();
+                runtime.wake_input();
+                // Finish both derivations and ordinary callbacks before publishing.
+                drain(&mut runtime);
+                runtime
+                    .driver_mut()
+                    .unwrap()
+                    .sync(&mut bridge, root)
+                    .unwrap();
+                assert!(
+                    runtime.driver().ui().images_pending(),
+                    "withhold the new state's IO"
+                );
+                assert!(
+                    runtime
+                        .driver()
+                        .record(&mut bridge, root, FrameId(9))
+                        .unwrap()
+                        .is_none()
+                );
+                runtime
+                    .driver_mut()
+                    .unwrap()
+                    .sync(&mut bridge, root)
+                    .unwrap();
+                finish_images(&mut runtime, &mut bridge);
+                present(&mut runtime, &mut bridge, root, index as u64 + 2);
+            }
+            runtime
+                .driver_mut()
+                .unwrap()
+                .handle_pointer(&mut bridge, mouse("up", (50., 20.)))
+                .unwrap();
+            runtime.wake_input();
+            drain(&mut runtime);
+            let expected = if replace_content {
+                "calls:0"
+            } else {
+                "calls:1"
+            };
+            assert!(
+                runtime.driver().adapter().stage().nodes().any(
+                    |node| matches!(&node.kind,NodeKind::Text(text) if text.as_ref()==expected)
+                ),
+                "asb={encoded} replacement={replace_content}: release must follow its accepted content"
+            );
+        }
+    }
+}
+
+#[test]
 fn pointer_use_hides_navigation_focus_without_losing_keyboard_activation() {
     let mut runtime = runtime(
         r#"fn main() {

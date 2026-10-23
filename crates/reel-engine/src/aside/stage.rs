@@ -296,6 +296,8 @@ pub(super) enum NodeProperty {
     #[aside(name = "align_y", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_opacity, animatable)]
     AlignY,
     /// Callback for hover, press and focus interaction changes.
+    /// State-driven appearance retains an ongoing press across callback scheduling
+    /// and image loading. Replacing application content cancels the old press.
     #[aside(name = "on_interaction", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Closure), default = null, validate = validate_callback)]
     OnInteraction,
     /// Requested font weight; 400 selects normal text.
