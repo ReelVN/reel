@@ -3,7 +3,7 @@ use reel_ui::imaging::record::{Command, Draw, Geometry};
 use reel_ui::kurbo::Shape as _;
 
 fn draws(source: &RecordedSource) -> impl Iterator<Item = &Draw> {
-    let scene = source.scene();
+    let scene = source.scene().unwrap();
     scene.commands().iter().filter_map(|command| match command {
         Command::Draw(id) => Some(scene.draw_op(*id)),
         _ => None,

@@ -5,7 +5,7 @@
 use crate::bridge::{CandidateGuard, CandidateKey, RecordedSource};
 use crate::resources::{ResourceHandle, ResourceSnapshot};
 use crate::{
-    app::{PresentedGeometryView, VisualLayerKind},
+    app::{GroupMetadata, PresentedGeometryView, VisualLayerKind},
     core::{PaintImageMask, WidgetId},
     imaging::{
         self, Composite, Filter, MaskMode,
@@ -21,6 +21,8 @@ use reel_core::{
 use std::{collections::BTreeMap, mem::size_of, ops::Range, sync::Arc};
 
 mod archive;
+mod blend;
+pub use blend::{BlendMode, GroupComposite};
 mod retained;
 mod wire;
 pub use archive::{
@@ -170,8 +172,7 @@ pub struct FrameGroup {
     pub mask: Option<MaskUse>,
     #[serde(with = "wire::filters")]
     pub filters: Vec<Filter>,
-    #[serde(with = "wire::CompositeDef")]
-    pub composite: Composite,
+    pub composite: GroupComposite,
     pub invert: f32,
     #[serde(with = "wire::widget")]
     pub owner: WidgetId,
@@ -1140,19 +1141,23 @@ impl Building {
         let c = self.cursors.last().unwrap();
         let layer = &self.source.plan.layers[c.layer];
         let meta = if c.stream.is_some() {
-            Some((c.owner, Affine::IDENTITY, None, 0.))
+            Some(GroupMetadata {
+                command: c.position,
+                owner: c.owner,
+                effect_transform: Affine::IDENTITY,
+                image_mask: None,
+                invert: 0.,
+                blend: None,
+            })
         } else {
             layer
                 .groups
                 .binary_search_by_key(&c.position, |m| m.command)
                 .ok()
                 .map(|i| {
-                    (
-                        layer.groups[i].owner,
-                        layer.transform * layer.groups[i].effect_transform,
-                        layer.groups[i].image_mask.clone(),
-                        layer.groups[i].invert,
-                    )
+                    let mut metadata = layer.groups[i].clone();
+                    metadata.effect_transform = layer.transform * metadata.effect_transform;
+                    metadata
                 })
         };
         let scene = Self::scene(&self.source, self.cursors.last().unwrap()).unwrap();
@@ -1748,7 +1753,7 @@ fn make_op(
     scene: &Scene,
     c: &Command,
     t: Affine,
-    meta: Option<(WidgetId, Affine, Option<PaintImageMask>, f32)>,
+    meta: Option<GroupMetadata>,
     mask: Option<MaskUse>,
     paint: ImagePaint,
     resources: &ResourceSnapshot,
@@ -1763,8 +1768,14 @@ fn make_op(
         Command::PopContext => (LocalId::None, FrameOp::PopContext),
         Command::PushGroup(id) => {
             let g = scene.group(*id);
-            let (owner, effect, image_mask, invert) =
-                meta.ok_or(BuildErrorKind::MissingGroupMetadata)?;
+            let GroupMetadata {
+                owner,
+                effect_transform: effect,
+                image_mask,
+                invert,
+                blend,
+                ..
+            } = meta.ok_or(BuildErrorKind::MissingGroupMetadata)?;
             let image_mask = image_mask
                 .map(|mask| {
                     if !mask.bounds.is_finite()
@@ -1804,7 +1815,10 @@ fn make_op(
                     clip: g.clip.as_ref().map(|c| empty_clip(c, t)),
                     mask,
                     filters: Vec::with_capacity(g.filters.len()),
-                    composite: g.composite,
+                    composite: GroupComposite {
+                        alpha: g.composite.alpha,
+                        blend: blend.unwrap_or_else(|| g.composite.blend.into()),
+                    },
                     invert,
                     owner,
                     effect_to_target: effect,

@@ -81,7 +81,8 @@ pub(super) fn command(
                 && value.filters.iter().copied().all(valid_filter)
                 && value.invert.is_finite()
                 && (0. ..=1.).contains(&value.invert)
-                && valid_composite(value.composite)
+                && value.composite.alpha.is_finite()
+                && (0. ..=1.).contains(&value.composite.alpha)
                 && finite(value.effect_to_target)
                 && value.image_mask.as_ref().is_none_or(mask)
                 && value.mask.is_none_or(|reference| {

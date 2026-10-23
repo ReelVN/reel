@@ -2534,7 +2534,7 @@ impl PaintCtx<'_> {
         &mut self,
         opacity: f32,
         invert: f32,
-        blend: peniko::BlendMode,
+        blend: crate::frame::BlendMode,
         mask: Option<PaintImageMask>,
     ) {
         self.widget_state.subtree_opacity = opacity;

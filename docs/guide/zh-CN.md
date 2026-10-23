@@ -1345,7 +1345,7 @@ await run(tween(scene, invert: 1, duration: 0.4), owner: scene);
 
 完整可运行示例：[author_invert.aside](../../examples/author_invert/src/main.aside)。反色和 opacity/mask 共用组离屏目标；不用时设为 0，独立反色组不再需要额外目标。
 
-图片、文字、UI 与演出可以用共同节点属性 `blend` 混合整个子树：`normal` 正常叠放，`add` 加色发光，`multiply` 正片叠底，`screen` 滤色。`opacity`、遮罩与反色先处理子树，再与后方画面混合；混合不改变布局或交互。颜色在线性空间计算。下面的光层也可放进图片、粒子或组件，完整示例见 [author_blend.aside](../../examples/author_blend/src/main.aside)。
+图片、文字、UI 与演出可以用共同节点属性 `blend` 混合整个子树：`normal` 正常叠放，`add` 加色发光，`subtract` 从背景减去源颜色，`multiply` 正片叠底，`screen` 滤色。减算对线性预乘 RGB 各通道计算 `max(背景 - 源, 0)`，保留背景 alpha；源透明度与遮罩在减算前各应用一次。`opacity`、遮罩与反色先处理子树，再与后方画面混合；混合不改变布局或交互。颜色在线性空间计算。下面的光层也可放进图片、粒子或组件，完整示例见 [author_blend.aside](../../examples/author_blend/src/main.aside)。
 
 ```aside
 stage.replace(stack(width: 320, height: 180, background: "#204060") {

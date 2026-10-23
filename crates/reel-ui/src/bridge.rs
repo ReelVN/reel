@@ -114,7 +114,7 @@ pub struct RecordedSource {
     pub(super) key: CandidateKey,
     pub(super) plan: VisualLayerPlan,
     pub(super) geometry: Arc<PresentedGeometryView>,
-    reference_scene: OnceLock<Scene>,
+    reference_scene: OnceLock<Result<Scene, crate::frame::BuildError>>,
 }
 /// U02 source-compatible name. scene() is an explicit, lazy structural reference.
 pub type RecordedCandidate = RecordedSource;
@@ -125,13 +125,17 @@ impl RecordedSource {
     pub fn plan(&self) -> &VisualLayerPlan {
         &self.plan
     }
-    /// Compatibility/CPU reference only. Production FrameBuild never calls this.
-    pub fn scene(&self) -> &Scene {
-        self.reference_scene.get_or_init(|| {
-            let mut scene = Scene::new();
-            self.plan.replay_into(&mut scene);
-            scene
-        })
+    /// Explicit CPU reference; returns UnsupportedRecord for modes Imaging cannot express.
+    /// Production FrameBuild never calls this.
+    pub fn scene(&self) -> Result<&Scene, crate::frame::BuildError> {
+        self.reference_scene
+            .get_or_init(|| {
+                let mut scene = Scene::new();
+                self.plan.replay_into(&mut scene)?;
+                Ok(scene)
+            })
+            .as_ref()
+            .map_err(|error| *error)
     }
     pub fn geometry(&self) -> &PresentedGeometryView {
         &self.geometry

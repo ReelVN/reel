@@ -388,7 +388,7 @@ pub struct NodeProps {
     /// Subtree inversion in encoded sRGB, preserving alpha.
     pub invert: f64,
     /// Blend the completed subtree with its backdrop.
-    pub blend: crate::peniko::BlendMode,
+    pub blend: crate::frame::BlendMode,
     pub visible: bool,
     /// Include this subtree in stage captures; ordinary presentation is unchanged.
     pub capture_included: bool,

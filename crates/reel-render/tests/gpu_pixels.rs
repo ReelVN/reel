@@ -810,7 +810,7 @@ fn retained_transition_uses_current_parent_backdrop_and_replaces_linear_pixels()
             let mut parent = RecordWidget::new(scene(Color::from_rgba8(80, 140, 200, 180)));
             parent.opacity = 0.7;
             let mut child = RecordWidget::new(scene(color));
-            child.blend = blend;
+            child.blend = blend.into();
             child.opacity = 0.6;
             let id = parent.inner.add(
                 child.prepare().with_transform(Affine::rotate(0.15)),

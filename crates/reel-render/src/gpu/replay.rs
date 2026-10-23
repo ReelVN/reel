@@ -39,7 +39,7 @@ struct Scope<'a> {
     image_mask: Option<(&'a reel_ui::frame::FrameImageMask, Affine)>,
     opacity: f32,
     invert: f32,
-    blend: reel_ui::peniko::BlendMode,
+    blend: reel_ui::frame::BlendMode,
     scissor: Scissor,
     isolated: bool,
 }
@@ -48,7 +48,7 @@ struct MaskComposition<'a> {
     source: Target,
     opacity: f32,
     invert: f32,
-    blend: reel_ui::peniko::BlendMode,
+    blend: reel_ui::frame::BlendMode,
     operation: CompositeOperation,
 }
 enum Pending<'a> {
@@ -207,7 +207,7 @@ impl Context<'_> {
                             &parent.scopes.last().target,
                             &mask.source.view,
                             &finished.view,
-                            reel_ui::imaging::Composite {
+                            reel_ui::frame::GroupComposite {
                                 alpha: mask.opacity,
                                 blend: mask.blend,
                             },
@@ -344,7 +344,7 @@ impl Context<'_> {
                                 &current.scopes.last().target,
                                 &source.view,
                                 &coverage.view,
-                                reel_ui::imaging::Composite {
+                                reel_ui::frame::GroupComposite {
                                     alpha: group.opacity,
                                     blend: group.blend,
                                 },
@@ -401,7 +401,7 @@ impl Context<'_> {
                             &current.scopes.last().target,
                             &source.view,
                             &source.view,
-                            reel_ui::imaging::Composite {
+                            reel_ui::frame::GroupComposite {
                                 alpha: group.opacity,
                                 blend: group.blend,
                             },
@@ -537,7 +537,7 @@ impl Context<'_> {
         target: &Target,
         source: &wgpu::TextureView,
         mask: &wgpu::TextureView,
-        composite: reel_ui::imaging::Composite,
+        composite: reel_ui::frame::GroupComposite,
         invert: f32,
         operation: CompositeOperation,
         image_mask: Option<(&reel_ui::frame::FrameImageMask, Affine)>,
@@ -741,8 +741,12 @@ impl Context<'_> {
     }
 }
 
-fn blend_code(blend: reel_ui::peniko::BlendMode) -> Option<u32> {
+pub(super) fn blend_code(blend: reel_ui::frame::BlendMode) -> Option<u32> {
+    use reel_ui::frame::BlendMode;
     use reel_ui::peniko::{Compose, Mix};
+    let BlendMode::Standard(blend) = blend else {
+        return Some(4);
+    };
     match (blend.mix, blend.compose) {
         (Mix::Normal, Compose::SrcOver) => Some(0),
         (Mix::Normal, Compose::PlusLighter) => Some(1),

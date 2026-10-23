@@ -93,6 +93,7 @@ impl LayerCollector {
                     effect_transform: transform,
                     image_mask: None,
                     invert: 0.,
+                    blend: None,
                 });
             }
         }
@@ -113,7 +114,7 @@ impl LayerCollector {
         mask: Option<&PaintImageMask>,
         opacity: f32,
         invert: f32,
-        blend: peniko::BlendMode,
+        blend: crate::frame::BlendMode,
         transform: Affine,
         owner: WidgetId,
     ) -> bool {
@@ -124,7 +125,8 @@ impl LayerCollector {
         let group = Group {
             composite: Composite {
                 alpha: opacity,
-                blend,
+                // FrameBuild reads the actual mode from group provenance.
+                blend: blend.imaging().unwrap_or_default(),
             },
             ..Default::default()
         };
@@ -136,6 +138,7 @@ impl LayerCollector {
             effect_transform: transform,
             image_mask: mask.cloned(),
             invert,
+            blend: Some(blend),
         });
         self.record_owner(command, owner, crate::frame::ImagePaint::default());
         true

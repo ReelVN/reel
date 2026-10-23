@@ -777,7 +777,7 @@ fn configured_fonts_shape_mixed_text_and_live_family_changes_preserve_widget_ide
         .unwrap();
     assert!(f.bridge.set_default_fonts(&[latin.clone(), cjk.clone()]));
     let used_fonts = |source: &RecordedSource| {
-        let scene = source.scene();
+        let scene = source.scene().unwrap();
         scene
             .commands()
             .iter()
@@ -1393,6 +1393,7 @@ fn particle_bounds_follow_each_captured_extent_after_resize_and_append() {
         };
         let draws = source
             .scene()
+            .unwrap()
             .commands()
             .iter()
             .filter(|command| matches!(command, reel_ui::imaging::record::Command::Draw(_)))
@@ -1742,7 +1743,7 @@ fn text_wrap_changes_height_preserves_newlines_and_reuses_the_label() {
         )
         .unwrap();
     let glyphs = |source: &RecordedSource| {
-        let scene = source.scene();
+        let scene = source.scene().unwrap();
         scene
             .commands()
             .iter()

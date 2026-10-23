@@ -55,7 +55,7 @@ fn group() -> FrameGroup {
         clip: None,
         mask: None,
         filters: Vec::new(),
-        composite: Composite::default(),
+        composite: GroupComposite::default(),
         invert: 0.,
         owner: wire::origin().at.owner,
         effect_to_target: Affine::IDENTITY,
