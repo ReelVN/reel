@@ -759,6 +759,8 @@ fn main() {
 
 命名动作把键盘、鼠标和手柄映射到同一行为。连续移动用时钟更新；输入回调更新玩家意图。文本编辑时，聚焦编辑器处理自己的键盘和输入法事件。
 
+需要指针位置时，用 `input(on_pointer: |event| ...)` 读取节点内的 `event.x`、`event.y` 和 `event.phase`。悬停与拖动都会产生 `moved`；主按钮或触摸产生 `pressed`、`released` 和 `cancelled`。
+
 ```aside
 fn main() {
     game.configure(fonts: ["fonts/body.ttf"]);
