@@ -929,19 +929,43 @@ impl Wire for FunctionDef {
     }
 }
 impl Wire for Instruction {
-    const MIN: usize = 16;
     fn put(&self, w: &mut Writer) -> Result<(), Error> {
-        w.write(&self.to_le_bytes())
+        let spec = instruction_spec(self.opcode)
+            .ok_or_else(|| Error::new(ErrorKind::Opcode, "unknown opcode"))?;
+        let opcode = u8::try_from(self.opcode)
+            .map_err(|_| Error::new(ErrorKind::Opcode, "opcode exceeds wire range"))?;
+        if self.flags != 0 {
+            return Err(Error::new(ErrorKind::Flags, "undeclared flags"));
+        }
+        opcode.put(w)?;
+        for (kind, value) in spec.operands.iter().zip(self.operands) {
+            if *kind == OperandKind::Unused {
+                if value != 0 {
+                    return Err(Error::new(ErrorKind::Encoding, "nonzero unused operand"));
+                }
+            } else {
+                put_operand(value, w)?;
+            }
+        }
+        Ok(())
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        let instruction = Self::from_le_bytes(r.take(16)?.try_into().expect("instruction field"))?;
-        let spec = instruction_spec(instruction.opcode).expect("decoded opcode");
-        for (kind, value) in spec.operands.iter().zip(instruction.operands) {
+        let opcode = u8::get(r)? as u16;
+        let spec =
+            instruction_spec(opcode).ok_or_else(|| r.error(ErrorKind::Opcode, "unknown opcode"))?;
+        let mut instruction = Self {
+            opcode,
+            flags: 0,
+            operands: [0; 3],
+        };
+        for (kind, operand) in spec.operands.iter().zip(&mut instruction.operands) {
             use OperandKind::*;
+            if *kind == Unused {
+                continue;
+            }
+            let value = get_operand(r)?;
+            *operand = value;
             match kind {
-                Unused if value != 0 => {
-                    return Err(r.error(ErrorKind::Encoding, "nonzero unused operand"));
-                }
                 ReadReg | WriteReg | ReadWriteReg => r.index(value, r.registers)?,
                 Const => r.index(value, r.counts[2])?,
                 Symbol => r.index(value, r.counts[0])?,
@@ -956,6 +980,38 @@ impl Wire for Instruction {
         }
         Ok(instruction)
     }
+}
+
+fn put_operand(mut value: u32, w: &mut Writer) -> Result<(), Error> {
+    let mut bytes = [0; 5];
+    let mut len = 0;
+    loop {
+        let byte = (value & 0x7f) as u8;
+        value >>= 7;
+        bytes[len] = byte | if value == 0 { 0 } else { 0x80 };
+        len += 1;
+        if value == 0 {
+            return w.write(&bytes[..len]);
+        }
+    }
+}
+
+fn get_operand(r: &mut Reader<'_>) -> Result<u32, Error> {
+    let mut value = 0;
+    for shift in (0..35).step_by(7) {
+        let byte = u8::get(r)?;
+        if shift == 28 && byte > 0x0f {
+            return Err(r.error(ErrorKind::Encoding, "instruction operand exceeds u32"));
+        }
+        value |= u32::from(byte & 0x7f) << shift;
+        if byte < 0x80 {
+            if shift != 0 && byte == 0 {
+                return Err(r.error(ErrorKind::Encoding, "noncanonical instruction operand"));
+            }
+            return Ok(value);
+        }
+    }
+    unreachable!("the fifth byte either terminates or exceeds u32")
 }
 impl Wire for BytecodePackage {
     fn put(&self, w: &mut Writer) -> Result<(), Error> {
@@ -1202,5 +1258,23 @@ pub(crate) fn identity(package: &BytecodePackage, limits: Limits) -> Result<[u8;
     package.host_abi_version.put(&mut writer)?;
     package.content_version.put(&mut writer)?;
     package.put(&mut writer)?;
+    Ok(*writer.digest.unwrap().finalize().as_bytes())
+}
+
+/// Hash the same canonical fields after the decoder and semantic verifier have
+/// accepted the input. The magic, total length and count directory are framing;
+/// versions and every package field retain their original identity coverage.
+pub(super) fn decoded_identity(input: &[u8], limits: Limits) -> Result<[u8; 32], Error> {
+    let mut writer = Writer {
+        bytes: None,
+        digest: Some(blake3::Hasher::new()),
+        len: 0,
+        max: limits.max_bytes,
+        capacity: 0,
+        records: 0,
+        limits,
+    };
+    writer.write(&input[MAGIC.len()..MAGIC.len() + 3 * size_of::<u32>() + size_of::<u64>()])?;
+    writer.write(&input[HEADER_BYTES..])?;
     Ok(*writer.digest.unwrap().finalize().as_bytes())
 }

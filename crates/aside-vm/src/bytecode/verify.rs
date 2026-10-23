@@ -153,8 +153,12 @@ impl VerifiedProgram {
         }
         source_span(&f.source_map, pc)
     }
+    /// Decode and verify owned program data. Code identity reuses the validated
+    /// canonical bytes; the returned program retains no borrow of the input.
     pub fn decode(input: &[u8], limits: Limits) -> Result<Self, Error> {
-        verify(decode(input, limits)?, limits)
+        verify_with_identity(decode(input, limits)?, limits, |_| {
+            super::codec::decoded_identity(input, limits)
+        })
     }
     pub fn decode_with_text_pool(
         input: &[u8],
@@ -358,10 +362,19 @@ impl VerifiedProgram {
     }
 }
 pub fn verify(package: BytecodePackage, limits: Limits) -> Result<VerifiedProgram, Error> {
+    verify_with_identity(package, limits, |package| {
+        super::codec::identity(package, limits)
+    })
+}
+fn verify_with_identity(
+    package: BytecodePackage,
+    limits: Limits,
+    identity: impl FnOnce(&BytecodePackage) -> Result<[u8; 32], Error>,
+) -> Result<VerifiedProgram, Error> {
     let (stats, layouts) = validate_program(&package, limits)?;
     Ok(VerifiedProgram(
         std::sync::Arc::new(VerifiedData {
-            identity: super::codec::identity(&package, limits)?,
+            identity: identity(&package)?,
             package,
             stats,
             limits,

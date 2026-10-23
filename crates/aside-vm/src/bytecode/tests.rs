@@ -3,6 +3,47 @@ use super::*;
 type Fixture = (&'static str, fn() -> BytecodePackage, &'static [u8]);
 
 #[test]
+#[ignore = "explicit code identity throughput measurement"]
+fn decoded_identity_cost() {
+    let mut package = fixtures::helper_native();
+    let function = &mut package.functions[0];
+    function.code = vec![Instruction::new(Opcode::LoadConst, 0, 1, 0); 1_000_000];
+    function
+        .code
+        .push(Instruction::new(Opcode::Return, 0, 0, 0));
+    function.source_map.clear();
+    let bytes = encode(&package, limits()).unwrap();
+    let mut canonical = Vec::new();
+    let mut decoded = Vec::new();
+    for _ in 0..7 {
+        let start = std::time::Instant::now();
+        let original = super::codec::identity(std::hint::black_box(&package), limits()).unwrap();
+        canonical.push(start.elapsed());
+        let start = std::time::Instant::now();
+        let loaded =
+            super::codec::decoded_identity(std::hint::black_box(&bytes), limits()).unwrap();
+        decoded.push(start.elapsed());
+        assert_eq!(original, loaded);
+    }
+    canonical.sort();
+    decoded.sort();
+    let mut identity = None;
+    let allocation = allocation_counter::measure(|| {
+        identity = Some(super::codec::decoded_identity(&bytes, limits()).unwrap());
+    });
+    assert!(identity.is_some());
+    assert_eq!(allocation.count_total, 0);
+    eprintln!(
+        "identity encoded_bytes={} instructions={} canonical_median={:?} decoded_median={:?} decoded_allocations={}",
+        bytes.len(),
+        package.functions[0].code.len(),
+        canonical[3],
+        decoded[3],
+        allocation.count_total
+    );
+}
+
+#[test]
 fn rest_name_cannot_be_supplied_through_a_property_bag_tail() {
     let mut p = fixtures::helper_native();
     let rest_name = SymbolId(p.symbols.len() as u32);
@@ -198,7 +239,12 @@ fn shared_fixtures_roundtrip_source_and_disassembly() {
         assert_eq!(decoded, p);
         assert_eq!(encode(&decoded, limits()).unwrap(), bytes);
         let original = verify(p, limits()).unwrap();
-        let loaded = verify(decoded, limits()).unwrap();
+        let loaded = VerifiedProgram::decode(&bytes, limits()).unwrap();
+        assert_eq!(
+            original.snapshot_identity(),
+            loaded.snapshot_identity(),
+            "canonical code identity {name}"
+        );
         let mut a = String::new();
         let mut b = String::new();
         disassemble(&original, &mut a).unwrap();
@@ -220,27 +266,17 @@ fn shared_fixtures_roundtrip_source_and_disassembly() {
     }
 }
 #[test]
-fn instruction_wire_is_exact_little_endian_and_not_enum_layout() {
-    let i = Instruction::new(Opcode::BranchBool, 0x12345678, 0x90abcdef, 0x10203040);
-    let expected = [
-        0x31, 0, 0, 0, 0x78, 0x56, 0x34, 0x12, 0xef, 0xcd, 0xab, 0x90, 0x40, 0x30, 0x20, 0x10,
-    ];
-    assert_eq!(i.to_le_bytes(), expected);
-    assert_eq!(Instruction::from_le_bytes(expected).unwrap(), i);
+fn instruction_wire_is_compact_and_independent_of_execution_layout() {
+    let package = fixtures::helper_native();
+    let bytes = encode(&package, limits()).unwrap();
+    // LoadConst r0,k1; Call r1,q0; Return r1.
+    assert!(
+        bytes
+            .windows(8)
+            .any(|w| w == [1, 0, 1, 0x41, 1, 0, 0x42, 1])
+    );
     assert_eq!(std::mem::size_of::<Instruction>(), 16);
-    let mut bad = expected;
-    bad[0] = 0xff;
-    bad[1] = 0xff;
-    assert_eq!(
-        Instruction::from_le_bytes(bad).unwrap_err().kind,
-        ErrorKind::Opcode
-    );
-    bad = expected;
-    bad[2] = 1;
-    assert_eq!(
-        Instruction::from_le_bytes(bad).unwrap_err().kind,
-        ErrorKind::Flags
-    );
+    assert_eq!(decode(&bytes, limits()).unwrap(), package);
 }
 #[test]
 fn all_truncation_points_are_rejected_even_with_rewritten_total_length() {
@@ -291,12 +327,18 @@ fn declared_counts_overflow_and_bad_indices_do_not_allocate_payloads() {
             allocation.bytes_total
         );
     }
-    let instruction = Instruction::new(Opcode::LoadConst, 0, 1, 0).to_le_bytes();
-    let position = bytes.windows(16).position(|w| w == instruction).unwrap();
-    for operand in [4, 8] {
+    let position = bytes
+        .windows(8)
+        .position(|w| w == [1, 0, 1, 0x41, 1, 0, 0x42, 1])
+        .unwrap();
+    for operand in [1, 2] {
         let mut corrupt = bytes.clone();
-        corrupt[position + operand..position + operand + 4]
-            .copy_from_slice(&u32::MAX.to_le_bytes());
+        corrupt.splice(
+            position + operand..position + operand + 1,
+            [0xff, 0xff, 0xff, 0xff, 0x0f],
+        );
+        let length = corrupt.len() as u32;
+        corrupt[28..32].copy_from_slice(&length.to_le_bytes());
         let allocation = allocation_counter::measure(|| {
             assert_eq!(
                 decode(&corrupt, limits()).unwrap_err().kind,
@@ -377,11 +419,45 @@ fn unknown_version_tags_flags_unused_operands_and_trailing_bytes_fail() {
         if kind == ErrorKind::Flags {
             p.functions[0].code[0].flags = 1;
         }
-        bad(p, kind);
+        assert_eq!(verify(p.clone(), limits()).unwrap_err().kind, kind);
+        assert_eq!(encode(&p, limits()).unwrap_err().kind, kind);
     }
     let mut p = fixtures::helper_native();
     p.functions[0].code[0].operands[2] = 1;
-    bad(p, ErrorKind::Encoding);
+    assert_eq!(
+        verify(p.clone(), limits()).unwrap_err().kind,
+        ErrorKind::Encoding
+    );
+    assert_eq!(encode(&p, limits()).unwrap_err().kind, ErrorKind::Encoding);
+}
+
+#[test]
+fn instruction_operands_reject_noncanonical_and_overflowing_encodings() {
+    let bytes = encode(&fixtures::helper_native(), limits()).unwrap();
+    let position = bytes
+        .windows(8)
+        .position(|w| w == [1, 0, 1, 0x41, 1, 0, 0x42, 1])
+        .unwrap();
+    for encoded in [
+        &[0x81, 0x00][..],
+        &[0xff, 0xff, 0xff, 0xff, 0x10],
+        &[0xff, 0xff, 0xff, 0xff, 0x80],
+    ] {
+        let mut corrupt = bytes.clone();
+        corrupt.splice(position + 2..position + 3, encoded.iter().copied());
+        let length = corrupt.len() as u32;
+        corrupt[28..32].copy_from_slice(&length.to_le_bytes());
+        assert_eq!(
+            decode(&corrupt, limits()).unwrap_err().kind,
+            ErrorKind::Encoding
+        );
+    }
+    let mut corrupt = bytes;
+    corrupt[position] = 0xff;
+    assert_eq!(
+        decode(&corrupt, limits()).unwrap_err().kind,
+        ErrorKind::Opcode
+    );
 }
 #[test]
 fn windows_descriptors_and_call_signature_conflicts_fail() {

@@ -269,7 +269,7 @@ fn external_text_binding_checks_identity_range_and_code_point_boundaries() {
     assert!(
         matches!(Vm::load(program.clone(), support(), VmLimits::default(), SessionEpoch(1)), Err(VmError::Format(error)) if error.detail.contains("external text pool"))
     );
-    let wrong = TextPool::from_bytes(std::sync::Arc::from("違う😀".as_bytes())).unwrap();
+    let wrong = TextPool::from_bytes("違う😀".as_bytes().to_vec()).unwrap();
     assert!(
         program
             .clone()
@@ -296,7 +296,71 @@ fn external_text_binding_checks_identity_range_and_code_point_boundaries() {
         verify(package, Limits::default()).unwrap_err().kind,
         ErrorKind::Index
     );
-    assert!(TextPool::from_bytes(std::sync::Arc::from([0xff])).is_err());
+    assert!(TextPool::from_bytes(vec![0xff]).is_err());
+}
+
+#[test]
+fn external_text_pool_preserves_backing_and_accounts_retained_capacity() {
+    let mut retained = None;
+    let mut expected = 0;
+    let allocation = allocation_counter::measure(|| {
+        let mut bytes = Vec::with_capacity(64 * 1024);
+        bytes.extend_from_slice("正文😀".as_bytes());
+        let pointer = bytes.as_ptr();
+        expected =
+            bytes.capacity() + std::mem::size_of::<Vec<u8>>() + 2 * std::mem::size_of::<usize>();
+        let pool = TextPool::from_bytes(bytes).unwrap();
+        assert_eq!(pool.as_bytes().as_ptr(), pointer);
+        assert_eq!(pool.capacity_bytes(), expected);
+        retained = Some(pool);
+    });
+    assert_eq!(allocation.count_total, 2);
+    assert_eq!(allocation.bytes_total, expected as u64);
+    assert_eq!(allocation.bytes_current, expected as i64);
+    assert_eq!(allocation.bytes_max, expected as u64);
+
+    let pool = retained.unwrap();
+    let allocation = allocation_counter::measure(|| {
+        let shared = pool.clone();
+        assert_eq!(shared.as_bytes().as_ptr(), pool.as_bytes().as_ptr());
+    });
+    assert_eq!(allocation.count_total, 0);
+
+    let mut package = package(
+        vec![Const::Text {
+            offset: 0,
+            len: pool.len() as u32,
+        }],
+        0,
+    );
+    package.text_pool = Some(pool.descriptor());
+    let program = verify(package.clone(), Limits::default()).unwrap();
+    let base_capacity = program.stats().owned_capacity_bytes;
+    let bound = program.bind_text_pool(pool.clone()).unwrap();
+    assert_eq!(bound.stats().owned_capacity_bytes, base_capacity + expected);
+
+    let limits = Limits {
+        max_allocation_bytes: base_capacity + expected - 1,
+        ..Limits::default()
+    };
+    assert_eq!(
+        verify(package.clone(), limits)
+            .unwrap()
+            .bind_text_pool(pool.clone())
+            .unwrap_err()
+            .kind,
+        ErrorKind::Limit
+    );
+    let limits = Limits {
+        max_allocation_bytes: base_capacity + expected,
+        ..limits
+    };
+    assert!(
+        verify(package.clone(), limits)
+            .unwrap()
+            .bind_text_pool(pool)
+            .is_ok()
+    );
 }
 
 fn default_package(
