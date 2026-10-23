@@ -483,6 +483,16 @@ impl Vm {
             _ => len,
         };
         let scan = matches!(s.phase, ScriptPhase::TableScan);
+        let hint = if scan && !work.matched && work.entry == 0 {
+            self.host_member_symbol(s).and_then(|symbol| {
+                let entry = self.member_hints.get(s.code.function, s.pc)?;
+                let bytes = self.program.package().symbols[symbol.index()].len();
+                (entry < len && bytes <= member_hints::MAX_KEY_BYTES)
+                    .then_some((entry, symbol, bytes))
+            })
+        } else {
+            None
+        };
         let store = scan
             && (work.matched || work.entry == scan_len)
             && !matches!(
@@ -511,6 +521,11 @@ impl Vm {
             0
         };
         let mut cost = (1, extra);
+        if let Some((_, _, bytes)) = hint {
+            // Bounded metadata reads, short-key bytes and comparison are paid
+            // before probing. A mismatch keeps the original ordered scan.
+            cost.0 += 3 + bytes as u64;
+        }
         let mut host_method = None;
         let mut host_lookup_work = 0;
         if scan
@@ -591,6 +606,20 @@ impl Vm {
             // the full retry requirement while accounting for that work.
             meter.usage.work += host_lookup_work;
             return Ok(false);
+        }
+        if let Some((entry, symbol, _)) = hint
+            && self.member_hint_matches(table, entry, symbol)?
+        {
+            let lookup = s.table_work.as_mut().unwrap();
+            lookup.entry = entry;
+            lookup.matched = true;
+            #[cfg(test)]
+            self.work_probe
+                .member_hint_hits
+                .set(self.work_probe.member_hint_hits.get() + 1);
+            // The following ordinary lookup step still checks its version,
+            // resolves reactive reads and admits the original commit work.
+            return Ok(true);
         }
         if let Some(read) = refresh {
             let index = self.index(s.id)?;
@@ -712,6 +741,13 @@ impl Vm {
         let work = s.table_work.unwrap();
         let table = self.value(s.env, 1)?;
         let key = self.value(s.env, 2)?;
+        if work.matched
+            && let Some(symbol) = self.host_member_symbol(s)
+            && self.program.package().symbols[symbol.index()].len() <= member_hints::MAX_KEY_BYTES
+        {
+            self.member_hints
+                .remember(s.code.function, s.pc, work.entry);
+        }
         match work.action {
             TableAction::Remove(call) => {
                 if !work.matched {

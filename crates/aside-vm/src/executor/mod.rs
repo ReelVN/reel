@@ -29,6 +29,7 @@ use generators::GeneratorAction;
 #[cfg(test)]
 mod generator_tests;
 mod iterators;
+mod member_hints;
 mod models;
 mod reactive;
 pub(crate) mod snapshot;
@@ -526,6 +527,7 @@ pub struct Vm {
     globals: RootRangeToken,
     constants: RootRangeToken,
     constant_cache: ChargedVec<Value>,
+    member_hints: member_hints::MemberHints,
     heap: Heap,
     limits: VmLimits,
     control_charge: Reservation,
@@ -544,6 +546,7 @@ struct WorkProbe {
     release_catch_checks: std::cell::Cell<u64>,
     native_layout_queries: std::cell::Cell<u64>,
     exit_handler_queries: std::cell::Cell<u64>,
+    member_hint_hits: std::cell::Cell<u64>,
 }
 impl Vm {
     pub fn load(
@@ -814,6 +817,7 @@ impl Vm {
             globals,
             constants,
             constant_cache,
+            member_hints: member_hints::MemberHints::default(),
             heap,
             limits,
             control_charge,
