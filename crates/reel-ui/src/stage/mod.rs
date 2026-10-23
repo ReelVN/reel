@@ -305,6 +305,8 @@ pub enum NodeKind {
     },
     Image {
         source: ImageSource,
+        /// Source-pixel sampling window; None selects the whole image.
+        source_rect: Option<crate::kurbo::Rect>,
         fit: ObjectFit,
         /// Nine-slice borders in source pixels, or ordinary object-fit drawing.
         slice: Option<Insets>,

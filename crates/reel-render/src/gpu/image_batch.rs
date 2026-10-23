@@ -89,7 +89,17 @@ impl Context<'_> {
                     transform,
                     uv,
                     self.size,
-                    quad.brush.image.color.map(|channel| channel * quad.alpha),
+                    mesh::ImagePaint {
+                        color: quad.brush.image.color.map(|channel| channel * quad.alpha),
+                        sampling: mesh::ImageSampling::new(
+                            quad.brush.image.source_rect,
+                            image.size,
+                            [
+                                quad.brush.sampler.x_extend == Extend::Repeat,
+                                quad.brush.sampler.y_extend == Extend::Repeat,
+                            ],
+                        ),
+                    },
                     at,
                 )?;
             }

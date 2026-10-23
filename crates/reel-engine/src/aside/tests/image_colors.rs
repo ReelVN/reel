@@ -143,3 +143,61 @@ fn image_colors_validate_atomically_bind_and_restore_for_images_and_video() {
         assert_eq!(adjustment(&vm, false).saturation, 2.);
     }
 }
+
+#[test]
+fn image_source_rect_binds_validates_and_restores_from_source_and_asb() {
+    use reel_ui::kurbo::Rect;
+    let code = r#"fn opening() {
+        let frames=[(0,0,64,64),(64,0,64,64)];
+        let state=model({frame:0});
+        let p=image("still.png",source_rect:derive(||frames[state.frame]),width:80,height:90);
+        let v=video("movie.mp4",source_rect:(-2,1,1,2));
+        let mut errors=0;
+        try {p.source_rect=(0,0,0,64);} catch error {errors+=1;}
+        try {p.source_rect=(0,0,-1,64);} catch error {errors+=1;}
+        try {p.source_rect=(0,0,1e100,64);} catch error {errors+=1;}
+        try {p.source_rect=(0,0,1e-100,64);} catch error {errors+=1;}
+        try {v.source_rect=(0,0,64,-1);} catch error {errors+=1;}
+        if errors!=5 || p.source_rect[2]!=64 || v.source_rect[0]!=-2 {throw "invalid source window committed";}
+        stage.replace(row(){p;v;});
+        narrator("before");
+        state.frame=1; v.source_rect=null;
+        narrator("after");
+    }"#;
+    fn rectangles(vm: &SessionVm) -> Vec<Option<Rect>> {
+        vm.stage()
+            .nodes()
+            .filter_map(|n| match &n.kind {
+                NodeKind::Image { source_rect, .. } => Some(*source_rect),
+                _ => None,
+            })
+            .collect()
+    }
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        drive(&mut vm, &mut session);
+        let expected = vec![
+            Some(Rect::new(0., 0., 64., 64.)),
+            Some(Rect::new(-2., 1., -1., 3.)),
+        ];
+        assert_eq!(rectangles(&vm), expected);
+        let identities = vm.stage().nodes().map(|n| n.id).collect::<Vec<_>>();
+        (session, vm) = restore(&session, &mut vm);
+        assert_eq!(rectangles(&vm), expected);
+        let id = session.view().interaction.unwrap().id();
+        for _ in 0..2 {
+            session
+                .handle_local_input(session.root_owner(), InputAction::Advance(id))
+                .unwrap();
+        }
+        drive(&mut vm, &mut session);
+        assert_eq!(
+            rectangles(&vm),
+            vec![Some(Rect::new(64., 0., 128., 64.)), None]
+        );
+        assert_eq!(
+            vm.stage().nodes().map(|n| n.id).collect::<Vec<_>>(),
+            identities
+        );
+    }
+}

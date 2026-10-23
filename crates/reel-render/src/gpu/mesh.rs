@@ -22,6 +22,38 @@ pub struct Vertex {
     pub position: [f32; 2],
     pub uv: [f32; 2],
     pub color: [f32; 4],
+    /// Normalized origin and signed span; a negative span repeats that axis.
+    /// Zero span selects the ordinary whole-texture sampler.
+    pub source_window: [f32; 4],
+}
+/// Per-quad sampling data keeps different windows in the same texture batch.
+#[derive(Clone, Copy, Default)]
+pub(super) struct ImageSampling {
+    window: [f32; 4],
+}
+impl ImageSampling {
+    pub(super) fn new(rect: Option<Rect>, size: [u32; 2], repeat: [bool; 2]) -> Self {
+        let Some(rect) = rect else {
+            return Self::default();
+        };
+        Self {
+            window: [
+                (rect.x0 / f64::from(size[0])) as f32,
+                (rect.y0 / f64::from(size[1])) as f32,
+                (rect.width() / f64::from(size[0])) as f32 * if repeat[0] { -1. } else { 1. },
+                (rect.height() / f64::from(size[1])) as f32 * if repeat[1] { -1. } else { 1. },
+            ],
+        }
+    }
+    fn apply(self, vertices: &mut [Vertex]) {
+        for vertex in vertices {
+            vertex.source_window = self.window;
+        }
+    }
+}
+pub(super) struct ImagePaint {
+    pub(super) color: [f32; 4],
+    pub(super) sampling: ImageSampling,
 }
 pub struct Mesh {
     pub vertices: Vec<Vertex>,
@@ -108,6 +140,7 @@ impl Mesh {
                 position: [p.0 as f32, p.1 as f32],
                 uv: [t.0 as f32, t.1 as f32],
                 color: [1.; 4],
+                source_window: [0.; 4],
             });
         }
         self.indices
@@ -120,19 +153,23 @@ impl Mesh {
         transform: Affine,
         uv: Affine,
         size: [u32; 2],
-        color: [f32; 4],
+        paint: ImagePaint,
         at: RecordLocation,
     ) -> Result<(), GpuError> {
         let start = self.vertices.len();
         self.quad(rect, rect)?;
+        paint.sampling.apply(&mut self.vertices[start..]);
         transform_vertices(
             &mut self.vertices[start..],
             transform,
             size,
             Some(uv),
-            color,
+            paint.color,
             at,
         )
+    }
+    pub(super) fn set_image_sampling(&mut self, sampling: ImageSampling) {
+        sampling.apply(&mut self.vertices);
     }
     fn push(
         &mut self,
@@ -150,6 +187,7 @@ impl Mesh {
             position: [p.x, p.y],
             uv: [0.; 2],
             color: [1.; 4],
+            source_window: [0.; 4],
         });
         Ok(id)
     }
@@ -466,17 +504,49 @@ mod tests {
             Affine::translate((10., 20.)),
             uv,
             [100, 100],
-            [0.25; 4],
+            ImagePaint {
+                color: [0.25; 4],
+                sampling: ImageSampling::new(Some(Rect::new(0., 0., 4., 4.)), [10, 10], [false; 2]),
+            },
             at,
         )
         .unwrap();
-        mesh.image_quad(bounds, Affine::scale(2.), uv, [100, 100], [0.75; 4], at)
-            .unwrap();
+        mesh.image_quad(
+            bounds,
+            Affine::scale(2.),
+            uv,
+            [100, 100],
+            ImagePaint {
+                color: [0.75; 4],
+                sampling: ImageSampling::new(
+                    Some(Rect::new(4., 0., 8., 4.)),
+                    [10, 10],
+                    [true, false],
+                ),
+            },
+            at,
+        )
+        .unwrap();
         assert_eq!(mesh.indices, [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7]);
         assert_eq!(mesh.vertices[0].position, [-0.76, 0.52]);
         assert_eq!(mesh.vertices[4].position, [-0.92, 0.84]);
         assert_eq!(mesh.vertices[0].uv, [0., 0.]);
         assert_eq!(mesh.vertices[2].uv, [0.4, 0.8]);
+        assert!(
+            mesh.vertices[..4]
+                .iter()
+                .all(|v| v.source_window == [0., 0., 0.4, 0.4])
+        );
+        assert!(
+            mesh.vertices[4..]
+                .iter()
+                .all(|v| v.source_window == [0.4, 0., -0.4, 0.4])
+        );
+        assert_eq!(
+            size_of::<Vertex>(),
+            48,
+            "sampling windows have fixed per-vertex cost"
+        );
         assert!(mesh.vertices[..4].iter().all(|v| v.color == [0.25; 4]));
         assert!(mesh.vertices[4..].iter().all(|v| v.color == [0.75; 4]));
         drop(mesh);

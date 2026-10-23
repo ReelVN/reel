@@ -2494,6 +2494,7 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
     let background = stage
         .create(
             NodeKind::Image {
+                source_rect: None,
                 source: "background.reel-image".into(),
                 origin: Some("snow.aside:2:3".into()),
                 fit: Default::default(),
@@ -2556,6 +2557,27 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
         "metadata path reuses the one decoded sprite"
     );
 
+    {
+        let root = Arc::make_mut(view.root.as_mut().unwrap());
+        let background = Arc::make_mut(&mut Arc::make_mut(&mut root.children)[0]);
+        let NodeKind::Image { source_rect, .. } = &mut Arc::make_mut(&mut background.node).kind
+        else {
+            unreachable!()
+        };
+        *source_rect = Some(Rect::new(0., 0., 64., 64.));
+    }
+    let error = view.image_requests().err().unwrap();
+    assert!(
+        error.contains("snow.aside:2:3") && error.contains("source_rect"),
+        "{error}"
+    );
+    let root = Arc::make_mut(view.root.as_mut().unwrap());
+    let background = Arc::make_mut(&mut Arc::make_mut(&mut root.children)[0]);
+    let NodeKind::Image { source_rect, .. } = &mut Arc::make_mut(&mut background.node).kind else {
+        unreachable!()
+    };
+    *source_rect = None;
+
     let root = Arc::make_mut(view.root.as_mut().unwrap());
     let child = Arc::make_mut(&mut Arc::make_mut(&mut root.children)[1]);
     let NodeKind::Particles(batch) = &mut Arc::make_mut(&mut child.node).kind else {
@@ -2607,7 +2629,8 @@ fn decoded_frames_preserve_geometry_skip_asset_io_and_release_pixels_with_last_v
         },
     );
     let mut registry = ResourceRegistry::new(4, 64 << 10).unwrap();
-    let kind = |source| NodeKind::Image {
+    let kind = |source, source_rect| NodeKind::Image {
+        source_rect,
         source,
         origin: None,
         fit: Default::default(),
@@ -2620,11 +2643,21 @@ fn decoded_frames_preserve_geometry_skip_asset_io_and_release_pixels_with_last_v
         adjustment: Default::default(),
     };
     let mut f = Fixture::new(None);
+    f.stage
+        .update(
+            f.root,
+            NodeKind::Button {
+                label: None,
+                listening: true,
+            },
+            f.stage.node(f.root).unwrap().props.clone(),
+        )
+        .unwrap();
     let props = f.stage.node(f.red).unwrap().props.clone();
     let blue = f.stage.node(f.blue).unwrap().props.clone();
     f.stage.update(f.blue, NodeKind::Stack, blue).unwrap();
     f.stage
-        .update(f.red, kind(ImageSource::empty()), props.clone())
+        .update(f.red, kind(ImageSource::empty(), None), props.clone())
         .unwrap();
     let source = f.record();
     assert!(!f.ui.images_pending());
@@ -2667,7 +2700,19 @@ fn decoded_frames_preserve_geometry_skip_asset_io_and_release_pixels_with_last_v
             .unwrap();
         let lease = registry.acquire(handle).unwrap();
         f.stage
-            .update(f.red, kind(ImageSource::resource(lease)), props.clone())
+            .update(
+                f.red,
+                kind(
+                    ImageSource::resource(lease),
+                    Some(Rect::new(
+                        f64::from(index % 2),
+                        0.,
+                        f64::from(index % 2) + 1.,
+                        1.,
+                    )),
+                ),
+                props.clone(),
+            )
             .unwrap();
         assert!(
             StageView::capture(&f.stage)
@@ -2689,6 +2734,8 @@ fn decoded_frames_preserve_geometry_skip_asset_io_and_release_pixels_with_last_v
             panic!("planar image expected")
         };
         assert_eq!(image.plane(0).as_ptr(), pointer);
+        let root_geometry = source.geometry().get(f.layouts()[&f.root].0).unwrap();
+        let button_center = root_geometry.window_transform * root_geometry.size.to_rect().center();
         let mut build = FrameBuild::new(
             source.source,
             snapshot,
@@ -2723,16 +2770,36 @@ fn decoded_frames_preserve_geometry_skip_asset_io_and_release_pixels_with_last_v
                 if let FrameOp::Draw(FrameDraw::Fill {
                     brush: Brush::Image(image),
                     transform,
+                    brush_transform,
                     ..
                 }) = &c.op
                 {
-                    Some((image, *transform))
+                    Some((image, *transform, *brush_transform))
                 } else {
                     None
                 }
             })
             .unwrap();
         assert_eq!(image.0.image.resource, handle);
+        assert_eq!(
+            image.2,
+            Some(Affine::translate((f64::from(index % 2), 0.))),
+            "source pixels retain their original 1:1 mapping"
+        );
+        assert_eq!(
+            image.0.image.source_rect,
+            Some(Rect::new(
+                f64::from(index % 2),
+                0.,
+                f64::from(index % 2) + 1.,
+                1.
+            ))
+        );
+        assert_eq!(
+            f.ui.image_resources().len(),
+            1,
+            "selecting pixels preserves one YUV resource"
+        );
         assert!(
             image.1.as_coeffs()[1] != 0.,
             "parent rotation must survive image recording"
@@ -2745,6 +2812,64 @@ fn decoded_frames_preserve_geometry_skip_asset_io_and_release_pixels_with_last_v
             );
         } else {
             stable_layouts = Some(f.layouts());
+        }
+        if index == 0 {
+            use reel_ui::core::{
+                PointerButton, PointerButtonEvent, PointerEvent, PointerId, PointerInfo,
+                PointerState, PointerType,
+            };
+            let pointer = |down| {
+                let event = PointerButtonEvent {
+                    pointer: PointerInfo {
+                        pointer_id: Some(PointerId::PRIMARY),
+                        persistent_device_id: None,
+                        pointer_type: PointerType::Mouse,
+                    },
+                    state: PointerState {
+                        position: reel_ui::dpi::PhysicalPosition::new(
+                            button_center.x,
+                            button_center.y,
+                        ),
+                        ..Default::default()
+                    },
+                    button: Some(PointerButton::Primary),
+                };
+                if down {
+                    PointerEvent::Down(event)
+                } else {
+                    PointerEvent::Up(event)
+                }
+            };
+            f.ui.handle_pointer(&mut f.bridge, pointer(true)).unwrap();
+            let before = f.layouts();
+            let mut kind = f.stage.node(f.red).unwrap().kind.clone();
+            let NodeKind::Image { source_rect, .. } = &mut kind else {
+                unreachable!()
+            };
+            *source_rect = Some(Rect::new(1., 0., 2., 1.));
+            f.stage.update(f.red, kind, props.clone()).unwrap();
+            let selection = f.record();
+            f.accept(&selection);
+            let clicks =
+                f.ui.handle_pointer(&mut f.bridge, pointer(false))
+                    .unwrap()
+                    .events;
+            assert!(
+                clicks
+                    .into_iter()
+                    .any(|event| matches!(event,NodeEvent::Click(click) if click.node==f.root)),
+                "source window animation preserves the button's accepted pointer gesture"
+            );
+            assert_eq!(
+                f.layouts(),
+                before,
+                "moving the window only invalidates paint"
+            );
+            assert_eq!(
+                f.ui.image_resources()[0].handle(),
+                handle,
+                "a frame selection retains the original YUV lease"
+            );
         }
         if first.is_none() {
             first = Some(frame);

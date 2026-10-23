@@ -187,6 +187,9 @@ pub struct FrameImage {
     pub color: [f32; 4],
     /// Optional corner tint and sRGB adjustment; None uses the shared plain uniform.
     pub appearance: Option<ImageAppearance>,
+    /// Optional source-pixel sampling window. Per-fragment padding preserves the
+    /// original UV mapping while preventing bilinear reads from adjacent regions.
+    pub source_rect: Option<Rect>,
 }
 mod image_color;
 pub use image_color::{ImageAppearance, ImageColorAdjustment};
@@ -1175,6 +1178,11 @@ impl Building {
             ImagePaint {
                 color: image_color,
                 appearance: image_appearance,
+                source_rect: if c.stream.is_none() {
+                    layer.command_owners[c.owner_range].image_source_rect
+                } else {
+                    None
+                },
                 sampling_transform: c.stream.is_none()
                     && layer.command_owners[c.owner_range].image_sampling_transform,
                 resource: if c.stream.is_none() {
@@ -1400,6 +1408,20 @@ fn valid_brush(b: &FrameBrush) -> bool {
         Brush::Solid(c) => valid_color(c.components),
         Brush::Image(i) => {
             valid_color(i.image.color)
+                && i.image.source_rect.is_none_or(|rect| {
+                    (rect.width() as f32) > 0.
+                        && (rect.height() as f32) > 0.
+                        && [
+                            rect.x0,
+                            rect.y0,
+                            rect.x1,
+                            rect.y1,
+                            rect.width(),
+                            rect.height(),
+                        ]
+                        .iter()
+                        .all(|v| (*v as f32).is_finite())
+                })
                 && i.image.appearance.is_none_or(|appearance| {
                     appearance.adjustment.is_valid()
                         && appearance.gradient.is_none_or(|gradient| {
@@ -1605,6 +1627,7 @@ pub(crate) struct ImagePaint {
     pub(crate) appearance: Option<ImageAppearance>,
     pub(crate) resource: Option<crate::resources::ResourceImageBrush>,
     pub(crate) sampling_transform: bool,
+    pub(crate) source_rect: Option<Rect>,
 }
 impl Default for ImagePaint {
     fn default() -> Self {
@@ -1613,6 +1636,7 @@ impl Default for ImagePaint {
             appearance: None,
             resource: None,
             sampling_transform: false,
+            source_rect: None,
         }
     }
 }
@@ -1661,6 +1685,7 @@ fn empty_brush(
                 resource: binding.resource,
                 color: image_color,
                 appearance: image_appearance,
+                source_rect: paint.source_rect,
             },
             sampler: binding.sampler,
         }));
@@ -1688,6 +1713,7 @@ fn empty_brush(
                     })?,
                 color: image_color,
                 appearance: image_appearance,
+                source_rect: paint.source_rect,
             },
             sampler: i.sampler,
         }),

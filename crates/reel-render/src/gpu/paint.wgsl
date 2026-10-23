@@ -2,12 +2,14 @@ struct VertexOut {
     @builtin(position) position: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
+    @location(2) @interpolate(flat) source_window: vec4<f32>,
 };
-@vertex fn vertex(@location(0) position: vec2<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>) -> VertexOut {
+@vertex fn vertex(@location(0) position: vec2<f32>, @location(1) uv: vec2<f32>, @location(2) color: vec4<f32>, @location(3) source_window: vec4<f32>) -> VertexOut {
     var out: VertexOut;
     out.position = vec4(position, 0.0, 1.0);
     out.uv = uv;
     out.color = color;
+    out.source_window = source_window;
     return out;
 }
 @group(0) @binding(0) var image: texture_2d<f32>;
@@ -46,8 +48,26 @@ fn tint(v: VertexOut, pixel: vec4<f32>) -> vec4<f32> {
         adjusted / 12.92, adjusted <= vec3<f32>(0.04045));
     return vec4<f32>(adjusted_linear * tinted.a, tinted.a);
 }
+// Clamp at sampling time, leaving interpolated UVs and 1:1 pixel centers unchanged.
+// Chroma planes use the same normalized window and their own half-texel size.
+fn source_uv(v: VertexOut, dimensions: vec2<u32>) -> vec2<f32> {
+    let low = v.source_window.xy;
+    let span = abs(v.source_window.zw);
+    let high = low + span;
+    if any(span <= vec2<f32>(0.0)) { return v.uv; }
+    var uv = v.uv;
+    if any(v.source_window.zw < vec2<f32>(0.0)) {
+        let wrapped = low + fract((uv - low) / span) * span;
+        uv = select(uv, wrapped, v.source_window.zw < vec2<f32>(0.0));
+    }
+    let half_texel = 0.5 / vec2<f32>(dimensions);
+    let inset = min(half_texel, span * 0.5);
+    // Regional repetition is already resolved above. Even a repeating sampler
+    // must pad the physical texture when the authored region crosses its edge.
+    return clamp(clamp(uv, low + inset, high - inset), half_texel, vec2<f32>(1.0) - half_texel);
+}
 @fragment fn fragment(v: VertexOut) -> @location(0) vec4<f32> {
-    return tint(v, textureSample(image, image_sampler, v.uv) * v.color);
+    return tint(v, textureSample(image, image_sampler, source_uv(v, textureDimensions(image))) * v.color);
 }
 @group(0) @binding(3) var chroma_u: texture_2d<f32>;
 @group(0) @binding(4) var chroma_v: texture_2d<f32>;
@@ -56,9 +76,9 @@ struct VideoColor {
 }
 @group(0) @binding(5) var<uniform> video_color: VideoColor;
 @fragment fn fragment_yuv(v: VertexOut) -> @location(0) vec4<f32> {
-    let yuv = vec4<f32>(textureSample(image, image_sampler, v.uv).r,
-        textureSample(chroma_u, image_sampler, v.uv).r,
-        textureSample(chroma_v, image_sampler, v.uv).r, 1.0);
+    let yuv = vec4<f32>(textureSample(image, image_sampler, source_uv(v, textureDimensions(image))).r,
+        textureSample(chroma_u, image_sampler, source_uv(v, textureDimensions(chroma_u))).r,
+        textureSample(chroma_v, image_sampler, source_uv(v, textureDimensions(chroma_v))).r, 1.0);
     let rgb = clamp(vec3<f32>(dot(video_color.r, yuv), dot(video_color.g, yuv), dot(video_color.b, yuv)), vec3<f32>(0.0), vec3<f32>(1.0));
     var linear: vec3<f32>;
     if video_color.transfer.x == 1.0 {

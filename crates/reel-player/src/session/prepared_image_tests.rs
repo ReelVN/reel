@@ -65,6 +65,7 @@ pub(super) fn fixture() -> (
                 corner_colors: None,
                 adjustment: Default::default(),
                 slice_center: true,
+                source_rect: None,
                 origin: Some("long.aside:4:17".into()),
             },
             NodeProps::default(),
@@ -298,6 +299,7 @@ fn two_dimensional_shared_sources_use_composed_ancestor_rotation_zoom_and_hidden
                     corner_colors: None,
                     adjustment: Default::default(),
                     slice_center: true,
+                    source_rect: None,
                     origin: Some("world.aside:8:5".into()),
                 },
                 NodeProps {

@@ -329,6 +329,8 @@ panel.add(pointer);
 
 图片的 `color` 用于乘色：`image("assets/panels.png", color: "#ffaaaa")` 让原图偏红，白色保持原样。透明度同时受颜色 alpha 与 opacity 控制。普通图片、分块大图及每个分层描述使用相同规则；给容器设置 color 不会改变子层。使用 bind/derive 调整悬浮等状态的颜色，无需为每种颜色准备或上传一份图片。
 
+图片和视频用 `source_rect: (x, y, width, height)` 选择源像素，null 恢复完整源。例如 `image("images/sheet.png", source_rect: (64, 0, 64, 64), width: 64, height: 64)` 绘制同一图集中的选区。预建各帧 tuple，再由普通游戏逻辑赋给原节点。选区宽高提供自然尺寸，显式节点尺寸保持布局和命中几何稳定。各值和右/下端点必须为有限 float32 数值，宽高为正；超出纹理的坐标延展边缘像素。fit 和 slice 使用选区，repeat 重复带边缘延展的选区。双线性采样限制在选区内并保留原像素映射。prepared `.reel-image` 资源暂不支持 source_rect。
+
 `image("assets/pattern.png", width: 1280, height: 720, repeat: "both", tile_scale: 1)` 以图片原始像素大小平铺。repeat 可选 none、x、y、both；重复时不使用 fit，不能同时指定 slice，也不能使用分块 `.reel-image`。tile_scale 必须为正数。`corner_colors: ["#ffffff", "#ffffff", "#ffaaaa", "#ffaaaa"]` 为左上、右上、右下、左下颜色，在节点内容框内双线性渐变并乘以 color；可与普通、九宫格或分块图片组合，不复制纹理。
 
 图片和视频也接受 `saturation: 0` 变为灰度、`brightness: 1.2` 设置 sRGB 倍数、`color_offset: 0.1` 设置 sRGB 偏移。倍数和偏移还可使用 RGB 三元组。这些调整在乘色后执行并保留 alpha；饱和度和倍数须非负，全部分量须有限且可表示为 float32 绘制参数。默认值依次为 1、1、0。在原节点上绑定或修改这些属性即可共享同一纹理。

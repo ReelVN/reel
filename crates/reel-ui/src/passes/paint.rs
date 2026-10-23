@@ -147,6 +147,7 @@ impl LayerCollector {
             appearance: image_appearance,
             resource: image_resource,
             sampling_transform: image_sampling_transform,
+            source_rect: image_source_rect,
         } = image;
         let end = self.current_scene.commands().len();
         if start == end {
@@ -157,6 +158,7 @@ impl LayerCollector {
             && last.image_color == image_color
             && last.image_appearance == image_appearance
             && last.image_resource == image_resource
+            && last.image_source_rect == image_source_rect
             && last.image_sampling_transform == image_sampling_transform
             && last.commands.end == start
         {
@@ -169,6 +171,7 @@ impl LayerCollector {
                 image_appearance,
                 image_resource,
                 image_sampling_transform,
+                image_source_rect,
             });
         }
     }
@@ -440,6 +443,7 @@ fn paint_widget(
                 appearance: state.image_appearance,
                 resource: state.image_resource,
                 sampling_transform: state.image_sampling_transform,
+                source_rect: state.image_source_rect,
             },
         );
 
@@ -472,6 +476,7 @@ fn paint_widget(
                     appearance: state.image_appearance,
                     resource: state.image_resource,
                     sampling_transform: state.image_sampling_transform,
+                    source_rect: state.image_source_rect,
                 },
             );
         }
@@ -550,6 +555,7 @@ fn paint_widget(
                 appearance: state.image_appearance,
                 resource: state.image_resource,
                 sampling_transform: state.image_sampling_transform,
+                source_rect: state.image_source_rect,
             },
         );
 

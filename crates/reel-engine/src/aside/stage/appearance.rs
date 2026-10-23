@@ -21,6 +21,9 @@ fn slice() -> TypeHint {
         TypeHint::Tuple(vec![number(); 4]),
     ]))
 }
+fn source_rect() -> TypeHint {
+    nullable(TypeHint::Tuple(vec![number(); 4]))
+}
 fn colors() -> TypeHint {
     nullable(TypeHint::Union(vec![
         TypeHint::Array,
@@ -78,6 +81,20 @@ pub(in crate::aside) enum ImageField {
     /// Components must be finite float32 drawing values.
     #[aside(name="color_offset",ty=Any,doc_type=rgb(),default=0)]
     ColorOffset,
+    /// Source-pixel window (x, y, width, height); null selects the whole source.
+    /// Components and endpoints must be finite float32 drawing values, with positive dimensions.
+    /// Out-of-texture coordinates use edge padding. Fit, slice and repeat use this window.
+    /// Bilinear sampling stays inside the window without shrinking its pixel mapping.
+    /// Image and video share this property, bindings and execution snapshots.
+    /// Prepared .reel-image sources do not support source_rect.
+    ///
+    /// ```aside
+    /// let frames = [(0, 0, 64, 64), (64, 0, 64, 64)];
+    /// let picture = image("images/sheet.png", source_rect: frames[0], width: 64, height: 64);
+    /// picture.source_rect = frames[1];
+    /// ```
+    #[aside(name="source_rect",ty=Any,doc_type=source_rect(),default=null)]
+    SourceRect,
 }
 #[derive(Properties)]
 #[expect(

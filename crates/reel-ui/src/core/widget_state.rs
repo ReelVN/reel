@@ -220,6 +220,7 @@ pub(crate) struct WidgetState {
     pub(crate) image_appearance: Option<crate::frame::ImageAppearance>,
     pub(crate) image_resource: Option<crate::resources::ResourceImageBrush>,
     pub(crate) image_sampling_transform: bool,
+    pub(crate) image_source_rect: Option<Rect>,
 
     /// The `accessibility` method must be called on this widget
     pub(crate) request_accessibility: bool,
@@ -356,6 +357,7 @@ impl WidgetState {
             image_appearance: None,
             image_resource: None,
             image_sampling_transform: false,
+            image_source_rect: None,
             request_accessibility: true,
             needs_accessibility: true,
             request_anim: true,
