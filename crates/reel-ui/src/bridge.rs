@@ -349,15 +349,6 @@ impl PresentationBridge {
     pub fn set_focus_fallback(&mut self, target: Option<WidgetId>) -> bool {
         self.root.set_focus_fallback(target)
     }
-    /// Reinstates host focus on the rebuilt live tree before accepting its frame.
-    pub fn restore_focus(
-        &mut self,
-        focused: Option<WidgetId>,
-        anchor: Option<WidgetId>,
-        visible: bool,
-    ) -> bool {
-        self.root.restore_focus(focused, anchor, visible)
-    }
     /// Pause input without applying disabled styles or changing widget properties.
     pub fn set_input_gates(&mut self, roots: &[WidgetId]) -> Result<(), InputBudgetExceeded> {
         if self.root.global_state.input_gates.as_ref() == roots {

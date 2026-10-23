@@ -32,14 +32,6 @@ impl ReadProgress {
     pub fn ids(&self) -> impl Iterator<Item = &str> {
         self.ids.iter().map(String::as_str)
     }
-    /// Number of distinct completed content IDs.
-    pub fn len(&self) -> usize {
-        self.ids.len()
-    }
-    /// Whether no content has been completed in this progress set.
-    pub fn is_empty(&self) -> bool {
-        self.ids.is_empty()
-    }
     pub fn contains(&self, content_id: &str) -> bool {
         self.ids.contains(content_id)
     }

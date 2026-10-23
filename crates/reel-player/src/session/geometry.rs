@@ -93,6 +93,7 @@ impl SessionUi {
                 .map(|widget| widget.content.id()),
         }
     }
+    #[cfg(any(feature = "window", test))]
     fn accepted_stage(
         &self,
         bridge: &PresentationBridge,
@@ -120,6 +121,7 @@ impl SessionUi {
         (transform.determinant().is_finite() && transform.determinant() != 0.)
             .then_some((stage_id, transform))
     }
+    #[cfg(any(feature = "window", test))]
     pub(crate) fn pointer_position(
         &self,
         bridge: &PresentationBridge,
@@ -129,6 +131,7 @@ impl SessionUi {
         let point = transform.inverse() * bridge.root().mouse_position()?;
         Some([point.x, point.y])
     }
+    #[cfg(any(feature = "window", test))]
     pub(crate) fn pointer_destination(
         &self,
         bridge: &PresentationBridge,

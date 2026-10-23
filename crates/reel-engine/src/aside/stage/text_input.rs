@@ -266,7 +266,6 @@ pub(super) fn options(
     Ok(TextInputOptions {
         placeholder,
         read_only: boolean(get(TextInputField::ReadOnly)?)?,
-        submit_listening: get(TextInputField::OnSubmit)?.tag() != ValueTag::Null,
         password: boolean(get(TextInputField::Password)?)?,
         selection_color: color(heap, get(TextInputField::SelectionColor)?)?,
         caret_color: if caret.tag() == ValueTag::Null {

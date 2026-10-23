@@ -2,8 +2,7 @@
 //! register [`contracts`] and [`types`] for linking and admission, and install
 //! [`modules`] in their resolver. Calls dispatch through one [`StandardLibrary`]
 //! per loaded program. [`prelude`] may be imported by default.
-//! Script values and created random-stream state belong to the VM heap. The
-//! host environment supplies process inputs for new streams and civil time.
+//! Script values and mutable random state belong to the VM heap, not this adapter.
 #![forbid(unsafe_code)]
 
 mod core;
@@ -21,30 +20,6 @@ use aside_host::aside_vm::{
     executor::{FaultKind, HostResponse, HostTicket, Vm, VmError},
 };
 use aside_host::{Error, NativeBinding, NativeContract, NativeHandler};
-use std::rc::Rc;
-
-/// Host services used when creating unseeded random streams and reading civil time.
-/// Implementations may keep interior state. A shared environment continues across
-/// new sessions; VM snapshots already preserve each created random stream.
-pub trait HostEnvironment {
-    /// Choose the seed of a newly created independent random stream.
-    fn random_seed(&self) -> u64;
-    /// Return UTC Unix time in whole seconds, independently of story scheduling.
-    fn unix_seconds(&self) -> i64;
-}
-
-/// Ordinary process entropy and system civil time for production embeddings.
-#[derive(Default)]
-pub struct SystemEnvironment;
-
-impl HostEnvironment for SystemEnvironment {
-    fn random_seed(&self) -> u64 {
-        fastrand::Rng::new().get_seed()
-    }
-    fn unix_seconds(&self) -> i64 {
-        jiff::Timestamp::now().as_second()
-    }
-}
 
 fn bindings() -> Vec<NativeBinding<StandardLibrary, NativeError>> {
     let mut bindings = vec![
@@ -126,13 +101,12 @@ pub fn modules() -> Vec<ModuleInterface> {
     api().modules.clone()
 }
 
-/// Resolved native handlers and host services for one program. Script random
-/// streams belong to the VM heap. Rebuild the handlers when loading a different
-/// program, sharing the host environment when its lifetime spans sessions.
+/// A program's resolved native handlers. This holds code identities only; it
+/// does not retain random objects or require GC roots. Rebuild when loading a
+/// different program, just as with the host's other linked native functions.
 pub struct StandardLibrary {
     handlers: Vec<Option<NativeHandler<Self, NativeError>>>,
     curve_constructor: Option<aside_host::aside_vm::bytecode::NativeId>,
-    environment: Rc<dyn HostEnvironment>,
 }
 
 impl StandardLibrary {
@@ -159,18 +133,7 @@ impl StandardLibrary {
         Self {
             handlers,
             curve_constructor,
-            environment: Rc::new(SystemEnvironment),
         }
-    }
-
-    /// Replace process services before executing the loaded program.
-    pub fn set_host_environment(&mut self, environment: Rc<dyn HostEnvironment>) {
-        self.environment = environment;
-    }
-
-    /// Share these host services with a new session or restored runtime.
-    pub fn host_environment(&self) -> Rc<dyn HostEnvironment> {
-        self.environment.clone()
     }
 
     /// Returns the consumed work, or None for another host's native.

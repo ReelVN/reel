@@ -1,5 +1,4 @@
 //! Compiler/VM-to-SessionUi assembly shared by library hosts and the native window.
-mod window;
 use crate::session::{ProjectionStamp, RecordedProjection, SessionUi, SessionWidget};
 use reel_engine::aside::{
     DeliveryId, FaultInfo, GcBudget, GcProgress, NativeDispatch, RunOutcome, SessionBudget,
@@ -148,10 +147,7 @@ impl AsideSessionUi {
     pub(crate) fn await_initial_stage(&mut self) {
         self.awaiting_stage = true;
     }
-    /// Rebuilds a restored projection while keeping story continuations and time fixed.
-    /// Hosts repeat this after layout feedback or resource IO until the saved stage
-    /// is ready to present, then resume ordinary execution from that boundary.
-    pub fn prepare_restored(&mut self, budget: SliceBudget) -> Result<bool, Error> {
+    pub(crate) fn prepare_restored(&mut self, budget: SliceBudget) -> Result<bool, Error> {
         self.transitions.maintain(&mut self.vm, &self.ui.assets())?;
         if !self.transitions.ready() {
             return Ok(false);
@@ -242,14 +238,6 @@ impl AsideSessionUi {
         self.vm.set_media(backend)?;
         Ok(self)
     }
-    /// Supply host entropy and civil time before the initializer executes.
-    pub fn with_host_environment(
-        mut self,
-        environment: std::rc::Rc<dyn reel_engine::aside::HostEnvironment>,
-    ) -> Self {
-        self.vm.set_host_environment(environment);
-        self
-    }
     pub fn maintain_media(&mut self) -> Result<bool, Error> {
         Ok(self.vm.maintain_media()?)
     }
@@ -325,42 +313,6 @@ impl AsideSessionUi {
     }
     pub fn ui(&self) -> &SessionUi {
         &self.ui
-    }
-    /// Inspect controls that can receive pointer input in the accepted frame.
-    /// Hosts dispatch the returned points through `handle_pointer` and retain
-    /// normal modal, gesture, callback and input ownership semantics.
-    pub fn input_targets(
-        &self,
-        bridge: &PresentationBridge,
-        root: WidgetId,
-    ) -> Vec<crate::session::InputTarget> {
-        self.ui.input_targets(bridge, root)
-    }
-    /// Captures accepted authored host focus for a development checkpoint.
-    pub fn input_focus(
-        &self,
-        bridge: &PresentationBridge,
-        root: WidgetId,
-    ) -> Option<crate::session::InputFocus> {
-        self.ui.input_focus(bridge, root)
-    }
-    /// Reinstates checkpoint host focus without replaying author callbacks.
-    /// Call after syncing the rebuilt tree and before its first presentation.
-    pub fn restore_input_focus(
-        &self,
-        bridge: &mut PresentationBridge,
-        root: WidgetId,
-        focus: &crate::session::InputFocus,
-    ) -> bool {
-        self.ui.restore_input_focus(bridge, root, focus)
-    }
-    /// Rebuilds accepted checkpoint hover ownership without author callbacks.
-    pub fn restore_input_pointer(
-        &self,
-        bridge: &mut PresentationBridge,
-        focus: &crate::session::InputFocus,
-    ) -> Result<(), Error> {
-        self.ui.restore_input_pointer(bridge, focus)
     }
     pub(crate) fn ui_mut(&mut self) -> &mut SessionUi {
         &mut self.ui
@@ -590,28 +542,6 @@ impl AsideSessionUi {
     ) -> Result<Handled, Error> {
         let result = self.ui.handle_access(bridge, event)?;
         self.accept_ui_input(result)
-    }
-    /// Drive the current accepted narrative interaction through its session owner.
-    /// This host action follows dialogue/choice sequencing and reading controls;
-    /// it does not perform pointer hit testing. Returns `None` while presentation,
-    /// focus, a modal, a gesture or reading pause prevents submission, or when the
-    /// action no longer identifies the current interaction.
-    pub fn handle_input(
-        &mut self,
-        action: reel_engine::InputAction,
-    ) -> Result<Option<reel_engine::InputOutcome>, Error> {
-        if self.state != StoryState::Running {
-            return Ok(None);
-        }
-        let outcome = self.ui.handle_semantic_input(action)?;
-        let events = self.ui.take_events();
-        self.accept_events(events)?;
-        Ok(outcome)
-    }
-    /// Whether the current narrative projection has accepted input permission.
-    /// Individual actions still validate their interaction and option identities.
-    pub fn narrative_input_ready(&self) -> bool {
-        self.state == StoryState::Running && self.ui.narrative_input_ready()
     }
     fn accept_ui_input(&mut self, result: crate::session::UiDispatch) -> Result<Handled, Error> {
         self.accept_events(result.events)?;

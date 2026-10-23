@@ -104,17 +104,6 @@ Pop-Location
 
 check 编译并报告源码错误，不运行剧情；加 `--format json` 可取得带 UTF-8 范围与行列位置的诊断。build 生成单个 .asb，包含字节码、模块初始化与选定入口。两者提供与播放器相同的默认 Reel 名称、已注册 native 与宿主默认参数。
 
-`reel test` 从当前游戏入口自动操作菜单、推进对白并探索选项，使用虚拟时间加速等待，在分支处复用执行状态。源码与编译产物分别运行，存储使用隔离的临时目录。报告写入 `build/test/report.json`，列出实际经过的路径和运行错误；失败路径可以重放。`--assets` 可指定资源目录，`--format json` 输出机器可读报告。
-
-报告以 `failed` 标记运行、资源或重放错误；遇到已观察的菜单回环、尚不能自动操作的输入或检查点中断时，标记 `incomplete` 并保留待检查路径。
-运行进度追加到 `build/test/progress.jsonl`，当前进度见 `partial.json`；已发现的错误立即生成重放文件。入场活动仍在运行时，检查器同时探索等待完成和操作当前控件的路径。游戏的 `stage.capture` 按需使用无窗口渲染执行，窗口操作使用虚拟窗口状态。
-
-```powershell
-reel test
-reel test --format json
-reel test --replay build/test/replay-001.json
-```
-
 入口固定为 `src/main.aside` 中的 `main`。缺少入口或入口无效会在检查时报告；入口可以私有，且须能无参数调用。run 直接加载包中的初始化函数和入口，不重新编译源码。默认 build 产物随构建更新，显式输出通过 --overwrite 替换。
 
 build 默认使用 Debug，完整源码与映射保存在包内，运行错误能指向原来的 .aside 文件。发布时加 `--release`，只生成去除源码、指令映射和声明位置的 ASB，减少文件体积及加载后驻留的调试数据。两种模式的语言行为和运行检查相同；Release 仍报告错误类型、函数和指令位置，保留执行需要的符号与文本常量。单独 build 的剧情文本保留在 ASB 内。现有执行存档对应实际 ASB，同一源码的 Debug 与 Release 存档不互换。

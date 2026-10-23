@@ -158,25 +158,6 @@ impl Renderer {
         }))
     }
 }
-impl CaptureBackend for Renderer {
-    type Error = GpuError;
-    type Capture = GpuCapture;
-    fn capture(
-        &mut self,
-        frame: &RenderFrame,
-        size: [u32; 2],
-        output: &BudgetPool,
-        wake: WakeSignal,
-    ) -> Result<GpuCapture, GpuError> {
-        Renderer::capture(self, frame, size, output, wake)
-    }
-    fn poll_capture(
-        &mut self,
-        capture: &mut GpuCapture,
-    ) -> Result<Option<CapturedPixels>, GpuError> {
-        Renderer::poll_capture(self, capture)
-    }
-}
 impl CaptureBackend for WgpuBackend {
     type Error = GpuError;
     type Capture = GpuCapture;
