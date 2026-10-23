@@ -77,26 +77,18 @@ impl Work {
 }
 
 fn defaults(heap: &mut Heap) -> Result<Value, HeapError> {
-    let fit = heap.alloc_string("contain")?;
-    let repeat = heap.alloc_string("none")?;
-    let values = heap.alloc_array(&[
-        Value::NULL,
-        fit,
-        Value::NULL,
-        Value::int(1),
-        repeat,
-        Value::int(1),
-        Value::NULL,
-        Value::bool(true),
-    ])?;
-    for property in NodeProperty::PROPERTIES {
+    let values = heap.alloc_array(&[])?;
+    for property in stage::appearance::ImageField::PROPERTIES
+        .iter()
+        .chain(NodeProperty::PROPERTIES)
+    {
         let value = match (property.default)() {
             Const::Null => Value::NULL,
             Const::Bool(v) => Value::bool(v),
             Const::Int(v) => Value::int(v),
             Const::FloatBits(v) => Value::float(f64::from_bits(v)),
             Const::Utf8(v) => heap.alloc_string(&v)?,
-            _ => unreachable!("scalar stage property default"),
+            _ => unreachable!("scalar image and stage property default"),
         };
         heap.array_push(values, value)?;
     }

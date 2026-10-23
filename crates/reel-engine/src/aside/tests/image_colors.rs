@@ -78,6 +78,83 @@ fn drive(vm: &mut SessionVm, session: &mut Session) {
 }
 
 #[test]
+fn layered_images_use_shared_image_defaults_and_keep_slots_across_restore_and_updates() {
+    use reel_ui::kurbo::Rect;
+    let code = r#"fn opening() {
+        let state=model({changed:false});
+        let portrait=layered_image(|| if state.changed {
+            [{source:"still.png",x:12,width:80,height:90,saturation:0.5,
+              brightness:[2,0.5,1],color_offset:0.1,source_rect:(4,5,16,32)}]
+        } else {
+            [{source:"still.png",x:7,width:80,height:90}]
+        },x:23);
+        stage.replace(portrait);
+        narrator("defaults");
+        state.changed=true;
+        narrator("custom fields");
+        state.changed=false;
+        narrator("restored defaults");
+    }"#;
+    let image = |vm: &SessionVm| {
+        vm.stage().nodes().find(|node|matches!(&node.kind,NodeKind::Image {source,..} if source.key()=="still.png")).unwrap().clone()
+    };
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        drive(&mut vm, &mut session);
+        let initial = image(&vm);
+        let NodeKind::Image {
+            adjustment,
+            source_rect,
+            ..
+        } = initial.kind
+        else {
+            unreachable!()
+        };
+        assert_eq!(adjustment, ImageColorAdjustment::default());
+        assert_eq!(source_rect, None);
+        assert_eq!(initial.props.x, 7.);
+        assert_eq!(initial.props.width, Some(80.));
+        (session, vm) = restore(&session, &mut vm);
+        let restored_id = image(&vm).id;
+        for changed in [true, false] {
+            let id = session.view().interaction.unwrap().id();
+            for _ in 0..2 {
+                session
+                    .handle_local_input(session.root_owner(), InputAction::Advance(id))
+                    .unwrap();
+            }
+            drive(&mut vm, &mut session);
+            let current = image(&vm);
+            assert_eq!(current.id, restored_id);
+            let NodeKind::Image {
+                adjustment,
+                source_rect,
+                ..
+            } = current.kind
+            else {
+                unreachable!()
+            };
+            if changed {
+                assert_eq!(current.props.x, 12.);
+                assert_eq!(source_rect, Some(Rect::new(4., 5., 20., 37.)));
+                assert_eq!(
+                    adjustment,
+                    ImageColorAdjustment {
+                        saturation: 0.5,
+                        gain: [2., 0.5, 1.],
+                        offset: [0.1; 3]
+                    }
+                );
+            } else {
+                assert_eq!(current.props.x, 7.);
+                assert_eq!(source_rect, None);
+                assert_eq!(adjustment, ImageColorAdjustment::default());
+            }
+        }
+    }
+}
+
+#[test]
 fn image_colors_validate_atomically_bind_and_restore_for_images_and_video() {
     let code = r#"fn opening() {
         let state=model({saturation:0.5});
