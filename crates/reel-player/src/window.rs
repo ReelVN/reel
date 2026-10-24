@@ -722,6 +722,7 @@ impl State {
                 &self.presentation.bridge,
                 stamp,
                 self.presentation.accepted_frame.as_ref().unwrap(),
+                self.host.monotonic_now().0,
             )?;
         }
         if result.accepted {

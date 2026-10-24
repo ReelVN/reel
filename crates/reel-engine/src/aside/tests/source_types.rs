@@ -87,7 +87,7 @@ fn callable_annotations_pass_functions_and_bound_methods_to_real_host_callbacks(
                     .expect("transition awaits final presentation");
                 assert_eq!(view.phase, TransitionPhase::FinalPending);
                 assert!(
-                    vm.accept_transition(view.id, view.phase, view.progress)
+                    vm.accept_transition(view.id, view.phase, view.progress, vm.logical_time())
                         .unwrap()
                 );
                 models::drive(&mut vm, &mut session, false);

@@ -115,7 +115,9 @@ pub fn present(
         NoticeResult::Accepted
     );
     if let Some(drawing) = &drawing {
-        driver.presented_frame(bridge, &stamp, drawing).unwrap();
+        driver
+            .presented_frame(bridge, &stamp, drawing, driver.adapter().logical_time())
+            .unwrap();
     } else {
         driver.presented(bridge, &stamp).unwrap();
     }

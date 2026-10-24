@@ -174,19 +174,14 @@ impl WindowSession {
         bridge: &PresentationBridge,
         frame: &crate::session::RecordedProjection,
         drawing: &reel_ui::frame::RenderFrame,
+        accepted_host_ns: u64,
     ) -> Result<(), Error> {
         match self {
             Self::Diagnostic(host) => {
                 host.ui.presented(bridge, frame);
             }
             Self::Aside { story, .. } => {
-                if story.capturing() {
-                    return Ok(());
-                }
-                story
-                    .driver_mut()?
-                    .presented_frame(bridge, frame, drawing)?;
-                story.wake_input();
+                story.presented_frame(bridge, frame, drawing, accepted_host_ns)?;
             }
         }
         Ok(())

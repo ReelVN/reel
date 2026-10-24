@@ -169,6 +169,9 @@ impl Transitions {
             if state.phase != TransitionPhase::Playing || state.finished {
                 continue;
             }
+            // Acceptance may be newer than the latest activity sample. Earlier
+            // maintenance must neither consume preparation time nor rewind it.
+            let time = time.max(state.last_time);
             let elapsed = (state.elapsed + (time - state.last_time)).min(state.duration);
             state.last_time = time;
             if state.elapsed != elapsed {
@@ -388,12 +391,19 @@ impl SessionVm {
     }
 
     /// Called only for the transition metadata carried by the accepted candidate.
+    /// Accept one transition projection at a monotonic session-logical time.
+    /// The first zero-progress frame starts playback at its actual acceptance,
+    /// independently of the earlier VM/activity sample used to prepare it.
     pub fn accept_transition(
         &mut self,
         id: TransitionId,
         phase: TransitionPhase,
         progress: f64,
+        accepted_time: f64,
     ) -> Result<bool, AdapterError> {
+        if !accepted_time.is_finite() || accepted_time < 0. {
+            return Err(AdapterError::Input("invalid transition presentation time"));
+        }
         let Some(index) = self.transition_index(id) else {
             return Ok(false);
         };
@@ -407,7 +417,7 @@ impl SessionVm {
         match phase {
             TransitionPhase::NewPending if progress == 0. => {
                 state.phase = TransitionPhase::Playing;
-                state.last_time = self.activities.time();
+                state.last_time = accepted_time.max(self.activities.time());
             }
             TransitionPhase::FinalPending if progress == 1. => {
                 let wait = state.wait.take().unwrap();
