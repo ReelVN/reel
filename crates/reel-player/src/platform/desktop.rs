@@ -63,7 +63,7 @@ fn run_mode(mode: Mode) -> Result<(), Error> {
                 let _ = proxy.send_event(());
             });
             let assets = driver.ui().assets();
-            let driver = driver.with_media(Box::new(crate::media::desktop(
+            let driver = driver.with_media(Box::new(crate::media::native(
                 assets,
                 options.media.clone(),
                 wake,

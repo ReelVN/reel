@@ -1,25 +1,14 @@
 //! Same-filesystem publication shared by package builds and player storage.
-//! Files are synced before publication. Vita retains immutable generations in a
-//! private v1 directory; native no-replace renames commit their logical contents.
-#[cfg(not(target_os = "vita"))]
-#[path = "desktop.rs"]
-mod backend;
-#[cfg(target_os = "vita")]
-#[path = "vita.rs"]
-mod backend;
-#[cfg(any(target_os = "vita", test))]
-mod generations;
+//! Files are synced before publication, and failed writes preserve the destination.
+mod desktop;
 use std::{
     fs, io,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
 
-/// A committed logical operation with separate durability and cleanup outcomes.
+/// A committed operation with any subsequent staging cleanup warning.
 pub struct Published {
-    /// Publication or deletion committed, but subsequent device synchronization
-    /// failed. The new logical state applies; power-loss durability is unconfirmed.
-    pub durability_warning: Option<String>,
     /// The logical operation committed, but reclaiming retired storage failed.
     pub cleanup_warning: Option<String>,
 }
@@ -31,25 +20,23 @@ pub fn publish(
     overwrite: bool,
     fill: impl FnOnce(&mut dyn io::Write) -> io::Result<()>,
 ) -> io::Result<Published> {
-    backend::publish(target, overwrite, fill)
+    desktop::publish(target, overwrite, fill)
 }
 
-/// Open the current committed contents as a standard file. Existing readers keep
-/// their immutable generation while a later publication replaces the logical file.
+/// Open the published contents as a standard file.
 pub fn open(target: &Path) -> io::Result<fs::File> {
-    backend::open(target)
+    desktop::open(target)
 }
 
 /// Remove the logical file. Warnings describe failures after deletion committed;
 /// an error means the logical file was not removed.
 pub fn remove(target: &Path) -> io::Result<Published> {
-    backend::remove(target)
+    desktop::remove(target)
 }
 
-/// Enumerate committed logical files in a directory, excluding private staging.
-/// Contents returned by `open` retain their original application format.
+/// Enumerate regular files in a directory, excluding subdirectories and staging.
 pub fn entries(directory: &Path) -> io::Result<impl Iterator<Item = io::Result<PathBuf>> + use<>> {
-    backend::entries(directory)
+    desktop::entries(directory)
 }
 
 fn destination(target: &Path) -> io::Result<PathBuf> {
@@ -109,7 +96,7 @@ impl Drop for Staging {
     }
 }
 
-#[cfg(all(test, not(target_os = "vita")))]
+#[cfg(test)]
 mod tests {
     use super::*;
     fn directory() -> Staging {

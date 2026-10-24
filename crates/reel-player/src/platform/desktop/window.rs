@@ -160,7 +160,7 @@ impl State {
         if let Some(PlayerSession::Aside { story: runtime, .. }) = &mut state.player.session {
             runtime.set_saves(crate::saves::RuntimeSaves::new(service, save_bytes));
             runtime.set_media_factory(move || {
-                Box::new(crate::media::desktop(
+                Box::new(crate::media::native(
                     assets.clone(),
                     media.clone(),
                     wake.clone(),
@@ -616,7 +616,7 @@ mod tests {
                         "cursor native resources did not settle"
                     );
                     state.tick_story().unwrap();
-                    if !state.settings_pending()
+                    if !state.player.settings_pending()
                         && !state.player.session.as_ref().unwrap().needs_tick()
                     {
                         break;
@@ -1463,7 +1463,7 @@ fn main() {{
             let deadline = Instant::now() + std::time::Duration::from_secs(15);
             loop {
                 state.tick_story().unwrap();
-                if !state.settings_pending()
+                if !state.player.settings_pending()
                     && !state.player.session.as_ref().unwrap().ui().images_pending()
                     && !state.player.session.as_ref().unwrap().needs_tick()
                 {
@@ -1559,7 +1559,7 @@ fn main() {{
                 .tick(Default::default(), || 0)
                 .unwrap();
         }
-        assert!(state.settings_pending());
+        assert!(state.player.settings_pending());
         assert!(!state.apply_game_settings().unwrap());
         assert_eq!(state.player.active_fonts, [font]);
         assert_eq!(
@@ -1690,9 +1690,6 @@ impl State {
     }
     pub(crate) fn is_diagnostic(&self) -> bool {
         self.player.is_diagnostic()
-    }
-    fn settings_pending(&self) -> bool {
-        self.player.settings_pending()
     }
     pub(crate) fn story_deadline(&self) -> Option<Instant> {
         let now = self.host.monotonic_now();

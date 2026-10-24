@@ -70,7 +70,7 @@ impl AudioDecoder for Software {
             .map_err(|e| e.message)?;
         Ok(!self.packet.is_empty())
     }
-    fn pcm(&self) -> AudioPcm<'_> {
-        AudioPcm::Frames(&self.packet)
+    fn pcm(&self) -> &[Frame] {
+        &self.packet
     }
 }

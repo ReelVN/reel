@@ -177,7 +177,7 @@ fn streaming_callback_is_allocation_free() {
     let bytes = std::fs::read("examples/assets/chime.wav").unwrap();
     let length = bytes.len() as u64;
     let pool = BudgetPool::new(BudgetCategory::CpuOutput, QueueLimits { max_requests: 4, max_bytes: 1 << 20 });
-    let sound = DecodedSound::prepare(std::io::Cursor::new(bytes), length, pool.clone(), 0, 1024, Arc::new(|| {}), &AtomicBool::new(false), &reel_media::decode::PlatformAudioDecoderFactory).unwrap().looping();
+    let sound = DecodedSound::prepare(std::io::Cursor::new(bytes), length, pool.clone(), 0, 1024, Arc::new(|| {}), &AtomicBool::new(false), &reel_media::decode::SoftwareAudioDecoderFactory).unwrap().looping();
     let mut service = AudioReclaimService::new(ReclaimLimits::default(), WakeSignal::new(|| {})).unwrap();
     let mut output = OfflineOutput::new(AudioDeviceConfig { sample_rate_hz: 48_000, sample_format: SampleFormat::F32, layout: ChannelLayout::Stereo }, WakeSignal::new(|| {})).unwrap();
     let format = output.configure(AudioRequest::default()).unwrap();

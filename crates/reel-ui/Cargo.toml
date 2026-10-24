@@ -33,12 +33,7 @@ tracing-tracy = { version = "=0.12.0", features = ["manual-lifetime"], optional 
 hashbrown.workspace = true
 reel-core = { path = "../reel-core" }
 ui-events.workspace = true
-
-[target.'cfg(not(target_os = "vita"))'.dependencies]
 reel-text = { workspace = true, features = ["system"] }
-
-[target.'cfg(target_os = "vita")'.dependencies]
-reel-text = { workspace = true, features = ["libm"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 time = { workspace = true, features = ["macros", "formatting"] }

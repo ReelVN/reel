@@ -41,7 +41,7 @@ Aside 依赖语言与 Rust 基础库。窗口和 GPU 类型留在平台适配器
 
 发行包由 `reel-player::distribution` 读取 ASB、文本池、语言索引和资源根，再交给共用会话执行。CLI 负责定位作者工程及编译、导出；平台入口直接加载发行包。
 
-平台实现按渲染、媒体与宿主职责放在现有 crate 的模块内，`cfg` 在模块入口和目标依赖处选择实现。公共接口传递能力、资源描述与拥有数据；原生句柄及设备特有的存储排列由适配模块管理。各后端复用通用资源格式。需要直接调用系统 API 的适配 crate 使用 `deny(unsafe_code)`，仅私有原生模块允许经审查的 FFI；UI、语言和其他共用实现保持 `forbid(unsafe_code)`。
+平台实现按渲染、媒体与宿主职责放在现有 crate 的模块内，`cfg` 在模块入口和目标依赖处选择实现。公共接口传递能力、资源描述与拥有数据，原生句柄由适配模块管理。各后端复用通用资源格式，生产实现保持 `forbid(unsafe_code)`。
 
 借用实现作为工作区 crate 维护，来源、许可证和必要版权信息随对应 crate 保存：UI 来自 Masonry，文字来自 Parley，混音来自 Kira，语法树来自 Rowan。Reel 按当前模块职责维护这些代码。通用算法优先复用锁定的 Rust 依赖，包括 Taffy、HarfRust、ICU、Symphonia、Lyon 和 WGPU。
 

@@ -139,7 +139,7 @@ impl Window {
                     break;
                 }
                 if next >= wanted {
-                    self.store(next, packet.frame(next - packet_start));
+                    self.store(next, packet[next - packet_start]);
                 }
                 next += 1;
             }
@@ -226,7 +226,7 @@ impl DecodedSound {
                 ticket
                     .resize(frames.capacity() as u64 * size_of::<Frame>() as u64)
                     .map_err(|e| e.message)?;
-                frames.extend((0..pcm.len()).map(|i| pcm.frame(i)));
+                frames.extend_from_slice(pcm);
             }
             if frames.is_empty() {
                 return Err("audio contains no PCM frames".into());
@@ -312,52 +312,11 @@ impl DecodedSound {
     }
 }
 
-#[cfg(all(test, feature = "decode", not(target_os = "vita")))]
+#[cfg(all(test, feature = "decode"))]
 mod tests {
     use super::*;
-    use crate::decode::{AudioDecoderFactory, PlatformAudioDecoderFactory};
+    use crate::decode::{AudioDecoderFactory, SoftwareAudioDecoderFactory};
     use reel_audio::sound::streaming::{Decoder, symphonia::SymphoniaDecoder};
-    #[test]
-    fn ordinary_wave_fact_and_metadata_before_format_stay_on_the_software_path() {
-        let original = include_bytes!("../../../../examples/assets/chime.wav");
-        let oracle =
-            SymphoniaDecoder::from_reader(std::io::Cursor::new(original), original.len() as u64)
-                .unwrap();
-        let expected = (oracle.sample_rate(), oracle.num_frames());
-        drop(oracle);
-        let mut wave = original.to_vec();
-        let mut prefix = b"fact".to_vec();
-        prefix.extend(4u32.to_le_bytes());
-        prefix.extend((expected.1 as u32).to_le_bytes());
-        // These bytes are ordinary unknown WAVE metadata, not AT9 source-clock data.
-        prefix.extend(b"krSR");
-        prefix.extend(4u32.to_le_bytes());
-        prefix.extend([0; 4]);
-        wave.splice(12..12, prefix);
-        let length = wave.len() as u64;
-        wave[4..8].copy_from_slice(&(length as u32 - 8).to_le_bytes());
-        let pool = BudgetPool::new(
-            reel_core::budget::BudgetCategory::CpuOutput,
-            reel_core::budget::QueueLimits {
-                max_requests: 8,
-                max_bytes: 1 << 20,
-            },
-        );
-        let sound = DecodedSound::prepare(
-            std::io::Cursor::new(wave),
-            length,
-            pool.clone(),
-            1 << 20,
-            256,
-            Arc::new(|| {}),
-            &AtomicBool::new(false),
-            &PlatformAudioDecoderFactory,
-        )
-        .unwrap();
-        assert_eq!((sound.data.sample_rate, sound.data.num_frames()), expected);
-        drop(sound);
-        assert_eq!(pool.usage().bytes, 0);
-    }
     #[test]
     fn unknown_length_seek_past_eof_scans_once_and_publishes_actual_end() {
         let bytes = include_bytes!("../../../../examples/assets/chime.wav").to_vec();
@@ -391,7 +350,7 @@ mod tests {
         });
         let worker = window.clone();
         drop(decoder);
-        let decoder = PlatformAudioDecoderFactory
+        let decoder = SoftwareAudioDecoderFactory
             .open(
                 Box::new(std::io::Cursor::new(bytes.clone())),
                 bytes.len() as u64,
@@ -434,7 +393,7 @@ mod tests {
                 4096,
                 Arc::new(|| {}),
                 &AtomicBool::new(false),
-                &PlatformAudioDecoderFactory,
+                &SoftwareAudioDecoderFactory,
             )
             .unwrap();
             let deadline = std::time::Instant::now() + Duration::from_secs(3);

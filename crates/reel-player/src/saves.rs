@@ -416,10 +416,7 @@ impl SaveStorage for DirectorySaves {
     }
 }
 fn publication_warnings(published: reel_storage::Published) {
-    for warning in [published.durability_warning, published.cleanup_warning]
-        .into_iter()
-        .flatten()
-    {
+    if let Some(warning) = published.cleanup_warning {
         eprintln!("{warning}");
     }
 }

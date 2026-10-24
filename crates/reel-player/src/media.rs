@@ -25,7 +25,7 @@ mod platform;
     feature = "audio-output",
     any(target_os = "windows", target_os = "linux", target_os = "macos")
 ))]
-pub use platform::desktop;
+pub use platform::native;
 
 #[derive(Clone, Debug)]
 pub struct MediaOptions {
@@ -42,7 +42,7 @@ pub struct MediaOptions {
 impl Default for MediaOptions {
     fn default() -> Self {
         Self {
-            decoder: Arc::new(decode::PlatformAudioDecoderFactory),
+            decoder: Arc::new(decode::SoftwareAudioDecoderFactory),
             mixer: MixerLimits::default(),
             pcm_bytes: 256 << 20,
             static_pcm_threshold_bytes: 8 << 20,
@@ -347,9 +347,11 @@ impl MediaPlayer {
         }
         let factory = self.factory.take().ok_or("audio output unavailable")?;
         let mut output = factory(self.wake.clone())?;
-        let format = output
-            .configure(reel_media::AudioRequest::default())
-            .map_err(|e| e.to_string())?;
+        let mut request = reel_media::AudioRequest::default();
+        request.max_pull_frames = request
+            .max_pull_frames
+            .max(output.capabilities().min_pull_frames);
+        let format = output.configure(request).map_err(|e| e.to_string())?;
         let reclaim = AudioReclaimService::new(
             ReclaimLimits {
                 max_generations: 1,

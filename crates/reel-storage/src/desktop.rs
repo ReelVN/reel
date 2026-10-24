@@ -29,10 +29,7 @@ pub(super) fn publish(
             staging.path.display()
         )
     });
-    Ok(Published {
-        durability_warning: None,
-        cleanup_warning,
-    })
+    Ok(Published { cleanup_warning })
 }
 
 pub(super) fn open(target: &Path) -> io::Result<fs::File> {
@@ -42,7 +39,6 @@ pub(super) fn open(target: &Path) -> io::Result<fs::File> {
 pub(super) fn remove(target: &Path) -> io::Result<Published> {
     fs::remove_file(target)?;
     Ok(Published {
-        durability_warning: None,
         cleanup_warning: None,
     })
 }
