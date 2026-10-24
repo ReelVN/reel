@@ -111,7 +111,7 @@ impl Cache {
         if reel_package::digest(&bytes) != stamp.artifact {
             return None;
         }
-        let mut story = crate::decode_story(&bytes).ok()?;
+        let mut story = reel_player::distribution::decode_story(&bytes).ok()?;
         drop(bytes);
         story.catalogs = Arc::new(CatalogProducts {
             catalogs: stamp.catalogs,

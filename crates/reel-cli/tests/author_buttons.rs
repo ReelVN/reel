@@ -31,7 +31,7 @@ fn conditional_table_tails_configure_input_from_source_and_asb() {
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for story in [
         reel_cli::into_story(checked, "main::main").unwrap(),
-        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
     ] {
         let mut driver = AsideSessionUi::from_compiled(
             Session::new(SessionId(1), Epoch(1)).unwrap(),
@@ -63,7 +63,7 @@ fn source_and_asb_retire_a_batch_of_live_completion_owners() {
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for story in [
         reel_engine::aside::source::compile_story(source, "main", 1, "main").unwrap(),
-        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
     ] {
         let mut driver = AsideSessionUi::from_compiled(
             Session::new(SessionId(1), Epoch(1)).unwrap(),
@@ -101,7 +101,7 @@ fn bound_class_method_keeps_its_receiver_after_entry_returns() {
     let checked = reel_cli::check(source, "class-callback.aside").unwrap();
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for story in [
-        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
         reel_engine::aside::source::compile_story(source, "main", 1, "main").unwrap(),
     ] {
         let mut driver = AsideSessionUi::from_compiled(
@@ -151,7 +151,7 @@ fn rich_links_consume_presented_mouse_touch_and_gamepad_input_without_advancing_
     for encoded in [false, true] {
         for pointer in [Some(PointerType::Mouse), Some(PointerType::Touch), None] {
             let story = if encoded {
-                reel_cli::decode_story(&artifact.bytes).unwrap()
+                reel_player::distribution::decode_story(&artifact.bytes).unwrap()
             } else {
                 reel_engine::aside::source::compile_story(source, "main", 1, "main").unwrap()
             };
@@ -286,7 +286,7 @@ fn source_and_asb_keep_buttons_live_then_finish_after_last_handler_retires() {
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for pointer_type in [Some(PointerType::Mouse), Some(PointerType::Touch), None] {
         run(
-            reel_cli::decode_story(&artifact.bytes).unwrap(),
+            reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
             pointer_type,
         );
         run(
@@ -302,7 +302,7 @@ fn source_and_asb_modal_menu_isolates_dialogue_and_restores_keyboard_focus() {
     let checked = reel_cli::check(MODAL, "author_modal.aside").unwrap();
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for story in [
-        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
         reel_engine::aside::source::compile_story(MODAL, "main", 1, "main").unwrap(),
     ] {
         let mut driver = AsideSessionUi::from_compiled(
@@ -394,7 +394,7 @@ fn source_and_asb_hud_clicks_preserve_gameplay_focus_through_a_modal() {
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for story in [
         reel_cli::into_story(checked, "main::main").unwrap(),
-        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
     ] {
         let mut driver = AsideSessionUi::from_compiled(
             Session::new(SessionId(1), Epoch(1)).unwrap(),
@@ -503,7 +503,7 @@ fn source_and_asb_dialogue_confirmation_uses_presented_pairing() {
     let checked = reel_cli::check(STORY, "gamepad.aside").unwrap();
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for story in [
-        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
         reel_engine::aside::source::compile_story(STORY, "main", 1, "main").unwrap(),
     ] {
         let mut driver = AsideSessionUi::from_compiled(
@@ -554,7 +554,7 @@ fn source_and_asb_author_actions_share_keyboard_gamepad_values_and_cancellation(
     let checked = reel_cli::check(INPUT, "author_input.aside").unwrap();
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for story in [
-        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
         reel_engine::aside::source::compile_story(INPUT, "main", 1, "main").unwrap(),
     ] {
         let mut driver = AsideSessionUi::from_compiled(
@@ -791,7 +791,7 @@ fn source_and_asb_handler_only_replacement_cancels_held_actions_through_old_hand
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for story in [
         reel_cli::into_story(checked, "main::main").unwrap(),
-        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
     ] {
         let mut driver = AsideSessionUi::from_compiled(
             Session::new(SessionId(1), Epoch(1)).unwrap(),
@@ -944,7 +944,7 @@ fn main() {
     let checked = reel_cli::check(input_source, "input-scope.aside").unwrap();
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for story in [
-        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
         reel_engine::aside::source::compile_story(input_source, "main", 1, "main").unwrap(),
     ] {
         let mut driver = AsideSessionUi::from_compiled(
@@ -1380,7 +1380,7 @@ fn source_and_asb_characters_share_history_unicode_playback_and_group_advance() 
     let checked = reel_cli::check(DIALOGUE, "author_dialogue.aside").unwrap();
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for story in [
-        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
         reel_engine::aside::source::compile_story(DIALOGUE, "main", 1, "main").unwrap(),
     ] {
         let driver = AsideSessionUi::from_compiled(
@@ -1602,7 +1602,7 @@ fn dialogue_validation_is_atomic_and_callable_characters_keep_native_boundaries(
     let checked = reel_cli::check(DIALOGUE, "dialogue-validation.aside").unwrap();
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for story in [
-        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
         reel_engine::aside::source::compile_story(DIALOGUE, "main", 1, "main").unwrap(),
     ] {
         let mut driver = AsideSessionUi::from_compiled(
@@ -1652,7 +1652,7 @@ fn source_and_asb_composed_dropdown_confirms_or_cancels_and_restores_its_trigger
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for story in [
         reel_engine::aside::source::compile_story(POPUP, "main", 1, "main").unwrap(),
-        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
     ] {
         let mut driver = AsideSessionUi::from_compiled(
             Session::new(SessionId(1), Epoch(1)).unwrap(),
@@ -1809,7 +1809,7 @@ mod author_exit {
             let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
             for story in [
                 compile_story(source, "main", 1, "main").unwrap(),
-                reel_cli::decode_story(&artifact.bytes).unwrap(),
+                reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
             ] {
                 let mut driver = AsideSessionUi::from_compiled(
                     Session::new(SessionId(1), Epoch(1)).unwrap(),
@@ -1903,7 +1903,7 @@ mod author_pointer {
         let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
         for story in [
             reel_cli::into_story(checked, "main::main").unwrap(),
-            reel_cli::decode_story(&artifact.bytes).unwrap(),
+            reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
         ] {
             let mut driver = AsideSessionUi::from_compiled(
                 Session::new(SessionId(1), Epoch(1)).unwrap(),
@@ -2000,7 +2000,7 @@ mod dynamic_stage {
         let bytes = reel_cli::build(&checked, Some("main::main")).unwrap().bytes;
         for story in [
             reel_engine::aside::source::compile_story(source, "main", 1, "main").unwrap(),
-            reel_cli::decode_story(&bytes).unwrap(),
+            reel_player::distribution::decode_story(&bytes).unwrap(),
         ] {
             let mut session = Session::new(SessionId(1), Epoch(1)).unwrap();
             let mut vm =
@@ -2263,7 +2263,7 @@ mod dynamic_stage {
         let direct = frames(reel_cli::into_story(checked, "main::main").unwrap());
         assert_eq!(
             direct,
-            frames(reel_cli::decode_story(&built.bytes).unwrap())
+            frames(reel_player::distribution::decode_story(&built.bytes).unwrap())
         );
         let red = [255, 0, 0, 255];
         let green = [0, 255, 0, 255];

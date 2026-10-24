@@ -14,6 +14,7 @@ audio-output = ["reel-media/cpal-output"]
 window = ["video", "audio-output", "gamepad", "winit", "dep:wgpu", "dep:pollster", "reel-render/wgpu"]
 
 [dependencies]
+aside-vm = { path = "../aside-vm" }
 reel-package = { path = "../reel-package" }
 reel-storage = { path = "../reel-storage" }
 serde = { version = "=1.0.229", features = ["derive"] }
@@ -42,7 +43,6 @@ reel-media = { path = "../reel-media", default-features = false, features = ["de
 
 [dev-dependencies]
 stats_alloc = "=0.1.10"
-aside-vm = { path = "../aside-vm" }
 reel-core = { path = "../reel-core", features = ["test-support"] }
 
 [[bin]]

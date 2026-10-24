@@ -36,7 +36,7 @@ fn virtual_list_source_and_asb_layout_navigation_and_filter_share_one_stage() {
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for compiled in [
         reel_cli::into_story(checked, "main::main").unwrap(),
-        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
     ] {
         let mut driver = AsideSessionUi::from_compiled(
             Session::new(SessionId(1), Epoch(1)).unwrap(),
@@ -117,7 +117,7 @@ fn source_and_asb_reorder_preserves_focus_and_reads_the_replacement_record() {
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for compiled in [
         reel_cli::into_story(checked, "main::main").unwrap(),
-        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
     ] {
         let mut driver = AsideSessionUi::from_compiled(
             Session::new(SessionId(1), Epoch(1)).unwrap(),
@@ -174,7 +174,7 @@ fn opaque_choice_ids_work_as_list_keys_through_source_and_asb() {
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for compiled in [
         reel_cli::into_story(checked, "main::main").unwrap(),
-        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
     ] {
         let mut driver = AsideSessionUi::from_compiled(
             Session::new(SessionId(1), Epoch(1)).unwrap(),
@@ -214,7 +214,7 @@ fn keyboard_edges_repeat_and_cancel_while_focused_editors_keep_ime() {
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for compiled in [
         reel_cli::into_story(checked, "main::main").unwrap(),
-        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
     ] {
         let mut driver = AsideSessionUi::from_compiled(
             Session::new(SessionId(1), Epoch(1)).unwrap(),
@@ -366,7 +366,7 @@ fn virtual_scroll_to_source_and_asb_complete_only_after_real_layout_and_acceptan
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for compiled in [
         reel_cli::into_story(checked, "main::main").unwrap(),
-        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
     ] {
         let mut driver = AsideSessionUi::from_compiled(
             Session::new(SessionId(1), Epoch(1)).unwrap(),
@@ -435,7 +435,7 @@ fn natural_gallery_example_source_and_asb_measure_only_the_window() {
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for compiled in [
         reel_cli::into_story(checked, "main::main").unwrap(),
-        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
     ] {
         let mut driver = AsideSessionUi::from_compiled(
             Session::new(SessionId(1), Epoch(1)).unwrap(),
@@ -490,7 +490,7 @@ mod author_radio_navigation {
         let asb = reel_cli::build(&checked, Some("main::main")).unwrap().bytes;
         [
             compile_story(source, "main", 1, "main").unwrap(),
-            reel_cli::decode_story(&asb).unwrap(),
+            reel_player::distribution::decode_story(&asb).unwrap(),
         ]
         .into_iter()
         .map(|story| {

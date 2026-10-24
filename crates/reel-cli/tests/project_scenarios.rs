@@ -117,7 +117,10 @@ fn execute_project_with_capture(
     let mut capture_stats = Vec::new();
     for (kind, story) in [
         ("source", reel_cli::into_story(checked, entry).unwrap()),
-        ("ASB", reel_cli::decode_story(&artifact.bytes).unwrap()),
+        (
+            "ASB",
+            reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
+        ),
     ] {
         let save_artifacts = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../target/reel-artifacts/scenario-saves");

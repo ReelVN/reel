@@ -90,7 +90,12 @@ fn rehashed_nonordinary_entries_are_rejected_by_cli_and_reader() {
         assert_eq!(error.stage, "entry");
         assert!(error.diagnostics[0].diagnostic.message.contains("Ordinary"));
         // Restricted-context helpers are still legal in a module-only artifact.
-        reel_cli::build(&checked, None).unwrap();
+        let module = reel_cli::build(&checked, None).unwrap();
+        let missing = reel_player::distribution::decode_story(&module.bytes)
+            .err()
+            .unwrap();
+        assert_eq!(missing.kind, ErrorKind::Metadata);
+        assert!(missing.detail.contains("no game entry"));
     }
 }
 
@@ -729,7 +734,7 @@ fn authored_scene_builds_loads_and_runs_without_recompilation() {
         )
     );
     let artifact = artifact(&source, Some("main::main"));
-    let story = reel_cli::decode_story(&artifact.bytes).unwrap();
+    let story = reel_player::distribution::decode_story(&artifact.bytes).unwrap();
     let package = story.program.package();
     assert_eq!(
         package.symbols[package.sources[0].path.index()],

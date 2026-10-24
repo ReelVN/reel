@@ -49,7 +49,7 @@ fn stories(source: &str) -> [CompiledStory; 2] {
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     [
         compile_story(source, "main", 1, "main").unwrap(),
-        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
     ]
 }
 fn driver(story: CompiledStory) -> AsideSessionUi {
@@ -270,7 +270,7 @@ fn main() {
         let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
         for story in [
             compile_story(SOURCE, "main", 1, "main").unwrap(),
-            reel_cli::decode_story(&artifact.bytes).unwrap(),
+            reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
         ] {
             let mut driver = AsideSessionUi::from_compiled(
                 Session::new(SessionId(1), Epoch(1)).unwrap(),
@@ -480,7 +480,7 @@ fn main() {
         let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
         for story in [
             compile_story(SOURCE, "main", 1, "main").unwrap(),
-            reel_cli::decode_story(&artifact.bytes).unwrap(),
+            reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
         ] {
             let mut driver = AsideSessionUi::from_compiled(
                 Session::new(SessionId(1), Epoch(1)).unwrap(),
@@ -625,7 +625,7 @@ fn main() {
         let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
         for story in [
             compile_story(&source, "main", 1, "main").unwrap(),
-            reel_cli::decode_story(&artifact.bytes).unwrap(),
+            reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
         ] {
             let mut driver = AsideSessionUi::from_compiled(
                 Session::new(SessionId(1), Epoch(1)).unwrap(),
@@ -663,7 +663,7 @@ fn main() {
         let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
         for story in [
             compile_story(source, "main", 1, "main").unwrap(),
-            reel_cli::decode_story(&artifact.bytes).unwrap(),
+            reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
         ] {
             let mut driver = AsideSessionUi::from_compiled(
                 Session::new(SessionId(1), Epoch(1)).unwrap(),
@@ -737,7 +737,7 @@ fn main() {
         let bytes = reel_cli::build(&checked, Some("main::main")).unwrap().bytes;
         [
             compile_story(source, "main", 1, "main").unwrap(),
-            reel_cli::decode_story(&bytes).unwrap(),
+            reel_player::distribution::decode_story(&bytes).unwrap(),
         ]
         .into_iter()
         .map(|story| {
@@ -928,7 +928,7 @@ fn main() {
         let bytes = reel_cli::build(&checked, Some("main::main")).unwrap().bytes;
         [
             compile_story(source, "main", 1, "main").unwrap(),
-            reel_cli::decode_story(&bytes).unwrap(),
+            reel_player::distribution::decode_story(&bytes).unwrap(),
         ]
         .into_iter()
         .map(|story| {

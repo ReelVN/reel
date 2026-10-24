@@ -61,7 +61,7 @@ fn source_and_asb_long_choices_scroll_without_activating_the_dragged_button() {
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for story in [
         compile_story(source, "main", 1, "main").unwrap(),
-        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
     ] {
         let mut driver = AsideSessionUi::from_compiled(
             Session::new(SessionId(1), Epoch(1)).unwrap(),
@@ -270,7 +270,7 @@ fn custom_nvl_taps_advance_but_pans_preserve_the_current_dialogue() {
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for story in [
         compile_story(source, "main", 1, "main").unwrap(),
-        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
     ] {
         let mut driver = AsideSessionUi::from_compiled(
             Session::new(SessionId(1), Epoch(1)).unwrap(),
@@ -428,7 +428,7 @@ fn main() {
         for kind in [PointerType::Mouse, PointerType::Touch] {
             for story in [
                 compile_story(SOURCE, "main", 1, "main").unwrap(),
-                reel_cli::decode_story(&artifact.bytes).unwrap(),
+                reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
             ] {
                 let mut driver = AsideSessionUi::from_compiled(
                     Session::new(SessionId(1), Epoch(1)).unwrap(),
@@ -548,7 +548,7 @@ fn main() {
         .unwrap();
         for story in [
             compile_story(source, "main", 1, "main").unwrap(),
-            reel_cli::decode_story(&artifact.bytes).unwrap(),
+            reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
         ] {
             let mut driver = AsideSessionUi::from_compiled(
                 Session::new(SessionId(1), Epoch(1)).unwrap(),

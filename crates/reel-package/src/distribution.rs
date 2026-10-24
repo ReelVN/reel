@@ -2,6 +2,11 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// Conventional code-package filename placed beside an exported platform player.
+pub const MAIN_PACKAGE: &str = "game.asb";
+/// Reserved text-archive entry containing the original bytecode text pool.
+pub const TEXT_POOL_ENTRY: &str = "__reel/text.pool";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Distribution {

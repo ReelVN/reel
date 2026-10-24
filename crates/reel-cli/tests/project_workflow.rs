@@ -208,7 +208,7 @@ fn default_export_preserves_inputs_and_explicit_mounts_select_the_complete_set()
         source
     );
     assert!(output.join("resources").is_dir());
-    let manifest = distribution::read_manifest(&output.join("game.asb")).unwrap();
+    let manifest = reel_player::distribution::read_manifest(&output.join("game.asb")).unwrap();
     assert_eq!(
         manifest.loose,
         Some(reel_package::distribution::LooseResources::Directory(
@@ -284,7 +284,7 @@ fn default_export_preserves_inputs_and_explicit_mounts_select_the_complete_set()
     );
     write(root, "resources/game.asb", "ordinary resource");
     success(command(root, &["export", "--format", "json"]));
-    distribution::load(&output.join("game.asb")).unwrap();
+    reel_player::distribution::load(&output.join("game.asb"), None).unwrap();
     assert_eq!(
         fs::read_to_string(output.join("resources/game.asb")).unwrap(),
         "ordinary resource"
@@ -378,7 +378,7 @@ fn project_commands_prepare_inline_languages_and_preserve_older_builds() {
     let package = root.join("build/debug/game.asb");
     let first = fs::read(&package).unwrap();
     assert_eq!(report["artifact"]["blake3"], reel_package::digest(&first));
-    let manifest = distribution::read_manifest(&package).unwrap();
+    let manifest = reel_player::distribution::read_manifest(&package).unwrap();
     assert_eq!(manifest.catalogs["en"], "__reel/catalogs/en.ftl");
     assert_eq!(
         manifest.loose,
@@ -392,14 +392,15 @@ fn project_commands_prepare_inline_languages_and_preserve_older_builds() {
     let report = success(command(root, &["build", "--format", "json"]));
     let second = fs::read(&package).unwrap();
     assert_eq!(report["artifact"]["blake3"], reel_package::digest(&second));
-    let current = distribution::load(&package).unwrap();
-    let previous = distribution::load(&old).unwrap();
+    let current = reel_player::distribution::load(&package, None).unwrap();
+    let previous = reel_player::distribution::load(&old, None).unwrap();
     assert_eq!(previous.packages, [first_archive.canonicalize().unwrap()]);
     assert_ne!(current.packages, previous.packages);
     assert_eq!(current.catalogs, previous.catalogs);
     assert!(first_archive.is_file());
     success(command(root, &["build", "--release", "--format", "json"]));
-    let release = distribution::load(&root.join("build/release/game.asb")).unwrap();
+    let release =
+        reel_player::distribution::load(&root.join("build/release/game.asb"), None).unwrap();
     assert_eq!(release.catalogs, current.catalogs);
     assert_eq!(release.packages.len(), 1);
     assert!(
@@ -548,7 +549,8 @@ mod projects {
         let bytes = fs::read(destination.join("story.asb")).unwrap();
         let package = reel_package::decode(&bytes, Default::default()).unwrap();
         assert_eq!(package.metadata().modules.len(), 2);
-        let (result, settings) = execute(reel_cli::story_from_package(package).unwrap());
+        let (result, settings) =
+            execute(reel_player::distribution::story_from_package(package).unwrap());
         assert!(result);
         assert_eq!(settings.title, "窗边");
         assert_eq!(settings.fonts, ["body.ttf", "cjk.ttf"]);

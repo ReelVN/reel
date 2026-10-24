@@ -70,7 +70,7 @@ fn builds_fixed_project_entry_and_library_private_entry_reproducibly() {
     assert_eq!(report["executed"], false);
     assert_eq!(report["artifact"]["power_loss_durability"], "not_promised");
     assert_eq!(report["artifact"]["blake3"], rp::digest(&case.bytes()));
-    let story = reel_cli::decode_story(&case.bytes()).unwrap();
+    let story = reel_player::distribution::decode_story(&case.bytes()).unwrap();
     let package = story.program.package();
     assert_eq!(
         package.symbols[package.functions[story.entry.index()].name.index()],
@@ -83,7 +83,7 @@ fn builds_fixed_project_entry_and_library_private_entry_reproducibly() {
     let checked =
         reel_cli::check("fn main() { 1 } fn hidden(a = 1) { loop {} }", "unit.aside").unwrap();
     let private = reel_cli::build(&checked, Some("main::hidden")).unwrap();
-    let story = reel_cli::decode_story(&private.bytes).unwrap();
+    let story = reel_player::distribution::decode_story(&private.bytes).unwrap();
     let package = story.program.package();
     assert_eq!(
         package.symbols[package.functions[story.entry.index()].name.index()],
@@ -113,7 +113,7 @@ fn release_build_strips_debug_data_and_check_dev_reject_release() {
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["artifact"]["profile"], "release");
     assert_eq!(report["artifact"]["source_included"], false);
-    let story = reel_cli::decode_story(&case.bytes()).unwrap();
+    let story = reel_player::distribution::decode_story(&case.bytes()).unwrap();
     assert!(story.program.package().sources.is_empty());
     assert!(
         story
@@ -201,7 +201,7 @@ fn author_example(source: &str, coordinates: &[(f64, f64)]) -> Vec<String> {
         "{}",
         String::from_utf8_lossy(&output.stdout)
     );
-    let story = reel_cli::decode_story(&case.bytes()).unwrap();
+    let story = reel_player::distribution::decode_story(&case.bytes()).unwrap();
     let mut session = Session::new(SessionId(1), Epoch(1)).unwrap();
     let mut vm = SessionVm::load(&session, story.program, VmLimits::default()).unwrap();
     let mut publications = 0;
@@ -391,11 +391,12 @@ fn concurrent_explicit_outputs_publish_exactly_one_complete_artifact() {
 mod build_profiles {
     //! Real ASB execution and snapshot round trips without a window or GPU.
     use aside_vm::snapshot::{SnapshotBudget, SnapshotError};
-    use reel_cli::{BuildProfile, build_with_profile, check, decode_story};
+    use reel_cli::{BuildProfile, build_with_profile, check};
     use reel_engine::aside::{
         AdapterError, NativeDispatch, RunOutcome, SessionStep, SessionVm, SliceBudget, VmLimits,
     };
     use reel_engine::{Epoch, InputAction, InteractionId, Session, SessionId, SessionIdentity};
+    use reel_player::distribution::decode_story;
 
     #[test]
     fn release_keeps_runtime_data_and_faults_but_drops_resident_debug_data() {
