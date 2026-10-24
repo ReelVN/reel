@@ -589,3 +589,65 @@ fn canonical_references_follow_aliases_groups_and_shadowing() {
     }
     assert_eq!(calls, 3);
 }
+
+#[test]
+fn dependency_discovery_projects_real_grouped_aliased_and_nested_uses() {
+    let source = r#"// Imports remain source-located after leading trivia.
+        pub use root::{types::{Entry as Renamed}, actions::*, empty::{}};
+        use root::api as api;
+        fn nested(){use nested::{item as local};}
+        let text = "use pretend::dependency;";
+    "#;
+    let found = discover_imports(source, "current", AnalysisLimits::default()).unwrap();
+    assert!(found.diagnostics.is_empty(), "{:?}", found.diagnostics);
+    let requests = found
+        .requests
+        .iter()
+        .map(|(request, _)| (request.from.as_str(), request.path.join("::"), request.kind))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        requests,
+        [
+            ("current", "root::types::Entry".into(), ImportKind::Symbol),
+            ("current", "root::actions".into(), ImportKind::Wildcard),
+            ("current", "root::api".into(), ImportKind::NamespaceOrSymbol),
+            ("current", "nested::item".into(), ImportKind::Symbol),
+        ]
+    );
+    for (_, range) in &found.requests {
+        let declaration = &source[*range];
+        assert!(
+            declaration.starts_with("use ") && declaration.ends_with(';'),
+            "{declaration}"
+        );
+    }
+    let invalid = "use root::api; fn broken(){let = 1;}";
+    let parsed = parse(invalid).unwrap();
+    assert!(!parsed.is_ok());
+    let found = discover_imports(invalid, "current", AnalysisLimits::default()).unwrap();
+    assert!(found.requests.is_empty());
+    assert_eq!(found.diagnostics, parsed.diagnostics());
+}
+
+#[test]
+fn import_projection_does_not_replace_complete_module_admission() {
+    let source = "use remote::value; fn main(){let a=(1,2,3,4,5,6); a}";
+    let limits = AnalysisLimits {
+        max_nodes: 8,
+        ..Default::default()
+    };
+    let found = discover_imports(source, "current", limits).unwrap();
+    assert!(found.diagnostics.is_empty());
+    assert_eq!(found.requests.len(), 1);
+    let analysis = analyze_module(
+        source,
+        &AnalysisOptions {
+            limits,
+            ..Default::default()
+        },
+        &mut NoModules,
+    )
+    .unwrap();
+    assert!(analysis.exhausted);
+    assert_eq!(analysis.diagnostics[0].code, DiagnosticCode::BudgetExceeded);
+}
