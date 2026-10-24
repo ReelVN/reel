@@ -710,6 +710,171 @@ mod tests {
     }
 
     #[test]
+    fn completed_speech_reveal_wakes_the_waiting_story_without_polling_incomplete_playback() {
+        use reel_core::identity::{FrameId, SurfaceEpoch};
+        use reel_ui::{
+            app::{RenderRoot, RenderRootOptions},
+            bridge::{
+                BridgeLimits, NoticeResult, PresentationBridge, PresentationNotice,
+                PresentationOutcome,
+            },
+            core::Widget,
+        };
+
+        let code = r#"fn main() {
+            stage.replace(stack(width:100,height:100));
+            let speech=narrator("AB",wait:false);
+            speech.revealed().wait();
+            narrator("next");
+        }"#;
+        for encoded in [false, true] {
+            for manual in [false, true] {
+                let mut compiled =
+                    reel_engine::aside::source::compile_story(code, "reveal_wake", 1, "main")
+                        .unwrap();
+                if encoded {
+                    use aside_vm::bytecode as bc;
+                    let bytes =
+                        bc::encode(compiled.program.package(), bc::Limits::default()).unwrap();
+                    compiled.program = bc::verify(
+                        bc::decode(&bytes, bc::Limits::default()).unwrap(),
+                        bc::Limits::default(),
+                    )
+                    .unwrap();
+                }
+                let driver = AsideSessionUi::from_compiled(
+                    Session::new(SessionId(73), Epoch(1)).unwrap(),
+                    compiled,
+                    "en",
+                    VmLimits::default(),
+                )
+                .unwrap();
+                let widget = driver.widget().prepare();
+                let root = widget.id();
+                let tree = RenderRoot::new(
+                    widget,
+                    |_| {},
+                    RenderRootOptions {
+                        default_properties: std::sync::Arc::new(Default::default()),
+                        use_system_fonts: false,
+                        size_policy: reel_ui::app::WindowSizePolicy::User,
+                        size: reel_ui::dpi::PhysicalSize::new(640, 420),
+                        scale_factor: 1.,
+                        default_font: None,
+                    },
+                );
+                let mut bridge = PresentationBridge::new(
+                    tree,
+                    SurfaceEpoch(1),
+                    BridgeLimits {
+                        geometry: reel_ui::app::GeometryLimits { max_bytes: 1 << 20 },
+                        max_candidates: 1,
+                        max_bridge_bytes: 64 << 10,
+                        max_snapshot_bytes: 8 << 20,
+                    },
+                )
+                .unwrap();
+                let mut story = StoryRuntime::new(driver);
+                let settle = |story: &mut StoryRuntime, time| {
+                    for _ in 0..10_000 {
+                        if !story.needs_work() {
+                            return;
+                        }
+                        story.tick(SliceBudget::default(), || time).unwrap();
+                    }
+                    panic!("speech playback did not settle");
+                };
+                settle(&mut story, 0);
+                let driver = story.driver_mut().unwrap();
+                driver.sync(&mut bridge, root).unwrap();
+                let (source, receipt) = driver
+                    .record(&mut bridge, root, FrameId(1))
+                    .unwrap()
+                    .expect("initial speech frame");
+                assert_eq!(
+                    bridge.resolve(PresentationNotice::new(
+                        source.key(),
+                        SurfaceEpoch(1),
+                        PresentationOutcome::Accepted(FrameId(1)),
+                    )),
+                    NoticeResult::Accepted
+                );
+                driver.presented(&bridge, &receipt).unwrap();
+                story.wake_input();
+                assert!(
+                    !story.needs_work(),
+                    "incomplete reveal must leave the VM asleep"
+                );
+                assert!(story.needs_tick(), "accepted text needs playback time");
+                let session = story.driver().ui().session();
+                let owner = session.root_owner();
+                let id = session.view().interaction.unwrap().id();
+                if manual {
+                    assert_eq!(
+                        story
+                            .driver_mut()
+                            .unwrap()
+                            .ui_mut()
+                            .session_mut()
+                            .handle_local_input(owner, InputAction::Advance(id))
+                            .unwrap(),
+                        reel_engine::InputOutcome::Revealed
+                    );
+                    story.wake_input();
+                } else {
+                    story.tick(SliceBudget::default(), || 0).unwrap();
+                    story.tick(SliceBudget::default(), || 40_000_000).unwrap();
+                    assert!(matches!(story.driver().ui().session().view().interaction,
+                        Some(InteractionView::Dialogue(d)) if d.lines()[0].visible_text()=="A"
+                            && !d.lines()[0].playback_complete() && !d.awaiting_advance()));
+                    assert!(
+                        !story.needs_work(),
+                        "partial reveal must leave the VM asleep"
+                    );
+                    story.tick(SliceBudget::default(), || 100_000_000).unwrap();
+                }
+                settle(&mut story, 100_000_000);
+                assert!(matches!(story.driver().ui().session().view().interaction,
+                    Some(InteractionView::Dialogue(d)) if d.id()==id && d.text()=="AB"
+                        && d.lines()[0].playback_complete() && d.awaiting_advance()));
+                assert!(
+                    story
+                        .driver()
+                        .ui()
+                        .session()
+                        .read_progress()
+                        .ids()
+                        .next()
+                        .is_none()
+                );
+                assert!(
+                    !story.needs_tick(),
+                    "a completed reveal must sleep while awaiting input"
+                );
+                story
+                    .tick(SliceBudget::default(), || panic!("advance wait must sleep"))
+                    .unwrap();
+                assert_eq!(
+                    story
+                        .driver_mut()
+                        .unwrap()
+                        .ui_mut()
+                        .session_mut()
+                        .handle_local_input(owner, InputAction::Advance(id))
+                        .unwrap(),
+                    reel_engine::InputOutcome::Completed
+                );
+                story.wake_input();
+                settle(&mut story, 100_000_000);
+                assert!(matches!(story.driver().ui().session().view().interaction,
+                    Some(InteractionView::Dialogue(d)) if d.text()=="next"));
+                story.close().unwrap();
+                drain(&mut story);
+            }
+        }
+    }
+
+    #[test]
     fn animations_progress_with_dialogue_and_paused_windows_sleep() {
         let mut story = runtime(
             r#"fn main() {
