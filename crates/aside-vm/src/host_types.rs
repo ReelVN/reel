@@ -53,7 +53,10 @@ pub(crate) struct HostTypes {
 }
 impl HostTypes {
     pub fn new(
-        package: &BytecodePackage<impl crate::bytecode::InstructionSequence>,
+        package: &BytecodePackage<
+            impl crate::bytecode::InstructionSequence,
+            impl crate::bytecode::SourceMapSequence,
+        >,
         registrations: &[HostTypeSupport],
         usage: &HeapBudgetUsage,
     ) -> Result<Self, VmError> {

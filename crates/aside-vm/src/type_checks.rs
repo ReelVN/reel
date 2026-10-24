@@ -22,7 +22,10 @@ pub(crate) struct TypeChecks {
 
 impl TypeChecks {
     pub(super) fn new(
-        p: &BytecodePackage<impl crate::bytecode::InstructionSequence>,
+        p: &BytecodePackage<
+            impl crate::bytecode::InstructionSequence,
+            impl crate::bytecode::SourceMapSequence,
+        >,
         usage: &HeapBudgetUsage,
         registrations: &[crate::HostTypeSupport],
     ) -> Result<Self, VmError> {
@@ -91,7 +94,10 @@ impl TypeChecks {
 
     pub(crate) fn symbol_str(
         &self,
-        p: &BytecodePackage<impl crate::bytecode::InstructionSequence>,
+        p: &BytecodePackage<
+            impl crate::bytecode::InstructionSequence,
+            impl crate::bytecode::SourceMapSequence,
+        >,
         name: &str,
     ) -> Option<SymbolId> {
         self.symbols
@@ -104,7 +110,10 @@ impl TypeChecks {
     /// Resolve dynamic property names without allocating text or scanning all symbols.
     pub(crate) fn symbol(
         &self,
-        p: &BytecodePackage<impl crate::bytecode::InstructionSequence>,
+        p: &BytecodePackage<
+            impl crate::bytecode::InstructionSequence,
+            impl crate::bytecode::SourceMapSequence,
+        >,
         heap: &Heap,
         key: Value,
     ) -> Result<Option<SymbolId>, HeapError> {
@@ -146,7 +155,10 @@ impl TypeChecks {
 
     pub(super) fn accepts(
         &self,
-        p: &BytecodePackage<impl crate::bytecode::InstructionSequence>,
+        p: &BytecodePackage<
+            impl crate::bytecode::InstructionSequence,
+            impl crate::bytecode::SourceMapSequence,
+        >,
         heap: &Heap,
         ty: TypeId,
         value: Value,

@@ -154,6 +154,14 @@ impl VerifiedProgram {
             retained = retained
                 .checked_sub(f.code.capacity_bytes())
                 .and_then(|n| n.checked_add(f.code.len().checked_mul(size_of::<Instruction>())?))
+                .and_then(|n| n.checked_sub(f.source_map.capacity_bytes()))
+                .and_then(|n| {
+                    n.checked_add(
+                        f.source_map
+                            .len()
+                            .checked_mul(size_of::<SourceMapEntry>())?,
+                    )
+                })
                 .ok_or_else(overflow)?;
             scratch = scratch.max((f.code.len() + 1).checked_mul(4).ok_or_else(overflow)?);
             let search = 1 + u64::from(usize::BITS - f.code.len().leading_zeros());
@@ -365,7 +373,7 @@ impl VerifiedProgram {
         function: FunctionId,
         pc: Pc,
         skip: Option<RegionId>,
-    ) -> Result<&FunctionDef<impl InstructionSequence>, Error> {
+    ) -> Result<&FunctionDef<impl InstructionSequence, impl SourceMapSequence>, Error> {
         let f = get(&self.0.package.functions, function.0, "exception function")?;
         check(
             pc.index() < f.code.end_pc() && f.code.is_boundary(pc.index()),
@@ -531,6 +539,8 @@ fn compact_package(
     opcode_uses: &mut [OpcodeUse],
     limits: Limits,
 ) -> Result<RuntimePackage, Error> {
+    let original_capacity = stats.owned_capacity_bytes;
+    let original_peak = original_capacity + stats.validation_scratch_peak;
     let mut budget = Budget::new(limits, stats.owned_capacity_bytes);
     budget.work = stats.validation_work;
     let mut functions = budget.vec::<RuntimeFunction>(p.functions.len())?;
@@ -569,6 +579,17 @@ fn compact_package(
                 .ok_or_else(|| Error::new(ErrorKind::Limit, "compact work"))?,
         )?;
         let bytes = CompactCode::planned_bytes(&f.code)?;
+        // Four deltas of up to five bytes are measured, encoded and scanned;
+        // the remaining units cover rebasing and checkpoint publication.
+        budget.work(f.source_map.len() as u64 * 64)?;
+        // Each delta occupies at most five bytes before PCs are rebased.
+        let source_bound = CompactSourceMap::planned_capacity(
+            f.source_map.len(),
+            f.source_map
+                .len()
+                .checked_mul(20)
+                .ok_or_else(|| Error::new(ErrorKind::Limit, "source map construction size"))?,
+        )?;
         let map_bytes = (f.code.len() + 1)
             .checked_mul(4)
             .ok_or_else(|| Error::new(ErrorKind::Limit, "PC map size"))?;
@@ -577,11 +598,14 @@ fn compact_package(
                 .checked_add(budget.scratch)
                 .and_then(|n| n.checked_add(bytes))
                 .and_then(|n| n.checked_add(map_bytes))
+                .and_then(|n| n.checked_add(source_bound))
                 .is_some_and(|n| n <= limits.max_allocation_bytes),
             ErrorKind::Limit,
             "compact allocation limit",
         )?;
-        budget.peak = budget.peak.max(budget.scratch + bytes + map_bytes);
+        budget.peak = budget
+            .peak
+            .max(budget.scratch + bytes + map_bytes + source_bound);
         let (code, pcs) = CompactCode::from_ordinal(&f.code)?;
         super::compact::map_metadata_pcs(&mut f.regions, &mut f.source_map, |pc| {
             pcs.get(pc.index())
@@ -589,6 +613,7 @@ fn compact_package(
                 .map(Pc)
                 .ok_or_else(|| Error::new(ErrorKind::Index, "metadata ordinal PC"))
         })?;
+        let source_map = CompactSourceMap::from_entries(&f.source_map)?;
         while let Some(used) = opcode_uses
             .get_mut(use_cursor)
             .filter(|used| used.function.index() == fi)
@@ -605,6 +630,7 @@ fn compact_package(
             .peak
             .max(budget.scratch + builder.capacity_bytes() + bytes + map_bytes);
         retained -= f.code.capacity_bytes();
+        retained = retained - f.source_map.capacity_bytes() + source_map.capacity_bytes();
         functions.push(FunctionDef {
             module: f.module,
             name: f.name,
@@ -617,7 +643,7 @@ fn compact_package(
             descriptors: f.descriptors,
             code: CompactCode::default(),
             regions: f.regions,
-            source_map: f.source_map,
+            source_map,
         });
     }
     let store = builder.finish()?;
@@ -650,7 +676,15 @@ fn compact_package(
     stats.encoded_bytes = measured.0;
     stats.owned_capacity_bytes = measured.1 + stats.derived_capacity_bytes;
     stats.validation_work = budget.work;
-    stats.validation_scratch_peak = stats.validation_scratch_peak.max(budget.peak);
+    stats.validation_scratch_peak = stats
+        .validation_scratch_peak
+        .max(budget.peak)
+        .max(original_peak.saturating_sub(stats.owned_capacity_bytes))
+        .max(if package.sources.is_empty() {
+            0
+        } else {
+            super::codec::SOURCE_COMPRESSION_SCRATCH
+        });
     Ok(package)
 }
 struct Budget {
@@ -727,7 +761,7 @@ fn contains_text(items: &[String], text: &str, b: &mut Budget) -> Result<bool, E
     Ok(false)
 }
 fn contains_symbol_text(
-    p: &BytecodePackage<impl InstructionSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
     items: &[SymbolId],
     text: &str,
     b: &mut Budget,
@@ -752,17 +786,29 @@ fn get<'a, T>(table: &'a [T], id: u32, label: &str) -> Result<&'a T, Error> {
         .get(id as usize)
         .ok_or_else(|| Error::new(ErrorKind::Index, label))
 }
-fn symbol(p: &BytecodePackage<impl InstructionSequence>, id: SymbolId) -> Result<&str, Error> {
+fn symbol(
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    id: SymbolId,
+) -> Result<&str, Error> {
     Ok(get(&p.symbols, id.0, "symbol")?.as_str())
 }
-fn ty(p: &BytecodePackage<impl InstructionSequence>, id: TypeId) -> Result<(), Error> {
+fn ty(
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    id: TypeId,
+) -> Result<(), Error> {
     get(&p.types, id.0, "type")?;
     Ok(())
 }
-fn reg(f: &FunctionDef<impl InstructionSequence>, r: Reg) -> Result<(), Error> {
+fn reg(
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
+    r: Reg,
+) -> Result<(), Error> {
     check(r.0 < f.register_count, ErrorKind::Index, "register")
 }
-fn window(f: &FunctionDef<impl InstructionSequence>, w: RegWindow) -> Result<(), Error> {
+fn window(
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
+    w: RegWindow,
+) -> Result<(), Error> {
     check(
         w.start
             .0
@@ -815,7 +861,7 @@ fn sorted_keys<K: Ord>(
 }
 
 fn validate_symbols(
-    p: &BytecodePackage<impl InstructionSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
     b: &mut Budget,
 ) -> Result<(), Error> {
     let hashes = RandomState::new();
@@ -823,7 +869,7 @@ fn validate_symbols(
 }
 
 fn validate_symbols_with_hash(
-    p: &BytecodePackage<impl InstructionSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
     b: &mut Budget,
     hash: impl Fn(&str) -> u64,
 ) -> Result<(), Error> {
@@ -883,7 +929,9 @@ fn validate_symbols_with_hash(
     b.release(sorted);
     Ok(())
 }
-fn version(p: &BytecodePackage<impl InstructionSequence>) -> Result<(), Error> {
+fn version(
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+) -> Result<(), Error> {
     check(
         (p.format_version, p.language_version, p.host_abi_version)
             == (FORMAT_VERSION, LANGUAGE_VERSION, HOST_ABI_VERSION),
@@ -893,13 +941,13 @@ fn version(p: &BytecodePackage<impl InstructionSequence>) -> Result<(), Error> {
 }
 
 pub(crate) fn validate(
-    p: &BytecodePackage<impl InstructionSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
     limits: Limits,
 ) -> Result<PackageStats, Error> {
     validate_program(p, limits).map(|(stats, _)| stats)
 }
 fn validate_program(
-    p: &BytecodePackage<impl InstructionSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
     limits: Limits,
 ) -> Result<(PackageStats, DerivedLayouts), Error> {
     version(p)?;
@@ -1295,7 +1343,11 @@ fn validate_program(
             records,
             declared_registers: registers,
             validation_work: b.work,
-            validation_scratch_peak: b.peak,
+            validation_scratch_peak: b.peak.max(if p.sources.is_empty() {
+                0
+            } else {
+                super::codec::SOURCE_COMPRESSION_SCRATCH
+            }),
         },
         DerivedLayouts {
             native_parameters: native_parameter_cells,
@@ -1309,7 +1361,7 @@ fn validate_program(
 /// Resolve binding aliases iteratively before execution. No runtime object is
 /// copied for an import, and malformed alias cycles cannot hang module loading.
 fn module_bindings(
-    p: &BytecodePackage<impl InstructionSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
     b: &mut Budget,
 ) -> Result<ModuleBindings, Error> {
     let mut offsets = b.vec::<u32>(p.modules.len() + 1)?;
@@ -1394,7 +1446,7 @@ fn module_bindings(
 
 /// Derive once per native signature, retaining only canonical Cell slots.
 fn native_parameter_cells(
-    p: &BytecodePackage<impl InstructionSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
     layouts: &ParameterLayouts,
     b: &mut Budget,
 ) -> Result<Vec<(u32, u32)>, Error> {
@@ -1488,7 +1540,10 @@ struct ParameterLayouts {
     declarations: Vec<(u32, u32, bool)>,
 }
 impl ParameterLayouts {
-    fn build(p: &BytecodePackage<impl InstructionSequence>, b: &mut Budget) -> Result<Self, Error> {
+    fn build(
+        p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+        b: &mut Budget,
+    ) -> Result<Self, Error> {
         b.work(p.functions.len() as u64)?;
         let mut count = 0usize;
         let mut bindings = 0u64;
@@ -1614,9 +1669,9 @@ impl ParameterLayouts {
 }
 
 fn validate_function(
-    p: &BytecodePackage<impl InstructionSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
     fi: usize,
-    f: &FunctionDef<impl InstructionSequence>,
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
     parameter_layouts: &ParameterLayouts,
     uses: &mut InstructionUses,
     b: &mut Budget,
@@ -1699,12 +1754,12 @@ fn validate_function(
     Ok(())
 }
 fn validate_source_map(
-    p: &BytecodePackage<impl InstructionSequence>,
-    f: &FunctionDef<impl InstructionSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
     native: bool,
 ) -> Result<(), Error> {
     let mut prev = None;
-    for m in &f.source_map {
+    for m in f.source_map.entries() {
         check(
             (if native {
                 m.pc.0 == 0
@@ -1728,8 +1783,8 @@ fn validate_source_map(
     Ok(())
 }
 fn validate_call(
-    p: &BytecodePackage<impl InstructionSequence>,
-    f: &FunctionDef<impl InstructionSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
     c: &CallDesc,
     b: &mut Budget,
 ) -> Result<(), Error> {
@@ -1833,8 +1888,8 @@ fn validate_call(
     Ok(())
 }
 fn validate_descriptor(
-    p: &BytecodePackage<impl InstructionSequence>,
-    f: &FunctionDef<impl InstructionSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
     d: &Descriptor,
     b: &mut Budget,
 ) -> Result<(), Error> {
@@ -1956,8 +2011,8 @@ fn validate_descriptor(
     Ok(())
 }
 fn validate_captures(
-    p: &BytecodePackage<impl InstructionSequence>,
-    f: &FunctionDef<impl InstructionSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
     function: FunctionId,
     captures: &[CaptureSource],
     b: &mut Budget,
@@ -1996,8 +2051,8 @@ fn validate_captures(
     Ok(())
 }
 fn validate_pattern(
-    p: &BytecodePackage<impl InstructionSequence>,
-    f: &FunctionDef<impl InstructionSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
     pattern: &PatternDesc,
     b: &mut Budget,
 ) -> Result<(), Error> {
@@ -2167,7 +2222,7 @@ fn ranges(r: &ExceptionRegion) -> impl Iterator<Item = PcRange> + '_ {
         .chain(r.finally)
 }
 fn validate_regions(
-    f: &FunctionDef<impl InstructionSequence>,
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
     b: &mut Budget,
 ) -> Result<(), Error> {
     for (index, r) in f.regions.iter().enumerate() {
@@ -2271,8 +2326,8 @@ fn validate_regions(
     Ok(())
 }
 fn validate_instruction(
-    p: &BytecodePackage<impl InstructionSequence>,
-    f: &FunctionDef<impl InstructionSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
     pc: usize,
     i: &Instruction,
     b: &mut Budget,
@@ -2432,7 +2487,7 @@ fn validate_instruction(
     Ok(())
 }
 fn edge(
-    f: &FunctionDef<impl InstructionSequence>,
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
     from: usize,
     to: usize,
     leave: bool,
@@ -2492,14 +2547,14 @@ fn edge(
     Ok(())
 }
 fn exception_target(
-    f: &FunctionDef<impl InstructionSequence>,
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
     pc: Pc,
     skip: Option<RegionId>,
 ) -> Option<HandlerTarget> {
     unwind_target(f, pc, skip, None)
 }
 fn strict_region_ancestor(
-    f: &FunctionDef<impl InstructionSequence>,
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
     parent: RegionId,
     child: RegionId,
 ) -> bool {
@@ -2520,7 +2575,7 @@ fn protected_or_catch_block(r: &ExceptionRegion, pc: Pc) -> Option<PcRange> {
     }
 }
 fn unwind_target(
-    f: &FunctionDef<impl InstructionSequence>,
+    f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
     pc: Pc,
     skip: Option<RegionId>,
     destination: Option<CleanupDestination>,
@@ -2570,7 +2625,7 @@ fn unwind_target(
     best.map(|(_, target)| target)
 }
 fn located(
-    p: &BytecodePackage<impl InstructionSequence>,
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
     fi: usize,
     pc: usize,
     mut e: Error,
@@ -2583,9 +2638,8 @@ fn located(
     e
 }
 
-fn source_span(map: &[SourceMapEntry], pc: Pc) -> Option<SourceSpan> {
-    let end = map.partition_point(|entry| entry.pc <= pc);
-    end.checked_sub(1).map(|index| map[index].span)
+fn source_span(map: &impl SourceMapSequence, pc: Pc) -> Option<SourceSpan> {
+    map.source_at(pc)
 }
 
 /// Streaming disassembly to a caller-owned sink; text includes descriptor fields,

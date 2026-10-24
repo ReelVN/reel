@@ -8,7 +8,7 @@ fn prepared(code: &str, mode: usize) -> (Session, SessionVm) {
         let mut package = story.program.package().clone();
         if mode == 2 {
             for function in &mut package.functions {
-                function.source_map.clear();
+                function.source_map = bc::CompactSourceMap::default();
             }
             package.sources.clear();
         }

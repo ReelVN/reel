@@ -384,7 +384,8 @@ pub fn compile_project_with_progress(
             options
                 .limits
                 .max_capacity_bytes
-                .saturating_sub(metadata_bytes),
+                .saturating_sub(metadata_bytes)
+                .saturating_add(size_of::<bc::BytecodePackage>()),
         );
 
         progress(crate::Progress {
@@ -401,13 +402,14 @@ pub fn compile_project_with_progress(
             total: 1,
         });
         let package_stats = program.stats();
-        let mut stats = state.budget.stats;
-        stats.capacity_bytes =
+        let capacity_bytes =
             package_stats.owned_capacity_bytes - size_of::<bc::BytecodePackage>() + metadata_bytes;
-        stats.capacity_peak_bytes = stats.capacity_peak_bytes.max(
-            stats.capacity_bytes - package_stats.derived_capacity_bytes
-                + package_stats.validation_scratch_peak,
-        );
+        let peak = capacity_bytes + package_stats.validation_scratch_peak;
+        state
+            .budget
+            .capacity(peak.saturating_sub(state.budget.stats.capacity_bytes))?;
+        let mut stats = state.budget.stats;
+        stats.capacity_bytes = capacity_bytes;
         Ok(ProjectCompilation {
             program,
             stats,

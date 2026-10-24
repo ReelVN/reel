@@ -27,6 +27,33 @@ struct Writer {
     limits: Limits,
 }
 impl Writer {
+    fn scratch(&self, bytes: usize) -> Result<(), Error> {
+        let requested = self
+            .retained
+            .max(self.capacity)
+            .checked_add(self.bytes.as_ref().map_or(0, Vec::capacity))
+            .and_then(|n| n.checked_add(bytes));
+        if requested.is_none_or(|n| n > self.limits.max_allocation_bytes) {
+            return Err(Error::new(
+                ErrorKind::Limit,
+                format!(
+                    "encoding scratch capacity: requested {requested:?}, limit {}",
+                    self.limits.max_allocation_bytes
+                ),
+            ));
+        }
+        Ok(())
+    }
+    fn unverified_fixture(&self) -> bool {
+        #[cfg(test)]
+        {
+            self.unverified_fixture
+        }
+        #[cfg(not(test))]
+        {
+            false
+        }
+    }
     fn capacity(&mut self, records: usize, bytes: usize) -> Result<(), Error> {
         self.capacity = self
             .capacity
@@ -553,9 +580,129 @@ impl Wire for TextPoolDescriptor {
         })
     }
 }
-record!(SourceFile { path, text });
+// The pinned miniz compressor's Huffman, output, dictionary and hash buffers
+// together fit 256 KiB beyond its inline state. wasm32 boxes one extra 64 KiB
+// code buffer. The allocator regression below checks this workspace bound.
+pub(super) const SOURCE_COMPRESSION_SCRATCH: usize = size_of::<
+    miniz_oxide::deflate::core::CompressorOxide,
+>() + 256 * 1024
+    + if cfg!(target_arch = "wasm32") {
+        64 * 1024
+    } else {
+        0
+    };
+
+fn compressed_source(
+    source: &[u8],
+    mut write: impl FnMut(&[u8]) -> Result<(), Error>,
+) -> Result<usize, Error> {
+    use miniz_oxide::deflate::core::{
+        CompressorOxide, TDEFLFlush, TDEFLStatus, compress_to_output,
+        create_comp_flags_from_zip_params,
+    };
+    let mut compressor = CompressorOxide::new(create_comp_flags_from_zip_params(1, 15, 0));
+    let mut error = None;
+    let mut len = 0usize;
+    let (status, consumed) = compress_to_output(
+        &mut compressor,
+        source,
+        TDEFLFlush::Finish,
+        |part| match write(part) {
+            Ok(()) => {
+                len += part.len();
+                true
+            }
+            Err(e) => {
+                error = Some(e);
+                false
+            }
+        },
+    );
+    if let Some(error) = error {
+        return Err(error);
+    }
+    if status != TDEFLStatus::Done || consumed != source.len() {
+        return Err(Error::new(ErrorKind::Encoding, "source compression failed"));
+    }
+    Ok(len)
+}
+
+impl Wire for SourceFile {
+    const MIN: usize = 12;
+    fn put(&self, w: &mut Writer) -> Result<(), Error> {
+        self.path.put(w)?;
+        u32::try_from(self.text.len())
+            .map_err(|_| Error::new(ErrorKind::Limit, "source length"))?
+            .put(w)?;
+        w.scratch(SOURCE_COMPRESSION_SCRATCH)?;
+        let len = compressed_source(self.text.as_bytes(), |_| Ok(()))?;
+        u32::try_from(len)
+            .map_err(|_| Error::new(ErrorKind::Limit, "packed source length"))?
+            .put(w)?;
+        if w.bytes.is_none() && w.digest.is_none() {
+            w.len = w
+                .len
+                .checked_add(len)
+                .ok_or_else(|| Error::new(ErrorKind::Limit, "encoded source size"))?;
+            if w.len > w.max || w.len as u64 > w.limits.max_work {
+                return Err(Error::new(ErrorKind::Limit, "encoded byte/work limit"));
+            }
+        } else {
+            compressed_source(self.text.as_bytes(), |part| w.write(part))?;
+        }
+        Ok(())
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        use miniz_oxide::inflate::{
+            TINFLStatus,
+            core::{DecompressorOxide, decompress, inflate_flags},
+        };
+        let path = SymbolId::get(r)?;
+        let len = u32::get(r)? as usize;
+        let packed = u32::get(r)? as usize;
+        r.charge(1, len)?;
+        let materialize = r.materialize;
+        let allocation = r
+            .allocation
+            .checked_add(size_of::<DecompressorOxide>())
+            .ok_or_else(|| r.error(ErrorKind::Limit, "source inflation capacity"))?;
+        if allocation > r.limits.max_allocation_bytes {
+            return Err(r.error(ErrorKind::Limit, "source inflation capacity"));
+        }
+        if materialize {
+            r.work = r
+                .work
+                .checked_add(len as u64 * 2)
+                .ok_or_else(|| r.error(ErrorKind::Limit, "source inflation work"))?;
+            if r.work > r.limits.max_work {
+                return Err(r.error(ErrorKind::Limit, "source inflation work"));
+            }
+        }
+        let bytes = r.take(packed)?;
+        let text = if materialize {
+            let mut output = Vec::new();
+            output
+                .try_reserve_exact(len)
+                .map_err(|_| Error::new(ErrorKind::Allocation, "source output"))?;
+            output.resize(len, 0);
+            let flags = inflate_flags::TINFL_FLAG_PARSE_ZLIB_HEADER
+                | inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF;
+            let (status, consumed, written) =
+                decompress(&mut DecompressorOxide::new(), bytes, &mut output, 0, flags);
+            if status != TINFLStatus::Done || consumed != packed || written != len {
+                return Err(Error::new(ErrorKind::Encoding, "invalid compressed source"));
+            }
+            let text = String::from_utf8(output)
+                .map_err(|_| Error::new(ErrorKind::Encoding, "source is not UTF-8"))?;
+            r.charge(0, text.capacity() - len)?;
+            text
+        } else {
+            String::new()
+        };
+        Ok(Self { path, text })
+    }
+}
 record!(SourceSpan { file, start, end });
-record!(SourceMapEntry { pc, span });
 
 impl Wire for Const {
     fn put(&self, w: &mut Writer) -> Result<(), Error> {
@@ -888,7 +1035,32 @@ impl Wire for ModuleDef {
         Ok(out)
     }
 }
-fn put_function(code: &FunctionDef<impl InstructionSequence>, w: &mut Writer) -> Result<(), Error> {
+fn get_source_map(r: &mut Reader<'_>, expected: u32) -> Result<CompactSourceMap, Error> {
+    let count = u32::get(r)?;
+    if count != expected {
+        return Err(r.error(ErrorKind::Encoding, "source map count mismatch"));
+    }
+    if count == 0 {
+        return Ok(CompactSourceMap::default());
+    }
+    let len = u32::get(r)? as usize;
+    r.charge(
+        count,
+        CompactSourceMap::planned_capacity(count as usize, len)?,
+    )?;
+    let materialize = r.materialize;
+    let bytes = r.take(len)?;
+    if materialize {
+        CompactSourceMap::from_encoded(bytes, count)
+    } else {
+        CompactSourceMap::scan(bytes, count)?;
+        Ok(CompactSourceMap::default())
+    }
+}
+fn put_function(
+    code: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
+    w: &mut Writer,
+) -> Result<(), Error> {
     for len in [
         code.captures.len(),
         code.bindings.len(),
@@ -926,8 +1098,10 @@ fn put_function(code: &FunctionDef<impl InstructionSequence>, w: &mut Writer) ->
         .function_word
         .checked_add(words as u32)
         .ok_or_else(|| Error::new(ErrorKind::Limit, "code range"))?;
-    if code.code.runtime_words().is_some() || (w.bytes.is_none() && w.digest.is_none()) {
-        put_pc_metadata(code, w, |pc, _| Ok(pc))?;
+    if code.code.runtime_words().is_some()
+        || (w.bytes.is_none() && w.digest.is_none() && w.code_store.is_none())
+    {
+        put_pc_metadata(code, w, Ok)?;
     } else {
         let raw = code.code.editable().expect("editable code");
         let map_bytes = (raw.len() + 1)
@@ -948,29 +1122,30 @@ fn put_function(code: &FunctionDef<impl InstructionSequence>, w: &mut Writer) ->
             pc += 1 + CompactCode::shape(i)?.3 as u32;
         }
         pcs.push(pc);
-        put_pc_metadata(code, w, |target, writer| encode_pc(&pcs, target, writer))?;
+        let unverified = w.unverified_fixture();
+        put_pc_metadata(code, w, |target| encode_pc(&pcs, target, unverified))?;
     }
     Ok(())
 }
-fn encode_pc(pcs: &[u32], target: Pc, w: &Writer) -> Result<Pc, Error> {
+fn encode_pc(pcs: &[u32], target: Pc, unverified: bool) -> Result<Pc, Error> {
     if let Some(&pc) = pcs.get(target.index()) {
         return Ok(Pc(pc));
     }
     #[cfg(test)]
-    if w.unverified_fixture {
+    if unverified {
         return Ok(Pc(pcs
             .last()
             .copied()
             .unwrap_or(0)
             .saturating_add(target.0)));
     }
-    let _ = w;
+    let _ = unverified;
     Err(Error::new(ErrorKind::Index, "encoding PC"))
 }
 fn put_pc_metadata(
-    code: &FunctionDef<impl InstructionSequence>,
+    code: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
     w: &mut Writer,
-    map: impl Fn(Pc, &Writer) -> Result<Pc, Error>,
+    map: impl Fn(Pc) -> Result<Pc, Error>,
 ) -> Result<(), Error> {
     w.capacity(
         code.regions.len(),
@@ -979,22 +1154,33 @@ fn put_pc_metadata(
     (code.regions.len() as u32).put(w)?;
     for region in &code.regions {
         let mut region = region.clone();
-        super::compact::map_metadata_pcs(std::slice::from_mut(&mut region), &mut [], |pc| {
-            map(pc, w)
-        })?;
+        super::compact::map_metadata_pcs(std::slice::from_mut(&mut region), &mut [], &map)?;
         region.put(w)?;
     }
-    w.capacity(
-        code.source_map.len(),
-        code.source_map.capacity() * size_of::<SourceMapEntry>(),
-    )?;
+    w.capacity(code.source_map.len(), code.source_map.capacity_bytes())?;
     (code.source_map.len() as u32).put(w)?;
-    for entry in &code.source_map {
-        SourceMapEntry {
-            pc: map(entry.pc, w)?,
-            span: entry.span,
-        }
-        .put(w)?;
+    if code.source_map.is_empty() {
+        return Ok(());
+    }
+    if let Some(bytes) = code.source_map.packed() {
+        (bytes.len() as u32).put(w)?;
+        w.write(bytes)?;
+    } else {
+        let mut size = 0usize;
+        let entries = || {
+            code.source_map.entries().map(|mut entry| {
+                entry.pc = map(entry.pc)?;
+                Ok(entry)
+            })
+        };
+        CompactSourceMap::encode_results(entries(), |part| {
+            size += part.len();
+            Ok(())
+        })?;
+        u32::try_from(size)
+            .map_err(|_| Error::new(ErrorKind::Limit, "source map bytes"))?
+            .put(w)?;
+        CompactSourceMap::encode_results(entries(), |part| w.write(part))?;
     }
     Ok(())
 }
@@ -1033,7 +1219,7 @@ impl Wire for RuntimeFunction {
             descriptors: r.expected(lens[2])?,
             code: CompactCode::get(r)?,
             regions: r.expected(lens[4])?,
-            source_map: r.expected(lens[5])?,
+            source_map: get_source_map(r, lens[5])?,
         };
         if r.materialize
             && [
@@ -1114,7 +1300,7 @@ fn check_instruction_indices(instruction: &Instruction, r: &Reader<'_>) -> Resul
     Ok(())
 }
 fn prepare_code_store(
-    package: &BytecodePackage<impl InstructionSequence>,
+    package: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
     limits: Limits,
     owned: usize,
     #[cfg(test)] unverified: bool,
@@ -1226,7 +1412,7 @@ fn append_fixture_words(builder: &mut CodeStoreBuilder, raw: &[Instruction]) -> 
     Ok(())
 }
 fn put_code_store(
-    package: &BytecodePackage<impl InstructionSequence>,
+    package: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
     w: &mut Writer,
 ) -> Result<(), Error> {
     let store = w.code_store.clone().or_else(|| {
@@ -1347,8 +1533,8 @@ impl Wire for CodeBlock {
         })
     }
 }
-fn put_package<C: InstructionSequence>(
-    code: &BytecodePackage<C>,
+fn put_package<C: InstructionSequence, S: SourceMapSequence>(
+    code: &BytecodePackage<C, S>,
     w: &mut Writer,
 ) -> Result<(), Error> {
     code.text_pool.put(w)?;
@@ -1361,7 +1547,7 @@ fn put_package<C: InstructionSequence>(
     put_code_store(code, w)?;
     w.capacity(
         code.functions.len(),
-        code.functions.capacity() * size_of::<FunctionDef<C>>(),
+        code.functions.capacity() * size_of::<FunctionDef<C, S>>(),
     )?;
     u32::try_from(code.functions.len())
         .map_err(|_| Error::new(ErrorKind::Limit, "function count"))?
@@ -1370,7 +1556,26 @@ fn put_package<C: InstructionSequence>(
         put_function(function, w)?;
     }
     code.capabilities.put(w)?;
-    code.sources.put(w)
+    // Count every resident source allocation before the first compressor starts.
+    // Later source files already belong to the package at this point.
+    w.capacity(
+        code.sources.len(),
+        code.sources.capacity() * size_of::<SourceFile>(),
+    )?;
+    w.capacity(
+        code.sources.len(),
+        code.sources.iter().try_fold(0usize, |n, source| {
+            n.checked_add(source.text.capacity())
+                .ok_or_else(|| Error::new(ErrorKind::Limit, "source capacity"))
+        })?,
+    )?;
+    u32::try_from(code.sources.len())
+        .map_err(|_| Error::new(ErrorKind::Limit, "source count"))?
+        .put(w)?;
+    for source in &code.sources {
+        source.put(w)?;
+    }
+    Ok(())
 }
 
 impl Wire for RuntimePackage {
@@ -1401,7 +1606,9 @@ impl Wire for RuntimePackage {
     }
 }
 
-fn counts(p: &BytecodePackage<impl InstructionSequence>) -> Result<[u32; 9], Error> {
+fn counts(
+    p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+) -> Result<[u32; 9], Error> {
     let lens = [
         p.symbols.len(),
         p.types.len(),
@@ -1421,7 +1628,7 @@ fn counts(p: &BytecodePackage<impl InstructionSequence>) -> Result<[u32; 9], Err
 }
 /// Encodes validated fields; does not serialize Rust layout or runtime values.
 pub fn encode(
-    package: &BytecodePackage<impl InstructionSequence>,
+    package: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
     limits: Limits,
 ) -> Result<Vec<u8>, Error> {
     let stats = super::verify::validate(package, limits)?;
@@ -1450,7 +1657,7 @@ pub(super) fn encode_verified(program: &VerifiedProgram, limits: Limits) -> Resu
     )
 }
 fn encode_fields(
-    package: &BytecodePackage<impl InstructionSequence>,
+    package: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
     limits: Limits,
     owned: usize,
 ) -> Result<Vec<u8>, Error> {
@@ -1463,7 +1670,7 @@ fn encode_fields(
     )
 }
 fn encode_fields_impl(
-    package: &BytecodePackage<impl InstructionSequence>,
+    package: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
     limits: Limits,
     owned: usize,
     #[cfg(test)] unverified_fixture: bool,
@@ -1489,9 +1696,9 @@ fn encode_fields_impl(
         len: HEADER_BYTES,
         max: limits.max_bytes,
         capacity: 0,
-        retained: 0,
+        retained: owned,
         #[cfg(test)]
-        unverified_fixture: false,
+        unverified_fixture,
         records: 0,
         code_store: None,
         function_word: 0,
@@ -1624,7 +1831,7 @@ pub fn decode(input: &[u8], limits: Limits) -> Result<RuntimePackage, Error> {
 }
 
 pub(crate) fn measure(
-    package: &BytecodePackage<impl InstructionSequence>,
+    package: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
     limits: Limits,
 ) -> Result<(usize, usize, u64), Error> {
     let mut w = Writer {
@@ -1653,13 +1860,15 @@ pub(crate) fn measure(
     Ok((w.len, w.capacity, w.records))
 }
 #[cfg(test)]
-pub(super) fn encode_unverified(package: &BytecodePackage<impl InstructionSequence>) -> Vec<u8> {
+pub(super) fn encode_unverified(
+    package: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
+) -> Vec<u8> {
     encode_fields_impl(package, Limits::default(), 0, true).expect("bounded malformed test fixture")
 }
 
 // Hash canonical fields without materializing another copy of the code package.
 pub(crate) fn identity(
-    package: &BytecodePackage<impl InstructionSequence>,
+    package: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
     limits: Limits,
 ) -> Result<[u8; 32], Error> {
     let mut writer = Writer {
@@ -1717,6 +1926,96 @@ pub(super) fn decoded_identity(input: &[u8], limits: Limits) -> Result<[u8; 32],
 #[cfg(test)]
 mod admission_tests {
     use super::*;
+    fn source_wire(source: &[u8], declared: usize) -> Vec<u8> {
+        let packed = miniz_oxide::deflate::compress_to_vec_zlib(source, 1);
+        let mut wire = Vec::new();
+        for value in [0u32, declared as u32, packed.len() as u32] {
+            wire.extend_from_slice(&value.to_le_bytes());
+        }
+        wire.extend(packed);
+        wire
+    }
+    fn source_reader(wire: &[u8], limits: Limits) -> Reader<'_> {
+        let mut reader = Reader::new(wire, limits);
+        reader.counts[0] = 1;
+        reader.materialize = true;
+        reader
+    }
+
+    #[test]
+    fn compressed_sources_admit_expanded_bytes_and_work_before_allocation() {
+        let source = "中文🎬\n".repeat(4096);
+        let wire = source_wire(source.as_bytes(), source.len());
+        assert!(wire.len() < source.len() / 10);
+        let mut tight = source_reader(
+            &wire,
+            Limits {
+                max_allocation_bytes: source.len() - 1,
+                ..Limits::default()
+            },
+        );
+        let allocation = allocation_counter::measure(|| {
+            assert_eq!(
+                SourceFile::get(&mut tight).unwrap_err().kind,
+                ErrorKind::Limit
+            );
+        });
+        assert!(allocation.bytes_max < source.len() as u64);
+        let mut tight_work = source_reader(
+            &wire,
+            Limits {
+                max_work: (source.len() * 2) as u64,
+                ..Limits::default()
+            },
+        );
+        assert_eq!(
+            SourceFile::get(&mut tight_work).unwrap_err().kind,
+            ErrorKind::Limit
+        );
+        assert_eq!(
+            SourceFile::get(&mut source_reader(&wire, Limits::default()))
+                .unwrap()
+                .text,
+            source
+        );
+        let workspace = allocation_counter::measure(|| {
+            compressed_source(source.as_bytes(), |_| Ok(())).unwrap();
+        });
+        assert!(workspace.bytes_max as usize <= SOURCE_COMPRESSION_SCRATCH);
+    }
+
+    #[test]
+    fn compressed_source_rejects_wrong_lengths_trailing_data_and_invalid_utf8() {
+        for wire in [
+            source_wire(b"hello", 4),
+            source_wire(b"hello", 6),
+            source_wire(&[0xff], 1),
+        ] {
+            assert_eq!(
+                SourceFile::get(&mut source_reader(&wire, Limits::default()))
+                    .unwrap_err()
+                    .kind,
+                ErrorKind::Encoding
+            );
+        }
+        let mut trailing = source_wire(b"hello", 5);
+        trailing.push(0);
+        let length = u32::from_le_bytes(trailing[8..12].try_into().unwrap()) + 1;
+        trailing[8..12].copy_from_slice(&length.to_le_bytes());
+        assert_eq!(
+            SourceFile::get(&mut source_reader(&trailing, Limits::default()))
+                .unwrap_err()
+                .kind,
+            ErrorKind::Encoding
+        );
+        let wire = source_wire(b"", 0);
+        assert!(
+            SourceFile::get(&mut source_reader(&wire, Limits::default()))
+                .unwrap()
+                .text
+                .is_empty()
+        );
+    }
     #[test]
     fn compressed_code_precharges_construction_workspace_before_inflating() {
         let mut builder = CodeStoreBuilder::new();

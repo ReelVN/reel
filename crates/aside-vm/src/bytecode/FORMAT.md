@@ -31,6 +31,18 @@ Records follow model.rs field order, with these prefixes:
   byte length (u32) and packed bytes. Each independent zlib block inflates to
   32 KiB, except the final block. Function ranges partition the word stream in
   declaration order. Instructions may cross a block boundary.
+- Source map: u32 run count; nonempty maps add u32 packed byte length and the
+  packed bytes. Each group of 32 runs restarts its previous PC, file and start
+  at zero. Each run stores four shortest unsigned LEB128 zigzag deltas: PC from
+  previous PC, file from previous file, start from previous start, and end from
+  current start. Each difference fits the full signed difference of two u32
+  values. Runtime maps retain these bytes and a sparse `(PC, byte offset)` index;
+  lookup binary-searches the index and decodes at most 32 runs.
+- Source file: path SymbolId (u32), original UTF-8 byte length (u32), compressed
+  byte length (u32), and one independent zlib stream. Encoding uses the pinned
+  compressor at level 1. Loading admits the complete original length and inflate
+  workspace before allocating, validates the stream, exact length and UTF-8,
+  and retains the source as ordinary text for diagnostics.
 
 | Record | Tags |
 | --- | --- |
@@ -207,6 +219,10 @@ begin at register_count.
 
 Source-map entries begin runs through the next entry or function end. A PC before
 the first entry has no location. Adjacent equal spans may share one run.
+Editable functions carry ordinary run vectors; verification rebases PCs and packs
+them once. Loading and execution preserve the packed runs. Explicit editing via
+`to_unpacked` restores the vectors and ordinal PCs. Source paths, byte spans and
+debug diagnostic locations are identical across these representations.
 
 Regions contain protected/catch/finally half-open ranges. They are laminar or
 disjoint, and all blocks of one nested region share a lexical parent. Ordinary

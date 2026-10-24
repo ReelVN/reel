@@ -416,7 +416,7 @@ mod build_profiles {
         let mut expected = checked.compilation.program.package().clone();
         expected.sources.clear();
         for function in &mut expected.functions {
-            function.source_map.clear();
+            function.source_map = aside_vm::bytecode::CompactSourceMap::default();
         }
         assert_eq!(r.program.package(), &expected);
         let encoded = reel_package::decode(&release.bytes, Default::default()).unwrap();
@@ -437,7 +437,8 @@ mod build_profiles {
         );
         assert_eq!(d.program.package().constants, r.program.package().constants);
         assert_eq!(d.program.package().symbols, r.program.package().symbols);
-        assert!(release.bytes.len() + source.len() < debug.bytes.len());
+        assert!(release.bytes.len() < debug.bytes.len());
+        assert!(debug.bytes.len() - release.bytes.len() < source.len());
         assert!(
             r.program.stats().owned_capacity_bytes + source.len()
                 < d.program.stats().owned_capacity_bytes

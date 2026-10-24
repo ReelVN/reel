@@ -310,7 +310,9 @@ fn external_text_pool_preserves_backing_and_accounts_retained_capacity() {
     let mut retained = None;
     let mut expected = 0;
     let allocation = allocation_counter::measure(|| {
-        let mut bytes = Vec::with_capacity(64 * 1024);
+        // Pool binding is a retained-capacity boundary; keep its spare backing
+        // larger than the independent debug-source compression workspace.
+        let mut bytes = Vec::with_capacity(512 * 1024);
         bytes.extend_from_slice("正文😀".as_bytes());
         let pointer = bytes.as_ptr();
         expected =

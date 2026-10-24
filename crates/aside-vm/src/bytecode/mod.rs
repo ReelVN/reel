@@ -8,6 +8,7 @@ mod compact;
 mod encoded;
 pub mod fixtures;
 mod model;
+mod source_map;
 mod spec;
 #[cfg(test)]
 mod tests;
@@ -21,6 +22,7 @@ pub use codec::{decode, encode};
 pub use compact::{CompactCode, CompactIter, InstructionSequence};
 pub use encoded::EncodedProgram;
 pub use model::*;
+pub use source_map::{CompactSourceMap, SourceMapIter, SourceMapSequence};
 pub use spec::*;
 pub use text_pool::{TextPool, externalize_text};
 pub use verify::{
@@ -29,8 +31,8 @@ pub use verify::{
 };
 
 /// Verified metadata and compact instructions share the editable package model.
-pub type RuntimePackage = BytecodePackage<CompactCode>;
-pub type RuntimeFunction = FunctionDef<CompactCode>;
+pub type RuntimePackage = BytecodePackage<CompactCode, CompactSourceMap>;
+pub type RuntimeFunction = FunctionDef<CompactCode, CompactSourceMap>;
 
 /// All limits apply to the whole package, including nested descriptor records.
 /// Work is bounded independently for decoding, verification and runtime admission;
