@@ -121,15 +121,11 @@ impl Images {
         let loading = self.wanted.keys().any(|source| {
             !self.loaded.contains_key(source) && !self.manifests.contains_key(source)
         });
-        self.loaded.retain(|source, lease| {
-            let retain = self.wanted.contains_key(source)
+        self.loaded.retain(|source, _| {
+            self.wanted.contains_key(source)
                 || self.displayed.contains(source)
                 || self.tiles.contains_key(source)
-                || (!loading && self.mounted.contains(source));
-            if !retain {
-                lease.prohibit_new_leases();
-            }
-            retain
+                || (!loading && self.mounted.contains(source))
         });
     }
     pub fn poll(&mut self) -> Result<bool, String> {
@@ -400,13 +396,8 @@ impl Images {
                 .filter(|(_, tile)| tile.required)
                 .map(|(source, _)| source.clone()),
         );
-        self.loaded.retain(|source, lease| {
-            let retain = self.mounted.contains(source) || self.tiles.contains_key(source);
-            if !retain {
-                lease.prohibit_new_leases();
-            }
-            retain
-        });
+        self.loaded
+            .retain(|source, _| self.mounted.contains(source) || self.tiles.contains_key(source));
     }
     pub fn close(&mut self) {
         self.closed = true;

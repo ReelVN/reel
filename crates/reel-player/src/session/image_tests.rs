@@ -389,7 +389,7 @@ fn image_pipeline(
             .resources()
             .leases()
             .iter()
-            .all(|lease| lease.is_retired())
+            .all(|lease| !lease.is_retired())
     );
     driver.sync(&mut bridge, root).unwrap();
     assert!(driver.ui().image_resources().is_empty());
@@ -454,7 +454,7 @@ fn cancelled_story_sync_clears_published_images_and_keeps_only_submitted_leases(
                 .resources()
                 .leases()
                 .iter()
-                .all(|lease| lease.is_retired())
+                .all(|lease| !lease.is_retired())
         );
         assert!(resident.usage().bytes >= 160 * 90 * 4);
         drop(submitted);

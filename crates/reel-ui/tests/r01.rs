@@ -729,6 +729,7 @@ fn large_path_gradient_glyph_variation_dash_and_utf8_resume_then_retire() {
         )
         .unwrap();
     let weak = registry.acquire(handle).unwrap().downgrade();
+    assert_eq!(weak.upgrade().unwrap().handle(), handle);
     let mut path = BezPath::new();
     path.move_to((0., 0.));
     for i in 0..8192 {
@@ -770,6 +771,10 @@ fn large_path_gradient_glyph_variation_dash_and_utf8_resume_then_retire() {
     let source = bridge.record(FrameId(1)).unwrap();
     let frozen = registry.freeze(&[handle], &pool).unwrap();
     registry.retire(handle);
+    assert!(
+        weak.upgrade().is_none(),
+        "explicit retirement closes weak admission"
+    );
     assert!(registry.acquire(handle).is_err());
     let mut b = FrameBuild::new(
         source,

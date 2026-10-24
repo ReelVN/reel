@@ -344,10 +344,12 @@ impl Transitions {
         &mut self,
         vm: &mut SessionVm,
         receipt: &TransitionReceipt,
+        accepted_time: f64,
     ) -> Result<(), Error> {
         let mut gates = receipt.gates.clone();
         for &(id, phase, progress) in &receipt.accepted {
-            if vm.accept_transition(id, phase, progress)? && phase == TransitionPhase::FinalPending
+            if vm.accept_transition(id, phase, progress, accepted_time)?
+                && phase == TransitionPhase::FinalPending
             {
                 gates.retain(|(candidate, _)| *candidate != id);
             }

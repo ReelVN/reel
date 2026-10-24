@@ -47,7 +47,7 @@ fn pixels(lease: &ResourceLease) -> &reel_ui::peniko::ImageData {
 }
 
 #[test]
-fn real_images_share_storage_replace_atomically_and_retire_with_frame_leases() {
+fn real_images_share_storage_replace_atomically_and_release_after_frame_leases() {
     let (mut images, wake) = loader();
     images.request(wanted(&["assets/panels.png", "assets/panels.png"]));
     ready(&mut images, &wake).unwrap();
@@ -95,13 +95,24 @@ fn real_images_share_storage_replace_atomically_and_retire_with_frame_leases() {
     }
     images.commit();
     assert_eq!(images.loads, 2);
-    assert!(submitted_frame.is_retired());
+    assert!(!submitted_frame.is_retired());
     assert!(!images.loaded.contains_key("assets/panels.png"));
     assert_eq!(
         &pixels(&submitted_frame).data.as_ref()[0..4],
         &[224, 64, 48, 255]
     );
+    let mut other = Images::new(images.assets.clone());
+    other.request(wanted(&["assets/panels.png"]));
+    ready(&mut other, &wake).unwrap();
+    other.commit();
+    assert_eq!(
+        other.loaded["assets/panels.png"].handle(),
+        submitted_frame.handle()
+    );
     images.close();
+    assert!(!other.loaded["assets/panels.png"].is_retired());
+    assert_eq!(images.pool.usage().bytes, 160 * 90 * 4);
+    other.close();
     assert_eq!(images.pool.usage().bytes, 160 * 90 * 4);
     drop(submitted_frame);
     assert_eq!(images.pool.usage().bytes, 0);

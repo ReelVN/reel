@@ -222,7 +222,10 @@ fn huge_image_cold_warm_pan_zoom_and_retirement_use_visible_residency() {
             .keys()
             .all(|key| !key.contains("/0/0-") && !key.contains("/0/156-"))
     );
-    assert!(first.is_retired());
+    assert!(
+        !first.is_retired(),
+        "the retained tile remains shared after this view releases it"
+    );
     pan(&mut ui, &mut stage, image, -10_000., 0.25);
     settle(&mut ui, &mut bridge, widget, &wake);
     assert!(

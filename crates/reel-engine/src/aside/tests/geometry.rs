@@ -16,6 +16,7 @@ fn reply(sequence: u64) -> GeometryReply {
             bounds: [10., 11., 20., 30.],
             transform: [1., 0., 0., 1., 10., 11.],
             text_end: Some([25., 41.]),
+            text_caret: Some([25., 11., 0., 30.]),
         }),
     }
 }
@@ -34,8 +35,11 @@ fn geometry_results_wait_for_geometry_and_acceptance_and_are_readonly_and_reusab
             if inspect(g,g.bounds,g.transform,g.text_end)!=81.0 {throw "typed geometry";}
             if g.width!=20 || g.height!=30 || g.bounds.x!=10 || g.transform.tx!=10 {throw "wrong geometry";}
             if g.text_end.x!=25 || g.text_end.y!=41 {throw "wrong text endpoint";}
+            if g.text_caret.x!=25 || g.text_caret.y+g.text_caret.height/2.0!=26.0 {throw "wrong caret center";}
             let mut readonly=false;try{change_x(g.bounds);}catch e{readonly=true;}
             if !readonly {throw "mutable geometry";}
+            readonly=false;try{change_x(g.text_caret);}catch e{readonly=true;}
+            if !readonly {throw "mutable caret";}
             readonly=false;try{change_x(g.text_end);}catch e{readonly=true;}
             if !readonly {throw "mutable text endpoint";}
             target.remove();

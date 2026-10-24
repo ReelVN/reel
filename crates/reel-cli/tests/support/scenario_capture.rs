@@ -316,7 +316,12 @@ impl ScenarioCapture {
             NoticeResult::Accepted
         );
         driver
-            .presented_frame(bridge, &receipt, &candidate)
+            .presented_frame(
+                bridge,
+                &receipt,
+                &candidate,
+                driver.adapter().logical_time(),
+            )
             .unwrap();
         self.accepted = Some(candidate);
     }

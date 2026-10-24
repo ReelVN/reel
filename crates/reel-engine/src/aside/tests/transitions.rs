@@ -94,7 +94,7 @@ fn accept_final(vm: &mut SessionVm) {
         assert_eq!(view.phase, TransitionPhase::FinalPending);
         assert_eq!(view.progress, 1.);
         assert!(
-            vm.accept_transition(view.id, view.phase, view.progress)
+            vm.accept_transition(view.id, view.phase, view.progress, vm.logical_time())
                 .unwrap()
         );
     }
@@ -135,7 +135,8 @@ fn transition_leaf_nodes_keep_identity_and_wait_for_both_presentations() {
             drive(&mut vm, &mut session, false);
             let view = vm.transition_views().next().unwrap();
             assert_eq!(view.phase, TransitionPhase::NewPending);
-            vm.accept_transition(view.id, view.phase, 0.).unwrap();
+            vm.accept_transition(view.id, view.phase, 0., vm.logical_time())
+                .unwrap();
             vm.advance_time(&session, 1., 64).unwrap();
             accept_final(&mut vm);
             drive(&mut vm, &mut session, false);
@@ -188,13 +189,17 @@ fn transition_zero_duration_waits_for_accepted_frame_returns_identity_and_restor
         assert_eq!(view.phase, TransitionPhase::FinalPending);
         assert!(view.previous.is_none());
         assert!(
-            !vm.accept_transition(view.id, TransitionPhase::NewPending, 0.)
+            !vm.accept_transition(view.id, TransitionPhase::NewPending, 0., vm.logical_time())
                 .unwrap()
         );
-        assert!(!vm.accept_transition(view.id, view.phase, 0.99).unwrap());
+        assert!(
+            !vm.accept_transition(view.id, view.phase, 0.99, vm.logical_time())
+                .unwrap()
+        );
         let (mut session, mut vm) = restored(&vm, &session);
         assert!(
-            !vm.accept_transition(view.id, view.phase, 1.).unwrap(),
+            !vm.accept_transition(view.id, view.phase, 1., vm.logical_time())
+                .unwrap(),
             "old session receipt"
         );
         accept_final(&mut vm);
@@ -224,7 +229,7 @@ fn elastic_transition_limits_coverage_without_finishing_at_an_overshoot() {
             drive(&mut vm, &mut session, false);
             let view = vm.transition_views().next().unwrap();
             assert!(
-                vm.accept_transition(view.id, TransitionPhase::NewPending, 0.)
+                vm.accept_transition(view.id, TransitionPhase::NewPending, 0., vm.logical_time())
                     .unwrap()
             );
             vm.advance_time(&session, time, 64).unwrap();
@@ -232,8 +237,13 @@ fn elastic_transition_limits_coverage_without_finishing_at_an_overshoot() {
             assert_eq!(view.progress, coverage);
             assert_eq!(view.phase, TransitionPhase::Playing);
             assert!(
-                !vm.accept_transition(view.id, TransitionPhase::FinalPending, 1.)
-                    .unwrap()
+                !vm.accept_transition(
+                    view.id,
+                    TransitionPhase::FinalPending,
+                    1.,
+                    vm.logical_time()
+                )
+                .unwrap()
             );
             vm.advance_time(&session, 1., 64).unwrap();
             accept_final(&mut vm);
@@ -503,10 +513,18 @@ fn transition_retains_before_change_starts_after_zero_frame_and_restores_playbac
         vm.advance_time(&session, 4., 64).unwrap();
         assert_eq!(vm.transition_views().next().unwrap().progress, 0.);
         assert!(
-            !vm.accept_transition(view.id, TransitionPhase::FinalPending, 1.)
+            !vm.accept_transition(
+                view.id,
+                TransitionPhase::FinalPending,
+                1.,
+                vm.logical_time()
+            )
+            .unwrap()
+        );
+        assert!(
+            vm.accept_transition(view.id, view.phase, 0., vm.logical_time())
                 .unwrap()
         );
-        assert!(vm.accept_transition(view.id, view.phase, 0.).unwrap());
         vm.advance_time(&session, 4.5, 64).unwrap();
         assert_eq!(vm.transition_views().next().unwrap().progress, 0.25);
         let (mut session, mut vm) = restored(&vm, &session);
@@ -703,7 +721,10 @@ fn transition_parallel_clock_maintenance_respects_work_and_publication_barriers(
     let views: Vec<_> = vm.transition_views().collect();
     for view in views {
         assert_eq!(view.phase, TransitionPhase::NewPending);
-        assert!(vm.accept_transition(view.id, view.phase, 0.).unwrap());
+        assert!(
+            vm.accept_transition(view.id, view.phase, 0., vm.logical_time())
+                .unwrap()
+        );
     }
     let progress = vm.advance_time(&session, 0.5, 1).unwrap();
     assert!(progress.work <= 1);
@@ -780,7 +801,7 @@ fn transition_finished_continuation_restores_after_its_target_is_retired() {
             .unwrap();
         drive(&mut vm, &mut session, false);
         let view = vm.transition_views().next().unwrap();
-        vm.accept_transition(view.id, TransitionPhase::NewPending, 0.)
+        vm.accept_transition(view.id, TransitionPhase::NewPending, 0., vm.logical_time())
             .unwrap();
         while vm.advance_time(&session, 0.1, 64).unwrap().pending {}
         accept_final(&mut vm);

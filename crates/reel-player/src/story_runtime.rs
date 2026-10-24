@@ -5,6 +5,8 @@ use reel_engine::aside::{GcBudget, RunOutcome, SliceBudget};
 mod save_cost;
 mod saves;
 mod start;
+#[cfg(test)]
+mod transition_timing;
 
 type Error = Box<dyn std::error::Error>;
 
@@ -68,6 +70,35 @@ impl StoryRuntime {
     pub fn driver_mut(&mut self) -> Result<&mut AsideSessionUi, Error> {
         self.interrupt_capture()?;
         Ok(self.driver.as_mut().unwrap())
+    }
+    /// Accept the actual compiled frame at the host's monotonic nanosecond time.
+    /// Transition starts use the same restored offset and suspension accounting
+    /// as story ticks, without advancing activities or executing script here.
+    pub fn presented_frame(
+        &mut self,
+        bridge: &reel_ui::bridge::PresentationBridge,
+        receipt: &crate::session::RecordedProjection,
+        frame: &reel_ui::frame::RenderFrame,
+        accepted_host_ns: u64,
+    ) -> Result<(), Error> {
+        if self.capturing() {
+            return Ok(());
+        }
+        let accepted_time = self.logical_time_at(accepted_host_ns) as f64 / 1_000_000_000.;
+        self.driver
+            .as_mut()
+            .unwrap()
+            .presented_frame(bridge, receipt, frame, accepted_time)?;
+        self.wake_input();
+        Ok(())
+    }
+    fn logical_time_at(&self, host_ns: u64) -> u64 {
+        self.logical_ns.max(
+            self.suspended_at
+                .unwrap_or(host_ns)
+                .saturating_add(self.time_offset_ns)
+                .saturating_sub(self.suspended_ns),
+        )
     }
     pub fn with_saves(mut self, saves: crate::saves::RuntimeSaves) -> Self {
         self.saves = Some(saves);
@@ -325,11 +356,7 @@ impl StoryRuntime {
             self.runnable = true;
         }
         if !self.closing && self.needs_tick() {
-            self.logical_ns = self.logical_ns.max(
-                now()
-                    .saturating_add(self.time_offset_ns)
-                    .saturating_sub(self.suspended_ns),
-            );
+            self.logical_ns = self.logical_time_at(now());
             let speed = self.driver().adapter().game_settings().text_speed;
             let reading_changed = self
                 .driver

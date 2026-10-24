@@ -163,6 +163,13 @@ pub struct ResourceWeak {
     _descriptor: Option<Arc<BudgetTicket>>,
 }
 impl ResourceWeak {
+    /// Reuse an immutable resource while another consumer still owns it.
+    /// Retirement closes this admission; the weak reference keeps no pixel or
+    /// font storage alive after the final existing lease is released.
+    pub fn upgrade(&self) -> Option<ResourceLease> {
+        let resource = self.weak.upgrade()?;
+        (!resource.retired.load(Ordering::Acquire)).then_some(ResourceLease(resource))
+    }
     pub fn is_released(&self) -> bool {
         self.weak.strong_count() == 0
     }

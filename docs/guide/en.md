@@ -405,7 +405,7 @@ fn card(children = []) {
 }
 ```
 
-Await `stage.geometry` to position an overlay relative to a presented node. The result includes bounds in the reference node coordinates; transparent nodes still participate in layout. A hidden or unmounted target, or a noninvertible reference transform, reports `GeometryUnavailable`.
+Await `stage.geometry` to position an overlay relative to a presented node. The result includes bounds in the reference node coordinates; transparent nodes still participate in layout. For text, `text_caret` gives the final insertion caret's bounds; use `y + height / 2` to center a continuation marker. A hidden or unmounted target, or a noninvertible reference transform, reports `GeometryUnavailable`.
 
 ```aside
 overlay.visible = true;

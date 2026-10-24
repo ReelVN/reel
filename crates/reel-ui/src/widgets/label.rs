@@ -410,11 +410,18 @@ impl Label {
     /// Returns the lower endpoint of the complete text's final insertion caret
     /// in label coordinates, using the active layout. Empty or unlaid text has no endpoint.
     pub fn text_end(&self) -> Option<Point> {
+        self.text_caret().map(|caret| caret.p1)
+    }
+
+    /// Returns the final insertion caret segment in label coordinates. Its length
+    /// follows the complete text's actual line metrics, including rich text and ruby.
+    /// Empty or unlaid text has no caret.
+    pub fn text_caret(&self) -> Option<crate::kurbo::Line> {
         self.layouts
             .get(self.active_layout)?
             .layout
-            .text_end()
-            .map(|point| self.axes() * point)
+            .text_caret()
+            .map(|caret| self.axes() * caret)
     }
 }
 
@@ -1671,6 +1678,14 @@ mod reveal_tests {
         };
         let before = snapshot(&root);
         assert!(before.4.len() > 1, "mixed-size paragraph should wrap");
+        let final_caret = root
+            .get_widget(id)
+            .unwrap()
+            .downcast::<Label>()
+            .unwrap()
+            .text_caret()
+            .unwrap();
+        assert!(final_caret.p1.y > final_caret.p0.y);
         let (point, baseline) = {
             let label = root.get_widget(id).unwrap().downcast::<Label>().unwrap();
             let layout = &label.layouts[label.active_layout].layout;
@@ -1704,6 +1719,12 @@ mod reveal_tests {
             );
             let label = root.get_widget(id).unwrap().downcast::<Label>().unwrap();
             assert_eq!(label.link_at(point), (end >= 4).then_some(0));
+            assert_eq!(
+                label.text_caret(),
+                Some(final_caret),
+                "reveal preserves final line geometry"
+            );
+            assert_eq!(label.text_end(), Some(final_caret.p1));
         }
         root.edit_widget(id, |mut w| {
             Label::set_rich_text(
@@ -1718,6 +1739,11 @@ mod reveal_tests {
             layout.width() > 0. && layout.height() > 0.,
             "a ruby-only paragraph has real geometry"
         );
+        let caret = label.text_caret().unwrap();
+        let last_line = layout.lines().last().unwrap();
+        let last = last_line.metrics();
+        assert_eq!(caret.p0.y, last.min_coord as f64);
+        assert_eq!(caret.p1.y, last.max_coord as f64);
 
         let fitted = Text::parse("[link=entry][ruby=reading]Extraordinary[/ruby][/link] [size=36]possibilities[/size]\nSecond line").unwrap();
         root.edit_widget(id, |mut widget| {

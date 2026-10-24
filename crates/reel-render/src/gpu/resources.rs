@@ -17,6 +17,56 @@ static SRGB_TO_LINEAR: LazyLock<[f32; 256]> = LazyLock::new(|| {
     })
 });
 
+static SRGB_TO_LINEAR_F16: LazyLock<[u16; 256]> =
+    LazyLock::new(|| std::array::from_fn(|i| half::f16::from_f32(SRGB_TO_LINEAR[i]).to_bits()));
+static NORMALIZED_F16: LazyLock<[u16; 256]> =
+    LazyLock::new(|| std::array::from_fn(|i| half::f16::from_f32(i as f32 / 255.).to_bits()));
+
+fn rgba8_linear_f16(rgba: &[u8], encoding: ColorEncoding, alpha_type: ImageAlphaType) -> [u16; 4] {
+    if rgba[3] == 0 {
+        // Hidden RGB must not become visible in interpolation or masks.
+        return [0; 4];
+    }
+    if rgba[3] == 255 {
+        // Opaque channels have only 256 possible results. Reuse their exact
+        // half encodings rather than converting every channel of every pixel.
+        let table = match encoding {
+            ColorEncoding::Srgb => &*SRGB_TO_LINEAR_F16,
+            ColorEncoding::Linear => &*NORMALIZED_F16,
+        };
+        return [
+            table[rgba[0] as usize],
+            table[rgba[1] as usize],
+            table[rgba[2] as usize],
+            0x3c00,
+        ];
+    }
+    let components = std::array::from_fn(|i| f32::from(rgba[i]) / 255.);
+    let linear = match (encoding, alpha_type) {
+        (ColorEncoding::Srgb, ImageAlphaType::Alpha) => {
+            let alpha = components[3];
+            [
+                SRGB_TO_LINEAR[rgba[0] as usize] * alpha,
+                SRGB_TO_LINEAR[rgba[1] as usize] * alpha,
+                SRGB_TO_LINEAR[rgba[2] as usize] * alpha,
+                alpha,
+            ]
+        }
+        (ColorEncoding::Srgb, ImageAlphaType::AlphaPremultiplied) => {
+            PremulColor::<Srgb>::new(components)
+                .convert::<LinearSrgb>()
+                .components
+        }
+        (ColorEncoding::Linear, ImageAlphaType::Alpha) => {
+            AlphaColor::<LinearSrgb>::new(components)
+                .premultiply()
+                .components
+        }
+        (ColorEncoding::Linear, ImageAlphaType::AlphaPremultiplied) => components,
+    };
+    linear.map(|value| half::f16::from_f32(value).to_bits())
+}
+
 #[cfg(test)]
 #[derive(Default)]
 pub(super) struct UploadCreations {
@@ -71,34 +121,7 @@ pub(super) fn image_rows(
     }
     upload_rows_with(gpu, encoder, target, rows, |index| {
         let rgba = &image.data.data()[index * 4..index * 4 + 4];
-        let components = std::array::from_fn(|i| f32::from(rgba[i]) / 255.);
-        if rgba[3] == 0 {
-            // Hidden RGB must not become visible in interpolation or masks.
-            [0.; 4]
-        } else {
-            match (encoding, image.alpha_type) {
-                (ColorEncoding::Srgb, ImageAlphaType::Alpha) => {
-                    let alpha = components[3];
-                    [
-                        SRGB_TO_LINEAR[rgba[0] as usize] * alpha,
-                        SRGB_TO_LINEAR[rgba[1] as usize] * alpha,
-                        SRGB_TO_LINEAR[rgba[2] as usize] * alpha,
-                        alpha,
-                    ]
-                }
-                (ColorEncoding::Srgb, ImageAlphaType::AlphaPremultiplied) => {
-                    PremulColor::<Srgb>::new(components)
-                        .convert::<LinearSrgb>()
-                        .components
-                }
-                (ColorEncoding::Linear, ImageAlphaType::Alpha) => {
-                    AlphaColor::<LinearSrgb>::new(components)
-                        .premultiply()
-                        .components
-                }
-                (ColorEncoding::Linear, ImageAlphaType::AlphaPremultiplied) => components,
-            }
-        }
+        rgba8_linear_f16(rgba, *encoding, image.alpha_type)
     })
 }
 pub fn upload_cost(size: [u32; 2]) -> Result<u64, GpuError> {
@@ -137,7 +160,7 @@ fn upload_with(
     encoder: &mut wgpu::CommandEncoder,
     size: [u32; 2],
     available: u64,
-    pixel: impl FnMut(usize) -> [f32; 4],
+    mut pixel: impl FnMut(usize) -> [f32; 4],
 ) -> Result<(Image, u64), GpuError> {
     gpu.check()?;
     let max = gpu.device.limits().max_texture_dimension_2d;
@@ -153,7 +176,8 @@ fn upload_with(
         });
     }
     let image = create_image(gpu, size)?;
-    upload_rows_with(gpu, encoder, &image, 0..size[1], pixel)?;
+    let bits = |index| pixel(index).map(|value| half::f16::from_f32(value).to_bits());
+    upload_rows_with(gpu, encoder, &image, 0..size[1], bits)?;
     Ok((image, cost))
 }
 
@@ -194,7 +218,7 @@ fn upload_rows_with(
     encoder: &mut wgpu::CommandEncoder,
     image: &Image,
     rows: std::ops::Range<u32>,
-    mut pixel: impl FnMut(usize) -> [f32; 4],
+    mut pixel: impl FnMut(usize) -> [u16; 4],
 ) -> Result<(), GpuError> {
     gpu.check()?;
     let size = image.size;
@@ -219,10 +243,14 @@ fn upload_rows_with(
                 .err()
                 .unwrap_or_else(|| GpuError::Device(error.to_string()))
         })?;
+        // Resolve the backend's write mapping once per upload. BufferViewMut::slice
+        // enters the backend dynamically; slicing the resulting WriteOnly view
+        // is ordinary bounds-checked pointer arithmetic for each pixel.
+        let mut mapped = mapped.slice(..);
         for y in 0..height as usize {
             for x in 0..size[0] as usize {
-                let components = pixel((y + rows.start as usize) * size[0] as usize + x)
-                    .map(|value| half::f16::from_f32(value).to_le_bytes());
+                let components =
+                    pixel((y + rows.start as usize) * size[0] as usize + x).map(u16::to_le_bytes);
                 let start = y * row as usize + x * 8;
                 mapped
                     .slice(start..start + 8)
@@ -261,4 +289,59 @@ fn upload_rows_with(
         },
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rgba8_upload_quantization_matches_color_contract_for_every_channel_and_alpha() {
+        for encoding in [ColorEncoding::Srgb, ColorEncoding::Linear] {
+            for alpha_type in [ImageAlphaType::Alpha, ImageAlphaType::AlphaPremultiplied] {
+                for alpha in 0..=255u8 {
+                    for channel in 0..=255u8 {
+                        let mut rgba = [channel, 255 - channel, channel.rotate_left(3), alpha];
+                        if alpha_type == ImageAlphaType::AlphaPremultiplied && alpha != 0 {
+                            for channel in &mut rgba[..3] {
+                                *channel = (u16::from(*channel) * u16::from(alpha) / 255) as u8;
+                            }
+                        }
+                        let components = rgba.map(|n| f32::from(n) / 255.);
+                        let expected = if alpha == 0 {
+                            [0.; 4]
+                        } else {
+                            match (encoding, alpha_type) {
+                                (ColorEncoding::Srgb, ImageAlphaType::Alpha) => {
+                                    AlphaColor::<Srgb>::new(components)
+                                        .convert::<LinearSrgb>()
+                                        .premultiply()
+                                        .components
+                                }
+                                (ColorEncoding::Srgb, ImageAlphaType::AlphaPremultiplied) => {
+                                    PremulColor::<Srgb>::new(components)
+                                        .convert::<LinearSrgb>()
+                                        .components
+                                }
+                                (ColorEncoding::Linear, ImageAlphaType::Alpha) => {
+                                    AlphaColor::<LinearSrgb>::new(components)
+                                        .premultiply()
+                                        .components
+                                }
+                                (ColorEncoding::Linear, ImageAlphaType::AlphaPremultiplied) => {
+                                    components
+                                }
+                            }
+                        }
+                        .map(|value| half::f16::from_f32(value).to_bits());
+                        assert_eq!(
+                            rgba8_linear_f16(&rgba, encoding, alpha_type),
+                            expected,
+                            "encoding={encoding:?} alpha={alpha_type:?} rgba={rgba:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

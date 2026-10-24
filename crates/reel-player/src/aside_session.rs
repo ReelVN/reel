@@ -424,18 +424,21 @@ impl AsideSessionUi {
     }
     /// Accept the actual compiled drawing together with its projection receipt.
     /// CPU hosts compile the same frame and resolve it without GPU submission.
+    /// `accepted_time` uses the session's logical seconds at backend acceptance,
+    /// rather than the earlier activity sample used to prepare the drawing.
     pub fn presented_frame(
         &mut self,
         bridge: &PresentationBridge,
         receipt: &RecordedProjection,
         frame: &reel_ui::frame::RenderFrame,
+        accepted_time: f64,
     ) -> Result<(), Error> {
         if frame.key() != receipt.key || !self.ui.presented(bridge, receipt) {
             return Ok(());
         }
         self.transitions
             .accepted(&mut self.vm, &receipt.transitions, frame, &self.ui.assets())?;
-        self.accept_recorded(receipt)
+        self.accept_recorded(receipt, accepted_time)
     }
     pub fn presented(
         &mut self,
@@ -448,11 +451,15 @@ impl AsideSessionUi {
         if frame.needs_transition_drawing() {
             return Err("transition presentation requires the accepted compiled frame".into());
         }
-        self.accept_recorded(frame)
+        self.accept_recorded(frame, self.vm.logical_time())
     }
-    fn accept_recorded(&mut self, frame: &RecordedProjection) -> Result<(), Error> {
+    fn accept_recorded(
+        &mut self,
+        frame: &RecordedProjection,
+        accepted_time: f64,
+    ) -> Result<(), Error> {
         self.transitions
-            .accepted_projection(&mut self.vm, &frame.transitions)?;
+            .accepted_projection(&mut self.vm, &frame.transitions, accepted_time)?;
         if self.state == StoryState::Running && frame.current {
             if let Some(identity) = &frame.identity
                 && let Some(geometry) = &frame.geometry
