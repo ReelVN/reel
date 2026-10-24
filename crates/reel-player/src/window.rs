@@ -34,6 +34,21 @@ use winit::{event_loop::ActiveEventLoop, window::Window};
 type Error = Box<dyn std::error::Error>;
 #[cfg(all(test, any(target_os = "linux", target_os = "windows")))]
 mod scroll_cost;
+
+/// Desktop windows allow 512 MiB of GPU resources. Other quotas and non-desktop
+/// hosts retain the renderer's defaults; explicit limits bypass this selection.
+fn default_gpu_limits() -> GpuLimits {
+    let mut limits = GpuLimits::default();
+    if cfg!(any(
+        target_os = "windows",
+        target_os = "linux",
+        target_os = "macos"
+    )) {
+        limits.resource_bytes = 512 << 20;
+    }
+    limits
+}
+
 // Surface is declared first and explicitly dropped before Window on shutdown/suspend.
 pub(crate) struct State {
     pub(crate) backend: WgpuBackend,
@@ -75,7 +90,7 @@ pub(crate) struct State {
 }
 impl State {
     pub(crate) fn new(event_loop: &ActiveEventLoop, generation: u64) -> Result<Self, Error> {
-        Self::with_limits(event_loop, generation, GpuLimits::default())
+        Self::with_limits(event_loop, generation, default_gpu_limits())
     }
     pub(crate) fn new_session(
         event_loop: &ActiveEventLoop,
@@ -84,7 +99,7 @@ impl State {
         Self::with_mode(
             event_loop,
             generation,
-            GpuLimits::default(),
+            default_gpu_limits(),
             Some(WindowSession::Diagnostic(Box::new(
                 SessionHostDiagnostic::new()?,
             ))),
@@ -126,7 +141,7 @@ impl State {
         let mut state = Self::with_mode(
             event_loop,
             generation,
-            GpuLimits::default(),
+            default_gpu_limits(),
             Some(WindowSession::aside(driver)),
             Some(options),
         )?;
