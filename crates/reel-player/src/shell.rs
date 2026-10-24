@@ -368,9 +368,15 @@ impl ApplicationHandler for App {
                 state.host.request_redraw();
             }
             // Completion wake-up is bounded; no continuous redraw when idle.
-            let completion_deadline = (state.presentation.needs_redraw()
-                || state.backend.has_pending())
-            .then(|| Instant::now() + Duration::from_millis(8));
+            let completion_deadline =
+                (state.presentation.needs_redraw() || state.backend.has_pending()).then(|| {
+                    let interval = if state.backend.has_pending_image_uploads() {
+                        1
+                    } else {
+                        8
+                    };
+                    Instant::now() + Duration::from_millis(interval)
+                });
             let deadline = match (completion_deadline, state.story_deadline()) {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (a, b) => a.or(b),

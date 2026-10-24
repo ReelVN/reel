@@ -148,6 +148,18 @@ impl Renderer {
             targets: Default::default(),
         }
     }
+    /// Prepare the device's supported quality tiers and built-in image masks
+    /// before showing the first frame. Repeated calls reuse the same slots.
+    /// This creates no frame targets or decoded image buffers.
+    pub fn prepare_pipelines(&self) -> Result<(), GpuError> {
+        for quality in self.gpu.supported_qualities() {
+            self.pipelines
+                .get(&self.gpu, quality)?
+                .masks
+                .prepare_builtin(&self.gpu, quality, &self.budgets.resources)?;
+        }
+        Ok(())
+    }
     pub(super) fn reserve_readback(
         &self,
         prepared: &Prepared,
@@ -174,7 +186,12 @@ impl Renderer {
         Ok(completed)
     }
     pub fn has_pending(&self) -> bool {
-        !self.inflight.is_empty() || self.images.has_pending()
+        !self.inflight.is_empty() || self.has_pending_image_uploads()
+    }
+    /// Submitted image uploads still own staging and may unblock a preparation
+    /// slice. Hosts can poll these short-lived completions more frequently.
+    pub fn has_pending_image_uploads(&self) -> bool {
+        self.images.has_pending()
     }
     pub(super) fn poll_completed(
         &mut self,
@@ -277,6 +294,7 @@ impl Renderer {
             targets = targets.max(1 + plan(second)?).max(3);
         }
         let quality = self.gpu.quality_for_targets(size, targets)?;
+        let pipelines = self.pipelines.get(&self.gpu, quality)?;
         let required = super::image_plan::collect(
             std::iter::once(frame).chain(second.map(|(frame, _)| frame)),
             self.gpu.device.limits().max_texture_dimension_2d,
@@ -289,6 +307,12 @@ impl Renderer {
                     self.gpu.limits.transient_bytes,
                     "image plan",
                 )?);
+                Ok(())
+            },
+            |program| {
+                pipelines
+                    .masks
+                    .get(&self.gpu, quality, program, &self.budgets.resources)?;
                 Ok(())
             },
         )?;
@@ -318,7 +342,7 @@ impl Renderer {
             capture,
             gpu: &self.gpu,
             encoder: self.gpu.device.create_command_encoder(&Default::default()),
-            pipelines: self.pipelines.get(&self.gpu, quality)?,
+            pipelines,
             quality,
             size,
             budgets: &self.budgets,

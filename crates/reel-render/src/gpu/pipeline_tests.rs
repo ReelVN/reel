@@ -70,6 +70,128 @@ fn counts(renderer: &Renderer, sets: usize) {
 
 #[test]
 #[ignore = "requires actual graphics adapter"]
+fn initialization_reuses_builtin_mask_without_holding_program_or_images() {
+    use reel_ui::stage::MaskProgram;
+    let renderer = renderer(Default::default());
+    renderer.prepare_pipelines().unwrap();
+    let sets = renderer.gpu.supported_qualities().count();
+    counts(&renderer, sets);
+    let initialized = renderer.usage();
+    assert_eq!(initialized.targets, 0);
+    assert_eq!(initialized.transient, 0);
+    for quality in renderer.gpu.supported_qualities() {
+        let pipelines = renderer.pipelines.get(&renderer.gpu, quality).unwrap();
+        let first = MaskProgram::image("first".into());
+        let weak = Arc::downgrade(&first);
+        let a = pipelines
+            .masks
+            .get(&renderer.gpu, quality, &first, &renderer.budgets.resources)
+            .unwrap();
+        drop(first);
+        assert!(weak.upgrade().is_none());
+        pipelines.masks.prune();
+        let second = MaskProgram::image("different".into());
+        let b = pipelines
+            .masks
+            .get(&renderer.gpu, quality, &second, &renderer.budgets.resources)
+            .unwrap();
+        assert!(Arc::ptr_eq(&a, &b));
+        assert_eq!(pipelines.masks.len(), 1);
+    }
+    renderer.prepare_pipelines().unwrap();
+    counts(&renderer, sets);
+    assert_eq!(renderer.usage().resources, initialized.resources);
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter"]
+fn zero_progress_transition_prepares_custom_mask_before_acceptance() {
+    use reel_ui::{
+        core::PaintImageMask,
+        frame::{FrameTransition, RetainBuild},
+        stage::{MaskOp, MaskProgram},
+    };
+    let renderer = renderer(Default::default());
+    let pool = pool();
+    let old = frame(scene(Color::BLACK), [400, 300], &pool);
+    let mut retain = RetainBuild::new(&old, None, limits(), &pool).unwrap();
+    while !retain.step(step_budget()).unwrap().complete {}
+    let previous = retain.finish().unwrap();
+    let program = MaskProgram::new(vec![MaskOp::Parameter(0)], vec![]).unwrap();
+    let build_transition = |progress| {
+        let mut widget = RecordWidget::new(scene(Color::WHITE));
+        widget.clip = false;
+        let mut bridge = widget_bridge(widget, Affine::IDENTITY);
+        let mut build = FrameBuild::new(
+            bridge.record(FrameId(1)).unwrap(),
+            empty_snapshot(&pool),
+            FrameInfo {
+                logical_size: [400., 300.],
+                physical_size: [400, 300],
+            },
+            limits(),
+            &pool,
+        )
+        .unwrap();
+        build
+            .set_transitions(vec![FrameTransition {
+                root: None,
+                previous: previous.clone(),
+                progress,
+                mask: Some(PaintImageMask {
+                    program: program.clone(),
+                    images: Vec::new().into(),
+                    bounds: Rect::new(0., 0., 400., 300.),
+                    parameters: [0.; 5],
+                }),
+            }])
+            .unwrap();
+        while !build.step(step_budget()).unwrap().complete {}
+        build.finish().unwrap()
+    };
+    let zero = build_transition(0.);
+    let prepared = renderer.prepare(&zero).unwrap();
+    let quality = prepared.quality();
+    drop(prepared);
+    let pipelines = renderer.pipelines.get(&renderer.gpu, quality).unwrap();
+    assert_eq!(
+        pipelines.masks.len(),
+        1,
+        "the zero-progress candidate must already own its compiled mask"
+    );
+    let first = pipelines
+        .masks
+        .get(
+            &renderer.gpu,
+            quality,
+            &program,
+            &renderer.budgets.resources,
+        )
+        .unwrap();
+    let middle = build_transition(0.5);
+    drop(renderer.prepare(&middle).unwrap());
+    let second = pipelines
+        .masks
+        .get(
+            &renderer.gpu,
+            quality,
+            &program,
+            &renderer.budgets.resources,
+        )
+        .unwrap();
+    assert!(Arc::ptr_eq(&first, &second));
+    drop((zero, middle));
+    drop(program);
+    pipelines.masks.prune();
+    assert_eq!(
+        pipelines.masks.len(),
+        0,
+        "custom programs still release their cache metadata"
+    );
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter"]
 fn subtree_blend_pixels_preserve_transparency_and_nested_opacity() {
     use reel_ui::peniko::{BlendMode, Compose, Mix};
     let pool = pool();

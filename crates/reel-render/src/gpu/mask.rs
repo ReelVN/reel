@@ -1,4 +1,4 @@
-//! One compiled coverage function per live scalar-mask structure and quality.
+//! Fixed image-threshold pipelines and live scalar-mask structures per quality.
 use super::{Gpu, GpuError, Quality, pipeline, targets::Target};
 use reel_core::budget::{BudgetPool, BudgetTicket};
 use reel_ui::{
@@ -17,6 +17,7 @@ struct State {
     storage: Option<BudgetTicket>,
 }
 struct Entry {
+    builtin: bool,
     hash: u64,
     operations: Vec<MaskOp>,
     images: usize,
@@ -60,7 +61,7 @@ impl Cache {
         let previous = state.entries.len();
         state.entries.retain_mut(|entry| {
             entry.programs.retain(|p| p.strong_count() != 0);
-            !entry.programs.is_empty()
+            entry.builtin || !entry.programs.is_empty()
         });
         if state.entries.len() != previous || state.entries.is_empty() {
             state.entries.shrink_to_fit();
@@ -96,6 +97,9 @@ impl Cache {
                     || entry.operations == program.operations()
                         && entry.images == program.sources().len())
         }) {
+            if entry.builtin {
+                return Ok(entry.pipeline.clone());
+            }
             if !entry
                 .programs
                 .iter()
@@ -133,8 +137,13 @@ impl Cache {
         )?;
         let mut code = String::with_capacity(count.0);
         shader(program, &mut code).unwrap();
+        let builtin = program.is_image_threshold();
         let bytes = size_of_val(program.operations())
-            + size_of::<Weak<MaskProgram>>()
+            + if builtin {
+                0
+            } else {
+                size_of::<Weak<MaskProgram>>()
+            }
             + size_of::<Compiled>()
             + 2 * size_of::<usize>();
         let storage = reserve(budget, bytes, gpu)?;
@@ -196,14 +205,43 @@ impl Cache {
         })?;
         let compiled = Arc::new(compiled);
         state.entries.push(Entry {
+            builtin,
             hash,
             operations: program.operations().to_vec(),
             images: program.sources().len(),
-            programs: vec![Arc::downgrade(program)],
+            programs: if builtin {
+                Vec::new()
+            } else {
+                vec![Arc::downgrade(program)]
+            },
             pipeline: compiled.clone(),
             storage,
         });
         Ok(compiled)
+    }
+    pub(super) fn prepare_builtin(
+        &self,
+        gpu: &Gpu,
+        quality: Quality,
+        budget: &BudgetPool,
+    ) -> Result<(), GpuError> {
+        if self
+            .0
+            .lock()
+            .unwrap()
+            .entries
+            .iter()
+            .any(|entry| entry.builtin)
+        {
+            return Ok(());
+        }
+        self.get(
+            gpu,
+            quality,
+            &MaskProgram::image("image-threshold".into()),
+            budget,
+        )?;
+        Ok(())
     }
 }
 struct Counter(usize);

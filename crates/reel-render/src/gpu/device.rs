@@ -9,6 +9,9 @@ pub struct GpuLimits {
     pub resource_bytes: u64,
     pub transient_bytes: u64,
     pub max_inflight: usize,
+    /// Maximum converted image staging bytes per preparation. A single complete
+    /// source row may exceed this limit so every valid image can make progress.
+    pub image_upload_bytes_per_prepare: u64,
 }
 impl Default for GpuLimits {
     fn default() -> Self {
@@ -17,6 +20,7 @@ impl Default for GpuLimits {
             resource_bytes: 128 << 20,
             transient_bytes: 32 << 20,
             max_inflight: 2,
+            image_upload_bytes_per_prepare: 4 << 20,
         }
     }
 }
@@ -193,27 +197,7 @@ impl Gpu {
         if size.contains(&0) || size.iter().any(|&v| v > max) {
             return Err(GpuError::InvalidSize);
         }
-        for (format, samples) in [
-            (wgpu::TextureFormat::Rgba16Float, 4),
-            (wgpu::TextureFormat::Rgba16Float, 1),
-            (wgpu::TextureFormat::Rgba8Unorm, 1),
-        ] {
-            let features = self.adapter.get_texture_format_features(format);
-            let usage =
-                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-            if !features.allowed_usages.contains(usage)
-                || !features
-                    .flags
-                    .contains(wgpu::TextureFormatFeatureFlags::BLENDABLE)
-                || !features.flags.sample_count_supported(samples)
-            {
-                continue;
-            }
-            let q = Quality {
-                format,
-                samples,
-                degraded: samples != 4 || format != wgpu::TextureFormat::Rgba16Float,
-            };
+        for q in self.supported_qualities() {
             if super::targets::target_bytes(size, q)?
                 .checked_mul(targets)
                 .is_some_and(|bytes| bytes <= self.limits.target_bytes)
@@ -225,6 +209,32 @@ impl Gpu {
             domain: "targets",
             requested: (u64::from(size[0]) * u64::from(size[1]) * 4).saturating_mul(targets),
             available: self.limits.target_bytes,
+        })
+    }
+    pub(super) fn supported_qualities(&self) -> impl Iterator<Item = Quality> + '_ {
+        [
+            (wgpu::TextureFormat::Rgba16Float, 4),
+            (wgpu::TextureFormat::Rgba16Float, 1),
+            (wgpu::TextureFormat::Rgba8Unorm, 1),
+        ]
+        .into_iter()
+        .filter_map(|(format, samples)| {
+            let features = self.adapter.get_texture_format_features(format);
+            let usage =
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+            if !features.allowed_usages.contains(usage)
+                || !features
+                    .flags
+                    .contains(wgpu::TextureFormatFeatureFlags::BLENDABLE)
+                || !features.flags.sample_count_supported(samples)
+            {
+                return None;
+            }
+            Some(Quality {
+                format,
+                samples,
+                degraded: samples != 4 || format != wgpu::TextureFormat::Rgba16Float,
+            })
         })
     }
 }

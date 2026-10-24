@@ -38,6 +38,10 @@ impl WgpuBackend {
     pub fn renderer_mut(&mut self) -> &mut Renderer {
         &mut self.renderer
     }
+    /// Whether submitted image copies can unblock preparation of the candidate.
+    pub fn has_pending_image_uploads(&self) -> bool {
+        self.renderer.has_pending_image_uploads()
+    }
     pub fn surface(&self) -> Option<&wgpu::Surface<'static>> {
         self.surface.as_ref()
     }
@@ -111,6 +115,9 @@ impl RenderBackend for WgpuBackend {
         let surface = self.surface.as_ref().ok_or(GpuError::InvalidSurface)?;
         let (config, output, unsynchronized) =
             negotiate(self.renderer.gpu(), surface, info.physical_size, self.vsync)?;
+        // First configuration happens before the host exposes its initial view.
+        // Device recovery gets fresh slots; resize only reuses initialized ones.
+        self.renderer.prepare_pipelines()?;
         self.vsync = config.present_mode == wgpu::PresentMode::Fifo;
         self.unsynchronized = unsynchronized;
         self.config = Some(config);

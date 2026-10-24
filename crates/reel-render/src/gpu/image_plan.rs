@@ -20,6 +20,7 @@ pub(super) fn collect<'a>(
     max_dimension: u32,
     capture: bool,
     mut reserve: impl FnMut(u64) -> Result<(), GpuError>,
+    mut prepare_mask: impl FnMut(&std::sync::Arc<reel_ui::stage::MaskProgram>) -> Result<(), GpuError>,
 ) -> Result<Vec<Required<'a>>, GpuError> {
     let mut required = Vec::new();
     let mut seen = HashSet::new();
@@ -63,6 +64,9 @@ pub(super) fn collect<'a>(
                 &mut reserve,
             )?;
             if let Some(mask) = &transition.mask {
+                // Even progress zero must be ready before the initial target is
+                // accepted and its transition clock starts.
+                prepare_mask(&mask.program)?;
                 let at = frame
                     .commands()
                     .get(transition.commands.start)
@@ -111,7 +115,12 @@ pub(super) fn collect<'a>(
                                 })?;
                             streams.push((&definition.commands, None));
                         }
-                        group.image_mask.as_ref().map_or(&[], |mask| &mask.images)
+                        if let Some(mask) = &group.image_mask {
+                            prepare_mask(&mask.program)?;
+                            &mask.images
+                        } else {
+                            &[]
+                        }
                     }
                     _ => continue,
                 };
