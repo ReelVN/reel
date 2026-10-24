@@ -26,12 +26,17 @@ pub struct ParseOptions {
 #[derive(Debug, Clone)]
 pub struct Parse {
     green: GreenNode,
+    import_offsets: Vec<crate::TextSize>,
     diagnostics: Vec<Diagnostic>,
     exhausted: bool,
 }
 impl Parse {
     pub fn syntax(&self) -> SyntaxNode {
         SyntaxNode::new_root(self.green.clone())
+    }
+    /// Keyword positions recorded by the import grammar, including nested uses.
+    pub(crate) fn import_offsets(&self) -> &[crate::TextSize] {
+        &self.import_offsets
     }
     pub fn green(&self) -> &GreenNode {
         &self.green
@@ -62,6 +67,7 @@ pub fn parse_with_options(source: &str, options: ParseOptions) -> Result<Parse, 
         diagnostics: lexed.diagnostics,
         cursor: 0,
         builder: GreenNodeBuilder::new(),
+        import_offsets: Vec::new(),
         limits,
         depth: 0,
         halted: false,
@@ -96,6 +102,7 @@ pub fn parse_with_options(source: &str, options: ParseOptions) -> Result<Parse, 
     p.finish();
     Ok(Parse {
         green: p.builder.finish(),
+        import_offsets: p.import_offsets,
         diagnostics: p.diagnostics,
         exhausted: p.exhausted,
     })
@@ -105,6 +112,7 @@ struct Parser<'a> {
     tokens: &'a [Token],
     cursor: usize,
     builder: GreenNodeBuilder<'static>,
+    import_offsets: Vec<crate::TextSize>,
     diagnostics: Vec<Diagnostic>,
     limits: Limits,
     depth: usize,
@@ -631,6 +639,7 @@ impl Parser<'_> {
             tokens: self.tokens,
             cursor: self.cursor,
             builder: GreenNodeBuilder::new(),
+            import_offsets: Vec::new(),
             diagnostics: Vec::new(),
             limits: self.limits,
             depth: self.depth,
@@ -1098,6 +1107,9 @@ impl Parser<'_> {
         self.leave();
     }
     fn use_decl(&mut self) {
+        if !self.probe {
+            self.import_offsets.push(self.range().start());
+        }
         self.start(K::UseDecl);
         self.expect(K::Use);
         self.use_path();
@@ -1591,6 +1603,7 @@ mod probe_tests {
                 tokens: &lexed.tokens,
                 cursor: 0,
                 builder: GreenNodeBuilder::new(),
+                import_offsets: Vec::new(),
                 diagnostics: Vec::new(),
                 limits,
                 depth: 0,
@@ -1609,6 +1622,7 @@ mod probe_tests {
             assert_eq!(parser.cursor, 0);
             assert_eq!(format!("{:?}", parser.builder.checkpoint()), checkpoint);
             assert_eq!(parser.frames, vec![Vec::<usize>::new()]);
+            assert!(parser.import_offsets.is_empty());
             assert_eq!(parser.depth, 0);
             assert!(parser.allow_min && parser.stop_pipe);
             assert_eq!(parser.exhausted, exhausted);

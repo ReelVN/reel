@@ -21,6 +21,81 @@ fn project_inner(parsed: &Parse, limits: AnalysisLimits, recover: bool) -> Resul
         names: Vec::new(),
     };
     let mut names = HashMap::new();
+    append_syntax(syntax, None, 0, &mut hir, &mut names, limits, recover)?;
+    super::forms::forms(&mut hir, recover);
+    Ok(hir)
+}
+
+/// Dependency discovery projects only grammar-recorded imports. Full source
+/// analysis separately admits every body against its complete HIR budgets.
+pub(super) fn project_imports(
+    parsed: &Parse,
+    source: &str,
+    limits: AnalysisLimits,
+) -> Result<Hir, Diagnostic> {
+    let root = parsed.syntax();
+    if limits.max_nodes == 0 {
+        return Err(Diagnostic::error(
+            D::BudgetExceeded,
+            root.text_range(),
+            "HIR node/depth budget exceeded",
+        ));
+    }
+    let mut hir = Hir {
+        source: source.into(),
+        nodes: vec![HirNode {
+            kind: HirKind::Module,
+            span: root.text_range(),
+            parent: None,
+            elements: 0..0,
+            form: Form::Sequence,
+        }],
+        elements: Vec::new(),
+        names: Vec::new(),
+    };
+    let mut names = HashMap::new();
+    let mut imports = Vec::new();
+    for &offset in parsed.import_offsets() {
+        let syntax = root
+            .token_at_offset(offset)
+            .right_biased()
+            .expect("parsed use keyword")
+            .parent_ancestors()
+            .find(|node| node.kind() == K::UseDecl)
+            .expect("parsed import declaration");
+        imports.push(HirElement::Node(append_syntax(
+            syntax,
+            Some(NodeId(0)),
+            1,
+            &mut hir,
+            &mut names,
+            limits,
+            false,
+        )?));
+    }
+    if hir.elements.len().saturating_add(imports.len()) > u32::MAX as usize {
+        return Err(Diagnostic::error(
+            D::BudgetExceeded,
+            root.text_range(),
+            "HIR edge budget exceeded",
+        ));
+    }
+    let start = hir.elements.len() as u32;
+    hir.elements.extend(imports);
+    hir.nodes[0].elements = start..hir.elements.len() as u32;
+    super::forms::forms(&mut hir, false);
+    Ok(hir)
+}
+
+fn append_syntax(
+    syntax: SyntaxNode,
+    parent: Option<NodeId>,
+    depth: usize,
+    hir: &mut Hir,
+    names: &mut HashMap<String, NameId>,
+    limits: AnalysisLimits,
+    recover: bool,
+) -> Result<NodeId, Diagnostic> {
     // Explicit projection frames retain only direct edges, so a flat binary or
     // postfix chain does not consume one Rust call frame per CST node.
     struct Frame {
@@ -69,7 +144,8 @@ fn project_inner(parsed: &Parse, limits: AnalysisLimits, recover: bool) -> Resul
             edges: SmallVec::new(),
         })
     }
-    let mut stack = vec![enter(syntax, None, 0, &mut hir, limits)?];
+    let mut stack = vec![enter(syntax, parent, depth, hir, limits)?];
+    let root = stack[0].id;
     while let Some(frame) = stack.last_mut() {
         if let Some(element) = frame.children.next() {
             match element {
@@ -87,7 +163,7 @@ fn project_inner(parsed: &Parse, limits: AnalysisLimits, recover: bool) -> Resul
                         node,
                         Some(frame.id),
                         frame.depth + usize::from(!flat_receiver),
-                        &mut hir,
+                        hir,
                         limits,
                     )?;
                     stack.push(child);
@@ -144,8 +220,7 @@ fn project_inner(parsed: &Parse, limits: AnalysisLimits, recover: bool) -> Resul
             parent.edges.push(HirElement::Node(id));
         }
     }
-    super::forms::forms(&mut hir, recover);
-    Ok(hir)
+    Ok(root)
 }
 fn kind(k: K) -> Option<HirKind> {
     use HirKind as H;

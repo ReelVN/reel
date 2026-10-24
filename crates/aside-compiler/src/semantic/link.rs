@@ -23,7 +23,9 @@ pub struct ImportDiscovery {
     pub diagnostics: Vec<Diagnostic>,
 }
 /// File providers discover dependencies through the same parsed import forms
-/// as analysis. This performs no IO and does not manufacture module interfaces.
+/// as analysis. All syntax diagnostics are preserved; only import subtrees enter
+/// the dependency projection. Full analysis separately admits the source bodies.
+/// This performs no IO and does not manufacture module interfaces.
 pub fn discover_imports(
     source: &str,
     module: &str,
@@ -36,7 +38,13 @@ pub fn discover_imports(
             diagnostics: parsed.diagnostics().to_vec(),
         });
     }
-    let hir = match super::project::project(&parsed, limits) {
+    if parsed.import_offsets().is_empty() && limits.max_nodes != 0 {
+        return Ok(ImportDiscovery {
+            requests: Vec::new(),
+            diagnostics: Vec::new(),
+        });
+    }
+    let hir = match super::project::project_imports(&parsed, source, limits) {
         Ok(hir) => hir,
         Err(diagnostic) => {
             return Ok(ImportDiscovery {
