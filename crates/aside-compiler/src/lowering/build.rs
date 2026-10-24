@@ -1968,12 +1968,16 @@ fn preflight(
             ));
         }
         if node.kind == H::Member {
-            b.work(m.external_bindings().len() as u64)?;
-            if m.external_bindings().iter().any(|e| {
-                e.kind == h::ExternalBindingKind::Reference
-                    && e.node == Some(h::NodeId(i as u32))
-                    && e.descriptor.reference.is_some()
-            }) {
+            let count = m.external_bindings().len();
+            if count != 0 {
+                b.work(1 + (usize::BITS - (count - 1).leading_zeros()) as u64)?;
+            }
+            if m.external_binding(None, Some(h::NodeId(i as u32)))
+                .is_some_and(|binding| {
+                    binding.kind == h::ExternalBindingKind::Reference
+                        && binding.descriptor.reference.is_some()
+                })
+            {
                 b.work(links.natives.len() as u64)?;
                 if project.is_none_or(|p| p.node(h::NodeId(i as u32)).is_none())
                     && !links
