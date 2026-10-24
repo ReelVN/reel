@@ -30,7 +30,7 @@ pub const LANGUAGE_VERSION: u32 = 1;
 pub const HOST_ABI_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BytecodePackage {
+pub struct BytecodePackage<C = Vec<Instruction>> {
     pub format_version: u32,
     pub language_version: u32,
     pub host_abi_version: u32,
@@ -42,11 +42,11 @@ pub struct BytecodePackage {
     pub signatures: Vec<Signature>,
     pub natives: Vec<NativeDef>,
     pub modules: Vec<ModuleDef>,
-    pub functions: Vec<FunctionDef>,
+    pub functions: Vec<FunctionDef<C>>,
     pub capabilities: Vec<SymbolId>,
     pub sources: Vec<SourceFile>,
 }
-impl Default for BytecodePackage {
+impl<C> Default for BytecodePackage<C> {
     fn default() -> Self {
         Self {
             format_version: FORMAT_VERSION,
@@ -252,7 +252,7 @@ pub struct BindingDef {
     pub initialization: BindingInitialization,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FunctionDef {
+pub struct FunctionDef<C = Vec<Instruction>> {
     pub module: ModuleId,
     pub name: SymbolId,
     pub kind: FunctionKind,
@@ -262,11 +262,12 @@ pub struct FunctionDef {
     pub register_count: u32,
     pub bindings: Vec<BindingDef>,
     pub descriptors: Vec<Descriptor>,
-    pub code: Vec<Instruction>,
+    pub code: C,
     pub regions: Vec<ExceptionRegion>,
     pub source_map: Vec<SourceMapEntry>,
 }
-/// Fixed-width execution record; the wire codec stores only declared operands.
+/// Editable instruction value. Verified execution stores compact words and
+/// reconstructs this value without allocation at the requested instruction PC.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Instruction {
     pub opcode: u16,

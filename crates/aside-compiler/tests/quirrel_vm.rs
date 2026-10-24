@@ -18,7 +18,7 @@ fn registry() -> (bc::VerifiedProgram, AnalysisOptions, bc::RuntimeSupport) {
         effects: bc::Effects(bc::Effects::HOST),
         property_bag_tail: None,
     };
-    let package = bc::BytecodePackage {
+    let package: bc::BytecodePackage = bc::BytecodePackage {
         symbols: HOSTS
             .iter()
             .map(|name| format!("test::{name}"))

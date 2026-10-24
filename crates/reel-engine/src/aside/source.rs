@@ -246,8 +246,8 @@ pub struct SourceCompilation {
     pub catalogs: Arc<CatalogProducts>,
 }
 
+/// Verified project products without retained source-analysis arenas.
 pub struct ProjectSourceCompilation {
-    pub modules: Vec<AnalyzedModule>,
     pub compilation: lowering::ProjectCompilation,
     pub catalogs: Arc<CatalogProducts>,
 }
@@ -624,15 +624,32 @@ pub fn compile_project(
     aliases: &std::collections::BTreeMap<String, String>,
     content_version: u64,
 ) -> Result<ProjectSourceCompilation, SourceError> {
+    compile_project_with_progress(inputs, aliases, content_version, &mut |_| {})
+}
+
+/// Run the same pipeline while reporting completed stages and modules.
+pub fn compile_project_with_progress(
+    inputs: &[aside_compiler::semantic::SourceModule],
+    aliases: &std::collections::BTreeMap<String, String>,
+    content_version: u64,
+    progress: &mut dyn FnMut(aside_compiler::Progress),
+) -> Result<ProjectSourceCompilation, SourceError> {
     let (mut resolver, prelude) = environment();
+
     resolver.0.aliases = aliases.clone();
     let options = AnalysisOptions {
         version: content_version.to_string(),
         hosts: prelude,
         ..Default::default()
     };
-    let mut analysis = aside_compiler::semantic::analyze_project(inputs, &options, &mut resolver)
-        .map_err(SourceError::Source)?;
+    let mut analysis = aside_compiler::semantic::analyze_project_with_progress(
+        inputs,
+        &options,
+        &mut resolver,
+        progress,
+    )
+    .map_err(SourceError::Source)?;
+
     if !analysis.is_ok() {
         return Err(SourceError::ProjectAnalysis(analysis));
     }
@@ -640,10 +657,12 @@ pub fn compile_project(
     let modules = analysis
         .into_modules()
         .map_err(SourceError::ProjectAnalysis)?;
+
     let (catalogs, expansions) =
         extract_translations(&modules).map_err(SourceError::Translation)?;
-    let compilation = aside_host::lower_project(
-        &modules,
+
+    let compilation = aside_host::lower_project_with_progress(
+        modules,
         &plan,
         contracts(),
         &api().functions,
@@ -656,10 +675,11 @@ pub fn compile_project(
             },
             expansions: &expansions,
         },
+        progress,
     )
     .map_err(SourceError::ProjectLowering)?;
+
     Ok(ProjectSourceCompilation {
-        modules,
         compilation,
         catalogs: Arc::new(catalogs),
     })

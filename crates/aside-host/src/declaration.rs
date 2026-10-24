@@ -185,15 +185,39 @@ pub fn lower(
 }
 
 /// Lower a source graph using one trusted source/ABI registration, nominal seed
-/// and final B01 verification.
+/// and final B01 verification. Each analyzed module is released after lowering.
 pub fn lower_project(
-    modules: &[aside_compiler::hir::AnalyzedModule],
+    modules: Vec<aside_compiler::hir::AnalyzedModule>,
     plan: &aside_compiler::semantic::ModulePlan,
     contracts: &[NativeContract],
     source_declarations: &[crate::source::Declaration],
     types: &[HostTypeSupport],
     capabilities: &[String],
     options: CompileOptions<'_>,
+) -> Result<aside_compiler::lowering::ProjectCompilation, aside_compiler::lowering::ProjectError> {
+    lower_project_with_progress(
+        modules,
+        plan,
+        contracts,
+        source_declarations,
+        types,
+        capabilities,
+        options,
+        &mut |_| {},
+    )
+}
+
+/// Run the same pipeline while reporting completed stages and modules.
+#[allow(clippy::too_many_arguments)]
+pub fn lower_project_with_progress(
+    modules: Vec<aside_compiler::hir::AnalyzedModule>,
+    plan: &aside_compiler::semantic::ModulePlan,
+    contracts: &[NativeContract],
+    source_declarations: &[crate::source::Declaration],
+    types: &[HostTypeSupport],
+    capabilities: &[String],
+    options: CompileOptions<'_>,
+    progress: &mut dyn FnMut(aside_compiler::Progress),
 ) -> Result<aside_compiler::lowering::ProjectCompilation, aside_compiler::lowering::ProjectError> {
     use aside_compiler::lowering::{self, ExternalTarget, NativeLink};
     let expansions = options.expansions;
@@ -244,7 +268,9 @@ pub fn lower_project(
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    lowering::compile_project(modules, plan, &seed, &links, expansions, options)
+    lowering::compile_project_with_progress(
+        modules, plan, &seed, &links, expansions, options, progress,
+    )
 }
 
 /// Resolve independently declared names/types into this package's indices.

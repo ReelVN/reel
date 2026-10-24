@@ -61,6 +61,11 @@ impl std::fmt::Display for Error {
     }
 }
 impl std::error::Error for Error {}
+impl From<bc::Error> for Error {
+    fn from(error: bc::Error) -> Self {
+        Self::new(ErrorKind::Bytecode, error.to_string())
+    }
+}
 impl Error {
     pub(crate) fn new(kind: ErrorKind, detail: impl Into<String>) -> Self {
         Self {

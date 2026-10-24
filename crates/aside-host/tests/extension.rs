@@ -735,9 +735,16 @@ mod editor_types {
         let plan = std::mem::take(&mut analysis.plan);
         let modules = analysis.into_modules().unwrap();
         for encoded in [false, true] {
-            let compiled =
-                aside_host::lower_project(&modules, &plan, &[], &[], &[], &[], Default::default())
-                    .unwrap();
+            let compiled = aside_host::lower_project(
+                modules.clone(),
+                &plan,
+                &[],
+                &[],
+                &[],
+                &[],
+                Default::default(),
+            )
+            .unwrap();
             let initializer = compiled.initializer;
             let program = if encoded {
                 let bytes = bc::encode(compiled.program.package(), bc::Limits::default()).unwrap();
@@ -1528,7 +1535,7 @@ mod shared_defaults {
         assert_eq!(seed.package().constants, [C::Null, C::Int(7), C::Int(3)]);
         let support = aside_host::runtime_support(&seed, &contracts, &[], &[]).unwrap();
         Vm::load(seed.clone(), support, Default::default(), SessionEpoch(1)).unwrap();
-        let mut forged = seed.package().clone();
+        let mut forged = seed.to_unpacked().unwrap();
         let other = default(&seed, 5, 1);
         let signature = forged.natives[0].signature.index();
         forged.signatures[signature].parameters[1].default = Some(other);
@@ -1537,7 +1544,7 @@ mod shared_defaults {
             aside_host::runtime_support(&forged, &contracts, &[], &[]).is_err(),
             "a different registered constant cannot be substituted"
         );
-        let mut forged = seed.package().clone();
+        let mut forged = seed.to_unpacked().unwrap();
         let signature = forged.natives[0].signature.index();
         let prefix = forged.signatures[signature].parameters[..1].to_vec();
         let helper_signature = bc::SignatureId(forged.signatures.len() as u32);
@@ -2469,7 +2476,11 @@ mod shared_methods {
             }
         }
         // Broad host registries may accompany a package that links no methods.
-        let minimal = bc::verify(bc::BytecodePackage::default(), bc::Limits::default()).unwrap();
+        let minimal = bc::verify(
+            bc::BytecodePackage::<Vec<bc::Instruction>>::default(),
+            bc::Limits::default(),
+        )
+        .unwrap();
         Vm::load(
             minimal,
             bc::RuntimeSupport {

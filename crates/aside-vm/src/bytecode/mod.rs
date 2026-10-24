@@ -2,7 +2,10 @@
 //!
 //! Tooling uses [`verify`]; dispatchers must additionally use
 //! [`VerifiedProgram::require_runtime`] with their real execution capabilities.
+mod code_residency;
 mod codec;
+mod compact;
+mod encoded;
 pub mod fixtures;
 mod model;
 mod spec;
@@ -12,14 +15,22 @@ mod text_pool;
 mod verify;
 
 pub use crate::{HostMethodSupport, HostTypeSupport};
+pub(crate) use code_residency::CodeWindow;
+pub use code_residency::{CodeCacheStats, CodeStore};
 pub use codec::{decode, encode};
+pub use compact::{CompactCode, CompactIter, InstructionSequence};
+pub use encoded::EncodedProgram;
 pub use model::*;
 pub use spec::*;
 pub use text_pool::{TextPool, externalize_text};
 pub use verify::{
-    CleanupDestination, GlobalBinding, HandlerKind, HandlerTarget, PackageStats, VerifiedProgram,
-    disassemble, verify,
+    CleanupDestination, EditableCloneCost, GlobalBinding, HandlerKind, HandlerTarget, PackageStats,
+    VerifiablePackage, VerifiedProgram, disassemble, verify,
 };
+
+/// Verified metadata and compact instructions share the editable package model.
+pub type RuntimePackage = BytecodePackage<CompactCode>;
+pub type RuntimeFunction = FunctionDef<CompactCode>;
 
 /// All limits apply to the whole package, including nested descriptor records.
 /// Work is bounded independently for decoding, verification and runtime admission;

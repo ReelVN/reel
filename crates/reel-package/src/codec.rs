@@ -14,22 +14,21 @@ const DISTRIBUTION: u32 = 3;
 const REQUIRED: u32 = 1;
 
 /// Canonical writer: header, B01, metadata, distribution, index; no padding or timestamps.
+/// Reuses the serialization's verified program for metadata validation.
 pub fn encode(
-    bytecode: &[u8],
+    encoded: &bc::EncodedProgram,
     metadata: &Metadata,
     distribution: Option<&Distribution>,
     limits: Limits,
 ) -> Result<Vec<u8>, Error> {
+    let bytecode = encoded.as_bytes();
     let mut budget = Budget::new(limits);
     require(
         bytecode.len() <= limits.bytecode.max_bytes,
         ErrorKind::Limit,
         "B01 byte budget exceeded",
     )?;
-    let program = bc::VerifiedProgram::decode(bytecode, limits.bytecode)
-        .map_err(|e| Error::new(ErrorKind::Bytecode, e.to_string()))?;
-    metadata.validate(&program, bytecode, limits, &mut budget)?;
-    drop(program);
+    metadata.validate(encoded.program(), bytecode, limits, &mut budget)?;
     let json = json_bytes(metadata, limits)?;
     budget.charge(json.len())?;
     let distribution = distribution

@@ -68,7 +68,8 @@ impl GeneratorValidation {
         if !(NEW..=CLOSED).contains(&state)
             || definition.kind != FunctionKind::Generator
             || integer(PC)? < 0
-            || integer(PC)? as usize >= definition.code.len()
+            || integer(PC)? as usize >= definition.code.end_pc()
+            || !definition.code.is_boundary(integer(PC)? as usize)
             || integer(MODULE)? != i64::from(definition.module.0)
             || !(0..=1).contains(&integer(CLOSURE)?)
             || effects < 0
@@ -438,7 +439,7 @@ impl Vm {
         self.put(s.env, 1, generator).map_err(vm_fault)?;
         self.clear(s.env, 2).map_err(vm_fault)?;
         s.phase = ScriptPhase::GeneratorStart { action, call: s.pc };
-        s.pc.0 += 1;
+        s.pc = s.instruction_end;
         Ok(())
     }
 
@@ -740,7 +741,10 @@ impl Vm {
         if created {
             self.preparation_fault(s, heap_fault(error))
         } else {
-            s.pc.0 = s.pc.0.saturating_sub(1);
+            s.pc = Pc(self.program.package().functions[s.code.function.index()]
+                .code
+                .previous_pc(s.pc.index())
+                .expect("generator resume PC") as u32);
             self.collection_fault(s, heap_fault(error))
         }
     }
@@ -860,6 +864,10 @@ impl Vm {
             },
             module: ModuleInstanceId(self.generator_integer(generator, MODULE)? as u32),
             pc,
+            instruction_end: Pc(0),
+            member_symbol: None,
+            instruction: None,
+            instruction_pc: Pc(0),
             regs: ranges[0],
             env: ranges[1],
             args: ranges[2],
@@ -1018,7 +1026,10 @@ impl Vm {
             self.put(s.env, 1, Value::NULL)?;
             self.clear(s.env, 2)?;
             ScriptPhase::Exit {
-                origin: Pc(s.pc.0.saturating_sub(1)),
+                origin: Pc(self.program.package().functions[s.code.function.index()]
+                    .code
+                    .previous_pc(s.pc.index())
+                    .expect("generator origin PC") as u32),
                 reason: ExitReason::GeneratorClose {
                     logical_id: self.generator_integer(generator, LOGICAL_ID)? as u64,
                     activation: s.id.0,
@@ -1080,7 +1091,7 @@ impl Vm {
             .set_field(generator, RESULT, value)
             .map_err(heap_fault)?;
         self.write(*s, result, Value::NULL)?;
-        s.pc.0 += 1;
+        s.pc = s.instruction_end;
         s.phase = ScriptPhase::GeneratorCapture {
             part: 0,
             index: 0,

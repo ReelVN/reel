@@ -166,7 +166,10 @@ fn escaped_fault_keeps_its_origin_and_closes_the_generator() {
     };
     let info = vm.delivery_fault(delivery).unwrap().unwrap();
     assert_eq!(info.location.code.function, FunctionId(1));
-    assert_eq!(info.location.pc, Pc(2));
+    assert_eq!(
+        info.location.pc,
+        test_pc(&vm, info.location.code.function.0, 2)
+    );
     vm.discard_delivery(delivery).unwrap();
     let (done, value) = pair(&mut vm, generator);
     assert!(done && value.same_bits(Value::NULL));
@@ -309,7 +312,14 @@ fn reentry_and_dynamic_helper_await_fail_at_the_actual_instruction() {
             info.location.code.function,
             FunctionId(if reentry { 1 } else { 4 })
         );
-        assert_eq!(info.location.pc, Pc(if reentry { 2 } else { 1 }));
+        assert_eq!(
+            info.location.pc,
+            test_pc(
+                &vm,
+                info.location.code.function.0,
+                if reentry { 2 } else { 1 }
+            )
+        );
         vm.discard_delivery(delivery).unwrap();
         assert!(pair(&mut vm, generator).0);
         vm.heap.release_root(root).unwrap();
@@ -381,7 +391,10 @@ fn catch_rethrow_survives_yield_gc_and_snapshot_with_original_fault_identity() {
     };
     let info = restored.delivery_fault(delivery).unwrap().unwrap();
     assert_eq!(info.location.code.function, FunctionId(1));
-    assert_eq!(info.location.pc, Pc(1));
+    assert_eq!(
+        info.location.pc,
+        test_pc(&vm, info.location.code.function.0, 1)
+    );
     assert_eq!(
         restored.delivery_value(delivery).unwrap().as_int(),
         Some(41)
@@ -438,7 +451,7 @@ fn hard_cancellation_and_unreachable_gc_release_frames_without_running_finally()
     super::review_tests::reach(
         &mut vm,
         task,
-        |vm| matches!(vm.active.frames.data.last(), Some(Frame::Script(s)) if s.generator && s.pc == Pc(3) && matches!(s.phase, ScriptPhase::Body)),
+        |vm| matches!(vm.active.frames.data.last(), Some(Frame::Script(s)) if s.generator && s.pc == test_pc(vm, s.code.function.0, 3) && matches!(s.phase, ScriptPhase::Body)),
     );
     vm.cancel_task(task).unwrap();
     for _ in 0..2000 {
@@ -505,6 +518,19 @@ fn generator_and_array_iteration_report_actual_cost_and_reuse_storage() {
         let task = vm
             .start(FunctionId(2), &[source], RootOwner(9), Context::Ordinary)
             .unwrap();
+        // Prepare the first code page before measuring steady-state iteration.
+        assert!(matches!(
+            vm.run_slice(
+                task,
+                SliceBudget {
+                    instructions: 1,
+                    ..SliceBudget::default()
+                },
+                || 0,
+            )
+            .unwrap(),
+            RunOutcome::BudgetYield(_)
+        ));
         let mut delivery = None;
         let started = std::time::Instant::now();
         let measured = allocation_counter::measure(|| {

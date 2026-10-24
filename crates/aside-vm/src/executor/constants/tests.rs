@@ -264,7 +264,13 @@ fn external_text_binding_checks_identity_range_and_code_point_boundaries() {
     let pool = externalize_text(&mut package).unwrap();
     assert_eq!(pool.as_bytes(), "正文😀".as_bytes());
     let encoded = encode(&package, Limits::default()).unwrap();
-    assert_eq!(decode(&encoded, Limits::default()).unwrap(), package);
+    assert_eq!(
+        decode(&encoded, Limits::default())
+            .unwrap()
+            .to_unpacked()
+            .unwrap(),
+        package
+    );
     let program = VerifiedProgram::decode(&encoded, Limits::default()).unwrap();
     assert!(
         matches!(Vm::load(program.clone(), support(), VmLimits::default(), SessionEpoch(1)), Err(VmError::Format(error)) if error.detail.contains("external text pool"))
@@ -336,11 +342,23 @@ fn external_text_pool_preserves_backing_and_accounts_retained_capacity() {
     package.text_pool = Some(pool.descriptor());
     let program = verify(package.clone(), Limits::default()).unwrap();
     let base_capacity = program.stats().owned_capacity_bytes;
+    let execution_capacity = program.execution_capacity_bytes();
     let bound = program.bind_text_pool(pool.clone()).unwrap();
     assert_eq!(bound.stats().owned_capacity_bytes, base_capacity + expected);
+    assert_eq!(
+        bound.execution_capacity_bytes(),
+        execution_capacity + expected
+    );
+    assert_eq!(
+        bound
+            .bind_text_pool(pool.clone())
+            .unwrap()
+            .execution_capacity_bytes(),
+        execution_capacity + expected
+    );
 
     let limits = Limits {
-        max_allocation_bytes: base_capacity + expected - 1,
+        max_allocation_bytes: execution_capacity + expected - 1,
         ..Limits::default()
     };
     assert_eq!(
@@ -352,7 +370,7 @@ fn external_text_pool_preserves_backing_and_accounts_retained_capacity() {
         ErrorKind::Limit
     );
     let limits = Limits {
-        max_allocation_bytes: base_capacity + expected,
+        max_allocation_bytes: execution_capacity + expected,
         ..limits
     };
     assert!(

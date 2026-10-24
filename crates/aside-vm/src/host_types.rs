@@ -53,7 +53,7 @@ pub(crate) struct HostTypes {
 }
 impl HostTypes {
     pub fn new(
-        package: &BytecodePackage,
+        package: &BytecodePackage<impl crate::bytecode::InstructionSequence>,
         registrations: &[HostTypeSupport],
         usage: &HeapBudgetUsage,
     ) -> Result<Self, VmError> {
@@ -430,7 +430,7 @@ mod tests {
 
     fn program() -> VerifiedProgram {
         verify(
-            BytecodePackage {
+            BytecodePackage::<Vec<crate::bytecode::Instruction>> {
                 content_version: 7,
                 symbols: ["sample", "Node", "Text", "Image", "Local"]
                     .map(str::to_owned)

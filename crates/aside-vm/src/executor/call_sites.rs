@@ -125,7 +125,7 @@ mod tests {
                         function: FunctionId(0),
                         version: 1
                     },
-                    pc: Pc(1)
+                    pc: test_pc(&vm, 0, 1)
                 },
                 HostCallSite {
                     code: CodeRef {

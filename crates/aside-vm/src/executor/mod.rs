@@ -272,6 +272,14 @@ struct ScriptFrame {
     code: CodeRef,
     module: ModuleInstanceId,
     pc: Pc,
+    #[serde(skip)]
+    instruction_end: Pc,
+    #[serde(skip)]
+    member_symbol: Option<SymbolId>,
+    #[serde(skip)]
+    instruction: Option<Instruction>,
+    #[serde(skip)]
+    instruction_pc: Pc,
     regs: RootRangeToken,
     env: RootRangeToken,
     args: RootRangeToken,
@@ -504,6 +512,7 @@ impl TaskState {
 /// the single FrameSlots provider. Field order deallocates before budget refunds.
 pub struct Vm {
     program: Rc<CodeLease>,
+    code_window: crate::bytecode::CodeWindow,
     slots: FrameSlots,
     active: TaskState,
     tasks: ChargedVec<TaskState>,
@@ -604,7 +613,7 @@ impl Vm {
         let type_checks = types::TypeChecks::new(p, &usage, &support.host_types)?;
         let program_charge = Reservation::new(
             &usage,
-            program.stats().owned_capacity_bytes as u64
+            program.execution_capacity_bytes() as u64
                 + (std::mem::size_of::<CodeLease>() + program.shared_header_bytes()
                     - std::mem::size_of::<BytecodePackage>()
                     + std::mem::size_of::<types::TypeChecks>()
@@ -696,23 +705,9 @@ impl Vm {
         if initialize {
             // Only member operands need a runtime string. Other symbols remain
             // metadata, avoiding an object allocation per unrelated identifier.
-            for function in &p.functions {
-                for instruction in &function.code {
-                    if matches!(
-                        instruction_spec(instruction.opcode).unwrap().opcode,
-                        Opcode::MemberGet | Opcode::MemberSet
-                    ) {
-                        let symbol = instruction.operands[2];
-                        let position = symbol;
-                        if matches!(
-                            slots.read(at(constants, position)),
-                            Err(HeapError::UninitializedSlot)
-                        ) {
-                            let value = heap.alloc_string(&p.symbols[symbol as usize])?;
-                            slots.write(&mut heap, at(constants, position), value)?;
-                        }
-                    }
-                }
+            for &symbol in program.member_symbols() {
+                let value = heap.alloc_string(&p.symbols[symbol.index()])?;
+                slots.write(&mut heap, at(constants, symbol.0), value)?;
             }
         }
         // Native function values are immutable code constants. Keep one rooted
@@ -804,6 +799,7 @@ impl Vm {
         heap.code = Some(program.clone());
         Ok(Self {
             program,
+            code_window: crate::bytecode::CodeWindow::default(),
             slots,
             active,
             tasks,
@@ -1182,6 +1178,10 @@ impl Vm {
             },
             module,
             pc: Pc(0),
+            instruction_end: Pc(0),
+            member_symbol: None,
+            instruction: None,
+            instruction_pc: Pc(0),
             regs,
             env,
             args,
@@ -1383,13 +1383,7 @@ impl Vm {
     }
 
     fn host_member_symbol(&self, frame: &ScriptFrame) -> Option<SymbolId> {
-        // Member instructions already carry the linked symbol. Indexed reads
-        // still resolve their runtime string after the own-field lookup.
-        let instruction =
-            self.program.package().functions[frame.code.function.index()].code[frame.pc.index()];
-        (instruction.opcode == Opcode::MemberGet as u16
-            || instruction.opcode == Opcode::MemberSet as u16)
-            .then_some(SymbolId(instruction.operands[2]))
+        frame.member_symbol
     }
 
     /// Bind the receiver of an admitted native callable. The immutable value
@@ -2264,6 +2258,7 @@ impl Vm {
             usage: SliceUsage::default(),
         };
         let result = self.run(&mut meter, &mut now);
+        self.code_window = crate::bytecode::CodeWindow::default();
         self.last_usage = meter.usage;
         result
     }
@@ -2775,8 +2770,30 @@ impl Vm {
                 }
             }
             ScriptPhase::Body => {
-                let instruction =
-                    self.program.package().functions[s.code.function.index()].code[s.pc.index()];
+                if !m.admits(0, 1, 0) {
+                    return Ok(false);
+                }
+                let (instruction, next_pc) = if let Some(instruction) =
+                    s.instruction.filter(|_| s.instruction_pc == s.pc)
+                {
+                    (instruction, s.instruction_end.index())
+                } else {
+                    let Some(decoded) = self.program.package().functions[s.code.function.index()]
+                        .code
+                        .fetch_budgeted(
+                            s.pc.index(),
+                            &mut self.code_window,
+                            &mut |work, allocation| m.take(0, work, allocation),
+                        )?
+                    else {
+                        return Ok(false);
+                    };
+                    s.instruction = Some(decoded.0);
+                    s.instruction_pc = s.pc;
+                    decoded
+                };
+                s.instruction_end = Pc(next_pc as u32);
+                s.member_symbol = matches!(instruction.opcode, value if value == Opcode::MemberGet as u16 || value == Opcode::MemberSet as u16).then_some(SymbolId(instruction.operands[2]));
                 let mut op = instruction_spec(instruction.opcode)
                     .expect("verified spec")
                     .opcode;
@@ -2805,6 +2822,7 @@ impl Vm {
                         // Check its work before comparing text; register reads do
                         // not re-evaluate the author's object or key expressions.
                         if !m.admits(1, index_work + 1, 0) {
+                            self.active.frames.data[top] = Frame::Script(s);
                             return Ok(false);
                         }
                         let name = self
@@ -2836,6 +2854,7 @@ impl Vm {
                     Ok((work, allocation)) => (work + index_work, allocation),
                     Err(error) => {
                         if !m.take(1, 1 + index_work, 0) {
+                            self.active.frames.data[top] = Frame::Script(s);
                             return Ok(false);
                         }
                         self.put(s.env, 1, Value::NULL)?;
@@ -2902,6 +2921,7 @@ impl Vm {
                     // Dynamic class indexing resolved its symbol before the
                     // final member operation's allocation admission.
                     m.usage.work += index_work;
+                    self.active.frames.data[top] = Frame::Script(s);
                     return Ok(false);
                 }
                 if let Some(read) = refresh {
@@ -2912,7 +2932,8 @@ impl Vm {
                     }
                     return Ok(true);
                 }
-                let step = self.execute(&mut s, op, a, b, c);
+                s.instruction = None;
+                let step = self.execute(&mut s, op, a, b, c, Pc(next_pc as u32));
                 match step {
                     Ok(true) => {
                         self.active.frames.data[top] = Frame::Script(s);
@@ -2962,7 +2983,7 @@ impl Vm {
                             match self.write(s, work.dest, value) {
                                 Ok(()) => {
                                     self.finish_constant(s.env, [1, 2])?;
-                                    s.pc.0 += 1;
+                                    s.pc = s.instruction_end;
                                     s.phase = ScriptPhase::Body;
                                 }
                                 Err(kind) => self.collection_fault(&mut s, kind)?,
@@ -3089,7 +3110,7 @@ impl Vm {
                         match result {
                             Ok(equal) => {
                                 self.put(s.regs, dest.0, Value::bool(equal != negated))?;
-                                s.pc.0 += 1;
+                                s.pc = s.instruction_end;
                                 s.phase = ScriptPhase::Body;
                             }
                             Err(kind) => {
@@ -3441,6 +3462,7 @@ impl Vm {
         a: u32,
         b: u32,
         c: u32,
+        next_pc: Pc,
     ) -> Result<bool, FaultKind> {
         let r = |n| Reg(n);
         let f = &self.program.package().functions[s.code.function.index()];
@@ -3462,7 +3484,7 @@ impl Vm {
                     .read(at(self.constants, self.native_values.data[index].1))
                     .map_err(heap_fault)?;
                 self.write(*s, r(a), value)?;
-                s.pc.0 += 1;
+                s.pc = next_pc;
                 return Ok(true);
             }
         }
@@ -3679,7 +3701,7 @@ impl Vm {
                 ) {
                     let reference = self.class_property_ref(host, key, writable)?;
                     self.write(*s, r(a), reference)?;
-                    s.pc.0 += 1;
+                    s.pc = next_pc;
                     return Ok(true);
                 }
                 let fields = self.heap.property_fields(host).map_err(heap_fault)?;
@@ -3713,7 +3735,7 @@ impl Vm {
                         .map_err(heap_fault)?
                         .ok_or(FaultKind::MissingKey)?;
                     self.write(*s, r(a), value)?;
-                    s.pc.0 += 1;
+                    s.pc = next_pc;
                     return Ok(true);
                 }
                 if matches!(
@@ -3729,7 +3751,7 @@ impl Vm {
                     if op == Opcode::MemberGet {
                         self.write(*s, r(a), result)?;
                     }
-                    s.pc.0 += 1;
+                    s.pc = next_pc;
                     return Ok(true);
                 }
                 if op == Opcode::MemberGet && self.heap.is_property_ref(object) {
@@ -3742,7 +3764,7 @@ impl Vm {
                         .map_err(heap_fault)?;
                     let value = self.heap.host_property(property).map_err(heap_fault)?;
                     self.write(*s, r(a), value)?;
-                    s.pc.0 += 1;
+                    s.pc = next_pc;
                     return Ok(true);
                 }
                 if op == Opcode::MemberGet {
@@ -3760,7 +3782,7 @@ impl Vm {
                                 .ok_or(FaultKind::MissingKey)?;
                         let value = self.bound_builtin(object, method, s.effects)?;
                         self.write(*s, r(a), value)?;
-                        s.pc.0 += 1;
+                        s.pc = next_pc;
                         return Ok(false);
                     }
                 }
@@ -4242,7 +4264,7 @@ impl Vm {
                 } else {
                     None
                 };
-                s.pc.0 += 1;
+                s.pc = next_pc;
                 let caller_index = self.index(s.id).map_err(|_| FaultKind::InvalidState)?;
                 self.active.frames.data[caller_index] = Frame::Script(*s);
                 match target {
@@ -4433,7 +4455,7 @@ impl Vm {
             }
             _ => return Err(FaultKind::InvalidState),
         }
-        s.pc.0 += 1;
+        s.pc = next_pc;
         Ok(false)
     }
     fn is_text(&self, v: Value, kind: ObjectKind) -> bool {
@@ -5365,4 +5387,16 @@ fn binary(op: Opcode, a: Value, b: Value) -> Result<Value, FaultKind> {
         }
         _ => return Err(FaultKind::Type),
     }))
+}
+
+#[cfg(test)]
+fn test_pc(vm: &Vm, function: u32, ordinal: u32) -> Pc {
+    let code = &vm.program.package().functions[function as usize].code;
+    Pc(code.indexed_iter().nth(ordinal as usize).map_or_else(
+        || {
+            assert_eq!(ordinal as usize, code.len());
+            code.end_pc()
+        },
+        |item| item.unwrap().0,
+    ) as u32)
 }

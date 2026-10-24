@@ -70,15 +70,15 @@ impl std::fmt::Display for ProjectError {
 }
 impl std::error::Error for ProjectError {}
 
-struct ModuleIndex<'a> {
-    path: &'a str,
-    version: &'a str,
+struct ModuleIndex {
+    path: String,
+    version: String,
     input: usize,
     module: bc::ModuleId,
 }
 type BindingIndex = ((u32, u32), GlobalTarget);
 struct LinkTables<'a> {
-    index: &'a [ModuleIndex<'a>],
+    index: &'a [ModuleIndex],
     bindings: &'a [BindingIndex],
     names: &'a [(&'a str, bc::SymbolId)],
     native_exports: &'a [Option<GlobalTarget>],
@@ -86,17 +86,45 @@ struct LinkTables<'a> {
 }
 
 /// Native links retain the exact analyzed registration identities. Source
-/// bindings are resolved internally, including reexports and legal SCCs.
+/// bindings are resolved internally, including reexports and legal SCCs. Each
+/// analyzed module is consumed after its bytecode and declaration metadata are emitted.
 pub fn compile_project(
-    modules: &[h::AnalyzedModule],
+    modules: Vec<h::AnalyzedModule>,
     plan: &ModulePlan,
     seed: &bc::VerifiedProgram,
     natives: &[Vec<NativeLink<'_>>],
     expansions: &[Vec<CallExpansion>],
     options: Options,
 ) -> Result<ProjectCompilation, ProjectError> {
-    let mut current = "<project>";
+    compile_project_with_progress(
+        modules,
+        plan,
+        seed,
+        natives,
+        expansions,
+        options,
+        &mut |_| {},
+    )
+}
+
+/// Run the same pipeline while reporting completed stages and modules.
+pub fn compile_project_with_progress(
+    modules: Vec<h::AnalyzedModule>,
+    plan: &ModulePlan,
+    seed: &bc::VerifiedProgram,
+    natives: &[Vec<NativeLink<'_>>],
+    expansions: &[Vec<CallExpansion>],
+    options: Options,
+    progress: &mut dyn FnMut(crate::Progress),
+) -> Result<ProjectCompilation, ProjectError> {
+    let mut current = None;
+    let mut index = Vec::new();
     let result = (|| -> Result<ProjectCompilation, Box<Error>> {
+        progress(crate::Progress {
+            stage: crate::ProgressStage::Lower,
+            completed: 0,
+            total: modules.len(),
+        });
         let mut b = Budget::new(options.limits);
         if modules.len() != natives.len() || modules.is_empty() {
             return Err(b.error(
@@ -116,19 +144,30 @@ pub fn compile_project(
                 "project and trusted seed content versions differ",
             ));
         }
-        b.capacity(seed.stats().owned_capacity_bytes - seed.stats().derived_capacity_bytes)?;
-        b.work(seed.stats().records + seed.stats().encoded_bytes as u64)?;
         b.stats.records = seed.stats().records as usize;
-        let mut package = seed.package().clone();
-        let names = names(modules, seed, expansions, &mut package, &mut b)?;
+        let mut package = build::clone_seed(seed, &mut b)?;
+        let mut inputs = Vec::new();
+        b.reserve(&mut inputs, modules.len())?;
+        inputs.extend(modules.into_iter().map(Some));
+        let mut modules = inputs;
+        let owned_names = names(&modules, seed, expansions, &mut package, &mut b)?;
+        let mut names = Vec::new();
+        b.reserve(&mut names, owned_names.len())?;
+        names.extend(
+            owned_names
+                .iter()
+                .map(|(text, symbol)| (text.as_str(), *symbol)),
+        );
         let name = |text: &str, b: &mut Budget| name(&names, text, b);
-        let mut index = Vec::new();
         for (input, module) in modules.iter().enumerate() {
+            let module = module.as_ref().expect("unconsumed source module");
+            let path = b.string(module.canonical_path())?;
+            let version = b.string(module.version())?;
             b.push(
                 &mut index,
                 ModuleIndex {
-                    path: module.canonical_path(),
-                    version: module.version(),
+                    path,
+                    version,
                     input,
                     module: bc::ModuleId(0),
                 },
@@ -136,12 +175,12 @@ pub fn compile_project(
         }
         let sort_work = modules
             .iter()
-            .map(|m| m.canonical_path().len() as u64 + 1)
+            .map(|m| m.as_ref().unwrap().canonical_path().len() as u64 + 1)
             .sum::<u64>()
             * (usize::BITS - modules.len().leading_zeros() + 1) as u64
             * 8;
         b.work(sort_work)?;
-        index.sort_unstable_by_key(|m| m.path);
+        index.sort_unstable_by(|a, b| a.path.cmp(&b.path));
         for pair in index.windows(2) {
             if pair[0].path == pair[1].path {
                 return Err(b.error(ErrorKind::LinkContract, "duplicate source module identity"));
@@ -150,10 +189,12 @@ pub fn compile_project(
         let any = builtin(&mut package, bc::BuiltinType::Any, &mut b)?;
         let closure = builtin(&mut package, bc::BuiltinType::Closure, &mut b)?;
         let mut bindings = Vec::new();
-        for entry in &mut index {
-            current = entry.path;
+        for (position, entry) in index.iter_mut().enumerate() {
+            current = Some(position);
             entry.module = bc::ModuleId(package.modules.len() as u32);
-            let module = &modules[entry.input];
+            let module = modules[entry.input]
+                .as_ref()
+                .expect("unconsumed source module");
             let mut globals = Vec::new();
             for symbol in module
                 .symbols()
@@ -182,7 +223,7 @@ pub fn compile_project(
                     ),
                 )?;
             }
-            let path = name(entry.path, &mut b)?;
+            let path = name(&entry.path, &mut b)?;
             b.push(
                 &mut package.modules,
                 bc::ModuleDef {
@@ -204,6 +245,7 @@ pub fn compile_project(
         let mut native_exports = b.filled(package.natives.len(), None)?;
         let mut requested_natives = b.filled(package.natives.len(), false)?;
         for (module, links) in modules.iter().zip(natives) {
+            let module = module.as_ref().expect("unconsumed source module");
             for link in links {
                 if let ExternalTarget::Symbol(symbol) = link.target
                     && module.exports().contains(&symbol)
@@ -243,11 +285,14 @@ pub fn compile_project(
         b.release(requested_natives);
         let mut results = Vec::new();
         let mut state = PackageState { package, budget: b };
-        for entry in &index {
-            current = entry.path;
-            let module = &modules[entry.input];
+
+        for (position, entry) in index.iter().enumerate() {
+            current = Some(position);
+            let module = modules[entry.input]
+                .take()
+                .expect("source module lowered once");
             let layout = links(
-                module,
+                &module,
                 entry.module,
                 LinkTables {
                     index: &index,
@@ -260,7 +305,7 @@ pub fn compile_project(
                 &mut state.budget,
             )?;
             let mut ir = build::lower_prepared(
-                module,
+                &module,
                 &Linkage {
                     package: Some(seed),
                     natives: &natives[entry.input],
@@ -271,7 +316,9 @@ pub fn compile_project(
                 Cow::Borrowed(&names),
                 Some(&layout),
             )?;
+
             emit::write(&mut ir)?;
+
             let output = ProjectModule {
                 module: ir.module,
                 source: ir.source,
@@ -284,11 +331,18 @@ pub fn compile_project(
             };
             layout.release(&mut state.budget);
             state.budget.push(&mut results, output)?;
+            progress(crate::Progress {
+                stage: crate::ProgressStage::Lower,
+                completed: position + 1,
+                total: index.len(),
+            });
         }
-        current = "<project>";
+
+        state.budget.release(modules);
+        current = None;
         let mut order = Vec::new();
         for path in &plan.initialization_order {
-            if let Ok(position) = index.binary_search_by_key(&path.as_str(), |m| m.path) {
+            if let Ok(position) = index.binary_search_by(|entry| entry.path.as_str().cmp(path)) {
                 state.budget.push(&mut order, index[position].module)?;
             }
         }
@@ -299,12 +353,26 @@ pub fn compile_project(
             ));
         }
         let initializer = initializer(&mut state.package, &order, &names, &mut state.budget)?;
+
         super::constants::intern(&mut state.package, &mut state.budget)?;
+
         super::descriptors::intern(&mut state.package, &mut state.budget)?;
-        state.budget.release(index);
+
+        state.budget.work(index.len() as u64)?;
+        for entry in &index {
+            state
+                .budget
+                .release_bytes(entry.path.capacity() + entry.version.capacity());
+        }
+        state.budget.release(std::mem::take(&mut index));
         state.budget.release(bindings);
         state.budget.release(native_exports);
         state.budget.release(names);
+        state.budget.work(owned_names.len() as u64)?;
+        for (text, _) in &owned_names {
+            state.budget.release_bytes(text.capacity());
+        }
+        state.budget.release(owned_names);
         let metadata_bytes = results
             .iter()
             .map(|m| m.metadata.capacity_bytes)
@@ -318,8 +386,20 @@ pub fn compile_project(
                 .max_capacity_bytes
                 .saturating_sub(metadata_bytes),
         );
+
+        progress(crate::Progress {
+            stage: crate::ProgressStage::Verify,
+            completed: 0,
+            total: 1,
+        });
         let program = bc::verify(state.package, limits)
             .map_err(|e| state.budget.error(ErrorKind::Bytecode, e.to_string()))?;
+
+        progress(crate::Progress {
+            stage: crate::ProgressStage::Verify,
+            completed: 1,
+            total: 1,
+        });
         let package_stats = program.stats();
         let mut stats = state.budget.stats;
         stats.capacity_bytes =
@@ -337,23 +417,25 @@ pub fn compile_project(
         })
     })();
     result.map_err(|error| ProjectError {
-        module: current.into(),
+        module: current
+            .and_then(|position| index.get(position))
+            .map_or_else(|| "<project>".into(), |entry| entry.path.clone()),
         error,
     })
 }
 
-fn names<'a>(
-    modules: &'a [h::AnalyzedModule],
-    seed: &'a bc::VerifiedProgram,
-    expansions: &'a [Vec<CallExpansion>],
+fn names(
+    modules: &[Option<h::AnalyzedModule>],
+    seed: &bc::VerifiedProgram,
+    expansions: &[Vec<CallExpansion>],
     package: &mut bc::BytecodePackage,
     b: &mut Budget,
-) -> Result<Vec<(&'a str, bc::SymbolId)>, Box<Error>> {
+) -> Result<Vec<(String, bc::SymbolId)>, Box<Error>> {
     let mut names = Vec::new();
     for (i, name) in seed.package().symbols.iter().enumerate() {
         b.push(&mut names, (name.as_str(), Some(bc::SymbolId(i as u32))))?;
     }
-    for module in modules {
+    for module in modules.iter().flatten() {
         for name in &module.hir().names {
             b.push(&mut names, (name.as_str(), None))?;
         }
@@ -379,7 +461,10 @@ fn names<'a>(
     build::sort_names(&mut names, b)?;
     let mut result = Vec::new();
     for &(text, seed) in &names {
-        if result.last().is_some_and(|&(last, _)| last == text) {
+        if result
+            .last()
+            .is_some_and(|(last, _): &(String, bc::SymbolId)| last == text)
+        {
             continue;
         }
         let symbol = if let Some(seed) = seed {
@@ -390,6 +475,7 @@ fn names<'a>(
             b.push(&mut package.symbols, owned)?;
             symbol
         };
+        let text = b.string(text)?;
         b.push(&mut result, (text, symbol))?;
     }
     b.release(names);
@@ -460,29 +546,30 @@ fn links(
             }
             continue;
         }
-        let target = match index.binary_search_by_key(&reference.module.as_str(), |m| m.path) {
-            Ok(position) => source_binding(reference, &index[position], bindings, names, b)?,
-            Err(_) => {
-                let Some(symbol) = binding.symbol.filter(|s| m.exports().contains(s)) else {
-                    continue;
-                };
-                let native = natives
-                    .iter()
-                    .find(|n| n.target == ExternalTarget::Symbol(symbol))
-                    .ok_or_else(|| {
+        let target =
+            match index.binary_search_by(|entry| entry.path.as_str().cmp(&reference.module)) {
+                Ok(position) => source_binding(reference, &index[position], bindings, names, b)?,
+                Err(_) => {
+                    let Some(symbol) = binding.symbol.filter(|s| m.exports().contains(s)) else {
+                        continue;
+                    };
+                    let native = natives
+                        .iter()
+                        .find(|n| n.target == ExternalTarget::Symbol(symbol))
+                        .ok_or_else(|| {
+                            b.error(
+                                ErrorKind::MissingLink,
+                                "reexport has no linked source or native",
+                            )
+                        })?;
+                    native_exports[native.native.index()].ok_or_else(|| {
                         b.error(
                             ErrorKind::MissingLink,
-                            "reexport has no linked source or native",
+                            "native reexport has no prepared callable",
                         )
-                    })?;
-                native_exports[native.native.index()].ok_or_else(|| {
-                    b.error(
-                        ErrorKind::MissingLink,
-                        "native reexport has no prepared callable",
-                    )
-                })?
-            }
-        };
+                    })?
+                }
+            };
         if let Some(symbol) = binding.symbol {
             out.symbols[symbol.0 as usize] = Some(target);
             let local_name = name(names, m.hir().name(m.symbols()[symbol.0 as usize].name), b)?;
@@ -510,7 +597,7 @@ fn links(
 }
 fn source_binding(
     reference: &SymbolReference,
-    entry: &ModuleIndex<'_>,
+    entry: &ModuleIndex,
     bindings: &[BindingIndex],
     names: &[(&str, bc::SymbolId)],
     b: &mut Budget,

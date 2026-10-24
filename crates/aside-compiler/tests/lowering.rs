@@ -50,7 +50,7 @@ fn compiled(source: &str) -> lowering::Compilation {
     assert!(disassembly.contains("Return"));
     for (i, function) in result.program.package().functions.iter().enumerate() {
         assert!(function.source_map.len() <= function.code.len());
-        for pc in 0..function.code.len() {
+        for (pc, _) in function.code.indexed_iter().map(Result::unwrap) {
             let span = result
                 .program
                 .source_at(bc::FunctionId(i as u32), bc::Pc(pc as u32))
@@ -97,6 +97,7 @@ fn consume() {
         generator
             .code
             .iter()
+            .map(Result::unwrap)
             .filter(|op| op.opcode == bc::Opcode::Yield as u16)
             .count(),
         2
@@ -109,7 +110,13 @@ fn consume() {
     assert_eq!(consumer.regions.len(), 2);
     for region in &consumer.regions {
         let cleanup = region.finally.unwrap();
-        let code = &consumer.code[cleanup.start.index()..cleanup.end.index()];
+        let code = &consumer
+            .code
+            .indexed_iter()
+            .map(Result::unwrap)
+            .filter(|(pc, _)| cleanup.contains(bc::Pc(*pc as u32)))
+            .map(|(_, i)| i)
+            .collect::<Vec<_>>();
         assert_eq!(
             code.iter()
                 .filter(|op| op.opcode == bc::Opcode::IterClose as u16)
@@ -122,7 +129,7 @@ fn consume() {
         );
     }
 }
-fn source_span(f: &bc::FunctionDef, pc: usize) -> bc::SourceSpan {
+fn source_span(f: &bc::RuntimeFunction, pc: usize) -> bc::SourceSpan {
     f.source_map[f.source_map.partition_point(|entry| entry.pc.index() <= pc) - 1].span
 }
 
@@ -174,8 +181,8 @@ fn source_runs_preserve_computation_and_control_flow_locations() {
     for (function, spans) in expected {
         let computation: Vec<_> = compiled.program.package().functions[function.index()]
             .code
-            .iter()
-            .enumerate()
+            .indexed_iter()
+            .map(Result::unwrap)
             .filter(|(_, instruction)| {
                 !matches!(
                     bc::instruction_spec(instruction.opcode).unwrap().opcode,
@@ -231,12 +238,13 @@ fn repeated_value_constants_share_slots_without_merging_object_constants() {
         function
             .code
             .iter()
+            .map(Result::unwrap)
             .filter(|instruction| instruction.opcode == bc::Opcode::MakeTuple as u16)
             .count(),
         2
     );
 }
-fn function<'a>(p: &'a bc::BytecodePackage, name: &str) -> &'a bc::FunctionDef {
+fn function<'a, C>(p: &'a bc::BytecodePackage<C>, name: &str) -> &'a bc::FunctionDef<C> {
     p.functions
         .iter()
         .find(|f| p.symbols[f.name.index()] == name)
@@ -291,6 +299,7 @@ fn dynamic_calls_have_contiguous_windows_and_preserve_live_values() {
     let calls: Vec<_> = f
         .code
         .iter()
+        .map(Result::unwrap)
         .filter(|i| i.opcode == bc::Opcode::Call as u16)
         .map(|i| {
             let bc::Descriptor::Call(call) = &f.descriptors[i.operands[1] as usize] else {
@@ -308,8 +317,8 @@ fn dynamic_calls_have_contiguous_windows_and_preserve_live_values() {
     assert_eq!(p.symbols[calls[3].names[0].name.index()], "b");
     let pcs: Vec<_> = f
         .code
-        .iter()
-        .enumerate()
+        .indexed_iter()
+        .map(Result::unwrap)
         .filter(|(_, i)| i.opcode == bc::Opcode::Call as u16)
         .map(|(pc, _)| pc)
         .collect();
@@ -320,17 +329,30 @@ fn dynamic_calls_have_contiguous_windows_and_preserve_live_values() {
         })
         .collect();
     assert_eq!(spans, ["one()", "two()", "one()", "take(two(), b: one())"]);
-    let saved_left = f.code[pcs[0]].operands[0];
+    let saved_left = f.code.instruction(pcs[0]).unwrap().unwrap().operands[0];
     let add_pc = f
         .code
-        .iter()
-        .rposition(|i| i.opcode == bc::Opcode::Add as u16)
-        .unwrap();
-    assert_eq!(f.code[add_pc].operands[1], saved_left);
-    for i in &f.code[pcs[0] + 1..add_pc] {
+        .indexed_iter()
+        .map(Result::unwrap)
+        .filter(|(_, i)| i.opcode == bc::Opcode::Add as u16)
+        .last()
+        .unwrap()
+        .0;
+    assert_eq!(
+        f.code.instruction(add_pc).unwrap().unwrap().operands[1],
+        saved_left
+    );
+    for i in &f
+        .code
+        .indexed_iter()
+        .map(Result::unwrap)
+        .filter(|(pc, _)| *pc > pcs[0] && *pc < add_pc)
+        .map(|(_, i)| i)
+        .collect::<Vec<_>>()
+    {
         bc::instruction_spec(i.opcode)
             .unwrap()
-            .visit_registers(f, i, |reg, access| {
+            .visit_registers(f, &i, |reg, access| {
                 assert!(
                     !(reg.0 == saved_left
                         && matches!(access, bc::Access::Write | bc::Access::ReadWrite)),
@@ -350,11 +372,13 @@ fn branches_short_circuit_and_null_coalescing_have_explicit_edges() {
     assert!(
         f.code
             .iter()
+            .map(Result::unwrap)
             .any(|i| i.opcode == bc::Opcode::BranchNull as u16)
     );
     assert!(
         f.code
             .iter()
+            .map(Result::unwrap)
             .filter(|i| i.opcode == bc::Opcode::BranchBool as u16)
             .count()
             >= 5
@@ -380,15 +404,23 @@ fn terminal_value_subexpressions_preserve_return_and_short_circuit_edges() {
         !in_arg
             .code
             .iter()
+            .map(Result::unwrap)
             .any(|i| i.opcode == bc::Opcode::Call as u16)
     );
     let in_eq = function(p, "in_eq");
-    assert!(!in_eq.code.iter().any(|i| i.opcode == bc::Opcode::Eq as u16));
+    assert!(
+        !in_eq
+            .code
+            .iter()
+            .map(Result::unwrap)
+            .any(|i| i.opcode == bc::Opcode::Eq as u16)
+    );
     for (name, returns) in [("in_short", 2), ("in_coalesce", 3)] {
         let f = function(p, name);
         assert_eq!(
             f.code
                 .iter()
+                .map(Result::unwrap)
                 .filter(|i| i.opcode == bc::Opcode::Return as u16)
                 .count(),
             returns
@@ -422,28 +454,32 @@ fn forward_readonly_cells_and_mutual_recursion_keep_binding_identity() {
         );
         let init_pc = f
             .code
-            .iter()
-            .position(|i| {
+            .indexed_iter()
+            .map(Result::unwrap)
+            .find(|(_, i)| {
                 i.opcode == bc::Opcode::BindInit as u16 && i.operands[0] == binding as u32
             })
+            .map(|(pc, _)| pc)
             .unwrap();
         let first_read_pc = f
             .code
-            .iter()
-            .position(|i| {
+            .indexed_iter()
+            .map(Result::unwrap)
+            .find(|(_, i)| {
                 if cell {
                     i.opcode == bc::Opcode::Call as u16
                 } else {
                     i.opcode == bc::Opcode::BindRead as u16 && i.operands[1] == binding as u32
                 }
             })
+            .map(|(pc, _)| pc)
             .unwrap();
         assert_eq!(init_pc < first_read_pc, initialized);
-        assert!(f.code.iter().any(|i| {
+        assert!(f.code.iter().map(Result::unwrap).any(|i| {
             if cell {
                 i.opcode == bc::Opcode::CellNew as u16 && i.operands[0] == binding as u32
             } else {
-                clears(i, binding as u32)
+                clears(&i, binding as u32)
             }
         }));
     }
@@ -458,24 +494,30 @@ fn forward_readonly_cells_and_mutual_recursion_keep_binding_identity() {
     assert_eq!(first.captures, [bc::CaptureKind::Cell]);
     let new_pc = outer
         .code
-        .iter()
-        .position(|i| {
+        .indexed_iter()
+        .map(Result::unwrap)
+        .find(|(_, i)| {
             i.opcode == bc::Opcode::CellNew as u16
                 && outer.bindings[i.operands[0] as usize].name == later.name
         })
+        .map(|(pc, _)| pc)
         .unwrap();
     let closure_pc = outer
         .code
-        .iter()
-        .position(|i| i.opcode == bc::Opcode::MakeClosure as u16)
+        .indexed_iter()
+        .map(Result::unwrap)
+        .find(|(_, i)| i.opcode == bc::Opcode::MakeClosure as u16)
+        .map(|(pc, _)| pc)
         .unwrap();
     let init_pc = outer
         .code
-        .iter()
-        .position(|i| {
+        .indexed_iter()
+        .map(Result::unwrap)
+        .find(|(_, i)| {
             i.opcode == bc::Opcode::BindInit as u16
                 && outer.bindings[i.operands[0] as usize].name == later.name
         })
+        .map(|(pc, _)| pc)
         .unwrap();
     assert!(new_pc < closure_pc && closure_pc < init_pc);
     assert!(p.constants.contains(&bc::Const::Null));
@@ -497,8 +539,10 @@ fn try_catch_finally_uses_shared_region_contract_and_cleanup_queries() {
     assert_eq!(f.regions.len(), 3);
     let pc = bc::Pc(
         f.code
-            .iter()
-            .position(|i| i.opcode == bc::Opcode::Return as u16)
+            .indexed_iter()
+            .map(Result::unwrap)
+            .find(|(_, i)| i.opcode == bc::Opcode::Return as u16)
+            .map(|(pc, _)| pc)
             .unwrap() as u32,
     );
     let first = result
@@ -522,6 +566,7 @@ fn try_catch_finally_uses_shared_region_contract_and_cleanup_queries() {
     assert!(
         f.code
             .iter()
+            .map(Result::unwrap)
             .any(|i| i.opcode == bc::Opcode::Rethrow as u16)
     );
 }
@@ -653,6 +698,7 @@ fn default_block_tails_nested_returns_loops_and_throw_still_compile() {
             thunk
                 .code
                 .iter()
+                .map(Result::unwrap)
                 .any(|i| i.opcode == bc::Opcode::Return as u16)
         );
     }
@@ -660,6 +706,7 @@ fn default_block_tails_nested_returns_loops_and_throw_still_compile() {
         function(p, "nested")
             .code
             .iter()
+            .map(Result::unwrap)
             .any(|i| i.opcode == bc::Opcode::Return as u16)
     );
 }
@@ -840,6 +887,7 @@ fn parameter_cell_defaults_use_body_prefix_and_definition_captures() {
     assert!(
         !f.code
             .iter()
+            .map(Result::unwrap)
             .any(|i| i.opcode == bc::Opcode::CellNew as u16 && i.operands[0] == 0)
     );
 }
@@ -1027,7 +1075,7 @@ fn direct_native_uses_trusted_identity_abi_capabilities_and_real_default() {
     )
     .unwrap();
     assert_eq!(aliased.program.package(), p);
-    let mut conflicting = seed.package().clone();
+    let mut conflicting = seed.to_unpacked().unwrap();
     let mut other = conflicting.natives[0].clone();
     other.symbol = bc::SymbolId(conflicting.symbols.len() as u32);
     conflicting.symbols.push("different::native".into());
@@ -1069,7 +1117,7 @@ fn direct_native_uses_trusted_identity_abi_capabilities_and_real_default() {
     )
     .unwrap_err();
     assert_eq!(wrong.kind, lowering::ErrorKind::LinkContract);
-    let mut missing_default = seed.package().clone();
+    let mut missing_default = seed.to_unpacked().unwrap();
     missing_default.signatures[1].parameters[0].default = None;
     let missing_default = bc::verify(missing_default, bc::Limits::default()).unwrap();
     let mismatch = lowering::compile(
@@ -1132,6 +1180,7 @@ fn cleanup_aware_loop_edges_stay_in_their_lexical_regions() {
     assert!(
         f.code
             .iter()
+            .map(Result::unwrap)
             .filter(|i| i.opcode == bc::Opcode::Leave as u16)
             .count()
             >= 2
@@ -1154,15 +1203,19 @@ fn while_condition_targets_cover_labels_terminal_paths_and_cleanup() {
     for name in ["terminal", "terminal_return", "outer_transfer", "forever"] {
         let f = function(p, name);
         assert!(
-            !f.code.iter().any(|i| i.opcode == bc::Opcode::Call as u16),
+            !f.code
+                .iter()
+                .map(Result::unwrap)
+                .any(|i| i.opcode == bc::Opcode::Call as u16),
             "unreachable call in {name}"
         );
     }
     let f = function(p, "condition_continue");
-    let head = f.code[0].operands[0];
+    let head = f.code.instruction(0).unwrap().unwrap().operands[0];
     let jump = f
         .code
         .iter()
+        .map(Result::unwrap)
         .zip(&f.source_map)
         .find(|(_, map)| {
             &source[map.span.start as usize..map.span.end as usize] == "continue outer;"
@@ -1176,13 +1229,18 @@ fn while_condition_targets_cover_labels_terminal_paths_and_cleanup() {
         let jump = f
             .code
             .iter()
+            .map(Result::unwrap)
             .zip(&f.source_map)
             .find(|(_, map)| {
                 &source[map.span.start as usize..map.span.end as usize] == "break outer;"
             })
             .unwrap()
             .0;
-        let next = f.code[jump.operands[0] as usize];
+        let next = f
+            .code
+            .instruction(jump.operands[0] as usize)
+            .unwrap()
+            .unwrap();
         assert_eq!(next.opcode, bc::Opcode::LoadConst as u16);
         assert_eq!(p.constants[next.operands[1] as usize], bc::Const::Int(7));
     }
@@ -1191,6 +1249,7 @@ fn while_condition_targets_cover_labels_terminal_paths_and_cleanup() {
         cleanup
             .code
             .iter()
+            .map(Result::unwrap)
             .any(|i| i.opcode == bc::Opcode::Leave as u16)
     );
     assert_eq!(cleanup.regions.len(), 1);
@@ -1202,8 +1261,8 @@ fn while_condition_targets_cover_labels_terminal_paths_and_cleanup() {
     );
     let (pc, leave) = cleanup
         .code
-        .iter()
-        .enumerate()
+        .indexed_iter()
+        .map(Result::unwrap)
         .find(|(_, i)| i.opcode == bc::Opcode::Leave as u16)
         .unwrap();
     let handler = result
@@ -1228,6 +1287,7 @@ fn while_condition_targets_cover_labels_terminal_paths_and_cleanup() {
         !function(p, "forever")
             .code
             .iter()
+            .map(Result::unwrap)
             .any(|i| i.opcode == bc::Opcode::Return as u16)
     );
 }
@@ -1271,9 +1331,15 @@ fn module_nested_bindings_roundtrip_with_initializer_identity() {
                 .iter()
                 .any(|g| g.source == identity.source)
         );
-        assert!(p.functions[result.entry.index()].code.iter().any(|i| {
-            i.opcode == bc::Opcode::BindInit as u16 && i.operands[0] == identity.binding.0
-        }));
+        assert!(
+            p.functions[result.entry.index()]
+                .code
+                .iter()
+                .map(Result::unwrap)
+                .any(|i| {
+                    i.opcode == bc::Opcode::BindInit as u16 && i.operands[0] == identity.binding.0
+                })
+        );
         initializer_locals::assert_local_structure(&module, &result);
     }
     let result = compiled("let mut i=0;while i<2{i+=1;}");
@@ -1284,6 +1350,7 @@ fn module_nested_bindings_roundtrip_with_initializer_identity() {
         initializer
             .code
             .iter()
+            .map(Result::unwrap)
             .filter(|i| i.opcode == bc::Opcode::GlobalInit as u16)
             .count(),
         1
@@ -1563,23 +1630,64 @@ fn source_and_constants_use_the_package_budget() {
     let bytes = bc::encode(compiled.program.package(), limits).unwrap();
     let decoded = bc::VerifiedProgram::decode(&bytes, limits).unwrap();
     assert_eq!(decoded.package().sources[0].text, source);
+    let extension = analyze_module(
+        "fn extend(){null}",
+        &AnalysisOptions {
+            module: "extension".into(),
+            ..Default::default()
+        },
+        &mut NoModules,
+    )
+    .unwrap()
+    .into_module()
+    .unwrap();
+    let links = Linkage {
+        package: Some(&compiled.program),
+        ..Default::default()
+    };
+    let cost = compiled.program.editable_clone_cost().unwrap();
+    assert!(cost.scratch_peak_bytes > 0);
+    for limits in [
+        lowering::Limits {
+            max_capacity_bytes: cost.retained_capacity_bytes + cost.scratch_peak_bytes - 1,
+            ..Default::default()
+        },
+        lowering::Limits {
+            max_work: cost.work_units - 1,
+            ..Default::default()
+        },
+    ] {
+        let error = lowering::lower(
+            &extension,
+            &links,
+            Options {
+                limits,
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.kind, lowering::ErrorKind::Limit);
+        assert_eq!(
+            error.stats.capacity_bytes, 0,
+            "the editable clone was allocated before admission"
+        );
+    }
 }
 
 /// Definite initialization of temporary registers over the actual shared CFG.
 /// Fixed binding slots have independent runtime initialization checks, so an
 /// intentional forward BindRead remains valid compiler output.
-fn assert_temporary_initialization(f: &bc::FunctionDef) {
-    let mut incoming: Vec<Option<Vec<bool>>> = vec![None; f.code.len()];
+fn assert_temporary_initialization(f: &bc::RuntimeFunction) {
+    let mut incoming: Vec<Option<Vec<bool>>> = vec![None; f.code.end_pc()];
     let entry = vec![false; f.register_count as usize];
     incoming[0] = Some(entry.clone());
     let mut changed = true;
     while changed {
         changed = false;
-        for pc in 0..f.code.len() {
+        for (pc, i) in f.code.indexed_iter().map(Result::unwrap) {
             let Some(mut state) = incoming[pc].clone() else {
                 continue;
             };
-            let i = f.code[pc];
             let spec = bc::instruction_spec(i.opcode).unwrap();
             // Cleanup inherits registers at the exiting instruction. In
             // particular, an owned for iterator was initialized before entering
@@ -1622,7 +1730,7 @@ fn assert_temporary_initialization(f: &bc::FunctionDef) {
             })
             .unwrap();
             let targets: Vec<usize> = match spec.flow {
-                bc::Flow::Next => vec![pc + 1],
+                bc::Flow::Next => vec![f.code.next_pc(pc).unwrap().unwrap()],
                 bc::Flow::Jump | bc::Flow::Leave => vec![i.operands[0] as usize],
                 bc::Flow::Branch => vec![i.operands[1] as usize, i.operands[2] as usize],
                 _ => vec![],
@@ -1647,7 +1755,7 @@ fn assert_temporary_initialization(f: &bc::FunctionDef) {
         let Some(state) = state else {
             continue;
         };
-        let instruction = f.code[pc];
+        let instruction = f.code.instruction(pc).unwrap().unwrap();
         let spec = bc::instruction_spec(instruction.opcode).unwrap();
         spec.visit_registers(f, &instruction, |reg, access| {
             if reg.index() >= f.bindings.len()

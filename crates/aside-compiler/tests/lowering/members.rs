@@ -14,7 +14,10 @@ fn member_symbols_and_string_indices_remain_distinct() {
     assert_eq!(pcs(f, bc::Opcode::IndexGet).len(), 1);
     assert!(pcs(f, bc::Opcode::IndexSet).is_empty());
     for pc in gets.into_iter().chain(sets) {
-        assert_eq!(p.symbols[f.code[pc].operands[2] as usize], "分数");
+        assert_eq!(
+            p.symbols[f.code.instruction(pc).unwrap().unwrap().operands[2] as usize],
+            "分数"
+        );
         assert_eq!(text(p, f, pc), "t.分数");
     }
     assert_eq!(
@@ -37,19 +40,43 @@ fn nested_member_index_receivers_are_evaluated_once_in_source_order() {
     let set = pcs(f, bc::Opcode::MemberSet)[0];
     assert_eq!(pcs(f, bc::Opcode::MemberGet).len(), 1);
     assert!(cp[0] < member && member < cp[1] && cp[1] < index && index < cp[2]);
-    assert_eq!(f.code[member].operands[1], f.code[cp[0]].operands[0]);
     assert_eq!(
-        f.code[index].operands[1..],
-        [f.code[member].operands[0], f.code[cp[1]].operands[0]]
+        f.code.instruction(member).unwrap().unwrap().operands[1],
+        f.code.instruction(cp[0]).unwrap().unwrap().operands[0]
     );
     assert_eq!(
-        f.code[set].operands[..2],
-        [f.code[index].operands[0], f.code[cp[2]].operands[0]]
+        f.code.instruction(index).unwrap().unwrap().operands[1..],
+        [
+            f.code.instruction(member).unwrap().unwrap().operands[0],
+            f.code.instruction(cp[1]).unwrap().unwrap().operands[0]
+        ]
     );
-    assert_eq!(p.symbols[f.code[member].operands[2] as usize], "分组");
-    assert_eq!(p.symbols[f.code[set].operands[2] as usize], "尾");
-    assert_live(f, f.code[index].operands[0], index, set);
-    assert_cleared(f, f.code[index].operands[0], set);
+    assert_eq!(
+        f.code.instruction(set).unwrap().unwrap().operands[..2],
+        [
+            f.code.instruction(index).unwrap().unwrap().operands[0],
+            f.code.instruction(cp[2]).unwrap().unwrap().operands[0]
+        ]
+    );
+    assert_eq!(
+        p.symbols[f.code.instruction(member).unwrap().unwrap().operands[2] as usize],
+        "分组"
+    );
+    assert_eq!(
+        p.symbols[f.code.instruction(set).unwrap().unwrap().operands[2] as usize],
+        "尾"
+    );
+    assert_live(
+        f,
+        f.code.instruction(index).unwrap().unwrap().operands[0],
+        index,
+        set,
+    );
+    assert_cleared(
+        f,
+        f.code.instruction(index).unwrap().unwrap().operands[0],
+        set,
+    );
 }
 
 #[test]
@@ -66,19 +93,29 @@ fn mixed_chain_keeps_all_positions_and_reverses_member_index_cell_global_writes(
     let member = pcs(f, bc::Opcode::MemberSet)[0];
     let cell = pcs(f, bc::Opcode::CellWrite)[0];
     let global = pcs(f, bc::Opcode::GlobalWrite)[0];
-    let rhs = f.code[cp[3]].operands[0];
+    let rhs = f.code.instruction(cp[3]).unwrap().unwrap().operands[0];
     assert!(cp[3] < index && index < member && member < cell && cell < global);
     assert_eq!(
-        f.code[index].operands,
-        [f.code[cp[1]].operands[0], f.code[cp[2]].operands[0], rhs]
+        f.code.instruction(index).unwrap().unwrap().operands,
+        [
+            f.code.instruction(cp[1]).unwrap().unwrap().operands[0],
+            f.code.instruction(cp[2]).unwrap().unwrap().operands[0],
+            rhs
+        ]
     );
     assert_eq!(
-        f.code[member].operands[..2],
-        [f.code[cp[0]].operands[0], rhs]
+        f.code.instruction(member).unwrap().unwrap().operands[..2],
+        [f.code.instruction(cp[0]).unwrap().unwrap().operands[0], rhs]
     );
-    assert_eq!(p.symbols[f.code[member].operands[2] as usize], "左");
-    assert_eq!(f.code[cell].operands[1], rhs);
-    assert_eq!(f.code[global].operands[0], rhs);
+    assert_eq!(
+        p.symbols[f.code.instruction(member).unwrap().unwrap().operands[2] as usize],
+        "左"
+    );
+    assert_eq!(f.code.instruction(cell).unwrap().unwrap().operands[1], rhs);
+    assert_eq!(
+        f.code.instruction(global).unwrap().unwrap().operands[0],
+        rhs
+    );
     assert!(pcs(f, bc::Opcode::MemberGet).is_empty());
     assert!(pcs(f, bc::Opcode::IndexGet).is_empty());
     for (from, to) in [
@@ -87,7 +124,7 @@ fn mixed_chain_keeps_all_positions_and_reverses_member_index_cell_global_writes(
         (cp[2], index),
         (cp[3], global),
     ] {
-        let reg = f.code[from].operands[0];
+        let reg = f.code.instruction(from).unwrap().unwrap().operands[0];
         assert_live(f, reg, from, to);
         assert_cleared(f, reg, to);
     }
@@ -113,10 +150,16 @@ fn rhs_rebinding_uses_the_saved_object_value_for_simple_and_compound_writes() {
         ));
         let call = pcs(f, bc::Opcode::Call)[0];
         let set = pcs(f, bc::Opcode::MemberSet)[0];
-        let saved = f.code[set].operands[0];
+        let saved = f.code.instruction(set).unwrap().unwrap().operands[0];
         let prepare = definition(f, saved, call);
-        assert_eq!(f.code[prepare].opcode, bc::Opcode::BindRead as u16);
-        assert_eq!(f.code[prepare].operands[1], receiver as u32);
+        assert_eq!(
+            f.code.instruction(prepare).unwrap().unwrap().opcode,
+            bc::Opcode::BindRead as u16
+        );
+        assert_eq!(
+            f.code.instruction(prepare).unwrap().unwrap().operands[1],
+            receiver as u32
+        );
         assert!(prepare < call && call < set);
         assert_live(f, saved, prepare, set);
         assert_cleared(f, saved, set);
@@ -124,12 +167,21 @@ fn rhs_rebinding_uses_the_saved_object_value_for_simple_and_compound_writes() {
         assert_eq!(gets.len(), usize::from(operator == "+="));
         if let Some(&get) = gets.first() {
             assert!(prepare < get && get < call);
-            assert_eq!(f.code[get].operands[1], saved);
+            assert_eq!(f.code.instruction(get).unwrap().unwrap().operands[1], saved);
             let add = pcs(f, bc::Opcode::Add)[0];
-            assert_eq!(f.code[add].operands[1], f.code[get].operands[0]);
-            assert_eq!(f.code[set].operands[1], f.code[add].operands[0]);
+            assert_eq!(
+                f.code.instruction(add).unwrap().unwrap().operands[1],
+                f.code.instruction(get).unwrap().unwrap().operands[0]
+            );
+            assert_eq!(
+                f.code.instruction(set).unwrap().unwrap().operands[1],
+                f.code.instruction(add).unwrap().unwrap().operands[0]
+            );
         } else {
-            assert_eq!(f.code[set].operands[1], f.code[call].operands[0]);
+            assert_eq!(
+                f.code.instruction(set).unwrap().unwrap().operands[1],
+                f.code.instruction(call).unwrap().unwrap().operands[0]
+            );
         }
         let closure = function(p, "$closure");
         assert_eq!(pcs(closure, bc::Opcode::CellWrite).len(), 1);
@@ -180,17 +232,46 @@ fn all_ten_member_compounds_read_before_rhs_and_write_the_original_receiver() {
         let op = pcs(f, opcode)[0];
         let set = pcs(f, bc::Opcode::MemberSet)[0];
         assert!(cp[0] < get && get < cp[1] && cp[1] < op && op < set);
-        assert_eq!(f.code[get].operands[1], f.code[cp[0]].operands[0]);
-        assert_eq!(f.code[set].operands[0], f.code[get].operands[1]);
-        assert_eq!(f.code[set].operands[2], f.code[get].operands[2]);
         assert_eq!(
-            f.code[op].operands[1..],
-            [f.code[get].operands[0], f.code[cp[1]].operands[0]]
+            f.code.instruction(get).unwrap().unwrap().operands[1],
+            f.code.instruction(cp[0]).unwrap().unwrap().operands[0]
         );
-        assert_eq!(f.code[set].operands[1], f.code[op].operands[0]);
-        assert_live(f, f.code[get].operands[1], cp[0], set);
-        assert_live(f, f.code[get].operands[0], get, op);
-        assert_cleared(f, f.code[set].operands[0], set);
+        assert_eq!(
+            f.code.instruction(set).unwrap().unwrap().operands[0],
+            f.code.instruction(get).unwrap().unwrap().operands[1]
+        );
+        assert_eq!(
+            f.code.instruction(set).unwrap().unwrap().operands[2],
+            f.code.instruction(get).unwrap().unwrap().operands[2]
+        );
+        assert_eq!(
+            f.code.instruction(op).unwrap().unwrap().operands[1..],
+            [
+                f.code.instruction(get).unwrap().unwrap().operands[0],
+                f.code.instruction(cp[1]).unwrap().unwrap().operands[0]
+            ]
+        );
+        assert_eq!(
+            f.code.instruction(set).unwrap().unwrap().operands[1],
+            f.code.instruction(op).unwrap().unwrap().operands[0]
+        );
+        assert_live(
+            f,
+            f.code.instruction(get).unwrap().unwrap().operands[1],
+            cp[0],
+            set,
+        );
+        assert_live(
+            f,
+            f.code.instruction(get).unwrap().unwrap().operands[0],
+            get,
+            op,
+        );
+        assert_cleared(
+            f,
+            f.code.instruction(set).unwrap().unwrap().operands[0],
+            set,
+        );
     }
 }
 
@@ -207,12 +288,16 @@ fn member_callees_precede_arguments_and_do_not_inject_self() {
     assert_eq!(cp.len(), 4);
     assert_eq!(gets.len(), 2);
     assert!(gets[0] < cp[0] && cp[0] < cp[1] && cp[1] < cp[2] && cp[2] < gets[1]);
-    let bc::Descriptor::Call(call) = &f.descriptors[f.code[cp[2]].operands[1] as usize] else {
+    let bc::Descriptor::Call(call) =
+        &f.descriptors[f.code.instruction(cp[2]).unwrap().unwrap().operands[1] as usize]
+    else {
         panic!()
     };
     assert_eq!(
         call.target,
-        bc::CallTarget::Register(bc::Reg(f.code[gets[0]].operands[0]))
+        bc::CallTarget::Register(bc::Reg(
+            f.code.instruction(gets[0]).unwrap().unwrap().operands[0]
+        ))
     );
     let bc::Arguments::Window(window) = call.arguments else {
         panic!()
@@ -226,9 +311,20 @@ fn member_callees_precede_arguments_and_do_not_inject_self() {
         ),
         ("x", 1)
     );
-    assert_live(f, f.code[gets[0]].operands[0], gets[0], cp[2]);
-    assert_cleared(f, f.code[gets[0]].operands[0], cp[2]);
-    let bc::Descriptor::Call(alias) = &f.descriptors[f.code[cp[3]].operands[1] as usize] else {
+    assert_live(
+        f,
+        f.code.instruction(gets[0]).unwrap().unwrap().operands[0],
+        gets[0],
+        cp[2],
+    );
+    assert_cleared(
+        f,
+        f.code.instruction(gets[0]).unwrap().unwrap().operands[0],
+        cp[2],
+    );
+    let bc::Descriptor::Call(alias) =
+        &f.descriptors[f.code.instruction(cp[3]).unwrap().unwrap().operands[1] as usize]
+    else {
         panic!()
     };
     let bc::Arguments::Window(window) = alias.arguments else {
@@ -250,7 +346,9 @@ fn member_callees_precede_arguments_and_do_not_inject_self() {
     assert_eq!(pcs(f, bc::Opcode::MemberSet).len(), 1);
     let get = pcs(f, bc::Opcode::MemberGet)[0];
     let pc = pcs(f, bc::Opcode::Call)[0];
-    let bc::Descriptor::Call(call) = &f.descriptors[f.code[pc].operands[1] as usize] else {
+    let bc::Descriptor::Call(call) =
+        &f.descriptors[f.code.instruction(pc).unwrap().unwrap().operands[1] as usize]
+    else {
         panic!()
     };
     let bc::Arguments::Window(window) = call.arguments else {
@@ -259,7 +357,9 @@ fn member_callees_precede_arguments_and_do_not_inject_self() {
     assert_eq!(window.len, 2);
     assert_eq!(
         call.target,
-        bc::CallTarget::Register(bc::Reg(f.code[get].operands[0]))
+        bc::CallTarget::Register(bc::Reg(
+            f.code.instruction(get).unwrap().unwrap().operands[0]
+        ))
     );
 }
 
@@ -331,11 +431,16 @@ fn conditional_paths_dominate_member_uses_and_keep_cleanup_edges() {
     let get = pcs(f, bc::Opcode::MemberGet)[0];
     let add = pcs(f, bc::Opcode::Add)[0];
     let set = pcs(f, bc::Opcode::MemberSet)[0];
-    let receiver = f.code[set].operands[0];
+    let receiver = f.code.instruction(set).unwrap().unwrap().operands[0];
     let prepare = definition(f, receiver, get);
     assert!(dom[get][prepare] && dom[set][prepare] && dom[add][get]);
     assert_live(f, receiver, prepare, set);
-    assert_live(f, f.code[get].operands[0], get, add);
+    assert_live(
+        f,
+        f.code.instruction(get).unwrap().unwrap().operands[0],
+        get,
+        add,
+    );
     assert!(dom[set][add]);
     let ret = pcs(f, bc::Opcode::Return)
         .into_iter()
@@ -483,7 +588,8 @@ fn member_positions_and_symbols_obey_register_work_capacity_and_depth_limits() {
         for pc in pcs(f, opcode) {
             assert_cleared(
                 f,
-                f.code[pc].operands[if opcode == bc::Opcode::MemberGet {
+                f.code.instruction(pc).unwrap().unwrap().operands[if opcode == bc::Opcode::MemberGet
+                {
                     1
                 } else {
                     0
@@ -580,7 +686,9 @@ fn resolved_native_members_keep_trusted_linkage_for_calls_and_values() {
         assert_eq!(call_pcs.len(), 1);
         let pc = call_pcs[0];
         assert_eq!(text(p, f, pc), expression);
-        let bc::Descriptor::Call(call) = &f.descriptors[f.code[pc].operands[1] as usize] else {
+        let bc::Descriptor::Call(call) =
+            &f.descriptors[f.code.instruction(pc).unwrap().unwrap().operands[1] as usize]
+        else {
             panic!("missing native call descriptor");
         };
         assert_eq!(call.target, bc::CallTarget::Native(bc::NativeId(0)));
@@ -767,6 +875,8 @@ fn resolved_native_members_keep_trusted_linkage_for_calls_and_values() {
     let f = function(c.program.package(), "f");
     assert_eq!(pcs(f, bc::Opcode::MemberGet).len(), 1);
     let call = pcs(f, bc::Opcode::Call)[0];
-    assert!(matches!(&f.descriptors[f.code[call].operands[1] as usize],
-        bc::Descriptor::Call(c) if matches!(c.target, bc::CallTarget::Register(_))));
+    assert!(
+        matches!(&f.descriptors[f.code.instruction(call).unwrap().unwrap().operands[1] as usize],
+        bc::Descriptor::Call(c) if matches!(c.target, bc::CallTarget::Register(_)))
+    );
 }

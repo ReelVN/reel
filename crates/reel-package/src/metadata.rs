@@ -77,10 +77,24 @@ impl Metadata {
         for (index, function) in p.functions.iter().enumerate() {
             functions[function.module.index()].push(index);
             budget.charge(function.code.len())?;
-            for instruction in function.code.iter().filter(|i| matches!(i.opcode, x if x == bc::Opcode::GlobalInit as u16 || x == bc::Opcode::GlobalWrite as u16)) {
-                let bc::Descriptor::Global { module, global } = function.descriptors[instruction.operands[1] as usize] else { unreachable!("verified global descriptor") };
+            for instruction in function.code.iter() {
+                let instruction = instruction?;
+                if instruction.opcode != bc::Opcode::GlobalInit as u16
+                    && instruction.opcode != bc::Opcode::GlobalWrite as u16
+                {
+                    continue;
+                }
+                let bc::Descriptor::Global { module, global } =
+                    function.descriptors[instruction.operands[1] as usize]
+                else {
+                    unreachable!("verified global descriptor")
+                };
                 let definition = p.modules[module.index()].globals.get(global.index());
-                require(definition.is_none_or(|d| d.linked_function.is_none()), Invalid, "linked declaration binding is initialized or written by code")?;
+                require(
+                    definition.is_none_or(|d| d.linked_function.is_none()),
+                    Invalid,
+                    "linked declaration binding is initialized or written by code",
+                )?;
             }
         }
         for module in &self.modules {
@@ -152,13 +166,15 @@ impl Metadata {
             Invalid,
             "invalid project initializer structure",
         )?;
+        let mut instructions = init.code.iter();
         for (index, &module) in self.initialization_order.iter().enumerate() {
             budget.charge(1)?;
             let target = p.modules[module as usize]
                 .initializer
                 .expect("validated source initializer");
             require(
-                init.code[index] == bc::Instruction::new(bc::Opcode::Call, 0, index as u32, 0)
+                instructions.next().transpose()?
+                    == Some(bc::Instruction::new(bc::Opcode::Call, 0, index as u32, 0))
                     && init.descriptors[index]
                         == bc::Descriptor::Call(bc::CallDesc {
                             contract: None,
@@ -173,14 +189,15 @@ impl Metadata {
                 "project initializer order differs from metadata",
             )?;
         }
-        let load = init.code[self.initialization_order.len()];
+        let load = instructions.next().expect("validated initializer length")?;
         require(
             load.opcode == bc::Opcode::LoadConst as u16
                 && load.flags == 0
                 && load.operands[0] == 0
                 && load.operands[2] == 0
                 && p.constants[load.operands[1] as usize] == bc::Const::Null
-                && init.code.last() == Some(&bc::Instruction::new(bc::Opcode::Return, 0, 0, 0)),
+                && instructions.next().transpose()?
+                    == Some(bc::Instruction::new(bc::Opcode::Return, 0, 0, 0)),
             Invalid,
             "project initializer terminal differs",
         )?;

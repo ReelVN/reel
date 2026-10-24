@@ -17,13 +17,20 @@ Sections are symbols, types, constants, signatures, natives, modules, functions,
 capabilities and sources. Each repeats its u32 count; header/body counts must
 agree. Integers are little-endian. Vectors/UTF-8 strings use u32 lengths; bool
 and Option tags are u8 0/1. Enum tags are explicit u8 values. Records pack fields
-without padding. IDs are separate u32 newtypes; PCs count instructions.
+without padding. IDs are separate u32 newtypes; wire and runtime PCs address u32 execution words.
 
 Records follow model.rs field order, with these prefixes:
 
 - Module: global count, then path/imports/exports/globals/initializer.
 - Function: counts for captures/bindings/descriptors/code/regions/source_map,
   register_count, then module/name/kind/signature/context and those six tables.
+  The code count is the logical instruction count; its table is a global word
+  start and word length (two u32 values).
+- Shared code: after modules and before functions, total words (u32), block count
+  (u32), contiguous compressed `(offset, length)` pairs (two u32 each), then packed
+  byte length (u32) and packed bytes. Each independent zlib block inflates to
+  32 KiB, except the final block. Function ranges partition the word stream in
+  declaration order. Instructions may cross a block boundary.
 
 | Record | Tags |
 | --- | --- |
@@ -86,11 +93,29 @@ requirements; runtime admission selects supported capabilities.
 
 ## Instructions
 
-An encoded instruction starts with its u8 opcode, followed by the operands
-declared in the instruction table. Operands use canonical unsigned LEB128 with
-at most five bytes per u32. Flags and unused operands are zero and occupy no
-encoded bytes. The decoded instruction retains a 16-byte fixed layout for
-execution. All instructions may yield at VM safe points.
+Execution words use this header: opcode in bits 0–7, following-word count in
+bits 8–9, packed-B/C flag in bit 10, and the first operand in bits 11–31. The
+21-bit all-ones first-operand value selects a full u32 in the next word. Missing
+operands are zero. Nonzero B alone uses one word; B/C use either one packed pair
+of u16 values or two full words. PC operands always use full words, fixing layout
+before ordinal targets are mapped. Canonical headers, zero unused operands and
+instruction boundaries are validated before execution.
+
+The compiler's editable instruction occupies 16 bytes and uses ordinal PCs.
+Verification maps branches, exception regions and source runs once to word PCs,
+compresses the shared word stream and releases those vectors. Wire loading keeps
+the same compressed blocks and validates through bounded page readers, without
+an expanded instruction package. All VMs for one verified program share a lazy
+8 MiB hot-page cache. A VM's fetch window reads the current page without locking;
+page changes reuse the bounded cache. Frames and snapshots retain word PCs, not
+page leases. A boundary bitmap admits branch, exception and restoration PCs.
+`to_unpacked` is an explicit fallible editing operation that restores ordinal PCs.
+Code reads and iterators propagate decompression, allocation and cache errors.
+
+Storage statistics distinguish immutable cold capacity, actual/peak hot residency,
+the hot limit and construction scratch. `PackageStats` includes actual owned
+capacity; execution admission reserves the full code-capacity ceiling. All
+instructions may yield at VM safe points.
 The table's suspension column describes language suspension: W external wait,
 Y generator yield, T thread suspend. Calls inherit cumulative context/effect
 restrictions; synchronous calls are valid under NoWait.

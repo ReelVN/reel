@@ -194,7 +194,17 @@ pub fn analyze_project(
     options: &AnalysisOptions,
     resolver: &mut dyn ModuleResolver,
 ) -> Result<ProjectAnalysis, SourceTooLarge> {
-    let result = analyze_project_inner(inputs, options, resolver, None, false)?;
+    analyze_project_with_progress(inputs, options, resolver, &mut |_| {})
+}
+
+/// Run the same pipeline while reporting completed stages and modules.
+pub fn analyze_project_with_progress(
+    inputs: &[SourceModule],
+    options: &AnalysisOptions,
+    resolver: &mut dyn ModuleResolver,
+    progress: &mut dyn FnMut(crate::Progress),
+) -> Result<ProjectAnalysis, SourceTooLarge> {
+    let result = analyze_project_inner(inputs, options, resolver, None, false, progress)?;
     Ok(ProjectAnalysis {
         modules: if result.diagnostics.is_empty() && !result.exhausted {
             Some(result.modules)
@@ -217,7 +227,14 @@ pub(crate) fn analyze_editor_project(
         .iter()
         .map(|input| (input.source.canonical_path.as_str(), &input.parsed))
         .collect();
-    analyze_project_inner(&sources, options, resolver, Some(&parsed), true)
+    analyze_project_inner(
+        &sources,
+        options,
+        resolver,
+        Some(&parsed),
+        true,
+        &mut |_| {},
+    )
 }
 
 fn analyze_project_inner(
@@ -226,6 +243,7 @@ fn analyze_project_inner(
     resolver: &mut dyn ModuleResolver,
     parsed_inputs: Option<&BTreeMap<&str, &Parse>>,
     recover: bool,
+    progress: &mut dyn FnMut(crate::Progress),
 ) -> Result<crate::editor::EditorProjectAnalysis, SourceTooLarge> {
     let mut diagnostics = Vec::new();
     let mut projected = BTreeMap::new();
@@ -258,7 +276,12 @@ fn analyze_project_inner(
         .iter()
         .map(|m| (m.canonical_path.as_str(), m.source_path.as_ref()))
         .collect::<BTreeMap<_, _>>();
-    for input in inputs {
+    for (completed, input) in inputs.iter().enumerate() {
+        progress(crate::Progress {
+            stage: crate::ProgressStage::Parse,
+            completed,
+            total: inputs.len(),
+        });
         if projected.contains_key(&input.canonical_path) {
             diagnostics.push(ModuleDiagnostic {
                 module: input.canonical_path.clone(),
@@ -319,6 +342,17 @@ fn analyze_project_inner(
             }
         }
     }
+    progress(crate::Progress {
+        stage: crate::ProgressStage::Parse,
+        completed: inputs.len(),
+        total: inputs.len(),
+    });
+    let analysis_total = projected.len();
+    progress(crate::Progress {
+        stage: crate::ProgressStage::Analyze,
+        completed: 0,
+        total: analysis_total,
+    });
     diagnostics.truncate(diagnostic_limit);
     // Public reexports form monotone interface equations. Cache import paths
     // once and revisit only users of changed interfaces, including legal cycles.
@@ -539,7 +573,7 @@ fn analyze_project_inner(
         let mut symbols = 0usize;
         let mut captures = 0usize;
         let mut imports = 0usize;
-        for (path, hir) in projected {
+        for (completed, (path, hir)) in projected.into_iter().enumerate() {
             let local = AnalysisOptions {
                 module: path.clone(),
                 source_path: source_paths
@@ -610,6 +644,11 @@ fn analyze_project_inner(
                 dependencies.insert(path, initialization_dependencies(&module));
                 modules.push(module);
             }
+            progress(crate::Progress {
+                stage: crate::ProgressStage::Analyze,
+                completed: completed + 1,
+                total: analysis_total,
+            });
         }
     }
     if recover && !exhausted {

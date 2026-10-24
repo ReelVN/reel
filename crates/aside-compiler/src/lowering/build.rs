@@ -22,6 +22,41 @@ use crate::{
 use aside_vm::bytecode as bc;
 use std::borrow::Cow;
 
+/// Admit the VM's editable clone and its temporary PC-remapping workspace.
+/// The returned scratch reservation ends as soon as `to_unpacked` returns.
+pub(super) fn admit_seed(seed: &bc::VerifiedProgram, b: &mut Budget) -> Result<usize, Box<Error>> {
+    b.work(seed.package().functions.len() as u64)?;
+    let cost = seed
+        .editable_clone_cost()
+        .map_err(|error| b.error(ErrorKind::Limit, error.to_string()))?;
+    b.work(cost.work_units)?;
+    let peak = cost
+        .retained_capacity_bytes
+        .checked_add(cost.scratch_peak_bytes)
+        .ok_or_else(|| b.error(ErrorKind::Limit, "editable seed clone capacity overflow"))?;
+    b.capacity(peak)?;
+    Ok(cost.scratch_peak_bytes)
+}
+
+pub(super) fn clone_seed(
+    seed: &bc::VerifiedProgram,
+    b: &mut Budget,
+) -> Result<bc::BytecodePackage, Box<Error>> {
+    let scratch = admit_seed(seed, b)?;
+    let package = seed.to_unpacked();
+    b.release_bytes(scratch);
+    package.map_err(|error| {
+        b.error(
+            match error.kind {
+                bc::ErrorKind::Limit => ErrorKind::Limit,
+                bc::ErrorKind::Allocation => ErrorKind::Allocation,
+                _ => ErrorKind::Bytecode,
+            },
+            error.to_string(),
+        )
+    })
+}
+
 pub(super) fn lower<'a>(
     m: &'a h::AnalyzedModule,
     links: &'a Linkage<'a>,
@@ -42,11 +77,7 @@ pub(super) fn lower<'a>(
             ));
         }
         b.stats.records = records;
-        b.work(stats.records + stats.encoded_bytes as u64)?;
-        // Clone admission happens before any clone allocation. Vec/String clones
-        // retain at most their input capacities; this is a conservative seed charge.
-        b.capacity(stats.owned_capacity_bytes - stats.derived_capacity_bytes)?;
-        seed.package().clone()
+        clone_seed(seed, &mut b)?
     } else {
         bc::BytecodePackage::default()
     };
@@ -330,6 +361,37 @@ pub(super) fn lower_prepared<'a>(
             }
         }
     }
+    let mut declarations = Vec::new();
+    lower.b.work(m.functions().len() as u64)?;
+    for (index, function) in m.functions().iter().enumerate() {
+        let Some(source_symbol) = m.facts()[function.node.0 as usize].symbol else {
+            continue;
+        };
+        let symbol = &m.symbols()[source_symbol.0 as usize];
+        if symbol.kind != h::SymbolKind::Function || symbol.origin != h::BindingOrigin::ModuleGlobal
+        {
+            continue;
+        }
+        lower.b.span = symbol.declaration;
+        let global = lower.globals[source_symbol.0 as usize].ok_or_else(|| {
+            lower.b.error(
+                ErrorKind::InvalidIr,
+                "module function lacks compiler global mapping",
+            )
+        })?;
+        let name = lower.name(m.hir().name(symbol.name))?;
+        lower.b.push(
+            &mut declarations,
+            super::DeclarationMetadata {
+                name,
+                source_symbol,
+                source_function: h::FunctionId(index as u32),
+                global,
+                output: lower.outputs[index],
+                span: symbol.declaration,
+            },
+        )?;
+    }
     lower.b.release(lower.type_cache);
     lower.b.release(lower.contracts);
     let mut global_identities = Vec::new();
@@ -406,12 +468,14 @@ pub(super) fn lower_prepared<'a>(
     let metadata_capacity = lower.b.stats.capacity_bytes - metadata_before
         + outputs_capacity
         + lower.binding_identities.capacity() * std::mem::size_of::<super::BindingIdentity>()
-        + global_identities.capacity() * std::mem::size_of::<super::GlobalIdentity>();
+        + global_identities.capacity() * std::mem::size_of::<super::GlobalIdentity>()
+        + declarations.capacity() * std::mem::size_of::<super::DeclarationMetadata>();
     let metadata_capacity = metadata_capacity
         + lower.native_identities.capacity() * std::mem::size_of::<super::NativeIdentity>();
     let metadata = Metadata {
         entry_context: m.entry_context(),
         functions: function_metadata,
+        declarations,
         canonical_path,
         source_version,
         imports,

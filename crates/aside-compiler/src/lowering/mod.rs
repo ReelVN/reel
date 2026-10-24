@@ -7,7 +7,9 @@ mod emit;
 pub mod ir;
 mod project;
 mod registers;
-pub use project::{ProjectCompilation, ProjectError, ProjectModule, compile_project};
+pub use project::{
+    ProjectCompilation, ProjectError, ProjectModule, compile_project, compile_project_with_progress,
+};
 
 use crate::{TextRange, hir};
 use aside_vm::bytecode as bc;
@@ -166,6 +168,8 @@ pub struct Compilation {
 pub struct Metadata {
     pub entry_context: crate::semantic::AnalysisContext,
     pub functions: Vec<FunctionMetadata>,
+    /// Module function identities retained after releasing their analyzed source.
+    pub declarations: Vec<DeclarationMetadata>,
     pub canonical_path: String,
     pub source_version: String,
     pub imports: Vec<hir::Import>,
@@ -184,6 +188,16 @@ pub struct FunctionMetadata {
     pub declared_context: hir::DeclaredContext,
     pub known_wait: bool,
     pub dynamic_calls: bool,
+}
+/// A module-level function declaration and its final bytecode identities.
+#[derive(Debug, Clone, Copy)]
+pub struct DeclarationMetadata {
+    pub name: bc::SymbolId,
+    pub source_symbol: hir::SymbolId,
+    pub source_function: hir::FunctionId,
+    pub global: bc::GlobalId,
+    pub output: bc::FunctionId,
+    pub span: TextRange,
 }
 #[derive(Debug, Clone)]
 pub struct NativeIdentity {

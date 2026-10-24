@@ -4,20 +4,20 @@ use super::initializer_locals::dominators;
 use super::*;
 use aside_compiler::{DiagnosticCode, byte_range, semantic::*};
 
-fn id(p: &bc::BytecodePackage, f: &bc::FunctionDef) -> bc::FunctionId {
+fn id(p: &bc::RuntimePackage, f: &bc::RuntimeFunction) -> bc::FunctionId {
     bc::FunctionId(p.functions.iter().position(|v| std::ptr::eq(v, f)).unwrap() as u32)
 }
 // Follow every ordinary CFG edge, never select a branch using an author value.
-fn reachable(f: &bc::FunctionDef, start: usize) -> Vec<bool> {
-    let mut seen = vec![false; f.code.len()];
+fn reachable(f: &bc::RuntimeFunction, start: usize) -> Vec<bool> {
+    let mut seen = vec![false; f.code.end_pc()];
     let mut todo = vec![start];
     while let Some(pc) = todo.pop() {
         if std::mem::replace(&mut seen[pc], true) {
             continue;
         }
-        let i = f.code[pc];
+        let i = f.code.instruction(pc).unwrap().unwrap();
         match bc::instruction_spec(i.opcode).unwrap().flow {
-            bc::Flow::Next => todo.push(pc + 1),
+            bc::Flow::Next => todo.push(f.code.next_pc(pc).unwrap().unwrap()),
             bc::Flow::Jump | bc::Flow::Leave => todo.push(i.operands[0] as usize),
             bc::Flow::Branch => todo.extend([i.operands[1] as usize, i.operands[2] as usize]),
             _ => (),
@@ -25,35 +25,60 @@ fn reachable(f: &bc::FunctionDef, start: usize) -> Vec<bool> {
     }
     seen
 }
-fn under_guard(c: &lowering::Compilation, f: &bc::FunctionDef, guard: usize, operations: &[usize]) {
-    let null = reachable(f, f.code[guard].operands[1] as usize);
-    let value = reachable(f, f.code[guard].operands[2] as usize);
+fn under_guard(
+    c: &lowering::Compilation,
+    f: &bc::RuntimeFunction,
+    guard: usize,
+    operations: &[usize],
+) {
+    let null = reachable(
+        f,
+        f.code.instruction(guard).unwrap().unwrap().operands[1] as usize,
+    );
+    let value = reachable(
+        f,
+        f.code.instruction(guard).unwrap().unwrap().operands[2] as usize,
+    );
     let dom = dominators(c, id(c.program.package(), f));
     for &pc in operations {
         assert!(!null[pc], "null edge reaches {pc}");
         assert!(value[pc] && dom[pc][guard], "operation outside guard: {pc}");
     }
 }
-fn null_result(c: &lowering::Compilation, f: &bc::FunctionDef, guards: &[usize]) {
+fn null_result(c: &lowering::Compilation, f: &bc::RuntimeFunction, guards: &[usize]) {
     let ret = *pcs(f, bc::Opcode::Return).last().unwrap();
-    let out = f.code[ret].operands[0];
+    let out = f.code.instruction(ret).unwrap().unwrap().operands[0];
     let p = c.program.package();
     let dom = dominators(c, id(p, f));
     let init = definition(f, out, guards[0]);
-    assert_eq!(f.code[init].opcode, bc::Opcode::LoadConst as u16);
     assert_eq!(
-        p.constants[f.code[init].operands[1] as usize],
+        f.code.instruction(init).unwrap().unwrap().opcode,
+        bc::Opcode::LoadConst as u16
+    );
+    assert_eq!(
+        p.constants[f.code.instruction(init).unwrap().unwrap().operands[1] as usize],
         bc::Const::Null
     );
     for &guard in guards {
-        assert_ne!(f.code[guard].operands[0], out);
-        assert_eq!(f.code[guard].operands[1], f.code[guards[0]].operands[1]);
-        let seen = reachable(f, f.code[guard].operands[1] as usize);
+        assert_ne!(f.code.instruction(guard).unwrap().unwrap().operands[0], out);
+        assert_eq!(
+            f.code.instruction(guard).unwrap().unwrap().operands[1],
+            f.code.instruction(guards[0]).unwrap().unwrap().operands[1]
+        );
+        let seen = reachable(
+            f,
+            f.code.instruction(guard).unwrap().unwrap().operands[1] as usize,
+        );
         assert!(seen[ret] && dom[guard][init]);
-        for (pc, i) in f.code.iter().enumerate().filter(|(pc, _)| seen[*pc]) {
+        for (pc, i) in f
+            .code
+            .indexed_iter()
+            .map(Result::unwrap)
+            .filter(|(pc, _)| seen[*pc])
+        {
             bc::instruction_spec(i.opcode)
                 .unwrap()
-                .visit_registers(f, i, |r, access| {
+                .visit_registers(f, &i, |r, access| {
                     assert!(
                         !(r.0 == out
                             && matches!(access, bc::Access::Write | bc::Access::ReadWrite)),
@@ -95,7 +120,12 @@ fn three_optional_forms_guard_gets_keys_arguments_and_return_null() {
         null_result(&c, f, &guards);
         if get == bc::Opcode::MemberGet {
             assert_eq!(
-                p.symbols[f.code[pcs(f, get)[0]].operands[2] as usize],
+                p.symbols[f
+                    .code
+                    .instruction(pcs(f, get)[0])
+                    .unwrap()
+                    .unwrap()
+                    .operands[2] as usize],
                 "中文"
             );
         }
@@ -150,7 +180,10 @@ fn later_guards_share_a_separate_null_result_after_successful_segments() {
     assert!(get[0] < guards[1] && index < guards[2]);
     under_guard(&c, f, guards[1], &[cp[0], index, cp[1], cp[2], get[1]]);
     under_guard(&c, f, guards[2], &[cp[1], cp[2], get[1]]);
-    assert_eq!(f.code[guards[0]].operands[0], f.code[guards[2]].operands[0]);
+    assert_eq!(
+        f.code.instruction(guards[0]).unwrap().unwrap().operands[0],
+        f.code.instruction(guards[2]).unwrap().unwrap().operands[0]
+    );
 }
 
 #[test]
@@ -160,9 +193,18 @@ fn nested_argument_and_index_chains_have_independent_joins() {
     let f = function(p, "f");
     let g = pcs(f, bc::Opcode::BranchNull);
     assert_eq!(g.len(), 4);
-    assert_eq!(f.code[g[0]].operands[1], f.code[g[2]].operands[1]);
-    assert_ne!(f.code[g[0]].operands[1], f.code[g[1]].operands[1]);
-    assert_ne!(f.code[g[2]].operands[1], f.code[g[3]].operands[1]);
+    assert_eq!(
+        f.code.instruction(g[0]).unwrap().unwrap().operands[1],
+        f.code.instruction(g[2]).unwrap().unwrap().operands[1]
+    );
+    assert_ne!(
+        f.code.instruction(g[0]).unwrap().unwrap().operands[1],
+        f.code.instruction(g[1]).unwrap().unwrap().operands[1]
+    );
+    assert_ne!(
+        f.code.instruction(g[2]).unwrap().unwrap().operands[1],
+        f.code.instruction(g[3]).unwrap().unwrap().operands[1]
+    );
     let cp = pcs(f, bc::Opcode::Call);
     under_guard(&c, f, g[0], &[g[1], cp[0], g[2], g[3], cp[1], cp[2], cp[3]]);
     under_guard(&c, f, g[1], &[cp[0]]);
@@ -178,7 +220,10 @@ fn group_ends_propagation_and_an_outer_question_starts_a_new_chain() {
         let f = function(p, "f");
         let g = pcs(f, bc::Opcode::BranchNull);
         assert_eq!(g.len(), 1);
-        let null = reachable(f, f.code[g[0]].operands[1] as usize);
+        let null = reachable(
+            f,
+            f.code.instruction(g[0]).unwrap().unwrap().operands[1] as usize,
+        );
         let outer = match expr.chars().last().unwrap() {
             'c' => pcs(f, bc::Opcode::MemberGet)[1],
             ']' => pcs(f, bc::Opcode::IndexGet)[0],
@@ -194,8 +239,16 @@ fn group_ends_propagation_and_an_outer_question_starts_a_new_chain() {
         let f = function(c.program.package(), "f");
         let g = pcs(f, bc::Opcode::BranchNull);
         assert_eq!(g.len(), 2);
-        assert_ne!(f.code[g[0]].operands[1], f.code[g[1]].operands[1]);
-        assert!(reachable(f, f.code[g[0]].operands[1] as usize)[g[1]]);
+        assert_ne!(
+            f.code.instruction(g[0]).unwrap().unwrap().operands[1],
+            f.code.instruction(g[1]).unwrap().unwrap().operands[1]
+        );
+        assert!(
+            reachable(
+                f,
+                f.code.instruction(g[0]).unwrap().unwrap().operands[1] as usize
+            )[g[1]]
+        );
         let ops: Vec<_> = pcs(f, bc::Opcode::Call)
             .into_iter()
             .chain(pcs(f, bc::Opcode::IndexGet))
@@ -212,23 +265,60 @@ fn null_coalescing_begins_after_chain_join_and_guards_its_own_rhs() {
     let f = function(p, "f");
     let g = pcs(f, bc::Opcode::BranchNull);
     assert_eq!(g.len(), 3);
-    let chain_join = f.code[g[0]].operands[1] as usize;
+    let chain_join = f.code.instruction(g[0]).unwrap().unwrap().operands[1] as usize;
     assert!(reachable(f, chain_join)[g[1]]);
     let rhs = pcs(f, bc::Opcode::Call)[0];
     let index = pcs(f, bc::Opcode::IndexGet)[0];
-    assert!(reachable(f, f.code[g[1]].operands[1] as usize)[rhs]);
-    assert!(!reachable(f, f.code[g[1]].operands[2] as usize)[rhs]);
-    assert!(reachable(f, f.code[g[2]].operands[1] as usize)[rhs]);
-    assert!(!reachable(f, f.code[g[2]].operands[1] as usize)[index]);
-    assert_ne!(f.code[g[0]].operands[1], f.code[g[2]].operands[1]);
-    let def = definition(f, f.code[g[1]].operands[0], g[1]);
-    assert_eq!(f.code[def].opcode, bc::Opcode::Move as u16);
+    assert!(
+        reachable(
+            f,
+            f.code.instruction(g[1]).unwrap().unwrap().operands[1] as usize
+        )[rhs]
+    );
+    assert!(
+        !reachable(
+            f,
+            f.code.instruction(g[1]).unwrap().unwrap().operands[2] as usize
+        )[rhs]
+    );
+    assert!(
+        reachable(
+            f,
+            f.code.instruction(g[2]).unwrap().unwrap().operands[1] as usize
+        )[rhs]
+    );
+    assert!(
+        !reachable(
+            f,
+            f.code.instruction(g[2]).unwrap().unwrap().operands[1] as usize
+        )[index]
+    );
+    assert_ne!(
+        f.code.instruction(g[0]).unwrap().unwrap().operands[1],
+        f.code.instruction(g[2]).unwrap().unwrap().operands[1]
+    );
+    let def = definition(
+        f,
+        f.code.instruction(g[1]).unwrap().unwrap().operands[0],
+        g[1],
+    );
+    assert_eq!(
+        f.code.instruction(def).unwrap().unwrap().opcode,
+        bc::Opcode::Move as u16
+    );
     let dom = dominators(&c, id(p, f));
     assert!(!dom[g[1]][def]); // the earlier null edge skips the successful value copy
-    let init = definition(f, f.code[g[1]].operands[0], g[0]);
-    assert_eq!(f.code[init].opcode, bc::Opcode::LoadConst as u16);
+    let init = definition(
+        f,
+        f.code.instruction(g[1]).unwrap().unwrap().operands[0],
+        g[0],
+    );
     assert_eq!(
-        p.constants[f.code[init].operands[1] as usize],
+        f.code.instruction(init).unwrap().unwrap().opcode,
+        bc::Opcode::LoadConst as u16
+    );
+    assert_eq!(
+        p.constants[f.code.instruction(init).unwrap().unwrap().operands[1] as usize],
         bc::Const::Null
     );
     assert!(dom[g[1]][init]);
@@ -246,7 +336,9 @@ fn optional_call_preserves_callee_named_offsets_and_live_windows_across_rebindin
         calls(p, f),
         ["change()", "key()", "a?.method(change(),中文:b?[key()])"]
     );
-    let bc::Descriptor::Call(call) = &f.descriptors[f.code[cp[2]].operands[1] as usize] else {
+    let bc::Descriptor::Call(call) =
+        &f.descriptors[f.code.instruction(cp[2]).unwrap().unwrap().operands[1] as usize]
+    else {
         panic!()
     };
     let bc::CallTarget::Register(callee) = call.target else {
@@ -261,12 +353,20 @@ fn optional_call_preserves_callee_named_offsets_and_live_windows_across_rebindin
     assert_eq!(p.symbols[call.names[0].name.index()], "中文");
     let get = pcs(f, bc::Opcode::MemberGet)[0];
     let saved = definition(f, callee.0, cp[2]);
-    assert_eq!(f.code[saved].opcode, bc::Opcode::Move as u16);
-    assert_eq!(f.code[saved].operands[1], f.code[get].operands[0]);
+    assert_eq!(
+        f.code.instruction(saved).unwrap().unwrap().opcode,
+        bc::Opcode::Move as u16
+    );
+    assert_eq!(
+        f.code.instruction(saved).unwrap().unwrap().operands[1],
+        f.code.instruction(get).unwrap().unwrap().operands[0]
+    );
     assert!(saved < cp[0]);
     assert_live(f, callee.0, saved, cp[2]);
     for &pc in &cp {
-        let bc::Descriptor::Call(v) = &f.descriptors[f.code[pc].operands[1] as usize] else {
+        let bc::Descriptor::Call(v) =
+            &f.descriptors[f.code.instruction(pc).unwrap().unwrap().operands[1] as usize]
+        else {
             panic!()
         };
         let bc::Arguments::Window(v) = v.arguments else {
@@ -288,19 +388,22 @@ fn grouped_chain_receivers_remain_saved_locations_across_a_rebinding_rhs() {
     let ms = pcs(f, bc::Opcode::MemberSet)[0];
     let ix = pcs(f, bc::Opcode::IndexSet)[0];
     assert!(cp[2] < ix && ix < ms);
-    assert_eq!(f.code[ix].operands[2], f.code[ms].operands[1]);
+    assert_eq!(
+        f.code.instruction(ix).unwrap().unwrap().operands[2],
+        f.code.instruction(ms).unwrap().unwrap().operands[1]
+    );
     assert_eq!(pcs(f, bc::Opcode::MemberGet).len(), 1); // no premature read of final 中文
     for reg in [
-        f.code[ms].operands[0],
-        f.code[ix].operands[0],
-        f.code[ix].operands[1],
+        f.code.instruction(ms).unwrap().unwrap().operands[0],
+        f.code.instruction(ix).unwrap().unwrap().operands[0],
+        f.code.instruction(ix).unwrap().unwrap().operands[1],
     ] {
         let prepare = definition(f, reg, cp[2]);
         assert_live(
             f,
             reg,
             prepare,
-            if reg == f.code[ms].operands[0] {
+            if reg == f.code.instruction(ms).unwrap().unwrap().operands[0] {
                 ms
             } else {
                 ix
@@ -402,7 +505,9 @@ fn partial_return_throw_and_loop_exits_keep_existing_cleanup_routes() {
                 .cleanup_handler(
                     fid,
                     bc::Pc(pc as u32),
-                    bc::CleanupDestination::Leave(bc::Pc(f.code[pc].operands[0])),
+                    bc::CleanupDestination::Leave(bc::Pc(
+                        f.code.instruction(pc).unwrap().unwrap().operands[0]
+                    )),
                     None
                 )
                 .unwrap()
@@ -439,7 +544,11 @@ fn getters_and_calls_keep_throwing_semantics_without_synthetic_catches() {
                 .filter(|&pc| text(p, f, pc) != "cleanup()"),
         )
     {
-        assert!(bc::instruction_spec(f.code[pc].opcode).unwrap().may_throw);
+        assert!(
+            bc::instruction_spec(f.code.instruction(pc).unwrap().unwrap().opcode)
+                .unwrap()
+                .may_throw
+        );
         assert_eq!(
             c.program
                 .exception_handler(fid, bc::Pc(pc as u32), None)
@@ -681,10 +790,12 @@ fn sequential_chains_clear_temporaries_and_reuse_registers() {
     );
     assert_eq!(pcs(f, bc::Opcode::BranchNull).len(), 1200);
     for pc in pcs(f, bc::Opcode::MemberSet) {
-        assert_cleared(f, f.code[pc].operands[0], pc);
+        assert_cleared(f, f.code.instruction(pc).unwrap().unwrap().operands[0], pc);
     }
     for pc in pcs(f, bc::Opcode::Call) {
-        let bc::Descriptor::Call(v) = &f.descriptors[f.code[pc].operands[1] as usize] else {
+        let bc::Descriptor::Call(v) =
+            &f.descriptors[f.code.instruction(pc).unwrap().unwrap().operands[1] as usize]
+        else {
             panic!()
         };
         let bc::Arguments::Window(w) = v.arguments else {
@@ -777,7 +888,9 @@ fn trusted_native_values_calls_and_optional_chains_share_the_registry() {
             assert_eq!(cp.len(), 1);
             assert_eq!(p.natives[0], seed.package().natives[0]);
             assert_eq!(p.functions[0], seed.package().functions[0]);
-            let bc::Descriptor::Call(v) = &f.descriptors[f.code[cp[0]].operands[1] as usize] else {
+            let bc::Descriptor::Call(v) =
+                &f.descriptors[f.code.instruction(cp[0]).unwrap().unwrap().operands[1] as usize]
+            else {
                 panic!()
             };
             assert_eq!(v.target, bc::CallTarget::Native(bc::NativeId(0)));

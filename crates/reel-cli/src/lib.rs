@@ -77,11 +77,19 @@ pub fn check_sources(
     inputs: &[aside_compiler::semantic::SourceModule],
     aliases: &std::collections::BTreeMap<String, String>,
 ) -> Result<Checked, Failure> {
+    check_sources_with_progress(inputs, aliases, &mut |_| {})
+}
+
+/// Run the same pipeline while reporting completed stages and modules.
+pub fn check_sources_with_progress(
+    inputs: &[aside_compiler::semantic::SourceModule],
+    aliases: &std::collections::BTreeMap<String, String>,
+    progress: &mut dyn FnMut(aside_compiler::Progress),
+) -> Result<Checked, Failure> {
     let ProjectSourceCompilation {
-        modules,
         compilation,
         catalogs,
-    } = source::compile_project(inputs, aliases, 1).map_err(|failure| {
+    } = source::compile_project_with_progress(inputs, aliases, 1, progress).map_err(|failure| {
         let mut failure = source_failure(failure);
         for diagnostic in &mut failure.diagnostics {
             if let Some(module) = diagnostic.source.as_deref()
@@ -92,17 +100,11 @@ pub fn check_sources(
         }
         failure
     })?;
-    let metadata = modules
+    let metadata = compilation
+        .modules
         .iter()
-        .map(|module| {
-            let compiled = compilation
-                .modules
-                .iter()
-                .find(|m| m.metadata.canonical_path == module.canonical_path())
-                .expect("compiled source module");
-            artifact::module_metadata(module, compiled, compilation.program.package())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+        .map(|compiled| artifact::module_metadata(compiled, &compilation.program))
+        .collect();
     Ok(Checked {
         compilation,
         modules: metadata,

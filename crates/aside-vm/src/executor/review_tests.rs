@@ -216,7 +216,7 @@ fn native_call_admission_uses_charged_cache_and_parameter_queries_wait_for_work(
     reach(
         &mut vm,
         task,
-        |v| matches!(v.active.frames.data.last(), Some(Frame::Script(s)) if s.pc == Pc(1) && matches!(s.phase, ScriptPhase::Body)),
+        |v| matches!(v.active.frames.data.last(), Some(Frame::Script(s)) if s.pc == test_pc(v, s.code.function.0, 1) && matches!(s.phase, ScriptPhase::Body)),
     );
     let roots = vm.slots.stats().active_ranges;
     for _ in 0..3 {
@@ -346,7 +346,10 @@ fn cross_module_value_default_fault_has_lexical_code_source_and_stack_module_bef
     let info = vm.delivery_fault(d).unwrap().unwrap();
     assert_eq!(info.kind, FaultKind::Thrown);
     assert_eq!(info.location.code.function, FunctionId(1));
-    assert_eq!(info.location.pc, Pc(1));
+    assert_eq!(
+        info.location.pc,
+        test_pc(&vm, info.location.code.function.0, 1)
+    );
     assert_eq!(info.location.source, Some(source));
     let mut stack = vm.heap.fault_stack(info.id).unwrap();
     let default = stack.next(&vm.heap).unwrap().unwrap();

@@ -1097,7 +1097,7 @@ mod sorting {
         fn unchanged() { values[0] == 3 && values[1] == 1 && values[2] == 2 }
     "#;
         let compiled = compile(source);
-        let mut package = compiled.program.package().clone();
+        let mut package = compiled.program.to_unpacked().unwrap();
         let any = bc::TypeId(
             package
                 .types

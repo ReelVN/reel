@@ -1,9 +1,8 @@
 use super::{Checked, Failure, error};
-use aside_compiler::{DiagnosticCode, TextRange, hir as h, lowering::ProjectModule};
+use aside_compiler::{DiagnosticCode, TextRange, lowering::ProjectModule};
 use aside_vm::bytecode as bc;
 use reel_package as rp;
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
 
 fn span(range: TextRange) -> rp::Span {
     rp::Span {
@@ -16,42 +15,28 @@ fn text_range(span: rp::Span) -> TextRange {
 }
 
 pub(crate) fn module_metadata(
-    module: &h::AnalyzedModule,
     compiled: &ProjectModule,
-    program: &bc::BytecodePackage,
-) -> Result<rp::ModuleMetadata, Failure> {
+    program: &bc::VerifiedProgram,
+) -> rp::ModuleMetadata {
     let m = &compiled.metadata;
-    let globals: BTreeMap<_, _> = m.globals.iter().map(|g| (g.source, g.global)).collect();
-    let mut declarations = Vec::new();
-    let mut declaration_spans = Vec::new();
-    for (source_function, function) in module.functions().iter().enumerate() {
-        let Some(symbol_id) = module.facts()[function.node.0 as usize].symbol else {
-            continue;
-        };
-        let symbol = &module.symbols()[symbol_id.0 as usize];
-        if symbol.kind != h::SymbolKind::Function || symbol.origin != h::BindingOrigin::ModuleGlobal
-        {
-            continue;
-        }
-        let global = globals.get(&symbol_id).ok_or_else(|| {
-            error(
-                "metadata",
-                DiagnosticCode::InvalidHir,
-                symbol.declaration,
-                "module function lacks compiler global mapping".into(),
-            )
-        })?;
-        let output = &m.functions[source_function];
-        declarations.push(rp::Declaration {
-            name: module.hir().name(symbol.name).into(),
-            source_symbol_id: symbol_id.0,
-            source_function_id: source_function as u32,
-            global_id: global.0,
-            function_id: output.output.0,
-        });
-        declaration_spans.push(span(symbol.declaration));
-    }
-    Ok(rp::ModuleMetadata {
+    let program = program.package();
+    let declarations = m
+        .declarations
+        .iter()
+        .map(|declaration| rp::Declaration {
+            name: program.symbols[declaration.name.index()].clone(),
+            source_symbol_id: declaration.source_symbol.0,
+            source_function_id: declaration.source_function.0,
+            global_id: declaration.global.0,
+            function_id: declaration.output.0,
+        })
+        .collect();
+    let declaration_spans = m
+        .declarations
+        .iter()
+        .map(|declaration| span(declaration.span))
+        .collect();
+    rp::ModuleMetadata {
         module_id: compiled.module.0,
         canonical_path: m.canonical_path.clone(),
         source_version: m.source_version.clone(),
@@ -98,7 +83,7 @@ pub(crate) fn module_metadata(
             })
             .collect(),
         declarations,
-    })
+    }
 }
 
 pub struct Artifact {
@@ -262,16 +247,20 @@ fn build_inner(
     let game_entry = select_entry(checked, entry)?;
     let mut release = (profile == BuildProfile::Release).then(|| without_debug(p));
     let mut text_pool = None;
-    let p = match release.as_mut() {
-        None => p,
-        Some(release) => {
-            if external_text {
-                text_pool = Some(bc::externalize_text(release).map_err(|e| fail(e.to_string()))?);
-            }
-            release
-        }
-    };
-    let bytecode = bc::encode(p, bc::Limits::default()).map_err(|e| fail(e.to_string()))?;
+    if let Some(release) = release.as_mut()
+        && external_text
+    {
+        text_pool = Some(bc::externalize_text(release).map_err(|e| fail(e.to_string()))?);
+    }
+    let release = release
+        .map(|package| bc::verify(package, bc::Limits::default()))
+        .transpose()
+        .map_err(|e| fail(e.to_string()))?;
+    let program = release.as_ref().unwrap_or(&compiled.program);
+    let p = program.package();
+    let bytecode = program
+        .encode(bc::Limits::default())
+        .map_err(|e| fail(e.to_string()))?;
     let mut modules = checked.modules.clone();
     if profile == BuildProfile::Release {
         for module in &mut modules {
@@ -280,7 +269,7 @@ fn build_inner(
     }
     let metadata = rp::Metadata {
         schema_version: 1,
-        bytecode_blake3: rp::digest(&bytecode),
+        bytecode_blake3: rp::digest(bytecode.as_bytes()),
         language_version: p.language_version,
         bytecode_version: p.format_version,
         host_abi_version: p.host_abi_version,
@@ -301,13 +290,13 @@ fn build_inner(
         bytes,
         game_entry,
         profile,
-        bytecode_bytes: bytecode.len(),
+        bytecode_bytes: bytecode.as_bytes().len(),
         text_pool,
         catalogs: checked.catalogs.clone(),
     })
 }
 
-fn without_debug(p: &bc::BytecodePackage) -> bc::BytecodePackage {
+fn without_debug(p: &bc::RuntimePackage) -> bc::RuntimePackage {
     // Do not clone full sources or per-instruction mappings merely to discard
     // them: large projects can hold substantially more debug data than code.
     bc::BytecodePackage {
