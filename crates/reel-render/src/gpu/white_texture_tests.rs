@@ -719,9 +719,14 @@ fn image_restore_fixture(
 #[test]
 fn image_plan_deduplicates_both_transition_inputs_before_admission() {
     let (frame, _, handles) = image_restore_fixture([4, 4], true);
-    let plan =
-        super::super::image_plan::collect([&frame, &frame].into_iter(), 4096, false, |_| Ok(()))
-            .unwrap();
+    let plan = super::super::image_plan::collect(
+        [&frame, &frame].into_iter(),
+        4096,
+        false,
+        |_| Ok(()),
+        |_| Ok(()),
+    )
+    .unwrap();
     assert_eq!(plan.len(), handles.len());
     for item in &plan {
         assert!(handles.contains(&item.source.handle()));
@@ -729,7 +734,7 @@ fn image_plan_deduplicates_both_transition_inputs_before_admission() {
         assert_eq!(item.staging, 4 * 256);
     }
     assert!(matches!(
-        super::super::image_plan::collect([&frame].into_iter(), 2, false, |_| Ok(())),
+        super::super::image_plan::collect([&frame].into_iter(), 2, false, |_| Ok(()), |_| Ok(())),
         Err(GpuError::InvalidSize)
     ));
 }
@@ -737,10 +742,17 @@ fn image_plan_deduplicates_both_transition_inputs_before_admission() {
 #[test]
 fn capture_plans_omit_excluded_image_uploads_and_isolated_targets() {
     let (frame, _, handles) = image_restore_fixture([4, 4], false);
-    let normal =
-        super::super::image_plan::collect([&frame].into_iter(), 4096, false, |_| Ok(())).unwrap();
+    let normal = super::super::image_plan::collect(
+        [&frame].into_iter(),
+        4096,
+        false,
+        |_| Ok(()),
+        |_| Ok(()),
+    )
+    .unwrap();
     let captured =
-        super::super::image_plan::collect([&frame].into_iter(), 4096, true, |_| Ok(())).unwrap();
+        super::super::image_plan::collect([&frame].into_iter(), 4096, true, |_| Ok(()), |_| Ok(()))
+            .unwrap();
     assert_eq!(normal.len(), handles.len());
     assert!(captured.is_empty());
     assert!(!frame.commands().is_empty());
@@ -868,6 +880,77 @@ fn cold_upload_progress_with_one_submission_slot() {
     drop(frame);
     renderer.poll().unwrap();
     empty(&renderer); // The cache does not own decoded pixels after completion.
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter"]
+fn image_upload_slices_share_one_prepare_quota_and_release_abandoned_work() {
+    let (frame, mut registry, handles) = image_restore_fixture([64, 64], true);
+    let mut renderer = renderer(super::super::GpuLimits {
+        max_inflight: 1,
+        image_upload_bytes_per_prepare: 1024, // Two 512-byte rows, across all images.
+        ..Default::default()
+    });
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        let before = renderer.gpu.upload_creations.snapshot();
+        let result = renderer.prepare(&frame);
+        let after = renderer.gpu.upload_creations.snapshot();
+        assert!(
+            after[1] - before[1] <= 1,
+            "one slice, even at image boundaries"
+        );
+        match result {
+            Ok(prepared) => {
+                drop(prepared);
+                break;
+            }
+            Err(error) => assert!(error.is_retryable(), "{error:?}"),
+        }
+        assert!(renderer.has_pending());
+        assert!(renderer.has_pending_image_uploads());
+        renderer
+            .gpu
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        renderer.poll().unwrap();
+        assert!(!renderer.has_pending_image_uploads());
+        assert!(attempts <= 97);
+    }
+    assert_eq!(attempts, 97); // 96 slices followed by the admitted ready frame.
+    assert_eq!(renderer.gpu.upload_creations.snapshot(), [3, 96, 96]);
+    for handle in handles {
+        assert!(registry.retire(handle));
+    }
+    drop(frame);
+    renderer.poll().unwrap();
+    assert_eq!(renderer.usage().resources, 0);
+    assert_eq!(renderer.usage().transient, 0);
+
+    let (candidate, _, _) = image_restore_fixture([64, 64], true);
+    assert!(matches!(
+        renderer.prepare(&candidate),
+        Err(GpuError::Pressure { .. })
+    ));
+    assert!(renderer.usage().resources > 0);
+    // Replacing the candidate drops its Partial; submitted staging lives only to completion.
+    let plain = frame_from_widget(
+        RecordWidget::new(Scene::new()),
+        empty_snapshot(&pool()),
+        &pool(),
+    );
+    assert!(matches!(renderer.prepare(&plain), Err(GpuError::Busy)));
+    drop(candidate);
+    renderer
+        .gpu
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    renderer.poll().unwrap();
+    assert_eq!(renderer.usage().resources, 0);
+    assert_eq!(renderer.usage().transient, 0);
 }
 
 #[test]
@@ -1284,8 +1367,14 @@ fn capture_global_transition_keeps_old_content_when_new_content_is_excluded() {
         .unwrap();
     while !build.step(step_budget()).unwrap().complete {}
     let frame = build.finish().unwrap();
-    let images =
-        crate::gpu::image_plan::collect(std::iter::once(&frame), 8192, true, |_| Ok(())).unwrap();
+    let images = crate::gpu::image_plan::collect(
+        std::iter::once(&frame),
+        8192,
+        true,
+        |_| Ok(()),
+        |_| Ok(()),
+    )
+    .unwrap();
     assert_eq!(
         images.len(),
         3,

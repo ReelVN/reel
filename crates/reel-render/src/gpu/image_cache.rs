@@ -143,11 +143,27 @@ impl ImageCache {
             })
         };
         let mut deferred = None;
+        let mut work_remaining = gpu.limits.image_upload_bytes_per_prepare;
+        let mut converted = false;
         for item in required {
             let handle = item.source.handle();
             if images.contains_key(&handle) {
                 continue;
             }
+            let staging_limit = if let ResourceData::Image { image, .. } = item.source.data() {
+                let row = resources::row_bytes(image.width);
+                if converted && work_remaining < row {
+                    deferred = Some(GpuError::Pressure {
+                        domain: "image upload slice",
+                        requested: row,
+                        available: work_remaining,
+                    });
+                    break;
+                }
+                work_remaining.max(row)
+            } else {
+                item.staging
+            };
             let mut recycled = match item.source.data() {
                 ResourceData::Yuv420(image) => self.recycle_video(image.size()),
                 _ => None,
@@ -158,9 +174,9 @@ impl ImageCache {
                 item.resident
             };
             let minimum = resident + item.minimum_staging;
-            // Prefer a single copy when evictable cache entries provide room;
-            // only the minimum row is an admission requirement.
-            let preferred = resident + item.staging;
+            // Evict for this slice, rather than a whole-image staging buffer.
+            // Only the minimum row is an admission requirement.
+            let preferred = resident + item.staging.min(staging_limit);
             glyphs.make_room(pool, preferred, limit);
             self.make_room(pool, preferred, limit);
             let available = limit.saturating_sub(pool.usage().bytes);
@@ -177,6 +193,7 @@ impl ImageCache {
                 encoding,
             } = item.source.data()
             {
+                let row_bytes = resources::row_bytes(source.width);
                 if let Entry::Vacant(entry) = partial.entry(handle) {
                     let storage = reserve(
                         &budgets.transient,
@@ -203,7 +220,7 @@ impl ImageCache {
                 let count = resources::rows_per_upload(
                     pending.image.size,
                     pending.next_row,
-                    limit.saturating_sub(pool.usage().bytes),
+                    limit.saturating_sub(pool.usage().bytes).min(staging_limit),
                 );
                 if count == 0 {
                     deferred = Some(GpuError::Pressure {
@@ -230,6 +247,8 @@ impl ImageCache {
                     &pending.image,
                     pending.next_row..next_row,
                 )?;
+                work_remaining = work_remaining.saturating_sub(row_bytes * u64::from(count));
+                converted = true;
                 uploaded.push(Copy {
                     _image: pending.image.clone(),
                     source: item.source.clone(),
