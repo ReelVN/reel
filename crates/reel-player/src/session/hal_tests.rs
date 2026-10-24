@@ -1,13 +1,17 @@
 use super::tests::{mount, mouse, session};
 use crate::{
-    aside_session::AsideSessionUi, platform::PlatformHost, presentation::Presentation,
+    aside_session::AsideSessionUi,
+    hal::{DisplayMetrics, PlatformHost, WindowControl},
+    player::{Player, PlayerOptions},
+    presentation::Presentation,
     story_runtime::StoryRuntime,
 };
 use reel_core::{
-    budget::{BudgetCategory, BudgetPool, QueueLimits},
-    clock::MonoTime,
+    budget::{BudgetCategory, BudgetPool, OwnedBytes, QueueLimits},
+    clock::{Clock, MonoTime, UnixMillis},
     identity::ResourceVersion,
     result::Rejected,
+    window::{WindowConfiguration, WindowInfo, WindowSize},
 };
 use reel_engine::aside::{SliceBudget, VmLimits};
 use reel_render::*;
@@ -16,12 +20,32 @@ use reel_ui::{
     resources::{ColorEncoding, ResourceSnapshot},
 };
 
-#[derive(Default)]
 struct Host {
     presents: usize,
     redraws: usize,
     deadline: Option<MonoTime>,
     exited: bool,
+    metrics: DisplayMetrics,
+    now: MonoTime,
+    visible: bool,
+    title: String,
+}
+impl Default for Host {
+    fn default() -> Self {
+        Self {
+            presents: 0,
+            redraws: 0,
+            deadline: None,
+            exited: false,
+            metrics: DisplayMetrics {
+                physical_size: [640, 420],
+                scale_factor: 1.,
+            },
+            now: MonoTime(0),
+            visible: false,
+            title: String::new(),
+        }
+    }
 }
 impl PlatformHost for Host {
     fn request_redraw(&mut self) {
@@ -37,11 +61,60 @@ impl PlatformHost for Host {
         self.exited = true;
     }
 }
+impl Clock for Host {
+    fn monotonic_now(&self) -> MonoTime {
+        self.now
+    }
+    fn wall_time(&self) -> Option<UnixMillis> {
+        None
+    }
+}
+impl WindowControl for Host {
+    fn window_info(&mut self) -> WindowInfo {
+        let size = WindowSize {
+            width: f64::from(self.metrics.physical_size[0]) / self.metrics.scale_factor,
+            height: f64::from(self.metrics.physical_size[1]) / self.metrics.scale_factor,
+        };
+        WindowInfo {
+            size,
+            windowed_size: size,
+            scale_factor: self.metrics.scale_factor,
+            ..Default::default()
+        }
+    }
+    fn configure_window(&mut self, _: WindowConfiguration) -> Result<bool, String> {
+        Err("display configuration is unsupported by this test host".into())
+    }
+    fn window_resized(&mut self) -> bool {
+        true
+    }
+    fn move_pointer(&mut self, _: [f64; 2]) -> Result<bool, String> {
+        Ok(false)
+    }
+}
+impl crate::hal::Host for Host {
+    fn display_metrics(&self) -> DisplayMetrics {
+        self.metrics
+    }
+    fn set_title(&mut self, title: &str) {
+        self.title = title.into();
+    }
+    fn set_visible(&mut self, visible: bool) {
+        self.visible = visible;
+    }
+    fn wake_callback(&self) -> std::sync::Arc<dyn Fn() + Send + Sync> {
+        std::sync::Arc::new(|| {})
+    }
+    fn ui_signal_handler(&self) -> impl FnMut(reel_ui::app::RenderRootSignal) + 'static {
+        |_| {}
+    }
+}
 struct Backend {
     inner: RecordingBackend,
     refusal: Option<RenderError>,
     polls: usize,
     resources_available: bool,
+    configurations: Vec<SurfaceInfo>,
 }
 impl RenderBackend for Backend {
     type Error = RenderError;
@@ -49,7 +122,9 @@ impl RenderBackend for Backend {
         self.inner.capabilities()
     }
     fn configure(&mut self, info: SurfaceInfo) -> Result<(), RenderError> {
-        self.inner.configure(info)
+        self.inner.configure(info)?;
+        self.configurations.push(info);
+        Ok(())
     }
     fn upload(&mut self, batch: UploadBatch) -> Result<UploadId, Rejected<UploadBatch>> {
         self.inner.upload(batch)
@@ -83,6 +158,22 @@ impl RenderBackend for Backend {
         self.inner.suspend();
     }
 }
+impl capture::CaptureBackend for Backend {
+    type Error = RenderError;
+    type Capture = ();
+    fn capture(
+        &mut self,
+        _: &RenderFrame,
+        _: [u32; 2],
+        _: &BudgetPool,
+        _: reel_core::wake::WakeSignal,
+    ) -> Result<(), RenderError> {
+        Err(RenderError::ResourcesUnavailable)
+    }
+    fn poll_capture(&mut self, _: &mut ()) -> Result<Option<capture::CapturedPixels>, RenderError> {
+        Err(RenderError::ResourcesUnavailable)
+    }
+}
 fn settle(story: &mut StoryRuntime, ns: u64) {
     for _ in 0..10_000 {
         story.tick(SliceBudget::default(), || ns).unwrap();
@@ -91,6 +182,218 @@ fn settle(story: &mut StoryRuntime, ns: u64) {
         }
     }
     panic!("story work did not settle");
+}
+
+#[test]
+fn shared_player_applies_preconfigured_fonts_gates_input_and_resumes_resized_surface() {
+    use crate::assets::{AssetOptions, Assets, ImageExecutor};
+    use reel_core::{
+        identity::{AssetKey, ContentVersion, Scope},
+        result::Terminal,
+        test_support::{MemoryAsset, MemoryAssetIo},
+    };
+    use std::{cell::RefCell, rc::Rc};
+    const FONT: &[u8] = include_bytes!("../../tests/fixtures/font-weight/400.ttf");
+    let limits = QueueLimits {
+        max_requests: 16,
+        max_bytes: 8 << 20,
+    };
+    let pool = BudgetPool::new(BudgetCategory::CpuInput, limits);
+    let mut reads = None;
+    let assets = Assets::with_adapters(AssetOptions::default(), |wake| {
+        let mut io = MemoryAssetIo::new(limits, limits, wake.clone());
+        io.insert_asset(
+            ResourceVersion {
+                key: AssetKey("body.ttf".into()),
+                version: ContentVersion([1; 32]),
+            },
+            MemoryAsset {
+                bytes: OwnedBytes::new(FONT.to_vec(), pool.reserve(FONT.len() as u64).unwrap())
+                    .unwrap(),
+                media_type: None,
+            },
+        )
+        .unwrap();
+        let io = Rc::new(RefCell::new(io));
+        reads = Some(io.clone());
+        (
+            Box::new(crate::images::tests::ControlledIo(io)),
+            Box::new(ImageExecutor::new(limits, wake)),
+        )
+    });
+    let reads = reads.unwrap();
+    let mut driver = AsideSessionUi::from_source(
+        session(),
+        r#"fn main() {
+            game.configure(title: "Portable lifecycle", fonts: ["body.ttf"]);
+            stage.replace(button(width: 180, height: 60, on_click: |event| {
+                await run(tween(event.target, x: 100, duration: 1));
+            }));
+        }"#,
+        "portable_lifecycle",
+        1,
+        "main",
+        "en",
+        VmLimits::default(),
+    )
+    .unwrap()
+    .with_assets(assets);
+    for _ in 0..1000 {
+        driver.tick(SliceBudget::default(), 256, || 0).unwrap();
+        if driver.adapter().stage().root().is_some() && !driver.has_runnable_tasks() {
+            break;
+        }
+    }
+    assert_eq!(driver.adapter().game_settings().fonts, ["body.ttf"]);
+    assert!(driver.adapter().stage().root().is_some());
+    let backend = Backend {
+        inner: RecordingBackend::new(ConsumerLimits {
+            max_uploads: 1,
+            max_resources: 4,
+            max_frames: 2,
+            max_events: 16,
+            max_upload_bytes: 1 << 20,
+            max_retained_bytes: 1 << 20,
+            max_metadata_bytes: 8192,
+            max_fixed_bytes: 16384,
+        })
+        .unwrap(),
+        refusal: None,
+        polls: 0,
+        resources_available: false,
+        configurations: Vec::new(),
+    };
+    let mut host = Host::default();
+    let mut player = Player::new(
+        driver,
+        backend,
+        &mut host,
+        &PlayerOptions {
+            logical_size: Some([640, 420]),
+            canvas_size: Some([640, 420]),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    for _ in 0..64 {
+        player.tick(&mut host).unwrap();
+    }
+    assert!(player.settings_pending());
+    assert!(!player.font_requests.is_empty());
+    assert!(!player.session.as_ref().unwrap().needs_tick());
+    for kind in ["move", "down", "up"] {
+        player.dispatch_pointer(mouse(kind, (50., 30.))).unwrap();
+    }
+    assert!(
+        !player.session.as_ref().unwrap().needs_tick(),
+        "public input cannot wake author callbacks while fonts are pending"
+    );
+    player.render(&mut host).unwrap();
+    assert!(!host.visible);
+    assert_eq!(host.presents, 0);
+    for _ in 0..1000 {
+        while reads.borrow_mut().complete_next_read() {}
+        player.tick(&mut host).unwrap();
+        if !player.settings_pending() {
+            break;
+        }
+    }
+    assert!(!player.settings_pending(), "completed font must be applied");
+    assert_eq!(player.active_fonts, ["body.ttf"]);
+    assert!(player.font_requests.is_empty());
+    assert_eq!(host.title, "Portable lifecycle");
+
+    // The recording consumer requires explicit upload completion, just as its
+    // presentation contract requires explicit completion of submitted frames.
+    let font = player.resources[0].clone();
+    let reel_ui::resources::ResourceData::Font(data) = font.data() else {
+        panic!("font resource");
+    };
+    let bytes = OwnedBytes::new(
+        data.as_ref().to_vec(),
+        pool.reserve(data.len() as u64).unwrap(),
+    )
+    .unwrap();
+    let items = vec![UploadItem {
+        resource: font,
+        payload: UploadPayload::Font { bytes },
+    }];
+    let storage = pool
+        .reserve((items.capacity() * size_of::<UploadItem>()) as u64)
+        .unwrap();
+    let upload = player
+        .backend
+        .upload(UploadBatch {
+            items,
+            scope: Scope::Process,
+            storage,
+        })
+        .unwrap();
+    assert!(
+        player
+            .backend
+            .inner
+            .complete_upload(upload, Terminal::Completed(()))
+    );
+    player.render(&mut host).unwrap();
+    assert!(host.visible);
+    assert_eq!(host.presents, 1);
+    let accepted = player.presentation.bridge.accepted_key().unwrap().clone();
+    let first = player.backend.inner.last_submission().unwrap();
+    assert!(player.backend.inner.complete_render(first));
+    player.poll_completions().unwrap();
+    for kind in ["move", "down", "up"] {
+        player.dispatch_pointer(mouse(kind, (50., 30.))).unwrap();
+    }
+    for _ in 0..64 {
+        player.tick(&mut host).unwrap();
+    }
+    host.now = MonoTime(250_000_000);
+    player.tick(&mut host).unwrap();
+    let x = |player: &mut Player<Backend>| {
+        player
+            .story_mut()
+            .unwrap()
+            .driver()
+            .adapter()
+            .stage()
+            .nodes()
+            .next()
+            .unwrap()
+            .props
+            .x
+    };
+    assert_eq!(x(&mut player), 25.);
+    player.suspend(&mut host).unwrap();
+    assert!(player.presentation.bridge.accepted_key().is_none());
+    let configurations = player.backend.configurations.len();
+    host.metrics = DisplayMetrics {
+        physical_size: [800, 600],
+        scale_factor: 1.25,
+    };
+    let metrics = host.metrics;
+    player.resize(&mut host, metrics).unwrap();
+    assert_eq!(player.backend.configurations.len(), configurations);
+    player.render(&mut host).unwrap();
+    assert_eq!(host.presents, 1);
+    assert!(player.presentation.bridge.accepted_key().is_none());
+    host.now = MonoTime(10_250_000_000);
+    player.resume(&mut host).unwrap();
+    assert_eq!(player.backend.configurations.len(), configurations + 1);
+    let restored = player.backend.configurations.last().unwrap();
+    assert_eq!(restored.physical_size, [800, 600]);
+    assert_eq!(restored.scale_factor, 1.25);
+    player.tick(&mut host).unwrap();
+    assert_eq!(x(&mut player), 25., "suspension freezes animation time");
+    player.render(&mut host).unwrap();
+    assert_eq!(host.presents, 2);
+    assert_ne!(
+        player.presentation.bridge.accepted_key().unwrap(),
+        &accepted
+    );
+    host.now = MonoTime(10_500_000_000);
+    player.tick(&mut host).unwrap();
+    assert_eq!(x(&mut player), 50.);
 }
 
 #[test]
@@ -138,6 +441,7 @@ fn portable_host_runs_story_with_real_frames_input_refusal_suspend_and_close() {
         refusal: None,
         polls: 0,
         resources_available: false,
+        configurations: Vec::new(),
     };
     backend.configure(info).unwrap();
     let pool = BudgetPool::new(

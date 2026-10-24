@@ -25,5 +25,9 @@ mp4 = { version = "=0.14.0", optional = true }
 [target.'cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))'.dependencies]
 cpal = { version = "=0.18.2", default-features = false, features = ["realtime"], optional = true }
 
-[lints]
-workspace = true
+[target.'cfg(target_os = "vita")'.dependencies]
+vitasdk-sys = { version = "=0.3.3", features = ["SceAudiodec_stub"] }
+
+[lints.rust]
+# Native SDK calls are confined to private target modules; portable code denies unsafe.
+unsafe_code = "deny"

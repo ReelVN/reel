@@ -371,7 +371,6 @@ impl AsideSessionUi {
     pub fn transitions_pending(&self) -> bool {
         self.transitions.pending()
     }
-    #[cfg(feature = "window")]
     pub(crate) fn frame_ready(&self) -> bool {
         (self.vm.stage_ready()
             || (self.vm.virtual_feedback_ready()

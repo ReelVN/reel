@@ -1,18 +1,12 @@
 //! Automatic storage selection. Both storage kinds use the original Kira queue.
 use super::*;
-use reel_audio::sound::{
-    static_sound::{FrameSource, FrameStorage, StreamStatus},
-    streaming::{
-        Decoder,
-        symphonia::{AudioRead, SymphoniaDecoder},
-    },
-};
+use reel_audio::sound::static_sound::{FrameSource, FrameStorage, StreamStatus};
 use std::sync::{
     Mutex,
     atomic::{AtomicBool, AtomicU64, AtomicUsize},
 };
 
-const READER_BYTES: u64 = 64 << 10;
+use crate::decode::{AudioDecoder, AudioDecoderFactory, MediaRead};
 struct Slot {
     index: AtomicUsize,
     pcm: AtomicU64,
@@ -22,7 +16,7 @@ struct Window {
     status: Arc<StreamStatus>,
     wanted: AtomicUsize,
     serial: AtomicU64,
-    stopped: AtomicBool,
+    stopped: Arc<AtomicBool>,
     _residency: Arc<Residency>,
 }
 struct Lease {
@@ -78,8 +72,8 @@ impl Window {
         );
         slot.index.store(index, Ordering::SeqCst);
     }
-    fn run(&self, mut decoder: SymphoniaDecoder, mut scratch: BudgetTicket) -> Result<(), String> {
-        let mut packet = Vec::<Frame>::new();
+    fn run(&self, mut decoder: Box<dyn AudioDecoder>) -> Result<(), String> {
+        let mut packet_len = 0usize;
         let mut packet_start = 0usize;
         let mut next = 0usize;
         let mut serial = self.serial.load(Ordering::Acquire);
@@ -94,14 +88,15 @@ impl Window {
             if request != serial || (outside && seeking_to.is_none()) {
                 serial = request;
                 seeking_to = Some(wanted);
-                next = match decoder.seek(wanted) {
+                next = usize::try_from(match decoder.seek(wanted as u64) {
                     Ok(index) => index,
                     Err(_) if self.status.len() == usize::MAX => {
                         decoder.seek(0).map_err(|e| e.to_string())?
                     }
                     Err(error) => return Err(error.to_string()),
-                };
-                packet.clear();
+                })
+                .map_err(|_| "audio seek exceeds address space")?;
+                packet_len = 0;
                 packet_start = next;
                 eof = false;
             }
@@ -116,22 +111,8 @@ impl Window {
                 std::thread::sleep(Duration::from_millis(if idle { 8 } else { 1 }));
                 continue;
             }
-            if next >= packet_start + packet.len() {
-                drop(packet);
-                // Codec output can remain allocated between packet calls.
-                // Keep its high-water reservation until this worker retires.
-                packet = decoder
-                    .decode_reserved(|bytes| {
-                        if self.stopped.load(Ordering::Acquire) {
-                            return Err(std::io::Error::other("audio preparation cancelled"));
-                        }
-                        scratch
-                            .resize(scratch.bytes().max(READER_BYTES + bytes as u64))
-                            .map_err(|e| std::io::Error::other(e.message))
-                    })
-                    .map_err(|e| e.to_string())?;
-                packet_start = next;
-                if packet.is_empty() {
+            if next >= packet_start + packet_len {
+                if !decoder.decode(&self.stopped)? {
                     self.status.set_len(next);
                     if next == 0 {
                         return Err("audio contains no PCM frames".into());
@@ -139,16 +120,18 @@ impl Window {
                     eof = true;
                     continue;
                 }
-                scratch
-                    .resize(
-                        scratch
-                            .bytes()
-                            .max(READER_BYTES + packet.capacity() as u64 * 8),
-                    )
-                    .map_err(|e| e.message)?;
+                packet_len = decoder.pcm().len();
+                if packet_len == 0 {
+                    return Err("decoder returned an empty PCM chunk".into());
+                }
+                next.checked_add(packet_len)
+                    .filter(|&n| n < usize::MAX)
+                    .ok_or("audio timeline exceeds address space")?;
+                packet_start = next;
             }
-            let limit = (packet_start + packet.len())
+            let limit = (packet_start + packet_len)
                 .min(wanted.saturating_add(self.slots.len().saturating_sub(4)));
+            let packet = decoder.pcm();
             while next < limit {
                 if self.stopped.load(Ordering::Acquire)
                     || self.serial.load(Ordering::Acquire) != serial
@@ -156,7 +139,7 @@ impl Window {
                     break;
                 }
                 if next >= wanted {
-                    self.store(next, packet[next - packet_start]);
+                    self.store(next, packet.frame(next - packet_start));
                 }
                 next += 1;
             }
@@ -168,44 +151,103 @@ impl DecodedSound {
     /// Prepare an ordinary audio item without loading the complete encoded file.
     /// Unknown or large PCM uses the same queued transport with a bounded window.
     pub fn prepare(
-        reader: impl AudioRead + 'static,
+        reader: impl MediaRead + 'static,
         length: u64,
         pool: BudgetPool,
         static_threshold: u64,
         window_frames: usize,
         cancel: Arc<dyn Fn() + Send + Sync>,
         cancelled: &AtomicBool,
+        factory: &dyn AudioDecoderFactory,
     ) -> Result<Self, String> {
         if window_frames < 8 {
             return Err("audio stream window needs at least eight frames".into());
         }
-        let mut scratch = pool.reserve(READER_BYTES).map_err(|e| e.message)?;
-        let decoder = SymphoniaDecoder::from_reader(reader, length).map_err(|e| e.to_string())?;
-        let count = decoder.num_frames();
-        let sample_rate = decoder.sample_rate();
-        let static_bytes = u64::try_from(count).ok().and_then(|n| n.checked_mul(8));
-        if count != usize::MAX && static_bytes.is_some_and(|n| n <= static_threshold) {
-            let data = decoder
-                .into_static(|bytes| {
-                    if cancelled.load(Ordering::Acquire) {
-                        return Err(std::io::Error::other("audio preparation cancelled"));
-                    }
-                    scratch
-                        .resize(scratch.bytes().max(READER_BYTES + bytes as u64))
-                        .map_err(|e| std::io::Error::other(e.message))
-                })
-                .map_err(|e| e.to_string())?;
-            if data.frames.is_empty() {
+        if cancelled.load(Ordering::Acquire) {
+            return Err("audio preparation cancelled".into());
+        }
+        let stopped = Arc::new(AtomicBool::new(false));
+        let mut decoder = factory.open(Box::new(reader), length, pool.clone(), stopped.clone())?;
+        let info = decoder.info();
+        if info.sample_rate == 0 {
+            return Err("audio sample rate is zero".into());
+        }
+        let count = info
+            .frames
+            .map(usize::try_from)
+            .transpose()
+            .map_err(|_| "audio frame count exceeds address space")?
+            .unwrap_or(usize::MAX);
+        if info.frames.is_some() && count == usize::MAX {
+            return Err("audio frame count exceeds source timeline".into());
+        }
+        let sample_rate = info.sample_rate;
+        let static_bytes = info
+            .frames
+            .and_then(|n| n.checked_mul(size_of::<Frame>() as u64));
+        if static_bytes.is_some_and(|n| n <= static_threshold) {
+            let mut ticket = pool.reserve(0).map_err(|e| e.message)?;
+            let mut frames = Vec::<Frame>::new();
+            loop {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err("audio preparation cancelled".into());
+                }
+                if !decoder.decode(cancelled)? {
+                    break;
+                }
+                let pcm = decoder.pcm();
+                if pcm.is_empty() {
+                    return Err("decoder returned an empty PCM chunk".into());
+                }
+                let required = frames
+                    .len()
+                    .checked_add(pcm.len())
+                    .ok_or("PCM size overflow")?;
+                let capacity = if required > frames.capacity() {
+                    required.max(frames.capacity().saturating_mul(2))
+                } else {
+                    frames.capacity()
+                };
+                let peak = capacity
+                    .checked_add(if capacity > frames.capacity() {
+                        frames.capacity()
+                    } else {
+                        0
+                    })
+                    .and_then(|n| n.checked_mul(size_of::<Frame>()))
+                    .filter(|&n| n <= isize::MAX as usize)
+                    .ok_or("PCM capacity overflow")?;
+                ticket.resize(peak as u64).map_err(|e| e.message)?;
+                if capacity > frames.capacity() {
+                    frames
+                        .try_reserve_exact(capacity - frames.len())
+                        .map_err(|e| e.to_string())?;
+                }
+                ticket
+                    .resize(frames.capacity() as u64 * size_of::<Frame>() as u64)
+                    .map_err(|e| e.message)?;
+                frames.extend((0..pcm.len()).map(|i| pcm.frame(i)));
+            }
+            if frames.is_empty() {
                 return Err("audio contains no PCM frames".into());
             }
-            scratch
-                .resize(data.frames.len() as u64 * 8)
+            drop(decoder);
+            let bytes = frames.len() as u64 * size_of::<Frame>() as u64;
+            ticket
+                .resize(frames.capacity() as u64 * size_of::<Frame>() as u64 + bytes)
                 .map_err(|e| e.message)?;
+            let frames = frames.into();
+            ticket.resize(bytes).map_err(|e| e.message)?;
             (cancel)();
             return Ok(Self {
-                data,
+                data: StaticSoundData {
+                    sample_rate,
+                    frames,
+                    settings: Default::default(),
+                    slice: None,
+                },
                 budget: Arc::new(Residency {
-                    ticket: scratch,
+                    ticket,
                     release: Mutex::new(None),
                 }),
             });
@@ -240,7 +282,7 @@ impl DecodedSound {
             status: Arc::new(StreamStatus::new(count)),
             wanted: AtomicUsize::new(0),
             serial: AtomicU64::new(0),
-            stopped: AtomicBool::new(false),
+            stopped,
             _residency: budget.clone(),
         });
         let lease = Arc::new(Lease {
@@ -251,7 +293,7 @@ impl DecodedSound {
             .name("reel-audio-stream".into())
             .stack_size(512 << 10)
             .spawn(move || {
-                if let Err(error) = window.run(decoder, scratch)
+                if let Err(error) = window.run(decoder)
                     && !window.stopped.load(Ordering::Acquire)
                 {
                     window.status.fail(error);
@@ -270,9 +312,52 @@ impl DecodedSound {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "decode", not(target_os = "vita")))]
 mod tests {
     use super::*;
+    use crate::decode::{AudioDecoderFactory, PlatformAudioDecoderFactory};
+    use reel_audio::sound::streaming::{Decoder, symphonia::SymphoniaDecoder};
+    #[test]
+    fn ordinary_wave_fact_and_metadata_before_format_stay_on_the_software_path() {
+        let original = include_bytes!("../../../../examples/assets/chime.wav");
+        let oracle =
+            SymphoniaDecoder::from_reader(std::io::Cursor::new(original), original.len() as u64)
+                .unwrap();
+        let expected = (oracle.sample_rate(), oracle.num_frames());
+        drop(oracle);
+        let mut wave = original.to_vec();
+        let mut prefix = b"fact".to_vec();
+        prefix.extend(4u32.to_le_bytes());
+        prefix.extend((expected.1 as u32).to_le_bytes());
+        // These bytes are ordinary unknown WAVE metadata, not AT9 source-clock data.
+        prefix.extend(b"krSR");
+        prefix.extend(4u32.to_le_bytes());
+        prefix.extend([0; 4]);
+        wave.splice(12..12, prefix);
+        let length = wave.len() as u64;
+        wave[4..8].copy_from_slice(&(length as u32 - 8).to_le_bytes());
+        let pool = BudgetPool::new(
+            reel_core::budget::BudgetCategory::CpuOutput,
+            reel_core::budget::QueueLimits {
+                max_requests: 8,
+                max_bytes: 1 << 20,
+            },
+        );
+        let sound = DecodedSound::prepare(
+            std::io::Cursor::new(wave),
+            length,
+            pool.clone(),
+            1 << 20,
+            256,
+            Arc::new(|| {}),
+            &AtomicBool::new(false),
+            &PlatformAudioDecoderFactory,
+        )
+        .unwrap();
+        assert_eq!((sound.data.sample_rate, sound.data.num_frames()), expected);
+        drop(sound);
+        assert_eq!(pool.usage().bytes, 0);
+    }
     #[test]
     fn unknown_length_seek_past_eof_scans_once_and_publishes_actual_end() {
         let bytes = include_bytes!("../../../../examples/assets/chime.wav").to_vec();
@@ -301,12 +386,20 @@ mod tests {
             status: Arc::new(StreamStatus::new(usize::MAX)),
             wanted: AtomicUsize::new(expected + 100_000),
             serial: AtomicU64::new(1),
-            stopped: AtomicBool::new(false),
+            stopped: Arc::new(AtomicBool::new(false)),
             _residency: residency,
         });
         let worker = window.clone();
-        let scratch = pool.reserve(READER_BYTES).unwrap();
-        let handle = std::thread::spawn(move || worker.run(decoder, scratch));
+        drop(decoder);
+        let decoder = PlatformAudioDecoderFactory
+            .open(
+                Box::new(std::io::Cursor::new(bytes.clone())),
+                bytes.len() as u64,
+                pool.clone(),
+                window.stopped.clone(),
+            )
+            .unwrap();
+        let handle = std::thread::spawn(move || worker.run(decoder));
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         while window.status.len() == usize::MAX {
             if std::time::Instant::now() >= deadline {
@@ -341,6 +434,7 @@ mod tests {
                 4096,
                 Arc::new(|| {}),
                 &AtomicBool::new(false),
+                &PlatformAudioDecoderFactory,
             )
             .unwrap();
             let deadline = std::time::Instant::now() + Duration::from_secs(3);

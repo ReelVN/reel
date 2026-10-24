@@ -7,7 +7,7 @@ use h264_reader::nal::{
 use mp4::{Mp4Reader, Mp4Track, TrackType};
 use openh264::{decoder::Decoder, formats::YUVSource};
 pub use playback::*;
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, Seek, SeekFrom};
 use symphonia::core::{
     audio::{Audio, AudioBuffer, GenericAudioBufferRef, conv::FromSample, sample::Sample},
     codecs::audio::{AudioCodecParameters, AudioDecoder, well_known::CODEC_ID_AAC},
@@ -15,8 +15,7 @@ use symphonia::core::{
     units::{Duration, Timestamp},
 };
 
-pub trait MediaRead: Read + Seek + Send {}
-impl<T: Read + Seek + Send> MediaRead for T {}
+pub use crate::decode::MediaRead;
 
 pub use reel_core::image::{Yuv420Layout, YuvColor, YuvMatrix, YuvTransfer};
 /// Owned top-down 8-bit YUV 4:2:0; no decoder-owned pointers escape.

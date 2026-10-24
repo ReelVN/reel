@@ -11,6 +11,10 @@ cancellation checkpoints, pending seek publication, interpolation-preserving
 PCM queues and worker-backed frame windows. Native device output and physical
 PCM retirement are owned by `reel-media`.
 
+The host reader contract is codec-independent. Shared source timelines, decoder
+factories and the static/window preparation policy are maintained in `reel-media`;
+the Symphonia packet decoder keeps its reservation and cancellation checkpoints.
+
 `tests/fixtures/short-tone.mp3` is an original synthetic 660 Hz tone under the
 crate license. Its priming/padding packets exercise zero-frame decode and EOF.
 Reproduce it with FFmpeg 9.0/libmp3lame:

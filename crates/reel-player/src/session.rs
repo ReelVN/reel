@@ -1044,11 +1044,9 @@ impl SessionUi {
             self.stage_dirty = true;
         }
     }
-    #[cfg(feature = "window")]
     pub(crate) fn has_stage_root(&self) -> bool {
         self.stage.as_ref().is_some_and(StageView::has_root)
     }
-    #[cfg(feature = "window")]
     pub(crate) fn images_need_poll(&self) -> bool {
         self.images_pending() || self.images.has_result_pending()
     }

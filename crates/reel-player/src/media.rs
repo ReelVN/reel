@@ -16,8 +16,21 @@ use std::{
     time::Duration,
 };
 
+#[cfg(all(
+    feature = "audio-output",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+mod platform;
+#[cfg(all(
+    feature = "audio-output",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+pub use platform::desktop;
+
 #[derive(Clone, Debug)]
 pub struct MediaOptions {
+    /// Background codec selection; playback and content positions stay shared.
+    pub decoder: Arc<dyn decode::AudioDecoderFactory>,
     pub mixer: MixerLimits,
     pub pcm_bytes: u64,
     pub static_pcm_threshold_bytes: u64,
@@ -29,6 +42,7 @@ pub struct MediaOptions {
 impl Default for MediaOptions {
     fn default() -> Self {
         Self {
+            decoder: Arc::new(decode::PlatformAudioDecoderFactory),
             mixer: MixerLimits::default(),
             pcm_bytes: 256 << 20,
             static_pcm_threshold_bytes: 8 << 20,
@@ -247,6 +261,7 @@ impl MediaPlayer {
                 max_bytes: options.pcm_bytes,
             },
         );
+        let decoder = options.decoder.clone();
         let mut player = Self {
             #[cfg(feature = "video")]
             movies: video::Movies::new(&options.video),
@@ -269,7 +284,7 @@ impl MediaPlayer {
             worker: Worker::new(
                 queue,
                 wake,
-                |mut request: Decode, cancelled| {
+                move |mut request: Decode, cancelled| {
                     let control = request.control.clone();
                     let cancel_control = control.clone();
                     let sound =
@@ -286,6 +301,7 @@ impl MediaPlayer {
                                     request.window,
                                     Arc::new(move || cancel_control.cancel()),
                                     cancelled,
+                                    decoder.as_ref(),
                                 )
                             });
                     if sound.is_err() {
@@ -317,17 +333,6 @@ impl MediaPlayer {
             player.failure = Some(error);
         }
         player
-    }
-    #[cfg(all(
-        feature = "audio-output",
-        any(target_os = "windows", target_os = "linux", target_os = "macos")
-    ))]
-    pub fn desktop(assets: Assets, options: MediaOptions, wake: WakeSignal) -> Self {
-        Self::new(assets, options, wake, |wake| {
-            CpalOutput::new(wake, reel_core::clock::MonoTime(0))
-                .map(|output| Box::new(output) as Box<dyn AudioOutput>)
-                .map_err(|e| e.to_string())
-        })
     }
     fn initialize(&mut self) -> Result<(), String> {
         if let Some(error) = &self.failure {

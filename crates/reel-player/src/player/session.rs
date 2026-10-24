@@ -1,9 +1,7 @@
-//! The native shell shares one session projection and event path across hosts.
-use crate::{
-    aside_session::AsideSessionUi,
-    session::{SessionHostDiagnostic, SessionUi},
-    story_runtime::StoryRuntime,
-};
+//! Session projection and event dispatch shared by platform hosts.
+#[cfg(feature = "window")]
+use crate::session::SessionHostDiagnostic;
+use crate::{aside_session::AsideSessionUi, session::SessionUi, story_runtime::StoryRuntime};
 use reel_engine::aside::SliceBudget;
 use reel_ui::{
     bridge::PresentationBridge,
@@ -12,7 +10,8 @@ use reel_ui::{
 
 type Error = Box<dyn std::error::Error>;
 
-pub(crate) enum WindowSession {
+pub(crate) enum PlayerSession {
+    #[cfg(feature = "window")]
     Diagnostic(Box<SessionHostDiagnostic>),
     Aside {
         story: Box<StoryRuntime>,
@@ -20,9 +19,17 @@ pub(crate) enum WindowSession {
     },
 }
 
-impl WindowSession {
+impl PlayerSession {
+    pub(crate) fn story_mut(&mut self) -> Option<&mut StoryRuntime> {
+        match self {
+            Self::Aside { story, .. } => Some(story),
+            #[cfg(feature = "window")]
+            Self::Diagnostic(_) => None,
+        }
+    }
     pub(crate) fn initial_frame_ready(&self) -> bool {
         match self {
+            #[cfg(feature = "window")]
             Self::Diagnostic(_) => true,
             Self::Aside { story, .. } => {
                 !story.driver().ui().images_pending()
@@ -49,6 +56,7 @@ impl WindowSession {
     ) -> Option<&std::sync::Arc<reel_engine::aside::GameSettings>> {
         match self {
             Self::Aside { story, .. } => Some(story.driver().adapter().game_settings()),
+            #[cfg(feature = "window")]
             Self::Diagnostic(_) => None,
         }
     }
@@ -58,6 +66,7 @@ impl WindowSession {
         event: PointerEvent,
     ) -> Result<Handled, Error> {
         match self {
+            #[cfg(feature = "window")]
             Self::Diagnostic(host) => Ok(host.ui.handle_pointer(bridge, event)?.handled),
             Self::Aside { story, hover } => {
                 // Capture owns the immutable session. Retain just the latest mouse
@@ -81,6 +90,7 @@ impl WindowSession {
         event: TextEvent,
     ) -> Result<Handled, Error> {
         match self {
+            #[cfg(feature = "window")]
             Self::Diagnostic(host) => Ok(host.ui.handle_text(bridge, event)?.handled),
             Self::Aside { story, hover } => {
                 *hover = None;
@@ -97,6 +107,7 @@ impl WindowSession {
 
     pub(crate) fn ui(&self) -> &SessionUi {
         match self {
+            #[cfg(feature = "window")]
             Self::Diagnostic(host) => &host.ui,
             Self::Aside { story, .. } => story.driver().ui(),
         }
@@ -104,6 +115,7 @@ impl WindowSession {
 
     pub(crate) fn ui_mut(&mut self) -> Result<&mut SessionUi, Error> {
         Ok(match self {
+            #[cfg(feature = "window")]
             Self::Diagnostic(host) => &mut host.ui,
             Self::Aside { story, .. } => story.driver_mut()?.ui_mut(),
         })
@@ -115,6 +127,7 @@ impl WindowSession {
         root: WidgetId,
     ) -> Result<(), Error> {
         match self {
+            #[cfg(feature = "window")]
             Self::Diagnostic(host) => host.after_input(bridge, root),
             Self::Aside { story, .. } => {
                 story.driver_mut()?.sync_input(bridge, root)?;
@@ -130,6 +143,7 @@ impl WindowSession {
         root: WidgetId,
     ) -> Result<(), Error> {
         match self {
+            #[cfg(feature = "window")]
             Self::Diagnostic(host) => host.ui.sync(bridge, root),
             Self::Aside { story, .. } if story.capturing() => Ok(()),
             Self::Aside { story, hover } => {
@@ -159,12 +173,14 @@ impl WindowSession {
         Error,
     > {
         match self {
+            #[cfg(feature = "window")]
             Self::Diagnostic(host) => host.ui.record(bridge, root, id).map(Some),
             Self::Aside { story, .. } => story.driver().record(bridge, root, id),
         }
     }
     pub(crate) fn frame_ready(&self) -> bool {
         match self {
+            #[cfg(feature = "window")]
             Self::Diagnostic(_) => true,
             Self::Aside { story, .. } => story.driver().frame_ready(),
         }
@@ -177,6 +193,7 @@ impl WindowSession {
         accepted_host_ns: u64,
     ) -> Result<(), Error> {
         match self {
+            #[cfg(feature = "window")]
             Self::Diagnostic(host) => {
                 host.ui.presented(bridge, frame);
             }
@@ -189,24 +206,26 @@ impl WindowSession {
     pub(crate) fn transition_resources(&self) -> &[reel_ui::resources::ResourceLease] {
         match self {
             Self::Aside { story, .. } => story.driver().transition_resources(),
+            #[cfg(feature = "window")]
             Self::Diagnostic(_) => &[],
         }
     }
     pub(crate) fn needs_tick(&self) -> bool {
         match self {
             Self::Aside { story, .. } => story.needs_tick(),
+            #[cfg(feature = "window")]
             Self::Diagnostic(host) => host.ui.dialogue_needs_time(),
         }
     }
     pub(crate) fn suspend(&mut self, now: u64) -> Result<(), Error> {
         self.ui_mut()?.pause_dialogue();
-        if let Self::Aside { story, .. } = self {
+        if let Some(story) = self.story_mut() {
             story.suspend(now)?;
         }
         Ok(())
     }
     pub(crate) fn resume(&mut self, now: u64) {
-        if let Self::Aside { story, .. } = self {
+        if let Some(story) = self.story_mut() {
             story.resume(now);
         }
     }
@@ -217,6 +236,7 @@ impl WindowSession {
     ) -> Option<reel_core::clock::MonoTime> {
         match self {
             Self::Aside { story, .. } => story.wake_deadline(now),
+            #[cfg(feature = "window")]
             Self::Diagnostic(host) => self.needs_tick().then(|| {
                 reel_core::clock::MonoTime(now.0.saturating_add(
                     u64::try_from(host.ui.dialogue_interval(30.).as_nanos()).unwrap_or(u64::MAX),
@@ -228,11 +248,13 @@ impl WindowSession {
     pub(crate) fn tick(
         &mut self,
         budget: SliceBudget,
-        mut now: impl FnMut() -> u64,
+        now: impl FnMut() -> u64,
     ) -> Result<(), Error> {
         match self {
             Self::Aside { story, .. } => story.tick(budget, now)?,
+            #[cfg(feature = "window")]
             Self::Diagnostic(host) => {
+                let mut now = now;
                 host.ui.advance_dialogue(now(), 30.)?;
             }
         }
@@ -241,6 +263,7 @@ impl WindowSession {
 
     pub(crate) fn close(&mut self) -> Result<(), Error> {
         match self {
+            #[cfg(feature = "window")]
             Self::Diagnostic(host) => {
                 host.ui.cancel();
                 Ok(())
@@ -251,6 +274,7 @@ impl WindowSession {
 
     pub(crate) fn close_complete(&self) -> bool {
         match self {
+            #[cfg(feature = "window")]
             Self::Diagnostic(_) => true,
             Self::Aside { story, .. } => story.close_complete(),
         }
@@ -260,9 +284,14 @@ impl WindowSession {
         matches!(self, Self::Aside { story, .. } if story.driver().adapter().exit_requested())
     }
 
-    #[cfg(all(test, any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        test,
+        feature = "window",
+        any(target_os = "linux", target_os = "windows")
+    ))]
     pub(crate) fn diagnostic_step(&self) -> u8 {
         match self {
+            #[cfg(feature = "window")]
             Self::Diagnostic(host) => host.diagnostic_step(),
             Self::Aside { .. } => unreachable!("diagnostic-only fixture"),
         }
@@ -318,7 +347,7 @@ mod tests {
                     |_| Err("test has no sound output".into()),
                 ))
             });
-        let mut window = WindowSession::Aside {
+        let mut window = PlayerSession::Aside {
             story: Box::new(runtime),
             hover: None,
         };
@@ -327,7 +356,7 @@ mod tests {
         while window.needs_tick() {
             assert!(std::time::Instant::now() < deadline, "save did not settle");
             window.tick(SliceBudget::default(), || 0).unwrap();
-            if matches!(&window, WindowSession::Aside { story, .. } if story.capturing()) {
+            if matches!(&window, PlayerSession::Aside { story, .. } if story.capturing()) {
                 captured = true;
                 for x in [10., 20., 30.] {
                     window
@@ -350,7 +379,7 @@ mod tests {
                         .unwrap();
                 }
                 assert!(
-                    matches!(&window, WindowSession::Aside { story, hover: Some(PointerEvent::Move(e)) }
+                    matches!(&window, PlayerSession::Aside { story, hover: Some(PointerEvent::Move(e)) }
                     if story.capturing() && e.current.position.x == 30.)
                 );
             }
@@ -359,7 +388,7 @@ mod tests {
         }
         assert!(captured);
         assert!(
-            matches!(&window, WindowSession::Aside { story, hover: None }
+            matches!(&window, PlayerSession::Aside { story, hover: None }
             if story.driver().state() == crate::aside_session::StoryState::Finished)
         );
         assert_eq!(storage.list().unwrap().len(), 1);
@@ -388,7 +417,7 @@ mod tests {
                 VmLimits::default(),
             )
             .unwrap();
-            let mut session = WindowSession::aside(driver);
+            let mut session = PlayerSession::aside(driver);
             assert!(
                 session.check_fonts().is_ok(),
                 "main must be allowed to initialize"

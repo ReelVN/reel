@@ -1,6 +1,8 @@
 use crate::aside_session::AsideSessionUi;
-use crate::platform::PlatformHost;
-use crate::window::{PointerKind, State};
+use crate::hal::PlatformHost;
+mod diagnostic;
+mod window;
+use crate::player::{PlayerOptions, PointerKind};
 use reel_engine::{
     Epoch, Session, SessionId,
     aside::{VmLimits, source::CompiledStory},
@@ -9,6 +11,7 @@ use reel_render::RenderBackend;
 use reel_render::gpu::GpuError;
 use reel_ui::core::TextEvent;
 use std::time::{Duration, Instant};
+use window::State;
 use winit::{
     application::ApplicationHandler,
     event::{ElementState, MouseButton, WindowEvent},
@@ -24,45 +27,9 @@ pub fn run_session_host() -> Result<(), Error> {
     run_mode(Mode::SessionDiagnostic)
 }
 
-/// Native window options. An explicit logical_size overrides the first story canvas.
-pub struct StoryWindowOptions {
-    pub assets: crate::assets::AssetOptions,
-    /// Some selects archive resolution; None retains ordinary directory assets.
-    pub asset_packages: Option<Vec<std::path::PathBuf>>,
-    /// Explicit loose overrides for an archive-backed work.
-    pub asset_overlay: Option<std::path::PathBuf>,
-    /// Canonical language tags resolved through the same asset service as images and media.
-    pub catalogs: crate::localization::CatalogIndex,
-    pub media: crate::media::MediaOptions,
-    pub title: String,
-    pub locale: String,
-    pub logical_size: Option<[u32; 2]>,
-    pub canvas_size: Option<[u32; 2]>,
-    /// Host-selected user data, independent of read-only game assets.
-    pub save_directory: Option<std::path::PathBuf>,
-    pub save_bytes: u64,
-}
-impl Default for StoryWindowOptions {
-    fn default() -> Self {
-        Self {
-            assets: Default::default(),
-            asset_packages: None,
-            asset_overlay: None,
-            catalogs: Default::default(),
-            media: Default::default(),
-            title: "Reel".into(),
-            locale: "en".into(),
-            logical_size: None,
-            canvas_size: None,
-            save_directory: None,
-            save_bytes: 256 << 20,
-        }
-    }
-}
-
 /// Run a prepared story using the production window and presented-input path.
 /// On close, VM task and root retirement finishes before the native window exits.
-pub fn run_story(story: CompiledStory, options: StoryWindowOptions) -> Result<(), Error> {
+pub fn run_story(story: CompiledStory, options: PlayerOptions) -> Result<(), Error> {
     let session = Session::new(SessionId(1), Epoch(1))?;
     let assets = match &options.asset_packages {
         Some(paths) => crate::assets::Assets::packaged(
@@ -82,7 +49,7 @@ pub fn run_story(story: CompiledStory, options: StoryWindowOptions) -> Result<()
 enum Mode {
     Diagnostic,
     SessionDiagnostic,
-    Story(Box<(AsideSessionUi, StoryWindowOptions)>),
+    Story(Box<(AsideSessionUi, PlayerOptions)>),
 }
 
 fn run_mode(mode: Mode) -> Result<(), Error> {
@@ -96,7 +63,7 @@ fn run_mode(mode: Mode) -> Result<(), Error> {
                 let _ = proxy.send_event(());
             });
             let assets = driver.ui().assets();
-            let driver = driver.with_media(Box::new(crate::media::MediaPlayer::desktop(
+            let driver = driver.with_media(Box::new(crate::media::desktop(
                 assets,
                 options.media.clone(),
                 wake,
@@ -212,7 +179,7 @@ impl ApplicationHandler for App {
                     && event.physical_key
                         == winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::F5) =>
             {
-                state.backend.renderer().gpu().device.destroy();
+                state.player.backend.renderer().gpu().device.destroy();
                 state.invalidate();
                 Ok(())
             }
@@ -256,7 +223,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::Touch(touch) => state.touch_event(touch),
             WindowEvent::CursorMoved { position, .. } => {
-                state.pointer = reel_ui::dpi::PhysicalPosition::new(position.x, position.y);
+                state.player.pointer = reel_ui::dpi::PhysicalPosition::new(position.x, position.y);
                 state.pointer_event(PointerKind::Move)
             }
             WindowEvent::CursorLeft { .. } => state.pointer_event(PointerKind::Leave),
@@ -280,7 +247,7 @@ impl ApplicationHandler for App {
                     PointerKind::Up(button)
                 })
             }
-            WindowEvent::MouseWheel { delta, .. } if state.session.is_some() => {
+            WindowEvent::MouseWheel { delta, .. } if state.player.session.is_some() => {
                 let delta = match delta {
                     winit::event::MouseScrollDelta::LineDelta(x, y) => {
                         reel_ui::core::ScrollDelta::LineDelta(-x, -y)
@@ -293,7 +260,7 @@ impl ApplicationHandler for App {
                 };
                 state.pointer_event(PointerKind::Scroll(delta))
             }
-            WindowEvent::MouseWheel { delta, .. } if state.session.is_none() => {
+            WindowEvent::MouseWheel { delta, .. } if state.player.session.is_none() => {
                 let delta = match delta {
                     winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(y) * 0.1,
                     winit::event::MouseScrollDelta::PixelDelta(p) => p.y * 0.002,
@@ -301,9 +268,10 @@ impl ApplicationHandler for App {
                 state.zoom = (state.zoom + delta).clamp(0.5, 1.5);
                 let zoom = state.zoom;
                 state
+                    .player
                     .presentation
                     .bridge
-                    .edit_widget(state.root_id, |mut widget| {
+                    .edit_widget(state.player.root_id, |mut widget| {
                         widget.set_transform(reel_ui::kurbo::Affine::scale(zoom))
                     });
                 state.invalidate();
@@ -364,19 +332,20 @@ impl ApplicationHandler for App {
                 self.recover_or_fail(event_loop, Box::new(e));
                 return;
             }
-            if state.presentation.needs_redraw() {
+            if state.player.presentation.needs_redraw() {
                 state.host.request_redraw();
             }
             // Completion wake-up is bounded; no continuous redraw when idle.
-            let completion_deadline =
-                (state.presentation.needs_redraw() || state.backend.has_pending()).then(|| {
-                    let interval = if state.backend.has_pending_image_uploads() {
-                        1
-                    } else {
-                        8
-                    };
-                    Instant::now() + Duration::from_millis(interval)
-                });
+            let completion_deadline = (state.player.presentation.needs_redraw()
+                || state.player.backend.has_pending())
+            .then(|| {
+                let interval = if state.player.backend.has_pending_image_uploads() {
+                    1
+                } else {
+                    8
+                };
+                Instant::now() + Duration::from_millis(interval)
+            });
             let deadline = match (completion_deadline, state.story_deadline()) {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (a, b) => a.or(b),

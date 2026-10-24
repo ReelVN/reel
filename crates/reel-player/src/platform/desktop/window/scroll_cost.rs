@@ -62,7 +62,7 @@ fn exercise(event_loop: &ActiveEventLoop) {
     )
     .unwrap()
     .with_asset_options(assets.clone());
-    let options = StoryWindowOptions {
+    let options = PlayerOptions {
         assets,
         logical_size: Some([1280, 720]),
         save_directory: Some(
@@ -80,11 +80,11 @@ fn exercise(event_loop: &ActiveEventLoop) {
             "native gallery warmup timed out"
         );
         state.tick_story().unwrap();
-        state.presentation.exposed();
+        state.player.presentation.exposed();
         state.render().unwrap();
-        if state.presentation.bridge.accepted_key().is_some()
-            && !state.session.as_ref().unwrap().ui().images_pending()
-            && !state.session.as_ref().unwrap().needs_tick()
+        if state.player.presentation.bridge.accepted_key().is_some()
+            && !state.player.session.as_ref().unwrap().ui().images_pending()
+            && !state.player.session.as_ref().unwrap().needs_tick()
         {
             warm += 1;
         } else {
@@ -93,7 +93,7 @@ fn exercise(event_loop: &ActiveEventLoop) {
         std::thread::sleep(Duration::from_millis(1));
     }
     if std::env::var("REEL_SCROLL_VSYNC").is_ok_and(|s| s == "0") {
-        state.backend.set_vsync(false).unwrap();
+        state.player.backend.set_vsync(false).unwrap();
     }
     let interval = Duration::from_secs_f64(
         std::env::var("REEL_SCROLL_FRAME_MS")
@@ -120,7 +120,7 @@ fn exercise(event_loop: &ActiveEventLoop) {
     let mut motion_frames = 0;
     let mut motion_stalls = 0;
     let mut rejected = std::collections::BTreeMap::<&str, usize>::new();
-    state.pointer = reel_ui::dpi::PhysicalPosition::new(
+    state.player.pointer = reel_ui::dpi::PhysicalPosition::new(
         100. * state.window.scale_factor(),
         100. * state.window.scale_factor(),
     );
@@ -148,6 +148,7 @@ fn exercise(event_loop: &ActiveEventLoop) {
         let tick_time = tick.elapsed();
         max_tick = max_tick.max(tick_time);
         let old = state
+            .player
             .presentation
             .bridge
             .accepted_key()
@@ -157,6 +158,7 @@ fn exercise(event_loop: &ActiveEventLoop) {
         let render_time = draw.elapsed();
         max_render = max_render.max(render_time);
         if state
+            .player
             .presentation
             .bridge
             .accepted_key()
@@ -170,6 +172,7 @@ fn exercise(event_loop: &ActiveEventLoop) {
             accepted += 1;
             current += usize::from(
                 state
+                    .player
                     .recorded_projection
                     .as_ref()
                     .is_some_and(|p| p.current),
@@ -194,14 +197,15 @@ fn exercise(event_loop: &ActiveEventLoop) {
                     tick_time,
                     render_time,
                     state
+                        .player
                         .recorded_projection
                         .as_ref()
                         .is_some_and(|p| p.current),
-                    state.session.as_ref().unwrap().ui().images_pending(),
+                    state.player.session.as_ref().unwrap().ui().images_pending(),
                 ));
             }
         } else if std::env::var_os("REEL_SCROLL_DIAG").is_some() {
-            let WindowSession::Aside { story, .. } = state.session.as_ref().unwrap() else {
+            let PlayerSession::Aside { story, .. } = state.player.session.as_ref().unwrap() else {
                 unreachable!()
             };
             let d = story.driver();
@@ -214,7 +218,10 @@ fn exercise(event_loop: &ActiveEventLoop) {
                     "feedback_identity"
                 } else if !d
                     .ui()
-                    .virtual_feedback_visible(&mut state.presentation.bridge, state.root_id)
+                    .virtual_feedback_visible(
+                        &mut state.player.presentation.bridge,
+                        state.player.root_id,
+                    )
                     .unwrap()
                 {
                     "viewport_coverage"
@@ -251,7 +258,7 @@ fn exercise(event_loop: &ActiveEventLoop) {
 }
 
 fn accepted_position(state: &State) -> f64 {
-    let WindowSession::Aside { story, .. } = state.session.as_ref().unwrap() else {
+    let PlayerSession::Aside { story, .. } = state.player.session.as_ref().unwrap() else {
         unreachable!()
     };
     let list = story
@@ -261,9 +268,13 @@ fn accepted_position(state: &State) -> f64 {
         .nodes()
         .find(|n| matches!(n.kind, reel_ui::stage::NodeKind::VirtualList(_)))
         .unwrap();
-    let widget =
-        crate::session::SessionUi::stage_widget(&state.presentation.bridge, state.root_id).unwrap();
+    let widget = crate::session::SessionUi::stage_widget(
+        &state.player.presentation.bridge,
+        state.player.root_id,
+    )
+    .unwrap();
     let stage = state
+        .player
         .presentation
         .bridge
         .root()
@@ -272,9 +283,10 @@ fn accepted_position(state: &State) -> f64 {
         .downcast::<crate::stage_widget::StageWidget>()
         .unwrap();
     let geometry = state
+        .player
         .presentation
         .bridge
-        .accepted_geometry(state.presentation.bridge.accepted_key().unwrap())
+        .accepted_geometry(state.player.presentation.bridge.accepted_key().unwrap())
         .unwrap();
     let list = geometry.get(stage.node_widget(list.id).unwrap()).unwrap();
     list.window_transform.translation().y

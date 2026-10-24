@@ -2,9 +2,12 @@
 use super::*;
 use reel_engine::aside::window::{WindowCommand, WindowReply};
 
-impl State {
-    pub(super) fn publish_pointer_info(&mut self) -> Result<(), Error> {
-        if let Some(WindowSession::Aside { story, .. }) = &mut self.session {
+impl<B> Player<B>
+where
+    B: RenderBackend + CaptureBackend<Error = <B as RenderBackend>::Error>,
+{
+    pub(crate) fn publish_pointer_info(&mut self) -> Result<(), Error> {
+        if let Some(PlayerSession::Aside { story, .. }) = &mut self.session {
             if story.capturing() {
                 return Ok(());
             }
@@ -22,14 +25,14 @@ impl State {
         }
         Ok(())
     }
-    pub(super) fn publish_window_info(&mut self) -> Result<(), Error> {
-        let mut info = self.host.window_info();
-        info.vsync = self.backend.vsync_enabled();
+    pub(crate) fn publish_window_info(&mut self, host: &mut impl Host) -> Result<(), Error> {
+        let mut info = host.window_info();
+        info.vsync = self.backend.vsync().unwrap_or(info.vsync);
         info.capabilities.vsync = self.backend.vsync().is_some();
         if *self.window_state != info {
             self.window_state = Arc::new(info);
         }
-        if let Some(WindowSession::Aside { story, .. }) = &mut self.session {
+        if let Some(PlayerSession::Aside { story, .. }) = &mut self.session {
             story
                 .driver_mut()?
                 .adapter_mut()
@@ -37,18 +40,14 @@ impl State {
         }
         Ok(())
     }
-    pub(crate) fn monitor_changed(&mut self) -> Result<(), Error> {
-        self.publish_window_info()
-    }
-
-    pub(super) fn complete_window_change(
+    pub(crate) fn complete_window_change(
         &mut self,
         result: Result<Arc<reel_core::window::WindowInfo>, String>,
     ) -> Result<(), Error> {
         let Some(id) = self.window_request.take() else {
             return Ok(());
         };
-        if let Some(WindowSession::Aside { story, .. }) = &mut self.session
+        if let Some(PlayerSession::Aside { story, .. }) = &mut self.session
             && story
                 .driver_mut()?
                 .adapter_mut()
@@ -58,11 +57,11 @@ impl State {
         }
         Ok(())
     }
-    pub(super) fn maintain_window_requests(&mut self) -> Result<(), Error> {
-        if self.window_request.is_some() || self.closing || self.is_suspended() {
+    pub(crate) fn maintain_window_requests(&mut self, host: &mut impl Host) -> Result<(), Error> {
+        if self.window_request.is_some() || self.closing || self.presentation.is_suspended() {
             return Ok(());
         }
-        let Some(WindowSession::Aside { story, .. }) = &mut self.session else {
+        let Some(PlayerSession::Aside { story, .. }) = &mut self.session else {
             return Ok(());
         };
         if story.capturing() {
@@ -88,20 +87,20 @@ impl State {
                 } else {
                     None
                 };
-                let logical = self
-                    .window
-                    .inner_size()
-                    .to_logical::<f64>(self.window.scale_factor());
+                let metrics = host.display_metrics();
+                let [width, height] = metrics
+                    .physical_size
+                    .map(|v| f64::from(v) / metrics.scale_factor);
                 let destination = destination.filter(|[x, y]| {
                     x.is_finite()
                         && y.is_finite()
                         && *x >= 0.
                         && *y >= 0.
-                        && *x < logical.width
-                        && *y < logical.height
+                        && *x < width
+                        && *y < height
                 });
                 let result = match destination {
-                    Some(position) => self.host.move_pointer(position),
+                    Some(position) => host.move_pointer(position),
                     None => Ok(false),
                 };
                 let moved = matches!(result, Ok(true));
@@ -114,7 +113,7 @@ impl State {
                 }
                 if moved {
                     let [x, y] = destination.unwrap();
-                    let scale = self.window.scale_factor();
+                    let scale = host.display_metrics().scale_factor;
                     self.pointer = reel_ui::dpi::PhysicalPosition::new(x * scale, y * scale);
                     self.pointer_event(PointerKind::Move)?;
                     self.publish_pointer_info()?;
@@ -136,24 +135,24 @@ impl State {
                     .map_err(|error| error.to_string())?
                     .ok_or("presentation synchronization cannot be changed by this backend")?;
             }
-            self.host.configure_window(configuration)
+            host.configure_window(configuration)
         })();
         match result {
             Ok(true) => {
-                let actual = self.window.inner_size();
-                if [actual.width, actual.height] != [self.size.width, self.size.height] {
-                    self.resize(actual)?;
+                let actual = host.display_metrics().physical_size;
+                if actual != [self.size.width, self.size.height] {
+                    self.resize(host, host.display_metrics())?;
                 } else {
-                    self.publish_window_info()?;
+                    self.publish_window_info(host)?;
                     self.complete_window_change(Ok(self.window_state.clone()))?;
                 }
                 self.invalidate();
             }
             Ok(false) => {
-                self.publish_window_info()?;
+                self.publish_window_info(host)?;
             }
             Err(error) => {
-                self.publish_window_info()?;
+                self.publish_window_info(host)?;
                 self.complete_window_change(Err(error))?;
             }
         }

@@ -44,7 +44,7 @@ pub fn launch(
 ) -> Result<(), String> {
     #[cfg(feature = "window")]
     {
-        let mut options = reel_player::shell::StoryWindowOptions::default();
+        let mut options = reel_player::player::PlayerOptions::default();
         options.assets.root = root;
         options.catalogs = std::sync::Arc::new(catalogs);
         if let Some((packages, overlay)) = packages {
@@ -52,7 +52,7 @@ pub fn launch(
             options.asset_overlay = overlay;
         }
         options.save_directory = saves;
-        reel_player::shell::run_story(story, options).map_err(|error| error.to_string())
+        reel_player::platform::desktop::run_story(story, options).map_err(|error| error.to_string())
     }
     #[cfg(not(feature = "window"))]
     {

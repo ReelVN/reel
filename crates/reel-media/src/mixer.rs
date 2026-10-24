@@ -28,7 +28,6 @@ use std::{
     sync::{Arc, atomic::Ordering},
     time::Duration,
 };
-#[cfg(feature = "decode")]
 mod stream;
 
 pub(crate) struct Bridge {
