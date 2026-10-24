@@ -37,6 +37,9 @@ aside_host::native_documentation! {
         /// excluded as targets.
         /// Duration, easing and masks control the blend. The call waits for final frame
         /// acceptance and returns the original value returned by `change`.
+        /// A string mask reveals the new drawing through the image's grayscale ranks as
+        /// progress advances. A Mask expression supplies coverage directly; compose it
+        /// with mask.param("progress") when its coverage should change during the blend.
         /// Retained drawing owns resources independently of retired script nodes.
         "reel::stage::transition";
     }
