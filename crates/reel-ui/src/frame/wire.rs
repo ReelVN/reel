@@ -232,7 +232,15 @@ pub(super) mod version {
 
 pub(super) mod yuv {
     use super::*;
-    use reel_core::image::{Yuv420Image, Yuv420Storage, YuvColor, YuvMatrix, YuvTransfer};
+    use reel_core::image::{
+        Yuv420Image, Yuv420Layout, Yuv420Storage, YuvColor, YuvMatrix, YuvTransfer,
+    };
+    #[derive(Serialize, Deserialize)]
+    #[serde(remote = "Yuv420Layout")]
+    enum Layout {
+        Planar,
+        Nv12,
+    }
     #[derive(Serialize, Deserialize)]
     #[serde(remote = "YuvMatrix")]
     enum Matrix {
@@ -259,27 +267,45 @@ pub(super) mod yuv {
         size: [u32; 2],
         #[serde(with = "Color")]
         color: YuvColor,
-        planes: [&'a [u8]; 3],
+        #[serde(with = "Layout")]
+        layout: Yuv420Layout,
+        row_strides: [u32; 3],
+        planes: &'a [&'a [u8]],
     }
     #[derive(Deserialize)]
     struct Owned {
         size: [u32; 2],
         #[serde(with = "Color")]
         color: YuvColor,
-        planes: [Vec<u8>; 3],
+        #[serde(with = "Layout")]
+        layout: Yuv420Layout,
+        row_strides: [u32; 3],
+        planes: Vec<Vec<u8>>,
     }
     #[derive(Debug)]
-    struct Planes([Vec<u8>; 3]);
+    struct Planes(Vec<Vec<u8>>);
     impl Yuv420Storage for Planes {
         fn plane(&self, index: usize) -> &[u8] {
             &self.0[index]
         }
     }
     pub fn serialize<S: Serializer>(value: &Yuv420Image, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut planes: [&[u8]; 3] = [&[]; 3];
+        for (i, plane) in planes.iter_mut().enumerate().take(value.plane_count()) {
+            *plane = value.plane(i);
+        }
         Ref {
             size: value.size(),
             color: value.color(),
-            planes: [value.plane(0), value.plane(1), value.plane(2)],
+            layout: value.layout(),
+            row_strides: std::array::from_fn(|i| {
+                if i < value.plane_count() {
+                    value.row_stride(i)
+                } else {
+                    0
+                }
+            }),
+            planes: &planes[..value.plane_count()],
         }
         .serialize(serializer)
     }
@@ -287,7 +313,22 @@ pub(super) mod yuv {
         deserializer: D,
     ) -> Result<Yuv420Image, D::Error> {
         let value = Owned::deserialize(deserializer)?;
-        Yuv420Image::new(value.size, value.color, Arc::new(Planes(value.planes)))
-            .map_err(|error| serde::de::Error::custom(format!("invalid retained video: {error:?}")))
+        let expected = match value.layout {
+            Yuv420Layout::Planar => 3,
+            Yuv420Layout::Nv12 => 2,
+        };
+        if value.planes.len() != expected {
+            return Err(serde::de::Error::custom(
+                "invalid retained video plane count",
+            ));
+        }
+        Yuv420Image::with_layout(
+            value.size,
+            value.color,
+            value.layout,
+            value.row_strides,
+            Arc::new(Planes(value.planes)),
+        )
+        .map_err(|error| serde::de::Error::custom(format!("invalid retained video: {error:?}")))
     }
 }

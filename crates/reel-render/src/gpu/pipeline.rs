@@ -124,6 +124,7 @@ pub struct Pipelines {
     pub composite_layout: wgpu::BindGroupLayout,
     pub samplers: [wgpu::Sampler; 4],
     pub plain_appearance: wgpu::Buffer,
+    pub block_appearance: [wgpu::Buffer; 2],
     pub masks: super::mask::Cache,
 }
 pub(super) fn texture(binding: u32) -> wgpu::BindGroupLayoutEntry {
@@ -285,8 +286,17 @@ impl Pipelines {
         });
         let plain_appearance = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("plain image appearance"),
-            contents: &[0u8; 128],
+            contents: &[0u8; 144],
             usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let block_appearance = std::array::from_fn(|index| {
+            let mut values = [[0f32; 4]; 9];
+            values[8][2] = (index + 1) as f32;
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("fixed block texture appearance"),
+                contents: bytemuck::cast_slice(&values),
+                usage: wgpu::BufferUsages::UNIFORM,
+            })
         });
         Self {
             paint,
@@ -298,6 +308,7 @@ impl Pipelines {
             composite_layout,
             samplers,
             plain_appearance,
+            block_appearance,
             masks: super::mask::Cache::default(),
         }
     }

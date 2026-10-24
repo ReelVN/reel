@@ -161,10 +161,7 @@ impl Context<'_> {
                 }
                 let image = self.image_resource(brush.image.resource, at)?;
                 let bt = brush_transform.unwrap_or(Affine::IDENTITY);
-                let uv = Affine::scale_non_uniform(
-                    1. / f64::from(image.size[0]),
-                    1. / f64::from(image.size[1]),
-                ) * bt;
+                let uv = image.uv_transform() * bt;
                 let alpha = composite.alpha * brush.sampler.alpha;
                 (
                     image,
@@ -198,13 +195,21 @@ impl Context<'_> {
                     at,
                 )?;
                 let white = self.white()?;
-                return self.paint_mesh(target, &mesh, &white.view, [false; 2], Some(paint), None);
+                return self.paint_mesh(
+                    target,
+                    &mesh,
+                    &white.view,
+                    [false; 2],
+                    Some(paint),
+                    None,
+                    None,
+                );
             }
         };
         if let Brush::Image(brush) = brush {
-            mesh.set_image_sampling(mesh::ImageSampling::new(
+            mesh.set_image_sampling(mesh::ImageSampling::with_layout(
                 brush.image.source_rect,
-                image.size,
+                image.layout,
                 repeat,
             ));
         }
@@ -309,7 +314,15 @@ impl Context<'_> {
                 && !Arc::ptr_eq(previous, glyph_page)
             {
                 mesh::transform_glyphs(&mut batch, outer * run.transform, self.size, color, at)?;
-                self.paint_mesh(target, &batch, &previous.view, [false; 2], paint, None)?;
+                self.paint_mesh(
+                    target,
+                    &batch,
+                    &previous.view,
+                    [false; 2],
+                    paint,
+                    None,
+                    None,
+                )?;
                 batch = mesh::Mesh::new(self.mesh_allocation());
             }
             page = Some(glyph_page.clone());
@@ -343,7 +356,7 @@ impl Context<'_> {
         }
         if let Some(page) = page {
             mesh::transform_glyphs(&mut batch, outer * run.transform, self.size, color, at)?;
-            self.paint_mesh(target, &batch, &page.view, [false; 2], paint, None)?;
+            self.paint_mesh(target, &batch, &page.view, [false; 2], paint, None, None)?;
         }
         Ok(())
     }
@@ -353,7 +366,7 @@ impl Context<'_> {
         mesh: &mesh::Mesh,
         image: &wgpu::TextureView,
     ) -> Result<(), GpuError> {
-        self.paint_mesh(target, mesh, image, [false; 2], None, None)
+        self.paint_mesh(target, mesh, image, [false; 2], None, None, None)
     }
 
     pub(super) fn paint_resource(
@@ -377,6 +390,16 @@ impl Context<'_> {
             repeat,
             appearance.map(|appearance| {
                 let mut uniform = appearance_uniform(appearance);
+                uniform[8] = [
+                    image.layout.content_size[0] as f32 / image.layout.storage_size[0] as f32,
+                    image.layout.content_size[1] as f32 / image.layout.storage_size[1] as f32,
+                    match image.texture_format {
+                        Some(reel_core::texture::TextureFormat::Bc1Rgb) => 1.,
+                        Some(reel_core::texture::TextureFormat::Bc3Rgba) => 2.,
+                        _ => 0.,
+                    },
+                    0.,
+                ];
                 if uniform[4][3] == 3.
                     && image.yuv.is_none()
                     && image.encoding == reel_ui::resources::ColorEncoding::Linear
@@ -385,6 +408,7 @@ impl Context<'_> {
                 }
                 uniform
             }),
+            image.texture_format,
             image.yuv.as_ref(),
         )
     }
@@ -396,6 +420,7 @@ impl Context<'_> {
         image: &wgpu::TextureView,
         repeat: [bool; 2],
         appearance: Option<super::gradient::Uniform>,
+        texture_format: Option<reel_core::texture::TextureFormat>,
         yuv: Option<&super::video::Planes>,
     ) -> Result<(), GpuError> {
         if mesh.indices.is_empty() || self.scissor.empty() {
@@ -410,10 +435,15 @@ impl Context<'_> {
             (mesh.vertices.len() * size_of::<mesh::Vertex>() + mesh.indices.len() * 4) as u64,
         )?;
         if appearance.is_some() {
-            self.transient(128)?;
+            self.transient(144)?;
         }
         let device = &self.gpu.device;
         let appearance_buffer = appearance.map(|values| {
+            #[cfg(test)]
+            self.gpu
+                .upload_creations
+                .appearance_buffers
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("brush appearance"),
                 contents: bytemuck::cast_slice(&values),
@@ -444,7 +474,15 @@ impl Context<'_> {
         let sampler = &self.pipelines.samplers[usize::from(repeat[0]) + 2 * usize::from(repeat[1])];
         let appearance = appearance_buffer
             .as_ref()
-            .unwrap_or(&self.pipelines.plain_appearance);
+            .unwrap_or_else(|| match texture_format {
+                Some(reel_core::texture::TextureFormat::Bc1Rgb) => {
+                    &self.pipelines.block_appearance[0]
+                }
+                Some(reel_core::texture::TextureFormat::Bc3Rgba) => {
+                    &self.pipelines.block_appearance[1]
+                }
+                _ => &self.pipelines.plain_appearance,
+            });
         let base = [
             wgpu::BindGroupEntry {
                 binding: 0,
@@ -510,8 +548,8 @@ impl Context<'_> {
     }
 }
 
-fn appearance_uniform(appearance: ImageAppearance) -> [[f32; 4]; 8] {
-    let mut values = [[0.; 4]; 8];
+fn appearance_uniform(appearance: ImageAppearance) -> [[f32; 4]; 9] {
+    let mut values = [[0.; 4]; 9];
     // The ordinary shader path keeps its first branch and reads no other fields.
     let mode = if appearance.alpha_layout == reel_ui::frame::ImageAlphaLayout::TopBottom {
         3.
@@ -568,7 +606,7 @@ mod tests {
         for corners in [None, Some(gradient)] {
             let appearance = ImageAppearance::new(corners, adjustment, Default::default()).unwrap();
             let uniform = appearance_uniform(appearance);
-            assert_eq!(size_of_val(&uniform), 128);
+            assert_eq!(size_of_val(&uniform), 144);
             assert_eq!(uniform[4][3], 1.);
             assert_eq!(uniform[5][3], f32::from(corners.is_some()));
             assert_eq!(uniform[6], [1.2, 0.8, 0.5, 0.4]);

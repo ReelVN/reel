@@ -40,6 +40,8 @@ reel-package = { path = "../reel-package" }
 reel-engine = { path = "../reel-engine" }
 reel-core = { path = "../reel-core" }
 image = { workspace = true, features = ["png", "jpeg"] }
+rgbcx = "=0.1.2"
+bc-crunch = "=0.1.2"
 reel-player = { path = "../reel-player", optional = true }
 reel-storage = { path = "../reel-storage" }
 

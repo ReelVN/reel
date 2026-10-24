@@ -80,7 +80,7 @@ struct SceneNode {
 struct SceneImages {
     image: Option<ImageData>,
     image_resource: Option<ResourceLease>,
-    mask_images: Arc<[ImageData]>,
+    mask_images: Arc<[ResourceLease]>,
     tiled_size: Option<Size>,
     tiles: Vec<reel_ui::widgets::ImageTile>,
 }
@@ -92,8 +92,8 @@ impl PartialEq for SceneImages {
             && self
                 .mask_images
                 .iter()
-                .map(|i| i.data.id())
-                .eq(other.mask_images.iter().map(|i| i.data.id()))
+                .map(ResourceLease::handle)
+                .eq(other.mask_images.iter().map(ResourceLease::handle))
             && self.tiled_size == other.tiled_size
             && self.tiles.len() == other.tiles.len()
             && self
@@ -515,20 +515,34 @@ impl StageView {
             encoded,
         })
     }
-    pub fn resolve_images(&mut self, images: &BTreeMap<String, ResourceLease>) {
+    pub fn resolve_images(
+        &mut self,
+        images: &BTreeMap<String, ResourceLease>,
+    ) -> Result<(), String> {
         self.resources.clear();
+        let mut failure = None;
         let mut handles = std::collections::BTreeSet::new();
         resolve_image_nodes(&mut self.root, |node, visible| {
             let mut resolved = SceneImages::default();
             if !visible {
                 return resolved;
             }
-            if let Some((source, _)) = image_source(&node.node.kind) {
+            if let Some((source, origin)) = image_source(&node.node.kind) {
                 let lease = &images[source];
-                let ResourceData::Image { image, .. } = lease.data() else {
-                    unreachable!()
-                };
-                resolved.image = Some(image.clone());
+                if matches!(lease.data(), ResourceData::Texture { .. })
+                    && matches!(node.node.kind, NodeKind::Particles(_))
+                {
+                    failure = Some(format!(
+                        "prepared texture {source} is not supported by particle recording at {}",
+                        origin.as_deref().unwrap_or("<stage>")
+                    ));
+                    return resolved;
+                }
+                if let ResourceData::Image { image, .. } = lease.data() {
+                    resolved.image = Some(image.clone());
+                } else {
+                    resolved.image_resource = Some(lease.clone());
+                }
                 if handles.insert(lease.handle()) {
                     self.resources.push(lease.clone());
                 }
@@ -545,22 +559,24 @@ impl StageView {
                     .iter()
                     .map(|source| {
                         let lease = &images[source.as_ref()];
-                        let ResourceData::Image { image, .. } = lease.data() else {
-                            unreachable!()
-                        };
                         if handles.insert(lease.handle()) {
                             self.resources.push(lease.clone());
                         }
-                        image.clone()
+                        lease.clone()
                     })
                     .collect();
             }
             resolved
         });
+        if let Some(error) = failure {
+            return Err(error);
+        }
         self.refresh_popups();
+        Ok(())
     }
-    pub fn resolve_metadata(&mut self, images: &crate::images::Images) {
+    pub fn resolve_metadata(&mut self, images: &crate::images::Images) -> Result<(), String> {
         self.resources.clear();
+        let mut failure = None;
         let mut resources = std::collections::BTreeSet::new();
         resolve_image_nodes(&mut self.root, |node, visible| {
             let mut resolved = SceneImages::default();
@@ -573,15 +589,25 @@ impl StageView {
                     self.resources.push(lease.clone());
                 }
             }
-            if let Some((source, _)) = image_source(&node.node.kind) {
+            if let Some((source, origin)) = image_source(&node.node.kind) {
                 if let Some(manifest) = images.manifests.get(source) {
                     resolved.tiled_size =
                         Some(Size::new(manifest.width.into(), manifest.height.into()));
                 } else if let Some(lease) = images.loaded.get(source) {
-                    let ResourceData::Image { image, .. } = lease.data() else {
-                        unreachable!()
-                    };
-                    resolved.image = Some(image.clone());
+                    if matches!(lease.data(), ResourceData::Texture { .. })
+                        && matches!(node.node.kind, NodeKind::Particles(_))
+                    {
+                        failure = Some(format!(
+                            "prepared texture {source} is not supported by particle recording at {}",
+                            origin.as_deref().unwrap_or("<stage>")
+                        ));
+                        return resolved;
+                    }
+                    if let ResourceData::Image { image, .. } = lease.data() {
+                        resolved.image = Some(image.clone());
+                    } else {
+                        resolved.image_resource = Some(lease.clone());
+                    }
                     if resources.insert(lease.handle()) {
                         self.resources.push(lease.clone());
                     }
@@ -593,19 +619,20 @@ impl StageView {
                     .iter()
                     .filter_map(|source| {
                         let lease = images.loaded.get(source.as_ref())?;
-                        let ResourceData::Image { image, .. } = lease.data() else {
-                            unreachable!()
-                        };
                         if resources.insert(lease.handle()) {
                             self.resources.push(lease.clone());
                         }
-                        Some(image.clone())
+                        Some(lease.clone())
                     })
                     .collect();
             }
             resolved
         });
+        if let Some(error) = failure {
+            return Err(error);
+        }
         self.refresh_popups();
+        Ok(())
     }
     pub fn resolve_tiles(
         &mut self,
@@ -968,7 +995,7 @@ struct SceneWidget {
     image: Option<WidgetPod<Image>>,
     image_size: Size,
     particle_image: Option<ImageData>,
-    mask_images: Arc<[ImageData]>,
+    mask_images: Arc<[ResourceLease]>,
     children: Vec<(Arc<SceneProperties>, WidgetPod<SceneWidget>)>,
     size: Size,
     scroll: ScrollState,
@@ -1347,8 +1374,8 @@ impl SceneWidget {
             .widget
             .mask_images
             .iter()
-            .map(|image| image.data.id())
-            .eq(view.images.mask_images.iter().map(|image| image.data.id()))
+            .map(ResourceLease::handle)
+            .eq(view.images.mask_images.iter().map(ResourceLease::handle))
         {
             this.widget.mask_images = view.images.mask_images.clone();
             this.ctx.request_render();

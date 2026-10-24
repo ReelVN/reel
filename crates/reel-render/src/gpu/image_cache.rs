@@ -26,6 +26,7 @@ pub(super) struct ImageCache {
 struct Partial {
     image: Arc<Image>,
     next_row: u32,
+    total_rows: u32,
     _storage: Reservation,
 }
 
@@ -150,8 +151,14 @@ impl ImageCache {
             if images.contains_key(&handle) {
                 continue;
             }
-            let staging_limit = if let ResourceData::Image { image, .. } = item.source.data() {
-                let row = resources::row_bytes(image.width);
+            let row = match item.source.data() {
+                ResourceData::Image { image, .. } => Some(resources::row_bytes(image.width)),
+                ResourceData::Texture { descriptor, .. } => {
+                    Some(resources::texture_row_bytes(*descriptor))
+                }
+                _ => None,
+            };
+            let staging_limit = if let Some(row) = row {
                 if converted && work_remaining < row {
                     deferred = Some(GpuError::Pressure {
                         domain: "image upload slice",
@@ -165,7 +172,7 @@ impl ImageCache {
                 item.staging
             };
             let mut recycled = match item.source.data() {
-                ResourceData::Yuv420(image) => self.recycle_video(image.size()),
+                ResourceData::Yuv420(image) => self.recycle_video(image.size(), image.layout()),
                 _ => None,
             };
             let resident = if recycled.is_some() || partial.contains_key(&handle) {
@@ -213,6 +220,7 @@ impl ImageCache {
                     entry.insert(Partial {
                         image: Arc::new(image),
                         next_row: 0,
+                        total_rows: source.height,
                         _storage: storage,
                     });
                 }
@@ -265,6 +273,77 @@ impl ImageCache {
                     });
                     break;
                 }
+            } else if let ResourceData::Texture { descriptor, .. } = item.source.data() {
+                let row_bytes = resources::texture_row_bytes(*descriptor);
+                if let Entry::Vacant(entry) = partial.entry(handle) {
+                    let storage = reserve(
+                        &budgets.transient,
+                        &local.transient,
+                        (size_of::<Partial>() + 4 * size_of::<ResourceHandle>()) as u64,
+                        gpu.limits.transient_bytes,
+                        "partial texture upload",
+                    )?;
+                    let residency = reserve_gpu(item.resident)?;
+                    let mut image = resources::create_texture(gpu, *descriptor, item.at)?;
+                    image.residency = Some(residency);
+                    image.source = Some(resources::ImageSource {
+                        version: item.source.version().clone(),
+                        lease: item.source.downgrade(),
+                    });
+                    entry.insert(Partial {
+                        image: Arc::new(image),
+                        next_row: 0,
+                        total_rows: descriptor.layout.storage_size[1]
+                            / descriptor.format.block_size(),
+                        _storage: storage,
+                    });
+                }
+                let pending = &partial[&handle];
+                let count = (limit.saturating_sub(pool.usage().bytes).min(staging_limit)
+                    / row_bytes)
+                    .min(u64::from(pending.total_rows - pending.next_row))
+                    as u32;
+                if count == 0 {
+                    deferred = Some(GpuError::Pressure {
+                        domain: "texture upload",
+                        requested: row_bytes,
+                        available: limit.saturating_sub(pool.usage().bytes),
+                    });
+                    break;
+                }
+                let next_row = pending.next_row + count;
+                let upload = match reserve_gpu(row_bytes * u64::from(count)) {
+                    Ok(ticket) => ticket,
+                    Err(error) => {
+                        deferred = Some(error);
+                        break;
+                    }
+                };
+                resources::texture_rows(
+                    gpu,
+                    &mut encoder,
+                    item.source,
+                    &pending.image,
+                    pending.next_row..next_row,
+                )?;
+                work_remaining = work_remaining.saturating_sub(row_bytes * u64::from(count));
+                converted = true;
+                uploaded.push(Copy {
+                    _image: pending.image.clone(),
+                    source: item.source.clone(),
+                    next_row: Some(next_row),
+                });
+                staging.push(upload);
+                if next_row == pending.total_rows {
+                    images.insert(handle, pending.image.clone());
+                } else {
+                    deferred = Some(GpuError::Pressure {
+                        domain: "texture upload slice",
+                        requested: row_bytes,
+                        available: limit.saturating_sub(pool.usage().bytes),
+                    });
+                    break;
+                }
             } else if let ResourceData::Yuv420(source) = item.source.data() {
                 let residency = if let Some(image) = &mut recycled {
                     image.residency.take().unwrap()
@@ -296,7 +375,7 @@ impl ImageCache {
             for copy in &uploaded {
                 if let Some(next_row) = copy.next_row {
                     let handle = copy.source.handle();
-                    if next_row == copy._image.size[1] {
+                    if next_row == partial[&handle].total_rows {
                         partial.remove(&handle);
                     } else {
                         partial.get_mut(&handle).unwrap().next_row = next_row;
@@ -326,11 +405,22 @@ impl ImageCache {
         !self.uploads.lock().unwrap().is_empty()
     }
 
-    fn recycle_video(&self, size: [u32; 2]) -> Option<Image> {
+    fn recycle_video(
+        &self,
+        size: [u32; 2],
+        layout: reel_core::image::Yuv420Layout,
+    ) -> Option<Image> {
         let mut cache = self.images.lock().unwrap();
         let handle = *cache
             .iter()
-            .find(|(_, image)| image.yuv.is_some() && image.size == size && reusable(image))?
+            .find(|(_, image)| {
+                image
+                    .yuv
+                    .as_ref()
+                    .is_some_and(|planes| planes.layout == layout)
+                    && image.size == size
+                    && reusable(image)
+            })?
             .0;
         Arc::try_unwrap(cache.remove(&handle).unwrap()).ok()
     }

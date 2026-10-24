@@ -361,6 +361,14 @@ reel prepare-image original.png --output resources/panorama.reel-image
 
 Display it with `image("panorama.reel-image")`. Keep the manifest and adjacent `.tiles` directory together in resources; build and export collect both. `--tile-size` defaults to 512; the tile plus two gutter pixels must fit the device's texture limit. Preparation decodes the original, while runtime memory follows the visible area. See [author_large_image](../../examples/author_large_image/src/main.aside) for a complete example.
 
+For lower-resolution backgrounds or portraits, resize artwork and encode GPU-compressed textures while retaining the original layout dimensions and `source_rect` coordinates:
+
+```sh
+reel prepare-texture original.png --output resources/background.reel-texture --size 960x544
+```
+
+Display it with `image("background.reel-texture")` or use it as an image mask. Particle images use PNG/JPEG; `prepare-image` generates the tiles for tiled images. The tool preserves aspect ratio and only reduces dimensions. Opaque images use BC1 by default; images with transparency use BC3. `--format rgba8` keeps uncompressed storage for detailed UI artwork and masks; `--power-of-two` pads edges for devices requiring power-of-two dimensions. BC formats require device support and upload as compressed blocks at runtime. See [prepare_texture](../../crates/reel-cli/src/prepare_texture.rs) for the conversion API.
+
 ```aside
 let view = camera(width: 960, height: 540, camera_x: 480, camera_y: 270) {
     image("assets/panels.png", width: 960, height: 540);

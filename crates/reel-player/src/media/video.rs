@@ -423,8 +423,14 @@ fn register_frame(
     digest.update(&picture.pts.to_bits().to_le_bytes());
     version.version = ContentVersion(*digest.finalize().as_bytes());
     version.key.0.push_str("#video-frame");
-    let image = Yuv420Image::new([picture.width, picture.height], picture.color, frame)
-        .map_err(|e| format!("video picture: {e:?}"))?;
+    let image = Yuv420Image::with_layout(
+        [picture.width, picture.height],
+        picture.color,
+        picture.layout,
+        picture.row_strides,
+        frame,
+    )
+    .map_err(|e| format!("video picture: {e:?}"))?;
     let mut registry = ResourceRegistry::new(1, 1024 + version.key.0.capacity() as u64)
         .map_err(|e| format!("video descriptor: {e:?}"))?;
     let handle = registry

@@ -7,6 +7,7 @@ use reel_core::budget::{
     BudgetCategory, BudgetPool, BudgetTicket, BudgetUsage, OwnedBytes, QueueLimits,
 };
 pub use reel_core::identity::ResourceVersion;
+use reel_core::texture::{TextureDescriptor, TexturePayload};
 use std::sync::{
     Arc, Mutex, Weak,
     atomic::{AtomicBool, Ordering},
@@ -20,13 +21,14 @@ pub struct ResourceHandle {
     pub slot: u32,
     pub generation: u64,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum ColorEncoding {
-    Srgb,
-    Linear,
-}
+pub use reel_core::texture::ColorEncoding;
 #[derive(Debug)]
 pub enum ResourceData {
+    /// Validated native sample bytes, in portable row-major layout and linear premultiplied color.
+    Texture {
+        descriptor: TextureDescriptor,
+        bytes: Blob<u8>,
+    },
     Image {
         image: ImageData,
         encoding: ColorEncoding,
@@ -40,6 +42,7 @@ pub enum ResourceData {
 impl ResourceData {
     fn blob(&self) -> Option<&Blob<u8>> {
         match self {
+            Self::Texture { bytes, .. } => Some(bytes),
             Self::Image { image, .. } => Some(&image.data),
             Self::Font(font) => Some(font),
             Self::External { .. } | Self::Yuv420(_) => None,
@@ -47,6 +50,16 @@ impl ResourceData {
     }
     fn same_source(&self, other: &Self) -> bool {
         match (self, other) {
+            (
+                Self::Texture {
+                    descriptor: a,
+                    bytes: ab,
+                },
+                Self::Texture {
+                    descriptor: b,
+                    bytes: bb,
+                },
+            ) => a == b && same_blob(ab, bb),
             (
                 Self::Image {
                     image: a,
@@ -71,8 +84,16 @@ impl ResourceData {
     }
     pub fn image_size(&self) -> Option<[u32; 2]> {
         match self {
+            Self::Texture { descriptor, .. } => Some(descriptor.layout.logical_size),
             Self::Image { image, .. } => Some([image.width, image.height]),
             Self::Yuv420(image) => Some(image.size()),
+            _ => None,
+        }
+    }
+    /// Describe prepared texture storage independently of its authored extent.
+    pub fn texture_descriptor(&self) -> Option<TextureDescriptor> {
+        match self {
+            Self::Texture { descriptor, .. } => Some(*descriptor),
             _ => None,
         }
     }
@@ -271,6 +292,16 @@ impl ResourceRegistry {
         };
         self.register_inner(version, ResourceData::Image { image, encoding }, None)
     }
+    /// Transfer validated prepared texture bytes into the existing image allocation ledger.
+    pub fn register_texture(
+        &mut self,
+        version: ResourceVersion,
+        payload: TexturePayload,
+    ) -> Result<ResourceHandle, ResourceError> {
+        let (descriptor, bytes) = payload.into_parts();
+        let bytes = self.owned_blob(bytes)?;
+        self.register_inner(version, ResourceData::Texture { descriptor, bytes }, None)
+    }
     /// Import producer-accounted planar pixels. The storage Arc retains the
     /// producer's budget reservation; the registry charges its own descriptors.
     pub fn register_yuv420(
@@ -306,6 +337,11 @@ impl ResourceRegistry {
         data: ResourceData,
         ticket: Option<BudgetTicket>,
     ) -> Result<ResourceHandle, ResourceError> {
+        if let ResourceData::Texture { descriptor, bytes } = &data {
+            descriptor
+                .validate(bytes.len())
+                .map_err(|_| ResourceError::InvalidData)?;
+        }
         if ticket
             .as_ref()
             .is_some_and(|t| data.bytes() as u64 > t.bytes())

@@ -80,10 +80,7 @@ impl Context<'_> {
                     f64::from(self.size[1]),
                 ));
             if visible.width() > 0. && visible.height() > 0. {
-                let uv = Affine::scale_non_uniform(
-                    1. / f64::from(image.size[0]),
-                    1. / f64::from(image.size[1]),
-                ) * quad.brush_transform;
+                let uv = image.uv_transform() * quad.brush_transform;
                 batch.image_quad(
                     quad.bounds,
                     transform,
@@ -91,9 +88,9 @@ impl Context<'_> {
                     self.size,
                     mesh::ImagePaint {
                         color: quad.brush.image.color.map(|channel| channel * quad.alpha),
-                        sampling: mesh::ImageSampling::new(
+                        sampling: mesh::ImageSampling::with_layout(
                             quad.brush.image.source_rect,
-                            image.size,
+                            image.layout,
                             [
                                 quad.brush.sampler.x_extend == Extend::Repeat,
                                 quad.brush.sampler.y_extend == Extend::Repeat,

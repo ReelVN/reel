@@ -2582,7 +2582,7 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
             .recv_timeout(std::time::Duration::from_secs(10))
             .unwrap();
     }
-    view.resolve_metadata(&images);
+    view.resolve_metadata(&images).unwrap();
     let root = view.root.as_ref().unwrap();
     assert_eq!(
         root.children[0].images.tiled_size,

@@ -155,6 +155,7 @@ impl Images {
                     result
                         .map(|lease| {
                             if let Some(tile) = self.tiles.get(&pending.source) {
+                                if matches!(lease.data(),ResourceData::Texture{..}) {return Err(format!("prepared texture {} is not supported by PNG tile recording",pending.source));}
                                 let ResourceData::Image { image, .. } = lease.data() else {
                                     unreachable!()
                                 };

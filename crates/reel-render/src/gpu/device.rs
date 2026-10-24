@@ -132,7 +132,7 @@ impl Gpu {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("reel device"),
-                required_features: wgpu::Features::empty(),
+                required_features: adapter.features() & wgpu::Features::TEXTURE_COMPRESSION_BC,
                 required_limits: wgpu::Limits::default(),
                 memory_hints: wgpu::MemoryHints::MemoryUsage,
                 trace: wgpu::Trace::Off,

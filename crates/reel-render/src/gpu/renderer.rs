@@ -3,6 +3,9 @@ use super::{
     pipeline::{CompositeOperation, PipelineSlots},
     replay::Context,
 };
+#[cfg(test)]
+#[path = "texture_tests.rs"]
+mod texture_tests;
 use reel_core::budget::{BudgetCategory, BudgetPool, BudgetTicket, QueueLimits};
 use reel_ui::frame::RenderFrame;
 use reel_ui::kurbo::Affine;
