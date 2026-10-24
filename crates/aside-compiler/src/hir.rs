@@ -470,6 +470,18 @@ impl AnalyzedModule {
     pub fn external_bindings(&self) -> &[ExternalBinding] {
         &self.external
     }
+    /// Look up the exact owner in the binder's sorted external entries.
+    /// Node entries precede symbol entries and each owner occurs once.
+    pub(crate) fn external_binding(
+        &self,
+        symbol: Option<SymbolId>,
+        node: Option<NodeId>,
+    ) -> Option<&ExternalBinding> {
+        self.external
+            .binary_search_by_key(&(symbol, node), |binding| (binding.symbol, binding.node))
+            .ok()
+            .map(|index| &self.external[index])
+    }
     /// Resolve a bound expression's canonical external identity, including
     /// immutable aliases and parenthesized references. This is metadata only;
     /// it does not replace evaluation of the expression or initialize aliases.
@@ -482,11 +494,11 @@ impl AnalyzedModule {
         {
             node = child;
         }
-        let symbol = self.facts[node.0 as usize].symbol;
-        self.external
-            .iter()
-            .find(|binding| {
-                binding.node == Some(node) || symbol.is_some() && binding.symbol == symbol
+        self.external_binding(None, Some(node))
+            .or_else(|| {
+                self.facts[node.0 as usize]
+                    .symbol
+                    .and_then(|symbol| self.external_binding(Some(symbol), None))
             })?
             .descriptor
             .reference

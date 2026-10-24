@@ -546,3 +546,46 @@ fn namespace_reexport_of_its_own_module_keeps_the_actual_export_hop() {
     );
     assert!(previous.previous.is_none());
 }
+
+#[test]
+fn canonical_references_follow_aliases_groups_and_shadowing() {
+    let inputs = [
+        input("origin", "pub fn f(){0}"),
+        input(
+            "user",
+            "use origin as api; use origin::{f as named}; let alias=named; fn invoke(f){((api.f))(); alias(); f();}",
+        ),
+    ];
+    let result = analyze_project(&inputs, &AnalysisOptions::default(), &mut NoModules).unwrap();
+    assert!(result.is_ok(), "{:?}", result.diagnostics);
+    let module = result
+        .modules()
+        .unwrap()
+        .iter()
+        .find(|module| module.canonical_path() == "user")
+        .unwrap();
+    let mut calls = 0;
+    for node in &module.hir().nodes {
+        let aside_compiler::hir::Form::Call { callee, .. } = node.form else {
+            continue;
+        };
+        calls += 1;
+        let expression = module.hir().text(module.hir().node(callee).span);
+        match expression {
+            "((api.f))" | "alias" => {
+                let reference = module.canonical_reference(callee).unwrap();
+                assert_eq!(
+                    (
+                        reference.module.as_str(),
+                        reference.version.as_str(),
+                        reference.export.as_deref()
+                    ),
+                    ("origin", "test-v1", Some("f"))
+                );
+            }
+            "f" => assert!(module.canonical_reference(callee).is_none()),
+            _ => panic!("unexpected source call: {expression}"),
+        }
+    }
+    assert_eq!(calls, 3);
+}
