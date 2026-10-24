@@ -284,7 +284,7 @@ impl Instruction {
 }
 const _: () = assert!(std::mem::size_of::<Instruction>() == 16);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RegWindow {
     pub start: Reg,
     pub len: u32,
@@ -294,23 +294,23 @@ pub enum CaptureSource {
     Binding(BindingId),
     Capture(CaptureId),
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CallTarget {
     Register(Reg),
     Function(FunctionId),
     Native(NativeId),
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Arguments {
     Window(RegWindow),
     Packed(Reg),
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct NamedArg {
     pub name: SymbolId,
     pub offset: u32,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CallDesc {
     pub target: CallTarget,
     pub arguments: Arguments,
@@ -383,7 +383,7 @@ pub struct PatternDesc {
     pub nodes: Vec<PatternNode>,
     pub root: u32,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TableSource {
     Pair([Reg; 2]),
     Spread(Reg),

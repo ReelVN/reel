@@ -10,6 +10,42 @@ fn descriptor(f: &bc::FunctionDef, pc: usize) -> &bc::CallDesc {
     };
     c
 }
+
+#[test]
+fn shared_operand_metadata_keeps_calls_sources_and_fresh_container_constructions() {
+    let c = compiled(
+        "fn f(first=null,second=null){first}fn run(){f(first:1);f(first:2);f(second:3);f([1,2]);f([3,4]);f({a:1,b:2});f({a:3,b:4});}",
+    );
+    let package = c.program.package();
+    let run = function(package, "run");
+    assert_eq!(
+        calls(package, run),
+        [
+            "f(first:1)",
+            "f(first:2)",
+            "f(second:3)",
+            "f([1,2])",
+            "f([3,4])",
+            "f({a:1,b:2})",
+            "f({a:3,b:4})"
+        ]
+    );
+    let call_pcs = pcs(run, bc::Opcode::Call);
+    let ids: Vec<_> = call_pcs
+        .iter()
+        .map(|&pc| run.code[pc].operands[1])
+        .collect();
+    assert_eq!(ids[0], ids[1]);
+    assert_ne!(ids[0], ids[2]);
+    for opcode in [bc::Opcode::MakeArray, bc::Opcode::MakeTable] {
+        let construction = pcs(run, opcode);
+        assert_eq!(construction.len(), 2);
+        assert_ne!(
+            text(package, run, construction[0]),
+            text(package, run, construction[1])
+        );
+    }
+}
 fn reachable(f: &bc::FunctionDef, start: usize) -> Vec<bool> {
     let mut seen = vec![false; f.code.len()];
     let mut todo = vec![start];

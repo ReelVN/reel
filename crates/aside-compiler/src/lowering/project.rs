@@ -300,6 +300,7 @@ pub fn compile_project(
         }
         let initializer = initializer(&mut state.package, &order, &names, &mut state.budget)?;
         super::constants::intern(&mut state.package, &mut state.budget)?;
+        super::descriptors::intern(&mut state.package, &mut state.budget)?;
         state.budget.release(index);
         state.budget.release(bindings);
         state.budget.release(native_exports);
