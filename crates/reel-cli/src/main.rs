@@ -89,6 +89,29 @@ fn run_package(args: commands::Run) -> io::Result<u8> {
 fn source_command(command: SourceCommand) -> io::Result<u8> {
     let json_format = command.format().json();
     let path = "src/main.aside";
+    let cache = if let SourceCommand::Dev(args) = &command {
+        let cache = reel_cli::development::Cache::probe(Path::new(".")).ok();
+        if let Some(cache) = &cache
+            && let Some(story) = cache.read()
+        {
+            let assets = args
+                .playback
+                .assets
+                .clone()
+                .unwrap_or_else(|| cache.assets());
+            return launch(
+                story,
+                Some(assets),
+                None,
+                Default::default(),
+                args.playback.save_directory.clone(),
+                path,
+            );
+        }
+        cache
+    } else {
+        None
+    };
     let loaded = match reel_cli::project::load(Path::new(".")) {
         Ok(project) => project,
         Err(error) if error.sources.is_empty() => {
@@ -287,16 +310,24 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
             }
         }
         SourceCommand::Dev(args) => {
+            if let Some(cache) = cache
+                && let Err(error) = cache.store(&checked)
+            {
+                writeln!(io::stderr().lock(), "warning: compilation cache: {error}")?;
+            }
             let assets = args.playback.assets.unwrap_or_else(|| loaded.assets());
             match reel_cli::into_story(checked, entry) {
-                Ok(story) => launch(
-                    story,
-                    Some(assets),
-                    None,
-                    Default::default(),
-                    args.playback.save_directory,
-                    path,
-                ),
+                Ok(story) => {
+                    drop(loaded);
+                    launch(
+                        story,
+                        Some(assets),
+                        None,
+                        Default::default(),
+                        args.playback.save_directory,
+                        path,
+                    )
+                }
                 Err(error) => source_error(false, path, inputs, error),
             }
         }
