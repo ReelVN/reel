@@ -4,7 +4,7 @@ use aside_vm::bytecode as bc;
 use std::collections::BTreeMap;
 
 pub(crate) fn from_bindings(
-    program: &bc::BytecodePackage,
+    program: &bc::BytecodePackage<impl bc::InstructionSequence>,
     module_id: u32,
     budget: &mut Budget,
 ) -> Result<BTreeMap<u32, u32>, Error> {

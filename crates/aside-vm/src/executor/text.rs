@@ -119,7 +119,7 @@ impl Vm {
                 self.heap.seal_string(value)?;
                 self.write(*s, dest, value)
                     .map_err(|_| VmError::Contract("text result register"))?;
-                s.pc.0 += 1;
+                s.pc = s.instruction_end;
                 s.phase = ScriptPhase::Body;
             }
             return Ok(true);
@@ -201,7 +201,7 @@ impl Vm {
         };
         let count = (len - offset).min(limit);
         if count == 0 {
-            s.pc.0 += 1;
+            s.pc = s.instruction_end;
             s.phase = ScriptPhase::Body;
             return Ok(true);
         }

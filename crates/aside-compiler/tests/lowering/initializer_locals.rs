@@ -48,12 +48,12 @@ fn creator(
 /// it does not prove the runtime semantics of the instructions.
 pub(super) fn dominators(c: &lowering::Compilation, id: bc::FunctionId) -> Vec<Vec<bool>> {
     let f = &c.program.package().functions[id.index()];
-    let n = f.code.len();
+    let n = f.code.end_pc();
     let mut edges = vec![Vec::new(); n];
-    for (pc, i) in f.code.iter().enumerate() {
+    for (pc, i) in f.code.indexed_iter().map(Result::unwrap) {
         let spec = bc::instruction_spec(i.opcode).unwrap();
         edges[pc].extend(match spec.flow {
-            bc::Flow::Next => vec![pc + 1],
+            bc::Flow::Next => vec![f.code.next_pc(pc).unwrap().unwrap()],
             bc::Flow::Jump | bc::Flow::Leave => vec![i.operands[0] as usize],
             bc::Flow::Branch => vec![i.operands[1] as usize, i.operands[2] as usize],
             _ => vec![],
@@ -83,8 +83,14 @@ pub(super) fn dominators(c: &lowering::Compilation, id: bc::FunctionId) -> Vec<V
             {
                 edges[pc].push(h.pc.index());
                 if let bc::CleanupDestination::Leave(target) = destination {
-                    let end = f.regions[h.region.index()].finally.unwrap().end.index() - 1;
-                    assert_eq!(f.code[end].opcode, bc::Opcode::EndFinally as u16);
+                    let end = f
+                        .code
+                        .previous_pc(f.regions[h.region.index()].finally.unwrap().end.index())
+                        .unwrap();
+                    assert_eq!(
+                        f.code.instruction(end).unwrap().unwrap().opcode,
+                        bc::Opcode::EndFinally as u16
+                    );
                     edges[end].push(target.index());
                 }
                 consumed = Some(h.region);
@@ -184,11 +190,11 @@ pub(super) fn assert_local_structure(m: &hir::AnalyzedModule, c: &lowering::Comp
             };
             let resets: Vec<_> = f
                 .code
-                .iter()
-                .enumerate()
+                .indexed_iter()
+                .map(Result::unwrap)
                 .filter(|(_, i)| {
                     if reset == bc::Opcode::Clear {
-                        clears(i, operand)
+                        clears(&i, operand)
                     } else {
                         i.opcode == reset as u16 && i.operands[0] == operand
                     }
@@ -220,7 +226,7 @@ pub(super) fn assert_local_structure(m: &hir::AnalyzedModule, c: &lowering::Comp
                     && m.scopes()[s.scope.0 as usize].span == mapped)
             );
         }
-        for (pc, i) in f.code.iter().enumerate() {
+        for (pc, i) in f.code.indexed_iter().map(Result::unwrap) {
             let mut uses = Vec::new();
             if matches!(
                 bc::instruction_spec(i.opcode).unwrap().opcode,
@@ -302,13 +308,14 @@ fn root_exports_shadowing_forward_recursion_and_shared_capture_sources() {
     assert_eq!(p.modules[0].globals.len(), 2);
     assert_eq!(p.modules[0].exports.len(), 2);
     let f = &p.functions[c.entry.index()];
-    assert!(!f.code.iter().any(|i| matches!(
+    assert!(!f.code.iter().map(Result::unwrap).any(|i| matches!(
         bc::instruction_spec(i.opcode).unwrap().opcode,
         bc::Opcode::GlobalRead | bc::Opcode::GlobalWrite
     )));
     assert_eq!(
         f.code
             .iter()
+            .map(Result::unwrap)
             .filter(|i| i.opcode == bc::Opcode::GlobalInit as u16)
             .count(),
         2
@@ -319,11 +326,13 @@ fn root_exports_shadowing_forward_recursion_and_shared_capture_sources() {
         f.bindings[later.index()].storage,
         bc::BindingStorage::Cell(_)
     ));
-    let closure = f.code.iter().position(|i| i.opcode == bc::Opcode::MakeClosure as u16 && matches!(&f.descriptors[i.operands[1] as usize], bc::Descriptor::Closure{ function: target, .. } if p.symbols[p.functions[target.index()].name.index()] == "first")).unwrap();
+    let closure = f.code.indexed_iter().map(Result::unwrap).find(|(_, i)| i.opcode == bc::Opcode::MakeClosure as u16 && matches!(&f.descriptors[i.operands[1] as usize], bc::Descriptor::Closure{ function: target, .. } if p.symbols[p.functions[target.index()].name.index()] == "first")).map(|(pc, _)| pc).unwrap();
     let init = f
         .code
-        .iter()
-        .position(|i| i.opcode == bc::Opcode::BindInit as u16 && i.operands[0] == later.0)
+        .indexed_iter()
+        .map(Result::unwrap)
+        .find(|(_, i)| i.opcode == bc::Opcode::BindInit as u16 && i.operands[0] == later.0)
+        .map(|(pc, _)| pc)
         .unwrap();
     assert!(closure < init);
     let scope = m.symbols()[symbol(&m, "later", O::EntryLocal).0 as usize].scope;
@@ -331,10 +340,12 @@ fn root_exports_shadowing_forward_recursion_and_shared_capture_sources() {
         let b = binding(&c, c.entry, sym);
         let reset = f
             .code
-            .iter()
-            .position(|i| {
-                (i.opcode == bc::Opcode::CellNew as u16 && i.operands[0] == b.0) || clears(i, b.0)
+            .indexed_iter()
+            .map(Result::unwrap)
+            .find(|(_, i)| {
+                (i.opcode == bc::Opcode::CellNew as u16 && i.operands[0] == b.0) || clears(&i, b.0)
             })
+            .map(|(pc, _)| pc)
             .unwrap();
         assert!(
             reset < closure,
@@ -368,21 +379,37 @@ fn condition_body_catch_and_finally_entries_cover_cleanup_backedges() {
     let error = binding(&c, c.entry, symbol(&m, "error", O::EntryLocal));
     let catch = &f.regions[0].catch.as_ref().unwrap().range;
     assert_eq!(
-        f.code[catch.start.index()].opcode,
+        f.code
+            .instruction(catch.start.index())
+            .unwrap()
+            .unwrap()
+            .opcode,
         bc::Opcode::CellNew as u16
     );
-    assert_eq!(f.code[catch.start.index()].operands[0], error.0);
     assert_eq!(
-        f.code[catch.start.index() + 1].opcode,
+        f.code
+            .instruction(catch.start.index())
+            .unwrap()
+            .unwrap()
+            .operands[0],
+        error.0
+    );
+    assert_eq!(
+        f.code
+            .instruction(catch.start.index() + 1)
+            .unwrap()
+            .unwrap()
+            .opcode,
         bc::Opcode::BindInit as u16
     );
     let head = f
         .code
         .iter()
+        .map(Result::unwrap)
         .find(|i| i.opcode == bc::Opcode::Jump as u16)
         .unwrap()
         .operands[0];
-    for (pc, i) in f.code.iter().enumerate().filter(|(pc, _)| {
+    for (pc, i) in f.code.indexed_iter().map(Result::unwrap).filter(|(pc, _)| {
         matches!(
             &source[source_span(f, *pc).start as usize..source_span(f, *pc).end as usize],
             "continue outer;" | "break outer;"
@@ -409,8 +436,10 @@ fn condition_body_catch_and_finally_entries_cover_cleanup_backedges() {
     let condition = binding(&c, c.entry, symbol(&m, "condition", O::EntryLocal));
     let reset = f
         .code
-        .iter()
-        .position(|i| i.opcode == bc::Opcode::CellNew as u16 && i.operands[0] == condition.0)
+        .indexed_iter()
+        .map(Result::unwrap)
+        .find(|(_, i)| i.opcode == bc::Opcode::CellNew as u16 && i.operands[0] == condition.0)
+        .map(|(pc, _)| pc)
         .unwrap();
     assert!(head as usize <= reset);
     // A labelled continue from inside the condition takes the same head,
@@ -461,6 +490,7 @@ fn definition_environment_is_forwarded_through_defaults_and_nested_closures() {
             !thunk
                 .code
                 .iter()
+                .map(Result::unwrap)
                 .any(|i| i.opcode == bc::Opcode::CellNew as u16)
         );
     }
@@ -472,6 +502,7 @@ fn definition_environment_is_forwarded_through_defaults_and_nested_closures() {
         !outer
             .code
             .iter()
+            .map(Result::unwrap)
             .any(|i| i.opcode == bc::Opcode::CellNew as u16 && i.operands[0] == 2)
     );
 }

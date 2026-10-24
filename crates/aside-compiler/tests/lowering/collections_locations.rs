@@ -2,39 +2,42 @@
 use super::*;
 use aside_compiler::{DiagnosticCode, byte_range};
 
-pub(super) fn pcs(f: &bc::FunctionDef, opcode: bc::Opcode) -> Vec<usize> {
+pub(super) fn pcs(f: &bc::RuntimeFunction, opcode: bc::Opcode) -> Vec<usize> {
     f.code
-        .iter()
-        .enumerate()
+        .indexed_iter()
+        .map(Result::unwrap)
         .filter_map(|(pc, i)| (i.opcode == opcode as u16).then_some(pc))
         .collect()
 }
-pub(super) fn text<'a>(p: &'a bc::BytecodePackage, f: &bc::FunctionDef, pc: usize) -> &'a str {
+pub(super) fn text<'a>(p: &'a bc::RuntimePackage, f: &bc::RuntimeFunction, pc: usize) -> &'a str {
     let span = source_span(f, pc);
     &p.sources[span.file.index()].text[span.start as usize..span.end as usize]
 }
-pub(super) fn calls<'a>(p: &'a bc::BytecodePackage, f: &bc::FunctionDef) -> Vec<&'a str> {
+pub(super) fn calls<'a>(p: &'a bc::RuntimePackage, f: &bc::RuntimeFunction) -> Vec<&'a str> {
     pcs(f, bc::Opcode::Call)
         .into_iter()
         .map(|pc| text(p, f, pc))
         .collect()
 }
-fn writes(f: &bc::FunctionDef, pc: usize, reg: u32) -> bool {
+fn writes(f: &bc::RuntimeFunction, pc: usize, reg: u32) -> bool {
+    if !f.code.is_boundary(pc) {
+        return false;
+    }
     let mut found = false;
-    bc::instruction_spec(f.code[pc].opcode)
+    bc::instruction_spec(f.code.instruction(pc).unwrap().unwrap().opcode)
         .unwrap()
-        .visit_registers(f, &f.code[pc], |r, access| {
+        .visit_registers(f, &f.code.instruction(pc).unwrap().unwrap(), |r, access| {
             found |= r.0 == reg && matches!(access, bc::Access::Write | bc::Access::ReadWrite);
         })
         .unwrap();
     found
 }
-pub(super) fn definition(f: &bc::FunctionDef, reg: u32, before: usize) -> usize {
+pub(super) fn definition(f: &bc::RuntimeFunction, reg: u32, before: usize) -> usize {
     (0..before)
         .rfind(|&pc| writes(f, pc, reg))
         .expect("register definition")
 }
-pub(super) fn assert_live(f: &bc::FunctionDef, reg: u32, from: usize, to: usize) {
+pub(super) fn assert_live(f: &bc::RuntimeFunction, reg: u32, from: usize, to: usize) {
     for pc in from + 1..to {
         assert!(
             !writes(f, pc, reg),
@@ -42,23 +45,29 @@ pub(super) fn assert_live(f: &bc::FunctionDef, reg: u32, from: usize, to: usize)
         );
     }
 }
-pub(super) fn assert_cleared(f: &bc::FunctionDef, reg: u32, after: usize) {
-    let next = (after + 1..f.code.len())
+pub(super) fn assert_cleared(f: &bc::RuntimeFunction, reg: u32, after: usize) {
+    let next = (after + 1..f.code.end_pc())
         .find(|&pc| writes(f, pc, reg))
         .unwrap();
     assert!(matches!(
-        bc::instruction_spec(f.code[next].opcode).unwrap().opcode,
+        bc::instruction_spec(f.code.instruction(next).unwrap().unwrap().opcode)
+            .unwrap()
+            .opcode,
         bc::Opcode::Clear | bc::Opcode::Clear2 | bc::Opcode::Clear3
     ));
 }
-fn sequence(f: &bc::FunctionDef, pc: usize) -> bc::RegWindow {
-    let bc::Descriptor::Sequence(window) = f.descriptors[f.code[pc].operands[1] as usize] else {
+fn sequence(f: &bc::RuntimeFunction, pc: usize) -> bc::RegWindow {
+    let bc::Descriptor::Sequence(window) =
+        f.descriptors[f.code.instruction(pc).unwrap().unwrap().operands[1] as usize]
+    else {
         panic!("sequence descriptor")
     };
     window
 }
-fn table(f: &bc::FunctionDef, pc: usize) -> &[[bc::Reg; 2]] {
-    let bc::Descriptor::Table(pairs) = &f.descriptors[f.code[pc].operands[1] as usize] else {
+fn table(f: &bc::RuntimeFunction, pc: usize) -> &[[bc::Reg; 2]] {
+    let bc::Descriptor::Table(pairs) =
+        &f.descriptors[f.code.instruction(pc).unwrap().unwrap().operands[1] as usize]
+    else {
         panic!("ordered table descriptor")
     };
     pairs
@@ -113,13 +122,20 @@ fn sequence_elements_are_saved_in_order_and_live_across_calls() {
     {
         let slot = window.start.0 + offset as u32;
         let def = definition(f, slot, make);
-        assert_eq!(f.code[def].opcode, bc::Opcode::Move as u16);
-        assert_eq!(f.code[def].operands[1], f.code[call].operands[0]);
+        assert_eq!(
+            f.code.instruction(def).unwrap().unwrap().opcode,
+            bc::Opcode::Move as u16
+        );
+        assert_eq!(
+            f.code.instruction(def).unwrap().unwrap().operands[1],
+            f.code.instruction(call).unwrap().unwrap().operands[0]
+        );
         assert!(call < def);
         assert_live(f, slot, def, make);
         assert_cleared(f, slot, make);
         for &later in call_pcs.iter().filter(|&&pc| pc > def) {
-            let bc::Descriptor::Call(desc) = &f.descriptors[f.code[later].operands[1] as usize]
+            let bc::Descriptor::Call(desc) =
+                &f.descriptors[f.code.instruction(later).unwrap().unwrap().operands[1] as usize]
             else {
                 panic!()
             };
@@ -151,17 +167,31 @@ fn table_key_value_order_preserves_duplicate_entries_until_one_make() {
     for pair in pairs {
         for reg in pair {
             let def = definition(f, reg.0, make);
-            assert_eq!(f.code[def].opcode, bc::Opcode::Move as u16);
+            assert_eq!(
+                f.code.instruction(def).unwrap().unwrap().opcode,
+                bc::Opcode::Move as u16
+            );
             definitions.push(def);
             assert_live(f, reg.0, def, make);
             assert_cleared(f, reg.0, make);
         }
     }
     assert!(definitions.windows(2).all(|w| w[0] < w[1]));
-    let load = definition(f, f.code[definitions[0]].operands[1], definitions[0]);
-    assert_eq!(f.code[load].opcode, bc::Opcode::LoadConst as u16);
+    let load = definition(
+        f,
+        f.code
+            .instruction(definitions[0])
+            .unwrap()
+            .unwrap()
+            .operands[1],
+        definitions[0],
+    );
     assert_eq!(
-        p.constants[f.code[load].operands[1] as usize],
+        f.code.instruction(load).unwrap().unwrap().opcode,
+        bc::Opcode::LoadConst as u16
+    );
+    assert_eq!(
+        p.constants[f.code.instruction(load).unwrap().unwrap().operands[1] as usize],
         bc::Const::Utf8("named".into())
     );
     assert_ne!(pairs[1][0], pairs[2][0]);
@@ -183,14 +213,21 @@ fn table_key_value_order_preserves_duplicate_entries_until_one_make() {
     assert_eq!(pairs.len(), 2);
     for pair in pairs {
         let save = definition(f, pair[0].0, make);
-        let load = if f.code[save].opcode == bc::Opcode::Move as u16 {
-            definition(f, f.code[save].operands[1], save)
+        let load = if f.code.instruction(save).unwrap().unwrap().opcode == bc::Opcode::Move as u16 {
+            definition(
+                f,
+                f.code.instruction(save).unwrap().unwrap().operands[1],
+                save,
+            )
         } else {
             save
         };
-        assert_eq!(f.code[load].opcode, bc::Opcode::LoadConst as u16);
         assert_eq!(
-            p.constants[f.code[load].operands[1] as usize],
+            f.code.instruction(load).unwrap().unwrap().opcode,
+            bc::Opcode::LoadConst as u16
+        );
+        assert_eq!(
+            p.constants[f.code.instruction(load).unwrap().unwrap().operands[1] as usize],
             bc::Const::Utf8("x".into())
         );
     }
@@ -222,15 +259,42 @@ fn index_reads_prepare_receiver_then_key_once_and_keep_nested_results() {
     let get = pcs(f, bc::Opcode::IndexGet);
     assert_eq!(get.len(), 2);
     assert_eq!(
-        f.code[get[0]].operands[1..3],
-        [f.code[cp[0]].operands[0], f.code[cp[1]].operands[0]]
+        f.code.instruction(get[0]).unwrap().unwrap().operands[1..3],
+        [
+            f.code.instruction(cp[0]).unwrap().unwrap().operands[0],
+            f.code.instruction(cp[1]).unwrap().unwrap().operands[0]
+        ]
     );
-    assert_eq!(f.code[get[1]].operands[1], f.code[get[0]].operands[0]);
-    assert_eq!(f.code[get[1]].operands[2], f.code[cp[2]].operands[0]);
-    assert_live(f, f.code[cp[0]].operands[0], cp[0], get[0]);
-    assert_live(f, f.code[get[0]].operands[0], get[0], get[1]);
-    assert_cleared(f, f.code[get[1]].operands[1], get[1]);
-    assert_cleared(f, f.code[get[1]].operands[2], get[1]);
+    assert_eq!(
+        f.code.instruction(get[1]).unwrap().unwrap().operands[1],
+        f.code.instruction(get[0]).unwrap().unwrap().operands[0]
+    );
+    assert_eq!(
+        f.code.instruction(get[1]).unwrap().unwrap().operands[2],
+        f.code.instruction(cp[2]).unwrap().unwrap().operands[0]
+    );
+    assert_live(
+        f,
+        f.code.instruction(cp[0]).unwrap().unwrap().operands[0],
+        cp[0],
+        get[0],
+    );
+    assert_live(
+        f,
+        f.code.instruction(get[0]).unwrap().unwrap().operands[0],
+        get[0],
+        get[1],
+    );
+    assert_cleared(
+        f,
+        f.code.instruction(get[1]).unwrap().unwrap().operands[1],
+        get[1],
+    );
+    assert_cleared(
+        f,
+        f.code.instruction(get[1]).unwrap().unwrap().operands[2],
+        get[1],
+    );
 }
 
 #[test]
@@ -249,17 +313,28 @@ fn mixed_chain_prepares_left_to_right_and_writes_right_to_left() {
     let bind = pcs(f, bc::Opcode::BindWrite);
     assert_eq!(set.len(), 2);
     assert_eq!(bind.len(), 1);
-    let rhs = f.code[cp[4]].operands[0];
+    let rhs = f.code.instruction(cp[4]).unwrap().unwrap().operands[0];
     assert_eq!(
-        f.code[set[0]].operands[..3],
-        [f.code[cp[2]].operands[0], f.code[cp[3]].operands[0], rhs]
+        f.code.instruction(set[0]).unwrap().unwrap().operands[..3],
+        [
+            f.code.instruction(cp[2]).unwrap().unwrap().operands[0],
+            f.code.instruction(cp[3]).unwrap().unwrap().operands[0],
+            rhs
+        ]
     );
     assert_eq!(
-        f.code[set[1]].operands[..3],
-        [f.code[cp[0]].operands[0], f.code[cp[1]].operands[0], rhs]
+        f.code.instruction(set[1]).unwrap().unwrap().operands[..3],
+        [
+            f.code.instruction(cp[0]).unwrap().unwrap().operands[0],
+            f.code.instruction(cp[1]).unwrap().unwrap().operands[0],
+            rhs
+        ]
     );
     assert!(cp[4] < set[0] && set[0] < set[1] && set[1] < bind[0]);
-    assert_eq!(f.code[bind[0]].operands[1], rhs);
+    assert_eq!(
+        f.code.instruction(bind[0]).unwrap().unwrap().operands[1],
+        rhs
+    );
     for (call, write) in [
         (0, set[1]),
         (1, set[1]),
@@ -267,7 +342,7 @@ fn mixed_chain_prepares_left_to_right_and_writes_right_to_left() {
         (3, set[0]),
         (4, bind[0]),
     ] {
-        let reg = f.code[cp[call]].operands[0];
+        let reg = f.code.instruction(cp[call]).unwrap().unwrap().operands[0];
         assert_live(f, reg, cp[call], write);
         assert_cleared(f, reg, write);
     }
@@ -294,10 +369,19 @@ fn chain_supports_globals_captured_names_and_nested_index_locations() {
         (get.len(), set.len(), cell.len(), global.len()),
         (1, 1, 1, 1)
     );
-    assert_eq!(f.code[set[0]].operands[0], f.code[get[0]].operands[0]);
+    assert_eq!(
+        f.code.instruction(set[0]).unwrap().unwrap().operands[0],
+        f.code.instruction(get[0]).unwrap().unwrap().operands[0]
+    );
     assert!(get[0] < set[0] && set[0] < cell[0] && cell[0] < global[0]);
-    assert_eq!(f.code[set[0]].operands[2], f.code[cell[0]].operands[1]);
-    assert_eq!(f.code[set[0]].operands[2], f.code[global[0]].operands[0]);
+    assert_eq!(
+        f.code.instruction(set[0]).unwrap().unwrap().operands[2],
+        f.code.instruction(cell[0]).unwrap().unwrap().operands[1]
+    );
+    assert_eq!(
+        f.code.instruction(set[0]).unwrap().unwrap().operands[2],
+        f.code.instruction(global[0]).unwrap().unwrap().operands[0]
+    );
 }
 
 #[test]
@@ -325,16 +409,33 @@ fn index_compound_reads_old_value_before_rhs_and_writes_original_position() {
         let op = pcs(f, opcode)[0];
         let set = pcs(f, bc::Opcode::IndexSet)[0];
         assert!(cp[1] < get && get < cp[2] && cp[2] < op && op < set);
-        assert_eq!(f.code[get].operands[1..3], f.code[set].operands[..2]);
-        assert_eq!(f.code[op].operands[1], f.code[get].operands[0]);
-        assert_eq!(f.code[op].operands[2], f.code[cp[2]].operands[0]);
-        assert_eq!(f.code[set].operands[2], f.code[op].operands[0]);
-        for &reg in &f.code[set].operands[..2] {
+        assert_eq!(
+            f.code.instruction(get).unwrap().unwrap().operands[1..3],
+            f.code.instruction(set).unwrap().unwrap().operands[..2]
+        );
+        assert_eq!(
+            f.code.instruction(op).unwrap().unwrap().operands[1],
+            f.code.instruction(get).unwrap().unwrap().operands[0]
+        );
+        assert_eq!(
+            f.code.instruction(op).unwrap().unwrap().operands[2],
+            f.code.instruction(cp[2]).unwrap().unwrap().operands[0]
+        );
+        assert_eq!(
+            f.code.instruction(set).unwrap().unwrap().operands[2],
+            f.code.instruction(op).unwrap().unwrap().operands[0]
+        );
+        for &reg in &f.code.instruction(set).unwrap().unwrap().operands[..2] {
             let def = definition(f, reg, get);
             assert_live(f, reg, def, set);
             assert_cleared(f, reg, set);
         }
-        assert_live(f, f.code[get].operands[0], get, op);
+        assert_live(
+            f,
+            f.code.instruction(get).unwrap().unwrap().operands[0],
+            get,
+            op,
+        );
     }
 }
 
@@ -474,7 +575,7 @@ fn conditional_fallthrough_keeps_prepared_values_and_shared_cfg_dominance() {
     let first = definition(f, window.start.0, make);
     assert!(dom[make][first]);
     assert_live(f, window.start.0, first, make);
-    for &reg in &f.code[set].operands[..2] {
+    for &reg in &f.code.instruction(set).unwrap().unwrap().operands[..2] {
         let def = definition(f, reg, set);
         assert!(dom[set][def]);
         assert_live(f, reg, def, set);

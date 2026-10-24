@@ -1,5 +1,5 @@
 //! Discover the imported source graph of the nearest Reel project.
-use super::{Checked, Failure, ReportedDiagnostic, check_sources, error, read_source};
+use super::{Checked, Failure, ReportedDiagnostic, error, read_source};
 use aside_compiler::{
     DiagnosticCode, TextRange,
     semantic::{self, ImportKind, ImportRequest, SourceModule},
@@ -122,12 +122,32 @@ impl Loaded {
         self.project_root.join("resources")
     }
     pub fn check(&self) -> Result<Checked, Failure> {
-        let checked = check_sources(&self.sources, &self.aliases)?;
+        self.check_with_progress(&mut |_| {})
+    }
+    /// Compile the loaded graph while reporting its real stage/module boundaries.
+    pub fn check_with_progress(
+        &self,
+        progress: &mut dyn FnMut(aside_compiler::Progress),
+    ) -> Result<Checked, Failure> {
+        let checked = super::check_sources_with_progress(&self.sources, &self.aliases, progress)?;
         super::artifact::select_entry(&checked, Some(ENTRY))?;
         Ok(checked)
     }
 }
 pub fn load(input: &Path) -> Result<Loaded, LoadError> {
+    load_with_progress(input, &mut |_| {})
+}
+
+/// Run the same pipeline while reporting completed stages and modules.
+pub fn load_with_progress(
+    input: &Path,
+    progress: &mut dyn FnMut(aside_compiler::Progress),
+) -> Result<Loaded, LoadError> {
+    progress(aside_compiler::Progress {
+        stage: aside_compiler::ProgressStage::Discover,
+        completed: 0,
+        total: 0,
+    });
     let location = locate(input).map_err(|error| {
         let mut result = failure(
             "input",
@@ -234,6 +254,11 @@ pub fn load(input: &Path) -> Result<Loaded, LoadError> {
         logical.insert(name);
         sources.push(source);
         files.push(file);
+        progress(aside_compiler::Progress {
+            stage: aside_compiler::ProgressStage::Discover,
+            completed: sources.len(),
+            total: 0,
+        });
         if !discovery.diagnostics.is_empty() {
             return Err(LoadError {
                 failure: Failure {
@@ -286,6 +311,11 @@ pub fn load(input: &Path) -> Result<Loaded, LoadError> {
             }
         }
     }
+    progress(aside_compiler::Progress {
+        stage: aside_compiler::ProgressStage::Discover,
+        completed: sources.len(),
+        total: sources.len(),
+    });
     Ok(Loaded {
         root,
         project_root: location.root,

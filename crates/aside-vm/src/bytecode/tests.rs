@@ -1,5 +1,72 @@
 use super::*;
 
+fn pc(program: &VerifiedProgram, ordinal: u32) -> Pc {
+    let code = &program.package().functions[0].code;
+    Pc(code
+        .indexed_iter()
+        .nth(ordinal as usize)
+        .transpose()
+        .unwrap()
+        .map_or_else(
+            || code.end_pc() + (ordinal as usize).saturating_sub(code.len()),
+            |(pc, _)| pc,
+        ) as u32)
+}
+
+fn code_section(words: &[u32]) -> Vec<u8> {
+    use super::code_residency::PAGE_WORDS;
+    let mut blocks = Vec::new();
+    let mut packed = Vec::new();
+    for page in words.chunks(PAGE_WORDS) {
+        let raw: Vec<_> = page.iter().flat_map(|word| word.to_le_bytes()).collect();
+        let data = miniz_oxide::deflate::compress_to_vec_zlib(&raw, 6);
+        blocks.push((packed.len() as u32, data.len() as u32));
+        packed.extend(data);
+    }
+    let mut out = Vec::new();
+    out.extend_from_slice(&(words.len() as u32).to_le_bytes());
+    out.extend_from_slice(&(blocks.len() as u32).to_le_bytes());
+    for (offset, len) in blocks {
+        out.extend_from_slice(&offset.to_le_bytes());
+        out.extend_from_slice(&len.to_le_bytes());
+    }
+    out.extend_from_slice(&(packed.len() as u32).to_le_bytes());
+    out.extend(packed);
+    out
+}
+fn rewrite_execution_words(bytes: &[u8], edit: impl FnOnce(&mut [u32])) -> Vec<u8> {
+    let p = decode(bytes, limits()).unwrap();
+    let store = p.functions[0].code.runtime_store().unwrap();
+    let mut words: Vec<_> = store
+        .words(0, store.words_len())
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let before = code_section(&words);
+    let offset = bytes
+        .windows(before.len())
+        .position(|part| part == before)
+        .unwrap();
+    edit(&mut words);
+    let after = code_section(&words);
+    let mut corrupt = bytes.to_vec();
+    corrupt.splice(offset..offset + before.len(), after);
+    let len = corrupt.len() as u32;
+    corrupt[28..32].copy_from_slice(&len.to_le_bytes());
+    corrupt
+}
+
+fn parameter_layout_bytes(program: &VerifiedProgram) -> usize {
+    let instructions = program
+        .package()
+        .functions
+        .iter()
+        .map(|f| f.code.len())
+        .sum::<usize>();
+    let opcode_capacity =
+        instructions.min(INSTRUCTION_SPECS.len()) * size_of::<(u16, FunctionId, Pc)>();
+    program.stats().derived_capacity_bytes - opcode_capacity
+}
+
 type Fixture = (&'static str, fn() -> BytecodePackage, &'static [u8]);
 
 #[test]
@@ -86,8 +153,11 @@ fn rest_name_cannot_be_supplied_through_a_property_bag_tail() {
     let v = verify(p.clone(), limits()).unwrap();
     let bytes = encode(v.package(), limits()).unwrap();
     assert_eq!(
-        VerifiedProgram::decode(&bytes, limits()).unwrap().package(),
-        v.package()
+        &VerifiedProgram::decode(&bytes, limits())
+            .unwrap()
+            .to_unpacked()
+            .unwrap(),
+        &v.to_unpacked().unwrap()
     );
     let Descriptor::Call(call) = &mut p.functions[0].descriptors[0] else {
         unreachable!()
@@ -182,7 +252,10 @@ fn native_callable_wire_preserves_registration_and_rejects_script_frame_metadata
     p.functions.push(f);
     let bytes = encode(&p, limits()).unwrap();
     assert_eq!(
-        VerifiedProgram::decode(&bytes, limits()).unwrap().package(),
+        &VerifiedProgram::decode(&bytes, limits())
+            .unwrap()
+            .to_unpacked()
+            .unwrap(),
         &p
     );
     for mutate in [
@@ -236,7 +309,7 @@ fn shared_fixtures_roundtrip_source_and_disassembly() {
             assert_eq!(&bytes, golden, "wire snapshot {name}");
         }
         let decoded = decode(&bytes, limits()).unwrap();
-        assert_eq!(decoded, p);
+        assert_eq!(decoded.to_unpacked().unwrap(), p);
         assert_eq!(encode(&decoded, limits()).unwrap(), bytes);
         let original = verify(p, limits()).unwrap();
         let loaded = VerifiedProgram::decode(&bytes, limits()).unwrap();
@@ -269,14 +342,23 @@ fn shared_fixtures_roundtrip_source_and_disassembly() {
 fn instruction_wire_is_compact_and_independent_of_execution_layout() {
     let package = fixtures::helper_native();
     let bytes = encode(&package, limits()).unwrap();
-    // LoadConst r0,k1; Call r1,q0; Return r1.
+    let runtime = decode(&bytes, limits()).unwrap();
+    let code = &runtime.functions[0].code;
+    assert_eq!(
+        code.words().collect::<Result<Vec<_>, _>>().unwrap(),
+        [0x101, 1, 0x841, 0x842]
+    );
+    let store = code.runtime_store().unwrap();
     assert!(
         bytes
-            .windows(8)
-            .any(|w| w == [1, 0, 1, 0x41, 1, 0, 0x42, 1])
+            .windows(store.packed().len())
+            .any(|part| part == store.packed())
     );
     assert_eq!(std::mem::size_of::<Instruction>(), 16);
-    assert_eq!(decode(&bytes, limits()).unwrap(), package);
+    assert_eq!(
+        decode(&bytes, limits()).unwrap().to_unpacked().unwrap(),
+        package
+    );
 }
 #[test]
 fn all_truncation_points_are_rejected_even_with_rewritten_total_length() {
@@ -308,7 +390,7 @@ fn complete_numeric_and_immutable_constant_bits_roundtrip() {
         Const::Tuple(vec![ConstId(0), ConstId(3), ConstId(5)]),
     ]);
     let bytes = encode(&p, limits()).unwrap();
-    assert_eq!(decode(&bytes, limits()).unwrap(), p);
+    assert_eq!(decode(&bytes, limits()).unwrap().to_unpacked().unwrap(), p);
     p.constants[3] = Const::Tuple(vec![ConstId(3)]);
     bad(p, ErrorKind::Index);
 }
@@ -327,18 +409,14 @@ fn declared_counts_overflow_and_bad_indices_do_not_allocate_payloads() {
             allocation.bytes_total
         );
     }
-    let position = bytes
-        .windows(8)
-        .position(|w| w == [1, 0, 1, 0x41, 1, 0, 0x42, 1])
-        .unwrap();
-    for operand in [1, 2] {
-        let mut corrupt = bytes.clone();
-        corrupt.splice(
-            position + operand..position + operand + 1,
-            [0xff, 0xff, 0xff, 0xff, 0x0f],
-        );
-        let length = corrupt.len() as u32;
-        corrupt[28..32].copy_from_slice(&length.to_le_bytes());
+    for register in [true, false] {
+        let corrupt = rewrite_execution_words(&bytes, |words| {
+            if register {
+                words[0] = 0x101u32 | 2 << 11;
+            } else {
+                words[1] = u32::MAX;
+            }
+        });
         let allocation = allocation_counter::measure(|| {
             assert_eq!(
                 decode(&corrupt, limits()).unwrap_err().kind,
@@ -346,8 +424,9 @@ fn declared_counts_overflow_and_bad_indices_do_not_allocate_payloads() {
             );
         });
         assert!(
-            allocation.bytes_total < 2048,
-            "bad index allocated payloads"
+            allocation.bytes_total
+                < (super::code_residency::CodeStore::construction_scratch_bytes() + 2048) as u64,
+            "bad index allocated package payloads"
         );
     }
 }
@@ -434,26 +513,14 @@ fn unknown_version_tags_flags_unused_operands_and_trailing_bytes_fail() {
 #[test]
 fn instruction_operands_reject_noncanonical_and_overflowing_encodings() {
     let bytes = encode(&fixtures::helper_native(), limits()).unwrap();
-    let position = bytes
-        .windows(8)
-        .position(|w| w == [1, 0, 1, 0x41, 1, 0, 0x42, 1])
-        .unwrap();
-    for encoded in [
-        &[0x81, 0x00][..],
-        &[0xff, 0xff, 0xff, 0xff, 0x10],
-        &[0xff, 0xff, 0xff, 0xff, 0x80],
-    ] {
-        let mut corrupt = bytes.clone();
-        corrupt.splice(position + 2..position + 3, encoded.iter().copied());
-        let length = corrupt.len() as u32;
-        corrupt[28..32].copy_from_slice(&length.to_le_bytes());
+    for header in [0xffff_f801u32, 0xffff_f901, 0x501, 0x201] {
+        let corrupt = rewrite_execution_words(&bytes, |words| words[0] = header);
         assert_eq!(
             decode(&corrupt, limits()).unwrap_err().kind,
             ErrorKind::Encoding
         );
     }
-    let mut corrupt = bytes;
-    corrupt[position] = 0xff;
+    let corrupt = rewrite_execution_words(&bytes, |words| words[0] = 0x1ff);
     assert_eq!(
         decode(&corrupt, limits()).unwrap_err().kind,
         ErrorKind::Opcode
@@ -575,29 +642,29 @@ fn every_normal_handler_entry_and_cleanup_bypass_is_rejected() {
 fn exceptional_edges_skip_consumed_catch_and_finally_handlers() {
     let p = verify(fixtures::exception_regions(), limits()).unwrap();
     assert_eq!(
-        p.exception_handler(FunctionId(0), Pc(1), None).unwrap(),
+        p.exception_handler(FunctionId(0), pc(&p, 1), None).unwrap(),
         Some(HandlerTarget {
             region: RegionId(0),
             kind: HandlerKind::Catch,
-            pc: Pc(2),
+            pc: pc(&p, 2),
             exception: Some(Reg(1))
         })
     );
     assert_eq!(
-        p.exception_handler(FunctionId(0), Pc(2), None).unwrap(),
+        p.exception_handler(FunctionId(0), pc(&p, 2), None).unwrap(),
         Some(HandlerTarget {
             region: RegionId(0),
             kind: HandlerKind::Finally,
-            pc: Pc(4),
+            pc: pc(&p, 4),
             exception: None
         })
     );
     assert_eq!(
-        p.exception_handler(FunctionId(0), Pc(4), None).unwrap(),
+        p.exception_handler(FunctionId(0), pc(&p, 4), None).unwrap(),
         None
     );
     assert_eq!(
-        p.exception_handler(FunctionId(0), Pc(1), Some(RegionId(0)))
+        p.exception_handler(FunctionId(0), pc(&p, 1), Some(RegionId(0)))
             .unwrap(),
         None
     );
@@ -646,7 +713,7 @@ fn exceptional_edges_skip_consumed_catch_and_finally_handlers() {
     f.source_map.clear();
     let p = verify(nested, limits()).unwrap();
     assert_eq!(
-        p.exception_handler(FunctionId(0), Pc(5), None)
+        p.exception_handler(FunctionId(0), pc(&p, 5), None)
             .unwrap()
             .unwrap()
             .region,
@@ -684,7 +751,13 @@ fn runtime_must_explicitly_support_all_opcodes_natives_and_capabilities() {
             required_capabilities: vec!["host.echo".into()],
         }],
     };
+    assert_eq!(p.code_cache_stats().unwrap().resident_capacity_bytes, 0);
     p.require_runtime(&runtime).unwrap();
+    assert_eq!(
+        p.code_cache_stats().unwrap().resident_capacity_bytes,
+        0,
+        "capability admission reads the derived opcode sites without loading code pages"
+    );
     runtime.natives[0].abi_version = 2;
     assert!(p.require_runtime(&runtime).is_err());
     runtime.natives[0].abi_version = 1;
@@ -697,10 +770,31 @@ fn runtime_must_explicitly_support_all_opcodes_natives_and_capabilities() {
         (e.function, e.pc, e.source),
         (
             Some(FunctionId(0)),
-            Some(Pc(1)),
-            p.source_at(FunctionId(0), Pc(1))
+            Some(pc(&p, 1)),
+            p.source_at(FunctionId(0), pc(&p, 1))
         )
     );
+
+    let mut package = fixtures::helper_native();
+    package.functions[0].code.extend([
+        Instruction::new(Opcode::MemberGet, 0, 0, 9),
+        Instruction::new(Opcode::MemberGet, 0, 0, 9),
+        Instruction::new(Opcode::MemberSet, 0, 0, 4),
+        Instruction::new(Opcode::Return, 0, 0, 0),
+    ]);
+    let bytes = encode(&package, limits()).unwrap();
+    for program in [
+        verify(package, limits()).unwrap(),
+        VerifiedProgram::decode(&bytes, limits()).unwrap(),
+    ] {
+        let resident = program.code_cache_stats().unwrap().resident_capacity_bytes;
+        assert_eq!(program.member_symbols(), &[SymbolId(4), SymbolId(9)]);
+        assert_eq!(
+            program.code_cache_stats().unwrap().resident_capacity_bytes,
+            resident,
+            "member names are unique metadata even when their instructions are unreachable"
+        );
+    }
 }
 #[test]
 fn pattern_outputs_and_argument_order_remain_runtime_conditional() {
@@ -740,6 +834,7 @@ fn pattern_outputs_and_argument_order_remain_runtime_conditional() {
     let ops: Vec<_> = duplicate.package().functions[0]
         .code
         .iter()
+        .map(Result::unwrap)
         .map(|i| instruction_spec(i.opcode).unwrap().opcode)
         .collect();
     assert_eq!(
@@ -769,10 +864,11 @@ fn source_spans_preserve_utf8_byte_boundaries_and_locate_bad_instructions() {
     let bytes = encode(&p, limits()).unwrap();
     let v = VerifiedProgram::decode(&bytes, limits()).unwrap();
     assert_eq!(v.source_at(FunctionId(0), Pc(0)).unwrap().end, 6);
-    let code_len = p.functions[0].code.len();
-    for pc in 1..code_len {
+    let code_len = v.package().functions[0].code.end_pc();
+    for item in v.package().functions[0].code.indexed_iter() {
+        let (word, _) = item.unwrap();
         assert_eq!(
-            v.source_at(FunctionId(0), Pc(pc as u32)),
+            v.source_at(FunctionId(0), Pc(word as u32)),
             v.source_at(FunctionId(0), Pc(0))
         );
     }
@@ -780,12 +876,12 @@ fn source_spans_preserve_utf8_byte_boundaries_and_locate_bad_instructions() {
     let mut malformed = p.clone();
     malformed.functions[0].code[1].operands[0] = u32::MAX;
     let error = verify(malformed, limits()).unwrap_err();
-    assert_eq!(error.source, v.source_at(FunctionId(0), Pc(1)));
+    assert_eq!(error.source, v.source_at(FunctionId(0), pc(&v, 1)));
     p.functions[0].source_map[0].pc = Pc(1);
     let sparse = verify(p.clone(), limits()).unwrap();
     assert_eq!(sparse.source_at(FunctionId(0), Pc(0)), None);
     assert_eq!(
-        sparse.source_at(FunctionId(0), Pc(1)),
+        sparse.source_at(FunctionId(0), pc(&sparse, 1)),
         v.source_at(FunctionId(0), Pc(0))
     );
     p.functions[0].source_map[0].span.end = 1;
@@ -954,7 +1050,7 @@ fn every_opcode_and_descriptor_family_has_a_real_wire_and_disassembly_contract()
         let p = gallery(spec.opcode);
         let bytes = encode(&p, limits()).unwrap_or_else(|e| panic!("{}: {e}", spec.mnemonic));
         let loaded = VerifiedProgram::decode(&bytes, limits()).unwrap();
-        assert_eq!(&p, loaded.package());
+        assert_eq!(&p, &loaded.to_unpacked().unwrap());
         let mut text = String::new();
         disassemble(&loaded, &mut text).unwrap();
         assert!(text.contains(spec.mnemonic));
@@ -1019,16 +1115,22 @@ fn decoder_capacity_accounting_matches_actual_allocator_residency() {
         let allocation = allocation_counter::measure(|| {
             decoded = Some(decode(&bytes, limits()).unwrap());
         });
-        let program = verify(decoded.unwrap(), limits()).unwrap();
-        let expected = program.stats().owned_capacity_bytes
-            - program.stats().derived_capacity_bytes
-            - std::mem::size_of::<BytecodePackage>();
+        let decoded = decoded.unwrap();
+        let raw_owned = super::codec::measure(&decoded, limits()).unwrap().1;
+        let cache = decoded.functions[0]
+            .code
+            .runtime_store()
+            .unwrap()
+            .cache_stats();
+        let expected =
+            raw_owned - std::mem::size_of::<RuntimePackage>() + cache.resident_capacity_bytes;
         assert_eq!(
             allocation.bytes_current as usize, expected,
             "retained capacity {name}"
         );
         assert!(
-            allocation.bytes_max as usize <= expected + 4 * program.package().modules.capacity()
+            allocation.bytes_max as usize
+                <= expected + 4 * decoded.modules.capacity() + cache.construction_scratch_bytes
         );
         println!(
             "allocator {name}: encoded={} heap={} peak={} total={} allocations={}",
@@ -1037,6 +1139,25 @@ fn decoder_capacity_accounting_matches_actual_allocator_residency() {
             allocation.bytes_max,
             allocation.bytes_total,
             allocation.count_total
+        );
+        drop(decoded);
+        let mut program = None;
+        let retained = allocation_counter::measure(|| {
+            program = Some(VerifiedProgram::decode(&bytes, limits()).unwrap());
+        });
+        let program = program.unwrap();
+        let expected = program.stats().owned_capacity_bytes - std::mem::size_of::<RuntimePackage>()
+            + program.shared_header_bytes();
+        assert_eq!(
+            retained.bytes_current as usize, expected,
+            "compact retained capacity {name}"
+        );
+        assert!(
+            retained.bytes_max as usize
+                <= raw_owned
+                    + program.stats().validation_scratch_peak
+                    + program.shared_header_bytes(),
+            "compact allocation peak {name}"
         );
     }
 }
@@ -1065,9 +1186,18 @@ fn forward_readonly_cell_carries_initialization_and_write_contract() {
         BindingInitialization::Explicit
     );
     assert!(!f.bindings[0].mutable);
-    assert_eq!(f.code[0], Instruction::new(Opcode::CellNew, 0, 0, 0));
-    assert_eq!(f.code[1].opcode, Opcode::MakeClosure as u16);
-    assert_eq!(f.code[3].opcode, Opcode::BindInit as u16);
+    assert_eq!(
+        f.code.instruction(0).unwrap().unwrap(),
+        Instruction::new(Opcode::CellNew, 0, 0, 0)
+    );
+    assert_eq!(
+        f.code.iter().map(Result::unwrap).nth(1).unwrap().opcode,
+        Opcode::MakeClosure as u16
+    );
+    assert_eq!(
+        f.code.iter().map(Result::unwrap).nth(3).unwrap().opcode,
+        Opcode::BindInit as u16
+    );
     assert_eq!(
         Opcode::CellNew.spec().operands,
         [
@@ -1087,7 +1217,9 @@ fn forward_readonly_cell_carries_initialization_and_write_contract() {
     let mut register_access = Vec::new();
     Opcode::CellNew
         .spec()
-        .visit_registers(f, &f.code[0], |r, a| register_access.push((r, a)))
+        .visit_registers(f, &f.code.instruction(0).unwrap().unwrap(), |r, a| {
+            register_access.push((r, a))
+        })
         .unwrap();
     assert_eq!(
         register_access,
@@ -1183,7 +1315,10 @@ fn modules_structural_types_rest_schema_and_lexical_initializers_roundtrip() {
     }
     let bytes = encode(&p, limits()).unwrap();
     assert_eq!(
-        VerifiedProgram::decode(&bytes, limits()).unwrap().package(),
+        &VerifiedProgram::decode(&bytes, limits())
+            .unwrap()
+            .to_unpacked()
+            .unwrap(),
         &p
     );
     let mut wrong = p.clone();
@@ -1339,22 +1474,22 @@ fn unwind_cursor_moves_strictly_outward_across_two_finally_layers() {
     let bytes = encode(&p, limits()).unwrap();
     let p = VerifiedProgram::decode(&bytes, limits()).unwrap();
     let inner = p
-        .exception_handler(FunctionId(0), Pc(1), None)
+        .exception_handler(FunctionId(0), pc(&p, 1), None)
         .unwrap()
         .unwrap();
     assert_eq!(inner.region, RegionId(0));
     let outer = p
-        .exception_handler(FunctionId(0), Pc(1), Some(inner.region))
+        .exception_handler(FunctionId(0), pc(&p, 1), Some(inner.region))
         .unwrap()
         .unwrap();
     assert_eq!(outer.region, RegionId(1));
     assert_eq!(
-        p.exception_handler(FunctionId(0), Pc(1), Some(outer.region))
+        p.exception_handler(FunctionId(0), pc(&p, 1), Some(outer.region))
             .unwrap(),
         None
     );
     assert_eq!(
-        p.exception_handler(FunctionId(0), Pc(4), Some(inner.region))
+        p.exception_handler(FunctionId(0), pc(&p, 4), Some(inner.region))
             .unwrap_err()
             .kind,
         ErrorKind::Region
@@ -1810,9 +1945,14 @@ fn return_cleanup_uses_catch_nesting_and_strict_consumed_ancestors() {
     let bytes = encode(&cleanups_nested_in_catch(), limits()).unwrap();
     let p = VerifiedProgram::decode(&bytes, limits()).unwrap();
     let mut consumed = None;
-    for (region, pc) in [(2, 7), (1, 10), (0, 14)] {
+    for (region, ordinal) in [(2, 7), (1, 10), (0, 14)] {
         let target = p
-            .cleanup_handler(FunctionId(0), Pc(4), CleanupDestination::Return, consumed)
+            .cleanup_handler(
+                FunctionId(0),
+                pc(&p, 4),
+                CleanupDestination::Return,
+                consumed,
+            )
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -1820,19 +1960,24 @@ fn return_cleanup_uses_catch_nesting_and_strict_consumed_ancestors() {
             HandlerTarget {
                 region: RegionId(region),
                 kind: HandlerKind::Finally,
-                pc: Pc(pc),
+                pc: pc(&p, ordinal),
                 exception: None,
             }
         );
         consumed = Some(target.region);
     }
     assert_eq!(
-        p.cleanup_handler(FunctionId(0), Pc(4), CleanupDestination::Return, consumed)
-            .unwrap(),
+        p.cleanup_handler(
+            FunctionId(0),
+            pc(&p, 4),
+            CleanupDestination::Return,
+            consumed
+        )
+        .unwrap(),
         None
     );
     assert_eq!(
-        p.exception_handler(FunctionId(0), Pc(4), Some(RegionId(2)))
+        p.exception_handler(FunctionId(0), pc(&p, 4), Some(RegionId(2)))
             .unwrap()
             .unwrap()
             .region,
@@ -1841,7 +1986,7 @@ fn return_cleanup_uses_catch_nesting_and_strict_consumed_ancestors() {
     assert_eq!(
         p.cleanup_handler(
             FunctionId(0),
-            Pc(13),
+            pc(&p, 13),
             CleanupDestination::Return,
             Some(RegionId(2))
         )
@@ -1850,7 +1995,7 @@ fn return_cleanup_uses_catch_nesting_and_strict_consumed_ancestors() {
         ErrorKind::Region
     );
     assert_eq!(
-        p.cleanup_handler(FunctionId(0), Pc(16), CleanupDestination::Return, None)
+        p.cleanup_handler(FunctionId(0), pc(&p, 16), CleanupDestination::Return, None)
             .unwrap(),
         None
     );
@@ -1860,16 +2005,16 @@ fn return_cleanup_uses_catch_nesting_and_strict_consumed_ancestors() {
 fn leave_cleanup_preserves_enclosing_catch_and_validates_destination() {
     let p = verify(cleanups_nested_in_catch(), limits()).unwrap();
     for (source, destination, region) in [(5, 9, 2), (9, 12, 1), (12, 16, 0)] {
-        let exit = CleanupDestination::Leave(Pc(destination));
+        let exit = CleanupDestination::Leave(pc(&p, destination));
         assert_eq!(
-            p.cleanup_handler(FunctionId(0), Pc(source), exit, None)
+            p.cleanup_handler(FunctionId(0), pc(&p, source), exit, None)
                 .unwrap()
                 .unwrap()
                 .region,
             RegionId(region)
         );
         assert_eq!(
-            p.cleanup_handler(FunctionId(0), Pc(source), exit, Some(RegionId(region)))
+            p.cleanup_handler(FunctionId(0), pc(&p, source), exit, Some(RegionId(region)))
                 .unwrap(),
             None
         );
@@ -1877,8 +2022,8 @@ fn leave_cleanup_preserves_enclosing_catch_and_validates_destination() {
     assert_eq!(
         p.cleanup_handler(
             FunctionId(0),
-            Pc(12),
-            CleanupDestination::Leave(Pc(17)),
+            pc(&p, 12),
+            CleanupDestination::Leave(pc(&p, 17)),
             None
         )
         .unwrap_err()
@@ -1886,13 +2031,13 @@ fn leave_cleanup_preserves_enclosing_catch_and_validates_destination() {
         ErrorKind::Index
     );
     assert_eq!(
-        p.cleanup_handler(FunctionId(0), Pc(17), CleanupDestination::Return, None)
+        p.cleanup_handler(FunctionId(0), pc(&p, 17), CleanupDestination::Return, None)
             .unwrap_err()
             .kind,
         ErrorKind::Index
     );
     assert_eq!(
-        p.cleanup_handler(FunctionId(1), Pc(4), CleanupDestination::Return, None)
+        p.cleanup_handler(FunctionId(1), pc(&p, 4), CleanupDestination::Return, None)
             .unwrap_err()
             .kind,
         ErrorKind::Index
@@ -1918,7 +2063,7 @@ fn parameter_cell_default_is_an_internal_prefix_and_an_ordinary_call_target() {
     let p = fixtures::parameter_cell_default();
     let bytes = encode(&p, limits()).unwrap();
     let program = VerifiedProgram::decode(&bytes, limits()).unwrap();
-    assert_eq!(program.package(), &p);
+    assert_eq!(&program.to_unpacked().unwrap(), &p);
     assert_eq!(
         p.signatures[1].parameters[1].default,
         Some(ParameterDefault::Function(FunctionId(2)))
@@ -2032,7 +2177,10 @@ fn readonly_prefix_and_rest_parameter_cells_use_existing_binding_fields() {
         }
         let bytes = encode(&p, limits()).unwrap();
         assert_eq!(
-            VerifiedProgram::decode(&bytes, limits()).unwrap().package(),
+            &VerifiedProgram::decode(&bytes, limits())
+                .unwrap()
+                .to_unpacked()
+                .unwrap(),
             &p
         );
     }
@@ -2058,7 +2206,10 @@ fn readonly_prefix_and_rest_parameter_cells_use_existing_binding_fields() {
     p.functions.push(f);
     let bytes = encode(&p, limits()).unwrap();
     assert_eq!(
-        VerifiedProgram::decode(&bytes, limits()).unwrap().package(),
+        &VerifiedProgram::decode(&bytes, limits())
+            .unwrap()
+            .to_unpacked()
+            .unwrap(),
         &p
     );
     p.functions[0].bindings[0].initialization = BindingInitialization::Parameter(1);
@@ -2107,8 +2258,13 @@ fn parameter_layout_index_is_sparse_under_shared_large_signatures() {
     p.functions = (0..20).map(|_| budget_function(0, 1000, 0)).collect();
     let bytes = encode(&p, limits()).unwrap();
     let program = VerifiedProgram::decode(&bytes, limits()).unwrap();
-    assert_eq!(program.package(), &p);
-    assert!(program.stats().validation_scratch_peak <= p.symbols.len() * 16);
+    assert_eq!(&program.to_unpacked().unwrap(), &p);
+    let code_scratch = program
+        .code_cache_stats()
+        .unwrap()
+        .construction_scratch_bytes
+        + p.modules.len() * 4;
+    assert!(program.stats().validation_scratch_peak <= (p.symbols.len() * 16).max(code_scratch));
 }
 
 #[test]
@@ -2116,7 +2272,7 @@ fn native_defaults_publish_one_canonical_sparse_layout_without_wire_fields() {
     let p = fixtures::native_parameter_defaults();
     let bytes = encode(&p, limits()).unwrap();
     let program = VerifiedProgram::decode(&bytes, limits()).unwrap();
-    assert_eq!(program.package(), &p);
+    assert_eq!(&program.to_unpacked().unwrap(), &p);
     assert_eq!(encode(program.package(), limits()).unwrap(), bytes);
     assert!(program.native_parameters_need_cells(NativeId(0)).unwrap());
     for (i, expected) in [
@@ -2135,7 +2291,7 @@ fn native_defaults_publish_one_canonical_sparse_layout_without_wire_fields() {
             expected
         );
     }
-    assert_eq!(program.stats().derived_capacity_bytes, 2 * 8 + 2 * 4);
+    assert_eq!(parameter_layout_bytes(&program), 2 * 8 + 2 * 4);
     assert_eq!(
         program
             .native_parameter_storage(NativeId(0), 4)
@@ -2159,7 +2315,7 @@ fn native_defaults_publish_one_canonical_sparse_layout_without_wire_fields() {
     );
     let ordinary = verify(fixtures::helper_native(), limits()).unwrap();
     assert!(!ordinary.native_parameters_need_cells(NativeId(0)).unwrap());
-    assert_eq!(ordinary.stats().derived_capacity_bytes, 2 * 4);
+    assert_eq!(parameter_layout_bytes(&ordinary), 2 * 4);
     assert_eq!(
         ordinary.native_parameter_storage(NativeId(0), 0).unwrap(),
         BindingStorage::Value(Reg(0))
@@ -2175,7 +2331,7 @@ fn native_defaults_publish_one_canonical_sparse_layout_without_wire_fields() {
     ];
     let ordinary = verify(no_defaults, limits()).unwrap();
     assert!(!ordinary.native_parameters_need_cells(NativeId(0)).unwrap());
-    assert_eq!(ordinary.stats().derived_capacity_bytes, 2 * 4);
+    assert_eq!(parameter_layout_bytes(&ordinary), 2 * 4);
     assert_eq!(
         ordinary.native_parameter_storage(NativeId(0), 0).unwrap(),
         BindingStorage::Value(Reg(0))
@@ -2284,7 +2440,7 @@ fn verified_native_cache_capacity_matches_actual_retained_allocation() {
         stats.owned_capacity_bytes - std::mem::size_of::<BytecodePackage>()
             + program.shared_header_bytes()
     );
-    assert_eq!(stats.derived_capacity_bytes, 16 + 2 * 4);
+    assert_eq!(parameter_layout_bytes(&program), 16 + 2 * 4);
     assert!(
         allocation.bytes_max as usize
             <= stats.owned_capacity_bytes - std::mem::size_of::<BytecodePackage>()

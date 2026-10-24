@@ -17,10 +17,14 @@ fn compile(inputs: &[(&str, &str)]) -> lowering::ProjectCompilation {
     assert!(analysis.is_ok(), "{:?}", analysis.diagnostics);
     let plan = std::mem::take(&mut analysis.plan);
     let modules = analysis.into_modules().unwrap();
-    let seed = bc::verify(bc::BytecodePackage::default(), bc::Limits::default()).unwrap();
+    let seed = bc::verify(
+        bc::BytecodePackage::<Vec<bc::Instruction>>::default(),
+        bc::Limits::default(),
+    )
+    .unwrap();
     let links = vec![Vec::new(); modules.len()];
     lowering::compile_project(
-        &modules,
+        modules,
         &plan,
         &seed,
         &links,
@@ -153,6 +157,46 @@ fn imported_functions_reexports_and_objects_keep_one_identity_and_private_enviro
         .metadata
         .functions[0]
         .output;
+    let state = compilation
+        .modules
+        .iter()
+        .find(|module| module.metadata.canonical_path == "state")
+        .unwrap();
+    let package = compilation.program.package();
+    assert_eq!(
+        state
+            .metadata
+            .declarations
+            .iter()
+            .map(|declaration| package.symbols[declaration.name.index()].as_str())
+            .collect::<Vec<_>>(),
+        ["bump", "make"]
+    );
+    for declaration in &state.metadata.declarations {
+        let name = &package.symbols[declaration.name.index()];
+        assert_eq!(
+            &package.sources[state.source.index()].text[declaration.span],
+            name
+        );
+        assert_eq!(
+            state.metadata.functions[declaration.source_function.0 as usize].output,
+            declaration.output
+        );
+        assert_eq!(
+            package.modules[state.module.index()].globals[declaration.global.index()].name,
+            declaration.name
+        );
+    }
+    assert!(
+        compilation
+            .modules
+            .iter()
+            .find(|module| module.metadata.canonical_path == "facade")
+            .unwrap()
+            .metadata
+            .declarations
+            .is_empty()
+    );
     let encoded = bc::encode(compilation.program.package(), bc::Limits::default()).unwrap();
     for _ in 0..2 {
         let program = bc::VerifiedProgram::decode(&encoded, bc::Limits::default()).unwrap();

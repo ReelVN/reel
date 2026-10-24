@@ -120,7 +120,7 @@ fn begin(vm: &mut Vm) -> (TaskId, Value) {
     reach(
         vm,
         task,
-        |v| matches!(v.active.frames.data.last(), Some(Frame::Script(s)) if matches!(s.phase, ScriptPhase::Exit { origin: Pc(2), reason: ExitReason::Throw(seed), .. } if seed.fault.is_some())),
+        |v| matches!(v.active.frames.data.last(), Some(Frame::Script(s)) if matches!(s.phase, ScriptPhase::Exit { origin, reason: ExitReason::Throw(seed), .. } if origin == test_pc(v, s.code.function.0, 2) && seed.fault.is_some())),
     );
     assert_eq!(vm.active.unwinds.data.len(), 1);
     vm.work_probe.exit_handler_queries.set(0);
@@ -132,13 +132,14 @@ fn selected(vm: &Vm) -> (ScriptFrame, FaultId) {
         panic!()
     };
     let ScriptPhase::ExitApply {
-        origin: Pc(2),
+        origin,
         reason: ExitReason::Throw(seed),
         ..
     } = s.phase
     else {
         panic!()
     };
+    assert_eq!(origin, test_pc(vm, s.code.function.0, 2));
     (s, seed.fault.unwrap())
 }
 
@@ -214,7 +215,7 @@ fn finally_throw_selection_is_admitted_before_scan_and_saved_across_work_and_all
         assert_eq!(vm.work_probe.exit_handler_queries.get(), 0);
         assert_eq!(vm.stats().usage.instructions, 0);
         assert!(
-            matches!(vm.active.frames.data.last(), Some(Frame::Script(s)) if matches!(s.phase, ScriptPhase::Exit { origin: Pc(2), .. }))
+            matches!(vm.active.frames.data.last(), Some(Frame::Script(s)) if matches!(s.phase, ScriptPhase::Exit { origin, .. } if origin == test_pc(&vm, s.code.function.0, 2)))
         );
         gc(&mut vm);
     }
@@ -389,11 +390,11 @@ fn finally_inner_catch_needs_no_replacement_allocation_and_preserves_pending_ret
         ScriptPhase::ExitApply {
             handler: Some(HandlerTarget {
                 kind: HandlerKind::Catch,
-                pc: Pc(3),
+                pc,
                 ..
             }),
             ..
-        }
+        } if pc == test_pc(&vm, s.code.function.0, 3)
     ));
     let unwind = *vm.active.unwinds.data.last().unwrap();
     assert!(matches!(

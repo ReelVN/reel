@@ -187,7 +187,10 @@ fn finish_caller(vm: &mut Vm, task: TaskId) -> DeliveryId {
     let outer_finally = ticket(vm, task);
     assert_eq!(outer_finally.input, NativeInput::Entry);
     assert_eq!(outer_finally.location.code.function, FunctionId(0));
-    assert_eq!(outer_finally.location.pc, Pc(5));
+    assert_eq!(
+        outer_finally.location.pc,
+        test_pc(vm, outer_finally.location.code.function.0, 5)
+    );
     vm.respond(outer_finally, HostResponse::Ready(Value::NULL))
         .unwrap();
     for _ in 0..10000 {

@@ -127,7 +127,7 @@ impl Vm {
             Ok(()) => {
                 self.clear(s.env, 1)?;
                 self.clear(s.env, 2)?;
-                s.pc.0 += 1;
+                s.pc = s.instruction_end;
                 s.phase = ScriptPhase::Body;
             }
             Err(kind) => self.collection_fault(s, kind)?,

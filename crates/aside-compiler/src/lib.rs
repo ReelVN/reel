@@ -14,6 +14,8 @@ pub use semantic::{
 };
 mod lexer;
 mod parser;
+mod progress;
+pub use progress::{Progress, ProgressStage};
 mod raw;
 mod syntax;
 pub use aside_syntax::{GreenNode, TextRange, TextSize};

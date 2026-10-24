@@ -138,7 +138,7 @@ fn packed_clears_charge_each_slot_and_release_only_the_named_roots() {
             .unwrap();
         let frame = loop {
             if let Some(Frame::Script(frame)) = vm.active.frames.data.last().copied()
-                && frame.pc == Pc(4)
+                && frame.pc == test_pc(&vm, frame.code.function.0, 4)
             {
                 break frame;
             }
@@ -566,7 +566,7 @@ fn named_capture_and_long_name_binding_survive_gc_mutation_and_cancellation() {
             .unwrap();
         loop {
             if matches!(vm.active.frames.data.last(), Some(Frame::Script(s))
-                if s.pc == Pc(4) && matches!(s.phase, ScriptPhase::Body))
+                if s.pc == test_pc(&vm, s.code.function.0, 4) && matches!(s.phase, ScriptPhase::Body))
             {
                 break;
             }
@@ -656,7 +656,14 @@ fn named_capture_and_long_name_binding_survive_gc_mutation_and_cancellation() {
                     }
                 );
                 assert_eq!(info.location.code.function, FunctionId(0));
-                assert_eq!(info.location.pc, Pc(if action == 3 { 5 } else { 4 }));
+                assert_eq!(
+                    info.location.pc,
+                    test_pc(
+                        &vm,
+                        info.location.code.function.0,
+                        if action == 3 { 5 } else { 4 }
+                    )
+                );
                 vm.discard_delivery(id).unwrap();
             }
             other => panic!("action {action}: {other:?}"),
@@ -675,7 +682,7 @@ fn spread_detects_overwrite_between_capture_steps() {
     for _ in 0..1000 {
         if let Some(Frame::Script(s)) = vm.active.frames.data.last().copied()
             && matches!(s.phase, ScriptPhase::Body)
-            && s.pc == Pc(4)
+            && s.pc == test_pc(&vm, s.code.function.0, 4)
         {
             vm.run_slice(
                 task,
@@ -1003,7 +1010,7 @@ fn packed_destination_package(len: u32, opcode: Opcode) -> BytecodePackage {
 fn reach_packed_append(vm: &mut Vm, task: TaskId, len: u32) -> Value {
     for _ in 0..10000 {
         if let Some(Frame::Script(s)) = vm.active.frames.data.last().copied()
-            && s.pc == Pc(len + 2)
+            && s.pc == test_pc(vm, s.code.function.0, len + 2)
             && matches!(s.phase, ScriptPhase::Body)
         {
             return vm.value(s.regs, len).unwrap();
@@ -1115,7 +1122,7 @@ fn spread_destination_overwrite_and_odd_append_invalidate_resume() {
             let Some(Frame::Script(s)) = vm.active.frames.data.last().copied() else {
                 panic!()
             };
-            if s.pc == Pc(4) && matches!(s.phase, ScriptPhase::Body) {
+            if s.pc == test_pc(&vm, s.code.function.0, 4) && matches!(s.phase, ScriptPhase::Body) {
                 vm.run_slice(
                     task,
                     SliceBudget {
@@ -1902,7 +1909,10 @@ fn collection_spread_detects_source_and_destination_mutation_and_cancels() {
                 let Frame::Script(s) = *vm.active.frames.data.last().unwrap() else {
                     panic!()
                 };
-                if mode == 2 && s.pc == Pc(1) && matches!(s.phase, ScriptPhase::Body) {
+                if mode == 2
+                    && s.pc == test_pc(&vm, s.code.function.0, 1)
+                    && matches!(s.phase, ScriptPhase::Body)
+                {
                     // Force the merge path and suspend inside its key scan.
                     let builder = vm.value(s.regs, 1).unwrap();
                     vm.heap_mut()

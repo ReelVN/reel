@@ -65,7 +65,7 @@ fn rehashed_nonordinary_entries_are_rejected_by_cli_and_reader() {
         let mut metadata: rp::Metadata =
             serde_json::from_slice(section(&original.bytes, 1)).unwrap();
         let entry = metadata.game_entry.as_ref().unwrap().function_id as usize;
-        let mut p = checked.compilation.program.package().clone();
+        let mut p = checked.compilation.program.to_unpacked().unwrap();
         p.functions[entry].context = context;
         let signature = p.functions[entry].signature.index();
         p.signatures[signature].effects.0 &= !bc::Effects::WAIT;
@@ -127,7 +127,7 @@ fn project_initializer_and_linked_declarations_reject_forged_control_and_writes(
         "clear-register",
         "omitted-metadata",
     ] {
-        let mut p = decoded.program().package().clone();
+        let mut p = decoded.program().to_unpacked().unwrap();
         let mut metadata = decoded.metadata().clone();
         let init = &mut p.functions[metadata.initializer.function_id as usize];
         match case {
@@ -235,7 +235,13 @@ fn private_entry_uses_the_linked_module_declaration_and_project_initializer() {
     }));
     assert_eq!(a.blake3, rp::digest(&a.bytes));
     assert_eq!(
-        rp::encode(section(&a.bytes, 0), m, None, Limits::default()).unwrap(),
+        rp::encode(
+            &read.program().encode(Default::default()).unwrap(),
+            m,
+            None,
+            Limits::default()
+        )
+        .unwrap(),
         a.bytes
     );
 }
@@ -509,7 +515,7 @@ fn embedded_distribution_roundtrips_and_seek_reader_skips_code_payloads() {
         loose: Some(LooseResources::Directory("resources/序章".into())),
     };
     let bytes = rp::encode(
-        section(&original, 0),
+        &package.program().encode(Default::default()).unwrap(),
         package.metadata(),
         Some(&manifest),
         Limits::default(),

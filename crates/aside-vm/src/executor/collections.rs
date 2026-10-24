@@ -74,7 +74,7 @@ impl Vm {
             Ok(value) => {
                 self.put(frame.regs, dest.0, value)?;
                 self.clear(frame.env, 2)?;
-                frame.pc.0 += 1;
+                frame.pc = frame.instruction_end;
                 frame.phase = ScriptPhase::Body;
             }
             Err(kind) => self.collection_fault(frame, kind)?,
@@ -106,7 +106,7 @@ impl Vm {
             match self.write(*s, dest, builder) {
                 Ok(()) => {
                     self.clear(s.env, 1)?;
-                    s.pc.0 += 1;
+                    s.pc = s.instruction_end;
                     s.phase = ScriptPhase::Body;
                 }
                 Err(kind) => self.collection_fault(s, kind)?,
@@ -202,7 +202,7 @@ impl Vm {
             Err(kind) => self.collection_fault(s, kind)?,
             Ok(()) if index == window.len => {
                 self.clear(s.env, 1)?;
-                s.pc.0 += 1;
+                s.pc = s.instruction_end;
                 s.phase = ScriptPhase::Body;
             }
             Ok(()) => {
@@ -366,7 +366,7 @@ impl Vm {
             self.clear(s.env, 1)?;
             self.clear(s.env, 2)?;
             s.table_work = None;
-            s.pc.0 += 1;
+            s.pc = s.instruction_end;
             s.phase = ScriptPhase::Body;
             return Ok(());
         };
@@ -782,7 +782,7 @@ impl Vm {
                     s.table_work = None;
                     self.clear(s.env, 1)?;
                     self.clear(s.env, 2)?;
-                    s.pc.0 += 1;
+                    s.pc = s.instruction_end;
                     s.phase = ScriptPhase::Body;
                     return Ok(());
                 }
@@ -910,7 +910,7 @@ impl Vm {
         s.table_work = None;
         self.clear(s.env, 1)?;
         self.clear(s.env, 2)?;
-        s.pc.0 += 1;
+        s.pc = s.instruction_end;
         s.phase = ScriptPhase::Body;
         Ok(())
     }

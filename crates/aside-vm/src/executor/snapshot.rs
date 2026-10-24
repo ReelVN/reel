@@ -564,7 +564,7 @@ impl VmRestore<'_> {
             }
             RecordKind::Frame => {
                 let mut frame: Frame = record.read()?;
-                rebase_frame(&mut frame, &self.map)?;
+                rebase_frame(&mut frame, &self.map, &self.vm.program)?;
                 self.constant_validation = validate_frame(&frame, &self.vm)?;
                 append(&mut self.task_mut(record.key)?.frames, record.offset, frame)?;
             }
@@ -725,9 +725,26 @@ fn rebase_exit(exit: &mut ExitReason, map: &SnapshotMap) -> Result<(), SnapshotE
     }
     Ok(())
 }
-fn rebase_frame(frame: &mut Frame, map: &SnapshotMap) -> Result<(), SnapshotError> {
+fn rebase_frame(
+    frame: &mut Frame,
+    map: &SnapshotMap,
+    program: &VerifiedProgram,
+) -> Result<(), SnapshotError> {
     match frame {
         Frame::Script(frame) => {
+            let code = program
+                .package()
+                .functions
+                .get(frame.code.function.index())
+                .ok_or_else(|| SnapshotError::Invalid("frame function".into()))?;
+            if frame.pc.index() < code.code.end_pc() && code.code.is_boundary(frame.pc.index()) {
+                let (instruction, end) =
+                    code.code.fetch(frame.pc.index()).map_err(VmError::from)?;
+                frame.instruction_end = Pc(end as u32);
+                frame.member_symbol=matches!(instruction.opcode,value if value==Opcode::MemberGet as u16||value==Opcode::MemberSet as u16).then_some(SymbolId(instruction.operands[2]));
+                frame.instruction = Some(instruction);
+                frame.instruction_pc = frame.pc;
+            }
             frame.regs = map.range(frame.regs)?;
             frame.env = map.range(frame.env)?;
             frame.args = map.range(frame.args)?;
@@ -764,7 +781,8 @@ fn validate_frame(frame: &Frame, vm: &Vm) -> Result<Option<ConstantValidation>, 
                 .get(frame.code.function.index())
                 .ok_or_else(|| SnapshotError::Invalid("frame function".into()))?;
             if frame.code.version != vm.program.package().content_version
-                || frame.pc.0 as usize > code.code.len()
+                || frame.pc.index() > code.code.end_pc()
+                || !code.code.is_boundary(frame.pc.index())
                 || frame.module.0 as usize >= vm.program.package().modules.len()
                 || vm.heap.range_descriptor(frame.regs)?.len != code.register_count
             {
@@ -775,7 +793,8 @@ fn validate_frame(frame: &Frame, vm: &Vm) -> Result<Option<ConstantValidation>, 
                 ScriptPhase::Constant(work) => {
                     let instruction = code
                         .code
-                        .get(frame.pc.index())
+                        .instruction(frame.pc.index())
+                        .map_err(VmError::from)?
                         .ok_or_else(|| SnapshotError::Invalid("constant instruction".into()))?;
                     if instruction.opcode != Opcode::LoadConst as u16
                         || work.dest != Reg(instruction.operands[0])

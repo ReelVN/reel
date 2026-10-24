@@ -71,7 +71,7 @@ impl Vm {
         } else if work.index == work.len {
             self.clear(s.env, 1)?;
             self.clear(s.env, 2)?;
-            s.pc.0 += 1;
+            s.pc = s.instruction_end;
             s.phase = ScriptPhase::Body;
         } else {
             let (name, value) = if matches!(work.kind, CaptureKind::NamedArguments) {
@@ -158,7 +158,7 @@ impl Vm {
             match work.finish {
                 TableFinish::Instruction => {
                     self.clear(s.env, 1)?;
-                    s.pc.0 += 1;
+                    s.pc = s.instruction_end;
                     s.phase = ScriptPhase::Body;
                 }
                 TableFinish::Build {

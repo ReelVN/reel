@@ -124,7 +124,7 @@ fn cancelled_preparation_stages_route_at_caller_without_entering_callee_pc_zero_
             assert_eq!(info.kind, FaultKind::Cancelled, "{target}");
             assert_eq!(
                 (info.location.code.function, info.location.pc),
-                (FunctionId(0), Pc(1)),
+                (FunctionId(0), test_pc(&vm, 0, 1)),
                 "{target}"
             );
             assert_eq!(vm.stats().comparison_depth, 0);

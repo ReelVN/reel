@@ -105,8 +105,7 @@ fn content_addressed_catalogs_preserve_old_asbs_and_capture_source_revisions() {
     invalid
         .catalogs
         .insert("en-US".into(), "__reel/catalogs/missing.ftl".into());
-    let program =
-        aside_vm::bytecode::encode(before.package.program().package(), Default::default()).unwrap();
+    let program = before.package.program().encode(Default::default()).unwrap();
     let invalid_bytes = reel_package::encode(
         &program,
         before.package.metadata(),

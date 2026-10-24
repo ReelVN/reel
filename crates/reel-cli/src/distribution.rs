@@ -39,7 +39,9 @@ pub fn with_catalogs(
     };
     let limits = reel_package::Limits::default();
     let package = reel_package::decode(&artifact.bytes, limits).map_err(io::Error::other)?;
-    let bytecode = aside_vm::bytecode::encode(package.program().package(), limits.bytecode)
+    let bytecode = package
+        .program()
+        .encode(limits.bytecode)
         .map_err(io::Error::other)?;
     reel_package::encode(&bytecode, package.metadata(), Some(&manifest), limits)
         .map_err(io::Error::other)
@@ -318,7 +320,9 @@ pub fn export(
         manifest.validate()?;
         let limits = reel_package::Limits::default();
         let package = reel_package::decode(&artifact.bytes, limits).map_err(io::Error::other)?;
-        let bytecode = aside_vm::bytecode::encode(package.program().package(), limits.bytecode)
+        let bytecode = package
+            .program()
+            .encode(limits.bytecode)
             .map_err(io::Error::other)?;
         let encoded = reel_package::encode(&bytecode, package.metadata(), Some(&manifest), limits)
             .map_err(io::Error::other)?;

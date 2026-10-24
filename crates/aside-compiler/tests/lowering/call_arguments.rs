@@ -4,8 +4,10 @@ use super::initializer_locals::dominators;
 use super::*;
 use aside_compiler::byte_range;
 
-fn descriptor(f: &bc::FunctionDef, pc: usize) -> &bc::CallDesc {
-    let bc::Descriptor::Call(c) = &f.descriptors[f.code[pc].operands[1] as usize] else {
+fn descriptor(f: &bc::RuntimeFunction, pc: usize) -> &bc::CallDesc {
+    let bc::Descriptor::Call(c) =
+        &f.descriptors[f.code.instruction(pc).unwrap().unwrap().operands[1] as usize]
+    else {
         panic!("call descriptor")
     };
     c
@@ -33,7 +35,7 @@ fn shared_operand_metadata_keeps_calls_sources_and_fresh_container_constructions
     let call_pcs = pcs(run, bc::Opcode::Call);
     let ids: Vec<_> = call_pcs
         .iter()
-        .map(|&pc| run.code[pc].operands[1])
+        .map(|&pc| run.code.instruction(pc).unwrap().unwrap().operands[1])
         .collect();
     assert_eq!(ids[0], ids[1]);
     assert_ne!(ids[0], ids[2]);
@@ -46,19 +48,24 @@ fn shared_operand_metadata_keeps_calls_sources_and_fresh_container_constructions
         );
     }
 }
-fn reachable(f: &bc::FunctionDef, start: usize) -> Vec<bool> {
-    let mut seen = vec![false; f.code.len()];
+fn reachable(f: &bc::RuntimeFunction, start: usize) -> Vec<bool> {
+    let mut seen = vec![false; f.code.end_pc()];
     let mut todo = vec![start];
     while let Some(pc) = todo.pop() {
         if std::mem::replace(&mut seen[pc], true) {
             continue;
         }
-        match bc::instruction_spec(f.code[pc].opcode).unwrap().flow {
-            bc::Flow::Next => todo.push(pc + 1),
-            bc::Flow::Jump | bc::Flow::Leave => todo.push(f.code[pc].operands[0] as usize),
+        match bc::instruction_spec(f.code.instruction(pc).unwrap().unwrap().opcode)
+            .unwrap()
+            .flow
+        {
+            bc::Flow::Next => todo.push(f.code.next_pc(pc).unwrap().unwrap()),
+            bc::Flow::Jump | bc::Flow::Leave => {
+                todo.push(f.code.instruction(pc).unwrap().unwrap().operands[0] as usize)
+            }
             bc::Flow::Branch => todo.extend([
-                f.code[pc].operands[1] as usize,
-                f.code[pc].operands[2] as usize,
+                f.code.instruction(pc).unwrap().unwrap().operands[1] as usize,
+                f.code.instruction(pc).unwrap().unwrap().operands[2] as usize,
             ]),
             _ => (),
         }
@@ -86,7 +93,7 @@ fn packed_arguments_capture_in_source_order_and_keep_callee_builder_live() {
     );
     let new = pcs(f, bc::Opcode::ArgsNew);
     assert_eq!(new.len(), 1);
-    let builder = f.code[new[0]].operands[0];
+    let builder = f.code.instruction(new[0]).unwrap().unwrap().operands[0];
     let cp = pcs(f, bc::Opcode::Call);
     let final_pc = *cp.last().unwrap();
     let desc = descriptor(f, final_pc);
@@ -100,8 +107,8 @@ fn packed_arguments_capture_in_source_order_and_keep_callee_builder_live() {
     assert_cleared(f, builder, final_pc);
     let append: Vec<_> = f
         .code
-        .iter()
-        .enumerate()
+        .indexed_iter()
+        .map(Result::unwrap)
         .filter(|(_, i)| {
             [
                 bc::Opcode::ArgsPush as u16,
@@ -124,7 +131,10 @@ fn packed_arguments_capture_in_source_order_and_keep_callee_builder_live() {
     );
     for (index, (pc, i)) in append.iter().enumerate() {
         assert_eq!(i.operands[0], builder);
-        assert_eq!(i.operands[1], f.code[cp[index]].operands[0]);
+        assert_eq!(
+            i.operands[1],
+            f.code.instruction(cp[index]).unwrap().unwrap().operands[0]
+        );
         assert!(cp[index] < *pc && *pc < cp[index + 1]);
     }
     assert_eq!(p.symbols[append[4].1.operands[2] as usize], "中文");
@@ -180,7 +190,7 @@ fn rest_cells_default_prefixes_and_definition_captures_are_exact() {
         (rest.name, rest.ty, rest.mutable)
     );
     assert!(pcs(take, bc::Opcode::CellNew).iter().all(|&pc| {
-        take.code[pc].operands[0] as usize
+        take.code.instruction(pc).unwrap().unwrap().operands[0] as usize
             != take
                 .bindings
                 .iter()
@@ -237,8 +247,14 @@ fn optional_calls_guard_builder_and_all_argument_operations() {
         let new = pcs(f, bc::Opcode::ArgsNew)[0];
         let guards = pcs(f, bc::Opcode::BranchNull);
         let guard = *guards.iter().filter(|&&pc| pc < new).max().unwrap();
-        let null = reachable(f, f.code[guard].operands[1] as usize);
-        let nonnull = reachable(f, f.code[guard].operands[2] as usize);
+        let null = reachable(
+            f,
+            f.code.instruction(guard).unwrap().unwrap().operands[1] as usize,
+        );
+        let nonnull = reachable(
+            f,
+            f.code.instruction(guard).unwrap().unwrap().operands[2] as usize,
+        );
         for pc in pcs(f, bc::Opcode::ArgsNew)
             .into_iter()
             .chain(pcs(f, bc::Opcode::ArgsSpread))
@@ -356,7 +372,11 @@ fn terminal_spread_sources_omit_pending_append_call_and_preserve_cleanup() {
         let dom = dominators(&c, id);
         let cp = pcs(f, bc::Opcode::Call);
         assert!(dom[cp[0]][spread] && dom[cp[1]][spread]);
-        let branch = &f.code[pcs(f, bc::Opcode::BranchBool)[0]];
+        let branch = &f
+            .code
+            .instruction(pcs(f, bc::Opcode::BranchBool)[0])
+            .unwrap()
+            .unwrap();
         let terminal_then =
             expression.starts_with("if flag{return") || expression.starts_with("if flag{throw");
         let terminal = reachable(
@@ -587,7 +607,7 @@ fn native_packed_calls_preserve_trusted_rest_defaults_abi_and_identity() {
         .unwrap()
         .into_module()
         .unwrap();
-    let mut package = native_seed().package().clone();
+    let mut package = native_seed().to_unpacked().unwrap();
     let rest_name = bc::SymbolId(package.symbols.len() as u32);
     package.symbols.push("rest".into());
     let rest_type = bc::TypeId(package.types.len() as u32);
@@ -690,7 +710,7 @@ fn native_packed_calls_preserve_trusted_rest_defaults_abi_and_identity() {
         assert_eq!(e.span, m.symbols()[symbol.0 as usize].declaration);
         assert!(!byte_range(e.span).is_empty());
     }
-    let mut package = seed.package().clone();
+    let mut package = seed.to_unpacked().unwrap();
     package.signatures[1].rest = None;
     let missing_rest = bc::verify(package, bc::Limits::default()).unwrap();
     assert_eq!(

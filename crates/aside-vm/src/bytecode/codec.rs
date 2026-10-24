@@ -1,6 +1,8 @@
 //! Explicit little-endian wire codec. The first pass materializes no payloads.
+use super::code_residency::{CodeBlock, CodeStore, CodeStoreBuilder, CodeWindow, PAGE_WORDS};
 use super::*;
 use std::mem::size_of;
+use std::sync::Arc;
 
 const MAGIC: &[u8; 8] = b"ASIDBC01";
 const HEADER_BYTES: usize = 68;
@@ -16,7 +18,12 @@ struct Writer {
     len: usize,
     max: usize,
     capacity: usize,
+    retained: usize,
+    #[cfg(test)]
+    unverified_fixture: bool,
     records: u64,
+    code_store: Option<Arc<CodeStore>>,
+    function_word: u32,
     limits: Limits,
 }
 impl Writer {
@@ -83,8 +90,33 @@ struct Reader<'a> {
     code: u32,
     regions: u32,
     global_bound: u32,
+    code_store: Option<Arc<CodeStore>>,
+    function_word: u32,
 }
-impl Reader<'_> {
+impl<'a> Reader<'a> {
+    fn new(input: &'a [u8], limits: Limits) -> Self {
+        Self {
+            input,
+            pos: 0,
+            limits,
+            materialize: false,
+            records: 0,
+            allocation: 0,
+            work: 0,
+            counts: [0; 9],
+            globals: Vec::new(),
+            registers: 0,
+            bindings: 0,
+            captures: 0,
+            descriptors: 0,
+            code: 0,
+            regions: 0,
+            global_bound: 0,
+            code_store: None,
+            function_word: 0,
+        }
+    }
+
     fn error(&self, kind: ErrorKind, detail: &str) -> Error {
         let mut e = Error::new(kind, detail);
         e.offset = Some(self.pos);
@@ -856,30 +888,120 @@ impl Wire for ModuleDef {
         Ok(out)
     }
 }
-impl Wire for FunctionDef {
-    fn put(&self, w: &mut Writer) -> Result<(), Error> {
-        for len in [
-            self.captures.len(),
-            self.bindings.len(),
-            self.descriptors.len(),
-            self.code.len(),
-            self.regions.len(),
-            self.source_map.len(),
-        ] {
-            (len as u32).put(w)?;
+fn put_function(code: &FunctionDef<impl InstructionSequence>, w: &mut Writer) -> Result<(), Error> {
+    for len in [
+        code.captures.len(),
+        code.bindings.len(),
+        code.descriptors.len(),
+        code.code.len(),
+        code.regions.len(),
+        code.source_map.len(),
+    ] {
+        (len as u32).put(w)?;
+    }
+    code.register_count.put(w)?;
+    code.module.put(w)?;
+    code.name.put(w)?;
+    code.kind.put(w)?;
+    code.signature.put(w)?;
+    code.context.put(w)?;
+    code.captures.put(w)?;
+    code.bindings.put(w)?;
+    code.descriptors.put(w)?;
+    let words = if code.code.runtime_words().is_some() {
+        code.code.end_pc()
+    } else {
+        code.code.iter().try_fold(0usize, |n, i| {
+            n.checked_add(1 + CompactCode::shape(&i?)?.3)
+                .ok_or_else(|| Error::new(ErrorKind::Limit, "code words"))
+        })?
+    };
+    w.capacity(0, code.code.capacity_bytes())?;
+    let start = w.function_word;
+    start.put(w)?;
+    u32::try_from(words)
+        .map_err(|_| Error::new(ErrorKind::Limit, "code words"))?
+        .put(w)?;
+    w.function_word = w
+        .function_word
+        .checked_add(words as u32)
+        .ok_or_else(|| Error::new(ErrorKind::Limit, "code range"))?;
+    if code.code.runtime_words().is_some() || (w.bytes.is_none() && w.digest.is_none()) {
+        put_pc_metadata(code, w, |pc, _| Ok(pc))?;
+    } else {
+        let raw = code.code.editable().expect("editable code");
+        let map_bytes = (raw.len() + 1)
+            .checked_mul(4)
+            .ok_or_else(|| Error::new(ErrorKind::Limit, "PC map bytes"))?;
+        let output = w.bytes.as_ref().map_or(0, Vec::capacity);
+        if w.retained
+            .checked_add(output)
+            .and_then(|n| n.checked_add(map_bytes))
+            .is_none_or(|n| n > w.limits.max_allocation_bytes)
+        {
+            return Err(Error::new(ErrorKind::Limit, "encoding PC map"));
         }
-        self.register_count.put(w)?;
-        self.module.put(w)?;
-        self.name.put(w)?;
-        self.kind.put(w)?;
-        self.signature.put(w)?;
-        self.context.put(w)?;
-        self.captures.put(w)?;
-        self.bindings.put(w)?;
-        self.descriptors.put(w)?;
-        self.code.put(w)?;
-        self.regions.put(w)?;
-        self.source_map.put(w)
+        let mut pcs = Vec::with_capacity(raw.len() + 1);
+        let mut pc = 0;
+        for i in raw {
+            pcs.push(pc);
+            pc += 1 + CompactCode::shape(i)?.3 as u32;
+        }
+        pcs.push(pc);
+        put_pc_metadata(code, w, |target, writer| encode_pc(&pcs, target, writer))?;
+    }
+    Ok(())
+}
+fn encode_pc(pcs: &[u32], target: Pc, w: &Writer) -> Result<Pc, Error> {
+    if let Some(&pc) = pcs.get(target.index()) {
+        return Ok(Pc(pc));
+    }
+    #[cfg(test)]
+    if w.unverified_fixture {
+        return Ok(Pc(pcs
+            .last()
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(target.0)));
+    }
+    let _ = w;
+    Err(Error::new(ErrorKind::Index, "encoding PC"))
+}
+fn put_pc_metadata(
+    code: &FunctionDef<impl InstructionSequence>,
+    w: &mut Writer,
+    map: impl Fn(Pc, &Writer) -> Result<Pc, Error>,
+) -> Result<(), Error> {
+    w.capacity(
+        code.regions.len(),
+        code.regions.capacity() * size_of::<ExceptionRegion>(),
+    )?;
+    (code.regions.len() as u32).put(w)?;
+    for region in &code.regions {
+        let mut region = region.clone();
+        super::compact::map_metadata_pcs(std::slice::from_mut(&mut region), &mut [], |pc| {
+            map(pc, w)
+        })?;
+        region.put(w)?;
+    }
+    w.capacity(
+        code.source_map.len(),
+        code.source_map.capacity() * size_of::<SourceMapEntry>(),
+    )?;
+    (code.source_map.len() as u32).put(w)?;
+    for entry in &code.source_map {
+        SourceMapEntry {
+            pc: map(entry.pc, w)?,
+            span: entry.span,
+        }
+        .put(w)?;
+    }
+    Ok(())
+}
+
+impl Wire for RuntimeFunction {
+    fn put(&self, w: &mut Writer) -> Result<(), Error> {
+        put_function(self, w)
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         let lens: [u32; 6] = [
@@ -909,7 +1031,7 @@ impl Wire for FunctionDef {
             captures: r.expected(lens[0])?,
             bindings: r.expected(lens[1])?,
             descriptors: r.expected(lens[2])?,
-            code: r.expected(lens[3])?,
+            code: CompactCode::get(r)?,
             regions: r.expected(lens[4])?,
             source_map: r.expected(lens[5])?,
         };
@@ -928,103 +1050,332 @@ impl Wire for FunctionDef {
         Ok(out)
     }
 }
-impl Wire for Instruction {
+impl Wire for CompactCode {
     fn put(&self, w: &mut Writer) -> Result<(), Error> {
-        let spec = instruction_spec(self.opcode)
-            .ok_or_else(|| Error::new(ErrorKind::Opcode, "unknown opcode"))?;
-        let opcode = u8::try_from(self.opcode)
-            .map_err(|_| Error::new(ErrorKind::Opcode, "opcode exceeds wire range"))?;
-        if self.flags != 0 {
-            return Err(Error::new(ErrorKind::Flags, "undeclared flags"));
-        }
-        opcode.put(w)?;
-        for (kind, value) in spec.operands.iter().zip(self.operands) {
-            if *kind == OperandKind::Unused {
-                if value != 0 {
-                    return Err(Error::new(ErrorKind::Encoding, "nonzero unused operand"));
-                }
-            } else {
-                put_operand(value, w)?;
-            }
+        w.capacity(self.end_pc(), self.capacity_bytes())?;
+        (self.end_pc() as u32).put(w)?;
+        for word in self.words() {
+            word?.put(w)?;
         }
         Ok(())
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
-        let opcode = u8::get(r)? as u16;
-        let spec =
-            instruction_spec(opcode).ok_or_else(|| r.error(ErrorKind::Opcode, "unknown opcode"))?;
-        let mut instruction = Self {
-            opcode,
-            flags: 0,
-            operands: [0; 3],
-        };
-        for (kind, operand) in spec.operands.iter().zip(&mut instruction.operands) {
-            use OperandKind::*;
-            if *kind == Unused {
+        let start = u32::get(r)?;
+        let words = u32::get(r)?;
+        let count = r.code;
+        let store = r
+            .code_store
+            .as_ref()
+            .expect("execution store precedes functions")
+            .clone();
+        if start != r.function_word {
+            return Err(r.error(ErrorKind::Encoding, "noncontiguous function code"));
+        }
+        r.function_word = start
+            .checked_add(words)
+            .ok_or_else(|| r.error(ErrorKind::Limit, "function code range"))?;
+        let code = CompactCode::from_store(store.clone(), start, words, count)?;
+        r.code = words;
+        if !r.materialize {
+            let mut window = CodeWindow::default();
+            let actual = CompactCode::try_scan_words_checked(
+                words as usize,
+                |pc| store.word(start as usize + pc, &mut window),
+                |i| check_instruction_indices(i, r),
+            )?;
+            if actual != count as usize {
+                return Err(r.error(ErrorKind::Encoding, "instruction count mismatch"));
+            }
+        }
+        Ok(code)
+    }
+}
+fn check_instruction_indices(instruction: &Instruction, r: &Reader<'_>) -> Result<(), Error> {
+    for (kind, value) in instruction_spec(instruction.opcode)
+        .expect("checked opcode")
+        .operands
+        .iter()
+        .zip(instruction.operands)
+    {
+        use OperandKind::*;
+        match kind {
+            ReadReg | WriteReg | ReadWriteReg => r.index(value, r.registers)?,
+            Const => r.index(value, r.counts[2])?,
+            Symbol => r.index(value, r.counts[0])?,
+            Type => r.index(value, r.counts[1])?,
+            Binding | BindingRead | BindingWrite | BindingInit => r.index(value, r.bindings)?,
+            Capture => r.index(value, r.captures)?,
+            Pc => r.index(value, r.code)?,
+            Region => r.index(value, r.regions)?,
+            Descriptor(_) => r.index(value, r.descriptors)?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+fn prepare_code_store(
+    package: &BytecodePackage<impl InstructionSequence>,
+    limits: Limits,
+    owned: usize,
+    #[cfg(test)] unverified: bool,
+) -> Result<Arc<CodeStore>, Error> {
+    if let Some(store) = package
+        .functions
+        .first()
+        .and_then(|f| f.code.runtime_store())
+        && package.functions.iter().all(|f| {
+            f.code
+                .runtime_store()
+                .is_some_and(|other| Arc::ptr_eq(store, other))
+        })
+    {
+        return Ok(store.clone());
+    }
+    let mut builder = CodeStoreBuilder::new();
+    let mut words = 0usize;
+    let mut temporary = 0usize;
+    for f in &package.functions {
+        let count = f.code.iter().try_fold(0usize, |n, i| {
+            n.checked_add(1 + CompactCode::shape(&i?)?.3)
+                .ok_or_else(|| Error::new(ErrorKind::Limit, "code words"))
+        })?;
+        words = words
+            .checked_add(count)
+            .ok_or_else(|| Error::new(ErrorKind::Limit, "code words"))?;
+        temporary = temporary.max(
+            count
+                .checked_mul(4)
+                .and_then(|n| n.checked_add((f.code.len() + 1) * 4))
+                .ok_or_else(|| Error::new(ErrorKind::Limit, "code mapping capacity"))?,
+        );
+    }
+    let packed_bound = words
+        .checked_mul(4)
+        .and_then(|n| n.checked_add(words / 250 + words.div_ceil(PAGE_WORDS) * 128))
+        .ok_or_else(|| Error::new(ErrorKind::Limit, "code packing capacity"))?;
+    let bound = CodeStore::planned_capacity_bytes(
+        u32::try_from(words).map_err(|_| Error::new(ErrorKind::Limit, "code words"))?,
+        packed_bound,
+        words.div_ceil(PAGE_WORDS),
+    )?;
+    if owned
+        .checked_add(bound)
+        .and_then(|n| n.checked_add(builder.capacity_bytes()))
+        .and_then(|n| n.checked_add(temporary))
+        .is_none_or(|n| n > limits.max_allocation_bytes)
+    {
+        return Err(Error::new(ErrorKind::Limit, "code packing capacity"));
+    }
+    if words as u64 * 4 > limits.max_work {
+        return Err(Error::new(ErrorKind::Limit, "code packing work"));
+    }
+    for f in &package.functions {
+        if let Some(words) = f.code.runtime_words() {
+            builder.append(words)?;
+        } else {
+            let raw = f.code.editable().expect("editable code");
+            #[cfg(test)]
+            if unverified {
+                append_fixture_words(&mut builder, raw)?;
                 continue;
             }
-            let value = get_operand(r)?;
-            *operand = value;
-            match kind {
-                ReadReg | WriteReg | ReadWriteReg => r.index(value, r.registers)?,
-                Const => r.index(value, r.counts[2])?,
-                Symbol => r.index(value, r.counts[0])?,
-                Type => r.index(value, r.counts[1])?,
-                Binding | BindingRead | BindingWrite | BindingInit => r.index(value, r.bindings)?,
-                Capture => r.index(value, r.captures)?,
-                Pc => r.index(value, r.code)?,
-                Region => r.index(value, r.regions)?,
-                Descriptor(_) => r.index(value, r.descriptors)?,
-                _ => {}
+            let (code, _) = CompactCode::from_ordinal(raw)?;
+            builder.append(code.words())?;
+        }
+    }
+    builder.finish()
+}
+#[cfg(test)]
+fn append_fixture_words(builder: &mut CodeStoreBuilder, raw: &[Instruction]) -> Result<(), Error> {
+    let mut pcs = Vec::with_capacity(raw.len() + 1);
+    let mut pc = 0;
+    for i in raw {
+        pcs.push(pc);
+        pc += 1 + CompactCode::shape(i)?.3 as u32;
+    }
+    pcs.push(pc);
+    for &original in raw {
+        let mut i = original;
+        for (kind, value) in instruction_spec(i.opcode)
+            .expect("fixture opcode")
+            .operands
+            .iter()
+            .zip(&mut i.operands)
+        {
+            if *kind == OperandKind::Pc {
+                *value = pcs
+                    .get(*value as usize)
+                    .copied()
+                    .unwrap_or_else(|| pc.saturating_add(*value));
             }
         }
-        Ok(instruction)
+        let (head, wide, packed, tail) = CompactCode::shape(&i)?;
+        let mut words = vec![head];
+        if wide {
+            words.push(i.operands[0]);
+        }
+        if packed {
+            words.push(i.operands[1] | i.operands[2] << 16);
+        } else if tail - usize::from(wide) == 2 {
+            words.extend_from_slice(&i.operands[1..]);
+        } else if tail - usize::from(wide) == 1 {
+            words.push(i.operands[1]);
+        }
+        builder.append(words.into_iter().map(Ok))?;
     }
+    Ok(())
 }
-
-fn put_operand(mut value: u32, w: &mut Writer) -> Result<(), Error> {
-    let mut bytes = [0; 5];
-    let mut len = 0;
-    loop {
-        let byte = (value & 0x7f) as u8;
-        value >>= 7;
-        bytes[len] = byte | if value == 0 { 0 } else { 0x80 };
-        len += 1;
-        if value == 0 {
-            return w.write(&bytes[..len]);
+fn put_code_store(
+    package: &BytecodePackage<impl InstructionSequence>,
+    w: &mut Writer,
+) -> Result<(), Error> {
+    let store = w.code_store.clone().or_else(|| {
+        package
+            .functions
+            .first()
+            .and_then(|f| f.code.runtime_store())
+            .cloned()
+    });
+    if let Some(store) = store {
+        w.capacity(
+            store.words_len() as usize + store.blocks().len(),
+            store.cache_stats().cold_capacity_bytes,
+        )?;
+        store.words_len().put(w)?;
+        (store.blocks().len() as u32).put(w)?;
+        for block in store.blocks() {
+            block.offset.put(w)?;
+            block.len.put(w)?;
+        }
+        (store.packed().len() as u32).put(w)?;
+        w.write(store.packed())?;
+    } else {
+        // Editable IR is measured before verification. Use a conservative wire
+        // bound without compressing or allocating a second copy of its code.
+        let words = package.functions.iter().try_fold(0usize, |n, f| {
+            f.code.iter().try_fold(n, |n, i| {
+                n.checked_add(1 + CompactCode::shape(&i?)?.3)
+                    .ok_or_else(|| Error::new(ErrorKind::Limit, "code words"))
+            })
+        })?;
+        let blocks = words.div_ceil(PAGE_WORDS);
+        (words as u32).put(w)?;
+        (blocks as u32).put(w)?;
+        for _ in 0..blocks {
+            0u32.put(w)?;
+            0u32.put(w)?;
+        }
+        let upper = words
+            .checked_mul(4)
+            .and_then(|n| n.checked_add(blocks * 128 + words / 250))
+            .ok_or_else(|| Error::new(ErrorKind::Limit, "compressed code bound"))?;
+        (upper as u32).put(w)?;
+        // Measuring has neither an output vector nor a digest.
+        debug_assert!(w.bytes.is_none() && w.digest.is_none());
+        w.len = w
+            .len
+            .checked_add(upper)
+            .ok_or_else(|| Error::new(ErrorKind::Limit, "encoded size"))?;
+        if w.len > w.max || w.len as u64 > w.limits.max_work {
+            return Err(Error::new(ErrorKind::Limit, "encoded byte/work limit"));
         }
     }
+    Ok(())
 }
-
-fn get_operand(r: &mut Reader<'_>) -> Result<u32, Error> {
-    let mut value = 0;
-    for shift in (0..35).step_by(7) {
-        let byte = u8::get(r)?;
-        if shift == 28 && byte > 0x0f {
-            return Err(r.error(ErrorKind::Encoding, "instruction operand exceeds u32"));
-        }
-        value |= u32::from(byte & 0x7f) << shift;
-        if byte < 0x80 {
-            if shift != 0 && byte == 0 {
-                return Err(r.error(ErrorKind::Encoding, "noncanonical instruction operand"));
-            }
-            return Ok(value);
+fn get_code_store(r: &mut Reader<'_>) -> Result<(), Error> {
+    let words = u32::get(r)?;
+    let blocks = r.count::<CodeBlock>()?;
+    if blocks != (words as usize).div_ceil(PAGE_WORDS) {
+        return Err(r.error(ErrorKind::Encoding, "execution page count"));
+    }
+    let mut directory = Vec::new();
+    if r.code_store.is_none() {
+        directory
+            .try_reserve_exact(blocks)
+            .map_err(|_| r.error(ErrorKind::Allocation, "execution page directory"))?;
+    }
+    for _ in 0..blocks {
+        let offset = u32::get(r)?;
+        let len = u32::get(r)?;
+        if r.code_store.is_none() {
+            directory.push(CodeBlock { offset, len });
         }
     }
-    unreachable!("the fifth byte either terminates or exceeds u32")
+    let packed = u32::get(r)? as usize;
+    r.charge(0, packed)?;
+    let scratch = if words == 0 {
+        0
+    } else {
+        CodeStore::construction_scratch_bytes()
+    };
+    let allocation = CodeStore::planned_capacity_bytes(words, packed, blocks)?
+        .checked_add(scratch)
+        .ok_or_else(|| r.error(ErrorKind::Limit, "execution construction capacity"))?;
+    r.charge(
+        words,
+        allocation.saturating_sub(packed + blocks * size_of::<CodeBlock>()),
+    )?;
+    r.work = r
+        .work
+        .checked_add(u64::from(words) * 4)
+        .ok_or_else(|| r.error(ErrorKind::Limit, "execution scan work"))?;
+    if r.work > r.limits.max_work {
+        return Err(r.error(ErrorKind::Limit, "execution scan work"));
+    }
+    let input = r.input;
+    let start = r.pos;
+    r.take(packed)?;
+    if r.code_store.is_none() {
+        let mut data = Vec::new();
+        data.try_reserve_exact(packed)
+            .map_err(|_| r.error(ErrorKind::Allocation, "compressed execution words"))?;
+        data.extend_from_slice(&input[start..start + packed]);
+        r.code_store = Some(CodeStore::from_blocks(words, data, directory)?);
+    }
+    Ok(())
 }
-impl Wire for BytecodePackage {
+impl Wire for CodeBlock {
+    const MIN: usize = 8;
     fn put(&self, w: &mut Writer) -> Result<(), Error> {
-        self.text_pool.put(w)?;
-        self.symbols.put(w)?;
-        self.types.put(w)?;
-        self.constants.put(w)?;
-        self.signatures.put(w)?;
-        self.natives.put(w)?;
-        self.modules.put(w)?;
-        self.functions.put(w)?;
-        self.capabilities.put(w)?;
-        self.sources.put(w)
+        self.offset.put(w)?;
+        self.len.put(w)
+    }
+    fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
+        Ok(Self {
+            offset: u32::get(r)?,
+            len: u32::get(r)?,
+        })
+    }
+}
+fn put_package<C: InstructionSequence>(
+    code: &BytecodePackage<C>,
+    w: &mut Writer,
+) -> Result<(), Error> {
+    code.text_pool.put(w)?;
+    code.symbols.put(w)?;
+    code.types.put(w)?;
+    code.constants.put(w)?;
+    code.signatures.put(w)?;
+    code.natives.put(w)?;
+    code.modules.put(w)?;
+    put_code_store(code, w)?;
+    w.capacity(
+        code.functions.len(),
+        code.functions.capacity() * size_of::<FunctionDef<C>>(),
+    )?;
+    u32::try_from(code.functions.len())
+        .map_err(|_| Error::new(ErrorKind::Limit, "function count"))?
+        .put(w)?;
+    for function in &code.functions {
+        put_function(function, w)?;
+    }
+    code.capabilities.put(w)?;
+    code.sources.put(w)
+}
+
+impl Wire for RuntimePackage {
+    fn put(&self, w: &mut Writer) -> Result<(), Error> {
+        put_package(self, w)
     }
     fn get(r: &mut Reader<'_>) -> Result<Self, Error> {
         Ok(Self {
@@ -1035,7 +1386,14 @@ impl Wire for BytecodePackage {
             signatures: r.expected(r.counts[3])?,
             natives: r.expected(r.counts[4])?,
             modules: r.expected(r.counts[5])?,
-            functions: r.expected(r.counts[6])?,
+            functions: {
+                get_code_store(r)?;
+                let functions = r.expected(r.counts[6])?;
+                if r.function_word != r.code_store.as_ref().expect("code store").words_len() {
+                    return Err(r.error(ErrorKind::Encoding, "unreferenced execution words"));
+                }
+                functions
+            },
             capabilities: r.expected(r.counts[7])?,
             sources: r.expected(r.counts[8])?,
             ..Self::default()
@@ -1043,7 +1401,7 @@ impl Wire for BytecodePackage {
     }
 }
 
-fn counts(p: &BytecodePackage) -> Result<[u32; 9], Error> {
+fn counts(p: &BytecodePackage<impl InstructionSequence>) -> Result<[u32; 9], Error> {
     let lens = [
         p.symbols.len(),
         p.types.len(),
@@ -1062,7 +1420,10 @@ fn counts(p: &BytecodePackage) -> Result<[u32; 9], Error> {
     Ok(out)
 }
 /// Encodes validated fields; does not serialize Rust layout or runtime values.
-pub fn encode(package: &BytecodePackage, limits: Limits) -> Result<Vec<u8>, Error> {
+pub fn encode(
+    package: &BytecodePackage<impl InstructionSequence>,
+    limits: Limits,
+) -> Result<Vec<u8>, Error> {
     let stats = super::verify::validate(package, limits)?;
     // Validation's derived cache has been dropped; only the package remains
     // resident while encoding allocates its output buffer.
@@ -1072,21 +1433,72 @@ pub fn encode(package: &BytecodePackage, limits: Limits) -> Result<Vec<u8>, Erro
         stats.owned_capacity_bytes - stats.derived_capacity_bytes,
     )
 }
+/// Serialize the immutable verifier result without rebuilding semantic metadata.
+pub(super) fn encode_verified(program: &VerifiedProgram, limits: Limits) -> Result<Vec<u8>, Error> {
+    if program
+        .package()
+        .functions
+        .iter()
+        .any(|f| f.register_count > limits.max_registers)
+    {
+        return Err(Error::new(ErrorKind::Limit, "register limit"));
+    }
+    encode_fields(
+        program.package(),
+        limits,
+        program.stats().owned_capacity_bytes,
+    )
+}
 fn encode_fields(
-    package: &BytecodePackage,
+    package: &BytecodePackage<impl InstructionSequence>,
     limits: Limits,
     owned: usize,
 ) -> Result<Vec<u8>, Error> {
+    encode_fields_impl(
+        package,
+        limits,
+        owned,
+        #[cfg(test)]
+        false,
+    )
+}
+fn encode_fields_impl(
+    package: &BytecodePackage<impl InstructionSequence>,
+    limits: Limits,
+    owned: usize,
+    #[cfg(test)] unverified_fixture: bool,
+) -> Result<Vec<u8>, Error> {
+    let borrowed = package
+        .functions
+        .first()
+        .and_then(|f| f.code.runtime_store())
+        .is_some();
+    let store = prepare_code_store(
+        package,
+        limits,
+        owned,
+        #[cfg(test)]
+        unverified_fixture,
+    )?;
+    let owned = owned
+        .checked_add(if borrowed { 0 } else { store.capacity_bytes() })
+        .ok_or_else(|| Error::new(ErrorKind::Limit, "encoding code capacity"))?;
     let mut measure = Writer {
         digest: None,
         bytes: None,
         len: HEADER_BYTES,
         max: limits.max_bytes,
         capacity: 0,
+        retained: 0,
+        #[cfg(test)]
+        unverified_fixture: false,
         records: 0,
+        code_store: None,
+        function_word: 0,
         limits,
     };
-    package.put(&mut measure)?;
+    measure.code_store = Some(store.clone());
+    put_package(package, &mut measure)?;
     let len =
         u32::try_from(measure.len).map_err(|_| Error::new(ErrorKind::Limit, "package size"))?;
     if measure.len > limits.max_allocation_bytes {
@@ -1120,9 +1532,15 @@ fn encode_fields(
         len: 0,
         max: limits.max_bytes,
         capacity: 0,
+        retained: owned,
+        #[cfg(test)]
+        unverified_fixture,
         records: 0,
+        code_store: None,
+        function_word: 0,
         limits,
     };
+    w.code_store = Some(store);
     w.write(MAGIC)?;
     package.format_version.put(&mut w)?;
     package.language_version.put(&mut w)?;
@@ -1132,33 +1550,16 @@ fn encode_fields(
     for n in counts(package)? {
         n.put(&mut w)?;
     }
-    package.put(&mut w)?;
+    put_package(package, &mut w)?;
     Ok(w.bytes.expect("output writer"))
 }
 /// Complete allocation-bounded shape/index scan, then fallible materialization.
 /// Semantic verification and runtime capability checks are explicit next steps.
-pub fn decode(input: &[u8], limits: Limits) -> Result<BytecodePackage, Error> {
+pub fn decode(input: &[u8], limits: Limits) -> Result<RuntimePackage, Error> {
     if input.len() > limits.max_bytes {
         return Err(Error::new(ErrorKind::Limit, "input bytes"));
     }
-    let mut r = Reader {
-        input,
-        pos: 0,
-        limits,
-        materialize: false,
-        records: 0,
-        allocation: size_of::<BytecodePackage>(),
-        work: 0,
-        counts: [0; 9],
-        globals: Vec::new(),
-        registers: 0,
-        bindings: 0,
-        captures: 0,
-        descriptors: 0,
-        code: 0,
-        regions: 0,
-        global_bound: 0,
-    };
+    let mut r = Reader::new(input, limits);
     if r.take(8)? != MAGIC {
         return Err(r.error(ErrorKind::Encoding, "magic"));
     }
@@ -1198,7 +1599,7 @@ pub fn decode(input: &[u8], limits: Limits) -> Result<BytecodePackage, Error> {
         .map_err(|_| r.error(ErrorKind::Allocation, "module count directory"))?;
     r.charge(0, r.globals.capacity() * size_of::<u32>())?;
     let allocation_base = r.allocation;
-    let _scan = BytecodePackage::get(&mut r)?;
+    let _scan = RuntimePackage::get(&mut r)?;
     if r.pos != input.len() {
         return Err(r.error(ErrorKind::Encoding, "trailing bytes"));
     }
@@ -1210,7 +1611,8 @@ pub fn decode(input: &[u8], limits: Limits) -> Result<BytecodePackage, Error> {
     r.allocation = allocation_base;
     r.work = scanned_work;
     r.globals.clear();
-    let mut package = BytecodePackage::get(&mut r)?;
+    r.function_word = 0;
+    let mut package = RuntimePackage::get(&mut r)?;
     if counts(&package)? != r.counts {
         return Err(r.error(ErrorKind::Encoding, "section count mismatch"));
     }
@@ -1222,42 +1624,70 @@ pub fn decode(input: &[u8], limits: Limits) -> Result<BytecodePackage, Error> {
 }
 
 pub(crate) fn measure(
-    package: &BytecodePackage,
+    package: &BytecodePackage<impl InstructionSequence>,
     limits: Limits,
 ) -> Result<(usize, usize, u64), Error> {
     let mut w = Writer {
         digest: None,
         bytes: None,
         len: HEADER_BYTES,
-        max: limits.max_bytes,
+        max: if package
+            .functions
+            .iter()
+            .any(|f| f.code.runtime_words().is_some())
+        {
+            limits.max_bytes
+        } else {
+            isize::MAX as usize
+        },
         capacity: size_of::<BytecodePackage>(),
+        retained: 0,
+        #[cfg(test)]
+        unverified_fixture: false,
         records: 0,
+        code_store: None,
+        function_word: 0,
         limits,
     };
-    package.put(&mut w)?;
+    put_package(package, &mut w)?;
     Ok((w.len, w.capacity, w.records))
 }
 #[cfg(test)]
-pub(super) fn encode_unverified(package: &BytecodePackage) -> Vec<u8> {
-    encode_fields(package, Limits::default(), 0).expect("bounded malformed test fixture")
+pub(super) fn encode_unverified(package: &BytecodePackage<impl InstructionSequence>) -> Vec<u8> {
+    encode_fields_impl(package, Limits::default(), 0, true).expect("bounded malformed test fixture")
 }
 
 // Hash canonical fields without materializing another copy of the code package.
-pub(crate) fn identity(package: &BytecodePackage, limits: Limits) -> Result<[u8; 32], Error> {
+pub(crate) fn identity(
+    package: &BytecodePackage<impl InstructionSequence>,
+    limits: Limits,
+) -> Result<[u8; 32], Error> {
     let mut writer = Writer {
         bytes: None,
         digest: Some(blake3::Hasher::new()),
         len: 0,
         max: limits.max_bytes,
         capacity: 0,
+        retained: 0,
+        #[cfg(test)]
+        unverified_fixture: false,
         records: 0,
+        code_store: None,
+        function_word: 0,
         limits,
     };
+    writer.code_store = Some(prepare_code_store(
+        package,
+        limits,
+        0,
+        #[cfg(test)]
+        false,
+    )?);
     package.format_version.put(&mut writer)?;
     package.language_version.put(&mut writer)?;
     package.host_abi_version.put(&mut writer)?;
     package.content_version.put(&mut writer)?;
-    package.put(&mut writer)?;
+    put_package(package, &mut writer)?;
     Ok(*writer.digest.unwrap().finalize().as_bytes())
 }
 
@@ -1271,10 +1701,74 @@ pub(super) fn decoded_identity(input: &[u8], limits: Limits) -> Result<[u8; 32],
         len: 0,
         max: limits.max_bytes,
         capacity: 0,
+        retained: 0,
+        #[cfg(test)]
+        unverified_fixture: false,
         records: 0,
+        code_store: None,
+        function_word: 0,
         limits,
     };
     writer.write(&input[MAGIC.len()..MAGIC.len() + 3 * size_of::<u32>() + size_of::<u64>()])?;
     writer.write(&input[HEADER_BYTES..])?;
     Ok(*writer.digest.unwrap().finalize().as_bytes())
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    #[test]
+    fn compressed_code_precharges_construction_workspace_before_inflating() {
+        let mut builder = CodeStoreBuilder::new();
+        builder.append([Ok(Opcode::Return as u32)]).unwrap();
+        let store = builder.finish().unwrap();
+        let mut wire = Vec::new();
+        for value in [
+            1u32,
+            1,
+            0,
+            store.packed().len() as u32,
+            store.packed().len() as u32,
+        ] {
+            wire.extend_from_slice(&value.to_le_bytes());
+        }
+        wire.extend_from_slice(store.packed());
+        let capacity = CodeStore::planned_capacity_bytes(1, store.packed().len(), 1).unwrap()
+            + CodeStore::construction_scratch_bytes();
+        let mut rejected = Reader::new(
+            &wire,
+            Limits {
+                max_allocation_bytes: capacity - 1,
+                ..Limits::default()
+            },
+        );
+        let allocated = allocation_counter::measure(|| {
+            assert_eq!(
+                get_code_store(&mut rejected).unwrap_err().kind,
+                ErrorKind::Limit
+            );
+        });
+        assert!(rejected.code_store.is_none());
+        assert!(
+            allocated.bytes_max < super::super::code_residency::PAGE_BYTES as u64,
+            "inflater workspace was allocated before admission"
+        );
+        let mut admitted = Reader::new(
+            &wire,
+            Limits {
+                max_allocation_bytes: capacity,
+                ..Limits::default()
+            },
+        );
+        get_code_store(&mut admitted).unwrap();
+        assert_eq!(admitted.allocation, capacity);
+        assert_eq!(
+            admitted
+                .code_store
+                .unwrap()
+                .cache_stats()
+                .resident_capacity_bytes,
+            0
+        );
+    }
 }

@@ -1107,7 +1107,7 @@ impl Vm {
                 )?;
                 self.put(s.regs, dest.0, class)?;
                 self.clear(s.env, 3)?;
-                s.pc.0 += 1;
+                s.pc = s.instruction_end;
                 s.phase = ScriptPhase::Body;
                 return Ok(());
             }
@@ -1245,7 +1245,7 @@ impl Vm {
                     self.put(s.regs, dest.0, instance)?;
                     self.clear(s.env, 2)?;
                     self.clear(s.env, 3)?;
-                    s.pc.0 += 1;
+                    s.pc = s.instruction_end;
                     s.phase = ScriptPhase::Body;
                     return Ok(());
                 }

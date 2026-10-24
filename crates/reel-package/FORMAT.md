@@ -20,6 +20,8 @@ Known sections set flags=1 (required when present). Kinds are unique; nonempty
 ranges are disjoint and outside the header/index. Unknown required sections
 fail. Full decoding hash-checks all payloads, including optional unknown sections.
 Writers emit header, bytecode, metadata, optional distribution and index.
+Container writers receive immutable serialized bytecode paired with its verified
+program and validate metadata against that shared program.
 
 `Distribution` holds optional `text`, ordered `resources`, `catalogs` and optional
 `loose`. File paths are relative to the ASB directory and validated at admission.

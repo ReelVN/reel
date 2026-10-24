@@ -236,7 +236,7 @@ impl InstructionSpec {
     /// budgeted form, which charges known lengths before traversing a window.
     pub fn visit_registers(
         &self,
-        f: &FunctionDef,
+        f: &FunctionDef<impl InstructionSequence>,
         i: &Instruction,
         visit: impl FnMut(Reg, Access),
     ) -> Result<(), Error> {
@@ -244,7 +244,7 @@ impl InstructionSpec {
     }
     pub fn visit_registers_budgeted(
         &self,
-        f: &FunctionDef,
+        f: &FunctionDef<impl InstructionSequence>,
         i: &Instruction,
         mut charge: impl FnMut(u64) -> Result<(), Error>,
         mut visit: impl FnMut(Reg, Access),
@@ -313,7 +313,11 @@ impl RegisterVisitor<'_> {
         }
         Ok(())
     }
-    fn captures(&mut self, f: &FunctionDef, captures: &[CaptureSource]) -> Result<(), Error> {
+    fn captures(
+        &mut self,
+        f: &FunctionDef<impl InstructionSequence>,
+        captures: &[CaptureSource],
+    ) -> Result<(), Error> {
         self.work(captures.len() as u64)?;
         for source in captures {
             if let CaptureSource::Binding(id) = source {
@@ -341,7 +345,7 @@ impl CallDesc {
 impl super::Descriptor {
     fn visit_registers(
         &self,
-        f: &FunctionDef,
+        f: &FunctionDef<impl InstructionSequence>,
         visitor: &mut RegisterVisitor<'_>,
     ) -> Result<(), Error> {
         match self {

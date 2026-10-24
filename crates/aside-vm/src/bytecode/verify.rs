@@ -1,3 +1,4 @@
+use super::code_residency::{CodeStore, CodeStoreBuilder, PAGE_WORDS};
 use super::*;
 use std::collections::{BinaryHeap, hash_map::RandomState};
 use std::fmt::Write;
@@ -15,6 +16,15 @@ pub struct PackageStats {
     pub declared_registers: u64,
     pub validation_work: u64,
     pub validation_scratch_peak: usize,
+}
+/// Admission cost for an explicit clone into the compiler's ordinal-PC model.
+/// Metadata spare capacities form a conservative retained bound; PC maps are
+/// temporary and reused one function at a time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EditableCloneCost {
+    pub retained_capacity_bytes: usize,
+    pub scratch_peak_bytes: usize,
+    pub work_units: u64,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum HandlerKind {
@@ -41,12 +51,14 @@ pub struct VerifiedProgram(std::sync::Arc<VerifiedData>, Option<TextPool>);
 #[derive(Debug)]
 struct VerifiedData {
     identity: [u8; 32],
-    package: BytecodePackage,
+    package: RuntimePackage,
     stats: PackageStats,
     limits: Limits,
     /// Sorted (signature, parameter) pairs; only Cell parameters are retained.
     native_parameter_cells: Vec<(u32, u32)>,
     module_bindings: ModuleBindings,
+    opcode_uses: Vec<OpcodeUse>,
+    member_symbols: Vec<SymbolId>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,9 +73,22 @@ struct ModuleBindings {
     offsets: Vec<u32>,
     values: Vec<GlobalBinding>,
 }
+#[derive(Clone, Copy, Debug)]
+struct OpcodeUse {
+    opcode: u16,
+    function: FunctionId,
+    pc: Pc,
+}
+struct InstructionUses {
+    opcodes: Vec<OpcodeUse>,
+    seen: [bool; 256],
+    members: Vec<u32>,
+}
 struct DerivedLayouts {
     native_parameters: Vec<(u32, u32)>,
     modules: ModuleBindings,
+    opcode_uses: Vec<OpcodeUse>,
+    member_symbols: Vec<SymbolId>,
 }
 impl VerifiedProgram {
     pub(crate) fn shared_header_bytes(&self) -> usize {
@@ -88,11 +113,88 @@ impl VerifiedProgram {
         check(global.0 < end - start, ErrorKind::Index, "global binding")?;
         Ok(self.0.module_bindings.values[(start + global.0) as usize])
     }
-    pub fn package(&self) -> &BytecodePackage {
+    pub fn package(&self) -> &RuntimePackage {
         &self.0.package
+    }
+    /// Every statically named member, including operands in unreachable code.
+    /// VM loading interns these names without decoding execution pages again.
+    pub(crate) fn member_symbols(&self) -> &[SymbolId] {
+        &self.0.member_symbols
+    }
+    /// Copy this immutable package into the compiler's editable instruction model.
+    /// Execution and serialization borrow compact storage without this expansion.
+    pub fn to_unpacked(&self) -> Result<BytecodePackage, Error> {
+        self.package().to_unpacked()
+    }
+    /// Query editable-clone capacity and work before expanding execution words.
+    pub fn editable_clone_cost(&self) -> Result<EditableCloneCost, Error> {
+        let p = self.package();
+        let overflow = || Error::new(ErrorKind::Limit, "editable clone cost");
+        let shared = p
+            .functions
+            .first()
+            .and_then(|f| f.code.runtime_store())
+            .map_or(0, |store| store.cache_stats().cold_capacity_bytes);
+        let mut retained = self.0.stats.owned_capacity_bytes - self.0.stats.derived_capacity_bytes;
+        retained = retained.checked_sub(shared).ok_or_else(overflow)?;
+        retained = retained
+            .checked_sub(p.functions.capacity() * size_of::<RuntimeFunction>())
+            .ok_or_else(overflow)?;
+        retained = retained
+            .checked_add(p.functions.len() * size_of::<FunctionDef>())
+            .ok_or_else(overflow)?;
+        let mut scratch = 0;
+        let mut work = self
+            .0
+            .stats
+            .records
+            .checked_add(self.0.stats.encoded_bytes as u64)
+            .ok_or_else(overflow)?;
+        for f in &p.functions {
+            retained = retained
+                .checked_sub(f.code.capacity_bytes())
+                .and_then(|n| n.checked_add(f.code.len().checked_mul(size_of::<Instruction>())?))
+                .ok_or_else(overflow)?;
+            scratch = scratch.max((f.code.len() + 1).checked_mul(4).ok_or_else(overflow)?);
+            let search = 1 + u64::from(usize::BITS - f.code.len().leading_zeros());
+            let queries = (f.code.len() as u64)
+                .checked_mul(3)
+                .and_then(|n| n.checked_add(f.source_map.len() as u64))
+                .and_then(|n| n.checked_add(f.regions.len() as u64 * 6))
+                .ok_or_else(overflow)?;
+            work = work
+                .checked_add(queries.checked_mul(search).ok_or_else(overflow)?)
+                .and_then(|n| n.checked_add(f.code.len() as u64))
+                .ok_or_else(overflow)?;
+        }
+        Ok(EditableCloneCost {
+            retained_capacity_bytes: retained,
+            scratch_peak_bytes: scratch,
+            work_units: work,
+        })
+    }
+    /// Inspect shared cold execution storage and the bounded lazy page cache.
+    pub fn code_cache_stats(&self) -> Option<super::code_residency::CodeCacheStats> {
+        self.package()
+            .functions
+            .first()
+            .and_then(|f| f.code.store())
+            .map(|store| store.cache_stats())
+    }
+    /// Capacity reserved by execution admission, including pages not yet loaded.
+    pub fn execution_capacity_bytes(&self) -> usize {
+        let actual = self.0.stats.owned_capacity_bytes
+            + self.1.as_ref().map_or(0, |pool| pool.capacity_bytes());
+        self.code_cache_stats().map_or(actual, |code| {
+            actual + code.hot_limit_bytes + code.construction_scratch_bytes
+        })
     }
     pub fn stats(&self) -> PackageStats {
         let mut stats = self.0.stats;
+        if let Some(code) = self.code_cache_stats() {
+            stats.owned_capacity_bytes += code.resident_capacity_bytes;
+            stats.instruction_bytes += code.resident_capacity_bytes;
+        }
         if let Some(pool) = &self.1 {
             stats.owned_capacity_bytes += pool.capacity_bytes();
         }
@@ -148,7 +250,9 @@ impl VerifiedProgram {
     }
     pub fn source_at(&self, function: FunctionId, pc: Pc) -> Option<SourceSpan> {
         let f = self.0.package.functions.get(function.index())?;
-        if pc.index() >= f.code.len() && !(matches!(f.kind, FunctionKind::Native(_)) && pc.0 == 0) {
+        if !(pc.index() < f.code.end_pc() && f.code.is_boundary(pc.index())
+            || matches!(f.kind, FunctionKind::Native(_)) && pc.0 == 0)
+        {
             return None;
         }
         source_span(&f.source_map, pc)
@@ -156,7 +260,7 @@ impl VerifiedProgram {
     /// Decode and verify owned program data. Code identity reuses the validated
     /// canonical bytes; the returned program retains no borrow of the input.
     pub fn decode(input: &[u8], limits: Limits) -> Result<Self, Error> {
-        verify_with_identity(decode(input, limits)?, limits, |_| {
+        verify_runtime_with_identity(decode(input, limits)?, limits, |_| {
             super::codec::decoded_identity(input, limits)
         })
     }
@@ -175,10 +279,10 @@ impl VerifiedProgram {
             ErrorKind::Encoding,
             "text pool identity does not match bytecode",
         )?;
+        let unbound_capacity =
+            self.execution_capacity_bytes() - self.1.as_ref().map_or(0, TextPool::capacity_bytes);
         check(
-            self.0
-                .stats
-                .owned_capacity_bytes
+            unbound_capacity
                 .checked_add(pool.capacity_bytes())
                 .is_some_and(|n| n <= self.0.limits.max_allocation_bytes),
             ErrorKind::Limit,
@@ -249,7 +353,7 @@ impl VerifiedProgram {
         let f = self.unwind_function(function, original_pc, consumed)?;
         if let CleanupDestination::Leave(target) = destination {
             check(
-                target.index() < f.code.len(),
+                target.index() < f.code.end_pc() && f.code.is_boundary(target.index()),
                 ErrorKind::Index,
                 "cleanup target PC",
             )?;
@@ -261,10 +365,10 @@ impl VerifiedProgram {
         function: FunctionId,
         pc: Pc,
         skip: Option<RegionId>,
-    ) -> Result<&FunctionDef, Error> {
+    ) -> Result<&FunctionDef<impl InstructionSequence>, Error> {
         let f = get(&self.0.package.functions, function.0, "exception function")?;
         check(
-            pc.index() < f.code.len(),
+            pc.index() < f.code.end_pc() && f.code.is_boundary(pc.index()),
             ErrorKind::Index,
             "exception source PC",
         )?;
@@ -282,7 +386,7 @@ impl VerifiedProgram {
     /// This includes unreachable code: unsupported instructions are never no-ops.
     pub fn require_runtime(&self, support: &RuntimeSupport) -> Result<(), Error> {
         let p = &self.0.package;
-        let mut b = Budget::new(self.0.limits, self.stats().owned_capacity_bytes);
+        let mut b = Budget::new(self.0.limits, self.execution_capacity_bytes());
         for c in &p.capabilities {
             if !contains_text(&support.capabilities, &p.symbols[c.index()], &mut b)? {
                 return Err(Error::new(
@@ -340,49 +444,214 @@ impl VerifiedProgram {
         for opcode in &support.opcodes {
             supported[*opcode as usize] = true;
         }
-        for (fi, f) in p.functions.iter().enumerate() {
-            for (pc, i) in f.code.iter().enumerate() {
-                b.work(1)?;
-                if !supported[i.opcode as usize] {
-                    let opcode = instruction_spec(i.opcode).expect("verified opcode").opcode;
-                    return Err(located(
-                        p,
-                        fi,
-                        pc,
-                        Error::new(
-                            ErrorKind::Capability,
-                            format!("runtime does not execute {opcode:?}"),
-                        ),
-                    ));
-                }
+        for used in &self.0.opcode_uses {
+            b.work(1)?;
+            if !supported[used.opcode as usize] {
+                let opcode = instruction_spec(used.opcode)
+                    .expect("verified opcode")
+                    .opcode;
+                return Err(located(
+                    p,
+                    used.function.index(),
+                    used.pc.index(),
+                    Error::new(
+                        ErrorKind::Capability,
+                        format!("runtime does not execute {opcode:?}"),
+                    ),
+                ));
             }
         }
         b.release(supported);
         Ok(())
     }
 }
-pub fn verify(package: BytecodePackage, limits: Limits) -> Result<VerifiedProgram, Error> {
-    verify_with_identity(package, limits, |package| {
-        super::codec::identity(package, limits)
-    })
+/// A package admitted through the single shared verifier. Editable vectors are
+/// rebased once; packages decoded as runtime words retain their storage directly.
+pub trait VerifiablePackage {
+    fn verified(self, limits: Limits) -> Result<VerifiedProgram, Error>;
 }
-fn verify_with_identity(
-    package: BytecodePackage,
+impl VerifiablePackage for BytecodePackage {
+    fn verified(self, limits: Limits) -> Result<VerifiedProgram, Error> {
+        let (mut stats, mut layouts) = validate_program(&self, limits)?;
+        let package = compact_package(self, &mut stats, &mut layouts.opcode_uses, limits)?;
+        let identity = super::codec::identity(&package, limits)?;
+        Ok(publish(package, stats, layouts, limits, identity))
+    }
+}
+impl VerifiablePackage for RuntimePackage {
+    fn verified(self, limits: Limits) -> Result<VerifiedProgram, Error> {
+        verify_runtime_with_identity(self, limits, |p| super::codec::identity(p, limits))
+    }
+}
+pub fn verify(package: impl VerifiablePackage, limits: Limits) -> Result<VerifiedProgram, Error> {
+    package.verified(limits)
+}
+fn publish(
+    package: RuntimePackage,
+    stats: PackageStats,
+    layouts: DerivedLayouts,
     limits: Limits,
-    identity: impl FnOnce(&BytecodePackage) -> Result<[u8; 32], Error>,
-) -> Result<VerifiedProgram, Error> {
-    let (stats, layouts) = validate_program(&package, limits)?;
-    Ok(VerifiedProgram(
+    identity: [u8; 32],
+) -> VerifiedProgram {
+    VerifiedProgram(
         std::sync::Arc::new(VerifiedData {
-            identity: identity(&package)?,
+            identity,
             package,
             stats,
             limits,
             native_parameter_cells: layouts.native_parameters,
             module_bindings: layouts.modules,
+            opcode_uses: layouts.opcode_uses,
+            member_symbols: layouts.member_symbols,
         }),
         None,
-    ))
+    )
+}
+fn verify_runtime_with_identity(
+    package: RuntimePackage,
+    limits: Limits,
+    identity: impl FnOnce(&RuntimePackage) -> Result<[u8; 32], Error>,
+) -> Result<VerifiedProgram, Error> {
+    let (mut stats, layouts) = validate_program(&package, limits)?;
+    if let Some(store) = package
+        .functions
+        .first()
+        .and_then(|f| f.code.runtime_store())
+    {
+        stats.validation_scratch_peak = stats
+            .validation_scratch_peak
+            .max(store.cache_stats().construction_scratch_bytes + package.modules.capacity() * 4);
+    }
+    let identity = identity(&package)?;
+    Ok(publish(package, stats, layouts, limits, identity))
+}
+fn compact_package(
+    p: BytecodePackage,
+    stats: &mut PackageStats,
+    opcode_uses: &mut [OpcodeUse],
+    limits: Limits,
+) -> Result<RuntimePackage, Error> {
+    let mut budget = Budget::new(limits, stats.owned_capacity_bytes);
+    budget.work = stats.validation_work;
+    let mut functions = budget.vec::<RuntimeFunction>(p.functions.len())?;
+    let mut retained = stats.owned_capacity_bytes;
+    let mut builder = CodeStoreBuilder::new();
+    let mut ranges = budget.vec::<(u32, u32, u32)>(p.functions.len())?;
+    let mut instruction_bytes = 0usize;
+    let total_words = p.functions.iter().try_fold(0usize, |n, f| {
+        f.code.iter().try_fold(n, |n, i| {
+            n.checked_add(1 + CompactCode::shape(&i?)?.3)
+                .ok_or_else(|| Error::new(ErrorKind::Limit, "code word count"))
+        })
+    })?;
+    let packed_bound = total_words
+        .checked_mul(4)
+        .and_then(|n| n.checked_add(total_words / 250 + total_words.div_ceil(PAGE_WORDS) * 128))
+        .ok_or_else(|| Error::new(ErrorKind::Limit, "cold code capacity"))?;
+    let build_bound = CodeStore::planned_capacity_bytes(
+        u32::try_from(total_words).map_err(|_| Error::new(ErrorKind::Limit, "code words"))?,
+        packed_bound,
+        total_words.div_ceil(PAGE_WORDS),
+    )? + builder.capacity_bytes();
+    check(
+        retained
+            .checked_add(budget.scratch)
+            .and_then(|n| n.checked_add(build_bound))
+            .is_some_and(|n| n <= limits.max_allocation_bytes),
+        ErrorKind::Limit,
+        "shared code construction capacity",
+    )?;
+    let mut use_cursor = 0;
+    for (fi, mut f) in p.functions.into_iter().enumerate() {
+        budget.work(
+            (f.code.len() as u64)
+                .checked_mul(6)
+                .ok_or_else(|| Error::new(ErrorKind::Limit, "compact work"))?,
+        )?;
+        let bytes = CompactCode::planned_bytes(&f.code)?;
+        let map_bytes = (f.code.len() + 1)
+            .checked_mul(4)
+            .ok_or_else(|| Error::new(ErrorKind::Limit, "PC map size"))?;
+        check(
+            retained
+                .checked_add(budget.scratch)
+                .and_then(|n| n.checked_add(bytes))
+                .and_then(|n| n.checked_add(map_bytes))
+                .is_some_and(|n| n <= limits.max_allocation_bytes),
+            ErrorKind::Limit,
+            "compact allocation limit",
+        )?;
+        budget.peak = budget.peak.max(budget.scratch + bytes + map_bytes);
+        let (code, pcs) = CompactCode::from_ordinal(&f.code)?;
+        super::compact::map_metadata_pcs(&mut f.regions, &mut f.source_map, |pc| {
+            pcs.get(pc.index())
+                .copied()
+                .map(Pc)
+                .ok_or_else(|| Error::new(ErrorKind::Index, "metadata ordinal PC"))
+        })?;
+        while let Some(used) = opcode_uses
+            .get_mut(use_cursor)
+            .filter(|used| used.function.index() == fi)
+        {
+            used.pc = Pc(pcs[used.pc.index()]);
+            use_cursor += 1;
+        }
+        let start = builder.words_len();
+        let words = code.end_pc() as u32;
+        let count = code.len() as u32;
+        builder.append(code.words())?;
+        ranges.push((start, words, count));
+        budget.peak = budget
+            .peak
+            .max(budget.scratch + builder.capacity_bytes() + bytes + map_bytes);
+        retained -= f.code.capacity_bytes();
+        functions.push(FunctionDef {
+            module: f.module,
+            name: f.name,
+            kind: f.kind,
+            signature: f.signature,
+            context: f.context,
+            captures: f.captures,
+            register_count: f.register_count,
+            bindings: f.bindings,
+            descriptors: f.descriptors,
+            code: CompactCode::default(),
+            regions: f.regions,
+            source_map: f.source_map,
+        });
+    }
+    let store = builder.finish()?;
+    for (f, &(start, words, count)) in functions.iter_mut().zip(&ranges) {
+        f.code = CompactCode::from_store(store.clone(), start, words, count)?;
+    }
+    budget.release(ranges);
+    if !functions.is_empty() {
+        instruction_bytes +=
+            store.cache_stats().cold_capacity_bytes + functions.len() * size_of::<CompactCode>();
+    }
+    let package = BytecodePackage {
+        format_version: p.format_version,
+        language_version: p.language_version,
+        host_abi_version: p.host_abi_version,
+        content_version: p.content_version,
+        text_pool: p.text_pool,
+        symbols: p.symbols,
+        types: p.types,
+        constants: p.constants,
+        signatures: p.signatures,
+        natives: p.natives,
+        modules: p.modules,
+        functions,
+        capabilities: p.capabilities,
+        sources: p.sources,
+    };
+    stats.instruction_bytes = instruction_bytes;
+    let measured = super::codec::measure(&package, limits)?;
+    stats.encoded_bytes = measured.0;
+    stats.owned_capacity_bytes = measured.1 + stats.derived_capacity_bytes;
+    stats.validation_work = budget.work;
+    stats.validation_scratch_peak = stats.validation_scratch_peak.max(budget.peak);
+    Ok(package)
 }
 struct Budget {
     limits: Limits,
@@ -458,7 +727,7 @@ fn contains_text(items: &[String], text: &str, b: &mut Budget) -> Result<bool, E
     Ok(false)
 }
 fn contains_symbol_text(
-    p: &BytecodePackage,
+    p: &BytecodePackage<impl InstructionSequence>,
     items: &[SymbolId],
     text: &str,
     b: &mut Budget,
@@ -483,17 +752,17 @@ fn get<'a, T>(table: &'a [T], id: u32, label: &str) -> Result<&'a T, Error> {
         .get(id as usize)
         .ok_or_else(|| Error::new(ErrorKind::Index, label))
 }
-fn symbol(p: &BytecodePackage, id: SymbolId) -> Result<&str, Error> {
+fn symbol(p: &BytecodePackage<impl InstructionSequence>, id: SymbolId) -> Result<&str, Error> {
     Ok(get(&p.symbols, id.0, "symbol")?.as_str())
 }
-fn ty(p: &BytecodePackage, id: TypeId) -> Result<(), Error> {
+fn ty(p: &BytecodePackage<impl InstructionSequence>, id: TypeId) -> Result<(), Error> {
     get(&p.types, id.0, "type")?;
     Ok(())
 }
-fn reg(f: &FunctionDef, r: Reg) -> Result<(), Error> {
+fn reg(f: &FunctionDef<impl InstructionSequence>, r: Reg) -> Result<(), Error> {
     check(r.0 < f.register_count, ErrorKind::Index, "register")
 }
-fn window(f: &FunctionDef, w: RegWindow) -> Result<(), Error> {
+fn window(f: &FunctionDef<impl InstructionSequence>, w: RegWindow) -> Result<(), Error> {
     check(
         w.start
             .0
@@ -545,13 +814,16 @@ fn sorted_keys<K: Ord>(
     Ok(heap.into_sorted_vec())
 }
 
-fn validate_symbols(p: &BytecodePackage, b: &mut Budget) -> Result<(), Error> {
+fn validate_symbols(
+    p: &BytecodePackage<impl InstructionSequence>,
+    b: &mut Budget,
+) -> Result<(), Error> {
     let hashes = RandomState::new();
     validate_symbols_with_hash(p, b, |text| hashes.hash_one(text))
 }
 
 fn validate_symbols_with_hash(
-    p: &BytecodePackage,
+    p: &BytecodePackage<impl InstructionSequence>,
     b: &mut Budget,
     hash: impl Fn(&str) -> u64,
 ) -> Result<(), Error> {
@@ -611,7 +883,7 @@ fn validate_symbols_with_hash(
     b.release(sorted);
     Ok(())
 }
-fn version(p: &BytecodePackage) -> Result<(), Error> {
+fn version(p: &BytecodePackage<impl InstructionSequence>) -> Result<(), Error> {
     check(
         (p.format_version, p.language_version, p.host_abi_version)
             == (FORMAT_VERSION, LANGUAGE_VERSION, HOST_ABI_VERSION),
@@ -620,21 +892,66 @@ fn version(p: &BytecodePackage) -> Result<(), Error> {
     )
 }
 
-pub(crate) fn validate(p: &BytecodePackage, limits: Limits) -> Result<PackageStats, Error> {
+pub(crate) fn validate(
+    p: &BytecodePackage<impl InstructionSequence>,
+    limits: Limits,
+) -> Result<PackageStats, Error> {
     validate_program(p, limits).map(|(stats, _)| stats)
 }
 fn validate_program(
-    p: &BytecodePackage,
+    p: &BytecodePackage<impl InstructionSequence>,
     limits: Limits,
 ) -> Result<(PackageStats, DerivedLayouts), Error> {
     version(p)?;
+    if let Some(store) = p.functions.first().and_then(|f| f.code.runtime_store()) {
+        let mut start = 0u32;
+        for f in &p.functions {
+            check(
+                f.code
+                    .runtime_store()
+                    .is_some_and(|other| std::sync::Arc::ptr_eq(store, other))
+                    && f.code.runtime_start() == start,
+                ErrorKind::Encoding,
+                "shared function code layout",
+            )?;
+            start = start
+                .checked_add(
+                    u32::try_from(f.code.end_pc())
+                        .map_err(|_| Error::new(ErrorKind::Limit, "code extent"))?,
+                )
+                .ok_or_else(|| Error::new(ErrorKind::Limit, "code extent"))?;
+        }
+        check(
+            start == store.words_len(),
+            ErrorKind::Encoding,
+            "shared function code extent",
+        )?;
+    }
     let (encoded, owned, records) = super::codec::measure(p, limits)?;
     check(
         records <= limits.max_records as u64 && owned <= limits.max_allocation_bytes,
         ErrorKind::Limit,
         "retained capacity/records",
     )?;
-    let mut b = Budget::new(limits, owned);
+    let hot = p
+        .functions
+        .first()
+        .and_then(|f| f.code.runtime_store())
+        .map_or(0, |store| {
+            let s = store.cache_stats();
+            s.hot_limit_bytes + s.construction_scratch_bytes
+        });
+    let mut b = Budget::new(
+        limits,
+        owned
+            .checked_add(hot)
+            .ok_or_else(|| Error::new(ErrorKind::Limit, "execution capacity"))?,
+    );
+    check(
+        b.owned <= limits.max_allocation_bytes,
+        ErrorKind::Limit,
+        "execution cache capacity",
+    )?;
     b.work(encoded as u64)?;
     validate_symbols(p, &mut b)?;
     for (i, c) in p.constants.iter().enumerate() {
@@ -908,25 +1225,67 @@ fn validate_program(
         symbol(p, file.path)?;
     }
     let parameter_layouts = ParameterLayouts::build(p, &mut b)?;
-    let mut instruction_bytes = 0usize;
+    let mut instruction_bytes = p
+        .functions
+        .first()
+        .and_then(|f| f.code.runtime_store())
+        .map_or(0, |store| store.cache_stats().cold_capacity_bytes);
+    if p.functions
+        .first()
+        .is_some_and(|f| f.code.runtime_store().is_some())
+    {
+        instruction_bytes += p.functions.len() * size_of::<CompactCode>();
+    }
     let mut registers = 0u64;
+    let code_count = p.functions.iter().try_fold(0usize, |sum, f| {
+        sum.checked_add(f.code.len())
+            .ok_or_else(|| Error::new(ErrorKind::Limit, "instruction count"))
+    })?;
+    let mut uses = InstructionUses {
+        opcodes: b.vec::<OpcodeUse>(code_count.min(INSTRUCTION_SPECS.len()))?,
+        seen: [false; 256],
+        members: b.vec::<u32>(p.symbols.len().div_ceil(32))?,
+    };
+    uses.members.resize(p.symbols.len().div_ceil(32), 0);
     for (fi, f) in p.functions.iter().enumerate() {
-        validate_function(p, fi, f, &parameter_layouts, &mut b).map_err(|mut e| {
+        validate_function(p, fi, f, &parameter_layouts, &mut uses, &mut b).map_err(|mut e| {
             e.function = Some(FunctionId(fi as u32));
             e
         })?;
         instruction_bytes = instruction_bytes
-            .checked_add(f.code.len() * 16)
+            .checked_add(f.code.capacity_bytes())
             .ok_or_else(|| Error::new(ErrorKind::Limit, "instruction byte count"))?;
         registers += f.register_count as u64;
     }
+    let InstructionUses {
+        opcodes: opcode_uses,
+        members: member_bits,
+        ..
+    } = uses;
+    b.work(member_bits.len() as u64 * 2)?;
+    let count = member_bits
+        .iter()
+        .map(|bits| bits.count_ones() as usize)
+        .sum();
+    let mut member_symbols = b.vec::<SymbolId>(count)?;
+    for (word, &bits) in member_bits.iter().enumerate() {
+        let mut bits = bits;
+        while bits != 0 {
+            let bit = bits.trailing_zeros() as usize;
+            member_symbols.push(SymbolId((word * 32 + bit) as u32));
+            bits &= bits - 1;
+        }
+    }
+    b.release(member_bits);
     let native_parameter_cells = native_parameter_cells(p, &parameter_layouts, &mut b)?;
     let module_bindings = module_bindings(p, &mut b)?;
     parameter_layouts.release(&mut b);
     let derived_capacity_bytes = native_parameter_cells.capacity()
         * std::mem::size_of::<(u32, u32)>()
         + module_bindings.offsets.capacity() * std::mem::size_of::<u32>()
-        + module_bindings.values.capacity() * std::mem::size_of::<GlobalBinding>();
+        + module_bindings.values.capacity() * std::mem::size_of::<GlobalBinding>()
+        + opcode_uses.capacity() * size_of::<OpcodeUse>()
+        + member_symbols.capacity() * size_of::<SymbolId>();
     Ok((
         PackageStats {
             encoded_bytes: encoded,
@@ -941,13 +1300,18 @@ fn validate_program(
         DerivedLayouts {
             native_parameters: native_parameter_cells,
             modules: module_bindings,
+            opcode_uses,
+            member_symbols,
         },
     ))
 }
 
 /// Resolve binding aliases iteratively before execution. No runtime object is
 /// copied for an import, and malformed alias cycles cannot hang module loading.
-fn module_bindings(p: &BytecodePackage, b: &mut Budget) -> Result<ModuleBindings, Error> {
+fn module_bindings(
+    p: &BytecodePackage<impl InstructionSequence>,
+    b: &mut Budget,
+) -> Result<ModuleBindings, Error> {
     let mut offsets = b.vec::<u32>(p.modules.len() + 1)?;
     let mut count = 0u32;
     for module in &p.modules {
@@ -1030,7 +1394,7 @@ fn module_bindings(p: &BytecodePackage, b: &mut Budget) -> Result<ModuleBindings
 
 /// Derive once per native signature, retaining only canonical Cell slots.
 fn native_parameter_cells(
-    p: &BytecodePackage,
+    p: &BytecodePackage<impl InstructionSequence>,
     layouts: &ParameterLayouts,
     b: &mut Budget,
 ) -> Result<Vec<(u32, u32)>, Error> {
@@ -1124,7 +1488,7 @@ struct ParameterLayouts {
     declarations: Vec<(u32, u32, bool)>,
 }
 impl ParameterLayouts {
-    fn build(p: &BytecodePackage, b: &mut Budget) -> Result<Self, Error> {
+    fn build(p: &BytecodePackage<impl InstructionSequence>, b: &mut Budget) -> Result<Self, Error> {
         b.work(p.functions.len() as u64)?;
         let mut count = 0usize;
         let mut bindings = 0u64;
@@ -1250,10 +1614,11 @@ impl ParameterLayouts {
 }
 
 fn validate_function(
-    p: &BytecodePackage,
+    p: &BytecodePackage<impl InstructionSequence>,
     fi: usize,
-    f: &FunctionDef,
+    f: &FunctionDef<impl InstructionSequence>,
     parameter_layouts: &ParameterLayouts,
+    uses: &mut InstructionUses,
     b: &mut Budget,
 ) -> Result<(), Error> {
     get(&p.modules, f.module.0, "function module")?;
@@ -1314,19 +1679,37 @@ fn validate_function(
     }
     validate_source_map(p, f, false)?;
     validate_regions(f, b)?;
-    for (pc, i) in f.code.iter().enumerate() {
-        validate_instruction(p, f, pc, i, b).map_err(|e| located(p, fi, pc, e))?;
+    for item in f.code.indexed_iter() {
+        let (pc, i) = item?;
+        validate_instruction(p, f, pc, &i, b).map_err(|e| located(p, fi, pc, e))?;
+        if matches!(i.opcode, op if op == Opcode::MemberGet as u16 || op == Opcode::MemberSet as u16)
+        {
+            let symbol = i.operands[2] as usize;
+            uses.members[symbol / 32] |= 1 << (symbol % 32);
+        }
+        if !uses.seen[i.opcode as usize] {
+            uses.seen[i.opcode as usize] = true;
+            uses.opcodes.push(OpcodeUse {
+                opcode: i.opcode,
+                function: FunctionId(fi as u32),
+                pc: Pc(pc as u32),
+            });
+        }
     }
     Ok(())
 }
-fn validate_source_map(p: &BytecodePackage, f: &FunctionDef, native: bool) -> Result<(), Error> {
+fn validate_source_map(
+    p: &BytecodePackage<impl InstructionSequence>,
+    f: &FunctionDef<impl InstructionSequence>,
+    native: bool,
+) -> Result<(), Error> {
     let mut prev = None;
     for m in &f.source_map {
         check(
             (if native {
                 m.pc.0 == 0
             } else {
-                m.pc.index() < f.code.len()
+                m.pc.index() < f.code.end_pc() && f.code.is_boundary(m.pc.index())
             }) && prev.is_none_or(|p| p < m.pc),
             ErrorKind::Source,
             "source PC order/range",
@@ -1345,8 +1728,8 @@ fn validate_source_map(p: &BytecodePackage, f: &FunctionDef, native: bool) -> Re
     Ok(())
 }
 fn validate_call(
-    p: &BytecodePackage,
-    f: &FunctionDef,
+    p: &BytecodePackage<impl InstructionSequence>,
+    f: &FunctionDef<impl InstructionSequence>,
     c: &CallDesc,
     b: &mut Budget,
 ) -> Result<(), Error> {
@@ -1450,8 +1833,8 @@ fn validate_call(
     Ok(())
 }
 fn validate_descriptor(
-    p: &BytecodePackage,
-    f: &FunctionDef,
+    p: &BytecodePackage<impl InstructionSequence>,
+    f: &FunctionDef<impl InstructionSequence>,
     d: &Descriptor,
     b: &mut Budget,
 ) -> Result<(), Error> {
@@ -1573,8 +1956,8 @@ fn validate_descriptor(
     Ok(())
 }
 fn validate_captures(
-    p: &BytecodePackage,
-    f: &FunctionDef,
+    p: &BytecodePackage<impl InstructionSequence>,
+    f: &FunctionDef<impl InstructionSequence>,
     function: FunctionId,
     captures: &[CaptureSource],
     b: &mut Budget,
@@ -1613,8 +1996,8 @@ fn validate_captures(
     Ok(())
 }
 fn validate_pattern(
-    p: &BytecodePackage,
-    f: &FunctionDef,
+    p: &BytecodePackage<impl InstructionSequence>,
+    f: &FunctionDef<impl InstructionSequence>,
     pattern: &PatternDesc,
     b: &mut Budget,
 ) -> Result<(), Error> {
@@ -1783,7 +2166,10 @@ fn ranges(r: &ExceptionRegion) -> impl Iterator<Item = PcRange> + '_ {
         .chain(r.catch.as_ref().map(|c| c.range))
         .chain(r.finally)
 }
-fn validate_regions(f: &FunctionDef, b: &mut Budget) -> Result<(), Error> {
+fn validate_regions(
+    f: &FunctionDef<impl InstructionSequence>,
+    b: &mut Budget,
+) -> Result<(), Error> {
     for (index, r) in f.regions.iter().enumerate() {
         check(
             r.catch.is_some() || r.finally.is_some(),
@@ -1792,7 +2178,10 @@ fn validate_regions(f: &FunctionDef, b: &mut Budget) -> Result<(), Error> {
         )?;
         for range in ranges(r) {
             check(
-                range.start < range.end && range.end.index() <= f.code.len(),
+                range.start < range.end
+                    && range.end.index() <= f.code.end_pc()
+                    && f.code.is_boundary(range.start.index())
+                    && f.code.is_boundary(range.end.index()),
                 ErrorKind::Region,
                 "exception range bounds",
             )?;
@@ -1823,7 +2212,14 @@ fn validate_regions(f: &FunctionDef, b: &mut Budget) -> Result<(), Error> {
             }
         }
         if let Some(cleanup) = r.finally {
-            let end = f.code[cleanup.end.index() - 1];
+            let end = f
+                .code
+                .instruction(
+                    f.code
+                        .previous_pc(cleanup.end.index())
+                        .expect("cleanup boundary"),
+                )?
+                .expect("verified PC");
             check(
                 end.opcode == Opcode::EndFinally as u16 && end.operands[0] as usize == index,
                 ErrorKind::Region,
@@ -1875,8 +2271,8 @@ fn validate_regions(f: &FunctionDef, b: &mut Budget) -> Result<(), Error> {
     Ok(())
 }
 fn validate_instruction(
-    p: &BytecodePackage,
-    f: &FunctionDef,
+    p: &BytecodePackage<impl InstructionSequence>,
+    f: &FunctionDef<impl InstructionSequence>,
     pc: usize,
     i: &Instruction,
     b: &mut Budget,
@@ -1911,7 +2307,11 @@ fn validate_instruction(
             Capture => {
                 get(&f.captures, value, "instruction capture")?;
             }
-            Pc => check((value as usize) < f.code.len(), ErrorKind::Index, "jump PC")?,
+            Pc => check(
+                (value as usize) < f.code.end_pc() && f.code.is_boundary(value as usize),
+                ErrorKind::Index,
+                "jump PC",
+            )?,
             Region => {
                 get(&f.regions, value, "instruction region")?;
             }
@@ -1994,8 +2394,10 @@ fn validate_instruction(
     }
     if spec.opcode == Opcode::EndFinally {
         let r = &f.regions[i.operands[0] as usize];
+        let next = f.code.next_pc(pc)?;
         check(
-            r.finally.is_some_and(|range| range.end.index() == pc + 1),
+            r.finally
+                .is_some_and(|range| Some(range.end.index()) == next),
             ErrorKind::Region,
             "EndFinally outside matching cleanup terminator",
         )?;
@@ -2003,11 +2405,19 @@ fn validate_instruction(
     match spec.flow {
         Flow::Next => {
             check(
-                pc + 1 < f.code.len(),
+                f.code
+                    .next_pc(pc)?
+                    .is_some_and(|next| next < f.code.end_pc()),
                 ErrorKind::ControlFlow,
                 "fallthrough past code",
             )?;
-            edge(f, pc, pc + 1, false, b)?;
+            edge(
+                f,
+                pc,
+                f.code.next_pc(pc)?.expect("checked next PC"),
+                false,
+                b,
+            )?;
         }
         Flow::Jump => edge(f, pc, i.operands[0] as usize, false, b)?,
         Flow::Leave => {
@@ -2021,7 +2431,13 @@ fn validate_instruction(
     }
     Ok(())
 }
-fn edge(f: &FunctionDef, from: usize, to: usize, leave: bool, b: &mut Budget) -> Result<(), Error> {
+fn edge(
+    f: &FunctionDef<impl InstructionSequence>,
+    from: usize,
+    to: usize,
+    leave: bool,
+    b: &mut Budget,
+) -> Result<(), Error> {
     let from = Pc(from as u32);
     let to = Pc(to as u32);
     let mut exits = false;
@@ -2075,10 +2491,18 @@ fn edge(f: &FunctionDef, from: usize, to: usize, leave: bool, b: &mut Budget) ->
     }
     Ok(())
 }
-fn exception_target(f: &FunctionDef, pc: Pc, skip: Option<RegionId>) -> Option<HandlerTarget> {
+fn exception_target(
+    f: &FunctionDef<impl InstructionSequence>,
+    pc: Pc,
+    skip: Option<RegionId>,
+) -> Option<HandlerTarget> {
     unwind_target(f, pc, skip, None)
 }
-fn strict_region_ancestor(f: &FunctionDef, parent: RegionId, child: RegionId) -> bool {
+fn strict_region_ancestor(
+    f: &FunctionDef<impl InstructionSequence>,
+    parent: RegionId,
+    child: RegionId,
+) -> bool {
     parent != child
         && ranges(&f.regions[parent.index()]).any(|block| {
             ranges(&f.regions[child.index()])
@@ -2096,7 +2520,7 @@ fn protected_or_catch_block(r: &ExceptionRegion, pc: Pc) -> Option<PcRange> {
     }
 }
 fn unwind_target(
-    f: &FunctionDef,
+    f: &FunctionDef<impl InstructionSequence>,
     pc: Pc,
     skip: Option<RegionId>,
     destination: Option<CleanupDestination>,
@@ -2145,7 +2569,12 @@ fn unwind_target(
     }
     best.map(|(_, target)| target)
 }
-fn located(p: &BytecodePackage, fi: usize, pc: usize, mut e: Error) -> Error {
+fn located(
+    p: &BytecodePackage<impl InstructionSequence>,
+    fi: usize,
+    pc: usize,
+    mut e: Error,
+) -> Error {
     e.function = Some(FunctionId(fi as u32));
     e.pc = Some(Pc(pc as u32));
     // All callers reach this after the source map's strict PC order is checked.
@@ -2218,7 +2647,8 @@ pub fn disassemble(program: &VerifiedProgram, out: &mut impl Write) -> std::fmt:
         for (r, region) in f.regions.iter().enumerate() {
             writeln!(out, "  region e{r} {region:?}")?;
         }
-        for (pc, i) in f.code.iter().enumerate() {
+        for item in f.code.indexed_iter() {
+            let (pc, i) = item.map_err(|_| std::fmt::Error)?;
             let spec = instruction_spec(i.opcode).expect("verified opcode");
             write!(out, "  {pc:04} {:04x} {}", i.opcode, spec.mnemonic)?;
             for (kind, operand) in spec.operands.iter().zip(i.operands) {
@@ -2252,7 +2682,7 @@ mod bounded_index_tests {
 
     #[test]
     fn symbol_hash_collisions_keep_exact_unique_checks_and_bounded_scratch() {
-        let mut p = BytecodePackage {
+        let mut p: BytecodePackage = BytecodePackage {
             symbols: (0..10_000).map(|i| format!("s{i:04x}")).collect(),
             ..BytecodePackage::default()
         };
@@ -2302,7 +2732,7 @@ mod bounded_index_tests {
 
     #[test]
     fn collision_fallback_capacity_is_checked_before_its_reservation() {
-        let p = BytecodePackage {
+        let p: BytecodePackage = BytecodePackage {
             symbols: (0..1000).map(|i| format!("s{i:04x}")).collect(),
             ..BytecodePackage::default()
         };
