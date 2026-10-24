@@ -1,5 +1,6 @@
 mod commands;
 mod formatting;
+mod progress;
 use aside_compiler::{SourceMap, semantic::SourceModule};
 use clap::Parser;
 use codespan_reporting::{files::SimpleFile, term};
@@ -88,8 +89,10 @@ fn run_package(args: commands::Run) -> io::Result<u8> {
 
 fn source_command(command: SourceCommand) -> io::Result<u8> {
     let json_format = command.format().json();
+    let mut progress = progress::Progress::new(json_format);
     let path = "src/main.aside";
     let cache = if let SourceCommand::Dev(args) = &command {
+        progress.phase("Checking development cache");
         let cache = reel_cli::development::Cache::probe(Path::new(".")).ok();
         if let Some(cache) = &cache
             && let Some(story) = cache.read()
@@ -99,6 +102,7 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
                 .assets
                 .clone()
                 .unwrap_or_else(|| cache.assets());
+            progress.finish("Using cached code; starting game");
             return launch(
                 story,
                 Some(assets),
@@ -112,9 +116,22 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
     } else {
         None
     };
-    let loaded = match reel_cli::project::load(Path::new(".")) {
+    progress.phase("Reading project");
+    let mut report = |event: aside_compiler::Progress| {
+        use aside_compiler::ProgressStage;
+        let label = match event.stage {
+            ProgressStage::Discover => "Reading project",
+            ProgressStage::Parse => "Parsing modules",
+            ProgressStage::Analyze => "Analyzing modules",
+            ProgressStage::Lower => "Compiling modules",
+            ProgressStage::Verify => "Preparing executable code",
+        };
+        progress.update(label, event.completed, event.total);
+    };
+    let loaded = match reel_cli::project::load_with_progress(Path::new("."), &mut report) {
         Ok(project) => project,
         Err(error) if error.sources.is_empty() => {
+            progress.stop();
             if let Some(input) = error.input_error {
                 if json_format {
                     report_json(
@@ -135,29 +152,43 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
             )?;
             return Ok(2);
         }
-        Err(error) => return source_error(json_format, path, &error.sources, error.failure),
+        Err(error) => {
+            progress.stop();
+            return source_error(json_format, path, &error.sources, error.failure);
+        }
     };
     let inputs = &loaded.sources;
     let entry = reel_cli::project::ENTRY;
-    let checked = match loaded.check() {
+    progress.phase("Compiling source");
+    let checked = match loaded.check_with_progress(&mut report) {
         Ok(checked) => checked,
-        Err(error) => return source_error(json_format, path, inputs, error),
+        Err(error) => {
+            progress.stop();
+            return source_error(json_format, path, inputs, error);
+        }
     };
     match command {
         SourceCommand::Check(_) => {
+            progress.phase("Checking translations");
             if let Err(error) =
                 reel_cli::localization::check_project(&loaded.project_root, &checked.catalogs)
             {
+                progress.stop();
                 failure(json_format, "localization", Some(path), &error.to_string())?;
                 return Ok(1);
             }
+            progress.finish("Checked");
             compilation_report(&checked, None, None, json_format, path)
         }
         SourceCommand::Build(args) => {
+            progress.phase("Building ASB");
             let mut artifact =
                 match build_with_profile(&checked, Some(entry), args.settings.profile()) {
                     Ok(artifact) => artifact,
-                    Err(error) => return source_error(json_format, path, inputs, error),
+                    Err(error) => {
+                        progress.stop();
+                        return source_error(json_format, path, inputs, error);
+                    }
                 };
             let default_output = args.output.is_none();
             let output = args.output.unwrap_or_else(|| {
@@ -167,6 +198,7 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
             });
             if default_output && let Err(error) = std::fs::create_dir_all(output.parent().unwrap())
             {
+                progress.stop();
                 failure(json_format, "output", output.to_str(), &error.to_string())?;
                 return Ok(2);
             }
@@ -177,6 +209,7 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
             let archive_directory = match archive_directory.canonicalize() {
                 Ok(directory) if directory.is_dir() => directory,
                 Ok(_) => {
+                    progress.stop();
                     failure(
                         json_format,
                         "output",
@@ -186,10 +219,12 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
                     return Ok(2);
                 }
                 Err(error) => {
+                    progress.stop();
                     failure(json_format, "output", output.to_str(), &error.to_string())?;
                     return Ok(2);
                 }
             };
+            progress.phase("Packing translations");
             let prepared = match reel_cli::localization::prepare_project(
                 &loaded.project_root,
                 &checked.catalogs,
@@ -197,6 +232,7 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
             ) {
                 Ok(prepared) => prepared,
                 Err(error) => {
+                    progress.stop();
                     failure(json_format, "localization", Some(path), &error.to_string())?;
                     return Ok(1);
                 }
@@ -205,12 +241,14 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
                 artifact.bytes = match reel_cli::distribution::with_catalogs(&artifact, &prepared) {
                     Ok(bytes) => bytes,
                     Err(error) => {
+                        progress.stop();
                         failure(json_format, "output", output.to_str(), &error.to_string())?;
                         return Ok(2);
                     }
                 };
                 artifact.blake3 = reel_package::digest(&artifact.bytes);
             }
+            progress.phase("Writing build");
             let published = match reel_cli::output::write(
                 &output,
                 &loaded.input,
@@ -219,10 +257,12 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
             ) {
                 Ok(published) => published,
                 Err(error) => {
+                    progress.stop();
                     failure(json_format, "output", output.to_str(), &error.to_string())?;
                     return Ok(2);
                 }
             };
+            progress.finish("Built");
             compilation_report(
                 &checked,
                 Some((&artifact, &output)),
@@ -232,10 +272,12 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
             )
         }
         SourceCommand::Export(args) => {
+            progress.phase("Preparing export");
             let profile = args.settings.profile();
             let player = if profile == BuildProfile::Release {
                 let player = reel_cli::distribution::player_path(&std::env::current_exe()?);
                 if !player.is_file() {
+                    progress.stop();
                     failure(
                         json_format,
                         "export",
@@ -248,9 +290,13 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
             } else {
                 None
             };
+            progress.phase("Building ASB");
             let artifact = match reel_cli::build_export(&checked, entry, profile) {
                 Ok(artifact) => artifact,
-                Err(error) => return source_error(json_format, path, inputs, error),
+                Err(error) => {
+                    progress.stop();
+                    return source_error(json_format, path, inputs, error);
+                }
             };
             let default_output = args.output.is_none();
             let resources = if args.resources.is_empty()
@@ -278,8 +324,10 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
                     .unwrap_or(std::num::NonZeroU64::new(2 << 30).unwrap()),
                 player,
             };
+            progress.phase("Packing resources");
             match reel_cli::distribution::export(&loaded, &artifact, &options) {
                 Ok(result) => {
+                    progress.finish("Exported");
                     if json_format {
                         report_json(
                             &json!({"status":"exported", "profile":profile.name(), "output":options.output,
@@ -299,6 +347,7 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
                     Ok(0)
                 }
                 Err(error) => {
+                    progress.stop();
                     failure(
                         json_format,
                         "export",
@@ -310,15 +359,18 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
             }
         }
         SourceCommand::Dev(args) => {
+            progress.phase("Saving development cache");
             if let Some(cache) = cache
                 && let Err(error) = cache.store(&checked)
             {
+                progress.stop();
                 writeln!(io::stderr().lock(), "warning: compilation cache: {error}")?;
             }
             let assets = args.playback.assets.unwrap_or_else(|| loaded.assets());
             match reel_cli::into_story(checked, entry) {
                 Ok(story) => {
                     drop(loaded);
+                    progress.finish("Starting game");
                     launch(
                         story,
                         Some(assets),
@@ -328,7 +380,10 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
                         path,
                     )
                 }
-                Err(error) => source_error(false, path, inputs, error),
+                Err(error) => {
+                    progress.stop();
+                    source_error(false, path, inputs, error)
+                }
             }
         }
     }
