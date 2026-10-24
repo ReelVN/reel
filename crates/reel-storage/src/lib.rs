@@ -1,14 +1,26 @@
 //! Same-filesystem publication shared by package builds and player storage.
-//! Files are synced before atomic replacement; power-loss directory durability is platform-specific.
-use atomic_write_file::AtomicWriteFile;
+//! Files are synced before publication. Vita retains immutable generations in a
+//! private v1 directory; native no-replace renames commit their logical contents.
+#[cfg(not(target_os = "vita"))]
+#[path = "desktop.rs"]
+mod backend;
+#[cfg(target_os = "vita")]
+#[path = "vita.rs"]
+mod backend;
+#[cfg(any(target_os = "vita", test))]
+mod generations;
 use std::{
     fs, io,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
 
+/// A committed logical operation with separate durability and cleanup outcomes.
 pub struct Published {
-    /// Publication is already complete even if private staging cleanup fails.
+    /// Publication or deletion committed, but subsequent device synchronization
+    /// failed. The new logical state applies; power-loss durability is unconfirmed.
+    pub durability_warning: Option<String>,
+    /// The logical operation committed, but reclaiming retired storage failed.
     pub cleanup_warning: Option<String>,
 }
 
@@ -19,6 +31,28 @@ pub fn publish(
     overwrite: bool,
     fill: impl FnOnce(&mut dyn io::Write) -> io::Result<()>,
 ) -> io::Result<Published> {
+    backend::publish(target, overwrite, fill)
+}
+
+/// Open the current committed contents as a standard file. Existing readers keep
+/// their immutable generation while a later publication replaces the logical file.
+pub fn open(target: &Path) -> io::Result<fs::File> {
+    backend::open(target)
+}
+
+/// Remove the logical file. Warnings describe failures after deletion committed;
+/// an error means the logical file was not removed.
+pub fn remove(target: &Path) -> io::Result<Published> {
+    backend::remove(target)
+}
+
+/// Enumerate committed logical files in a directory, excluding private staging.
+/// Contents returned by `open` retain their original application format.
+pub fn entries(directory: &Path) -> io::Result<impl Iterator<Item = io::Result<PathBuf>> + use<>> {
+    backend::entries(directory)
+}
+
+fn destination(target: &Path) -> io::Result<PathBuf> {
     // Resolve the existing directory before constructing either rename path.
     // Windows app-data virtualization may redirect file creation to another
     // volume while resolving a not-yet-existing rename destination literally.
@@ -26,30 +60,7 @@ pub fn publish(
         .parent()
         .expect("normalized target parent")
         .canonicalize()?;
-    let target = parent.join(target.file_name().expect("normalized target filename"));
-    let mut staging = Staging::new(&parent)?;
-    let candidate = staging.path.join("candidate");
-    let mut file = AtomicWriteFile::open(&candidate)?;
-    fill(&mut file)?;
-    // The dependency syncs the file and directory, but directory fsync may fail
-    // AFTER its rename. Commit into private staging so any such error still
-    // leaves the author's target untouched and our guard can remove leftovers.
-    file.commit()?;
-    if overwrite {
-        fs::rename(&candidate, &target)?;
-    } else {
-        // Atomic no-replace even when another writer creates target concurrently.
-        // Unsupported hard links fail safely; never fall back to clobbering rename.
-        fs::hard_link(&candidate, &target)?;
-    }
-    // No fallible step after publication is reported as an unpublished failure.
-    let cleanup_warning = staging.cleanup().err().map(|e| {
-        format!(
-            "artifact published; staging cleanup failed at {}: {e}",
-            staging.path.display()
-        )
-    });
-    Ok(Published { cleanup_warning })
+    Ok(parent.join(target.file_name().expect("normalized target filename")))
 }
 
 struct Staging {
@@ -98,10 +109,9 @@ impl Drop for Staging {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "vita")))]
 mod tests {
     use super::*;
-    use std::io::Write;
     fn directory() -> Staging {
         let root =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/reel-artifacts/storage-tests");
