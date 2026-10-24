@@ -430,7 +430,12 @@ fn compilation_report(
 }
 
 fn prepare_image_command(args: commands::PrepareImage) -> io::Result<u8> {
-    match reel_cli::prepare_image::prepare(&args.source, &args.output, args.tile_size) {
+    match reel_cli::prepare_image::prepare(
+        &args.source,
+        &args.output,
+        args.tile_size,
+        args.tile_encoding,
+    ) {
         Ok(manifest) => {
             writeln!(
                 io::stdout().lock(),

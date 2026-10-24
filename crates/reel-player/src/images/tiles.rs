@@ -91,7 +91,7 @@ pub(crate) fn visible_tiles(
         for x in x0.saturating_sub(1)..x1.saturating_add(1).min(nx) {
             let required = x >= x0 && x < x1 && y >= y0 && y < y1;
             let dimensions = manifest.tile_dimensions(level, x, y).unwrap();
-            let key = PreparedImage::tile_source(&image.source, level, x, y);
+            let key = manifest.tile_source(&image.source, level, x, y);
             if required {
                 region.tiles.push(key.clone());
             }

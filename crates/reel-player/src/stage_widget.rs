@@ -96,11 +96,11 @@ impl PartialEq for SceneImages {
                 .eq(other.mask_images.iter().map(ResourceLease::handle))
             && self.tiled_size == other.tiled_size
             && self.tiles.len() == other.tiles.len()
-            && self
-                .tiles
-                .iter()
-                .zip(&other.tiles)
-                .all(|(a, b)| a.image == b.image && a.transform == b.transform && a.clip == b.clip)
+            && self.tiles.iter().zip(&other.tiles).all(|(a, b)| {
+                a.resource.handle() == b.resource.handle()
+                    && a.transform == b.transform
+                    && a.clip == b.clip
+            })
     }
 }
 impl SceneNode {
@@ -347,7 +347,6 @@ impl StageView {
                 }),
         )
     }
-    #[cfg(feature = "window")]
     pub fn has_root(&self) -> bool {
         self.root.is_some()
     }
@@ -441,7 +440,7 @@ impl StageView {
                     && source.ends_with(".reel-image")
                 {
                     return Err(format!(
-                        "{}: particle image {source:?}: particles require a whole PNG or JPEG sprite; prepared .reel-image sources are supported by image nodes",
+                        "{}: particle image {source:?}: particles require a whole PNG, JPEG or .reel-texture sprite; prepared .reel-image sources are supported by image nodes",
                         origin.as_deref().unwrap_or("stage")
                     ));
                 }
@@ -454,7 +453,7 @@ impl StageView {
                 ) && source.ends_with(".reel-image")
                 {
                     return Err(format!(
-                        "{}: image {source:?}: source_rect requires a whole PNG or JPEG image",
+                        "{}: image {source:?}: source_rect requires a whole PNG, JPEG or .reel-texture image",
                         origin.as_deref().unwrap_or("stage")
                     ));
                 }
@@ -467,7 +466,7 @@ impl StageView {
                 ) && source.ends_with(".reel-image")
                 {
                     return Err(format!(
-                        "{}: image {source:?}: alpha_layout top_bottom requires a whole PNG or JPEG image",
+                        "{}: image {source:?}: alpha_layout top_bottom requires a whole PNG, JPEG or .reel-texture image",
                         origin.as_deref().unwrap_or("stage")
                     ));
                 }
@@ -475,7 +474,7 @@ impl StageView {
                     && source.ends_with(".reel-image")
                 {
                     return Err(format!(
-                        "{}: sliced image {source:?}: nine-slice images require a whole PNG or JPEG image",
+                        "{}: sliced image {source:?}: nine-slice images require a whole PNG, JPEG or .reel-texture image",
                         origin.as_deref().unwrap_or("stage")
                     ));
                 }
@@ -483,7 +482,7 @@ impl StageView {
                     && source.ends_with(".reel-image")
                 {
                     return Err(format!(
-                        "{}: repeating image {source:?}: repetition requires a whole PNG or JPEG image",
+                        "{}: repeating image {source:?}: repetition requires a whole PNG, JPEG or .reel-texture image",
                         origin.as_deref().unwrap_or("stage")
                     ));
                 }
@@ -500,7 +499,7 @@ impl StageView {
                 let origin = node.node.props.mask_origin.as_deref();
                 if source.ends_with(".reel-image") {
                     return Err(format!(
-                        "{}: mask image {source:?}: masks require a whole PNG or JPEG image; prepared .reel-image sources are supported by image nodes",
+                        "{}: mask image {source:?}: masks require a whole PNG, JPEG or .reel-texture image; prepared .reel-image sources are supported by image nodes",
                         origin.unwrap_or("stage")
                     ));
                 }
@@ -520,25 +519,17 @@ impl StageView {
         images: &BTreeMap<String, ResourceLease>,
     ) -> Result<(), String> {
         self.resources.clear();
-        let mut failure = None;
         let mut handles = std::collections::BTreeSet::new();
         resolve_image_nodes(&mut self.root, |node, visible| {
             let mut resolved = SceneImages::default();
             if !visible {
                 return resolved;
             }
-            if let Some((source, origin)) = image_source(&node.node.kind) {
+            if let Some((source, _)) = image_source(&node.node.kind) {
                 let lease = &images[source];
-                if matches!(lease.data(), ResourceData::Texture { .. })
-                    && matches!(node.node.kind, NodeKind::Particles(_))
-                {
-                    failure = Some(format!(
-                        "prepared texture {source} is not supported by particle recording at {}",
-                        origin.as_deref().unwrap_or("<stage>")
-                    ));
-                    return resolved;
-                }
-                if let ResourceData::Image { image, .. } = lease.data() {
+                if matches!(node.node.kind, NodeKind::Particles(_)) {
+                    resolved.image_resource = Some(lease.clone());
+                } else if let ResourceData::Image { image, .. } = lease.data() {
                     resolved.image = Some(image.clone());
                 } else {
                     resolved.image_resource = Some(lease.clone());
@@ -568,15 +559,11 @@ impl StageView {
             }
             resolved
         });
-        if let Some(error) = failure {
-            return Err(error);
-        }
         self.refresh_popups();
         Ok(())
     }
     pub fn resolve_metadata(&mut self, images: &crate::images::Images) -> Result<(), String> {
         self.resources.clear();
-        let mut failure = None;
         let mut resources = std::collections::BTreeSet::new();
         resolve_image_nodes(&mut self.root, |node, visible| {
             let mut resolved = SceneImages::default();
@@ -589,21 +576,14 @@ impl StageView {
                     self.resources.push(lease.clone());
                 }
             }
-            if let Some((source, origin)) = image_source(&node.node.kind) {
+            if let Some((source, _)) = image_source(&node.node.kind) {
                 if let Some(manifest) = images.manifests.get(source) {
                     resolved.tiled_size =
                         Some(Size::new(manifest.width.into(), manifest.height.into()));
                 } else if let Some(lease) = images.loaded.get(source) {
-                    if matches!(lease.data(), ResourceData::Texture { .. })
-                        && matches!(node.node.kind, NodeKind::Particles(_))
-                    {
-                        failure = Some(format!(
-                            "prepared texture {source} is not supported by particle recording at {}",
-                            origin.as_deref().unwrap_or("<stage>")
-                        ));
-                        return resolved;
-                    }
-                    if let ResourceData::Image { image, .. } = lease.data() {
+                    if matches!(node.node.kind, NodeKind::Particles(_)) {
+                        resolved.image_resource = Some(lease.clone());
+                    } else if let ResourceData::Image { image, .. } = lease.data() {
                         resolved.image = Some(image.clone());
                     } else {
                         resolved.image_resource = Some(lease.clone());
@@ -628,9 +608,6 @@ impl StageView {
             }
             resolved
         });
-        if let Some(error) = failure {
-            return Err(error);
-        }
         self.refresh_popups();
         Ok(())
     }
@@ -994,7 +971,7 @@ struct SceneWidget {
     editor: Option<WidgetPod<TextInput>>,
     image: Option<WidgetPod<Image>>,
     image_size: Size,
-    particle_image: Option<ImageData>,
+    particle_image: Option<ResourceLease>,
     mask_images: Arc<[ResourceLease]>,
     children: Vec<(Arc<SceneProperties>, WidgetPod<SceneWidget>)>,
     size: Size,
@@ -1328,7 +1305,7 @@ impl SceneWidget {
                 None
             },
             particle_image: matches!(view.node.kind, NodeKind::Particles(_))
-                .then(|| view.images.image.clone())
+                .then(|| view.images.image_resource.clone())
                 .flatten(),
             mask_images: view.images.mask_images.clone(),
             image: Self::image_widget(view),
@@ -1385,8 +1362,12 @@ impl SceneWidget {
                 .widget
                 .particle_image
                 .as_ref()
-                .map(|i| (i.width, i.height))
-                != view.images.image.as_ref().map(|i| (i.width, i.height))
+                .and_then(|i| i.data().image_size())
+                != view
+                    .images
+                    .image_resource
+                    .as_ref()
+                    .and_then(|i| i.data().image_size())
             {
                 this.ctx.request_layout();
             }
@@ -1394,12 +1375,16 @@ impl SceneWidget {
                 .widget
                 .particle_image
                 .as_ref()
-                .map(|image| image.data.id())
-                != view.images.image.as_ref().map(|image| image.data.id())
+                .map(ResourceLease::handle)
+                != view
+                    .images
+                    .image_resource
+                    .as_ref()
+                    .map(ResourceLease::handle)
             {
                 this.ctx.request_render();
             }
-            this.widget.particle_image = view.images.image.clone();
+            this.widget.particle_image = view.images.image_resource.clone();
         }
         if this.widget.node.props.capture_included != view.node.props.capture_included {
             this.ctx.request_render();
@@ -2490,14 +2475,14 @@ impl Widget for SceneWidget {
             }
         }
         if let (NodeKind::Particles(batch), Some(image)) = (&self.node.kind, &self.particle_image) {
+            let [width, height] = image.data().image_size().expect("particle image resource");
             let insets = batch.batches.iter().fold(Insets::ZERO, |insets, emission| {
                 let frame = emission.frame;
                 let config = &emission.config;
                 let max_size =
                     (config.size + config.size_spread).max(config.size_end.unwrap_or(0.));
                 let lifetime = config.max_lifetime();
-                let radius =
-                    max_size * (1. + f64::from(image.height) / f64::from(image.width)) * 0.5;
+                let radius = max_size * (1. + f64::from(height) / f64::from(width)) * 0.5;
                 let reach: [f64; 2] = std::array::from_fn(|axis| {
                     radius
                         + (config.velocity[axis].abs() + config.spread[axis]) * lifetime
@@ -2848,7 +2833,8 @@ impl Widget for SceneWidget {
                 .draw();
         }
         if let (NodeKind::Particles(batch), Some(image)) = (&self.node.kind, &self.particle_image) {
-            use reel_ui::{kurbo::Affine, peniko::ImageBrushRef};
+            use reel_ui::{kurbo::Affine, peniko::ImageSampler};
+            let [width, height] = image.data().image_size().expect("particle image resource");
             // A single widget, image resource and painter pass. Image alpha is
             // carried in the brush, avoiding one compositing group per sprite.
             for sprite in batch.samples() {
@@ -2857,14 +2843,18 @@ impl Widget for SceneWidget {
                 }
                 let transform = Affine::translate((sprite.position[0], sprite.position[1]))
                     * Affine::rotate(sprite.rotation.to_radians())
-                    * Affine::scale(sprite.size / f64::from(image.width))
-                    * Affine::translate((
-                        -f64::from(image.width) * 0.5,
-                        -f64::from(image.height) * 0.5,
-                    ));
-                painter.draw_image(
-                    ImageBrushRef::from(image).with_alpha(sprite.opacity as f32),
+                    * Affine::scale(sprite.size / f64::from(width))
+                    * Affine::translate((-f64::from(width) * 0.5, -f64::from(height) * 0.5));
+                ctx.draw_resource_image(
+                    painter,
+                    image,
+                    Rect::new(0., 0., f64::from(width), f64::from(height)),
                     transform,
+                    Affine::IDENTITY,
+                    ImageSampler {
+                        alpha: sprite.opacity as f32,
+                        ..Default::default()
+                    },
                 );
             }
         }

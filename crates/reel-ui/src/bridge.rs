@@ -123,7 +123,8 @@ impl RecordedSource {
     pub fn plan(&self) -> &VisualLayerPlan {
         &self.plan
     }
-    /// Explicit CPU reference; returns UnsupportedRecord for modes Imaging cannot express.
+    /// Explicit CPU reference; returns UnsupportedRecord for resource draws and
+    /// blend modes Imaging cannot express.
     /// Production FrameBuild never calls this.
     pub fn scene(&self) -> Result<&Scene, crate::frame::BuildError> {
         self.reference_scene

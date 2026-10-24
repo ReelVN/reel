@@ -12,6 +12,7 @@ use crate::app::{
     CommandOwnerRange, GroupMetadata, RenderRoot, RenderRootState, SubtreePaint, VisualLayer,
     VisualLayerKind, VisualLayerPlan,
 };
+use crate::core::recorded_paint::{CachedPaint, RecordingSink};
 use crate::core::{
     DefaultProperties, PaintCtx, PaintImageMask, PaintLayerMode, PropertiesRef, PropertyArena,
     WidgetArenaNode, WidgetId,
@@ -20,6 +21,7 @@ use crate::imaging::record::{Clip, Command, Geometry, Group, Scene};
 use crate::imaging::{Composite, PaintSink, Painter};
 use crate::passes::{enter_span_if, recurse_on_children};
 use crate::util::get_debug_color;
+use std::cell::Cell;
 
 struct CursorPaint {
     layers: Vec<VisualLayer>,
@@ -78,13 +80,14 @@ impl LayerCollector {
 
     fn append(
         &mut self,
-        scene: &Scene,
+        cached: &CachedPaint,
         transform: Affine,
         owner: WidgetId,
         image: crate::frame::ImagePaint,
     ) {
         let start = self.current_scene.commands().len();
-        self.current_scene.append_transformed(scene, transform);
+        self.current_scene
+            .append_transformed(&cached.scene, transform);
         for (offset, command) in self.current_scene.commands()[start..].iter().enumerate() {
             if matches!(command, Command::PushGroup(_)) {
                 self.groups.push(GroupMetadata {
@@ -97,16 +100,34 @@ impl LayerCollector {
                 });
             }
         }
-        self.record_owner(
-            start,
-            owner,
-            crate::frame::ImagePaint {
-                appearance: image
-                    .appearance
-                    .map(|appearance| appearance.transformed(transform)),
-                ..image
-            },
-        );
+        let image = crate::frame::ImagePaint {
+            appearance: image
+                .appearance
+                .map(|appearance| appearance.transformed(transform)),
+            ..image
+        };
+        let end = self.current_scene.commands().len();
+        let mut next = start;
+        for binding in &cached.images {
+            let command = start + binding.command;
+            self.record_owner_range(next, command, owner, image, None);
+            self.record_owner_range(
+                command,
+                command + 1,
+                owner,
+                crate::frame::ImagePaint {
+                    resource: Some(crate::resources::ResourceImageBrush {
+                        resource: binding.resource.handle(),
+                        sampler: binding.sampler,
+                    }),
+                    sampling_transform: true,
+                    ..image
+                },
+                Some(&binding.resource),
+            );
+            next = command + 1;
+        }
+        self.record_owner_range(next, end, owner, image, None);
     }
 
     fn push_subtree_composite(
@@ -145,6 +166,22 @@ impl LayerCollector {
     }
 
     fn record_owner(&mut self, start: usize, owner: WidgetId, image: crate::frame::ImagePaint) {
+        self.record_owner_range(
+            start,
+            self.current_scene.commands().len(),
+            owner,
+            image,
+            None,
+        );
+    }
+    fn record_owner_range(
+        &mut self,
+        start: usize,
+        end: usize,
+        owner: WidgetId,
+        image: crate::frame::ImagePaint,
+        lease: Option<&crate::resources::ResourceLease>,
+    ) {
         let crate::frame::ImagePaint {
             color: image_color,
             appearance: image_appearance,
@@ -152,7 +189,6 @@ impl LayerCollector {
             sampling_transform: image_sampling_transform,
             source_rect: image_source_rect,
         } = image;
-        let end = self.current_scene.commands().len();
         if start == end {
             return;
         }
@@ -173,6 +209,7 @@ impl LayerCollector {
                 image_color,
                 image_appearance,
                 image_resource,
+                image_lease: lease.cloned(),
                 image_sampling_transform,
                 image_source_rect,
             });
@@ -251,7 +288,7 @@ fn paint_widget(
     default_properties: &DefaultProperties,
     property_arena: &PropertyArena,
     layer_collector: &mut LayerCollector,
-    scene_cache: &mut HashMap<WidgetId, (Scene, Scene, Scene)>,
+    scene_cache: &mut HashMap<WidgetId, (CachedPaint, CachedPaint, CachedPaint)>,
     cursor_layers: &mut Vec<CursorPaint>,
     in_cursor: bool,
     border_box_to_layer_transform: Affine,
@@ -349,12 +386,6 @@ fn paint_widget(
         }
 
         let stack = property_arena.get(state.property_stack_id, widget.type_id());
-        let mut ctx = PaintCtx {
-            geometry: crate::app::ContextGeometry::Live,
-            global_state,
-            widget_state: state,
-            children: children.reborrow_mut(),
-        };
         let props = PropertiesRef {
             local: properties,
             default_map: default_properties.for_widget(widget.type_id()),
@@ -366,28 +397,40 @@ fn paint_widget(
         // https://github.com/linebender/xilem/issues/524
         let (pre_scene, scene, post_scene) = scene_cache.entry(id).or_insert_with(|| {
             // Restoring an evicted drawing also rebuilds decorations on either side.
-            ctx.widget_state.request_pre_paint = true;
-            ctx.widget_state.request_paint = true;
-            ctx.widget_state.request_post_paint = true;
+            state.request_pre_paint = true;
+            state.request_paint = true;
+            state.request_post_paint = true;
             Default::default()
         });
-        if ctx.widget_state.request_pre_paint {
-            pre_scene.clear();
-            let sink_dyn: &mut dyn PaintSink = pre_scene;
-            let mut painter = Painter::new(sink_dyn);
-            widget.pre_paint(&mut ctx, &props, &mut painter);
-        }
-        if ctx.widget_state.request_paint {
-            scene.clear();
-            let sink_dyn: &mut dyn PaintSink = scene;
-            let mut painter = Painter::new(sink_dyn);
-            widget.paint(&mut ctx, &props, &mut painter);
-        }
-        if ctx.widget_state.request_post_paint {
-            post_scene.clear();
-            let sink_dyn: &mut dyn PaintSink = post_scene;
-            let mut painter = Painter::new(sink_dyn);
-            widget.post_paint(&mut ctx, &props, &mut painter);
+        for (phase, cached) in [pre_scene, scene, post_scene].into_iter().enumerate() {
+            let requested = match phase {
+                0 => state.request_pre_paint,
+                1 => state.request_paint,
+                _ => state.request_post_paint,
+            };
+            if !requested {
+                continue;
+            }
+            cached.clear();
+            let cursor = Cell::new(0);
+            let mut ctx = PaintCtx {
+                geometry: crate::app::ContextGeometry::Live,
+                global_state,
+                widget_state: state,
+                children: children.reborrow_mut(),
+                image_draws: &mut cached.images,
+                command_cursor: &cursor,
+            };
+            let mut sink = RecordingSink {
+                scene: &mut cached.scene,
+                cursor: &cursor,
+            };
+            let mut painter = Painter::new(&mut sink as &mut dyn PaintSink);
+            match phase {
+                0 => widget.pre_paint(&mut ctx, &props, &mut painter),
+                1 => widget.paint(&mut ctx, &props, &mut painter),
+                _ => widget.post_paint(&mut ctx, &props, &mut painter),
+            }
         }
     }
 
@@ -456,7 +499,7 @@ fn paint_widget(
             crate::frame::ImagePaint {
                 color: state.image_color,
                 appearance: state.image_appearance,
-                resource: state.image_resource,
+                resource: None,
                 sampling_transform: state.image_sampling_transform,
                 source_rect: state.image_source_rect,
             },
@@ -489,7 +532,7 @@ fn paint_widget(
                 crate::frame::ImagePaint {
                     color: state.image_color,
                     appearance: state.image_appearance,
-                    resource: state.image_resource,
+                    resource: None,
                     sampling_transform: state.image_sampling_transform,
                     source_rect: state.image_source_rect,
                 },
@@ -568,7 +611,7 @@ fn paint_widget(
             crate::frame::ImagePaint {
                 color: state.image_color,
                 appearance: state.image_appearance,
-                resource: state.image_resource,
+                resource: None,
                 sampling_transform: state.image_sampling_transform,
                 source_rect: state.image_source_rect,
             },
@@ -706,7 +749,7 @@ pub(crate) fn run_paint_pass(root: &mut RenderRoot) -> VisualLayerPlan {
 fn paint_layer(
     root: &mut RenderRoot,
     layer_collector: &mut LayerCollector,
-    scene_cache: &mut HashMap<WidgetId, (Scene, Scene, Scene)>,
+    scene_cache: &mut HashMap<WidgetId, (CachedPaint, CachedPaint, CachedPaint)>,
     cursor_layers: &mut Vec<CursorPaint>,
     root_id: WidgetId,
     layer_widget_id: WidgetId,

@@ -40,6 +40,166 @@ fn version(n: u8) -> ResourceVersion {
 }
 
 #[test]
+fn resource_draws_are_independent_cached_and_owned_until_the_last_recording() {
+    use reel_core::{budget::OwnedBytes, texture::*};
+    let pool = pool();
+    let mut registry = ResourceRegistry::new(2, 65536).unwrap();
+    let handles = [TextureFormat::Bc1Rgb, TextureFormat::Bc3Rgba].map(|format| {
+        let descriptor = TextureDescriptor {
+            format,
+            source_encoding: ColorEncoding::Srgb,
+            layout: TextureLayout {
+                logical_size: [16, 8],
+                content_size: [6, 3],
+                storage_size: [8, 4],
+            },
+        };
+        let length = descriptor.byte_len().unwrap();
+        registry
+            .register_texture(
+                version(if format == TextureFormat::Bc1Rgb {
+                    80
+                } else {
+                    81
+                }),
+                TexturePayload::new(
+                    descriptor,
+                    OwnedBytes::new(vec![0; length as usize], pool.reserve(length).unwrap())
+                        .unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap()
+    });
+    let mut widget = RecordWidget::new(fill(Color::from_rgb8(10, 20, 30)));
+    widget.clip = false;
+    for (index, handle) in handles.into_iter().enumerate() {
+        widget.resource_draws.push((
+            registry.acquire(handle).unwrap(),
+            Rect::new(0., 0., 16., 8.),
+            Affine::translate((index as f64 * 20., 0.)),
+            peniko::ImageSampler {
+                alpha: 0.5 + index as f32 * 0.25,
+                ..Default::default()
+            },
+        ));
+    }
+    let prepared = widget.prepare();
+    let id = prepared.id();
+    let mut bridge = bridge(fixture::root(prepared.with_transform(Affine::translate((7., 9.)))).0);
+    let first = bridge.record(FrameId(1)).unwrap();
+    let bindings: Vec<_> = first
+        .plan()
+        .layers
+        .iter()
+        .flat_map(|layer| &layer.command_owners)
+        .filter_map(|range| range.image_resource)
+        .collect();
+    assert_eq!(
+        bindings.iter().map(|b| b.resource).collect::<Vec<_>>(),
+        handles
+    );
+    assert_eq!(
+        bindings.iter().map(|b| b.sampler.alpha).collect::<Vec<_>>(),
+        [0.5, 0.75]
+    );
+    let mut reference = Scene::new();
+    assert_eq!(
+        first.plan().replay_into(&mut reference).unwrap_err().kind,
+        BuildErrorKind::UnsupportedRecord
+    );
+    assert!(
+        reference.commands().is_empty(),
+        "unsupported replay must fail before emitting the solid geometry record"
+    );
+    let second = bridge.record(FrameId(2)).unwrap();
+    assert_eq!(
+        second
+            .plan()
+            .layers
+            .iter()
+            .flat_map(|layer| &layer.command_owners)
+            .filter_map(|range| range.image_resource)
+            .map(|b| b.resource)
+            .collect::<Vec<_>>(),
+        handles,
+        "a warm cached paint retains every draw binding"
+    );
+    drop(second);
+    bridge.edit_widget(id, |mut widget| {
+        let mut widget = widget.downcast::<RecordWidget>();
+        widget.widget.resource_draws.swap(0, 1);
+        widget.ctx.request_render();
+    });
+    let changed = bridge.record(FrameId(3)).unwrap();
+    let snapshots = || {
+        ResourceSnapshot::capture(
+            handles.into_iter().map(|handle| registry.acquire(handle)),
+            &pool,
+        )
+        .unwrap()
+    };
+    let frame = build(first, snapshots(), &pool);
+    let changed = build(changed, snapshots(), &pool);
+    let draws: Vec<_> = frame
+        .commands()
+        .iter()
+        .filter_map(|c| match &c.op {
+            FrameOp::Draw(FrameDraw::Fill {
+                brush,
+                brush_transform,
+                transform,
+                ..
+            }) => Some((brush, *brush_transform, *transform)),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        matches!(draws[0].0, Brush::Solid(_)),
+        "the widget background keeps its solid brush"
+    );
+    for (index, (brush, sampling, transform)) in draws[1..].iter().enumerate() {
+        let Brush::Image(image) = brush else {
+            panic!("typed draw must become an image")
+        };
+        assert_eq!(image.image.resource, handles[index]);
+        assert_eq!(*sampling, Some(Affine::IDENTITY));
+        assert_eq!(
+            transform.translation(),
+            Vec2::new(7. + index as f64 * 20., 9.)
+        );
+    }
+    let changed_handles: Vec<_> = changed
+        .commands()
+        .iter()
+        .filter_map(|c| match &c.op {
+            FrameOp::Draw(FrameDraw::Fill {
+                brush: Brush::Image(image),
+                ..
+            }) => Some(image.image.resource),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        changed_handles,
+        [handles[1], handles[0]],
+        "paint invalidation replaces the exact per-draw bindings"
+    );
+    for handle in handles {
+        registry.retire(handle);
+    }
+    drop(registry);
+    drop(bridge);
+    assert!(
+        pool.usage().bytes > 0,
+        "recordings and frames retain the actual resource allocations"
+    );
+    drop(changed);
+    drop(frame);
+    assert_eq!(pool.usage().bytes, 0);
+}
+
+#[test]
 fn expired_registration_reclaims_its_descriptor_before_slot_reuse() {
     let pool = pool();
     let mut probe = ResourceRegistry::new(1, 8192).unwrap();

@@ -5,7 +5,6 @@ use crate::assets::{AssetKind, Assets, LoadId};
 use reel_core::prepared_image::PreparedImage;
 use reel_ui::{
     kurbo::{Affine, Rect, Size},
-    resources::ResourceData,
     widgets::ImageTile,
 };
 pub(crate) mod tiles;
@@ -70,7 +69,6 @@ impl Images {
     pub fn set_waker(&mut self, wake: Arc<dyn Fn() + Send + Sync>) {
         self.assets.set_waker(wake);
     }
-    #[cfg(feature = "window")]
     pub fn has_result_pending(&self) -> bool {
         self.assets.needs_poll()
     }
@@ -155,11 +153,7 @@ impl Images {
                     result
                         .map(|lease| {
                             if let Some(tile) = self.tiles.get(&pending.source) {
-                                if matches!(lease.data(),ResourceData::Texture{..}) {return Err(format!("prepared texture {} is not supported by PNG tile recording",pending.source));}
-                                let ResourceData::Image { image, .. } = lease.data() else {
-                                    unreachable!()
-                                };
-                                if [image.width, image.height] != tile.dimensions {
+                                if lease.data().image_size() != Some(tile.dimensions) {
                                     return Err("tile dimensions differ from manifest".into());
                                 }
                             }
@@ -378,11 +372,8 @@ impl Images {
             .filter_map(|key| {
                 let tile = self.tiles.get(key)?;
                 let lease = self.loaded.get(key)?;
-                let ResourceData::Image { image, .. } = lease.data() else {
-                    unreachable!()
-                };
                 Some(ImageTile {
-                    image: image.clone().into(),
+                    resource: lease.clone(),
                     transform: tile.transform,
                     clip: tile.clip,
                 })

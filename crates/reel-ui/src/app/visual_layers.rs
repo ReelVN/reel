@@ -18,6 +18,8 @@ pub struct CommandOwnerRange {
     pub image_color: [f32; 4],
     pub image_appearance: Option<crate::frame::ImageAppearance>,
     pub image_resource: Option<crate::resources::ResourceImageBrush>,
+    /// Keeps a typed image draw's producer storage alive with the recording.
+    pub image_lease: Option<crate::resources::ResourceLease>,
     /// Image brush matrices already map local coordinates to source pixels.
     pub image_sampling_transform: bool,
     /// Source-pixel window retained by this widget's cached image paint.
@@ -65,13 +67,29 @@ pub struct VisualLayerPlan {
 impl VisualLayerPlan {
     /// Replay all layers into a sink in window coordinate space.
     ///
-    /// Return UnsupportedRecord before writing when Imaging cannot represent a subtree blend.
+    /// Return UnsupportedRecord before writing when Imaging cannot represent a
+    /// subtree blend or a typed resource image draw.
     /// Production FrameBuild reads the original plan and preserves every Reel blend.
     pub fn replay_into<S>(&self, sink: &mut S) -> Result<(), crate::frame::BuildError>
     where
         S: PaintSink + ?Sized,
     {
         for (fragment, layer) in self.layers.iter().enumerate() {
+            if let Some(range) = layer
+                .command_owners
+                .iter()
+                .find(|range| range.image_resource.is_some())
+            {
+                return Err(crate::frame::BuildError {
+                    kind: crate::frame::BuildErrorKind::UnsupportedRecord,
+                    at: crate::frame::RecordLocation {
+                        fragment,
+                        command: range.commands.start,
+                        mask_depth: 0,
+                        owner: range.owner,
+                    },
+                });
+            }
             if let Some(group) = layer
                 .groups
                 .iter()

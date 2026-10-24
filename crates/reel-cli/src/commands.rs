@@ -173,6 +173,9 @@ pub struct PrepareImage {
     /// Interior tile edge in pixels, excluding the two-pixel border.
     #[arg(long, default_value_t = 512, value_parser = clap::value_parser!(u32).range(1..=i64::from(u32::MAX - 2)))]
     pub tile_size: u32,
+    /// Compressed Reel textures by default; PNG preserves exact source samples.
+    #[arg(long, value_enum, default_value = "reel-texture")]
+    pub tile_encoding: reel_cli::prepare_image::Encoding,
 }
 
 #[derive(Args)]

@@ -1,9 +1,24 @@
 //! Offline preparation of original images; runtime reads only individual tiles.
 use image::{ImageReader, RgbaImage, imageops};
-use reel_core::prepared_image::PreparedImage;
+use reel_core::prepared_image::{PreparedImage, TileEncoding};
 use std::{fs, io::Write, path::Path};
 
-pub fn prepare(source: &Path, output: &Path, tile_edge: u32) -> Result<PreparedImage, String> {
+/// Offline tile file encoding. Compressed textures are selected by default.
+#[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
+pub enum Encoding {
+    /// Preserve exact sRGB PNG samples.
+    Png,
+    /// Encode opaque tiles as BC1 and translucent tiles as BC3.
+    #[default]
+    ReelTexture,
+}
+/// Prepare and publish a complete v1 pyramid with an explicit tile encoding.
+pub fn prepare(
+    source: &Path,
+    output: &Path,
+    tile_edge: u32,
+    encoding: Encoding,
+) -> Result<PreparedImage, String> {
     if output
         .extension()
         .is_none_or(|extension| extension != "reel-image")
@@ -26,7 +41,15 @@ pub fn prepare(source: &Path, output: &Path, tile_edge: u32) -> Result<PreparedI
         return Err("original image must be PNG or JPEG".into());
     }
     let mut pixels = reader.decode().map_err(|e| e.to_string())?.into_rgba8();
-    let manifest = PreparedImage::new(pixels.width(), pixels.height(), tile_edge)?;
+    let manifest = PreparedImage::new(
+        pixels.width(),
+        pixels.height(),
+        tile_edge,
+        match encoding {
+            Encoding::Png => TileEncoding::Png,
+            Encoding::ReelTexture => TileEncoding::ReelTexture,
+        },
+    )?;
     fs::create_dir(&directory).map_err(|e| e.to_string())?;
     for level in 0..manifest.levels() {
         fs::create_dir(Path::new(&directory).join(level.to_string())).map_err(|e| e.to_string())?;
@@ -42,8 +65,17 @@ pub fn prepare(source: &Path, output: &Path, tile_edge: u32) -> Result<PreparedI
                         as u32;
                     *pixels.get_pixel(sx, sy)
                 });
-                tile.save(PreparedImage::tile_source(output_str, level, x, y))
-                    .map_err(|e| e.to_string())?;
+                let path = manifest.tile_source(output_str, level, x, y);
+                match encoding {
+                    Encoding::Png => tile.save(&path).map_err(|e| e.to_string())?,
+                    Encoding::ReelTexture => {
+                        crate::prepare_texture::prepare_decoded(
+                            tile.into(),
+                            Path::new(&path),
+                            Default::default(),
+                        )?;
+                    }
+                }
             }
         }
         if level + 1 < manifest.levels() {
@@ -96,6 +128,66 @@ fn downsample(pixels: RgbaImage, width: u32, height: u32) -> Result<RgbaImage, S
 mod tests {
     use super::*;
     #[test]
+    fn compressed_tiles_preserve_gutters_and_store_native_bc_payloads() {
+        use reel_core::texture::{ColorEncoding, TextureFormat, TextureHeader};
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target/reel-artifacts/prepared-image-tool")
+            .join(format!(
+                "bc-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+        fs::create_dir_all(&root).unwrap();
+        let original = root.join("original.png");
+        let output = root.join("blocks.reel-image");
+        RgbaImage::from_fn(17, 9, |x, _| {
+            image::Rgba([90, 60, 30, if x < 9 { 255 } else { 128 }])
+        })
+        .save(&original)
+        .unwrap();
+        let manifest = prepare(&original, &output, 8, Encoding::ReelTexture).unwrap();
+        assert_eq!(manifest.tile_encoding, TileEncoding::ReelTexture);
+        assert_eq!(
+            PreparedImage::decode(&fs::read(&output).unwrap()),
+            Ok(manifest)
+        );
+        let mut formats = Vec::new();
+        for level in 0..manifest.levels() {
+            let [width, height] = manifest.dimensions(level);
+            for y in 0..height.div_ceil(8) {
+                for x in 0..width.div_ceil(8) {
+                    let path = manifest.tile_source(output.to_str().unwrap(), level, x, y);
+                    assert!(path.ends_with(".reel-texture"));
+                    let bytes = fs::read(path).unwrap();
+                    let (header, _) = TextureHeader::parse(&bytes).unwrap();
+                    let descriptor = header.descriptor();
+                    assert_eq!(
+                        descriptor.layout.logical_size,
+                        manifest.tile_dimensions(level, x, y).unwrap()
+                    );
+                    assert_eq!(
+                        descriptor.layout.content_size,
+                        descriptor.layout.logical_size
+                    );
+                    assert_eq!(descriptor.source_encoding, ColorEncoding::Srgb);
+                    assert_eq!(
+                        descriptor.layout.storage_size,
+                        descriptor
+                            .layout
+                            .content_size
+                            .map(|axis| axis.div_ceil(4) * 4)
+                    );
+                    formats.push(descriptor.format);
+                }
+            }
+        }
+        assert!(formats.contains(&TextureFormat::Bc1Rgb));
+        assert!(formats.contains(&TextureFormat::Bc3Rgba));
+    }
+    #[test]
     fn pyramid_filter_uses_linear_premultiplied_colors() {
         let pixels = RgbaImage::from_fn(2, 1, |x, _| {
             if x == 0 {
@@ -132,33 +224,23 @@ mod tests {
         });
         pixels.save(&original).unwrap();
         let started = std::time::Instant::now();
-        let manifest = prepare(&original, &output, 512).unwrap();
+        let manifest = prepare(&original, &output, 512, Encoding::Png).unwrap();
         assert_eq!(
             PreparedImage::decode(&fs::read(&output).unwrap()).unwrap(),
             manifest
         );
-        let a = image::open(PreparedImage::tile_source(
-            output.to_str().unwrap(),
-            0,
-            0,
-            0,
-        ))
-        .unwrap()
-        .into_rgba8();
-        let b = image::open(PreparedImage::tile_source(
-            output.to_str().unwrap(),
-            0,
-            1,
-            0,
-        ))
-        .unwrap()
-        .into_rgba8();
+        let a = image::open(manifest.tile_source(output.to_str().unwrap(), 0, 0, 0))
+            .unwrap()
+            .into_rgba8();
+        let b = image::open(manifest.tile_source(output.to_str().unwrap(), 0, 1, 0))
+            .unwrap()
+            .into_rgba8();
         assert_eq!(a.dimensions(), (514, 19));
         for y in 0..19 {
             assert_eq!(a.get_pixel(512, y), b.get_pixel(0, y));
             assert_eq!(a.get_pixel(513, y), b.get_pixel(1, y));
         }
-        let last = image::open(PreparedImage::tile_source(
+        let last = image::open(manifest.tile_source(
             output.to_str().unwrap(),
             manifest.levels() - 1,
             0,
@@ -167,7 +249,7 @@ mod tests {
         .unwrap();
         assert_eq!((last.width(), last.height()), (3, 3));
         assert!(
-            prepare(&original, &output, 512)
+            prepare(&original, &output, 512, Encoding::Png)
                 .unwrap_err()
                 .contains("already exists")
         );

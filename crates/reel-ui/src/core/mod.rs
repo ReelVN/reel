@@ -17,6 +17,7 @@ mod property_arena;
 mod property_cache;
 mod property_set;
 mod property_stack;
+pub(crate) mod recorded_paint;
 mod selector;
 mod text;
 mod widget;

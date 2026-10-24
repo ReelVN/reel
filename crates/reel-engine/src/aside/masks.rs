@@ -33,7 +33,8 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
 aside_host::native_documentation! {
     pub(super) fn documentation {
         /// Create an immutable mask expression sampling image alpha. x/y and scale_x/y
-        /// transform sampling; repeat accepts none, x, y or both. Source is a whole PNG or JPEG.
+        /// transform sampling; repeat accepts none, x, y or both. Source is a whole
+        /// PNG, JPEG or prepared texture.
         "reel::mask::alpha";
         /// Create an immutable mask expression sampling image grayscale. Sampling
         /// transform and repetition follow mask.alpha.
@@ -96,7 +97,7 @@ pub(super) fn create(
             let source = text::read_string(heap, args[0], limit)?;
             if source.is_empty() || source.ends_with(".reel-image") {
                 return Err(AdapterError::Input(
-                    "mask source must be a whole PNG or JPEG image",
+                    "mask source must be a whole image or prepared texture",
                 ));
             }
             for &value in &args[1..5] {
@@ -183,7 +184,7 @@ pub(super) fn project(
         let source = text::read_string(heap, root, limit)?;
         if source.is_empty() || source.ends_with(".reel-image") {
             return Err(AdapterError::Input(
-                "mask source must be a whole PNG or JPEG image",
+                "mask source must be a whole image or prepared texture",
             ));
         }
         return Ok(MaskProgram::image(Arc::from(source)));

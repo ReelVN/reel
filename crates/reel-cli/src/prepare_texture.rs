@@ -51,6 +51,16 @@ pub fn prepare(source: &Path, output: &Path, options: Options) -> Result<Texture
         return Err("original image must be PNG or JPEG".into());
     }
     let pixels = reader.decode().map_err(|e| e.to_string())?;
+    prepare_decoded(pixels, output, options)
+}
+
+/// Encode already decoded artwork with the same filtering, block and publication
+/// rules as `prepare`, without an intermediate image file.
+pub(crate) fn prepare_decoded(
+    pixels: DynamicImage,
+    output: &Path,
+    options: Options,
+) -> Result<TextureHeader, String> {
     let (descriptor, pixels) = prepare_pixels(pixels, options)?;
     let [width, height] = descriptor.layout.storage_size;
     let blocks = match descriptor.format {
