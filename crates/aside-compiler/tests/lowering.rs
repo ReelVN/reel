@@ -130,7 +130,7 @@ fn consume() {
     }
 }
 fn source_span(f: &bc::RuntimeFunction, pc: usize) -> bc::SourceSpan {
-    f.source_map[f.source_map.partition_point(|entry| entry.pc.index() <= pc) - 1].span
+    f.source_map.source_at(bc::Pc(pc as u32)).unwrap()
 }
 
 #[test]
@@ -244,7 +244,7 @@ fn repeated_value_constants_share_slots_without_merging_object_constants() {
         2
     );
 }
-fn function<'a, C>(p: &'a bc::BytecodePackage<C>, name: &str) -> &'a bc::FunctionDef<C> {
+fn function<'a, C, S>(p: &'a bc::BytecodePackage<C, S>, name: &str) -> &'a bc::FunctionDef<C, S> {
     p.functions
         .iter()
         .find(|f| p.symbols[f.name.index()] == name)

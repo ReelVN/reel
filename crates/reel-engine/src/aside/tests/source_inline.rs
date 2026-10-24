@@ -185,7 +185,7 @@ fn catalog_count_does_not_change_runtime_argument_construction() {
             .functions
             .iter()
             .flat_map(|function| &function.code)
-            .any(|instruction| instruction.opcode == bc::Opcode::MakeTable as u16)
+            .any(|instruction| instruction.unwrap().opcode == bc::Opcode::MakeTable as u16)
     );
     assert_eq!(many.catalogs.catalogs.len(), 8);
     eprintln!(

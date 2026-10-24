@@ -30,7 +30,7 @@ pub const LANGUAGE_VERSION: u32 = 1;
 pub const HOST_ABI_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BytecodePackage<C = Vec<Instruction>> {
+pub struct BytecodePackage<C = Vec<Instruction>, S = Vec<SourceMapEntry>> {
     pub format_version: u32,
     pub language_version: u32,
     pub host_abi_version: u32,
@@ -42,11 +42,11 @@ pub struct BytecodePackage<C = Vec<Instruction>> {
     pub signatures: Vec<Signature>,
     pub natives: Vec<NativeDef>,
     pub modules: Vec<ModuleDef>,
-    pub functions: Vec<FunctionDef<C>>,
+    pub functions: Vec<FunctionDef<C, S>>,
     pub capabilities: Vec<SymbolId>,
     pub sources: Vec<SourceFile>,
 }
-impl<C> Default for BytecodePackage<C> {
+impl<C, S> Default for BytecodePackage<C, S> {
     fn default() -> Self {
         Self {
             format_version: FORMAT_VERSION,
@@ -252,7 +252,7 @@ pub struct BindingDef {
     pub initialization: BindingInitialization,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FunctionDef<C = Vec<Instruction>> {
+pub struct FunctionDef<C = Vec<Instruction>, S = Vec<SourceMapEntry>> {
     pub module: ModuleId,
     pub name: SymbolId,
     pub kind: FunctionKind,
@@ -264,7 +264,7 @@ pub struct FunctionDef<C = Vec<Instruction>> {
     pub descriptors: Vec<Descriptor>,
     pub code: C,
     pub regions: Vec<ExceptionRegion>,
-    pub source_map: Vec<SourceMapEntry>,
+    pub source_map: S,
 }
 /// Editable instruction value. Verified execution stores compact words and
 /// reconstructs this value without allocation at the requested instruction PC.

@@ -741,7 +741,11 @@ impl super::RuntimePackage {
                 code.push(i);
             }
             let mut regions = f.regions.clone();
-            let mut source_map = f.source_map.clone();
+            let mut source_map = Vec::new();
+            source_map
+                .try_reserve_exact(f.source_map.len())
+                .map_err(|_| Error::new(ErrorKind::Allocation, "editable source runs"))?;
+            source_map.extend(f.source_map.iter());
             map_metadata_pcs(&mut regions, &mut source_map, map)?;
             functions.push(FunctionDef {
                 module: f.module,

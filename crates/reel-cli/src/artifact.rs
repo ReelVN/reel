@@ -326,7 +326,7 @@ fn without_debug(p: &bc::RuntimePackage) -> bc::RuntimePackage {
                 descriptors: f.descriptors.clone(),
                 code: f.code.clone(),
                 regions: f.regions.clone(),
-                source_map: Vec::new(),
+                source_map: bc::CompactSourceMap::default(),
             })
             .collect(),
         capabilities: p.capabilities.clone(),

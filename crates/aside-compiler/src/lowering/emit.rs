@@ -266,7 +266,8 @@ pub(super) fn emit(mut ir: IrModule) -> Result<Compilation, Box<Error>> {
     validation_limits.max_allocation_bytes = validation_limits.max_allocation_bytes.min(
         b.limits
             .max_capacity_bytes
-            .saturating_sub(ir.metadata.capacity_bytes),
+            .saturating_sub(ir.metadata.capacity_bytes)
+            .saturating_add(size_of::<bc::BytecodePackage>()),
     );
     let program = bc::verify(ir.package, validation_limits).map_err(|e| {
         let mut error = b.error(ErrorKind::Bytecode, e.to_string());
@@ -279,13 +280,13 @@ pub(super) fn emit(mut ir: IrModule) -> Result<Compilation, Box<Error>> {
     // The shared verifier reports the final package and derived cache capacities.
     // Replace conservative seed-clone admission with actual retained allocation;
     // metadata owns only new Vec/String storage, while descriptors retain Arcs.
-    b.stats.capacity_bytes = stats.owned_capacity_bytes
-        - std::mem::size_of::<bc::BytecodePackage>()
+    let capacity_bytes = stats.owned_capacity_bytes - std::mem::size_of::<bc::BytecodePackage>()
         + ir.metadata.capacity_bytes;
-    b.stats.capacity_peak_bytes = b
-        .stats
-        .capacity_peak_bytes
-        .max(b.stats.capacity_bytes - stats.derived_capacity_bytes + stats.validation_scratch_peak);
+    let peak = capacity_bytes + stats.validation_scratch_peak;
+    // Verifier scratch overlaps its retained derived metadata. Admit the same
+    // complete bound that the compilation statistics expose to the embedder.
+    b.capacity(peak.saturating_sub(b.stats.capacity_bytes))?;
+    b.stats.capacity_bytes = capacity_bytes;
     Ok(Compilation {
         program,
         stats: b.stats,

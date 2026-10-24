@@ -374,11 +374,9 @@ impl Vm {
                     Frame::Script(s) => s.code.function,
                     Frame::Native(n) => n.location.code.function,
                 };
-                2 + self.program.package().functions[function.index()]
-                    .source_map
-                    .len()
-                    .checked_ilog2()
-                    .unwrap_or(0) as u64
+                crate::bytecode::SourceMapSequence::lookup_work(
+                    &self.program.package().functions[function.index()].source_map,
+                )
             }
             _ => 1,
         };
