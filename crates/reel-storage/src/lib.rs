@@ -12,10 +12,12 @@ pub struct Published {
     pub cleanup_warning: Option<String>,
 }
 
+/// Fill and sync a temporary file, then publish it on the destination filesystem.
+/// The writer is borrowed for the callback; a callback error preserves the destination.
 pub fn publish(
     target: &Path,
     overwrite: bool,
-    fill: impl FnOnce(&mut AtomicWriteFile) -> io::Result<()>,
+    fill: impl FnOnce(&mut dyn io::Write) -> io::Result<()>,
 ) -> io::Result<Published> {
     // Resolve the existing directory before constructing either rename path.
     // Windows app-data virtualization may redirect file creation to another

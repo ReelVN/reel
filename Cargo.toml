@@ -5,7 +5,7 @@ resolver = "3"
 [workspace.package]
 version = "1.0.0"
 edition = "2024"
-rust-version = "1.96"
+rust-version = "1.98.1"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -16,7 +16,7 @@ reel-ui = { path = "crates/reel-ui", default-features = false }
 anymore = "=1.0.0"
 imaging = "=0.0.1"
 kurbo = "=0.13.1"
-reel-text = { path = "crates/reel-text", features = ["accesskit"] }
+reel-text = { path = "crates/reel-text", default-features = false, features = ["accesskit"] }
 peniko = "=0.6.1"
 tracing = { version = "=0.1.44", default-features = false }
 tracing-wasm = "=0.2.1"

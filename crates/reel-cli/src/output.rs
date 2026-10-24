@@ -2,8 +2,7 @@
 pub use reel_storage::Published;
 use reel_storage::publish;
 use std::{
-    fs,
-    io::{self, Write},
+    fs, io,
     path::{Path, PathBuf},
 };
 
