@@ -28,10 +28,45 @@ pub struct BudgetUsage {
 }
 
 #[derive(Debug)]
+struct GroupAccount {
+    max_bytes: u64,
+    usage: BudgetUsage,
+}
+
+/// A shared physical byte limit across independently limited resource domains.
+/// Each physical buffer carries one ticket through moves or shared ownership.
+/// Distinct storage receives distinct reservations, even on a shared-memory device.
+#[derive(Clone, Debug)]
+pub struct BudgetGroup(Arc<Mutex<GroupAccount>>);
+
+impl BudgetGroup {
+    /// Create an empty group with a byte limit. Request limits belong to its pools.
+    pub fn new(max_bytes: u64) -> Self {
+        Self(Arc::new(Mutex::new(GroupAccount {
+            max_bytes,
+            usage: BudgetUsage::default(),
+        })))
+    }
+
+    /// Create a domain constrained by both these local limits and the group.
+    /// Cloning the returned pool shares that domain; each call creates a new domain.
+    pub fn pool(&self, category: BudgetCategory, limits: QueueLimits) -> BudgetPool {
+        BudgetPool::with_group(category, limits, Some(self.clone()))
+    }
+
+    /// Current aggregate reservations and their actual simultaneous byte peak.
+    /// Tickets count reservations across all domains, including zero-byte tickets.
+    pub fn usage(&self) -> BudgetUsage {
+        self.0.lock().expect("budget group poisoned").usage
+    }
+}
+
+#[derive(Debug)]
 struct Account {
     category: BudgetCategory,
     limits: QueueLimits,
     usage: BudgetUsage,
+    group: Option<BudgetGroup>,
 }
 
 /// Clones share accounting, never duplicate tickets. Uses no 64-bit atomics.
@@ -40,10 +75,19 @@ pub struct BudgetPool(Arc<Mutex<Account>>);
 
 impl BudgetPool {
     pub fn new(category: BudgetCategory, limits: QueueLimits) -> Self {
+        Self::with_group(category, limits, None)
+    }
+
+    fn with_group(
+        category: BudgetCategory,
+        limits: QueueLimits,
+        group: Option<BudgetGroup>,
+    ) -> Self {
         Self(Arc::new(Mutex::new(Account {
             category,
             limits,
             usage: BudgetUsage::default(),
+            group,
         })))
     }
 
@@ -53,26 +97,54 @@ impl BudgetPool {
 
     pub fn reserve(&self, bytes: u64) -> Result<BudgetTicket, RejectReason> {
         let mut a = self.0.lock().expect("budget account poisoned");
-        let next = a
-            .usage
+        let category = a.category;
+        let Account {
+            limits,
+            usage,
+            group,
+            ..
+        } = &mut *a;
+        let next = usage
             .bytes
             .checked_add(bytes)
-            .filter(|n| *n <= a.limits.max_bytes);
-        if a.usage.tickets >= a.limits.max_requests || next.is_none() {
-            return Err(RejectReason::new(
-                RejectCode::Busy,
-                "budget capacity exhausted",
-            ));
+            .filter(|n| *n <= limits.max_bytes);
+        if usage.tickets >= limits.max_requests || next.is_none() {
+            return Err(capacity_exhausted());
         }
-        a.usage.bytes = next.expect("checked above");
-        a.usage.tickets += 1;
-        a.usage.peak_bytes = a.usage.peak_bytes.max(a.usage.bytes);
+        // All mutations lock the domain before its group. Group operations never
+        // lock domains. Validate both ledgers before publishing either charge.
+        let mut total = group
+            .as_ref()
+            .map(|group| group.0.lock().expect("budget group poisoned"));
+        if let Some(total) = &mut total {
+            let next = total
+                .usage
+                .bytes
+                .checked_add(bytes)
+                .filter(|n| *n <= total.max_bytes)
+                .ok_or_else(capacity_exhausted)?;
+            let tickets = total
+                .usage
+                .tickets
+                .checked_add(1)
+                .ok_or_else(capacity_exhausted)?;
+            total.usage.bytes = next;
+            total.usage.tickets = tickets;
+            total.usage.peak_bytes = total.usage.peak_bytes.max(next);
+        }
+        usage.bytes = next.expect("checked above");
+        usage.tickets += 1;
+        usage.peak_bytes = usage.peak_bytes.max(usage.bytes);
         Ok(BudgetTicket {
             account: self.0.clone(),
-            category: a.category,
+            category,
             bytes,
         })
     }
+}
+
+fn capacity_exhausted() -> RejectReason {
+    RejectReason::new(RejectCode::Busy, "budget capacity exhausted")
 }
 
 /// A linear reservation. Dropping returns exactly this ticket's charge.
@@ -92,15 +164,32 @@ impl BudgetTicket {
     }
 
     /// Change this reservation without briefly releasing its existing charge.
-    /// A rejected growth leaves both the ticket and shared usage unchanged.
+    /// A rejected growth leaves the ticket, domain and group usage unchanged.
     pub fn resize(&mut self, bytes: u64) -> Result<(), RejectReason> {
         let mut account = self.account.lock().expect("budget account poisoned");
-        let next = (account.usage.bytes - self.bytes)
+        let Account {
+            limits,
+            usage,
+            group,
+            ..
+        } = &mut *account;
+        let next = (usage.bytes - self.bytes)
             .checked_add(bytes)
-            .filter(|next| *next <= account.limits.max_bytes)
-            .ok_or_else(|| RejectReason::new(RejectCode::Busy, "budget capacity exhausted"))?;
-        account.usage.bytes = next;
-        account.usage.peak_bytes = account.usage.peak_bytes.max(next);
+            .filter(|next| *next <= limits.max_bytes)
+            .ok_or_else(capacity_exhausted)?;
+        let mut total = group
+            .as_ref()
+            .map(|group| group.0.lock().expect("budget group poisoned"));
+        if let Some(total) = &mut total {
+            let next = (total.usage.bytes - self.bytes)
+                .checked_add(bytes)
+                .filter(|next| *next <= total.max_bytes)
+                .ok_or_else(capacity_exhausted)?;
+            total.usage.bytes = next;
+            total.usage.peak_bytes = total.usage.peak_bytes.max(next);
+        }
+        usage.bytes = next;
+        usage.peak_bytes = usage.peak_bytes.max(next);
         self.bytes = bytes;
         Ok(())
     }
@@ -109,12 +198,22 @@ impl BudgetTicket {
 impl Drop for BudgetTicket {
     fn drop(&mut self) {
         let mut a = self.account.lock().expect("budget account poisoned");
-        a.usage.bytes -= self.bytes;
-        a.usage.tickets -= 1;
+        let Account { usage, group, .. } = &mut *a;
+        let mut total = group
+            .as_ref()
+            .map(|group| group.0.lock().expect("budget group poisoned"));
+        if let Some(total) = &mut total {
+            total.usage.bytes -= self.bytes;
+            total.usage.tickets -= 1;
+        }
+        usage.bytes -= self.bytes;
+        usage.tickets -= 1;
     }
 }
 
 /// Immutable owned bytes. The entire vector capacity, not just length, is charged.
+/// Moving this value or sharing it through `Arc` retains its single reservation
+/// until the final owner physically releases the vector.
 #[derive(Debug)]
 pub struct OwnedBytes {
     data: Vec<u8>,

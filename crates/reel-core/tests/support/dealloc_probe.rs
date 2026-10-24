@@ -26,12 +26,14 @@ static STATE: Mutex<Option<State>> = Mutex::new(None);
 struct Record {
     bytes_still_live: usize,
     charged: u64,
+    group_charged: Option<u64>,
     reserve_blocked: bool,
 }
 struct Watch {
     addr: usize,
     size: usize,
     pool: BudgetPool,
+    group: Option<BudgetGroup>,
     record: Option<Record>,
 }
 struct State {
@@ -70,10 +72,13 @@ unsafe impl GlobalAlloc for ProbeAllocator {
                     for watch in &mut state.watches {
                         if watch.addr == ptr as usize && watch.record.is_none() {
                             let charged = watch.pool.usage().bytes;
+                            let group_charged =
+                                watch.group.as_ref().map(|group| group.usage().bytes);
                             let reservation = watch.pool.reserve(watch.size as u64);
                             watch.record = Some(Record {
                                 bytes_still_live: layout.size(),
                                 charged,
+                                group_charged,
                                 reserve_blocked: reservation.is_err(),
                             });
                             drop(reservation);
@@ -97,27 +102,37 @@ enum Exit {
     Rejected,
 }
 
-fn pool(category: BudgetCategory, bytes: u64) -> BudgetPool {
-    BudgetPool::new(
-        category,
-        QueueLimits {
-            max_requests: 1,
-            max_bytes: bytes,
-        },
-    )
+fn pool(group: Option<&BudgetGroup>, category: BudgetCategory, bytes: u64) -> BudgetPool {
+    let limits = QueueLimits {
+        max_requests: 1,
+        max_bytes: bytes,
+    };
+    match group {
+        Some(group) => group.pool(category, limits),
+        None => BudgetPool::new(category, limits),
+    }
 }
 
-fn observe(exit: Exit) -> [Record; 3] {
+fn observe(exit: Exit, grouped: bool) -> [Record; 3] {
     const INPUT: usize = 65_537;
-    let input_pool = pool(BudgetCategory::CpuInput, INPUT as u64);
+    let group = grouped.then(|| BudgetGroup::new((2 * INPUT + 256) as u64 + WORK_COMPLETION_BYTES));
+    let input_pool = pool(group.as_ref(), BudgetCategory::CpuInput, INPUT as u64);
     let output_size = if matches!(exit, Exit::Failed) {
         1
     } else {
         INPUT
     };
-    let output_pool = pool(BudgetCategory::CpuOutput, output_size as u64);
-    let temporary_pool = pool(BudgetCategory::Temporary, 256);
-    let completion_pool = pool(BudgetCategory::Completion, WORK_COMPLETION_BYTES);
+    let output_pool = pool(
+        group.as_ref(),
+        BudgetCategory::CpuOutput,
+        output_size as u64,
+    );
+    let temporary_pool = pool(group.as_ref(), BudgetCategory::Temporary, 256);
+    let completion_pool = pool(
+        group.as_ref(),
+        BudgetCategory::Completion,
+        WORK_COMPLETION_BYTES,
+    );
     let data = vec![1; INPUT]; // odd length makes XOR verification genuinely fail
     let input_addr = data.as_ptr() as usize;
     let input = OwnedBytes::new(data, input_pool.reserve(INPUT as u64).unwrap()).unwrap();
@@ -156,18 +171,21 @@ fn observe(exit: Exit) -> [Record; 3] {
                 addr: input_addr,
                 size: INPUT,
                 pool: input_pool.clone(),
+                group: group.clone(),
                 record: None,
             },
             Watch {
                 addr: 0,
                 size: output_size,
                 pool: output_pool.clone(),
+                group: group.clone(),
                 record: None,
             },
             Watch {
                 addr: 0,
                 size: 256,
                 pool: temporary_pool.clone(),
+                group: group.clone(),
                 record: None,
             },
         ],
@@ -223,27 +241,37 @@ fn observe(exit: Exit) -> [Record; 3] {
     for p in [&input_pool, &output_pool, &temporary_pool, &completion_pool] {
         assert_eq!(p.usage().bytes, 0);
     }
+    if let Some(group) = group {
+        assert_eq!(group.usage().bytes, 0);
+        assert_eq!(group.usage().tickets, 0);
+    }
     records
 }
 
 #[test]
 fn buffers_remain_charged_until_system_dealloc_on_every_exit() {
     let mut violations = 0;
-    for exit in [
-        Exit::Completed,
-        Exit::Failed,
-        Exit::Cancelled,
-        Exit::ExecutorDrop,
-        Exit::Rejected,
-    ] {
-        let records = observe(exit);
-        println!(
-            "{exit:?}: input={:?} output={:?} scratch={:?}",
-            records[0], records[1], records[2]
-        );
-        for r in records {
-            if r.charged < r.bytes_still_live as u64 || !r.reserve_blocked {
-                violations += 1;
+    for grouped in [false, true] {
+        for exit in [
+            Exit::Completed,
+            Exit::Failed,
+            Exit::Cancelled,
+            Exit::ExecutorDrop,
+            Exit::Rejected,
+        ] {
+            let records = observe(exit, grouped);
+            println!(
+                "grouped={grouped} {exit:?}: input={:?} output={:?} scratch={:?}",
+                records[0], records[1], records[2]
+            );
+            for r in records {
+                if r.charged < r.bytes_still_live as u64
+                    || !r.reserve_blocked
+                    || r.group_charged
+                        .is_some_and(|charged| charged < r.bytes_still_live as u64)
+                {
+                    violations += 1;
+                }
             }
         }
     }

@@ -166,6 +166,196 @@ fn moving_tickets_charge_capacity_and_return_once_across_a_thread() {
 }
 
 #[test]
+fn grouped_capacity_rejections_and_resize_are_atomic() {
+    let group = BudgetGroup::new(100);
+    let input = group.pool(BudgetCategory::CpuInput, limits(2, 70));
+    let gpu = group.pool(BudgetCategory::GpuResource, limits(1, 90));
+    let mut a = input.reserve(60).unwrap();
+    assert_eq!(gpu.reserve(50).unwrap_err().code, RejectCode::Busy);
+    assert_eq!(gpu.usage(), BudgetUsage::default());
+    assert_eq!(input.reserve(11).unwrap_err().code, RejectCode::Busy);
+    let zero = input.clone().reserve(0).unwrap();
+    assert_eq!(input.reserve(0).unwrap_err().code, RejectCode::Busy);
+    let mut b = gpu.reserve(40).unwrap();
+    assert_eq!(a.category(), BudgetCategory::CpuInput);
+    assert_eq!(b.category(), BudgetCategory::GpuResource);
+    assert_eq!(
+        group.clone().usage(),
+        BudgetUsage {
+            tickets: 3,
+            bytes: 100,
+            peak_bytes: 100
+        }
+    );
+    let before = (input.usage(), gpu.usage(), group.usage());
+    assert_eq!(a.resize(61).unwrap_err().code, RejectCode::Busy); // Group exhausted.
+    assert_eq!(a.resize(71).unwrap_err().code, RejectCode::Busy); // Domain exhausted.
+    assert_eq!(a.bytes(), 60);
+    assert_eq!((input.usage(), gpu.usage(), group.usage()), before);
+    b.resize(20).unwrap();
+    assert_eq!(group.usage().bytes, 80);
+    a.resize(70).unwrap();
+    assert_eq!(
+        group.usage(),
+        BudgetUsage {
+            tickets: 3,
+            bytes: 90,
+            peak_bytes: 100
+        }
+    );
+    assert_eq!(input.usage().peak_bytes, 70);
+    assert_eq!(gpu.usage().peak_bytes, 40);
+    drop((input, gpu)); // Tickets retain their domain and group accounts.
+    drop((a, b, zero));
+    assert_eq!(
+        group.usage(),
+        BudgetUsage {
+            tickets: 0,
+            bytes: 0,
+            peak_bytes: 100
+        }
+    );
+}
+
+#[test]
+fn grouped_peak_follows_overlap_and_shared_bytes_release_once() {
+    let group = BudgetGroup::new(128);
+    let input = group.pool(BudgetCategory::CpuInput, limits(2, 128));
+    let output = group.pool(BudgetCategory::CpuOutput, limits(2, 128));
+    drop(input.reserve(80).unwrap());
+    drop(output.reserve(80).unwrap());
+    assert_eq!(input.usage().peak_bytes + output.usage().peak_bytes, 160);
+    assert_eq!(group.usage().peak_bytes, 80);
+    let data = vec![9; 64];
+    let address = data.as_ptr() as usize;
+    let bytes = Arc::new(OwnedBytes::new(data, input.reserve(64).unwrap()).unwrap());
+    let shared = bytes.clone();
+    drop(bytes);
+    let other = output.reserve(40).unwrap();
+    assert_eq!(
+        group.usage(),
+        BudgetUsage {
+            tickets: 2,
+            bytes: 104,
+            peak_bytes: 104
+        }
+    );
+    let transferred = std::thread::spawn(move || {
+        assert_eq!(shared.as_slice().as_ptr() as usize, address);
+        let (data, ticket) = Arc::try_unwrap(shared).unwrap().into_parts();
+        assert_eq!(data.as_ptr() as usize, address);
+        OwnedBytes::new(data, ticket).unwrap()
+    })
+    .join()
+    .unwrap();
+    assert_eq!(group.usage().bytes, 104);
+    assert_eq!(input.usage().tickets, 1);
+    drop(transferred);
+    assert_eq!(group.usage().bytes, 40);
+    assert_eq!(input.usage().bytes, 0);
+    drop(other);
+    assert_eq!(
+        group.usage(),
+        BudgetUsage {
+            tickets: 0,
+            bytes: 0,
+            peak_bytes: 104
+        }
+    );
+}
+
+#[test]
+fn grouped_zero_byte_tickets_and_byte_overflow_preserve_accounting() {
+    let group = BudgetGroup::new(u64::MAX);
+    let a = group.pool(BudgetCategory::CpuInput, limits(1, u64::MAX));
+    let b = group.pool(BudgetCategory::GpuResource, limits(1, u64::MAX));
+    let mut large = a.reserve(u64::MAX).unwrap();
+    assert_eq!(b.reserve(1).unwrap_err().code, RejectCode::Busy);
+    let mut zero = b.reserve(0).unwrap();
+    assert_eq!(group.usage().tickets, 2);
+    assert_eq!(zero.resize(1).unwrap_err().code, RejectCode::Busy);
+    assert_eq!(zero.bytes(), 0);
+    large.resize(0).unwrap();
+    zero.resize(u64::MAX).unwrap();
+    drop((large, zero));
+    assert_eq!(
+        group.usage(),
+        BudgetUsage {
+            tickets: 0,
+            bytes: 0,
+            peak_bytes: u64::MAX
+        }
+    );
+    let empty = BudgetGroup::new(0);
+    let pool = empty.pool(BudgetCategory::Completion, limits(2, 1));
+    let ticket = pool.reserve(0).unwrap();
+    assert_eq!(pool.reserve(1).unwrap_err().code, RejectCode::Busy);
+    assert_eq!(
+        empty.usage(),
+        BudgetUsage {
+            tickets: 1,
+            bytes: 0,
+            peak_bytes: 0
+        }
+    );
+    drop(ticket);
+    assert_eq!(empty.usage(), BudgetUsage::default());
+}
+
+#[test]
+fn grouped_domains_compete_atomically_across_threads() {
+    let group = BudgetGroup::new(100);
+    let enter = std::sync::Barrier::new(3);
+    let reserved = std::sync::Barrier::new(3);
+    let release = std::sync::Barrier::new(3);
+    let (usage, successes) = std::thread::scope(|scope| {
+        let workers: Vec<_> = [BudgetCategory::CpuOutput, BudgetCategory::GpuResource]
+            .into_iter()
+            .map(|category| {
+                let pool = group.pool(category, limits(1, 100));
+                let (enter, reserved, release) = (&enter, &reserved, &release);
+                scope.spawn(move || {
+                    enter.wait();
+                    let result = pool.reserve(80);
+                    reserved.wait();
+                    release.wait();
+                    result.is_ok()
+                })
+            })
+            .collect();
+        enter.wait();
+        reserved.wait();
+        let usage = group.usage();
+        release.wait();
+        (
+            usage,
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .filter(|success| *success)
+                .count(),
+        )
+    });
+    assert_eq!(successes, 1);
+    assert_eq!(
+        usage,
+        BudgetUsage {
+            tickets: 1,
+            bytes: 80,
+            peak_bytes: 80
+        }
+    );
+    assert_eq!(
+        group.usage(),
+        BudgetUsage {
+            tickets: 0,
+            bytes: 0,
+            peak_bytes: 80
+        }
+    );
+}
+
+#[test]
 fn read_pending_cancel_is_unique_and_rejection_keeps_original_under_backpressure() {
     let p = Pools::new();
     let (signal, calls) = wake();
