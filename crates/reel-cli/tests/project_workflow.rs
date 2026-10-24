@@ -51,8 +51,34 @@ fn project_discovery_fixes_entry_and_source_root_from_nested_directories() {
     write(root, "src/unused.aside", "invalid unused source");
     write(root, "src/ui/preview.aside", "fn main() { 7 }");
     write(root, "resources/images/sample.bin", "asset");
+    let mut progress = Vec::new();
     let loaded =
-        project::load(&root.join("src/ui")).unwrap_or_else(|error| panic!("{:?}", error.failure));
+        project::load_with_progress(&root.join("src/ui"), &mut |event| progress.push(event))
+            .unwrap_or_else(|error| panic!("{:?}", error.failure));
+    let checked = loaded
+        .check_with_progress(&mut |event| progress.push(event))
+        .unwrap();
+    use aside_compiler::ProgressStage::{Analyze, Discover, Lower, Parse, Verify};
+    let mut stages = Vec::new();
+    for event in &progress {
+        if stages.last() != Some(&event.stage) {
+            stages.push(event.stage);
+        }
+        if event.total != 0 {
+            assert!(event.completed <= event.total);
+        }
+    }
+    assert_eq!(stages, [Discover, Parse, Analyze, Lower, Verify]);
+    for stage in [Discover, Parse, Analyze, Lower] {
+        let last = progress.iter().rfind(|event| event.stage == stage).unwrap();
+        assert_eq!((last.completed, last.total), (2, 2));
+    }
+    assert_eq!(
+        progress
+            .last()
+            .map(|event| (event.stage, event.completed, event.total)),
+        Some((Verify, 1, 1))
+    );
     assert_eq!(loaded.project_root, root.canonicalize().unwrap());
     assert_eq!(loaded.root, root.join("src").canonicalize().unwrap());
     assert_eq!(loaded.files.len(), 2);
@@ -66,6 +92,10 @@ fn project_discovery_fixes_entry_and_source_root_from_nested_directories() {
         &["check", "--format", "json"],
     ));
     assert_eq!(report["status"], "verified");
+    assert_eq!(
+        report["encoded_bytes"],
+        checked.compilation.program.stats().encoded_bytes
+    );
     assert!(!root.join("build").exists());
     success(command(
         &root.join("src/ui"),
