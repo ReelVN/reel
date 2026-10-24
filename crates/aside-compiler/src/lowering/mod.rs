@@ -2,6 +2,7 @@
 mod budget;
 mod build;
 mod constants;
+mod descriptors;
 mod emit;
 pub mod ir;
 mod project;
