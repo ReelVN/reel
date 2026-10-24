@@ -10,6 +10,9 @@ aside_host::native_documentation! {
         /// {x,y} in the same reference space. It follows wrapping, alignment, rich text
         /// and ruby, independently of reveal progress. Empty text and non-text nodes
         /// return null.
+        /// text_caret provides the same caret's transformed {x,y,width,height} bounds,
+        /// with its extent taken from the actual final line. Center an overlay at
+        /// x + width / 2, y + height / 2 instead of estimating from font size.
         /// Unavailable geometry rejects with {code: GeometryUnavailable}; retirement cancels
         /// it. Saved pending requests wait for a fresh presentation after restore.
         "reel::stage::geometry";
@@ -34,6 +37,8 @@ pub struct NodeGeometry {
     pub transform: [f64; 6],
     /// Lower endpoint of the complete text's final caret, in reference coordinates.
     pub text_end: Option<[f64; 2]>,
+    /// Transformed bounds of the complete text's final zero-width insertion caret.
+    pub text_caret: Option<[f64; 4]>,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GeometryReply {
@@ -92,6 +97,10 @@ fn value(
         Some(point) => record::<Point, _>(heap, host_types, keys, point.map(Value::float))?,
         None => Value::NULL,
     };
+    let text_caret = match geometry.text_caret {
+        Some(bounds) => record::<Bounds, _>(heap, host_types, keys, bounds.map(Value::float))?,
+        None => Value::NULL,
+    };
     record::<Geometry, _>(
         heap,
         host_types,
@@ -102,6 +111,7 @@ fn value(
             bounds,
             transform,
             text_end,
+            text_caret,
         ],
     )
 }

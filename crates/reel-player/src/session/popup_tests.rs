@@ -238,6 +238,10 @@ fn source_and_asb_popups_float_outside_parent_clip_and_route_actual_callbacks() 
                 .text_end
                 .expect("popup text retains its real text endpoint");
             assert!(text_end[0] > 7. && text_end[1] >= 84., "{text_end:?}");
+            let caret = queried.text_caret.expect("text caret extent");
+            assert_eq!(caret[0], text_end[0]);
+            assert_eq!(caret[1] + caret[3], text_end[1]);
+            assert!(caret[3] > 0. && caret[2] == 0.);
             let content = SessionUi::transition_target(&bridge, root, None).unwrap();
             let range = |id| {
                 frame

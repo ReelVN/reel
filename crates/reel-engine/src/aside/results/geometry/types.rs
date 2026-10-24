@@ -75,6 +75,10 @@ pub(super) enum Geometry {
     /// Lower endpoint of the complete text's final caret, or null for absent text.
     #[aside(name="text_end", ty=Any, doc_type=nullable(named("reel::types::Point")), readonly)]
     TextEnd,
+    /// Transformed bounds of the final insertion caret, using the actual line extent.
+    /// Null for absent text. Center markers using x + width / 2 and y + height / 2.
+    #[aside(name="text_caret", ty=Any, doc_type=nullable(named("reel::types::Bounds")), readonly)]
+    TextCaret,
 }
 
 pub(super) trait Record: PropertySchema {

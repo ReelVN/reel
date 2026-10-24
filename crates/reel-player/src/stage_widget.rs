@@ -778,11 +778,11 @@ impl StageWidget {
     pub(crate) fn node_widget(&self, node: NodeId) -> Option<WidgetId> {
         self.nodes.get(&node).copied()
     }
-    pub(crate) fn text_end(
+    pub(crate) fn text_caret(
         &self,
         root: &reel_ui::app::RenderRoot,
         node: NodeId,
-    ) -> Option<(WidgetId, Point)> {
+    ) -> Option<(WidgetId, reel_ui::kurbo::Line)> {
         let widget = root
             .get_widget(self.node_widget(node)?)?
             .downcast::<SceneWidget>()?;
@@ -791,7 +791,7 @@ impl StageWidget {
         }
         let label_id = widget.label.as_ref()?.id();
         let label = root.get_widget(label_id)?.downcast::<Label>()?;
-        Some((label_id, label.text_end()?))
+        Some((label_id, label.text_caret()?))
     }
     pub fn input_fallback(&self, root: &reel_ui::app::RenderRoot) -> Option<WidgetId> {
         fn visit(root: &reel_ui::app::RenderRoot, id: WidgetId) -> Option<WidgetId> {

@@ -67,6 +67,7 @@ fn geometry(
         bounds: [bounds.x0, bounds.y0, bounds.width(), bounds.height()],
         transform: coefficients,
         text_end: None,
+        text_caret: None,
     })
 }
 impl SessionUi {
@@ -203,11 +204,13 @@ impl SessionUi {
         };
         let view = source.geometry();
         let mut result = geometry(view, node, relative)?;
-        if let Some((label, end)) = stage.text_end(bridge.root(), query.node) {
+        if let Some((label, caret)) = stage.text_caret(bridge.root(), query.node) {
             let label = visible(view, label)?;
             let reference = visible(view, relative)?;
-            let point = reference.window_transform.inverse() * label.window_transform * end;
-            result.text_end = Some([point.x, point.y]);
+            let caret = reference.window_transform.inverse() * label.window_transform * caret;
+            let bounds = reel_ui::kurbo::Rect::from_points(caret.p0, caret.p1);
+            result.text_end = Some([caret.p1.x, caret.p1.y]);
+            result.text_caret = Some([bounds.x0, bounds.y0, bounds.width(), bounds.height()]);
         }
         Some(result)
     }

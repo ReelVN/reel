@@ -5,7 +5,7 @@ use crate::{
         render_text_lines,
     },
     imaging::Painter,
-    kurbo::{Affine, Point, Rect, Vec2},
+    kurbo::{Affine, Line, Rect, Vec2},
     peniko::{Brush, Color},
     reel_text::{self, FontContext, Layout, LayoutContext, PositionedLayoutItem},
 };
@@ -72,7 +72,7 @@ impl std::ops::DerefMut for Paragraph {
     }
 }
 impl Paragraph {
-    pub fn text_end(&self) -> Option<Point> {
+    pub fn text_caret(&self) -> Option<Line> {
         if self.plain.is_empty() {
             return None;
         }
@@ -92,7 +92,10 @@ impl Paragraph {
                     } else {
                         position.x + position.width
                     };
-                    return Some(Point::new(x as f64, line.metrics().max_coord as f64));
+                    return Some(Line::new(
+                        (x as f64, line.metrics().min_coord as f64),
+                        (x as f64, line.metrics().max_coord as f64),
+                    ));
                 }
             }
         }
@@ -102,7 +105,7 @@ impl Paragraph {
             reel_text::Affinity::Upstream,
         )
         .geometry(&self.layout, 0.);
-        Some(Point::new(caret.x0, caret.y1))
+        Some(Line::new((caret.x0, caret.y0), (caret.x0, caret.y1)))
     }
 
     #[expect(

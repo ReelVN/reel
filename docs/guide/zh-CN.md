@@ -405,7 +405,7 @@ fn card(children = []) {
 }
 ```
 
-为已经显示的节点定位浮层时，等待 `stage.geometry`。结果包含转换到参考节点坐标的边界；透明节点仍参与布局。目标隐藏、未挂载或参考变换不可逆时，请求报告 `GeometryUnavailable`。
+为已经显示的节点定位浮层时，等待 `stage.geometry`。结果包含转换到参考节点坐标的边界；透明节点仍参与布局。文本的 `text_caret` 给出末尾插入光标的边界，可用 `y + height / 2` 居中放置继续标记。目标隐藏、未挂载或参考变换不可逆时，请求报告 `GeometryUnavailable`。
 
 ```aside
 overlay.visible = true;
