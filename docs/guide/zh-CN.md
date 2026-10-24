@@ -18,6 +18,8 @@ reel export --release
 
 `check` 编译并定位错误；`dev` 运行源码。`build` 默认生成 `build/debug/game.asb`，`--release` 使用 `build/release/game.asb`。`reel run build/debug/game.asb` 运行已编译代码。
 
+`dev` 将编译缓存保存在 `build/dev/`，工具与源码内容未变时直接复用；修改源码后重新编译。
+
 `export` 默认生成 `build/export/debug/` 开发工程，`--release` 生成 `build/export/release/` 发布目录。发布目录包含播放器、代码、文本包和资源卷；整个目录交给玩家。默认输出重复执行时更新，显式 `--output` 通过 `--overwrite` 替换已有目标。替换导出目录前，将存档放在独立位置；`--save-directory` 指定运行数据目录。
 
 在项目根运行 `reel fmt` 整理源码，`reel fmt --check` 检查排版。格式化使用 4 空格缩进和 100 字符目标行宽，长调用紧凑排列参数。英文 API 文档由 Rust 声明生成，可在编辑器中悬停或跳转查看。

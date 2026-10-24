@@ -18,6 +18,8 @@ reel export --release
 
 `check` compiles and locates errors; `dev` runs source. `build` produces `build/debug/game.asb`, or `build/release/game.asb` with `--release`. Use `reel run build/debug/game.asb` to run compiled code.
 
+`dev` stores its compilation cache in `build/dev/` and reuses it while the tool and source contents remain unchanged. Editing source triggers recompilation.
+
 `export` produces a development project at `build/export/debug/`, or a release at `build/export/release/` with `--release`. A release contains the player, code, text package and resource volumes; distribute the whole directory. Default outputs update on repeated runs; explicit `--output` destinations use `--overwrite` to replace existing output. Keep saves separately before replacing an export directory; `--save-directory` selects runtime storage.
 
 Run `reel fmt` in the project root to format source or `reel fmt --check` to check formatting. The formatter uses four-space indentation, a 100-character target width and compact argument wrapping. English API documentation is generated from Rust declarations and appears in editor hover and definition navigation.
