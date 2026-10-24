@@ -115,6 +115,79 @@ fn retained_assets_preserve_provenance_and_fixed_versions() {
     );
 }
 
+#[test]
+fn prepared_versions_share_only_live_matching_kinds_and_respect_explicit_retirement() {
+    let assets = memory_assets();
+    let first = load_until_done(
+        &assets,
+        assets.request("assets/panels.png", AssetKind::Image),
+    )
+    .unwrap();
+    let weak = first.downgrade();
+    let shared = load_until_done(
+        &assets,
+        assets.request("assets/panels.png", AssetKind::Image),
+    )
+    .unwrap();
+    assert_eq!(first.handle(), shared.handle());
+    assert_eq!(assets.output_pool().usage().bytes, 160 * 90 * 4);
+    let font = load_until_done(
+        &assets,
+        assets.request("assets/panels.png", AssetKind::Font),
+    )
+    .unwrap();
+    assert!(matches!(font.data(), ResourceData::Font(_)));
+    assert_ne!(first.handle(), font.handle());
+    first.prohibit_new_leases();
+    assert!(weak.upgrade().is_none());
+    let replacement = load_until_done(
+        &assets,
+        assets.request("assets/panels.png", AssetKind::Image),
+    )
+    .unwrap();
+    assert_ne!(first.handle(), replacement.handle());
+    assert_eq!(first.version(), replacement.version());
+    assert!(!replacement.is_retired());
+    drop((first, shared, font, replacement));
+    assert!(weak.is_released());
+    assert_eq!(assets.output_pool().usage().bytes, 0);
+}
+
+#[test]
+fn loose_resource_reuse_resolves_the_current_content_before_sharing() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/reel-artifacts/asset-version-tests")
+        .join(format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("current.png");
+    std::fs::write(&path, PNG).unwrap();
+    let assets = Assets::directory(AssetOptions {
+        root: root.clone(),
+        ..Default::default()
+    });
+    let first = load_until_done(&assets, assets.request("current.png", AssetKind::Image)).unwrap();
+    let shared = load_until_done(&assets, assets.request("current.png", AssetKind::Image)).unwrap();
+    assert_eq!(first.handle(), shared.handle());
+    std::fs::write(&path, JPEG).unwrap();
+    let changed =
+        load_until_done(&assets, assets.request("current.png", AssetKind::Image)).unwrap();
+    assert_ne!(first.version(), changed.version());
+    assert_eq!(changed.data().image_size(), Some([96, 96]));
+    assert_eq!(first.data().image_size(), Some([160, 90]));
+    drop((first, shared, changed));
+    assert_eq!(assets.output_pool().usage().bytes, 0);
+    drop(assets);
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_dir(root).unwrap();
+}
+
 // A deterministic in-memory host drives the contract fixture at admission.
 // Image work still uses the production codec adapter, without a filesystem.
 struct MemoryHost(MemoryAssetIo, Option<Option<ContentVersion>>);

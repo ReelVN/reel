@@ -359,19 +359,6 @@ impl Assets {
             let Phase::Done(result) = load.phase else {
                 unreachable!()
             };
-            if load.reloadable
-                && let Ok(lease) = &result
-            {
-                let kind = match load.kind {
-                    AssetKind::Image => RetainedAssetKind::Image,
-                    AssetKind::Font => RetainedAssetKind::Font,
-                    AssetKind::Bytes => unreachable!(),
-                };
-                service.origins.retain(|_, (weak, _)| !weak.is_released());
-                service
-                    .origins
-                    .insert(lease.handle(), (lease.downgrade(), kind));
-            }
             result.map(Some)
         } else {
             Ok(None)
@@ -478,7 +465,8 @@ impl Service {
                         load.source.version = info.version;
                         match info.length.and_then(|n| u32::try_from(n).ok()) {
                             Some(length) => {
-                                load.phase = Phase::Read(length);
+                                load.phase = shared_resource(&self.origins, load)
+                                    .map_or(Phase::Read(length), |lease| Phase::Done(Ok(lease)));
                                 Ok(())
                             }
                             None => Err("asset must have a bounded length for preparation".into()),
@@ -486,6 +474,7 @@ impl Service {
                     }
                 }
                 Terminal::Completed(IoPayload::Read(read)) => {
+                    let described_version = load.source.version.is_some();
                     let version_matches = load
                         .source
                         .version
@@ -500,6 +489,12 @@ impl Service {
                     if !version_matches {
                         Err("asset adapter returned a different version".into())
                     } else if read.eof {
+                        if !described_version
+                            && let Some(lease) = shared_resource(&self.origins, load)
+                        {
+                            load.input = None;
+                            load.phase = Phase::Done(Ok(lease));
+                        }
                         Ok(())
                     } else {
                         Err("asset adapter returned an incomplete full read".into())
@@ -543,7 +538,13 @@ impl Service {
                     }
                 }
                 Terminal::Completed(data) => {
-                    load.phase = Phase::Done(register(load, data));
+                    let result = register(load, data);
+                    if load.reloadable
+                        && let Ok(lease) = &result
+                    {
+                        remember_resource(&mut self.origins, load.kind, lease);
+                    }
+                    load.phase = Phase::Done(result);
                     load.input = None;
                     Ok(())
                 }
@@ -632,7 +633,13 @@ impl Service {
                     .into_parts();
                 let bytes = OwnedBytes::new(bytes, ticket).map_err(|e| e.reason.message)?;
                 drop(old_ticket);
-                load.phase = Phase::Done(register(load, bytes));
+                let result = register(load, bytes);
+                if load.reloadable
+                    && let Ok(lease) = &result
+                {
+                    remember_resource(&mut self.origins, load.kind, lease);
+                }
+                load.phase = Phase::Done(result);
             }
             Phase::Probe | Phase::Decode => {
                 let probe = matches!(load.phase, Phase::Probe);
@@ -640,6 +647,14 @@ impl Service {
                     return Err("image decode limit exceeded".into());
                 }
                 if self.temporary.usage().bytes != 0 {
+                    return Ok(());
+                }
+                // A concurrent request may have completed while this one waited
+                // for the decoder lane. Check once when this lane is available,
+                // rather than scanning resources on every pending host tick.
+                if let Some(lease) = shared_resource(&self.origins, load) {
+                    load.input = None;
+                    load.phase = Phase::Done(Ok(lease));
                     return Ok(());
                 }
                 let output = self
@@ -710,4 +725,42 @@ fn register(load: &Load, data: OwnedBytes) -> Result<ResourceLease, String> {
     registry
         .acquire(handle)
         .map_err(|e| format!("asset lease: {e:?}"))
+}
+
+fn shared_resource(
+    origins: &BTreeMap<ResourceHandle, (ResourceWeak, RetainedAssetKind)>,
+    load: &Load,
+) -> Option<ResourceLease> {
+    if !load.reloadable {
+        return None;
+    }
+    let version = load.source.version?;
+    // The path alone is insufficient: Describe or Read selected this immutable
+    // version. Upgrade only a matching kind without retaining any strong cache.
+    origins.values().find_map(|(weak, kind)| {
+        if !matches!(
+            (load.kind, kind),
+            (AssetKind::Image, RetainedAssetKind::Image)
+                | (AssetKind::Font, RetainedAssetKind::Font)
+        ) {
+            return None;
+        }
+        weak.upgrade().filter(|lease| {
+            lease.version().key == load.source.key && lease.version().version == version
+        })
+    })
+}
+
+fn remember_resource(
+    origins: &mut BTreeMap<ResourceHandle, (ResourceWeak, RetainedAssetKind)>,
+    kind: AssetKind,
+    lease: &ResourceLease,
+) {
+    let kind = match kind {
+        AssetKind::Image => RetainedAssetKind::Image,
+        AssetKind::Font => RetainedAssetKind::Font,
+        AssetKind::Bytes => unreachable!(),
+    };
+    origins.retain(|_, (weak, _)| !weak.is_released());
+    origins.insert(lease.handle(), (lease.downgrade(), kind));
 }
