@@ -307,18 +307,34 @@ impl SessionVm {
         })
     }
 
+    /// Whether story interaction playback or input has a result for the next VM slice.
+    /// A completed reveal observation is ready before its VM wait is settled.
+    pub fn completion_pending(&self, session: &Session) -> bool {
+        session.completion_pending() || self.speech_reveal_ready(session)
+    }
+
+    fn speech_reveal_ready(&self, session: &Session) -> bool {
+        self.pending.as_ref().is_some_and(|pending| {
+            matches!(pending.kind, PendingInteractionKind::Reveal)
+                && session
+                    .open_dialogue(pending.interaction)
+                    .is_ok_and(|dialogue| {
+                        dialogue
+                            .lines()
+                            .iter()
+                            .all(crate::DialogueLine::playback_complete)
+                    })
+        })
+    }
+
     pub(super) fn deliver_speech_reveal(&mut self, session: &Session) -> Result<(), AdapterError> {
         let pending = self.pending.as_ref().expect("pending speech reveal");
         self.live(session)?;
         if self.task != Some(pending.task) {
             return Err(AdapterError::Input("speech reveal task mismatch"));
         }
-        let dialogue = session.open_dialogue(pending.interaction)?;
-        if dialogue
-            .lines()
-            .iter()
-            .all(crate::DialogueLine::playback_complete)
-        {
+        session.open_dialogue(pending.interaction)?;
+        if self.speech_reveal_ready(session) {
             // Reveal is a playback observation. It does not arm advancement,
             // consume the session completion or record a read checkpoint.
             self.vm

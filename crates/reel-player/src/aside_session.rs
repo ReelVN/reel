@@ -608,7 +608,7 @@ impl AsideSessionUi {
     }
     pub fn has_runnable_tasks(&self) -> bool {
         self.state == StoryState::Running
-            && (self.ui.session().completion_pending() || self.vm.has_runnable_tasks())
+            && (self.vm.completion_pending(self.ui.session()) || self.vm.has_runnable_tasks())
     }
     pub fn reveal_more(&mut self, graphemes: usize) -> Result<(), Error> {
         if let Some(InteractionView::Dialogue(dialogue)) = self.ui.session().view().interaction {
