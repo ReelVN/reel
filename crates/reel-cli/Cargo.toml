@@ -9,7 +9,7 @@ default-run = "reel"
 
 [features]
 default = []
-window = ["dep:reel-player", "reel-player/window"]
+window = ["reel-player/window"]
 
 [[bin]]
 name = "reel"
@@ -40,7 +40,9 @@ reel-package = { path = "../reel-package" }
 reel-engine = { path = "../reel-engine" }
 reel-core = { path = "../reel-core" }
 image = { workspace = true, features = ["png", "jpeg"] }
-reel-player = { path = "../reel-player", optional = true }
+rgbcx = "=0.1.2"
+bc-crunch = "=0.1.2"
+reel-player = { path = "../reel-player" }
 reel-storage = { path = "../reel-storage" }
 
 [target.'cfg(unix)'.dependencies]
@@ -49,7 +51,6 @@ libc = "=0.2.190"
 [dev-dependencies]
 lsp-server = "=0.7.9"
 reel-media = { path = "../reel-media", default-features = false }
-reel-player = { path = "../reel-player" }
 reel-core = { path = "../reel-core" }
 reel-ui = { path = "../reel-ui" }
 reel-render = { path = "../reel-render", features = ["wgpu"] }

@@ -1,7 +1,7 @@
 //! Shared presentation and input acceptance for every host/backend combination.
 use crate::{
     demand::{Demand, Draw},
-    platform::PlatformHost,
+    hal::PlatformHost,
 };
 use reel_core::identity::FrameId;
 use reel_render::{
@@ -74,6 +74,9 @@ impl Presentation {
         self.bridge.clear();
         self.accepted_frame = None;
         self.demand = Demand::idle();
+    }
+    pub fn is_suspended(&self) -> bool {
+        self.suspended
     }
     pub fn invalidate(&mut self) {
         self.demand.invalidate();

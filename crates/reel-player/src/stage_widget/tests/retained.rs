@@ -2,7 +2,7 @@ use super::*;
 use reel_core::{
     budget::{BudgetTicket, OwnedBytes},
     identity::{AssetKey, ContentVersion, ResourceVersion},
-    image::{Yuv420Image, Yuv420Storage, YuvColor, YuvMatrix, YuvTransfer},
+    image::{Yuv420Image, Yuv420Layout, Yuv420Storage, YuvColor, YuvMatrix, YuvTransfer},
 };
 use reel_ui::{
     frame::{
@@ -134,27 +134,66 @@ fn version(name: &str, byte: u8) -> ResourceVersion {
 
 #[test]
 fn retained_inline_rgba_and_yuv_share_pixels_then_restore_color_and_planes() {
-    for (matrix, full_range, transfer) in [
-        (YuvMatrix::Bt601, true, YuvTransfer::Srgb),
-        (YuvMatrix::Bt709, false, YuvTransfer::Bt709),
+    for (layout, matrix, full_range, transfer) in [
+        (
+            Yuv420Layout::Planar,
+            YuvMatrix::Bt601,
+            true,
+            YuvTransfer::Srgb,
+        ),
+        (
+            Yuv420Layout::Planar,
+            YuvMatrix::Bt709,
+            false,
+            YuvTransfer::Bt709,
+        ),
+        (
+            Yuv420Layout::Nv12,
+            YuvMatrix::Bt601,
+            true,
+            YuvTransfer::Srgb,
+        ),
+        (
+            Yuv420Layout::Nv12,
+            YuvMatrix::Bt709,
+            false,
+            YuvTransfer::Bt709,
+        ),
     ] {
         let storage_pool = pool();
         let frame_pool = pool();
+        let (data, strides) = match layout {
+            Yuv420Layout::Planar => (
+                [
+                    vec![16, 32, 48, 64, 80, 96, 112, 128, 235],
+                    vec![90, 110, 130, 150],
+                    vec![70, 100, 140, 180],
+                ],
+                [3, 2, 2],
+            ),
+            Yuv420Layout::Nv12 => (
+                [
+                    vec![16, 32, 48, 255, 255, 64, 80, 96, 255, 255, 112, 128, 235],
+                    vec![90, 70, 110, 100, 255, 255, 130, 140, 150, 180],
+                    vec![],
+                ],
+                [5, 6, 0],
+            ),
+        };
+        let bytes = data.iter().map(|p| p.len() as u64).sum();
         let planes = Arc::new(Planes {
-            planes: [
-                vec![16, 32, 48, 64, 80, 96, 112, 128, 235],
-                vec![90, 110, 130, 150],
-                vec![70, 100, 140, 180],
-            ],
-            _ticket: storage_pool.reserve(17).unwrap(),
+            planes: data,
+            _ticket: storage_pool.reserve(bytes).unwrap(),
         });
-        let image = Yuv420Image::new(
+        let image = Yuv420Image::with_layout(
             [3, 3],
             YuvColor {
                 matrix,
                 full_range,
                 transfer,
             },
+            layout,
+            strides,
             planes,
         )
         .unwrap();
@@ -220,8 +259,11 @@ fn retained_inline_rgba_and_yuv_share_pixels_then_restore_color_and_planes() {
                 ResourceData::Yuv420(restored) => {
                     assert_eq!(restored.size(), [3, 3]);
                     assert_eq!(restored.color(), image.color());
-                    for plane in 0..3 {
+                    assert_eq!(restored.layout(), layout);
+                    assert_eq!(restored.plane_count(), image.plane_count());
+                    for plane in 0..image.plane_count() {
                         assert_eq!(restored.plane_size(plane), image.plane_size(plane));
+                        assert_eq!(restored.row_stride(plane), image.row_stride(plane));
                         assert_eq!(restored.plane(plane), image.plane(plane));
                     }
                 }

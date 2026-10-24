@@ -28,6 +28,7 @@ pub struct RecordWidget {
     pub blend: reel_ui::frame::BlendMode,
     pub mask: Option<PaintImageMask>,
     pub capture_included: bool,
+    pub resource_draws: Vec<(ResourceLease, Rect, Affine, reel_ui::peniko::ImageSampler)>,
 }
 impl RecordWidget {
     pub fn new(own: Scene) -> Self {
@@ -49,6 +50,7 @@ impl RecordWidget {
             blend: Default::default(),
             mask: None,
             capture_included: true,
+            resource_draws: Vec::new(),
         }
     }
 }
@@ -91,7 +93,10 @@ impl Widget for RecordWidget {
         } else {
             c.set_paint_layer_mode(self.mode);
         }
-        p.replay(&self.own)
+        p.replay(&self.own);
+        for (resource, bounds, transform, sampler) in &self.resource_draws {
+            c.draw_resource_image(p, resource, *bounds, *transform, Affine::IDENTITY, *sampler);
+        }
     }
     fn post_paint(&mut self, _: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, p: &mut Painter<'_>) {
         p.replay(&self.post)

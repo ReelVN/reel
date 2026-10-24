@@ -105,11 +105,10 @@ pub(super) fn compile_transitions(
                     .images
                     .iter()
                     .map(|image| {
-                        resources.image(image).ok_or_else(|| {
-                            error(BuildErrorKind::MissingResource {
-                                blob_id: image.data.id(),
-                            })
-                        })
+                        resources
+                            .contains_image(image.handle())
+                            .then_some(image.handle())
+                            .ok_or_else(|| error(BuildErrorKind::InvalidRecord))
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(FrameImageMask {

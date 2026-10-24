@@ -1,14 +1,17 @@
 //! Execute relocated exports with the real catalog loader and resource service.
 use reel_cli::{
     BuildProfile, build_export,
-    distribution::{self, ExportOptions, Mount, TEXT_POOL_ENTRY},
+    distribution::{self, ExportOptions, Mount},
     project,
 };
 use reel_engine::{
     Epoch, InteractionView, Session, SessionId,
     aside::{SliceBudget, VmLimits},
 };
-use reel_package::archive::{ArchiveIndex, ArchiveKind, ArchiveWriter};
+use reel_package::{
+    archive::{ArchiveIndex, ArchiveKind, ArchiveWriter},
+    distribution::TEXT_POOL_ENTRY,
+};
 use reel_player::{
     aside_session::{AsideSessionUi, StoryProgress},
     assets::{AssetOptions, Assets},
@@ -21,7 +24,7 @@ use std::{
 };
 
 fn read_line(path: &Path) -> String {
-    let loaded = distribution::load(path).unwrap();
+    let loaded = reel_player::distribution::load(path, None).unwrap();
     let assets = Assets::packaged(
         AssetOptions {
             root: loaded.root,
@@ -31,7 +34,7 @@ fn read_line(path: &Path) -> String {
         loaded.loose,
     )
     .unwrap();
-    let story = reel_cli::story_from_package(loaded.package).unwrap();
+    let story = reel_player::distribution::story_from_package(loaded.package).unwrap();
     let mut driver = AsideSessionUi::from_compiled(
         Session::new(SessionId(1), Epoch(1)).unwrap(),
         story,
@@ -129,7 +132,8 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
         let relocated = root.join(format!("relocated-{name}"));
         fs::rename(&options.output, &relocated).unwrap();
         assert!(!relocated.join("release.json").exists());
-        let manifest = distribution::read_manifest(&relocated.join("game.asb")).unwrap();
+        let manifest =
+            reel_player::distribution::read_manifest(&relocated.join("game.asb")).unwrap();
         if profile == BuildProfile::Debug {
             let copied = project::load(&relocated).unwrap_or_else(|e| panic!("{:?}", e.failure));
             copied.check().unwrap();
@@ -192,7 +196,8 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
                     );
                 }
             }
-            let decoded = distribution::load(&relocated.join("game.asb")).unwrap();
+            let decoded =
+                reel_player::distribution::load(&relocated.join("game.asb"), None).unwrap();
             let program = decoded.package.program();
             assert!(program.package().sources.is_empty());
             assert!(
@@ -240,7 +245,7 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
                 .unwrap();
             writer.finish().unwrap();
             assert_eq!(
-                distribution::load(&relocated.join("game.asb"))
+                reel_player::distribution::load(&relocated.join("game.asb"), None)
                     .unwrap()
                     .package
                     .metadata()
@@ -252,7 +257,7 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
                 "Updated translation."
             );
             fs::remove_file(relocated.join("game.rtp")).unwrap();
-            assert!(distribution::load(&relocated.join("game.asb")).is_err());
+            assert!(reel_player::distribution::load(&relocated.join("game.asb"), None).is_err());
             continue;
         }
         assert_eq!(

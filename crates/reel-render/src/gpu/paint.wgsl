@@ -24,6 +24,8 @@ struct ImageAppearance {
     y: vec4<f32>,
     gain_saturation: vec4<f32>,
     offset_enabled: vec4<f32>,
+    // Visible/storage extent; z selects opaque BC1 (1) or premultiplied BC3 (2).
+    texel_layout: vec4<f32>,
 }
 @group(0) @binding(2) var<uniform> appearance: ImageAppearance;
 // Stops interpolate in their declared space before entering linear composition.
@@ -88,7 +90,7 @@ fn source_uv(v: VertexOut, dimensions: vec2<u32>) -> vec2<f32> {
     let high = low + span;
     let packed_alpha = appearance.x.w >= 3.0;
     let half_texel = 0.5 / vec2<f32>(dimensions);
-    let texture_high = vec2<f32>(1.0, select(1.0, 0.5, packed_alpha)) - half_texel;
+    let texture_high = vec2<f32>(1.0, select(1.0, appearance.texel_layout.y * 0.5, packed_alpha)) - half_texel;
     if any(span <= vec2<f32>(0.0)) {
         if packed_alpha { return clamp(v.uv, half_texel, texture_high); }
         return v.uv;
@@ -126,8 +128,10 @@ fn image_alpha(uv: vec2<f32>) -> f32 {
 @fragment fn fragment(v: VertexOut) -> @location(0) vec4<f32> {
     let uv = source_uv(v, textureDimensions(image));
     var pixel = textureSample(image, image_sampler, uv);
+    if appearance.texel_layout.z == 1.0 { pixel.a = 1.0; }
+    if appearance.texel_layout.z == 2.0 { pixel = vec4<f32>(min(pixel.rgb, vec3<f32>(pixel.a)), pixel.a); }
     if appearance.x.w >= 3.0 {
-        let alpha = image_alpha(uv + vec2<f32>(0.0, 0.5));
+        let alpha = image_alpha(uv + vec2<f32>(0.0, appearance.texel_layout.y * 0.5));
         var color = vec3<f32>(0.0);
         if pixel.a > 0.0 { color = pixel.rgb / pixel.a; }
         pixel = vec4<f32>(color * alpha, alpha);
@@ -140,10 +144,15 @@ struct VideoColor {
     r: vec4<f32>, g: vec4<f32>, b: vec4<f32>, transfer: vec4<f32>,
 }
 @group(0) @binding(5) var<uniform> video_color: VideoColor;
+fn video_chroma(v: VertexOut, offset: vec2<f32>) -> vec2<f32> {
+    let uv = textureSample(chroma_u, image_sampler, source_uv(v, textureDimensions(chroma_u)) + offset);
+    if video_color.transfer.y == 1.0 { return uv.rg; }
+    return vec2<f32>(uv.r, textureSample(chroma_v, image_sampler, source_uv(v, textureDimensions(chroma_v)) + offset).r);
+}
 @fragment fn fragment_yuv(v: VertexOut) -> @location(0) vec4<f32> {
+    let chroma = video_chroma(v, vec2<f32>(0.0));
     let yuv = vec4<f32>(textureSample(image, image_sampler, source_uv(v, textureDimensions(image))).r,
-        textureSample(chroma_u, image_sampler, source_uv(v, textureDimensions(chroma_u))).r,
-        textureSample(chroma_v, image_sampler, source_uv(v, textureDimensions(chroma_v))).r, 1.0);
+        chroma, 1.0);
     let rgb = clamp(vec3<f32>(dot(video_color.r, yuv), dot(video_color.g, yuv), dot(video_color.b, yuv)), vec3<f32>(0.0), vec3<f32>(1.0));
     var linear: vec3<f32>;
     if video_color.transfer.x == 1.0 {
@@ -155,12 +164,8 @@ struct VideoColor {
     if appearance.x.w == 3.0 {
         let offset = vec2<f32>(0.0, 0.5);
         let y = textureSample(image, image_sampler, source_uv(v, textureDimensions(image)) + offset).r;
-        let red_v = textureSample(chroma_v, image_sampler, source_uv(v, textureDimensions(chroma_v)) + offset).r;
-        var red_u = 0.0;
-        if video_color.r.y != 0.0 {
-            red_u = textureSample(chroma_u, image_sampler, source_uv(v, textureDimensions(chroma_u)) + offset).r;
-        }
-        alpha = clamp(dot(video_color.r, vec4<f32>(y, red_u, red_v, 1.0)), 0.0, 1.0);
+        let red_chroma = video_chroma(v, offset);
+        alpha = clamp(dot(video_color.r, vec4<f32>(y, red_chroma, 1.0)), 0.0, 1.0);
     }
     return tint(v, vec4<f32>(linear * alpha, alpha) * v.color);
 }

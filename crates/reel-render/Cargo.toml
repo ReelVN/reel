@@ -11,6 +11,7 @@ wgpu = ["dep:wgpu", "dep:lyon_tessellation", "dep:swash", "dep:bytemuck", "dep:p
 
 [dependencies]
 reel-ui.workspace = true
+smallvec.workspace = true
 reel-core = { path = "../reel-core" }
 
 wgpu = { version = "=30.0.1", optional = true }

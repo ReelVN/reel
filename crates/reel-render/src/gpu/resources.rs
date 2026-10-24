@@ -1,4 +1,5 @@
 use super::{Gpu, GpuError};
+use reel_core::texture::{TextureDescriptor, TextureFormat, TextureLayout};
 use reel_ui::frame::RecordLocation;
 use reel_ui::peniko::{
     ImageAlphaType, ImageFormat,
@@ -76,6 +77,7 @@ pub(super) struct UploadCreations {
     pub(super) draws: std::sync::atomic::AtomicUsize,
     pub(super) mesh_buffers: std::sync::atomic::AtomicUsize,
     pub(super) brush_groups: std::sync::atomic::AtomicUsize,
+    pub(super) appearance_buffers: std::sync::atomic::AtomicUsize,
 }
 #[cfg(test)]
 impl UploadCreations {
@@ -89,11 +91,19 @@ pub struct Image {
     pub view: wgpu::TextureView,
     pub(super) texture: wgpu::Texture,
     pub size: [u32; 2],
+    pub(super) layout: TextureLayout,
+    pub(super) texture_format: Option<TextureFormat>,
     /// Original channel encoding, retained for packed alpha coverage.
     pub(super) encoding: ColorEncoding,
     pub(super) yuv: Option<super::video::Planes>,
     pub(super) residency: Option<reel_core::budget::BudgetTicket>,
     pub(super) source: Option<ImageSource>,
+}
+impl Image {
+    pub(super) fn uv_transform(&self) -> reel_ui::kurbo::Affine {
+        let [x, y] = self.layout.uv_scale();
+        reel_ui::kurbo::Affine::scale_non_uniform(x, y)
+    }
 }
 pub(super) struct ImageSource {
     pub(super) version: ResourceVersion,
@@ -206,11 +216,165 @@ pub(super) fn create_image(gpu: &Gpu, size: [u32; 2]) -> Result<Image, GpuError>
         view: texture.create_view(&Default::default()),
         texture,
         size,
+        layout: TextureLayout::identity(size),
+        texture_format: None,
         encoding: ColorEncoding::Linear,
         yuv: None,
         residency: None,
         source: None,
     })
+}
+
+pub(super) fn texture_format(format: TextureFormat) -> wgpu::TextureFormat {
+    match format {
+        TextureFormat::Rgba8 => wgpu::TextureFormat::Rgba8Unorm,
+        TextureFormat::Bgra8 => wgpu::TextureFormat::Bgra8Unorm,
+        TextureFormat::LinearRgba16Float => wgpu::TextureFormat::Rgba16Float,
+        TextureFormat::Bc1Rgb => wgpu::TextureFormat::Bc1RgbaUnorm,
+        TextureFormat::Bc3Rgba => wgpu::TextureFormat::Bc3RgbaUnorm,
+    }
+}
+pub(super) fn texture_row_bytes(descriptor: TextureDescriptor) -> u64 {
+    descriptor
+        .format
+        .row_bytes(descriptor.layout.storage_size[0])
+        .unwrap()
+        .div_ceil(256)
+        * 256
+}
+pub(super) fn texture_costs(descriptor: TextureDescriptor) -> Result<(u64, u64), GpuError> {
+    let resident = descriptor.byte_len().map_err(|_| GpuError::InvalidSize)?;
+    let rows = u64::from(descriptor.layout.storage_size[1] / descriptor.format.block_size());
+    Ok((resident, texture_row_bytes(descriptor) * rows))
+}
+pub(super) fn create_texture(
+    gpu: &Gpu,
+    descriptor: TextureDescriptor,
+    at: RecordLocation,
+) -> Result<Image, GpuError> {
+    if descriptor.format.is_compressed()
+        && !gpu
+            .device
+            .features()
+            .contains(wgpu::Features::TEXTURE_COMPRESSION_BC)
+    {
+        return Err(GpuError::Unsupported {
+            at,
+            record: "BC texture compression",
+        });
+    }
+    let size = descriptor.layout.storage_size;
+    if size
+        .iter()
+        .any(|&n| n > gpu.device.limits().max_texture_dimension_2d)
+    {
+        return Err(GpuError::InvalidSize);
+    }
+    #[cfg(test)]
+    gpu.upload_creations
+        .textures
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("prepared linear premultiplied texture"),
+        size: wgpu::Extent3d {
+            width: size[0],
+            height: size[1],
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: texture_format(descriptor.format),
+        usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    gpu.check()?;
+    Ok(Image {
+        view: texture.create_view(&Default::default()),
+        texture,
+        size,
+        layout: descriptor.layout,
+        texture_format: Some(descriptor.format),
+        encoding: descriptor.source_encoding,
+        yuv: None,
+        residency: None,
+        source: None,
+    })
+}
+/// Copy whole format block rows, retaining compressed bytes throughout staging.
+pub(super) fn texture_rows(
+    gpu: &Gpu,
+    encoder: &mut wgpu::CommandEncoder,
+    source: &ResourceLease,
+    target: &Image,
+    rows: std::ops::Range<u32>,
+) -> Result<(), GpuError> {
+    let ResourceData::Texture { descriptor, bytes } = source.data() else {
+        return Err(GpuError::InvalidSize);
+    };
+    let row = texture_row_bytes(*descriptor);
+    let packed = descriptor
+        .format
+        .row_bytes(descriptor.layout.storage_size[0])
+        .unwrap();
+    let count = rows.end - rows.start;
+    #[cfg(test)]
+    gpu.upload_creations
+        .staging
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("bounded texture block upload"),
+        size: row * u64::from(count),
+        usage: wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: true,
+    });
+    gpu.check()?;
+    {
+        let mut mapping = staging
+            .slice(..)
+            .get_mapped_range_mut()
+            .map_err(|e| GpuError::Device(e.to_string()))?;
+        let mut mapping = mapping.slice(..);
+        for y in 0..count {
+            let src = (u64::from(rows.start + y) * packed) as usize;
+            let dest = u64::from(y) * row;
+            mapping
+                .slice(dest as usize..(dest + packed) as usize)
+                .copy_from_slice(&bytes.data()[src..src + packed as usize]);
+        }
+    }
+    staging.unmap();
+    #[cfg(test)]
+    gpu.upload_creations
+        .copies
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let edge = descriptor.format.block_size();
+    encoder.copy_buffer_to_texture(
+        wgpu::TexelCopyBufferInfo {
+            buffer: &staging,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row as u32),
+                rows_per_image: None,
+            },
+        },
+        wgpu::TexelCopyTextureInfo {
+            texture: &target.texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d {
+                x: 0,
+                y: rows.start * edge,
+                z: 0,
+            },
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::Extent3d {
+            width: target.size[0],
+            height: count * edge,
+            depth_or_array_layers: 1,
+        },
+    );
+    gpu.check()
 }
 
 fn upload_rows_with(

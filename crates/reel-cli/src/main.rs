@@ -49,6 +49,7 @@ fn run() -> io::Result<u8> {
         Command::Source(command) => source_command(command),
         Command::Run(args) => run_package(args),
         Command::PrepareImage(args) => prepare_image_command(args),
+        Command::PrepareTexture(args) => prepare_texture_command(args),
         Command::Fmt(args) => formatting::run(args.check),
     }
 }
@@ -429,7 +430,12 @@ fn compilation_report(
 }
 
 fn prepare_image_command(args: commands::PrepareImage) -> io::Result<u8> {
-    match reel_cli::prepare_image::prepare(&args.source, &args.output, args.tile_size) {
+    match reel_cli::prepare_image::prepare(
+        &args.source,
+        &args.output,
+        args.tile_size,
+        args.tile_encoding,
+    ) {
         Ok(manifest) => {
             writeln!(
                 io::stdout().lock(),
@@ -444,6 +450,34 @@ fn prepare_image_command(args: commands::PrepareImage) -> io::Result<u8> {
         }
         Err(error) => {
             failure(false, "prepare-image", args.source.to_str(), &error)?;
+            Ok(1)
+        }
+    }
+}
+fn prepare_texture_command(args: commands::PrepareTexture) -> io::Result<u8> {
+    let options = reel_cli::prepare_texture::Options {
+        max_size: args.size,
+        power_of_two: args.power_of_two,
+        format: args.format,
+    };
+    match reel_cli::prepare_texture::prepare(&args.source, &args.output, options) {
+        Ok(header) => {
+            let descriptor = header.descriptor();
+            writeln!(
+                io::stdout().lock(),
+                "Prepared {:?}: logical {:?}, content {:?}, storage {:?}, {} texture bytes, {} payload bytes: {}",
+                descriptor.format,
+                descriptor.layout.logical_size,
+                descriptor.layout.content_size,
+                descriptor.layout.storage_size,
+                descriptor.byte_len().unwrap(),
+                header.payload_len(),
+                args.output.display()
+            )?;
+            Ok(0)
+        }
+        Err(error) => {
+            failure(false, "prepare-texture", args.source.to_str(), &error)?;
             Ok(1)
         }
     }

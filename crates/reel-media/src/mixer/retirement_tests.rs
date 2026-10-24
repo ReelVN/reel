@@ -427,6 +427,7 @@ fn completed_stream_releases_window_before_queued_infinite_successor_and_status_
             256,
             Arc::new(|| {}),
             &AtomicBool::new(false),
+            &crate::decode::SoftwareAudioDecoderFactory,
         )
         .unwrap()
     }

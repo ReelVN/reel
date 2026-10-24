@@ -16,7 +16,7 @@ use crate::kurbo::{Affine, Axis, Insets, Rect, Size};
 use crate::layout::{LenReq, Length};
 use crate::peniko::{Color, Extend, ImageBrush};
 use crate::properties::ObjectFit;
-use crate::resources::{ResourceImageBrush, ResourceLease};
+use crate::resources::ResourceLease;
 
 // TODO: Make this a configurable option of the widget.
 /// The scale that the image is native to.
@@ -57,12 +57,15 @@ pub struct Image {
     adjustment: crate::frame::ImageColorAdjustment,
 }
 
-/// One resident tile. The image includes its sampling gutter; `clip` is the
-/// tile interior in original-image coordinates and `transform` maps its pixels.
+/// One resident tile, including its sampling gutter. `clip` is its interior in
+/// original-image coordinates; `transform` maps logical tile pixels into that image.
 #[derive(Clone, Debug)]
 pub struct ImageTile {
-    pub image: ImageBrush,
+    /// Actual raster or prepared-texture storage retained by this tile draw.
+    pub resource: ResourceLease,
+    /// Forward mapping from logical tile pixels into original-image coordinates.
     pub transform: Affine,
+    /// Tile interior in original-image coordinates, excluding its gutter.
     pub clip: Rect,
 }
 
@@ -388,7 +391,13 @@ impl Image {
         )
     }
 
-    fn paint_sliced(&self, painter: &mut Painter<'_>, bounds: Rect, insets: Insets) {
+    fn paint_sliced(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        painter: &mut Painter<'_>,
+        bounds: Rect,
+        insets: Insets,
+    ) {
         if self.image_data.is_none() && self.resource.is_none() {
             return;
         }
@@ -466,12 +475,33 @@ impl Image {
                 ]);
                 // Each rectangle already lies in the content box. Shared brush
                 // identity keeps the same resource; no per-slice clip layer.
-                self.fill(painter, target, transform);
+                self.fill(ctx, painter, target, transform);
             }
         }
     }
 
-    fn fill(&self, painter: &mut Painter<'_>, bounds: Rect, transform: Affine) {
+    fn sampler(&self) -> crate::peniko::ImageSampler {
+        crate::peniko::ImageSampler {
+            x_extend: if self.repeat[0] {
+                Extend::Repeat
+            } else {
+                Extend::Pad
+            },
+            y_extend: if self.repeat[1] {
+                Extend::Repeat
+            } else {
+                Extend::Pad
+            },
+            ..Default::default()
+        }
+    }
+    fn fill(
+        &self,
+        ctx: &mut PaintCtx<'_>,
+        painter: &mut Painter<'_>,
+        bounds: Rect,
+        transform: Affine,
+    ) {
         if let Some(image) = &self.image_data {
             let mut brush = image.clone();
             if self.repeat != [false; 2] {
@@ -490,11 +520,20 @@ impl Image {
                 .fill(bounds, &brush)
                 .brush_transform(Some(transform))
                 .draw();
-        } else {
-            painter
-                .fill(bounds, Color::WHITE)
-                .brush_transform(Some(transform))
-                .draw();
+        } else if let Some(resource) = &self.resource {
+            let sampling = if self.slice.is_some() || self.color_rect().is_some() {
+                transform
+            } else {
+                transform.inverse()
+            };
+            ctx.draw_resource_image(
+                painter,
+                resource,
+                bounds,
+                Affine::IDENTITY,
+                sampling,
+                self.sampler(),
+            );
         }
     }
 }
@@ -557,22 +596,6 @@ impl Widget for Image {
         let source_rect = self.color_rect();
         ctx.set_image_sampling_transform(self.slice.is_some() || source_rect.is_some());
         ctx.set_image_source_rect(source_rect);
-        ctx.set_image_resource(self.resource.as_ref().map(|lease| ResourceImageBrush {
-            resource: lease.handle(),
-            sampler: crate::peniko::ImageSampler {
-                x_extend: if self.repeat[0] {
-                    Extend::Repeat
-                } else {
-                    Extend::Pad
-                },
-                y_extend: if self.repeat[1] {
-                    Extend::Repeat
-                } else {
-                    Extend::Pad
-                },
-                ..Default::default()
-            },
-        }));
         let content_box = ctx.content_box();
         ctx.set_image_appearance(
             self.corner_colors,
@@ -602,12 +625,12 @@ impl Widget for Image {
                     Affine::translate(content_box.origin().to_vec2())
                         * Affine::scale(self.tile_scale)
                 };
-                self.fill(painter, bounds, transform);
+                self.fill(ctx, painter, bounds, transform);
             }
             return;
         }
         if let Some(slice) = self.slice {
-            self.paint_sliced(painter, content_box, slice);
+            self.paint_sliced(ctx, painter, content_box, slice);
             return;
         }
         let cache = ctx.property_cache();
@@ -638,33 +661,43 @@ impl Widget for Image {
                     .transform(transform)
                     .brush_transform(Some(sampling))
                     .draw();
-            } else if self.resource.is_some() {
-                painter
-                    .fill(bounds, Color::WHITE)
-                    .transform(transform)
-                    .brush_transform(Some(sampling))
-                    .draw();
+            } else if let Some(resource) = &self.resource {
+                ctx.draw_resource_image(
+                    painter,
+                    resource,
+                    bounds,
+                    transform,
+                    sampling,
+                    self.sampler(),
+                );
             }
             return;
         }
         painter.with_fill_clip(content_box, |painter| {
             if let Some(image) = &self.image_data {
                 painter.draw_image(image, transform);
-            } else if self.resource.is_some() {
-                painter
-                    .fill(image_size.to_rect(), Color::WHITE)
-                    .transform(transform)
-                    .draw();
+            } else if let Some(resource) = &self.resource {
+                ctx.draw_resource_image(
+                    painter,
+                    resource,
+                    image_size.to_rect(),
+                    transform,
+                    Affine::IDENTITY,
+                    self.sampler(),
+                );
             } else {
                 for tile in &self.tiles {
                     // Adjacent interiors share rasterization edges on the same
                     // target. Separate antialiased clip layers would blend their
                     // complementary coverage twice and leave seams under rotation.
-                    painter
-                        .fill(tile.clip, &tile.image)
-                        .transform(transform)
-                        .brush_transform(Some(tile.transform))
-                        .draw();
+                    ctx.draw_resource_image(
+                        painter,
+                        &tile.resource,
+                        tile.clip,
+                        transform,
+                        tile.transform.inverse(),
+                        self.sampler(),
+                    );
                 }
             }
         });

@@ -25,6 +25,8 @@ pub enum Command {
     Run(Run),
     /// Prepare a tiled image pyramid for visible-region loading.
     PrepareImage(PrepareImage),
+    /// Scale artwork and prepare GPU texture storage while retaining author coordinates.
+    PrepareTexture(PrepareTexture),
     /// Format every Aside source file in the current project's src directory.
     Fmt(Fmt),
 }
@@ -171,6 +173,35 @@ pub struct PrepareImage {
     /// Interior tile edge in pixels, excluding the two-pixel border.
     #[arg(long, default_value_t = 512, value_parser = clap::value_parser!(u32).range(1..=i64::from(u32::MAX - 2)))]
     pub tile_size: u32,
+    /// Compressed Reel textures by default; PNG preserves exact source samples.
+    #[arg(long, value_enum, default_value = "reel-texture")]
+    pub tile_encoding: reel_cli::prepare_image::Encoding,
+}
+
+#[derive(Args)]
+pub struct PrepareTexture {
+    #[arg(value_name = "IMAGE")]
+    pub source: PathBuf,
+    #[arg(long, value_name = "FILE.reel-texture")]
+    pub output: PathBuf,
+    /// Fit inside WIDTHxHEIGHT without enlarging the original image.
+    #[arg(long, value_name = "WIDTHxHEIGHT", value_parser = texture_size)]
+    pub size: Option<[u32; 2]>,
+    /// Pad stored dimensions to powers of two, with a minimum of eight texels.
+    #[arg(long)]
+    pub power_of_two: bool,
+    /// Auto selects BC1 for opaque artwork and BC3 for transparent artwork.
+    #[arg(long, value_enum, default_value = "auto")]
+    pub format: reel_cli::prepare_texture::Format,
+}
+
+fn texture_size(value: &str) -> Result<[u32; 2], String> {
+    let (width, height) = value.split_once('x').ok_or("expected WIDTHxHEIGHT")?;
+    let size = [width, height].map(|axis| axis.parse::<u32>().ok().filter(|n| *n > 0));
+    match size {
+        [Some(width), Some(height)] => Ok([width, height]),
+        _ => Err("expected positive WIDTHxHEIGHT".into()),
+    }
 }
 
 /// Invalid commands still honor machine-readable diagnostics. This only selects

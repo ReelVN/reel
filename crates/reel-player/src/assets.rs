@@ -10,6 +10,7 @@ pub(crate) mod tests;
 pub(crate) mod worker;
 pub use decode::ImageExecutor;
 pub use io::{DirectoryIo, PackIo};
+use reel_core::texture::{TextureCodec, TextureDescriptor, TextureHeader, TexturePayload};
 use reel_core::{
     budget::{BudgetCategory, BudgetPool, OwnedBytes, QueueLimits},
     identity::{AssetKey, AssetSource, IoId, Priority, ResourceVersion, Scope, WorkId},
@@ -89,6 +90,7 @@ struct Load {
     phase: Phase,
     input: Option<Arc<OwnedBytes>>,
     size: [u32; 2],
+    texture: Option<TextureDescriptor>,
     output: u64,
     temporary: u64,
 }
@@ -283,6 +285,7 @@ impl Assets {
                 phase,
                 input: None,
                 size: [0; 2],
+                texture: None,
                 output: 0,
                 temporary: 0,
             },
@@ -337,6 +340,7 @@ impl Assets {
                 phase: Phase::Probe,
                 input: Some(Arc::new(input)),
                 size: [0; 2],
+                texture: None,
                 output: 0,
                 temporary: 0,
             },
@@ -517,7 +521,23 @@ impl Service {
             let result = match event.result {
                 Terminal::Completed(data) if matches!(load.phase, Phase::Probing(_)) => {
                     let bytes = data.as_slice();
-                    if bytes.len() != 24 {
+                    if bytes.len() == TextureHeader::LEN {
+                        TextureHeader::decode(bytes)
+                            .map_err(|e| e.to_string())
+                            .map(|header| {
+                                let descriptor = header.descriptor();
+                                load.texture = Some(descriptor);
+                                load.size = descriptor.layout.logical_size;
+                                load.output =
+                                    descriptor.byte_len().expect("validated texture header");
+                                load.temporary = if header.codec() == TextureCodec::BcCrunch {
+                                    decode::BC_CRUNCH_WORKSPACE_BYTES
+                                } else {
+                                    0
+                                };
+                                load.phase = Phase::Decode;
+                            })
+                    } else if bytes.len() != 24 {
                         Err("invalid image probe result".into())
                     } else {
                         load.size = [
@@ -659,11 +679,25 @@ impl Service {
                 }
                 let output = self
                     .output
-                    .reserve(if probe { 24 } else { load.output })
+                    .reserve(if probe {
+                        TextureHeader::LEN as u64
+                    } else {
+                        load.output
+                    })
                     .map_err(|e| format!("image resident budget: {}", e.message))?;
+                let prepared = load
+                    .input
+                    .as_ref()
+                    .unwrap()
+                    .as_slice()
+                    .starts_with(TextureHeader::MAGIC);
                 let temporary = self
                     .temporary
-                    .reserve(self.options.decode_bytes)
+                    .reserve(if prepared {
+                        if probe { 0 } else { load.temporary }
+                    } else {
+                        self.options.decode_bytes
+                    })
                     .map_err(|e| format!("image decode limit: {}", e.message))?;
                 let request = WorkRequest {
                     kind: if probe {
@@ -712,6 +746,10 @@ fn register(load: &Load, data: OwnedBytes) -> Result<ResourceLease, String> {
     let handle = match load.kind {
         AssetKind::Bytes => return Err("raw bytes do not use the UI registry".into()),
         AssetKind::Font => registry.register_font(version, data),
+        AssetKind::Image if load.texture.is_some() => registry.register_texture(
+            version,
+            TexturePayload::new(load.texture.unwrap(), data).map_err(|e| e.to_string())?,
+        ),
         AssetKind::Image => registry.register_image(
             version,
             data,

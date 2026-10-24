@@ -2,8 +2,9 @@
 //!
 //! Configure an output before constructing its mixer. The callback uses
 //! preallocated buffers and bounded queues; [`AudioReclaimService`] retains
-//! retired PCM until physical release. Native output uses the `cpal-output`
-//! feature, encoded sounds use `decode`, and movie decoding uses `video`.
+//! retired PCM until physical release. Desktop output uses the `cpal-output`
+//! feature, software codecs use `decode`, and movie decoding uses `video`.
+//! Codec selection stays behind the shared [`decode`] interfaces.
 #![allow(clippy::result_large_err)]
 
 mod activity;
@@ -11,6 +12,7 @@ pub use activity::*;
 mod retirement;
 pub use retirement::{AudioActivityRetirement, AudioOwner};
 mod contracts;
+pub mod decode;
 mod maintenance;
 mod mixer;
 mod output;

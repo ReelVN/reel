@@ -62,22 +62,14 @@ pub enum RenderEffect {
     Filters,
     External,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PixelFormat {
-    Rgba8,
-    Bgra8,
-    LinearRgba16Float,
-}
-impl PixelFormat {
-    fn pixel_bytes(self) -> u64 {
-        match self {
-            Self::Rgba8 | Self::Bgra8 => 4,
-            Self::LinearRgba16Float => 8,
-        }
-    }
-}
+pub use reel_core::texture::TextureFormat as PixelFormat;
 #[derive(Debug)]
 pub enum UploadPayload {
+    /// Whole prepared storage; compressed formats use block rows rather than pixel stride.
+    Texture {
+        descriptor: reel_core::texture::TextureDescriptor,
+        bytes: OwnedBytes,
+    },
     Pixels {
         size: [u32; 2],
         stride: u64,
@@ -93,7 +85,9 @@ pub enum UploadPayload {
 impl UploadPayload {
     fn bytes(&self) -> &OwnedBytes {
         match self {
-            Self::Pixels { bytes, .. } | Self::Font { bytes } => bytes,
+            Self::Pixels { bytes, .. } | Self::Font { bytes } | Self::Texture { bytes, .. } => {
+                bytes
+            }
         }
     }
 }
@@ -459,6 +453,16 @@ fn validate_batch(batch: &UploadBatch, max_bytes: u64) -> Result<u64, RejectCode
             .ok_or(RejectCode::InvalidRequest)?;
         match (&item.payload, item.resource.data()) {
             (
+                UploadPayload::Texture { descriptor, bytes },
+                ResourceData::Texture {
+                    descriptor: source, ..
+                },
+            ) => {
+                if descriptor != source || descriptor.validate(bytes.as_slice().len()).is_err() {
+                    return Err(RejectCode::InvalidRequest);
+                }
+            }
+            (
                 UploadPayload::Pixels {
                     size,
                     stride,
@@ -469,7 +473,7 @@ fn validate_batch(batch: &UploadBatch, max_bytes: u64) -> Result<u64, RejectCode
                 ResourceData::Image { image, .. },
             ) => {
                 let row = (size[0] as u64)
-                    .checked_mul(format.pixel_bytes())
+                    .checked_mul(format.pixel_bytes().ok_or(RejectCode::Unsupported)?)
                     .ok_or(RejectCode::InvalidRequest)?;
                 let len = stride
                     .checked_mul(size[1] as u64)
@@ -501,6 +505,8 @@ impl RenderBackend for RecordingBackend {
                 PixelFormat::Rgba8,
                 PixelFormat::Bgra8,
                 PixelFormat::LinearRgba16Float,
+                PixelFormat::Bc1Rgb,
+                PixelFormat::Bc3Rgba,
             ],
             effects: &[
                 RenderEffect::Groups,

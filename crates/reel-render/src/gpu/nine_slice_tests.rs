@@ -268,7 +268,7 @@ fn sliced_frame(pool: &BudgetPool) -> RenderFrame {
         NewWidget::new(Image::tiled(
             Size::new(20., 73.),
             vec![ImageTile {
-                image: ImageBrush::new(image.clone()),
+                resource: lease.clone(),
                 transform: Affine::IDENTITY,
                 clip: Rect::new(0., 0., 20., 73.),
             }],

@@ -1,20 +1,32 @@
 //! Shared entry for author commands and the exported platform player.
 use std::{
     collections::BTreeMap,
+    io,
     path::{Path, PathBuf},
 };
 
+fn project_resources(path: &Path) -> io::Result<Option<PathBuf>> {
+    let root = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    Ok(crate::project::find(root)?.map(|project| project.root.join("resources")))
+}
+
 fn asset_overlay(
-    loaded: &crate::distribution::LoadedDistribution,
+    loaded: &reel_player::distribution::LoadedDistribution,
     explicit: Option<PathBuf>,
 ) -> Option<PathBuf> {
     explicit.or_else(|| loaded.loose.clone())
 }
 
 pub fn run(path: &Path, assets: Option<PathBuf>, saves: Option<PathBuf>) -> Result<(), String> {
-    let loaded = crate::distribution::load(path).map_err(|error| error.to_string())?;
+    let project_resources = project_resources(path).map_err(|error| error.to_string())?;
+    let loaded = reel_player::distribution::load(path, project_resources.as_deref())
+        .map_err(|error| error.to_string())?;
     let assets = asset_overlay(&loaded, assets);
-    let story = crate::story_from_package(loaded.package).map_err(|error| error.to_string())?;
+    let story = reel_player::distribution::story_from_package(loaded.package)
+        .map_err(|error| error.to_string())?;
     launch(
         story,
         loaded.root,
@@ -29,7 +41,7 @@ pub fn standalone(executable: &Path, saves: Option<PathBuf>) -> Result<(), Strin
         .parent()
         .ok_or("player executable has no parent directory")?;
     run(
-        &root.join(crate::distribution::MAIN_PACKAGE),
+        &root.join(reel_package::distribution::MAIN_PACKAGE),
         None,
         Some(saves.unwrap_or_else(|| root.join("saves"))),
     )
@@ -44,7 +56,7 @@ pub fn launch(
 ) -> Result<(), String> {
     #[cfg(feature = "window")]
     {
-        let mut options = reel_player::shell::StoryWindowOptions::default();
+        let mut options = reel_player::player::PlayerOptions::default();
         options.assets.root = root;
         options.catalogs = std::sync::Arc::new(catalogs);
         if let Some((packages, overlay)) = packages {
@@ -52,7 +64,7 @@ pub fn launch(
             options.asset_overlay = overlay;
         }
         options.save_directory = saves;
-        reel_player::shell::run_story(story, options).map_err(|error| error.to_string())
+        reel_player::platform::desktop::run_story(story, options).map_err(|error| error.to_string())
     }
     #[cfg(not(feature = "window"))]
     {
@@ -87,7 +99,11 @@ mod tests {
         let artifact = crate::build(&checked, Some("main::main")).unwrap();
         let package = root.join("build/debug/game.asb");
         fs::write(&package, &artifact.bytes).unwrap();
-        let loaded = crate::distribution::load(&package).unwrap();
+        let loaded = reel_player::distribution::load(
+            &package,
+            project_resources(&package).unwrap().as_deref(),
+        )
+        .unwrap();
         assert_eq!(asset_overlay(&loaded, None), Some(project.assets()));
         let explicit = root.join("overrides");
         assert_eq!(
@@ -103,7 +119,11 @@ mod tests {
             player: None,
         };
         crate::distribution::export(&project, &artifact, &options).unwrap();
-        let loaded = crate::distribution::load(&options.output.join("game.asb")).unwrap();
+        let loaded = reel_player::distribution::load(
+            &options.output.join("game.asb"),
+            Some(&project.assets()),
+        )
+        .unwrap();
         assert_eq!(asset_overlay(&loaded, None), loaded.loose);
         assert_ne!(asset_overlay(&loaded, None), Some(project.assets()));
         assert_eq!(
@@ -119,7 +139,7 @@ mod tests {
         let artifact = crate::build(&checked, Some("main::main")).unwrap();
         let package = temporary.path().join("single.asb");
         fs::write(&package, &artifact.bytes).unwrap();
-        let loaded = crate::distribution::load(&package).unwrap();
+        let loaded = reel_player::distribution::load(&package, None).unwrap();
         assert_eq!(
             asset_overlay(&loaded, None),
             Some(loaded.root.join("resources"))

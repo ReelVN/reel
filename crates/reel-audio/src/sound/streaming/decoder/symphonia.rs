@@ -1,3 +1,4 @@
+use super::AudioRead;
 use crate::{
 	frame::Frame,
 	sound::{FromFileError, symphonia::load_frames_from_buffer_ref},
@@ -168,9 +169,6 @@ impl SymphoniaDecoder {
 	}
 }
 
-/// A seekable host resource. Reads and seeks run on decoder workers only.
-pub trait AudioRead: std::io::Read + std::io::Seek + Send + Sync {}
-impl<T: std::io::Read + std::io::Seek + Send + Sync> AudioRead for T {}
 struct Reader<R> {
 	reader: R,
 	length: u64,

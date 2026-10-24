@@ -1,20 +1,37 @@
-//! Immutable planar frame uploads. Reuse is authorized by ImageCache only when
+//! Immutable YUV frame uploads. Reuse is authorized by ImageCache only when
 //! no recorded frame, upload or prepared render can observe the old contents.
 use super::{Gpu, GpuError, resources::Image};
-use reel_core::image::{Yuv420Image, YuvTransfer};
+use reel_core::image::{Yuv420Image, Yuv420Layout, YuvTransfer};
+
+enum Textures {
+    Planar([wgpu::Texture; 3]),
+    Nv12([wgpu::Texture; 2]),
+}
+impl Textures {
+    fn as_slice(&self) -> &[wgpu::Texture] {
+        match self {
+            Self::Planar(textures) => textures,
+            Self::Nv12(textures) => textures,
+        }
+    }
+}
 
 pub(super) struct Planes {
-    textures: [wgpu::Texture; 3],
+    textures: Textures,
+    pub(super) layout: Yuv420Layout,
     pub(super) chroma: [wgpu::TextureView; 2],
     pub(super) color: wgpu::Buffer,
 }
 
 pub(super) fn costs(image: &Yuv420Image) -> (u64, u64) {
-    let resident = image.byte_len() as u64 + 64;
-    let staging = (0..3)
+    let resident = (0..image.plane_count())
+        .map(|i| u64::from(image.row_bytes(i)) * u64::from(image.plane_size(i)[1]))
+        .sum::<u64>()
+        + 64;
+    let staging = (0..image.plane_count())
         .map(|i| {
-            let [w, h] = image.plane_size(i);
-            u64::from(w).div_ceil(256) * 256 * u64::from(h)
+            let h = image.plane_size(i)[1];
+            u64::from(image.row_bytes(i)).div_ceil(256) * 256 * u64::from(h)
         })
         .sum::<u64>()
         + 64;
@@ -29,12 +46,12 @@ pub(super) fn upload(
 ) -> Result<Image, GpuError> {
     gpu.check()?;
     let size = image.size();
-    let mut output = if let Some(image) = recycled {
-        debug_assert_eq!(image.size, size);
-        debug_assert!(image.yuv.is_some());
-        image
+    let mut output = if let Some(recycled) = recycled {
+        debug_assert_eq!(recycled.size, size);
+        debug_assert_eq!(recycled.yuv.as_ref().unwrap().layout, image.layout());
+        recycled
     } else {
-        let textures = std::array::from_fn(|i| {
+        let create = |i| {
             let [width, height] = image.plane_size(i);
             #[cfg(test)]
             gpu.upload_creations
@@ -50,12 +67,28 @@ pub(super) fn upload(
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::R8Unorm,
+                format: if image.layout() == Yuv420Layout::Nv12 && i == 1 {
+                    wgpu::TextureFormat::Rg8Unorm
+                } else {
+                    wgpu::TextureFormat::R8Unorm
+                },
                 usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             })
+        };
+        let textures = match image.layout() {
+            Yuv420Layout::Planar => Textures::Planar(std::array::from_fn(create)),
+            Yuv420Layout::Nv12 => Textures::Nv12(std::array::from_fn(create)),
+        };
+        // NV12 binds two views of the same UV texture to the existing layout.
+        let chroma = std::array::from_fn(|i| {
+            let index = if image.layout() == Yuv420Layout::Nv12 {
+                1
+            } else {
+                i + 1
+            };
+            textures.as_slice()[index].create_view(&Default::default())
         });
-        let chroma = std::array::from_fn(|i| textures[i + 1].create_view(&Default::default()));
         let color = gpu.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("video color"),
             size: 64,
@@ -63,12 +96,15 @@ pub(super) fn upload(
             mapped_at_creation: false,
         });
         Image {
-            view: textures[0].create_view(&Default::default()),
-            texture: textures[0].clone(),
+            view: textures.as_slice()[0].create_view(&Default::default()),
+            texture: textures.as_slice()[0].clone(),
             size,
+            layout: reel_core::texture::TextureLayout::identity(size),
+            texture_format: None,
             encoding: reel_ui::resources::ColorEncoding::Linear,
             yuv: Some(Planes {
                 textures,
+                layout: image.layout(),
                 chroma,
                 color,
             }),
@@ -82,7 +118,7 @@ pub(super) fn upload(
         .staging
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("planar video upload"),
+        label: Some("YUV video upload"),
         size: staging_size,
         usage: wgpu::BufferUsages::COPY_SRC,
         mapped_at_creation: true,
@@ -96,14 +132,16 @@ pub(super) fn upload(
                 .err()
                 .unwrap_or_else(|| GpuError::Device(error.to_string()))
         })?;
-        for i in 0..3 {
-            let [w, h] = image.plane_size(i);
-            let row = u64::from(w).div_ceil(256) * 256;
+        for i in 0..image.plane_count() {
+            let h = image.plane_size(i)[1];
+            let visible = image.row_bytes(i) as usize;
+            let stride = image.row_stride(i) as usize;
+            let row = (visible as u64).div_ceil(256) * 256;
             for y in 0..h as usize {
                 let start = offset as usize + y * row as usize;
                 mapped
-                    .slice(start..start + w as usize)
-                    .copy_from_slice(&image.plane(i)[y * w as usize..(y + 1) * w as usize]);
+                    .slice(start..start + visible)
+                    .copy_from_slice(&image.plane(i)[y * stride..y * stride + visible]);
             }
             offset += row * u64::from(h);
         }
@@ -114,39 +152,46 @@ pub(super) fn upload(
         } else {
             0.
         };
+        color[3][1] = if image.layout() == Yuv420Layout::Nv12 {
+            1.
+        } else {
+            0.
+        };
         mapped
             .slice(offset as usize..offset as usize + 64)
             .copy_from_slice(bytemuck::cast_slice(&color));
     }
     staging.unmap();
     offset = 0;
-    for i in 0..3 {
-        let [w, h] = image.plane_size(i);
-        let row = w.div_ceil(256) * 256;
+    for i in 0..image.plane_count() {
+        let h = image.plane_size(i)[1];
+        let row = u64::from(image.row_bytes(i)).div_ceil(256) * 256;
         encoder.copy_buffer_to_texture(
             wgpu::TexelCopyBufferInfo {
                 buffer: &staging,
                 layout: wgpu::TexelCopyBufferLayout {
                     offset,
-                    bytes_per_row: Some(row),
+                    bytes_per_row: Some(u32::try_from(row).map_err(|_| {
+                        GpuError::Device("video upload row exceeds device address space".into())
+                    })?),
                     rows_per_image: None,
                 },
             },
             wgpu::TexelCopyTextureInfo {
-                texture: &planes.textures[i],
+                texture: &planes.textures.as_slice()[i],
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            planes.textures[i].size(),
+            planes.textures.as_slice()[i].size(),
         );
-        offset += u64::from(row) * u64::from(h);
+        offset += row * u64::from(h);
     }
     encoder.copy_buffer_to_buffer(&staging, offset, &planes.color, 0, 64);
     #[cfg(test)]
     gpu.upload_creations
         .copies
-        .fetch_add(3, std::sync::atomic::Ordering::Relaxed);
+        .fetch_add(image.plane_count(), std::sync::atomic::Ordering::Relaxed);
     Ok(output)
 }
 
@@ -157,7 +202,7 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn planar_upload_cost_and_shader_validate_without_device() {
+    fn yuv_upload_cost_and_shader_validate_without_device() {
         #[derive(Debug)]
         struct Planes([Vec<u8>; 3]);
         impl Yuv420Storage for Planes {
@@ -197,6 +242,23 @@ mod tests {
             costs(&packed),
             (1_474_560 + 64, 1024 * 1024 + 2 * 512 * 512 + 64)
         );
+        let nv12 = Yuv420Image::with_layout(
+            [960, 544],
+            image.color(),
+            Yuv420Layout::Nv12,
+            [1024, 1024, 0],
+            Arc::new(Planes([
+                vec![16; 1024 * 544],
+                vec![128; 1024 * 272],
+                vec![],
+            ])),
+        )
+        .unwrap();
+        assert_eq!(
+            costs(&nv12),
+            (960 * (544 + 272) + 64, 1024 * (544 + 272) + 64)
+        );
+        assert_eq!(nv12.byte_len(), 1024 * (544 + 272));
         let module = wgpu::naga::front::wgsl::parse_str(include_str!("paint.wgsl")).unwrap();
         wgpu::naga::valid::Validator::new(
             wgpu::naga::valid::ValidationFlags::all(),

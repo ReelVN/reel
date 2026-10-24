@@ -379,6 +379,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "bc-crunch"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "87b83b939fd5cac1ff667cdf038b0fb10f6597e1be25f72187f147680b4ace7b"
+
+[[package]]
 name = "bit-set"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3256,6 +3262,7 @@ dependencies = [
  "aside-host",
  "aside-lsp",
  "aside-vm",
+ "bc-crunch",
  "blake3",
  "clap",
  "codespan-reporting",
@@ -3272,6 +3279,7 @@ dependencies = [
  "reel-render",
  "reel-storage",
  "reel-ui",
+ "rgbcx",
  "serde",
  "serde_json",
  "tempfile",
@@ -3348,6 +3356,7 @@ version = "1.0.0"
 dependencies = [
  "arboard",
  "aside-vm",
+ "bc-crunch",
  "blake3",
  "flate2",
  "gilrs",
@@ -3381,6 +3390,7 @@ dependencies = [
  "postcard",
  "reel-core",
  "reel-ui",
+ "smallvec",
  "swash",
  "wgpu",
 ]
@@ -3482,6 +3492,12 @@ dependencies = [
  "mp4ra-rust",
  "mpeg4-audio-const",
 ]
+
+[[package]]
+name = "rgbcx"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "459aab4d862e9218eb24ddeec79f6dc6b4377d2500f1a4213d26153b9dca835e"
 
 [[package]]
 name = "roxmltree"

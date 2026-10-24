@@ -16,6 +16,7 @@ pub mod editor;
 pub mod localization;
 pub mod playback;
 pub mod prepare_image;
+pub mod prepare_texture;
 pub mod project;
 
 #[derive(Debug)]
@@ -211,28 +212,6 @@ pub fn into_story(checked: Checked, entry: &str) -> Result<CompiledStory, Failur
         initializer: checked.compilation.initializer,
         entry: bc::FunctionId(entry.function_id),
         catalogs: checked.catalogs,
-    })
-}
-
-pub fn decode_story(bytes: &[u8]) -> Result<CompiledStory, reel_package::Error> {
-    story_from_package(reel_package::decode(
-        bytes,
-        reel_package::Limits::default(),
-    )?)
-}
-pub fn story_from_package(
-    package: reel_package::CodePackage,
-) -> Result<CompiledStory, reel_package::Error> {
-    let (program, metadata) = package.into_parts();
-    let entry = metadata.game_entry.ok_or_else(|| reel_package::Error {
-        kind: reel_package::ErrorKind::Metadata,
-        detail: "this package contains only a module; define main in src/main.aside and run reel build from the project".into(),
-    })?;
-    Ok(CompiledStory {
-        program,
-        initializer: bc::FunctionId(metadata.initializer.function_id),
-        entry: bc::FunctionId(entry.function_id),
-        catalogs: Default::default(),
     })
 }
 

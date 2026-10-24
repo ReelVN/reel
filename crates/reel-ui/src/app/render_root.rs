@@ -21,7 +21,6 @@ use crate::core::{
     PropertyStackId, QueryCtx, ResizeDirection, TextEvent, Widget, WidgetArena, WidgetArenaNode,
     WidgetId, WidgetMut, WidgetPod, WidgetRef, WidgetState, WidgetTag, WidgetTagInner, WindowEvent,
 };
-use crate::imaging::record::Scene;
 use crate::passes::accessibility::run_accessibility_pass;
 use crate::passes::action::run_action_pass;
 use crate::passes::anim::run_update_anim_pass;
@@ -157,7 +156,14 @@ pub(crate) struct RenderRootState {
     pub(crate) last_sent_ime_area: Rect,
 
     /// Scene cache for the widget tree.
-    pub(crate) scene_cache: HashMap<WidgetId, (Scene, Scene, Scene)>,
+    pub(crate) scene_cache: HashMap<
+        WidgetId,
+        (
+            crate::core::recorded_paint::CachedPaint,
+            crate::core::recorded_paint::CachedPaint,
+            crate::core::recorded_paint::CachedPaint,
+        ),
+    >,
 
     pub(crate) widget_tags: HashMap<WidgetTagInner, WidgetId>,
 

@@ -13,6 +13,78 @@ const JPEG: &[u8] = include_bytes!("../../../../examples/assets/sun.jpg");
 mod packed;
 
 #[test]
+fn prepared_texture_worker_preserves_blocks_and_uses_bounded_workspace() {
+    use reel_core::texture::*;
+    for format in [
+        TextureFormat::Rgba8,
+        TextureFormat::Bc1Rgb,
+        TextureFormat::Bc3Rgba,
+    ] {
+        let descriptor = TextureDescriptor {
+            format,
+            source_encoding: ColorEncoding::Srgb,
+            layout: TextureLayout {
+                logical_size: [192, 108],
+                content_size: [96, 54],
+                storage_size: [128, 64],
+            },
+        };
+        let blocks = vec![0; descriptor.byte_len().unwrap() as usize];
+        for codec in [TextureCodec::Raw, TextureCodec::BcCrunch] {
+            if codec == TextureCodec::BcCrunch && !format.is_compressed() {
+                continue;
+            }
+            let payload = if codec == TextureCodec::Raw {
+                blocks.clone()
+            } else {
+                bc_crunch::compress(
+                    128,
+                    64,
+                    if format == TextureFormat::Bc1Rgb {
+                        bc_crunch::Format::Bc1
+                    } else {
+                        bc_crunch::Format::Bc3
+                    },
+                    &blocks,
+                )
+                .unwrap()
+            };
+            let mut bytes = TextureHeader::new(descriptor, codec, payload.len() as u64)
+                .unwrap()
+                .encode()
+                .to_vec();
+            bytes.extend(payload);
+            let assets = Assets::directory(AssetOptions {
+                resident_bytes: 65536,
+                input_bytes: 65536,
+                decode_bytes: if codec == TextureCodec::Raw { 0 } else { 65536 },
+                ..Default::default()
+            });
+            let id = assets
+                .request_encoded("prepared.reel-texture".into(), &bytes)
+                .unwrap();
+            let lease = load_until_done(&assets, id).unwrap();
+            let ResourceData::Texture {
+                descriptor: actual,
+                bytes: data,
+            } = lease.data()
+            else {
+                panic!("prepared texture must retain its block resource kind")
+            };
+            assert_eq!(*actual, descriptor);
+            assert_eq!(data.data(), blocks);
+            assert_eq!(lease.data().image_size(), Some([192, 108]));
+            assert!(assets.temporary_pool().usage().peak_bytes <= 65536);
+            assert_eq!(assets.output_pool().usage().bytes, blocks.len() as u64);
+            drop(lease);
+            assets.cancel(id);
+            assets.maintain();
+            assert_eq!(assets.output_pool().usage().bytes, 0);
+        }
+    }
+}
+
+#[test]
 fn small_png_metadata_uses_the_configured_decoder_budget() {
     use image::ImageEncoder;
     let pixels = vec![128; 19 * 5 * 4];

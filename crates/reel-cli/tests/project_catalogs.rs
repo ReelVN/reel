@@ -87,7 +87,12 @@ fn content_addressed_catalogs_preserve_old_asbs_and_capture_source_revisions() {
     let old_bytes = distribution::with_catalogs(&artifact, &first).unwrap();
     let old = output.join("old.asb");
     fs::write(&old, &old_bytes).unwrap();
-    let before = distribution::load(&old).unwrap();
+    let before = reel_player::distribution::load(&old, Some(&loaded.assets())).unwrap();
+    let adjacent = reel_player::distribution::load(&old, None).unwrap();
+    assert_eq!(
+        adjacent.loose,
+        Some(output.canonicalize().unwrap().join("resources"))
+    );
     assert!(before.package.program().package().text_pool.is_none());
     assert_eq!(
         before.loose,
@@ -116,7 +121,7 @@ fn content_addressed_catalogs_preserve_old_asbs_and_capture_source_revisions() {
     let invalid_asb = output.join("missing-catalog.asb");
     fs::write(&invalid_asb, invalid_bytes).unwrap();
     assert!(
-        distribution::load(&invalid_asb)
+        reel_player::distribution::load(&invalid_asb, None)
             .err()
             .unwrap()
             .to_string()
@@ -137,10 +142,10 @@ fn content_addressed_catalogs_preserve_old_asbs_and_capture_source_revisions() {
     assert_eq!(fs::read(&old).unwrap(), old_bytes);
     let updated = output.join("new.asb");
     reel_cli::output::write(&updated, &loaded.input, &updated_bytes, false).unwrap();
-    let after = distribution::load(&updated).unwrap();
+    let after = reel_player::distribution::load(&updated, None).unwrap();
     assert_ne!(after.package.metadata().bytecode_blake3, identity);
     assert_eq!(
-        distribution::load(&old)
+        reel_player::distribution::load(&old, None)
             .unwrap()
             .package
             .metadata()
@@ -233,7 +238,8 @@ fn exports_keep_inline_translations_in_editable_source_and_reject_collisions() {
         options.output = root.join(format!("build/export/{}", profile.name()));
         let artifact = build_export(&checked, project::ENTRY, profile).unwrap();
         distribution::export(&loaded, &artifact, &options).unwrap();
-        let decoded = distribution::load(&options.output.join("game.asb")).unwrap();
+        let decoded =
+            reel_player::distribution::load(&options.output.join("game.asb"), None).unwrap();
         assert!(
             translation(&options.output.join("game.rtp"), &decoded.catalogs["en-US"])
                 .contains("English menu")

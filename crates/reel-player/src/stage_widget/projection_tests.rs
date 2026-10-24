@@ -336,6 +336,11 @@ fn optimistic_control_proposal_is_reconciled_through_unchanged_ancestors() {
 
 #[test]
 fn image_resolution_and_removal_invalidate_only_the_resource_branch() {
+    use reel_core::{
+        budget::{BudgetCategory, BudgetPool, QueueLimits},
+        identity::{AssetKey, ContentVersion, ResourceVersion},
+    };
+    use reel_ui::resources::{ColorEncoding, ResourceRegistry};
     fn painted_images(root: &mut RenderRoot) -> Vec<u64> {
         use reel_ui::{
             app::VisualLayerKind,
@@ -402,11 +407,33 @@ fn image_resolution_and_removal_invalidate_only_the_resource_branch() {
         width: 2,
         height: 2,
     };
+    let mask_pool = BudgetPool::new(
+        BudgetCategory::CpuOutput,
+        QueueLimits {
+            max_requests: 1,
+            max_bytes: 16,
+        },
+    );
+    let mut masks = ResourceRegistry::new(1, 64 << 10).unwrap();
+    let mask = masks
+        .register(
+            ResourceVersion {
+                key: AssetKey("mask.png".into()),
+                version: ContentVersion([1; 32]),
+            },
+            ResourceData::Image {
+                image: image.clone(),
+                encoding: ColorEncoding::Srgb,
+            },
+            mask_pool.reserve(16).unwrap(),
+        )
+        .unwrap();
+    let mask = masks.acquire(mask).unwrap();
     resolve_image_nodes(&mut view.root, |node, _| {
         if node.node.id == picture {
             SceneImages {
                 image: Some(image.clone()),
-                mask_images: vec![image.clone()].into(),
+                mask_images: vec![mask.clone()].into(),
                 ..Default::default()
             }
         } else {
@@ -426,7 +453,7 @@ fn image_resolution_and_removal_invalidate_only_the_resource_branch() {
         if node.node.id == picture {
             SceneImages {
                 image: Some(replacement.clone()),
-                mask_images: vec![image.clone()].into(),
+                mask_images: vec![mask.clone()].into(),
                 ..Default::default()
             }
         } else {
@@ -476,7 +503,7 @@ fn image_resolution_and_removal_invalidate_only_the_resource_branch() {
                 if node.node.id == picture {
                     SceneImages {
                         image: Some(replacement.clone()),
-                        mask_images: vec![image.clone()].into(),
+                        mask_images: vec![mask.clone()].into(),
                         ..Default::default()
                     }
                 } else {
@@ -484,7 +511,7 @@ fn image_resolution_and_removal_invalidate_only_the_resource_branch() {
                 }
             });
         } else {
-            next.resolve_images(&BTreeMap::new());
+            next.resolve_images(&BTreeMap::new()).unwrap();
         }
         sync(&mut root, widget, &next);
         let parent = scene(&root, widget);
@@ -509,7 +536,7 @@ fn image_resolution_and_removal_invalidate_only_the_resource_branch() {
         .update(picture, NodeKind::Stack, NodeProps::default())
         .unwrap();
     let mut removed = StageView::update(&stage, Some(&view));
-    removed.resolve_images(&BTreeMap::new());
+    removed.resolve_images(&BTreeMap::new()).unwrap();
     let projected = &removed.root.as_ref().unwrap().children[1];
     assert!(!projected.image_branch);
     assert!(projected.images == SceneImages::default());

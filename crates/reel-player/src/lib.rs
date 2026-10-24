@@ -5,17 +5,12 @@
 //! [`story_runtime`] schedules VM, GC and retirement work. The `winit` feature
 //! enables platform event conversion; `window` includes Winit and WGPU adapters.
 mod demand;
-#[cfg(feature = "window")]
-pub mod diagnostic;
+pub mod distribution;
+pub mod hal;
 pub mod platform;
+pub mod player;
 pub mod presentation;
-#[cfg(feature = "window")]
-pub mod shell;
 pub mod story_runtime;
-#[cfg(feature = "window")]
-mod window;
-#[cfg(feature = "window")]
-mod window_session;
 
 pub mod aside_session;
 pub mod assets;

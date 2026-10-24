@@ -1,5 +1,5 @@
 //! Winit host commands, usable with any RenderBackend.
-use super::PlatformHost;
+use crate::hal::{DisplayMetrics, Host, PlatformHost, WindowControl};
 #[path = "winit_display.rs"]
 mod display;
 #[path = "winit_text.rs"]
@@ -62,7 +62,7 @@ impl WinitHost {
         );
     }
 }
-impl super::WindowControl for WinitHost {
+impl WindowControl for WinitHost {
     fn window_info(&mut self) -> reel_core::window::WindowInfo {
         self.display.info(&self.window)
     }
@@ -83,6 +83,32 @@ impl super::WindowControl for WinitHost {
             .set_cursor_position(winit::dpi::LogicalPosition::new(position[0], position[1]))
             .map(|()| true)
             .map_err(|error| error.to_string())
+    }
+}
+impl Host for WinitHost {
+    fn display_metrics(&self) -> DisplayMetrics {
+        let size = self.window.inner_size();
+        DisplayMetrics {
+            physical_size: [size.width, size.height],
+            scale_factor: self.window.scale_factor(),
+        }
+    }
+    fn set_title(&mut self, title: &str) {
+        self.window.set_title(title);
+    }
+    fn set_visible(&mut self, visible: bool) {
+        self.window.set_visible(visible);
+    }
+    fn wake_callback(&self) -> Arc<dyn Fn() + Send + Sync> {
+        let window = Arc::downgrade(&self.window);
+        Arc::new(move || {
+            if let Some(window) = window.upgrade() {
+                window.request_redraw();
+            }
+        })
+    }
+    fn ui_signal_handler(&self) -> impl FnMut(reel_ui::app::RenderRootSignal) + 'static {
+        WinitHost::ui_signal_handler(self)
     }
 }
 impl Clock for WinitHost {

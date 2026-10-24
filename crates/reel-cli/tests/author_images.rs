@@ -295,7 +295,7 @@ fn source_and_asb_share_real_image_frames_with_an_independent_asset_root() {
     ] {
         let checked = reel_cli::check(SOURCE, source_path).unwrap();
         let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
-        let packaged = reel_cli::decode_story(&artifact.bytes).unwrap();
+        let packaged = reel_player::distribution::decode_story(&artifact.bytes).unwrap();
         let program = packaged.program.package();
         assert_eq!(
             program.symbols[program.sources[0].path.index()],
@@ -324,7 +324,7 @@ fn cursor_source_and_asb_use_ordinary_image_resource_leases_after_owner_drop() {
     let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
     for story in [
         reel_cli::into_story(checked, "main::main").unwrap(),
-        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
     ] {
         let frame = render_at(story, &assets, true);
         let mut count = 0;
@@ -376,7 +376,7 @@ mod author_cursor {
         let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
         for compiled in [
             reel_cli::into_story(checked, "main::main").unwrap(),
-            reel_cli::decode_story(&artifact.bytes).unwrap(),
+            reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
         ] {
             let mut d = AsideSessionUi::from_compiled(
                 Session::new(SessionId(1), Epoch(1)).unwrap(),
@@ -487,7 +487,7 @@ mod author_geometry {
         let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
         for compiled in [
             reel_cli::into_story(checked, "main::main").unwrap(),
-            reel_cli::decode_story(&artifact.bytes).unwrap(),
+            reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
         ] {
             let mut driver = AsideSessionUi::from_compiled(
                 Session::new(SessionId(1), Epoch(1)).unwrap(),
@@ -694,7 +694,7 @@ mod author_geometry {
         let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
         for compiled in [
             reel_cli::into_story(checked, "main::main").unwrap(),
-            reel_cli::decode_story(&artifact.bytes).unwrap(),
+            reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
         ] {
             let mut driver = AsideSessionUi::from_compiled(
                 Session::new(SessionId(1), Epoch(1)).unwrap(),

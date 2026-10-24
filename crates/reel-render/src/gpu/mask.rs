@@ -256,7 +256,12 @@ pub(super) struct Inputs<'a> {
     pub source: &'a wgpu::TextureView,
     pub mask: &'a wgpu::TextureView,
     pub backdrop: &'a wgpu::TextureView,
-    pub images: Vec<&'a wgpu::TextureView>,
+    pub images: Vec<&'a super::resources::Image>,
+}
+/// GPU parameter storage plus a spill allocation only beyond the four-image inline capacity.
+pub(super) fn parameter_cost(images: usize) -> u64 {
+    let bytes = 96 + images as u64 * 16;
+    bytes * if images > 4 { 2 } else { 1 }
 }
 impl Compiled {
     #[expect(
@@ -276,7 +281,9 @@ impl Compiled {
     ) {
         let matrix = transform.as_coeffs();
         let (mode, progress, softness) = pipeline::operation_words(params.operation);
-        let mut words = [0_u32; 24];
+        let mut words =
+            smallvec::SmallVec::<[u32; 40]>::with_capacity(24 + inputs.images.len() * 4);
+        words.resize(24 + inputs.images.len() * 4, 0);
         words[..8].copy_from_slice(&[
             params.opacity.to_bits(),
             mode,
@@ -302,6 +309,22 @@ impl Compiled {
         );
         for (word, value) in words[16..21].iter_mut().zip(mask.parameters) {
             *word = value.to_bits();
+        }
+        for (parameters, image) in words[24..].chunks_exact_mut(4).zip(&inputs.images) {
+            let l = image.layout;
+            parameters.copy_from_slice(
+                &[
+                    l.content_size[0] as f32 / l.storage_size[0] as f32,
+                    l.content_size[1] as f32 / l.storage_size[1] as f32,
+                    f32::from(image.encoding == reel_ui::resources::ColorEncoding::Linear),
+                    match image.texture_format {
+                        Some(reel_core::texture::TextureFormat::Bc1Rgb) => 1.,
+                        Some(reel_core::texture::TextureFormat::Bc3Rgba) => 2.,
+                        _ => 0.,
+                    },
+                ]
+                .map(f32::to_bits),
+            );
         }
         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("mask parameters"),
@@ -350,7 +373,7 @@ impl Compiled {
                 .enumerate()
                 .map(|(i, image)| wgpu::BindGroupEntry {
                     binding: i as u32 + 8,
-                    resource: wgpu::BindingResource::TextureView(image),
+                    resource: wgpu::BindingResource::TextureView(&image.view),
                 }),
         );
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -386,6 +409,13 @@ fn shader(program: &MaskProgram, code: &mut impl std::fmt::Write) -> std::fmt::R
     let (_, after_coverage) = rest.split_once("/*END_MASK_COVERAGE*/").unwrap();
     code.write_str(before_fields)?;
     code.write_str(", padding: vec2<f32>, mask_uv0: vec4<f32>, mask_uv1: vec4<f32>, mask_values: vec4<f32>, mask_flags: vec4<f32>")?;
+    if !program.sources().is_empty() {
+        write!(
+            code,
+            ", mask_texels: array<vec4<f32>,{}>",
+            program.sources().len()
+        )?;
+    }
     code.write_str(before_coverage)?;
     code.write_str(after_coverage)?;
     code.write_str("\n@group(0) @binding(5) var repeat_x: sampler;\n@group(0) @binding(6) var repeat_y: sampler;\n@group(0) @binding(7) var repeat_xy: sampler;\n")?;
@@ -408,12 +438,22 @@ fn shader(program: &MaskProgram, code: &mut impl std::fmt::Write) -> std::fmt::R
                 coordinates: [x, y, sx, sy],
                 repeat,
             } => {
-                let sampler =
-                    ["linear_sampler", "repeat_x", "repeat_y", "repeat_xy"][repeat as usize];
-                writeln!(code, "let sample_{i}=textureSampleLevel(image_{image},{sampler},uv*vec2(n{sx},n{sy})+vec2(n{x},n{y}),0.0);").unwrap();
+                writeln!(code, "var coords_{i}=uv*vec2(n{sx},n{sy})+vec2(n{x},n{y});")?;
+                if repeat & 1 != 0 {
+                    writeln!(code, "coords_{i}.x=fract(coords_{i}.x);")?;
+                }
+                if repeat & 2 != 0 {
+                    writeln!(code, "coords_{i}.y=fract(coords_{i}.y);")?;
+                }
+                writeln!(
+                    code,
+                    "let texels_{i}=params.mask_texels[{image}];let half_{i}=0.5/vec2<f32>(textureDimensions(image_{image}));var sample_{i}=textureSampleLevel(image_{image},linear_sampler,clamp(coords_{i}*texels_{i}.xy,half_{i},texels_{i}.xy-half_{i}),0.0);if texels_{i}.w==1.0{{sample_{i}.a=1.0;}}if texels_{i}.w==2.0{{sample_{i}=vec4<f32>(min(sample_{i}.rgb,vec3<f32>(sample_{i}.a)),sample_{i}.a);}}"
+                )?;
                 match channel {
                     MaskChannel::Alpha => format!("sample_{i}.a"),
-                    MaskChannel::Gray => format!("mask_gray(sample_{i})"),
+                    MaskChannel::Gray => format!(
+                        "select(mask_gray(sample_{i}),dot(clamp(sample_{i}.rgb/max(sample_{i}.a,1.0e-20),vec3(0.0),vec3(1.0)),vec3(0.2126,0.7152,0.0722)),texels_{i}.z!=0.0)"
+                    ),
                 }
             }
             MaskOp::Add(a, b) => format!("n{a}+n{b}"),

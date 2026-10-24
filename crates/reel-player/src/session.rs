@@ -1044,11 +1044,9 @@ impl SessionUi {
             self.stage_dirty = true;
         }
     }
-    #[cfg(feature = "window")]
     pub(crate) fn has_stage_root(&self) -> bool {
         self.stage.as_ref().is_some_and(StageView::has_root)
     }
-    #[cfg(feature = "window")]
     pub(crate) fn images_need_poll(&self) -> bool {
         self.images_pending() || self.images.has_result_pending()
     }
@@ -1109,7 +1107,7 @@ impl SessionUi {
             }
         } else if images_ready {
             if let Some(mut view) = self.pending_stage.take() {
-                view.resolve_images(&self.images.loaded);
+                view.resolve_images(&self.images.loaded)?;
                 self.stage = Some(view);
                 self.stage_dirty = true;
                 self.images.commit();
@@ -1125,7 +1123,7 @@ impl SessionUi {
                 && candidate.can_layout_virtual_images(&self.images.loaded)
             {
                 let mut view = candidate.clone();
-                view.resolve_metadata(&self.images);
+                view.resolve_metadata(&self.images)?;
                 bridge.edit_widget(Self::stage_widget(bridge, root_id).unwrap(), |mut stage| {
                     StageWidget::sync(&mut stage.downcast::<StageWidget>(), &view);
                 });
@@ -1224,7 +1222,7 @@ impl SessionUi {
     ) -> Result<bool, Error> {
         let mut candidate = self.pending_stage.take();
         if let Some(view) = &mut candidate {
-            view.resolve_metadata(&self.images);
+            view.resolve_metadata(&self.images)?;
         }
         if let Some(view) = &candidate {
             bridge.edit_widget(Self::stage_widget(bridge, root_id).unwrap(), |mut stage| {
@@ -1288,7 +1286,7 @@ impl SessionUi {
         if let Some(mut view) = candidate {
             // Rebuild leases from this demand; previous accepted frames retain their own.
             self.images_waiting_presentation = true;
-            view.resolve_metadata(&self.images);
+            view.resolve_metadata(&self.images)?;
             view.resolve_tiles(&self.images, &regions);
             self.stage = Some(view);
             self.stage_dirty = true;

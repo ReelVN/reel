@@ -165,6 +165,8 @@ pub struct PaintCtx<'a> {
     pub(crate) global_state: &'a mut RenderRootState,
     pub(crate) widget_state: &'a mut WidgetState,
     pub(crate) children: ArenaMutList<'a, WidgetArenaNode>,
+    pub(crate) image_draws: &'a mut Vec<super::recorded_paint::ResourceDraw>,
+    pub(crate) command_cursor: &'a std::cell::Cell<usize>,
 }
 
 /// A context passed to [`Widget::accessibility`] method.
@@ -2472,11 +2474,29 @@ impl PaintCtx<'_> {
         self.widget_state.image_source_rect = rect;
     }
 
-    /// Bind this widget's filled image geometry to a decoded resource. The
-    /// recording retains its identity, sampler, transform and tint; the frame
-    /// resource snapshot must retain its lease. Children and masks are separate.
-    pub fn set_image_resource(&mut self, resource: Option<crate::resources::ResourceImageBrush>) {
-        self.widget_state.image_resource = resource;
+    /// Record one image rectangle and retain its actual resource for this draw.
+    /// `transform` maps geometry into widget coordinates; `source_transform`
+    /// maps that geometry into logical source pixels, including collapsed axes.
+    /// The frame snapshot must also admit the resource. Other draws are unchanged.
+    pub fn draw_resource_image<S: crate::imaging::PaintSink + ?Sized>(
+        &mut self,
+        painter: &mut crate::imaging::Painter<'_, S>,
+        resource: &crate::resources::ResourceLease,
+        bounds: Rect,
+        transform: Affine,
+        source_transform: Affine,
+        sampler: peniko::ImageSampler,
+    ) {
+        self.image_draws.push(super::recorded_paint::ResourceDraw {
+            command: self.command_cursor.get(),
+            resource: resource.clone(),
+            sampler,
+        });
+        painter
+            .fill(bounds, peniko::Color::WHITE)
+            .transform(transform)
+            .brush_transform(Some(source_transform))
+            .draw();
     }
 
     /// Multiply image brushes emitted by this widget by a linear premultiplied color.

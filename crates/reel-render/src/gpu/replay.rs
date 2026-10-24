@@ -589,9 +589,10 @@ impl Context<'_> {
         };
         if let Some((definition, uv)) = image_mask {
             self.transient(
-                96 + ((8 + definition.images.len()) * size_of::<wgpu::BindGroupEntry>()
-                    + definition.images.len() * size_of::<&wgpu::TextureView>())
-                    as u64,
+                super::mask::parameter_cost(definition.images.len())
+                    + ((8 + definition.images.len()) * size_of::<wgpu::BindGroupEntry>()
+                        + definition.images.len() * size_of::<&wgpu::TextureView>())
+                        as u64,
             )?;
             let pipeline = self.pipelines.masks.get(
                 self.gpu,
@@ -602,7 +603,7 @@ impl Context<'_> {
             let images = definition
                 .images
                 .iter()
-                .map(|handle| &self.images[handle].view)
+                .map(|handle| self.images[handle].as_ref())
                 .collect();
             pipeline.draw(
                 &self.gpu.device,
@@ -676,9 +677,10 @@ impl Context<'_> {
         ) * Affine::translate((-definition.bounds.x0, -definition.bounds.y0))
             * transform.inverse();
         self.transient(
-            96 + ((8 + definition.images.len()) * size_of::<wgpu::BindGroupEntry>()
-                + definition.images.len() * size_of::<&wgpu::TextureView>())
-                as u64,
+            super::mask::parameter_cost(definition.images.len())
+                + ((8 + definition.images.len()) * size_of::<wgpu::BindGroupEntry>()
+                    + definition.images.len() * size_of::<&wgpu::TextureView>())
+                    as u64,
         )?;
         let pipeline = self.pipelines.masks.get(
             self.gpu,
@@ -689,7 +691,7 @@ impl Context<'_> {
         let images = definition
             .images
             .iter()
-            .map(|handle| &self.images[handle].view)
+            .map(|handle| self.images[handle].as_ref())
             .collect();
         pipeline.draw(
             &self.gpu.device,

@@ -32,6 +32,36 @@ pub(super) struct ImageSampling {
     window: [f32; 4],
 }
 impl ImageSampling {
+    pub(super) fn with_layout(
+        rect: Option<Rect>,
+        layout: reel_core::texture::TextureLayout,
+        repeat: [bool; 2],
+    ) -> Self {
+        let rect = rect.or_else(|| {
+            (layout.content_size != layout.storage_size).then(|| {
+                Rect::from_origin_size(
+                    (0., 0.),
+                    (
+                        f64::from(layout.logical_size[0]),
+                        f64::from(layout.logical_size[1]),
+                    ),
+                )
+            })
+        });
+        let Some(rect) = rect else {
+            return Self::default();
+        };
+        let scale = layout.uv_scale();
+        Self {
+            window: [
+                (rect.x0 * scale[0]) as f32,
+                (rect.y0 * scale[1]) as f32,
+                (rect.width() * scale[0]) as f32 * if repeat[0] { -1. } else { 1. },
+                (rect.height() * scale[1]) as f32 * if repeat[1] { -1. } else { 1. },
+            ],
+        }
+    }
+    #[cfg(test)]
     pub(super) fn new(rect: Option<Rect>, size: [u32; 2], repeat: [bool; 2]) -> Self {
         let Some(rect) = rect else {
             return Self::default();

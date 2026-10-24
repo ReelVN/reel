@@ -68,7 +68,7 @@ fn sentence_timing_preserves_pauses_and_waits_for_presentation_before_continuing
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for compiled in [
         reel_cli::into_story(checked, "main::main").unwrap(),
-        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
     ] {
         let driver = AsideSessionUi::from_compiled(
             Session::new(SessionId(1), Epoch(1)).unwrap(),
@@ -192,7 +192,7 @@ fn source_and_asb_reading_controls_wait_for_presentation_and_preserve_choices() 
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for compiled in [
         reel_cli::into_story(checked, "main::main").unwrap(),
-        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
     ] {
         let driver = AsideSessionUi::from_compiled(
             Session::new(SessionId(1), Epoch(1)).unwrap(),
@@ -375,7 +375,7 @@ fn source_and_asb_skip_actions_follow_read_boundaries_release_and_choices() {
     let artifact = reel_cli::build(&checked, Some("main::main")).unwrap();
     for compiled in [
         reel_cli::into_story(checked, "main::main").unwrap(),
-        reel_cli::decode_story(&artifact.bytes).unwrap(),
+        reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
     ] {
         let driver = AsideSessionUi::from_compiled(
             Session::new(SessionId(3), Epoch(1)).unwrap(),

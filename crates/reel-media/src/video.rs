@@ -7,7 +7,7 @@ use h264_reader::nal::{
 use mp4::{Mp4Reader, Mp4Track, TrackType};
 use openh264::{decoder::Decoder, formats::YUVSource};
 pub use playback::*;
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, Seek, SeekFrom};
 use symphonia::core::{
     audio::{Audio, AudioBuffer, GenericAudioBufferRef, conv::FromSample, sample::Sample},
     codecs::audio::{AudioCodecParameters, AudioDecoder, well_known::CODEC_ID_AAC},
@@ -15,17 +15,20 @@ use symphonia::core::{
     units::{Duration, Timestamp},
 };
 
-pub trait MediaRead: Read + Seek + Send {}
-impl<T: Read + Seek + Send> MediaRead for T {}
+pub use crate::decode::MediaRead;
 
-pub use reel_core::image::{YuvColor, YuvMatrix, YuvTransfer};
-/// Top-down packed 8-bit YUV 4:2:0; no decoder-owned pointers escape.
+pub use reel_core::image::{Yuv420Layout, YuvColor, YuvMatrix, YuvTransfer};
+/// Owned top-down 8-bit YUV 4:2:0; no decoder-owned pointers escape.
 #[derive(Debug)]
 pub struct VideoFrame {
     pub pts: f64,
     pub duration: f64,
     pub width: u32,
     pub height: u32,
+    /// Planar Y/U/V or two-plane NV12; unused plane storage is empty.
+    pub layout: Yuv420Layout,
+    /// Producer byte strides, with a zero third entry for NV12.
+    pub row_strides: [u32; 3],
     pub planes: [Vec<u8>; 3],
     pub color: YuvColor,
 }
@@ -344,6 +347,12 @@ impl MovieDecoder {
                     duration,
                     width: width as u32,
                     height: height as u32,
+                    layout: Yuv420Layout::Planar,
+                    row_strides: [
+                        width as u32,
+                        width.div_ceil(2) as u32,
+                        width.div_ceil(2) as u32,
+                    ],
                     color: self.config.color,
                     planes: [
                         copy(frame.y(), ys, width, height),

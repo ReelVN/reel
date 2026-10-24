@@ -1,6 +1,6 @@
 use super::*;
 use crate::assets::AssetOptions;
-use reel_core::prepared_image::PreparedImage;
+use reel_core::prepared_image::{PreparedImage, TileEncoding};
 use reel_ui::{
     properties::ObjectFit,
     stage::{NodeKind, NodeProps, Stage},
@@ -25,6 +25,19 @@ pub(super) fn fixture() -> (
     mpsc::Receiver<()>,
     PathBuf,
 ) {
+    fixture_with_encoding(TileEncoding::Png)
+}
+fn fixture_with_encoding(
+    encoding: TileEncoding,
+) -> (
+    SessionUi,
+    PresentationBridge,
+    WidgetId,
+    Stage,
+    reel_ui::stage::NodeId,
+    mpsc::Receiver<()>,
+    PathBuf,
+) {
     let directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/reel-artifacts/prepared-image-runtime")
         .join(format!(
@@ -36,7 +49,7 @@ pub(super) fn fixture() -> (
                 .as_nanos()
         ));
     fs::create_dir_all(&directory).unwrap();
-    let manifest = PreparedImage::new(40001, 33, 128).unwrap();
+    let manifest = PreparedImage::new(40001, 33, 128, encoding).unwrap();
     fs::write(directory.join("long.reel-image"), manifest.encode()).unwrap();
     for level in 0..manifest.levels() {
         fs::create_dir_all(directory.join(format!("long.reel-image.tiles/{level}"))).unwrap();
@@ -44,11 +57,38 @@ pub(super) fn fixture() -> (
         for y in 0..height.div_ceil(manifest.tile_edge) {
             for x in 0..width.div_ceil(manifest.tile_edge) {
                 let [w, h] = manifest.tile_dimensions(level, x, y).unwrap();
-                image::RgbaImage::from_fn(w, h, |tx, ty| {
-                    image::Rgba([((x * 128 + tx) % 251) as u8, ty as u8, level as u8, 255])
-                })
-                .save(directory.join(PreparedImage::tile_source("long.reel-image", level, x, y)))
-                .unwrap();
+                let path = directory.join(manifest.tile_source("long.reel-image", level, x, y));
+                if encoding == TileEncoding::ReelTexture {
+                    use reel_core::texture::*;
+                    let descriptor = TextureDescriptor {
+                        format: if x % 2 == 0 {
+                            TextureFormat::Bc1Rgb
+                        } else {
+                            TextureFormat::Bc3Rgba
+                        },
+                        source_encoding: ColorEncoding::Srgb,
+                        layout: TextureLayout {
+                            logical_size: [w, h],
+                            content_size: [w, h],
+                            storage_size: [w.div_ceil(4) * 4, h.div_ceil(4) * 4],
+                        },
+                    };
+                    let header = TextureHeader::new(
+                        descriptor,
+                        TextureCodec::Raw,
+                        descriptor.byte_len().unwrap(),
+                    )
+                    .unwrap();
+                    let mut bytes = header.encode().to_vec();
+                    bytes.resize(bytes.len() + descriptor.byte_len().unwrap() as usize, 0);
+                    fs::write(path, bytes).unwrap();
+                } else {
+                    image::RgbaImage::from_fn(w, h, |tx, ty| {
+                        image::Rgba([((x * 128 + tx) % 251) as u8, ty as u8, level as u8, 255])
+                    })
+                    .save(path)
+                    .unwrap();
+                }
             }
         }
     }
@@ -101,6 +141,94 @@ pub(super) fn fixture() -> (
     ui.set_stage(&stage);
     let (bridge, widget) = super::tests::mount(&ui);
     (ui, bridge, widget, stage, image, wake, directory)
+}
+
+#[test]
+fn bc_tiles_load_as_blocks_and_bind_each_visible_draw() {
+    use reel_core::{
+        budget::{BudgetCategory, BudgetPool, QueueLimits},
+        identity::FrameId,
+    };
+    use reel_ui::{
+        frame::{BuildLimits, FrameBuild, FrameDraw, FrameInfo, FrameOp, StepBudget},
+        peniko::Brush,
+        resources::{ResourceData, ResourceSnapshot},
+    };
+    let (mut ui, mut bridge, widget, _, _, wake, _) =
+        fixture_with_encoding(TileEncoding::ReelTexture);
+    settle(&mut ui, &mut bridge, widget, &wake);
+    assert!(ui.images.loaded.len() >= 2);
+    assert!(ui.images.loaded.values().all(|lease|matches!(lease.data(),ResourceData::Texture{descriptor,..} if descriptor.format.is_compressed())));
+    assert!(
+        ui.images.pool.usage().bytes < 30_000,
+        "only native BC blocks of visible tiles and neighbors are resident"
+    );
+    let storage = ui.images.pool.clone();
+    let pool = BudgetPool::new(
+        BudgetCategory::CpuOutput,
+        QueueLimits {
+            max_requests: 32,
+            max_bytes: 8 << 20,
+        },
+    );
+    let source = bridge.record(FrameId(1)).unwrap();
+    let recorded: Vec<_> = source
+        .plan()
+        .layers
+        .iter()
+        .flat_map(|layer| &layer.command_owners)
+        .filter_map(|range| range.image_resource)
+        .map(|b| b.resource)
+        .collect();
+    assert!(recorded.len() >= 2);
+    let snapshot =
+        ResourceSnapshot::capture(ui.image_resources().iter().cloned().map(Ok), &pool).unwrap();
+    let mut build = FrameBuild::new(
+        source,
+        snapshot,
+        FrameInfo {
+            logical_size: [640., 420.],
+            physical_size: [640, 420],
+        },
+        BuildLimits { max_bytes: 4 << 20 },
+        &pool,
+    )
+    .unwrap();
+    while !build
+        .step(StepBudget {
+            max_commands: 64,
+            max_units: 65536,
+            max_bytes: 1 << 20,
+        })
+        .unwrap()
+        .complete
+    {}
+    let frame = build.finish().unwrap();
+    let handles: Vec<_> = frame
+        .commands()
+        .iter()
+        .filter_map(|c| match &c.op {
+            FrameOp::Draw(FrameDraw::Fill {
+                brush: Brush::Image(image),
+                ..
+            }) => Some(image.image.resource),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(handles, recorded);
+    assert!(handles.iter().all(|handle| {
+        frame
+            .resources()
+            .leases()
+            .iter()
+            .any(|lease| lease.handle() == *handle)
+    }));
+    drop(ui);
+    drop(bridge);
+    assert!(storage.usage().bytes > 0);
+    drop(frame);
+    assert_eq!(storage.usage().bytes, 0);
+    assert_eq!(pool.usage().bytes, 0);
 }
 fn settle(
     ui: &mut SessionUi,
@@ -337,7 +465,13 @@ fn two_dimensional_shared_sources_use_composed_ancestor_rotation_zoom_and_hidden
     ui.set_stage(&stage);
     ui.images.manifests.insert(
         "world.reel-image".into(),
-        PreparedImage::new(40001, 30001, 128).unwrap(),
+        PreparedImage::new(
+            40001,
+            30001,
+            128,
+            reel_core::prepared_image::TileEncoding::Png,
+        )
+        .unwrap(),
     );
     let (mut bridge, widget) = super::tests::mount(&ui);
     ui.sync(&mut bridge, widget).unwrap();

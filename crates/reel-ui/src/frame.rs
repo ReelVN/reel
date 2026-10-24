@@ -1787,11 +1787,10 @@ fn make_op(
                     }
                     let mut images = Vec::with_capacity(mask.images.len());
                     for image in mask.images.iter() {
-                        images.push(resources.image(image).ok_or(
-                            BuildErrorKind::MissingResource {
-                                blob_id: image.data.id(),
-                            },
-                        )?);
+                        if !resources.contains_image(image.handle()) {
+                            return Err(BuildErrorKind::InvalidRecord);
+                        }
+                        images.push(image.handle());
                     }
                     Ok(FrameImageMask {
                         program: mask.program,

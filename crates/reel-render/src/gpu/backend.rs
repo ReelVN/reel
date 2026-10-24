@@ -86,11 +86,27 @@ impl RenderBackend for WgpuBackend {
         RenderCaps {
             consumer: ConsumerKind::Device,
             rasterizes: true,
-            formats: &[
-                PixelFormat::Rgba8,
-                PixelFormat::Bgra8,
-                PixelFormat::LinearRgba16Float,
-            ],
+            formats: if self
+                .renderer
+                .gpu()
+                .device
+                .features()
+                .contains(wgpu::Features::TEXTURE_COMPRESSION_BC)
+            {
+                &[
+                    PixelFormat::Rgba8,
+                    PixelFormat::Bgra8,
+                    PixelFormat::LinearRgba16Float,
+                    PixelFormat::Bc1Rgb,
+                    PixelFormat::Bc3Rgba,
+                ]
+            } else {
+                &[
+                    PixelFormat::Rgba8,
+                    PixelFormat::Bgra8,
+                    PixelFormat::LinearRgba16Float,
+                ]
+            },
             effects: &[
                 RenderEffect::Groups,
                 RenderEffect::Clips,

@@ -24,6 +24,10 @@ pub struct RetainedAsset {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum InlineResource {
+    Texture {
+        descriptor: reel_core::texture::TextureDescriptor,
+        bytes: peniko::Blob<u8>,
+    },
     Image {
         image: peniko::ImageData,
         encoding: ColorEncoding,
@@ -34,6 +38,7 @@ enum InlineResource {
 impl InlineResource {
     fn bytes(&self) -> usize {
         match self {
+            Self::Texture { bytes, .. } => bytes.len(),
             Self::Image { image, .. } => image.data.len(),
             Self::Font(font) => font.len(),
             Self::Yuv(image) => image.byte_len(),
@@ -41,6 +46,10 @@ impl InlineResource {
     }
     fn data(&self) -> ResourceData {
         match self {
+            Self::Texture { descriptor, bytes } => ResourceData::Texture {
+                descriptor: *descriptor,
+                bytes: bytes.clone(),
+            },
             Self::Image { image, encoding } => ResourceData::Image {
                 image: image.clone(),
                 encoding: *encoding,
@@ -241,6 +250,12 @@ impl RetainedScene {
                             .resize(ticket.bytes() - key_bytes as u64)
                             .map_err(|_| retained::error(BuildErrorKind::Bytes))?;
                         SavedResourceKind::Inline(match lease.data() {
+                            ResourceData::Texture { descriptor, bytes } => {
+                                InlineResource::Texture {
+                                    descriptor: *descriptor,
+                                    bytes: bytes.clone(),
+                                }
+                            }
                             ResourceData::Image { image, encoding } => InlineResource::Image {
                                 image: image.clone(),
                                 encoding: *encoding,
@@ -260,6 +275,7 @@ impl RetainedScene {
                         live_bytes: 512
                             + lease.version().key.0.capacity() as u64
                             + match lease.data() {
+                                ResourceData::Texture { bytes, .. } => bytes.len() as u64,
                                 ResourceData::Image { image, .. } => image.data.len() as u64,
                                 ResourceData::Font(font) => font.len() as u64,
                                 ResourceData::Yuv420(image) => image.byte_len() as u64,
@@ -309,8 +325,10 @@ impl RetainedScene {
 fn asset_matches(asset: &RetainedAsset, lease: &ResourceLease) -> bool {
     matches!(
         (asset.kind, lease.data()),
-        (RetainedAssetKind::Image, ResourceData::Image { .. })
-            | (RetainedAssetKind::Font, ResourceData::Font(_))
+        (
+            RetainedAssetKind::Image,
+            ResourceData::Image { .. } | ResourceData::Texture { .. }
+        ) | (RetainedAssetKind::Font, ResourceData::Font(_))
     )
 }
 
@@ -545,7 +563,9 @@ impl RetainedRestore {
                 }
                 let lease = self.leases[index].as_ref().unwrap();
                 let kind = match lease.data() {
-                    ResourceData::Image { .. } => ResourceKind::Image,
+                    ResourceData::Image { .. } | ResourceData::Texture { .. } => {
+                        ResourceKind::Image
+                    }
                     ResourceData::Yuv420(_) => ResourceKind::Video,
                     ResourceData::Font(_) => ResourceKind::Font,
                     ResourceData::External { .. } => {

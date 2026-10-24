@@ -134,7 +134,13 @@ fn prepared_tiles_match_contiguous_image_through_rotated_camera() {
                 .as_nanos()
         ));
     fs::create_dir_all(directory.join("world.reel-image.tiles/0")).unwrap();
-    let manifest = PreparedImage::new(40001, 30001, 128).unwrap();
+    let manifest = PreparedImage::new(
+        40001,
+        30001,
+        128,
+        reel_core::prepared_image::TileEncoding::Png,
+    )
+    .unwrap();
     fs::write(directory.join("world.reel-image"), manifest.encode()).unwrap();
     // Smooth repeating RGB ramps plus partial alpha expose both wrong UVs and
     // double-blended antialiased seams. Gutters sample actual adjacent pixels.
@@ -149,7 +155,7 @@ fn prepared_tiles_match_contiguous_image_through_rotated_camera() {
     for y in 72..88 {
         for x in 70..88 {
             image::RgbaImage::from_fn(130, 130, |tx, ty| pixel(x * 128 + tx - 1, y * 128 + ty - 1))
-                .save(directory.join(PreparedImage::tile_source("world.reel-image", 0, x, y)))
+                .save(directory.join(manifest.tile_source("world.reel-image", 0, x, y)))
                 .unwrap();
         }
     }

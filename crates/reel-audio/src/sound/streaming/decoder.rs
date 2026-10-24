@@ -6,6 +6,11 @@ pub mod symphonia;
 
 use crate::frame::Frame;
 
+/// An owned, seekable encoded source usable by background decoding workers.
+/// The contract is independent of any software or hardware codec.
+pub trait AudioRead: std::io::Read + std::io::Seek + Send + Sync {}
+impl<T: std::io::Read + std::io::Seek + Send + Sync> AudioRead for T {}
+
 /// Decodes chunks of audio.
 pub trait Decoder: Send {
 	/// Errors that can occur when decoding audio.

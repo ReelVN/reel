@@ -138,6 +138,15 @@ pub(super) fn collect<'a>(
                 record: "missing image lease",
             })?;
             let (size, resident, staging, minimum_staging) = match source.data() {
+                ResourceData::Texture { descriptor, .. } => {
+                    let (resident, staging) = resources::texture_costs(*descriptor)?;
+                    (
+                        descriptor.layout.storage_size,
+                        resident,
+                        staging,
+                        resources::texture_row_bytes(*descriptor),
+                    )
+                }
                 ResourceData::Image { image, .. } => {
                     if image.format != ImageFormat::Rgba8 {
                         return Err(GpuError::Unsupported {

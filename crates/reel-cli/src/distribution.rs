@@ -1,20 +1,18 @@
-//! Build and load a relocatable author export through the ordinary ASB/AssetIo path.
+//! Build a relocatable author export through the ordinary ASB/AssetIo path.
 use crate::{Artifact, BuildProfile, project::Loaded};
-use aside_vm::bytecode::TextPool;
 use reel_package::{
-    archive::{ArchiveIndex, ArchiveKind, ArchiveWriter},
-    distribution::{Distribution, LooseResources, relative_path},
+    archive::{ArchiveKind, ArchiveWriter},
+    distribution::{Distribution, LooseResources, MAIN_PACKAGE, TEXT_POOL_ENTRY, relative_path},
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File},
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, Write},
     num::NonZeroU64,
     path::{Path, PathBuf},
 };
 
-pub const TEXT_POOL_ENTRY: &str = "__reel/text.pool";
-pub const MAIN_PACKAGE: &str = "game.asb";
+use reel_player::distribution::read_manifest;
 
 /// Add a prepared language index without changing bytecode or code identity.
 /// The content-addressed archive is already published beside the target ASB.
@@ -384,111 +382,4 @@ pub fn export(
     }
     backup.close()?;
     Ok(result)
-}
-
-pub fn read_manifest(path: &Path) -> io::Result<Distribution> {
-    reel_package::read_distribution(&mut File::open(path)?, Default::default())?
-        .ok_or_else(|| io::Error::other("ASB has no embedded distribution"))
-}
-
-pub struct LoadedDistribution {
-    pub package: reel_package::CodePackage,
-    pub root: PathBuf,
-    pub packages: Vec<PathBuf>,
-    pub loose: Option<PathBuf>,
-    pub catalogs: BTreeMap<String, String>,
-}
-
-/// Resource locations resolved once for either an ASB launch or editable export.
-pub struct ResourceContext {
-    pub packages: Vec<PathBuf>,
-    pub loose: Option<PathBuf>,
-    pub catalogs: BTreeMap<String, String>,
-}
-
-/// Interpret a distribution's package and loose-asset rules without decoding code.
-pub fn resource_context(root: &Path, manifest: Distribution) -> io::Result<ResourceContext> {
-    let mut packages = Vec::new();
-    if let Some(text) = manifest.text {
-        packages.push(root.join(text));
-    }
-    packages.extend(manifest.resources.into_iter().map(|name| root.join(name)));
-    let loose = match manifest.loose {
-        Some(LooseResources::Directory(directory)) => Some(root.join(directory)),
-        Some(LooseResources::Project) => {
-            let project = crate::project::find(root)?;
-            Some(
-                project
-                    .map_or_else(|| root.to_path_buf(), |project| project.root)
-                    .join("resources"),
-            )
-        }
-        None => None,
-    };
-    Ok(ResourceContext {
-        packages,
-        loose,
-        catalogs: manifest.catalogs,
-    })
-}
-
-pub fn load(path: &Path) -> io::Result<LoadedDistribution> {
-    let root = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."))
-        .canonicalize()?;
-    let bytes = fs::read(path)?;
-    let mut package = reel_package::decode(&bytes, Default::default()).map_err(io::Error::other)?;
-    // The decoded package owns its fields; release the ASB before loading text.
-    drop(bytes);
-    let manifest = package
-        .distribution()
-        .cloned()
-        .unwrap_or_else(|| Distribution {
-            text: None,
-            resources: vec![],
-            catalogs: BTreeMap::new(),
-            loose: Some(LooseResources::Project),
-        });
-    if let Some(text) = &manifest.text {
-        let path = root.join(text);
-        let mut file = File::open(&path)?;
-        let index = ArchiveIndex::read(&mut file)?;
-        if index.kind() != ArchiveKind::Text {
-            return Err(io::Error::other("text package has resource kind"));
-        }
-        for (locale, key) in &manifest.catalogs {
-            if index.get(key).is_none() {
-                return Err(io::Error::other(format!(
-                    "text archive lacks indexed catalog {locale}: {key}"
-                )));
-            }
-        }
-        if let Some(descriptor) = package.program().package().text_pool {
-            let entry = index
-                .get(TEXT_POOL_ENTRY)
-                .ok_or_else(|| io::Error::other("text package has no original text pool"))?;
-            if descriptor.byte_len != entry.length || descriptor.digest != entry.version {
-                return Err(io::Error::other("text pool does not match ASB"));
-            }
-            let len = usize::try_from(entry.length).map_err(io::Error::other)?;
-            let mut bytes = Vec::new();
-            bytes.try_reserve_exact(len).map_err(io::Error::other)?;
-            file.seek(SeekFrom::Start(entry.offset))?;
-            file.take(entry.length).read_to_end(&mut bytes)?;
-            let pool = TextPool::from_bytes(bytes).map_err(io::Error::other)?;
-            package = package.bind_text_pool(pool).map_err(io::Error::other)?;
-        }
-    } else if package.program().package().text_pool.is_some() {
-        return Err(io::Error::other("ASB requires a text package"));
-    }
-    let context = resource_context(&root, manifest)?;
-    Ok(LoadedDistribution {
-        package,
-        root,
-        packages: context.packages,
-        loose: context.loose,
-        catalogs: context.catalogs,
-    })
 }

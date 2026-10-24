@@ -70,6 +70,185 @@ fn counts(renderer: &Renderer, sets: usize) {
 
 #[test]
 #[ignore = "requires actual graphics adapter"]
+fn nv12_submit_preserves_producer_and_reuses_only_matching_completed_planes() {
+    use reel_core::{
+        budget::BudgetTicket,
+        identity::{AssetKey, ContentVersion, ResourceVersion},
+        image::{Yuv420Image, Yuv420Layout, Yuv420Storage, YuvColor, YuvMatrix, YuvTransfer},
+    };
+    use reel_ui::{
+        core::NewWidget,
+        frame::ImageAlphaLayout,
+        kurbo::{Point, Size},
+        resources::{ResourceRegistry, ResourceSnapshot},
+        widgets::Image,
+    };
+    #[derive(Debug)]
+    struct Pixels {
+        planes: [Vec<u8>; 3],
+        _ticket: BudgetTicket,
+    }
+    impl Yuv420Storage for Pixels {
+        fn plane(&self, i: usize) -> &[u8] {
+            &self.planes[i]
+        }
+    }
+    let pool = pool();
+    let make_frame = |layout, version| {
+        let (planes, strides) = match layout {
+            Yuv420Layout::Planar => ([vec![16; 32], vec![128; 8], vec![128; 8]], [4, 2, 2]),
+            // Last rows intentionally have no trailing padding.
+            Yuv420Layout::Nv12 => ([vec![16; 60], vec![128; 28], vec![]], [8, 8, 0]),
+        };
+        let bytes = planes.iter().map(|p| p.len() as u64).sum();
+        let pixels = Arc::new(Pixels {
+            planes,
+            _ticket: pool.reserve(bytes).unwrap(),
+        });
+        let weak = Arc::downgrade(&pixels);
+        let image = Yuv420Image::with_layout(
+            [4, 8],
+            YuvColor {
+                matrix: YuvMatrix::Bt601,
+                full_range: false,
+                transfer: YuvTransfer::Bt709,
+            },
+            layout,
+            strides,
+            pixels,
+        )
+        .unwrap();
+        let mut registry = ResourceRegistry::new(1, 64 << 10).unwrap();
+        let handle = registry
+            .register_yuv420(
+                ResourceVersion {
+                    key: AssetKey(format!("video-{version}")),
+                    version: ContentVersion([version; 32]),
+                },
+                image,
+            )
+            .unwrap();
+        let mut widget = RecordWidget::new(Scene::new());
+        widget.inner.add(
+            NewWidget::new(
+                Image::from_resource(registry.acquire(handle).unwrap())
+                    .with_alpha_layout(ImageAlphaLayout::TopBottom),
+            ),
+            Point::ZERO,
+            Size::new(400., 300.),
+        );
+        let mut bridge = widget_bridge(widget, Affine::IDENTITY);
+        let snapshot =
+            ResourceSnapshot::capture([registry.acquire(handle)].into_iter(), &pool).unwrap();
+        let mut build = FrameBuild::new(
+            bridge.record(FrameId(version.into())).unwrap(),
+            snapshot,
+            FrameInfo {
+                logical_size: [400., 300.],
+                physical_size: [400, 300],
+            },
+            limits(),
+            &pool,
+        )
+        .unwrap();
+        while !build.step(step_budget()).unwrap().complete {}
+        (build.finish().unwrap(), weak)
+    };
+    // Keep two submitted pictures and their upload batches alive together.
+    let mut renderer = renderer(super::super::GpuLimits {
+        max_inflight: 4,
+        ..Default::default()
+    });
+    let textures = || {
+        renderer
+            .gpu
+            .upload_creations
+            .textures
+            .load(Ordering::Relaxed)
+    };
+    let baseline = textures();
+    let (first, first_pixels) = make_frame(Yuv420Layout::Nv12, 1u8);
+    let prepared = renderer.prepare(&first).unwrap();
+    assert_eq!(
+        textures() - baseline,
+        2,
+        "NV12 keeps one Y and one RG8 UV texture"
+    );
+    renderer.submit(prepared).unwrap();
+    drop(first);
+    assert!(
+        first_pixels.upgrade().is_some(),
+        "submission owns the producer lease"
+    );
+    let (second, second_pixels) = make_frame(Yuv420Layout::Nv12, 2);
+    let prepared = renderer.prepare(&second).unwrap();
+    assert_eq!(
+        renderer
+            .gpu
+            .upload_creations
+            .textures
+            .load(Ordering::Relaxed)
+            - baseline,
+        4,
+        "in-flight planes cannot be overwritten"
+    );
+    renderer.submit(prepared).unwrap();
+    drop(second);
+    renderer
+        .gpu
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    renderer.poll().unwrap();
+    assert!(first_pixels.upgrade().is_none());
+    assert!(second_pixels.upgrade().is_none());
+    let (planar, _) = make_frame(Yuv420Layout::Planar, 3);
+    let prepared = renderer.prepare(&planar).unwrap();
+    assert_eq!(
+        renderer
+            .gpu
+            .upload_creations
+            .textures
+            .load(Ordering::Relaxed)
+            - baseline,
+        7,
+        "same-size NV12 textures cannot become planar textures"
+    );
+    renderer.submit(prepared).unwrap();
+    drop(planar);
+    renderer
+        .gpu
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    renderer.poll().unwrap();
+    let (third, third_pixels) = make_frame(Yuv420Layout::Nv12, 4);
+    let prepared = renderer.prepare(&third).unwrap();
+    assert_eq!(
+        renderer
+            .gpu
+            .upload_creations
+            .textures
+            .load(Ordering::Relaxed)
+            - baseline,
+        7,
+        "completed NV12 planes are reused"
+    );
+    renderer.submit(prepared).unwrap();
+    drop(third);
+    renderer
+        .gpu
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    renderer.poll().unwrap();
+    assert!(third_pixels.upgrade().is_none());
+    assert_eq!(renderer.usage().transient, 0);
+    assert_eq!(pool.usage().bytes, 0);
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter"]
 fn initialization_reuses_builtin_mask_without_holding_program_or_images() {
     use reel_ui::stage::MaskProgram;
     let renderer = renderer(Default::default());
@@ -1057,7 +1236,7 @@ fn subtree_invert_and_image_threshold_share_composite() {
     use reel_ui::{
         core::PaintImageMask,
         peniko::{ImageAlphaType, ImageFormat},
-        resources::{ColorEncoding, ResourceData, ResourceRegistry},
+        resources::{ColorEncoding, ResourceRegistry},
     };
     let pool = pool();
     let mut registry = ResourceRegistry::new(1, 65536).unwrap();
@@ -1075,9 +1254,6 @@ fn subtree_invert_and_image_threshold_share_composite() {
         )
         .unwrap();
     let lease = registry.acquire(handle).unwrap();
-    let ResourceData::Image { image, .. } = lease.data() else {
-        unreachable!()
-    };
     let mut renderer = renderer(Default::default());
     let program = reel_ui::stage::MaskProgram::image("mask".into());
     for (progress, invert) in [
@@ -1093,7 +1269,7 @@ fn subtree_invert_and_image_threshold_share_composite() {
         widget.opacity = 0.5;
         widget.mask = Some(PaintImageMask {
             program: program.clone(),
-            images: vec![image.clone()].into(),
+            images: vec![lease.clone()].into(),
             bounds: Rect::new(0., 0., 400., 300.),
             parameters: [progress, 0., 0., 0., f32::from(invert)],
         });
@@ -1142,7 +1318,7 @@ fn composed_masks_transform_sample_animate_and_retire() {
     use reel_ui::{
         core::PaintImageMask,
         peniko::{ImageAlphaType, ImageFormat},
-        resources::{ColorEncoding, ResourceData, ResourceRegistry},
+        resources::{ColorEncoding, ResourceRegistry},
         stage::{MaskChannel, MaskOp, MaskProgram},
     };
     use std::sync::Arc;
@@ -1172,10 +1348,7 @@ fn composed_masks_transform_sample_animate_and_retire() {
             )
             .unwrap();
         let lease = registry.acquire(handle).unwrap();
-        let ResourceData::Image { image, .. } = lease.data() else {
-            unreachable!()
-        };
-        images.push(image.clone());
+        images.push(lease.clone());
         handles.push(handle);
         versions.push(version);
     }

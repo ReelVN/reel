@@ -99,7 +99,7 @@ pub(in crate::aside) enum ImageField {
     /// and the lower half's encoded red channel as coverage, before transfer decoding.
     /// The visible height is half the encoded height; source_rect, slice and repeat
     /// use visible color pixels. Image and video share bindings and execution snapshots.
-    /// Whole PNG/JPEG images and decoded video frames support top_bottom.
+    /// Whole images, prepared textures and decoded video frames support top_bottom.
     #[aside(name="alpha_layout",ty=String,default="native")]
     AlphaLayout,
 }

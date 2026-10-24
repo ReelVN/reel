@@ -2,6 +2,7 @@ use super::*;
 mod cursor;
 mod flow;
 mod input_focus;
+mod prepared_textures;
 mod radio_navigation;
 mod retained;
 mod scroll_alignment;
@@ -1348,13 +1349,29 @@ fn particle_bounds_follow_each_captured_extent_after_resize_and_append() {
         .unwrap();
     stage.replace(id).unwrap();
     let mut view = StageView::capture(&stage);
-    Arc::make_mut(view.root.as_mut().unwrap()).images.image = Some(ImageData {
-        data: Blob::new(Arc::new(vec![255_u8; 2 * 4 * 4])),
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: 2,
-        height: 4,
-    });
+    let mut registry = reel_ui::resources::ResourceRegistry::new(1, 65536).unwrap();
+    let handle = registry
+        .register(
+            reel_core::identity::ResourceVersion {
+                key: reel_core::identity::AssetKey("sprite.png".into()),
+                version: reel_core::identity::ContentVersion([1; 32]),
+            },
+            ResourceData::Image {
+                image: ImageData {
+                    data: Blob::new(Arc::new(vec![255_u8; 2 * 4 * 4])),
+                    format: ImageFormat::Rgba8,
+                    alpha_type: ImageAlphaType::Alpha,
+                    width: 2,
+                    height: 4,
+                },
+                encoding: reel_ui::resources::ColorEncoding::Srgb,
+            },
+            pool.reserve(32).unwrap(),
+        )
+        .unwrap();
+    Arc::make_mut(view.root.as_mut().unwrap())
+        .images
+        .image_resource = Some(registry.acquire(handle).unwrap());
     let widget = NewWidget::new(StageWidget::new(Some(&view)));
     let widget_id = widget.id();
     let root = RenderRoot::new(
@@ -1392,10 +1409,13 @@ fn particle_bounds_follow_each_captured_extent_after_resize_and_append() {
             unreachable!()
         };
         let draws = source
-            .scene()
-            .unwrap()
-            .commands()
+            .plan()
+            .layers
             .iter()
+            .flat_map(|layer| match &layer.kind {
+                reel_ui::app::VisualLayerKind::Scene(scene) => scene.commands(),
+                _ => &[],
+            })
             .filter(|command| matches!(command, reel_ui::imaging::record::Command::Draw(_)))
             .count();
         assert_eq!(
@@ -2574,7 +2594,13 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
     }));
     images.manifests.insert(
         "background.reel-image".into(),
-        PreparedImage::new(4096, 2048, 512).unwrap(),
+        PreparedImage::new(
+            4096,
+            2048,
+            512,
+            reel_core::prepared_image::TileEncoding::Png,
+        )
+        .unwrap(),
     );
     images.request_stage(&view);
     while !images.poll().unwrap() {
@@ -2582,14 +2608,14 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
             .recv_timeout(std::time::Duration::from_secs(10))
             .unwrap();
     }
-    view.resolve_metadata(&images);
+    view.resolve_metadata(&images).unwrap();
     let root = view.root.as_ref().unwrap();
     assert_eq!(
         root.children[0].images.tiled_size,
         Some(Size::new(4096., 2048.))
     );
-    let sprite = root.children[1].images.image.as_ref().unwrap();
-    assert_eq!([sprite.width, sprite.height], [160, 90]);
+    let sprite = root.children[1].images.image_resource.as_ref().unwrap();
+    assert_eq!(sprite.data().image_size(), Some([160, 90]));
     assert_eq!(view.resources.len(), 1);
     assert_eq!(
         view.resources[0].handle(),
@@ -2632,7 +2658,10 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
     images.request_stage(&view);
     let error = images.poll().unwrap_err();
     assert!(error.contains("snow.aside:7:3"), "{error}");
-    assert!(error.contains("whole PNG or JPEG sprite"), "{error}");
+    assert!(
+        error.contains("whole PNG, JPEG or .reel-texture sprite"),
+        "{error}"
+    );
     assert_eq!(images.loads, 1, "unsupported request is rejected before IO");
 }
 

@@ -11,7 +11,7 @@ use reel_ui::{
         BuildLimits, FrameTransition, RenderFrame, RetainBuild, RetainedAssetKind, RetainedRestore,
         SavedRetainedScene, StepBudget,
     },
-    resources::{ResourceData, ResourceLease},
+    resources::ResourceLease,
 };
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -282,10 +282,7 @@ impl Transitions {
                     .iter()
                     .map(|source| {
                         let lease = &self.masks.as_ref().unwrap().loaded[source.as_ref()];
-                        let ResourceData::Image { image, .. } = lease.data() else {
-                            unreachable!()
-                        };
-                        image.clone()
+                        lease.clone()
                     })
                     .collect();
                 PaintImageMask {

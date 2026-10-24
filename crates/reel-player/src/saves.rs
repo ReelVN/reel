@@ -235,7 +235,7 @@ impl DirectorySaves {
 }
 impl SaveStorage for DirectorySaves {
     fn copy(&self, source: &str, destination: &str) -> Result<(), StorageError> {
-        let mut input = fs::File::open(self.path(source))?;
+        let mut input = reel_storage::open(&self.path(source))?;
         let slot = self.metadata(&mut input)?;
         if slot.id != source {
             return Err("slot identity mismatch".into());
@@ -261,9 +261,7 @@ impl SaveStorage for DirectorySaves {
             }
             Ok(())
         })?;
-        if let Some(warning) = published.cleanup_warning {
-            eprintln!("{warning}");
-        }
+        publication_warnings(published);
         Ok(())
     }
 
@@ -284,13 +282,11 @@ impl SaveStorage for DirectorySaves {
                 .finish()?;
             Ok(())
         })?;
-        if let Some(warning) = published.cleanup_warning {
-            eprintln!("{warning}");
-        }
+        publication_warnings(published);
         Ok(())
     }
     fn read_data(&self, key: &str) -> Result<Option<DataDocument>, StorageError> {
-        let mut file = match fs::File::open(self.data_path(key)) {
+        let mut file = match reel_storage::open(&self.data_path(key)) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
@@ -314,8 +310,11 @@ impl SaveStorage for DirectorySaves {
         Ok(Some(data))
     }
     fn delete_data(&self, key: &str) -> Result<(), StorageError> {
-        match fs::remove_file(self.data_path(key)) {
-            Ok(()) => Ok(()),
+        match reel_storage::remove(&self.data_path(key)) {
+            Ok(published) => {
+                publication_warnings(published);
+                Ok(())
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error.into()),
         }
@@ -359,13 +358,11 @@ impl SaveStorage for DirectorySaves {
             }
             Ok(())
         })?;
-        if let Some(warning) = published.cleanup_warning {
-            eprintln!("{warning}");
-        }
+        publication_warnings(published);
         Ok(())
     }
     fn thumbnail(&self, slot: &str) -> Result<Option<Vec<u8>>, StorageError> {
-        let mut file = fs::File::open(self.path(slot))?;
+        let mut file = reel_storage::open(&self.path(slot))?;
         if self.metadata(&mut file)?.id != slot {
             return Err("slot identity mismatch".into());
         }
@@ -378,7 +375,7 @@ impl SaveStorage for DirectorySaves {
         Ok(Some(bytes))
     }
     fn read(&self, slot: &str) -> Result<SessionSnapshot, StorageError> {
-        let mut file = fs::File::open(self.path(slot))?;
+        let mut file = reel_storage::open(&self.path(slot))?;
         if self.metadata(&mut file)?.id != slot {
             return Err("slot identity mismatch".into());
         }
@@ -392,14 +389,17 @@ impl SaveStorage for DirectorySaves {
         Ok(SessionSnapshot::decode(&bytes)?)
     }
     fn delete(&self, slot: &str) -> Result<(), StorageError> {
-        match fs::remove_file(self.path(slot)) {
-            Ok(()) => Ok(()),
+        match reel_storage::remove(&self.path(slot)) {
+            Ok(published) => {
+                publication_warnings(published);
+                Ok(())
+            }
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error.into()),
         }
     }
     fn list(&self) -> Result<Vec<SaveSlot>, StorageError> {
-        let entries = match fs::read_dir(&self.root) {
+        let entries = match reel_storage::entries(&self.root) {
             Ok(entries) => entries,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error.into()),
@@ -407,13 +407,17 @@ impl SaveStorage for DirectorySaves {
         let mut slots = Vec::new();
         for entry in entries {
             let entry = entry?;
-            if entry.path().extension().is_some_and(|e| e == "save") && entry.file_type()?.is_file()
-            {
-                slots.push(self.metadata(&mut fs::File::open(entry.path())?)?);
+            if entry.extension().is_some_and(|e| e == "save") {
+                slots.push(self.metadata(&mut reel_storage::open(&entry)?)?);
             }
         }
         slots.sort_by(|a, b| a.id.cmp(&b.id));
         Ok(slots)
+    }
+}
+fn publication_warnings(published: reel_storage::Published) {
+    if let Some(warning) = published.cleanup_warning {
+        eprintln!("{warning}");
     }
 }
 struct LimitedWriter<W> {
