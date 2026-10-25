@@ -75,6 +75,8 @@ bitrate = 4000000
 
 The first matching rule applies; unmatched files retain their original content. Use `convert = "copy"` to preserve specific files. Selection resolves common assets and target overrides before conversion. Texture scaling preserves logical dimensions and `source_rect` coordinates. Scripts keep their existing image and audio paths.
 
+For smooth gradients, place a texture rule with `format = "rgba8"` and `dither = "ordered"` before the general texture rule. Dithering distributes color quantization error and preserves alpha; RGBA8 uses eight times the texture memory of BC1. For a single file, run `reel prepare-texture image.png --output image.reel-texture --format rgba8 --dither ordered`.
+
 For long images or atlases, place a `convert = "tiles"` rule before the general texture rule. `tile_size = 510` leaves room for gutters in a 512-pixel texture; `first_level = 1` stores half density and smaller levels. The rule also accepts `format` and `power_of_two`. The original logical path and atlas crop coordinates remain usable, while loading follows the visible tiles.
 
 ```sh

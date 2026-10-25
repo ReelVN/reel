@@ -7,6 +7,9 @@
 //! component; `**` crosses directories). Source target selection runs first.
 //! Texture `scale` changes texel density while preserving logical coordinates;
 //! `size = [width, height]` instead fits artwork inside an explicit box.
+//! Texture rules with `format = "rgba8"` may select `dither = "ordered"` to spread
+//! linear RGB rounding across a fixed 8x8 pattern; the default is `"none"`.
+//! Alpha remains undithered. Ordered dithering does not apply to block formats or tiles.
 //! Tile rules retain the logical image path and publish adjacent pyramid tiles.
 //! `tile_size` defaults to 510 content pixels plus a one-pixel gutter per side;
 //! `first_level = 1` starts at half density. `format` and `power_of_two` apply to
@@ -82,6 +85,7 @@ struct RuleInput {
     scale: Option<f64>,
     size: Option<[u32; 2]>,
     format: Option<prepare_texture::Format>,
+    dither: Option<prepare_texture::Dither>,
     power_of_two: Option<bool>,
     bitrate: Option<u32>,
     tile_size: Option<u32>,
@@ -111,6 +115,7 @@ enum Recipe {
         size: Option<[u32; 2]>,
         format: prepare_texture::Format,
         power_of_two: bool,
+        dither: prepare_texture::Dither,
     },
     Tiles {
         tile_size: u32,
@@ -149,6 +154,9 @@ impl RuleInput {
             .build()
             .map_err(invalid)?
             .compile_matcher();
+        if self.dither.is_some() && !matches!(self.convert, Convert::Texture) {
+            return Err(invalid("dither belongs to texture rules"));
+        }
         if !matches!(self.convert, Convert::Tiles)
             && (self.tile_size.is_some() || self.first_level.is_some())
         {
@@ -233,6 +241,15 @@ impl RuleInput {
                 Recipe::Copy
             }
             Convert::Texture => {
+                let format = self.format.unwrap_or_default();
+                let dither = self.dither.unwrap_or_default();
+                prepare_texture::Options {
+                    format,
+                    dither,
+                    ..Default::default()
+                }
+                .validate()
+                .map_err(invalid)?;
                 if self.bitrate.is_some() {
                     return Err(invalid("bitrate belongs to opus or video rules"));
                 }
@@ -251,7 +268,8 @@ impl RuleInput {
                 Recipe::Texture {
                     scale,
                     size: self.size,
-                    format: self.format.unwrap_or_default(),
+                    format,
+                    dither,
                     power_of_two: self.power_of_two.unwrap_or(false),
                 }
             }
@@ -678,6 +696,7 @@ fn convert(source: &Path, output: &Path, recipe: &Recipe, memory_bytes: u64) -> 
                 max_size: None,
                 format: *format,
                 power_of_two: *power_of_two,
+                dither: prepare_texture::Dither::None,
             },
             memory_bytes,
         )
@@ -688,11 +707,13 @@ fn convert(source: &Path, output: &Path, recipe: &Recipe, memory_bytes: u64) -> 
             size,
             format,
             power_of_two,
+            dither,
         } => {
             let options = prepare_texture::Options {
                 max_size: *size,
                 power_of_two: *power_of_two,
                 format: *format,
+                dither: *dither,
             };
             prepare_texture::prepare_scaled_bounded(source, output, options, *scale, memory_bytes)
                 .map(|(_, workspace)| workspace)

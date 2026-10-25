@@ -75,6 +75,8 @@ bitrate = 4000000
 
 规则按顺序取首个匹配，未匹配的文件直接使用原内容；`convert = "copy"` 可保留特定文件。先选取公共素材和平台覆盖，再应用转换。纹理缩放保留原有逻辑尺寸和 `source_rect` 坐标；原脚本中的图片、音频路径继续使用。
 
+给渐变素材单独配置 `format = "rgba8"` 与 `dither = "ordered"`，并把该规则放在通用纹理规则之前。抖动分散颜色量化误差，alpha 保持不变；RGBA8 的纹理内存是 BC1 的八倍。单个文件可运行 `reel prepare-texture image.png --output image.reel-texture --format rgba8 --dither ordered`。
+
 长图和图集可在通用纹理规则前配置 `convert = "tiles"`。`tile_size = 510` 为 512 像素纹理留出边缘，`first_level = 1` 保存半尺寸及更小层级；同一规则也接受 `format` 和 `power_of_two`。原有逻辑路径与图集裁剪坐标继续使用，运行时按可见瓦片加载。
 
 ```sh

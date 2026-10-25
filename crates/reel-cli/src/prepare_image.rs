@@ -45,6 +45,11 @@ pub fn prepare_bounded(
     texture_options: crate::prepare_texture::Options,
     memory_bytes: u64,
 ) -> Result<(PreparedImage, u64), String> {
+    if texture_options.dither != crate::prepare_texture::Dither::None {
+        return Err(
+            "ordered dithering is supported by texture conversion, not tiled images".into(),
+        );
+    }
     if output
         .extension()
         .is_none_or(|extension| extension != "reel-image")
@@ -406,6 +411,7 @@ mod tests {
             power_of_two: true,
             format: crate::prepare_texture::Format::Rgba8,
             max_size: None,
+            dither: crate::prepare_texture::Dither::None,
         };
         let expected = PreparedImage::new(17, 9, 6, TileEncoding::ReelTexture)
             .unwrap()

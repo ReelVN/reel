@@ -222,6 +222,9 @@ pub struct PrepareTexture {
     /// Auto selects BC1 for opaque artwork and BC3 for transparent artwork.
     #[arg(long, value_enum, default_value = "auto")]
     pub format: reel_cli::prepare_texture::Format,
+    /// Stable offline RGB quantization; ordered requires --format rgba8.
+    #[arg(long, value_enum, default_value = "none")]
+    pub dither: reel_cli::prepare_texture::Dither,
 }
 
 #[derive(Args)]
