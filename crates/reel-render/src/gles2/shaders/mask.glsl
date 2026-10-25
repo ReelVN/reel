@@ -1,7 +1,7 @@
 #version 100
 precision highp float;
 uniform sampler2D u_image0,u_image1,u_image2,u_image3;
-uniform vec4 u_ops[64],u_texels[4],u_dimensions[4];
+uniform vec4 u_ops[32],u_texels[4],u_dimensions[4];
 uniform vec4 u_uv0,u_uv1,u_values,u_flags;
 uniform vec2 u_output_size;
 uniform int u_count;
@@ -15,12 +15,14 @@ void main(){
  float nodes[32];float value=0.0;
  for(int i=0;i<32;i++){
   if(i>=u_count)break;
-  vec4 a=u_ops[i*2],b=u_ops[i*2+1];int op=int(a.x);
+  vec4 a=u_ops[i];int op=int(a.x);
   if(op==0)value=a.y;
   else if(op==1){if(a.y<0.5)value=u_values.x;else if(a.y<1.5)value=u_values.y;else if(a.y<2.5)value=u_values.z;else value=u_values.w;}
   else if(op==2||op==3){
-   int image=int(a.y);vec2 at=uv*vec2(nodes[int(b.x)],nodes[int(b.y)])+vec2(nodes[int(a.z)],nodes[int(a.w)]);
-   if(mod(b.z,2.0)>0.5)at.x=fract(at.x);if(b.z>1.5)at.y=fract(at.y);
+   int image=int(a.y);vec2 offset=vec2(nodes[int(mod(a.z,32.0))],nodes[int(floor(a.z/32.0))]);
+   vec2 scale=vec2(nodes[int(mod(a.w,32.0))],nodes[int(mod(floor(a.w/32.0),32.0))]);
+   float repeat=floor(a.w/1024.0);vec2 at=uv*scale+offset;
+   if(mod(repeat,2.0)>0.5)at.x=fract(at.x);if(repeat>1.5)at.y=fract(at.y);
    vec4 texels=u_texels[image],dimensions=u_dimensions[image];vec2 half_texel=0.5/dimensions.xy;
    at=clamp(at*texels.xy,half_texel,texels.xy-half_texel);
    vec4 color=image_sample(image,at);

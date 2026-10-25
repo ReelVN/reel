@@ -9,6 +9,42 @@ use reel_ui::{
     kurbo::Affine,
     stage::{MaskChannel, MaskOp},
 };
+
+pub(super) const OPERATION_CAPACITY: usize = 32;
+// 32 operation vectors, two image arrays, four parameter/transform vectors,
+// the output size and the operation count. Scalar packing can use fewer slots.
+pub(super) const UNIFORM_VECTORS: u32 = OPERATION_CAPACITY as u32 + 4 + 4 + 4 + 1 + 1;
+
+fn encode_operation(operation: &MaskOp) -> [f32; 4] {
+    match *operation {
+        MaskOp::Constant(bits) => [0., f32::from_bits(bits), 0., 0.],
+        MaskOp::Parameter(p) => [1., f32::from(p), 0., 0.],
+        MaskOp::Sample {
+            image,
+            channel,
+            coordinates: [x, y, sx, sy],
+            repeat,
+        } => [
+            if channel == MaskChannel::Alpha {
+                2.
+            } else {
+                3.
+            },
+            image as f32,
+            // Validated references fit in five bits. These small integers are
+            // exact in GLSL highp floats and share the otherwise spare lanes.
+            x as f32 + 32. * y as f32,
+            sx as f32 + 32. * sy as f32 + 1024. * f32::from(repeat),
+        ],
+        MaskOp::Add(a, b) => [4., a as f32, b as f32, 0.],
+        MaskOp::Subtract(a, b) => [5., a as f32, b as f32, 0.],
+        MaskOp::Multiply(a, b) => [6., a as f32, b as f32, 0.],
+        MaskOp::Pow(a, p) => [7., a as f32, f32::from_bits(p), 0.],
+        MaskOp::Clamp(a, min, max) => [8., a as f32, f32::from_bits(min), f32::from_bits(max)],
+        MaskOp::Smoothstep(a, b, x) => [9., a as f32, b as f32, x as f32],
+        MaskOp::ImageThreshold { alpha, gray } => [10., alpha as f32, gray as f32, 0.],
+    }
+}
 impl Context<'_> {
     pub fn mask_expression(
         &mut self,
@@ -34,44 +70,9 @@ impl Context<'_> {
             1. / definition.bounds.height(),
         ) * Affine::translate((-definition.bounds.x0, -definition.bounds.y0))
             * transform.inverse();
-        let mut operations = [[0.; 4]; 64];
+        let mut operations = [[0.; 4]; OPERATION_CAPACITY];
         for (index, operation) in definition.program.operations().iter().enumerate() {
-            let (a, b) = match *operation {
-                MaskOp::Constant(bits) => ([0., f32::from_bits(bits), 0., 0.], [0.; 4]),
-                MaskOp::Parameter(p) => ([1., f32::from(p), 0., 0.], [0.; 4]),
-                MaskOp::Sample {
-                    image,
-                    channel,
-                    coordinates: [x, y, sx, sy],
-                    repeat,
-                } => (
-                    [
-                        if channel == MaskChannel::Alpha {
-                            2.
-                        } else {
-                            3.
-                        },
-                        image as f32,
-                        x as f32,
-                        y as f32,
-                    ],
-                    [sx as f32, sy as f32, f32::from(repeat), 0.],
-                ),
-                MaskOp::Add(a, b) => ([4., a as f32, b as f32, 0.], [0.; 4]),
-                MaskOp::Subtract(a, b) => ([5., a as f32, b as f32, 0.], [0.; 4]),
-                MaskOp::Multiply(a, b) => ([6., a as f32, b as f32, 0.], [0.; 4]),
-                MaskOp::Pow(a, p) => ([7., a as f32, f32::from_bits(p), 0.], [0.; 4]),
-                MaskOp::Clamp(a, min, max) => (
-                    [8., a as f32, f32::from_bits(min), f32::from_bits(max)],
-                    [0.; 4],
-                ),
-                MaskOp::Smoothstep(a, b, x) => ([9., a as f32, b as f32, x as f32], [0.; 4]),
-                MaskOp::ImageThreshold { alpha, gray } => {
-                    ([10., alpha as f32, gray as f32, 0.], [0.; 4])
-                }
-            };
-            operations[index * 2] = a;
-            operations[index * 2 + 1] = b;
+            operations[index] = encode_operation(operation);
         }
         let white = self.white()?;
         let mut images = Vec::with_capacity(4);
@@ -140,5 +141,40 @@ impl Context<'_> {
             self.gl_scissor(),
         )?;
         Ok(target)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn packed_sample_references_preserve_coordinates_and_repeat_bits() {
+        for repeat in 0..4 {
+            for x in 0..32 {
+                for y in 0..32 {
+                    let sx = 31 - x;
+                    let sy = 31 - y;
+                    let value = encode_operation(&MaskOp::Sample {
+                        image: 3,
+                        channel: MaskChannel::Gray,
+                        coordinates: [x, y, sx, sy],
+                        repeat,
+                    });
+                    assert_eq!(value[0..2], [3., 3.]);
+                    // Decode with the same floating point operations as GLSL.
+                    assert_eq!(
+                        [value[2] % 32., (value[2] / 32.).floor()],
+                        [x as f32, y as f32]
+                    );
+                    assert_eq!(
+                        [value[3] % 32., (value[3] / 32.).floor() % 32.],
+                        [sx as f32, sy as f32]
+                    );
+                    assert_eq!((value[3] / 1024.).floor(), f32::from(repeat));
+                }
+            }
+        }
+        assert!(UNIFORM_VECTORS <= 64);
     }
 }

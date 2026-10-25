@@ -267,7 +267,7 @@ impl GlesBackend {
         }
         for mask in &plan.masks {
             let caps = self.context.capabilities();
-            if mask.definition.program.operations().len() > 32 {
+            if mask.definition.program.operations().len() > mask::OPERATION_CAPACITY {
                 return Err(GlesError::Unsupported {
                     at: mask.at,
                     record: "mask graph exceeds the device interpreter capacity",
@@ -275,7 +275,7 @@ impl GlesBackend {
             }
             if mask.definition.images.len() > 4
                 || caps.max_texture_units < 4
-                || caps.max_fragment_uniform_vectors < 77
+                || caps.max_fragment_uniform_vectors < mask::UNIFORM_VECTORS
             {
                 return Err(GlesError::Unsupported {
                     at: mask.at,
