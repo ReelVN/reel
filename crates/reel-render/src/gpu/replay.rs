@@ -291,6 +291,37 @@ impl Context<'_> {
                     )?;
                 }
                 FrameOp::PushGroup(group) => {
+                    let boundary = current.transitions_enabled
+                        && current
+                            .drawing
+                            .transitions()
+                            .get(current.transition_next)
+                            .is_some_and(|t| {
+                                t.commands.start < current.offset.unwrap() + current.next + 2
+                            })
+                        || self.capture
+                            && current.offset.is_some_and(|offset| {
+                                current
+                                    .drawing
+                                    .capture_exclusion_end(offset + current.next)
+                                    .is_some()
+                            });
+                    if !boundary
+                        && let Some((draw, draw_at)) = crate::common::scopes::inline_group_fill(
+                            group,
+                            &current.commands[current.next..],
+                        )
+                    {
+                        self.draw(
+                            current.drawing,
+                            &current.scopes.last().target,
+                            &draw,
+                            transform,
+                            draw_at,
+                        )?;
+                        current.next += 2;
+                        continue;
+                    }
                     blend_code(group.composite.blend).ok_or(GpuError::Unsupported {
                         at,
                         record: "group blend mode",
