@@ -15,6 +15,7 @@ static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 /// Run with REEL_PROFILE_PACKAGE pointing at game.asb and --ignored --nocapture.
 /// REEL_PROFILE_FRAMES optionally advances its clock at 60 Hz after startup.
 /// REEL_PROFILE_RESOURCES optionally supplies an existing distribution's asset paths.
+/// REEL_PROFILE_HEAP_MIB overrides the 24 MiB heap allowance beyond retained code.
 /// REEL_PROFILE_LAYOUT adds a CPU layout/presentation host, runs real elapsed time,
 /// and observes one second without VM work (up to 15 seconds). It records no pixels.
 /// REEL_PROFILE_SLICE_US optionally sets a wall deadline for each layout tick.
@@ -70,7 +71,10 @@ fn distribution_startup_cost() {
     );
     let story = reel_player::distribution::story_from_package(loaded.package).unwrap();
     let mut limits = VmLimits::default();
-    limits.heap.max_bytes = code_bytes as u64 + (24 << 20);
+    let heap_mib = std::env::var("REEL_PROFILE_HEAP_MIB")
+        .map(|value| value.parse::<u64>().unwrap())
+        .unwrap_or(24);
+    limits.heap.max_bytes = code_bytes as u64 + (heap_mib << 20);
     limits.slots.initial_capacity = 4096;
     limits.slots.max_capacity = 65_536;
     limits.max_tasks = 256;
