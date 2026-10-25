@@ -27,6 +27,8 @@ pub enum Command {
     PrepareImage(PrepareImage),
     /// Scale artwork and prepare GPU texture storage while retaining author coordinates.
     PrepareTexture(PrepareTexture),
+    /// Prepare this project's selected resource conversion rules.
+    PrepareResources(PrepareResources),
     /// Format every Aside source file in the current project's src directory.
     Fmt(Fmt),
 }
@@ -207,6 +209,20 @@ pub struct PrepareTexture {
     pub format: reel_cli::prepare_texture::Format,
 }
 
+#[derive(Args)]
+/// Project resource preparation and reporting options.
+pub struct PrepareResources {
+    /// Select the resource overlay and matching resources.toml target rules.
+    #[arg(long, value_name = "NAME", default_value = std::env::consts::OS, value_parser = resource_target)]
+    pub resource_target: String,
+    /// Maximum image/audio conversion workspace; cached outputs need no decode.
+    #[arg(long, value_name = "BYTES", default_value_t = std::num::NonZeroU64::new(reel_cli::resource_conversion::MEMORY_BYTES).unwrap())]
+    pub memory_bytes: std::num::NonZeroU64,
+    /// Render progress and results for a terminal or JSON consumer.
+    #[arg(long, value_enum, default_value = "human")]
+    pub format: Format,
+}
+
 fn texture_size(value: &str) -> Result<[u32; 2], String> {
     let (width, height) = value.split_once('x').ok_or("expected WIDTHxHEIGHT")?;
     let size = [width, height].map(|axis| axis.parse::<u32>().ok().filter(|n| *n > 0));
@@ -234,7 +250,7 @@ mod tests {
 
     #[test]
     fn resource_targets_are_shared_by_development_run_and_export() {
-        for command in ["dev", "run", "export"] {
+        for command in ["dev", "run", "export", "prepare-resources"] {
             assert!(Cli::try_parse_from(["reel", command, "--resource-target", "vita"]).is_ok());
             assert!(Cli::try_parse_from(["reel", command]).is_ok());
             for invalid in ["Vita", "../vita", "@vita", "vita/game", ""] {

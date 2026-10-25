@@ -4,12 +4,15 @@ use reel_audio::sound::streaming::{Decoder, symphonia::SymphoniaDecoder};
 use reel_core::budget::BudgetTicket;
 use std::sync::atomic::Ordering;
 
+mod opus;
+
 const READER_BYTES: u64 = 64 << 10;
 struct Software {
     decoder: SymphoniaDecoder,
     packet: Vec<Frame>,
     scratch: BudgetTicket,
     stopped: Arc<AtomicBool>,
+    codec_workspace: u64,
 }
 pub(super) fn open(
     source: Box<dyn MediaRead>,
@@ -17,22 +20,45 @@ pub(super) fn open(
     pool: BudgetPool,
     stopped: Arc<AtomicBool>,
 ) -> Result<Box<dyn AudioDecoder>, String> {
-    let scratch = pool.reserve(READER_BYTES).map_err(|e| e.message)?;
+    let mut scratch = pool.reserve(READER_BYTES).map_err(|e| e.message)?;
     if stopped.load(Ordering::Acquire) {
         return Err("audio preparation cancelled".into());
     }
-    let decoder = SymphoniaDecoder::from_reader(source, length).map_err(|e| e.to_string())?;
+    let mut codec_workspace = 0;
+    let decoder = SymphoniaDecoder::from_reader_with_decoder(source, length, |params, start_ts| {
+        if params
+            .channels
+            .as_ref()
+            .is_none_or(|channels| !(1..=2).contains(&channels.count()))
+        {
+            return Err(reel_audio::sound::FromFileError::UnsupportedChannelConfiguration);
+        }
+        if params.codec == symphonia::core::codecs::audio::well_known::CODEC_ID_OPUS {
+            let bytes = opus::buffer_bytes(params)?;
+            // Interleaved libopus output and the planar Symphonia buffer coexist.
+            scratch
+                .resize(READER_BYTES + 2 * bytes)
+                .map_err(|e| std::io::Error::other(e.message))?;
+            codec_workspace = bytes;
+            Ok(Box::new(opus::OpusDecoder::new(params, start_ts.get())?))
+        } else {
+            Ok(symphonia::default::get_codecs().make_audio_decoder(params, &Default::default())?)
+        }
+    })
+    .map_err(|e| e.to_string())?;
     Ok(Box::new(Software {
         decoder,
         packet: Vec::new(),
         scratch,
         stopped,
+        codec_workspace,
     }))
 }
 impl AudioDecoder for Software {
     fn info(&self) -> AudioInfo {
         AudioInfo {
             sample_rate: self.decoder.sample_rate(),
+            channels: self.decoder.channel_count() as u8,
             frames: (self.decoder.num_frames() != usize::MAX)
                 .then_some(self.decoder.num_frames() as u64),
         }
@@ -46,14 +72,13 @@ impl AudioDecoder for Software {
             .map_err(|e| e.to_string())
     }
     fn decode(&mut self, cancelled: &AtomicBool) -> Result<bool, String> {
-        self.packet = Vec::new();
-        self.packet = self
+        let decoded = self
             .decoder
-            .decode_reserved(|bytes| {
+            .decode_reserved_into(&mut self.packet, |bytes| {
                 if cancelled.load(Ordering::Acquire) || self.stopped.load(Ordering::Acquire) {
                     return Err(std::io::Error::other("audio preparation cancelled"));
                 }
-                let bytes = READER_BYTES
+                let bytes = (READER_BYTES + self.codec_workspace)
                     .checked_add(bytes as u64)
                     .ok_or_else(|| std::io::Error::other("audio workspace overflow"))?;
                 self.scratch
@@ -62,13 +87,13 @@ impl AudioDecoder for Software {
             })
             .map_err(|e| e.to_string())?;
         self.scratch
-            .resize(
-                self.scratch
-                    .bytes()
-                    .max(READER_BYTES + self.packet.capacity() as u64 * size_of::<Frame>() as u64),
-            )
+            .resize(self.scratch.bytes().max(
+                READER_BYTES
+                    + self.codec_workspace
+                    + self.packet.capacity() as u64 * size_of::<Frame>() as u64,
+            ))
             .map_err(|e| e.message)?;
-        Ok(!self.packet.is_empty())
+        Ok(decoded)
     }
     fn pcm(&self) -> &[Frame] {
         &self.packet

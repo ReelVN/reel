@@ -24,10 +24,8 @@ pub(super) struct Files {
 impl Files {
     pub(super) fn open(
         paths: impl IntoIterator<Item = PathBuf>,
-        overlay: Option<PathBuf>,
-        target: String,
+        overlay: Option<directory::Files>,
         temporary: &BudgetPool,
-        cache_capacity: usize,
     ) -> Result<Self, IoError> {
         let mut archives = Vec::new();
         let mut entries = BTreeMap::new();
@@ -46,9 +44,6 @@ impl Files {
             }
             archives.push(file);
         }
-        let overlay = overlay
-            .map(|root| directory::Files::for_target(root, cache_capacity, target))
-            .transpose()?;
         let workspace = if entries
             .values()
             .any(|e| matches!(e.descriptor.storage, EntryStorage::Blocks { .. }))

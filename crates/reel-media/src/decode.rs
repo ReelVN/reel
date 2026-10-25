@@ -5,7 +5,7 @@ use std::sync::{Arc, atomic::AtomicBool};
 
 pub use reel_audio::sound::streaming::AudioRead as MediaRead;
 
-#[cfg(feature = "decode")]
+#[cfg(any(feature = "decode", feature = "opus"))]
 mod software;
 
 /// The audible source timeline after codec priming and trailing padding.
@@ -13,6 +13,9 @@ mod software;
 pub struct AudioInfo {
     /// Source frames per second; codec rates and output device rates are separate.
     pub sample_rate: u32,
+    /// Encoded source channels: one (mono) or two (stereo). Mono PCM is duplicated
+    /// into the common stereo frames without changing this source metadata.
+    pub channels: u8,
     /// Audible source frames, or unknown until EOF.
     pub frames: Option<u64>,
 }
@@ -43,7 +46,8 @@ pub trait AudioDecoderFactory: std::fmt::Debug + Send + Sync {
     ) -> Result<Box<dyn AudioDecoder>, String>;
 }
 
-/// Opens software codecs with the `decode` feature using one borrowed PCM packet.
+/// Opens the selected software codecs using one borrowed, reusable PCM packet.
+/// `opus` enables Ogg/Opus; `decode` adds WAV, Vorbis, FLAC and MP3.
 #[derive(Debug, Default)]
 pub struct SoftwareAudioDecoderFactory;
 impl AudioDecoderFactory for SoftwareAudioDecoderFactory {
@@ -54,14 +58,14 @@ impl AudioDecoderFactory for SoftwareAudioDecoderFactory {
         budget: BudgetPool,
         stopped: Arc<AtomicBool>,
     ) -> Result<Box<dyn AudioDecoder>, String> {
-        #[cfg(feature = "decode")]
+        #[cfg(any(feature = "decode", feature = "opus"))]
         {
             software::open(source, length, budget, stopped)
         }
-        #[cfg(not(feature = "decode"))]
+        #[cfg(not(any(feature = "decode", feature = "opus")))]
         {
             let _ = (source, length, budget, stopped);
-            Err("software audio decoding requires the decode feature".into())
+            Err("software audio decoding requires the decode or opus feature".into())
         }
     }
 }

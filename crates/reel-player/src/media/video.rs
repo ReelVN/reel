@@ -138,9 +138,14 @@ impl MediaPlayer {
         poster: bool,
         paused: bool,
     ) -> Result<(StreamControl, VideoPlayback), String> {
+        let decoder = self
+            .options
+            .video_decoder
+            .clone()
+            .ok_or("video decoder is unavailable on this platform")?;
         let (control, stream) = self.assets.stream(&request.source)?;
         let cancel = control.clone();
-        let playback = VideoPlayback::start(
+        let playback = VideoPlayback::start_with_decoder(
             Box::new(stream),
             move || cancel.cancel(),
             VideoOptions {
@@ -153,6 +158,7 @@ impl MediaPlayer {
             },
             self.movies.budget.clone(),
             self.wake.clone(),
+            decoder,
         )?;
         playback.set_volume(request.volume)?;
         Ok((control, playback))

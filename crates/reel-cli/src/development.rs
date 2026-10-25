@@ -83,6 +83,11 @@ fn fingerprint(root: &Path, tool: &Path) -> io::Result<String> {
 }
 
 impl Cache {
+    /// Canonical source project owning this development artifact and resources.
+    pub fn project_root(&self) -> &Path {
+        &self.root
+    }
+
     /// Fingerprint source contents and the running tool without parsing the project.
     pub fn probe(directory: &Path) -> io::Result<Self> {
         Self::with_tool(directory, std::env::current_exe()?)

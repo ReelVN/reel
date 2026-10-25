@@ -1,4 +1,4 @@
-#![cfg(feature = "video")]
+#![cfg(feature = "video-software")]
 use reel_core::{
     budget::{BudgetCategory, BudgetPool, QueueLimits},
     clock::MonoTime,
@@ -31,6 +31,38 @@ fn source() -> Box<dyn MediaRead> {
     ))
 }
 #[test]
+fn software_factory_respects_session_workspace_budget_and_stop_flag() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let factory = SoftwareVideoDecoderFactory;
+    let tiny = BudgetPool::new(
+        BudgetCategory::CpuOutput,
+        QueueLimits {
+            max_requests: 32,
+            max_bytes: 1,
+        },
+    );
+    assert!(
+        factory
+            .open(source(), tiny.clone(), Arc::new(AtomicBool::new(false)))
+            .is_err()
+    );
+    assert_eq!(tiny.usage().bytes, 0);
+
+    let budget = pool();
+    let stopped = Arc::new(AtomicBool::new(false));
+    let mut decoder = factory
+        .open(source(), budget.clone(), stopped.clone())
+        .unwrap();
+    assert!(budget.usage().bytes > 0);
+    stopped.store(true, Ordering::Release);
+    assert!(decoder.next_packet().is_err());
+    drop(decoder);
+    assert_eq!(budget.usage().bytes, 0);
+}
+#[test]
 fn real_movie_shares_mixer_clock_pause_completion_and_reclaims_pcm() {
     let wake = WakeSignal::new(|| {});
     let budget = pool();
@@ -47,12 +79,13 @@ fn real_movie_shares_mixer_clock_pause_completion_and_reclaims_pcm() {
     let reclaim = AudioReclaimService::new(ReclaimLimits::default(), wake.clone()).unwrap();
     let mut mixer = KiraMixer::new(&format, MixerLimits::default(), &reclaim).unwrap();
     output.start(mixer.take_fill().unwrap()).ok().unwrap();
-    let mut movie = VideoPlayback::start(
+    let mut movie = VideoPlayback::start_with_decoder(
         source(),
         || {},
         VideoOptions::default(),
         budget.clone(),
         wake,
+        std::sync::Arc::new(SoftwareVideoDecoderFactory),
     )
     .unwrap();
     let mut sound = None;
@@ -175,14 +208,16 @@ fn silent_movie_uses_session_time_and_stop_remains_terminal() {
 }
 
 mod video_decode {
-    #![cfg(feature = "video")]
     use reel_media::video::{DecodedPacket, MovieDecoder};
 
     #[test]
     fn baseline_movie_decodes_every_picture_and_real_aac_samples() {
-        let mut decoder = MovieDecoder::new(Box::new(std::io::Cursor::new(
-            include_bytes!("fixtures/baseline-aac.mp4").as_slice(),
-        )))
+        let mut decoder = MovieDecoder::new(
+            Box::new(std::io::Cursor::new(
+                include_bytes!("fixtures/baseline-aac.mp4").as_slice(),
+            )),
+            super::pool(),
+        )
         .unwrap();
         assert_eq!((decoder.info().width, decoder.info().height), (64, 48));
         assert_eq!(decoder.info().audio_sample_rate, Some(48000));
@@ -224,9 +259,12 @@ mod video_decode {
 
     #[test]
     fn seek_decodes_from_idr_and_trims_audio_to_requested_sample() {
-        let mut decoder = MovieDecoder::new(Box::new(std::io::Cursor::new(
-            include_bytes!("fixtures/baseline-aac.mp4").as_slice(),
-        )))
+        let mut decoder = MovieDecoder::new(
+            Box::new(std::io::Cursor::new(
+                include_bytes!("fixtures/baseline-aac.mp4").as_slice(),
+            )),
+            super::pool(),
+        )
         .unwrap();
         decoder.seek(0.625).unwrap();
         let mut video = Vec::new();
@@ -248,9 +286,12 @@ mod video_decode {
     #[test]
     fn video_preserves_declared_matrix_range_and_transfer() {
         use reel_media::video::{YuvMatrix, YuvTransfer};
-        let mut decoder = MovieDecoder::new(Box::new(std::io::Cursor::new(
-            include_bytes!("fixtures/baseline-srgb.mp4").as_slice(),
-        )))
+        let mut decoder = MovieDecoder::new(
+            Box::new(std::io::Cursor::new(
+                include_bytes!("fixtures/baseline-srgb.mp4").as_slice(),
+            )),
+            super::pool(),
+        )
         .unwrap();
         assert_eq!(decoder.info().audio_sample_rate, None);
         let Some(DecodedPacket::Video(frame)) = decoder.next_packet().unwrap() else {
@@ -262,9 +303,12 @@ mod video_decode {
     }
     #[test]
     fn exclusive_segment_end_trims_real_aac_samples() {
-        let mut decoder = MovieDecoder::new(Box::new(std::io::Cursor::new(
-            include_bytes!("fixtures/baseline-aac.mp4").as_slice(),
-        )))
+        let mut decoder = MovieDecoder::new(
+            Box::new(std::io::Cursor::new(
+                include_bytes!("fixtures/baseline-aac.mp4").as_slice(),
+            )),
+            super::pool(),
+        )
         .unwrap();
         decoder.seek(0.2).unwrap();
         decoder.set_end(0.4);

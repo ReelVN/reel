@@ -34,6 +34,9 @@ pub struct PlayerOptions {
     /// Resource directory overlay, defaulting to the host OS name.
     /// This selects assets independently of the player platform.
     pub resource_target: String,
+    /// Prepared logical-to-physical resources supplied by authoring tools.
+    /// The player opens these files directly and leaves archive-only entries available.
+    pub resource_files: Option<std::collections::BTreeMap<String, std::path::PathBuf>>,
     /// Canonical language tags resolved through the same asset service as images and media.
     pub catalogs: crate::localization::CatalogIndex,
     pub media: crate::media::MediaOptions,
@@ -52,6 +55,7 @@ impl Default for PlayerOptions {
             asset_packages: None,
             asset_overlay: None,
             resource_target: std::env::consts::OS.into(),
+            resource_files: None,
             catalogs: Default::default(),
             media: Default::default(),
             title: "Reel".into(),

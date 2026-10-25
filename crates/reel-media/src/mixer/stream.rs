@@ -318,6 +318,69 @@ mod tests {
     use crate::decode::{AudioDecoderFactory, SoftwareAudioDecoderFactory};
     use reel_audio::sound::streaming::{Decoder, symphonia::SymphoniaDecoder};
     #[test]
+    fn opus_static_and_windowed_playback_share_audible_loop_positions() {
+        let bytes = include_bytes!("../../tests/fixtures/stereo.opus");
+        let pool = BudgetPool::new(
+            reel_core::budget::BudgetCategory::CpuOutput,
+            reel_core::budget::QueueLimits {
+                max_requests: 8,
+                max_bytes: 1 << 20,
+            },
+        );
+        let mut decoder = SoftwareAudioDecoderFactory
+            .open(
+                Box::new(std::io::Cursor::new(bytes)),
+                bytes.len() as u64,
+                pool.clone(),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .unwrap();
+        let mut reference = Vec::new();
+        while decoder.decode(&AtomicBool::new(false)).unwrap() {
+            reference.extend_from_slice(decoder.pcm());
+        }
+        assert_eq!(reference.len(), 6576);
+        drop(decoder);
+        for threshold in [0, 1 << 20] {
+            let sound = DecodedSound::prepare(
+                std::io::Cursor::new(bytes),
+                bytes.len() as u64,
+                pool.clone(),
+                threshold,
+                256,
+                Arc::new(|| {}),
+                &AtomicBool::new(false),
+                &SoftwareAudioDecoderFactory,
+            )
+            .unwrap();
+            assert_eq!(sound.data.frames.len(), reference.len());
+            for target in [0, 2000, 0, 2000, 0] {
+                sound.data.frames.seek(target);
+                let deadline = std::time::Instant::now() + Duration::from_secs(3);
+                loop {
+                    if let Some(actual) = sound.data.frames.frame(target) {
+                        assert_eq!(actual, reference[target]);
+                        break;
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "Opus window failed to refill"
+                    );
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+            drop(sound);
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            while pool.usage().bytes != 0 {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "Opus storage retained after retirement"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
+    #[test]
     fn unknown_length_seek_past_eof_scans_once_and_publishes_actual_end() {
         let bytes = include_bytes!("../../../../examples/assets/chime.wav").to_vec();
         let decoder =

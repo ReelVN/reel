@@ -1,11 +1,14 @@
 use super::AudioRead;
 use crate::{
 	frame::Frame,
-	sound::{FromFileError, symphonia::load_frames_from_buffer_ref},
+	sound::{FromFileError, symphonia::load_frames_from_buffer_ref_into},
 };
 use symphonia::core::{
 	audio::{Audio, GenericAudioBufferRef},
-	codecs::{CodecParameters, audio::AudioDecoder},
+	codecs::{
+		CodecParameters,
+		audio::{AudioCodecParameters, AudioDecoder, well_known::CODEC_ID_OPUS},
+	},
 	formats::{FormatReader, SeekMode, SeekTo, TrackType, probe::Hint},
 	io::{MediaSource, MediaSourceStream},
 	units::Timestamp,
@@ -18,12 +21,26 @@ pub struct SymphoniaDecoder {
 	sample_rate: u32,
 	num_frames: usize,
 	track_id: u32,
+	seek_preroll: usize,
+	timeline_offset: u64,
+	channel_count: usize,
 }
 
 impl SymphoniaDecoder {
 	/// Probe a native Symphonia media source.
 	pub fn new(media_source: Box<dyn MediaSource>) -> Result<Self, FromFileError> {
-		let codecs = symphonia::default::get_codecs();
+		Self::new_with_decoder(media_source, |params, _| {
+			Ok(symphonia::default::get_codecs().make_audio_decoder(params, &Default::default())?)
+		})
+	}
+
+	fn new_with_decoder(
+		media_source: Box<dyn MediaSource>,
+		make_decoder: impl FnOnce(
+			&AudioCodecParameters,
+			Timestamp,
+		) -> Result<Box<dyn AudioDecoder>, FromFileError>,
+	) -> Result<Self, FromFileError> {
 		let probe = symphonia::default::get_probe();
 		let mss = MediaSourceStream::new(media_source, Default::default());
 		let format_reader = probe.probe(
@@ -42,13 +59,33 @@ impl SymphoniaDecoder {
 		let sample_rate = audio_params
 			.sample_rate
 			.ok_or(FromFileError::UnknownSampleRate)?;
+		let channel_count = audio_params
+			.channels
+			.as_ref()
+			.ok_or(FromFileError::UnsupportedChannelConfiguration)?
+			.count();
+		// Symphonia 0.6 Ogg/Opus retains the raw granule clock. Convert the
+		// first audible position and total into the shared source timeline.
+		let timeline_offset = if audio_params.codec == CODEC_ID_OPUS {
+			(default_track.start_ts.get().max(0) as u64)
+				+ u64::from(default_track.delay.unwrap_or(0))
+		} else {
+			0
+		};
 		let num_frames = default_track
 			.num_frames
+			.map(|frames| frames.saturating_sub(timeline_offset))
 			.map(usize::try_from)
 			.transpose()
 			.map_err(|_| std::io::Error::other("audio frame count exceeds address space"))?
 			.unwrap_or(usize::MAX);
-		let decoder = codecs.make_audio_decoder(audio_params, &Default::default())?;
+		let decoder = make_decoder(audio_params, default_track.start_ts)?;
+		// RFC 7845 section 4.6 requires at least 80 ms of Opus pre-roll.
+		let seek_preroll = if audio_params.codec == CODEC_ID_OPUS {
+			3840
+		} else {
+			0
+		};
 		let track_id = default_track.id;
 		Ok(Self {
 			format_reader,
@@ -56,7 +93,15 @@ impl SymphoniaDecoder {
 			sample_rate,
 			num_frames,
 			track_id,
+			seek_preroll,
+			timeline_offset,
+			channel_count,
 		})
+	}
+
+	/// The encoded source channel count, before the common stereo PCM mapping.
+	pub fn channel_count(&self) -> usize {
+		self.channel_count
 	}
 
 	/// Probe a host reader without requiring the host to depend on Symphonia.
@@ -67,24 +112,51 @@ impl SymphoniaDecoder {
 		Self::new(Box::new(Reader { reader, length }))
 	}
 
+	/// Probe a host reader and construct its codec on the preparation worker.
+	/// The callback receives the track's raw start timestamp and may reserve the
+	/// codec's owned buffers before creating it.
+	pub fn from_reader_with_decoder(
+		reader: impl AudioRead + 'static,
+		length: u64,
+		make_decoder: impl FnOnce(
+			&AudioCodecParameters,
+			Timestamp,
+		) -> Result<Box<dyn AudioDecoder>, FromFileError>,
+	) -> Result<Self, FromFileError> {
+		Self::new_with_decoder(Box::new(Reader { reader, length }), make_decoder)
+	}
+
 	/// Decode the next nonempty PCM chunk, reserving storage for each packet.
 	/// Empty codec output (for example encoder priming) is consumed internally;
 	/// an empty result means the format reader reached EOF. The reservation
 	/// callback remains a cancellation checkpoint for every selected packet.
 	pub fn decode_reserved(
 		&mut self,
-		mut reserve: impl FnMut(usize) -> Result<(), std::io::Error>,
+		reserve: impl FnMut(usize) -> Result<(), std::io::Error>,
 	) -> Result<Vec<Frame>, FromFileError> {
+		let mut frames = Vec::new();
+		self.decode_reserved_into(&mut frames, reserve)?;
+		Ok(frames)
+	}
+
+	/// Decode into reusable stereo PCM, reserving growth and old/new overlap
+	/// before allocation. False means EOF; cancellation leaves no published PCM.
+	pub fn decode_reserved_into(
+		&mut self,
+		frames: &mut Vec<Frame>,
+		mut reserve: impl FnMut(usize) -> Result<(), std::io::Error>,
+	) -> Result<bool, FromFileError> {
+		frames.clear();
 		loop {
 			let packet = loop {
 				match self.format_reader.next_packet()? {
 					Some(packet) if packet.track_id == self.track_id => break packet,
 					Some(_) => continue,
-					None => return Ok(vec![]),
+					None => return Ok(false),
 				}
 			};
 			let packet_bytes = packet.data.len();
-			reserve(packet_bytes)?;
+			reserve(packet_bytes + frames.capacity() * std::mem::size_of::<Frame>())?;
 			let buffer = self.decoder.decode(&packet)?;
 			macro_rules! bytes {
 				($b:expr, $t:ty) => {
@@ -103,19 +175,30 @@ impl SymphoniaDecoder {
 				GenericAudioBufferRef::F32(b) => bytes!(b, f32),
 				GenericAudioBufferRef::F64(b) => bytes!(b, f64),
 			};
-			reserve(
-				packet_bytes
-					+ native + buffer
-					.frames()
-					.checked_mul(std::mem::size_of::<Frame>())
-					.ok_or_else(|| std::io::Error::other("audio packet size overflow"))?,
-			)?;
 			// A codec may consume priming or padding packets without producing PCM.
 			// Only the format reader's end-of-stream result terminates this decoder.
 			if buffer.frames() == 0 {
 				continue;
 			}
-			return load_frames_from_buffer_ref(&buffer);
+			let capacity = frames.capacity().max(buffer.frames());
+			let overlap = if capacity > frames.capacity() {
+				frames.capacity()
+			} else {
+				0
+			};
+			let pcm_bytes = capacity
+				.checked_add(overlap)
+				.and_then(|n| n.checked_mul(std::mem::size_of::<Frame>()))
+				.ok_or_else(|| std::io::Error::other("audio packet size overflow"))?;
+			reserve(packet_bytes + native + pcm_bytes)?;
+			if capacity > frames.capacity() {
+				frames
+					.try_reserve_exact(capacity)
+					.map_err(std::io::Error::other)?;
+			}
+			reserve(packet_bytes + native + frames.capacity() * std::mem::size_of::<Frame>())?;
+			load_frames_from_buffer_ref_into(&buffer, frames)?;
+			return Ok(true);
 		}
 	}
 
@@ -208,10 +291,15 @@ impl super::Decoder for SymphoniaDecoder {
 	}
 
 	fn seek(&mut self, index: usize) -> Result<usize, Self::Error> {
+		let raw = (index as u64)
+			.saturating_add(self.timeline_offset)
+			.saturating_sub(self.seek_preroll as u64);
+		let raw = i64::try_from(raw)
+			.map_err(|_| std::io::Error::other("audio seek exceeds timestamp range"))?;
 		let seeked_to = self.format_reader.seek(
 			SeekMode::Accurate,
 			SeekTo::Timestamp {
-				ts: Timestamp::new(index as i64),
+				ts: Timestamp::new(raw),
 				track_id: self.track_id,
 			},
 		)?;
@@ -220,7 +308,7 @@ impl super::Decoder for SymphoniaDecoder {
 		Ok(if actual < 0 {
 			0
 		} else {
-			(actual as usize).min(self.num_frames)
+			((actual as u64).saturating_sub(self.timeline_offset) as usize).min(self.num_frames)
 		})
 	}
 }

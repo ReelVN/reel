@@ -33,6 +33,32 @@ reel export --release --resource-target vita
 
 These commands preview and export the selected assets using the current platform player. Development exports copy selected files; release exports package them under their logical paths.
 
+Add `resources.toml` at the project root to generate target-specific asset copies:
+
+```toml
+[[targets.vita]]
+match = "images/**/*.{png,jpg,jpeg}"
+convert = "texture"
+scale = 0.5
+format = "auto"
+power_of_two = true
+
+[[targets.vita]]
+match = "audio/**/*.{wav,ogg,mp3,flac}"
+convert = "opus"
+bitrate = 96000
+```
+
+The first matching rule applies; unmatched files retain their original content. Use `convert = "copy"` to preserve specific files. Selection resolves common assets and target overrides before conversion. Texture scaling preserves logical dimensions and `source_rect` coordinates. Scripts keep their existing image and audio paths.
+
+```sh
+reel prepare-resources --resource-target vita
+reel dev --resource-target vita
+reel export --release --resource-target vita
+```
+
+`prepare-resources` prepares assets and reports its results; `dev`, `run` and `export` also prepare configured resources. The cache lives under `build/resources/` and updates affected copies when source contents, parameters or the tool change. Offline conversion processes one resource at a time; `prepare-resources --memory-bytes` selects its workspace limit.
+
 Run `reel fmt` in the project root to format source or `reel fmt --check` to check formatting. The formatter uses four-space indentation, a 100-character target width and compact argument wrapping. English API documentation is generated from Rust declarations and appears in editor hover and definition navigation.
 
 Complete projects below include `main`; other snippets belong inside the surrounding function or component and use its variables. Supply their fonts and assets before running. Shared repository assets live in `examples/assets/`; `--assets` selects an alternate resource root.

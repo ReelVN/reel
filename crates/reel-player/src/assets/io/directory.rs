@@ -8,10 +8,11 @@ use reel_core::{
 };
 use reel_package::resource_target::ResourceTarget;
 use std::{
-    collections::HashMap,
+    borrow::Cow,
+    collections::{BTreeMap, HashMap},
     fs::{File, Metadata},
     io::Read,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
     time::SystemTime,
 };
@@ -39,11 +40,34 @@ impl OpenFile {
 }
 
 pub(super) struct Files {
-    root: PathBuf,
-    target: ResourceTarget,
+    source: Source,
     capacity: usize,
     sequence: u64,
     open: HashMap<String, OpenFile>,
+}
+enum Source {
+    Directory {
+        root: PathBuf,
+        target: ResourceTarget,
+    },
+    Selected(BTreeMap<String, PathBuf>),
+}
+impl Source {
+    fn resolve(&self, logical: &str) -> Result<Cow<'_, Path>, IoError> {
+        match self {
+            Self::Directory { root, target } => target
+                .resolve(root, logical)
+                .map(Cow::Owned)
+                .map_err(io_error),
+            Self::Selected(files) => files
+                .get(logical)
+                .map(|path| Cow::Borrowed(path.as_path()))
+                .ok_or_else(|| IoError {
+                    code: IoErrorCode::NotFound,
+                    message: format!("asset not found in selected resources: {logical}"),
+                }),
+        }
+    }
 }
 impl Files {
     pub(super) fn new(root: PathBuf, capacity: usize) -> Self {
@@ -61,9 +85,14 @@ impl Files {
         ))
     }
     fn with_target(root: PathBuf, capacity: usize, target: ResourceTarget) -> Self {
+        Self::from_source(Source::Directory { root, target }, capacity)
+    }
+    pub(super) fn selected(files: BTreeMap<String, PathBuf>, capacity: usize) -> Self {
+        Self::from_source(Source::Selected(files), capacity)
+    }
+    fn from_source(source: Source, capacity: usize) -> Self {
         Self {
-            root,
-            target,
+            source,
             capacity,
             sequence: 0,
             open: HashMap::new(),
@@ -75,13 +104,11 @@ impl Files {
         cancelled: &AtomicBool,
     ) -> Result<&mut OpenFile, IoError> {
         self.sequence += 1;
-        let path = self
-            .target
-            .resolve(&self.root, &source.key.0)
-            .map_err(io_error)?;
+        let path = self.source.resolve(&source.key.0)?;
         let metadata = std::fs::metadata(&path).map_err(io_error)?;
         let cached = self.open.get(&source.key.0).is_some_and(|file| {
-            file.path == path && same(&metadata, file.length, file.modified).unwrap_or(false)
+            file.path.as_path() == path.as_ref()
+                && same(&metadata, file.length, file.modified).unwrap_or(false)
         });
         if !cached {
             let mut file = File::open(&path).map_err(io_error)?;
@@ -106,7 +133,7 @@ impl Files {
                 modified,
                 version: ContentVersion(*hash.finalize().as_bytes()),
                 used: self.sequence,
-                path,
+                path: path.into_owned(),
             };
             file.verify()?;
             if self.open.len() >= self.capacity

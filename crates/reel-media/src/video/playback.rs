@@ -1,5 +1,5 @@
 //! Bounded worker playback and mixer-owned PCM consumption.
-use super::{DecodedPacket, MediaRead, MovieDecoder, VideoFrame, VideoInfo};
+use super::{DecodedPacket, MediaRead, VideoDecoderFactory, VideoFrame, VideoInfo};
 use reel_audio::{
     Frame,
     info::Info,
@@ -103,7 +103,7 @@ impl Clock {
 }
 struct Transport {
     paused: AtomicBool,
-    cancelled: AtomicBool,
+    cancelled: Arc<AtomicBool>,
     audio_end: AtomicBool,
     audio_drained: AtomicBool,
     clock: Clock,
@@ -224,12 +224,33 @@ pub struct VideoPlayback {
     options: VideoOptions,
 }
 impl VideoPlayback {
+    /// Start playback with the MP4 software decoder on a background worker.
+    #[cfg(feature = "video-software")]
     pub fn start(
         source: Box<dyn MediaRead>,
         cancel_source: impl Fn() + Send + 'static,
         options: VideoOptions,
         budget: BudgetPool,
         wake: WakeSignal,
+    ) -> Result<Self, String> {
+        Self::start_with_decoder(
+            source,
+            cancel_source,
+            options,
+            budget,
+            wake,
+            Arc::new(super::SoftwareVideoDecoderFactory),
+        )
+    }
+    /// Start the common picture/PCM transport with a host-selected decoder.
+    /// Factory opening and every decoder operation run on the owned worker.
+    pub fn start_with_decoder(
+        source: Box<dyn MediaRead>,
+        cancel_source: impl Fn() + Send + 'static,
+        options: VideoOptions,
+        budget: BudgetPool,
+        wake: WakeSignal,
+        decoder: Arc<dyn VideoDecoderFactory>,
     ) -> Result<Self, String> {
         if options.queued_video_frames == 0
             || options.queued_audio_frames == 0
@@ -249,7 +270,7 @@ impl VideoPlayback {
             available: Condvar::new(),
             transport: Arc::new(Transport {
                 paused: AtomicBool::new(options.paused),
-                cancelled: AtomicBool::new(false),
+                cancelled: Arc::new(AtomicBool::new(false)),
                 audio_end: AtomicBool::new(false),
                 audio_drained: AtomicBool::new(false),
                 clock: Clock::new(position),
@@ -261,7 +282,7 @@ impl VideoPlayback {
         let worker = thread::Builder::new()
             .name("reel-video-decode".into())
             .spawn(move || {
-                let result = decode(source, options, budget, &background);
+                let result = decode(source, options, budget, &background, decoder.as_ref());
                 let mut state = background.state.lock().unwrap();
                 if let Err(error) = result
                     && !background.transport.cancelled.load(Ordering::Acquire)
@@ -412,8 +433,9 @@ fn decode(
     options: VideoOptions,
     budget: BudgetPool,
     shared: &Shared,
+    factory: &dyn VideoDecoderFactory,
 ) -> Result<(), String> {
-    let mut decoder = MovieDecoder::new(source)?;
+    let mut decoder = factory.open(source, budget.clone(), shared.transport.cancelled.clone())?;
     if let Some(end) = options.end {
         decoder.set_end(end.as_secs_f64());
     }

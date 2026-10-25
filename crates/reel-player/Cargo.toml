@@ -10,8 +10,9 @@ default = []
 winit = ["dep:winit", "dep:ui-events-winit", "dep:arboard"]
 gamepad = ["dep:gilrs"]
 video = ["reel-media/video"]
+video-software = ["video", "reel-media/video-software"]
 audio-output = ["reel-media/cpal-output"]
-window = ["video", "audio-output", "gamepad", "winit", "dep:wgpu", "dep:pollster", "reel-render/wgpu"]
+window = ["video-software", "audio-output", "gamepad", "winit", "dep:wgpu", "dep:pollster", "reel-render/wgpu"]
 
 [dependencies]
 aside-vm = { path = "../aside-vm" }

@@ -20,6 +20,22 @@ fn asset_overlay(
     explicit.or_else(|| loaded.loose.clone())
 }
 
+type ResourceFiles = BTreeMap<String, PathBuf>;
+
+/// Prepare the current project's resource view, optionally selecting another
+/// source directory through the same target rules and logical namespace.
+pub fn prepare_assets(
+    project_root: &Path,
+    explicit: Option<PathBuf>,
+    resource_target: &str,
+) -> io::Result<(PathBuf, Option<ResourceFiles>)> {
+    let target = reel_package::resource_target::ResourceTarget::parse(resource_target)?;
+    let root = explicit.unwrap_or_else(|| project_root.join("resources"));
+    let prepared =
+        crate::resource_conversion::prepare_directory_if_configured(project_root, &root, &target)?;
+    Ok((root, prepared.map(|prepared| prepared.files)))
+}
+
 pub fn run(
     path: &Path,
     assets: Option<PathBuf>,
@@ -30,16 +46,27 @@ pub fn run(
     let loaded = reel_player::distribution::load(path, project_resources.as_deref())
         .map_err(|error| error.to_string())?;
     let assets = asset_overlay(&loaded, assets);
+    let (assets, resource_files) = if let Some(project_root) =
+        project_resources.as_ref().and_then(|root| root.parent())
+        && assets.is_some()
+    {
+        let (root, files) = prepare_assets(project_root, assets, &resource_target)
+            .map_err(|error| error.to_string())?;
+        (Some(root), files)
+    } else {
+        (assets, None)
+    };
     let story = reel_player::distribution::story_from_package(loaded.package)
         .map_err(|error| error.to_string())?;
-    launch(
-        story,
-        loaded.root,
-        Some((loaded.packages, assets)),
-        loaded.catalogs,
-        saves,
-        resource_target,
-    )
+    let mut options = reel_player::player::PlayerOptions::default();
+    options.assets.root = loaded.root;
+    options.asset_packages = Some(loaded.packages);
+    options.asset_overlay = assets;
+    options.catalogs = std::sync::Arc::new(loaded.catalogs);
+    options.save_directory = saves;
+    options.resource_target = resource_target;
+    options.resource_files = resource_files;
+    launch(story, options)
 }
 
 pub fn standalone(executable: &Path, saves: Option<PathBuf>) -> Result<(), String> {
@@ -54,30 +81,18 @@ pub fn standalone(executable: &Path, saves: Option<PathBuf>) -> Result<(), Strin
     )
 }
 
+/// Launch a compiled story with the shared player's resource and host settings.
 pub fn launch(
     story: reel_engine::aside::source::CompiledStory,
-    root: PathBuf,
-    packages: Option<(Vec<PathBuf>, Option<PathBuf>)>,
-    catalogs: BTreeMap<String, String>,
-    saves: Option<PathBuf>,
-    resource_target: String,
+    options: reel_player::player::PlayerOptions,
 ) -> Result<(), String> {
     #[cfg(feature = "window")]
     {
-        let mut options = reel_player::player::PlayerOptions::default();
-        options.assets.root = root;
-        options.resource_target = resource_target;
-        options.catalogs = std::sync::Arc::new(catalogs);
-        if let Some((packages, overlay)) = packages {
-            options.asset_packages = Some(packages);
-            options.asset_overlay = overlay;
-        }
-        options.save_directory = saves;
         reel_player::platform::desktop::run_story(story, options).map_err(|error| error.to_string())
     }
     #[cfg(not(feature = "window"))]
     {
-        let _ = (story, root, packages, catalogs, saves, resource_target);
+        let _ = (story, options);
         Err("playback requires the complete Reel tool package; download the package containing the platform player".into())
     }
 }

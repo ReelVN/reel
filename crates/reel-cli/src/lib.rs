@@ -18,6 +18,7 @@ pub mod playback;
 pub mod prepare_image;
 pub mod prepare_texture;
 pub mod project;
+pub mod resource_conversion;
 
 #[derive(Debug)]
 pub struct Failure {
