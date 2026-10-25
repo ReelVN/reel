@@ -258,11 +258,12 @@ impl StoryRuntime {
         Some(MonoTime(deadline.max(now.0)))
     }
 
+    /// Resume ready callbacks and completed waits after host input or a resource
+    /// wake. A stage containing only event handlers remains asleep until a
+    /// callback or completed wait becomes runnable.
     pub fn wake_input(&mut self) {
         if self.driver().state() == StoryState::Running
-            && (self.driver().has_runnable_tasks()
-                || self.driver().adapter().asset_reads_pending()
-                || self.driver().ui().session().view().interaction.is_none())
+            && (self.driver().has_runnable_tasks() || self.driver().adapter().asset_reads_pending())
         {
             self.runnable = true;
         }
