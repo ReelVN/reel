@@ -1130,6 +1130,19 @@ fn slice_deadline_allocation_and_work_limits_preserve_unexecuted_operation() {
         RunOutcome::BudgetYield(_)
     ));
     assert_eq!(initial.frames, v.stats().frames);
+    // Admit the initial frame windows before isolating the closure's payload.
+    assert!(matches!(
+        v.run_slice(
+            v.task_id().unwrap(),
+            SliceBudget {
+                instructions: 1,
+                ..SliceBudget::default()
+            },
+            || 0,
+        )
+        .unwrap(),
+        RunOutcome::BudgetYield(_)
+    ));
     loop {
         let out = v
             .run_slice(
@@ -1145,7 +1158,7 @@ fn slice_deadline_allocation_and_work_limits_preserve_unexecuted_operation() {
         match out {
             RunOutcome::BudgetYield(u) if u.required_allocation > 0 => {
                 assert_eq!(u.allocation_bytes, 0);
-                assert_eq!(u.required_allocation, VALUE_CHUNK_BYTES);
+                assert_eq!(u.required_allocation, 32 * size_of::<Value>() as u64);
                 break;
             }
             RunOutcome::BudgetYield(_) => {}

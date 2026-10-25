@@ -47,6 +47,7 @@ struct Signals {
     exit: Cell<bool>,
     visible: Cell<bool>,
     title: RefCell<String>,
+    text: super::vita_text::Signals,
 }
 /// Fixed-display host. Native controller, wake and power objects stay in the
 /// platform adapter; author code sees the ordinary stage and window capabilities.
@@ -165,6 +166,12 @@ impl Host for VitaHost {
             RenderRootSignal::SetTitle(title) => {
                 *signals.title.borrow_mut() = title;
             }
+            signal @ (RenderRootSignal::StartIme
+            | RenderRootSignal::EndIme
+            | RenderRootSignal::ImeMoved(..)) => {
+                signals.text.receive(&signal);
+                let _ = wake.signal();
+            }
             _ => {}
         }
     }
@@ -175,6 +182,8 @@ impl Host for VitaHost {
 /// changes. Player resources are dropped and GPU work drained before the next
 /// player mounts. Game shutdown and SELECT + START return to the library.
 pub fn run_launcher(game_root: &Path, module_directory: &Path) -> Result<(), Error> {
+    #[cfg(feature = "profiling")]
+    let _live_probe = crate::probe::Live::start()?;
     let (mut native, mut backend) = NativeLoop::new(module_directory)?;
     let result = run_launcher_on(game_root, &mut native, &mut backend);
     close_backend(result, backend)
@@ -226,7 +235,12 @@ fn run_library(
     options.canvas_size = Some([960, 544]);
     let launcher = crate::launcher::Launcher::new(
         game_root,
-        crate::assets::Assets::directory(options.assets.clone()),
+        crate::assets::Assets::packaged(
+            options.assets.clone(),
+            vec!["app0:/launcher.rpk".into()],
+            None,
+        )
+        .map_err(|error| error.message)?,
         error,
         {
             let notify = native.host.wake_callback();
@@ -267,6 +281,7 @@ fn run_package_on(
     native: &mut NativeLoop,
     backend: &mut GlesBackend,
 ) -> Result<(), Error> {
+    let loading = reel_core::profile::Scope::new(reel_core::profile::Phase::Load);
     let loaded = crate::distribution::load(package, None)?;
     let mut options = PlayerOptions::default();
     options.assets.root = loaded.loose.clone().unwrap_or_else(|| loaded.root.clone());
@@ -292,6 +307,7 @@ fn run_package_on(
     options.media.video.queued_audio_frames = 4096;
     options.media.video_decoder = Some(Arc::new(reel_media::video::VitaVideoDecoderFactory));
     let story = crate::distribution::story_from_package(loaded.package)?;
+    drop(loading);
     run_story_on(story, options, native, backend)
 }
 
@@ -313,6 +329,7 @@ fn run_story_on(
     backend: &mut GlesBackend,
 ) -> Result<(), Error> {
     use reel_engine::{Epoch, Session, SessionId, aside::VmLimits};
+    let mounting = reel_core::profile::Scope::new(reel_core::profile::Phase::Mount);
     let assets = crate::assets::Assets::packaged_for_target(
         options.assets.clone(),
         options.asset_packages.clone().unwrap_or_default(),
@@ -379,6 +396,7 @@ fn run_story_on(
         runtime.set_saves(crate::saves::RuntimeSaves::new(service, options.save_bytes));
         runtime.set_media_factory(make_media);
     }
+    drop(mounting);
     native.drive(&mut player, true)
 }
 
@@ -415,6 +433,8 @@ struct NativeLoop {
 
 impl NativeLoop {
     fn begin_session(&mut self, backend: &GlesBackend) {
+        #[cfg(feature = "profiling")]
+        let _ = reel_core::profile::Sample::take();
         // Signals and deadlines belong to the departed player, unlike native input,
         // power callbacks and the wake object retained by the application.
         self.host = VitaHost::new(backend.output_size(), self.wake.clone());
@@ -457,8 +477,11 @@ impl NativeLoop {
         // Carry held input through the boundary until release. A launch-confirm press
         // must not become a second confirmation in the newly mounted game.
         let mut input = input::Input::default();
+        let mut text = super::vita_text::TextInput::<native::ime::Keyboard>::default();
         let mut suspended = false;
         let mut closing = false;
+        #[cfg(feature = "profiling")]
+        let mut recording = crate::probe::Recording::new();
         let result = (|| -> Result<(), Error> {
             input = input::Input::new(controls.sample()?);
             loop {
@@ -469,11 +492,13 @@ impl NativeLoop {
                     match event.kind {
                         PowerKind::Suspending if !suspended => {
                             input.cancel(player)?;
+                            text.cancel(|event| player.text_event(event).map(|_| ()))?;
                             player.suspend(host)?;
                             suspended = true;
                         }
                         PowerKind::Resumed if suspended => {
                             player.resume(host)?;
+                            player.text_event(reel_ui::core::TextEvent::WindowFocusChange(true))?;
                             suspended = false;
                         }
                         _ => {}
@@ -482,6 +507,7 @@ impl NativeLoop {
                 }
                 if host.signals.exit.get() || player.exit_requested() {
                     if !closing {
+                        text.cancel(|event| player.text_event(event).map(|_| ()))?;
                         player.close()?;
                         closing = true;
                     }
@@ -500,18 +526,42 @@ impl NativeLoop {
                     continue;
                 }
                 let now = host.monotonic_now();
+                #[cfg(feature = "profiling")]
+                let probe_started = std::time::Instant::now();
                 let poll_deadline = MonoTime(now.0.saturating_add(16_000_000));
                 let sample = controls.sample()?;
-                if return_to_library && input.return_to_library(&sample) {
+                let keyboard_was_active = text.active();
+                if !keyboard_was_active && return_to_library && input.return_to_library(&sample) {
                     host.signals.exit.set(true);
                     continue;
                 }
-                input.sample(sample, now, host.size, player)?;
+                {
+                    let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Input);
+                    if !keyboard_was_active {
+                        input.sample(sample, now, host.size, player)?;
+                    }
+                    text.update(&host.signals.text, |event| {
+                        player.text_event(event).map(|_| ())
+                    })?;
+                    if keyboard_was_active || text.active() {
+                        if !keyboard_was_active {
+                            input.cancel(player)?;
+                        }
+                        // Native keyboard owns held controls until their release;
+                        // closing it cannot leak its confirm/touch into the story.
+                        input.suppress(sample);
+                    }
+                }
                 player.poll_completions()?;
                 player.tick(host)?;
                 player.prepare_initial_frame(host)?;
                 if host.signals.redraw.replace(false) || player.needs_redraw() {
                     player.render(host)?;
+                }
+                #[cfg(feature = "profiling")]
+                {
+                    let gpu = player.backend.usage().bytes;
+                    recording.record(probe_started, player.story_mut().as_deref(), gpu);
                 }
                 let now = host.monotonic_now();
                 let deadline = player
@@ -533,6 +583,7 @@ impl NativeLoop {
         // Always close shared services before the graphics context and native wake
         // registrations disappear, including error exits from input or rendering.
         host.event_time = None;
+        let keyboard_cleanup = text.cancel(|event| player.text_event(event).map(|_| ()));
         let cleanup = (|| -> Result<(), Error> {
             if !closing {
                 player.close()?;
@@ -545,6 +596,25 @@ impl NativeLoop {
             Ok(())
         })();
         // Preserve the event/render failure when closing also reports an error.
-        result.and(cleanup)
+        let result = result.and(keyboard_cleanup).and(cleanup);
+        #[cfg(feature = "profiling")]
+        {
+            let outcome = result
+                .as_ref()
+                .err()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "closed".into());
+            let title = host.signals.title.borrow();
+            let logged = recording.write(
+                Path::new("ux0:/data/reel/performance"),
+                &title,
+                native::time::unix_millis().unwrap_or(0) as u64,
+                &outcome,
+            );
+            if let Err(error) = logged {
+                return result.and(Err(format!("Probe log: {error}").into()));
+            }
+        }
+        result
     }
 }

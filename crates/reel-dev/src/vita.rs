@@ -3,6 +3,7 @@
 //! `cargo +nightly vita build vpk` owns executable conversion and VPK packaging.
 
 use anyhow::{Context, Result, bail, ensure};
+use reel_package::archive::{ArchiveKind, ArchiveWriter};
 use std::{fs, io::BufWriter, path::Path};
 
 const MODULES: [&str; 4] = [
@@ -23,8 +24,10 @@ const LIVEAREA: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 ///
 /// Arguments are `--modules DIR --font FILE --font-license FILE`. The module
 /// directory must contain all four PVR GLES modules. The supplied OpenType or
-/// TrueType font (including a TTC) is copied unchanged to `fonts/body.ttf`,
-/// together with its redistribution license.
+/// TrueType font (including a TTC) retains its complete logical bytes at
+/// `fonts/body.ttf` inside `launcher.rpk`; its content digest is computed during
+/// packaging so startup mounts only the archive index before loading the font.
+/// The font's redistribution license is copied to `licenses/launcher-font.txt`.
 /// Generated indexed PNG artwork uses the Vita LiveArea image dimensions.
 pub fn assets(args: &[String]) -> Result<()> {
     let mut modules = None;
@@ -82,13 +85,18 @@ pub fn assets(args: &[String]) -> Result<()> {
 }
 
 fn assemble(output: &Path, modules: &Path, font: &Path, license: &Path) -> Result<()> {
-    for name in ["module", "fonts", "licenses", "sce_sys/livearea/contents"] {
+    for name in ["module", "licenses", "sce_sys/livearea/contents"] {
         fs::create_dir_all(output.join(name))?;
     }
     for name in MODULES {
         fs::copy(modules.join(name), output.join("module").join(name))?;
     }
-    fs::copy(font, output.join("fonts/body.ttf"))?;
+    let mut archive = ArchiveWriter::new(
+        BufWriter::new(fs::File::create(output.join("launcher.rpk"))?),
+        ArchiveKind::Resources,
+    )?;
+    archive.add("fonts/body.ttf", &mut fs::File::open(font)?)?;
+    archive.finish()?;
     fs::copy(license, output.join("licenses/launcher-font.txt"))?;
     fs::write(
         output.join("sce_sys/livearea/contents/template.xml"),
@@ -138,4 +146,61 @@ fn artwork(path: &Path, width: u32, height: u32, mark: f32) -> Result<()> {
     encoder.set_palette(&palette[..]);
     encoder.write_header()?.write_image_data(&pixels)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reel_package::archive::{ArchiveIndex, ReadScratch};
+
+    #[test]
+    fn launcher_assets_keep_complete_font_in_standard_archive() {
+        let root = crate::root()
+            .join("target/reel-artifacts/vita-assets-tests")
+            .join(std::process::id().to_string());
+        let source = root.join("source");
+        let output = root.join("output");
+        fs::create_dir_all(&source).unwrap();
+        fs::create_dir_all(&output).unwrap();
+        for name in MODULES {
+            fs::write(source.join(name), name.as_bytes()).unwrap();
+        }
+        let font = source.join("font.ttc");
+        let license = source.join("license.txt");
+        let bytes = (0..150_000)
+            .map(|index| (index % 251) as u8)
+            .collect::<Vec<_>>();
+        fs::write(&font, &bytes).unwrap();
+        fs::write(&license, b"font redistribution license").unwrap();
+        assemble(&output, &source, &font, &license).unwrap();
+        let mut archive = fs::File::open(output.join("launcher.rpk")).unwrap();
+        let index = ArchiveIndex::read(&mut archive).unwrap();
+        assert_eq!(index.kind(), ArchiveKind::Resources);
+        assert_eq!(index.entries().len(), 1);
+        let font = index.get("fonts/body.ttf").unwrap();
+        let mut decoded = vec![0; font.length as usize];
+        font.read_range(
+            &mut archive,
+            0,
+            &mut decoded,
+            &mut ReadScratch::new(),
+            || false,
+        )
+        .unwrap();
+        assert_eq!(decoded, bytes, "font collections retain all input bytes");
+        assert!(
+            !output.join("fonts/body.ttf").exists(),
+            "the VPK carries one font payload"
+        );
+        assert_eq!(
+            fs::read(output.join("licenses/launcher-font.txt")).unwrap(),
+            b"font redistribution license"
+        );
+        for name in MODULES {
+            assert_eq!(
+                fs::read(output.join("module").join(name)).unwrap(),
+                name.as_bytes()
+            );
+        }
+    }
 }

@@ -1,4 +1,4 @@
-//! Vita GLES rendering of the common immutable frame and resource contracts.
+//! GLES rendering of the common immutable frame and resource contracts.
 mod draw;
 mod mask;
 mod programs;
@@ -89,6 +89,7 @@ pub struct GlesBackend {
     _group: BudgetGroup,
     images: Images,
     glyphs: draw::GlyphCache,
+    targets: Vec<resources::Target>,
     info: Option<SurfaceInfo>,
     suspended: bool,
     next_submission: u64,
@@ -101,7 +102,28 @@ pub struct GlesBackend {
 }
 impl GlesBackend {
     /// Create the thread-bound native context and load offline SGX programs.
+    #[cfg(target_os = "vita")]
     pub fn new(options: GlesOptions) -> Result<Self, GlesError> {
+        let context =
+            native::Context::new(&options.module_directory, options.vsync).map_err(native_error)?;
+        Self::with_context(context, options)
+    }
+
+    /// Create an offscreen desktop EGL context with the same rendering and budget
+    /// paths as the device backend. Shaders use their shared GLSL sources.
+    #[cfg(not(target_os = "vita"))]
+    pub fn headless(size: [u32; 2], limits: GlesLimits) -> Result<Self, GlesError> {
+        let context = native::Context::headless(size, false).map_err(native_error)?;
+        Self::with_context(
+            context,
+            GlesOptions {
+                limits,
+                ..Default::default()
+            },
+        )
+    }
+
+    fn with_context(context: native::Context, options: GlesOptions) -> Result<Self, GlesError> {
         if options.limits.max_inflight == 0 || options.limits.image_upload_bytes_per_prepare == 0 {
             return Err(GlesError::InvalidSize);
         }
@@ -120,8 +142,6 @@ impl GlesBackend {
             targets: pool(BudgetCategory::Offscreen, options.limits.target_bytes),
             transient: pool(BudgetCategory::Temporary, options.limits.transient_bytes),
         };
-        let context =
-            native::Context::new(&options.module_directory, options.vsync).map_err(native_error)?;
         let programs = Rc::new(programs::Programs::new(&context, &budgets.resources)?);
         Ok(Self {
             context,
@@ -131,6 +151,7 @@ impl GlesBackend {
             _group: group,
             images: Default::default(),
             glyphs: Default::default(),
+            targets: Vec::new(),
             info: None,
             suspended: false,
             next_submission: 1,
@@ -165,6 +186,7 @@ impl GlesBackend {
         self.events.clear();
         self.images = Images::default();
         self.glyphs = draw::GlyphCache::default();
+        self.targets.clear();
         self.drain_failed = false;
         Ok(())
     }
@@ -207,6 +229,7 @@ impl GlesBackend {
         self.glyphs.prune(&[]);
         let local = Budgets::new(limits);
         let mut plan_tickets = Vec::new();
+        let planning = reel_core::profile::Scope::new(reel_core::profile::Phase::ImagePlan);
         let plan = crate::common::image_plan::collect(
             std::iter::once(frame),
             self.context.capabilities().max_texture_size,
@@ -222,15 +245,35 @@ impl GlesBackend {
                 Ok(())
             },
         )?;
-        Images::validate(
+        drop(planning);
+        let image_growth = self.images.validate(
             &plan.images,
             self.context.capabilities(),
             limits,
             self.options.limits.total_bytes,
         )?;
+        // New image residency takes priority when the simultaneous budget needs
+        // room. Small cursor/video updates can retain the existing scratch pool.
+        // Flights keep any targets that the device still owns alive.
+        if self
+            .targets
+            .first()
+            .is_some_and(|target| target.view.size() != size)
+            || image_growth
+                > self.options.limits.total_bytes.saturating_sub(
+                    self.budgets
+                        .resources
+                        .usage()
+                        .bytes
+                        .saturating_add(self.budgets.targets.usage().bytes)
+                        .saturating_add(self.budgets.transient.usage().bytes),
+                )
+        {
+            self.targets.clear();
+        }
         for mask in &plan.masks {
             let caps = self.context.capabilities();
-            if mask.definition.program.operations().len() > 32 {
+            if mask.definition.program.operations().len() > mask::OPERATION_CAPACITY {
                 return Err(GlesError::Unsupported {
                     at: mask.at,
                     record: "mask graph exceeds the device interpreter capacity",
@@ -238,7 +281,7 @@ impl GlesBackend {
             }
             if mask.definition.images.len() > 4
                 || caps.max_texture_units < 4
-                || caps.max_fragment_uniform_vectors < 77
+                || caps.max_fragment_uniform_vectors < mask::UNIFORM_VECTORS
             {
                 return Err(GlesError::Unsupported {
                     at: mask.at,
@@ -260,6 +303,7 @@ impl GlesBackend {
         let mut images = HashMap::new();
         let mut touched = Vec::new();
         let mut quota = limits.image_upload_bytes_per_prepare;
+        let uploading = reel_core::profile::Scope::new(reel_core::profile::Phase::Upload);
         let upload = self.images.prepare(
             &self.context,
             &self.budgets,
@@ -269,6 +313,7 @@ impl GlesBackend {
             &mut images,
             &mut touched,
         );
+        drop(uploading);
         drop(plan);
         drop(plan_tickets);
         let ready = match upload {
@@ -306,6 +351,13 @@ impl GlesBackend {
             });
             return Err(GlesError::Busy);
         }
+        // Captures retain their output until readback, independently of later frames.
+        let mut capture_targets = Vec::new();
+        let targets = if capture {
+            &mut capture_targets
+        } else {
+            &mut self.targets
+        };
         match replay::prepare(
             &self.context,
             &self.programs,
@@ -313,6 +365,7 @@ impl GlesBackend {
             self.options.limits.common(),
             &mut self.images,
             &mut self.glyphs,
+            targets,
             images,
             frame,
             size,
@@ -481,7 +534,10 @@ impl RenderBackend for GlesBackend {
         self.next_submission = next;
         self.submit(frame, prepared, Some((id, frame.frame_id())))?;
         before_present();
-        self.context.present().map_err(native_error)?;
+        {
+            let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Present);
+            self.context.present().map_err(native_error)?;
+        }
         Ok(PresentOutcome::PresentAccepted(frame.frame_id()))
     }
     fn retire(&mut self, resources: &[ResourceVersion]) {
@@ -612,6 +668,7 @@ impl Drop for GlesBackend {
             self.failed_images.clear();
             self.images.after_drain();
             self.glyphs.after_drain();
+            self.targets.clear();
         } else {
             std::mem::forget(self.programs.clone());
             std::mem::forget(std::mem::take(&mut self.flights));
@@ -620,6 +677,7 @@ impl Drop for GlesBackend {
             std::mem::forget(std::mem::take(&mut self.failed_images));
             std::mem::forget(std::mem::take(&mut self.images));
             std::mem::forget(std::mem::take(&mut self.glyphs));
+            std::mem::forget(std::mem::take(&mut self.targets));
         }
     }
 }

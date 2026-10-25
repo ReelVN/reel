@@ -1088,6 +1088,11 @@ impl RenderRoot {
         self.root_state().needs_anim
     }
 
+    /// Returns true when painting or pending tree updates can change the view.
+    pub fn needs_paint(&self) -> bool {
+        self.root_state().needs_paint || self.needs_rewrite_passes()
+    }
+
     /// Returns true if the accessibility tree needs to be rebuilt.
     ///
     /// This will be inhibited if `access_tree_active` is false.

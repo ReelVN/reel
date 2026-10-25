@@ -26,6 +26,59 @@ pub struct Vertex {
     /// Zero span selects the ordinary whole-texture sampler.
     pub source_window: [f32; 4],
 }
+/// Axis-aligned geometry clip in the same float32 clip space as draw vertices.
+/// Single-sample rasterization keeps this binary, so ordinary draws can be
+/// clipped individually without changing their source-over composition.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RectClip {
+    bounds: [f32; 4],
+}
+impl RectClip {
+    pub(crate) fn from_clip(
+        clip: &reel_ui::imaging::record::Clip,
+        outer: Affine,
+        size: [u32; 2],
+    ) -> Option<Self> {
+        let reel_ui::imaging::record::Clip::Fill {
+            transform,
+            shape: Geometry::Rect(rect),
+            ..
+        } = clip
+        else {
+            return None;
+        };
+        let transform = outer * *transform;
+        let [_, b, c, _, _, _] = transform.as_coeffs();
+        if b != 0. || c != 0. {
+            return None;
+        }
+        // Tessellation stores local coordinates in float32 before the common
+        // transform; use that same conversion for the rectangle's own edges.
+        let rect = Rect::new(
+            rect.x0 as f32 as f64,
+            rect.y0 as f32 as f64,
+            rect.x1 as f32 as f64,
+            rect.y1 as f32 as f64,
+        );
+        let rect = transform.transform_rect_bbox(rect);
+        let bounds = [
+            (rect.x0 * 2. / f64::from(size[0]) - 1.) as f32,
+            (1. - rect.y1 * 2. / f64::from(size[1])) as f32,
+            (rect.x1 * 2. / f64::from(size[0]) - 1.) as f32,
+            (1. - rect.y0 * 2. / f64::from(size[1])) as f32,
+        ];
+        bounds
+            .iter()
+            .all(|v| v.is_finite())
+            .then_some(Self { bounds })
+    }
+    fn contains(self, vertex: &Vertex) -> bool {
+        (0..2).all(|axis| {
+            vertex.position[axis] >= self.bounds[axis]
+                && vertex.position[axis] <= self.bounds[axis + 2]
+        })
+    }
+}
 /// Per-quad sampling data keeps different windows in the same texture batch.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct ImageSampling {
@@ -148,6 +201,97 @@ impl Allocation {
     }
 }
 impl Mesh {
+    /// Clip triangles and linearly interpolate every authored vertex attribute.
+    /// The fixed polygon scratch has at most seven vertices; output growth is
+    /// reserved through the same transient ledger as ordinary tessellation.
+    pub(crate) fn clipped(
+        &self,
+        clip: RectClip,
+        allocation: Allocation,
+    ) -> Result<Option<Self>, GpuError> {
+        if self.vertices.iter().all(|vertex| clip.contains(vertex)) {
+            return Ok(None);
+        }
+        let mut output = Self::new(allocation);
+        for triangle in self.indices.as_chunks::<3>().0 {
+            let first = self.vertices[triangle[0] as usize];
+            let mut polygon = [first; 8];
+            for (vertex, index) in polygon.iter_mut().zip(triangle) {
+                *vertex = self.vertices[*index as usize];
+            }
+            let mut count = 3;
+            for edge in 0..4 {
+                if count == 0 {
+                    break;
+                }
+                let axis = edge % 2;
+                let bound = clip.bounds[edge];
+                let inside = |vertex: Vertex| {
+                    if edge < 2 {
+                        vertex.position[axis] >= bound
+                    } else {
+                        vertex.position[axis] <= bound
+                    }
+                };
+                let input = polygon;
+                let mut previous = input[count - 1];
+                let mut written = 0;
+                for current in input.into_iter().take(count) {
+                    if inside(previous) != inside(current)
+                        && previous.position[axis] != bound
+                        && current.position[axis] != bound
+                    {
+                        // Canonical endpoint order makes adjacent triangles
+                        // produce bit-identical shared-edge intersections.
+                        let (a, b) = if previous.position[axis] < current.position[axis] {
+                            (previous, current)
+                        } else {
+                            (current, previous)
+                        };
+                        // Finite float32 endpoints can still have an overflowing
+                        // float32 difference when geometry extends far offscreen.
+                        let t = (f64::from(bound) - f64::from(a.position[axis]))
+                            / (f64::from(b.position[axis]) - f64::from(a.position[axis]));
+                        let lerp = |a: f32, b: f32| {
+                            (f64::from(a) + (f64::from(b) - f64::from(a)) * t) as f32
+                        };
+                        let mut vertex = Vertex {
+                            position: std::array::from_fn(|i| lerp(a.position[i], b.position[i])),
+                            uv: std::array::from_fn(|i| lerp(a.uv[i], b.uv[i])),
+                            color: std::array::from_fn(|i| lerp(a.color[i], b.color[i])),
+                            source_window: std::array::from_fn(|i| {
+                                lerp(a.source_window[i], b.source_window[i])
+                            }),
+                        };
+                        vertex.position[axis] = bound;
+                        polygon[written] = vertex;
+                        written += 1;
+                    }
+                    if inside(current) {
+                        polygon[written] = current;
+                        written += 1;
+                    }
+                    previous = current;
+                }
+                count = written;
+            }
+            if count < 3 {
+                continue;
+            }
+            output.allocation.grow(&mut output.vertices, count)?;
+            output
+                .allocation
+                .grow(&mut output.indices, (count - 2) * 3)?;
+            let start = output.vertices.len() as u32;
+            output.vertices.extend_from_slice(&polygon[..count]);
+            for index in 1..count - 1 {
+                output
+                    .indices
+                    .extend([start, start + index as u32, start + index as u32 + 1]);
+            }
+        }
+        Ok(Some(output))
+    }
     pub(crate) fn new(allocation: Allocation) -> Self {
         Self {
             vertices: Vec::new(),
@@ -510,6 +654,107 @@ fn transform_vertices(
 mod tests {
     use super::*;
     use reel_ui::core::Widget;
+    #[test]
+    fn rectangle_clip_preserves_triangle_area_and_affine_attributes() {
+        let limits = super::super::GpuLimits::default();
+        let budgets = Budgets::new(limits);
+        let local = Budgets::new(limits);
+        let allocation = || Allocation::new(&budgets, &local, limits.transient_bytes, 1 << 20);
+        let mut mesh = Mesh::new(allocation());
+        mesh.quad(Rect::new(-2., -2., 2., 2.), Rect::new(0., 0., 1., 1.))
+            .unwrap();
+        for vertex in &mut mesh.vertices {
+            vertex.color = [vertex.uv[0], vertex.uv[1], 0.25, 0.5];
+            vertex.source_window = [0.1, 0.2, -0.5, 0.75];
+        }
+        let clip = RectClip {
+            bounds: [-0.5, -0.25, 1., 0.75],
+        };
+        let output = mesh.clipped(clip, allocation()).unwrap().unwrap();
+        let mut area = 0.;
+        for triangle in output.indices.as_chunks::<3>().0 {
+            let p: [[f32; 2]; 3] =
+                std::array::from_fn(|i| output.vertices[triangle[i] as usize].position);
+            area += ((p[1][0] - p[0][0]) * (p[2][1] - p[0][1])
+                - (p[1][1] - p[0][1]) * (p[2][0] - p[0][0]))
+                .abs()
+                * 0.5;
+        }
+        assert!((area - 1.5).abs() < 1e-6);
+        for vertex in &output.vertices {
+            assert!(clip.contains(vertex));
+            for axis in 0..2 {
+                let expected = (vertex.position[axis] + 2.) / 4.;
+                assert!((vertex.uv[axis] - expected).abs() < 1e-6);
+                assert!((vertex.color[axis] - expected).abs() < 1e-6);
+            }
+            assert_eq!(vertex.color[2..], [0.25, 0.5]);
+            assert_eq!(vertex.source_window, [0.1, 0.2, -0.5, 0.75]);
+        }
+        assert!(output.clipped(clip, allocation()).unwrap().is_none());
+        // Both original triangles cross their shared diagonal. Its intersection
+        // must carry identical attributes in both clipped output polygons.
+        for point in [[-0.25, -0.25], [0.75, 0.75]] {
+            let shared: Vec<_> = output
+                .vertices
+                .iter()
+                .filter(|vertex| vertex.position == point)
+                .collect();
+            assert_eq!(shared.len(), 2);
+            assert_eq!(bytemuck::bytes_of(shared[0]), bytemuck::bytes_of(shared[1]));
+        }
+        assert!(
+            mesh.clipped(
+                RectClip {
+                    bounds: [3., 3., 4., 4.]
+                },
+                allocation()
+            )
+            .unwrap()
+            .unwrap()
+            .indices
+            .is_empty()
+        );
+        assert_eq!(mesh.vertices.len(), 4);
+        drop(output);
+        drop(mesh);
+        assert_eq!(budgets.transient.usage().bytes, 0);
+    }
+    #[test]
+    fn rectangle_clip_boundary_vertices_do_not_duplicate_intersections() {
+        let limits = super::super::GpuLimits::default();
+        let budgets = Budgets::new(limits);
+        let local = Budgets::new(limits);
+        let allocation = || Allocation::new(&budgets, &local, limits.transient_bytes, 1 << 20);
+        let mut mesh = Mesh::new(allocation());
+        let clip = RectClip {
+            bounds: [-1., -1., 1., 1.],
+        };
+        mesh.quad(Rect::new(-2., -2., 1., 1.), Rect::new(0., 0., 1., 1.))
+            .unwrap();
+        let clipped = mesh.clipped(clip, allocation()).unwrap().unwrap();
+        assert_eq!(clipped.vertices.len(), 6);
+        assert_eq!(clipped.indices.len(), 6);
+        for triangle in clipped.indices.as_chunks::<3>().0 {
+            let positions = triangle.map(|i| clipped.vertices[i as usize].position);
+            assert_ne!(positions[0], positions[1]);
+            assert_ne!(positions[1], positions[2]);
+            assert_ne!(positions[0], positions[2]);
+        }
+        let mut large = Mesh::new(allocation());
+        let extent = f64::from(f32::MAX);
+        large
+            .quad(Rect::new(-extent, -extent, extent, extent), Rect::ZERO)
+            .unwrap();
+        let clipped = large.clipped(clip, allocation()).unwrap().unwrap();
+        assert!(clipped.vertices.iter().all(|vertex| {
+            vertex
+                .position
+                .iter()
+                .chain(&vertex.uv)
+                .all(|value| value.is_finite())
+        }));
+    }
     #[test]
     fn image_quads_preserve_order_crop_transforms_and_alpha() {
         let limits = super::super::GpuLimits::default();

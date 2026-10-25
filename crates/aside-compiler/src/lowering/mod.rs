@@ -7,6 +7,7 @@ mod emit;
 pub mod ir;
 mod project;
 mod registers;
+mod signatures;
 pub use project::{
     ProjectCompilation, ProjectError, ProjectModule, compile_project, compile_project_with_progress,
 };

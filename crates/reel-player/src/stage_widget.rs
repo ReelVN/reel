@@ -352,7 +352,12 @@ impl StageView {
     }
     /// Compare button content only. Animated geometry uses accepted hit testing;
     /// changes outside a control cannot invalidate its activation.
-    pub fn button_changes(&self, previous: Option<&Self>, feedback: bool) -> Vec<(NodeId, bool)> {
+    /// `None` preserves the existing bindings when every button is unchanged.
+    pub fn button_changes(
+        &self,
+        previous: Option<&Self>,
+        feedback: bool,
+    ) -> Option<Vec<(NodeId, bool)>> {
         fn buttons(view: &StageView) -> BTreeMap<NodeId, &Arc<SceneNode>> {
             let mut found = BTreeMap::new();
             let mut pending: Vec<_> = view.root.iter().collect();
@@ -368,10 +373,8 @@ impl StageView {
             found
         }
         fn same_content(a: &Arc<SceneNode>, b: &Arc<SceneNode>) -> bool {
-            if Arc::ptr_eq(a, b) {
-                return true;
-            }
-            let mut pending = vec![(a, b)];
+            let mut pending = smallvec::SmallVec::<[(_, _); 8]>::new();
+            pending.push((a, b));
             while let Some((a, b)) = pending.pop() {
                 if Arc::ptr_eq(a, b) {
                     continue;
@@ -384,23 +387,64 @@ impl StageView {
                 {
                     return false;
                 }
-                pending.extend(a.children.iter().zip(b.children.iter()));
+                if !Arc::ptr_eq(&a.children, &b.children) {
+                    pending.extend(a.children.iter().zip(b.children.iter()));
+                }
             }
             true
         }
-        let previous = previous
-            .filter(|old| old.identity == self.identity)
-            .map(buttons)
-            .unwrap_or_default();
-        buttons(self)
-            .into_iter()
-            .map(|(id, node)| {
-                let changed = previous
-                    .get(&id)
-                    .is_none_or(|old| !feedback && !same_content(old, node));
-                (id, changed)
-            })
-            .collect()
+        fn same_buttons(a: &Arc<SceneNode>, b: &Arc<SceneNode>, feedback: bool) -> bool {
+            let mut pending = smallvec::SmallVec::<[(_, _); 8]>::new();
+            pending.push((a, b));
+            while let Some((a, b)) = pending.pop() {
+                if Arc::ptr_eq(a, b) || (!a.button_branch && !b.button_branch) {
+                    continue;
+                }
+                if a.node.id != b.node.id {
+                    return false;
+                }
+                match (
+                    matches!(a.node.kind, NodeKind::Button { .. }),
+                    matches!(b.node.kind, NodeKind::Button { .. }),
+                ) {
+                    (true, true) if !feedback => {
+                        if !same_content(a, b) {
+                            return false;
+                        }
+                        continue;
+                    }
+                    (true, false) | (false, true) => return false,
+                    _ => {}
+                }
+                if !Arc::ptr_eq(&a.children, &b.children) {
+                    if a.children.len() != b.children.len() {
+                        return false;
+                    }
+                    pending.extend(a.children.iter().zip(b.children.iter()));
+                }
+            }
+            true
+        }
+        let previous = previous.filter(|old| old.identity == self.identity);
+        if previous.is_some_and(|old| match (&old.root, &self.root) {
+            (Some(a), Some(b)) => same_buttons(a, b, feedback),
+            (None, None) => true,
+            _ => false,
+        }) {
+            return None;
+        }
+        let previous = previous.map(buttons).unwrap_or_default();
+        Some(
+            buttons(self)
+                .into_iter()
+                .map(|(id, node)| {
+                    let changed = previous
+                        .get(&id)
+                        .is_none_or(|old| !feedback && !same_content(old, node));
+                    (id, changed)
+                })
+                .collect(),
+        )
     }
     pub fn image_requests(&self) -> Result<ImageRequests, String> {
         Self::image_requests_for(self.root.as_ref())

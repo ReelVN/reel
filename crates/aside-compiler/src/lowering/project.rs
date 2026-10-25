@@ -356,6 +356,8 @@ pub fn compile_project_with_progress(
 
         super::constants::intern(&mut state.package, &mut state.budget)?;
 
+        super::signatures::intern(&mut state.package, &mut state.budget)?;
+
         super::descriptors::intern(&mut state.package, &mut state.budget)?;
 
         state.budget.work(index.len() as u64)?;

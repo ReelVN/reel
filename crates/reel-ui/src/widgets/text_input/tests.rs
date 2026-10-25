@@ -206,6 +206,62 @@ fn root(input: TextInput, size: PhysicalSize<u32>) -> (RenderRoot, WidgetId) {
 }
 
 #[test]
+fn refocusing_pointer_restarts_ime_once_and_discards_only_preedit() {
+    use crate::app::RenderRootSignal;
+    use std::{cell::RefCell, rc::Rc};
+    for composing in [false, true] {
+        let (mut root, id) = root(input("AAA", false), PhysicalSize::new(180, 60));
+        root.focus_on(Some(id));
+        root.handle_text_event(TextEvent::key_down(Key::Named(NamedKey::End)));
+        if composing {
+            root.handle_text_event(TextEvent::preedit("AA".into()));
+        }
+        root.redraw();
+        let point = {
+            let field = root
+                .get_widget(id)
+                .unwrap()
+                .downcast::<TextInput>()
+                .unwrap();
+            field.ctx.to_window(Point::new(1., 1.))
+        };
+        let signals = Rc::new(RefCell::new(Vec::new()));
+        let output = signals.clone();
+        root.global_state.signal_sink = Box::new(move |signal| output.borrow_mut().push(signal));
+        let handled = root.handle_pointer_event(PointerEvent::Down(PointerButtonEvent {
+            pointer: PointerInfo {
+                pointer_id: Some(PointerId::PRIMARY),
+                persistent_device_id: None,
+                pointer_type: PointerType::Mouse,
+            },
+            state: PointerState {
+                position: PhysicalPosition::new(point.x, point.y),
+                ..Default::default()
+            },
+            button: Some(PointerButton::Primary),
+        }));
+        assert_eq!(handled, Handled::Yes);
+        let sequence: Vec<_> = signals
+            .borrow()
+            .iter()
+            .filter_map(|signal| match signal {
+                RenderRootSignal::EndIme => Some(false),
+                RenderRootSignal::StartIme => Some(true),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sequence, [false, true]);
+        let field = root
+            .get_widget(id)
+            .unwrap()
+            .downcast::<TextInput>()
+            .unwrap();
+        assert_eq!(field.value.as_ref(), "AAA");
+        assert!(field.composition.is_none());
+    }
+}
+
+#[test]
 fn formatting_real_pointer_keeps_ltr_and_rtl_scrolled_caret_at_both_ends() {
     for source in [
         "AA ".repeat(30),

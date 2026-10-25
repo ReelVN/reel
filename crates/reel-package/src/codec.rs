@@ -241,7 +241,7 @@ fn parse_index(
         .try_reserve_exact(count)
         .map_err(|e| Error::new(Limit, e.to_string()))?;
     let mut kinds = std::collections::BTreeSet::new();
-    for entry in bytes.chunks_exact(INDEX_ENTRY_LEN) {
+    for entry in bytes.as_chunks::<INDEX_ENTRY_LEN>().0 {
         let kind = u32_at(entry, 0);
         let flags = u32_at(entry, 4);
         require(kinds.insert(kind), Encoding, "duplicate section kind")?;

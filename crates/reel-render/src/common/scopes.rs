@@ -1,5 +1,99 @@
 use super::GpuError;
-use reel_ui::frame::RecordLocation;
+use reel_ui::frame::{FrameCommand, FrameDraw, FrameGroup, FrameOp, RecordLocation};
+
+/// A flat clip can move to ordinary draw geometry when it crosses no retained
+/// transition/capture boundary. Child scopes keep their existing isolation.
+pub(crate) fn flat_clip(
+    drawing: &reel_ui::frame::FrameDrawing,
+    commands: &[FrameCommand],
+    next: usize,
+    offset: Option<usize>,
+    transitions: bool,
+    capture: bool,
+) -> bool {
+    let mut end = next;
+    loop {
+        match commands.get(end).map(|command| &command.op) {
+            Some(FrameOp::PopClip) => break,
+            Some(FrameOp::Draw(_) | FrameOp::PushContext(_) | FrameOp::PopContext) => end += 1,
+            _ => return false,
+        }
+    }
+    let Some(offset) = offset else {
+        return true;
+    };
+    let start = offset + next;
+    let end = offset + end + 1;
+    !(transitions
+        && drawing
+            .transitions()
+            .iter()
+            .any(|t| t.commands.start < end && t.commands.end > start)
+        || capture
+            && drawing
+                .capture_exclusions()
+                .iter()
+                .any(|range| range.start < end && range.end > start))
+}
+
+/// A single source-over rectangle can carry its group's opacity directly.
+/// Multiple draws and glyph runs retain isolation because their pixels can overlap.
+/// The caller keeps transition and capture boundaries outside this fused pair.
+pub(crate) fn inline_group_fill(
+    group: &FrameGroup,
+    commands: &[FrameCommand],
+) -> Option<(FrameDraw, RecordLocation)> {
+    use reel_ui::{imaging::record::Geometry, peniko::Brush};
+    if group.clip.is_some()
+        || group.mask.is_some()
+        || group.image_mask.is_some()
+        || !group.filters.is_empty()
+        || group.invert != 0.
+        || group.composite.blend != Default::default()
+    {
+        return None;
+    }
+    let [
+        command,
+        FrameCommand {
+            op: FrameOp::PopGroup,
+            ..
+        },
+        ..,
+    ] = commands
+    else {
+        return None;
+    };
+    let FrameOp::Draw(FrameDraw::Fill {
+        shape: Geometry::Rect(rect),
+        transform,
+        fill_rule,
+        brush,
+        brush_transform,
+        composite,
+    }) = &command.op
+    else {
+        return None;
+    };
+    if composite.blend != Default::default() || !matches!(brush, Brush::Solid(_) | Brush::Image(_))
+    {
+        return None;
+    }
+    Some((
+        FrameDraw::Fill {
+            shape: Geometry::Rect(*rect),
+            transform: *transform,
+            fill_rule: *fill_rule,
+            brush: brush.clone(),
+            brush_transform: *brush_transform,
+            composite: reel_ui::imaging::Composite {
+                alpha: composite.alpha * group.composite.alpha,
+                blend: composite.blend,
+            },
+        },
+        command.origin.at,
+    ))
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
@@ -95,6 +189,70 @@ mod tests {
             mask_depth: 0,
             owner: *OWNER.get_or_init(|| reel_ui::widgets::Label::new("").prepare().id()),
         }
+    }
+    #[test]
+    fn single_rectangle_opacity_is_folded_without_changing_the_recording() {
+        use reel_ui::{
+            frame::{CommandOrigin, GroupComposite, InkBounds, LocalId},
+            imaging::{Composite, record::Geometry},
+            kurbo::{Affine, Rect},
+            peniko::{Brush, Color, Fill},
+        };
+        let mut group = FrameGroup {
+            image_mask: None,
+            clip: None,
+            mask: None,
+            filters: vec![],
+            composite: GroupComposite {
+                alpha: 0.4,
+                blend: Default::default(),
+            },
+            invert: 0.,
+            owner: at(0).owner,
+            effect_to_target: Affine::IDENTITY,
+            ink_bounds: InkBounds::Unbounded,
+        };
+        let command = |index, op| FrameCommand {
+            origin: CommandOrigin {
+                source: 0,
+                local: LocalId::None,
+                at: at(index),
+            },
+            op,
+        };
+        let draw = command(
+            1,
+            FrameOp::Draw(FrameDraw::Fill {
+                transform: Affine::IDENTITY,
+                fill_rule: Fill::NonZero,
+                brush: Brush::Solid(Color::WHITE),
+                brush_transform: None,
+                shape: Geometry::Rect(Rect::new(0., 0., 40., 30.)),
+                composite: Composite {
+                    alpha: 0.5,
+                    ..Default::default()
+                },
+            }),
+        );
+        let body = [draw.clone(), command(2, FrameOp::PopGroup)];
+        let (FrameDraw::Fill { composite, .. }, location) =
+            inline_group_fill(&group, &body).unwrap()
+        else {
+            panic!("fused rectangle");
+        };
+        assert_eq!(composite.alpha, 0.2);
+        assert_eq!(location, at(1));
+        assert!(
+            matches!(&body[0].op, FrameOp::Draw(FrameDraw::Fill { composite, .. }) if composite.alpha == 0.5)
+        );
+        // Overlapping drawing remains isolated; multiplying each draw's alpha
+        // would change its composition inside the group.
+        assert!(inline_group_fill(&group, &[draw.clone(), draw, body[1].clone()]).is_none());
+        group.invert = 1.;
+        assert!(inline_group_fill(&group, &body).is_none());
+        group.invert = 0.;
+        group.composite.blend = reel_ui::peniko::Mix::Screen.into();
+        assert!(inline_group_fill(&group, &body).is_none());
     }
     #[test]
     fn stack_growth_reserves_capacity_before_mutation_without_a_depth_ceiling() {

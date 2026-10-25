@@ -532,29 +532,32 @@ fn large_container_and_utf8_buffer_release_obey_independent_edge_byte_budgets() 
         .unwrap();
     assert_eq!(p.invalidated_objects, 1);
     assert_eq!(h.info(array).unwrap_err(), HeapError::InvalidHandle);
-    assert_eq!(h.stats().pending_bytes, 64 * VALUE_CHUNK_BYTES);
+    assert_eq!(h.stats().pending_bytes, 512 + 64 * VALUE_CHUNK_BYTES);
     assert_eq!(h.stats().payload_bytes, before);
-    let too_small = GcBudget {
-        objects: 0,
-        bytes: VALUE_CHUNK_BYTES - 1,
-        release_edges: 64,
-        units: 128,
-        ..tiny()
-    };
-    let p = h.gc_step(too_small).unwrap();
-    assert_eq!(p.release_edges, 64);
-    assert_eq!(p.bytes, 0);
-    assert!(p.blocked);
-    let p = h
-        .gc_step(GcBudget {
-            objects: 0,
-            release_edges: 0,
-            bytes: VALUE_CHUNK_BYTES,
-            units: 1,
-            ..tiny()
-        })
-        .unwrap();
-    assert_eq!(p.bytes, VALUE_CHUNK_BYTES);
+    for (edges, bytes) in [(32, 512), (64, VALUE_CHUNK_BYTES)] {
+        let p = h
+            .gc_step(GcBudget {
+                objects: 0,
+                bytes: bytes - 1,
+                release_edges: edges,
+                units: 128,
+                ..tiny()
+            })
+            .unwrap();
+        assert_eq!(p.release_edges, edges);
+        assert_eq!(p.bytes, 0);
+        assert!(p.blocked);
+        let p = h
+            .gc_step(GcBudget {
+                objects: 0,
+                release_edges: 0,
+                bytes,
+                units: 1,
+                ..tiny()
+            })
+            .unwrap();
+        assert_eq!(p.bytes, bytes);
+    }
     finish(&mut h, tiny());
     assert_eq!(h.stats().pending_bytes, 0);
     assert_eq!(h.stats().payload_bytes, 0);
@@ -688,12 +691,12 @@ fn budgets_include_reserved_queues_pending_payload_and_backpressure() {
     let limits = HeapLimits {
         max_objects: 2,
         max_roots: 32,
-        max_bytes: reserved + VALUE_CHUNK_BYTES,
+        max_bytes: reserved + 512 + VALUE_CHUNK_BYTES,
         ..HeapLimits::default()
     };
     let mut h = Heap::new(SessionEpoch(1), limits).unwrap();
     h.alloc_array(&[Value::int(1); 64]).unwrap();
-    assert_eq!(h.stats().payload_bytes, VALUE_CHUNK_BYTES);
+    assert_eq!(h.stats().payload_bytes, 512 + VALUE_CHUNK_BYTES);
     assert!(matches!(
         h.alloc_array(&[Value::NULL; 64]),
         Err(HeapError::ResourceLimit { .. })

@@ -31,8 +31,8 @@ pub enum ArchiveKind {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
-    /// Portable logical path relative to the archive's resource root.
-    pub path: String,
+    /// Immutable portable logical path relative to the archive's resource root.
+    pub path: Box<str>,
     /// Absolute file offset of the physical payload region.
     pub offset: u64,
     /// Decoded content length, independent of physical storage.
@@ -56,7 +56,7 @@ impl ArchiveIndex {
     }
     pub fn get(&self, path: &str) -> Option<&Entry> {
         self.entries
-            .binary_search_by(|entry| entry.path.as_str().cmp(path))
+            .binary_search_by(|entry| entry.path.as_ref().cmp(path))
             .ok()
             .map(|index| &self.entries[index])
     }
@@ -88,7 +88,8 @@ impl ArchiveIndex {
             return Err(invalid("archive entry count exceeds index length"));
         }
         input.seek(SeekFrom::Start(index_offset))?;
-        let mut input = BufReader::with_capacity(64 << 10, input.take(remaining));
+        let mut input =
+            BufReader::with_capacity(remaining.min(64 << 10) as usize, input.take(remaining));
         let mut entries = Vec::new();
         entries
             .try_reserve_exact(usize::try_from(count).map_err(io::Error::other)?)
@@ -140,7 +141,7 @@ impl ArchiveIndex {
                 )));
             }
             let entry = Entry {
-                path,
+                path: path.into_boxed_str(),
                 offset,
                 length,
                 version: fixed[20..52].try_into().unwrap(),

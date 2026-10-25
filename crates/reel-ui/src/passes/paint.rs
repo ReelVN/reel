@@ -443,6 +443,7 @@ fn paint_widget(
     let previous_suppression = layer_collector.suppress_output;
     let suppress_output = previous_suppression
         || is_stashed
+        || (state.subtree_opacity == 0. && state.subtree_blend == Default::default())
         || state
             .subtree_image_mask
             .as_ref()

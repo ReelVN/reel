@@ -31,10 +31,12 @@ pub(super) struct Context<'a> {
     pub image_cache: &'a mut Images,
     pub glyph_cache: &'a mut draw::GlyphCache,
     pub glyphs: Vec<Rc<draw::Glyph>>,
+    pub target_cache: &'a mut Vec<Target>,
     pub targets: Vec<Target>,
     pub available_targets: Vec<Target>,
     pub buffers: Vec<(native::VertexBuffer, native::IndexBuffer)>,
     pub scissor: Scissor,
+    pub mesh_clip: Option<crate::common::mesh::RectClip>,
     pub at: Option<RecordLocation>,
 }
 pub(super) struct Work {
@@ -55,11 +57,13 @@ pub(super) fn prepare(
     limits: crate::common::GpuLimits,
     image_cache: &mut Images,
     glyph_cache: &mut draw::GlyphCache,
+    target_cache: &mut Vec<Target>,
     images: HashMap<ResourceHandle, Rc<Image>>,
     frame: &RenderFrame,
     size: [u32; 2],
     capture: bool,
 ) -> Result<Prepared, (GlesError, Work)> {
+    let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Replay);
     let mut context = Context {
         capture,
         gpu,
@@ -73,10 +77,12 @@ pub(super) fn prepare(
         image_cache,
         glyph_cache,
         glyphs: Vec::new(),
+        target_cache,
         targets: Vec::new(),
         available_targets: Vec::new(),
         buffers: Vec::new(),
         scissor: Scissor::full(size),
+        mesh_clip: None,
         at: None,
     };
     let transform = Affine::scale_non_uniform(
@@ -84,6 +90,7 @@ pub(super) fn prepare(
         f64::from(size[1]) / frame.info().logical_size[1],
     );
     let output = context.stream(frame.drawing(), transform);
+    context.target_cache.truncate(context.targets.len());
     context.glyphs.extend(context.glyph_cache.take_uploads());
     let work = Work {
         _tickets: context.tickets,
@@ -110,6 +117,7 @@ struct Scope<'a> {
     invert: f32,
     blend: reel_ui::frame::BlendMode,
     scissor: Scissor,
+    mesh_clip: Option<crate::common::mesh::RectClip>,
     isolated: bool,
 }
 struct MaskComposition<'a> {
@@ -157,20 +165,28 @@ impl Context<'_> {
                             .target_bytes
                             .saturating_sub(self.budget_scope.targets.usage().bytes),
                     })?;
-            let target = match Target::new(
-                self.gpu,
-                self.size,
-                &self.budgets.targets,
-                self.limits.target_bytes,
-            ) {
-                Ok(target) => target,
-                Err((error, storage)) => {
-                    self.tickets.push(Reservation {
-                        _shared: storage,
-                        _local: local,
-                    });
-                    return Err(error);
-                }
+            // The previous frame's presentation draw precedes this clear on the
+            // same GLES queue. Capture outputs use a separate allocation set.
+            let target = if let Some(target) = self.target_cache.get(self.targets.len()) {
+                target.clone()
+            } else {
+                let target = match Target::new(
+                    self.gpu,
+                    self.size,
+                    &self.budgets.targets,
+                    self.limits.target_bytes,
+                ) {
+                    Ok(target) => target,
+                    Err((error, storage)) => {
+                        self.tickets.push(Reservation {
+                            _shared: storage,
+                            _local: local,
+                        });
+                        return Err(error);
+                    }
+                };
+                self.target_cache.push(target.clone());
+                target
             };
             self.tickets.push(Reservation {
                 _shared: None,
@@ -179,6 +195,7 @@ impl Context<'_> {
             self.targets.push(target.clone());
             target
         };
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Clear);
         self.gpu
             .clear(native::Target::Framebuffer(&target.framebuffer), [0.; 4])?;
         Ok(target)
@@ -323,32 +340,85 @@ impl Context<'_> {
             self.at = Some(at);
             let transform = current.transform;
             self.scissor = current.scopes.last().scissor;
+            self.mesh_clip = current.scopes.last().mesh_clip;
             match &command.op {
                 FrameOp::PushContext(_) | FrameOp::PopContext => (),
                 FrameOp::PushClip(clip) => {
-                    let scissor = Scissor::from_clip(clip, transform, self.size);
+                    let scissor = Scissor::from_clip(clip, transform, self.size, 1);
+                    let mesh_clip = scissor
+                        .is_none()
+                        .then(|| {
+                            crate::common::scopes::flat_clip(
+                                current.drawing,
+                                current.commands,
+                                current.next,
+                                current.offset,
+                                current.transitions_enabled,
+                                self.capture,
+                            )
+                            .then(|| {
+                                crate::common::mesh::RectClip::from_clip(clip, transform, self.size)
+                            })
+                            .flatten()
+                        })
+                        .flatten();
+                    let isolated = scissor.is_none() && mesh_clip.is_none();
                     current.scopes.push(
                         Kind::Clip,
                         at,
                         Scope {
-                            target: if scissor.is_some() {
+                            target: if !isolated {
                                 current.scopes.last().target.clone()
                             } else {
                                 self.target()?
                             },
-                            clip: if scissor.is_some() { None } else { Some(clip) },
+                            clip: isolated.then_some(clip),
+                            mesh_clip: mesh_clip.or(self.mesh_clip),
                             mask: None,
                             image_mask: None,
                             opacity: 1.,
                             invert: 0.,
                             blend: Default::default(),
-                            scissor: scissor.map_or(self.scissor, |s| self.scissor.intersect(s)),
-                            isolated: scissor.is_none(),
+                            scissor: scissor
+                                .or_else(|| Scissor::clip_bounds(clip, transform, self.size))
+                                .map_or(self.scissor, |s| self.scissor.intersect(s)),
+                            isolated,
                         },
                         |bytes| self.transient(bytes),
                     )?;
                 }
                 FrameOp::PushGroup(group) => {
+                    let boundary = current.transitions_enabled
+                        && current
+                            .drawing
+                            .transitions()
+                            .get(current.transition_next)
+                            .is_some_and(|t| {
+                                t.commands.start < current.offset.unwrap() + current.next + 2
+                            })
+                        || self.capture
+                            && current.offset.is_some_and(|offset| {
+                                current
+                                    .drawing
+                                    .capture_exclusion_end(offset + current.next)
+                                    .is_some()
+                            });
+                    if !boundary
+                        && let Some((draw, draw_at)) = crate::common::scopes::inline_group_fill(
+                            group,
+                            &current.commands[current.next..],
+                        )
+                    {
+                        self.draw(
+                            current.drawing,
+                            &current.scopes.last().target,
+                            &draw,
+                            transform,
+                            draw_at,
+                        )?;
+                        current.next += 2;
+                        continue;
+                    }
                     blend_code(group.composite.blend).ok_or(GlesError::Unsupported {
                         at,
                         record: "group blend mode",
@@ -364,6 +434,7 @@ impl Context<'_> {
                         at,
                         Scope {
                             target: self.target()?,
+                            mesh_clip: self.mesh_clip,
                             clip: group.clip.as_ref(),
                             mask: group.mask,
                             image_mask: group
@@ -388,9 +459,11 @@ impl Context<'_> {
                     let entry = current.scopes.pop(kind, at)?;
                     let group = entry.value;
                     self.scissor = current.scopes.last().scissor;
+                    self.mesh_clip = current.scopes.last().mesh_clip;
                     if !group.isolated {
                         continue;
                     }
+                    self.scissor = self.scissor.intersect(group.scissor);
                     let mut source = group.target;
                     if let Some(clip) = group.clip {
                         let coverage = self.target()?;
@@ -542,6 +615,7 @@ impl Context<'_> {
             transform,
             scopes: Scopes::new(Scope {
                 target: self.target()?,
+                mesh_clip: None,
                 clip: None,
                 mask: None,
                 image_mask: None,
@@ -580,6 +654,7 @@ impl Context<'_> {
         blend: u32,
         expression: Option<&Target>,
     ) -> Result<(), GlesError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Composite);
         if self.scissor.empty() {
             return Ok(());
         }
@@ -590,7 +665,22 @@ impl Context<'_> {
             CompositeOperation::Transition(p) => (3., p),
             CompositeOperation::MaskedTransition(p) => (4., p),
         };
-        let shader = &self.programs.composite;
+        let plain = mode == 0. && invert == 0. && blend == 0 && expression.is_none();
+        let coverage = mode == 1. && invert == 0. && blend == 0 && expression.is_none();
+        let _kind = reel_core::profile::Scope::new(if plain {
+            reel_core::profile::Phase::SourceComposite
+        } else if coverage {
+            reel_core::profile::Phase::CoverageComposite
+        } else {
+            reel_core::profile::Phase::EffectComposite
+        });
+        let shader = if plain {
+            &self.programs.source_over
+        } else if coverage {
+            &self.programs.alpha_mask
+        } else {
+            &self.programs.composite
+        };
         let mut values = Values::new();
         for (name, unit) in [
             ("u_source", 0),
@@ -618,7 +708,13 @@ impl Context<'_> {
                 mask,
                 backdrop,
                 expression.map_or(source, |t| &t.view),
-            ],
+            ][..if plain {
+                1
+            } else if coverage {
+                2
+            } else {
+                4
+            }],
             &values,
             if replacing {
                 native::Blend::Replace

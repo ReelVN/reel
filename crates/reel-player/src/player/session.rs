@@ -105,8 +105,12 @@ impl PlayerSession {
             #[cfg(feature = "window")]
             Self::Diagnostic(host) => Ok(host.ui.handle_text(bridge, event)?.handled),
             Self::Aside { story, hover } => {
+                let dispatch = story.driver().ui().dispatch_text(bridge, event);
+                if story.capturing() && !dispatch.changes_session {
+                    return Ok(dispatch.handled);
+                }
                 *hover = None;
-                story.driver_mut()?.handle_text(bridge, event)
+                story.driver_mut()?.finish_text(dispatch)
             }
         }
     }
@@ -147,6 +151,7 @@ impl PlayerSession {
             Self::Launcher(launcher) => launcher.sync(bridge, root),
             #[cfg(feature = "window")]
             Self::Diagnostic(host) => host.after_input(bridge, root),
+            Self::Aside { story, .. } if story.capturing() => Ok(()),
             Self::Aside { story, .. } => {
                 story.driver_mut()?.sync_input(bridge, root)?;
                 story.wake_input();
@@ -160,6 +165,7 @@ impl PlayerSession {
         bridge: &mut PresentationBridge,
         root: WidgetId,
     ) -> Result<(), Error> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::UiSync);
         match self {
             #[cfg(any(feature = "vita", test))]
             Self::Launcher(launcher) => launcher.sync(bridge, root),
@@ -353,6 +359,68 @@ mod tests {
     use super::*;
     use reel_engine::{Epoch, Session, SessionId, aside::VmLimits};
 
+    mod capture_input;
+
+    #[test]
+    fn stage_sync_preserves_idle_ui_and_timed_waits_without_dialogue() {
+        use crate::saves::Candidate;
+        use reel_core::clock::MonoTime;
+
+        for timed in [false, true] {
+            let ending = if timed {
+                "await run(delay(2)); panel.opacity = 0.5;"
+            } else {
+                ""
+            };
+            let driver = AsideSessionUi::from_source(
+                Session::new(SessionId(1), Epoch(1)).unwrap(),
+                &format!(
+                    "fn main() {{ let panel = button(width: 80, height: 40, on_click: |event| {{ event.target.opacity = 0.25; }}); stage.replace(panel); {ending} }}"
+                ),
+                "idle_ui",
+                1,
+                "main",
+                "en",
+                VmLimits::default(),
+            )
+            .unwrap();
+            let Candidate {
+                driver,
+                mut bridge,
+                root,
+            } = Candidate::new(driver).unwrap();
+            let mut session = PlayerSession::aside(driver);
+            let settle = |session: &mut PlayerSession, bridge: &mut PresentationBridge, now| {
+                for _ in 0..1000 {
+                    session.tick(SliceBudget::default(), || now).unwrap();
+                    session.sync(bridge, root).unwrap();
+                    let deadline = session.wake_deadline(MonoTime(now));
+                    if deadline.is_none_or(|deadline| deadline.0 > now + 1_000_000) {
+                        return;
+                    }
+                }
+                panic!("stage synchronization kept an idle VM runnable");
+            };
+            settle(&mut session, &mut bridge, 0);
+            let expected = timed.then_some(MonoTime(2_000_000_000));
+            assert_eq!(session.wake_deadline(MonoTime(0)), expected);
+            let initial = session.ui().projection_stamp();
+            for _ in 0..100 {
+                session.sync(&mut bridge, root).unwrap();
+                assert_eq!(session.wake_deadline(MonoTime(0)), expected);
+                assert_eq!(session.ui().projection_stamp(), initial);
+            }
+            if timed {
+                settle(&mut session, &mut bridge, 2_000_000_000);
+                assert_eq!(session.wake_deadline(MonoTime(2_000_000_000)), None);
+                assert_ne!(session.ui().projection_stamp(), initial);
+            }
+            session.close().unwrap();
+            settle(&mut session, &mut bridge, 2_000_000_000);
+            assert!(session.close_complete());
+        }
+    }
+
     #[test]
     fn mouse_hover_during_capture_preserves_save_and_coalesces_pending_motion() {
         use crate::saves::{Candidate, DirectorySaves, RuntimeSaves, SaveService, SaveStorage};
@@ -427,6 +495,7 @@ mod tests {
                             }),
                         )
                         .unwrap();
+                    window.after_input(&mut bridge, root).unwrap();
                 }
                 assert!(
                     matches!(&window, PlayerSession::Aside { story, hover: Some(PointerEvent::Move(e)) }

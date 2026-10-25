@@ -42,13 +42,16 @@ pub(super) struct Images {
 impl Images {
     /// Validate the simultaneous image demand before issuing an upload command.
     pub fn validate(
+        &self,
         required: &[crate::common::image_plan::Required<'_>],
         caps: &native::Capabilities,
         limits: crate::common::GpuLimits,
         total_bytes: u64,
-    ) -> Result<(), GlesError> {
+    ) -> Result<u64, GlesError> {
         let mut resident = 0u64;
+        let mut additional = 0u64;
         let mut staging = 0;
+        let mut pending_staging = 0;
         for item in required {
             let (bytes, upload) = match item.source.data() {
                 ResourceData::Image { image, .. } => (
@@ -102,6 +105,14 @@ impl Images {
                 _ => unreachable!("common image demand validates resource kinds"),
             };
             resident = resident.checked_add(bytes).ok_or(GlesError::InvalidSize)?;
+            if !self.entries.contains_key(&item.source.handle()) {
+                pending_staging = pending_staging.max(upload);
+                if !self.pending.contains_key(&item.source.handle()) {
+                    additional = additional
+                        .checked_add(bytes)
+                        .ok_or(GlesError::InvalidSize)?;
+                }
+            }
             staging = staging.max(upload);
         }
         if staging > limits.transient_bytes {
@@ -113,7 +124,9 @@ impl Images {
         }
         crate::common::image_plan::peak(std::iter::once((resident, 0)), limits.resource_bytes)?;
         crate::common::image_plan::peak(std::iter::once((resident, staging)), total_bytes)?;
-        Ok(())
+        additional
+            .checked_add(pending_staging)
+            .ok_or(GlesError::InvalidSize)
     }
     pub fn prune(&mut self, versions: &[ResourceVersion]) {
         self.entries.retain(|_, image| {

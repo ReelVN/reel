@@ -15,6 +15,7 @@ pub mod identity;
 pub mod image;
 pub mod io;
 pub mod prepared_image;
+pub mod profile;
 pub mod queue;
 pub mod request_ids;
 pub mod result;

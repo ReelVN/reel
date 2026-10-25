@@ -259,6 +259,7 @@ fn pack_clears(function: &mut Function, b: &mut super::budget::Budget) -> Result
 pub(super) fn emit(mut ir: IrModule) -> Result<Compilation, Box<Error>> {
     write(&mut ir)?;
     super::constants::intern(&mut ir.package, &mut ir.budget)?;
+    super::signatures::intern(&mut ir.package, &mut ir.budget)?;
     super::descriptors::intern(&mut ir.package, &mut ir.budget)?;
     let b = &mut ir.budget;
     b.span = ir.metadata.source_span;

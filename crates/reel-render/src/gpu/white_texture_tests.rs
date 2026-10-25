@@ -755,10 +755,10 @@ fn capture_plans_omit_excluded_image_uploads_and_isolated_targets() {
     widget.capture_included = false;
     let frame = frame_from_widget(widget, empty_snapshot(&pool), &pool);
     assert!(
-        super::super::targets::peak_targets(&frame, [400, 300], false, |_| Ok(())).unwrap() > 1
+        super::super::targets::peak_targets(&frame, [400, 300], false, 4, |_| Ok(())).unwrap() > 1
     );
     assert_eq!(
-        super::super::targets::peak_targets(&frame, [400, 300], true, |_| Ok(())).unwrap(),
+        super::super::targets::peak_targets(&frame, [400, 300], true, 4, |_| Ok(())).unwrap(),
         1
     );
 }
@@ -1366,7 +1366,7 @@ fn capture_global_transition_keeps_old_content_when_new_content_is_excluded() {
         3,
         "old accepted drawing remains an input to the blend"
     );
-    assert!(crate::gpu::targets::peak_targets(&frame, [64, 48], true, |_| Ok(())).unwrap() > 1);
+    assert!(crate::gpu::targets::peak_targets(&frame, [64, 48], true, 4, |_| Ok(())).unwrap() > 1);
 }
 
 #[test]

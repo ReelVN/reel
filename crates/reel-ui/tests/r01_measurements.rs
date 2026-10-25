@@ -69,6 +69,63 @@ fn workload(count: usize, payload: usize) -> Scene {
     scene
 }
 
+#[test]
+#[ignore = "CPU recording and compilation measurement"]
+fn transparent_overlay_recording_cost() {
+    use reel_ui::{
+        core::Widget,
+        kurbo::{Point, Size},
+    };
+    let mut root = RecordWidget::new(workload(1, 0));
+    root.clip = false;
+    for index in 0..24 {
+        let mut overlay = RecordWidget::new(workload(8, 0));
+        overlay.opacity = 0.;
+        root.inner.add(
+            overlay.prepare(),
+            Point::new(index as f64, 0.),
+            Size::new(320., 240.),
+        );
+    }
+    let mut bridge = widget_bridge(root, Affine::IDENTITY);
+    let pool = pool();
+    drop(build(
+        bridge.record(FrameId(1)).unwrap(),
+        empty_snapshot(&pool),
+        &pool,
+    ));
+    let region = Region::new(&ALLOCATOR);
+    let start = Instant::now();
+    let mut commands = 0;
+    let mut groups = 0;
+    let mut frame_bytes = 0;
+    for id in 2..202 {
+        let frame = build(
+            bridge.record(FrameId(id)).unwrap(),
+            empty_snapshot(&pool),
+            &pool,
+        );
+        commands += frame.commands().len();
+        groups += frame
+            .commands()
+            .iter()
+            .filter(|c| matches!(c.op, FrameOp::PushGroup(_)))
+            .count();
+        frame_bytes += frame.accounted_bytes();
+    }
+    let elapsed = start.elapsed();
+    let cost = region.change();
+    println!(
+        "transparent_overlays frames=200 elapsed_us={} commands={} groups={} frame_bytes={} allocated_bytes={} allocations={}",
+        elapsed.as_micros(),
+        commands,
+        groups,
+        frame_bytes,
+        cost.bytes_allocated,
+        cost.allocations
+    );
+}
+
 fn probe_workloads(case: Option<&str>) -> Result<&'static [(usize, usize)], &'static str> {
     match case {
         None => Ok(&[(512, 0), (16, 2048)]),

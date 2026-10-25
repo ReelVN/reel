@@ -838,6 +838,19 @@ impl Vm {
             .task_id
             .or_else(|| self.tasks.data.iter().find_map(|t| t.task_id))
     }
+    /// Current instruction or native call site, available without allocating a
+    /// fault record. A task without execution frames has no current location.
+    pub fn task_location(&self, task: TaskId) -> Result<Option<Location>, VmError> {
+        Ok(self
+            .task(task)?
+            .frames
+            .data
+            .last()
+            .map(|frame| match frame {
+                Frame::Script(script) => self.loc(*script, script.pc),
+                Frame::Native(native) => native.location,
+            }))
+    }
     pub fn is_idle(&self) -> bool {
         self.active.task_id.is_none() && self.tasks.data.iter().all(|t| t.task_id.is_none())
     }

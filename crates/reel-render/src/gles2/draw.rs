@@ -81,6 +81,7 @@ impl GlyphCache {
         index: usize,
         at: RecordLocation,
     ) -> Result<Rc<Glyph>, GlesError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GlyphRaster);
         let source = frame
             .resources()
             .leases()
@@ -667,13 +668,24 @@ impl Context<'_> {
         if mesh.indices.is_empty() || self.scissor.empty() {
             return Ok(());
         }
+        let clipped = self
+            .mesh_clip
+            .map(|clip| mesh.clipped(clip, self.mesh_allocation()))
+            .transpose()?
+            .flatten();
+        let mesh = clipped.as_ref().unwrap_or(mesh);
+        if mesh.indices.is_empty() {
+            return Ok(());
+        }
         self.transient(
             (mesh.vertices.len() * size_of::<mesh::Vertex>() + mesh.indices.len() * 4) as u64,
         )?;
+        let allocating = reel_core::profile::Scope::new(reel_core::profile::Phase::BufferCreate);
         let vertices =
             self.gpu
                 .vertex_buffer(bytemuck::cast_slice(&mesh.vertices), 12, &attributes())?;
         let indices = self.gpu.index_buffer(&mesh.indices)?;
+        drop(allocating);
         self.buffers.push((vertices, indices));
         let (vertices, indices) = self.buffers.last().expect("retained draw buffers");
         let styled = appearance[5][3] != 0. || appearance[7][3] != 0.;
@@ -710,10 +722,14 @@ impl Context<'_> {
         values.extend(shader.float("u_video_kind", kind));
         values.extend(shader.float("u_image_flip", 0.));
         values.extend(shader.float("u_coverage", f32::from(coverage)));
-        self.gpu.set_repeat(texture, repeat)?;
-        for plane in planes {
-            self.gpu.set_repeat(plane, repeat)?;
+        {
+            let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Sampler);
+            self.gpu.set_repeat(texture, repeat)?;
+            for plane in planes {
+                self.gpu.set_repeat(plane, repeat)?;
+            }
         }
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Draw);
         self.gpu.draw(native::Draw {
             target: native::Target::Framebuffer(&target.framebuffer),
             size: self.size,

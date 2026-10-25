@@ -9,8 +9,8 @@ pub const SCRATCH_BYTES: usize = BLOCK_BYTES * 2;
 const RECORD_BYTES: u64 = 16;
 
 /// Reusable workspace for archive range reads. Decoding allocates no additional
-/// block buffers; raw entries read directly into the destination. The last
-/// successfully decoded block remains available across small range requests,
+/// block buffers; raw entries and complete compressed blocks write directly into
+/// the destination. The last partially requested decoded block remains available,
 /// identified by the immutable logical content version, length, and block index.
 #[derive(Debug)]
 pub struct ReadScratch {
@@ -47,7 +47,8 @@ pub(super) fn directory_bytes(length: u64) -> Option<u64> {
 
 impl Entry {
     /// Reads exactly `output.len()` logical bytes beginning at `offset`.
-    /// Only the addressed directory records and payload blocks are read.
+    /// Only the addressed directory records and payload blocks are read. Records
+    /// are batched in 4 KiB of stack storage; adjacent payloads read sequentially.
     /// Cancellation returns [`io::ErrorKind::Interrupted`] and may leave a written
     /// prefix in `output`; callers publish their result only after success.
     /// Content digests identify bytes at packaging time; range reads validate
@@ -85,6 +86,11 @@ impl Entry {
             return check_cancelled(&mut cancelled);
         };
         let (encoded, decoded) = scratch.bytes.split_at_mut(BLOCK_BYTES);
+        let last_block = (offset + output.len() as u64 - 1) / BLOCK_BYTES as u64;
+        let mut records = [0; 4096];
+        let mut first_record = 0;
+        let mut record_count = 0;
+        let mut next_payload = None;
         let mut logical_offset = offset;
         while !output.is_empty() {
             check_cancelled(&mut cancelled)?;
@@ -104,13 +110,23 @@ impl Entry {
                 output = &mut output[size..];
                 continue;
             }
-            let record_offset = block
-                .checked_mul(RECORD_BYTES)
-                .and_then(|relative| directory_offset.checked_add(relative))
-                .ok_or_else(|| invalid("archive block record offset overflow"))?;
-            input.seek(SeekFrom::Start(record_offset))?;
-            let mut record = [0; RECORD_BYTES as usize];
-            read_exact(input, &mut record, &mut cancelled)?;
+            if block < first_record || block - first_record >= record_count {
+                let record_offset = block
+                    .checked_mul(RECORD_BYTES)
+                    .and_then(|relative| directory_offset.checked_add(relative))
+                    .ok_or_else(|| invalid("archive block record offset overflow"))?;
+                first_record = block;
+                record_count = (last_block - block + 1).min(records.len() as u64 / RECORD_BYTES);
+                input.seek(SeekFrom::Start(record_offset))?;
+                read_exact(
+                    input,
+                    &mut records[..(record_count * RECORD_BYTES) as usize],
+                    &mut cancelled,
+                )?;
+                next_payload = None;
+            }
+            let record_at = ((block - first_record) * RECORD_BYTES) as usize;
+            let record = &records[record_at..record_at + RECORD_BYTES as usize];
             let relative = u64::from_le_bytes(record[..8].try_into().unwrap());
             let stored = u32::from_le_bytes(record[8..12].try_into().unwrap()) as usize;
             let codec = u32::from_le_bytes(record[12..16].try_into().unwrap());
@@ -131,25 +147,36 @@ impl Entry {
                 .ok_or_else(|| invalid("archive block payload offset overflow"))?;
             if codec == 0 {
                 // Raw blocks require neither a decode nor a full-block read.
-                input.seek(SeekFrom::Start(payload_offset + within as u64))?;
+                let position = payload_offset + within as u64;
+                if next_payload != Some(position) {
+                    input.seek(SeekFrom::Start(position))?;
+                }
                 read_exact(input, &mut output[..size], &mut cancelled)?;
+                next_payload = Some(position + size as u64);
             } else {
-                input.seek(SeekFrom::Start(payload_offset))?;
+                if next_payload != Some(payload_offset) {
+                    input.seek(SeekFrom::Start(payload_offset))?;
+                }
                 read_exact(input, &mut encoded[..stored], &mut cancelled)?;
+                next_payload = Some(payload_offset + stored as u64);
                 check_cancelled(&mut cancelled)?;
-                // The decoder may partially overwrite its output before failing.
-                // Retire the previous identity before that first mutation.
-                scratch.cached = None;
-                let written = lz4_flex::block::decompress_into(
-                    &encoded[..stored],
-                    &mut decoded[..logical_length],
-                )
-                .map_err(|error| invalid(format!("invalid archive LZ4 block: {error}")))?;
+                let direct = within == 0 && size == logical_length;
+                let destination = if direct {
+                    &mut output[..size]
+                } else {
+                    // A failed decode may mutate scratch; retire its old identity first.
+                    scratch.cached = None;
+                    &mut decoded[..logical_length]
+                };
+                let written = lz4_flex::block::decompress_into(&encoded[..stored], destination)
+                    .map_err(|error| invalid(format!("invalid archive LZ4 block: {error}")))?;
                 if written != logical_length {
                     return Err(invalid("archive block decoded length mismatch"));
                 }
-                scratch.cached = Some(key);
-                output[..size].copy_from_slice(&decoded[within..within + size]);
+                if !direct {
+                    scratch.cached = Some(key);
+                    output[..size].copy_from_slice(&decoded[within..within + size]);
+                }
             }
             logical_offset += size as u64;
             output = &mut output[size..];
@@ -192,7 +219,7 @@ fn read_exact(
 }
 
 /// Packaging retains directory records, never logical file content. Runtime
-/// directory reads use a separate fixed stack record and do not retain this list.
+/// directory reads use a fixed stack batch and do not retain this list.
 pub(super) fn write(
     input: &mut impl Read,
     output: &mut impl Write,

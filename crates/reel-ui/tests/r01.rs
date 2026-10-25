@@ -40,6 +40,42 @@ fn version(n: u8) -> ResourceVersion {
 }
 
 #[test]
+fn transparent_subtrees_keep_geometry_and_resume_painting_when_visible() {
+    let mut root = RecordWidget::new(fill(Color::WHITE));
+    root.opacity = 0.;
+    let widget = root.prepare();
+    let root = widget.id();
+    let mut bridge = r01_fixture::bridge(fixture::root(widget).0);
+    let pool = pool();
+    let source = bridge.record(FrameId(1)).unwrap();
+    let frame = build(source, empty_snapshot(&pool), &pool);
+    assert!(frame.commands().is_empty());
+    assert!(bridge.root().get_widget(root).is_some());
+    let mut retained = RetainBuild::new(&frame, Some(root), limits(), &pool).unwrap();
+    while !retained.step(step_budget()).unwrap().complete {}
+    assert!(retained.finish().unwrap().drawing().commands().is_empty());
+    drop(frame);
+    bridge.edit_widget(root, |mut widget| {
+        let mut widget = widget.downcast::<RecordWidget>();
+        widget.widget.opacity = 0.5;
+        widget.ctx.request_pre_paint();
+    });
+    let frame = build(
+        bridge.record(FrameId(2)).unwrap(),
+        empty_snapshot(&pool),
+        &pool,
+    );
+    assert!(frame.commands().iter().any(|c| matches!(&c.op,
+        FrameOp::PushGroup(group) if group.composite.alpha == 0.5)));
+    assert!(
+        frame
+            .commands()
+            .iter()
+            .any(|c| matches!(c.op, FrameOp::Draw(_)))
+    );
+}
+
+#[test]
 fn small_frames_share_a_pool_below_the_per_frame_ceiling() {
     use reel_core::budget::{BudgetCategory, QueueLimits};
     let pool = BudgetPool::new(

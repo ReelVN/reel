@@ -193,7 +193,7 @@ impl Heap {
             return Ok(false);
         }
         let extra = capture.pair_bytes()?;
-        let chunks = Values::growth_bytes(capture.values.len.into(), 2) / VALUE_CHUNK_BYTES;
+        let chunks = u64::from(Values::growth_bytes(capture.values.len.into(), 2) != 0);
         self.ensure_bytes(extra)?;
         self.barrier(source)?;
         self.charge(extra, chunks);
@@ -940,7 +940,7 @@ mod tests {
             .budget_usage()
             .reserve(
                 heap.budget_usage().remaining_bytes()
-                    - VALUE_CHUNK_BYTES
+                    - Values::growth_bytes(8, 2)
                     - crate::dependencies::INDEX_ENTRY_BYTES
                     + 1,
             )

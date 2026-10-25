@@ -7,7 +7,7 @@ pub(crate) use reactive::DerivedSlot;
 mod table;
 use crate::HeapBudgetUsage;
 use crate::gc::Collector;
-use crate::payload::{BYTE_CHUNK_BYTES, Bytes, Payload, VALUE_CHUNK_BYTES, Values};
+use crate::payload::{BYTE_CHUNK_BYTES, Bytes, Payload, Values};
 use crate::root_ranges::{BOOK_BYTES, RangeDescriptor};
 use crate::slots::{HeapKey, RangeKey, RootKey, Slots, heap_key, index};
 use crate::{GcPhase, HeapHandle, HeapId, SessionEpoch, Value, WeakHandle};
@@ -637,19 +637,14 @@ impl Heap {
                 0,
             ));
         }
-        let chunks = Values::chunks_for_len(input.len() as u64);
-        self.ensure_bytes(chunks * VALUE_CHUNK_BYTES)?;
+        let bytes = Values::allocation_bytes(input.len() as u64);
+        self.ensure_bytes(bytes)?;
         let mut values = Values::default();
         for &v in input {
             self.shade(v);
             values.push(v);
         }
-        Ok(self.allocate(
-            kind,
-            Payload::Values(values),
-            None,
-            chunks * VALUE_CHUNK_BYTES,
-        ))
+        Ok(self.allocate(kind, Payload::Values(values), None, bytes))
     }
     pub fn alloc_cell(&mut self, value: Value) -> Result<Value, HeapError> {
         self.allocate_values(ObjectKind::Cell, &[value])
@@ -1040,11 +1035,7 @@ impl Heap {
             unreachable!()
         };
         values.len.checked_add(1).ok_or(HeapError::OutOfBounds)?;
-        let extra = if values.needs_chunk() {
-            VALUE_CHUNK_BYTES
-        } else {
-            0
-        };
+        let extra = Values::growth_bytes(values.len.into(), 1);
         self.ensure_bytes(extra)?;
         self.adopt_model_value_reserving(target, value, extra)?;
         self.barrier(value)?;

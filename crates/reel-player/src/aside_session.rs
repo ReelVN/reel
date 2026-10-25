@@ -548,6 +548,13 @@ impl AsideSessionUi {
         let result = self.ui.handle_text(bridge, event)?;
         self.accept_ui_input(result)
     }
+    pub(crate) fn finish_text(
+        &mut self,
+        dispatch: crate::session::TextDispatch,
+    ) -> Result<Handled, Error> {
+        let result = self.ui.finish_text(dispatch)?;
+        self.accept_ui_input(result)
+    }
     pub fn handle_access(
         &mut self,
         bridge: &mut PresentationBridge,

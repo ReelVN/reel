@@ -268,6 +268,7 @@ fn scalar_string_arithmetic_and_defaults_roundtrip() {
     let p = result.program.package();
     assert!(p.constants.contains(&bc::Const::Utf8("中文\n🙂".into())));
     assert!(p.constants.contains(&bc::Const::Utf8(r"a\nb".into())));
+    assert_eq!(function(p, "text").signature, function(p, "raw").signature);
     assert!(p.constants.contains(&bc::Const::Int(i64::MIN)));
     assert!(
         p.constants

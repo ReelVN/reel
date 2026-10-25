@@ -227,7 +227,7 @@ fn replacement_stage_with_matching_ids_and_revisions_replaces_widgets_and_button
     ));
     assert_eq!(
         b.button_changes(Some(&a), false),
-        vec![(second.root().unwrap(), true)]
+        Some(vec![(second.root().unwrap(), true)])
     );
     let (mut root, widget) = mount(&a);
     let old = scene(&root, widget).id();
@@ -332,6 +332,78 @@ fn optimistic_control_proposal_is_reconciled_through_unchanged_ancestors() {
         ),
         "optimistic edits must not mutate shared projections"
     );
+}
+
+#[test]
+fn button_bindings_reuse_animation_and_track_content_topology_and_feedback() {
+    let mut stage = Stage::default();
+    let caption = stage
+        .create(
+            NodeKind::Text("Continue".into()),
+            NodeProps::default(),
+            vec![],
+        )
+        .unwrap();
+    let button = stage
+        .create(
+            NodeKind::Button {
+                label: None,
+                listening: true,
+                focus_on_pointer: true,
+            },
+            NodeProps::default(),
+            vec![caption],
+        )
+        .unwrap();
+    let other = stage
+        .create(NodeKind::Stack, NodeProps::default(), vec![])
+        .unwrap();
+    let root = stage
+        .create(NodeKind::Stack, NodeProps::default(), vec![button, other])
+        .unwrap();
+    stage.replace(root).unwrap();
+    let original = StageView::capture(&stage);
+    for id in [other, root, button, caption] {
+        let node = stage.node(id).unwrap();
+        let mut props = node.props.clone();
+        props.x += 12.;
+        props.opacity = 0.75;
+        stage.update(id, node.kind.clone(), props).unwrap();
+    }
+    let animated = StageView::update(&stage, Some(&original));
+    assert!(animated.button_changes(Some(&original), false).is_none());
+
+    let props = stage.node(caption).unwrap().props.clone();
+    stage
+        .update(caption, NodeKind::Text("Replace".into()), props)
+        .unwrap();
+    let replaced = StageView::update(&stage, Some(&animated));
+    assert_eq!(
+        replaced.button_changes(Some(&animated), false),
+        Some(vec![(button, true)])
+    );
+    assert!(replaced.button_changes(Some(&animated), true).is_none());
+
+    stage.reconcile_children(root, vec![other, button]).unwrap();
+    let reordered = StageView::update(&stage, Some(&replaced));
+    assert_eq!(
+        reordered.button_changes(Some(&replaced), false),
+        Some(vec![(button, false)])
+    );
+
+    let node = stage.node(button).unwrap();
+    let mut props = node.props.clone();
+    props.enabled = false;
+    stage.update(button, node.kind.clone(), props).unwrap();
+    let disabled = StageView::update(&stage, Some(&reordered));
+    assert_eq!(
+        disabled.button_changes(Some(&reordered), false),
+        Some(vec![(button, true)])
+    );
+
+    stage.remove(button).unwrap();
+    let removed = StageView::update(&stage, Some(&disabled));
+    assert_eq!(removed.button_changes(Some(&disabled), false), Some(vec![]));
 }
 
 #[test]

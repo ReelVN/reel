@@ -258,11 +258,12 @@ impl StoryRuntime {
         Some(MonoTime(deadline.max(now.0)))
     }
 
+    /// Resume ready callbacks and completed waits after host input or a resource
+    /// wake. A stage containing only event handlers remains asleep until a
+    /// callback or completed wait becomes runnable.
     pub fn wake_input(&mut self) {
         if self.driver().state() == StoryState::Running
-            && (self.driver().has_runnable_tasks()
-                || self.driver().adapter().asset_reads_pending()
-                || self.driver().ui().session().view().interaction.is_none())
+            && (self.driver().has_runnable_tasks() || self.driver().adapter().asset_reads_pending())
         {
             self.runnable = true;
         }
@@ -394,8 +395,8 @@ impl StoryRuntime {
         }
     }
 
-    /// Alternate VM and incremental GC work, draining invalidated payloads before
-    /// allocating again. A wait finishes any requested collection before sleeping.
+    /// Alternate VM and incremental GC work. Resource pressure completes a full
+    /// collection before retrying; persistent hard-capacity failure ends the run.
     fn step(&mut self, budget: SliceBudget, now: impl FnMut() -> u64) -> Result<(), Error> {
         if self.driver().cleanup_pending() {
             self.driver
@@ -418,6 +419,7 @@ impl StoryRuntime {
         }
         if self.collecting
             && (self.gc_turn
+                || self.retry_after_collection
                 || !self.runnable
                 || self.driver().adapter().vm().heap().stats().pending_bytes != 0)
         {
@@ -469,35 +471,22 @@ impl StoryRuntime {
                     .driver()
                     .fault()?
                     .expect("fault delivery remains rooted");
-                let location = if let Some(span) = fault.location.source {
-                    let package = self.driver().adapter().vm().program().package();
-                    let source = &package.sources[span.file.index()];
-                    let before = &source.text[..span.start as usize];
-                    let line = before.bytes().filter(|byte| *byte == b'\n').count() + 1;
-                    let column = before.rsplit('\n').next().unwrap().chars().count() + 1;
-                    format!("{}:{line}:{column}", package.symbols[source.path.index()],)
-                } else {
-                    let package = self.driver().adapter().vm().program().package();
-                    let id = fault.location.code.function;
-                    let function = &package.functions[id.index()];
-                    let module = &package.modules[function.module.index()];
-                    format!(
-                        "{}::{} [function {}, pc {}]",
-                        package.symbols[module.path.index()],
-                        package.symbols[function.name.index()],
-                        id.0,
-                        fault.location.pc.0,
-                    )
-                };
+                let location = self.location_text(fault.location);
                 let value = self.driver().adapter().format_fault_value(fault)?;
                 return Err(format!("{location}: story fault {:?}: {value}", fault.kind).into());
             }
             StoryProgress::Vm(RunOutcome::ResourceBlocked(blocked)) => {
                 self.runnable = false;
                 if self.retried_collection {
-                    // Active catch/unwind capacity cannot be reclaimed by repeated GC.
-                    // Keep the complete VM state available for cancellation, without spinning.
-                    eprintln!("story resource blocked: {blocked:?}; close the window to cancel");
+                    let vm = self.driver().adapter().vm();
+                    let location = vm
+                        .task_location(blocked.task)?
+                        .map(|location| self.location_text(location))
+                        .unwrap_or_else(|| "story".into());
+                    return Err(format!(
+                        "{location}: story resource {:?}: used {}, requires {} after garbage collection",
+                        blocked.resource, blocked.current, blocked.required
+                    ).into());
                 } else {
                     if !self.collecting {
                         self.driver.as_mut().unwrap().begin_collection()?;
@@ -524,6 +513,28 @@ impl StoryRuntime {
         }
         Ok(())
     }
+
+    fn location_text(&self, location: aside_vm::executor::Location) -> String {
+        let package = self.driver().adapter().vm().program().package();
+        if let Some(span) = location.source {
+            let source = &package.sources[span.file.index()];
+            let before = &source.text[..span.start as usize];
+            let line = before.bytes().filter(|byte| *byte == b'\n').count() + 1;
+            let column = before.rsplit('\n').next().unwrap().chars().count() + 1;
+            format!("{}:{line}:{column}", package.symbols[source.path.index()])
+        } else {
+            let id = location.code.function;
+            let function = &package.functions[id.index()];
+            let module = &package.modules[function.module.index()];
+            format!(
+                "{}::{} [function {}, pc {}]",
+                package.symbols[module.path.index()],
+                package.symbols[function.name.index()],
+                id.0,
+                location.pc.0
+            )
+        }
+    }
 }
 
 #[cfg(test)]
@@ -546,6 +557,40 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    #[test]
+    fn hard_capacity_finishes_collection_and_reports_the_blocked_source() {
+        let code =
+            "fn main() { try { throw 1; } catch a { try { throw 2; } catch b { throw 3; } } }";
+        let mut limits = VmLimits::default();
+        limits.max_unwinds = 1;
+        let driver = AsideSessionUi::from_source(
+            Session::new(SessionId(74), Epoch(1)).unwrap(),
+            code,
+            "pressure",
+            1,
+            "main",
+            "en",
+            limits,
+        )
+        .unwrap();
+        let mut story = StoryRuntime::new(driver);
+        let collections = story.driver().adapter().vm().heap().stats().collections;
+        let mut error = None;
+        for _ in 0..10_000 {
+            // UI synchronization can wake work while the forced collection runs.
+            story.wake_input();
+            if let Err(failure) = story.tick(SliceBudget::default(), || 0) {
+                error = Some(failure.to_string());
+                break;
+            }
+        }
+        let error = error.expect("persistent hard-capacity pressure must reach the host");
+        assert!(error.contains("pressure:1:"), "{error}");
+        assert!(error.contains("CatchRecords"), "{error}");
+        assert!(error.contains("after garbage collection"), "{error}");
+        assert!(story.driver().adapter().vm().heap().stats().collections > collections);
     }
 
     fn drain(runtime: &mut StoryRuntime) {

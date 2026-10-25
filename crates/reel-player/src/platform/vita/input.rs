@@ -42,6 +42,19 @@ impl Input {
             .next_deadline()
             .map(|time| MonoTime(time.as_nanos().min(u128::from(u64::MAX)) as u64))
     }
+    /// Retain releases belonging to the native keyboard without dispatching
+    /// them to the story after the keyboard closes.
+    pub fn suppress(&mut self, sample: native::Sample) {
+        self.blocked_buttons = sample.buttons;
+        self.blocked_axes = sample.axes.map(|value| value.abs() > 0.2);
+        self.blocked_touches.clear();
+        self.blocked_touches.extend(
+            sample.touches[..sample.touch_count]
+                .iter()
+                .map(|touch| touch.id),
+        );
+        self.last = sample;
+    }
     fn value(
         &mut self,
         control: Control,

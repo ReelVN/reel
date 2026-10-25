@@ -5,7 +5,7 @@
 )]
 #[cfg(any(feature = "wgpu", feature = "gles2"))]
 mod common;
-#[cfg(all(feature = "gles2", target_os = "vita"))]
+#[cfg(feature = "gles2")]
 pub mod gles2;
 #[cfg(feature = "wgpu")]
 pub mod gpu;

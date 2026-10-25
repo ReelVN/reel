@@ -64,7 +64,7 @@ fn counts(renderer: &Renderer, sets: usize) {
     assert_eq!(renderer.pipelines.initialized_count(), sets);
     assert_eq!(
         renderer.pipelines.creations.snapshot(),
-        [3 * sets, 4 * sets, 4 * sets, 4 * sets, 4 * sets]
+        [3 * sets, 6 * sets, 6 * sets, 6 * sets, 4 * sets]
     );
 }
 
@@ -494,7 +494,8 @@ fn subtree_blend_mask_clip_and_backdrop_fit_the_planned_target_budget() {
             let frame = frame(drawing, [400, 300], &pool);
             let expected_targets = if masked || clipped { 4 } else { 3 };
             let planned =
-                super::super::targets::peak_targets(&frame, [400, 300], false, |_| Ok(())).unwrap();
+                super::super::targets::peak_targets(&frame, [400, 300], false, 4, |_| Ok(()))
+                    .unwrap();
             assert_eq!(planned, expected_targets);
             // Exactly one-sample RGBA16F storage: an omitted backdrop in planning
             // would choose a quality whose replay does not fit this budget.
@@ -875,7 +876,7 @@ fn pipeline_reuse_cold_warm_cpu_distribution() {
         cold.sort_unstable();
         warm.sort_unstable();
         eprintln!(
-            "paired_samples=30 size={:?} quality={:?} cold_p50_us={:.3} cold_p95_us={:.3} warm_p50_us={:.3} warm_p95_us={:.3}; per_renderer_creations=[3,4,4,4,4]",
+            "paired_samples=30 size={:?} quality={:?} cold_p50_us={:.3} cold_p95_us={:.3} warm_p50_us={:.3} warm_p95_us={:.3}; per_renderer_creations=[3,5,5,5,4]",
             frame.info().physical_size,
             quality.unwrap(),
             cold[14].as_secs_f64() * 1e6,
@@ -1079,7 +1080,7 @@ fn pipeline_reuse_cross_slot_concurrency_preserves_outer_scope_stack() {
             assert_eq!(renderer.pipelines.initialized_count(), 0);
             assert_eq!(
                 renderer.pipelines.creations.snapshot(),
-                [3, 4, 4, 4, 4],
+                [3, 5, 5, 5, 4],
                 "one failed constructor becomes sticky before another tier constructs"
             );
         } else {
