@@ -200,8 +200,8 @@ fn run_library(
     let mut options = PlayerOptions::default();
     options.assets = crate::assets::AssetOptions {
         root: "app0:/".into(),
-        resident_bytes: 24 << 20,
-        input_bytes: 12 << 20,
+        resident_bytes: 32 << 20,
+        input_bytes: 32 << 20,
         decode_bytes: 1 << 20,
     };
     options.frame_bytes = 4 << 20;

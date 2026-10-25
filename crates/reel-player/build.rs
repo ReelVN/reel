@@ -8,5 +8,7 @@ fn main() {
         .warnings(true)
         .compile("reel_vita_startup");
     // The packager discovers this configuration symbol after ELF linking.
-    println!("cargo:rustc-link-arg-bin=reel-vita=-Wl,--undefined=sceUserMainThreadStackSize");
+    for symbol in ["sceUserMainThreadStackSize", "sceLibcHeapSize"] {
+        println!("cargo:rustc-link-arg-bin=reel-vita=-Wl,--undefined={symbol}");
+    }
 }
