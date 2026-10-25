@@ -3,6 +3,7 @@ use crate::{Artifact, BuildProfile, project::Loaded};
 use reel_package::{
     archive::{ArchiveKind, ArchiveWriter},
     distribution::{Distribution, LooseResources, MAIN_PACKAGE, TEXT_POOL_ENTRY, relative_path},
+    resource_target::ResourceTarget,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -79,6 +80,8 @@ pub struct ExportOptions {
     pub overwrite: bool,
     pub resources: Vec<Mount>,
     pub text: Vec<Mount>,
+    /// Source-resource variants to select before writing either export profile.
+    pub resource_target: String,
     pub pack_bytes: NonZeroU64,
     /// Platform player to copy into a release export.
     pub player: Option<PathBuf>,
@@ -226,11 +229,12 @@ pub fn export(
         }
         read_manifest(&output.join(MAIN_PACKAGE))?;
     }
+    let target = ResourceTarget::parse(&options.resource_target)?;
     let mut resources = BTreeMap::new();
     let mut text = BTreeMap::new();
-    for (mounts, files) in [
-        (&options.resources, &mut resources),
-        (&options.text, &mut text),
+    for (mounts, files, variants) in [
+        (&options.resources, &mut resources, true),
+        (&options.text, &mut text, false),
     ] {
         for mount in mounts {
             let root = mount.directory.canonicalize()?;
@@ -239,7 +243,23 @@ pub fn export(
                     "export output overlaps a resource directory",
                 ));
             }
-            collect(&root, &mount.prefix, files)?;
+            if variants {
+                for (suffix, path) in target.collect(&root)? {
+                    let name = if mount.prefix == "." {
+                        suffix
+                    } else {
+                        format!("{}/{suffix}", mount.prefix)
+                    };
+                    relative_path(&name)?;
+                    if files.insert(name.clone(), path).is_some() {
+                        return Err(io::Error::other(format!(
+                            "duplicate exported resource: {name}"
+                        )));
+                    }
+                }
+            } else {
+                collect(&root, &mount.prefix, files)?;
+            }
         }
     }
     let mut names = BTreeSet::new();

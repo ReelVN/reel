@@ -79,7 +79,12 @@ fn run_package(args: commands::Run) -> io::Result<u8> {
         )?;
         return Ok(2);
     };
-    match reel_cli::playback::run(&source, args.playback.assets, args.playback.save_directory) {
+    match reel_cli::playback::run(
+        &source,
+        args.playback.assets,
+        args.playback.save_directory,
+        args.playback.resource_target,
+    ) {
         Ok(()) => Ok(0),
         Err(error) => {
             failure(false, "package", Some(path), &error)?;
@@ -110,6 +115,7 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
                 None,
                 Default::default(),
                 args.playback.save_directory.clone(),
+                args.playback.resource_target.clone(),
                 path,
             );
         }
@@ -320,6 +326,7 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
                 overwrite: default_output || args.settings.overwrite,
                 resources,
                 text: args.text,
+                resource_target: args.resource_target,
                 pack_bytes: args
                     .pack_bytes
                     .unwrap_or(std::num::NonZeroU64::new(2 << 30).unwrap()),
@@ -378,6 +385,7 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
                         None,
                         Default::default(),
                         args.playback.save_directory,
+                        args.playback.resource_target,
                         path,
                     )
                 }
@@ -534,10 +542,18 @@ fn launch(
     packages: Option<(Vec<PathBuf>, Option<PathBuf>)>,
     catalogs: std::collections::BTreeMap<String, String>,
     save_directory: Option<PathBuf>,
+    resource_target: String,
     path: &str,
 ) -> io::Result<u8> {
     let root = assets.unwrap_or_else(|| Path::new(path).parent().unwrap().to_path_buf());
-    let result = reel_cli::playback::launch(story, root, packages, catalogs, save_directory);
+    let result = reel_cli::playback::launch(
+        story,
+        root,
+        packages,
+        catalogs,
+        save_directory,
+        resource_target,
+    );
     match result {
         Ok(()) => Ok(0),
         Err(message) => {

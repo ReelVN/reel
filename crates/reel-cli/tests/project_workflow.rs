@@ -289,6 +289,28 @@ fn default_export_preserves_inputs_and_explicit_mounts_select_the_complete_set()
         fs::read_to_string(output.join("resources/game.asb")).unwrap(),
         "ordinary resource"
     );
+    write(root, "resources/@vita/images/sample.bin", "vita resource");
+    write(root, "resources/@vita/target-only.bin", "vita only");
+    write(root, "resources/@other/excluded.bin", "other target");
+    success(command(
+        root,
+        &["export", "--resource-target", "vita", "--format", "json"],
+    ));
+    assert_eq!(
+        fs::read_to_string(output.join("resources/images/sample.bin")).unwrap(),
+        "vita resource"
+    );
+    assert_eq!(
+        fs::read_to_string(output.join("resources/target-only.bin")).unwrap(),
+        "vita only"
+    );
+    assert!(!output.join("resources/@vita").exists());
+    assert!(!output.join("resources/@other").exists());
+    assert!(!output.join("resources/excluded.bin").exists());
+    assert_eq!(
+        fs::read_to_string(root.join("resources/images/sample.bin")).unwrap(),
+        "updated resource"
+    );
 }
 
 #[test]
@@ -313,6 +335,7 @@ fn export_allows_project_build_but_protects_imported_sources_and_resource_trees(
             distribution::Mount::parse(&format!(".={}", root.join("resources").display())).unwrap(),
         ],
         text: vec![],
+        resource_target: std::env::consts::OS.into(),
         pack_bytes: 4096.try_into().unwrap(),
         player: Some(player),
     };

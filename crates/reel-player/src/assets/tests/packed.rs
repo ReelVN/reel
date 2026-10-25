@@ -66,12 +66,20 @@ fn source(key: &str, version: Option<ContentVersion>) -> AssetSource {
 struct Requests {
     completion: BudgetPool,
     output: BudgetPool,
+    temporary: BudgetPool,
 }
 impl Requests {
     fn new() -> Self {
         Self {
             completion: BudgetPool::new(BudgetCategory::Completion, LIMITS),
             output: BudgetPool::new(BudgetCategory::CpuInput, LIMITS),
+            temporary: BudgetPool::new(
+                BudgetCategory::Temporary,
+                QueueLimits {
+                    max_requests: 1,
+                    max_bytes: reel_package::archive::SCRATCH_BYTES as u64,
+                },
+            ),
         }
     }
     fn read(
@@ -131,6 +139,17 @@ fn bytes(event: &IoEvent) -> &[u8] {
     read.bytes.as_slice()
 }
 
+fn wait_for_workspace_release(pool: &BudgetPool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while pool.usage().bytes != 0 {
+        assert!(
+            Instant::now() < deadline,
+            "closed IO worker retained its workspace"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 #[test]
 fn pack_mount_order_explicit_overlay_and_range_versions_use_one_io_contract() {
     let fixture = Fixture::new();
@@ -153,14 +172,16 @@ fn pack_mount_order_explicit_overlay_and_range_versions_use_one_io_contract() {
         let wake = WakeSignal::new(move || {
             let _ = sender.send(());
         });
+        let requests = Requests::new();
         let mut io = PackIo::open(
             [base.clone(), patch.clone()],
             overlay.clone(),
+            std::env::consts::OS.into(),
+            &requests.temporary,
             LIMITS,
             wake.clone(),
         )
         .unwrap();
-        let requests = Requests::new();
         let expected: &[u8] = if overlay.is_some() {
             b"loose-file"
         } else {
@@ -225,6 +246,11 @@ fn pack_mount_order_explicit_overlay_and_range_versions_use_one_io_contract() {
         );
         drop(failures);
         requests.settled();
+        assert_eq!(
+            requests.temporary.usage().bytes,
+            0,
+            "raw archives allocate no workspace"
+        );
     }
 }
 
@@ -247,9 +273,12 @@ fn packed_reads_preserve_priority_cancel_queue_backpressure_and_budget_ownership
                 .unwrap();
         }
     });
+    let requests = Requests::new();
     let mut io = PackIo::open(
         [path],
         None,
+        std::env::consts::OS.into(),
+        &requests.temporary,
         QueueLimits {
             max_requests: 3,
             ..LIMITS
@@ -257,7 +286,6 @@ fn packed_reads_preserve_priority_cancel_queue_backpressure_and_budget_ownership
         wake.clone(),
     )
     .unwrap();
-    let requests = Requests::new();
     io.describe(requests.describe("asset")).unwrap();
     receiver.recv_timeout(Duration::from_secs(10)).unwrap();
     drop(events(&mut io, &wake, &receiver, 1));
@@ -292,4 +320,114 @@ fn packed_reads_preserve_priority_cancel_queue_backpressure_and_budget_ownership
     );
     drop(completed);
     requests.settled();
+}
+
+#[test]
+fn compressed_ranges_share_one_workspace_and_release_it_with_the_worker() {
+    use reel_package::archive::{BLOCK_BYTES, SCRATCH_BYTES};
+    let fixture = Fixture::new();
+    let content: Vec<u8> = (0..3 * BLOCK_BYTES).map(|n| (n / 47) as u8).collect();
+    let path = fixture.pack("assets.rpk", ArchiveKind::Resources, &[("data", &content)]);
+    let requests = Requests::new();
+    let (sender, receiver) = mpsc::channel();
+    let wake = WakeSignal::new(move || {
+        let _ = sender.send(());
+    });
+    let insufficient = BudgetPool::new(
+        BudgetCategory::Temporary,
+        QueueLimits {
+            max_requests: 1,
+            max_bytes: SCRATCH_BYTES as u64 - 1,
+        },
+    );
+    assert!(
+        PackIo::open(
+            [path.clone()],
+            None,
+            "vita".into(),
+            &insufficient,
+            LIMITS,
+            wake.clone()
+        )
+        .is_err()
+    );
+    assert_eq!(insufficient.usage().bytes, 0);
+    let mut io = PackIo::open(
+        [path],
+        None,
+        "vita".into(),
+        &requests.temporary,
+        LIMITS,
+        wake.clone(),
+    )
+    .unwrap();
+    assert_eq!(requests.temporary.usage().bytes, SCRATCH_BYTES as u64);
+    let version = ContentVersion(*blake3::hash(&content).as_bytes());
+    for offset in [BLOCK_BYTES - 31, 2 * BLOCK_BYTES + 7, 17] {
+        io.read(requests.read("data", offset as u64, 1024, Some(version), Priority::Normal))
+            .unwrap();
+        let read = events(&mut io, &wake, &receiver, 1);
+        assert_eq!(bytes(&read[0]), &content[offset..offset + 1024]);
+    }
+    requests.settled();
+    assert_eq!(requests.temporary.usage().peak_bytes, SCRATCH_BYTES as u64);
+    drop(io);
+    wait_for_workspace_release(&requests.temporary);
+}
+
+#[test]
+fn compressed_image_decoding_stays_within_the_shared_temporary_allowance() {
+    use image::ImageEncoder;
+    use reel_package::archive::SCRATCH_BYTES;
+    let fixture = Fixture::new();
+    let pixels = vec![128; 19 * 5 * 4];
+    let mut encoded = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut encoded)
+        .write_image(&pixels, 19, 5, image::ExtendedColorType::Rgba8)
+        .unwrap();
+    let mut comment = b"tEXtComment\0".to_vec();
+    comment.resize(16 << 10, b'x');
+    let mut crc = flate2::Crc::new();
+    crc.update(&comment);
+    let mut chunk = ((comment.len() - 4) as u32).to_be_bytes().to_vec();
+    chunk.extend(comment);
+    chunk.extend(crc.sum().to_be_bytes());
+    encoded.splice(33..33, chunk);
+    let path = fixture.pack(
+        "assets.rpk",
+        ArchiveKind::Resources,
+        &[("image.png", &encoded)],
+    );
+    for (decoder_bytes, succeeds) in [(64 << 10, true), (1024, false)] {
+        let limit = SCRATCH_BYTES as u64 + decoder_bytes;
+        let assets = Assets::packaged(
+            AssetOptions {
+                decode_bytes: limit,
+                ..Default::default()
+            },
+            [path.clone()],
+            None,
+        )
+        .unwrap();
+        let pool = assets.temporary_pool();
+        let id = assets.request("image.png", AssetKind::Image);
+        let result = load_until_done(&assets, id);
+        if succeeds {
+            let lease = result.unwrap();
+            let ResourceData::Image { image, .. } = lease.data() else {
+                panic!("image resource")
+            };
+            assert_eq!(image.data.as_ref(), pixels);
+        } else {
+            assert!(
+                result.is_err(),
+                "archive and decoder must share the configured allowance"
+            );
+        }
+        assets.cancel(id);
+        assert!(pool.usage().peak_bytes <= limit);
+        assert_eq!(pool.usage().bytes, SCRATCH_BYTES as u64);
+        drop(assets);
+        wait_for_workspace_release(&pool);
+    }
 }

@@ -3,7 +3,7 @@
 use aside_vm::bytecode::{self as bc, TextPool};
 use reel_engine::aside::source::CompiledStory;
 use reel_package::{
-    archive::{ArchiveIndex, ArchiveKind},
+    archive::{ArchiveIndex, ArchiveKind, EntryStorage, ReadScratch},
     distribution::{Distribution, LooseResources, TEXT_POOL_ENTRY},
 };
 use std::{
@@ -148,8 +148,17 @@ pub fn load(path: &Path, project_resources: Option<&Path>) -> io::Result<LoadedD
             let len = usize::try_from(entry.length).map_err(io::Error::other)?;
             let mut bytes = Vec::new();
             bytes.try_reserve_exact(len).map_err(io::Error::other)?;
-            file.seek(SeekFrom::Start(entry.offset))?;
-            file.take(entry.length).read_to_end(&mut bytes)?;
+            bytes.resize(len, 0);
+            match entry.storage {
+                EntryStorage::Raw => {
+                    file.seek(SeekFrom::Start(entry.offset))?;
+                    file.read_exact(&mut bytes)?;
+                }
+                EntryStorage::Blocks { .. } => {
+                    entry
+                        .read_range(&mut file, 0, &mut bytes, &mut ReadScratch::new(), || false)?;
+                }
+            }
             let pool = TextPool::from_bytes(bytes).map_err(io::Error::other)?;
             package = package.bind_text_pool(pool).map_err(io::Error::other)?;
         }

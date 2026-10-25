@@ -24,6 +24,15 @@ Source commands in an interactive terminal show the current phase, module progre
 
 `export` produces a development project at `build/export/debug/`, or a release at `build/export/release/` with `--release`. A release contains the player, code, text package and resource volumes; distribute the whole directory. Default outputs update on repeated runs; explicit `--output` destinations use `--overwrite` to replace existing output. Keep saves separately before replacing an export directory; `--save-directory` selects runtime storage.
 
+Place platform assets in `resources/@TARGET/` to override common assets at matching paths. For example, `resources/@vita/bg/room.png` overrides `resources/bg/room.png`; scripts still reference `bg/room.png`. Target-only files are included and other target directories are skipped. Files without overrides use the common version. The resource target defaults to the host OS name, such as `windows`, `linux` or `macos`.
+
+```sh
+reel dev --resource-target vita
+reel export --release --resource-target vita
+```
+
+These commands preview and export the selected assets using the current platform player. Development exports copy selected files; release exports package them under their logical paths.
+
 Run `reel fmt` in the project root to format source or `reel fmt --check` to check formatting. The formatter uses four-space indentation, a 100-character target width and compact argument wrapping. English API documentation is generated from Rust declarations and appears in editor hover and definition navigation.
 
 Complete projects below include `main`; other snippets belong inside the surrounding function or component and use its variables. Supply their fonts and assets before running. Shared repository assets live in `examples/assets/`; `--assets` selects an alternate resource root.

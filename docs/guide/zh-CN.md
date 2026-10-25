@@ -24,6 +24,15 @@ reel export --release
 
 `export` 默认生成 `build/export/debug/` 开发工程，`--release` 生成 `build/export/release/` 发布目录。发布目录包含播放器、代码、文本包和资源卷；整个目录交给玩家。默认输出重复执行时更新，显式 `--output` 通过 `--overwrite` 替换已有目标。替换导出目录前，将存档放在独立位置；`--save-directory` 指定运行数据目录。
 
+平台素材放在 `resources/@目标/`，按相同路径覆盖公共素材。例如 `resources/@vita/bg/room.png` 覆盖 `resources/bg/room.png`，脚本仍引用 `bg/room.png`。目标内独有的文件也会选入，其余目标目录跳过；缺少覆盖时使用公共文件。默认资源目标为宿主系统名，如 `windows`、`linux` 或 `macos`。
+
+```sh
+reel dev --resource-target vita
+reel export --release --resource-target vita
+```
+
+这两个命令使用当前平台播放器预览、导出选定素材。开发版复制所选资源，发布版打包为统一逻辑路径。
+
 在项目根运行 `reel fmt` 整理源码，`reel fmt --check` 检查排版。格式化使用 4 空格缩进和 100 字符目标行宽，长调用紧凑排列参数。英文 API 文档由 Rust 声明生成，可在编辑器中悬停或跳转查看。
 
 下文的完整项目包含 `main`；其余片段放在相应函数或组件中，沿用上下文中的变量。提供示例使用的字体和素材后运行。仓库共享素材位于 `examples/assets/`；通过 `--assets` 可另选资源根。
