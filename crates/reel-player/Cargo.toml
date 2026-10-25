@@ -50,6 +50,9 @@ pvr-psp2-sys = { workspace = true, features = ["platform"] }
 stats_alloc = "=0.1.10"
 reel-core = { path = "../reel-core", features = ["test-support"] }
 
+[build-dependencies]
+cc = "=1.8.0"
+
 [[bin]]
 name = "reel-diagnostic"
 path = "src/main.rs"
