@@ -5,19 +5,18 @@ use reel_core::{
     io::{IoError, IoErrorCode},
 };
 use reel_package::archive::{self, ArchiveIndex, EntryStorage, ReadScratch};
-use std::{collections::BTreeMap, path::PathBuf, sync::atomic::AtomicBool};
+use std::{path::PathBuf, sync::atomic::AtomicBool};
 
-struct Entry {
-    archive: usize,
-    descriptor: archive::Entry,
+struct Archive {
+    file: File,
+    index: ArchiveIndex,
 }
 struct Workspace {
     scratch: ReadScratch,
     _ticket: BudgetTicket,
 }
 pub(super) struct Files {
-    archives: Vec<File>,
-    entries: BTreeMap<String, Entry>,
+    archives: Vec<Archive>,
     overlay: Option<directory::Files>,
     workspace: Option<Workspace>,
 }
@@ -28,25 +27,16 @@ impl Files {
         temporary: &BudgetPool,
     ) -> Result<Self, IoError> {
         let mut archives = Vec::new();
-        let mut entries = BTreeMap::new();
         for path in paths {
             let mut file = File::open(&path).map_err(io_error)?;
             let index = ArchiveIndex::read(&mut file)
                 .map_err(|error| failure(format!("{}: {error}", path.display())))?;
-            for entry in index.entries() {
-                entries.insert(
-                    entry.path.clone(),
-                    Entry {
-                        archive: archives.len(),
-                        descriptor: entry.clone(),
-                    },
-                );
-            }
-            archives.push(file);
+            archives.push(Archive { file, index });
         }
-        let workspace = if entries
-            .values()
-            .any(|e| matches!(e.descriptor.storage, EntryStorage::Blocks { .. }))
+        let workspace = if archives
+            .iter()
+            .flat_map(|archive| archive.index.entries())
+            .any(|e| matches!(e.storage, EntryStorage::Blocks { .. }))
         {
             let ticket = temporary
                 .reserve(archive::SCRATCH_BYTES as u64)
@@ -63,7 +53,6 @@ impl Files {
         };
         Ok(Self {
             archives,
-            entries,
             overlay,
             workspace,
         })
@@ -80,11 +69,20 @@ impl Files {
                 Err(error) => return Err(error),
             }
         }
-        let entry = self.entries.get(&source.key.0).ok_or_else(|| IoError {
-            code: IoErrorCode::NotFound,
-            message: format!("asset not found in mounted archives: {}", source.key.0),
-        })?;
-        let descriptor = &entry.descriptor;
+        let (file, descriptor) = self
+            .archives
+            .iter_mut()
+            .rev()
+            .find_map(|archive| {
+                archive
+                    .index
+                    .get(&source.key.0)
+                    .map(|entry| (&mut archive.file, entry))
+            })
+            .ok_or_else(|| IoError {
+                code: IoErrorCode::NotFound,
+                message: format!("asset not found in mounted archives: {}", source.key.0),
+            })?;
         let compressed = match descriptor.storage {
             EntryStorage::Raw => None,
             EntryStorage::Blocks { .. } => {
@@ -92,7 +90,7 @@ impl Files {
             }
         };
         Ok(ReadFile {
-            file: &mut self.archives[entry.archive],
+            file,
             offset: descriptor.offset,
             length: descriptor.length,
             version: ContentVersion(descriptor.version),

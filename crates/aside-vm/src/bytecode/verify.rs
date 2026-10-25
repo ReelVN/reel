@@ -1734,9 +1734,10 @@ fn validate_function(
     }
     validate_source_map(p, f, false)?;
     validate_regions(f, b)?;
-    for item in f.code.indexed_iter() {
-        let (pc, i) = item?;
-        validate_instruction(p, f, pc, &i, b).map_err(|e| located(p, fi, pc, e))?;
+    for item in f.code.ranged_iter() {
+        let (range, i) = item?;
+        let pc = range.start;
+        validate_instruction(p, f, range, &i, b).map_err(|e| located(p, fi, pc, e))?;
         if matches!(i.opcode, op if op == Opcode::MemberGet as u16 || op == Opcode::MemberSet as u16)
         {
             let symbol = i.operands[2] as usize;
@@ -2328,10 +2329,11 @@ fn validate_regions(
 fn validate_instruction(
     p: &BytecodePackage<impl InstructionSequence, impl SourceMapSequence>,
     f: &FunctionDef<impl InstructionSequence, impl SourceMapSequence>,
-    pc: usize,
+    range: std::ops::Range<usize>,
     i: &Instruction,
     b: &mut Budget,
 ) -> Result<(), Error> {
+    let pc = range.start;
     b.work(1)?;
     let spec = instruction_spec(i.opcode)
         .ok_or_else(|| Error::new(ErrorKind::Opcode, "unknown opcode"))?;
@@ -2449,10 +2451,9 @@ fn validate_instruction(
     }
     if spec.opcode == Opcode::EndFinally {
         let r = &f.regions[i.operands[0] as usize];
-        let next = f.code.next_pc(pc)?;
         check(
             r.finally
-                .is_some_and(|range| Some(range.end.index()) == next),
+                .is_some_and(|cleanup| cleanup.end.index() == range.end),
             ErrorKind::Region,
             "EndFinally outside matching cleanup terminator",
         )?;
@@ -2460,19 +2461,11 @@ fn validate_instruction(
     match spec.flow {
         Flow::Next => {
             check(
-                f.code
-                    .next_pc(pc)?
-                    .is_some_and(|next| next < f.code.end_pc()),
+                range.end < f.code.end_pc(),
                 ErrorKind::ControlFlow,
                 "fallthrough past code",
             )?;
-            edge(
-                f,
-                pc,
-                f.code.next_pc(pc)?.expect("checked next PC"),
-                false,
-                b,
-            )?;
+            edge(f, pc, range.end, false, b)?;
         }
         Flow::Jump => edge(f, pc, i.operands[0] as usize, false, b)?,
         Flow::Leave => {

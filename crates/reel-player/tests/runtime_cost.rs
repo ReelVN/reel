@@ -11,6 +11,56 @@ use std::{alloc::System, time::Instant};
 #[global_allocator]
 static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
+/// Profile a supplied release distribution without a window or game interaction.
+/// Run with REEL_PROFILE_PACKAGE pointing at game.asb and --ignored --nocapture.
+#[test]
+#[ignore = "requires an external release distribution"]
+fn distribution_startup_cost() {
+    let path = std::env::var_os("REEL_PROFILE_PACKAGE").expect("REEL_PROFILE_PACKAGE");
+    let region = Region::new(GLOBAL);
+    let started = Instant::now();
+    let loaded = reel_player::distribution::load(std::path::Path::new(&path), None).unwrap();
+    let load_time = started.elapsed();
+    let code_bytes = loaded.package.program().execution_capacity_bytes();
+    eprintln!(
+        "decode_ms={} code_bytes={} live_bytes={} code={:?}",
+        load_time.as_millis(),
+        code_bytes,
+        live_delta(&region),
+        loaded.package.program().code_cache_stats()
+    );
+    let started = Instant::now();
+    let assets =
+        reel_player::assets::Assets::packaged(Default::default(), loaded.packages, loaded.loose)
+            .unwrap();
+    eprintln!(
+        "archives_ms={} live_bytes={}",
+        started.elapsed().as_millis(),
+        live_delta(&region)
+    );
+    let story = reel_player::distribution::story_from_package(loaded.package).unwrap();
+    let mut limits = VmLimits::default();
+    limits.heap.max_bytes = code_bytes as u64 + (24 << 20);
+    limits.slots.initial_capacity = 4096;
+    limits.slots.max_capacity = 65_536;
+    limits.max_tasks = 256;
+    let started = Instant::now();
+    let session = AsideSessionUi::from_compiled(
+        Session::new(SessionId(1), Epoch(1)).unwrap(),
+        story,
+        "zh-CN",
+        limits,
+    )
+    .unwrap()
+    .with_assets(assets);
+    eprintln!(
+        "vm_ms={} charged_bytes={} live_bytes={}",
+        started.elapsed().as_millis(),
+        session.adapter().vm().heap().budget_usage().charged_bytes(),
+        live_delta(&region)
+    );
+}
+
 fn runtime(source: &str) -> StoryRuntime {
     StoryRuntime::new(
         AsideSessionUi::from_source(
