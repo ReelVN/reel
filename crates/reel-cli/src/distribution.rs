@@ -75,6 +75,14 @@ impl Mount {
     }
 }
 
+/// Native runtime payload placed beside the exported game package.
+pub enum Runtime {
+    /// The current tool bundle's player, published as the default game executable.
+    Executable(PathBuf),
+    /// Another platform's complete runtime, with relative paths preserved.
+    Directory(PathBuf),
+}
+
 pub struct ExportOptions {
     pub output: PathBuf,
     pub overwrite: bool,
@@ -83,8 +91,8 @@ pub struct ExportOptions {
     /// Source-resource variants to select before writing either export profile.
     pub resource_target: String,
     pub pack_bytes: NonZeroU64,
-    /// Platform player to copy into a release export.
-    pub player: Option<PathBuf>,
+    /// Platform runtime to copy into a release export.
+    pub runtime: Option<Runtime>,
 }
 
 fn resource_volumes(
@@ -286,16 +294,24 @@ pub fn export(
             )));
         }
     }
-    let player = if artifact.profile == BuildProfile::Release {
-        Some(
-            options
-                .player
-                .as_deref()
-                .ok_or_else(|| io::Error::other("release export requires the platform player"))?,
-        )
-    } else {
-        None
-    };
+    let mut runtime_files = BTreeMap::new();
+    if artifact.profile == BuildProfile::Release {
+        match options
+            .runtime
+            .as_ref()
+            .ok_or_else(|| io::Error::other("release export requires a platform runtime"))?
+        {
+            Runtime::Executable(path) => {
+                runtime_files.insert(exported_player_name(), path.clone());
+            }
+            Runtime::Directory(path) => {
+                collect(&path.canonicalize()?, ".", &mut runtime_files)?;
+                if runtime_files.is_empty() {
+                    return Err(io::Error::other("runtime directory contains no files"));
+                }
+            }
+        }
+    }
     let candidate = tempfile::Builder::new()
         .prefix(".reel-export-")
         .tempdir_in(&parent)?;
@@ -353,13 +369,11 @@ pub fn export(
         let encoded = reel_package::encode(&bytecode, package.metadata(), Some(&manifest), limits)
             .map_err(io::Error::other)?;
         File::create_new(staging.join(MAIN_PACKAGE))?.write_all(&encoded)?;
-        let player_bytes = if let Some(player) = player {
-            fs::copy(player, staging.join(exported_player_name()))?
-        } else {
-            0
-        };
+        let runtime_bytes = runtime_files.iter().try_fold(0u64, |total, (name, file)| {
+            copy(file, &staging.join(name)).map(|bytes| total + bytes)
+        })?;
         let bytes = encoded.len() as u64
-            + player_bytes
+            + runtime_bytes
             + resources
                 .values()
                 .chain(text.values())

@@ -47,6 +47,9 @@ pub struct PlayerOptions {
     /// Host-selected user data, independent of read-only game assets.
     pub save_directory: Option<std::path::PathBuf>,
     pub save_bytes: u64,
+    /// CPU frame preparation and metadata admission limit, charged by actual
+    /// capacity. The desktop default is 64 MiB; smaller hosts select their quota.
+    pub frame_bytes: u64,
 }
 impl Default for PlayerOptions {
     fn default() -> Self {
@@ -64,6 +67,7 @@ impl Default for PlayerOptions {
             canvas_size: None,
             save_directory: None,
             save_bytes: 256 << 20,
+            frame_bytes: 64 << 20,
         }
     }
 }
@@ -174,7 +178,7 @@ where
                 BudgetCategory::CpuOutput,
                 QueueLimits {
                     max_requests: u32::MAX,
-                    max_bytes: 64 << 20,
+                    max_bytes: options.frame_bytes,
                 },
             ),
             resources: Vec::new(),

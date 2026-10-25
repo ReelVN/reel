@@ -11,6 +11,7 @@ winit = ["dep:winit", "dep:ui-events-winit", "dep:arboard"]
 gamepad = ["dep:gilrs"]
 video = ["reel-media/video"]
 video-software = ["video", "reel-media/video-software"]
+vita = ["video", "reel-media/opus", "reel-media/vita", "reel-media/vita-output", "reel-render/gles2"]
 audio-output = ["reel-media/cpal-output"]
 window = ["video-software", "audio-output", "gamepad", "winit", "dep:wgpu", "dep:pollster", "reel-render/wgpu"]
 
@@ -23,7 +24,7 @@ postcard = { version = "=1.1.3", default-features = false, features = ["alloc", 
 flate2 = "=1.1.10"
 bc-crunch = "=0.1.2"
 self_cell = "=1.3.0"
-reel-media = { path = "../reel-media", default-features = false, features = ["decode"] }
+reel-media = { path = "../reel-media", default-features = false }
 reel-ui.workspace = true
 reel-engine = { path = "../reel-engine" }
 blake3 = { version = "=1.8.7" }
@@ -38,6 +39,12 @@ pollster = { version = "=1.0.1", optional = true }
 [target.'cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))'.dependencies]
 gilrs = { version = "=0.11.2", optional = true }
 arboard = { version = "=3.6.1", default-features = false, features = ["wayland-data-control"], optional = true }
+
+[target.'cfg(not(target_os = "vita"))'.dependencies]
+reel-media = { path = "../reel-media", default-features = false, features = ["decode"] }
+
+[target.'cfg(target_os = "vita")'.dependencies]
+pvr-psp2-sys = { workspace = true, features = ["platform"] }
 
 [dev-dependencies]
 stats_alloc = "=0.1.10"
@@ -55,3 +62,18 @@ workspace = true
 name = "reel-session-host"
 path = "src/session_main.rs"
 required-features = ["window"]
+
+[[bin]]
+name = "reel-vita"
+path = "src/vita_main.rs"
+required-features = ["vita"]
+
+[package.metadata.vita]
+title_id = "REEL00001"
+title_name = "Reel"
+build_std = "std,panic_unwind"
+vita_make_fself_flags = ["-a", "0x2F00000000000001"]
+vita_mksfoex_flags = ["-d", "ATTRIBUTE2=12", "-s", "APP_VER=01.00", "-s", "VERSION=01.00"]
+
+[package.metadata.vita.profile.release]
+strip_symbols = false

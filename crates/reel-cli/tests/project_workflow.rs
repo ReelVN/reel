@@ -398,7 +398,7 @@ fn export_allows_project_build_but_protects_imported_sources_and_resource_trees(
         text: vec![],
         resource_target: std::env::consts::OS.into(),
         pack_bytes: 4096.try_into().unwrap(),
-        player: Some(player),
+        runtime: Some(reel_cli::distribution::Runtime::Executable(player)),
     };
     let artifact = build_export(&checked, "main::main", BuildProfile::Release).unwrap();
     distribution::export(&loaded, &artifact, &options).unwrap();

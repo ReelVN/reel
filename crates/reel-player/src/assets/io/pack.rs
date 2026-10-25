@@ -1,11 +1,11 @@
-use super::{ReadFile, directory, failure, io_error};
+use super::{ReadFile, directory, failure, file::File, io_error};
 use reel_core::{
     budget::{BudgetCategory, BudgetPool, BudgetTicket},
     identity::{AssetSource, ContentVersion},
     io::{IoError, IoErrorCode},
 };
 use reel_package::archive::{self, ArchiveIndex, EntryStorage, ReadScratch};
-use std::{collections::BTreeMap, fs::File, path::PathBuf, sync::atomic::AtomicBool};
+use std::{collections::BTreeMap, path::PathBuf, sync::atomic::AtomicBool};
 
 struct Entry {
     archive: usize,

@@ -6,11 +6,11 @@ use reel_ui::{
     peniko::{Extend, Gradient, GradientKind, InterpolationAlphaSpace, color::ColorSpaceTag},
 };
 
-pub(super) type Uniform = [[f32; 4]; 9];
+pub(crate) type Uniform = [[f32; 4]; 9];
 
 /// Map window pixel centers into the brush's declared interpolation space.
 /// Glyph outline transforms belong to coverage rasterization, not this mapping.
-pub(super) fn uniform(
+pub(crate) fn uniform(
     gradient: &Gradient,
     transform: Affine,
     at: RecordLocation,

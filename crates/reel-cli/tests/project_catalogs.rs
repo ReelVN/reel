@@ -236,7 +236,9 @@ fn exports_keep_inline_translations_in_editable_source_and_reject_collisions() {
         resources: vec![],
         text: vec![],
         pack_bytes: 4096.try_into().unwrap(),
-        player: Some(root.join("platform-player")),
+        runtime: Some(distribution::Runtime::Executable(
+            root.join("platform-player"),
+        )),
     };
     for profile in [BuildProfile::Debug, BuildProfile::Release] {
         options.output = root.join(format!("build/export/{}", profile.name()));

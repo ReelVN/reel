@@ -33,6 +33,14 @@ reel export --release --resource-target vita
 
 These commands preview and export the selected assets using the current platform player. Development exports copy selected files; release exports package them under their logical paths.
 
+To export with another platform's runtime, pass its directory with `--runtime`. Its executable, native modules and platform metadata keep their relative paths beside `game.asb`:
+
+```sh
+reel export --release --resource-target vita --runtime path/to/vita-runtime
+```
+
+Use the platform's packaging tool to turn that directory into an installable package. A Vita runtime consumes prepared Opus audio and block textures; hardware movies use H.264/AAC with even dimensions up to 960 × 544.
+
 Add `resources.toml` at the project root to generate target-specific asset copies:
 
 ```toml

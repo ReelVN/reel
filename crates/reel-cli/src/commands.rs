@@ -128,9 +128,12 @@ pub struct Export {
     /// Package translation catalogs under their logical prefix; repeat as needed.
     #[arg(long, value_name = "PREFIX=DIRECTORY", value_parser = Mount::parse)]
     pub text: Vec<Mount>,
-    /// Select @NAME resource variants; the exported player uses the current platform.
+    /// Select @NAME resource variants and conversion rules.
     #[arg(long, value_name = "NAME", default_value = std::env::consts::OS, value_parser = resource_target)]
     pub resource_target: String,
+    /// Runtime directory to include with its original structure instead of the local player.
+    #[arg(long, value_name = "DIRECTORY", requires = "release")]
+    pub runtime: Option<PathBuf>,
     /// Target resource volume size including index; defaults to 2147483648 (2 GiB).
     #[arg(long, value_name = "BYTES", requires = "release")]
     pub pack_bytes: Option<std::num::NonZeroU64>,

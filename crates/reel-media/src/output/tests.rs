@@ -13,6 +13,26 @@ fn timing() -> CallbackTiming {
         uncertainty_frames: Some(0),
     }
 }
+
+#[test]
+fn native_close_failure_is_reported_after_fill_is_closed_and_disposed() {
+    let mut driver = SyncDriver::new();
+    driver.close_fail = true;
+    let mut output = DrivenOutput::new(driver, WakeSignal::new(|| {})).unwrap();
+    output.configure(AudioRequest::default()).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let drops = Arc::new(AtomicUsize::new(0));
+    assert!(
+        output
+            .start(counted_fill(calls.clone(), drops.clone()))
+            .is_ok()
+    );
+    let error = output.stop().unwrap_err();
+    assert_eq!(error.message, "native release failed");
+    assert_eq!(calls.load(Ordering::Acquire), 0);
+    assert_eq!(drops.load(Ordering::Acquire), 1);
+    assert!(output.stream.is_none());
+}
 fn device() -> AudioDeviceConfig {
     AudioDeviceConfig {
         sample_rate_hz: 48_000,
@@ -25,6 +45,7 @@ struct SyncDriver {
     build_fail: bool,
     play_fail: bool,
     pause_fail: bool,
+    close_fail: bool,
     verify_fail: bool,
     async_fail: bool,
     retired: Option<Arc<Shared>>,
@@ -37,6 +58,7 @@ impl SyncDriver {
             build_fail: false,
             play_fail: false,
             pause_fail: false,
+            close_fail: false,
             verify_fail: false,
             async_fail: false,
             retired: None,
@@ -46,6 +68,17 @@ impl SyncDriver {
 }
 impl Driver for SyncDriver {
     type Stream = RefCell<Callback>;
+    fn close(&mut self, stream: Self::Stream) -> Result<(), AudioError> {
+        drop(stream);
+        if self.close_fail {
+            Err(AudioError::new(
+                AudioErrorKind::DeviceFailure,
+                "native release failed",
+            ))
+        } else {
+            Ok(())
+        }
+    }
     fn capabilities(&self) -> AudioCaps {
         let mut caps = self.offline.capabilities();
         caps.clock = self.clock;
@@ -242,6 +275,10 @@ impl Drop for ThreadStream {
 struct ThreadDriver(OfflineDriver);
 impl Driver for ThreadDriver {
     type Stream = ThreadStream;
+    fn close(&mut self, stream: Self::Stream) -> Result<(), AudioError> {
+        drop(stream);
+        Ok(())
+    }
     fn capabilities(&self) -> AudioCaps {
         self.0.capabilities()
     }
@@ -390,6 +427,10 @@ fn stop_disposes_fill_even_if_native_callback_object_is_retained() {
     }
     impl Driver for RetainingDriver {
         type Stream = RetainedStream;
+        fn close(&mut self, stream: Self::Stream) -> Result<(), AudioError> {
+            drop(stream);
+            Ok(())
+        }
         fn capabilities(&self) -> AudioCaps {
             self.offline.capabilities()
         }

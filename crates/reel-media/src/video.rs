@@ -1,13 +1,19 @@
 //! Worker-owned video decoding and bounded playback using portable frames.
 mod playback;
 pub use playback::*;
+#[cfg(any(feature = "video-software", all(feature = "vita", target_os = "vita")))]
+mod h264;
 #[cfg(feature = "video-software")]
 mod software;
 pub use crate::decode::MediaRead;
 use reel_core::budget::BudgetPool;
 #[cfg(feature = "video-software")]
 pub use software::{MovieDecoder, SoftwareVideoDecoderFactory};
+#[cfg(all(feature = "vita", target_os = "vita"))]
+mod vita;
 use std::sync::{Arc, atomic::AtomicBool};
+#[cfg(all(feature = "vita", target_os = "vita"))]
+pub use vita::VitaVideoDecoderFactory;
 
 pub use reel_core::image::{Yuv420Layout, YuvColor, YuvMatrix, YuvTransfer};
 /// Owned top-down 8-bit YUV 4:2:0; no decoder-owned pointers escape.
@@ -53,8 +59,14 @@ pub trait VideoDecoder {
     fn audio_finished(&self) -> bool;
     /// Limit decoded output to an exclusive source-time endpoint in seconds.
     fn set_end(&mut self, seconds: f64);
-    /// Prepare the picture covering a saved position without decoding or
-    /// admitting the audio track. Updates info to report no audio sample rate.
+    /// Pause native transport while bounded publication queues are full.
+    /// Software decoders advance only on demand and retain the default no-op.
+    fn set_paused(&mut self, _paused: bool) -> Result<(), String> {
+        Ok(())
+    }
+    /// Prepare the picture covering a saved position without admitting audio.
+    /// Native adapters may internally drain codec output. Updates info to
+    /// report no audio sample rate, so restoration creates no PCM stream.
     fn prepare_poster(&mut self, seconds: f64) -> Result<(), String>;
     /// Decode the next owned picture or PCM packet. None means all output has
     /// ended; transient native readiness is waited for on this worker. Long

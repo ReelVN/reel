@@ -118,14 +118,6 @@ impl Cache {
             }
             return Ok(entry.pipeline.clone());
         }
-        let limits = gpu.device.limits();
-        if program.sources().len() + 3 > limits.max_sampled_textures_per_shader_stage as usize {
-            return Err(GpuError::Device(format!(
-                "mask needs {} sampled textures; device supports {}",
-                program.sources().len() + 3,
-                limits.max_sampled_textures_per_shader_stage
-            )));
-        }
         // Count formatting bytes before allocating the source. Driver-private compiler
         // storage is owned by wgpu; generated source and cache metadata are charged here.
         let mut count = Counter(0);
@@ -310,7 +302,12 @@ impl Compiled {
         for (word, value) in words[16..21].iter_mut().zip(mask.parameters) {
             *word = value.to_bits();
         }
-        for (parameters, image) in words[24..].chunks_exact_mut(4).zip(&inputs.images) {
+        for (parameters, image) in words[24..]
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(&inputs.images)
+        {
             let l = image.layout;
             parameters.copy_from_slice(
                 &[

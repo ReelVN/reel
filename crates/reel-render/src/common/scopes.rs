@@ -2,22 +2,22 @@ use super::GpuError;
 use reel_ui::frame::RecordLocation;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Kind {
+pub(crate) enum Kind {
     Clip,
     Group,
 }
-pub(super) struct Entry<T> {
-    pub(super) at: RecordLocation,
-    pub(super) value: T,
+pub(crate) struct Entry<T> {
+    pub(crate) at: RecordLocation,
+    pub(crate) value: T,
     kind: Kind,
 }
 /// The replay stack owns its payloads. Validation precedes allocation/removal.
-pub(super) struct Scopes<T> {
+pub(crate) struct Scopes<T> {
     root: T,
     nested: Vec<Entry<T>>,
 }
 
-pub(super) fn push_stack<T>(
+pub(crate) fn push_stack<T>(
     stack: &mut Vec<T>,
     entry: T,
     reserve: impl FnOnce(u64) -> Result<(), GpuError>,
@@ -35,13 +35,13 @@ pub(super) fn push_stack<T>(
 }
 
 impl<T> Scopes<T> {
-    pub(super) fn new(root: T) -> Self {
+    pub(crate) fn new(root: T) -> Self {
         Self {
             root,
             nested: Vec::new(),
         }
     }
-    pub(super) fn push(
+    pub(crate) fn push(
         &mut self,
         kind: Kind,
         at: RecordLocation,
@@ -50,7 +50,7 @@ impl<T> Scopes<T> {
     ) -> Result<(), GpuError> {
         push_stack(&mut self.nested, Entry { at, value, kind }, reserve)
     }
-    pub(super) fn pop(&mut self, kind: Kind, at: RecordLocation) -> Result<Entry<T>, GpuError> {
+    pub(crate) fn pop(&mut self, kind: Kind, at: RecordLocation) -> Result<Entry<T>, GpuError> {
         match self.nested.last() {
             None => {
                 return Err(GpuError::InvalidRecord {
@@ -68,10 +68,10 @@ impl<T> Scopes<T> {
         }
         Ok(self.nested.pop().expect("validated scope"))
     }
-    pub(super) fn last(&self) -> &T {
+    pub(crate) fn last(&self) -> &T {
         self.nested.last().map_or(&self.root, |entry| &entry.value)
     }
-    pub(super) fn finish(self) -> Result<T, GpuError> {
+    pub(crate) fn finish(self) -> Result<T, GpuError> {
         if let Some(entry) = self.nested.last() {
             return Err(GpuError::InvalidRecord {
                 at: entry.at,

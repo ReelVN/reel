@@ -108,7 +108,7 @@ fn resource_target_selection_matches_live_reads_and_relocated_exports_in_both_pr
             text: vec![],
             resource_target: "vita".into(),
             pack_bytes: 4096.try_into().unwrap(),
-            player: Some(player.clone()),
+            runtime: Some(reel_cli::distribution::Runtime::Executable(player.clone())),
         };
         let artifact = build_export(&checked, project::ENTRY, profile).unwrap();
         if profile == BuildProfile::Debug {
@@ -262,7 +262,7 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
         output: root.join("development"),
         overwrite: false,
         pack_bytes: std::num::NonZeroU64::new(256).unwrap(),
-        player: Some(player),
+        runtime: Some(reel_cli::distribution::Runtime::Executable(player)),
         resources: vec![Mount {
             prefix: "assets".into(),
             directory: resources.clone(),
@@ -447,15 +447,41 @@ fn failed_player_copy_preserves_previous_export_and_overwrite_requires_embedded_
         pack_bytes: std::num::NonZeroU64::new(1024).unwrap(),
         resources: vec![],
         text: vec![],
-        player: Some(player),
+        runtime: Some(reel_cli::distribution::Runtime::Executable(player)),
     };
     distribution::export(&loaded, &artifact, &options).unwrap();
     let original = fs::read(options.output.join("game.asb")).unwrap();
     options.overwrite = true;
-    options.player = Some(root.join("missing-player"));
+    options.runtime = Some(reel_cli::distribution::Runtime::Executable(
+        root.join("missing-player"),
+    ));
     assert!(distribution::export(&loaded, &artifact, &options).is_err());
     assert_eq!(fs::read(options.output.join("game.asb")).unwrap(), original);
     assert_eq!(read_line(&options.output.join("game.asb")), "original");
+    let runtime = root.join("native-runtime");
+    fs::create_dir_all(runtime.join("module")).unwrap();
+    fs::write(runtime.join("eboot.bin"), b"native executable").unwrap();
+    fs::write(runtime.join("module/driver.suprx"), b"native module").unwrap();
+    options.runtime = Some(distribution::Runtime::Directory(runtime.clone()));
+    distribution::export(&loaded, &artifact, &options).unwrap();
+    assert_eq!(
+        fs::read(options.output.join("eboot.bin")).unwrap(),
+        b"native executable"
+    );
+    assert_eq!(
+        fs::read(options.output.join("module/driver.suprx")).unwrap(),
+        b"native module"
+    );
+    assert!(
+        !options
+            .output
+            .join(distribution::exported_player_name())
+            .exists()
+    );
+    assert_eq!(read_line(&options.output.join("game.asb")), "original");
+    fs::write(runtime.join("game.asb"), b"conflicting runtime file").unwrap();
+    assert!(distribution::export(&loaded, &artifact, &options).is_err());
+    assert_eq!(fs::read(options.output.join("game.asb")).unwrap(), original);
     let legacy = root.join("legacy");
     fs::create_dir(&legacy).unwrap();
     fs::write(legacy.join("release.json"), r#"{"code":"game.asb"}"#).unwrap();

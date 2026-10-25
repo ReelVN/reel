@@ -4,6 +4,8 @@
 //! stage. [`presentation`] coordinates candidate acceptance and input geometry;
 //! [`story_runtime`] schedules VM, GC and retirement work. The `winit` feature
 //! enables platform event conversion; `window` includes Winit and WGPU adapters.
+//! The `vita` feature assembles the fixed-display GLES host, Opus/AudioOut and
+//! AvPlayer adapters for `armv7-sony-vita-newlibeabihf`.
 mod demand;
 pub mod distribution;
 pub mod hal;

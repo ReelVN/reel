@@ -36,6 +36,8 @@ pub enum WindowPlatform {
     Android,
     Ios,
     Web,
+    /// PlayStation Vita's fixed native display and device controls.
+    Vita,
     #[default]
     Unknown,
 }
@@ -49,6 +51,7 @@ impl WindowPlatform {
             Self::Android => "android",
             Self::Ios => "ios",
             Self::Web => "web",
+            Self::Vita => "vita",
             Self::Unknown => "unknown",
         }
     }

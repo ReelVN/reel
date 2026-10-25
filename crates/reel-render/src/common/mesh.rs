@@ -28,11 +28,11 @@ pub struct Vertex {
 }
 /// Per-quad sampling data keeps different windows in the same texture batch.
 #[derive(Clone, Copy, Default)]
-pub(super) struct ImageSampling {
+pub(crate) struct ImageSampling {
     window: [f32; 4],
 }
 impl ImageSampling {
-    pub(super) fn with_layout(
+    pub(crate) fn with_layout(
         rect: Option<Rect>,
         layout: reel_core::texture::TextureLayout,
         repeat: [bool; 2],
@@ -62,7 +62,7 @@ impl ImageSampling {
         }
     }
     #[cfg(test)]
-    pub(super) fn new(rect: Option<Rect>, size: [u32; 2], repeat: [bool; 2]) -> Self {
+    pub(crate) fn new(rect: Option<Rect>, size: [u32; 2], repeat: [bool; 2]) -> Self {
         let Some(rect) = rect else {
             return Self::default();
         };
@@ -81,9 +81,9 @@ impl ImageSampling {
         }
     }
 }
-pub(super) struct ImagePaint {
-    pub(super) color: [f32; 4],
-    pub(super) sampling: ImageSampling,
+pub(crate) struct ImagePaint {
+    pub(crate) color: [f32; 4],
+    pub(crate) sampling: ImageSampling,
 }
 pub struct Mesh {
     pub vertices: Vec<Vertex>,
@@ -91,7 +91,7 @@ pub struct Mesh {
     allocation: Allocation,
     error: Option<GpuError>,
 }
-pub(super) struct Allocation {
+pub(crate) struct Allocation {
     shared: BudgetPool,
     local: BudgetPool,
     limit: u64,
@@ -99,7 +99,7 @@ pub(super) struct Allocation {
     _tickets: Vec<Reservation>,
 }
 impl Allocation {
-    pub(super) fn new(
+    pub(crate) fn new(
         budgets: &Budgets,
         budget_scope: &Budgets,
         limit: u64,
@@ -148,7 +148,7 @@ impl Allocation {
     }
 }
 impl Mesh {
-    pub(super) fn new(allocation: Allocation) -> Self {
+    pub(crate) fn new(allocation: Allocation) -> Self {
         Self {
             vertices: Vec::new(),
             indices: Vec::new(),
@@ -156,7 +156,7 @@ impl Mesh {
             error: None,
         }
     }
-    pub(super) fn quad(&mut self, rect: Rect, uv: Rect) -> Result<(), GpuError> {
+    pub(crate) fn quad(&mut self, rect: Rect, uv: Rect) -> Result<(), GpuError> {
         self.allocation.grow(&mut self.vertices, 4)?;
         self.allocation.grow(&mut self.indices, 6)?;
         let start = self.vertices.len() as u32;
@@ -177,7 +177,7 @@ impl Mesh {
             .extend([start, start + 1, start + 2, start, start + 2, start + 3]);
         Ok(())
     }
-    pub(super) fn image_quad(
+    pub(crate) fn image_quad(
         &mut self,
         rect: Rect,
         transform: Affine,
@@ -198,7 +198,7 @@ impl Mesh {
             at,
         )
     }
-    pub(super) fn set_image_sampling(&mut self, sampling: ImageSampling) {
+    pub(crate) fn set_image_sampling(&mut self, sampling: ImageSampling) {
         sampling.apply(&mut self.vertices);
     }
     fn push(
@@ -457,7 +457,7 @@ pub fn transform(
 ) -> Result<(), GpuError> {
     transform_mesh(mesh, transform, size, Some(uv), color, at)
 }
-pub(super) fn transform_glyphs(
+pub(crate) fn transform_glyphs(
     mesh: &mut Mesh,
     transform: Affine,
     size: [u32; 2],

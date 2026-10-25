@@ -3,6 +3,10 @@
     clippy::result_large_err,
     reason = "upload refusal returns the intact owned batch and its budget tickets"
 )]
+#[cfg(any(feature = "wgpu", feature = "gles2"))]
+mod common;
+#[cfg(all(feature = "gles2", target_os = "vita"))]
+pub mod gles2;
 #[cfg(feature = "wgpu")]
 pub mod gpu;
 use reel_core::{

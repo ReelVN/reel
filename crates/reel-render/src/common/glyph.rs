@@ -8,10 +8,11 @@ use swash::{
     zeno,
 };
 
+#[path = "synthesis.rs"]
 mod synthesis;
 
 #[derive(Default)]
-pub(super) struct Rasterizer {
+pub(crate) struct Rasterizer {
     scale: ScaleContext,
     outline: Outline,
     scratch: zeno::Scratch,
@@ -21,15 +22,17 @@ pub struct GlyphBitmap {
     pub y: f64,
     pub size: [u32; 2],
     pub alpha: Vec<u8>,
+    _storage: reel_core::budget::BudgetTicket,
 }
 
 pub struct RasterLimits {
     pub available: u64,
     pub max_dimension: u32,
+    pub budget: reel_core::budget::BudgetPool,
 }
 
 /// Power-of-two densities keep animated transforms on reusable atlas tiers.
-pub(super) fn raster_density(transform: kurbo::Affine) -> f64 {
+pub(crate) fn raster_density(transform: kurbo::Affine) -> f64 {
     let [a, b, c, d, _, _] = transform.as_coeffs();
     let magnification = ((a + d).hypot(b - c) + (a - d).hypot(b + c)) * 0.5;
     if magnification > 1. {
@@ -49,6 +52,7 @@ pub fn rasterize(
     RasterLimits {
         available,
         max_dimension,
+        budget,
     }: RasterLimits,
 ) -> Result<Option<GlyphBitmap>, GpuError> {
     let resource = frame
@@ -204,6 +208,12 @@ pub fn rasterize(
             available,
         });
     }
+    let bytes = u64::from(size[0]) * u64::from(size[1]);
+    let storage = budget.reserve(bytes).map_err(|_| GpuError::Budget {
+        domain: "glyph coverage",
+        requested: bytes,
+        available,
+    })?;
     let mut alpha = vec![0; size[0] as usize * size[1] as usize];
     let placement = mask.render_into(&mut alpha, None);
     Ok(Some(GlyphBitmap {
@@ -211,6 +221,7 @@ pub fn rasterize(
         y: -f64::from(placement.top),
         size,
         alpha,
+        _storage: storage,
     }))
 }
 

@@ -289,7 +289,9 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
         SourceCommand::Export(args) => {
             progress.phase("Preparing export");
             let profile = args.settings.profile();
-            let player = if profile == BuildProfile::Release {
+            let runtime = if let Some(directory) = args.runtime {
+                Some(reel_cli::distribution::Runtime::Directory(directory))
+            } else if profile == BuildProfile::Release {
                 let player = reel_cli::distribution::player_path(&std::env::current_exe()?);
                 if !player.is_file() {
                     progress.stop();
@@ -301,7 +303,7 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
                     )?;
                     return Ok(1);
                 }
-                Some(player)
+                Some(reel_cli::distribution::Runtime::Executable(player))
             } else {
                 None
             };
@@ -338,7 +340,7 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
                 pack_bytes: args
                     .pack_bytes
                     .unwrap_or(std::num::NonZeroU64::new(2 << 30).unwrap()),
-                player,
+                runtime,
             };
             progress.phase("Packing resources");
             match reel_cli::distribution::export(&loaded, &artifact, &options) {

@@ -33,6 +33,14 @@ reel export --release --resource-target vita
 
 这两个命令使用当前平台播放器预览、导出选定素材。开发版复制所选资源，发布版打包为统一逻辑路径。
 
+使用其他平台的运行时导出时，通过 `--runtime` 指定其目录。可执行文件、原生模块与平台元数据保留相对路径，与 `game.asb` 放在一起：
+
+```sh
+reel export --release --resource-target vita --runtime path/to/vita-runtime
+```
+
+使用对应平台的打包工具将该目录制成安装包。Vita 运行时读取准备好的 Opus 音频和块压缩纹理；硬解视频使用 H.264/AAC，尺寸为偶数且不超过 960 × 544。
+
 在项目根添加 `resources.toml`，可以自动生成目标平台的素材副本：
 
 ```toml

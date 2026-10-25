@@ -1,11 +1,11 @@
-//! Unique image demand, including masks and both inputs of a transition.
+//! WGPU storage costs for the shared CPU-only image demand.
 use super::{GpuError, resources};
+use crate::common::image_plan;
+pub(super) use image_plan::peak;
 use reel_ui::{
-    frame::{FrameDraw, FrameOp, RecordLocation, RenderFrame},
-    peniko::{Brush, ImageFormat},
-    resources::{ResourceData, ResourceHandle, ResourceLease},
+    frame::{RecordLocation, RenderFrame},
+    resources::{ResourceData, ResourceLease},
 };
-use std::collections::{HashMap, HashSet};
 
 pub(super) struct Required<'a> {
     pub(super) source: &'a ResourceLease,
@@ -14,150 +14,31 @@ pub(super) struct Required<'a> {
     pub(super) staging: u64,
     pub(super) minimum_staging: u64,
 }
-
+pub(super) struct Plan<'a> {
+    pub(super) images: Vec<Required<'a>>,
+    pub(super) masks: Vec<image_plan::Mask<'a>>,
+}
 pub(super) fn collect<'a>(
     frames: impl Iterator<Item = &'a RenderFrame>,
     max_dimension: u32,
     capture: bool,
     mut reserve: impl FnMut(u64) -> Result<(), GpuError>,
-    mut prepare_mask: impl FnMut(&std::sync::Arc<reel_ui::stage::MaskProgram>) -> Result<(), GpuError>,
-) -> Result<Vec<Required<'a>>, GpuError> {
-    let mut required = Vec::new();
-    let mut seen = HashSet::new();
-    let mut drawings = Vec::new();
-    let mut visited_drawings = HashSet::new();
-    for frame in frames {
-        let at = frame.commands().first().map_or(
-            RecordLocation {
-                fragment: 0,
-                command: 0,
-                mask_depth: 0,
-                owner: frame.geometry().root_id(),
-            },
-            |c| c.origin.at,
-        );
-        super::scopes::push_stack(&mut drawings, (frame.drawing(), at), &mut reserve)?;
-    }
-    while let Some((frame, fallback_at)) = drawings.pop() {
-        if !visited_drawings.insert(frame as *const _) {
-            continue;
-        }
-        let leases = frame.resources().leases();
-        reserve(
-            (leases.len()
-                * (size_of::<Required<'_>>()
-                    + 4 * size_of::<ResourceHandle>()
-                    + 2 * size_of::<&ResourceLease>())
-                + (frame.masks().len() + frame.transitions().len() + 1) * 96) as u64,
-        )?;
-        let sources: HashMap<_, _> = leases.iter().map(|lease| (lease.handle(), lease)).collect();
-        let mut visited = HashSet::new();
-        let mut used = HashMap::new();
-        let mut streams = vec![(frame.commands(), Some(0))];
-        for transition in frame.transitions() {
-            if capture && !transition.capture_included {
-                continue;
-            }
-            super::scopes::push_stack(
-                &mut drawings,
-                (transition.previous.drawing(), fallback_at),
-                &mut reserve,
-            )?;
-            if let Some(mask) = &transition.mask {
-                // Even progress zero must be ready before the initial target is
-                // accepted and its transition clock starts.
-                prepare_mask(&mask.program)?;
-                let at = frame
-                    .commands()
-                    .get(transition.commands.start)
-                    .map_or(fallback_at, |c| c.origin.at);
-                for &handle in &mask.images {
-                    used.insert(handle, at);
-                }
-            }
-        }
-        while let Some((commands, offset)) = streams.pop() {
-            let mut index = 0;
-            while index < commands.len() {
-                if capture
-                    && let Some(offset) = offset
-                    && let Some(end) = frame.capture_exclusion_end(offset + index)
-                {
-                    index = (end - offset).min(commands.len());
-                    continue;
-                }
-                let command = &commands[index];
-                index += 1;
-                let at = command.origin.at;
-                let handles: &[ResourceHandle] = match &command.op {
-                    FrameOp::Draw(
-                        FrameDraw::Fill {
-                            brush: Brush::Image(brush),
-                            ..
-                        }
-                        | FrameDraw::Stroke {
-                            brush: Brush::Image(brush),
-                            ..
-                        },
-                    ) => std::slice::from_ref(&brush.image.resource),
-                    FrameOp::Draw(FrameDraw::GlyphRun(g)) => match &g.brush {
-                        Brush::Image(brush) => std::slice::from_ref(&brush.image.resource),
-                        _ => &[],
-                    },
-                    FrameOp::PushGroup(group) => {
-                        if let Some(mask) = group.mask
-                            && visited.insert(mask.mask)
-                        {
-                            let definition =
-                                frame.masks().get(&mask.mask).ok_or(GpuError::Unsupported {
-                                    at,
-                                    record: "missing mask",
-                                })?;
-                            streams.push((&definition.commands, None));
-                        }
-                        if let Some(mask) = &group.image_mask {
-                            prepare_mask(&mask.program)?;
-                            &mask.images
-                        } else {
-                            &[]
-                        }
-                    }
-                    _ => continue,
-                };
-                for &handle in handles {
-                    used.insert(handle, at);
-                }
-            }
-        }
-        for (handle, at) in used {
-            if !seen.insert(handle) {
-                continue;
-            }
-            let source = *sources.get(&handle).ok_or(GpuError::Unsupported {
-                at,
-                record: "missing image lease",
-            })?;
-            let (size, resident, staging, minimum_staging) = match source.data() {
+) -> Result<Plan<'a>, GpuError> {
+    let plan = image_plan::collect(frames, max_dimension, capture, &mut reserve)?;
+    reserve((plan.images.len() * size_of::<Required<'_>>()) as u64)?;
+    let images = plan
+        .images
+        .into_iter()
+        .map(|item| {
+            let (resident, staging, minimum_staging) = match item.source.data() {
                 ResourceData::Texture { descriptor, .. } => {
                     let (resident, staging) = resources::texture_costs(*descriptor)?;
-                    (
-                        descriptor.layout.storage_size,
-                        resident,
-                        staging,
-                        resources::texture_row_bytes(*descriptor),
-                    )
+                    (resident, staging, resources::texture_row_bytes(*descriptor))
                 }
                 ResourceData::Image { image, .. } => {
-                    if image.format != ImageFormat::Rgba8 {
-                        return Err(GpuError::Unsupported {
-                            at,
-                            record: "image format",
-                        });
-                    }
                     let size = [image.width, image.height];
                     let resident = u64::from(image.width) * u64::from(image.height) * 8;
                     (
-                        size,
                         resident,
                         resources::upload_cost(size)? - resident,
                         resources::row_bytes(size[0]),
@@ -165,55 +46,23 @@ pub(super) fn collect<'a>(
                 }
                 ResourceData::Yuv420(image) => {
                     let (resident, staging) = super::video::costs(image);
-                    (image.size(), resident, staging, staging)
+                    (resident, staging, staging)
                 }
-                _ => {
-                    return Err(GpuError::Unsupported {
-                        at,
-                        record: "non-image resource",
-                    });
-                }
+                _ => unreachable!("common image demand validates resource kinds"),
             };
-            if size.contains(&0) || size.iter().any(|&n| n > max_dimension) {
-                return Err(GpuError::InvalidSize);
-            }
-            required.push(Required {
-                source,
-                at,
+            Ok(Required {
+                source: item.source,
+                at: item.at,
                 resident,
                 staging,
                 minimum_staging,
-            });
-        }
-    }
-    Ok(required)
-}
-
-/// All textures must coexist for rendering, but uploads only require their
-/// smallest copy unit. Larger batches use available space opportunistically.
-pub(super) fn peak(images: impl Iterator<Item = (u64, u64)>, limit: u64) -> Result<u64, GpuError> {
-    let mut resident = 0u64;
-    let mut staging = 0u64;
-    for (bytes, upload) in images {
-        resident = resident.checked_add(bytes).ok_or(GpuError::InvalidSize)?;
-        staging = staging.max(upload);
-    }
-    if resident > limit {
-        return Err(GpuError::Budget {
-            domain: "image residency",
-            requested: resident,
-            available: limit,
-        });
-    }
-    let peak = resident.checked_add(staging).ok_or(GpuError::InvalidSize)?;
-    if peak > limit {
-        return Err(GpuError::Budget {
-            domain: "image residency and upload",
-            requested: peak,
-            available: limit,
-        });
-    }
-    Ok(resident)
+            })
+        })
+        .collect::<Result<_, GpuError>>()?;
+    Ok(Plan {
+        images,
+        masks: plan.masks,
+    })
 }
 
 #[cfg(test)]

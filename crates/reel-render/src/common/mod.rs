@@ -1,0 +1,17 @@
+//! Shared CPU geometry, color, glyph rasterization and renderer accounting.
+mod error;
+#[cfg(feature = "wgpu")]
+pub use error::SurfaceFailure;
+pub use error::{GpuError, GpuLimits};
+pub(crate) mod appearance;
+pub(crate) mod glyph;
+pub(crate) mod gradient;
+pub(crate) mod image_plan;
+pub(crate) mod mesh;
+pub(crate) mod renderer;
+pub(crate) mod resources;
+pub(crate) mod scopes;
+
+pub(crate) mod scissor;
+
+pub(crate) mod glyph_key;

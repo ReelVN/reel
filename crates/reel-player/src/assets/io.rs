@@ -1,6 +1,8 @@
 use super::worker::{Worker, check_completion};
 mod directory;
+pub(crate) mod file;
 mod pack;
+use file::File;
 use reel_core::{
     budget::{BudgetCategory, BudgetPool, OwnedBytes, QueueLimits},
     identity::{AssetSource, ContentVersion, IoId},
@@ -12,7 +14,6 @@ use reel_core::{
 };
 use std::{
     collections::BTreeMap,
-    fs::File,
     io::{Read, Seek, SeekFrom},
     path::PathBuf,
     sync::{
