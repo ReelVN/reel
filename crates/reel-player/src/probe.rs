@@ -28,7 +28,7 @@ impl Live {
                 let start = Instant::now();
                 let mut previous = Sample::snapshot();
                 let mut line = String::with_capacity(2048);
-                eprintln!("[reel-probe] live sampling started; CPU us and completed calls; nested phases overlap");
+                eprintln!("[reel-probe] live sampling started; elapsed us and completed calls; nested phases overlap");
                 while !stopped.load(Ordering::Relaxed) {
                     let deadline = Instant::now() + std::time::Duration::from_secs(1);
                     while !stopped.load(Ordering::Relaxed) {
@@ -65,7 +65,6 @@ impl Drop for Live {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(thread) = self.thread.take() {
-            thread.thread().unpark();
             let _ = thread.join();
         }
     }

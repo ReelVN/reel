@@ -13,13 +13,23 @@ static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 
 /// Profile a supplied release distribution without a window or game interaction.
 /// Run with REEL_PROFILE_PACKAGE pointing at game.asb and --ignored --nocapture.
+/// REEL_PROFILE_FRAMES optionally advances its clock at 60 Hz after startup.
+/// REEL_PROFILE_RESOURCES optionally supplies an existing distribution's asset paths.
 #[test]
 #[ignore = "requires an external release distribution"]
 fn distribution_startup_cost() {
     let path = std::env::var_os("REEL_PROFILE_PACKAGE").expect("REEL_PROFILE_PACKAGE");
     let region = Region::new(GLOBAL);
     let started = Instant::now();
-    let loaded = reel_player::distribution::load(std::path::Path::new(&path), None).unwrap();
+    let mut loaded = reel_player::distribution::load(std::path::Path::new(&path), None).unwrap();
+    if let Some(resources) = std::env::var_os("REEL_PROFILE_RESOURCES") {
+        let path = std::path::Path::new(&resources);
+        let manifest = reel_player::distribution::read_manifest(path).unwrap();
+        let context =
+            reel_player::distribution::resource_context(path.parent().unwrap(), manifest, None);
+        loaded.packages = context.packages;
+        loaded.loose = context.loose;
+    }
     let load_time = started.elapsed();
     let code_bytes = loaded.package.program().execution_capacity_bytes();
     eprintln!(
@@ -38,6 +48,23 @@ fn distribution_startup_cost() {
         started.elapsed().as_millis(),
         live_delta(&region)
     );
+    let media = reel_player::media::MediaPlayer::new(
+        assets.clone(),
+        Default::default(),
+        reel_core::wake::WakeSignal::new(|| {}),
+        |wake| {
+            reel_media::OfflineOutput::new(
+                reel_media::AudioDeviceConfig {
+                    sample_rate_hz: 48_000,
+                    sample_format: reel_media::SampleFormat::F32,
+                    layout: reel_media::ChannelLayout::Stereo,
+                },
+                wake,
+            )
+            .map(|output| Box::new(output) as Box<dyn reel_media::AudioOutput>)
+            .map_err(|error| error.to_string())
+        },
+    );
     let story = reel_player::distribution::story_from_package(loaded.package).unwrap();
     let mut limits = VmLimits::default();
     limits.heap.max_bytes = code_bytes as u64 + (24 << 20);
@@ -52,13 +79,107 @@ fn distribution_startup_cost() {
         limits,
     )
     .unwrap()
-    .with_assets(assets);
+    .with_assets(assets)
+    .with_media(Box::new(media))
+    .unwrap();
     eprintln!(
         "vm_ms={} charged_bytes={} live_bytes={}",
         started.elapsed().as_millis(),
         session.adapter().vm().heap().budget_usage().charged_bytes(),
         live_delta(&region)
     );
+    let saves = reel_player::saves::SaveService::new(
+        std::sync::Arc::new(reel_player::saves::DirectorySaves::new(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../target/reel-artifacts/vita-performance/profile-saves")
+                .join(std::process::id().to_string()),
+            64 << 20,
+        )),
+        reel_core::budget::QueueLimits {
+            max_requests: 8,
+            max_bytes: 64 << 20,
+        },
+        reel_core::wake::WakeSignal::new(|| {}),
+    );
+    let initializer_task = session.adapter().task();
+    let mut runtime = StoryRuntime::new(session)
+        .with_saves(reel_player::saves::RuntimeSaves::new(saves, 64 << 20));
+    let started = Instant::now();
+    let mut max_tick_ns = 0;
+    let mut last_report = 0;
+    let mut initialized = false;
+    for steps in 1..1_000_000 {
+        let tick = Instant::now();
+        let result = runtime.tick(SliceBudget::default(), || 0);
+        max_tick_ns = max_tick_ns.max(tick.elapsed().as_nanos());
+        let elapsed_ms = started.elapsed().as_millis();
+        if !initialized && runtime.driver().adapter().task() != initializer_task {
+            initialized = true;
+            eprintln!(
+                "module_init_ms={elapsed_ms} live_bytes={} heap={:?}",
+                live_delta(&region),
+                runtime.driver().adapter().vm().heap().stats()
+            );
+        }
+        let settled =
+            !runtime.needs_tick() || runtime.tick_interval() > std::time::Duration::from_millis(1);
+        if elapsed_ms >= last_report + 1000 || settled || result.is_err() {
+            last_report = elapsed_ms;
+            eprintln!(
+                "startup_ms={elapsed_ms} steps={steps} max_tick_ns={max_tick_ns} live_bytes={} state={:?} stats={:?} result={result:?}",
+                live_delta(&region),
+                runtime.driver().state(),
+                runtime.driver().adapter().vm().stats()
+            );
+        }
+        result.unwrap();
+        if settled {
+            assert_eq!(
+                runtime.driver().adapter().vm().heap().phase(),
+                GcPhase::Idle
+            );
+            let frames = std::env::var("REEL_PROFILE_FRAMES")
+                .map(|value| value.parse::<u64>().unwrap())
+                .unwrap_or(0);
+            let started = Instant::now();
+            let mut max_clock_tick_ns = 0;
+            for frame in 1..=frames {
+                let (_, max_ns) = settle(&mut runtime, frame * 16_666_667);
+                max_clock_tick_ns = max_clock_tick_ns.max(max_ns);
+                if frame.is_multiple_of(60) || frame == frames {
+                    let vm = runtime.driver().adapter().vm();
+                    eprintln!(
+                        "clock_frame={frame} elapsed_ms={} max_tick_ns={max_clock_tick_ns} live_bytes={} heap={:?} location={:?}",
+                        started.elapsed().as_millis(),
+                        live_delta(&region),
+                        vm.heap().stats(),
+                        runtime
+                            .driver()
+                            .adapter()
+                            .task()
+                            .and_then(|task| vm.task_location(task).unwrap())
+                    );
+                }
+            }
+            let started = Instant::now();
+            runtime.driver_mut().unwrap().begin_collection().unwrap();
+            while runtime.driver().adapter().vm().heap().phase() != GcPhase::Idle {
+                runtime
+                    .driver_mut()
+                    .unwrap()
+                    .gc_step(Default::default())
+                    .unwrap();
+            }
+            eprintln!(
+                "retained_gc_ms={} live_bytes={} heap={:?}",
+                started.elapsed().as_millis(),
+                live_delta(&region),
+                runtime.driver().adapter().vm().heap().stats()
+            );
+            return;
+        }
+    }
+    panic!("distribution startup did not settle");
 }
 
 fn runtime(source: &str) -> StoryRuntime {
