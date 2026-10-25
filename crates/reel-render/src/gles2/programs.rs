@@ -48,6 +48,17 @@ const NAMES: &[&str] = &[
     "u_image1",
     "u_image2",
     "u_image3",
+    "u_texels",
+    "u_coordinates",
+    "u_sample_flags",
+    "u_step0",
+    "u_step1",
+    "u_step2",
+    "u_step3",
+    "u_step4",
+    "u_step5",
+    "u_step6",
+    "u_step7",
 ];
 pub(super) type Values<'a> = SmallVec<[UniformValue<'a>; 24]>;
 pub(super) struct Shader {
@@ -118,6 +129,8 @@ pub(super) struct Programs {
     pub source_over: Shader,
     pub alpha_mask: Shader,
     pub mask: Shader,
+    pub mask_sample_chain: Shader,
+    pub mask_threshold: Shader,
     pub present: Shader,
     pub vertices: VertexBuffer,
     pub indices: IndexBuffer,
@@ -126,7 +139,7 @@ pub(super) struct Programs {
 impl Programs {
     pub fn new(context: &native::Context, budget: &BudgetPool) -> Result<Self, GlesError> {
         let bytes = (size_of::<Self>()
-            + NAMES.len() * size_of::<Option<Uniform>>() * 13
+            + NAMES.len() * size_of::<Option<Uniform>>() * 15
             + 4 * size_of::<crate::common::mesh::Vertex>()
             + 6 * 4) as u64;
         let storage = budget
@@ -158,6 +171,8 @@ impl Programs {
             source_over: Shader::new(context, shader_code!("source_over"))?,
             alpha_mask: Shader::new(context, shader_code!("alpha_mask"))?,
             mask: Shader::new(context, shader_code!("mask"))?,
+            mask_sample_chain: Shader::new(context, shader_code!("mask_sample_chain"))?,
+            mask_threshold: Shader::new(context, shader_code!("mask_threshold"))?,
             present: Shader::new(context, shader_code!("present"))?,
             vertices: context.vertex_buffer(bytemuck::cast_slice(&data), 12, &attributes)?,
             indices: context.index_buffer(&[0, 1, 2, 0, 2, 3])?,

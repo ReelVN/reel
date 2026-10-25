@@ -78,6 +78,67 @@ fn compile_scene(scene: Scene) -> RenderFrame {
     build.finish().unwrap()
 }
 
+#[cfg(all(feature = "wgpu", feature = "profiling"))]
+#[test]
+#[ignore = "requires an actual native WGPU adapter"]
+fn wgpu_effect_endpoints_reuse_scratch_targets() {
+    use reel_core::profile::{Phase, Sample};
+    use reel_render::gpu::{DeviceGeneration, Gpu, GpuLimits, Renderer};
+    use reel_ui::imaging::record::Group;
+    let mut scene = Scene::new();
+    scene.push_group(Group {
+        composite: Composite {
+            alpha: 0.5,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    for x in [40., 80.] {
+        scene.draw(Draw::Fill {
+            transform: Affine::IDENTITY,
+            fill_rule: Default::default(),
+            brush: Brush::Solid(Color::WHITE),
+            brush_transform: None,
+            shape: Geometry::Rect(Rect::new(x, 10., x + 100., 60.)),
+            composite: Composite::default(),
+        });
+    }
+    scene.pop_group();
+    let effect = compile_scene(scene);
+    let plain = compile_scene(Scene::new());
+    let gpu = pollster::block_on(Gpu::request(
+        &wgpu::Instance::default(),
+        None,
+        DeviceGeneration(1),
+        GpuLimits {
+            target_bytes: 96 << 20,
+            ..Default::default()
+        },
+    ))
+    .unwrap();
+    let mut renderer = Renderer::new(gpu);
+    let before = Sample::snapshot();
+    let mut resident = None;
+    for frame in [&effect, &plain, &effect, &plain, &effect] {
+        let prepared = renderer.prepare(frame).unwrap();
+        renderer.submit(prepared).unwrap();
+        renderer
+            .gpu()
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        renderer.poll().unwrap();
+        assert_eq!(
+            renderer.usage().targets,
+            *resident.get_or_insert(renderer.usage().targets)
+        );
+    }
+    assert_eq!(
+        Sample::snapshot().delta(before).calls[Phase::TargetCreate as usize],
+        2
+    );
+}
+
 #[cfg(feature = "wgpu")]
 #[test]
 #[ignore = "requires an actual native WGPU adapter"]

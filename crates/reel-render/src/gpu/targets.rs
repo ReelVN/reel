@@ -221,6 +221,7 @@ pub struct Target {
 }
 impl Target {
     pub fn new(device: &wgpu::Device, size: [u32; 2], quality: Quality) -> Self {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::TargetCreate);
         let descriptor = wgpu::TextureDescriptor {
             label: Some("reel linear target"),
             size: wgpu::Extent3d {

@@ -7,6 +7,7 @@ pub(crate) mod appearance;
 pub(crate) mod glyph;
 pub(crate) mod gradient;
 pub(crate) mod image_plan;
+pub(crate) mod mask;
 pub(crate) mod mesh;
 pub(crate) mod renderer;
 pub(crate) mod resources;

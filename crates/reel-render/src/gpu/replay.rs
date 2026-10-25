@@ -52,6 +52,7 @@ struct MaskComposition<'a> {
     invert: f32,
     blend: reel_ui::frame::BlendMode,
     operation: CompositeOperation,
+    scissor: Scissor,
 }
 enum Pending<'a> {
     Mask(MaskComposition<'a>),
@@ -205,6 +206,7 @@ impl Context<'_> {
                 self.scissor = parent.scopes.last().scissor;
                 match parent.pending.take().expect("suspended composition") {
                     Pending::Mask(mask) => {
+                        self.scissor = self.scissor.intersect(mask.scissor);
                         self.combine_group(
                             &parent.scopes.last().target,
                             &mask.source.view,
@@ -371,7 +373,14 @@ impl Context<'_> {
                             opacity: group.composite.alpha,
                             invert: group.invert,
                             blend: group.composite.blend,
-                            scissor: self.scissor,
+                            scissor: Scissor::group_bounds(
+                                group,
+                                transform,
+                                self.size,
+                                current.transitions_enabled
+                                    && !current.drawing.transitions().is_empty(),
+                            )
+                            .map_or(self.scissor, |bounds| self.scissor.intersect(bounds)),
                             isolated: true,
                         },
                         |bytes| self.transient(bytes),
@@ -435,6 +444,7 @@ impl Context<'_> {
                             },
                         )?;
                         current.pending = Some(Pending::Mask(MaskComposition {
+                            scissor: self.scissor,
                             image_mask: group.image_mask,
                             source,
                             opacity: group.opacity,

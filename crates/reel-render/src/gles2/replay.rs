@@ -90,7 +90,8 @@ pub(super) fn prepare(
         f64::from(size[1]) / frame.info().logical_size[1],
     );
     let output = context.stream(frame.drawing(), transform);
-    context.target_cache.truncate(context.targets.len());
+    // Keep the compatible high-water pool across effect endpoints. Residency
+    // pressure and output-size changes retire it at the admission boundary.
     context.glyphs.extend(context.glyph_cache.take_uploads());
     let work = Work {
         _tickets: context.tickets,
@@ -127,6 +128,7 @@ struct MaskComposition<'a> {
     invert: f32,
     blend: reel_ui::frame::BlendMode,
     operation: CompositeOperation,
+    scissor: Scissor,
 }
 enum Pending<'a> {
     Mask(MaskComposition<'a>),
@@ -277,6 +279,7 @@ impl Context<'_> {
                 self.scissor = parent.scopes.last().scissor;
                 match parent.pending.take().expect("suspended composition") {
                     Pending::Mask(mask) => {
+                        self.scissor = self.scissor.intersect(mask.scissor);
                         self.combine_group(
                             &parent.scopes.last().target,
                             &mask.source.view,
@@ -444,7 +447,14 @@ impl Context<'_> {
                             opacity: group.composite.alpha,
                             invert: group.invert,
                             blend: group.composite.blend,
-                            scissor: self.scissor,
+                            scissor: Scissor::group_bounds(
+                                group,
+                                transform,
+                                self.size,
+                                current.transitions_enabled
+                                    && !current.drawing.transitions().is_empty(),
+                            )
+                            .map_or(self.scissor, |bounds| self.scissor.intersect(bounds)),
                             isolated: true,
                         },
                         |bytes| self.transient(bytes),
@@ -508,6 +518,7 @@ impl Context<'_> {
                             },
                         )?;
                         current.pending = Some(Pending::Mask(MaskComposition {
+                            scissor: self.scissor,
                             image_mask: group.image_mask,
                             source,
                             opacity: group.opacity,
@@ -734,6 +745,9 @@ impl Context<'_> {
         operation: CompositeOperation,
         image_mask: Option<(&reel_ui::frame::FrameImageMask, Affine)>,
     ) -> Result<(), GlesError> {
+        if self.scissor.empty() {
+            return Ok(());
+        }
         let blend = blend_code(composite.blend)
             .ok_or(GlesError::Device("unsupported group blend".into()))?;
         let expression = if let Some((definition, transform)) = image_mask {

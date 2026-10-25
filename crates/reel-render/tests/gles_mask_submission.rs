@@ -1,5 +1,5 @@
 #![cfg(feature = "gles2")]
-//! Native execution of the packed GLES mask interpreter without pixel readback.
+//! Native execution of specialized and general GLES masks without pixel readback.
 #[allow(dead_code, reason = "shared UI fixture")]
 #[path = "../../reel-ui/tests/support/fixture.rs"]
 mod fixture;
@@ -84,62 +84,72 @@ fn gray_progress_clamp_mask_executes_and_completes() {
     )
     .unwrap();
     assert_eq!(program.operations().len(), 12);
+    let chain = MaskProgram::new(
+        program.operations()[..10].to_vec(),
+        vec!["gray-mask".into()],
+    )
+    .unwrap();
+    let threshold = MaskProgram::image("gray-mask".into());
     let mut renderer = GlesBackend::headless([400, 300], GlesLimits::default()).unwrap();
     let mut events = Vec::new();
     #[cfg(feature = "profiling")]
     let targets_before = reel_core::profile::Sample::snapshot().calls
         [reel_core::profile::Phase::TargetCreate as usize];
-    for (index, progress) in [0., 0.35, 0.7, 1.].into_iter().enumerate() {
-        let handle = handles[index];
-        let lease = registry.acquire(handle).unwrap();
-        let mut scene = Scene::new();
-        scene.draw(Draw::Fill {
-            transform: Affine::IDENTITY,
-            fill_rule: Default::default(),
-            brush: Brush::Solid(Color::WHITE),
-            brush_transform: None,
-            shape: Geometry::Rect(Rect::new(0., 0., 400., 300.)),
-            composite: Composite::default(),
-        });
-        let mut widget = RecordWidget::new(scene);
-        widget.clip = false;
-        widget.mask = Some(PaintImageMask {
-            program: program.clone(),
-            images: vec![lease.clone()].into(),
-            bounds: Rect::new(0., 0., 400., 300.),
-            parameters: [progress, 0., 0.125, 0., 0.],
-        });
-        let mut bridge = widget_bridge(widget, Affine::IDENTITY);
-        let frame = build(
-            bridge.record(FrameId(index as u64 + 1)).unwrap(),
-            registry.freeze(&[handle], &pool).unwrap(),
-            &pool,
-        );
-        if index == 0 {
-            renderer
-                .configure(SurfaceInfo {
-                    physical_size: [400, 300],
-                    scale_factor: 1.,
-                    surface_epoch: frame.surface_epoch(),
-                    color_encoding: ColorEncoding::Srgb,
-                    alpha_mode: AlphaMode::Opaque,
-                })
-                .unwrap();
-        }
-        assert!(matches!(
-            renderer.render_present(&frame, || {}).unwrap(),
-            PresentOutcome::PresentAccepted(_)
-        ));
-        loop {
-            events.clear();
-            renderer.poll(&mut events, 32).unwrap();
-            if events
-                .iter()
-                .any(|event| matches!(event, RenderEvent::RenderFinished { .. }))
-            {
-                break;
+    for (case, program) in [program, chain, threshold].into_iter().enumerate() {
+        for (index, progress) in [0., 0.35, 0.7, 1.].into_iter().enumerate() {
+            let handle = handles[index];
+            let lease = registry.acquire(handle).unwrap();
+            let mut scene = Scene::new();
+            scene.draw(Draw::Fill {
+                transform: Affine::IDENTITY,
+                fill_rule: Default::default(),
+                brush: Brush::Solid(Color::WHITE),
+                brush_transform: None,
+                shape: Geometry::Rect(Rect::new(0., 0., 400., 300.)),
+                composite: Composite::default(),
+            });
+            let mut widget = RecordWidget::new(scene);
+            widget.clip = false;
+            widget.mask = Some(PaintImageMask {
+                program: program.clone(),
+                images: vec![lease.clone()].into(),
+                bounds: Rect::new(0., 0., 400., 300.),
+                parameters: [progress, 0., 0.125, 0., 0.],
+            });
+            let mut bridge = widget_bridge(widget, Affine::IDENTITY);
+            let frame = build(
+                bridge
+                    .record(FrameId((case * 4 + index) as u64 + 1))
+                    .unwrap(),
+                registry.freeze(&[handle], &pool).unwrap(),
+                &pool,
+            );
+            if case == 0 && index == 0 {
+                renderer
+                    .configure(SurfaceInfo {
+                        physical_size: [400, 300],
+                        scale_factor: 1.,
+                        surface_epoch: frame.surface_epoch(),
+                        color_encoding: ColorEncoding::Srgb,
+                        alpha_mode: AlphaMode::Opaque,
+                    })
+                    .unwrap();
             }
-            std::thread::yield_now();
+            assert!(matches!(
+                renderer.render_present(&frame, || {}).unwrap(),
+                PresentOutcome::PresentAccepted(_)
+            ));
+            loop {
+                events.clear();
+                renderer.poll(&mut events, 32).unwrap();
+                if events
+                    .iter()
+                    .any(|event| matches!(event, RenderEvent::RenderFinished { .. }))
+                {
+                    break;
+                }
+                std::thread::yield_now();
+            }
         }
     }
     #[cfg(feature = "profiling")]
@@ -151,5 +161,5 @@ fn gray_progress_clamp_mask_executes_and_completes() {
         "small new images must reuse all three scratch targets"
     );
     renderer.close().unwrap();
-    eprintln!("gles mask_ops=12 progress_frames=4 all_submissions_completed");
+    eprintln!("gles masks=general,chain,threshold progress_frames=12 all_submissions_completed");
 }

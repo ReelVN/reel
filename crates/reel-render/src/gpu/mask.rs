@@ -398,6 +398,10 @@ impl Compiled {
 }
 
 fn shader(program: &MaskProgram, code: &mut impl std::fmt::Write) -> std::fmt::Result {
+    let shared_threshold_sample = match crate::common::mask::plan(program) {
+        Some(crate::common::mask::Plan::ImageThreshold { alpha, gray }) => Some((alpha, gray)),
+        _ => None,
+    };
     let number = |bits| format!("{:.9e}", f32::from_bits(bits));
     let (before_fields, rest) = include_str!("composite.wgsl")
         .split_once("/*MASK_FIELDS*/")
@@ -435,6 +439,17 @@ fn shader(program: &MaskProgram, code: &mut impl std::fmt::Write) -> std::fmt::R
                 coordinates: [x, y, sx, sy],
                 repeat,
             } => {
+                // The common classifier proves that alpha and gray use the
+                // same image, coordinates and repeat. Reuse the sampled color.
+                if let Some((alpha, gray)) = shared_threshold_sample
+                    && i == gray
+                {
+                    writeln!(
+                        code,
+                        "let n{i}=select(mask_gray(sample_{alpha}),dot(clamp(sample_{alpha}.rgb/max(sample_{alpha}.a,1.0e-20),vec3(0.0),vec3(1.0)),vec3(0.2126,0.7152,0.0722)),texels_{alpha}.z!=0.0);"
+                    )?;
+                    continue;
+                }
                 writeln!(code, "var coords_{i}=uv*vec2(n{sx},n{sy})+vec2(n{x},n{y});")?;
                 if repeat & 1 != 0 {
                     writeln!(code, "coords_{i}.x=fract(coords_{i}.x);")?;
@@ -475,4 +490,19 @@ fn shader(program: &MaskProgram, code: &mut impl std::fmt::Write) -> std::fmt::R
     let result = program.operations().len() - 1;
     writeln!(code, "return clamp(n{result},0.0,1.0); }}").unwrap();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn image_threshold_reuses_one_sample_without_changing_composition() {
+        let mut source = String::new();
+        shader(&MaskProgram::image("mask".into()), &mut source).unwrap();
+        assert_eq!(source.matches("textureSampleLevel(image_").count(), 1);
+        assert!(source.contains("let n2=sample_2.a;"));
+        assert!(source.contains("let n3=select(mask_gray(sample_2)"));
+        assert!(source.contains("let n4=n2*threshold_4;"));
+    }
 }
