@@ -228,6 +228,10 @@ fn run_library(
         game_root,
         crate::assets::Assets::directory(options.assets.clone()),
         error,
+        {
+            let notify = native.host.wake_callback();
+            WakeSignal::new(move || notify())
+        },
     )?;
     let mut player = Player::mount(
         crate::player::session::PlayerSession::Launcher(Box::new(launcher)),
@@ -335,8 +339,18 @@ fn run_story_on(
             )) as Box<dyn reel_engine::media::MediaBackend>
         }
     };
+    // The VM ledger includes immutable code, text and the code-page allowance.
+    // Reserve their measured capacity separately from the mutable working set.
+    let bytes = story.program.execution_capacity_bytes() as u64 + (24 << 20);
+    if bytes > 80 << 20 {
+        return Err(format!(
+            "VM needs {} MiB for code and working memory; Vita allows 80 MiB",
+            bytes.div_ceil(1 << 20)
+        )
+        .into());
+    }
     let mut limits = VmLimits::default();
-    limits.heap.max_bytes = 24 << 20;
+    limits.heap.max_bytes = bytes;
     limits.slots.initial_capacity = 4096;
     limits.slots.max_capacity = 65_536;
     limits.max_tasks = 256;

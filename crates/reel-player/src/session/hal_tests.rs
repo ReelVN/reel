@@ -440,6 +440,7 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
                     std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
                     Assets::directory(Default::default()),
                     None,
+                    reel_core::wake::WakeSignal::new(|| {}),
                 )
                 .unwrap(),
             ))
