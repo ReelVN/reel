@@ -105,8 +105,12 @@ impl PlayerSession {
             #[cfg(feature = "window")]
             Self::Diagnostic(host) => Ok(host.ui.handle_text(bridge, event)?.handled),
             Self::Aside { story, hover } => {
+                let dispatch = story.driver().ui().dispatch_text(bridge, event);
+                if story.capturing() && !dispatch.changes_session {
+                    return Ok(dispatch.handled);
+                }
                 *hover = None;
-                story.driver_mut()?.handle_text(bridge, event)
+                story.driver_mut()?.finish_text(dispatch)
             }
         }
     }
@@ -147,6 +151,7 @@ impl PlayerSession {
             Self::Launcher(launcher) => launcher.sync(bridge, root),
             #[cfg(feature = "window")]
             Self::Diagnostic(host) => host.after_input(bridge, root),
+            Self::Aside { story, .. } if story.capturing() => Ok(()),
             Self::Aside { story, .. } => {
                 story.driver_mut()?.sync_input(bridge, root)?;
                 story.wake_input();
@@ -354,6 +359,8 @@ mod tests {
     use super::*;
     use reel_engine::{Epoch, Session, SessionId, aside::VmLimits};
 
+    mod capture_input;
+
     #[test]
     fn stage_sync_preserves_idle_ui_and_timed_waits_without_dialogue() {
         use crate::saves::Candidate;
@@ -488,6 +495,7 @@ mod tests {
                             }),
                         )
                         .unwrap();
+                    window.after_input(&mut bridge, root).unwrap();
                 }
                 assert!(
                     matches!(&window, PlayerSession::Aside { story, hover: Some(PointerEvent::Move(e)) }

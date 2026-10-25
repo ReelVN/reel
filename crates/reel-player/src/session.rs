@@ -189,6 +189,13 @@ pub struct UiDispatch {
     pub handled: Handled,
     pub events: Vec<reel_ui::stage::NodeEvent>,
 }
+/// Native widget routing precedes mutable access to a captured session.
+pub(crate) struct TextDispatch {
+    pub(crate) handled: Handled,
+    pub(crate) changes_session: bool,
+    focused: Option<bool>,
+    pause_dialogue: bool,
+}
 struct LineWidgets {
     speaker: WidgetPod<Label>,
     text: WidgetPod<Label>,
@@ -1355,27 +1362,51 @@ impl SessionUi {
         bridge: &mut PresentationBridge,
         event: TextEvent,
     ) -> Result<UiDispatch, Error> {
+        let dispatch = self.dispatch_text(bridge, event);
+        self.finish_text(dispatch)
+    }
+    /// Route through the current widgets and authored action mappings first.
+    /// Held physical values belong to widgets; only queued actions and focus
+    /// changes need to mutate the session protected by snapshot capture.
+    pub(crate) fn dispatch_text(
+        &self,
+        bridge: &mut PresentationBridge,
+        event: TextEvent,
+    ) -> TextDispatch {
         let was_held = self.gesture_active();
         self.binding.borrow_mut().non_pointer = true;
-        if let TextEvent::WindowFocusChange(focused) = &event {
-            self.reading_focused = *focused;
-            if !focused {
-                self.session.set_skip_reading(false, false, false);
-            }
-            self.pause_dialogue();
-        }
-        let lost_focus = matches!(event, TextEvent::WindowFocusChange(false));
+        let focused = match &event {
+            TextEvent::WindowFocusChange(focused) => Some(*focused),
+            _ => None,
+        };
         let handled = bridge.handle_text_event(event);
         self.binding.borrow_mut().non_pointer = false;
-        if was_held || self.gesture_active() {
-            self.pause_dialogue();
-        }
-        if lost_focus {
+        let pause_dialogue = focused.is_some() || was_held || self.gesture_active();
+        if focused == Some(false) {
             let mut binding = self.binding.borrow_mut();
             binding.down = None;
             binding.contacts.clear();
         }
-        self.finish_input(handled)
+        TextDispatch {
+            handled,
+            changes_session: focused.is_some()
+                || self.inputs.borrow().is_some()
+                || !self.events.borrow().is_empty(),
+            focused,
+            pause_dialogue,
+        }
+    }
+    pub(crate) fn finish_text(&mut self, dispatch: TextDispatch) -> Result<UiDispatch, Error> {
+        if let Some(focused) = dispatch.focused {
+            self.reading_focused = focused;
+            if !focused {
+                self.session.set_skip_reading(false, false, false);
+            }
+        }
+        if dispatch.pause_dialogue {
+            self.pause_dialogue();
+        }
+        self.finish_input(dispatch.handled)
     }
     /// Submit an accessibility action from the host through accepted UI geometry.
     pub fn handle_access(
