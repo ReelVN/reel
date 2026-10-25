@@ -539,6 +539,7 @@ fn prepare_texture_command(args: commands::PrepareTexture) -> io::Result<u8> {
         max_size: args.size,
         power_of_two: args.power_of_two,
         format: args.format,
+        dither: args.dither,
     };
     match reel_cli::prepare_texture::prepare(&args.source, &args.output, options) {
         Ok(header) => {

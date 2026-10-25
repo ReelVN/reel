@@ -20,6 +20,29 @@ pub enum Format {
     Rgba8,
 }
 
+/// Optional offline RGB quantization for uncompressed textures.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    clap::ValueEnum,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum Dither {
+    /// Round to the nearest linear UNORM8 value.
+    #[default]
+    None,
+    /// Use a fixed 8x8 threshold after linear filtering and premultiplication.
+    /// RGB shares a zero-mean offset of at most 63/128 of one UNORM8 step.
+    /// Alpha is rounded without dithering; RGB never exceeds rounded alpha.
+    Ordered,
+}
+
 /// Conversion changes stored texels while preserving the original author coordinates.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Options {
@@ -28,6 +51,22 @@ pub struct Options {
     /// Pad each stored axis to a power of two, with a minimum of eight texels.
     pub power_of_two: bool,
     pub format: Format,
+    /// Stable RGB dithering for RGBA8 texture conversion; disabled by default.
+    /// Coordinates refer to the complete resized image, with edge-repeated padding.
+    /// Block-compressed formats and tiled-image conversion do not accept ordered dithering.
+    pub dither: Dither,
+}
+
+impl Options {
+    pub(crate) fn validate(self) -> Result<(), String> {
+        if self.dither == Dither::Ordered && !matches!(self.format, Format::Rgba8) {
+            return Err(
+                "ordered dithering requires format rgba8; BC and auto formats are unsupported"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
 }
 
 /// Prepare PNG/JPEG artwork and atomically publish a new `.reel-texture` file.
@@ -64,6 +103,7 @@ pub(crate) fn prepare_scaled_bounded(
     scale: f64,
     memory_bytes: u64,
 ) -> Result<(TextureHeader, u64), String> {
+    options.validate()?;
     if output
         .extension()
         .is_none_or(|extension| extension != "reel-texture")
@@ -255,6 +295,7 @@ fn prepare_pixels(
     options: Options,
     scale: f64,
 ) -> Result<(TextureDescriptor, RgbaImage), String> {
+    options.validate()?;
     let logical_size = [original.width(), original.height()];
     if logical_size.contains(&0) {
         return Err("image dimensions must be positive".into());
@@ -315,19 +356,143 @@ fn prepare_pixels(
     // RGB and alpha remain linear premultiplied when quantized. The decoder does
     // not interpret these bytes as an sRGB image or premultiply them a second time.
     let pixels = RgbaImage::from_fn(storage_size[0], storage_size[1], |x, y| {
-        let pixel = linear.get_pixel(x.min(content_size[0] - 1), y.min(content_size[1] - 1));
-        image::Rgba(
-            pixel
-                .0
-                .map(|value| (value.clamp(0., 1.) * 255.).round() as u8),
-        )
+        let coordinates = [x.min(content_size[0] - 1), y.min(content_size[1] - 1)];
+        let pixel = linear.get_pixel(coordinates[0], coordinates[1]);
+        image::Rgba(quantize(pixel.0, options.dither, coordinates))
     });
     Ok((descriptor, pixels))
+}
+
+fn ordered_offset([x, y]: [u32; 2]) -> f32 {
+    const RANKS: [[u8; 8]; 8] = [
+        [0, 48, 12, 60, 3, 51, 15, 63],
+        [32, 16, 44, 28, 35, 19, 47, 31],
+        [8, 56, 4, 52, 11, 59, 7, 55],
+        [40, 24, 36, 20, 43, 27, 39, 23],
+        [2, 50, 14, 62, 1, 49, 13, 61],
+        [34, 18, 46, 30, 33, 17, 45, 29],
+        [10, 58, 6, 54, 9, 57, 5, 53],
+        [42, 26, 38, 22, 41, 25, 37, 21],
+    ];
+    (f32::from(RANKS[(y % 8) as usize][(x % 8) as usize]) + 0.5) / 64. - 0.5
+}
+
+fn quantize(pixel: [f32; 4], dither: Dither, coordinates: [u32; 2]) -> [u8; 4] {
+    let mut result = pixel.map(|value| (value.clamp(0., 1.) * 255.).round() as u8);
+    if dither == Dither::Ordered {
+        let offset = ordered_offset(coordinates);
+        for channel in 0..3 {
+            result[channel] =
+                ((pixel[channel].clamp(0., 1.) * 255. + offset).round() as u8).min(result[3]);
+        }
+    }
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ordered_dither_preserves_the_mean_of_subcode_gradients() {
+        let offsets: Vec<_> = (0..8)
+            .flat_map(|y| (0..8).map(move |x| ordered_offset([x, y])))
+            .collect();
+        assert_eq!(offsets.iter().sum::<f32>(), 0.);
+        assert!(offsets.iter().all(|offset| offset.abs() <= 63. / 128.));
+        let mut ordered_levels = std::collections::BTreeSet::new();
+        let mut rounded_levels = std::collections::BTreeSet::new();
+        for step in 0..=64 {
+            let value = 32. + step as f32 / 64.;
+            let pixel = [value / 255., value / 255., value / 255., 1.];
+            let sum: u32 = (0..8)
+                .flat_map(|y| (0..8).map(move |x| quantize(pixel, Dither::Ordered, [x, y])))
+                .map(|pixel| {
+                    assert_eq!(pixel[0], pixel[1]);
+                    assert_eq!(pixel[0], pixel[2]);
+                    assert_eq!(pixel[3], 255);
+                    u32::from(pixel[0])
+                })
+                .sum();
+            assert!((sum as f32 / 64. - value).abs() <= 1. / 128.);
+            ordered_levels.insert(sum);
+            rounded_levels.insert(quantize(pixel, Dither::None, [0, 0])[0]);
+        }
+        assert_eq!(ordered_levels.len(), 65);
+        assert_eq!(rounded_levels.len(), 2);
+    }
+
+    #[test]
+    fn ordered_dither_keeps_alpha_padding_and_payload_extent() {
+        let original = RgbaImage::from_fn(17, 19, |x, y| {
+            image::Rgba([96, 96, 96, (x + 17 * y).min(255) as u8])
+        });
+        let options = Options {
+            power_of_two: true,
+            format: Format::Rgba8,
+            ..Default::default()
+        };
+        let (rounded_descriptor, rounded) =
+            prepare_pixels(original.clone().into(), options, 1.).unwrap();
+        let ordered_options = Options {
+            dither: Dither::Ordered,
+            ..options
+        };
+        let (descriptor, ordered) =
+            prepare_pixels(original.clone().into(), ordered_options, 1.).unwrap();
+        assert_eq!(
+            descriptor.byte_len().unwrap(),
+            rounded_descriptor.byte_len().unwrap()
+        );
+        assert_eq!(ordered.as_raw().len(), rounded.as_raw().len());
+        assert_ne!(ordered, rounded);
+        for (x, y, pixel) in ordered.enumerate_pixels() {
+            assert_eq!(pixel[3], rounded.get_pixel(x, y)[3]);
+            assert_eq!(pixel[0], pixel[1]);
+            assert_eq!(pixel[0], pixel[2]);
+            assert!(pixel[0] <= pixel[3]);
+            assert_eq!(pixel, ordered.get_pixel(x.min(16), y.min(18)));
+        }
+        for alpha in 0..=255 {
+            let a = f32::from(alpha) / 255.;
+            for y in 0..8 {
+                for x in 0..8 {
+                    let pixel = quantize([a, a / 4., 0., a], Dither::Ordered, [x, y]);
+                    assert_eq!(pixel[3], alpha);
+                    assert_eq!(pixel[0], alpha);
+                    assert!(pixel[1] <= alpha);
+                    assert_eq!(pixel[2], 0);
+                }
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("rounded.reel-texture");
+        let second = directory.path().join("ordered.reel-texture");
+        let a = prepare_decoded(original.clone().into(), &first, options).unwrap();
+        let b = prepare_decoded(original.into(), &second, ordered_options).unwrap();
+        assert_eq!(a.payload_len(), b.payload_len());
+        assert_eq!(
+            std::fs::metadata(first).unwrap().len(),
+            std::fs::metadata(second).unwrap().len()
+        );
+    }
+
+    #[test]
+    fn ordered_dither_rejects_block_formats_before_reading_source() {
+        for format in [Format::Auto, Format::Bc1, Format::Bc3] {
+            let error = prepare(
+                Path::new("unused.png"),
+                Path::new("unused.reel-texture"),
+                Options {
+                    format,
+                    dither: Dither::Ordered,
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+            assert!(error.contains("requires format rgba8"), "{error}");
+        }
+    }
 
     #[test]
     fn scaled_texture_preserves_coordinates_and_filters_premultiplied_colors() {
@@ -344,6 +509,7 @@ mod tests {
                 max_size: Some([1, 1]),
                 power_of_two: true,
                 format: Format::Rgba8,
+                dither: Dither::None,
             },
             1.,
         )

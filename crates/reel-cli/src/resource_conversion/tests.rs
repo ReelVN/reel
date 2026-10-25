@@ -2,6 +2,48 @@ use super::*;
 use reel_core::texture::{TextureFormat, TextureHeader};
 
 #[test]
+fn ordered_dither_is_validated_and_part_of_the_texture_cache_recipe() {
+    let (directory, tool, target) = fixture();
+    let root = directory.path();
+    let config = "[[targets.vita]]\nmatch = 'images/**'\nconvert = 'texture'\nformat = 'rgba8'\n";
+    fs::write(root.join("resources.toml"), config).unwrap();
+    let plain = prepare(root, &tool, &target, MEMORY_BYTES).unwrap();
+    fs::write(
+        root.join("resources.toml"),
+        format!("{config}dither = 'none'\n"),
+    )
+    .unwrap();
+    let explicit_none = prepare(root, &tool, &target, MEMORY_BYTES).unwrap();
+    assert_eq!(plain.files, explicit_none.files);
+    fs::write(
+        root.join("resources.toml"),
+        format!("{config}dither = 'ordered'\n"),
+    )
+    .unwrap();
+    let ordered = prepare(root, &tool, &target, MEMORY_BYTES).unwrap();
+    assert_ne!(
+        plain.files["images/room.png"],
+        ordered.files["images/room.png"]
+    );
+    let repeated = prepare(root, &tool, &target, MEMORY_BYTES).unwrap();
+    assert_eq!(ordered.files, repeated.files);
+    assert_eq!(repeated.report.converted, 0);
+    assert_eq!(repeated.report.reused, 2);
+    for (convert, format, expected) in [
+        ("texture", "auto", "requires format rgba8"),
+        ("texture", "bc1", "requires format rgba8"),
+        ("texture", "bc3", "requires format rgba8"),
+        ("tiles", "rgba8", "belongs to texture rules"),
+    ] {
+        fs::write(root.join("resources.toml"), format!(
+            "[[targets.vita]]\nmatch = 'images/**'\nconvert = '{convert}'\nformat = '{format}'\ndither = 'ordered'\n"
+        )).unwrap();
+        let error = prepare(root, &tool, &target, MEMORY_BYTES).err().unwrap();
+        assert!(error.to_string().contains(expected), "{error}");
+    }
+}
+
+#[test]
 fn font_coverage_combines_input_ranges_translations_and_escaped_story_characters() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
