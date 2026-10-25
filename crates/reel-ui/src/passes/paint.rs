@@ -121,6 +121,7 @@ impl LayerCollector {
                         sampler: binding.sampler,
                     }),
                     sampling_transform: true,
+                    source_rect: binding.source_rect,
                     ..image
                 },
                 Some(&binding.resource),

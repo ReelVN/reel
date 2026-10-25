@@ -1,7 +1,7 @@
 //! Stage image subscriptions over the host's shared resource service.
 #[cfg(test)]
 pub(crate) mod tests;
-use crate::assets::{AssetKind, Assets, LoadId};
+use crate::assets::{AssetKind, Assets, ImageAsset, LoadId};
 use reel_core::prepared_image::PreparedImage;
 use reel_ui::{
     kurbo::{Affine, Rect, Size},
@@ -20,7 +20,6 @@ pub(crate) use tiles::{ImageRegion, TileDemand};
 struct Pending {
     source: String,
     id: LoadId,
-    manifest: bool,
     optional: bool,
 }
 pub(crate) struct Images {
@@ -137,21 +136,17 @@ impl Images {
         let mut index = 0;
         while index < self.pending.len() {
             let pending = &self.pending[index];
-            let result = if pending.manifest {
-                self.assets.poll_bytes(pending.id).and_then(|result| {
-                    result
-                        .map(|(_, bytes)| {
-                            let manifest =
-                                PreparedImage::decode(bytes.as_slice()).map_err(str::to_owned)?;
+            let result = self.assets.take_image(pending.id).and_then(|result| {
+                result
+                    .map(|image| match image {
+                        ImageAsset::Tiled(manifest) => {
+                            if self.tiles.contains_key(&pending.source) {
+                                return Err("image tiles must contain raster data".into());
+                            }
                             self.manifests.insert(pending.source.clone(), manifest);
                             Ok(())
-                        })
-                        .transpose()
-                })
-            } else {
-                self.assets.take_ready(pending.id).and_then(|result| {
-                    result
-                        .map(|lease| {
+                        }
+                        ImageAsset::Raster(lease) => {
                             if let Some(tile) = self.tiles.get(&pending.source) {
                                 if lease.data().image_size() != Some(tile.dimensions) {
                                     return Err("tile dimensions differ from manifest".into());
@@ -159,10 +154,10 @@ impl Images {
                             }
                             self.loaded.insert(pending.source.clone(), lease);
                             Ok(())
-                        })
-                        .transpose()
-                })
-            };
+                        }
+                    })
+                    .transpose()
+            });
             match result {
                 Ok(None) => index += 1,
                 Ok(Some(())) => {
@@ -192,7 +187,6 @@ impl Images {
             .cloned()
             .collect::<Vec<_>>();
         for source in sources {
-            let manifest = source.ends_with(".reel-image");
             let id = if let Some(bytes) = self.encoded.get(&source) {
                 let Some(id) = self
                     .assets
@@ -203,19 +197,11 @@ impl Images {
                 };
                 id
             } else {
-                self.assets.request(
-                    source.clone(),
-                    if manifest {
-                        AssetKind::Bytes
-                    } else {
-                        AssetKind::Image
-                    },
-                )
+                self.assets.request(source.clone(), AssetKind::Image)
             };
             self.push_pending(Pending {
                 source,
                 id,
-                manifest,
                 optional: false,
             });
         }
@@ -260,9 +246,8 @@ impl Images {
     pub(crate) fn request_tiles(&mut self, tiles: BTreeMap<String, TileDemand>) -> bool {
         let changed = self.tiles != tiles;
         self.pending.retain(|pending| {
-            let retain = pending.manifest
-                || self.wanted.contains_key(&pending.source)
-                || tiles.contains_key(&pending.source);
+            let retain =
+                self.wanted.contains_key(&pending.source) || tiles.contains_key(&pending.source);
             if !retain {
                 self.assets.cancel(pending.id);
             }
@@ -359,7 +344,6 @@ impl Images {
             self.push_pending(Pending {
                 source,
                 id,
-                manifest: false,
                 optional,
             });
         }

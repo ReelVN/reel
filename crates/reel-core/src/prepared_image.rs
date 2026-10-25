@@ -1,10 +1,11 @@
 //! Immutable prepared-image format shared by author tooling and resource consumers.
 //!
-//! Format v1 is a 28-byte little-endian manifest: `REELIMG1`, followed by five
+//! Format v1 is a 32-byte little-endian manifest: `REELIMG1`, followed by six
 //! `u32` values for original width, original height, interior tile edge and
-//! level count and tile encoding (0 = PNG, 1 = Reel texture). Dimensions and tile
-//! edge are positive. Each level halves both
-//! dimensions, rounding up, until the pyramid reaches 1 by 1.
+//! level count, tile encoding (0 = PNG, 1 = Reel texture) and first stored level.
+//! Dimensions and tile edge are positive. Each level halves both dimensions,
+//! rounding up, until the pyramid reaches 1 by 1. Only levels starting at the
+//! first stored level have tile files; the original dimensions remain logical.
 //!
 //! A manifest named `panorama.reel-image` uses adjacent tile files at
 //! `panorama.reel-image.tiles/N/X-Y.png` or `X-Y.reel-texture`, according to the
@@ -41,9 +42,13 @@ pub struct PreparedImage {
     pub tile_edge: u32,
     /// File encoding shared by all levels and tiles.
     pub tile_encoding: TileEncoding,
+    /// Lowest stored pyramid level. Author dimensions retain full resolution.
+    pub first_level: u32,
 }
 
 impl PreparedImage {
+    /// Content signature used independently of the author's logical filename.
+    pub const MAGIC: &'static [u8; 8] = b"REELIMG1";
     /// Validate author dimensions and the maximum decoded tile allocation.
     pub fn new(
         width: u32,
@@ -70,7 +75,16 @@ impl PreparedImage {
             height,
             tile_edge,
             tile_encoding,
+            first_level: 0,
         })
+    }
+    /// Select the first stored level while preserving the original author size.
+    pub fn with_first_level(mut self, first_level: u32) -> Result<Self, &'static str> {
+        if first_level >= self.levels() {
+            return Err("prepared image first stored level is outside the pyramid");
+        }
+        self.first_level = first_level;
+        Ok(self)
     }
     /// Number of levels, including the original resolution and final 1x1 level.
     pub fn levels(self) -> u32 {
@@ -85,15 +99,20 @@ impl PreparedImage {
         ]
     }
     /// Serialize the complete v1 manifest.
-    pub fn encode(self) -> [u8; 28] {
-        let mut bytes = [0; 28];
-        bytes[..8].copy_from_slice(b"REELIMG1");
+    pub fn encode(self) -> [u8; 32] {
+        assert!(
+            self.first_level < self.levels(),
+            "first stored level must belong to the pyramid"
+        );
+        let mut bytes = [0; 32];
+        bytes[..8].copy_from_slice(Self::MAGIC);
         for (chunk, value) in bytes[8..].chunks_exact_mut(4).zip([
             self.width,
             self.height,
             self.tile_edge,
             self.levels(),
             self.tile_encoding as u32,
+            self.first_level,
         ]) {
             chunk.copy_from_slice(&value.to_le_bytes());
         }
@@ -101,8 +120,8 @@ impl PreparedImage {
     }
     /// Parse the exact v1 layout and validate its dimensions and encoding.
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
-        if bytes.len() != 28 || &bytes[..8] != b"REELIMG1" {
-            return Err("expected a 28-byte REELIMG1 manifest");
+        if bytes.len() != 32 || &bytes[..8] != Self::MAGIC {
+            return Err("expected a 32-byte REELIMG1 manifest");
         }
         let mut values = bytes[8..]
             .chunks_exact(4)
@@ -116,15 +135,16 @@ impl PreparedImage {
             1 => TileEncoding::ReelTexture,
             _ => return Err("prepared image tile encoding is invalid"),
         };
-        let image = Self::new(width, height, tile_edge, encoding)?;
+        let image = Self::new(width, height, tile_edge, encoding)?
+            .with_first_level(values.next().unwrap())?;
         if levels != image.levels() {
             return Err("prepared image pyramid level count is invalid");
         }
         Ok(image)
     }
-    /// Logical tile dimensions including gutters, or `None` outside the pyramid.
+    /// Logical tile dimensions including gutters, or `None` outside stored levels.
     pub fn tile_dimensions(self, level: u32, x: u32, y: u32) -> Option<[u32; 2]> {
-        if level >= self.levels() {
+        if level < self.first_level || level >= self.levels() {
             return None;
         }
         let [width, height] = self.dimensions(level);
@@ -174,5 +194,28 @@ mod tests {
         let png = PreparedImage::new(17, 17, 8, TileEncoding::Png).unwrap();
         assert_eq!(PreparedImage::decode(&png.encode()), Ok(png));
         assert!(png.tile_source("x", 0, 0, 0).ends_with(".png"));
+    }
+    #[test]
+    fn first_stored_level_preserves_author_size_and_rejects_missing_levels() {
+        let image = PreparedImage::new(1920, 29616, 510, TileEncoding::ReelTexture)
+            .unwrap()
+            .with_first_level(1)
+            .unwrap();
+        assert_eq!(image.encode().len(), 32);
+        assert_eq!(PreparedImage::decode(&image.encode()), Ok(image));
+        assert_eq!([image.width, image.height], [1920, 29616]);
+        assert_eq!(image.dimensions(1), [960, 14808]);
+        assert_eq!(image.tile_dimensions(0, 0, 0), None);
+        assert_eq!(image.tile_dimensions(1, 0, 0), Some([512, 512]));
+        assert!(image.with_first_level(image.levels()).is_err());
+        assert!(PreparedImage::decode(&image.encode()[..28]).is_err());
+        let mut invalid = image.encode();
+        invalid[28..32].copy_from_slice(&image.levels().to_le_bytes());
+        assert!(PreparedImage::decode(&invalid).is_err());
+        let invalid = PreparedImage {
+            first_level: image.levels(),
+            ..image
+        };
+        assert!(std::panic::catch_unwind(|| invalid.encode()).is_err());
     }
 }

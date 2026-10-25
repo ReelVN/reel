@@ -436,56 +436,6 @@ impl StageView {
                 continue;
             }
             if let Some((source, origin)) = image_source(&node.node.kind) {
-                if matches!(node.node.kind, NodeKind::Particles(_))
-                    && source.ends_with(".reel-image")
-                {
-                    return Err(format!(
-                        "{}: particle image {source:?}: particles require a whole PNG, JPEG or .reel-texture sprite; prepared .reel-image sources are supported by image nodes",
-                        origin.as_deref().unwrap_or("stage")
-                    ));
-                }
-                if matches!(
-                    &node.node.kind,
-                    NodeKind::Image {
-                        source_rect: Some(_),
-                        ..
-                    }
-                ) && source.ends_with(".reel-image")
-                {
-                    return Err(format!(
-                        "{}: image {source:?}: source_rect requires a whole PNG, JPEG or .reel-texture image",
-                        origin.as_deref().unwrap_or("stage")
-                    ));
-                }
-                if matches!(
-                    &node.node.kind,
-                    NodeKind::Image {
-                        alpha_layout: reel_ui::frame::ImageAlphaLayout::TopBottom,
-                        ..
-                    }
-                ) && source.ends_with(".reel-image")
-                {
-                    return Err(format!(
-                        "{}: image {source:?}: alpha_layout top_bottom requires a whole PNG, JPEG or .reel-texture image",
-                        origin.as_deref().unwrap_or("stage")
-                    ));
-                }
-                if matches!(&node.node.kind, NodeKind::Image { slice: Some(_), .. })
-                    && source.ends_with(".reel-image")
-                {
-                    return Err(format!(
-                        "{}: sliced image {source:?}: nine-slice images require a whole PNG, JPEG or .reel-texture image",
-                        origin.as_deref().unwrap_or("stage")
-                    ));
-                }
-                if matches!(&node.node.kind, NodeKind::Image { repeat, .. } if *repeat != [false; 2])
-                    && source.ends_with(".reel-image")
-                {
-                    return Err(format!(
-                        "{}: repeating image {source:?}: repetition requires a whole PNG, JPEG or .reel-texture image",
-                        origin.as_deref().unwrap_or("stage")
-                    ));
-                }
                 requests
                     .entry(source.to_owned())
                     .or_insert_with(|| origin.clone());
@@ -497,12 +447,6 @@ impl StageView {
             }
             for source in node.node.props.mask.iter().flat_map(|mask| mask.sources()) {
                 let origin = node.node.props.mask_origin.as_deref();
-                if source.ends_with(".reel-image") {
-                    return Err(format!(
-                        "{}: mask image {source:?}: masks require a whole PNG, JPEG or .reel-texture image; prepared .reel-image sources are supported by image nodes",
-                        origin.unwrap_or("stage")
-                    ));
-                }
                 requests
                     .entry(source.to_string())
                     .or_insert_with(|| origin.map(str::to_owned));
@@ -565,9 +509,10 @@ impl StageView {
     pub fn resolve_metadata(&mut self, images: &crate::images::Images) -> Result<(), String> {
         self.resources.clear();
         let mut resources = std::collections::BTreeSet::new();
+        let mut failure = None;
         resolve_image_nodes(&mut self.root, |node, visible| {
             let mut resolved = SceneImages::default();
-            if !visible {
+            if !visible || failure.is_some() {
                 return resolved;
             }
             if let Some(lease) = image_resource(&node.node.kind) {
@@ -576,8 +521,33 @@ impl StageView {
                     self.resources.push(lease.clone());
                 }
             }
-            if let Some((source, _)) = image_source(&node.node.kind) {
+            if let Some((source, origin)) = image_source(&node.node.kind) {
                 if let Some(manifest) = images.manifests.get(source) {
+                    let restriction = match &node.node.kind {
+                        NodeKind::Particles(_) => {
+                            Some("particles require a whole PNG, JPEG or .reel-texture sprite")
+                        }
+                        NodeKind::Image {
+                            alpha_layout: reel_ui::frame::ImageAlphaLayout::TopBottom,
+                            ..
+                        } => Some(
+                            "alpha_layout top_bottom requires a whole PNG, JPEG or .reel-texture image",
+                        ),
+                        NodeKind::Image { slice: Some(_), .. } => Some(
+                            "nine-slice images require a whole PNG, JPEG or .reel-texture image",
+                        ),
+                        NodeKind::Image { repeat, .. } if *repeat != [false; 2] => {
+                            Some("repetition requires a whole PNG, JPEG or .reel-texture image")
+                        }
+                        _ => None,
+                    };
+                    if let Some(restriction) = restriction {
+                        failure = Some(format!(
+                            "{}: image {source:?}: {restriction}; prepared image manifests support ordinary image nodes and source_rect",
+                            origin.as_deref().unwrap_or("stage")
+                        ));
+                        return resolved;
+                    }
                     resolved.tiled_size =
                         Some(Size::new(manifest.width.into(), manifest.height.into()));
                 } else if let Some(lease) = images.loaded.get(source) {
@@ -594,6 +564,17 @@ impl StageView {
                 }
             }
             if let Some(mask) = &node.node.props.mask {
+                if let Some(source) = mask
+                    .sources()
+                    .iter()
+                    .find(|source| images.manifests.contains_key(source.as_ref()))
+                {
+                    failure = Some(format!(
+                        "{}: mask image {source:?}: masks require a whole PNG, JPEG or .reel-texture image",
+                        node.node.props.mask_origin.as_deref().unwrap_or("stage")
+                    ));
+                    return resolved;
+                }
                 resolved.mask_images = mask
                     .sources()
                     .iter()
@@ -608,6 +589,9 @@ impl StageView {
             }
             resolved
         });
+        if let Some(error) = failure {
+            return Err(error);
+        }
         self.refresh_popups();
         Ok(())
     }
@@ -732,8 +716,15 @@ impl StageWidget {
             if !this.widget.node.props.visible || !this.widget.projection.image_branch {
                 return;
             }
-            if let (Some(image), NodeKind::Image { source, fit, .. }) =
-                (&this.widget.image, &this.widget.node.kind)
+            if let (
+                Some(image),
+                NodeKind::Image {
+                    source,
+                    fit,
+                    source_rect,
+                    ..
+                },
+            ) = (&this.widget.image, &this.widget.node.kind)
             {
                 out.push((
                     this.widget.node.id,
@@ -741,6 +732,7 @@ impl StageWidget {
                         source: source.key().to_owned(),
                         widget: image.id(),
                         fit: *fit,
+                        source_rect: *source_rect,
                     },
                 ));
             }

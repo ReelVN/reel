@@ -91,7 +91,8 @@ pub struct ExportOptions {
     /// Source-resource variants to select before writing either export profile.
     pub resource_target: String,
     pub pack_bytes: NonZeroU64,
-    /// Platform runtime to copy into a release export.
+    /// Platform runtime to copy into a release export. `None` exports game data
+    /// for a shared runtime already installed on the destination device.
     pub runtime: Option<Runtime>,
 }
 
@@ -295,12 +296,10 @@ pub fn export(
         }
     }
     let mut runtime_files = BTreeMap::new();
-    if artifact.profile == BuildProfile::Release {
-        match options
-            .runtime
-            .as_ref()
-            .ok_or_else(|| io::Error::other("release export requires a platform runtime"))?
-        {
+    if artifact.profile == BuildProfile::Release
+        && let Some(runtime) = &options.runtime
+    {
+        match runtime {
             Runtime::Executable(path) => {
                 runtime_files.insert(exported_player_name(), path.clone());
             }

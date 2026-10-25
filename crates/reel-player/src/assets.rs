@@ -83,6 +83,12 @@ enum Phase {
     Decoding(WorkId),
     Done(Result<ResourceLease, String>),
     Bytes(ResourceVersion, Arc<OwnedBytes>),
+    ImageManifest(reel_core::prepared_image::PreparedImage),
+}
+/// A logical image path can resolve to raster storage or a tiled-image manifest.
+pub(crate) enum ImageAsset {
+    Raster(ResourceLease),
+    Tiled(reel_core::prepared_image::PreparedImage),
 }
 struct Load {
     source: AssetSource,
@@ -429,9 +435,28 @@ impl Assets {
                 unreachable!()
             };
             result.map(Some)
+        } else if matches!(load.phase, Phase::ImageManifest(_)) {
+            service.loads.remove(&id);
+            Err("a tiled image must be loaded through the stage image service".into())
         } else {
             Ok(None)
         }
+    }
+    /// Take a decoded raster or a content-identified tile manifest after maintain.
+    pub(crate) fn take_image(&self, id: LoadId) -> Result<Option<ImageAsset>, String> {
+        {
+            let mut service = self.0.borrow_mut();
+            let load = service
+                .loads
+                .get(&id)
+                .ok_or("asset request no longer active")?;
+            if let Phase::ImageManifest(manifest) = load.phase {
+                service.loads.remove(&id);
+                return Ok(Some(ImageAsset::Tiled(manifest)));
+            }
+        }
+        self.take_ready(id)
+            .map(|value| value.map(ImageAsset::Raster))
     }
     /// Take raw bytes after calling maintain; does not re-run the shared pump.
     pub fn poll_bytes(
@@ -728,6 +753,22 @@ impl Service {
             }
             Phase::Probe | Phase::Decode => {
                 let probe = matches!(load.phase, Phase::Probe);
+                if probe
+                    && load
+                        .input
+                        .as_ref()
+                        .unwrap()
+                        .as_slice()
+                        .starts_with(reel_core::prepared_image::PreparedImage::MAGIC)
+                {
+                    let manifest = reel_core::prepared_image::PreparedImage::decode(
+                        load.input.as_ref().unwrap().as_slice(),
+                    )
+                    .map_err(str::to_owned)?;
+                    load.input = None;
+                    load.phase = Phase::ImageManifest(manifest);
+                    return Ok(());
+                }
                 let decode_bytes = self.options.decode_bytes - self.io_workspace_bytes;
                 if !probe && load.temporary > decode_bytes {
                     return Err("image decode limit exceeded".into());
