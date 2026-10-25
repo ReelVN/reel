@@ -23,6 +23,8 @@ const SIZE: [u32; 2] = [960, 544];
 const TARGET_BYTES: u64 = SIZE[0] as u64 * SIZE[1] as u64 * 4;
 const GROUPS: u64 = 16;
 const WARM_FRAMES: usize = 40;
+#[cfg(feature = "gles2")]
+static GLES_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn fill(scene: &mut Scene, rect: Rect, transform: Affine) {
     scene.draw(Draw::Fill {
@@ -161,6 +163,7 @@ fn gles_bounded_groups_and_retained_masks_submit() {
     use reel_render::gles2::{GlesBackend, GlesLimits};
     use reel_render::{AlphaMode, RenderBackend, RenderEvent, SurfaceInfo};
     use reel_ui::resources::ColorEncoding;
+    let _serial = GLES_TEST_LOCK.lock().unwrap();
     let frame = frame();
     let mut renderer = GlesBackend::headless(
         SIZE,
@@ -202,5 +205,135 @@ fn gles_bounded_groups_and_retained_masks_submit() {
         "gles bounded_groups frames={WARM_FRAMES} submit_complete_us={}",
         measured.elapsed().as_micros()
     );
+    // Prepare and cancel an independent output under the same three-target
+    // ceiling. No poll_capture call or pixel readback is performed.
+    let output = pool();
+    let capture = reel_render::capture::CaptureBackend::capture(
+        &mut renderer,
+        &frame,
+        SIZE,
+        &output,
+        reel_core::wake::WakeSignal::new(|| {}),
+    )
+    .unwrap();
+    drop(capture);
+    renderer.close().unwrap();
+}
+
+#[cfg(feature = "gles2")]
+fn geometry_frame() -> RenderFrame {
+    use reel_ui::kurbo::BezPath;
+    let mut path = BezPath::new();
+    // Disjoint contours retain 4096 vertices in one mesh. Its vertex storage
+    // alone exceeds the 128 KiB left beside the previous three-target pool.
+    for y in 0..32 {
+        for x in 0..32 {
+            let (x, y) = (f64::from(x) * 8., f64::from(y) * 8.);
+            path.move_to((x, y));
+            path.line_to((x + 6., y));
+            path.line_to((x + 6., y + 6.));
+            path.line_to((x, y + 6.));
+            path.close_path();
+        }
+    }
+    let mut scene = Scene::new();
+    scene.draw(Draw::Fill {
+        transform: Affine::IDENTITY,
+        fill_rule: Default::default(),
+        brush: Brush::Solid(Color::WHITE),
+        brush_transform: None,
+        shape: Geometry::Path(path),
+        composite: Composite::default(),
+    });
+    let mut widget = RecordWidget::new(scene);
+    widget.clip = false;
+    let mut bridge = widget_bridge(widget, Affine::IDENTITY);
+    let pool = pool();
+    let mut build = FrameBuild::new(
+        bridge.record(FrameId(2)).unwrap(),
+        empty_snapshot(&pool),
+        FrameInfo {
+            logical_size: [960., 544.],
+            physical_size: SIZE,
+        },
+        limits(),
+        &pool,
+    )
+    .unwrap();
+    while !build.step(step_budget()).unwrap().complete {}
+    let frame = build.finish().unwrap();
+    assert!(frame.commands().iter().all(|command| {
+        matches!(
+            command.op,
+            FrameOp::Draw(_) | FrameOp::PushContext(_) | FrameOp::PopContext
+        )
+    }));
+    assert_eq!(
+        frame
+            .commands()
+            .iter()
+            .filter(|command| matches!(command.op, FrameOp::Draw(_)))
+            .count(),
+        1
+    );
+    frame
+}
+
+#[cfg(feature = "gles2")]
+#[test]
+#[ignore = "requires a native GLES context"]
+fn gles_retained_targets_yield_to_geometry_pressure() {
+    use reel_render::gles2::{GlesBackend, GlesLimits};
+    use reel_render::{AlphaMode, RenderBackend, RenderEvent, SurfaceInfo};
+    use reel_ui::resources::ColorEncoding;
+    let _serial = GLES_TEST_LOCK.lock().unwrap();
+    let effect = frame();
+    let geometry = geometry_frame();
+    let total_bytes = TARGET_BYTES * 3 + (128 << 10);
+    let mut renderer = GlesBackend::headless(
+        SIZE,
+        GlesLimits {
+            target_bytes: TARGET_BYTES * 3,
+            total_bytes,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    renderer
+        .configure(SurfaceInfo {
+            physical_size: SIZE,
+            scale_factor: 1.,
+            surface_epoch: effect.surface_epoch(),
+            color_encoding: ColorEncoding::Srgb,
+            alpha_mode: AlphaMode::Opaque,
+        })
+        .unwrap();
+    let mut completed = Vec::new();
+    let mut events = Vec::new();
+    for frame in [&effect, &geometry] {
+        // The renderer must resolve reclaimable pressure within this call;
+        // the test supplies no external retry or extra completion event.
+        renderer.render_present(frame, || {}).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            events.clear();
+            renderer.poll(&mut events, 32).unwrap();
+            if events.iter().any(|event| {
+                matches!(event, RenderEvent::RenderFinished { frame: id, .. } if *id == frame.frame_id())
+            }) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "submission did not complete"
+            );
+            std::thread::yield_now();
+        }
+        let usage = renderer.usage();
+        assert!(usage.peak_bytes <= total_bytes);
+        completed.push(usage.bytes);
+    }
+    assert!(completed[0] >= TARGET_BYTES * 3);
+    assert_eq!(completed[0] - completed[1], TARGET_BYTES * 2);
     renderer.close().unwrap();
 }
