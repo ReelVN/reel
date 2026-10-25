@@ -31,6 +31,7 @@ pub(super) struct Context<'a> {
     pub image_cache: &'a mut Images,
     pub glyph_cache: &'a mut draw::GlyphCache,
     pub glyphs: Vec<Rc<draw::Glyph>>,
+    pub target_cache: &'a mut Vec<Target>,
     pub targets: Vec<Target>,
     pub available_targets: Vec<Target>,
     pub buffers: Vec<(native::VertexBuffer, native::IndexBuffer)>,
@@ -55,6 +56,7 @@ pub(super) fn prepare(
     limits: crate::common::GpuLimits,
     image_cache: &mut Images,
     glyph_cache: &mut draw::GlyphCache,
+    target_cache: &mut Vec<Target>,
     images: HashMap<ResourceHandle, Rc<Image>>,
     frame: &RenderFrame,
     size: [u32; 2],
@@ -74,6 +76,7 @@ pub(super) fn prepare(
         image_cache,
         glyph_cache,
         glyphs: Vec::new(),
+        target_cache,
         targets: Vec::new(),
         available_targets: Vec::new(),
         buffers: Vec::new(),
@@ -85,6 +88,7 @@ pub(super) fn prepare(
         f64::from(size[1]) / frame.info().logical_size[1],
     );
     let output = context.stream(frame.drawing(), transform);
+    context.target_cache.truncate(context.targets.len());
     context.glyphs.extend(context.glyph_cache.take_uploads());
     let work = Work {
         _tickets: context.tickets,
@@ -158,20 +162,28 @@ impl Context<'_> {
                             .target_bytes
                             .saturating_sub(self.budget_scope.targets.usage().bytes),
                     })?;
-            let target = match Target::new(
-                self.gpu,
-                self.size,
-                &self.budgets.targets,
-                self.limits.target_bytes,
-            ) {
-                Ok(target) => target,
-                Err((error, storage)) => {
-                    self.tickets.push(Reservation {
-                        _shared: storage,
-                        _local: local,
-                    });
-                    return Err(error);
-                }
+            // The previous frame's presentation draw precedes this clear on the
+            // same GLES queue. Capture outputs use a separate allocation set.
+            let target = if let Some(target) = self.target_cache.get(self.targets.len()) {
+                target.clone()
+            } else {
+                let target = match Target::new(
+                    self.gpu,
+                    self.size,
+                    &self.budgets.targets,
+                    self.limits.target_bytes,
+                ) {
+                    Ok(target) => target,
+                    Err((error, storage)) => {
+                        self.tickets.push(Reservation {
+                            _shared: storage,
+                            _local: local,
+                        });
+                        return Err(error);
+                    }
+                };
+                self.target_cache.push(target.clone());
+                target
             };
             self.tickets.push(Reservation {
                 _shared: None,

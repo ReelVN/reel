@@ -89,6 +89,7 @@ pub struct GlesBackend {
     _group: BudgetGroup,
     images: Images,
     glyphs: draw::GlyphCache,
+    targets: Vec<resources::Target>,
     info: Option<SurfaceInfo>,
     suspended: bool,
     next_submission: u64,
@@ -131,6 +132,7 @@ impl GlesBackend {
             _group: group,
             images: Default::default(),
             glyphs: Default::default(),
+            targets: Vec::new(),
             info: None,
             suspended: false,
             next_submission: 1,
@@ -165,6 +167,7 @@ impl GlesBackend {
         self.events.clear();
         self.images = Images::default();
         self.glyphs = draw::GlyphCache::default();
+        self.targets.clear();
         self.drain_failed = false;
         Ok(())
     }
@@ -230,6 +233,19 @@ impl GlesBackend {
             limits,
             self.options.limits.total_bytes,
         )?;
+        // New image residency takes priority over idle scratch allocations.
+        // Flights keep any targets that the device still owns alive.
+        if self
+            .targets
+            .first()
+            .is_some_and(|target| target.view.size() != size)
+            || plan
+                .images
+                .iter()
+                .any(|item| !self.images.entries.contains_key(&item.source.handle()))
+        {
+            self.targets.clear();
+        }
         for mask in &plan.masks {
             let caps = self.context.capabilities();
             if mask.definition.program.operations().len() > 32 {
@@ -310,6 +326,13 @@ impl GlesBackend {
             });
             return Err(GlesError::Busy);
         }
+        // Captures retain their output until readback, independently of later frames.
+        let mut capture_targets = Vec::new();
+        let targets = if capture {
+            &mut capture_targets
+        } else {
+            &mut self.targets
+        };
         match replay::prepare(
             &self.context,
             &self.programs,
@@ -317,6 +340,7 @@ impl GlesBackend {
             self.options.limits.common(),
             &mut self.images,
             &mut self.glyphs,
+            targets,
             images,
             frame,
             size,
@@ -619,6 +643,7 @@ impl Drop for GlesBackend {
             self.failed_images.clear();
             self.images.after_drain();
             self.glyphs.after_drain();
+            self.targets.clear();
         } else {
             std::mem::forget(self.programs.clone());
             std::mem::forget(std::mem::take(&mut self.flights));
@@ -627,6 +652,7 @@ impl Drop for GlesBackend {
             std::mem::forget(std::mem::take(&mut self.failed_images));
             std::mem::forget(std::mem::take(&mut self.images));
             std::mem::forget(std::mem::take(&mut self.glyphs));
+            std::mem::forget(std::mem::take(&mut self.targets));
         }
     }
 }
