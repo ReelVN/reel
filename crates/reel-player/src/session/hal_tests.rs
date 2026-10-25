@@ -185,7 +185,7 @@ fn settle(story: &mut StoryRuntime, ns: u64) {
 }
 
 #[test]
-fn shared_player_applies_preconfigured_fonts_gates_input_and_resumes_resized_surface() {
+fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
     use crate::assets::{AssetOptions, Assets, ImageExecutor};
     use reel_core::{
         identity::{AssetKey, ContentVersion, Scope},
@@ -246,18 +246,18 @@ fn shared_player_applies_preconfigured_fonts_gates_input_and_resumes_resized_sur
     }
     assert_eq!(driver.adapter().game_settings().fonts, ["body.ttf"]);
     assert!(driver.adapter().stage().root().is_some());
-    let backend = Backend {
-        inner: RecordingBackend::new(ConsumerLimits {
-            max_uploads: 1,
-            max_resources: 4,
-            max_frames: 2,
-            max_events: 16,
-            max_upload_bytes: 1 << 20,
-            max_retained_bytes: 1 << 20,
-            max_metadata_bytes: 8192,
-            max_fixed_bytes: 16384,
-        })
-        .unwrap(),
+    let limits = ConsumerLimits {
+        max_uploads: 1,
+        max_resources: 4,
+        max_frames: 2,
+        max_events: 16,
+        max_upload_bytes: 1 << 20,
+        max_retained_bytes: 1 << 20,
+        max_metadata_bytes: 8192,
+        max_fixed_bytes: 16384,
+    };
+    let mut backend = Backend {
+        inner: RecordingBackend::new(limits).unwrap(),
         refusal: None,
         polls: 0,
         resources_available: false,
@@ -266,7 +266,7 @@ fn shared_player_applies_preconfigured_fonts_gates_input_and_resumes_resized_sur
     let mut host = Host::default();
     let mut player = Player::new(
         driver,
-        backend,
+        &mut backend,
         &mut host,
         &PlayerOptions {
             logical_size: Some([640, 420]),
@@ -350,7 +350,7 @@ fn shared_player_applies_preconfigured_fonts_gates_input_and_resumes_resized_sur
     }
     host.now = MonoTime(250_000_000);
     player.tick(&mut host).unwrap();
-    let x = |player: &mut Player<Backend>| {
+    let x = |player: &mut Player<&mut Backend>| {
         player
             .story_mut()
             .unwrap()
@@ -394,6 +394,82 @@ fn shared_player_applies_preconfigured_fonts_gates_input_and_resumes_resized_sur
     host.now = MonoTime(10_500_000_000);
     player.tick(&mut host).unwrap();
     assert_eq!(x(&mut player), 50.);
+
+    let frame_pool = player.pool.clone();
+    let font = player.resources[0].downgrade();
+    let font_version = player.resources[0].version().clone();
+    let last = player.backend.inner.last_submission().unwrap();
+    player.close().unwrap();
+    for _ in 0..1000 {
+        if player.close_complete() {
+            break;
+        }
+        player.tick(&mut host).unwrap();
+    }
+    assert!(player.close_complete());
+    drop(player);
+    assert!(
+        frame_pool.usage().bytes > 0,
+        "submitted frame retains its resources"
+    );
+    assert!(backend.inner.complete_render(last));
+    backend.retire(&[font_version]);
+    backend.poll(&mut Vec::new(), 64).unwrap();
+    assert_eq!(frame_pool.usage().bytes, 0);
+    assert!(
+        font.upgrade().is_none(),
+        "departed player's font owners are released"
+    );
+    // Like GLES reset_session, clear the departed session's surface and caches
+    // while preserving the device wrapper. A new player owns a fresh epoch domain.
+    let reset_session = |backend: &mut Backend| {
+        assert!(!backend.has_pending());
+        assert_eq!(backend.inner.resident_count(), 0);
+        assert_eq!(backend.inner.inflight_count(), 0);
+        backend.inner = RecordingBackend::new(limits).unwrap();
+    };
+    reset_session(&mut backend);
+
+    // Exercise the actual library -> game -> library session variants, including
+    // a game assembly error. Every player borrows the same still-live device.
+    for (library, fail) in [(true, false), (false, true), (true, false)] {
+        let configurations = backend.configurations.len();
+        let session = if library {
+            crate::player::session::PlayerSession::Launcher(Box::new(
+                crate::launcher::Launcher::new(
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR")),
+                    Assets::directory(Default::default()),
+                    None,
+                )
+                .unwrap(),
+            ))
+        } else {
+            crate::player::session::PlayerSession::aside(
+                AsideSessionUi::from_source(
+                    session(),
+                    "fn main() {}",
+                    "replacement",
+                    1,
+                    "main",
+                    "en",
+                    VmLimits::default(),
+                )
+                .unwrap(),
+            )
+        };
+        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            let mut player = Player::mount(session, &mut backend, &mut host, &Default::default())?;
+            if fail {
+                return Err("session assembly failed".into());
+            }
+            player.close()?;
+            Ok(())
+        })();
+        assert_eq!(result.is_err(), fail, "library={library}: {result:?}");
+        assert_eq!(backend.configurations.len(), configurations + 1);
+        assert!(!backend.has_pending());
+        reset_session(&mut backend);
+    }
 }
 
 #[test]

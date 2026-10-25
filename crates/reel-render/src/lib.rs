@@ -204,6 +204,48 @@ pub trait RenderBackend {
     fn has_pending(&self) -> bool;
     fn suspend(&mut self);
 }
+/// A player may borrow a process-owned device without taking its lifetime.
+impl<B: RenderBackend + ?Sized> RenderBackend for &mut B {
+    type Error = B::Error;
+    fn vsync(&self) -> Option<bool> {
+        (**self).vsync()
+    }
+    fn set_vsync(&mut self, enabled: bool) -> Result<Option<bool>, Self::Error> {
+        (**self).set_vsync(enabled)
+    }
+    fn capabilities(&self) -> RenderCaps {
+        (**self).capabilities()
+    }
+    fn configure(&mut self, info: SurfaceInfo) -> Result<(), Self::Error> {
+        (**self).configure(info)
+    }
+    fn upload(&mut self, batch: UploadBatch) -> Result<UploadId, Rejected<UploadBatch>> {
+        (**self).upload(batch)
+    }
+    fn render_present(
+        &mut self,
+        frame: &RenderFrame,
+        before_present: impl FnOnce(),
+    ) -> Result<PresentOutcome, Self::Error> {
+        (**self).render_present(frame, before_present)
+    }
+    fn retire(&mut self, resources: &[ResourceVersion]) {
+        (**self).retire(resources);
+    }
+    fn poll(
+        &mut self,
+        out: &mut Vec<RenderEvent<Self::Error>>,
+        limit: usize,
+    ) -> Result<(), Self::Error> {
+        (**self).poll(out, limit)
+    }
+    fn has_pending(&self) -> bool {
+        (**self).has_pending()
+    }
+    fn suspend(&mut self) {
+        (**self).suspend();
+    }
+}
 /// The coordinator supplies the current surface epoch and the exact borrowed frame key.
 /// Upload/build completion never calls this acceptance gate.
 pub fn presentation_notice<E>(

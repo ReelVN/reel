@@ -164,6 +164,23 @@ impl View {
             .after_input(&mut self.bridge, self.root)
             .unwrap();
     }
+    fn button(&mut self, button: GamepadButton) {
+        for value in [1., 0.] {
+            self.session
+                .handle_text(
+                    &mut self.bridge,
+                    TextEvent::Input(InputEvent::Value {
+                        device: reel_ui::input::InputDeviceId::Gamepad(1),
+                        control: Control::Button(button),
+                        value,
+                    }),
+                )
+                .unwrap();
+            self.session
+                .after_input(&mut self.bridge, self.root)
+                .unwrap();
+        }
+    }
 }
 
 #[test]
@@ -207,10 +224,12 @@ fn touch_launch_requires_an_accepted_frame() {
 #[test]
 fn controller_selects_and_launches_a_work() {
     let library = Library::new();
-    let package = library.game("作品");
+    library.game("A");
+    let package = library.game("B");
     let mut view = View::new(&library, None);
     view.present();
     view.navigation(NavigationAction::Down, ActionPhase::Pressed);
+    view.present();
     view.navigation(NavigationAction::Confirm, ActionPhase::Pressed);
     view.navigation(NavigationAction::Confirm, ActionPhase::Released);
     assert_eq!(
@@ -220,30 +239,25 @@ fn controller_selects_and_launches_a_work() {
 }
 
 #[test]
-fn paging_retires_old_buttons_and_requires_new_frame_acceptance() {
+fn paging_mounts_bounded_rows_and_requires_new_frame_acceptance() {
     let library = Library::new();
-    for index in 0..7 {
-        library.game(&format!("game-{index}"));
+    for index in 0..100 {
+        library.game(&format!("game-{index:03}"));
     }
     let mut view = View::new(&library, None);
     view.present();
-    view.touch([220., 465.]);
-    assert_eq!(view.launcher().page, 1);
-    assert_eq!(
-        view.launcher()
-            .stage
-            .nodes()
-            .filter(|node| matches!(node.kind, NodeKind::Button { .. }))
-            .count(),
-        5
-    );
-    view.touch([80., 120.]);
+    view.button(GamepadButton::RightShoulder);
+    assert_eq!(view.launcher().selected, 4);
+    assert!(view.launcher().list.as_ref().unwrap().rows.len() <= 7);
+    view.navigation(NavigationAction::Confirm, ActionPhase::Pressed);
+    view.navigation(NavigationAction::Confirm, ActionPhase::Released);
     assert_eq!(view.launcher().take_outcome(), None);
     view.present();
-    view.touch([80., 120.]);
+    view.navigation(NavigationAction::Confirm, ActionPhase::Pressed);
+    view.navigation(NavigationAction::Confirm, ActionPhase::Released);
     assert_eq!(
         view.launcher().take_outcome(),
-        Some(Outcome::Launch(library.0.join("game-6/game.asb")))
+        Some(Outcome::Launch(library.0.join("game-004/game.asb")))
     );
 }
 
@@ -257,11 +271,101 @@ fn refresh_discovers_copied_games_and_error_back_returns_to_library() {
     assert!(view.launcher().games.is_empty());
     let package = library.game("new");
     view.present();
-    view.touch([650., 465.]);
+    view.button(GamepadButton::Start);
     assert_eq!(view.launcher().games[0].package, package);
     view.present();
-    view.touch([820., 465.]);
+    view.button(GamepadButton::Select);
+    assert_eq!(view.launcher().screen, Screen::Settings);
+    view.present();
+    view.touch([410., 410.]);
+    assert!(view.launcher().confirm_exit);
+    assert_eq!(view.launcher().take_outcome(), None);
+    view.present();
+    view.touch([600., 340.]);
     assert_eq!(view.launcher().take_outcome(), Some(Outcome::Exit));
     view.session.close().unwrap();
     assert!(view.session.close_complete());
+}
+
+#[test]
+fn reference_frame_keeps_large_rows_between_shared_header_and_footer() {
+    let library = Library::new();
+    library.game("A");
+    let mut view = View::new(&library, None);
+    view.present();
+    let launcher = view.launcher();
+    let list = launcher.list.as_ref().unwrap();
+    let viewport = &launcher.stage.node(list.scroll).unwrap().props;
+    assert_eq!(
+        (viewport.x, viewport.y, viewport.width, viewport.height),
+        (64., 100., Some(832.), Some(355.))
+    );
+    let row = launcher.stage.node(list.rows[&0]).unwrap();
+    assert_eq!(row.props.height, Some(90.));
+    assert!(row.children.iter().any(|node| {
+        let node = launcher.stage.node(*node).unwrap();
+        matches!(node.kind, NodeKind::Text(_)) && node.props.font_size == 28.
+    }));
+    let root = launcher.stage.node(launcher.stage.root().unwrap()).unwrap();
+    assert_eq!(root.props.background, Some([31, 35, 43, 255]));
+    let separators = launcher
+        .stage
+        .nodes()
+        .filter(|node| node.props.width == Some(864.) && node.props.height == Some(1.))
+        .map(|node| node.props.y)
+        .collect::<Vec<_>>();
+    assert_eq!(separators, vec![87., 471.]);
+}
+
+#[test]
+fn settings_theme_and_launched_selection_persist_and_details_restore_focus() {
+    let library = Library::new();
+    library.game("A");
+    let package = library.game("B");
+    let mut view = View::new(&library, None);
+    view.present();
+    view.navigation(NavigationAction::Down, ActionPhase::Pressed);
+    view.present();
+    assert_eq!(view.launcher().selected, 1);
+    view.button(GamepadButton::North);
+    assert_eq!(view.launcher().screen, Screen::Information);
+    view.present();
+    view.navigation(NavigationAction::Back, ActionPhase::Released);
+    view.present();
+    assert_eq!(view.launcher().selected, 1);
+    view.button(GamepadButton::Select);
+    view.present();
+    view.navigation(NavigationAction::Confirm, ActionPhase::Pressed);
+    view.navigation(NavigationAction::Confirm, ActionPhase::Released);
+    assert!(view.launcher().preferences.light);
+    view.present();
+    view.navigation(NavigationAction::Back, ActionPhase::Released);
+    view.present();
+    view.navigation(NavigationAction::Confirm, ActionPhase::Pressed);
+    view.navigation(NavigationAction::Confirm, ActionPhase::Released);
+    assert_eq!(
+        view.launcher().take_outcome(),
+        Some(Outcome::Launch(package))
+    );
+    let mut restored = View::new(&library, None);
+    restored.present();
+    assert!(restored.launcher().preferences.light);
+    assert_eq!(restored.launcher().selected, 1);
+}
+
+#[test]
+fn error_modal_blocks_underlying_touch_and_library_shortcuts() {
+    let library = Library::new();
+    library.game("A");
+    let mut view = View::new(&library, Some("failure".into()));
+    view.present();
+    view.touch([80., 120.]);
+    view.button(GamepadButton::Select);
+    view.button(GamepadButton::Start);
+    view.button(GamepadButton::North);
+    assert_eq!(view.launcher().take_outcome(), None);
+    assert_eq!(view.launcher().screen, Screen::Library);
+    assert_eq!(view.launcher().error.as_deref(), Some("failure"));
+    view.navigation(NavigationAction::Back, ActionPhase::Released);
+    assert!(!view.launcher().modal());
 }
