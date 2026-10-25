@@ -104,7 +104,7 @@ impl Context<'_> {
         }
         self.paint_resource(
             target,
-            &batch,
+            batch,
             &image,
             [
                 first.brush.sampler.x_extend == Extend::Repeat,

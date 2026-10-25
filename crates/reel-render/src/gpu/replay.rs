@@ -32,6 +32,7 @@ pub(super) struct Context<'a> {
     pub(super) available_targets: Vec<Target>,
     pub(super) scissor: Scissor,
     pub(super) mesh_clip: Option<crate::common::mesh::RectClip>,
+    pub(super) paint_batch: Option<super::draw::PaintBatch>,
 }
 struct Scope<'a> {
     target: Target,
@@ -75,6 +76,7 @@ struct Stream<'a> {
 }
 impl Context<'_> {
     pub(super) fn target(&mut self) -> Result<Target, GpuError> {
+        self.flush_draws()?;
         let target = if let Some(target) = self.available_targets.pop() {
             target
         } else {
@@ -199,6 +201,7 @@ impl Context<'_> {
                 continue;
             }
             let Some(command) = current.commands.get(current.next) else {
+                self.flush_draws()?;
                 let finished = streams.pop().unwrap().scopes.finish()?.target;
                 let Some(parent) = streams.last_mut() else {
                     return Ok(finished);
@@ -399,6 +402,7 @@ impl Context<'_> {
                     if !group.isolated {
                         continue;
                     }
+                    self.flush_draws()?;
                     self.scissor = self.scissor.intersect(group.scissor);
                     let mut source = group.target;
                     if let Some(clip) = group.clip {
@@ -574,6 +578,7 @@ impl Context<'_> {
         invert: f32,
         operation: CompositeOperation,
     ) -> Result<(), GpuError> {
+        self.flush_draws()?;
         if self.scissor.empty() {
             return Ok(());
         }
@@ -611,6 +616,7 @@ impl Context<'_> {
         operation: CompositeOperation,
         image_mask: Option<(&reel_ui::frame::FrameImageMask, Affine)>,
     ) -> Result<(), GpuError> {
+        self.flush_draws()?;
         if self.scissor.empty() {
             return Ok(());
         }
@@ -716,6 +722,7 @@ impl Context<'_> {
         transition: &SceneTransition,
         outer: Affine,
     ) -> Result<(), GpuError> {
+        self.flush_draws()?;
         if self.scissor.empty() {
             return Ok(());
         }

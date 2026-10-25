@@ -15,4 +15,5 @@ pub(crate) mod scopes;
 
 pub(crate) mod scissor;
 
+pub(crate) mod draw_batch;
 pub(crate) mod glyph_key;

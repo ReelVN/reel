@@ -343,6 +343,7 @@ impl Renderer {
             available_targets: Vec::new(),
             scissor: super::targets::Scissor::full(size),
             mesh_clip: None,
+            paint_batch: None,
         };
         let transform = Affine::scale_non_uniform(
             f64::from(size[0]) / frame.info().logical_size[0],
