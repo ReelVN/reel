@@ -1,4 +1,4 @@
-//! A fixed precompiled GPU interpreter consumes the validated common scalar DAG.
+//! Fixed simple-mask shaders and an interpreter for the remaining scalar DAGs.
 use super::*;
 use super::{
     programs::{Target, Values},
@@ -70,6 +70,12 @@ impl Context<'_> {
             1. / definition.bounds.height(),
         ) * Affine::translate((-definition.bounds.x0, -definition.bounds.y0))
             * transform.inverse();
+        if let Some(simple) = crate::common::mask::plan(&definition.program)
+            .and_then(|plan| plan.evaluate(&definition.program, definition.parameters))
+        {
+            self.mask_sample(&target, definition, uv, simple)?;
+            return Ok(target);
+        }
         let mut operations = [[0.; 4]; OPERATION_CAPACITY];
         for (index, operation) in definition.program.operations().iter().enumerate() {
             operations[index] = encode_operation(operation);
@@ -141,6 +147,80 @@ impl Context<'_> {
             self.gl_scissor(),
         )?;
         Ok(target)
+    }
+
+    fn mask_sample(
+        &self,
+        target: &Target,
+        definition: &FrameImageMask,
+        uv: Affine,
+        simple: crate::common::mask::Evaluated,
+    ) -> Result<(), GlesError> {
+        let image = self
+            .images
+            .get(&definition.images[simple.image])
+            .ok_or_else(|| {
+                self.at.map_or_else(
+                    || GlesError::Device("mask image is not resident".into()),
+                    |at| GlesError::Unsupported {
+                        at,
+                        record: "mask image is not resident",
+                    },
+                )
+            })?;
+        let shader = if simple.threshold {
+            &self.programs.mask_threshold
+        } else {
+            &self.programs.mask_sample_chain
+        };
+        let [a, b, c, d, e, f] = uv.as_coeffs().map(|v| v as f32);
+        let mut values = Values::new();
+        values.extend(shader.int("u_image", 0));
+        values.extend(shader.vec4("u_uv0", [a, c, e, 0.]));
+        values.extend(shader.vec4("u_uv1", [b, d, f, 0.]));
+        values.extend(shader.vec4("u_values", definition.parameters[..4].try_into().unwrap()));
+        values.extend(shader.vec4("u_flags", [definition.parameters[4], 0., 0., 0.]));
+        values.extend(shader.vec4("u_coordinates", simple.coordinates));
+        values.extend(shader.vec2(
+            "u_sample_flags",
+            [
+                f32::from(simple.channel == MaskChannel::Gray),
+                f32::from(simple.repeat),
+            ],
+        ));
+        values.extend(shader.vec2("u_dimensions", image.layout.storage_size.map(|v| v as f32)));
+        values.extend(shader.vec2("u_output_size", self.size.map(|v| v as f32)));
+        values.extend(shader.vec4(
+            "u_texels",
+            [
+                image.layout.content_size[0] as f32 / image.layout.storage_size[0] as f32,
+                image.layout.content_size[1] as f32 / image.layout.storage_size[1] as f32,
+                f32::from(image.encoding == ColorEncoding::Linear),
+                match image.format {
+                    Some(PixelFormat::Bc1Rgb) => 1.,
+                    Some(PixelFormat::Bc3Rgba) => 2.,
+                    _ => 0.,
+                },
+            ],
+        ));
+        for (name, step) in [
+            "u_step0", "u_step1", "u_step2", "u_step3", "u_step4", "u_step5", "u_step6", "u_step7",
+        ]
+        .into_iter()
+        .zip(simple.steps)
+        {
+            values.extend(shader.vec4(name, step));
+        }
+        self.programs.quad(
+            self.gpu,
+            native::Target::Framebuffer(&target.framebuffer),
+            self.size,
+            shader,
+            &[&image.texture],
+            &values,
+            native::Blend::Replace,
+            self.gl_scissor(),
+        )
     }
 }
 

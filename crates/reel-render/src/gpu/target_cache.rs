@@ -17,20 +17,19 @@ struct Entries {
 pub(super) struct TargetCache(Mutex<Option<Entries>>);
 
 impl TargetCache {
-    pub(super) fn configure(&self, size: [u32; 2], quality: Quality, count: u64) {
+    pub(super) fn configure(&self, size: [u32; 2], quality: Quality) {
         let mut cache = self.0.lock().unwrap();
-        if let Some(entries) = cache.as_mut()
+        if let Some(entries) = cache.as_ref()
             && entries.size == size
             && entries.quality == quality
         {
-            entries.slots.truncate(count as usize);
-        } else {
-            *cache = Some(Entries {
-                size,
-                quality,
-                slots: Vec::new(),
-            });
+            return;
         }
+        *cache = Some(Entries {
+            size,
+            quality,
+            slots: Vec::new(),
+        });
     }
 
     pub(super) fn get(
@@ -66,8 +65,11 @@ impl TargetCache {
             && entries.size == size
             && entries.quality == quality
         {
-            entries.slots.clear();
-            entries.slots.extend_from_slice(slots);
+            // A simple frame reuses the prefix; subsequent effects can reuse
+            // the remaining budgeted allocations without recreating textures.
+            let shared = entries.slots.len().min(slots.len());
+            entries.slots[..shared].clone_from_slice(&slots[..shared]);
+            entries.slots.extend_from_slice(&slots[shared..]);
         }
     }
 

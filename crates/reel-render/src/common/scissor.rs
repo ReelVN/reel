@@ -1,6 +1,8 @@
 use reel_ui::{
+    frame::{BlendMode, FrameGroup, InkBounds},
     imaging::record::{Clip, Geometry},
     kurbo::{Affine, Rect},
+    peniko::{Compose, Mix},
 };
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Scissor {
@@ -94,6 +96,44 @@ impl Scissor {
             return None;
         };
         let bounds = (outer * *transform).transform_rect_bbox(*rect);
+        Self::conservative_bounds(bounds, size)
+    }
+    /// Bound a completed group's source in frame coordinates, independently of
+    /// its effect-local mask transform. Masks, opacity and RGB inversion cannot
+    /// add coverage outside this source. Only zero-source identity blends qualify.
+    /// Retained transitions can draw an older, larger source absent from this ink.
+    pub fn group_bounds(
+        group: &FrameGroup,
+        outer: Affine,
+        size: [u32; 2],
+        retained_transitions: bool,
+    ) -> Option<Self> {
+        if retained_transitions || !group.filters.is_empty() {
+            return None;
+        }
+        match group.composite.blend {
+            BlendMode::Standard(blend)
+                if matches!(
+                    (blend.mix, blend.compose),
+                    (Mix::Normal | Mix::Multiply | Mix::Screen, Compose::SrcOver)
+                ) =>
+            {
+                ()
+            }
+            _ => return None,
+        }
+        match group.ink_bounds {
+            InkBounds::Empty => Some(Self::full([0, 0])),
+            InkBounds::Unbounded => None,
+            InkBounds::Rect(rect) => {
+                if !rect.is_finite() || !outer.as_coeffs().into_iter().all(f64::is_finite) {
+                    return None;
+                }
+                Self::conservative_bounds(outer.transform_rect_bbox(rect), size)
+            }
+        }
+    }
+    fn conservative_bounds(bounds: Rect, size: [u32; 2]) -> Option<Self> {
         if !bounds.is_finite() {
             return None;
         }
@@ -117,6 +157,107 @@ impl Scissor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn group(ink_bounds: InkBounds) -> FrameGroup {
+        FrameGroup {
+            image_mask: None,
+            clip: None,
+            mask: None,
+            filters: Vec::new(),
+            composite: Default::default(),
+            invert: 0.,
+            owner: reel_ui::core::WidgetPod::new(reel_ui::widgets::Label::new("")).id(),
+            effect_to_target: Affine::IDENTITY,
+            ink_bounds,
+        }
+    }
+
+    #[test]
+    fn group_bounds_preserve_transformed_coverage_and_parent_samples() {
+        let rect = Rect::new(2.25, 4.5, 35.5, 20.25);
+        let group = group(InkBounds::Rect(rect));
+        let parent = Scissor {
+            x: 20,
+            y: 16,
+            width: 40,
+            height: 28,
+        };
+        for outer in [
+            Affine::translate((18.5, 12.5)),
+            Affine::translate((60., 42.)) * Affine::scale_non_uniform(-0.6666667, -1.25),
+            Affine::translate((30., 24.)) * Affine::rotate(0.6),
+            Affine::new([1., 0.25, -0.3, 1., 25., 20.]),
+        ] {
+            let bounds = Scissor::group_bounds(&group, outer, [96, 64], false).unwrap();
+            let intersection = parent.intersect(bounds);
+            // Independent sample oracle: transform samples back into the source,
+            // including positions near pixel boundaries and MSAA sample locations.
+            for y in parent.y..parent.y + parent.height {
+                for x in parent.x..parent.x + parent.width {
+                    for offset in [0.001, 0.125, 0.5, 0.875, 0.999] {
+                        let local = outer.inverse()
+                            * reel_ui::kurbo::Point::new(x as f64 + offset, y as f64 + offset);
+                        if rect.contains(local) {
+                            assert!(x >= intersection.x && x < intersection.x + intersection.width);
+                            assert!(
+                                y >= intersection.y && y < intersection.y + intersection.height
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn group_bounds_keep_unknown_expanding_and_replacing_operations_conservative() {
+        let size = [960, 544];
+        let bounds = |g: &FrameGroup| Scissor::group_bounds(g, Affine::IDENTITY, size, false);
+        let mut group = group(InkBounds::Empty);
+        assert!(bounds(&group).unwrap().empty());
+        group.ink_bounds = InkBounds::Unbounded;
+        assert_eq!(bounds(&group), None);
+        group.ink_bounds = InkBounds::Rect(Rect::new(200., 100., 320., 140.));
+        let small = bounds(&group).unwrap();
+        assert_eq!(small.width * small.height, 122 * 42);
+        assert!(small.width * small.height < size[0] * size[1] / 100);
+        group.effect_to_target = Affine::scale(100.);
+        group.invert = 1.;
+        group.composite.alpha = 0.5;
+        assert_eq!(bounds(&group), Some(small));
+        assert_eq!(
+            Scissor::group_bounds(&group, Affine::IDENTITY, size, true),
+            None
+        );
+        group.filters.push(reel_ui::imaging::Filter::Flood {
+            color: reel_ui::peniko::Color::WHITE,
+        });
+        assert_eq!(bounds(&group), None);
+        group.filters.clear();
+        for blend in [
+            BlendMode::Standard(reel_ui::peniko::BlendMode {
+                mix: Mix::Normal,
+                compose: Compose::Copy,
+            }),
+            BlendMode::Standard(reel_ui::peniko::BlendMode {
+                mix: Mix::Normal,
+                compose: Compose::PlusLighter,
+            }),
+            BlendMode::Subtract,
+        ] {
+            group.composite.blend = blend;
+            assert_eq!(bounds(&group), None);
+        }
+        group.composite.blend = Default::default();
+        assert_eq!(
+            Scissor::group_bounds(&group, Affine::scale(f64::INFINITY), size, false),
+            None
+        );
+        group.ink_bounds = InkBounds::Rect(Rect::new(0., 0., f64::NAN, 4.));
+        assert_eq!(bounds(&group), None);
+        group.ink_bounds = InkBounds::Rect(Rect::new(-100., -100., -10., -10.));
+        assert!(bounds(&group).unwrap().empty());
+    }
 
     fn clip(rect: Rect) -> Clip {
         Clip::Fill {

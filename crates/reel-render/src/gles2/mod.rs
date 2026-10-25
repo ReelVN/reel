@@ -216,6 +216,25 @@ impl GlesBackend {
         size: [u32; 2],
         capture: bool,
     ) -> Result<replay::Prepared, GlesError> {
+        let result = self.prepare_cached(frame, size, capture);
+        if matches!(result, Err(GlesError::Pressure { .. })) && !self.drain_failed {
+            let resident = self._group.usage().bytes;
+            self.targets.clear();
+            // Glyph and geometry demand is discovered during replay. Retry once
+            // when evicting the unused scratch pool actually released capacity.
+            // In-flight owners keep their allocations until completion.
+            if self._group.usage().bytes < resident {
+                return self.prepare_cached(frame, size, capture);
+            }
+        }
+        result
+    }
+    fn prepare_cached(
+        &mut self,
+        frame: &RenderFrame,
+        size: [u32; 2],
+        capture: bool,
+    ) -> Result<replay::Prepared, GlesError> {
         if self.drain_failed {
             return Err(GlesError::NativeDeviceLost(
                 "GPU failure could not be drained".into(),
@@ -252,13 +271,14 @@ impl GlesBackend {
             limits,
             self.options.limits.total_bytes,
         )?;
-        // New image residency takes priority when the simultaneous budget needs
-        // room. Small cursor/video updates can retain the existing scratch pool.
+        // Captures need independent outputs; release the ordinary scratch cache
+        // before reserving them. New images also take priority under pressure.
         // Flights keep any targets that the device still owns alive.
-        if self
-            .targets
-            .first()
-            .is_some_and(|target| target.view.size() != size)
+        if capture
+            || self
+                .targets
+                .first()
+                .is_some_and(|target| target.view.size() != size)
             || image_growth
                 > self.options.limits.total_bytes.saturating_sub(
                     self.budgets

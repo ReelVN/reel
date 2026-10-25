@@ -232,7 +232,7 @@ impl Renderer {
         let budget_scope = Budgets::new(self.gpu.limits);
         let mut tickets = Vec::new();
         let mut previous_plan = None;
-        let (quality, targets) = self.gpu.quality_for_targets(size, |samples| {
+        let (quality, _) = self.gpu.quality_for_targets(size, |samples| {
             if let Some((previous_samples, targets)) = previous_plan
                 && previous_samples == samples
             {
@@ -322,7 +322,7 @@ impl Renderer {
         // Upload batches own their own admission. Reserving this earlier would
         // deadlock cold frames on a host configured for one in-flight submission.
         let admission = self.admission.reserve(0).map_err(|_| GpuError::Busy)?;
-        self.targets.configure(size, quality, targets);
+        self.targets.configure(size, quality);
         let mut ctx = Context {
             capture,
             gpu: &self.gpu,

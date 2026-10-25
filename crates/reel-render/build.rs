@@ -47,6 +47,23 @@ fn compile_shaders() {
         }
         shaders.push((name.to_owned(), stage, source));
     }
+    println!("cargo:rerun-if-changed=src/gles2/shaders/mask_sample.glsl");
+    let mask_sample = std::fs::read_to_string("src/gles2/shaders/mask_sample.glsl")
+        .expect("read simple mask template");
+    shaders.push((
+        "mask_sample_chain".into(),
+        Stage::Fragment,
+        mask_sample.clone(),
+    ));
+    shaders.push((
+        "mask_threshold".into(),
+        Stage::Fragment,
+        mask_sample.replacen(
+            "#version 100",
+            "#version 100\n#define REEL_MASK_THRESHOLD",
+            1,
+        ),
+    ));
     println!("cargo:rerun-if-changed=src/gles2/shaders/paint.glsl");
     let paint =
         std::fs::read_to_string("src/gles2/shaders/paint.glsl").expect("read paint template");
