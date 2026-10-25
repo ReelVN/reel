@@ -96,6 +96,60 @@ fn counts(renderer: &Renderer, uploads: usize) {
 }
 
 #[test]
+#[ignore = "requires actual graphics adapter; submits without pixel readback"]
+fn ordered_draw_segments_share_uploads_across_scissors_and_stop_at_groups() {
+    use std::sync::atomic::Ordering;
+    let mut scene = workload(10, 0, Color::WHITE);
+    scene.push_clip(Clip::Fill {
+        transform: Affine::IDENTITY,
+        shape: Geometry::Rect(Rect::new(10., 20., 300., 200.)),
+        fill_rule: Default::default(),
+    });
+    fill(&mut scene, Color::from_rgba8(128, 64, 32, 128));
+    fill(&mut scene, Color::from_rgba8(32, 64, 128, 64));
+    scene.pop_clip();
+    scene.push_group(Group {
+        composite: Composite {
+            alpha: 0.5,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    fill(&mut scene, Color::WHITE);
+    fill(&mut scene, Color::from_rgba8(0, 0, 0, 128));
+    scene.pop_group();
+    fill(&mut scene, Color::WHITE);
+    let pool = pool();
+    let frame = frame(scene, &pool);
+    let mut renderer = renderer(super::super::GpuLimits {
+        target_bytes: 64 * 48 * 4 * 2,
+        ..Default::default()
+    });
+    let prepared = renderer.prepare(&frame).unwrap();
+    assert_eq!(prepared.quality().samples, 1);
+    assert_eq!(
+        renderer.gpu.upload_creations.draws.load(Ordering::Relaxed),
+        15
+    );
+    assert_eq!(
+        renderer
+            .gpu
+            .upload_creations
+            .mesh_buffers
+            .load(Ordering::Relaxed),
+        6
+    );
+    renderer.submit(prepared).unwrap();
+    renderer
+        .gpu
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    renderer.poll().unwrap();
+    assert_eq!(renderer.usage().transient, 0);
+}
+
+#[test]
 #[ignore = "requires REEL_R01_TEST_FONT; CPU only, no graphics adapter"]
 fn transformed_text_raster_keeps_logical_metrics_and_scales_fill_and_outline() {
     use reel_ui::{

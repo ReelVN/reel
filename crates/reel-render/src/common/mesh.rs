@@ -201,6 +201,39 @@ impl Allocation {
     }
 }
 impl Mesh {
+    /// Append already transformed geometry without changing primitive order.
+    pub(crate) fn append(&mut self, mesh: &Self) -> Result<std::ops::Range<u32>, GpuError> {
+        let vertex_start = u32::try_from(self.vertices.len()).map_err(|_| GpuError::InvalidSize)?;
+        let start = u32::try_from(self.indices.len()).map_err(|_| GpuError::InvalidSize)?;
+        let end = self
+            .indices
+            .len()
+            .checked_add(mesh.indices.len())
+            .filter(|&n| n <= i32::MAX as usize)
+            .ok_or(GpuError::InvalidSize)? as u32;
+        if self
+            .vertices
+            .len()
+            .checked_add(mesh.vertices.len())
+            .is_none_or(|n| n > u32::MAX as usize)
+        {
+            return Err(GpuError::InvalidSize);
+        }
+        self.allocation
+            .grow(&mut self.vertices, mesh.vertices.len())?;
+        self.allocation
+            .grow(&mut self.indices, mesh.indices.len())?;
+        self.vertices.extend_from_slice(&mesh.vertices);
+        self.indices
+            .extend(mesh.indices.iter().map(|&index| vertex_start + index));
+        Ok(start..end)
+    }
+    pub(crate) fn bytes(&self) -> usize {
+        self.vertices.len() * size_of::<Vertex>() + self.indices.len() * size_of::<u32>()
+    }
+    pub(crate) fn reserve_entries<T>(&mut self, entries: &mut Vec<T>) -> Result<(), GpuError> {
+        self.allocation.grow(entries, 1)
+    }
     /// Clip triangles and linearly interpolate every authored vertex attribute.
     /// The fixed polygon scratch has at most seven vertices; output growth is
     /// reserved through the same transient ledger as ordinary tessellation.

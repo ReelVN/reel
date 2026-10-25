@@ -35,6 +35,7 @@ pub(super) struct Context<'a> {
     pub targets: Vec<Target>,
     pub available_targets: Vec<Target>,
     pub buffers: Vec<(native::VertexBuffer, native::IndexBuffer)>,
+    pub paint_batch: Option<draw::PaintBatch>,
     pub scissor: Scissor,
     pub mesh_clip: Option<crate::common::mesh::RectClip>,
     pub at: Option<RecordLocation>,
@@ -81,6 +82,7 @@ pub(super) fn prepare(
         targets: Vec::new(),
         available_targets: Vec::new(),
         buffers: Vec::new(),
+        paint_batch: None,
         scissor: Scissor::full(size),
         mesh_clip: None,
         at: None,
@@ -151,6 +153,7 @@ struct Stream<'a> {
 }
 impl Context<'_> {
     pub fn target(&mut self) -> Result<Target, GlesError> {
+        self.flush_draws()?;
         let target = if let Some(target) = self.available_targets.pop() {
             target
         } else {
@@ -272,6 +275,7 @@ impl Context<'_> {
                 continue;
             }
             let Some(command) = current.commands.get(current.next) else {
+                self.flush_draws()?;
                 let finished = streams.pop().unwrap().scopes.finish()?.target;
                 let Some(parent) = streams.last_mut() else {
                     return Ok(finished);
@@ -473,6 +477,7 @@ impl Context<'_> {
                     if !group.isolated {
                         continue;
                     }
+                    self.flush_draws()?;
                     self.scissor = self.scissor.intersect(group.scissor);
                     let mut source = group.target;
                     if let Some(clip) = group.clip {
@@ -665,6 +670,7 @@ impl Context<'_> {
         blend: u32,
         expression: Option<&Target>,
     ) -> Result<(), GlesError> {
+        self.flush_draws()?;
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Composite);
         if self.scissor.empty() {
             return Ok(());

@@ -17,6 +17,23 @@ use reel_ui::{
     peniko::{Brush, Extend, Fill, color::LinearSrgb},
 };
 use std::{cell::RefCell, rc::Weak, sync::Arc};
+
+pub(super) struct PaintBatch {
+    target: Target,
+    geometry: crate::common::draw_batch::Batch<PaintState>,
+}
+struct PaintState {
+    texture: native::Texture,
+    planes: smallvec::SmallVec<[native::Texture; 2]>,
+    kind: f32,
+    video: [[f32; 4]; 4],
+    dimensions: [u32; 2],
+    appearance: [[f32; 4]; 9],
+    repeat: [bool; 2],
+    coverage: bool,
+    scissor: Option<[u32; 4]>,
+}
+
 struct Page {
     texture: native::Texture,
     allocator: RefCell<AtlasAllocator>,
@@ -262,7 +279,7 @@ impl Context<'_> {
             at,
         )?;
         let white = self.white()?;
-        self.paint_resource(target, &mesh, &white, [false; 2], None)
+        self.paint_resource(target, mesh, &white, [false; 2], None)
     }
     pub fn draw(
         &mut self,
@@ -331,7 +348,7 @@ impl Context<'_> {
                     color,
                     at,
                 )?;
-                self.paint_resource(target, &mesh, &white, [false; 2], None)
+                self.paint_resource(target, mesh, &white, [false; 2], None)
             }
             Brush::Image(brush) => {
                 if brush.sampler.quality != reel_ui::peniko::ImageQuality::Medium
@@ -367,7 +384,7 @@ impl Context<'_> {
                 )?;
                 self.paint_resource(
                     target,
-                    &mesh,
+                    mesh,
                     &image,
                     repeat,
                     brush
@@ -396,7 +413,7 @@ impl Context<'_> {
                 let white = self.white()?;
                 self.paint_mesh(
                     target,
-                    &mesh,
+                    mesh,
                     &white.texture,
                     &white.planes,
                     white.kind,
@@ -485,7 +502,7 @@ impl Context<'_> {
         if count != 0 {
             self.paint_resource(
                 target,
-                &mesh,
+                mesh,
                 &image,
                 repeat,
                 first_brush.image.appearance.map(|p| p.transformed(outer)),
@@ -564,7 +581,7 @@ impl Context<'_> {
                         color,
                         at,
                     )?;
-                    self.paint_glyph_mesh(target, &batch, previous, paint)?;
+                    self.paint_glyph_mesh(target, batch, previous, paint)?;
                     batch = mesh::Mesh::new(self.mesh_allocation());
                 }
             }
@@ -587,14 +604,14 @@ impl Context<'_> {
         }
         if let Some(page) = page {
             mesh::transform_glyphs(&mut batch, outer * run.transform, self.size, color, at)?;
-            self.paint_glyph_mesh(target, &batch, &page, paint)?;
+            self.paint_glyph_mesh(target, batch, &page, paint)?;
         }
         Ok(())
     }
     fn paint_glyph_mesh(
         &mut self,
         target: &Target,
-        mesh: &mesh::Mesh,
+        mesh: mesh::Mesh,
         page: &Page,
         paint: Option<crate::common::gradient::Uniform>,
     ) -> Result<(), GlesError> {
@@ -614,7 +631,7 @@ impl Context<'_> {
     fn paint_resource(
         &mut self,
         target: &Target,
-        mesh: &mesh::Mesh,
+        mesh: mesh::Mesh,
         image: &Image,
         repeat: [bool; 2],
         appearance: Option<ImageAppearance>,
@@ -655,7 +672,7 @@ impl Context<'_> {
     fn paint_mesh(
         &mut self,
         target: &Target,
-        mesh: &mesh::Mesh,
+        mesh: mesh::Mesh,
         texture: &native::Texture,
         planes: &[native::Texture],
         kind: f32,
@@ -673,7 +690,46 @@ impl Context<'_> {
             .map(|clip| mesh.clipped(clip, self.mesh_allocation()))
             .transpose()?
             .flatten();
-        let mesh = clipped.as_ref().unwrap_or(mesh);
+        let mesh = clipped.unwrap_or(mesh);
+        if mesh.indices.is_empty() {
+            return Ok(());
+        }
+        if self
+            .paint_batch
+            .as_ref()
+            .is_some_and(|batch| batch.geometry.full(&mesh))
+        {
+            self.flush_draws()?;
+        }
+        let state = PaintState {
+            texture: texture.clone(),
+            planes: planes.iter().cloned().collect(),
+            kind,
+            video: *video,
+            dimensions,
+            appearance,
+            repeat,
+            coverage,
+            scissor: self.gl_scissor(),
+        };
+        if let Some(mut batch) = self.paint_batch.take() {
+            let result = batch.geometry.push(mesh, state);
+            self.paint_batch = Some(batch);
+            result
+        } else {
+            self.paint_batch = Some(PaintBatch {
+                target: target.clone(),
+                geometry: crate::common::draw_batch::Batch::new(mesh, state)?,
+            });
+            Ok(())
+        }
+    }
+    /// Flush before target clearing, composition, or leaving the replay stream.
+    pub(super) fn flush_draws(&mut self) -> Result<(), GlesError> {
+        let Some(batch) = self.paint_batch.take() else {
+            return Ok(());
+        };
+        let mesh = &batch.geometry.mesh;
         if mesh.indices.is_empty() {
             return Ok(());
         }
@@ -688,64 +744,77 @@ impl Context<'_> {
         drop(allocating);
         self.buffers.push((vertices, indices));
         let (vertices, indices) = self.buffers.last().expect("retained draw buffers");
-        let styled = appearance[5][3] != 0. || appearance[7][3] != 0.;
-        let shader = if kind > 0. {
-            if styled {
-                &self.programs.video_appearance
-            } else {
-                &self.programs.video
-            }
-        } else if coverage {
-            if appearance[4][3] == 2. {
-                &self.programs.glyph_gradient
-            } else {
-                &self.programs.coverage
-            }
-        } else if appearance[4][3] >= 3. {
-            &self.programs.packed
-        } else if appearance[4][3] == 2. {
-            &self.programs.gradient
-        } else if styled {
-            &self.programs.appearance
-        } else {
-            &self.programs.rgba
-        };
-        let mut values = Values::new();
-        for (name, unit) in [("u_image", 0), ("u_chroma_u", 1), ("u_chroma_v", 2)] {
-            values.extend(shader.int(name, unit));
-        }
-        values.extend(shader.vec2("u_dimensions", dimensions.map(|n| n as f32)));
-        values.extend(shader.vec2("u_output_size", self.size.map(|n| n as f32)));
-        values.extend(shader.vec2("u_repeat", repeat.map(f32::from)));
-        values.extend(shader.array("u_appearance[0]", &appearance));
-        values.extend(shader.array("u_video[0]", video));
-        values.extend(shader.float("u_video_kind", kind));
-        values.extend(shader.float("u_image_flip", 0.));
-        values.extend(shader.float("u_coverage", f32::from(coverage)));
-        {
-            let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Sampler);
-            self.gpu.set_repeat(texture, repeat)?;
-            for plane in planes {
-                self.gpu.set_repeat(plane, repeat)?;
-            }
-        }
-        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Draw);
-        self.gpu.draw(native::Draw {
-            target: native::Target::Framebuffer(&target.framebuffer),
-            size: self.size,
-            program: &shader.program,
-            vertices,
-            indices: Some(indices),
-            range: 0..mesh.indices.len() as u32,
-            textures: &[
+        for entry in batch.geometry.entries {
+            let PaintState {
                 texture,
-                planes.first().unwrap_or(texture),
-                planes.get(1).or(planes.first()).unwrap_or(texture),
-            ],
-            uniforms: &values,
-            blend: native::Blend::Premultiplied,
-            scissor: self.gl_scissor(),
-        })?;
+                planes,
+                kind,
+                video,
+                dimensions,
+                appearance,
+                repeat,
+                coverage,
+                scissor,
+            } = entry.state;
+            let styled = appearance[5][3] != 0. || appearance[7][3] != 0.;
+            let shader = if kind > 0. {
+                if styled {
+                    &self.programs.video_appearance
+                } else {
+                    &self.programs.video
+                }
+            } else if coverage {
+                if appearance[4][3] == 2. {
+                    &self.programs.glyph_gradient
+                } else {
+                    &self.programs.coverage
+                }
+            } else if appearance[4][3] >= 3. {
+                &self.programs.packed
+            } else if appearance[4][3] == 2. {
+                &self.programs.gradient
+            } else if styled {
+                &self.programs.appearance
+            } else {
+                &self.programs.rgba
+            };
+            let mut values = Values::new();
+            for (name, unit) in [("u_image", 0), ("u_chroma_u", 1), ("u_chroma_v", 2)] {
+                values.extend(shader.int(name, unit));
+            }
+            values.extend(shader.vec2("u_dimensions", dimensions.map(|n| n as f32)));
+            values.extend(shader.vec2("u_output_size", self.size.map(|n| n as f32)));
+            values.extend(shader.vec2("u_repeat", repeat.map(f32::from)));
+            values.extend(shader.array("u_appearance[0]", &appearance));
+            values.extend(shader.array("u_video[0]", &video));
+            values.extend(shader.float("u_video_kind", kind));
+            values.extend(shader.float("u_image_flip", 0.));
+            values.extend(shader.float("u_coverage", f32::from(coverage)));
+            {
+                let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Sampler);
+                self.gpu.set_repeat(&texture, repeat)?;
+                for plane in &planes {
+                    self.gpu.set_repeat(plane, repeat)?;
+                }
+            }
+            let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Draw);
+            self.gpu.draw(native::Draw {
+                target: native::Target::Framebuffer(&batch.target.framebuffer),
+                size: self.size,
+                program: &shader.program,
+                vertices,
+                indices: Some(indices),
+                range: entry.range,
+                textures: &[
+                    &texture,
+                    planes.first().unwrap_or(&texture),
+                    planes.get(1).or(planes.first()).unwrap_or(&texture),
+                ],
+                uniforms: &values,
+                blend: native::Blend::Premultiplied,
+                scissor,
+            })?;
+        }
         Ok(())
     }
 }
