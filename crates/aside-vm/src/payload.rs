@@ -14,10 +14,18 @@ pub const BYTE_CHUNK_BYTES: u64 = BYTE_CHUNK_LEN as u64 + CHUNK_METADATA_BYTES;
 // independently allocated chunks for bounded growth and GC release.
 pub(crate) const INLINE_VALUES: usize = 8;
 pub(crate) const INLINE_BYTES: usize = 128;
+const FIRST_VALUES: usize = 32;
+const FIRST_VALUE_BYTES: u64 = (FIRST_VALUES * size_of::<Value>()) as u64;
 
 enum ValueStorage {
     Inline([Value; INLINE_VALUES]),
-    Chunks(BTreeMap<u32, Box<[Value; VALUE_CHUNK_LEN]>>),
+    // Common records need one compact block. Larger collections retain that
+    // block and append bounded chunks, without relocating their existing edges.
+    Small(Box<[Value; FIRST_VALUES]>),
+    Chunks {
+        first: Option<Box<[Value; FIRST_VALUES]>>,
+        rest: BTreeMap<u32, Box<[Value; VALUE_CHUNK_LEN]>>,
+    },
 }
 pub(crate) struct Values {
     storage: ValueStorage,
@@ -39,11 +47,18 @@ impl Values {
         if len <= INLINE_VALUES as u64 {
             0
         } else {
-            len.div_ceil(VALUE_CHUNK_LEN as u64)
+            1 + len
+                .saturating_sub(FIRST_VALUES as u64)
+                .div_ceil(VALUE_CHUNK_LEN as u64)
         }
     }
     pub fn allocation_bytes(len: u64) -> u64 {
-        Self::chunks_for_len(len) * VALUE_CHUNK_BYTES
+        let chunks = Self::chunks_for_len(len);
+        if chunks == 0 {
+            0
+        } else {
+            FIRST_VALUE_BYTES + (chunks - 1) * VALUE_CHUNK_BYTES
+        }
     }
     pub fn growth_bytes(len: u64, additional: u64) -> u64 {
         Self::allocation_bytes(len + additional) - Self::allocation_bytes(len)
@@ -51,7 +66,8 @@ impl Values {
     pub fn owned_chunks(&self) -> u64 {
         match &self.storage {
             ValueStorage::Inline(_) => 0,
-            ValueStorage::Chunks(chunks) => chunks.len() as u64,
+            ValueStorage::Small(_) => 1,
+            ValueStorage::Chunks { first, rest } => u64::from(first.is_some()) + rest.len() as u64,
         }
     }
     pub fn get(&self, index: u32) -> Option<Value> {
@@ -60,9 +76,16 @@ impl Values {
         }
         match &self.storage {
             ValueStorage::Inline(values) => Some(values[index as usize]),
-            ValueStorage::Chunks(chunks) => chunks
-                .get(&(index / VALUE_CHUNK_LEN as u32))
-                .map(|c| c[index as usize % VALUE_CHUNK_LEN]),
+            ValueStorage::Small(values) => Some(values[index as usize]),
+            ValueStorage::Chunks { first, rest } => {
+                if (index as usize) < FIRST_VALUES {
+                    first.as_ref().map(|values| values[index as usize])
+                } else {
+                    let offset = index as usize - FIRST_VALUES;
+                    rest.get(&((offset / VALUE_CHUNK_LEN) as u32))
+                        .map(|values| values[offset % VALUE_CHUNK_LEN])
+                }
+            }
         }
     }
     /// The remaining values in one existing storage block. Internal walkers
@@ -73,19 +96,30 @@ impl Values {
         }
         match &self.storage {
             ValueStorage::Inline(values) => &values[offset as usize..self.len as usize],
-            ValueStorage::Chunks(chunks) => {
-                let within = offset as usize % VALUE_CHUNK_LEN;
+            ValueStorage::Small(values) => &values[offset as usize..self.len as usize],
+            ValueStorage::Chunks { first, .. } if (offset as usize) < FIRST_VALUES => {
+                &first.as_ref().unwrap()[offset as usize..FIRST_VALUES]
+            }
+            ValueStorage::Chunks { rest, .. } => {
+                let relative = offset as usize - FIRST_VALUES;
+                let within = relative % VALUE_CHUNK_LEN;
                 let count = (self.len - offset).min((VALUE_CHUNK_LEN - within) as u32) as usize;
-                &chunks[&(offset / VALUE_CHUNK_LEN as u32)][within..within + count]
+                &rest[&((relative / VALUE_CHUNK_LEN) as u32)][within..within + count]
             }
         }
     }
     pub fn set(&mut self, index: u32, value: Value) {
         match &mut self.storage {
             ValueStorage::Inline(values) => values[index as usize] = value,
-            ValueStorage::Chunks(chunks) => {
-                chunks.get_mut(&(index / VALUE_CHUNK_LEN as u32)).unwrap()
-                    [index as usize % VALUE_CHUNK_LEN] = value
+            ValueStorage::Small(values) => values[index as usize] = value,
+            ValueStorage::Chunks { first, rest } => {
+                if (index as usize) < FIRST_VALUES {
+                    first.as_mut().unwrap()[index as usize] = value;
+                } else {
+                    let offset = index as usize - FIRST_VALUES;
+                    rest.get_mut(&((offset / VALUE_CHUNK_LEN) as u32)).unwrap()
+                        [offset % VALUE_CHUNK_LEN] = value;
+                }
             }
         }
     }
@@ -99,16 +133,27 @@ impl Values {
                 self.len += 1;
                 return;
             }
-            let mut first = Box::new([Value::NULL; VALUE_CHUNK_LEN]);
+            let mut first = Box::new([Value::NULL; FIRST_VALUES]);
             first[..INLINE_VALUES].copy_from_slice(values);
-            self.storage = ValueStorage::Chunks(BTreeMap::from([(0, first)]));
+            self.storage = ValueStorage::Small(first);
         }
-        let ValueStorage::Chunks(chunks) = &mut self.storage else {
-            unreachable!()
-        };
-        if (self.len as usize).is_multiple_of(VALUE_CHUNK_LEN) {
-            chunks.insert(
-                self.len / VALUE_CHUNK_LEN as u32,
+        if self.len as usize == FIRST_VALUES {
+            let ValueStorage::Small(first) = std::mem::replace(
+                &mut self.storage,
+                ValueStorage::Inline([Value::NULL; INLINE_VALUES]),
+            ) else {
+                unreachable!()
+            };
+            self.storage = ValueStorage::Chunks {
+                first: Some(first),
+                rest: BTreeMap::new(),
+            };
+        }
+        if let ValueStorage::Chunks { rest, .. } = &mut self.storage
+            && (self.len as usize - FIRST_VALUES).is_multiple_of(VALUE_CHUNK_LEN)
+        {
+            rest.insert(
+                ((self.len as usize - FIRST_VALUES) / VALUE_CHUNK_LEN) as u32,
                 Box::new([Value::NULL; VALUE_CHUNK_LEN]),
             );
         }
@@ -121,33 +166,48 @@ impl Values {
         self.len -= 1;
         let freed = Self::growth_bytes(self.len.into(), 1);
         if freed != 0 {
-            let ValueStorage::Chunks(chunks) = &mut self.storage else {
-                unreachable!()
-            };
             if self.len as usize == INLINE_VALUES {
                 let mut inline = [Value::NULL; INLINE_VALUES];
-                inline.copy_from_slice(&chunks[&0][..INLINE_VALUES]);
+                let ValueStorage::Small(first) = &self.storage else {
+                    unreachable!()
+                };
+                inline.copy_from_slice(&first[..INLINE_VALUES]);
                 self.storage = ValueStorage::Inline(inline);
             } else {
-                chunks.remove(&(self.len / VALUE_CHUNK_LEN as u32));
+                let ValueStorage::Chunks { first, rest } = &mut self.storage else {
+                    unreachable!()
+                };
+                rest.remove(&(((self.len as usize - FIRST_VALUES) / VALUE_CHUNK_LEN) as u32));
+                if rest.is_empty() {
+                    self.storage = ValueStorage::Small(first.take().unwrap());
+                }
             }
         }
         Some((value, freed))
     }
     pub fn first_chunk_len(&self) -> u32 {
-        let ValueStorage::Chunks(chunks) = &self.storage else {
+        let ValueStorage::Chunks { first, rest } = &self.storage else {
             return self.len;
         };
-        let Some((&index, _)) = chunks.first_key_value() else {
+        if first.is_some() {
+            return FIRST_VALUES as u32;
+        }
+        let Some((&index, _)) = rest.first_key_value() else {
             return 0;
         };
-        (self.len - index * VALUE_CHUNK_LEN as u32).min(VALUE_CHUNK_LEN as u32)
+        (self.len - FIRST_VALUES as u32 - index * VALUE_CHUNK_LEN as u32)
+            .min(VALUE_CHUNK_LEN as u32)
     }
     pub fn clear_release_edge(&mut self) {
         match &mut self.storage {
             ValueStorage::Inline(values) => values[self.release_cursor as usize] = Value::NULL,
-            ValueStorage::Chunks(chunks) => {
-                chunks.first_entry().unwrap().get_mut()[self.release_cursor as usize] = Value::NULL
+            ValueStorage::Small(values) => values[self.release_cursor as usize] = Value::NULL,
+            ValueStorage::Chunks {
+                first: Some(values),
+                ..
+            } => values[self.release_cursor as usize] = Value::NULL,
+            ValueStorage::Chunks { first: None, rest } => {
+                rest.first_entry().unwrap().get_mut()[self.release_cursor as usize] = Value::NULL
             }
         }
         self.release_cursor += 1;
@@ -155,10 +215,15 @@ impl Values {
     pub fn drop_first_chunk(&mut self) {
         match &mut self.storage {
             ValueStorage::Inline(_) => self.len = 0,
-            ValueStorage::Chunks(chunks) => {
-                chunks.pop_first();
-                if chunks.is_empty() {
-                    *chunks = BTreeMap::new();
+            ValueStorage::Small(_) => *self = Self::default(),
+            ValueStorage::Chunks { first, rest } => {
+                if first.is_some() {
+                    *first = None;
+                } else {
+                    rest.pop_first();
+                }
+                if rest.is_empty() {
+                    *rest = BTreeMap::new();
                 }
             }
         }
@@ -167,13 +232,17 @@ impl Values {
     pub fn empty(&self) -> bool {
         match &self.storage {
             ValueStorage::Inline(_) => self.len == 0,
-            ValueStorage::Chunks(chunks) => chunks.is_empty(),
+            ValueStorage::Small(_) => false,
+            ValueStorage::Chunks { first, rest } => first.is_none() && rest.is_empty(),
         }
     }
     pub fn release_bytes(&self) -> u64 {
         match &self.storage {
             ValueStorage::Inline(_) => 0,
-            ValueStorage::Chunks(_) => VALUE_CHUNK_BYTES,
+            ValueStorage::Small(_) | ValueStorage::Chunks { first: Some(_), .. } => {
+                FIRST_VALUE_BYTES
+            }
+            ValueStorage::Chunks { first: None, .. } => VALUE_CHUNK_BYTES,
         }
     }
 }
@@ -400,7 +469,7 @@ mod tests {
             size_of::<Values>(),
             size_of::<Bytes>()
         );
-        for len in [1, 4, 8, 9, 64, 65] {
+        for len in [1, 4, 8, 9, 32, 33, 64, 96, 97] {
             let mut values = Values::default();
             let cost = allocation_counter::measure(|| {
                 for index in 0..len {
@@ -414,7 +483,11 @@ mod tests {
             );
             if len as usize <= INLINE_VALUES {
                 assert_eq!(cost.count_total, 0);
+            } else if len as usize <= FIRST_VALUES {
+                assert_eq!(cost.count_total, 1);
+                assert_eq!(cost.bytes_current, FIRST_VALUE_BYTES as i64);
             }
+            assert!(cost.bytes_max as u64 <= Values::allocation_bytes(len as u64));
         }
         for len in [1, 32, 64, 128, 129, 1024, 1025] {
             let mut bytes = Bytes::default();
@@ -440,13 +513,22 @@ mod tests {
         for index in 0..130 {
             charged += Values::growth_bytes(index, 1);
             values.push(Value::int(index as i64));
-            assert_eq!(charged, values.owned_chunks() * VALUE_CHUNK_BYTES);
+            assert_eq!(charged, Values::allocation_bytes(values.len.into()));
+            let mut offset = 0;
+            while offset < values.len {
+                let segment = values.segment(offset);
+                assert!(!segment.is_empty() && segment.len() <= VALUE_CHUNK_LEN);
+                for (index, value) in segment.iter().enumerate() {
+                    assert_eq!(value.as_int(), Some(i64::from(offset) + index as i64));
+                }
+                offset += segment.len() as u32;
+            }
         }
         for index in (0..130).rev() {
             let (value, freed) = values.pop().unwrap();
             assert_eq!(value.as_int(), Some(index));
             charged -= freed;
-            assert_eq!(charged, values.owned_chunks() * VALUE_CHUNK_BYTES);
+            assert_eq!(charged, Values::allocation_bytes(values.len.into()));
         }
         assert_eq!(charged, 0);
         assert!(values.empty());

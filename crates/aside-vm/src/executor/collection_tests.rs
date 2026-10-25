@@ -1054,7 +1054,8 @@ fn forged_odd_packed_destinations_fail_before_any_half_pair_or_allocation() {
 }
 #[test]
 fn packed_pair_allocation_is_admitted_before_either_element_is_published() {
-    for len in [crate::payload::INLINE_VALUES as u32, 64] {
+    for len in [crate::payload::INLINE_VALUES as u32, 32, 96] {
+        let allocation = Values::growth_bytes(len.into(), 2);
         for opcode in [Opcode::ArgsPush, Opcode::ArgsNamed, Opcode::ArgsSpread] {
             let mut vm = load(packed_destination_package(len, opcode));
             let task = vm
@@ -1069,7 +1070,7 @@ fn packed_pair_allocation_is_admitted_before_either_element_is_published() {
                         SliceBudget {
                             instructions: 1,
                             work: 3,
-                            allocation_bytes: VALUE_CHUNK_BYTES - 1,
+                            allocation_bytes: allocation - 1,
                             ..SliceBudget::default()
                         },
                         || 0,
@@ -1079,7 +1080,7 @@ fn packed_pair_allocation_is_admitted_before_either_element_is_published() {
                     panic!()
                 };
                 assert_eq!(usage.allocation_bytes, 0);
-                assert_eq!(usage.required_allocation, VALUE_CHUNK_BYTES);
+                assert_eq!(usage.required_allocation, allocation);
                 let info = vm.heap().info(packed).unwrap();
                 assert_eq!(info.len, len);
                 assert_eq!(info.content_version, version);
@@ -1091,7 +1092,7 @@ fn packed_pair_allocation_is_admitted_before_either_element_is_published() {
                     SliceBudget {
                         instructions: 1,
                         work: 2,
-                        allocation_bytes: VALUE_CHUNK_BYTES,
+                        allocation_bytes: allocation,
                         ..SliceBudget::default()
                     },
                     || 0,
@@ -1100,7 +1101,7 @@ fn packed_pair_allocation_is_admitted_before_either_element_is_published() {
             else {
                 panic!()
             };
-            assert_eq!(usage.allocation_bytes, VALUE_CHUNK_BYTES);
+            assert_eq!(usage.allocation_bytes, allocation);
             assert_eq!(vm.heap().info(packed).unwrap().len, len + 2);
             assert_eq!(
                 vm.heap().sequence_get(packed, len).unwrap().as_int(),
@@ -1831,7 +1832,7 @@ fn bulk_edit_work_grows_with_elements_and_commit_has_no_payload_allocation() {
             }
         }
         let chunks = vm.heap().stats().chunk_allocations - before;
-        assert_eq!(chunks, (len as usize).div_ceil(VALUE_CHUNK_LEN) as u64);
+        assert_eq!(chunks, Values::chunks_for_len(len.into()));
         println!("reverse len={len} work={work} chunks={chunks}");
         costs.push(work);
     }
@@ -1881,7 +1882,7 @@ fn collection_copy_cost_is_linear_and_allocates_only_payload_chunks() {
             let chunks = vm.heap().stats().chunk_allocations - before;
             assert_eq!(
                 chunks,
-                (len as usize * if table { 2 } else { 1 }).div_ceil(VALUE_CHUNK_LEN) as u64
+                Values::chunks_for_len(u64::from(len) * if table { 2 } else { 1 })
             );
             println!(
                 "collection_copy table={table} len={len} work={work} chunks={chunks} elapsed={:?}",

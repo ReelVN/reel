@@ -554,7 +554,7 @@ pub(crate) fn connect(
                     }
                     let extra = match &heap.object(key)?.payload {
                         Payload::Values(v) | Payload::Table(v) if v.len == offset => {
-                            u64::from(v.needs_chunk()) * VALUE_CHUNK_BYTES
+                            Values::growth_bytes(v.len.into(), 1)
                         }
                         Payload::Dependencies(d) if d.values.len == offset => {
                             d.restore_bytes(value)?

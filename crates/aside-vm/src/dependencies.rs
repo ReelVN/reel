@@ -1,5 +1,5 @@
 //! Private dependency payload: ordered strong edges plus an identity-only index.
-use crate::payload::{VALUE_CHUNK_BYTES, Values};
+use crate::payload::Values;
 use crate::{HeapError, Value};
 use std::collections::BTreeSet;
 
@@ -71,7 +71,7 @@ impl Dependencies {
                 return Err(HeapError::WrongKind);
             }
         }
-        Ok(u64::from(self.values.needs_chunk()) * VALUE_CHUNK_BYTES
+        Ok(Values::growth_bytes(self.values.len.into(), 1)
             + if self.values.len % 2 == 1 {
                 INDEX_ENTRY_BYTES
             } else {
