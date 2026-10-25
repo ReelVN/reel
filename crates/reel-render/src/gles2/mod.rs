@@ -150,6 +150,33 @@ impl GlesBackend {
     pub fn usage(&self) -> reel_core::budget::BudgetUsage {
         self._group.usage()
     }
+    /// Drain all submitted work before releasing a departed player's resources.
+    /// Call only after that player and its captures have been dropped. The native
+    /// device and offline programs remain owned by this backend for the next player.
+    /// A failed drain retains all owners and prevents mounting another session.
+    pub fn reset_session(&mut self) -> Result<(), GlesError> {
+        self.suspended = true;
+        self.info = None;
+        self.context.finish().map_err(native_error)?;
+        self.flights.clear();
+        self.failed_work.clear();
+        self.failed_prepared.clear();
+        self.failed_images.clear();
+        self.events.clear();
+        self.images = Images::default();
+        self.glyphs = draw::GlyphCache::default();
+        self.drain_failed = false;
+        Ok(())
+    }
+    /// Release device resources, then explicitly close EGL and its native modules.
+    /// The underlying close rejects any outstanding resource or capture owner and
+    /// reports the actual EGL/module failure instead of creating another context.
+    pub fn close(mut self) -> Result<(), GlesError> {
+        self.reset_session()?;
+        let context = self.context.clone();
+        drop(self);
+        context.close().map_err(|(_, error)| native_error(error))
+    }
     // A failed command can already have reached the device. Retire its owners
     // only after a successful drain; a failed drain makes this backend terminal.
     fn drain_error(&mut self) -> bool {

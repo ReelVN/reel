@@ -171,19 +171,37 @@ impl Host for VitaHost {
 }
 
 /// Show immediate child directories containing `game.asb`. Each selected work
-/// owns its `saves/` directory. Launcher and game resources are retired and
-/// dropped before the next player is mounted; only this library's Exit closes
-/// the application. Game shutdown and SELECT + START return to the library.
+/// owns its `saves/` directory. One native loop and graphics device survive player
+/// changes. Player resources are dropped and GPU work drained before the next
+/// player mounts. Game shutdown and SELECT + START return to the library.
 pub fn run_launcher(game_root: &Path, module_directory: &Path) -> Result<(), Error> {
+    let (mut native, mut backend) = NativeLoop::new(module_directory)?;
+    let result = run_launcher_on(game_root, &mut native, &mut backend);
+    close_backend(result, backend)
+}
+
+fn run_launcher_on(
+    game_root: &Path,
+    native: &mut NativeLoop,
+    backend: &mut GlesBackend,
+) -> Result<(), Error> {
     let mut error = std::fs::create_dir_all(game_root)
         .err()
         .map(|error| format!("创建作品目录失败：\n{error}"));
     loop {
-        match run_library(game_root, module_directory, error.take())? {
+        native.begin_session(backend);
+        let outcome = run_library(game_root, native, backend, error.take());
+        // The borrowed player has left scope, including captures and UI/font leases.
+        // A failed drain is terminal: no subsequent player may use this device.
+        reset_after_session(backend, &outcome)?;
+        match outcome? {
             crate::launcher::Outcome::Exit => return Ok(()),
             crate::launcher::Outcome::Launch(package) => {
                 let saves = package.with_file_name("saves");
-                if let Err(failure) = run_package(&package, &saves, module_directory) {
+                native.begin_session(backend);
+                let result = run_package_on(&package, &saves, native, backend);
+                reset_after_session(backend, &result)?;
+                if let Err(failure) = result {
                     error = Some(format!("{}\n{failure}", package.display()));
                 }
             }
@@ -193,10 +211,10 @@ pub fn run_launcher(game_root: &Path, module_directory: &Path) -> Result<(), Err
 
 fn run_library(
     game_root: &Path,
-    module_directory: &Path,
+    native: &mut NativeLoop,
+    backend: &mut GlesBackend,
     error: Option<String>,
 ) -> Result<crate::launcher::Outcome, Error> {
-    let (mut native, backend) = NativeLoop::new(module_directory)?;
     let mut options = PlayerOptions::default();
     options.assets = crate::assets::AssetOptions {
         root: "app0:/".into(),
@@ -234,11 +252,24 @@ pub fn run_package(
     save_directory: &Path,
     module_directory: &Path,
 ) -> Result<(), Error> {
+    let (mut native, mut backend) = NativeLoop::new(module_directory)?;
+    let result = run_package_on(package, save_directory, &mut native, &mut backend);
+    close_backend(result, backend)
+}
+
+fn run_package_on(
+    package: &Path,
+    save_directory: &Path,
+    native: &mut NativeLoop,
+    backend: &mut GlesBackend,
+) -> Result<(), Error> {
     let loaded = crate::distribution::load(package, None)?;
     let mut options = PlayerOptions::default();
     options.assets.root = loaded.loose.clone().unwrap_or_else(|| loaded.root.clone());
-    options.assets.resident_bytes = 24 << 20;
-    options.assets.input_bytes = 4 << 20;
+    // Font payloads move from input to resident ownership without copying. Keep
+    // complete Unicode fonts viable alongside images and dynamic player input.
+    options.assets.resident_bytes = 64 << 20;
+    options.assets.input_bytes = 24 << 20;
     options.assets.decode_bytes = 12 << 20;
     options.asset_packages = Some(loaded.packages);
     options.asset_overlay = loaded.loose;
@@ -257,7 +288,7 @@ pub fn run_package(
     options.media.video.queued_audio_frames = 4096;
     options.media.video_decoder = Some(Arc::new(reel_media::video::VitaVideoDecoderFactory));
     let story = crate::distribution::story_from_package(loaded.package)?;
-    run_story(story, options, module_directory)
+    run_story_on(story, options, native, backend)
 }
 
 /// Run an already compiled story with native controllers and power callbacks.
@@ -266,8 +297,18 @@ pub fn run_story(
     options: PlayerOptions,
     module_directory: &Path,
 ) -> Result<(), Error> {
+    let (mut native, mut backend) = NativeLoop::new(module_directory)?;
+    let result = run_story_on(story, options, &mut native, &mut backend);
+    close_backend(result, backend)
+}
+
+fn run_story_on(
+    story: reel_engine::aside::source::CompiledStory,
+    options: PlayerOptions,
+    native: &mut NativeLoop,
+    backend: &mut GlesBackend,
+) -> Result<(), Error> {
     use reel_engine::{Epoch, Session, SessionId, aside::VmLimits};
-    let (mut native, backend) = NativeLoop::new(module_directory)?;
     let assets = crate::assets::Assets::packaged_for_target(
         options.assets.clone(),
         options.asset_packages.clone().unwrap_or_default(),
@@ -327,6 +368,30 @@ pub fn run_story(
     native.drive(&mut player, true)
 }
 
+fn reset_after_session<T>(
+    backend: &mut GlesBackend,
+    result: &Result<T, Error>,
+) -> Result<(), Error> {
+    backend.reset_session().map_err(|failure| {
+        let prior = result
+            .as_ref()
+            .err()
+            .map(|error| format!("{error}\n"))
+            .unwrap_or_default();
+        format!("{prior}Vita graphics session cleanup: {failure}").into()
+    })
+}
+
+fn close_backend<T>(result: Result<T, Error>, backend: GlesBackend) -> Result<T, Error> {
+    match (result, backend.close()) {
+        (result, Ok(())) => result,
+        (Ok(_), Err(failure)) => Err(format!("Vita graphics shutdown: {failure}").into()),
+        (Err(error), Err(failure)) => {
+            Err(format!("{error}\nVita graphics shutdown: {failure}").into())
+        }
+    }
+}
+
 struct NativeLoop {
     host: VitaHost,
     wake: Arc<Wake>,
@@ -335,6 +400,12 @@ struct NativeLoop {
 }
 
 impl NativeLoop {
+    fn begin_session(&mut self, backend: &GlesBackend) {
+        // Signals and deadlines belong to the departed player, unlike native input,
+        // power callbacks and the wake object retained by the application.
+        self.host = VitaHost::new(backend.output_size(), self.wake.clone());
+    }
+
     fn new(module_directory: &Path) -> Result<(Self, GlesBackend), Error> {
         let wake = Wake::new()?;
         let power = PowerEvents::new(wake.clone())?;
@@ -360,7 +431,7 @@ impl NativeLoop {
 
     fn drive(
         &mut self,
-        player: &mut Player<GlesBackend>,
+        player: &mut Player<&mut GlesBackend>,
         return_to_library: bool,
     ) -> Result<(), Error> {
         let Self {

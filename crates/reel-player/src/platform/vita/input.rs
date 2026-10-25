@@ -47,7 +47,7 @@ impl Input {
         control: Control,
         value: f32,
         now: MonoTime,
-        player: &mut Player<GlesBackend>,
+        player: &mut Player<&mut GlesBackend>,
     ) -> Result<(), Error> {
         let event = InputEvent::Value {
             device: InputDeviceId::Gamepad(1),
@@ -71,7 +71,7 @@ impl Input {
         }
         Ok(())
     }
-    pub fn cancel(&mut self, player: &mut Player<GlesBackend>) -> Result<(), Error> {
+    pub fn cancel(&mut self, player: &mut Player<&mut GlesBackend>) -> Result<(), Error> {
         self.blocked_buttons = self.last.buttons;
         for (blocked, axis) in self.blocked_axes.iter_mut().zip(self.last.axes) {
             *blocked = axis.abs() > 0.2;
@@ -94,7 +94,7 @@ impl Input {
         sample: native::Sample,
         now: MonoTime,
         size: [u32; 2],
-        player: &mut Player<GlesBackend>,
+        player: &mut Player<&mut GlesBackend>,
     ) -> Result<(), Error> {
         if !self.connected {
             player.text_event(TextEvent::Input(InputEvent::Connected {

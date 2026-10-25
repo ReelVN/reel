@@ -348,6 +348,11 @@ impl PresentationBridge {
     pub fn set_focus_fallback(&mut self, target: Option<WidgetId>) -> bool {
         self.root.set_focus_fallback(target)
     }
+    /// Restore focus through the root's scope and eligibility checks.
+    /// Activation continues to use the accepted presentation geometry.
+    pub fn focus_on(&mut self, target: Option<WidgetId>) -> bool {
+        self.root.focus_on(target)
+    }
     /// Pause input without applying disabled styles or changing widget properties.
     pub fn set_input_gates(&mut self, roots: &[WidgetId]) -> Result<(), InputBudgetExceeded> {
         if self.root.global_state.input_gates.as_ref() == roots {

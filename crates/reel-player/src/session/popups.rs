@@ -44,7 +44,7 @@ impl SessionUi {
                 .find_map(|layer| contains(layer.stage).then_some(layer.stage))
         }
     }
-    pub(super) fn projected_node(
+    pub(crate) fn projected_node(
         bridge: &PresentationBridge,
         root: WidgetId,
         node: NodeId,
