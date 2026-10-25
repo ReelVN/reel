@@ -26,8 +26,10 @@ pub fn external_tools_identity() -> io::Result<String> {
 /// Every original collection face remains in its original order. FontTools
 /// retains all name records, font styles, applicable OpenType layout features,
 /// glyph names and hinting. Each face's output Unicode cmap must equal the
-/// intersection of its original coverage and `characters`; layout closure may
-/// retain additional unencoded glyphs needed for shaping selected characters.
+/// intersection of its original coverage and `characters`; layout closure and
+/// shared collection outlines may retain additional unencoded glyphs. Faces
+/// sharing source outlines retain one common glyph order and shared storage.
+/// A selection covering every original Unicode cmap copies the source unchanged.
 ///
 /// Existing output files are preserved. The returned workspace estimate is
 /// twelve times the source length, 128 bytes per requested codepoint and 16 MiB
@@ -201,10 +203,12 @@ import hashlib
 import json
 from pathlib import Path
 import platform
+import shutil
+import struct
 import sys
 import fontTools
 from fontTools import subset
-from fontTools.ttLib import TTFont, TTCollection
+from fontTools.ttLib import TTFont, TTCollection, newTable
 
 def identity():
     package = Path(fontTools.__file__).resolve().parent
@@ -240,27 +244,111 @@ def style(font):
         tuple(getattr(font['OS/2'], key) for key in ('usWeightClass', 'usWidthClass', 'fsSelection'))
         if 'OS/2' in font else ())
 
+def options():
+    result = subset.Options()
+    result.name_IDs = ['*']
+    result.name_languages = ['*']
+    result.name_legacy = True
+    result.layout_features = ['*']
+    result.layout_scripts = ['*']
+    result.hinting = True
+    result.glyph_names = True
+    result.notdef_glyph = True
+    result.notdef_outline = True
+    result.recalc_timestamp = False
+    return result
+
+def outline_groups(faces):
+    groups = {}
+    for index, font in enumerate(faces):
+        tags = ['glyf', 'loca'] if 'glyf' in font else [
+            tag for tag in ('CFF ', 'CFF2') if tag in font]
+        if not tags:
+            continue
+        # TTC table offsets identify actual shared source storage. Glyph names
+        # can differ between faces when a format-3 post table uses cmap aliases.
+        key = (tuple((tag, font.reader.tables[tag].offset,
+            font.reader.tables[tag].length) for tag in tags),
+            len(font.getGlyphOrder()), font['head'].indexToLocFormat)
+        groups.setdefault(key, []).append(index)
+    return [indices for indices in groups.values() if len(indices) > 1]
+
+def shared_glyphs(faces, groups, characters):
+    retained = {}
+    for indices in groups:
+        gids = set()
+        while True:
+            previous = len(gids)
+            for index in indices:
+                font = faces[index]
+                selector = subset.Subsetter(options=options())
+                selector.populate(unicodes=characters, gids=gids)
+                # FontTools owns layout/composite closure. Iterate its closure
+                # over original GIDs until every face accepts the same set.
+                selector._closure_glyphs(font)
+                gids.update(font.getGlyphID(name) for name in selector.glyphs_retained)
+            if len(gids) == previous:
+                break
+        for index in indices:
+            retained[index] = gids
+    return retained
+
+def restrict_cmap(font, characters):
+    # Explicit extra GIDs also retain cmap aliases in FontTools. Shared outlines
+    # must not expand an individual face's requested Unicode intersection.
+    cmap = font['cmap']
+    for table in cmap.tables:
+        if table.format == 14:
+            table.uvsDict = {selector: [(base, glyph) for base, glyph in pairs
+                if base in characters] for selector, pairs in table.uvsDict.items()
+                if selector in characters}
+            table.uvsDict = {key: pairs for key, pairs in table.uvsDict.items() if pairs}
+        elif table.isUnicode():
+            table.cmap = {codepoint: glyph for codepoint, glyph in table.cmap.items()
+                if codepoint in characters}
+    cmap.tables = [table for table in cmap.tables if
+        (table.uvsDict if table.format == 14 else table.cmap)]
+    cmap.numSubTables = len(cmap.tables)
+
+def normalize_gasp(font):
+    if 'gasp' not in font:
+        return
+    data = font.reader['gasp']
+    if len(data) < 4:
+        return
+    version, count = struct.unpack_from('>HH', data)
+    length = 4 + count * 4
+    # Some writers include zero padding in this table's declared length. Only
+    # discard that padding; FontTools still rejects truncated or nonzero tails.
+    if version in (0, 1) and len(data) > length and not any(data[length:]):
+        table = newTable('gasp')
+        table.decompile(data[:length], font)
+        font['gasp'] = table
+
 def convert(source, output, unicode_file):
     characters = {int(line, 16) for line in Path(unicode_file).read_text(encoding='ascii').splitlines()}
     original, faces, collection = load(source)
     before = [(coverage(font) & characters, names(font), style(font)) for font in faces]
+    groups = outline_groups(faces) if collection else []
+    copied = all(coverage(font) == expected for font, (expected, _, _) in zip(faces, before))
     try:
-        for font in faces:
-            options = subset.Options()
-            options.name_IDs = ['*']
-            options.name_languages = ['*']
-            options.name_legacy = True
-            options.layout_features = ['*']
-            options.layout_scripts = ['*']
-            options.hinting = True
-            options.glyph_names = True
-            options.notdef_glyph = True
-            options.notdef_outline = True
-            options.recalc_timestamp = False
-            selector = subset.Subsetter(options=options)
-            selector.populate(unicodes=characters)
-            selector.subset(font)
-        original.save(output)
+        if copied:
+            original.close()
+            shutil.copyfile(source, output)
+        else:
+            for font in faces:
+                normalize_gasp(font)
+            retained = shared_glyphs(faces, groups, characters)
+            for index, font in enumerate(faces):
+                selector = subset.Subsetter(options=options())
+                selector.populate(unicodes=characters, gids=retained.get(index, ()))
+                selector.subset(font)
+                if index in retained:
+                    restrict_cmap(font, characters)
+            if collection:
+                original.save(output, shareTables=True)
+            else:
+                original.save(output)
     finally:
         original.close()
     prepared, faces, actual_collection = load(output)
@@ -272,7 +360,17 @@ def convert(source, output, unicode_file):
                 raise ValueError(f'font face {index} Unicode cmap changed outside the requested intersection')
             if names(font) != original_names or style(font) != original_style:
                 raise ValueError(f'font face {index} naming or style changed')
-        print(json.dumps(dict(faces=len(faces), codepoints=[len(expected) for expected, _, _ in before])))
+        for indices in groups:
+            for tag in ('glyf', 'loca', 'CFF ', 'CFF2'):
+                if tag not in faces[indices[0]]:
+                    continue
+                tables = {(faces[index].reader.tables[tag].offset,
+                    faces[index].reader.tables[tag].length) for index in indices}
+                if len(tables) != 1:
+                    raise ValueError(f'font collection lost shared {tag} storage')
+        print(json.dumps(dict(faces=len(faces), copied_original=copied,
+            shared_outline_groups=len(groups),
+            codepoints=[len(expected) for expected, _, _ in before])))
     finally:
         prepared.close()
 
@@ -287,6 +385,13 @@ else:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn artifact_directory() -> tempfile::TempDir {
+        let artifacts =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/reel-artifacts/font-tests");
+        std::fs::create_dir_all(&artifacts).unwrap();
+        tempfile::tempdir_in(artifacts).unwrap()
+    }
 
     #[test]
     fn invalid_unicode_and_low_budget_preserve_output() {
@@ -332,5 +437,126 @@ mod tests {
                 .kind(),
             io::ErrorKind::AlreadyExists
         );
+    }
+
+    #[test]
+    #[ignore = "requires FontTools in PATH Python or REEL_FONT_PYTHON"]
+    fn fonttools_shares_outlines_with_distinct_collection_cmaps() {
+        let tools = Tools::discover().unwrap();
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let fixture = root.join("../reel-player/tests/fixtures/font-weight/400.ttf");
+        let directory = artifact_directory();
+        let source = directory.path().join("shared.ttf");
+        let mut make = Command::new(&tools.python);
+        make.args([
+            "-B",
+            "-c",
+            r#"
+import sys
+from fontTools.ttLib import TTFont, TTCollection
+collection = TTCollection()
+for index in range(2):
+    font = TTFont(sys.argv[2])
+    font['post'].formatType = 3.0
+    font['name'].setName(f'Shared face {index}', 1, 3, 1, 0x409)
+    font['OS/2'].usWeightClass = 700 if index else 400
+    font['OS/2'].fsSelection = 32 if index else 64
+    font['head'].macStyle = 1 if index else 0
+    if index:
+        for table in font['cmap'].tables:
+            if table.isUnicode():
+                table.cmap[65] = 'space'
+    collection.fonts.append(font)
+collection.save(sys.argv[1], shareTables=True)
+collection.close()
+"#,
+        ])
+        .arg(&source)
+        .arg(fixture);
+        run(&mut make).unwrap();
+        let output = directory.path().join("subset.ttf");
+        prepare(&source, &output, &BTreeSet::from([65]), 128 << 20).unwrap();
+        let mut check = Command::new(&tools.python);
+        check.args(["-B", "-c", r#"
+import sys
+from fontTools.ttLib import TTCollection
+original, prepared = [TTCollection(path) for path in sys.argv[1:]]
+assert len(original.fonts) == len(prepared.fonts) == 2
+assert original.fonts[0].getGlyphOrder() != original.fonts[1].getGlyphOrder()
+def outline(font):
+    name = font.getBestCmap()[65]
+    glyph = font['glyf'][name]
+    coordinates, ends, flags = glyph.getCoordinates(font['glyf'])
+    return (glyph.numberOfContours, list(coordinates), list(ends), list(flags),
+        font['hmtx'][name], bytes(glyph.program.getBytecode()) if hasattr(glyph, 'program') else b'')
+assert outline(original.fonts[0]) != outline(original.fonts[1])
+for before, after in zip(original.fonts, prepared.fonts):
+    assert set(after.getBestCmap()) == {65}
+    assert outline(before) == outline(after)
+    assert before['OS/2'].usWeightClass == after['OS/2'].usWeightClass
+for fonts in (original.fonts, prepared.fonts):
+    for tag in ('glyf', 'loca'):
+        assert len({(font.reader.tables[tag].offset, font.reader.tables[tag].length)
+            for font in fonts}) == 1
+original.close()
+prepared.close()
+"#]).arg(&source).arg(&output);
+        run(&mut check).unwrap();
+        let unchanged = directory.path().join("complete.ttf");
+        prepare(&source, &unchanged, &BTreeSet::from([32, 65]), 128 << 20).unwrap();
+        assert_eq!(
+            std::fs::read(&source).unwrap(),
+            std::fs::read(&unchanged).unwrap(),
+            "complete character coverage preserves the original shared container"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires FontTools in PATH Python or REEL_FONT_PYTHON"]
+    fn fonttools_normalizes_only_zero_gasp_padding() {
+        let tools = Tools::discover().unwrap();
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let fixture = root.join("../reel-player/tests/fixtures/font-weight/400.ttf");
+        let directory = artifact_directory();
+        let mut make = Command::new(&tools.python);
+        make.args([
+            "-B",
+            "-c",
+            r#"
+import sys
+from pathlib import Path
+from fontTools.ttLib import TTFont
+from fontTools.ttLib.tables.DefaultTable import DefaultTable
+data = bytes.fromhex('0000000200180001ffff0003')
+for name, payload in [('padded', data + b'\0' * 4),
+    ('nonzero', data + b'\0\0\0\1'), ('truncated', data[:-2])]:
+    font = TTFont(sys.argv[2])
+    font['gasp'] = DefaultTable('gasp')
+    font['gasp'].data = payload
+    font.save(Path(sys.argv[1]) / (name + '.ttf'))
+    font.close()
+"#,
+        ])
+        .arg(directory.path())
+        .arg(fixture);
+        run(&mut make).unwrap();
+        let output = directory.path().join("normalized.ttf");
+        prepare(
+            &directory.path().join("padded.ttf"),
+            &output,
+            &BTreeSet::from([65]),
+            128 << 20,
+        )
+        .unwrap();
+        let mut check = Command::new(&tools.python);
+        check.args(["-B", "-c", "from fontTools.ttLib import TTFont; import sys; f=TTFont(sys.argv[1]); assert f['gasp'].version == 0 and f['gasp'].gaspRange == {24:1,65535:3}; assert f.reader.tables['gasp'].length == 12; assert set(f.getBestCmap()) == {65}; f.close()"])
+            .arg(&output);
+        run(&mut check).unwrap();
+        for name in ["nonzero", "truncated"] {
+            let source = directory.path().join(format!("{name}.ttf"));
+            let output = directory.path().join(format!("{name}-subset.ttf"));
+            assert!(prepare(&source, &output, &BTreeSet::from([65]), 128 << 20).is_err());
+            assert!(!output.exists(), "invalid gasp payload must not publish");
+        }
     }
 }
