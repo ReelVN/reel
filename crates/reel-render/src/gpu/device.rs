@@ -107,24 +107,27 @@ impl Gpu {
     }
     /// Capability probe for one target. Renderer negotiates the complete frame's peak.
     pub fn quality(&self, size: [u32; 2]) -> Result<Quality, GpuError> {
-        self.quality_for_targets(size, 1)
+        self.quality_for_targets(size, |_| Ok(1))
+            .map(|(quality, _)| quality)
     }
     pub(super) fn quality_for_targets(
         &self,
         size: [u32; 2],
-        targets: u64,
-    ) -> Result<Quality, GpuError> {
+        mut target_count: impl FnMut(u32) -> Result<u64, GpuError>,
+    ) -> Result<(Quality, u64), GpuError> {
         self.check()?;
         let max = self.device.limits().max_texture_dimension_2d;
         if size.contains(&0) || size.iter().any(|&v| v > max) {
             return Err(GpuError::InvalidSize);
         }
+        let mut targets = 1;
         for q in self.supported_qualities() {
+            targets = target_count(q.samples)?;
             if super::targets::target_bytes(size, q)?
                 .checked_mul(targets)
                 .is_some_and(|bytes| bytes <= self.limits.target_bytes)
             {
-                return Ok(q);
+                return Ok((q, targets));
             }
         }
         Err(GpuError::Budget {

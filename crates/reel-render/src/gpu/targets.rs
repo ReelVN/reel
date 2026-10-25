@@ -10,6 +10,7 @@ pub(super) fn peak_targets(
     frame: &RenderFrame,
     size: [u32; 2],
     capture: bool,
+    samples: u32,
     mut reserve: impl FnMut(u64) -> Result<(), GpuError>,
 ) -> Result<u64, GpuError> {
     enum Pending<'a> {
@@ -125,7 +126,7 @@ pub(super) fn peak_targets(
         current.next += 1;
         match &command.op {
             FrameOp::PushClip(clip) => {
-                let isolated = Scissor::from_clip(clip, current.transform, size).is_none();
+                let isolated = Scissor::from_clip(clip, current.transform, size, samples).is_none();
                 super::scopes::push_stack(&mut current.isolated, isolated, &mut reserve)?;
                 if isolated {
                     current.live += 1;

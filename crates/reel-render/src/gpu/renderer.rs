@@ -231,23 +231,36 @@ impl Renderer {
         self.glyphs.retire(&[]);
         let budget_scope = Budgets::new(self.gpu.limits);
         let mut tickets = Vec::new();
-        let mut plan = |frame| {
-            super::targets::peak_targets(frame, size, capture, |bytes| {
-                tickets.push(reserve(
-                    &self.budgets.transient,
-                    &budget_scope.transient,
-                    bytes,
-                    self.gpu.limits.transient_bytes,
-                    "transient",
-                )?);
-                Ok(())
-            })
-        };
-        let mut targets = plan(frame)?;
-        if let Some((second, _)) = second {
-            targets = targets.max(1 + plan(second)?).max(3);
-        }
-        let quality = self.gpu.quality_for_targets(size, targets)?;
+        let mut previous_plan = None;
+        let (quality, targets) = self.gpu.quality_for_targets(size, |samples| {
+            if let Some((previous_samples, targets)) = previous_plan
+                && previous_samples == samples
+            {
+                return Ok(targets);
+            }
+            // Planning storage is released when the traversal finishes. Candidate
+            // sample counts can need different clip targets and must be admitted
+            // using the same coverage policy as replay.
+            let mut plan_tickets = Vec::new();
+            let mut plan = |frame| {
+                super::targets::peak_targets(frame, size, capture, samples, |bytes| {
+                    plan_tickets.push(reserve(
+                        &self.budgets.transient,
+                        &budget_scope.transient,
+                        bytes,
+                        self.gpu.limits.transient_bytes,
+                        "transient",
+                    )?);
+                    Ok(())
+                })
+            };
+            let mut targets = plan(frame)?;
+            if let Some((second, _)) = second {
+                targets = targets.max(1 + plan(second)?).max(3);
+            }
+            previous_plan = Some((samples, targets));
+            Ok(targets)
+        })?;
         let plan = super::image_plan::collect(
             std::iter::once(frame).chain(second.map(|(frame, _)| frame)),
             self.gpu.device.limits().max_texture_dimension_2d,

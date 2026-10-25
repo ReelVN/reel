@@ -268,7 +268,8 @@ impl Context<'_> {
             match &command.op {
                 FrameOp::PushContext(_) | FrameOp::PopContext => (),
                 FrameOp::PushClip(clip) => {
-                    let scissor = Scissor::from_clip(clip, transform, self.size);
+                    let scissor =
+                        Scissor::from_clip(clip, transform, self.size, self.quality.samples);
                     current.scopes.push(
                         Kind::Clip,
                         at,
@@ -284,7 +285,9 @@ impl Context<'_> {
                             opacity: 1.,
                             invert: 0.,
                             blend: Default::default(),
-                            scissor: scissor.map_or(self.scissor, |s| self.scissor.intersect(s)),
+                            scissor: scissor
+                                .or_else(|| Scissor::clip_bounds(clip, transform, self.size))
+                                .map_or(self.scissor, |s| self.scissor.intersect(s)),
                             isolated: scissor.is_none(),
                         },
                         |bytes| self.transient(bytes),
@@ -364,6 +367,7 @@ impl Context<'_> {
                     if !group.isolated {
                         continue;
                     }
+                    self.scissor = self.scissor.intersect(group.scissor);
                     let mut source = group.target;
                     if let Some(clip) = group.clip {
                         let coverage = self.target()?;
