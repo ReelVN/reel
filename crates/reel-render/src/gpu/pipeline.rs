@@ -116,6 +116,9 @@ pub(super) struct CompositeInputs<'a> {
 }
 pub struct Pipelines {
     pub paint: wgpu::RenderPipeline,
+    pub direct: [wgpu::RenderPipeline; 3],
+    #[cfg(test)]
+    pub direct_draws: [std::sync::atomic::AtomicUsize; 3],
     pub yuv: wgpu::RenderPipeline,
     pub yuv_layout: wgpu::BindGroupLayout,
     pub composite: wgpu::RenderPipeline,
@@ -204,6 +207,26 @@ impl Pipelines {
             #[cfg(test)]
             Some(counts),
         );
+        let direct = [
+            "fragment_direct",
+            "fragment_direct_bc1",
+            "fragment_direct_bc3",
+        ]
+        .map(|entry| {
+            pipeline_entry(
+                device,
+                quality,
+                &paint_layout,
+                include_str!("paint.wgsl"),
+                true,
+                FragmentOutput {
+                    entry,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                },
+                #[cfg(test)]
+                Some(counts),
+            )
+        });
         #[cfg(test)]
         counts
             .bind_layouts
@@ -328,6 +351,9 @@ impl Pipelines {
         });
         Self {
             paint,
+            direct,
+            #[cfg(test)]
+            direct_draws: Default::default(),
             yuv,
             yuv_layout,
             composite,

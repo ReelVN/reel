@@ -117,6 +117,136 @@ fn frame() -> RenderFrame {
     frame
 }
 
+fn source_over_frame() -> RenderFrame {
+    let mut scene = Scene::new();
+    for _ in 0..4 {
+        scene.push_group(Group::default());
+        fill(
+            &mut scene,
+            Rect::new(30., 40., 430., 340.),
+            Affine::IDENTITY,
+        );
+    }
+    fill(
+        &mut scene,
+        Rect::new(120., 150., 600., 430.),
+        Affine::IDENTITY,
+    );
+    for _ in 0..4 {
+        scene.pop_group();
+    }
+    let mut widget = RecordWidget::new(scene);
+    widget.clip = false;
+    let mut bridge = widget_bridge(widget, Affine::IDENTITY);
+    let pool = pool();
+    let mut build = FrameBuild::new(
+        bridge.record(FrameId(3)).unwrap(),
+        empty_snapshot(&pool),
+        FrameInfo {
+            logical_size: [960., 544.],
+            physical_size: SIZE,
+        },
+        limits(),
+        &pool,
+    )
+    .unwrap();
+    while !build.step(step_budget()).unwrap().complete {}
+    let frame = build.finish().unwrap();
+    assert_eq!(
+        frame
+            .commands()
+            .iter()
+            .filter(|c| matches!(c.op, FrameOp::PushGroup(_)))
+            .count(),
+        4
+    );
+    frame
+}
+
+#[cfg(feature = "wgpu")]
+#[test]
+#[ignore = "requires an actual native WGPU adapter"]
+fn wgpu_source_over_containers_use_one_target() {
+    use reel_render::gpu::{DeviceGeneration, Gpu, GpuLimits, Renderer};
+    let frame = source_over_frame();
+    let gpu = pollster::block_on(Gpu::request(
+        &wgpu::Instance::default(),
+        None,
+        DeviceGeneration(1),
+        GpuLimits {
+            target_bytes: TARGET_BYTES,
+            ..Default::default()
+        },
+    ))
+    .unwrap();
+    let mut renderer = Renderer::new(gpu);
+    let start = std::time::Instant::now();
+    for _ in 0..8 {
+        let prepared = renderer.prepare(&frame).unwrap();
+        assert_eq!(renderer.usage().targets, TARGET_BYTES);
+        renderer.submit(prepared).unwrap();
+        renderer
+            .gpu()
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        renderer.poll().unwrap();
+    }
+    eprintln!(
+        "wgpu source_over_containers frames=8 targets=1 target_bytes={TARGET_BYTES} submit_complete_us={}",
+        start.elapsed().as_micros()
+    );
+}
+
+#[cfg(feature = "gles2")]
+#[test]
+#[ignore = "requires a native GLES context"]
+fn gles_source_over_containers_use_one_target() {
+    use reel_render::gles2::{GlesBackend, GlesLimits};
+    use reel_render::{AlphaMode, RenderBackend, RenderEvent, SurfaceInfo};
+    use reel_ui::resources::ColorEncoding;
+    let _serial = GLES_TEST_LOCK.lock().unwrap();
+    let frame = source_over_frame();
+    let mut renderer = GlesBackend::headless(
+        SIZE,
+        GlesLimits {
+            target_bytes: TARGET_BYTES,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    renderer
+        .configure(SurfaceInfo {
+            physical_size: SIZE,
+            scale_factor: 1.,
+            surface_epoch: frame.surface_epoch(),
+            color_encoding: ColorEncoding::Srgb,
+            alpha_mode: AlphaMode::Opaque,
+        })
+        .unwrap();
+    let start = std::time::Instant::now();
+    let mut events = Vec::new();
+    for _ in 0..8 {
+        renderer.render_present(&frame, || {}).unwrap();
+        loop {
+            events.clear();
+            renderer.poll(&mut events, 32).unwrap();
+            if events
+                .iter()
+                .any(|event| matches!(event, RenderEvent::RenderFinished { .. }))
+            {
+                break;
+            }
+            std::thread::yield_now();
+        }
+    }
+    eprintln!(
+        "gles source_over_containers frames=8 targets=1 target_bytes={TARGET_BYTES} submit_complete_us={}",
+        start.elapsed().as_micros()
+    );
+    renderer.close().unwrap();
+}
+
 #[cfg(feature = "wgpu")]
 #[test]
 #[ignore = "requires an actual native WGPU adapter"]
@@ -470,9 +600,11 @@ fn gles_simple_image_masks_composite_without_an_intermediate_target() {
                             .iter()
                             .all(|command| !matches!(command.op, FrameOp::Draw(_)))
                     );
-                    (1, 1, 0)
+                    (2, 1, 0)
                 } else {
-                    (targets, targets + 2, 1)
+                    // Each offscreen target and the replaced output surface
+                    // start with a full clear.
+                    (targets + 1, targets + 2, 1)
                 };
                 assert_eq!(delta.calls[Phase::Clear as usize], clears);
                 assert_eq!(delta.calls[Phase::Draw as usize], draws);

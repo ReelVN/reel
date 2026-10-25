@@ -138,6 +138,17 @@ fn image_alpha(uv: vec2<f32>) -> f32 {
     }
     return tint(v, pixel * v.color);
 }
+@fragment fn fragment_direct(v: VertexOut) -> @location(0) vec4<f32> {
+    return textureSample(image, image_sampler, v.uv) * v.color;
+}
+@fragment fn fragment_direct_bc1(v: VertexOut) -> @location(0) vec4<f32> {
+    let pixel = textureSample(image, image_sampler, v.uv);
+    return vec4<f32>(pixel.rgb, 1.0) * v.color;
+}
+@fragment fn fragment_direct_bc3(v: VertexOut) -> @location(0) vec4<f32> {
+    let pixel = textureSample(image, image_sampler, v.uv);
+    return vec4<f32>(min(pixel.rgb, vec3<f32>(pixel.a)), pixel.a) * v.color;
+}
 @group(0) @binding(3) var chroma_u: texture_2d<f32>;
 @group(0) @binding(4) var chroma_v: texture_2d<f32>;
 struct VideoColor {

@@ -8,6 +8,18 @@
 precision highp float;
 varying vec2 v_uv;
 varying vec4 v_color,v_window;
+#ifdef REEL_DIRECT
+uniform sampler2D u_image;
+void main(){
+ vec4 color=texture2D(u_image,v_uv);
+#if REEL_DIRECT == 1
+ color.a=1.0;
+#elif REEL_DIRECT == 2
+ color.rgb=min(color.rgb,vec3(color.a));
+#endif
+ gl_FragColor=color*v_color;
+}
+#else
 uniform sampler2D u_image,u_chroma_u,u_chroma_v;
 uniform vec2 u_dimensions,u_output_size,u_repeat;
 uniform vec4 u_appearance[9],u_video[4];
@@ -104,3 +116,4 @@ void main(){
 #endif
  gl_FragColor=color;
 }
+#endif

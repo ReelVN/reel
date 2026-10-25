@@ -31,6 +31,7 @@ struct PaintState {
     appearance: [[f32; 4]; 9],
     repeat: [bool; 2],
     coverage: bool,
+    direct: Option<mesh::DirectPaint>,
     scissor: Option<[u32; 4]>,
 }
 
@@ -422,6 +423,7 @@ impl Context<'_> {
                     paint,
                     [false; 2],
                     false,
+                    white.format,
                 )
             }
         }
@@ -626,6 +628,7 @@ impl Context<'_> {
             paint.unwrap_or([[0.; 4]; 9]),
             [false; 2],
             true,
+            None,
         )
     }
     fn paint_resource(
@@ -667,6 +670,7 @@ impl Context<'_> {
             values,
             repeat,
             image.coverage,
+            image.format,
         )
     }
     fn paint_mesh(
@@ -681,6 +685,7 @@ impl Context<'_> {
         appearance: [[f32; 4]; 9],
         repeat: [bool; 2],
         coverage: bool,
+        format: Option<PixelFormat>,
     ) -> Result<(), GlesError> {
         if mesh.indices.is_empty() || self.scissor.empty() {
             return Ok(());
@@ -702,6 +707,9 @@ impl Context<'_> {
             self.flush_draws()?;
         }
         let state = PaintState {
+            direct: (kind == 0. && !coverage)
+                .then(|| mesh.direct_paint(repeat, Some(&appearance), format))
+                .flatten(),
             texture: texture.clone(),
             planes: planes.iter().cloned().collect(),
             kind,
@@ -754,10 +762,17 @@ impl Context<'_> {
                 appearance,
                 repeat,
                 coverage,
+                direct,
                 scissor,
             } = entry.state;
             let styled = appearance[5][3] != 0. || appearance[7][3] != 0.;
-            let shader = if kind > 0. {
+            let shader = if let Some(direct) = direct {
+                match direct {
+                    mesh::DirectPaint::Rgba => &self.programs.direct,
+                    mesh::DirectPaint::Bc1 => &self.programs.direct_bc1,
+                    mesh::DirectPaint::Bc3 => &self.programs.direct_bc3,
+                }
+            } else if kind > 0. {
                 if styled {
                     &self.programs.video_appearance
                 } else {

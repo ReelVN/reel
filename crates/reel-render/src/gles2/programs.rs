@@ -118,6 +118,9 @@ impl Shader {
 }
 pub(super) struct Programs {
     pub rgba: Shader,
+    pub direct: Shader,
+    pub direct_bc1: Shader,
+    pub direct_bc3: Shader,
     pub coverage: Shader,
     pub gradient: Shader,
     pub glyph_gradient: Shader,
@@ -143,7 +146,7 @@ pub(super) struct Programs {
 impl Programs {
     pub fn new(context: &native::Context, budget: &BudgetPool) -> Result<Self, GlesError> {
         let bytes = (size_of::<Self>()
-            + NAMES.len() * size_of::<Option<Uniform>>() * 19
+            + NAMES.len() * size_of::<Option<Uniform>>() * 22
             + 4 * size_of::<crate::common::mesh::Vertex>()
             + 6 * 4) as u64;
         let storage = budget
@@ -164,6 +167,9 @@ impl Programs {
         });
         Ok(Self {
             rgba: Shader::new(context, shader_code!("paint_rgba"))?,
+            direct: Shader::new(context, shader_code!("paint_direct"))?,
+            direct_bc1: Shader::new(context, shader_code!("paint_direct_bc1"))?,
+            direct_bc3: Shader::new(context, shader_code!("paint_direct_bc3"))?,
             coverage: Shader::new(context, shader_code!("paint_coverage"))?,
             gradient: Shader::new(context, shader_code!("paint_gradient"))?,
             glyph_gradient: Shader::new(context, shader_code!("paint_glyph_gradient"))?,
@@ -226,6 +232,12 @@ impl Programs {
         size: [u32; 2],
     ) -> Result<(), GlesError> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Screen);
+        // This pass replaces the whole surface. Match WGPU's clear load op so
+        // tile renderers need not restore the previous swapchain image first.
+        {
+            let _clear = reel_core::profile::Scope::new(reel_core::profile::Phase::Clear);
+            context.clear(NativeTarget::Screen, [0., 0., 0., 1.])?;
+        }
         let mut values = Values::new();
         values.extend(self.present.int("u_image", 0));
         self.quad(

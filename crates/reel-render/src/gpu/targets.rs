@@ -24,6 +24,7 @@ pub(super) fn peak_targets(
         transitions_enabled: bool,
         pending: Option<Pending<'a>>,
         commands: &'a [FrameCommand],
+        groups: crate::common::scopes::GroupPlan,
         next: usize,
         live: u64,
         peak: u64,
@@ -36,8 +37,25 @@ pub(super) fn peak_targets(
         offset: Option<usize>,
         transitions_enabled: bool,
         transform: Affine,
-    ) -> Stream<'a> {
-        Stream {
+        capture: bool,
+        reserve: impl FnMut(u64) -> Result<(), GpuError>,
+    ) -> Result<Stream<'a>, GpuError> {
+        let groups = crate::common::scopes::GroupPlan::new(
+            commands,
+            offset,
+            drawing
+                .transitions()
+                .iter()
+                .filter(|_| transitions_enabled)
+                .map(|t| t.commands.clone()),
+            drawing
+                .capture_exclusions()
+                .iter()
+                .filter(|_| capture)
+                .cloned(),
+            reserve,
+        )?;
+        Ok(Stream {
             drawing,
             offset,
             transitions_enabled,
@@ -46,23 +64,29 @@ pub(super) fn peak_targets(
                 .transitions()
                 .partition_point(|t| t.commands.start < offset.unwrap_or(0)),
             commands,
+            groups,
             next: 0,
             live: 1,
             peak: 1,
             transform,
             isolated: Vec::new(),
-        }
+        })
     }
     let mut stack = Vec::new();
     let transform = Affine::scale_non_uniform(
         size[0] as f64 / frame.info().logical_size[0],
         size[1] as f64 / frame.info().logical_size[1],
     );
-    super::scopes::push_stack(
-        &mut stack,
-        stream(frame.drawing(), frame.commands(), Some(0), true, transform),
+    let first = stream(
+        frame.drawing(),
+        frame.commands(),
+        Some(0),
+        true,
+        transform,
+        capture,
         &mut reserve,
     )?;
+    super::scopes::push_stack(&mut stack, first, &mut reserve)?;
     loop {
         let current = stack.last_mut().unwrap();
         if current.transitions_enabled
@@ -81,7 +105,9 @@ pub(super) fn peak_targets(
                 Some(0),
                 true,
                 current.transform * transition.parent_to_window * transition.previous.to_parent(),
-            );
+                capture,
+                &mut reserve,
+            )?;
             super::scopes::push_stack(&mut stack, child, &mut reserve)?;
             continue;
         }
@@ -113,7 +139,9 @@ pub(super) fn peak_targets(
                         Some(transition.commands.start),
                         false,
                         parent.transform,
-                    );
+                        capture,
+                        &mut reserve,
+                    )?;
                     super::scopes::push_stack(&mut stack, child, &mut reserve)?;
                 }
                 Some(Pending::New) => {
@@ -146,7 +174,11 @@ pub(super) fn peak_targets(
                 }
             }
             FrameOp::PushGroup(group) => {
-                super::scopes::push_stack(&mut current.isolated, true, &mut reserve)?;
+                let isolated = !current.groups.can_inline(current.next - 1);
+                super::scopes::push_stack(&mut current.isolated, isolated, &mut reserve)?;
+                if !isolated {
+                    continue;
+                }
                 current.live += 1;
                 let clip_targets = if group.clip.is_none() {
                     0
@@ -183,7 +215,9 @@ pub(super) fn peak_targets(
                         None,
                         false,
                         transform,
-                    );
+                        capture,
+                        &mut reserve,
+                    )?;
                     super::scopes::push_stack(&mut stack, child, &mut reserve)?;
                 }
             }
