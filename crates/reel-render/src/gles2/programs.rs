@@ -4,6 +4,18 @@ use native::{
     Target as NativeTarget, Texture, Uniform, UniformValue, VertexAttribute, VertexBuffer,
 };
 use smallvec::SmallVec;
+#[cfg(target_os = "vita")]
+macro_rules! shader_code {
+    ($name:literal) => {
+        ShaderCode::SgxBinary(include_bytes!(concat!(env!("OUT_DIR"), "/", $name, ".sgx")))
+    };
+}
+#[cfg(not(target_os = "vita"))]
+macro_rules! shader_code {
+    ($name:literal) => {
+        ShaderCode::Source(include_str!(concat!(env!("OUT_DIR"), "/", $name, ".glsl")))
+    };
+}
 const NAMES: &[&str] = &[
     "u_image",
     "u_chroma_u",
@@ -43,10 +55,10 @@ pub(super) struct Shader {
     uniforms: Vec<Option<Uniform>>,
 }
 impl Shader {
-    fn new(context: &native::Context, bytes: &[u8]) -> Result<Self, GlesError> {
+    fn new(context: &native::Context, fragment: ShaderCode<'_>) -> Result<Self, GlesError> {
         let program = context.create_program(
-            ShaderCode::SgxBinary(include_bytes!(concat!(env!("OUT_DIR"), "/vertex.sgx"))),
-            ShaderCode::SgxBinary(bytes),
+            shader_code!("vertex"),
+            fragment,
             &[
                 AttributeBinding {
                     location: 0,
@@ -103,6 +115,7 @@ pub(super) struct Programs {
     pub video: Shader,
     pub video_appearance: Shader,
     pub composite: Shader,
+    pub source_over: Shader,
     pub mask: Shader,
     pub present: Shader,
     pub vertices: VertexBuffer,
@@ -112,7 +125,7 @@ pub(super) struct Programs {
 impl Programs {
     pub fn new(context: &native::Context, budget: &BudgetPool) -> Result<Self, GlesError> {
         let bytes = (size_of::<Self>()
-            + NAMES.len() * size_of::<Option<Uniform>>() * 11
+            + NAMES.len() * size_of::<Option<Uniform>>() * 12
             + 4 * size_of::<crate::common::mesh::Vertex>()
             + 6 * 4) as u64;
         let storage = budget
@@ -132,50 +145,18 @@ impl Programs {
             source_window: [0.; 4],
         });
         Ok(Self {
-            rgba: Shader::new(
-                context,
-                include_bytes!(concat!(env!("OUT_DIR"), "/paint_rgba.sgx")),
-            )?,
-            coverage: Shader::new(
-                context,
-                include_bytes!(concat!(env!("OUT_DIR"), "/paint_coverage.sgx")),
-            )?,
-            gradient: Shader::new(
-                context,
-                include_bytes!(concat!(env!("OUT_DIR"), "/paint_gradient.sgx")),
-            )?,
-            glyph_gradient: Shader::new(
-                context,
-                include_bytes!(concat!(env!("OUT_DIR"), "/paint_glyph_gradient.sgx")),
-            )?,
-            appearance: Shader::new(
-                context,
-                include_bytes!(concat!(env!("OUT_DIR"), "/paint_appearance.sgx")),
-            )?,
-            packed: Shader::new(
-                context,
-                include_bytes!(concat!(env!("OUT_DIR"), "/paint_packed.sgx")),
-            )?,
-            video: Shader::new(
-                context,
-                include_bytes!(concat!(env!("OUT_DIR"), "/paint_video.sgx")),
-            )?,
-            video_appearance: Shader::new(
-                context,
-                include_bytes!(concat!(env!("OUT_DIR"), "/paint_video_appearance.sgx")),
-            )?,
-            composite: Shader::new(
-                context,
-                include_bytes!(concat!(env!("OUT_DIR"), "/composite.sgx")),
-            )?,
-            mask: Shader::new(
-                context,
-                include_bytes!(concat!(env!("OUT_DIR"), "/mask.sgx")),
-            )?,
-            present: Shader::new(
-                context,
-                include_bytes!(concat!(env!("OUT_DIR"), "/present.sgx")),
-            )?,
+            rgba: Shader::new(context, shader_code!("paint_rgba"))?,
+            coverage: Shader::new(context, shader_code!("paint_coverage"))?,
+            gradient: Shader::new(context, shader_code!("paint_gradient"))?,
+            glyph_gradient: Shader::new(context, shader_code!("paint_glyph_gradient"))?,
+            appearance: Shader::new(context, shader_code!("paint_appearance"))?,
+            packed: Shader::new(context, shader_code!("paint_packed"))?,
+            video: Shader::new(context, shader_code!("paint_video"))?,
+            video_appearance: Shader::new(context, shader_code!("paint_video_appearance"))?,
+            composite: Shader::new(context, shader_code!("composite"))?,
+            source_over: Shader::new(context, shader_code!("source_over"))?,
+            mask: Shader::new(context, shader_code!("mask"))?,
+            present: Shader::new(context, shader_code!("present"))?,
             vertices: context.vertex_buffer(bytemuck::cast_slice(&data), 12, &attributes)?,
             indices: context.index_buffer(&[0, 1, 2, 0, 2, 3])?,
             _storage: storage,

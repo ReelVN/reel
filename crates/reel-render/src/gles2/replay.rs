@@ -636,7 +636,12 @@ impl Context<'_> {
             CompositeOperation::Transition(p) => (3., p),
             CompositeOperation::MaskedTransition(p) => (4., p),
         };
-        let shader = &self.programs.composite;
+        let plain = mode == 0. && invert == 0. && blend == 0 && expression.is_none();
+        let shader = if plain {
+            &self.programs.source_over
+        } else {
+            &self.programs.composite
+        };
         let mut values = Values::new();
         for (name, unit) in [
             ("u_source", 0),
@@ -664,7 +669,7 @@ impl Context<'_> {
                 mask,
                 backdrop,
                 expression.map_or(source, |t| &t.view),
-            ],
+            ][..if plain { 1 } else { 4 }],
             &values,
             if replacing {
                 native::Blend::Replace

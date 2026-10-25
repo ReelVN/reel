@@ -1,16 +1,14 @@
 fn main() {
     #[cfg(feature = "gles2")]
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("vita") {
-        compile_shaders();
-    }
+    compile_shaders();
 }
 
 #[cfg(feature = "gles2")]
 fn compile_shaders() {
     use pvr_compiler::{Compiler, Stage};
     let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
-    let mut compiler =
-        Compiler::new().expect("Vita shader compilation requires the Linux/WSL host");
+    let mut compiler = (std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("vita"))
+        .then(|| Compiler::new().expect("Vita shader compilation requires the Linux/WSL host"));
     let variants = [
         ("paint_rgba", 0, 0),
         ("paint_coverage", 1, 0),
@@ -30,11 +28,19 @@ fn compile_shaders() {
     ] {
         let path = format!("src/gles2/shaders/{name}.glsl");
         println!("cargo:rerun-if-changed={path}");
-        shaders.push((
-            name.to_owned(),
-            stage,
-            std::fs::read_to_string(path).expect("read GLSL source"),
-        ));
+        let source = std::fs::read_to_string(path).expect("read GLSL source");
+        if name == "composite" {
+            shaders.push((
+                "source_over".to_owned(),
+                stage,
+                source.replacen(
+                    "#version 100",
+                    "#version 100\n#define REEL_SOURCE_OVER_ONLY",
+                    1,
+                ),
+            ));
+        }
+        shaders.push((name.to_owned(), stage, source));
     }
     println!("cargo:rerun-if-changed=src/gles2/shaders/paint.glsl");
     let paint =
@@ -48,6 +54,10 @@ fn compile_shaders() {
         shaders.push((name.to_owned(), Stage::Fragment, source));
     }
     for (name, stage, source) in shaders {
+        std::fs::write(output.join(format!("{name}.glsl")), &source).unwrap();
+        let Some(compiler) = &mut compiler else {
+            continue;
+        };
         let compiled = compiler
             .compile_binary(stage, &source)
             .expect("compile SGX shader binary");

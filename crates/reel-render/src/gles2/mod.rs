@@ -1,4 +1,4 @@
-//! Vita GLES rendering of the common immutable frame and resource contracts.
+//! GLES rendering of the common immutable frame and resource contracts.
 mod draw;
 mod mask;
 mod programs;
@@ -102,7 +102,28 @@ pub struct GlesBackend {
 }
 impl GlesBackend {
     /// Create the thread-bound native context and load offline SGX programs.
+    #[cfg(target_os = "vita")]
     pub fn new(options: GlesOptions) -> Result<Self, GlesError> {
+        let context =
+            native::Context::new(&options.module_directory, options.vsync).map_err(native_error)?;
+        Self::with_context(context, options)
+    }
+
+    /// Create an offscreen desktop EGL context with the same rendering and budget
+    /// paths as the device backend. Shaders use their shared GLSL sources.
+    #[cfg(not(target_os = "vita"))]
+    pub fn headless(size: [u32; 2], limits: GlesLimits) -> Result<Self, GlesError> {
+        let context = native::Context::headless(size, false).map_err(native_error)?;
+        Self::with_context(
+            context,
+            GlesOptions {
+                limits,
+                ..Default::default()
+            },
+        )
+    }
+
+    fn with_context(context: native::Context, options: GlesOptions) -> Result<Self, GlesError> {
         if options.limits.max_inflight == 0 || options.limits.image_upload_bytes_per_prepare == 0 {
             return Err(GlesError::InvalidSize);
         }
@@ -121,8 +142,6 @@ impl GlesBackend {
             targets: pool(BudgetCategory::Offscreen, options.limits.target_bytes),
             transient: pool(BudgetCategory::Temporary, options.limits.transient_bytes),
         };
-        let context =
-            native::Context::new(&options.module_directory, options.vsync).map_err(native_error)?;
         let programs = Rc::new(programs::Programs::new(&context, &budgets.resources)?);
         Ok(Self {
             context,
