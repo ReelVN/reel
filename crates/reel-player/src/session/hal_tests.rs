@@ -342,6 +342,20 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
     let first = player.backend.inner.last_submission().unwrap();
     assert!(player.backend.inner.complete_render(first));
     player.poll_completions().unwrap();
+    // Unbound analogue input still reaches the shared input path, without
+    // rebuilding an unchanged accepted frame on each controller sample.
+    for index in 0..120 {
+        use reel_ui::{core::TextEvent, input::*};
+        player
+            .text_event(TextEvent::Input(InputEvent::Value {
+                device: InputDeviceId::Gamepad(1),
+                control: Control::Axis(GamepadAxis::LeftX),
+                value: if index % 2 == 0 { 0.01 } else { -0.01 },
+            }))
+            .unwrap();
+        player.tick(&mut host).unwrap();
+        assert!(!player.needs_redraw(), "unbound sample {index} repainted");
+    }
     for kind in ["move", "down", "up"] {
         player.dispatch_pointer(mouse(kind, (50., 30.))).unwrap();
     }

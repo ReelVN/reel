@@ -650,6 +650,7 @@ where
         if self.settings_pending() && !cancelling {
             return Ok(Handled::Yes);
         }
+        let before = self.session.as_ref().map(|s| s.ui().projection_stamp());
         let handled = if let Some(session) = &mut self.session {
             let handled = session.handle_text(&mut self.presentation.bridge, event)?;
             session.after_input(&mut self.presentation.bridge, self.root_id)?;
@@ -657,8 +658,16 @@ where
         } else {
             self.presentation.bridge.handle_text_event(event)
         };
-        self.invalidate();
+        self.invalidate_input_changes(before);
         Ok(handled)
+    }
+
+    fn invalidate_input_changes(&mut self, before: Option<crate::session::ProjectionStamp>) {
+        if before != self.session.as_ref().map(|s| s.ui().projection_stamp())
+            || self.presentation.bridge.root().needs_paint()
+        {
+            self.invalidate();
+        }
     }
 
     pub(crate) fn pointer_event(&mut self, kind: PointerKind) -> Result<(), Error> {
@@ -714,6 +723,7 @@ where
             return Ok(());
         }
         let released = matches!(event, PointerEvent::Up(_));
+        let before = self.session.as_ref().map(|s| s.ui().projection_stamp());
         if let Some(session) = &mut self.session {
             session.handle_pointer(&mut self.presentation.bridge, event)?;
             if released {
@@ -722,7 +732,7 @@ where
         } else {
             self.presentation.bridge.handle_pointer_event(event)?;
         }
-        self.invalidate();
+        self.invalidate_input_changes(before);
         Ok(())
     }
 }
