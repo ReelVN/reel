@@ -3509,6 +3509,7 @@ dependencies = [
  "reel-ui",
  "self_cell",
  "serde",
+ "smallvec",
  "stats_alloc",
  "ui-events-winit",
  "wgpu",

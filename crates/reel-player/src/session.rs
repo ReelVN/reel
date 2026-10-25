@@ -971,26 +971,27 @@ impl SessionUi {
                 self.stamp.advance_revision = self.stamp.advance_revision.wrapping_add(1);
                 binding.accepted = None;
             }
-            let buttons = view.button_changes(
+            if let Some(buttons) = view.button_changes(
                 self.pending_stage.as_ref().or(self.stage.as_ref()),
                 view.feedback,
-            );
-            if buttons.iter().any(|(_, changed)| *changed) {
-                binding.button_revision = binding.button_revision.wrapping_add(1);
+            ) {
+                if buttons.iter().any(|(_, changed)| *changed) {
+                    binding.button_revision = binding.button_revision.wrapping_add(1);
+                }
+                let revision = binding.button_revision;
+                binding.buttons = buttons
+                    .into_iter()
+                    .map(|(id, changed)| {
+                        let version = if changed {
+                            revision
+                        } else {
+                            binding.buttons.get(&id).copied().unwrap_or(revision)
+                        };
+                        (id, version)
+                    })
+                    .collect();
             }
-            let revision = binding.button_revision;
-            view.button_revision = revision;
-            binding.buttons = buttons
-                .into_iter()
-                .map(|(id, changed)| {
-                    let version = if changed {
-                        revision
-                    } else {
-                        binding.buttons.get(&id).copied().unwrap_or(revision)
-                    };
-                    (id, version)
-                })
-                .collect();
+            view.button_revision = binding.button_revision;
             self.pending_stage = Some(view);
             self.images_waiting_presentation = true;
             // Stable control identities retain gestures across value/layout changes.

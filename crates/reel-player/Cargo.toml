@@ -17,6 +17,7 @@ audio-output = ["reel-media/cpal-output"]
 window = ["video-software", "audio-output", "gamepad", "winit", "dep:wgpu", "dep:pollster", "reel-render/wgpu"]
 
 [dependencies]
+smallvec.workspace = true
 aside-vm = { path = "../aside-vm" }
 reel-package = { path = "../reel-package" }
 reel-storage = { path = "../reel-storage" }

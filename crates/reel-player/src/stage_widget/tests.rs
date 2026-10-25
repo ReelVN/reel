@@ -1,4 +1,5 @@
 use super::*;
+mod animation_cost;
 mod cursor;
 mod flow;
 mod input_focus;
