@@ -1,5 +1,5 @@
 use anyhow::{Result, bail};
-use reel_dev::{audio, maintenance, root};
+use reel_dev::{audio, maintenance, root, vita};
 use std::{env, path::Path, process::Command};
 
 fn main() -> Result<()> {
@@ -26,6 +26,7 @@ fn main() -> Result<()> {
         ["audio-regression"] => audio::regression(false)?,
         ["audio-regression", "--release"] => audio::regression(true)?,
         ["audio-probe"] => audio::probes()?,
+        ["vita-assets", ..] => vita::assets(&args[1..])?,
         ["root-negative"] => maintenance::negative_controls()?,
         ["compiler-probe", probe, mode] => maintenance::compiler_probe(probe, Some(mode))?,
         ["compiler-probe", probe] => maintenance::compiler_probe(probe, None)?,
@@ -33,7 +34,7 @@ fn main() -> Result<()> {
             maintenance::measure(Path::new(build), target, &args[3..])?
         }
         _ => bail!(
-            "Usage: cargo run -p reel-dev -- <check|deps|audio-regression [--release]|audio-probe|root-negative|compiler-probe frontend/semantic/lowering [MODE]|measure BUILD_JSON contracts/r01_measurements [TEST_ARGS]>\nRepository: {}",
+            "Usage: cargo run -p reel-dev -- <check|deps|audio-regression [--release]|audio-probe|vita-assets --modules DIR --font FILE --font-license FILE|root-negative|compiler-probe frontend/semantic/lowering [MODE]|measure BUILD_JSON contracts/r01_measurements [TEST_ARGS]>\nRepository: {}",
             root().display()
         ),
     }

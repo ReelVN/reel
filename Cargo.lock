@@ -3427,6 +3427,7 @@ name = "reel-dev"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "png",
  "serde_json",
 ]
 

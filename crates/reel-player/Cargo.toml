@@ -71,6 +71,7 @@ required-features = ["vita"]
 [package.metadata.vita]
 title_id = "REEL00001"
 title_name = "Reel"
+assets = "../../target/vita/assets"
 build_std = "std,panic_unwind"
 vita_make_fself_flags = ["-a", "0x2F00000000000001"]
 vita_mksfoex_flags = ["-d", "ATTRIBUTE2=12", "-s", "APP_VER=01.00", "-s", "VERSION=01.00"]

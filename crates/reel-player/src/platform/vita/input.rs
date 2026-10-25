@@ -21,6 +21,22 @@ pub(super) struct Input {
     events: Vec<input::NavigationEvent>,
 }
 impl Input {
+    pub fn return_to_library(&self, sample: &native::Sample) -> bool {
+        let chord = native::SELECT | native::START;
+        sample.buttons & chord == chord && self.blocked_buttons & chord == 0
+    }
+    pub fn new(sample: native::Sample) -> Self {
+        Self {
+            blocked_buttons: sample.buttons,
+            blocked_axes: sample.axes.map(|value| value.abs() > 0.2),
+            blocked_touches: sample.touches[..sample.touch_count]
+                .iter()
+                .map(|touch| touch.id)
+                .collect(),
+            last: sample,
+            ..Default::default()
+        }
+    }
     pub fn deadline(&self) -> Option<MonoTime> {
         self.navigation
             .next_deadline()

@@ -19,6 +19,8 @@ pub mod assets;
 pub mod capture;
 pub mod fonts;
 mod images;
+#[cfg(any(feature = "vita", test))]
+mod launcher;
 pub mod localization;
 pub mod media;
 pub mod saves;

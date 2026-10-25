@@ -11,6 +11,8 @@ use reel_ui::{
 type Error = Box<dyn std::error::Error>;
 
 pub(crate) enum PlayerSession {
+    #[cfg(any(feature = "vita", test))]
+    Launcher(Box<crate::launcher::Launcher>),
     #[cfg(feature = "window")]
     Diagnostic(Box<SessionHostDiagnostic>),
     Aside {
@@ -22,6 +24,8 @@ pub(crate) enum PlayerSession {
 impl PlayerSession {
     pub(crate) fn story_mut(&mut self) -> Option<&mut StoryRuntime> {
         match self {
+            #[cfg(any(feature = "vita", test))]
+            Self::Launcher(_) => None,
             Self::Aside { story, .. } => Some(story),
             #[cfg(feature = "window")]
             Self::Diagnostic(_) => None,
@@ -29,6 +33,8 @@ impl PlayerSession {
     }
     pub(crate) fn initial_frame_ready(&self) -> bool {
         match self {
+            #[cfg(any(feature = "vita", test))]
+            Self::Launcher(_) => true,
             #[cfg(feature = "window")]
             Self::Diagnostic(_) => true,
             Self::Aside { story, .. } => {
@@ -55,6 +61,8 @@ impl PlayerSession {
         &self,
     ) -> Option<&std::sync::Arc<reel_engine::aside::GameSettings>> {
         match self {
+            #[cfg(any(feature = "vita", test))]
+            Self::Launcher(launcher) => Some(&launcher.settings),
             Self::Aside { story, .. } => Some(story.driver().adapter().game_settings()),
             #[cfg(feature = "window")]
             Self::Diagnostic(_) => None,
@@ -66,6 +74,8 @@ impl PlayerSession {
         event: PointerEvent,
     ) -> Result<Handled, Error> {
         match self {
+            #[cfg(any(feature = "vita", test))]
+            Self::Launcher(launcher) => launcher.handle_pointer(bridge, event),
             #[cfg(feature = "window")]
             Self::Diagnostic(host) => Ok(host.ui.handle_pointer(bridge, event)?.handled),
             Self::Aside { story, hover } => {
@@ -90,6 +100,8 @@ impl PlayerSession {
         event: TextEvent,
     ) -> Result<Handled, Error> {
         match self {
+            #[cfg(any(feature = "vita", test))]
+            Self::Launcher(launcher) => launcher.handle_text(bridge, event),
             #[cfg(feature = "window")]
             Self::Diagnostic(host) => Ok(host.ui.handle_text(bridge, event)?.handled),
             Self::Aside { story, hover } => {
@@ -107,6 +119,8 @@ impl PlayerSession {
 
     pub(crate) fn ui(&self) -> &SessionUi {
         match self {
+            #[cfg(any(feature = "vita", test))]
+            Self::Launcher(launcher) => &launcher.ui,
             #[cfg(feature = "window")]
             Self::Diagnostic(host) => &host.ui,
             Self::Aside { story, .. } => story.driver().ui(),
@@ -115,6 +129,8 @@ impl PlayerSession {
 
     pub(crate) fn ui_mut(&mut self) -> Result<&mut SessionUi, Error> {
         Ok(match self {
+            #[cfg(any(feature = "vita", test))]
+            Self::Launcher(launcher) => &mut launcher.ui,
             #[cfg(feature = "window")]
             Self::Diagnostic(host) => &mut host.ui,
             Self::Aside { story, .. } => story.driver_mut()?.ui_mut(),
@@ -127,6 +143,8 @@ impl PlayerSession {
         root: WidgetId,
     ) -> Result<(), Error> {
         match self {
+            #[cfg(any(feature = "vita", test))]
+            Self::Launcher(launcher) => launcher.sync(bridge, root),
             #[cfg(feature = "window")]
             Self::Diagnostic(host) => host.after_input(bridge, root),
             Self::Aside { story, .. } => {
@@ -143,6 +161,8 @@ impl PlayerSession {
         root: WidgetId,
     ) -> Result<(), Error> {
         match self {
+            #[cfg(any(feature = "vita", test))]
+            Self::Launcher(launcher) => launcher.sync(bridge, root),
             #[cfg(feature = "window")]
             Self::Diagnostic(host) => host.ui.sync(bridge, root),
             Self::Aside { story, .. } if story.capturing() => Ok(()),
@@ -173,6 +193,8 @@ impl PlayerSession {
         Error,
     > {
         match self {
+            #[cfg(any(feature = "vita", test))]
+            Self::Launcher(launcher) => launcher.ui.record(bridge, root, id).map(Some),
             #[cfg(feature = "window")]
             Self::Diagnostic(host) => host.ui.record(bridge, root, id).map(Some),
             Self::Aside { story, .. } => story.driver().record(bridge, root, id),
@@ -180,6 +202,8 @@ impl PlayerSession {
     }
     pub(crate) fn frame_ready(&self) -> bool {
         match self {
+            #[cfg(any(feature = "vita", test))]
+            Self::Launcher(launcher) => !launcher.ui.images_pending(),
             #[cfg(feature = "window")]
             Self::Diagnostic(_) => true,
             Self::Aside { story, .. } => story.driver().frame_ready(),
@@ -193,6 +217,10 @@ impl PlayerSession {
         accepted_host_ns: u64,
     ) -> Result<(), Error> {
         match self {
+            #[cfg(any(feature = "vita", test))]
+            Self::Launcher(launcher) => {
+                launcher.ui.presented(bridge, frame);
+            }
             #[cfg(feature = "window")]
             Self::Diagnostic(host) => {
                 host.ui.presented(bridge, frame);
@@ -205,6 +233,8 @@ impl PlayerSession {
     }
     pub(crate) fn transition_resources(&self) -> &[reel_ui::resources::ResourceLease] {
         match self {
+            #[cfg(any(feature = "vita", test))]
+            Self::Launcher(_) => &[],
             Self::Aside { story, .. } => story.driver().transition_resources(),
             #[cfg(feature = "window")]
             Self::Diagnostic(_) => &[],
@@ -212,6 +242,8 @@ impl PlayerSession {
     }
     pub(crate) fn needs_tick(&self) -> bool {
         match self {
+            #[cfg(any(feature = "vita", test))]
+            Self::Launcher(launcher) => !launcher.ui.current_presentation_ready(),
             Self::Aside { story, .. } => story.needs_tick(),
             #[cfg(feature = "window")]
             Self::Diagnostic(host) => host.ui.dialogue_needs_time(),
@@ -235,6 +267,8 @@ impl PlayerSession {
         now: reel_core::clock::MonoTime,
     ) -> Option<reel_core::clock::MonoTime> {
         match self {
+            #[cfg(any(feature = "vita", test))]
+            Self::Launcher(_) => None,
             Self::Aside { story, .. } => story.wake_deadline(now),
             #[cfg(feature = "window")]
             Self::Diagnostic(host) => self.needs_tick().then(|| {
@@ -251,6 +285,8 @@ impl PlayerSession {
         now: impl FnMut() -> u64,
     ) -> Result<(), Error> {
         match self {
+            #[cfg(any(feature = "vita", test))]
+            Self::Launcher(_) => {}
             Self::Aside { story, .. } => story.tick(budget, now)?,
             #[cfg(feature = "window")]
             Self::Diagnostic(host) => {
@@ -263,6 +299,11 @@ impl PlayerSession {
 
     pub(crate) fn close(&mut self) -> Result<(), Error> {
         match self {
+            #[cfg(any(feature = "vita", test))]
+            Self::Launcher(launcher) => {
+                launcher.ui.cancel();
+                Ok(())
+            }
             #[cfg(feature = "window")]
             Self::Diagnostic(host) => {
                 host.ui.cancel();
@@ -274,6 +315,8 @@ impl PlayerSession {
 
     pub(crate) fn close_complete(&self) -> bool {
         match self {
+            #[cfg(any(feature = "vita", test))]
+            Self::Launcher(_) => true,
             #[cfg(feature = "window")]
             Self::Diagnostic(_) => true,
             Self::Aside { story, .. } => story.close_complete(),
@@ -281,7 +324,13 @@ impl PlayerSession {
     }
 
     pub(crate) fn exit_requested(&self) -> bool {
-        matches!(self, Self::Aside { story, .. } if story.driver().adapter().exit_requested())
+        match self {
+            Self::Aside { story, .. } => story.driver().adapter().exit_requested(),
+            #[cfg(any(feature = "vita", test))]
+            Self::Launcher(launcher) => launcher.exit_requested(),
+            #[cfg(feature = "window")]
+            Self::Diagnostic(_) => false,
+        }
     }
 
     #[cfg(all(
@@ -293,6 +342,7 @@ impl PlayerSession {
         match self {
             #[cfg(feature = "window")]
             Self::Diagnostic(host) => host.diagnostic_step(),
+            Self::Launcher(_) => unreachable!("diagnostic-only fixture"),
             Self::Aside { .. } => unreachable!("diagnostic-only fixture"),
         }
     }

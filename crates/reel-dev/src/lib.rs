@@ -2,6 +2,7 @@
 pub mod audio;
 pub mod maintenance;
 pub mod process;
+pub mod vita;
 
 use std::path::{Path, PathBuf};
 
