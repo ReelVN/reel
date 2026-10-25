@@ -337,3 +337,165 @@ fn gles_retained_targets_yield_to_geometry_pressure() {
     assert_eq!(completed[0] - completed[1], TARGET_BYTES * 2);
     renderer.close().unwrap();
 }
+
+#[cfg(feature = "gles2")]
+fn image_mask_frame(threshold: bool, progress: f32, invert: f32) -> RenderFrame {
+    use reel_core::{
+        budget::OwnedBytes,
+        identity::{AssetKey, ContentVersion, ResourceVersion},
+    };
+    use reel_ui::{
+        core::PaintImageMask,
+        peniko::{ImageAlphaType, ImageFormat},
+        resources::{ColorEncoding, ResourceRegistry},
+        stage::{MaskChannel, MaskOp, MaskProgram},
+    };
+    let pool = pool();
+    let mut registry = ResourceRegistry::new(1, 64 << 10).unwrap();
+    let pixels = vec![255, 64, 0, 255, 0, 128, 0, 64, 0, 0, 255, 192, 0, 0, 0, 0];
+    let image = registry
+        .register_image(
+            ResourceVersion {
+                key: AssetKey("mask".into()),
+                version: ContentVersion([0; 32]),
+            },
+            OwnedBytes::new(pixels, pool.reserve(16).unwrap()).unwrap(),
+            [2, 2],
+            ImageFormat::Rgba8,
+            ImageAlphaType::Alpha,
+            ColorEncoding::Srgb,
+        )
+        .unwrap();
+    let program = if threshold {
+        MaskProgram::image("mask".into())
+    } else {
+        MaskProgram::new(
+            vec![
+                MaskOp::Constant(0),
+                MaskOp::Constant(1_f32.to_bits()),
+                MaskOp::Sample {
+                    image: 0,
+                    channel: MaskChannel::Gray,
+                    coordinates: [0, 0, 1, 1],
+                    repeat: 3,
+                },
+                MaskOp::Parameter(0),
+                MaskOp::Subtract(2, 3),
+                MaskOp::Clamp(4, 0_f32.to_bits(), 1_f32.to_bits()),
+            ],
+            vec!["mask".into()],
+        )
+        .unwrap()
+    };
+    let mut scene = Scene::new();
+    // Overlap requires isolation before either opacity or image coverage.
+    for x in [20., 80.] {
+        fill(
+            &mut scene,
+            Rect::new(x, 20., x + 140., 160.),
+            Affine::IDENTITY,
+        );
+    }
+    let mut widget = RecordWidget::new(scene);
+    widget.clip = false;
+    widget.opacity = 0.6;
+    widget.invert = invert;
+    widget.mask = Some(PaintImageMask {
+        program,
+        images: vec![registry.acquire(image).unwrap()].into(),
+        bounds: Rect::new(0., 0., 400., 300.),
+        parameters: [progress, 0.2, 0., 0., 0.],
+    });
+    let mut bridge = widget_bridge(
+        widget,
+        Affine::translate((40.5, 20.5)) * Affine::rotate(0.1),
+    );
+    let mut build = FrameBuild::new(
+        bridge.record(FrameId(1)).unwrap(),
+        registry.freeze(&[image], &pool).unwrap(),
+        FrameInfo {
+            logical_size: [960., 544.],
+            physical_size: SIZE,
+        },
+        limits(),
+        &pool,
+    )
+    .unwrap();
+    while !build.step(step_budget()).unwrap().complete {}
+    build.finish().unwrap()
+}
+
+#[cfg(feature = "gles2")]
+#[test]
+#[ignore = "requires a native GLES context; submits without pixel readback"]
+fn gles_simple_image_masks_composite_without_an_intermediate_target() {
+    use reel_render::gles2::{GlesBackend, GlesLimits};
+    use reel_render::{AlphaMode, RenderBackend, RenderEvent, SurfaceInfo};
+    use reel_ui::resources::ColorEncoding;
+    let _serial = GLES_TEST_LOCK.lock().unwrap();
+    // Inversion retains the general path and its additional expression target.
+    for (threshold, invert, targets) in [(false, 0., 2), (true, 0., 2), (false, 0.25, 3)] {
+        let mut renderer = GlesBackend::headless(
+            SIZE,
+            GlesLimits {
+                target_bytes: TARGET_BYTES * targets,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for progress in [0., 0.45, 1.] {
+            let frame = image_mask_frame(threshold, progress, invert);
+            renderer
+                .configure(SurfaceInfo {
+                    physical_size: SIZE,
+                    scale_factor: 1.,
+                    surface_epoch: frame.surface_epoch(),
+                    color_encoding: ColorEncoding::Srgb,
+                    alpha_mode: AlphaMode::Opaque,
+                })
+                .unwrap();
+            #[cfg(feature = "profiling")]
+            let before = reel_core::profile::Sample::snapshot();
+            renderer.render_present(&frame, || {}).unwrap();
+            #[cfg(feature = "profiling")]
+            {
+                use reel_core::profile::{Phase, Sample};
+                let delta = Sample::snapshot().delta(before);
+                // The shared paint planner removes a threshold's hidden endpoint
+                // before replay; only the cleared output and presentation remain.
+                let (clears, draws, composites) = if threshold && progress == 0. {
+                    assert!(
+                        frame
+                            .commands()
+                            .iter()
+                            .all(|command| !matches!(command.op, FrameOp::Draw(_)))
+                    );
+                    (1, 1, 0)
+                } else {
+                    (targets, targets + 2, 1)
+                };
+                assert_eq!(delta.calls[Phase::Clear as usize], clears);
+                assert_eq!(delta.calls[Phase::Draw as usize], draws);
+                assert_eq!(delta.calls[Phase::Composite as usize], composites);
+            }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut events = Vec::new();
+            loop {
+                events.clear();
+                renderer.poll(&mut events, 32).unwrap();
+                if events
+                    .iter()
+                    .any(|event| matches!(event, RenderEvent::RenderFinished { .. }))
+                {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "submission did not complete"
+                );
+                std::thread::yield_now();
+            }
+        }
+        renderer.close().unwrap();
+    }
+}

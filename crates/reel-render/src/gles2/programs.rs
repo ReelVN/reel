@@ -128,9 +128,13 @@ pub(super) struct Programs {
     pub composite: Shader,
     pub source_over: Shader,
     pub alpha_mask: Shader,
+    pub mask_8: Shader,
+    pub mask_16: Shader,
     pub mask: Shader,
     pub mask_sample_chain: Shader,
     pub mask_threshold: Shader,
+    pub mask_sample_chain_composite: Shader,
+    pub mask_threshold_composite: Shader,
     pub present: Shader,
     pub vertices: VertexBuffer,
     pub indices: IndexBuffer,
@@ -139,7 +143,7 @@ pub(super) struct Programs {
 impl Programs {
     pub fn new(context: &native::Context, budget: &BudgetPool) -> Result<Self, GlesError> {
         let bytes = (size_of::<Self>()
-            + NAMES.len() * size_of::<Option<Uniform>>() * 15
+            + NAMES.len() * size_of::<Option<Uniform>>() * 19
             + 4 * size_of::<crate::common::mesh::Vertex>()
             + 6 * 4) as u64;
         let storage = budget
@@ -170,9 +174,19 @@ impl Programs {
             composite: Shader::new(context, shader_code!("composite"))?,
             source_over: Shader::new(context, shader_code!("source_over"))?,
             alpha_mask: Shader::new(context, shader_code!("alpha_mask"))?,
+            mask_8: Shader::new(context, shader_code!("mask_8"))?,
+            mask_16: Shader::new(context, shader_code!("mask_16"))?,
             mask: Shader::new(context, shader_code!("mask"))?,
             mask_sample_chain: Shader::new(context, shader_code!("mask_sample_chain"))?,
             mask_threshold: Shader::new(context, shader_code!("mask_threshold"))?,
+            mask_sample_chain_composite: Shader::new(
+                context,
+                shader_code!("mask_sample_chain_composite"),
+            )?,
+            mask_threshold_composite: Shader::new(
+                context,
+                shader_code!("mask_threshold_composite"),
+            )?,
             present: Shader::new(context, shader_code!("present"))?,
             vertices: context.vertex_buffer(bytemuck::cast_slice(&data), 12, &attributes)?,
             indices: context.index_buffer(&[0, 1, 2, 0, 2, 3])?,
