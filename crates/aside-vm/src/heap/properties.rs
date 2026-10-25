@@ -54,6 +54,7 @@ impl Heap {
         object.observable_writable = writable;
         let key = self.key(fields)?;
         self.objects.get_mut(key).unwrap().property_owner = Some(owner);
+        self.mutation_revision = self.mutation_revision.wrapping_add(1);
         Ok(())
     }
 

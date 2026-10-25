@@ -297,3 +297,44 @@ fn frame_animation_cost() {
         }
     }
 }
+
+#[test]
+#[ignore = "release CPU measurement of normal animated scenes and explicit stage publication"]
+fn derived_animation_stage_sync_cost() {
+    for nodes in [31, 203] {
+        let source = format!(
+            r#"fn opening() {{
+                let root=stack(width:960,height:544);
+                let timer=clock(interval:0.016,owner:root);
+                let moving=text("Animated scenery",x:derive(|| timer.ticks*1.0));
+                root.add(moving);
+                for i in 0..{buttons} {{
+                    root.add(button("Menu",x:i%6*100,y:i/6*28));
+                }}
+                stage.replace(root);
+                narrator("A conversation stays visible while the scenery moves.");
+            }}"#,
+            buttons = nodes - 2,
+        );
+        let (mut session, mut vm) = models::prepared(&source, false);
+        models::drive(&mut vm, &mut session, false);
+        let moving = vm
+            .stage()
+            .node(vm.stage().root().unwrap())
+            .unwrap()
+            .children[0];
+        let before = vm.stage.sync_count;
+        let started = Instant::now();
+        for frame in 1..=600 {
+            activities::advance_clock(&mut vm, &session, frame as f64 * 0.016 + 0.001, 64);
+            models::drive(&mut vm, &mut session, false);
+            assert_eq!(vm.stage().node(moving).unwrap().props.x, frame as f64);
+        }
+        println!(
+            "derived_animation nodes={nodes} frames=600 syncs={} elapsed_us={}",
+            vm.stage.sync_count - before,
+            started.elapsed().as_micros(),
+        );
+        assert_eq!(vm.stage.sync_count - before, 600);
+    }
+}

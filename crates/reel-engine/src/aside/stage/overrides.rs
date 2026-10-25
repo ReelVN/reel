@@ -389,6 +389,7 @@ impl StageBinding {
             binding.overrides = cache;
         }
         binding.projection_dirty = true;
+        self.last_sync = None;
         Ok(token)
     }
     pub(in crate::aside) fn remove_layer(
@@ -452,6 +453,7 @@ impl StageBinding {
             binding.overrides = None;
         }
         binding.projection_dirty = true;
+        self.last_sync = None;
         heap.retire_host(token)?;
         Ok(())
     }

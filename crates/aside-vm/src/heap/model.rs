@@ -109,6 +109,7 @@ impl Heap {
         object.observable_fields = 0;
         object.observable_writable = 0;
         object.model_metadata = Value::NULL;
+        self.mutation_revision = self.mutation_revision.wrapping_add(1);
         Ok(())
     }
 
@@ -127,6 +128,7 @@ impl Heap {
             object.observable_fields = 1;
             object.observable_writable = u32::from(cell.contract.mutable);
         }
+        self.mutation_revision = self.mutation_revision.wrapping_add(1);
         Ok(())
     }
 

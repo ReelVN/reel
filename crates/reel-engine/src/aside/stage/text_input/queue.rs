@@ -239,6 +239,7 @@ impl StageBinding {
     pub(in crate::aside) fn mark_text_projection(&mut self, node: reel_ui::stage::NodeId) {
         if let Some(binding) = self.handles.get_mut(&node) {
             binding.projection_dirty = true;
+            self.last_sync = None;
         }
     }
     pub(in crate::aside) fn ensure_text_queue(
@@ -289,7 +290,10 @@ impl StageBinding {
             if queue.active.is_some() && queue.active_replay == Some(id) {
                 return;
             }
-            binding.projection_dirty |= queue.complete(id);
+            if queue.complete(id) {
+                binding.projection_dirty = true;
+                self.last_sync = None;
+            }
         }
     }
 
@@ -297,7 +301,10 @@ impl StageBinding {
         if let Some(binding) = self.handles.get_mut(&node)
             && let Some(queue) = binding.text_history.as_mut().and_then(|h| h.queue.as_mut())
         {
-            binding.projection_dirty |= queue.cancel_composition();
+            if queue.cancel_composition() {
+                binding.projection_dirty = true;
+                self.last_sync = None;
+            }
         }
     }
 
@@ -315,6 +322,7 @@ impl StageBinding {
                 queue.complete(sequence);
             }
             binding.projection_dirty = true;
+            self.last_sync = None;
         }
     }
 
@@ -341,6 +349,7 @@ impl StageBinding {
         let revision = revision(heap, host)?.wrapping_add(1);
         heap.set_host_payload(host, 4, Value::int(revision as i64))?;
         binding.projection_dirty = true;
+        self.last_sync = None;
         Ok(())
     }
 }
