@@ -22,7 +22,7 @@ reel export --release
 
 Source commands in an interactive terminal show the current phase, module progress and elapsed time. `dev` reports when it reuses cached code.
 
-`export` produces a development project at `build/export/debug/`, or a release at `build/export/release/` with `--release`. A release contains the player, code, text package and resource volumes; distribute the whole directory. Default outputs update on repeated runs; explicit `--output` destinations use `--overwrite` to replace existing output. Keep saves separately before replacing an export directory; `--save-directory` selects runtime storage.
+`export` produces a development project at `build/export/TARGET/debug/`; `--release` uses `release/` under the same target. For example, a Vita release goes to `build/export/vita/release/`. A release contains the player, code, text package and resource volumes; distribute the whole directory. Default outputs update on repeated runs; explicit `--output` destinations use `--overwrite` to replace existing output. Keep saves separately before replacing an export directory; `--save-directory` selects runtime storage.
 
 Place platform assets in `resources/@TARGET/` to override common assets at matching paths. For example, `resources/@vita/bg/room.png` overrides `resources/bg/room.png`; scripts still reference `bg/room.png`. Target-only files are included and other target directories are skipped. Files without overrides use the common version. The resource target defaults to the host OS name, such as `windows`, `linux` or `macos`.
 
@@ -63,6 +63,12 @@ power_of_two = true
 match = "audio/**/*.{wav,ogg,mp3,flac}"
 convert = "opus"
 bitrate = 96000
+
+[[targets.vita]]
+match = "video/**/*.mp4"
+convert = "video"
+size = [960, 544]
+bitrate = 4000000
 ```
 
 The first matching rule applies; unmatched files retain their original content. Use `convert = "copy"` to preserve specific files. Selection resolves common assets and target overrides before conversion. Texture scaling preserves logical dimensions and `source_rect` coordinates. Scripts keep their existing image and audio paths.
@@ -75,7 +81,13 @@ reel dev --resource-target vita
 reel export --release --resource-target vita
 ```
 
-`prepare-resources` prepares assets and reports its results; `dev`, `run` and `export` also prepare configured resources. The cache lives under `build/resources/` and updates affected copies when source contents, parameters or the tool change. Offline conversion processes one resource at a time; `prepare-resources --memory-bytes` selects its workspace limit.
+`prepare-resources` prepares assets and reports its results; `dev`, `run` and `export` also prepare configured resources. The cache lives under `build/resources/` and updates affected copies when assets, parameters, the corresponding converter implementation or its dependencies change. Offline conversion processes one resource at a time; `prepare-resources --memory-bytes` selects its workspace limit.
+
+Video conversion uses `ffmpeg` and `ffprobe` from PATH to produce H.264/AAC MP4, preserving the frame rate and fitting within `size`. Movies with color and alpha stacked vertically use `alpha_layout = "top_bottom"`. Video workspace is estimated from dimensions; codec subprocesses allocate their own memory.
+
+Fonts use complete files by default. To subset a font, explicitly select `convert = "font"`, use `unicode = ["U+0020-024F", "U+3000-9FFF", "U+FF00-FFEF"]` for character ranges, and add story and translation text with `text = ["src/**/*.aside"]`. Extend ranges for the languages accepted by player input; characters outside the selected coverage will be missing. Font conversion requires Python with FontTools; `REEL_FONT_PYTHON` can select that interpreter. Font families, styles and every face in a collection are preserved.
+
+`reel clean --resources` removes conversion caches while keeping exports; the next preparation converts assets again. `reel clean` removes the entire `build/` directory.
 
 Run `reel fmt` in the project root to format source or `reel fmt --check` to check formatting. The formatter uses four-space indentation, a 100-character target width and compact argument wrapping. English API documentation is generated from Rust declarations and appears in editor hover and definition navigation.
 

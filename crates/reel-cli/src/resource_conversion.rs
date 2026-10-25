@@ -2,7 +2,7 @@
 //!
 //! An optional project-root `resources.toml` contains ordered `[[targets.NAME]]`
 //! rules. The first matching logical path selects `convert = "texture"`, `"tiles"`,
-//! `"opus"`, or `"copy"`; unmatched resources retain their selected source file.
+//! `"opus"`, `"video"`, or `"copy"`; unmatched resources retain their selected source file.
 //! `match` is a case-sensitive glob with `/` separators (`*` stays within one
 //! component; `**` crosses directories). Source target selection runs first.
 //! Texture `scale` changes texel density while preserving logical coordinates;
@@ -11,9 +11,13 @@
 //! `tile_size` defaults to 510 content pixels plus a one-pixel gutter per side;
 //! `first_level = 1` starts at half density. `format` and `power_of_two` apply to
 //! each tile. The manifest and tiles share one atomic cache object.
+//! Video rules use `size` and `bitrate` to encode H.264/AAC with FFmpeg on PATH.
+//! `alpha_layout = "top_bottom"` preserves packed color and alpha half-frames.
+//! Font rules opt into subsetting with explicit `unicode` ranges and UTF-8 `text`
+//! file globs. Include the characters accepted by player input as well as story text.
 //!
 //! Conversion runs one resource at a time. Immutable cache objects are keyed by
-//! source content, normalized recipe and the running tool's content identity.
+//! source content, normalized recipe and the converter implementation identity.
 //! Payloads remain on disk; hashing uses a fixed 64 KiB buffer. A complete index
 //! is atomically published only after all selected resources are ready.
 use crate::prepare_texture;
@@ -22,7 +26,7 @@ use reel_core::budget::{BudgetCategory, BudgetPool, QueueLimits};
 use reel_package::resource_target::ResourceTarget;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{self, File},
     io::{self, Read},
     path::{Path, PathBuf},
@@ -47,7 +51,8 @@ pub struct Report {
     pub source_bytes: u64,
     /// Selected prepared or unchanged payload length.
     pub output_bytes: u64,
-    /// Peak image reservation or measured audio budget use, excluding thread stacks.
+    /// Peak image reservation, audio budget use or video workspace estimate.
+    /// External video codec allocations and thread stacks are not metered here.
     pub workspace_bytes: u64,
 }
 
@@ -81,6 +86,9 @@ struct RuleInput {
     bitrate: Option<u32>,
     tile_size: Option<u32>,
     first_level: Option<u32>,
+    alpha_layout: Option<crate::prepare_video::AlphaLayout>,
+    unicode: Option<Vec<String>>,
+    text: Option<Vec<String>>,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -90,6 +98,8 @@ enum Convert {
     Texture,
     Tiles,
     Opus,
+    Video,
+    Font,
 }
 
 #[derive(Serialize)]
@@ -111,6 +121,14 @@ enum Recipe {
     Opus {
         bitrate: u32,
     },
+    Video {
+        size: [u32; 2],
+        bitrate: u32,
+        alpha_layout: crate::prepare_video::AlphaLayout,
+    },
+    Font {
+        characters: BTreeSet<u32>,
+    },
 }
 
 struct Rule {
@@ -119,7 +137,7 @@ struct Rule {
 }
 
 impl RuleInput {
-    fn compile(self) -> io::Result<Rule> {
+    fn compile(self, root: &Path) -> io::Result<Rule> {
         if self.pattern.is_empty() || self.pattern.contains('\\') || self.pattern.starts_with('/') {
             return Err(invalid(
                 "match must be a nonempty relative glob using '/' separators",
@@ -136,7 +154,53 @@ impl RuleInput {
         {
             return Err(invalid("tile_size and first_level belong to tiles rules"));
         }
+        if !matches!(self.convert, Convert::Video) && self.alpha_layout.is_some() {
+            return Err(invalid("alpha_layout belongs to video rules"));
+        }
+        if !matches!(self.convert, Convert::Font) && (self.unicode.is_some() || self.text.is_some())
+        {
+            return Err(invalid("unicode and text belong to font rules"));
+        }
         let recipe = match self.convert {
+            Convert::Font => {
+                if self.scale.is_some()
+                    || self.size.is_some()
+                    || self.format.is_some()
+                    || self.power_of_two.is_some()
+                    || self.bitrate.is_some()
+                {
+                    return Err(invalid(
+                        "font rules accept unicode ranges and text file globs",
+                    ));
+                }
+                Recipe::Font {
+                    characters: font_characters(
+                        root,
+                        self.unicode.unwrap_or_default(),
+                        self.text.unwrap_or_default(),
+                    )?,
+                }
+            }
+            Convert::Video => {
+                if self.scale.is_some() || self.format.is_some() || self.power_of_two.is_some() {
+                    return Err(invalid("video rules accept size, bitrate and alpha_layout"));
+                }
+                let size = self
+                    .size
+                    .ok_or_else(|| invalid("video rules require size"))?;
+                let bitrate = self.bitrate.unwrap_or(4_000_000);
+                if size.iter().any(|&value| value < 2) || !(16_000..=100_000_000).contains(&bitrate)
+                {
+                    return Err(invalid(
+                        "video size dimensions must be at least two and bitrate 16000..100000000",
+                    ));
+                }
+                Recipe::Video {
+                    size,
+                    bitrate,
+                    alpha_layout: self.alpha_layout.unwrap_or_default(),
+                }
+            }
             Convert::Tiles => {
                 if self.scale.is_some() || self.size.is_some() || self.bitrate.is_some() {
                     return Err(invalid(
@@ -170,7 +234,7 @@ impl RuleInput {
             }
             Convert::Texture => {
                 if self.bitrate.is_some() {
-                    return Err(invalid("bitrate belongs to opus rules"));
+                    return Err(invalid("bitrate belongs to opus or video rules"));
                 }
                 if self.scale.is_some() && self.size.is_some() {
                     return Err(invalid("texture rules select either scale or size"));
@@ -216,6 +280,92 @@ fn invalid(message: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.to_string())
 }
 
+fn font_characters(
+    root: &Path,
+    ranges: Vec<String>,
+    patterns: Vec<String>,
+) -> io::Result<BTreeSet<u32>> {
+    let mut characters = BTreeSet::new();
+    let scalar = |text: &str| -> io::Result<u32> {
+        u32::from_str_radix(text.strip_prefix("U+").unwrap_or(text), 16)
+            .ok()
+            .filter(|&value| value <= 0x10ffff)
+            .ok_or_else(|| invalid(format!("invalid Unicode scalar: {text}")))
+    };
+    for range in ranges {
+        let (start, end) = range.split_once('-').unwrap_or((&range, &range));
+        let (start, end) = (scalar(start)?, scalar(end)?);
+        if start > end {
+            return Err(invalid(format!("reversed Unicode range: {range}")));
+        }
+        characters.extend((start..=end).filter(|&value| char::from_u32(value).is_some()));
+    }
+    let mut files = BTreeSet::new();
+    for pattern in patterns {
+        let path = Path::new(&pattern);
+        if pattern.is_empty()
+            || pattern.contains('\\')
+            || path
+                .components()
+                .any(|part| !matches!(part, std::path::Component::Normal(_)))
+        {
+            return Err(invalid(
+                "font text globs must be relative paths using '/' separators",
+            ));
+        }
+        let matcher = GlobBuilder::new(&pattern)
+            .literal_separator(true)
+            .backslash_escape(false)
+            .build()
+            .map_err(invalid)?
+            .compile_matcher();
+        let mut base = root.to_path_buf();
+        for part in pattern.split('/') {
+            if part.contains(['*', '?', '[', '{']) {
+                break;
+            }
+            base.push(part);
+        }
+        let mut pending = vec![base];
+        let mut matched = false;
+        while let Some(path) = pending.pop() {
+            let metadata = fs::symlink_metadata(&path)?;
+            if metadata.is_dir() {
+                for entry in fs::read_dir(path)? {
+                    pending.push(entry?.path());
+                }
+            } else if metadata.is_file() && matcher.is_match(path.strip_prefix(root).unwrap()) {
+                files.insert(path);
+                matched = true;
+            }
+        }
+        if !matched {
+            return Err(invalid(format!(
+                "font text glob matched no files: {pattern}"
+            )));
+        }
+    }
+    for file in files {
+        let text = fs::read_to_string(&file)?;
+        characters.extend(text.chars().map(u32::from));
+        for rest in text.split("\\u{").skip(1) {
+            if let Some((hex, _)) = rest.split_once('}') {
+                if let Ok(value) = u32::from_str_radix(hex, 16) {
+                    if char::from_u32(value).is_some() {
+                        characters.insert(value);
+                    }
+                }
+            }
+        }
+    }
+    if characters.is_empty() {
+        return Err(invalid(
+            "font rules require nonempty unicode ranges or text files",
+        ));
+    }
+    Ok(characters)
+}
+
 fn rules(root: &Path, target: &ResourceTarget) -> io::Result<Vec<Rule>> {
     let path = root.join("resources.toml");
     let text = match fs::read_to_string(&path) {
@@ -230,16 +380,17 @@ fn rules(root: &Path, target: &ResourceTarget) -> io::Result<Vec<Rule>> {
         ResourceTarget::parse(&name)
             .map_err(|error| invalid(format!("{}: targets.{name}: {error}", path.display())))?;
         for (index, input) in inputs.into_iter().enumerate() {
-            let rule = input.compile().map_err(|error| {
+            if name != target.as_str() {
+                continue;
+            }
+            let rule = input.compile(root).map_err(|error| {
                 invalid(format!(
                     "{}: targets.{name}[{}]: {error}",
                     path.display(),
                     index + 1
                 ))
             })?;
-            if name == target.as_str() {
-                selected.push(rule);
-            }
+            selected.push(rule);
         }
     }
     Ok(selected)
@@ -272,9 +423,9 @@ pub fn prepare_directory_if_configured(
         project_root,
         target,
         selected,
-        &std::env::current_exe()?,
         MEMORY_BYTES,
         rules,
+        converter_identity,
     )
     .map(Some)
 }
@@ -293,13 +444,7 @@ pub fn prepare_project_with_limit(
     } else {
         BTreeMap::new()
     };
-    prepare_with_tool(
-        root,
-        target,
-        selected,
-        &std::env::current_exe()?,
-        memory_bytes,
-    )
+    prepare_with_identity(root, target, selected, memory_bytes, converter_identity)
 }
 
 /// Prepare an already selected logical resource map, including explicit mounts.
@@ -309,13 +454,7 @@ pub fn prepare_selected(
     target: &ResourceTarget,
     selected: BTreeMap<String, PathBuf>,
 ) -> io::Result<Prepared> {
-    prepare_with_tool(
-        root,
-        target,
-        selected,
-        &std::env::current_exe()?,
-        MEMORY_BYTES,
-    )
+    prepare_with_identity(root, target, selected, MEMORY_BYTES, converter_identity)
 }
 
 fn hash_file(path: &Path) -> io::Result<blake3::Hash> {
@@ -332,24 +471,36 @@ fn hash_file(path: &Path) -> io::Result<blake3::Hash> {
     Ok(hash.finalize())
 }
 
-fn prepare_with_tool(
-    root: &Path,
-    target: &ResourceTarget,
-    selected: BTreeMap<String, PathBuf>,
-    tool: &Path,
-    memory_bytes: u64,
-) -> io::Result<Prepared> {
-    let rules = rules(root, target)?;
-    prepare_with_rules(root, target, selected, tool, memory_bytes, rules)
+fn converter_identity(recipe: &Recipe) -> &'static str {
+    use crate::conversion_identity as identity;
+    match recipe {
+        Recipe::Copy => unreachable!(),
+        Recipe::Texture { .. } => identity::for_kind("texture"),
+        Recipe::Tiles { .. } => identity::for_kind("tiles"),
+        Recipe::Opus { .. } => identity::for_kind("opus"),
+        Recipe::Video { .. } => identity::for_kind("video"),
+        Recipe::Font { .. } => identity::for_kind("font"),
+    }
 }
 
-fn prepare_with_rules(
+fn prepare_with_identity<'a>(
     root: &Path,
     target: &ResourceTarget,
     selected: BTreeMap<String, PathBuf>,
-    tool: &Path,
+    memory_bytes: u64,
+    identity: impl Fn(&Recipe) -> &'a str,
+) -> io::Result<Prepared> {
+    let rules = rules(root, target)?;
+    prepare_with_rules(root, target, selected, memory_bytes, rules, identity)
+}
+
+fn prepare_with_rules<'a>(
+    root: &Path,
+    target: &ResourceTarget,
+    selected: BTreeMap<String, PathBuf>,
     memory_bytes: u64,
     rules: Vec<Rule>,
+    identity: impl Fn(&Recipe) -> &'a str,
 ) -> io::Result<Prepared> {
     let root = root.canonicalize()?;
     let mut prepared = Prepared {
@@ -357,7 +508,8 @@ fn prepare_with_rules(
         report: Report::default(),
         index: None,
     };
-    let mut tool_hash = None;
+    let mut video_tools = None;
+    let mut font_tools = None;
     for (name, source) in selected {
         let source = source.canonicalize()?;
         let source_bytes = fs::metadata(&source)?.len();
@@ -368,18 +520,30 @@ fn prepare_with_rules(
             .map(|rule| &rule.recipe);
         let path = match recipe {
             Some(
-                recipe @ (Recipe::Texture { .. } | Recipe::Tiles { .. } | Recipe::Opus { .. }),
+                recipe @ (Recipe::Texture { .. }
+                | Recipe::Tiles { .. }
+                | Recipe::Opus { .. }
+                | Recipe::Video { .. }
+                | Recipe::Font { .. }),
             ) => {
-                let tool = match tool_hash {
-                    Some(hash) => hash,
-                    None => *tool_hash.insert(hash_file(tool)?),
-                };
                 let source_hash = hash_file(&source)?;
                 let mut hash = blake3::Hasher::new();
                 hash.update(b"Reel resource conversion v1\0");
-                hash.update(tool.as_bytes());
+                hash.update(identity(recipe).as_bytes());
                 hash.update(source_hash.as_bytes());
                 hash.update(&serde_json::to_vec(recipe).map_err(io::Error::other)?);
+                if matches!(recipe, Recipe::Video { .. }) {
+                    if video_tools.is_none() {
+                        video_tools = Some(crate::prepare_video::external_tools_identity()?);
+                    }
+                    hash.update(video_tools.as_ref().unwrap().as_bytes());
+                }
+                if matches!(recipe, Recipe::Font { .. }) {
+                    if font_tools.is_none() {
+                        font_tools = Some(crate::prepare_font::external_tools_identity()?);
+                    }
+                    hash.update(font_tools.as_ref().unwrap().as_bytes());
+                }
                 let key = hash.finalize().to_hex().to_string();
                 let objects = root.join("build/resources/objects");
                 let object = objects.join(key);
@@ -387,6 +551,8 @@ fn prepare_with_rules(
                     Recipe::Texture { .. } => "resource.reel-texture",
                     Recipe::Tiles { .. } => "resource.reel-image",
                     Recipe::Opus { .. } => "resource.opus",
+                    Recipe::Video { .. } => "resource.mp4",
+                    Recipe::Font { .. } => "resource.ttf",
                     Recipe::Copy => unreachable!(),
                 };
                 let output = object.join(output_name);
@@ -480,6 +646,23 @@ fn insert_prepared(prepared: &mut Prepared, name: String, path: PathBuf) -> io::
 
 fn convert(source: &Path, output: &Path, recipe: &Recipe, memory_bytes: u64) -> io::Result<u64> {
     match recipe {
+        Recipe::Font { characters } => {
+            crate::prepare_font::prepare(source, output, characters, memory_bytes)
+        }
+        Recipe::Video {
+            size,
+            bitrate,
+            alpha_layout,
+        } => crate::prepare_video::prepare(
+            source,
+            output,
+            crate::prepare_video::Options {
+                size: *size,
+                bitrate: *bitrate,
+                alpha_layout: *alpha_layout,
+            },
+            memory_bytes,
+        ),
         Recipe::Tiles {
             tile_size,
             first_level,

@@ -22,7 +22,7 @@ reel export --release
 
 交互终端中的源码命令显示当前阶段、模块进度和耗时；`dev` 复用缓存时显示缓存状态。
 
-`export` 默认生成 `build/export/debug/` 开发工程，`--release` 生成 `build/export/release/` 发布目录。发布目录包含播放器、代码、文本包和资源卷；整个目录交给玩家。默认输出重复执行时更新，显式 `--output` 通过 `--overwrite` 替换已有目标。替换导出目录前，将存档放在独立位置；`--save-directory` 指定运行数据目录。
+`export` 默认生成 `build/export/目标/debug/` 开发工程，`--release` 使用同一目标下的 `release/`。例如 Vita 发布目录为 `build/export/vita/release/`。发布目录包含播放器、代码、文本包和资源卷；整个目录交给玩家。默认输出重复执行时更新，显式 `--output` 通过 `--overwrite` 替换已有目标。替换导出目录前，将存档放在独立位置；`--save-directory` 指定运行数据目录。
 
 平台素材放在 `resources/@目标/`，按相同路径覆盖公共素材。例如 `resources/@vita/bg/room.png` 覆盖 `resources/bg/room.png`，脚本仍引用 `bg/room.png`。目标内独有的文件也会选入，其余目标目录跳过；缺少覆盖时使用公共文件。默认资源目标为宿主系统名，如 `windows`、`linux` 或 `macos`。
 
@@ -63,6 +63,12 @@ power_of_two = true
 match = "audio/**/*.{wav,ogg,mp3,flac}"
 convert = "opus"
 bitrate = 96000
+
+[[targets.vita]]
+match = "video/**/*.mp4"
+convert = "video"
+size = [960, 544]
+bitrate = 4000000
 ```
 
 规则按顺序取首个匹配，未匹配的文件直接使用原内容；`convert = "copy"` 可保留特定文件。先选取公共素材和平台覆盖，再应用转换。纹理缩放保留原有逻辑尺寸和 `source_rect` 坐标；原脚本中的图片、音频路径继续使用。
@@ -75,7 +81,13 @@ reel dev --resource-target vita
 reel export --release --resource-target vita
 ```
 
-`prepare-resources` 提前准备并报告转换结果；`dev`、`run` 和 `export` 也会按配置准备。缓存位于 `build/resources/`，源码、参数或工具变化时更新相关副本。离线转换逐个处理资源；`prepare-resources --memory-bytes` 可指定转换工作区限额。
+`prepare-resources` 提前准备并报告转换结果；`dev`、`run` 和 `export` 也会按配置准备。缓存位于 `build/resources/`，素材、参数、对应转换实现或依赖变化时更新相关副本。离线转换逐个处理资源；`prepare-resources --memory-bytes` 可指定转换工作区限额。
+
+视频转换调用 PATH 中的 `ffmpeg` 和 `ffprobe`，输出 H.264/AAC MP4，保持帧率并按 `size` 等比缩小。上下排列颜色与透明度的影片使用 `alpha_layout = "top_bottom"`。视频工作区按尺寸估算，编解码子进程自行分配内存。
+
+字体默认使用完整文件。需要裁剪时，显式选择 `convert = "font"`，用 `unicode = ["U+0020-024F", "U+3000-9FFF", "U+FF00-FFEF"]` 指定字符区间，用 `text = ["src/**/*.aside"]` 加入剧情与翻译用字。按作品支持的语言扩展区间，覆盖玩家输入；范围外字符会缺字。字体转换需要 Python 的 FontTools 包；`REEL_FONT_PYTHON` 可指定已安装该包的 Python。字体族、样式和字体集合中的各字体均保留。
+
+`reel clean --resources` 清理转换缓存并保留导出包；下一次准备会重新转换。`reel clean` 清理整个 `build/`。
 
 在项目根运行 `reel fmt` 整理源码，`reel fmt --check` 检查排版。格式化使用 4 空格缩进和 100 字符目标行宽，长调用紧凑排列参数。英文 API 文档由 Rust 声明生成，可在编辑器中悬停或跳转查看。
 
