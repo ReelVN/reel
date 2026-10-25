@@ -233,7 +233,7 @@ fn independently_compressed_blocks_preserve_unknown_length_input_and_misaligned_
         u32::from_le_bytes(bytes[directory + 44..directory + 48].try_into().unwrap()),
         1
     );
-    assert!(SCRATCH_BYTES <= 128 << 10);
+    const { assert!(SCRATCH_BYTES <= 128 << 10) };
     let mut scratch = ReadScratch::new();
     for (start, length) in [
         (0, payload.len()),
@@ -366,23 +366,23 @@ fn corrupt_block_metadata_and_codec_output_fail_at_the_addressed_read() {
     );
 }
 
-struct CancelOnSeek<R> {
+struct CancelOnRead<R> {
     inner: R,
     at: u64,
     cancelled: Rc<Cell<bool>>,
 }
-impl<R: Read> Read for CancelOnSeek<R> {
+impl<R: Read + Seek> Read for CancelOnRead<R> {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if self.inner.stream_position()? == self.at {
+            self.cancelled.set(true);
+            return Err(io::ErrorKind::Interrupted.into());
+        }
         self.inner.read(output)
     }
 }
-impl<R: Seek> Seek for CancelOnSeek<R> {
+impl<R: Seek> Seek for CancelOnRead<R> {
     fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
-        let position = self.inner.seek(from)?;
-        if position == self.at {
-            self.cancelled.set(true);
-        }
-        Ok(position)
+        self.inner.seek(from)
     }
 }
 
@@ -395,9 +395,15 @@ fn cancellation_stops_before_the_next_block_and_preserves_the_completed_prefix()
         unreachable!()
     };
     let cancelled = Rc::new(Cell::new(false));
-    let mut input = CancelOnSeek {
+    let second_payload = entry.offset
+        + u64::from_le_bytes(
+            bytes[directory_offset as usize + 16..directory_offset as usize + 24]
+                .try_into()
+                .unwrap(),
+        );
+    let mut input = CancelOnRead {
         inner: Cursor::new(bytes),
-        at: directory_offset + 16,
+        at: second_payload,
         cancelled: cancelled.clone(),
     };
     let mut result = vec![0; payload.len()];
@@ -450,6 +456,7 @@ struct SparseArchive {
     position: u64,
     gap: u64,
     reads: Vec<(u64, usize)>,
+    seeks: usize,
 }
 impl Read for SparseArchive {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
@@ -471,6 +478,7 @@ impl Read for SparseArchive {
 }
 impl Seek for SparseArchive {
     fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        self.seeks += 1;
         self.position = match from {
             SeekFrom::Start(position) => position,
             SeekFrom::Current(delta) => (i128::from(self.position) + i128::from(delta))
@@ -515,6 +523,7 @@ fn compressed_sparse_mount_and_ranges_only_read_addressed_records_and_payloads()
         position: 0,
         gap,
         reads: Vec::new(),
+        seeks: 0,
     };
     let index = ArchiveIndex::read(&mut input).unwrap();
     assert_eq!(
@@ -614,18 +623,21 @@ fn decoded_cache_tracks_content_and_retires_identity_before_failed_decodes() {
         position: 0,
         gap: 0,
         reads: Vec::new(),
+        seeks: 0,
     };
     let mut other_input = SparseArchive {
         bytes: other_bytes,
         position: 0,
         gap: 0,
         reads: Vec::new(),
+        seeks: 0,
     };
     let mut damaged_input = SparseArchive {
         bytes: damaged,
         position: 0,
         gap: 0,
         reads: Vec::new(),
+        seeks: 0,
     };
     let mut scratch = ReadScratch::new();
     let mut result = [0];
@@ -693,5 +705,71 @@ fn decoded_cache_tracks_content_and_retires_identity_before_failed_decodes() {
         input.reads.len(),
         2,
         "decoded length mismatch also retires the previous identity"
+    );
+}
+
+#[test]
+fn sequential_blocks_batch_directory_reads_and_preserve_small_range_cache() {
+    let mut payload = Vec::with_capacity(BLOCK_BYTES * 258 + 17);
+    for block in 0..258 {
+        payload.extend(std::iter::repeat_n((block % 251) as u8, BLOCK_BYTES));
+    }
+    payload.extend_from_slice(&[42; 17]);
+    let mut writer = ArchiveWriter::new(Cursor::new(Vec::new()), ArchiveKind::Resources).unwrap();
+    writer.add("large", &mut payload.as_slice()).unwrap();
+    let bytes = writer.finish().unwrap().into_inner();
+    let entry = ArchiveIndex::read(&mut Cursor::new(&bytes))
+        .unwrap()
+        .get("large")
+        .unwrap()
+        .clone();
+    let mut input = SparseArchive {
+        bytes,
+        position: 0,
+        gap: 0,
+        reads: Vec::new(),
+        seeks: 0,
+    };
+    let mut result = vec![0; payload.len()];
+    let mut scratch = ReadScratch::new();
+    entry
+        .read_range(&mut input, 0, &mut result, &mut scratch, || false)
+        .unwrap();
+    assert_eq!(result, payload);
+    assert_eq!(
+        input.seeks, 4,
+        "two directory batches and two contiguous payload runs"
+    );
+    assert_eq!(
+        input.reads.len(),
+        261,
+        "259 payload blocks and two directory reads"
+    );
+    assert_eq!(input.reads[0].1, 4096);
+    assert_eq!(input.reads[257].1, 3 * 16);
+
+    // A small request owns its cached decoded block. Complete block decodes write
+    // into the caller's buffer and preserve those still-valid cached bytes.
+    let mut tiny = [0; 19];
+    entry
+        .read_range(&mut input, 3, &mut tiny, &mut scratch, || false)
+        .unwrap();
+    entry
+        .read_range(
+            &mut input,
+            BLOCK_BYTES as u64,
+            &mut result[BLOCK_BYTES..],
+            &mut scratch,
+            || false,
+        )
+        .unwrap();
+    input.reads.clear();
+    entry
+        .read_range(&mut input, 22, &mut tiny, &mut scratch, || false)
+        .unwrap();
+    assert_eq!(tiny, payload[22..41]);
+    assert!(
+        input.reads.is_empty(),
+        "complete reads leave the small-range cache usable"
     );
 }

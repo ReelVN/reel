@@ -88,7 +88,8 @@ impl ArchiveIndex {
             return Err(invalid("archive entry count exceeds index length"));
         }
         input.seek(SeekFrom::Start(index_offset))?;
-        let mut input = BufReader::with_capacity(64 << 10, input.take(remaining));
+        let mut input =
+            BufReader::with_capacity(remaining.min(64 << 10) as usize, input.take(remaining));
         let mut entries = Vec::new();
         entries
             .try_reserve_exact(usize::try_from(count).map_err(io::Error::other)?)
