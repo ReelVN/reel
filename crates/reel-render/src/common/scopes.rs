@@ -1,6 +1,41 @@
 use super::GpuError;
 use reel_ui::frame::{FrameCommand, FrameDraw, FrameGroup, FrameOp, RecordLocation};
 
+/// A flat clip can move to ordinary draw geometry when it crosses no retained
+/// transition/capture boundary. Child scopes keep their existing isolation.
+pub(crate) fn flat_clip(
+    drawing: &reel_ui::frame::FrameDrawing,
+    commands: &[FrameCommand],
+    next: usize,
+    offset: Option<usize>,
+    transitions: bool,
+    capture: bool,
+) -> bool {
+    let mut end = next;
+    loop {
+        match commands.get(end).map(|command| &command.op) {
+            Some(FrameOp::PopClip) => break,
+            Some(FrameOp::Draw(_) | FrameOp::PushContext(_) | FrameOp::PopContext) => end += 1,
+            _ => return false,
+        }
+    }
+    let Some(offset) = offset else {
+        return true;
+    };
+    let start = offset + next;
+    let end = offset + end + 1;
+    !(transitions
+        && drawing
+            .transitions()
+            .iter()
+            .any(|t| t.commands.start < end && t.commands.end > start)
+        || capture
+            && drawing
+                .capture_exclusions()
+                .iter()
+                .any(|range| range.start < end && range.end > start))
+}
+
 /// A single source-over rectangle can carry its group's opacity directly.
 /// Multiple draws and glyph runs retain isolation because their pixels can overlap.
 /// The caller keeps transition and capture boundaries outside this fused pair.

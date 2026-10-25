@@ -120,6 +120,7 @@ pub struct Pipelines {
     pub yuv_layout: wgpu::BindGroupLayout,
     pub composite: wgpu::RenderPipeline,
     pub source_over: wgpu::RenderPipeline,
+    pub alpha_mask: wgpu::RenderPipeline,
     pub composite_blend: wgpu::RenderPipeline,
     pub paint_layout: wgpu::BindGroupLayout,
     pub composite_layout: wgpu::BindGroupLayout,
@@ -276,6 +277,19 @@ impl Pipelines {
             #[cfg(test)]
             Some(counts),
         );
+        let alpha_mask = pipeline_entry(
+            device,
+            quality,
+            &composite_layout,
+            include_str!("composite.wgsl"),
+            false,
+            FragmentOutput {
+                entry: "alpha_mask",
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+            },
+            #[cfg(test)]
+            Some(counts),
+        );
         #[cfg(test)]
         counts
             .samplers
@@ -318,6 +332,7 @@ impl Pipelines {
             yuv_layout,
             composite,
             source_over,
+            alpha_mask,
             composite_blend,
             paint_layout,
             composite_layout,
@@ -392,6 +407,8 @@ impl Pipelines {
         });
         pass.set_pipeline(if mode == 0 && params.invert == 0. && params.blend == 0 {
             &self.source_over
+        } else if mode == 1 && params.invert == 0. && params.blend == 0 {
+            &self.alpha_mask
         } else if params.blend == 0 && !params.operation.replaces() {
             &self.composite
         } else {

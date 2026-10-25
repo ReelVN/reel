@@ -56,6 +56,10 @@ fn subtract(s: vec4<f32>, d: vec4<f32>) -> vec4<f32> {
     return textureSample(source, linear_sampler, v.uv) * params.opacity;
 }
 
+@fragment fn alpha_mask(v: Varying) -> @location(0) vec4<f32> {
+    return textureSample(source, linear_sampler, v.uv) * clamp(textureSample(mask, linear_sampler, v.uv).a, 0.0, 1.0) * params.opacity;
+}
+
 @fragment fn fragment(v: Varying) -> @location(0) vec4<f32> {
     let s = covered_source(v);
     if params.blend == 0u { return s; }

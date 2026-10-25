@@ -448,6 +448,15 @@ impl Context<'_> {
         if mesh.indices.is_empty() || self.scissor.empty() {
             return Ok(());
         }
+        let clipped = self
+            .mesh_clip
+            .map(|clip| mesh.clipped(clip, self.mesh_allocation()))
+            .transpose()?
+            .flatten();
+        let mesh = clipped.as_ref().unwrap_or(mesh);
+        if mesh.indices.is_empty() {
+            return Ok(());
+        }
         #[cfg(test)]
         self.gpu
             .upload_creations

@@ -21,13 +21,16 @@ use reel_ui::{
 
 const SIZE: [u32; 2] = [960, 544];
 const TARGET_BYTES: u64 = SIZE[0] as u64 * SIZE[1] as u64 * 4;
+#[cfg(feature = "gles2")]
+static GLES_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn clipped_frame() -> RenderFrame {
     let mut scene = Scene::new();
     // A common parent scale turns otherwise integral UI rectangles into
     // fractional physical clips. Siblings exercise target reuse as well as cost.
     for index in 0..66 {
-        let transform = Affine::scale(0.6666667)
+        let transform = Affine::translate((0.5, 0.5))
+            * Affine::scale(0.6666667)
             * Affine::translate((
                 30. + (index % 6) as f64 * 150.,
                 30. + (index / 6) as f64 * 48.,
@@ -52,6 +55,10 @@ fn clipped_frame() -> RenderFrame {
         }
         scene.pop_clip();
     }
+    compile_scene(scene)
+}
+
+fn compile_scene(scene: Scene) -> RenderFrame {
     let mut widget = RecordWidget::new(scene);
     widget.clip = false;
     let mut bridge = widget_bridge(widget, Affine::IDENTITY);
@@ -144,6 +151,7 @@ fn multisample_rect_clips_retain_coverage_targets() {
 #[test]
 #[ignore = "requires a native GLES context"]
 fn gles_single_sample_rect_clips_fit_one_target() {
+    let _serial = GLES_TEST_LOCK.lock().unwrap();
     use reel_render::gles2::{GlesBackend, GlesLimits};
     use reel_render::{AlphaMode, RenderBackend, RenderEvent, SurfaceInfo};
     use reel_ui::resources::ColorEncoding;
@@ -188,5 +196,85 @@ fn gles_single_sample_rect_clips_fit_one_target() {
         "gles clips=66 frames=200 submit_complete_us={} target_bytes={TARGET_BYTES}",
         measured.elapsed().as_micros()
     );
+    renderer.close().unwrap();
+}
+
+#[cfg(feature = "gles2")]
+#[test]
+#[ignore = "requires a native GLES context"]
+fn gles_nested_groups_retain_clip_composition() {
+    let _serial = GLES_TEST_LOCK.lock().unwrap();
+    use reel_render::gles2::{GlesBackend, GlesLimits};
+    use reel_render::{AlphaMode, PresentOutcome, RenderBackend, RenderEvent, SurfaceInfo};
+    use reel_ui::{imaging::record::Group, resources::ColorEncoding};
+    let mut scene = Scene::new();
+    scene.push_clip(Clip::Fill {
+        transform: Affine::translate((0.5, 0.5)),
+        fill_rule: Default::default(),
+        shape: Geometry::Rect(Rect::new(0., 0., 120., 36.)),
+    });
+    scene.push_group(Group {
+        composite: Composite {
+            alpha: 0.5,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    for x in [0., 45.] {
+        scene.draw(Draw::Fill {
+            transform: Affine::IDENTITY,
+            fill_rule: Default::default(),
+            brush: Brush::Solid(Color::from_rgba8(64, 128, 192, 128)),
+            brush_transform: None,
+            shape: Geometry::Rect(Rect::new(x, -6., x + 90., 42.)),
+            composite: Composite::default(),
+        });
+    }
+    scene.pop_group();
+    scene.pop_clip();
+    let frame = compile_scene(scene);
+    let mut renderer = GlesBackend::headless(
+        SIZE,
+        GlesLimits {
+            target_bytes: TARGET_BYTES * 3,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    renderer
+        .configure(SurfaceInfo {
+            physical_size: SIZE,
+            scale_factor: 1.,
+            surface_epoch: frame.surface_epoch(),
+            color_encoding: ColorEncoding::Srgb,
+            alpha_mode: AlphaMode::Opaque,
+        })
+        .unwrap();
+    #[cfg(feature = "profiling")]
+    let before = reel_core::profile::Sample::snapshot();
+    assert!(matches!(
+        renderer.render_present(&frame, || {}).unwrap(),
+        PresentOutcome::PresentAccepted(_)
+    ));
+    let mut events = Vec::new();
+    loop {
+        renderer.poll(&mut events, 32).unwrap();
+        if events
+            .iter()
+            .any(|event| matches!(event, RenderEvent::RenderFinished { .. }))
+        {
+            break;
+        }
+        std::thread::yield_now();
+    }
+    #[cfg(feature = "profiling")]
+    {
+        use reel_core::profile::{Phase, Sample};
+        let measured = Sample::snapshot().delta(before);
+        assert_eq!(measured.calls[Phase::SourceComposite as usize], 1);
+        assert_eq!(measured.calls[Phase::CoverageComposite as usize], 1);
+        assert_eq!(measured.calls[Phase::EffectComposite as usize], 0);
+        assert_eq!(measured.calls[Phase::TargetCreate as usize], 3);
+    }
     renderer.close().unwrap();
 }

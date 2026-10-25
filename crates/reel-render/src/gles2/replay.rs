@@ -36,6 +36,7 @@ pub(super) struct Context<'a> {
     pub available_targets: Vec<Target>,
     pub buffers: Vec<(native::VertexBuffer, native::IndexBuffer)>,
     pub scissor: Scissor,
+    pub mesh_clip: Option<crate::common::mesh::RectClip>,
     pub at: Option<RecordLocation>,
 }
 pub(super) struct Work {
@@ -81,6 +82,7 @@ pub(super) fn prepare(
         available_targets: Vec::new(),
         buffers: Vec::new(),
         scissor: Scissor::full(size),
+        mesh_clip: None,
         at: None,
     };
     let transform = Affine::scale_non_uniform(
@@ -115,6 +117,7 @@ struct Scope<'a> {
     invert: f32,
     blend: reel_ui::frame::BlendMode,
     scissor: Scissor,
+    mesh_clip: Option<crate::common::mesh::RectClip>,
     isolated: bool,
 }
 struct MaskComposition<'a> {
@@ -337,20 +340,40 @@ impl Context<'_> {
             self.at = Some(at);
             let transform = current.transform;
             self.scissor = current.scopes.last().scissor;
+            self.mesh_clip = current.scopes.last().mesh_clip;
             match &command.op {
                 FrameOp::PushContext(_) | FrameOp::PopContext => (),
                 FrameOp::PushClip(clip) => {
                     let scissor = Scissor::from_clip(clip, transform, self.size, 1);
+                    let mesh_clip = scissor
+                        .is_none()
+                        .then(|| {
+                            crate::common::scopes::flat_clip(
+                                current.drawing,
+                                current.commands,
+                                current.next,
+                                current.offset,
+                                current.transitions_enabled,
+                                self.capture,
+                            )
+                            .then(|| {
+                                crate::common::mesh::RectClip::from_clip(clip, transform, self.size)
+                            })
+                            .flatten()
+                        })
+                        .flatten();
+                    let isolated = scissor.is_none() && mesh_clip.is_none();
                     current.scopes.push(
                         Kind::Clip,
                         at,
                         Scope {
-                            target: if scissor.is_some() {
+                            target: if !isolated {
                                 current.scopes.last().target.clone()
                             } else {
                                 self.target()?
                             },
-                            clip: if scissor.is_some() { None } else { Some(clip) },
+                            clip: isolated.then_some(clip),
+                            mesh_clip: mesh_clip.or(self.mesh_clip),
                             mask: None,
                             image_mask: None,
                             opacity: 1.,
@@ -359,7 +382,7 @@ impl Context<'_> {
                             scissor: scissor
                                 .or_else(|| Scissor::clip_bounds(clip, transform, self.size))
                                 .map_or(self.scissor, |s| self.scissor.intersect(s)),
-                            isolated: scissor.is_none(),
+                            isolated,
                         },
                         |bytes| self.transient(bytes),
                     )?;
@@ -411,6 +434,7 @@ impl Context<'_> {
                         at,
                         Scope {
                             target: self.target()?,
+                            mesh_clip: self.mesh_clip,
                             clip: group.clip.as_ref(),
                             mask: group.mask,
                             image_mask: group
@@ -435,6 +459,7 @@ impl Context<'_> {
                     let entry = current.scopes.pop(kind, at)?;
                     let group = entry.value;
                     self.scissor = current.scopes.last().scissor;
+                    self.mesh_clip = current.scopes.last().mesh_clip;
                     if !group.isolated {
                         continue;
                     }
@@ -590,6 +615,7 @@ impl Context<'_> {
             transform,
             scopes: Scopes::new(Scope {
                 target: self.target()?,
+                mesh_clip: None,
                 clip: None,
                 mask: None,
                 image_mask: None,
@@ -640,8 +666,18 @@ impl Context<'_> {
             CompositeOperation::MaskedTransition(p) => (4., p),
         };
         let plain = mode == 0. && invert == 0. && blend == 0 && expression.is_none();
+        let coverage = mode == 1. && invert == 0. && blend == 0 && expression.is_none();
+        let _kind = reel_core::profile::Scope::new(if plain {
+            reel_core::profile::Phase::SourceComposite
+        } else if coverage {
+            reel_core::profile::Phase::CoverageComposite
+        } else {
+            reel_core::profile::Phase::EffectComposite
+        });
         let shader = if plain {
             &self.programs.source_over
+        } else if coverage {
+            &self.programs.alpha_mask
         } else {
             &self.programs.composite
         };
@@ -672,7 +708,13 @@ impl Context<'_> {
                 mask,
                 backdrop,
                 expression.map_or(source, |t| &t.view),
-            ][..if plain { 1 } else { 4 }],
+            ][..if plain {
+                1
+            } else if coverage {
+                2
+            } else {
+                4
+            }],
             &values,
             if replacing {
                 native::Blend::Replace

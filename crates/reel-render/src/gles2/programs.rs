@@ -116,6 +116,7 @@ pub(super) struct Programs {
     pub video_appearance: Shader,
     pub composite: Shader,
     pub source_over: Shader,
+    pub alpha_mask: Shader,
     pub mask: Shader,
     pub present: Shader,
     pub vertices: VertexBuffer,
@@ -125,7 +126,7 @@ pub(super) struct Programs {
 impl Programs {
     pub fn new(context: &native::Context, budget: &BudgetPool) -> Result<Self, GlesError> {
         let bytes = (size_of::<Self>()
-            + NAMES.len() * size_of::<Option<Uniform>>() * 12
+            + NAMES.len() * size_of::<Option<Uniform>>() * 13
             + 4 * size_of::<crate::common::mesh::Vertex>()
             + 6 * 4) as u64;
         let storage = budget
@@ -155,6 +156,7 @@ impl Programs {
             video_appearance: Shader::new(context, shader_code!("paint_video_appearance"))?,
             composite: Shader::new(context, shader_code!("composite"))?,
             source_over: Shader::new(context, shader_code!("source_over"))?,
+            alpha_mask: Shader::new(context, shader_code!("alpha_mask"))?,
             mask: Shader::new(context, shader_code!("mask"))?,
             present: Shader::new(context, shader_code!("present"))?,
             vertices: context.vertex_buffer(bytemuck::cast_slice(&data), 12, &attributes)?,

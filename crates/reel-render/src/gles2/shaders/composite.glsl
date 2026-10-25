@@ -9,6 +9,8 @@ vec3 encode(vec3 x){return mix(1.055*pow(max(x,vec3(0.0)),vec3(1.0/2.4))-0.055,1
 vec3 linear(vec3 x){return mix(pow((x+0.055)/1.055,vec3(2.4)),x/12.92,step(x,vec3(0.04045)));}
 #ifdef REEL_SOURCE_OVER_ONLY
 void main(){gl_FragColor=sample_fbo(u_source)*u_params.x;}
+#elif defined(REEL_ALPHA_MASK_ONLY)
+void main(){gl_FragColor=sample_fbo(u_source)*clamp(sample_fbo(u_mask).a,0.0,1.0)*u_params.x;}
 #else
 void main(){
  vec4 s=sample_fbo(u_source),m=sample_fbo(u_mask);

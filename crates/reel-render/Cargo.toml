@@ -7,6 +7,7 @@ publish = false
 
 [features]
 default = []
+profiling = ["reel-core/profiling"]
 wgpu = ["dep:wgpu", "dep:lyon_tessellation", "dep:swash", "dep:bytemuck", "dep:pollster", "dep:half", "dep:guillotiere"]
 gles2 = ["dep:pvr-psp2-sys", "dep:pvr-compiler", "dep:lyon_tessellation", "dep:swash", "dep:bytemuck", "dep:half", "dep:guillotiere"]
 

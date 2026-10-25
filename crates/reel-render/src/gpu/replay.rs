@@ -31,6 +31,7 @@ pub(super) struct Context<'a> {
     pub(super) target_allocations: Vec<Arc<super::target_cache::Allocation>>,
     pub(super) available_targets: Vec<Target>,
     pub(super) scissor: Scissor,
+    pub(super) mesh_clip: Option<crate::common::mesh::RectClip>,
 }
 struct Scope<'a> {
     target: Target,
@@ -41,6 +42,7 @@ struct Scope<'a> {
     invert: f32,
     blend: reel_ui::frame::BlendMode,
     scissor: Scissor,
+    mesh_clip: Option<crate::common::mesh::RectClip>,
     isolated: bool,
 }
 struct MaskComposition<'a> {
@@ -265,21 +267,40 @@ impl Context<'_> {
             let at = command.origin.at;
             let transform = current.transform;
             self.scissor = current.scopes.last().scissor;
+            self.mesh_clip = current.scopes.last().mesh_clip;
             match &command.op {
                 FrameOp::PushContext(_) | FrameOp::PopContext => (),
                 FrameOp::PushClip(clip) => {
                     let scissor =
                         Scissor::from_clip(clip, transform, self.size, self.quality.samples);
+                    let mesh_clip = (scissor.is_none() && self.quality.samples == 1)
+                        .then(|| {
+                            crate::common::scopes::flat_clip(
+                                current.drawing,
+                                current.commands,
+                                current.next,
+                                current.offset,
+                                current.transitions_enabled,
+                                self.capture,
+                            )
+                            .then(|| {
+                                crate::common::mesh::RectClip::from_clip(clip, transform, self.size)
+                            })
+                            .flatten()
+                        })
+                        .flatten();
+                    let isolated = scissor.is_none() && mesh_clip.is_none();
                     current.scopes.push(
                         Kind::Clip,
                         at,
                         Scope {
-                            target: if scissor.is_some() {
+                            target: if !isolated {
                                 current.scopes.last().target.clone()
                             } else {
                                 self.target()?
                             },
-                            clip: if scissor.is_some() { None } else { Some(clip) },
+                            clip: isolated.then_some(clip),
+                            mesh_clip: mesh_clip.or(self.mesh_clip),
                             mask: None,
                             image_mask: None,
                             opacity: 1.,
@@ -288,7 +309,7 @@ impl Context<'_> {
                             scissor: scissor
                                 .or_else(|| Scissor::clip_bounds(clip, transform, self.size))
                                 .map_or(self.scissor, |s| self.scissor.intersect(s)),
-                            isolated: scissor.is_none(),
+                            isolated,
                         },
                         |bytes| self.transient(bytes),
                     )?;
@@ -340,6 +361,7 @@ impl Context<'_> {
                         at,
                         Scope {
                             target: self.target()?,
+                            mesh_clip: self.mesh_clip,
                             clip: group.clip.as_ref(),
                             mask: group.mask,
                             image_mask: group
@@ -364,6 +386,7 @@ impl Context<'_> {
                     let entry = current.scopes.pop(kind, at)?;
                     let group = entry.value;
                     self.scissor = current.scopes.last().scissor;
+                    self.mesh_clip = current.scopes.last().mesh_clip;
                     if !group.isolated {
                         continue;
                     }
@@ -519,6 +542,7 @@ impl Context<'_> {
             transform,
             scopes: Scopes::new(Scope {
                 target: self.target()?,
+                mesh_clip: None,
                 clip: None,
                 mask: None,
                 image_mask: None,

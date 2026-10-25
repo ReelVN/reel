@@ -246,22 +246,28 @@ impl GlesBackend {
             },
         )?;
         drop(planning);
-        Images::validate(
+        let image_growth = self.images.validate(
             &plan.images,
             self.context.capabilities(),
             limits,
             self.options.limits.total_bytes,
         )?;
-        // New image residency takes priority over idle scratch allocations.
+        // New image residency takes priority when the simultaneous budget needs
+        // room. Small cursor/video updates can retain the existing scratch pool.
         // Flights keep any targets that the device still owns alive.
         if self
             .targets
             .first()
             .is_some_and(|target| target.view.size() != size)
-            || plan
-                .images
-                .iter()
-                .any(|item| !self.images.entries.contains_key(&item.source.handle()))
+            || image_growth
+                > self.options.limits.total_bytes.saturating_sub(
+                    self.budgets
+                        .resources
+                        .usage()
+                        .bytes
+                        .saturating_add(self.budgets.targets.usage().bytes)
+                        .saturating_add(self.budgets.transient.usage().bytes),
+                )
         {
             self.targets.clear();
         }

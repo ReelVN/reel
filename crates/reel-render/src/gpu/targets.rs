@@ -126,7 +126,19 @@ pub(super) fn peak_targets(
         current.next += 1;
         match &command.op {
             FrameOp::PushClip(clip) => {
-                let isolated = Scissor::from_clip(clip, current.transform, size, samples).is_none();
+                let direct_mesh = samples == 1
+                    && crate::common::scopes::flat_clip(
+                        current.drawing,
+                        current.commands,
+                        current.next,
+                        current.offset,
+                        current.transitions_enabled,
+                        capture,
+                    )
+                    && crate::common::mesh::RectClip::from_clip(clip, current.transform, size)
+                        .is_some();
+                let isolated = Scissor::from_clip(clip, current.transform, size, samples).is_none()
+                    && !direct_mesh;
                 super::scopes::push_stack(&mut current.isolated, isolated, &mut reserve)?;
                 if isolated {
                     current.live += 1;

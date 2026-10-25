@@ -30,15 +30,20 @@ fn compile_shaders() {
         println!("cargo:rerun-if-changed={path}");
         let source = std::fs::read_to_string(path).expect("read GLSL source");
         if name == "composite" {
-            shaders.push((
-                "source_over".to_owned(),
-                stage,
-                source.replacen(
-                    "#version 100",
-                    "#version 100\n#define REEL_SOURCE_OVER_ONLY",
-                    1,
-                ),
-            ));
+            for (variant, define) in [
+                ("source_over", "REEL_SOURCE_OVER_ONLY"),
+                ("alpha_mask", "REEL_ALPHA_MASK_ONLY"),
+            ] {
+                shaders.push((
+                    variant.to_owned(),
+                    stage,
+                    source.replacen(
+                        "#version 100",
+                        &format!("#version 100\n#define {define}"),
+                        1,
+                    ),
+                ));
+            }
         }
         shaders.push((name.to_owned(), stage, source));
     }

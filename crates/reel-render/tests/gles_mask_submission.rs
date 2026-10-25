@@ -32,27 +32,29 @@ use reel_ui::{
 #[ignore = "requires a native GLES context"]
 fn gray_progress_clamp_mask_executes_and_completes() {
     let pool = pool();
-    let mut registry = ResourceRegistry::new(1, 65536).unwrap();
-    let handle = registry
-        .register_image(
-            ResourceVersion {
-                key: AssetKey("gray-mask".into()),
-                version: ContentVersion([1; 32]),
-            },
-            OwnedBytes::new(
-                vec![
-                    0, 0, 0, 255, 64, 64, 64, 192, 128, 128, 128, 128, 255, 255, 255, 255,
-                ],
-                pool.reserve(16).unwrap(),
+    let mut registry = ResourceRegistry::new(4, 65536).unwrap();
+    let mut register = |index: u8| {
+        registry
+            .register_image(
+                ResourceVersion {
+                    key: AssetKey(format!("gray-mask-{index}")),
+                    version: ContentVersion([index; 32]),
+                },
+                OwnedBytes::new(
+                    vec![
+                        0, 0, 0, 255, 64, 64, 64, 192, 128, 128, 128, 128, 255, 255, 255, 255,
+                    ],
+                    pool.reserve(16).unwrap(),
+                )
+                .unwrap(),
+                [2, 2],
+                ImageFormat::Rgba8,
+                ImageAlphaType::Alpha,
+                ColorEncoding::Srgb,
             )
-            .unwrap(),
-            [2, 2],
-            ImageFormat::Rgba8,
-            ImageAlphaType::Alpha,
-            ColorEncoding::Srgb,
-        )
-        .unwrap();
-    let lease = registry.acquire(handle).unwrap();
+            .unwrap()
+    };
+    let handles = [register(0), register(1), register(2), register(3)];
     let program = MaskProgram::new(
         vec![
             MaskOp::Constant(0),
@@ -84,7 +86,12 @@ fn gray_progress_clamp_mask_executes_and_completes() {
     assert_eq!(program.operations().len(), 12);
     let mut renderer = GlesBackend::headless([400, 300], GlesLimits::default()).unwrap();
     let mut events = Vec::new();
+    #[cfg(feature = "profiling")]
+    let targets_before = reel_core::profile::Sample::snapshot().calls
+        [reel_core::profile::Phase::TargetCreate as usize];
     for (index, progress) in [0., 0.35, 0.7, 1.].into_iter().enumerate() {
+        let handle = handles[index];
+        let lease = registry.acquire(handle).unwrap();
         let mut scene = Scene::new();
         scene.draw(Draw::Fill {
             transform: Affine::IDENTITY,
@@ -135,6 +142,14 @@ fn gray_progress_clamp_mask_executes_and_completes() {
             std::thread::yield_now();
         }
     }
+    #[cfg(feature = "profiling")]
+    assert_eq!(
+        reel_core::profile::Sample::snapshot().calls
+            [reel_core::profile::Phase::TargetCreate as usize]
+            - targets_before,
+        3,
+        "small new images must reuse all three scratch targets"
+    );
     renderer.close().unwrap();
     eprintln!("gles mask_ops=12 progress_frames=4 all_submissions_completed");
 }
