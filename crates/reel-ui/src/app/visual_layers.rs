@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use kurbo::{Affine, Rect};
+use std::sync::Arc;
 
 use crate::core::{PaintImageMask, WidgetId};
 use crate::imaging::PaintSink;
@@ -125,19 +126,21 @@ pub struct VisualLayer {
     pub kind: VisualLayerKind,
     /// Transform from layer-local space to window space.
     pub transform: Affine,
-    /// The widget that requested this layer boundary.
+    /// Default painter identity for this fragment; explicit ranges may name other painters.
     pub widget_id: WidgetId,
     /// Group provenance; independent of optional context annotations or child draws.
     pub groups: Vec<GroupMetadata>,
     /// Sorted, nonoverlapping command ownership captured at paint/append boundaries.
+    /// An empty list assigns the whole fragment to `widget_id` with default image paint.
     pub command_owners: Vec<CommandOwnerRange>,
 }
 
 /// The content represented by a visual layer.
 #[derive(Debug)]
 pub enum VisualLayerKind {
-    /// Retained scene content in layer-local coordinates.
-    Scene(Scene),
+    /// Immutable widget paint shared by recordings in layer-local coordinates.
+    /// Repainting replaces the producer's scene; existing candidates retain its old content.
+    Scene(Arc<Scene>),
     /// A placeholder for externally realized content.
     ///
     /// Bounds are content-local; apply `content_transform` then the layer transform.
@@ -178,7 +181,7 @@ mod tests {
             body_commands: 3,
             layers: vec![
                 VisualLayer {
-                    kind: VisualLayerKind::Scene(root_scene.clone()),
+                    kind: VisualLayerKind::Scene(root_scene.clone().into()),
                     transform: Affine::IDENTITY,
                     widget_id: WidgetId::next(),
                     groups: Vec::new(),
@@ -196,7 +199,7 @@ mod tests {
                     command_owners: Vec::new(),
                 },
                 VisualLayer {
-                    kind: VisualLayerKind::Scene(overlay_scene.clone()),
+                    kind: VisualLayerKind::Scene(overlay_scene.clone().into()),
                     transform: Affine::translate((20.0, 5.0)),
                     widget_id: WidgetId::next(),
                     groups: Vec::new(),

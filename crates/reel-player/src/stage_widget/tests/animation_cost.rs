@@ -148,10 +148,32 @@ fn animated_scene_projection_and_frame_cost() {
         let started = Instant::now();
         let mut command_count = 0;
         let mut glyph_count = 0;
+        let mut record_time = std::time::Duration::ZERO;
+        let mut sync_time = std::time::Duration::ZERO;
+        let mut accept_time = std::time::Duration::ZERO;
+        let mut build_time = std::time::Duration::ZERO;
+        let mut record_allocations = 0;
+        let mut build_allocations = 0;
         for index in 0..240 {
             f.edit(moving, |props| props.x = (index % 120) as f64);
-            let recorded = f.record();
+            let phase = Instant::now();
+            let allocations = Region::new(&INSTRUMENTED_SYSTEM);
+            f.ui.set_stage(&f.stage);
+            f.ui.sync(&mut f.bridge, f.widget).unwrap();
+            sync_time += phase.elapsed();
+            let phase = Instant::now();
+            f.frame += 1;
+            let (source, receipt) =
+                f.ui.record(&mut f.bridge, f.widget, FrameId(f.frame))
+                    .unwrap();
+            let recorded = TestFrame { source, receipt };
+            record_time += phase.elapsed();
+            record_allocations += allocations.change().allocations;
+            let phase = Instant::now();
             f.accept(&recorded);
+            accept_time += phase.elapsed();
+            let phase = Instant::now();
+            let allocations = Region::new(&INSTRUMENTED_SYSTEM);
             let mut build = FrameBuild::new(
                 recorded.source,
                 ResourceSnapshot::capture([Ok(font_lease.clone())].into_iter(), &pool).unwrap(),
@@ -173,6 +195,8 @@ fn animated_scene_projection_and_frame_cost() {
                 .complete
             {}
             let frame = build.finish().unwrap();
+            build_time += phase.elapsed();
+            build_allocations += allocations.change().allocations;
             command_count = frame.commands().len();
             glyph_count = frame
                 .commands()
@@ -185,6 +209,18 @@ fn animated_scene_projection_and_frame_cost() {
         }
         let frame_time = started.elapsed();
         let frame = region.change();
+        let geometry_region = Region::new(&INSTRUMENTED_SYSTEM);
+        let geometry_started = Instant::now();
+        for _ in 0..240 {
+            let geometry = f
+                .bridge
+                .root()
+                .capture_presented_geometry(GeometryLimits { max_bytes: 1 << 20 })
+                .unwrap();
+            assert!(geometry.get(f.widget).is_some());
+        }
+        let geometry_time = geometry_started.elapsed();
+        let geometry = geometry_region.change();
         assert_eq!(
             f.layouts(),
             initial_layouts,
@@ -204,6 +240,19 @@ fn animated_scene_projection_and_frame_cost() {
             frame_time.as_micros(),
             frame.allocations,
             frame.bytes_allocated
+        );
+        println!(
+            "animation_phases sync_us={} record_us={} accept_us={} build_us={} record_allocations={record_allocations} build_allocations={build_allocations}",
+            sync_time.as_micros(),
+            record_time.as_micros(),
+            accept_time.as_micros(),
+            build_time.as_micros()
+        );
+        println!(
+            "animation_geometry frames=240 us={} allocations={} bytes={}",
+            geometry_time.as_micros(),
+            geometry.allocations,
+            geometry.bytes_allocated
         );
     }
 }

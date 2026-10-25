@@ -429,7 +429,11 @@ impl Cursor {
         let layer = &plan.layers[self.layer];
         // Ranges are contiguous producer metadata. At most one neighbor is read
         // per prepaid commit; never scan after work exhaustion to diagnose it.
-        if layer.command_owners[self.owner_range].commands.end == self.position {
+        if layer
+            .command_owners
+            .get(self.owner_range)
+            .is_some_and(|r| r.commands.end == self.position)
+        {
             self.owner_range += 1;
             self.owner = layer
                 .command_owners
@@ -759,7 +763,7 @@ impl Building {
         let VisualLayerKind::Scene(scene) = &source.plan.layers.get(c.layer)?.kind else {
             return None;
         };
-        let mut scene = scene;
+        let mut scene = scene.as_ref();
         for &mask in &c.path {
             scene = &scene.mask(mask).scene;
         }
@@ -793,6 +797,37 @@ impl Building {
                     let scene = Self::scene(&self.source, c).expect("copy job scene");
                     let cmd = &scene.commands()[c.position];
                     let job = self.job.as_ref().unwrap();
+                    // Glyph payloads are contiguous immutable input. Resolve the scene once
+                    // per admitted batch while preserving the same per-element work/byte
+                    // charges and continuation position used by one-element slices.
+                    if job.field == 3
+                        && let Some(run) = source_glyph(scene, cmd)
+                        && job.index < run.glyphs.len()
+                    {
+                        let glyph_bytes = size_of::<record::Glyph>() as u64;
+                        let count = (run.glyphs.len() - job.index) as u64;
+                        let count = count
+                            .min(1 + (b.max_units - p.units) / resolve_units)
+                            .min((b.max_bytes - p.bytes) / glyph_bytes);
+                        if count == 0 {
+                            p.minimum_units = resolve_units;
+                            p.minimum_bytes = glyph_bytes;
+                            break;
+                        }
+                        let glyphs = &run.glyphs[job.index..job.index + count as usize];
+                        if !glyphs.iter().copied().all(valid_glyph) {
+                            return Err(self.error(BuildErrorKind::InvalidRecord));
+                        }
+                        let job = self.job.as_mut().unwrap();
+                        let FrameOp::Draw(FrameDraw::GlyphRun(target)) = &mut job.command.op else {
+                            unreachable!()
+                        };
+                        target.glyphs.extend_from_slice(glyphs);
+                        job.index += count as usize;
+                        p.units += (count - 1) * resolve_units;
+                        p.bytes += count * glyph_bytes;
+                        continue;
+                    }
                     let size = field_size(scene, cmd, job.field, job.index);
                     if let Some(size) = size {
                         if !self.spend(&mut p, &b, 0, size as u64)? {
@@ -966,7 +1001,8 @@ impl Building {
                 // Validate the already selected range once after prepayment.
                 // Owner was advanced by the prior commit, before any new spend.
                 let c = self.cursors.last().unwrap();
-                if c.stream.is_none() {
+                if c.stream.is_none() && !self.source.plan.layers[c.layer].command_owners.is_empty()
+                {
                     let layer = &self.source.plan.layers[c.layer];
                     layer
                         .command_owners
@@ -1184,40 +1220,27 @@ impl Building {
         };
         let scene = Self::scene(&self.source, self.cursors.last().unwrap()).unwrap();
         let command = &scene.commands()[self.cursors.last().unwrap().position];
-        let image_color = if c.stream.is_none() {
-            layer.command_owners[c.owner_range].image_color
-        } else {
-            [1.; 4]
-        };
-        let image_appearance = if c.stream.is_none() {
-            layer.command_owners[c.owner_range]
-                .image_appearance
-                .map(|appearance| appearance.transformed(transform))
+        let image = if c.stream.is_none() {
+            layer.command_owners.get(c.owner_range)
         } else {
             None
         };
+        let image_paint = image.map_or_else(ImagePaint::default, |image| ImagePaint {
+            color: image.image_color,
+            appearance: image
+                .image_appearance
+                .map(|appearance| appearance.transformed(transform)),
+            source_rect: image.image_source_rect,
+            sampling_transform: image.image_sampling_transform,
+            resource: image.image_resource,
+        });
         let (local, op) = make_op(
             scene,
             command,
             transform,
             meta,
             mask,
-            ImagePaint {
-                color: image_color,
-                appearance: image_appearance,
-                source_rect: if c.stream.is_none() {
-                    layer.command_owners[c.owner_range].image_source_rect
-                } else {
-                    None
-                },
-                sampling_transform: c.stream.is_none()
-                    && layer.command_owners[c.owner_range].image_sampling_transform,
-                resource: if c.stream.is_none() {
-                    layer.command_owners[c.owner_range].image_resource
-                } else {
-                    None
-                },
-            },
+            image_paint,
             &self.resources,
         )
         .map_err(|kind| self.error(kind))?;

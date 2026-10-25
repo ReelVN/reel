@@ -176,6 +176,29 @@ fn resource_draws_are_independent_cached_and_owned_until_the_last_recording() {
         "unsupported replay must fail before emitting the solid geometry record"
     );
     let second = bridge.record(FrameId(2)).unwrap();
+    let scene = |source: &RecordedSource| {
+        source
+            .plan()
+            .layers
+            .iter()
+            .find_map(|layer| {
+                if layer
+                    .command_owners
+                    .iter()
+                    .any(|range| range.image_resource.is_some())
+                    && let reel_ui::app::VisualLayerKind::Scene(scene) = &layer.kind
+                {
+                    Some(scene.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap()
+    };
+    assert!(
+        Arc::ptr_eq(&scene(&first), &scene(&second)),
+        "warm recordings share cached payloads"
+    );
     assert_eq!(
         second
             .plan()
@@ -195,6 +218,10 @@ fn resource_draws_are_independent_cached_and_owned_until_the_last_recording() {
         widget.ctx.request_render();
     });
     let changed = bridge.record(FrameId(3)).unwrap();
+    assert!(
+        !Arc::ptr_eq(&scene(&first), &scene(&changed)),
+        "repaint preserves older candidates"
+    );
     let snapshots = || {
         ResourceSnapshot::capture(
             handles.into_iter().map(|handle| registry.acquire(handle)),
@@ -373,11 +400,10 @@ fn inline_child_draws_and_errors_keep_the_actual_command_owner() {
         );
         let mut bridge = widget_bridge(parent, Affine::IDENTITY);
         let source = bridge.record(FrameId(1)).unwrap();
-        assert_eq!(
-            source.plan().layers.len(),
-            1,
-            "ordinary Inline child shares a fragment"
-        );
+        let child_fragment = source.plan().layers.iter().position(|layer| {
+            layer.widget_id == child && matches!(&layer.kind,
+                reel_ui::app::VisualLayerKind::Scene(scene) if scene.commands().iter().any(|c| matches!(c, record::Command::Draw(_))))
+        }).expect("inline child keeps its own recorded paint");
         if case == 0 {
             let frame = build(source, empty_snapshot(&pool), &pool);
             let owners: Vec<_> = frame
@@ -413,7 +439,7 @@ fn inline_child_draws_and_errors_keep_the_actual_command_owner() {
                 error.at.owner, child,
                 "case {case}: Inline child failure belongs to its painter"
             );
-            assert_eq!(error.at.fragment, 0);
+            assert_eq!(error.at.fragment, child_fragment);
             if case == 3 {
                 assert!(matches!(error.kind, BuildErrorKind::MissingResource { .. }));
             } else {
@@ -1263,8 +1289,25 @@ fn nonfinite_record_has_a_localized_failure() {
     });
     let mut bridge = widget_bridge(RecordWidget::new(scene), Affine::IDENTITY);
     let pool = pool();
+    let source = bridge.record(FrameId(1)).unwrap();
+    let expected = source
+        .plan()
+        .layers
+        .iter()
+        .enumerate()
+        .find_map(|(fragment, layer)| {
+            let reel_ui::app::VisualLayerKind::Scene(scene) = &layer.kind else {
+                return None;
+            };
+            scene.commands().iter().enumerate().find_map(|(command, c)| {
+            let record::Command::Draw(id) = c else { return None };
+            matches!(scene.draw_op(*id), Draw::Fill { transform, .. } if !transform.is_finite())
+                .then_some((fragment, command, layer.widget_id))
+        })
+        })
+        .unwrap();
     let mut b = FrameBuild::new(
-        bridge.record(FrameId(1)).unwrap(),
+        source,
         empty_snapshot(&pool),
         FrameInfo {
             logical_size: [400., 300.],
@@ -1280,7 +1323,7 @@ fn nonfinite_record_has_a_localized_failure() {
         }
     };
     assert_eq!(e.kind, BuildErrorKind::InvalidRecord);
-    assert!(e.at.command > 0);
+    assert_eq!((e.at.fragment, e.at.command, e.at.owner), expected);
     assert_eq!(bridge.pending_count(), 0);
 }
 #[test]

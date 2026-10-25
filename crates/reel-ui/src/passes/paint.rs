@@ -21,7 +21,7 @@ use crate::imaging::record::{Clip, Command, Geometry, Group, Scene};
 use crate::imaging::{Composite, PaintSink, Painter};
 use crate::passes::{enter_span_if, recurse_on_children};
 use crate::util::get_debug_color;
-use std::cell::Cell;
+use std::{cell::Cell, sync::Arc};
 
 struct CursorPaint {
     layers: Vec<VisualLayer>,
@@ -85,31 +85,26 @@ impl LayerCollector {
         owner: WidgetId,
         image: crate::frame::ImagePaint,
     ) {
-        let start = self.current_scene.commands().len();
-        self.current_scene
-            .append_transformed(&cached.scene, transform);
-        for (offset, command) in self.current_scene.commands()[start..].iter().enumerate() {
+        if cached.scene.is_empty() {
+            return;
+        }
+        self.finish_current_layer(false);
+        for (offset, command) in cached.scene.commands().iter().enumerate() {
             if matches!(command, Command::PushGroup(_)) {
                 self.groups.push(GroupMetadata {
-                    command: start + offset,
+                    command: offset,
                     owner,
-                    effect_transform: transform,
+                    effect_transform: Affine::IDENTITY,
                     image_mask: None,
                     invert: 0.,
                     blend: None,
                 });
             }
         }
-        let image = crate::frame::ImagePaint {
-            appearance: image
-                .appearance
-                .map(|appearance| appearance.transformed(transform)),
-            ..image
-        };
-        let end = self.current_scene.commands().len();
-        let mut next = start;
+        let end = cached.scene.commands().len();
+        let mut next = 0;
         for binding in &cached.images {
-            let command = start + binding.command;
+            let command = binding.command;
             self.record_owner_range(next, command, owner, image, None);
             self.record_owner_range(
                 command,
@@ -128,7 +123,23 @@ impl LayerCollector {
             );
             next = command + 1;
         }
-        self.record_owner_range(next, end, owner, image, None);
+        if !cached.images.is_empty()
+            || image.color != [1.; 4]
+            || image.appearance.is_some()
+            || image.resource.is_some()
+            || image.sampling_transform
+            || image.source_rect.is_some()
+        {
+            self.record_owner_range(next, end, owner, image, None);
+        }
+        self.commands_before_layer += end;
+        self.layers.push(VisualLayer {
+            kind: VisualLayerKind::Scene(cached.scene.clone()),
+            transform: self.transform * transform,
+            widget_id: owner,
+            groups: std::mem::take(&mut self.groups),
+            command_owners: std::mem::take(&mut self.command_owners),
+        });
     }
 
     fn push_subtree_composite(
@@ -244,7 +255,7 @@ impl LayerCollector {
         let scene = std::mem::replace(&mut self.current_scene, empty_scene);
         self.commands_before_layer += scene.commands().len();
         self.layers.push(VisualLayer {
-            kind: VisualLayerKind::Scene(scene),
+            kind: VisualLayerKind::Scene(scene.into()),
             transform: self.transform,
             widget_id: self.current_owner_id,
             groups: std::mem::take(&mut self.groups),
@@ -423,7 +434,7 @@ fn paint_widget(
                 command_cursor: &cursor,
             };
             let mut sink = RecordingSink {
-                scene: &mut cached.scene,
+                scene: Arc::get_mut(&mut cached.scene).expect("fresh paint has unique ownership"),
                 cursor: &cursor,
             };
             let mut painter = Painter::new(&mut sink as &mut dyn PaintSink);
