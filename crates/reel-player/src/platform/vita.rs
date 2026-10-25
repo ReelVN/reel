@@ -535,16 +535,8 @@ impl NativeLoop {
                 }
                 #[cfg(feature = "profiling")]
                 {
-                    let vm = player.story_mut().map_or(0, |story| {
-                        story
-                            .driver()
-                            .adapter()
-                            .vm()
-                            .heap()
-                            .budget_usage()
-                            .charged_bytes()
-                    });
-                    recording.record(probe_started, vm, player.backend.usage().bytes);
+                    let gpu = player.backend.usage().bytes;
+                    recording.record(probe_started, player.story_mut().as_deref(), gpu);
                 }
                 let now = host.monotonic_now();
                 let deadline = player
