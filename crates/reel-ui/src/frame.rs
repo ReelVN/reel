@@ -493,7 +493,8 @@ impl Drop for FrameBuild {
     }
 }
 impl FrameBuild {
-    /// Reserves the maximum frame/scratch allowance before any compiler allocation.
+    /// Reserves each frame/scratch allocation before growing its storage.
+    /// The per-frame limit bounds this build; the pool bounds simultaneous frames.
     /// Source Scene/cache residency is the producer's separate, measured account.
     pub fn new(
         source: RecordedSource,
@@ -535,9 +536,6 @@ impl FrameBuild {
                 })
             })
             .ok_or_else(|| error(BuildErrorKind::Capacity))?;
-        let ticket = pool
-            .reserve(limits.max_bytes)
-            .map_err(|_| error(BuildErrorKind::Bytes))?;
         let initial = size_of::<FrameData>()
             .checked_add(4 * size_of::<usize>() + size_of::<Building>() + size_of::<FrameDrawing>())
             .and_then(|n| n.checked_add(main_count.checked_mul(size_of::<FrameCommand>())?))
@@ -564,6 +562,9 @@ impl FrameBuild {
         if initial as u64 > limits.max_bytes {
             return Err(error(BuildErrorKind::Bytes));
         }
+        let ticket = pool
+            .reserve(initial as u64)
+            .map_err(|_| error(BuildErrorKind::Bytes))?;
         let cursor = Cursor {
             layer: 0,
             path: Vec::new(),
@@ -657,9 +658,17 @@ impl FrameBuild {
             commands,
             masks,
             bytes,
-            ticket,
+            mut ticket,
+            cursors,
+            mappings,
             ..
         } = state;
+        let scratch = size_of::<Building>()
+            + cursors.capacity() * size_of::<Cursor>()
+            + cursors.iter().map(Cursor::storage_bytes).sum::<usize>()
+            + mappings.capacity() * size_of::<MaskMapping>()
+            + masks.capacity() * size_of::<FrameMask>()
+            + transitions.capacity() * size_of::<FrameTransition>();
         let subtrees = std::mem::take(&mut source.plan.subtrees);
         let body_end = source.plan.body_commands;
         let capture_exclusions = std::mem::take(&mut source.plan.capture_exclusions);
@@ -676,6 +685,14 @@ impl FrameBuild {
             guard,
             ..
         } = source;
+        let masks = masks
+            .into_iter()
+            .enumerate()
+            .map(|(i, mask)| (i as u32, Arc::new(mask)))
+            .collect();
+        drop((cursors, mappings, transitions));
+        let bytes = bytes - scratch as u64;
+        ticket.resize(bytes).expect("shrinking a frame reservation");
         Ok(RenderFrame {
             inner: Arc::new(FrameData {
                 key,
@@ -684,11 +701,7 @@ impl FrameBuild {
                 drawing: Arc::new(FrameDrawing {
                     commands,
                     capture_exclusions,
-                    masks: masks
-                        .into_iter()
-                        .enumerate()
-                        .map(|(i, mask)| (i as u32, Arc::new(mask)))
-                        .collect(),
+                    masks,
                     resources,
                     transitions: compiled,
                     accounted_bytes: bytes,
@@ -717,11 +730,15 @@ impl Building {
         }
     }
     fn charge(&mut self, bytes: usize) -> Result<(), BuildError> {
-        self.bytes = self
+        let next = self
             .bytes
             .checked_add(bytes as u64)
             .filter(|n| *n <= self.limits.max_bytes)
             .ok_or_else(|| self.error(BuildErrorKind::Bytes))?;
+        self.ticket
+            .resize(next)
+            .map_err(|_| self.error(BuildErrorKind::Bytes))?;
+        self.bytes = next;
         Ok(())
     }
     fn spend(
@@ -879,6 +896,10 @@ impl Building {
                         }
                         let cursor = self.cursors.pop().unwrap();
                         self.bytes -= cursor.storage_bytes() as u64;
+                        drop(cursor);
+                        self.ticket
+                            .resize(self.bytes)
+                            .expect("shrinking cursor storage");
                     } else {
                         self.cursors
                             .last_mut()
