@@ -1,3 +1,4 @@
+mod cleaning;
 mod commands;
 mod formatting;
 mod progress;
@@ -51,6 +52,7 @@ fn run() -> io::Result<u8> {
         Command::PrepareImage(args) => prepare_image_command(args),
         Command::PrepareTexture(args) => prepare_texture_command(args),
         Command::PrepareResources(args) => prepare_resources_command(args),
+        Command::Clean(args) => cleaning::run(args.resources),
         Command::Fmt(args) => formatting::run(args.check),
     }
 }
@@ -331,7 +333,9 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
                 output: args.output.unwrap_or_else(|| {
                     loaded
                         .project_root
-                        .join(format!("build/export/{}", profile.name()))
+                        .join("build/export")
+                        .join(&args.resource_target)
+                        .join(profile.name())
                 }),
                 overwrite: default_output || args.settings.overwrite,
                 resources,

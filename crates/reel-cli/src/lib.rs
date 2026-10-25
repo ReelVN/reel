@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 mod input;
 pub use input::{InputError, read_source};
 mod artifact;
+mod conversion_identity;
 pub mod output;
 pub use artifact::{
     Artifact, BuildProfile, build, build_export, build_with_profile, package_limits_json,
@@ -15,8 +16,10 @@ pub mod distribution;
 pub mod editor;
 pub mod localization;
 pub mod playback;
+pub mod prepare_font;
 pub mod prepare_image;
 pub mod prepare_texture;
+pub mod prepare_video;
 pub mod project;
 pub mod resource_conversion;
 

@@ -51,6 +51,9 @@ reel-media = { path = "../reel-media", default-features = false, features = ["en
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.190"
 
+[build-dependencies]
+blake3 = "=1.8.7"
+
 [dev-dependencies]
 lsp-server = "=0.7.9"
 reel-media = { path = "../reel-media", default-features = false }

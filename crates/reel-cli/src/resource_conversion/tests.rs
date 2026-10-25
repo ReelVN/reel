@@ -1,6 +1,29 @@
 use super::*;
 use reel_core::texture::{TextureFormat, TextureHeader};
 
+#[test]
+fn font_coverage_combines_input_ranges_translations_and_escaped_story_characters() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::create_dir(root.join("src")).unwrap();
+    fs::write(
+        root.join("src/main.aside"),
+        r#"fn main() { tr("文字", en: "Words"); "\u{20BB7}"; }"#,
+    )
+    .unwrap();
+    let characters = font_characters(
+        root,
+        vec!["U+4E00-9FFF".into()],
+        vec!["src/**/*.aside".into()],
+    )
+    .unwrap();
+    for character in ['文', '字', 'W', '𠮷', '龘'] {
+        assert!(characters.contains(&u32::from(character)));
+    }
+    assert!(!characters.contains(&0xd800));
+    assert!(font_characters(root, vec![], vec!["src/missing.aside".into()]).is_err());
+}
+
 fn fixture() -> (tempfile::TempDir, PathBuf, ResourceTarget) {
     let artifacts = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/reel-artifacts/resource-conversion");
@@ -44,12 +67,13 @@ power_of_two = true
 }
 
 fn prepare(root: &Path, tool: &Path, target: &ResourceTarget, memory: u64) -> io::Result<Prepared> {
-    prepare_with_tool(
+    let identity = hash_file(tool)?.to_hex();
+    prepare_with_identity(
         root,
         target,
         target.collect(&root.join("resources"))?,
-        tool,
         memory,
+        |_| identity.as_str(),
     )
 }
 
@@ -182,6 +206,10 @@ fn configuration_diagnostics_reject_typos_and_conflicting_parameters() {
         "convert = 'copy'\nscale = 0.5",
         "convert = 'opus'\nformat = 'auto'",
         "convert = 'opus'\nbitrate = 0",
+        "convert = 'video'",
+        "convert = 'video'\nsize = [960, 544]\nscale = 0.5",
+        "convert = 'video'\nsize = [960, 544]\nbitrate = 1",
+        "convert = 'copy'\nalpha_layout = 'top_bottom'",
         "convert = 'texture'\nscle = 0.5",
         "convert = 'txture'",
     ] {
