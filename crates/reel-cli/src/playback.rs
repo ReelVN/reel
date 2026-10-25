@@ -141,7 +141,7 @@ mod tests {
             text: vec![],
             resource_target: std::env::consts::OS.into(),
             pack_bytes: 4096.try_into().unwrap(),
-            player: None,
+            runtime: None,
         };
         crate::distribution::export(&project, &artifact, &options).unwrap();
         let loaded = reel_player::distribution::load(

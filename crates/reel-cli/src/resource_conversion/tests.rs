@@ -302,7 +302,7 @@ fn prepared_logical_paths_reach_the_player_and_both_export_profiles() {
             text: Vec::new(),
             resource_target: target.as_str().into(),
             pack_bytes: (4 << 20).try_into().unwrap(),
-            player: Some(player.clone()),
+            runtime: Some(crate::distribution::Runtime::Executable(player.clone())),
         };
         crate::distribution::export(&project, &artifact, &options).unwrap();
         let distribution =
