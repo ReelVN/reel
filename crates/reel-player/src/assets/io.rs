@@ -194,6 +194,7 @@ impl FileIo {
                 limits,
                 wake,
                 move |(id, request), cancelled| {
+                    let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Read);
                     let (scope, completion, result) =
                         match request {
                             Request::Describe(r) => {

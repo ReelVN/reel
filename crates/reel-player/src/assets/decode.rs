@@ -44,6 +44,7 @@ impl ImageExecutor {
                 limits,
                 wake,
                 |(id, request): (WorkId, WorkRequest), cancelled| {
+                    let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Decode);
                     let WorkRequest {
                         kind,
                         input,

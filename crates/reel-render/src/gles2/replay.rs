@@ -60,6 +60,7 @@ pub(super) fn prepare(
     size: [u32; 2],
     capture: bool,
 ) -> Result<Prepared, (GlesError, Work)> {
+    let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Replay);
     let mut context = Context {
         capture,
         gpu,

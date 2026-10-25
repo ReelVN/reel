@@ -207,6 +207,7 @@ impl GlesBackend {
         self.glyphs.prune(&[]);
         let local = Budgets::new(limits);
         let mut plan_tickets = Vec::new();
+        let planning = reel_core::profile::Scope::new(reel_core::profile::Phase::ImagePlan);
         let plan = crate::common::image_plan::collect(
             std::iter::once(frame),
             self.context.capabilities().max_texture_size,
@@ -222,6 +223,7 @@ impl GlesBackend {
                 Ok(())
             },
         )?;
+        drop(planning);
         Images::validate(
             &plan.images,
             self.context.capabilities(),
@@ -260,6 +262,7 @@ impl GlesBackend {
         let mut images = HashMap::new();
         let mut touched = Vec::new();
         let mut quota = limits.image_upload_bytes_per_prepare;
+        let uploading = reel_core::profile::Scope::new(reel_core::profile::Phase::Upload);
         let upload = self.images.prepare(
             &self.context,
             &self.budgets,
@@ -269,6 +272,7 @@ impl GlesBackend {
             &mut images,
             &mut touched,
         );
+        drop(uploading);
         drop(plan);
         drop(plan_tickets);
         let ready = match upload {
@@ -481,7 +485,10 @@ impl RenderBackend for GlesBackend {
         self.next_submission = next;
         self.submit(frame, prepared, Some((id, frame.frame_id())))?;
         before_present();
-        self.context.present().map_err(native_error)?;
+        {
+            let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Present);
+            self.context.present().map_err(native_error)?;
+        }
         Ok(PresentOutcome::PresentAccepted(frame.frame_id()))
     }
     fn retire(&mut self, resources: &[ResourceVersion]) {

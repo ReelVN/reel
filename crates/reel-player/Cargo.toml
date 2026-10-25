@@ -7,6 +7,7 @@ publish = false
 
 [features]
 default = []
+profiling = ["reel-core/profiling"]
 winit = ["dep:winit", "dep:ui-events-winit", "dep:arboard"]
 gamepad = ["dep:gilrs"]
 video = ["reel-media/video"]
@@ -72,8 +73,8 @@ path = "src/vita_main.rs"
 required-features = ["vita"]
 
 [package.metadata.vita]
-title_id = "REEL00001"
-title_name = "Reel"
+title_id = "REELP0001"
+title_name = "Reel Probe"
 assets = "../../target/vita/assets"
 build_std = "std,panic_unwind"
 vita_make_fself_flags = ["-a", "0x2F00000000000001"]

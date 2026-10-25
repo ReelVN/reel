@@ -12,6 +12,8 @@ pub mod hal;
 pub mod platform;
 pub mod player;
 pub mod presentation;
+#[cfg(all(feature = "profiling", any(target_os = "vita", test)))]
+mod probe;
 pub mod story_runtime;
 
 pub mod aside_session;

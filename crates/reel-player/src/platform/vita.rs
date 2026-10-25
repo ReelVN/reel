@@ -267,6 +267,7 @@ fn run_package_on(
     native: &mut NativeLoop,
     backend: &mut GlesBackend,
 ) -> Result<(), Error> {
+    let loading = reel_core::profile::Scope::new(reel_core::profile::Phase::Load);
     let loaded = crate::distribution::load(package, None)?;
     let mut options = PlayerOptions::default();
     options.assets.root = loaded.loose.clone().unwrap_or_else(|| loaded.root.clone());
@@ -292,6 +293,7 @@ fn run_package_on(
     options.media.video.queued_audio_frames = 4096;
     options.media.video_decoder = Some(Arc::new(reel_media::video::VitaVideoDecoderFactory));
     let story = crate::distribution::story_from_package(loaded.package)?;
+    drop(loading);
     run_story_on(story, options, native, backend)
 }
 
@@ -313,6 +315,7 @@ fn run_story_on(
     backend: &mut GlesBackend,
 ) -> Result<(), Error> {
     use reel_engine::{Epoch, Session, SessionId, aside::VmLimits};
+    let mounting = reel_core::profile::Scope::new(reel_core::profile::Phase::Mount);
     let assets = crate::assets::Assets::packaged_for_target(
         options.assets.clone(),
         options.asset_packages.clone().unwrap_or_default(),
@@ -379,6 +382,7 @@ fn run_story_on(
         runtime.set_saves(crate::saves::RuntimeSaves::new(service, options.save_bytes));
         runtime.set_media_factory(make_media);
     }
+    drop(mounting);
     native.drive(&mut player, true)
 }
 
@@ -415,6 +419,8 @@ struct NativeLoop {
 
 impl NativeLoop {
     fn begin_session(&mut self, backend: &GlesBackend) {
+        #[cfg(feature = "profiling")]
+        let _ = reel_core::profile::Sample::take();
         // Signals and deadlines belong to the departed player, unlike native input,
         // power callbacks and the wake object retained by the application.
         self.host = VitaHost::new(backend.output_size(), self.wake.clone());
@@ -459,6 +465,8 @@ impl NativeLoop {
         let mut input = input::Input::default();
         let mut suspended = false;
         let mut closing = false;
+        #[cfg(feature = "profiling")]
+        let mut recording = crate::probe::Recording::new();
         let result = (|| -> Result<(), Error> {
             input = input::Input::new(controls.sample()?);
             loop {
@@ -500,18 +508,36 @@ impl NativeLoop {
                     continue;
                 }
                 let now = host.monotonic_now();
+                #[cfg(feature = "profiling")]
+                let probe_started = std::time::Instant::now();
                 let poll_deadline = MonoTime(now.0.saturating_add(16_000_000));
                 let sample = controls.sample()?;
                 if return_to_library && input.return_to_library(&sample) {
                     host.signals.exit.set(true);
                     continue;
                 }
-                input.sample(sample, now, host.size, player)?;
+                {
+                    let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Input);
+                    input.sample(sample, now, host.size, player)?;
+                }
                 player.poll_completions()?;
                 player.tick(host)?;
                 player.prepare_initial_frame(host)?;
                 if host.signals.redraw.replace(false) || player.needs_redraw() {
                     player.render(host)?;
+                }
+                #[cfg(feature = "profiling")]
+                {
+                    let vm = player.story_mut().map_or(0, |story| {
+                        story
+                            .driver()
+                            .adapter()
+                            .vm()
+                            .heap()
+                            .budget_usage()
+                            .charged_bytes()
+                    });
+                    recording.record(probe_started, vm, player.backend.usage().bytes);
                 }
                 let now = host.monotonic_now();
                 let deadline = player
@@ -545,6 +571,25 @@ impl NativeLoop {
             Ok(())
         })();
         // Preserve the event/render failure when closing also reports an error.
-        result.and(cleanup)
+        let result = result.and(cleanup);
+        #[cfg(feature = "profiling")]
+        {
+            let outcome = result
+                .as_ref()
+                .err()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "closed".into());
+            let title = host.signals.title.borrow();
+            let logged = recording.write(
+                Path::new("ux0:/data/reel/performance"),
+                &title,
+                native::time::unix_millis().unwrap_or(0) as u64,
+                &outcome,
+            );
+            if let Err(error) = logged {
+                return result.and(Err(format!("Probe log: {error}").into()));
+            }
+        }
+        result
     }
 }

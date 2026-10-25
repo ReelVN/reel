@@ -160,6 +160,7 @@ impl PlayerSession {
         bridge: &mut PresentationBridge,
         root: WidgetId,
     ) -> Result<(), Error> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::UiSync);
         match self {
             #[cfg(any(feature = "vita", test))]
             Self::Launcher(launcher) => launcher.sync(bridge, root),

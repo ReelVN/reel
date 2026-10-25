@@ -192,6 +192,7 @@ impl Programs {
         blend: Blend,
         scissor: Option<[u32; 4]>,
     ) -> Result<(), GlesError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Draw);
         context.draw(Draw {
             target,
             size,
@@ -263,6 +264,7 @@ impl Target {
         budget: &BudgetPool,
         limit: u64,
     ) -> Result<Self, (GlesError, Option<BudgetTicket>)> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::TargetCreate);
         let bytes = u64::from(size[0]) * u64::from(size[1]) * 4;
         let storage = budget.reserve(bytes).map_err(|_| {
             (

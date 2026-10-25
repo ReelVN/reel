@@ -315,6 +315,7 @@ where
 
     /// Advance ready work within one scheduling slice and apply game settings.
     pub fn tick(&mut self, host: &mut impl Host) -> Result<(), Error> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Tick);
         self.publish_pointer_info()?;
         self.maintain_window_requests(host)?;
         self.maintain_captures()?;
@@ -331,7 +332,10 @@ where
         };
         let before = session.ui().projection_stamp();
         let frame_was_ready = session.frame_ready();
-        session.tick(budget, now)?;
+        {
+            let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Vm);
+            session.tick(budget, now)?;
+        }
         if !self.closing && session.exit_requested() {
             return self.close();
         }
@@ -513,6 +517,7 @@ where
 
     /// Release completed submissions and wake deferred frame preparation.
     pub fn poll_completions(&mut self) -> Result<(), <B as RenderBackend>::Error> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Poll);
         self.completions.clear();
         self.presentation
             .poll(&mut self.backend, &mut self.completions, 64)?;
@@ -755,6 +760,7 @@ pub(crate) fn build_frame(
     session: Option<&PlayerSession>,
     recorded_projection: &mut Option<RecordedProjection>,
 ) -> Result<Option<RenderFrame>, Error> {
+    let recording = reel_core::profile::Scope::new(reel_core::profile::Phase::Record);
     let source = if let Some(session) = session {
         let Some((source, receipt)) = session.record(bridge, root, id)? else {
             *recorded_projection = None;
@@ -768,6 +774,8 @@ pub(crate) fn build_frame(
             .record(id)
             .map_err(|error| format!("record: {error:?}"))?
     };
+    drop(recording);
+    let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Compile);
     let images = session.map_or(&[][..], |session| session.ui().image_resources());
     let transitions = session.map_or(&[][..], PlayerSession::transition_resources);
     let snapshot = reel_ui::resources::ResourceSnapshot::capture(
