@@ -3427,6 +3427,7 @@ name = "reel-dev"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "png",
  "serde_json",
 ]
 
@@ -3492,6 +3493,7 @@ dependencies = [
  "aside-vm",
  "bc-crunch",
  "blake3",
+ "cc",
  "flate2",
  "gilrs",
  "image",

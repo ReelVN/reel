@@ -3,16 +3,17 @@
 //! Build on Linux/WSL with nightly Rust, `rust-src` and VitaSDK on `PATH`:
 //!
 //! ```sh
-//! cargo +nightly build -Z build-std=std,panic_unwind --locked --release \
-//!     -p reel-player --bin reel-vita --no-default-features --features vita \
-//!     --target armv7-sony-vita-newlibeabihf
+//! cargo run -p reel-dev -- vita-assets --modules path/to/module \
+//!     --font path/to/font.ttf --font-license path/to/license.txt
+//! cargo +nightly vita build vpk -- --locked --release \
+//!     -p reel-player --bin reel-vita --no-default-features --features vita
 //! ```
 //!
 //! Set the target's `CC`, `CXX` and `AR` to the VitaSDK cross tools. The render
 //! build compiles GLSL to embedded SGX binaries with the pinned host compiler.
-//! Convert the ELF using `vita-elf-create` and `vita-make-fself`; the runtime
-//! directory contains `eboot.bin`, `sce_sys/param.sfo` and the four matching PVR
-//! modules under `module/`. `reel export --runtime` adds the game distribution.
+//! `cargo-vita` packages the ELF, platform metadata and `target/vita/assets`.
+//! Its VPK contains `eboot.bin`, the four matching PVR modules under `module/`
+//! and the launcher font at `fonts/body.ttf`.
 use crate::{
     hal::{DisplayMetrics, Host, PlatformHost, WindowControl},
     player::{Player, PlayerOptions},
@@ -169,11 +170,71 @@ impl Host for VitaHost {
     }
 }
 
-/// Load the same relocatable ASB distribution used by desktop exports. Persistent
-/// data follows the installed title identity and survives rebuilt code packages.
-pub fn run_package(package: &Path, save_root: &Path, module_directory: &Path) -> Result<(), Error> {
+/// Show immediate child directories containing `game.asb`. Each selected work
+/// owns its `saves/` directory. Launcher and game resources are retired and
+/// dropped before the next player is mounted; only this library's Exit closes
+/// the application. Game shutdown and SELECT + START return to the library.
+pub fn run_launcher(game_root: &Path, module_directory: &Path) -> Result<(), Error> {
+    let mut error = std::fs::create_dir_all(game_root)
+        .err()
+        .map(|error| format!("创建作品目录失败：\n{error}"));
+    loop {
+        match run_library(game_root, module_directory, error.take())? {
+            crate::launcher::Outcome::Exit => return Ok(()),
+            crate::launcher::Outcome::Launch(package) => {
+                let saves = package.with_file_name("saves");
+                if let Err(failure) = run_package(&package, &saves, module_directory) {
+                    error = Some(format!("{}\n{failure}", package.display()));
+                }
+            }
+        }
+    }
+}
+
+fn run_library(
+    game_root: &Path,
+    module_directory: &Path,
+    error: Option<String>,
+) -> Result<crate::launcher::Outcome, Error> {
+    let (mut native, backend) = NativeLoop::new(module_directory)?;
+    let mut options = PlayerOptions::default();
+    options.assets = crate::assets::AssetOptions {
+        root: "app0:/".into(),
+        resident_bytes: 32 << 20,
+        input_bytes: 32 << 20,
+        decode_bytes: 1 << 20,
+    };
+    options.frame_bytes = 4 << 20;
+    options.canvas_size = Some([960, 544]);
+    let launcher = crate::launcher::Launcher::new(
+        game_root,
+        crate::assets::Assets::directory(options.assets.clone()),
+        error,
+    )?;
+    let mut player = Player::mount(
+        crate::player::session::PlayerSession::Launcher(Box::new(launcher)),
+        backend,
+        &mut native.host,
+        &options,
+    )?;
+    native.drive(&mut player, false)?;
+    let Some(crate::player::session::PlayerSession::Launcher(launcher)) = &mut player.session
+    else {
+        unreachable!("library player owns its native launcher");
+    };
+    Ok(launcher
+        .take_outcome()
+        .unwrap_or(crate::launcher::Outcome::Exit))
+}
+
+/// Load the same relocatable ASB distribution used by desktop exports. The host
+/// supplies this work's persistent-data directory independently of the title ID.
+pub fn run_package(
+    package: &Path,
+    save_directory: &Path,
+    module_directory: &Path,
+) -> Result<(), Error> {
     let loaded = crate::distribution::load(package, None)?;
-    let title_id = native::title_id()?;
     let mut options = PlayerOptions::default();
     options.assets.root = loaded.loose.clone().unwrap_or_else(|| loaded.root.clone());
     options.assets.resident_bytes = 24 << 20;
@@ -183,7 +244,7 @@ pub fn run_package(package: &Path, save_root: &Path, module_directory: &Path) ->
     options.asset_overlay = loaded.loose;
     options.resource_target = "vita".into();
     options.catalogs = loaded.catalogs.into();
-    options.save_directory = Some(save_root.join(title_id));
+    options.save_directory = Some(save_directory.into());
     options.save_bytes = 8 << 20;
     options.frame_bytes = 4 << 20;
     options.media.pcm_bytes = 8 << 20;
@@ -206,17 +267,7 @@ pub fn run_story(
     module_directory: &Path,
 ) -> Result<(), Error> {
     use reel_engine::{Epoch, Session, SessionId, aside::VmLimits};
-    let wake = Wake::new()?;
-    let mut power = PowerEvents::new(wake.clone())?;
-    let mut controls = native::input::Input::new()?;
-    let mut gles = GlesOptions::default();
-    gles.module_directory = module_directory
-        .to_str()
-        .ok_or("Vita module directory must be UTF-8")?
-        .into();
-    gles.vsync = true;
-    let backend = GlesBackend::new(gles)?;
-    let mut host = VitaHost::new(backend.output_size(), wake.clone());
+    let (mut native, backend) = NativeLoop::new(module_directory)?;
     let assets = crate::assets::Assets::packaged_for_target(
         options.assets.clone(),
         options.asset_packages.clone().unwrap_or_default(),
@@ -224,7 +275,7 @@ pub fn run_story(
         "vita".into(),
     )
     .map_err(|error| format!("Vita resources: {error:?}"))?;
-    let notify = host.wake_callback();
+    let notify = native.host.wake_callback();
     let signal = WakeSignal::new(move || notify());
     let media_options = options.media.clone();
     let make_media = {
@@ -256,7 +307,7 @@ pub fn run_story(
     )?
     .with_asset_context(assets, options.catalogs.clone())
     .with_media(make_media())?;
-    let mut player = Player::new(driver, backend, &mut host, &options)?;
+    let mut player = Player::new(driver, backend, &mut native.host, &options)?;
     if let Some(runtime) = player.story_mut() {
         let root = options
             .save_directory
@@ -273,88 +324,142 @@ pub fn run_story(
         runtime.set_saves(crate::saves::RuntimeSaves::new(service, options.save_bytes));
         runtime.set_media_factory(make_media);
     }
-    let mut input = input::Input::default();
-    let mut suspended = false;
-    let mut closing = false;
-    let result = (|| -> Result<(), Error> {
-        loop {
-            while let Some(event) = power.poll()? {
-                // Keep the actual notification timestamp, even when a callback
-                // was queued immediately before the kernel suspended this thread.
-                host.event_time = Some(MonoTime(event.monotonic_micros.saturating_mul(1000)));
-                match event.kind {
-                    PowerKind::Suspending if !suspended => {
-                        input.cancel(&mut player)?;
-                        player.suspend(&mut host)?;
-                        suspended = true;
+    native.drive(&mut player, true)
+}
+
+struct NativeLoop {
+    host: VitaHost,
+    wake: Arc<Wake>,
+    power: PowerEvents,
+    controls: native::input::Input,
+}
+
+impl NativeLoop {
+    fn new(module_directory: &Path) -> Result<(Self, GlesBackend), Error> {
+        let wake = Wake::new()?;
+        let power = PowerEvents::new(wake.clone())?;
+        let controls = native::input::Input::new()?;
+        let mut gles = GlesOptions::default();
+        gles.module_directory = module_directory
+            .to_str()
+            .ok_or("Vita module directory must be UTF-8")?
+            .into();
+        gles.vsync = true;
+        let backend = GlesBackend::new(gles)?;
+        let host = VitaHost::new(backend.output_size(), wake.clone());
+        Ok((
+            Self {
+                host,
+                wake,
+                power,
+                controls,
+            },
+            backend,
+        ))
+    }
+
+    fn drive(
+        &mut self,
+        player: &mut Player<GlesBackend>,
+        return_to_library: bool,
+    ) -> Result<(), Error> {
+        let Self {
+            host,
+            wake,
+            power,
+            controls,
+        } = self;
+        // Carry held input through the boundary until release. A launch-confirm press
+        // must not become a second confirmation in the newly mounted game.
+        let mut input = input::Input::default();
+        let mut suspended = false;
+        let mut closing = false;
+        let result = (|| -> Result<(), Error> {
+            input = input::Input::new(controls.sample()?);
+            loop {
+                while let Some(event) = power.poll()? {
+                    // Keep the actual notification timestamp, even when a callback
+                    // was queued immediately before the kernel suspended this thread.
+                    host.event_time = Some(MonoTime(event.monotonic_micros.saturating_mul(1000)));
+                    match event.kind {
+                        PowerKind::Suspending if !suspended => {
+                            input.cancel(player)?;
+                            player.suspend(host)?;
+                            suspended = true;
+                        }
+                        PowerKind::Resumed if suspended => {
+                            player.resume(host)?;
+                            suspended = false;
+                        }
+                        _ => {}
                     }
-                    PowerKind::Resumed if suspended => {
-                        player.resume(&mut host)?;
-                        suspended = false;
+                    host.event_time = None;
+                }
+                if host.signals.exit.get() || player.exit_requested() {
+                    if !closing {
+                        player.close()?;
+                        closing = true;
                     }
-                    _ => {}
                 }
-                host.event_time = None;
-            }
-            if host.signals.exit.get() || player.exit_requested() {
-                if !closing {
-                    player.close()?;
-                    closing = true;
+                if closing {
+                    player.tick(host)?;
+                    player.poll_completions()?;
+                    if player.close_complete() {
+                        break;
+                    }
+                    wake.wait(Some(Duration::from_millis(1)))?;
+                    continue;
                 }
-            }
-            if closing {
-                player.tick(&mut host)?;
+                if suspended {
+                    wake.wait(None)?;
+                    continue;
+                }
+                let now = host.monotonic_now();
+                let poll_deadline = MonoTime(now.0.saturating_add(16_000_000));
+                let sample = controls.sample()?;
+                if return_to_library && input.return_to_library(&sample) {
+                    host.signals.exit.set(true);
+                    continue;
+                }
+                input.sample(sample, now, host.size, player)?;
                 player.poll_completions()?;
-                if player.close_complete() {
-                    break;
+                player.tick(host)?;
+                player.prepare_initial_frame(host)?;
+                if host.signals.redraw.replace(false) || player.needs_redraw() {
+                    player.render(host)?;
                 }
+                let now = host.monotonic_now();
+                let deadline = player
+                    .story_deadline(now)
+                    .into_iter()
+                    .chain(host.deadline)
+                    .chain(input.deadline())
+                    .chain([poll_deadline])
+                    .min()
+                    .expect("controller poll deadline");
+                // Controller/touch sampling has no event notification API. Poll at a
+                // bounded 60 Hz. Time spent in rendering/vsync already contributes
+                // to this interval, so continuous animation receives no second cap.
+                let timeout = Duration::from_nanos(deadline.0.saturating_sub(now.0));
+                wake.wait(Some(timeout))?;
+            }
+            Ok(())
+        })();
+        // Always close shared services before the graphics context and native wake
+        // registrations disappear, including error exits from input or rendering.
+        host.event_time = None;
+        let cleanup = (|| -> Result<(), Error> {
+            if !closing {
+                player.close()?;
+            }
+            while !player.close_complete() {
+                player.tick(host)?;
+                player.poll_completions()?;
                 wake.wait(Some(Duration::from_millis(1)))?;
-                continue;
             }
-            if suspended {
-                wake.wait(None)?;
-                continue;
-            }
-            let now = host.monotonic_now();
-            let poll_deadline = MonoTime(now.0.saturating_add(16_000_000));
-            input.sample(controls.sample()?, now, host.size, &mut player)?;
-            player.poll_completions()?;
-            player.tick(&mut host)?;
-            player.prepare_initial_frame(&mut host)?;
-            if host.signals.redraw.replace(false) || player.needs_redraw() {
-                player.render(&mut host)?;
-            }
-            let now = host.monotonic_now();
-            let deadline = player
-                .story_deadline(now)
-                .into_iter()
-                .chain(host.deadline)
-                .chain(input.deadline())
-                .chain([poll_deadline])
-                .min()
-                .expect("controller poll deadline");
-            // Controller/touch sampling has no event notification API. Poll at a
-            // bounded 60 Hz. Time spent in rendering/vsync already contributes
-            // to this interval, so continuous animation receives no second cap.
-            let timeout = Duration::from_nanos(deadline.0.saturating_sub(now.0));
-            wake.wait(Some(timeout))?;
-        }
-        Ok(())
-    })();
-    // Always close shared services before the graphics context and native wake
-    // registrations disappear, including error exits from input or rendering.
-    host.event_time = None;
-    let cleanup = (|| -> Result<(), Error> {
-        if !closing {
-            player.close()?;
-        }
-        while !player.close_complete() {
-            player.tick(&mut host)?;
-            player.poll_completions()?;
-            wake.wait(Some(Duration::from_millis(1)))?;
-        }
-        Ok(())
-    })();
-    // Preserve the event/render failure when closing also reports an error.
-    result.and(cleanup)
+            Ok(())
+        })();
+        // Preserve the event/render failure when closing also reports an error.
+        result.and(cleanup)
+    }
 }

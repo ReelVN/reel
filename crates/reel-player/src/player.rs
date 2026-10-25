@@ -297,7 +297,12 @@ where
     }
 
     pub(crate) fn is_diagnostic(&self) -> bool {
-        !matches!(self.session, Some(PlayerSession::Aside { .. }))
+        match self.session {
+            Some(PlayerSession::Aside { .. }) => false,
+            #[cfg(any(feature = "vita", test))]
+            Some(PlayerSession::Launcher(_)) => false,
+            _ => true,
+        }
     }
 
     /// Next story or capture wake in the host's monotonic time domain.

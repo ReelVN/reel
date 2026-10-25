@@ -483,6 +483,15 @@ fn failed_player_copy_preserves_previous_export_and_overwrite_requires_embedded_
     assert!(distribution::export(&loaded, &artifact, &options).is_err());
     assert_eq!(fs::read(options.output.join("game.asb")).unwrap(), original);
     let legacy = root.join("legacy");
+    options.runtime = None;
+    distribution::export(&loaded, &artifact, &options).unwrap();
+    assert_eq!(read_line(&options.output.join("game.asb")), "original");
+    let mut files = fs::read_dir(&options.output)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<Vec<_>>();
+    files.sort();
+    assert_eq!(files, ["game.asb", "game.rtp", "resources.rpk"]);
     fs::create_dir(&legacy).unwrap();
     fs::write(legacy.join("release.json"), r#"{"code":"game.asb"}"#).unwrap();
     options.output = legacy.clone();

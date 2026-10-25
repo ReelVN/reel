@@ -176,6 +176,9 @@ fn configuration_diagnostics_reject_typos_and_conflicting_parameters() {
         "convert = 'texture'\nsize = [0, 1]",
         "convert = 'texture'\nscale = 0.5\nsize = [2, 2]",
         "convert = 'texture'\nbitrate = 96000",
+        "convert = 'texture'\nfirst_level = 1",
+        "convert = 'tiles'\nscale = 0.5",
+        "convert = 'tiles'\ntile_size = 0",
         "convert = 'copy'\nscale = 0.5",
         "convert = 'opus'\nformat = 'auto'",
         "convert = 'opus'\nbitrate = 0",
@@ -194,6 +197,67 @@ fn configuration_diagnostics_reject_typos_and_conflicting_parameters() {
         assert!(error.contains("resources.toml"), "{fields}: {error}");
     }
     assert!(!directory.path().join("build").exists());
+}
+
+#[test]
+fn tiled_recipe_keeps_logical_names_and_publishes_only_stored_levels() {
+    use reel_core::prepared_image::PreparedImage;
+    let (directory, tool, target) = fixture();
+    let root = directory.path();
+    fs::write(root.join("resources.toml"), "[[targets.vita]]\nmatch = 'images/room.png'\nconvert = 'tiles'\ntile_size = 2\nfirst_level = 1\npower_of_two = true\n").unwrap();
+    let first = prepare(root, &tool, &target, MEMORY_BYTES).unwrap();
+    let manifest =
+        PreparedImage::decode(&fs::read(&first.files["images/room.png"]).unwrap()).unwrap();
+    assert_eq!(
+        [manifest.width, manifest.height, manifest.first_level],
+        [12, 6, 1]
+    );
+    let mut tiles = 0;
+    for level in manifest.first_level..manifest.levels() {
+        let [width, height] = manifest.dimensions(level);
+        for y in 0..height.div_ceil(manifest.tile_edge) {
+            for x in 0..width.div_ceil(manifest.tile_edge) {
+                let name = manifest.tile_source("images/room.png", level, x, y);
+                let bytes = fs::read(&first.files[&name]).unwrap();
+                let (header, _) = TextureHeader::parse(&bytes).unwrap();
+                assert_eq!(
+                    header.descriptor().layout.logical_size,
+                    manifest.tile_dimensions(level, x, y).unwrap()
+                );
+                assert!(
+                    header
+                        .descriptor()
+                        .layout
+                        .storage_size
+                        .into_iter()
+                        .all(u32::is_power_of_two)
+                );
+                tiles += 1;
+            }
+        }
+    }
+    assert_eq!(first.files.len(), 4 + tiles);
+    assert!(
+        !first
+            .files
+            .keys()
+            .any(|name| name.starts_with("images/room.png.tiles/0/"))
+    );
+    let cached = prepare(root, &tool, &target, 1).unwrap();
+    assert_eq!(first.files, cached.files);
+    assert_eq!((cached.report.converted, cached.report.reused), (0, 1));
+    let collision = root
+        .join("resources")
+        .join(manifest.tile_source("images/room.png", 1, 0, 0));
+    fs::create_dir_all(collision.parent().unwrap()).unwrap();
+    fs::write(collision, b"author asset").unwrap();
+    assert!(
+        prepare(root, &tool, &target, MEMORY_BYTES)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("conflicts")
+    );
 }
 
 #[test]

@@ -17,6 +17,7 @@ pub(crate) struct ResourceDraw {
     pub command: usize,
     pub resource: ResourceLease,
     pub sampler: ImageSampler,
+    pub source_rect: Option<crate::kurbo::Rect>,
 }
 impl CachedPaint {
     pub fn clear(&mut self) {

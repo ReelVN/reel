@@ -2637,10 +2637,9 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
         };
         *source_rect = Some(Rect::new(0., 0., 64., 64.));
     }
-    let error = view.image_requests().err().unwrap();
     assert!(
-        error.contains("snow.aside:2:3") && error.contains("source_rect"),
-        "{error}"
+        view.image_requests().is_ok(),
+        "prepared atlas regions share image geometry"
     );
     let root = Arc::make_mut(view.root.as_mut().unwrap());
     let background = Arc::make_mut(&mut Arc::make_mut(&mut root.children)[0]);
@@ -2649,20 +2648,71 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
     };
     *source_rect = None;
 
+    images.manifests.insert(
+        "atlas.png".into(),
+        images.manifests["background.reel-image"],
+    );
+    for (index, expected) in ["alpha_layout", "nine-slice", "repetition", "masks"]
+        .into_iter()
+        .enumerate()
+    {
+        let mut invalid = view.clone();
+        let root = Arc::make_mut(invalid.root.as_mut().unwrap());
+        let background = Arc::make_mut(&mut Arc::make_mut(&mut root.children)[0]);
+        let node = Arc::make_mut(&mut background.node);
+        let NodeKind::Image {
+            source,
+            alpha_layout,
+            slice,
+            repeat,
+            ..
+        } = &mut node.kind
+        else {
+            unreachable!()
+        };
+        *source = "atlas.png".into();
+        match index {
+            0 => *alpha_layout = reel_ui::frame::ImageAlphaLayout::TopBottom,
+            1 => *slice = Some(Insets::uniform(1.)),
+            2 => *repeat = [true; 2],
+            _ => {
+                node.props.mask = Some(reel_ui::stage::MaskProgram::image("atlas.png".into()));
+                node.props.mask_origin = Some("snow.aside:11:5".into());
+            }
+        }
+        assert!(
+            invalid.image_requests().is_ok(),
+            "filename extensions do not classify images"
+        );
+        let error = invalid.resolve_metadata(&images).unwrap_err();
+        assert!(
+            error.contains(expected) && error.contains("snow.aside:"),
+            "{error}"
+        );
+    }
+
     let root = Arc::make_mut(view.root.as_mut().unwrap());
     let child = Arc::make_mut(&mut Arc::make_mut(&mut root.children)[1]);
     let NodeKind::Particles(batch) = &mut Arc::make_mut(&mut child.node).kind else {
         unreachable!()
     };
-    batch.source = "background.reel-image".into();
+    batch.source = "atlas.png".into();
+    images.manifests.insert(
+        "atlas.png".into(),
+        images.manifests["background.reel-image"],
+    );
     images.request_stage(&view);
-    let error = images.poll().unwrap_err();
+    assert!(images.poll().unwrap());
+    let error = view.resolve_metadata(&images).unwrap_err();
     assert!(error.contains("snow.aside:7:3"), "{error}");
     assert!(
         error.contains("whole PNG, JPEG or .reel-texture sprite"),
         "{error}"
     );
-    assert_eq!(images.loads, 1, "unsupported request is rejected before IO");
+    assert_eq!(
+        images.loads, 1,
+        "known unsupported manifests are rejected before tile IO"
+    );
 }
 
 #[test]

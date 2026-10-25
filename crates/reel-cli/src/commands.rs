@@ -134,6 +134,9 @@ pub struct Export {
     /// Runtime directory to include with its original structure instead of the local player.
     #[arg(long, value_name = "DIRECTORY", requires = "release")]
     pub runtime: Option<PathBuf>,
+    /// Export code, text and resources for an already installed shared runtime.
+    #[arg(long, requires = "release", conflicts_with = "runtime")]
+    pub data_only: bool,
     /// Target resource volume size including index; defaults to 2147483648 (2 GiB).
     #[arg(long, value_name = "BYTES", requires = "release")]
     pub pack_bytes: Option<std::num::NonZeroU64>,
@@ -253,6 +256,19 @@ mod tests {
 
     #[test]
     fn resource_targets_are_shared_by_development_run_and_export() {
+        assert!(Cli::try_parse_from(["reel", "export", "--release", "--data-only"]).is_ok());
+        assert!(Cli::try_parse_from(["reel", "export", "--data-only"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "reel",
+                "export",
+                "--release",
+                "--data-only",
+                "--runtime",
+                "vita-runtime"
+            ])
+            .is_err()
+        );
         for command in ["dev", "run", "export", "prepare-resources"] {
             assert!(Cli::try_parse_from(["reel", command, "--resource-target", "vita"]).is_ok());
             assert!(Cli::try_parse_from(["reel", command]).is_ok());

@@ -640,6 +640,57 @@ impl Widget for Image {
         let image_size = self.preferred_size();
         let transform = object_fit.affine(content_box, image_size.to_rect());
 
+        if self.image_data.is_none() && self.resource.is_none() {
+            let source = source_rect.unwrap_or(self.tiled_size.to_rect());
+            let transform = transform * Affine::translate(-source.origin().to_vec2());
+            if transform.determinant() == 0. {
+                return;
+            }
+            let visible = transform
+                .inverse()
+                .transform_rect_bbox(content_box)
+                .intersect(source);
+            painter.with_fill_clip(content_box, |painter| {
+                for tile in &self.tiles {
+                    // Edge tiles also cover source windows extending beyond the
+                    // image. Their clamped gutters preserve ordinary edge padding.
+                    let mut interior = tile.clip;
+                    if interior.x0 == 0. {
+                        interior.x0 = interior.x0.min(source.x0);
+                    }
+                    if interior.y0 == 0. {
+                        interior.y0 = interior.y0.min(source.y0);
+                    }
+                    if interior.x1.round() == self.tiled_size.width {
+                        interior.x1 = interior.x1.max(source.x1);
+                    }
+                    if interior.y1.round() == self.tiled_size.height {
+                        interior.y1 = interior.y1.max(source.y1);
+                    }
+                    let bounds = interior.intersect(visible);
+                    if bounds.width() <= 0. || bounds.height() <= 0. {
+                        continue;
+                    }
+                    let sampling = tile.transform.inverse();
+                    ctx.set_image_source_rect(
+                        source_rect.map(|rect| sampling.transform_rect_bbox(rect)),
+                    );
+                    // Crop adjacent tile interiors directly. Separate antialiased
+                    // clip layers would double-blend their shared raster edges.
+                    ctx.draw_resource_image(
+                        painter,
+                        &tile.resource,
+                        bounds,
+                        transform,
+                        sampling,
+                        self.sampler(),
+                    );
+                }
+            });
+            ctx.set_image_source_rect(source_rect);
+            return;
+        }
+
         if let Some(rect) = source_rect {
             // Object-fit is axis-aligned in the image's local coordinates.
             // Trim geometry there instead of opening a per-image clip layer;
@@ -685,20 +736,6 @@ impl Widget for Image {
                     Affine::IDENTITY,
                     self.sampler(),
                 );
-            } else {
-                for tile in &self.tiles {
-                    // Adjacent interiors share rasterization edges on the same
-                    // target. Separate antialiased clip layers would blend their
-                    // complementary coverage twice and leave seams under rotation.
-                    ctx.draw_resource_image(
-                        painter,
-                        &tile.resource,
-                        tile.clip,
-                        transform,
-                        tile.transform.inverse(),
-                        self.sampler(),
-                    );
-                }
             }
         });
     }

@@ -49,15 +49,20 @@ fn fixture_with_encoding(
                 .as_nanos()
         ));
     fs::create_dir_all(&directory).unwrap();
+    let source = if encoding == TileEncoding::ReelTexture {
+        "long.png"
+    } else {
+        "long.reel-image"
+    };
     let manifest = PreparedImage::new(40001, 33, 128, encoding).unwrap();
-    fs::write(directory.join("long.reel-image"), manifest.encode()).unwrap();
+    fs::write(directory.join(source), manifest.encode()).unwrap();
     for level in 0..manifest.levels() {
-        fs::create_dir_all(directory.join(format!("long.reel-image.tiles/{level}"))).unwrap();
+        fs::create_dir_all(directory.join(format!("{source}.tiles/{level}"))).unwrap();
         let [width, height] = manifest.dimensions(level);
         for y in 0..height.div_ceil(manifest.tile_edge) {
             for x in 0..width.div_ceil(manifest.tile_edge) {
                 let [w, h] = manifest.tile_dimensions(level, x, y).unwrap();
-                let path = directory.join(manifest.tile_source("long.reel-image", level, x, y));
+                let path = directory.join(manifest.tile_source(source, level, x, y));
                 if encoding == TileEncoding::ReelTexture {
                     use reel_core::texture::*;
                     let descriptor = TextureDescriptor {
@@ -96,7 +101,7 @@ fn fixture_with_encoding(
     let image = stage
         .create(
             NodeKind::Image {
-                source: "long.reel-image".into(),
+                source: source.into(),
                 fit: ObjectFit::Contain,
                 slice: None,
                 slice_scale: 1.,
@@ -244,6 +249,128 @@ fn settle(
         }
         assert!(Instant::now() < deadline, "tile readiness deadline");
         let _ = wake.recv_timeout(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn prepared_atlas_windows_select_and_paint_only_their_source_region() {
+    use reel_core::{
+        budget::{BudgetCategory, BudgetPool, QueueLimits},
+        identity::FrameId,
+    };
+    use reel_ui::{
+        frame::{BuildLimits, FrameBuild, FrameDraw, FrameInfo, FrameOp, StepBudget},
+        imaging::record::Geometry,
+        kurbo::{Point, Rect},
+        peniko::Brush,
+        resources::ResourceSnapshot,
+    };
+    let (mut ui, mut bridge, widget, mut stage, image, wake, _) = fixture();
+    for (index, crop, columns) in [
+        (0, Rect::new(128.5, 0.5, 385.5, 32.5), vec![1, 2, 3]),
+        (1, Rect::new(1024.5, 0.5, 1281.5, 32.5), vec![8, 9, 10]),
+        (2, Rect::new(-64., 0., -1., 33.), vec![0]),
+        (3, Rect::new(40002., 0., 40066., 33.), vec![312]),
+    ] {
+        let old = stage.node(image).unwrap();
+        let mut kind = old.kind.clone();
+        let NodeKind::Image {
+            source_rect, fit, ..
+        } = &mut kind
+        else {
+            unreachable!()
+        };
+        *source_rect = Some(crop);
+        *fit = ObjectFit::Stretch;
+        let mut props = old.props.clone();
+        props.width = Some(crop.width() * 2.);
+        props.height = Some(crop.height() * 2.);
+        stage.update(image, kind, props).unwrap();
+        ui.set_stage(&stage);
+        settle(&mut ui, &mut bridge, widget, &wake);
+        let required = ui
+            .images
+            .tiles
+            .iter()
+            .filter(|(_, tile)| tile.required)
+            .map(|(source, _)| source.as_str())
+            .collect::<Vec<_>>();
+        let mut expected = columns
+            .iter()
+            .map(|x| format!("long.reel-image.tiles/0/{x}-0.png"))
+            .collect::<Vec<_>>();
+        expected.sort();
+        assert_eq!(
+            required,
+            expected.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+        let pool = BudgetPool::new(
+            BudgetCategory::CpuOutput,
+            QueueLimits {
+                max_requests: 32,
+                max_bytes: 8 << 20,
+            },
+        );
+        let resources =
+            ResourceSnapshot::capture(ui.image_resources().iter().cloned().map(Ok), &pool).unwrap();
+        let mut build = FrameBuild::new(
+            bridge.record(FrameId(index + 1)).unwrap(),
+            resources,
+            FrameInfo {
+                logical_size: [640., 420.],
+                physical_size: [640, 420],
+            },
+            BuildLimits { max_bytes: 4 << 20 },
+            &pool,
+        )
+        .unwrap();
+        while !build
+            .step(StepBudget {
+                max_commands: 64,
+                max_units: 65536,
+                max_bytes: 1 << 20,
+            })
+            .unwrap()
+            .complete
+        {}
+        let frame = build.finish().unwrap();
+        let draws = frame
+            .commands()
+            .iter()
+            .filter_map(|command| match &command.op {
+                FrameOp::Draw(FrameDraw::Fill {
+                    transform,
+                    brush: Brush::Image(image),
+                    brush_transform: Some(sampling),
+                    shape: Geometry::Rect(bounds),
+                    ..
+                }) => Some((*transform, image, *sampling, *bounds)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            draws.len(),
+            columns.len(),
+            "prefetch tiles never draw outside the crop"
+        );
+        let mut area = 0.;
+        for (transform, image, sampling, bounds) in draws {
+            let target = transform.transform_rect_bbox(bounds);
+            assert!(target.x0 >= 0. && target.x1 <= crop.width() * 2.);
+            assert!(target.y0 >= 0. && target.y1 <= crop.height() * 2.);
+            area += target.area();
+            let window = image
+                .image
+                .source_rect
+                .expect("per-tile crop sampling window");
+            assert_eq!(window, sampling.transform_rect_bbox(crop));
+            assert_eq!(transform * crop.origin(), Point::ORIGIN);
+        }
+        assert_eq!(
+            area,
+            crop.area() * 4.,
+            "tile geometry covers the complete crop, including padded image edges"
+        );
     }
 }
 fn pan(ui: &mut SessionUi, stage: &mut Stage, image: reel_ui::stage::NodeId, x: f64, scale: f64) {
@@ -504,6 +631,17 @@ fn two_dimensional_shared_sources_use_composed_ancestor_rotation_zoom_and_hidden
     assert!(
         ui.images.tiles.len() < 120,
         "rotation clips conservative demand to the viewport"
+    );
+    ui.images
+        .manifests
+        .get_mut("world.reel-image")
+        .unwrap()
+        .first_level = 2;
+    ui.set_stage(&stage);
+    ui.sync(&mut bridge, widget).unwrap();
+    assert!(
+        !ui.images.tiles.is_empty() && ui.images.tiles.keys().all(|key| key.contains(".tiles/2/")),
+        "runtime demand never selects levels omitted by resource preparation"
     );
     for id in [near, far] {
         let old = stage.node(id).unwrap();

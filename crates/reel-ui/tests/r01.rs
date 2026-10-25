@@ -40,6 +40,33 @@ fn version(n: u8) -> ResourceVersion {
 }
 
 #[test]
+fn small_frames_share_a_pool_below_the_per_frame_ceiling() {
+    use reel_core::budget::{BudgetCategory, QueueLimits};
+    let pool = BudgetPool::new(
+        BudgetCategory::CpuOutput,
+        QueueLimits {
+            max_requests: 16,
+            max_bytes: 4 << 20,
+        },
+    );
+    let mut bridge = widget_bridge(RecordWidget::new(fill(Color::WHITE)), Affine::IDENTITY);
+    let mut frames = Vec::new();
+    for id in 1..=3 {
+        let snapshot = ResourceSnapshot::capture(std::iter::empty(), &pool).unwrap();
+        let frame = build(bridge.record(FrameId(id)).unwrap(), snapshot, &pool);
+        assert_eq!(frame.reserved_bytes(), frame.accounted_bytes());
+        assert!(frame.reserved_bytes() < 64 << 10);
+        frames.push(frame);
+    }
+    assert_eq!(
+        pool.usage().bytes,
+        frames.iter().map(RenderFrame::reserved_bytes).sum()
+    );
+    drop(frames);
+    assert_eq!(pool.usage().bytes, 0);
+}
+
+#[test]
 fn resource_draws_are_independent_cached_and_owned_until_the_last_recording() {
     use reel_core::{budget::OwnedBytes, texture::*};
     let pool = pool();

@@ -291,7 +291,7 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
             let profile = args.settings.profile();
             let runtime = if let Some(directory) = args.runtime {
                 Some(reel_cli::distribution::Runtime::Directory(directory))
-            } else if profile == BuildProfile::Release {
+            } else if profile == BuildProfile::Release && !args.data_only {
                 let player = reel_cli::distribution::player_path(&std::env::current_exe()?);
                 if !player.is_file() {
                     progress.stop();

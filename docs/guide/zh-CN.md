@@ -41,6 +41,14 @@ reel export --release --resource-target vita --runtime path/to/vita-runtime
 
 使用对应平台的打包工具将该目录制成安装包。Vita 运行时读取准备好的 Opus 音频和块压缩纹理；硬解视频使用 H.264/AAC，尺寸为偶数且不超过 960 × 544。
 
+安装 Reel 启动器后，每部作品可单独导出数据：
+
+```sh
+reel export --release --resource-target vita --data-only
+```
+
+将导出目录复制到 `ux0:/data/reel/作品名/`。启动器列出含 `game.asb` 的作品目录；进度保存在各作品的 `saves/` 目录。游戏中按 SELECT + START 返回作品列表。
+
 在项目根添加 `resources.toml`，可以自动生成目标平台的素材副本：
 
 ```toml
@@ -58,6 +66,8 @@ bitrate = 96000
 ```
 
 规则按顺序取首个匹配，未匹配的文件直接使用原内容；`convert = "copy"` 可保留特定文件。先选取公共素材和平台覆盖，再应用转换。纹理缩放保留原有逻辑尺寸和 `source_rect` 坐标；原脚本中的图片、音频路径继续使用。
+
+长图和图集可在通用纹理规则前配置 `convert = "tiles"`。`tile_size = 510` 为 512 像素纹理留出边缘，`first_level = 1` 保存半尺寸及更小层级；同一规则也接受 `format` 和 `power_of_two`。原有逻辑路径与图集裁剪坐标继续使用，运行时按可见瓦片加载。
 
 ```sh
 reel prepare-resources --resource-target vita

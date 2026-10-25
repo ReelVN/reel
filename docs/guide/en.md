@@ -41,6 +41,14 @@ reel export --release --resource-target vita --runtime path/to/vita-runtime
 
 Use the platform's packaging tool to turn that directory into an installable package. A Vita runtime consumes prepared Opus audio and block textures; hardware movies use H.264/AAC with even dimensions up to 960 × 544.
 
+With the Reel launcher installed, export each game as data:
+
+```sh
+reel export --release --resource-target vita --data-only
+```
+
+Copy the exported directory to `ux0:/data/reel/GameName/`. The launcher lists directories containing `game.asb`; each game keeps its progress in its own `saves/` directory. Press SELECT + START during a game to return to the list.
+
 Add `resources.toml` at the project root to generate target-specific asset copies:
 
 ```toml
@@ -58,6 +66,8 @@ bitrate = 96000
 ```
 
 The first matching rule applies; unmatched files retain their original content. Use `convert = "copy"` to preserve specific files. Selection resolves common assets and target overrides before conversion. Texture scaling preserves logical dimensions and `source_rect` coordinates. Scripts keep their existing image and audio paths.
+
+For long images or atlases, place a `convert = "tiles"` rule before the general texture rule. `tile_size = 510` leaves room for gutters in a 512-pixel texture; `first_level = 1` stores half density and smaller levels. The rule also accepts `format` and `power_of_two`. The original logical path and atlas crop coordinates remain usable, while loading follows the visible tiles.
 
 ```sh
 reel prepare-resources --resource-target vita

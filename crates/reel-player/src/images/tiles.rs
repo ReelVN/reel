@@ -5,6 +5,7 @@ pub(crate) struct ImageGeometry {
     pub source: String,
     pub widget: WidgetId,
     pub fit: ObjectFit,
+    pub source_rect: Option<Rect>,
 }
 #[derive(Clone, Default)]
 pub(crate) struct ImageRegion {
@@ -50,10 +51,12 @@ pub(crate) fn visible_tiles(
         ancestor = node.parent.map(|index| &geometry.records()[index]);
     }
     let image_size = Size::new(f64::from(manifest.width), f64::from(manifest.height));
+    let source_rect = image.source_rect.unwrap_or(image_size.to_rect());
     let fit = image
         .fit
-        .affine(record.size.to_rect(), image_size.to_rect());
-    let transform = record.window_transform * fit;
+        .affine(record.size.to_rect(), source_rect.size().to_rect());
+    let transform =
+        record.window_transform * fit * Affine::translate(-source_rect.origin().to_vec2());
     let coefficients = transform.as_coeffs();
     let scale = coefficients[0]
         .hypot(coefficients[1])
@@ -70,11 +73,26 @@ pub(crate) fn visible_tiles(
     let source_visible = transform
         .inverse()
         .transform_rect_bbox(visible)
-        .intersect(image_size.to_rect());
+        .intersect(source_rect);
     if source_visible.width() <= 0. || source_visible.height() <= 0. {
         return (region, tiles);
     }
-    let level = ((1. / scale).log2().floor().max(0.) as u32).min(manifest.levels() - 1);
+    // Source windows outside the image pad its nearest edge, just like an
+    // ordinary whole-image source_rect. Demand those edge texels as well.
+    let sample_axis = |start: f64, end: f64, size: f64| {
+        if end <= 0. {
+            (0., 1.)
+        } else if start >= size {
+            (size - 1., size)
+        } else {
+            (start.max(0.), end.min(size))
+        }
+    };
+    let (x0, x1) = sample_axis(source_visible.x0, source_visible.x1, image_size.width);
+    let (y0, y1) = sample_axis(source_visible.y0, source_visible.y1, image_size.height);
+    let source_visible = Rect::new(x0, y0, x1, y1);
+    let level = ((1. / scale).log2().floor().max(0.) as u32)
+        .clamp(manifest.first_level, manifest.levels() - 1);
     let [width, height] = manifest.dimensions(level);
     // Each level resizes the full image. Odd dimensions therefore have their own
     // exact x/y scale, rather than accumulating rounded power-of-two edge drift.

@@ -1,12 +1,16 @@
 //! Prepare selected source resources while preserving their author-facing names.
 //!
 //! An optional project-root `resources.toml` contains ordered `[[targets.NAME]]`
-//! rules. The first matching logical path selects `convert = "texture"`,
+//! rules. The first matching logical path selects `convert = "texture"`, `"tiles"`,
 //! `"opus"`, or `"copy"`; unmatched resources retain their selected source file.
 //! `match` is a case-sensitive glob with `/` separators (`*` stays within one
 //! component; `**` crosses directories). Source target selection runs first.
 //! Texture `scale` changes texel density while preserving logical coordinates;
 //! `size = [width, height]` instead fits artwork inside an explicit box.
+//! Tile rules retain the logical image path and publish adjacent pyramid tiles.
+//! `tile_size` defaults to 510 content pixels plus a one-pixel gutter per side;
+//! `first_level = 1` starts at half density. `format` and `power_of_two` apply to
+//! each tile. The manifest and tiles share one atomic cache object.
 //!
 //! Conversion runs one resource at a time. Immutable cache objects are keyed by
 //! source content, normalized recipe and the running tool's content identity.
@@ -75,6 +79,8 @@ struct RuleInput {
     format: Option<prepare_texture::Format>,
     power_of_two: Option<bool>,
     bitrate: Option<u32>,
+    tile_size: Option<u32>,
+    first_level: Option<u32>,
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -82,6 +88,7 @@ struct RuleInput {
 enum Convert {
     Copy,
     Texture,
+    Tiles,
     Opus,
 }
 
@@ -92,6 +99,12 @@ enum Recipe {
     Texture {
         scale: f64,
         size: Option<[u32; 2]>,
+        format: prepare_texture::Format,
+        power_of_two: bool,
+    },
+    Tiles {
+        tile_size: u32,
+        first_level: u32,
         format: prepare_texture::Format,
         power_of_two: bool,
     },
@@ -118,7 +131,32 @@ impl RuleInput {
             .build()
             .map_err(invalid)?
             .compile_matcher();
+        if !matches!(self.convert, Convert::Tiles)
+            && (self.tile_size.is_some() || self.first_level.is_some())
+        {
+            return Err(invalid("tile_size and first_level belong to tiles rules"));
+        }
         let recipe = match self.convert {
+            Convert::Tiles => {
+                if self.scale.is_some() || self.size.is_some() || self.bitrate.is_some() {
+                    return Err(invalid(
+                        "tiles rules use first_level for density and tile_size for each tile",
+                    ));
+                }
+                let tile_size = self.tile_size.unwrap_or(510);
+                let first_level = self.first_level.unwrap_or(0);
+                if tile_size == 0 || first_level > 31 {
+                    return Err(invalid(
+                        "tile_size must be positive and first_level must be between 0 and 31",
+                    ));
+                }
+                Recipe::Tiles {
+                    tile_size,
+                    first_level,
+                    format: self.format.unwrap_or_default(),
+                    power_of_two: self.power_of_two.unwrap_or(false),
+                }
+            }
             Convert::Copy => {
                 if self.scale.is_some()
                     || self.size.is_some()
@@ -329,7 +367,9 @@ fn prepare_with_rules(
             .find(|rule| rule.matcher.is_match(&name))
             .map(|rule| &rule.recipe);
         let path = match recipe {
-            Some(recipe @ (Recipe::Texture { .. } | Recipe::Opus { .. })) => {
+            Some(
+                recipe @ (Recipe::Texture { .. } | Recipe::Tiles { .. } | Recipe::Opus { .. }),
+            ) => {
                 let tool = match tool_hash {
                     Some(hash) => hash,
                     None => *tool_hash.insert(hash_file(tool)?),
@@ -343,10 +383,11 @@ fn prepare_with_rules(
                 let key = hash.finalize().to_hex().to_string();
                 let objects = root.join("build/resources/objects");
                 let object = objects.join(key);
-                let output_name = if matches!(recipe, Recipe::Texture { .. }) {
-                    "resource.reel-texture"
-                } else {
-                    "resource.opus"
+                let output_name = match recipe {
+                    Recipe::Texture { .. } => "resource.reel-texture",
+                    Recipe::Tiles { .. } => "resource.reel-image",
+                    Recipe::Opus { .. } => "resource.opus",
+                    Recipe::Copy => unreachable!(),
                 };
                 let output = object.join(output_name);
                 if output.is_file() {
@@ -386,8 +427,26 @@ fn prepare_with_rules(
                 source
             }
         };
-        prepared.report.output_bytes += fs::metadata(&path)?.len();
-        prepared.files.insert(name, path);
+        if matches!(recipe, Some(Recipe::Tiles { .. })) {
+            let manifest = reel_core::prepared_image::PreparedImage::decode(&fs::read(&path)?)
+                .map_err(invalid)?;
+            let filename = path.file_name().and_then(|name| name.to_str()).unwrap();
+            for level in manifest.first_level..manifest.levels() {
+                let [width, height] = manifest.dimensions(level);
+                for y in 0..height.div_ceil(manifest.tile_edge) {
+                    for x in 0..width.div_ceil(manifest.tile_edge) {
+                        insert_prepared(
+                            &mut prepared,
+                            manifest.tile_source(&name, level, x, y),
+                            path.parent()
+                                .unwrap()
+                                .join(manifest.tile_source(filename, level, x, y)),
+                        )?;
+                    }
+                }
+            }
+        }
+        insert_prepared(&mut prepared, name, path)?;
     }
     if !rules.is_empty() {
         let directory = root.join("build/resources").join(target.as_str());
@@ -404,8 +463,43 @@ fn prepare_with_rules(
     Ok(prepared)
 }
 
+fn insert_prepared(prepared: &mut Prepared, name: String, path: PathBuf) -> io::Result<()> {
+    use std::collections::btree_map::Entry;
+    match prepared.files.entry(name) {
+        Entry::Occupied(entry) => Err(invalid(format!(
+            "generated resource conflicts with {:?}",
+            entry.key()
+        ))),
+        Entry::Vacant(entry) => {
+            prepared.report.output_bytes += fs::metadata(&path)?.len();
+            entry.insert(path);
+            Ok(())
+        }
+    }
+}
+
 fn convert(source: &Path, output: &Path, recipe: &Recipe, memory_bytes: u64) -> io::Result<u64> {
     match recipe {
+        Recipe::Tiles {
+            tile_size,
+            first_level,
+            format,
+            power_of_two,
+        } => crate::prepare_image::prepare_bounded(
+            source,
+            output,
+            *tile_size,
+            crate::prepare_image::Encoding::ReelTexture,
+            *first_level,
+            prepare_texture::Options {
+                max_size: None,
+                format: *format,
+                power_of_two: *power_of_two,
+            },
+            memory_bytes,
+        )
+        .map(|(_, workspace)| workspace)
+        .map_err(io::Error::other),
         Recipe::Texture {
             scale,
             size,
