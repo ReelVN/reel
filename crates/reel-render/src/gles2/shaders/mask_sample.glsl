@@ -3,6 +3,11 @@ precision highp float;
 uniform sampler2D u_image;
 uniform vec4 u_texels,u_uv0,u_uv1,u_values,u_flags,u_coordinates;
 uniform vec2 u_dimensions,u_output_size,u_sample_flags;
+#ifdef REEL_MASK_COMPOSITE
+varying vec2 v_uv;
+uniform sampler2D u_source;
+uniform vec4 u_params;
+#endif
 #ifndef REEL_MASK_THRESHOLD
 uniform vec4 u_step0,u_step1,u_step2,u_step3,u_step4,u_step5,u_step6,u_step7;
 float chain_step(float value,vec4 operation){
@@ -16,13 +21,13 @@ float chain_step(float value,vec4 operation){
 }
 #endif
 vec3 encoded(vec3 x){return mix(1.055*pow(max(x,vec3(0.0)),vec3(1.0/2.4))-0.055,12.92*x,step(x,vec3(0.0031308)));}
-void main(){
+float mask_coverage(){
  vec3 position=vec3(gl_FragCoord.x,u_output_size.y-gl_FragCoord.y,1.0);
  vec2 uv=vec2(dot(u_uv0.xyz,position),dot(u_uv1.xyz,position));
- if(any(lessThan(uv,vec2(0.0)))||any(greaterThan(uv,vec2(1.0)))){gl_FragColor=vec4(0.0);return;}
+ if(any(lessThan(uv,vec2(0.0)))||any(greaterThan(uv,vec2(1.0))))return 0.0;
 #ifdef REEL_MASK_THRESHOLD
- if(u_values.x<=0.0){gl_FragColor=vec4(0.0);return;}
- if(u_values.x>=1.0){gl_FragColor=vec4(1.0);return;}
+ if(u_values.x<=0.0)return 0.0;
+ if(u_values.x>=1.0)return 1.0;
 #endif
  vec2 at=uv*u_coordinates.zw+u_coordinates.xy;
  if(mod(u_sample_flags.y,2.0)>0.5)at.x=fract(at.x);
@@ -55,5 +60,13 @@ void main(){
  if(u_values.y>0.0)threshold=clamp((u_values.x*(1.0+u_values.y)-value)/u_values.y,0.0,1.0);
  value=color.a*threshold;
 #endif
- gl_FragColor=vec4(clamp(value,0.0,1.0));
+ return clamp(value,0.0,1.0);
+}
+void main(){
+#ifdef REEL_MASK_COMPOSITE
+ // Keep coverage in highp until the final linear-premultiplied blend, as on WGPU.
+ gl_FragColor=texture2D(u_source,vec2(v_uv.x,1.0-v_uv.y))*(u_params.x*mask_coverage());
+#else
+ gl_FragColor=vec4(mask_coverage());
+#endif
 }

@@ -45,6 +45,19 @@ fn compile_shaders() {
                 ));
             }
         }
+        if name == "mask" {
+            for capacity in [8, 16] {
+                shaders.push((
+                    format!("mask_{capacity}"),
+                    stage,
+                    source.replacen(
+                        "#version 100",
+                        &format!("#version 100\n#define REEL_MASK_NODES {capacity}"),
+                        1,
+                    ),
+                ));
+            }
+        }
         shaders.push((name.to_owned(), stage, source));
     }
     println!("cargo:rerun-if-changed=src/gles2/shaders/mask_sample.glsl");
@@ -64,6 +77,19 @@ fn compile_shaders() {
             1,
         ),
     ));
+    for (name, defines) in [
+        ("mask_sample_chain_composite", "#define REEL_MASK_COMPOSITE"),
+        (
+            "mask_threshold_composite",
+            "#define REEL_MASK_COMPOSITE\n#define REEL_MASK_THRESHOLD",
+        ),
+    ] {
+        shaders.push((
+            name.into(),
+            Stage::Fragment,
+            mask_sample.replacen("#version 100", &format!("#version 100\n{defines}"), 1),
+        ));
+    }
     println!("cargo:rerun-if-changed=src/gles2/shaders/paint.glsl");
     let paint =
         std::fs::read_to_string("src/gles2/shaders/paint.glsl").expect("read paint template");

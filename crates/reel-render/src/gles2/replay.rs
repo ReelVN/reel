@@ -751,11 +751,20 @@ impl Context<'_> {
         operation: CompositeOperation,
         image_mask: Option<(&reel_ui::frame::FrameImageMask, Affine)>,
     ) -> Result<(), GlesError> {
+        self.flush_draws()?;
         if self.scissor.empty() {
             return Ok(());
         }
         let blend = blend_code(composite.blend)
             .ok_or(GlesError::Device("unsupported group blend".into()))?;
+        if blend == 0
+            && invert == 0.
+            && matches!(operation, CompositeOperation::SourceOver)
+            && let Some((definition, transform)) = image_mask
+            && self.composite_sample_mask(target, source, definition, transform, composite.alpha)?
+        {
+            return Ok(());
+        }
         let expression = if let Some((definition, transform)) = image_mask {
             Some(self.mask_expression(definition, transform)?)
         } else {

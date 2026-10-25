@@ -470,15 +470,12 @@ fn progress(
                     .chunks_exact(4)
                     .zip(data.chunks_exact_mut(4))
                 {
-                    let linear = crate::common::resources::rgba8_linear_f16(
+                    let linear = crate::common::resources::rgba8_linear_u8(
                         source,
                         pending.image.encoding,
                         alpha,
                     );
-                    for i in 0..4 {
-                        target[i] = (half::f16::from_bits(linear[i]).to_f32().clamp(0., 1.) * 255.)
-                            .round() as u8;
-                    }
+                    target.copy_from_slice(&linear);
                 }
             } else {
                 for (y, target) in data.chunks_exact_mut(row).enumerate() {

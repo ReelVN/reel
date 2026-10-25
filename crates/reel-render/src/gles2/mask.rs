@@ -15,6 +15,16 @@ pub(super) const OPERATION_CAPACITY: usize = 32;
 // the output size and the operation count. Scalar packing can use fewer slots.
 pub(super) const UNIFORM_VECTORS: u32 = OPERATION_CAPACITY as u32 + 4 + 4 + 4 + 1 + 1;
 
+const fn operation_capacity(count: usize) -> usize {
+    if count <= 8 {
+        8
+    } else if count <= 16 {
+        16
+    } else {
+        OPERATION_CAPACITY
+    }
+}
+
 fn encode_operation(operation: &MaskOp) -> [f32; 4] {
     match *operation {
         MaskOp::Constant(bits) => [0., f32::from_bits(bits), 0., 0.],
@@ -46,6 +56,29 @@ fn encode_operation(operation: &MaskOp) -> [f32; 4] {
     }
 }
 impl Context<'_> {
+    /// Apply a single-sample mask while compositing the already isolated source.
+    /// Coverage stays highp through the final blend instead of visiting RGBA8.
+    pub fn composite_sample_mask(
+        &self,
+        target: &Target,
+        source: &native::Texture,
+        definition: &FrameImageMask,
+        transform: Affine,
+        alpha: f32,
+    ) -> Result<bool, GlesError> {
+        let Some(simple) = crate::common::mask::plan(&definition.program)
+            .and_then(|plan| plan.evaluate(&definition.program, definition.parameters))
+        else {
+            return Ok(false);
+        };
+        let Some(uv) = mask_uv(definition, transform) else {
+            return Ok(true);
+        };
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Composite);
+        let _kind = reel_core::profile::Scope::new(reel_core::profile::Phase::EffectComposite);
+        self.mask_sample(target, definition, uv, simple, Some((source, alpha)))?;
+        Ok(true)
+    }
     pub fn mask_expression(
         &mut self,
         definition: &FrameImageMask,
@@ -59,21 +92,13 @@ impl Context<'_> {
             )
         };
         let target = self.target()?;
-        if definition.bounds.width() <= 0.
-            || definition.bounds.height() <= 0.
-            || transform.determinant() == 0.
-        {
+        let Some(uv) = mask_uv(definition, transform) else {
             return Ok(target);
-        }
-        let uv = Affine::scale_non_uniform(
-            1. / definition.bounds.width(),
-            1. / definition.bounds.height(),
-        ) * Affine::translate((-definition.bounds.x0, -definition.bounds.y0))
-            * transform.inverse();
+        };
         if let Some(simple) = crate::common::mask::plan(&definition.program)
             .and_then(|plan| plan.evaluate(&definition.program, definition.parameters))
         {
-            self.mask_sample(&target, definition, uv, simple)?;
+            self.mask_sample(&target, definition, uv, simple, None)?;
             return Ok(target);
         }
         let mut operations = [[0.; 4]; OPERATION_CAPACITY];
@@ -111,7 +136,12 @@ impl Context<'_> {
         while images.len() < 4 {
             images.push(white.clone());
         }
-        let shader = &self.programs.mask;
+        let capacity = operation_capacity(definition.program.operations().len());
+        let shader = match capacity {
+            8 => &self.programs.mask_8,
+            16 => &self.programs.mask_16,
+            _ => &self.programs.mask,
+        };
         let mut values = Values::new();
         for (name, unit) in [
             ("u_image0", 0),
@@ -122,7 +152,7 @@ impl Context<'_> {
             values.extend(shader.int(name, unit));
         }
         let [a, b, c, d, e, f] = uv.as_coeffs().map(|v| v as f32);
-        values.extend(shader.array("u_ops[0]", &operations));
+        values.extend(shader.array("u_ops[0]", &operations[..capacity]));
         values.extend(shader.array("u_texels[0]", &texels));
         values.extend(shader.array("u_dimensions[0]", &dimensions));
         values.extend(shader.vec4("u_uv0", [a, c, e, 0.]));
@@ -155,6 +185,7 @@ impl Context<'_> {
         definition: &FrameImageMask,
         uv: Affine,
         simple: crate::common::mask::Evaluated,
+        composite: Option<(&native::Texture, f32)>,
     ) -> Result<(), GlesError> {
         let image = self
             .images
@@ -168,14 +199,19 @@ impl Context<'_> {
                     },
                 )
             })?;
-        let shader = if simple.threshold {
-            &self.programs.mask_threshold
-        } else {
-            &self.programs.mask_sample_chain
+        let shader = match (simple.threshold, composite.is_some()) {
+            (true, true) => &self.programs.mask_threshold_composite,
+            (false, true) => &self.programs.mask_sample_chain_composite,
+            (true, false) => &self.programs.mask_threshold,
+            (false, false) => &self.programs.mask_sample_chain,
         };
         let [a, b, c, d, e, f] = uv.as_coeffs().map(|v| v as f32);
         let mut values = Values::new();
         values.extend(shader.int("u_image", 0));
+        if let Some((_, alpha)) = composite {
+            values.extend(shader.int("u_source", 1));
+            values.extend(shader.vec4("u_params", [alpha, 0., 0., 0.]));
+        }
         values.extend(shader.vec4("u_uv0", [a, c, e, 0.]));
         values.extend(shader.vec4("u_uv1", [b, d, f, 0.]));
         values.extend(shader.vec4("u_values", definition.parameters[..4].try_into().unwrap()));
@@ -211,22 +247,61 @@ impl Context<'_> {
         {
             values.extend(shader.vec4(name, step));
         }
+        let textures = [
+            &image.texture,
+            composite.map_or(&image.texture, |(source, _)| source),
+        ];
         self.programs.quad(
             self.gpu,
             native::Target::Framebuffer(&target.framebuffer),
             self.size,
             shader,
-            &[&image.texture],
+            &textures[..if composite.is_some() { 2 } else { 1 }],
             &values,
-            native::Blend::Replace,
+            if composite.is_some() {
+                native::Blend::Premultiplied
+            } else {
+                native::Blend::Replace
+            },
             self.gl_scissor(),
         )
     }
 }
 
+fn mask_uv(definition: &FrameImageMask, transform: Affine) -> Option<Affine> {
+    if definition.bounds.width() <= 0.
+        || definition.bounds.height() <= 0.
+        || transform.determinant() == 0.
+    {
+        return None;
+    }
+    Some(
+        Affine::scale_non_uniform(
+            1. / definition.bounds.width(),
+            1. / definition.bounds.height(),
+        ) * Affine::translate((-definition.bounds.x0, -definition.bounds.y0))
+            * transform.inverse(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn operation_banks_cover_the_exact_program_length() {
+        for (count, expected) in [
+            (1, 8),
+            (8, 8),
+            (9, 16),
+            (12, 16),
+            (16, 16),
+            (17, 32),
+            (32, 32),
+        ] {
+            assert_eq!(operation_capacity(count), expected);
+        }
+    }
 
     #[test]
     fn packed_sample_references_preserve_coordinates_and_repeat_bits() {
