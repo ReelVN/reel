@@ -175,6 +175,8 @@ impl Host for VitaHost {
 /// changes. Player resources are dropped and GPU work drained before the next
 /// player mounts. Game shutdown and SELECT + START return to the library.
 pub fn run_launcher(game_root: &Path, module_directory: &Path) -> Result<(), Error> {
+    #[cfg(feature = "profiling")]
+    let _live_probe = crate::probe::Live::start()?;
     let (mut native, mut backend) = NativeLoop::new(module_directory)?;
     let result = run_launcher_on(game_root, &mut native, &mut backend);
     close_backend(result, backend)

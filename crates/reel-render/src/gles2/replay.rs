@@ -192,6 +192,7 @@ impl Context<'_> {
             self.targets.push(target.clone());
             target
         };
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Clear);
         self.gpu
             .clear(native::Target::Framebuffer(&target.framebuffer), [0.; 4])?;
         Ok(target)
@@ -593,6 +594,7 @@ impl Context<'_> {
         blend: u32,
         expression: Option<&Target>,
     ) -> Result<(), GlesError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Composite);
         if self.scissor.empty() {
             return Ok(());
         }

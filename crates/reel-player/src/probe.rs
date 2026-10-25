@@ -11,6 +11,65 @@ use std::{
 const WINDOWS: usize = 512;
 const SLOW: usize = 64;
 static SERIAL: AtomicU32 = AtomicU32::new(0);
+static VM_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static GPU_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) struct Live {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+impl Live {
+    pub(crate) fn start() -> io::Result<Self> {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stopped = stop.clone();
+        let thread = std::thread::Builder::new().name("reel-probe".into()).stack_size(64 << 10)
+            .spawn(move || {
+                use std::fmt::Write as _;
+                let start = Instant::now();
+                let mut previous = Sample::snapshot();
+                let mut line = String::with_capacity(2048);
+                eprintln!("[reel-probe] live sampling started; CPU us and completed calls; nested phases overlap");
+                while !stopped.load(Ordering::Relaxed) {
+                    let deadline = Instant::now() + std::time::Duration::from_secs(1);
+                    while !stopped.load(Ordering::Relaxed) {
+                        let remaining = deadline.saturating_duration_since(Instant::now());
+                        if remaining.is_zero() { break; }
+                        std::thread::sleep(remaining);
+                    }
+                    if stopped.load(Ordering::Relaxed) { break; }
+                    let current = Sample::snapshot();
+                    let delta = current.delta(previous);
+                    previous = current;
+                    line.clear();
+                    let _ = write!(line, "[reel-probe] t_ms={} vm={} gpu={} active=", start.elapsed().as_millis(),
+                        VM_BYTES.load(Ordering::Relaxed), GPU_BYTES.load(Ordering::Relaxed));
+                    for (i, elapsed) in Sample::active().iter().enumerate() {
+                        if let Some(elapsed) = elapsed { let _ = write!(line, "{}:{}ms,", NAMES[i], elapsed / 1000); }
+                    }
+                    line.push_str(" work=");
+                    for (i, name) in NAMES.iter().enumerate() {
+                        if delta.calls[i] != 0 || delta.micros[i] != 0 {
+                            let _ = write!(line, "{name}:{}/{};", delta.micros[i], delta.calls[i]);
+                        }
+                    }
+                    eprintln!("{line}");
+                }
+            })?;
+        Ok(Self {
+            stop,
+            thread: Some(thread),
+        })
+    }
+}
+impl Drop for Live {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            thread.thread().unpark();
+            let _ = thread.join();
+        }
+    }
+}
 
 #[derive(Clone, Copy, Default)]
 struct Row {
@@ -122,6 +181,8 @@ impl Recording {
     }
 
     pub(crate) fn record(&mut self, started: Instant, vm: u64, gpu: u64) {
+        VM_BYTES.store(vm, Ordering::Relaxed);
+        GPU_BYTES.store(gpu, Ordering::Relaxed);
         let elapsed = self.started.elapsed().as_micros() as u64;
         let active = started.elapsed().as_micros() as u64;
         let phases = Sample::take();

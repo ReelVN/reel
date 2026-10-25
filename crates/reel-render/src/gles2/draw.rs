@@ -713,9 +713,12 @@ impl Context<'_> {
         values.extend(shader.float("u_video_kind", kind));
         values.extend(shader.float("u_image_flip", 0.));
         values.extend(shader.float("u_coverage", f32::from(coverage)));
-        self.gpu.set_repeat(texture, repeat)?;
-        for plane in planes {
-            self.gpu.set_repeat(plane, repeat)?;
+        {
+            let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Sampler);
+            self.gpu.set_repeat(texture, repeat)?;
+            for plane in planes {
+                self.gpu.set_repeat(plane, repeat)?;
+            }
         }
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Draw);
         self.gpu.draw(native::Draw {

@@ -213,6 +213,7 @@ impl Programs {
         target: &resources::Target,
         size: [u32; 2],
     ) -> Result<(), GlesError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Screen);
         let mut values = Values::new();
         values.extend(self.present.int("u_image", 0));
         self.quad(

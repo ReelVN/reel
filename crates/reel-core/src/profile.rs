@@ -26,8 +26,12 @@ pub enum Phase {
     Poll,
     Load,
     Mount,
+    Sampler,
+    Composite,
+    Screen,
+    Clear,
 }
-pub const NAMES: [&str; 19] = [
+pub const NAMES: [&str; 23] = [
     "input",
     "tick",
     "vm",
@@ -47,6 +51,10 @@ pub const NAMES: [&str; 19] = [
     "poll",
     "load",
     "mount",
+    "sampler",
+    "composite",
+    "screen",
+    "clear",
 ];
 
 /// Times one phase. Repeated calls contribute their duration and count.
@@ -61,26 +69,56 @@ impl Scope {
     pub fn new(phase: Phase) -> Self {
         #[cfg(not(feature = "profiling"))]
         let _ = phase;
-        Self {
+        let scope = Self {
             #[cfg(feature = "profiling")]
             start: std::time::Instant::now(),
             #[cfg(feature = "profiling")]
             phase,
-        }
+        };
+        #[cfg(feature = "profiling")]
+        enabled::begin(phase, scope.start);
+        scope
     }
 }
 #[cfg(feature = "profiling")]
 mod enabled {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{
+        OnceLock,
+        atomic::{AtomicU32, AtomicU64, Ordering},
+    };
+    static EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
     static MICROS: [AtomicU64; NAMES.len()] = [const { AtomicU64::new(0) }; NAMES.len()];
     static CALLS: [AtomicU64; NAMES.len()] = [const { AtomicU64::new(0) }; NAMES.len()];
+    static LAST_MICROS: [AtomicU64; NAMES.len()] = [const { AtomicU64::new(0) }; NAMES.len()];
+    static LAST_CALLS: [AtomicU64; NAMES.len()] = [const { AtomicU64::new(0) }; NAMES.len()];
+    static ACTIVE: [AtomicU32; NAMES.len()] = [const { AtomicU32::new(0) }; NAMES.len()];
+    static SINCE: [AtomicU64; NAMES.len()] = [const { AtomicU64::new(0) }; NAMES.len()];
+
+    fn tracked(phase: Phase) -> bool {
+        !matches!(
+            phase,
+            Phase::Draw | Phase::TargetCreate | Phase::BufferCreate | Phase::GlyphRaster
+        )
+    }
+    pub(super) fn begin(phase: Phase, start: std::time::Instant) {
+        if tracked(phase) && ACTIVE[phase as usize].fetch_add(1, Ordering::Relaxed) == 0 {
+            let epoch = EPOCH.get_or_init(|| start);
+            SINCE[phase as usize].store(
+                start.saturating_duration_since(*epoch).as_micros() as u64,
+                Ordering::Relaxed,
+            );
+        }
+    }
 
     impl Drop for Scope {
         fn drop(&mut self) {
             let index = self.phase as usize;
             MICROS[index].fetch_add(self.start.elapsed().as_micros() as u64, Ordering::Relaxed);
             CALLS[index].fetch_add(1, Ordering::Relaxed);
+            if tracked(self.phase) {
+                ACTIVE[index].fetch_sub(1, Ordering::Relaxed);
+            }
         }
     }
     /// Completed phase work since the previous sample, across all threads.
@@ -93,10 +131,41 @@ mod enabled {
         /// The main-thread collector is the sole consumer. Durations and counts
         /// are sampled independently; concurrent completions may cross a row.
         pub fn take() -> Self {
+            let current = Self::snapshot();
             Self {
-                micros: std::array::from_fn(|i| MICROS[i].swap(0, Ordering::Relaxed)),
-                calls: std::array::from_fn(|i| CALLS[i].swap(0, Ordering::Relaxed)),
+                micros: std::array::from_fn(|i| {
+                    current.micros[i]
+                        .wrapping_sub(LAST_MICROS[i].swap(current.micros[i], Ordering::Relaxed))
+                }),
+                calls: std::array::from_fn(|i| {
+                    current.calls[i]
+                        .wrapping_sub(LAST_CALLS[i].swap(current.calls[i], Ordering::Relaxed))
+                }),
             }
+        }
+        /// Independent readers observe cumulative counters without consuming them.
+        pub fn snapshot() -> Self {
+            Self {
+                micros: std::array::from_fn(|i| MICROS[i].load(Ordering::Relaxed)),
+                calls: std::array::from_fn(|i| CALLS[i].load(Ordering::Relaxed)),
+            }
+        }
+        pub fn delta(self, previous: Self) -> Self {
+            Self {
+                micros: std::array::from_fn(|i| self.micros[i].wrapping_sub(previous.micros[i])),
+                calls: std::array::from_fn(|i| self.calls[i].wrapping_sub(previous.calls[i])),
+            }
+        }
+        /// Elapsed microseconds in phases that have entered and not returned yet.
+        pub fn active() -> [Option<u64>; NAMES.len()] {
+            let now = EPOCH
+                .get_or_init(std::time::Instant::now)
+                .elapsed()
+                .as_micros() as u64;
+            std::array::from_fn(|i| {
+                (ACTIVE[i].load(Ordering::Relaxed) != 0)
+                    .then(|| now.saturating_sub(SINCE[i].load(Ordering::Relaxed)))
+            })
         }
     }
 }
