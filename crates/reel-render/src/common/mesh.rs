@@ -138,6 +138,13 @@ pub(crate) struct ImagePaint {
     pub(crate) color: [f32; 4],
     pub(crate) sampling: ImageSampling,
 }
+/// Whole-texture paint preserves the resource's block-format alpha contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DirectPaint {
+    Rgba,
+    Bc1,
+    Bc3,
+}
 pub struct Mesh {
     pub vertices: Vec<Vertex>,
     pub indices: Vec<u32>,
@@ -201,6 +208,32 @@ impl Allocation {
     }
 }
 impl Mesh {
+    /// Classify before batching: another draw in the same segment may have a
+    /// different source window. Zero windows delegate edge clamping to the
+    /// sampler; regional windows retain the fragment-time half-texel clamp.
+    pub(crate) fn direct_paint(
+        &self,
+        repeat: [bool; 2],
+        appearance: Option<&[[f32; 4]; 9]>,
+        format: Option<reel_core::texture::TextureFormat>,
+    ) -> Option<DirectPaint> {
+        if repeat != [false; 2]
+            || appearance.is_some_and(|values| {
+                !matches!(values[4][3], 0. | 1.) || values[5][3] != 0. || values[7][3] != 0.
+            })
+            || self
+                .vertices
+                .iter()
+                .any(|vertex| vertex.source_window != [0.; 4])
+        {
+            return None;
+        }
+        Some(match format {
+            Some(reel_core::texture::TextureFormat::Bc1Rgb) => DirectPaint::Bc1,
+            Some(reel_core::texture::TextureFormat::Bc3Rgba) => DirectPaint::Bc3,
+            _ => DirectPaint::Rgba,
+        })
+    }
     /// Append already transformed geometry without changing primitive order.
     pub(crate) fn append(&mut self, mesh: &Self) -> Result<std::ops::Range<u32>, GpuError> {
         let vertex_start = u32::try_from(self.vertices.len()).map_err(|_| GpuError::InvalidSize)?;
@@ -686,6 +719,59 @@ fn transform_vertices(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direct_paint_keeps_windows_repetition_styles_and_block_alpha_distinct() {
+        use reel_core::texture::{TextureFormat, TextureLayout};
+        let limits = super::super::GpuLimits::default();
+        let shared = Budgets::new(limits);
+        let local = Budgets::new(limits);
+        let mut mesh = Mesh::new(Allocation::new(
+            &shared,
+            &local,
+            limits.transient_bytes,
+            1 << 20,
+        ));
+        mesh.quad(Rect::new(0., 0., 4., 4.), Rect::new(-1., -1., 2., 2.))
+            .unwrap();
+        for (format, expected) in [
+            (None, DirectPaint::Rgba),
+            (Some(TextureFormat::Bc1Rgb), DirectPaint::Bc1),
+            (Some(TextureFormat::Bc3Rgba), DirectPaint::Bc3),
+        ] {
+            assert_eq!(mesh.direct_paint([false; 2], None, format), Some(expected));
+        }
+        assert_eq!(mesh.direct_paint([true, false], None, None), None);
+        assert_eq!(mesh.direct_paint([false, true], None, None), None);
+        let mut appearance = [[0.; 4]; 9];
+        appearance[4][3] = 1.;
+        assert_eq!(
+            mesh.direct_paint([false; 2], Some(&appearance), None),
+            Some(DirectPaint::Rgba)
+        );
+        for (field, value) in [
+            ((4, 3), 2.),
+            ((4, 3), 3.),
+            ((4, 3), 4.),
+            ((5, 3), 1.),
+            ((7, 3), 1.),
+        ] {
+            let mut styled = appearance;
+            styled[field.0][field.1] = value;
+            assert_eq!(mesh.direct_paint([false; 2], Some(&styled), None), None);
+        }
+        // One regional vertex is sufficient to reject the whole original draw.
+        // In particular, do not infer eligibility from the first vertex.
+        mesh.vertices[3].source_window = [0.25, 0.25, 0.5, 0.5];
+        assert_eq!(mesh.direct_paint([false; 2], None, None), None);
+        let layout = TextureLayout {
+            logical_size: [3, 2],
+            content_size: [3, 2],
+            storage_size: [4, 4],
+        };
+        ImageSampling::with_layout(None, layout, [false; 2]).apply(&mut mesh.vertices);
+        assert_eq!(mesh.direct_paint([false; 2], None, None), None);
+    }
     use reel_ui::core::Widget;
     #[test]
     fn rectangle_clip_preserves_triangle_area_and_affine_attributes() {

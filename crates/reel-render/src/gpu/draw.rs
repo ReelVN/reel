@@ -22,6 +22,7 @@ struct PaintState {
     yuv: Option<VideoState>,
     repeat: [bool; 2],
     appearance: Option<super::gradient::Uniform>,
+    direct: Option<mesh::DirectPaint>,
     scissor: super::targets::Scissor,
 }
 
@@ -482,6 +483,10 @@ impl Context<'_> {
             self.flush_draws()?;
         }
         let state = PaintState {
+            direct: yuv
+                .is_none()
+                .then(|| mesh.direct_paint(repeat, appearance.as_ref(), texture_format))
+                .flatten(),
             image: image.clone(),
             texture_format,
             yuv: yuv.map(|planes| VideoState {
@@ -647,6 +652,16 @@ impl Context<'_> {
             let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Draw);
             pass.set_pipeline(if entry.state.yuv.is_some() {
                 &self.pipelines.yuv
+            } else if let Some(direct) = entry.state.direct {
+                let index = match direct {
+                    mesh::DirectPaint::Rgba => 0,
+                    mesh::DirectPaint::Bc1 => 1,
+                    mesh::DirectPaint::Bc3 => 2,
+                };
+                #[cfg(test)]
+                self.pipelines.direct_draws[index]
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                &self.pipelines.direct[index]
             } else {
                 &self.pipelines.paint
             });

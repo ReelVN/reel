@@ -93,6 +93,21 @@ fn compile_shaders() {
     println!("cargo:rerun-if-changed=src/gles2/shaders/paint.glsl");
     let paint =
         std::fs::read_to_string("src/gles2/shaders/paint.glsl").expect("read paint template");
+    for (name, alpha) in [
+        ("paint_direct", 0),
+        ("paint_direct_bc1", 1),
+        ("paint_direct_bc3", 2),
+    ] {
+        shaders.push((
+            name.to_owned(),
+            Stage::Fragment,
+            paint.replacen(
+                "#version 100",
+                &format!("#version 100\n#define REEL_DIRECT {alpha}"),
+                1,
+            ),
+        ));
+    }
     for (name, kind, style) in variants {
         let source = paint.replacen(
             "#version 100",

@@ -106,6 +106,91 @@ fn frame(lease: ResourceLease, variant: u32, pool: &BudgetPool) -> RenderFrame {
 }
 
 #[test]
+#[ignore = "requires actual BC-capable graphics adapter; submits without pixel readback"]
+fn direct_paint_submits_each_alpha_policy_and_keeps_regional_draws_general() {
+    use std::sync::atomic::Ordering;
+    let pool = BudgetPool::new(
+        BudgetCategory::CpuOutput,
+        QueueLimits {
+            max_requests: 128,
+            max_bytes: 8 << 20,
+        },
+    );
+    let mut registry = ResourceRegistry::new(3, 65536).unwrap();
+    let gpu = pollster::block_on(Gpu::request(
+        &wgpu::Instance::default(),
+        None,
+        DeviceGeneration(1),
+        GpuLimits::default(),
+    ))
+    .unwrap();
+    assert!(
+        gpu.device
+            .features()
+            .contains(wgpu::Features::TEXTURE_COMPRESSION_BC)
+    );
+    let mut renderer = Renderer::new(gpu);
+    let mut expected = [0; 3];
+    for (index, format) in [
+        TextureFormat::Rgba8,
+        TextureFormat::Bc1Rgb,
+        TextureFormat::Bc3Rgba,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let descriptor = TextureDescriptor {
+            format,
+            source_encoding: ColorEncoding::Linear,
+            layout: TextureLayout::identity([32, 32]),
+        };
+        let bytes = descriptor.byte_len().unwrap();
+        let handle = registry
+            .register_texture(
+                ResourceVersion {
+                    key: AssetKey(format!("direct-paint-{index}")),
+                    version: ContentVersion([index as u8; 32]),
+                },
+                TexturePayload::new(
+                    descriptor,
+                    OwnedBytes::new(vec![0; bytes as usize], pool.reserve(bytes).unwrap()).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        for variant in [0, 1, 3, 4] {
+            let frame = frame(registry.acquire(handle).unwrap(), variant, &pool);
+            let prepared = renderer.prepare(&frame).unwrap();
+            let pipelines = renderer
+                .pipelines
+                .get(&renderer.gpu, prepared.quality())
+                .unwrap();
+            if variant == 0 {
+                expected[index] += 1;
+            }
+            assert_eq!(
+                pipelines
+                    .direct_draws
+                    .each_ref()
+                    .map(|count| count.load(Ordering::Relaxed)),
+                expected,
+                "format {format:?}, variant {variant}",
+            );
+            renderer.submit(prepared).unwrap();
+            renderer
+                .gpu
+                .device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .unwrap();
+            renderer.poll().unwrap();
+        }
+    }
+    assert_eq!(expected, [1, 1, 1]);
+    assert_eq!(renderer.pipelines.creations.snapshot(), [3, 9, 9, 9, 4]);
+    assert_eq!(renderer.usage().transient, 0);
+}
+
+#[test]
 #[ignore = "requires actual BC-capable graphics adapter"]
 fn typed_tiles_submit_mixed_raster_bc1_bc3_resources_with_exact_leases() {
     use reel_ui::{
