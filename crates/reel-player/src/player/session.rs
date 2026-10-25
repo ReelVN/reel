@@ -219,7 +219,7 @@ impl PlayerSession {
         match self {
             #[cfg(any(feature = "vita", test))]
             Self::Launcher(launcher) => {
-                launcher.ui.presented(bridge, frame);
+                launcher.presented(bridge, frame);
             }
             #[cfg(feature = "window")]
             Self::Diagnostic(host) => {
@@ -243,7 +243,7 @@ impl PlayerSession {
     pub(crate) fn needs_tick(&self) -> bool {
         match self {
             #[cfg(any(feature = "vita", test))]
-            Self::Launcher(launcher) => !launcher.ui.current_presentation_ready(),
+            Self::Launcher(launcher) => launcher.needs_tick(),
             Self::Aside { story, .. } => story.needs_tick(),
             #[cfg(feature = "window")]
             Self::Diagnostic(host) => host.ui.dialogue_needs_time(),
@@ -286,7 +286,7 @@ impl PlayerSession {
     ) -> Result<(), Error> {
         match self {
             #[cfg(any(feature = "vita", test))]
-            Self::Launcher(_) => {}
+            Self::Launcher(launcher) => launcher.poll()?,
             Self::Aside { story, .. } => story.tick(budget, now)?,
             #[cfg(feature = "window")]
             Self::Diagnostic(host) => {
@@ -316,7 +316,7 @@ impl PlayerSession {
     pub(crate) fn close_complete(&self) -> bool {
         match self {
             #[cfg(any(feature = "vita", test))]
-            Self::Launcher(_) => true,
+            Self::Launcher(launcher) => launcher.close_complete(),
             #[cfg(feature = "window")]
             Self::Diagnostic(_) => true,
             Self::Aside { story, .. } => story.close_complete(),

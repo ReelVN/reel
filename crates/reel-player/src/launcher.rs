@@ -12,7 +12,6 @@ use reel_ui::{
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io::Read,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -22,42 +21,53 @@ const ROW_HEIGHT: f64 = 90.;
 const LIST_HEIGHT: f64 = 355.;
 const PAGE_ROWS: usize = 4;
 const PREFERENCES_BYTES: u64 = 64 << 10;
+mod catalog;
 #[cfg(test)]
 mod tests;
 mod view;
+use crate::assets::worker::Worker;
+use catalog::{Reply, Request};
+use reel_core::{budget::QueueLimits, identity::Priority, wake::WakeSignal};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Game {
     title: String,
     package: PathBuf,
-}
-fn scan(root: &Path) -> Result<Vec<Game>, Error> {
-    let mut games = Vec::new();
-    for entry in std::fs::read_dir(root)? {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            let package = entry.path().join("game.asb");
-            if package.is_file() {
-                games.push(Game {
-                    title: entry.file_name().to_string_lossy().into_owned(),
-                    package,
-                });
-            }
-        }
-    }
-    games.sort_by(|a, b| a.title.cmp(&b.title));
-    Ok(games)
+    bytes: u64,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Outcome {
     Launch(PathBuf),
     Exit,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Screen {
     Library,
-    Information,
     Settings,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Picker {
+    Theme,
+    Language,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Language {
+    #[default]
+    Chinese,
+    English,
+    Japanese,
+}
+impl Language {
+    fn pick<'a>(self, zh: &'a str, en: &'a str, ja: &'a str) -> &'a str {
+        match self {
+            Self::Chinese => zh,
+            Self::English => en,
+            Self::Japanese => ja,
+        }
+    }
+    fn code(self) -> &'static str {
+        self.pick("zh", "en", "ja")
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
@@ -66,16 +76,19 @@ enum Action {
     Previous,
     Next,
     Refresh,
-    Information,
+    About,
     Settings,
-    Theme,
+    Picker(Picker),
+    Theme(bool),
+    Language(Language),
     Back,
     Exit,
     ConfirmExit,
 }
-#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Default)]
 struct Preferences {
     light: bool,
+    language: Language,
     selected: Option<String>,
 }
 struct Button {
@@ -102,7 +115,19 @@ pub(crate) struct Launcher {
     screen: Screen,
     error: Option<String>,
     confirm_exit: bool,
+    about: bool,
+    picker: Option<Picker>,
+    loading: Option<Game>,
+    loading_presented: bool,
+    worker: Worker<Request, Reply>,
+    scanning: bool,
+    saving: bool,
+    pending_save: Option<Preferences>,
+    next_request: u64,
     stage: Stage,
+    pages: BTreeMap<Screen, NodeId>,
+    overlay: Option<NodeId>,
+    page_focus: BTreeMap<Screen, NodeId>,
     buttons: BTreeMap<NodeId, Button>,
     list: Option<List>,
     pending_focus: Option<NodeId>,
@@ -110,7 +135,31 @@ pub(crate) struct Launcher {
     outcome: Option<Outcome>,
 }
 impl Launcher {
-    pub(crate) fn new(root: &Path, assets: Assets, error: Option<String>) -> Result<Self, Error> {
+    pub(crate) fn new(
+        root: &Path,
+        assets: Assets,
+        error: Option<String>,
+        wake: WakeSignal,
+    ) -> Result<Self, Error> {
+        let directory = root.to_path_buf();
+        let worker = Worker::new(
+            QueueLimits {
+                max_requests: 2,
+                max_bytes: PREFERENCES_BYTES * 2,
+            },
+            wake,
+            move |request, cancelled| match request {
+                Request::Scan => Reply::Scanned(
+                    catalog::scan(&directory, cancelled)
+                        .map_err(|e| format!("{}: {e}", directory.display())),
+                ),
+                Request::Save(preferences) => Reply::Saved(
+                    catalog::save_preferences(&directory, &preferences)
+                        .map_err(|e| format!("launcher.tsv: {e}")),
+                ),
+            },
+            |_| {},
+        );
         let mut launcher = Self {
             ui: SessionUi::new(Session::new(SessionId(1), Epoch(1))?)?.with_assets(assets),
             settings: Arc::new(GameSettings {
@@ -127,45 +176,36 @@ impl Launcher {
             screen: Screen::Library,
             error,
             confirm_exit: false,
+            about: false,
+            picker: None,
+            loading: None,
+            loading_presented: false,
+            worker,
+            scanning: false,
+            saving: false,
+            pending_save: None,
+            next_request: 0,
             stage: Stage::default(),
+            pages: BTreeMap::new(),
+            overlay: None,
+            page_focus: BTreeMap::new(),
             buttons: BTreeMap::new(),
             list: None,
             pending_focus: None,
             root_widget: None,
             outcome: None,
         };
-        match launcher.read_preferences() {
+        match catalog::read_preferences(root) {
             Ok(preferences) => launcher.preferences = preferences,
             Err(error) => launcher.report(format!("读取启动器设置失败：\n{error}")),
         }
-        match scan(root) {
-            Ok(games) => launcher.games = games,
-            Err(error) => launcher.report(format!("读取作品目录失败：\n{error}")),
-        }
-        launcher.selected = launcher
-            .preferences
-            .selected
-            .as_ref()
-            .and_then(|name| launcher.games.iter().position(|game| &game.title == name))
-            .unwrap_or(0);
-        launcher.scroll_to_selected();
+        launcher.request(Request::Scan)?;
+        launcher.scanning = true;
         launcher.rebuild()?;
         Ok(launcher)
     }
-    fn read_preferences(&self) -> Result<Preferences, Error> {
-        let file = match reel_storage::open(&self.root.join("launcher.preferences")) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Preferences::default());
-            }
-            Err(error) => return Err(error.into()),
-        };
-        let mut bytes = Vec::new();
-        file.take(PREFERENCES_BYTES + 1).read_to_end(&mut bytes)?;
-        if bytes.len() as u64 > PREFERENCES_BYTES {
-            return Err("启动器设置超过 64 KiB".into());
-        }
-        Ok(postcard::from_bytes(&bytes)?)
+    fn text<'a>(&self, zh: &'a str, en: &'a str, ja: &'a str) -> &'a str {
+        self.preferences.language.pick(zh, en, ja)
     }
     fn report(&mut self, message: String) {
         if let Some(error) = &mut self.error {
@@ -175,16 +215,91 @@ impl Launcher {
             self.error = Some(message);
         }
     }
-    fn save_preferences(&self, preferences: &Preferences) -> Result<(), Error> {
-        let bytes = postcard::to_stdvec(preferences)?;
-        let result =
-            reel_storage::publish(&self.root.join("launcher.preferences"), true, |writer| {
-                writer.write_all(&bytes)
-            })?;
-        if let Some(warning) = result.cleanup_warning {
-            eprintln!("launcher settings: {warning}");
+    fn request(&mut self, request: Request) -> Result<(), Error> {
+        self.next_request += 1;
+        self.worker
+            .accept(
+                self.next_request,
+                request,
+                PREFERENCES_BYTES,
+                Priority::Visible,
+            )
+            .map_err(|e| e.reason.message.to_string())?;
+        Ok(())
+    }
+    fn save_preferences(&mut self) -> Result<(), Error> {
+        if self.saving {
+            self.pending_save = Some(self.preferences.clone());
+        } else {
+            self.request(Request::Save(self.preferences.clone()))?;
+            self.saving = true;
         }
         Ok(())
+    }
+    pub(crate) fn close_complete(&self) -> bool {
+        self.worker.is_idle()
+    }
+    pub(crate) fn needs_tick(&self) -> bool {
+        !self.worker.is_idle() || !self.ui.current_presentation_ready()
+    }
+    pub(crate) fn poll(&mut self) -> Result<(), Error> {
+        let mut events = Vec::new();
+        self.worker.drain(&mut events, 2);
+        for event in events {
+            match event {
+                Reply::Scanned(result) => {
+                    self.scanning = false;
+                    match result {
+                        Ok(games) => {
+                            let selected = self
+                                .games
+                                .get(self.selected)
+                                .map(|g| &g.title)
+                                .or(self.preferences.selected.as_ref());
+                            self.selected = selected
+                                .and_then(|name| games.iter().position(|g| &g.title == name))
+                                .unwrap_or(0);
+                            self.games = games;
+                            self.scroll_to_selected();
+                        }
+                        Err(error) => self.report(error),
+                    }
+                    self.rebuild()?;
+                }
+                Reply::Saved(result) => {
+                    self.saving = false;
+                    if let Err(error) = result {
+                        self.loading = None;
+                        self.report(error);
+                        self.update_overlay()?;
+                    }
+                    if let Some(preferences) = self.pending_save.take() {
+                        self.request(Request::Save(preferences))?;
+                        self.saving = true;
+                    }
+                }
+            }
+        }
+        if self.loading_presented && self.error.is_none() && self.worker.is_idle() {
+            if let Some(game) = &self.loading {
+                self.outcome = Some(Outcome::Launch(game.package.clone()));
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn presented(
+        &mut self,
+        bridge: &PresentationBridge,
+        frame: &crate::session::RecordedProjection,
+    ) {
+        if self.ui.presented(bridge, frame) && self.loading.is_some() {
+            self.loading_presented = true;
+            if self.worker.is_idle() && self.error.is_none() {
+                self.outcome = Some(Outcome::Launch(
+                    self.loading.as_ref().unwrap().package.clone(),
+                ));
+            }
+        }
     }
     pub(crate) fn take_outcome(&mut self) -> Option<Outcome> {
         self.outcome.take()
@@ -197,6 +312,9 @@ impl Launcher {
         bridge: &mut PresentationBridge,
         event: PointerEvent,
     ) -> Result<Handled, Error> {
+        if self.loading.is_some() {
+            return Ok(Handled::Yes);
+        }
         let dispatch = self.ui.handle_pointer(bridge, event)?;
         self.events(dispatch.events)?;
         Ok(dispatch.handled)
@@ -207,6 +325,9 @@ impl Launcher {
         event: TextEvent,
     ) -> Result<Handled, Error> {
         self.focus(bridge);
+        if self.loading.is_some() {
+            return Ok(Handled::Yes);
+        }
         let shortcut = if self.ui.current_presentation_ready() {
             match &event {
                 TextEvent::Navigation(event)
@@ -224,11 +345,7 @@ impl Launcher {
                     GamepadButton::Select if self.screen == Screen::Library => {
                         Some(Action::Settings)
                     }
-                    GamepadButton::North
-                        if self.screen == Screen::Library && !self.games.is_empty() =>
-                    {
-                        Some(Action::Information)
-                    }
+                    GamepadButton::North if self.screen == Screen::Settings => Some(Action::About),
                     GamepadButton::LeftShoulder if self.screen == Screen::Library => {
                         Some(Action::Previous)
                     }
@@ -264,7 +381,7 @@ impl Launcher {
             let events = self.ui.take_events();
             self.events(events)?;
             if before == self.stage.revision() {
-                break;
+                return Ok(());
             }
         }
         self.ui.sync(bridge, root)
@@ -278,11 +395,17 @@ impl Launcher {
         }
     }
     fn modal(&self) -> bool {
-        self.error.is_some() || self.confirm_exit
+        self.error.is_some()
+            || self.confirm_exit
+            || self.about
+            || self.picker.is_some()
+            || self.loading.is_some()
     }
     fn events(&mut self, events: Vec<NodeEvent>) -> Result<(), Error> {
+        let before = self.stage.revision();
         for event in events {
             match event {
+                NodeEvent::PopupDismiss(_) => self.perform(Action::Back)?,
                 NodeEvent::Click(click) => {
                     if let Some(button) = self.buttons.get(&click.node) {
                         self.perform(button.action)?;
@@ -332,12 +455,16 @@ impl Launcher {
                 _ => {}
             }
         }
+        if before != self.stage.revision() {
+            self.ui.set_feedback_stage(&self.stage);
+        }
         Ok(())
     }
     fn perform(&mut self, action: Action) -> Result<(), Error> {
         if let Err(error) = self.act(action) {
             self.error = Some(error.to_string());
-            self.rebuild()?;
+            self.loading = None;
+            self.update_overlay()?;
         }
         Ok(())
     }
@@ -347,18 +474,12 @@ impl Launcher {
                 return self.act(Action::Launch(self.selected));
             }
             Action::Launch(index) => {
-                let game = &self.games[index];
-                let preferences = Preferences {
-                    selected: Some(game.title.clone()),
-                    ..self.preferences.clone()
-                };
-                if let Err(error) = self.save_preferences(&preferences) {
-                    eprintln!("launcher selection: {error}");
-                }
-                self.preferences = preferences;
+                let game = self.games[index].clone();
+                self.preferences.selected = Some(game.title.clone());
+                self.save_preferences()?;
                 self.selected = index;
-                self.outcome = Some(Outcome::Launch(game.package.clone()));
-                return Ok(());
+                self.loading = Some(game);
+                self.loading_presented = false;
             }
             Action::Previous | Action::Next if !self.games.is_empty() => {
                 self.selected = if action == Action::Previous {
@@ -377,29 +498,36 @@ impl Launcher {
                     .and_then(|list| list.rows.get(&self.selected).copied());
                 return Ok(());
             }
-            Action::Refresh => {
-                let selected = self.games.get(self.selected).map(|game| game.title.clone());
-                self.games = scan(&self.root)?;
-                self.selected = selected
-                    .and_then(|name| self.games.iter().position(|game| game.title == name))
-                    .unwrap_or(0);
-                self.scroll_to_selected();
+            Action::Refresh if !self.scanning => {
+                self.request(Request::Scan)?;
+                self.scanning = true;
+                return self.rebuild();
             }
-            Action::Information if !self.games.is_empty() => self.screen = Screen::Information,
-            Action::Settings => self.screen = Screen::Settings,
-            Action::Theme => {
-                let preferences = Preferences {
-                    light: !self.preferences.light,
-                    ..self.preferences.clone()
-                };
-                self.save_preferences(&preferences)?;
-                self.preferences = preferences;
+            Action::About => self.about = true,
+            Action::Settings => return self.navigate(Screen::Settings),
+            Action::Picker(picker) => self.picker = Some(picker),
+            Action::Theme(light) => {
+                self.preferences.light = light;
+                self.picker = None;
+                self.save_preferences()?;
+                return self.rebuild();
+            }
+            Action::Language(language) => {
+                self.preferences.language = language;
+                self.picker = None;
+                self.save_preferences()?;
+                return self.rebuild();
             }
             Action::Back if self.modal() => {
                 self.error = None;
                 self.confirm_exit = false;
+                self.about = false;
+                self.picker = None;
+                self.loading = None;
             }
-            Action::Back if self.screen != Screen::Library => self.screen = Screen::Library,
+            Action::Back if self.screen != Screen::Library => {
+                return self.navigate(Screen::Library);
+            }
             Action::Back | Action::Exit => self.confirm_exit = true,
             Action::ConfirmExit => {
                 self.outcome = Some(Outcome::Exit);
@@ -407,7 +535,7 @@ impl Launcher {
             }
             _ => return Ok(()),
         }
-        self.rebuild()
+        self.update_overlay()
     }
     fn scroll_to_selected(&mut self) {
         let viewport = self

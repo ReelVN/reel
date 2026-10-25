@@ -16,6 +16,14 @@ pub(crate) struct Rasterizer {
     scale: ScaleContext,
     outline: Outline,
     scratch: zeno::Scratch,
+    // Swash's convenience constructor creates a fresh cache identity each time.
+    // Keep the last face identity so adjacent glyphs share its parsed tables.
+    face: Option<(
+        reel_ui::resources::ResourceHandle,
+        u32,
+        u32,
+        swash::CacheKey,
+    )>,
 }
 pub struct GlyphBitmap {
     pub x: f64,
@@ -70,12 +78,26 @@ pub fn rasterize(
             record: "font resource type",
         });
     };
-    let font = swash::FontRef::from_index(font.data(), run.font_index as usize).ok_or(
-        GpuError::Unsupported {
-            at,
-            record: "font collection index",
-        },
-    )?;
+    let (offset, key) = match context.face {
+        Some((handle, index, offset, key)) if handle == run.font && index == run.font_index => {
+            (offset, key)
+        }
+        _ => {
+            let face = swash::FontRef::from_index(font.data(), run.font_index as usize).ok_or(
+                GpuError::Unsupported {
+                    at,
+                    record: "font collection index",
+                },
+            )?;
+            context.face = Some((run.font, run.font_index, face.offset, face.key));
+            (face.offset, face.key)
+        }
+    };
+    let font = swash::FontRef {
+        data: font.data(),
+        offset,
+        key,
+    };
     let glyph = &run.glyphs[index];
     let id = u16::try_from(glyph.id).map_err(|_| GpuError::Unsupported {
         at,

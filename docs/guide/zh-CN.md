@@ -49,6 +49,8 @@ reel export --release --resource-target vita --data-only
 
 将导出目录复制到 `ux0:/data/reel/作品名/`。启动器列出含 `game.asb` 的作品目录；进度保存在各作品的 `saves/` 目录。游戏中按 SELECT + START 返回作品列表。
 
+在启动器中按 SELECT 打开设置，选择界面语言和主题；设置保存在 `ux0:/data/reel/launcher.tsv`。复制新作品后按 START 刷新列表。
+
 在项目根添加 `resources.toml`，可以自动生成目标平台的素材副本：
 
 ```toml

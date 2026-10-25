@@ -26,6 +26,14 @@ pub trait InstructionSequence {
             .enumerate()
             .map(|(pc, value)| value.map(|value| (pc, value)))
     }
+    /// Decode each instruction and its PC range in one sequential pass.
+    fn ranged_iter(
+        &self,
+    ) -> impl ExactSizeIterator<Item = Result<(std::ops::Range<usize>, Instruction), Error>> {
+        self.iter()
+            .enumerate()
+            .map(|(pc, value)| value.map(|value| (pc..pc + 1, value)))
+    }
     fn previous_pc(&self, pc: usize) -> Option<usize> {
         (pc > 0 && pc <= self.end_pc()).then(|| pc - 1)
     }
@@ -594,6 +602,18 @@ impl InstructionSequence for CompactCode {
     }
     fn indexed_iter(&self) -> impl ExactSizeIterator<Item = Result<(usize, Instruction), Error>> {
         self.indexed_iter()
+    }
+    fn ranged_iter(
+        &self,
+    ) -> impl ExactSizeIterator<Item = Result<(std::ops::Range<usize>, Instruction), Error>> {
+        let mut cursor = self.iter();
+        (0..self.len()).map(move |_| {
+            let start = cursor.front;
+            cursor
+                .next()
+                .expect("declared instruction count")
+                .map(|value| (start..cursor.front, value))
+        })
     }
     fn previous_pc(&self, pc: usize) -> Option<usize> {
         self.previous_pc(pc)

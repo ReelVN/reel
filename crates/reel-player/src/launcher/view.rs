@@ -230,65 +230,93 @@ impl Launcher {
         props.border_color = palette.focus;
         props.opacity = if props.enabled { 1. } else { 0.4 };
         self.stage.update(node, view.kind.clone(), props)?;
-        self.ui.set_feedback_stage(&self.stage);
         Ok(())
     }
     pub(super) fn game_row(&mut self, index: usize) -> Result<NodeId, Error> {
-        let title = self.games[index].title.clone();
-        let text = self.label(title, [16., 27., 800., 38.], 28., false)?;
-        let node = self.stage.node(text).unwrap();
-        let mut props = node.props.clone();
-        props.text_wrap = false;
-        self.stage.update(text, node.kind.clone(), props)?;
+        let game = &self.games[index];
+        let title = game.title.clone();
+        let bytes = game.bytes;
+        let size = if bytes >= 1 << 30 {
+            format!("{:.2} GiB", bytes as f64 / (1u64 << 30) as f64)
+        } else {
+            format!("{:.1} MiB", bytes as f64 / (1u64 << 20) as f64)
+        };
+        let text = self.label(title, [16., 27., 654., 38.], 28., false)?;
+        self.align(text, reel_ui::TextAlign::Start, false)?;
+        let detail = self.label(size, [686., 34., 130., 28.], 17., true)?;
+        self.align(detail, reel_ui::TextAlign::End, false)?;
         let separator = self.line([16., 89., 800., 1.])?;
         self.control(
             [0., 0., 832., ROW_HEIGHT],
-            vec![text, separator],
+            vec![text, detail, separator],
             Action::Launch(index),
             true,
             false,
             true,
         )
     }
+    fn align(&mut self, node: NodeId, align: reel_ui::TextAlign, wrap: bool) -> Result<(), Error> {
+        let view = self.stage.node(node).unwrap();
+        let mut props = view.props.clone();
+        props.text_align = align;
+        props.text_wrap = wrap;
+        self.stage.update(node, view.kind.clone(), props)?;
+        Ok(())
+    }
     pub(super) fn rebuild(&mut self) -> Result<(), Error> {
         self.buttons.clear();
         self.list = None;
+        self.overlay = None;
+        self.pages.clear();
+        self.page_focus.clear();
         self.pending_focus = None;
-        let mut nodes = Vec::new();
-        let title = match self.screen {
-            Screen::Library => "Reel",
-            Screen::Information => "作品信息",
-            Screen::Settings => "设置",
-        };
-        nodes.push(self.label(title, [65., 26., 400., 40.], 28., false)?);
-        if self.screen == Screen::Library {
-            nodes.push(self.label(
-                format!("{} 部作品", self.games.len()),
-                [143., 37., 350., 26.],
+        let mut pages = Vec::new();
+        for screen in [Screen::Library, Screen::Settings] {
+            let mut nodes = Vec::new();
+            let title = if screen == Screen::Library {
+                "Reel"
+            } else {
+                self.text("设置", "Settings", "設定")
+            };
+            nodes.push(self.label(title, [65., 26., 400., 40.], 28., false)?);
+            if screen == Screen::Library {
+                nodes.push(self.label(
+                    format!(
+                        "{} {}",
+                        self.games.len(),
+                        self.text("部作品", "games", "作品")
+                    ),
+                    [143., 37., 350., 26.],
+                    17.,
+                    true,
+                )?);
+            }
+            let status = self.label(
+                concat!("v", env!("CARGO_PKG_VERSION")),
+                [695., 35., 200., 26.],
                 17.,
                 true,
-            )?);
-        }
-        let status = self.label(
-            concat!("v", env!("CARGO_PKG_VERSION")),
-            [695., 35., 200., 26.],
-            17.,
-            true,
-        )?;
-        let node = self.stage.node(status).unwrap();
-        let mut props = node.props.clone();
-        props.text_align = reel_ui::TextAlign::End;
-        self.stage.update(status, node.kind.clone(), props)?;
-        nodes.push(status);
-        nodes.push(self.line([48., 87., 864., 1.])?);
-        nodes.push(self.line([48., 471., 864., 1.])?);
-        match self.screen {
-            Screen::Library => self.library(&mut nodes)?,
-            Screen::Information => self.information(&mut nodes)?,
-            Screen::Settings => self.options(&mut nodes)?,
-        }
-        if self.modal() {
-            nodes.push(self.dialog()?);
+            )?;
+            self.align(status, reel_ui::TextAlign::End, false)?;
+            nodes.push(status);
+            nodes.push(self.line([48., 87., 864., 1.])?);
+            nodes.push(self.line([48., 471., 864., 1.])?);
+            match screen {
+                Screen::Library => self.library(&mut nodes)?,
+                Screen::Settings => self.options(&mut nodes)?,
+            }
+            let page = self.stage.create(
+                NodeKind::Stack,
+                NodeProps {
+                    width: Some(960.),
+                    height: Some(544.),
+                    visible: screen == self.screen,
+                    ..Default::default()
+                },
+                nodes,
+            )?;
+            pages.push(page);
+            self.pages.insert(screen, page);
         }
         let root = self.stage.create(
             NodeKind::Stack,
@@ -298,47 +326,76 @@ impl Launcher {
                 background: Some(self.palette().background),
                 ..Default::default()
             },
-            nodes,
+            pages,
         )?;
         self.stage.replace(root)?;
-        if self.list.is_some() {
-            self.reconcile(&[])?;
-            if !self.modal() {
-                self.pending_focus = self
-                    .list
-                    .as_ref()
-                    .and_then(|list| list.rows.get(&self.selected).copied());
-            }
+        self.reconcile(&[])?;
+        self.restore_focus();
+        self.update_overlay()
+    }
+    fn restore_focus(&mut self) {
+        self.pending_focus = if self.screen == Screen::Library {
+            self.list
+                .as_ref()
+                .and_then(|list| list.rows.get(&self.selected).copied())
+                .or_else(|| self.page_focus.get(&Screen::Library).copied())
+        } else {
+            self.page_focus.get(&self.screen).copied()
+        };
+    }
+    pub(super) fn navigate(&mut self, screen: Screen) -> Result<(), Error> {
+        self.screen = screen;
+        for (&page_screen, &node) in &self.pages {
+            let page = self.stage.node(node).unwrap();
+            let mut props = page.props.clone();
+            props.visible = page_screen == screen;
+            self.stage.update(node, page.kind.clone(), props)?;
+        }
+        self.restore_focus();
+        self.ui.set_stage(&self.stage);
+        Ok(())
+    }
+    pub(super) fn update_overlay(&mut self) -> Result<(), Error> {
+        if let Some(node) = self.overlay.take() {
+            self.stage.remove(node)?;
+            self.buttons
+                .retain(|node, _| self.stage.node(*node).is_some());
+        }
+        self.restore_focus();
+        if self.modal() {
+            let overlay = if self.loading.is_some() {
+                self.loading_view()?
+            } else if let Some(picker) = self.picker {
+                self.dropdown(picker)?
+            } else {
+                self.dialog()?
+            };
+            let root = self.stage.root().unwrap();
+            let position = self.stage.node(root).unwrap().children.len();
+            self.stage.add(root, overlay, position)?;
+            self.overlay = Some(overlay);
         }
         self.ui.set_stage(&self.stage);
         Ok(())
     }
     fn library(&mut self, nodes: &mut Vec<NodeId>) -> Result<(), Error> {
         if self.games.is_empty() {
-            for node in [
-                self.label("未找到作品", [64., 175., 832., 44.], 28., false)?,
-                self.label(
-                    self.root.display().to_string(),
-                    [64., 231., 832., 60.],
-                    20.,
-                    true,
-                )?,
-                self.label(
-                    "每个作品目录放入 game.asb，复制完成后刷新。",
-                    [64., 301., 832., 32.],
-                    20.,
-                    true,
-                )?,
-            ] {
-                let view = self.stage.node(node).unwrap();
-                let mut props = view.props.clone();
-                props.text_align = reel_ui::TextAlign::Center;
-                self.stage.update(node, view.kind.clone(), props)?;
-                nodes.push(node);
-            }
-            let refresh = self.button("刷新", [360., 363., 240., 56.], Action::Refresh, true)?;
-            self.pending_focus = Some(refresh);
-            nodes.push(refresh);
+            let message = if self.scanning {
+                self.text("正在读取…", "Loading library…", "読み込み中…")
+            } else {
+                self.text("未找到作品", "No games found", "作品が見つかりません")
+            };
+            let title = self.label(message, [64., 194., 832., 44.], 28., false)?;
+            self.align(title, reel_ui::TextAlign::Center, false)?;
+            nodes.push(title);
+            let path = self.label(
+                self.root.display().to_string(),
+                [64., 255., 832., 60.],
+                20.,
+                true,
+            )?;
+            self.align(path, reel_ui::TextAlign::Center, true)?;
+            nodes.push(path);
         } else {
             let node = self.stage.create(
                 NodeKind::VirtualList(VirtualListView {
@@ -380,111 +437,263 @@ impl Launcher {
                 navigation: None,
             });
         }
-        nodes.push(self.hint("SELECT", "设置", 55., 145., Some(Action::Settings), true)?);
+        let settings = self.hint(
+            "SELECT",
+            self.text("设置", "Settings", "設定"),
+            55.,
+            175.,
+            Some(Action::Settings),
+            true,
+        )?;
+        self.page_focus.insert(Screen::Library, settings);
+        nodes.push(settings);
         if !self.games.is_empty() {
-            nodes.push(self.hint("L", "", 206., 46., Some(Action::Previous), true)?);
-            nodes.push(self.hint("R", "翻页", 254., 102., Some(Action::Next), true)?);
+            nodes.push(self.hint("L", "", 236., 46., Some(Action::Previous), true)?);
+            nodes.push(self.hint(
+                "R",
+                self.text("翻页", "Page", "ページ"),
+                284.,
+                120.,
+                Some(Action::Next),
+                true,
+            )?);
         }
-        nodes.push(self.hint("START", "刷新", 368., 152., Some(Action::Refresh), true)?);
+        nodes.push(self.hint(
+            "START",
+            self.text("刷新", "Refresh", "更新"),
+            410.,
+            178.,
+            Some(Action::Refresh),
+            !self.scanning,
+        )?);
         if !self.games.is_empty() {
-            nodes.push(self.hint("△", "详情", 665., 111., Some(Action::Information), true)?);
-            nodes.push(self.hint("×", "启动", 790., 115., Some(Action::Play), true)?);
+            nodes.push(self.hint(
+                "×",
+                self.text("启动", "Play", "起動"),
+                770.,
+                135.,
+                Some(Action::Play),
+                true,
+            )?);
         }
         Ok(())
     }
-    fn subpage(
+    fn selector(
         &mut self,
-        nodes: &mut Vec<NodeId>,
         title: &str,
-        description: &str,
-    ) -> Result<(), Error> {
-        nodes.push(self.label(title, [64., 112., 190., 110.], 28., false)?);
-        nodes.push(self.label(description, [64., 236., 190., 168.], 18., true)?);
-        nodes.push(self.line([282., 100., 1., 355.])?);
-        nodes.push(self.hint("○", "返回", 665., 111., Some(Action::Back), true)?);
-        nodes.push(self.hint("×", "选择", 790., 115., None, true)?);
-        Ok(())
-    }
-    fn information(&mut self, nodes: &mut Vec<NodeId>) -> Result<(), Error> {
-        let game = self.games[self.selected].clone();
-        self.subpage(nodes, &game.title, "作品保留各自的资源与存档。")?;
-        let directory = game.package.parent().unwrap();
-        nodes.push(self.label("作品目录", [311., 111., 585., 27.], 17., true)?);
-        nodes.push(self.label(
-            directory.display().to_string(),
-            [311., 148., 585., 71.],
-            18.,
+        value: &str,
+        y: f64,
+        picker: Picker,
+    ) -> Result<NodeId, Error> {
+        let label = self.label(title, [18., 18., 310., 36.], 24., false)?;
+        let value = self.label(value, [340., 20., 340., 32.], 22., true)?;
+        self.align(value, reel_ui::TextAlign::End, false)?;
+        let arrow = self.label("▾", [700., 18., 32., 36.], 24., true)?;
+        let separator = self.line([16., 73., 720., 1.])?;
+        self.control(
+            [104., y, 752., 74.],
+            vec![label, value, arrow, separator],
+            Action::Picker(picker),
+            true,
             false,
-        )?);
-        nodes.push(self.label("存档目录", [311., 239., 585., 27.], 17., true)?);
-        nodes.push(self.label(
-            directory.join("saves").display().to_string(),
-            [311., 276., 585., 71.],
-            18.,
-            false,
-        )?);
-        let play = self.button("启动作品", [311., 383., 280., 56.], Action::Play, true)?;
-        self.pending_focus = Some(play);
-        nodes.push(play);
-        Ok(())
+            true,
+        )
     }
     fn options(&mut self, nodes: &mut Vec<NodeId>) -> Result<(), Error> {
-        self.subpage(nodes, "启动器设置", "主题与上次启动的作品会自动保存。")?;
-        let theme = self.button(
-            if self.preferences.light {
-                "主题：浅色"
-            } else {
-                "主题：深色"
-            },
-            [311., 112., 585., 56.],
-            Action::Theme,
-            false,
+        let language = match self.preferences.language {
+            Language::Chinese => "简体中文",
+            Language::English => "English",
+            Language::Japanese => "日本語",
+        };
+        let first = self.selector(
+            self.text("语言", "Language", "言語"),
+            language,
+            120.,
+            Picker::Language,
         )?;
-        self.pending_focus = Some(theme);
-        nodes.push(theme);
-        nodes.push(self.label("操作", [311., 204., 585., 32.], 22., false)?);
-        nodes.push(self.label("方向键 / 左摇杆选择，× 确认，○ 返回。\n触摸作品启动，上下拖动列表滚动。\n游戏中按 SELECT + START 返回作品列表。",[311.,248.,585.,103.],18.,true)?);
-        nodes.push(self.button("退出启动器", [311., 383., 280., 56.], Action::Exit, false)?);
+        nodes.push(first);
+        self.page_focus.insert(Screen::Settings, first);
+        let theme = if self.preferences.light {
+            self.text("浅色", "Light", "ライト")
+        } else {
+            self.text("深色", "Dark", "ダーク")
+        };
+        nodes.push(self.selector(
+            self.text("主题", "Theme", "テーマ"),
+            theme,
+            210.,
+            Picker::Theme,
+        )?);
+        nodes.push(self.button(
+            self.text("关于", "About", "情報"),
+            [120., 360., 230., 56.],
+            Action::About,
+            false,
+        )?);
+        nodes.push(self.button(
+            self.text("退出", "Exit", "終了"),
+            [610., 360., 230., 56.],
+            Action::Exit,
+            false,
+        )?);
+        nodes.push(self.hint(
+            "○",
+            self.text("返回", "Back", "戻る"),
+            620.,
+            130.,
+            Some(Action::Back),
+            true,
+        )?);
+        nodes.push(self.hint(
+            "×",
+            self.text("选择", "Select", "選択"),
+            770.,
+            135.,
+            None,
+            true,
+        )?);
         Ok(())
     }
-    fn dialog(&mut self) -> Result<NodeId, Error> {
-        let mut nodes = Vec::new();
-        let error = self.error.clone();
-        let (rect, title, message) = if let Some(error) = error {
-            ([96., 90., 768., 365.], "启动失败", error)
-        } else {
-            (
-                [200., 150., 560., 244.],
-                "退出启动器",
-                "确定退出 Reel？".into(),
-            )
+    fn dropdown(&mut self, picker: Picker) -> Result<NodeId, Error> {
+        let choices = match picker {
+            Picker::Theme => vec![
+                (
+                    self.text("深色", "Dark", "ダーク"),
+                    Action::Theme(false),
+                    !self.preferences.light,
+                ),
+                (
+                    self.text("浅色", "Light", "ライト"),
+                    Action::Theme(true),
+                    self.preferences.light,
+                ),
+            ],
+            Picker::Language => vec![
+                (
+                    "简体中文",
+                    Action::Language(Language::Chinese),
+                    self.preferences.language == Language::Chinese,
+                ),
+                (
+                    "English",
+                    Action::Language(Language::English),
+                    self.preferences.language == Language::English,
+                ),
+                (
+                    "日本語",
+                    Action::Language(Language::Japanese),
+                    self.preferences.language == Language::Japanese,
+                ),
+            ],
         };
-        let [x, y, width, height] = rect;
-        let card = self.stage.create(
-            NodeKind::Stack,
+        let y = if picker == Picker::Language {
+            120.
+        } else {
+            210.
+        };
+        let mut rows = Vec::new();
+        for (index, (label, action, selected)) in choices.iter().enumerate() {
+            let text = self.label(*label, [20., 14., 246., 34.], 22., false)?;
+            let mut children = vec![text];
+            if *selected {
+                children.push(self.label("✓", [278., 14., 30., 34.], 22., false)?);
+            }
+            let row = self.control(
+                [6., 6. + index as f64 * 60., 328., 60.],
+                children,
+                *action,
+                true,
+                false,
+                true,
+            )?;
+            if *selected {
+                self.pending_focus = Some(row);
+            }
+            rows.push(row);
+        }
+        let popup = self.stage.create(
+            NodeKind::Popup(reel_ui::stage::PopupView {
+                placement: reel_ui::widgets::PopupPlacement::BottomEnd,
+                offset: 4.,
+                listening: true,
+            }),
             NodeProps {
-                x,
-                y,
-                width: Some(width),
-                height: Some(height),
+                width: Some(340.),
+                height: Some(12. + choices.len() as f64 * 60.),
+                modal: true,
                 background: Some(self.palette().surface),
                 border_width: 1.,
                 border_color: self.palette().separator,
-                corner_radius: 8.,
+                corner_radius: 10.,
                 ..Default::default()
             },
-            Vec::new(),
+            rows,
         )?;
-        nodes.push(card);
-        nodes.push(self.label(title, [x + 32., y + 25., width - 64., 42.], 28., false)?);
-        nodes.push(self.line([x + 32., y + 85., width - 64., 1.])?);
-        let text = self.label(message, [0., 0., width - 64., 0.], 22., false)?;
+        Ok(self.stage.create(
+            NodeKind::Stack,
+            NodeProps {
+                x: 504.,
+                y,
+                width: Some(340.),
+                height: Some(74.),
+                ..Default::default()
+            },
+            vec![popup],
+        )?)
+    }
+    fn loading_view(&mut self) -> Result<NodeId, Error> {
+        let title = self.loading.as_ref().unwrap().title.clone();
+        let text = self.label(
+            self.text("正在加载…", "Loading…", "読み込み中…"),
+            [80., 228., 800., 44.],
+            28.,
+            false,
+        )?;
+        self.align(text, reel_ui::TextAlign::Center, false)?;
+        let game = self.label(title, [80., 292., 800., 36.], 22., true)?;
+        self.align(game, reel_ui::TextAlign::Center, false)?;
+        Ok(self.stage.create(
+            NodeKind::Stack,
+            NodeProps {
+                width: Some(960.),
+                height: Some(544.),
+                modal: true,
+                background: Some(self.palette().background),
+                ..Default::default()
+            },
+            vec![text, game],
+        )?)
+    }
+    fn dialog(&mut self) -> Result<NodeId, Error> {
+        let (title, message, height) = if let Some(error) = &self.error {
+            (
+                self.text("发生错误", "Error", "エラー"),
+                error.clone(),
+                380.,
+            )
+        } else if self.about {
+            ("Reel", format!("v{}", env!("CARGO_PKG_VERSION")), 260.)
+        } else {
+            (
+                self.text("退出 Reel", "Exit Reel", "Reel を終了"),
+                self.text("确定退出？", "Exit the launcher?", "終了しますか？")
+                    .into(),
+                280.,
+            )
+        };
+        let width = 720.;
+        let x = (960. - width) / 2.;
+        let y = (544. - height) / 2.;
+        let heading = self.label(title, [48., 32., width - 96., 42.], 28., false)?;
+        self.align(heading, reel_ui::TextAlign::Center, false)?;
+        let text = self.label(message, [0., 0., width - 112., 0.], 22., false)?;
         let node = self.stage.node(text).unwrap();
         let mut props = node.props.clone();
         props.height = None;
         props.clip = false;
+        props.text_align = reel_ui::TextAlign::Center;
         self.stage.update(text, node.kind.clone(), props)?;
-        nodes.push(self.stage.create(
+        let scroll = self.stage.create(
             NodeKind::Scroll {
                 axis: ScrollAxis::Vertical,
                 follow_end: false,
@@ -492,45 +701,71 @@ impl Launcher {
                 offset: Default::default(),
             },
             NodeProps {
-                x: x + 32.,
-                y: y + 105.,
-                width: Some(width - 64.),
-                height: Some(height - 190.),
+                x: 56.,
+                y: 88.,
+                width: Some(width - 112.),
+                height: Some(height - 188.),
                 clip: true,
                 ..Default::default()
             },
             vec![text],
-        )?);
-        let back = self.button(
-            if self.error.is_some() {
-                "返回"
-            } else {
-                "取消"
-            },
-            [x + 32., y + height - 72., 224., 48.],
-            Action::Back,
-            false,
         )?;
-        nodes.push(back);
-        self.pending_focus = Some(back);
-        if self.error.is_none() {
-            nodes.push(self.button(
-                "退出",
-                [x + width - 256., y + height - 72., 224., 48.],
-                Action::ConfirmExit,
+        let mut nodes = vec![heading, scroll, self.line([0., height - 68., width, 1.])?];
+        let actions = if self.confirm_exit && self.error.is_none() {
+            vec![
+                (self.text("取消", "Cancel", "キャンセル"), Action::Back),
+                (self.text("退出", "Exit", "終了"), Action::ConfirmExit),
+            ]
+        } else {
+            vec![(self.text("确定", "OK", "確認"), Action::Back)]
+        };
+        let button_width = width / actions.len() as f64;
+        for (index, (label, action)) in actions.into_iter().enumerate() {
+            let text = self.label(label, [16., 18., button_width - 32., 34.], 22., false)?;
+            let node = self.stage.node(text).unwrap();
+            let mut props = node.props.clone();
+            props.text_align = reel_ui::TextAlign::Center;
+            props.color = self.palette().accent;
+            self.stage.update(text, node.kind.clone(), props)?;
+            let button = self.control(
+                [index as f64 * button_width, height - 68., button_width, 68.],
+                vec![text],
+                action,
                 true,
-            )?);
+                false,
+                true,
+            )?;
+            if index == 0 {
+                self.pending_focus = Some(button);
+            } else {
+                nodes.push(self.line([index as f64 * button_width, height - 68., 1., 68.])?);
+            }
+            nodes.push(button);
         }
+        let panel = self.stage.create(
+            NodeKind::Stack,
+            NodeProps {
+                x,
+                y,
+                width: Some(width),
+                height: Some(height),
+                background: Some(self.palette().surface),
+                corner_radius: 16.,
+                clip: true,
+                ..Default::default()
+            },
+            nodes,
+        )?;
         Ok(self.stage.create(
             NodeKind::Stack,
             NodeProps {
                 width: Some(960.),
                 height: Some(544.),
                 modal: true,
-                background: Some([0, 0, 0, 140]),
+                background: Some([0, 0, 0, 144]),
                 ..Default::default()
             },
-            nodes,
+            vec![panel],
         )?)
     }
 }

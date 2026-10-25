@@ -49,6 +49,8 @@ reel export --release --resource-target vita --data-only
 
 Copy the exported directory to `ux0:/data/reel/GameName/`. The launcher lists directories containing `game.asb`; each game keeps its progress in its own `saves/` directory. Press SELECT + START during a game to return to the list.
 
+Press SELECT in the launcher to choose its language and theme; preferences are saved in `ux0:/data/reel/launcher.tsv`. Press START to refresh the list after copying a new game.
+
 Add `resources.toml` at the project root to generate target-specific asset copies:
 
 ```toml

@@ -40,6 +40,19 @@ fn data(root: &Path, generation: u64) -> PathBuf {
     root.join(format!("{generation:016x}.data"))
 }
 fn current(root: &Path) -> io::Result<Option<Commit>> {
+    // Vita newlib's opendir reports ENOTDIR for missing paths as well. Stat
+    // first so a missing store stays distinct from an actual file in its place.
+    match fs::metadata(root) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::NotADirectory,
+                root.display().to_string(),
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    }
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -247,6 +260,8 @@ pub(super) fn remove(target: &Path) -> io::Result<Published> {
 pub(super) fn entries(
     directory: &Path,
 ) -> io::Result<impl Iterator<Item = io::Result<PathBuf>> + use<>> {
+    // Preserve NotFound before crossing newlib's directory-open boundary.
+    fs::metadata(directory)?;
     let parent = directory.to_path_buf();
     Ok(fs::read_dir(directory)?.filter_map(move |entry| {
         let entry = match entry {
@@ -281,6 +296,21 @@ mod tests {
         let mut bytes = Vec::new();
         open(path).unwrap().read_to_end(&mut bytes).unwrap();
         bytes
+    }
+    #[test]
+    fn missing_store_is_absent_and_a_file_in_its_place_is_an_error() {
+        let dir = directory();
+        let target = dir.path.join("new.data");
+        assert_eq!(open(&target).unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(
+            entries(&dir.path.join("missing")).err().unwrap().kind(),
+            io::ErrorKind::NotFound
+        );
+        fs::write(store(&target).unwrap(), b"not a directory").unwrap();
+        assert_eq!(
+            open(&target).unwrap_err().kind(),
+            io::ErrorKind::NotADirectory
+        );
     }
     #[test]
     fn committed_generations_preserve_reader_ownership_failures_and_tombstones() {

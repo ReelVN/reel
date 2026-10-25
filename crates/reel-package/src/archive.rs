@@ -48,17 +48,20 @@ pub struct Entry {
 #[derive(Debug)]
 pub struct ArchiveIndex {
     kind: ArchiveKind,
-    entries: BTreeMap<String, Entry>,
+    entries: Vec<Entry>,
 }
 impl ArchiveIndex {
     pub fn kind(&self) -> ArchiveKind {
         self.kind
     }
     pub fn get(&self, path: &str) -> Option<&Entry> {
-        self.entries.get(path)
+        self.entries
+            .binary_search_by(|entry| entry.path.as_str().cmp(path))
+            .ok()
+            .map(|index| &self.entries[index])
     }
     pub fn entries(&self) -> impl ExactSizeIterator<Item = &Entry> {
-        self.entries.values()
+        self.entries.iter()
     }
     /// Reads the header and index only. Payloads are neither loaded nor hashed.
     pub fn read(input: &mut (impl Read + Seek)) -> io::Result<Self> {
@@ -85,8 +88,11 @@ impl ArchiveIndex {
             return Err(invalid("archive entry count exceeds index length"));
         }
         input.seek(SeekFrom::Start(index_offset))?;
-        let mut input = BufReader::new(input.take(remaining));
-        let mut entries = BTreeMap::new();
+        let mut input = BufReader::with_capacity(64 << 10, input.take(remaining));
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(usize::try_from(count).map_err(io::Error::other)?)
+            .map_err(io::Error::other)?;
         for _ in 0..count {
             let mut fixed = [0; ENTRY_FIXED_LEN as usize];
             input.read_exact(&mut fixed)?;
@@ -134,19 +140,21 @@ impl ArchiveIndex {
                 )));
             }
             let entry = Entry {
-                path: path.clone(),
+                path,
                 offset,
                 length,
                 version: fixed[20..52].try_into().unwrap(),
                 stored_length,
                 storage,
             };
-            if entries.insert(path, entry).is_some() {
-                return Err(invalid("duplicate archive path"));
-            }
+            entries.push(entry);
         }
         if remaining != 0 {
             return Err(invalid("unexpected bytes after archive index"));
+        }
+        entries.sort_unstable_by(|a, b| a.path.cmp(&b.path));
+        if entries.windows(2).any(|pair| pair[0].path == pair[1].path) {
+            return Err(invalid("duplicate archive path"));
         }
         Ok(Self { kind, entries })
     }
@@ -157,7 +165,8 @@ impl ArchiveIndex {
 /// Finish writes the sorted index and publishes its location in the header.
 pub struct ArchiveWriter<W> {
     output: W,
-    index: ArchiveIndex,
+    kind: ArchiveKind,
+    entries: BTreeMap<String, Entry>,
     index_bytes: u64,
 }
 impl<W: Write + Seek> ArchiveWriter<W> {
@@ -169,14 +178,12 @@ impl<W: Write + Seek> ArchiveWriter<W> {
         Ok(Self {
             output,
             index_bytes: 0,
-            index: ArchiveIndex {
-                kind,
-                entries: BTreeMap::new(),
-            },
+            kind,
+            entries: BTreeMap::new(),
         })
     }
     pub fn is_empty(&self) -> bool {
-        self.index.entries.is_empty()
+        self.entries.is_empty()
     }
     /// Conservative final size for an automatically compressed entry, including
     /// its main-index record and worst-case block directory. Raw storage and
@@ -209,7 +216,7 @@ impl<W: Write + Seek> ArchiveWriter<W> {
     ) -> io::Result<&Entry> {
         validate_path(path)?;
         u32::try_from(path.len()).map_err(|_| invalid("archive path exceeds format width"))?;
-        if self.index.entries.contains_key(path) {
+        if self.entries.contains_key(path) {
             return Err(invalid(format!("duplicate archive path: {path}")));
         }
         let offset = self.output.stream_position()?;
@@ -225,12 +232,12 @@ impl<W: Write + Seek> ArchiveWriter<W> {
             storage,
         };
         self.index_bytes += ENTRY_FIXED_LEN + path.len() as u64;
-        self.index.entries.insert(path.into(), entry);
-        Ok(self.index.entries.get(path).unwrap())
+        self.entries.insert(path.into(), entry);
+        Ok(self.entries.get(path).unwrap())
     }
     pub fn finish(mut self) -> io::Result<W> {
         let index_offset = self.output.stream_position()?;
-        for entry in self.index.entries.values() {
+        for entry in self.entries.values() {
             self.output
                 .write_all(&(entry.path.len() as u32).to_le_bytes())?;
             self.output.write_all(&entry.offset.to_le_bytes())?;
@@ -248,11 +255,10 @@ impl<W: Write + Seek> ArchiveWriter<W> {
         self.output.seek(SeekFrom::Start(0))?;
         self.output.write_all(&MAGIC)?;
         self.output.write_all(&VERSION.to_le_bytes())?;
-        self.output
-            .write_all(&(self.index.kind as u32).to_le_bytes())?;
+        self.output.write_all(&(self.kind as u32).to_le_bytes())?;
         self.output.write_all(&index_offset.to_le_bytes())?;
         self.output
-            .write_all(&(self.index.entries.len() as u64).to_le_bytes())?;
+            .write_all(&(self.entries.len() as u64).to_le_bytes())?;
         self.output.flush()?;
         self.output.seek(SeekFrom::End(0))?;
         Ok(self.output)

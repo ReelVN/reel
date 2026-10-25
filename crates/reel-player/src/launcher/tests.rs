@@ -50,8 +50,15 @@ struct View {
 }
 impl View {
     fn new(library: &Library, error: Option<String>) -> Self {
-        let launcher =
-            Launcher::new(&library.0, Assets::directory(Default::default()), error).unwrap();
+        let launcher = Launcher::new(
+            &library.0,
+            Assets::directory(Default::default()),
+            error,
+            WakeSignal::new(|| {}),
+        )
+        .unwrap();
+        let mut launcher = launcher;
+        settle_io(&mut launcher);
         let session = PlayerSession::Launcher(Box::new(launcher));
         let widget = session.ui().widget().prepare();
         let root = widget.id();
@@ -109,12 +116,10 @@ impl View {
             )),
             NoticeResult::Accepted
         );
-        assert!(
-            self.session
-                .ui_mut()
-                .unwrap()
-                .presented(&self.bridge, &frame)
-        );
+        let PlayerSession::Launcher(launcher) = &mut self.session else {
+            unreachable!()
+        };
+        launcher.presented(&self.bridge, &frame);
     }
     fn touch(&mut self, position: [f64; 2]) {
         for down in [true, false] {
@@ -190,17 +195,19 @@ fn library_scans_sorted_immediate_game_directories() {
     let a = library.game("A");
     library.game("nested/ignored");
     std::fs::write(library.0.join("game.asb"), []).unwrap();
-    let games = scan(&library.0).unwrap();
+    let games = catalog::scan(&library.0, &std::sync::atomic::AtomicBool::new(false)).unwrap();
     assert_eq!(
         games,
         vec![
             Game {
                 title: "A".into(),
-                package: a
+                package: a,
+                bytes: 0
             },
             Game {
                 title: "B".into(),
-                package: b
+                package: b,
+                bytes: 0
             }
         ]
     );
@@ -215,6 +222,13 @@ fn touch_launch_requires_an_accepted_frame() {
     assert_eq!(view.launcher().take_outcome(), None);
     view.present();
     view.touch([80., 120.]);
+    assert_eq!(
+        view.launcher().take_outcome(),
+        None,
+        "the loading frame must be accepted first"
+    );
+    view.present();
+    settle_io(view.launcher());
     assert_eq!(
         view.launcher().take_outcome(),
         Some(Outcome::Launch(package))
@@ -232,6 +246,8 @@ fn controller_selects_and_launches_a_work() {
     view.present();
     view.navigation(NavigationAction::Confirm, ActionPhase::Pressed);
     view.navigation(NavigationAction::Confirm, ActionPhase::Released);
+    view.present();
+    settle_io(view.launcher());
     assert_eq!(
         view.launcher().take_outcome(),
         Some(Outcome::Launch(package))
@@ -255,6 +271,8 @@ fn paging_mounts_bounded_rows_and_requires_new_frame_acceptance() {
     view.present();
     view.navigation(NavigationAction::Confirm, ActionPhase::Pressed);
     view.navigation(NavigationAction::Confirm, ActionPhase::Released);
+    view.present();
+    settle_io(view.launcher());
     assert_eq!(
         view.launcher().take_outcome(),
         Some(Outcome::Launch(library.0.join("game-004/game.asb")))
@@ -272,16 +290,17 @@ fn refresh_discovers_copied_games_and_error_back_returns_to_library() {
     let package = library.game("new");
     view.present();
     view.button(GamepadButton::Start);
+    settle_io(view.launcher());
     assert_eq!(view.launcher().games[0].package, package);
     view.present();
     view.button(GamepadButton::Select);
     assert_eq!(view.launcher().screen, Screen::Settings);
     view.present();
-    view.touch([410., 410.]);
+    view.touch([710., 390.]);
     assert!(view.launcher().confirm_exit);
     assert_eq!(view.launcher().take_outcome(), None);
     view.present();
-    view.touch([600., 340.]);
+    view.touch([600., 380.]);
     assert_eq!(view.launcher().take_outcome(), Some(Outcome::Exit));
     view.session.close().unwrap();
     assert!(view.session.close_complete());
@@ -314,11 +333,11 @@ fn reference_frame_keeps_large_rows_between_shared_header_and_footer() {
         .filter(|node| node.props.width == Some(864.) && node.props.height == Some(1.))
         .map(|node| node.props.y)
         .collect::<Vec<_>>();
-    assert_eq!(separators, vec![87., 471.]);
+    assert_eq!(separators, vec![87., 471., 87., 471.]);
 }
 
 #[test]
-fn settings_theme_and_launched_selection_persist_and_details_restore_focus() {
+fn dropdowns_persist_readable_preferences_and_restore_library_selection() {
     let library = Library::new();
     library.game("A");
     let package = library.game("B");
@@ -327,30 +346,73 @@ fn settings_theme_and_launched_selection_persist_and_details_restore_focus() {
     view.navigation(NavigationAction::Down, ActionPhase::Pressed);
     view.present();
     assert_eq!(view.launcher().selected, 1);
-    view.button(GamepadButton::North);
-    assert_eq!(view.launcher().screen, Screen::Information);
-    view.present();
-    view.navigation(NavigationAction::Back, ActionPhase::Released);
-    view.present();
-    assert_eq!(view.launcher().selected, 1);
     view.button(GamepadButton::Select);
+    view.present();
+    view.touch([650., 242.]);
+    assert_eq!(view.launcher().picker, Some(Picker::Theme));
+    view.present();
+    view.navigation(NavigationAction::Down, ActionPhase::Pressed);
     view.present();
     view.navigation(NavigationAction::Confirm, ActionPhase::Pressed);
     view.navigation(NavigationAction::Confirm, ActionPhase::Released);
     assert!(view.launcher().preferences.light);
     view.present();
-    view.navigation(NavigationAction::Back, ActionPhase::Released);
+    view.touch([650., 150.]);
+    assert_eq!(view.launcher().picker, Some(Picker::Language));
+    view.present();
+    view.navigation(NavigationAction::Down, ActionPhase::Pressed);
     view.present();
     view.navigation(NavigationAction::Confirm, ActionPhase::Pressed);
     view.navigation(NavigationAction::Confirm, ActionPhase::Released);
+    assert_eq!(view.launcher().preferences.language, Language::English);
+    view.present();
+    view.navigation(NavigationAction::Back, ActionPhase::Released);
+    view.present();
+    assert_eq!(view.launcher().selected, 1);
+    view.navigation(NavigationAction::Confirm, ActionPhase::Pressed);
+    view.navigation(NavigationAction::Confirm, ActionPhase::Released);
+    assert_eq!(view.launcher().take_outcome(), None);
+    view.present();
+    settle_io(view.launcher());
     assert_eq!(
         view.launcher().take_outcome(),
         Some(Outcome::Launch(package))
     );
+    let saved = std::fs::read_to_string(library.0.join("launcher.tsv")).unwrap();
+    assert!(saved.contains("theme\tlight\n") && saved.contains("language\ten\n"));
+    assert!(!library.0.join(".reel-store-launcher.preferences").exists());
     let mut restored = View::new(&library, None);
     restored.present();
     assert!(restored.launcher().preferences.light);
+    assert_eq!(restored.launcher().preferences.language, Language::English);
     assert_eq!(restored.launcher().selected, 1);
+}
+
+#[test]
+fn page_switches_reuse_nodes_and_popup_dismissal_keeps_settings() {
+    let library = Library::new();
+    library.game("A");
+    let mut view = View::new(&library, None);
+    view.present();
+    let pages = view.launcher().pages.clone();
+    let count = view.launcher().stage.nodes().count();
+    let started = std::time::Instant::now();
+    for _ in 0..20 {
+        view.button(GamepadButton::Select);
+        view.present();
+        view.navigation(NavigationAction::Back, ActionPhase::Released);
+        view.present();
+    }
+    eprintln!("40 page switches: {:?}", started.elapsed());
+    assert_eq!(view.launcher().pages, pages);
+    assert_eq!(view.launcher().stage.nodes().count(), count);
+    view.button(GamepadButton::Select);
+    view.present();
+    view.touch([650., 150.]);
+    view.present();
+    view.touch([100., 110.]);
+    assert_eq!(view.launcher().picker, None);
+    assert_eq!(view.launcher().screen, Screen::Settings);
 }
 
 #[test]
@@ -368,4 +430,17 @@ fn error_modal_blocks_underlying_touch_and_library_shortcuts() {
     assert_eq!(view.launcher().error.as_deref(), Some("failure"));
     view.navigation(NavigationAction::Back, ActionPhase::Released);
     assert!(!view.launcher().modal());
+}
+
+fn settle_io(launcher: &mut Launcher) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !launcher.worker.is_idle() {
+        launcher.poll().unwrap();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "launcher IO did not settle"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    launcher.poll().unwrap();
 }
