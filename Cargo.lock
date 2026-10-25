@@ -3221,7 +3221,7 @@ dependencies = [
 [[package]]
 name = "pvr-psp2-sys"
 version = "0.1.3"
-source = "git+https://github.com/jhq223/pvr-psp2-sys.git?rev=3c359c045bc333395536b77c3386aa302c591d7c#3c359c045bc333395536b77c3386aa302c591d7c"
+source = "git+https://github.com/jhq223/pvr-psp2-sys.git?rev=0472a06c4e284cebb9b2ce3a6c0dde4470337753#0472a06c4e284cebb9b2ce3a6c0dde4470337753"
 dependencies = [
  "glow 0.18.0",
  "khronos-egl",
