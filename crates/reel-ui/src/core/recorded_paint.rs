@@ -6,11 +6,11 @@ use crate::{
     peniko::ImageSampler,
     resources::ResourceLease,
 };
-use std::cell::Cell;
+use std::{cell::Cell, sync::Arc};
 
 #[derive(Default)]
 pub(crate) struct CachedPaint {
-    pub scene: Scene,
+    pub scene: Arc<Scene>,
     pub images: Vec<ResourceDraw>,
 }
 pub(crate) struct ResourceDraw {
@@ -21,7 +21,11 @@ pub(crate) struct ResourceDraw {
 }
 impl CachedPaint {
     pub fn clear(&mut self) {
-        self.scene.clear();
+        if let Some(scene) = Arc::get_mut(&mut self.scene) {
+            scene.clear();
+        } else {
+            self.scene = Arc::new(Scene::new());
+        }
         self.images.clear();
     }
 }
@@ -87,12 +91,45 @@ impl PaintSink for RecordingSink<'_> {
 mod tests {
     use super::*;
     #[test]
+    fn repaint_replaces_shared_scene_and_preserves_pending_recordings() {
+        let mut cached = CachedPaint::default();
+        let rect = crate::kurbo::Rect::new(0., 0., 10., 10.);
+        imaging::Painter::new(Arc::get_mut(&mut cached.scene).unwrap())
+            .fill_rect(rect, crate::peniko::Color::WHITE);
+        let old = cached.scene.clone();
+        let old_lease = Arc::downgrade(&old);
+        cached.clear();
+        imaging::Painter::new(Arc::get_mut(&mut cached.scene).unwrap())
+            .fill_rect(rect, crate::peniko::Color::BLACK);
+        assert!(!Arc::ptr_eq(&old, &cached.scene));
+        let imaging::record::Command::Draw(id) = old.commands()[0] else {
+            panic!()
+        };
+        let imaging::record::Draw::Fill { brush, .. } = old.draw_op(id) else {
+            panic!()
+        };
+        assert_eq!(
+            brush,
+            &crate::peniko::Brush::Solid(crate::peniko::Color::WHITE)
+        );
+        drop(cached);
+        assert!(
+            old_lease.upgrade().is_some(),
+            "recording survives producer retirement"
+        );
+        drop(old);
+        assert!(
+            old_lease.upgrade().is_none(),
+            "last recording releases its scene"
+        );
+    }
+    #[test]
     fn ordinary_paint_counts_commands_without_allocating_resource_bindings() {
         let mut cached = CachedPaint::default();
         let cursor = Cell::new(0);
         {
             let mut sink = RecordingSink {
-                scene: &mut cached.scene,
+                scene: Arc::get_mut(&mut cached.scene).unwrap(),
                 cursor: &cursor,
             };
             let mut painter = imaging::Painter::new(&mut sink);

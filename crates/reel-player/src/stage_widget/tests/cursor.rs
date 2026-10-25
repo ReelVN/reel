@@ -2,6 +2,17 @@ use super::*;
 use reel_ui::dpi::PhysicalPosition;
 use std::{cell::RefCell, rc::Rc};
 
+fn topmost_cursor(frame: &TestFrame) -> Option<WidgetId> {
+    let geometry = frame.geometry();
+    let mut painter = geometry.get(frame.plan().layers.last()?.widget_id)?;
+    loop {
+        if painter.is_cursor {
+            return Some(painter.id);
+        }
+        painter = &geometry.records()[painter.parent?];
+    }
+}
+
 pub(super) fn pointer(kind: PointerType, position: (f64, f64), down: Option<bool>) -> PointerEvent {
     let pointer = PointerInfo {
         pointer_id: Some(PointerId::PRIMARY),
@@ -167,10 +178,7 @@ fn cursor_uses_window_geometry_topmost_paint_and_excludes_subtree_input() {
     let frame = f.record();
     f.accept(&frame);
     let ids = f.layouts();
-    assert_eq!(
-        frame.plan().layers.last().unwrap().widget_id,
-        ids[&cursor].0
-    );
+    assert_eq!(topmost_cursor(&frame), Some(ids[&cursor].0));
     affine(
         frame
             .geometry()
@@ -229,8 +237,8 @@ fn cursor_uses_window_geometry_topmost_paint_and_excludes_subtree_input() {
     let captured = f.record();
     f.accept(&captured);
     assert_eq!(
-        captured.plan().layers.last().unwrap().widget_id,
-        ids[&cursor].0,
+        topmost_cursor(&captured),
+        Some(ids[&cursor].0),
         "captured owner keeps its cursor outside its bounds"
     );
     f.ui.handle_pointer(
@@ -280,10 +288,7 @@ fn cursor_leave_touch_override_visibility_and_retirement_follow_current_ownershi
     .unwrap();
     let no_mouse = f.record();
     f.accept(&no_mouse);
-    assert_ne!(
-        no_mouse.plan().layers.last().unwrap().widget_id,
-        f.layouts()[&cursor].0
-    );
+    assert_ne!(topmost_cursor(&no_mouse), Some(f.layouts()[&cursor].0));
     drop(no_mouse);
     f.ui.handle_pointer(
         &mut f.bridge,
@@ -300,10 +305,7 @@ fn cursor_leave_touch_override_visibility_and_retirement_follow_current_ownershi
     drop(added);
     let hidden = f.record();
     f.accept(&hidden);
-    assert_eq!(
-        hidden.plan().layers.last().unwrap().widget_id,
-        f.layouts()[&empty].0
-    );
+    assert_eq!(topmost_cursor(&hidden), Some(f.layouts()[&empty].0));
     drop(hidden);
     f.edit(empty, |props| props.visible = false);
     let configured = f.record();
@@ -311,10 +313,7 @@ fn cursor_leave_touch_override_visibility_and_retirement_follow_current_ownershi
     drop(configured);
     let fallback = f.record();
     f.accept(&fallback);
-    assert_eq!(
-        fallback.plan().layers.last().unwrap().widget_id,
-        f.layouts()[&cursor].0
-    );
+    assert_eq!(topmost_cursor(&fallback), Some(f.layouts()[&cursor].0));
     drop(fallback);
     f.edit(owner, |props| props.visible = false);
     let hidden_owner = f.record();
@@ -441,10 +440,7 @@ fn cursor_modal_focus_loss_and_cleared_presentation_withdraw_without_stale_reviv
     assert_eq!(visibility.borrow().last(), Some(&true));
     let next = f.record();
     f.accept(&next);
-    assert_ne!(
-        next.plan().layers.last().unwrap().widget_id,
-        f.layouts()[&cursor].0
-    );
+    assert_ne!(topmost_cursor(&next), Some(f.layouts()[&cursor].0));
     assert_eq!(
         visibility.borrow().last(),
         Some(&true),
@@ -614,10 +610,7 @@ fn cursor_deepest_owner_wins_and_disabled_owner_yields_to_ancestor() {
     .unwrap();
     let active = f.record();
     f.accept(&active);
-    assert_eq!(
-        active.plan().layers.last().unwrap().widget_id,
-        f.layouts()[&cursor].0
-    );
+    assert_eq!(topmost_cursor(&active), Some(f.layouts()[&cursor].0));
     drop(active);
     f.edit(owner, |props| props.enabled = false);
     let disabled = f.record();
@@ -625,10 +618,7 @@ fn cursor_deepest_owner_wins_and_disabled_owner_yields_to_ancestor() {
     drop(disabled);
     let fallback = f.record();
     f.accept(&fallback);
-    assert_eq!(
-        fallback.plan().layers.last().unwrap().widget_id,
-        f.layouts()[&ancestor].0
-    );
+    assert_eq!(topmost_cursor(&fallback), Some(f.layouts()[&ancestor].0));
     drop(fallback);
     assert_eq!(
         visibility.borrow().last(),
