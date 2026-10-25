@@ -283,6 +283,7 @@ impl StageBinding {
                 binding.text_history = Some(marker);
                 binding.text_source = None;
                 binding.projection_dirty = true;
+                self.last_sync = None;
             }
             SavedHistory::Begin {
                 expected,
@@ -430,6 +431,7 @@ impl StageBinding {
                 queue.restore_expected = count;
                 history.queue = Some(queue);
                 binding.projection_dirty = true;
+                self.last_sync = None;
                 self.project_restored_text_queue(node)?;
             }
         }
@@ -485,6 +487,7 @@ impl StageBinding {
         queue.push(saved.replay.intent.clone())?;
         queue.next_sequence = next;
         binding.projection_dirty = true;
+        self.last_sync = None;
         self.project_restored_text_queue(saved.node)?;
         Ok(())
     }

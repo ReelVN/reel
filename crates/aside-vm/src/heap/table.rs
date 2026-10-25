@@ -98,6 +98,7 @@ impl Heap {
         for key in [target, prepared] {
             let object = self.objects.get_mut(key).unwrap();
             object.content_version = object.content_version.wrapping_add(1);
+            self.mutation_revision = self.mutation_revision.wrapping_add(1);
             object.structure_version = object.structure_version.wrapping_add(1);
             if self.gc.phase == crate::GcPhase::Mark {
                 object.scan = 0;
@@ -241,6 +242,7 @@ impl Heap {
             values.set(index + 1, value);
         }
         object.content_version = object.content_version.wrapping_add(1);
+        self.mutation_revision = self.mutation_revision.wrapping_add(1);
         object.charged += extra;
         self.invalidate_reactive(table, Some(self.model_field(table, position)?))?;
         Ok(())
@@ -263,6 +265,7 @@ impl Heap {
         };
         values.set(position * 2 + 1, value);
         object.content_version = object.content_version.wrapping_add(1);
+        self.mutation_revision = self.mutation_revision.wrapping_add(1);
         self.invalidate_reactive(table, Some(field))
     }
 }

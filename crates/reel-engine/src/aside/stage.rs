@@ -339,6 +339,9 @@ pub(super) enum NodeProperty {
 }
 
 pub(super) struct StageBinding {
+    #[cfg(test)]
+    pub(super) sync_count: u64,
+    last_sync: Option<(aside_vm::HeapId, aside_vm::SessionEpoch, u64, u64)>,
     pub(super) types: super::source::HostTypes,
     pub(super) text_filter_function: Option<aside_vm::bytecode::FunctionId>,
     pub scene: Stage,
@@ -408,6 +411,9 @@ impl StageBinding {
     }
     pub fn new(heap: &Heap) -> Result<Self, AdapterError> {
         Ok(Self {
+            #[cfg(test)]
+            sync_count: 0,
+            last_sync: None,
             types: super::source::HostTypes::new(heap)?,
             text_filter_function: None,
             scene: Stage::default(),
@@ -1132,6 +1138,21 @@ impl StageBinding {
     }
 
     pub fn sync(&mut self, heap: &mut Heap, read_limit: usize) -> Result<(), AdapterError> {
+        let stamp = |heap: &Heap, scene: &Stage| {
+            (
+                heap.id(),
+                heap.epoch(),
+                heap.mutation_revision(),
+                scene.revision(),
+            )
+        };
+        if self.last_sync == Some(stamp(heap, &self.scene)) {
+            return Ok(());
+        }
+        #[cfg(test)]
+        {
+            self.sync_count += 1;
+        }
         if let Some(root) = self.scene.root() {
             self.sync_tree(heap, root, read_limit)?;
         }
@@ -1148,6 +1169,7 @@ impl StageBinding {
             let retired = self.scene.discard(root)?;
             self.retire(heap, retired)?;
         }
+        self.last_sync = Some(stamp(heap, &self.scene));
         Ok(())
     }
 

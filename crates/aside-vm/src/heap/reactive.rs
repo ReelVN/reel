@@ -618,6 +618,7 @@ impl Heap {
         let object = self.objects.get_mut(key).unwrap();
         object.model = true;
         object.readonly_collection = true;
+        self.mutation_revision = self.mutation_revision.wrapping_add(1);
         Ok(())
     }
 

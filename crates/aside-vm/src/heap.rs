@@ -315,6 +315,7 @@ pub struct Heap {
     reactive_capture: Option<Value>,
     evaluation: u64,
     binding_revision: u64,
+    pub(crate) mutation_revision: u64,
     property_proposal: Option<Value>,
     pub(crate) limits: HeapLimits,
     reserved: u64,
@@ -409,6 +410,7 @@ impl Heap {
             reactive_capture: None,
             evaluation: 0,
             binding_revision: 1,
+            mutation_revision: 0,
             property_proposal: None,
             limits,
             reserved: estimate,
@@ -441,6 +443,15 @@ impl Heap {
     }
     pub fn id(&self) -> HeapId {
         self.id
+    }
+    /// Conservative invalidation watermark for cached host projections of stored
+    /// fields, collections, private host payloads and object liveness. Unrelated
+    /// writes and property-observer changes may also advance it; this is
+    /// not an exact edit count. Pair it with `id()` and `epoch()` and discard
+    /// cached stamps on reconstruction: the watermark has no persistent or
+    /// snapshot identity semantics.
+    pub fn mutation_revision(&self) -> u64 {
+        self.mutation_revision
     }
     pub fn epoch(&self) -> SessionEpoch {
         self.epoch
@@ -659,6 +670,7 @@ impl Heap {
             return Err(HeapError::WrongKind);
         }
         self.objects.get_mut(key).unwrap().kind = ObjectKind::Tuple;
+        self.mutation_revision = self.mutation_revision.wrapping_add(1);
         Ok(())
     }
     pub fn alloc_tuple(&mut self, values: &[Value]) -> Result<Value, HeapError> {
@@ -807,6 +819,7 @@ impl Heap {
         };
         values.set(index + 4, value);
         object.content_version = object.content_version.wrapping_add(1);
+        self.mutation_revision = self.mutation_revision.wrapping_add(1);
         Ok(())
     }
     pub(crate) fn validate_host_property(
@@ -939,6 +952,7 @@ impl Heap {
             return Err(HeapError::WrongKind);
         }
         self.objects.get_mut(key).unwrap().kind = ObjectKind::String;
+        self.mutation_revision = self.mutation_revision.wrapping_add(1);
         Ok(())
     }
     /// Freeze an unpublished byte builder without copying its payload.
@@ -948,6 +962,7 @@ impl Heap {
             return Err(HeapError::WrongKind);
         }
         self.objects.get_mut(key).unwrap().kind = ObjectKind::Bytes;
+        self.mutation_revision = self.mutation_revision.wrapping_add(1);
         Ok(())
     }
     pub fn info(&self, value: Value) -> Result<ObjectInfo, HeapError> {
@@ -1022,6 +1037,7 @@ impl Heap {
             _ => unreachable!(),
         }
         obj.content_version = obj.content_version.wrapping_add(1);
+        self.mutation_revision = self.mutation_revision.wrapping_add(1);
         self.invalidate_reactive(target, None)?;
         Ok(())
     }
@@ -1046,6 +1062,7 @@ impl Heap {
         }
         obj.charged += extra;
         obj.content_version = obj.content_version.wrapping_add(1);
+        self.mutation_revision = self.mutation_revision.wrapping_add(1);
         obj.structure_version = obj.structure_version.wrapping_add(1);
         self.invalidate_reactive(target, None)?;
         Ok(())
@@ -1089,6 +1106,7 @@ impl Heap {
         values.push(value);
         obj.charged += extra;
         obj.content_version = obj.content_version.wrapping_add(1);
+        self.mutation_revision = self.mutation_revision.wrapping_add(1);
         obj.structure_version = obj.structure_version.wrapping_add(1);
         Ok(())
     }
@@ -1116,6 +1134,7 @@ impl Heap {
         };
         obj.charged -= freed;
         obj.content_version = obj.content_version.wrapping_add(1);
+        self.mutation_revision = self.mutation_revision.wrapping_add(1);
         obj.structure_version = obj.structure_version.wrapping_add(1);
         self.freed(freed);
         self.invalidate_reactive(target, None)?;
@@ -1137,6 +1156,7 @@ impl Heap {
             values.set(b, left);
         }
         obj.content_version = obj.content_version.wrapping_add(1);
+        self.mutation_revision = self.mutation_revision.wrapping_add(1);
         obj.structure_version = obj.structure_version.wrapping_add(1);
         self.invalidate_reactive(target, None)?;
         Ok(())
@@ -1170,6 +1190,7 @@ impl Heap {
         obj.charged += chunks * BYTE_CHUNK_BYTES;
         if !input.is_empty() {
             obj.content_version = obj.content_version.wrapping_add(1);
+            self.mutation_revision = self.mutation_revision.wrapping_add(1);
         }
         self.invalidate_reactive(target, None)?;
         Ok(())
@@ -1404,6 +1425,56 @@ impl Drop for Heap {
 mod tests {
     use super::*;
     use crate::GcBudget;
+
+    #[test]
+    fn projection_watermark_covers_value_writes_private_payload_and_collection() {
+        let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+        let table = heap.alloc_table().unwrap();
+        let name = heap.alloc_string("value").unwrap();
+        heap.table_store(table, 0, name, Value::int(1)).unwrap();
+        let host = heap.alloc_host(table, &[Value::NULL], None).unwrap();
+        heap.observe_host_properties(host, 1, 0).unwrap();
+        let array = heap.alloc_array(&[Value::int(1)]).unwrap();
+        let cell = heap.alloc_cell(Value::int(1)).unwrap();
+        let buffer = heap.alloc_byte_buffer(b"a").unwrap();
+        let mut changed = |edit: &mut dyn FnMut(&mut Heap) -> Result<(), HeapError>| {
+            let before = heap.mutation_revision();
+            edit(&mut heap).unwrap();
+            assert_ne!(heap.mutation_revision(), before);
+        };
+        changed(&mut |h| h.table_store(table, 0, name, Value::int(2)));
+        changed(&mut |h| h.observe_host_properties(host, 1, 0));
+        changed(&mut |h| h.write_host_property(PropertyId { host, field: 0 }, Value::int(3), true));
+        changed(&mut |h| h.set_host_payload(host, 0, Value::int(4)));
+        changed(&mut |h| h.set_field(array, 0, Value::int(5)));
+        changed(&mut |h| h.array_push(array, Value::int(6)));
+        changed(&mut |h| h.array_swap(array, 0, 1));
+        changed(&mut |h| h.array_pop(array).map(|_| ()));
+        changed(&mut |h| h.clear_collection(array));
+        changed(&mut |h| h.cell_write(cell, Value::int(7)));
+        changed(&mut |h| h.bytes_append(buffer, b"b"));
+        changed(&mut |h| h.seal_bytes(buffer));
+        changed(&mut |h| h.observe_readonly_collection(array));
+        let before = heap.mutation_revision();
+        assert_eq!(heap.table_entry(table, 0).unwrap().1.as_int(), Some(3));
+        assert_eq!(heap.host_payload(host, 0).unwrap().as_int(), Some(4));
+        assert_eq!(
+            heap.mutation_revision(),
+            before,
+            "reads preserve cached projections"
+        );
+        let handle = heap.handle(host).unwrap();
+        collect(&mut heap);
+        assert!(heap.import_handle(handle).is_err());
+        assert_ne!(heap.mutation_revision(), before);
+        let rebuilt = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
+        assert_ne!(
+            heap.id(),
+            rebuilt.id(),
+            "new heaps never reuse cached stamps"
+        );
+    }
+
     fn collect(h: &mut Heap) {
         h.begin_collection().unwrap();
         while h.phase() != GcPhase::Idle {

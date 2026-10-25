@@ -217,6 +217,7 @@ impl Heap {
                         self.gc.weak_cursor = 0;
                         self.gc.sweep_remaining = self.gc.cutoff_len;
                         self.gc.phase = GcPhase::Weak;
+                        self.mutation_revision = self.mutation_revision.wrapping_add(1);
                     }
                 }
                 GcPhase::Weak => {
@@ -238,6 +239,7 @@ impl Heap {
                     let target = obj.weak;
                     if target.is_some_and(|h| !self.weak_confirmed(h)) {
                         self.objects.get_mut(key).unwrap().weak = None;
+                        self.mutation_revision = self.mutation_revision.wrapping_add(1);
                     }
                     self.gc.weak_cursor += 1;
                     p.weak += 1;
@@ -266,6 +268,7 @@ impl Heap {
                         } else {
                             // Reject lookups immediately; payload remains fully charged.
                             obj.dying = true;
+                            self.mutation_revision = self.mutation_revision.wrapping_add(1);
                             self.pending_bytes += obj.charged;
                             self.peak_pending_bytes =
                                 self.peak_pending_bytes.max(self.pending_bytes);

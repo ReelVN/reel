@@ -136,6 +136,85 @@ fn save_restore(vm: &SessionVm, session: &Session) -> (Session, SessionVm) {
     restore.finish().unwrap()
 }
 #[test]
+fn replay_ack_and_composition_cancel_publish_without_heap_writes() {
+    use reel_ui::widgets::TextInputIntent;
+    for cancel in [false, true] {
+        let (mut session, mut vm) = models::prepared(
+            r#"fn opening(){stage.replace(text_input(value:"committed"));narrator("wait");}"#,
+            false,
+        );
+        drive(&mut vm, &mut session);
+        let node = vm.stage().root().unwrap();
+        let options = |vm: &SessionVm| {
+            let NodeKind::TextInput { options, .. } = &vm.stage().node(node).unwrap().kind else {
+                unreachable!()
+            };
+            options.clone()
+        };
+        let revision = options(&vm).selection_revision;
+        for intent in [
+            TextInputIntent::Preedit {
+                text: "uncommitted".into(),
+                cursor: None,
+            },
+            TextInputIntent::Paste("accepted".into()),
+        ] {
+            assert!(
+                vm.text_input(
+                    &mut session,
+                    &NodeText {
+                        node,
+                        event: TextInputEvent::Deferred {
+                            intent: Arc::new(intent),
+                            revision
+                        },
+                    }
+                )
+                .unwrap()
+            );
+        }
+        let first = options(&vm).replay.unwrap().id;
+        let before = vm.vm.heap().mutation_revision();
+        assert!(
+            vm.text_input(
+                &mut session,
+                &NodeText {
+                    node,
+                    event: if cancel {
+                        TextInputEvent::CompositionCancelled
+                    } else {
+                        TextInputEvent::ReplayCompleted(first)
+                    },
+                }
+            )
+            .unwrap()
+        );
+        assert_eq!(vm.vm.heap().mutation_revision(), before);
+        let projected = options(&vm);
+        assert!(projected.pending_edit);
+        let next = projected.replay.unwrap();
+        assert_ne!(next.id, first);
+        assert_eq!(
+            next.intent.as_ref(),
+            &TextInputIntent::Paste("accepted".into())
+        );
+        assert!(
+            vm.text_input(
+                &mut session,
+                &NodeText {
+                    node,
+                    event: TextInputEvent::ReplayCompleted(next.id),
+                }
+            )
+            .unwrap()
+        );
+        assert_eq!(vm.vm.heap().mutation_revision(), before);
+        assert!(!options(&vm).pending_edit);
+        assert!(options(&vm).replay.is_none());
+        assert_eq!(value(&vm, node), "committed");
+    }
+}
+#[test]
 fn accepted_typing_keeps_order_after_partial_undo_focus_loss_and_restore() {
     let prefix = "A".repeat(300);
     let code = format!(

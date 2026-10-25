@@ -155,6 +155,7 @@ impl Heap {
         };
         state.value = Some(value);
         obj.content_version = obj.content_version.wrapping_add(1);
+        self.mutation_revision = self.mutation_revision.wrapping_add(1);
         if obj.model {
             self.invalidate_reactive(cell, Some(0))?;
         }
