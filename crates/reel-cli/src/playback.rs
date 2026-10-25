@@ -20,7 +20,12 @@ fn asset_overlay(
     explicit.or_else(|| loaded.loose.clone())
 }
 
-pub fn run(path: &Path, assets: Option<PathBuf>, saves: Option<PathBuf>) -> Result<(), String> {
+pub fn run(
+    path: &Path,
+    assets: Option<PathBuf>,
+    saves: Option<PathBuf>,
+    resource_target: String,
+) -> Result<(), String> {
     let project_resources = project_resources(path).map_err(|error| error.to_string())?;
     let loaded = reel_player::distribution::load(path, project_resources.as_deref())
         .map_err(|error| error.to_string())?;
@@ -33,6 +38,7 @@ pub fn run(path: &Path, assets: Option<PathBuf>, saves: Option<PathBuf>) -> Resu
         Some((loaded.packages, assets)),
         loaded.catalogs,
         saves,
+        resource_target,
     )
 }
 
@@ -44,6 +50,7 @@ pub fn standalone(executable: &Path, saves: Option<PathBuf>) -> Result<(), Strin
         &root.join(reel_package::distribution::MAIN_PACKAGE),
         None,
         Some(saves.unwrap_or_else(|| root.join("saves"))),
+        std::env::consts::OS.into(),
     )
 }
 
@@ -53,11 +60,13 @@ pub fn launch(
     packages: Option<(Vec<PathBuf>, Option<PathBuf>)>,
     catalogs: BTreeMap<String, String>,
     saves: Option<PathBuf>,
+    resource_target: String,
 ) -> Result<(), String> {
     #[cfg(feature = "window")]
     {
         let mut options = reel_player::player::PlayerOptions::default();
         options.assets.root = root;
+        options.resource_target = resource_target;
         options.catalogs = std::sync::Arc::new(catalogs);
         if let Some((packages, overlay)) = packages {
             options.asset_packages = Some(packages);
@@ -68,7 +77,7 @@ pub fn launch(
     }
     #[cfg(not(feature = "window"))]
     {
-        let _ = (story, root, packages, catalogs, saves);
+        let _ = (story, root, packages, catalogs, saves, resource_target);
         Err("playback requires the complete Reel tool package; download the package containing the platform player".into())
     }
 }
@@ -115,6 +124,7 @@ mod tests {
             overwrite: false,
             resources: vec![],
             text: vec![],
+            resource_target: std::env::consts::OS.into(),
             pack_bytes: 4096.try_into().unwrap(),
             player: None,
         };

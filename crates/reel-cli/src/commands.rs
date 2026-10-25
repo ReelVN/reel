@@ -126,6 +126,9 @@ pub struct Export {
     /// Package translation catalogs under their logical prefix; repeat as needed.
     #[arg(long, value_name = "PREFIX=DIRECTORY", value_parser = Mount::parse)]
     pub text: Vec<Mount>,
+    /// Select @NAME resource variants; the exported player uses the current platform.
+    #[arg(long, value_name = "NAME", default_value = std::env::consts::OS, value_parser = resource_target)]
+    pub resource_target: String,
     /// Target resource volume size including index; defaults to 2147483648 (2 GiB).
     #[arg(long, value_name = "BYTES", requires = "release")]
     pub pack_bytes: Option<std::num::NonZeroU64>,
@@ -137,9 +140,18 @@ pub struct Playback {
     /// Asset directory; for exported ASB this explicitly enables loose-file overrides.
     #[arg(long, value_name = "DIRECTORY")]
     pub assets: Option<PathBuf>,
+    /// Select @NAME resource variants for preview in the current platform player.
+    #[arg(long, value_name = "NAME", default_value = std::env::consts::OS, value_parser = resource_target)]
+    pub resource_target: String,
     /// Override the player's save directory.
     #[arg(long, value_name = "DIRECTORY")]
     pub save_directory: Option<PathBuf>,
+}
+
+fn resource_target(value: &str) -> Result<String, String> {
+    reel_package::resource_target::ResourceTarget::parse(value)
+        .map(|target| target.as_str().into())
+        .map_err(|error| error.to_string())
 }
 #[derive(Args)]
 #[command(
@@ -214,4 +226,28 @@ pub fn requested_json(raw: &[OsString]) -> bool {
         previous = Some(arg.as_os_str());
         requested
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resource_targets_are_shared_by_development_run_and_export() {
+        for command in ["dev", "run", "export"] {
+            assert!(Cli::try_parse_from(["reel", command, "--resource-target", "vita"]).is_ok());
+            assert!(Cli::try_parse_from(["reel", command]).is_ok());
+            for invalid in ["Vita", "../vita", "@vita", "vita/game", ""] {
+                assert!(
+                    Cli::try_parse_from(["reel", command, "--resource-target", invalid]).is_err()
+                );
+            }
+        }
+        let Command::Source(SourceCommand::Dev(dev)) =
+            Cli::try_parse_from(["reel", "dev"]).unwrap().command
+        else {
+            panic!()
+        };
+        assert_eq!(dev.playback.resource_target, std::env::consts::OS);
+    }
 }

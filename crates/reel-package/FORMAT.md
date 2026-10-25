@@ -37,3 +37,36 @@ Full decoding verifies section digests, metadata and bytecode. The seekable
 distribution reader checks only header/index/distribution using the same index,
 JSON, path and limit validation. Resource archives are read by their owning
 loaders. Wire encoding is in [codec.rs](src/codec.rs).
+
+## Resource and text archives v1
+
+RPK and RTP use the same seekable `REELPAK\0` v1 format. The 32-byte header is
+`magic:[u8;8], version:u32, kind:u32, index_offset:u64, entry_count:u64`.
+Kind is 1 for resources and 2 for text. The main index ends at EOF. Every sorted
+entry is `path_len:u32, offset:u64, logical_length:u64, blake3:[u8;32],
+stored_length:u64, directory_offset:u64, storage:u32`, followed by its UTF-8 path.
+Offsets are absolute file offsets. The digest covers the logical input bytes.
+
+Storage 0 is contiguous raw bytes: stored and logical lengths match and the
+directory offset is zero. Storage 1 divides logical content into independent
+64 KiB blocks, with a shorter final block. Stored block payloads precede their
+directory. Each 16-byte directory record contains `relative_offset:u64,
+stored_length:u32, codec:u32`. Offsets are relative to the entry's payload offset;
+codec 0 stores the block raw and codec 1 stores a raw LZ4 block. Logical block
+lengths derive from the entry length. Compressed blocks are strictly smaller
+than their logical block. The directory contains `ceil(logical_length / 65536)`
+records and immediately follows the stored payload region.
+
+Mount reads only the header and main index, checking storage ranges and directory
+sizes. Range reads fetch only addressed directory records and blocks, validate
+their bounds and codec, and decode into a reusable 128 KiB workspace. Cancellation
+is checked between IO chunks and blocks. The decoded half of that workspace
+retains the most recently decoded block by logical content digest, length and
+block index, so successive small range requests avoid repeated IO and decoding.
+The previous cache identity is retired before a decode can overwrite its bytes;
+only a successful exact-length decode publishes the new identity.
+Writers accept unknown-length readers,
+hash logical input incrementally, retain only block records and fixed payload
+workspace, and choose raw storage for blocks that do not shrink. An entry with
+no compressed blocks becomes a contiguous raw entry. Callers may explicitly
+choose raw storage for already compressed content.

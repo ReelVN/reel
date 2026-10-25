@@ -37,8 +37,8 @@ pub struct AssetOptions {
     pub root: PathBuf,
     pub resident_bytes: u64,
     pub input_bytes: u64,
-    /// Temporary allowance for the active image decoder, including metadata and
-    /// codec workspace. Reserving the allowance does not allocate a byte buffer.
+    /// Temporary allowance shared by the archive reader and active image decoder.
+    /// Compressed archives retain a fixed workspace; the decoder uses the remainder.
     pub decode_bytes: u64,
 }
 impl Default for AssetOptions {
@@ -103,6 +103,7 @@ struct Service {
     input: BudgetPool,
     output: BudgetPool,
     temporary: BudgetPool,
+    io_workspace_bytes: u64,
     completion: BudgetPool,
     options: AssetOptions,
     next: u64,
@@ -127,16 +128,43 @@ impl Assets {
             )
         })
     }
+    /// Uses a resource target overlay with the current platform's image decoder.
+    pub fn directory_for_target(options: AssetOptions, target: String) -> Result<Self, IoError> {
+        let limits = options.queue_limits();
+        let root = options.root.clone();
+        Self::try_with_adapters(options, |wake, _temporary| {
+            Ok((
+                Box::new(DirectoryIo::for_target(root, target, limits, wake.clone())?),
+                Box::new(ImageExecutor::new(limits, wake)),
+            ))
+        })
+    }
     /// Release archives are the sole source unless a loose-file overlay is explicit.
     pub fn packaged(
         options: AssetOptions,
         paths: impl IntoIterator<Item = PathBuf>,
         overlay: Option<PathBuf>,
     ) -> Result<Self, IoError> {
+        Self::packaged_for_target(options, paths, overlay, std::env::consts::OS.into())
+    }
+    /// Mounts selected archives and resolves loose overrides for a resource target.
+    pub fn packaged_for_target(
+        options: AssetOptions,
+        paths: impl IntoIterator<Item = PathBuf>,
+        overlay: Option<PathBuf>,
+        target: String,
+    ) -> Result<Self, IoError> {
         let limits = options.queue_limits();
-        Self::try_with_adapters(options, |wake| {
+        Self::try_with_adapters(options, |wake, temporary| {
             Ok((
-                Box::new(PackIo::open(paths, overlay, limits, wake.clone())?),
+                Box::new(PackIo::open(
+                    paths,
+                    overlay,
+                    target,
+                    temporary,
+                    limits,
+                    wake.clone(),
+                )?),
                 Box::new(ImageExecutor::new(limits, wake)),
             ))
         })
@@ -145,14 +173,17 @@ impl Assets {
         options: AssetOptions,
         create: impl FnOnce(WakeSignal) -> (Box<dyn AssetIo>, Box<dyn WorkExecutor>),
     ) -> Self {
-        Self::try_with_adapters(options, |wake| {
+        Self::try_with_adapters(options, |wake, _temporary| {
             Ok::<_, std::convert::Infallible>(create(wake))
         })
         .unwrap()
     }
     fn try_with_adapters<E>(
         options: AssetOptions,
-        create: impl FnOnce(WakeSignal) -> Result<(Box<dyn AssetIo>, Box<dyn WorkExecutor>), E>,
+        create: impl FnOnce(
+            WakeSignal,
+            &BudgetPool,
+        ) -> Result<(Box<dyn AssetIo>, Box<dyn WorkExecutor>), E>,
     ) -> Result<Self, E> {
         let notify: Notify = Arc::new(Mutex::new(Arc::new(|| {})));
         let callback = notify.clone();
@@ -160,8 +191,17 @@ impl Assets {
             let notify = callback.lock().unwrap().clone();
             notify();
         });
-        let (io, executor) = create(wake.clone())?;
-        Ok(Self::assemble(options, io, executor, wake, notify))
+        let temporary = BudgetPool::new(
+            BudgetCategory::Temporary,
+            QueueLimits {
+                max_requests: u32::MAX,
+                max_bytes: options.decode_bytes,
+            },
+        );
+        let (io, executor) = create(wake.clone(), &temporary)?;
+        Ok(Self::assemble(
+            options, io, executor, wake, notify, temporary,
+        ))
     }
     fn assemble(
         options: AssetOptions,
@@ -169,6 +209,7 @@ impl Assets {
         executor: Box<dyn WorkExecutor>,
         wake: WakeSignal,
         notify: Notify,
+        temporary: BudgetPool,
     ) -> Self {
         let pool = |category, bytes| {
             BudgetPool::new(
@@ -186,7 +227,8 @@ impl Assets {
             notify,
             input: pool(BudgetCategory::CpuInput, options.input_bytes),
             output: pool(BudgetCategory::CpuOutput, options.resident_bytes),
-            temporary: pool(BudgetCategory::Temporary, options.decode_bytes),
+            io_workspace_bytes: temporary.usage().bytes,
+            temporary,
             completion: pool(BudgetCategory::Completion, 1 << 20),
             options,
             next: 0,
@@ -663,10 +705,11 @@ impl Service {
             }
             Phase::Probe | Phase::Decode => {
                 let probe = matches!(load.phase, Phase::Probe);
-                if !probe && load.temporary > self.options.decode_bytes {
+                let decode_bytes = self.options.decode_bytes - self.io_workspace_bytes;
+                if !probe && load.temporary > decode_bytes {
                     return Err("image decode limit exceeded".into());
                 }
-                if self.temporary.usage().bytes != 0 {
+                if self.temporary.usage().bytes > self.io_workspace_bytes {
                     return Ok(());
                 }
                 // A concurrent request may have completed while this one waited
@@ -696,7 +739,7 @@ impl Service {
                     .reserve(if prepared {
                         if probe { 0 } else { load.temporary }
                     } else {
-                        self.options.decode_bytes
+                        decode_bytes
                     })
                     .map_err(|e| format!("image decode limit: {}", e.message))?;
                 let request = WorkRequest {

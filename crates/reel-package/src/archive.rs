@@ -5,10 +5,22 @@ use std::{
     io::{self, BufReader, Read, Seek, SeekFrom, Write},
 };
 
+mod blocks;
+pub use blocks::{BLOCK_BYTES, ReadScratch, SCRATCH_BYTES};
+
 pub const MAGIC: [u8; 8] = *b"REELPAK\0";
 pub const HEADER_LEN: u64 = 32;
 const VERSION: u32 = 1;
-const ENTRY_FIXED_LEN: u64 = 52;
+const ENTRY_FIXED_LEN: u64 = 72;
+
+/// Physical representation of one entry's logical bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntryStorage {
+    /// Contiguous bytes, suitable for direct seek and range reads.
+    Raw,
+    /// Independent 64 KiB blocks with an on-disk directory immediately after payload.
+    Blocks { directory_offset: u64 },
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
@@ -19,11 +31,18 @@ pub enum ArchiveKind {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
+    /// Portable logical path relative to the archive's resource root.
     pub path: String,
+    /// Absolute file offset of the physical payload region.
     pub offset: u64,
+    /// Decoded content length, independent of physical storage.
     pub length: u64,
-    /// BLAKE3 of this entry's raw payload, computed once when packaging.
+    /// BLAKE3 of this entry's logical bytes, computed once when packaging.
     pub version: [u8; 32],
+    /// Physical payload bytes, excluding the optional block directory.
+    pub stored_length: u64,
+    /// Representation used to recover the logical content.
+    pub storage: EntryStorage,
 }
 
 #[derive(Debug)]
@@ -88,9 +107,26 @@ impl ArchiveIndex {
             validate_path(&path)?;
             let offset = u64::from_le_bytes(fixed[4..12].try_into().unwrap());
             let length = u64::from_le_bytes(fixed[12..20].try_into().unwrap());
+            let stored_length = u64::from_le_bytes(fixed[52..60].try_into().unwrap());
+            let directory_offset = u64::from_le_bytes(fixed[60..68].try_into().unwrap());
+            let storage = match u32::from_le_bytes(fixed[68..72].try_into().unwrap()) {
+                0 if stored_length == length && directory_offset == 0 => EntryStorage::Raw,
+                1 if length != 0 && stored_length != 0 && stored_length <= length => {
+                    let payload_end = offset.checked_add(stored_length);
+                    let directory_end = blocks::directory_bytes(length)
+                        .and_then(|bytes| directory_offset.checked_add(bytes));
+                    if payload_end != Some(directory_offset)
+                        || directory_end.is_none_or(|end| end > index_offset)
+                    {
+                        return Err(invalid("archive block directory lies outside payload"));
+                    }
+                    EntryStorage::Blocks { directory_offset }
+                }
+                _ => return Err(invalid("invalid archive entry storage")),
+            };
             if offset < HEADER_LEN
                 || offset
-                    .checked_add(length)
+                    .checked_add(stored_length)
                     .is_none_or(|end| end > index_offset)
             {
                 return Err(invalid(format!(
@@ -102,6 +138,8 @@ impl ArchiveIndex {
                 offset,
                 length,
                 version: fixed[20..52].try_into().unwrap(),
+                stored_length,
+                storage,
             };
             if entries.insert(path, entry).is_some() {
                 return Err(invalid("duplicate archive path"));
@@ -114,8 +152,9 @@ impl ArchiveIndex {
     }
 }
 
-/// One writer owns a new, empty output. Entries stream through fixed scratch space;
-/// finish writes the sorted index and publishes its location in the header.
+/// One writer owns a new, empty output. Entries stream through fixed payload
+/// scratch space and retain 16-byte block directory records during packaging.
+/// Finish writes the sorted index and publishes its location in the header.
 pub struct ArchiveWriter<W> {
     output: W,
     index: ArchiveIndex,
@@ -139,16 +178,35 @@ impl<W: Write + Seek> ArchiveWriter<W> {
     pub fn is_empty(&self) -> bool {
         self.index.entries.is_empty()
     }
-    /// Final size including the index if this complete resource is appended.
+    /// Conservative final size for an automatically compressed entry, including
+    /// its main-index record and worst-case block directory. Raw storage and
+    /// compression may make the completed archive smaller.
     pub fn encoded_len_after(&mut self, path: &str, length: u64) -> io::Result<u64> {
         self.output
             .stream_position()?
             .checked_add(self.index_bytes)
             .and_then(|n| n.checked_add(ENTRY_FIXED_LEN + path.len() as u64))
             .and_then(|n| n.checked_add(length))
+            .and_then(|n| n.checked_add(blocks::directory_bytes(length)?))
             .ok_or_else(|| invalid("archive exceeds format width"))
     }
+    /// Streams an unknown-length input as independent 64 KiB LZ4 blocks, retaining
+    /// individual blocks raw when compression does not shrink them. Entries with
+    /// no compressed blocks use contiguous raw storage and omit the directory.
     pub fn add(&mut self, path: &str, input: &mut impl Read) -> io::Result<&Entry> {
+        self.add_impl(path, input, true)
+    }
+    /// Streams an entry verbatim, bypassing compression for content whose storage
+    /// encoding is already compressed. The logical content digest is unchanged.
+    pub fn add_raw(&mut self, path: &str, input: &mut impl Read) -> io::Result<&Entry> {
+        self.add_impl(path, input, false)
+    }
+    fn add_impl(
+        &mut self,
+        path: &str,
+        input: &mut impl Read,
+        compress: bool,
+    ) -> io::Result<&Entry> {
         validate_path(path)?;
         u32::try_from(path.len()).map_err(|_| invalid("archive path exceeds format width"))?;
         if self.index.entries.contains_key(path) {
@@ -156,27 +214,15 @@ impl<W: Write + Seek> ArchiveWriter<W> {
         }
         let offset = self.output.stream_position()?;
         let mut hash = blake3::Hasher::new();
-        let mut length = 0u64;
-        let mut scratch = [0; 64 << 10];
-        loop {
-            let size = match input.read(&mut scratch) {
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                result => result?,
-            };
-            if size == 0 {
-                break;
-            }
-            length = length
-                .checked_add(size as u64)
-                .ok_or_else(|| invalid("archive entry exceeds format width"))?;
-            self.output.write_all(&scratch[..size])?;
-            hash.update(&scratch[..size]);
-        }
+        let (length, stored_length, storage) =
+            blocks::write(input, &mut self.output, &mut hash, offset, compress)?;
         let entry = Entry {
             path: path.into(),
             offset,
             length,
             version: *hash.finalize().as_bytes(),
+            stored_length,
+            storage,
         };
         self.index_bytes += ENTRY_FIXED_LEN + path.len() as u64;
         self.index.entries.insert(path.into(), entry);
@@ -190,6 +236,13 @@ impl<W: Write + Seek> ArchiveWriter<W> {
             self.output.write_all(&entry.offset.to_le_bytes())?;
             self.output.write_all(&entry.length.to_le_bytes())?;
             self.output.write_all(&entry.version)?;
+            self.output.write_all(&entry.stored_length.to_le_bytes())?;
+            let (storage, directory_offset) = match entry.storage {
+                EntryStorage::Raw => (0u32, 0u64),
+                EntryStorage::Blocks { directory_offset } => (1, directory_offset),
+            };
+            self.output.write_all(&directory_offset.to_le_bytes())?;
+            self.output.write_all(&storage.to_le_bytes())?;
             self.output.write_all(entry.path.as_bytes())?;
         }
         self.output.seek(SeekFrom::Start(0))?;

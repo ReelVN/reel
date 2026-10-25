@@ -378,7 +378,10 @@ fn concurrent_images_share_decode_capacity_and_preserve_versions_across_adapters
         }
         let output = assets.output_pool();
         assert_eq!(output.usage().bytes, (160 * 90 + 96 * 96) * 4);
-        assert_eq!(assets.temporary_pool().usage().bytes, 0);
+        assert_eq!(
+            assets.temporary_pool().usage().bytes,
+            assets.0.borrow().io_workspace_bytes
+        );
         assert_eq!(assets.0.borrow().input.usage().bytes, 0);
         assert_eq!(assets.0.borrow().completion.usage().bytes, 0);
         assert!(!assets.needs_poll());

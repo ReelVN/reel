@@ -5,6 +5,7 @@ mod codec;
 mod declarations;
 pub mod distribution;
 mod metadata;
+pub mod resource_target;
 use aside_vm::bytecode as bc;
 pub use codec::{HEADER_LEN, INDEX_ENTRY_LEN, MAGIC, VERSION, decode, encode, read_distribution};
 pub use metadata::*;

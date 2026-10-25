@@ -32,13 +32,18 @@ pub fn run_session_host() -> Result<(), Error> {
 pub fn run_story(story: CompiledStory, options: PlayerOptions) -> Result<(), Error> {
     let session = Session::new(SessionId(1), Epoch(1))?;
     let assets = match &options.asset_packages {
-        Some(paths) => crate::assets::Assets::packaged(
+        Some(paths) => crate::assets::Assets::packaged_for_target(
             options.assets.clone(),
             paths.clone(),
             options.asset_overlay.clone(),
+            options.resource_target.clone(),
         )
         .map_err(|error| format!("cannot open resource packages: {error:?}"))?,
-        None => crate::assets::Assets::directory(options.assets.clone()),
+        None => crate::assets::Assets::directory_for_target(
+            options.assets.clone(),
+            options.resource_target.clone(),
+        )
+        .map_err(|error| format!("cannot open resource directory: {error:?}"))?,
     };
     let driver =
         AsideSessionUi::from_compiled(session, story, &options.locale, VmLimits::default())?

@@ -9,19 +9,168 @@ use reel_engine::{
     aside::{SliceBudget, VmLimits},
 };
 use reel_package::{
-    archive::{ArchiveIndex, ArchiveKind, ArchiveWriter},
+    archive::{ArchiveIndex, ArchiveKind, ArchiveWriter, ReadScratch},
     distribution::TEXT_POOL_ENTRY,
+    resource_target::ResourceTarget,
 };
 use reel_player::{
     aside_session::{AsideSessionUi, StoryProgress},
-    assets::{AssetOptions, Assets},
+    assets::{AssetKind, AssetOptions, Assets},
 };
 use std::{
+    collections::BTreeMap,
     fs::{self, File},
-    io::{Read, Seek, SeekFrom},
     path::Path,
     time::{Duration, Instant},
 };
+
+fn asset_bytes(assets: &Assets, path: &str) -> Result<Vec<u8>, String> {
+    let id = assets.request(path, AssetKind::Bytes);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        assets.maintain();
+        match assets.poll_bytes(id) {
+            Ok(Some((_, bytes))) => return Ok(bytes.as_slice().to_vec()),
+            Err(error) => return Err(error),
+            Ok(None) => {}
+        }
+        assert!(
+            Instant::now() < deadline,
+            "asset worker did not finish: {path}"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn resource_target_selection_matches_live_reads_and_relocated_exports_in_both_profiles() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    let source = root.join("source");
+    let resources = source.join("resources");
+    for (path, content) in [
+        ("src/main.aside", "fn main() { 1 }"),
+        ("resources/bg/room.bin", "common room"),
+        ("resources/common.bin", "common only"),
+        ("resources/@vita/bg/room.bin", "vita room"),
+        ("resources/@vita/only.bin", "vita only"),
+        ("resources/@other/excluded.bin", "other target"),
+        ("resources/nested/@labels/value.bin", "nested directory"),
+    ] {
+        let path = source.join(path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+    }
+    let selected = ResourceTarget::parse("vita")
+        .unwrap()
+        .collect(&resources)
+        .unwrap();
+    let expected = BTreeMap::from([
+        ("bg/room.bin", b"vita room".as_slice()),
+        ("common.bin", b"common only".as_slice()),
+        ("nested/@labels/value.bin", b"nested directory".as_slice()),
+        ("only.bin", b"vita only".as_slice()),
+    ]);
+    assert_eq!(
+        selected.keys().map(String::as_str).collect::<Vec<_>>(),
+        expected.keys().copied().collect::<Vec<_>>()
+    );
+    let live = Assets::directory_for_target(
+        AssetOptions {
+            root: resources.clone(),
+            ..Default::default()
+        },
+        "vita".into(),
+    )
+    .unwrap();
+    for (key, bytes) in &expected {
+        assert_eq!(asset_bytes(&live, key).unwrap(), *bytes);
+        assert_eq!(fs::read(&selected[*key]).unwrap(), *bytes);
+    }
+    assert!(asset_bytes(&live, "excluded.bin").is_err());
+    assert!(asset_bytes(&live, "@other/excluded.bin").is_err());
+    live.close();
+    drop(live);
+    let loaded = project::load(&source).unwrap_or_else(|error| panic!("{:?}", error.failure));
+    let checked = loaded.check().unwrap();
+    let player = root.join("platform-player");
+    fs::write(&player, b"current platform player").unwrap();
+    let mut outputs = Vec::new();
+    for profile in [BuildProfile::Debug, BuildProfile::Release] {
+        let output = root.join(profile.name());
+        let options = ExportOptions {
+            output: output.clone(),
+            overwrite: false,
+            resources: vec![Mount {
+                prefix: ".".into(),
+                directory: resources.clone(),
+            }],
+            text: vec![],
+            resource_target: "vita".into(),
+            pack_bytes: 4096.try_into().unwrap(),
+            player: Some(player.clone()),
+        };
+        let artifact = build_export(&checked, project::ENTRY, profile).unwrap();
+        if profile == BuildProfile::Debug {
+            let conflict = resources.join("@vita/@other/conflict.bin");
+            fs::create_dir_all(conflict.parent().unwrap()).unwrap();
+            fs::write(&conflict, b"reserved logical namespace").unwrap();
+            let error = distribution::export(&loaded, &artifact, &options)
+                .err()
+                .unwrap();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+            assert!(error.to_string().contains("@other/conflict.bin"));
+            assert!(!output.exists());
+            fs::remove_file(&conflict).unwrap();
+            fs::remove_dir(conflict.parent().unwrap()).unwrap();
+        }
+        distribution::export(&loaded, &artifact, &options).unwrap();
+        let relocated = root.join(format!("relocated-{}", profile.name()));
+        fs::rename(output, &relocated).unwrap();
+        outputs.push((profile, relocated));
+    }
+    fs::remove_dir_all(source).unwrap();
+    for (profile, relocated) in outputs {
+        let loaded = reel_player::distribution::load(&relocated.join("game.asb"), None).unwrap();
+        if profile == BuildProfile::Debug {
+            let exported = ResourceTarget::default()
+                .collect(loaded.loose.as_ref().unwrap())
+                .unwrap();
+            assert_eq!(
+                exported.keys().collect::<Vec<_>>(),
+                selected.keys().collect::<Vec<_>>()
+            );
+        } else {
+            let mut names = Vec::new();
+            for archive in &loaded.packages {
+                let mut file = File::open(archive).unwrap();
+                let index = ArchiveIndex::read(&mut file).unwrap();
+                if index.kind() == ArchiveKind::Resources {
+                    names.extend(index.entries().map(|entry| entry.path.clone()));
+                }
+            }
+            assert_eq!(
+                names.iter().collect::<Vec<_>>(),
+                selected.keys().collect::<Vec<_>>()
+            );
+        }
+        let assets = Assets::packaged(
+            AssetOptions {
+                root: loaded.root,
+                ..Default::default()
+            },
+            loaded.packages,
+            loaded.loose,
+        )
+        .unwrap();
+        for (key, bytes) in &expected {
+            assert_eq!(asset_bytes(&assets, key).unwrap(), *bytes);
+        }
+        assert!(asset_bytes(&assets, "excluded.bin").is_err());
+        assert!(asset_bytes(&assets, "@vita/bg/room.bin").is_err());
+        assets.close();
+    }
+}
 
 fn read_line(path: &Path) -> String {
     let loaded = reel_player::distribution::load(path, None).unwrap();
@@ -109,9 +258,10 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
     let loaded = project::load(&source).unwrap_or_else(|e| panic!("{:?}", e.failure));
     let checked = loaded.check().unwrap();
     let mut options = ExportOptions {
+        resource_target: std::env::consts::OS.into(),
         output: root.join("development"),
         overwrite: false,
-        pack_bytes: std::num::NonZeroU64::new(128).unwrap(),
+        pack_bytes: std::num::NonZeroU64::new(256).unwrap(),
         player: Some(player),
         resources: vec![Mount {
             prefix: "assets".into(),
@@ -183,11 +333,11 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
                     } else {
                         assert!(file.metadata().unwrap().len() <= options.pack_bytes.get());
                     }
-                    file.seek(SeekFrom::Start(entry.offset)).unwrap();
-                    let mut content = vec![];
-                    (&mut file)
-                        .take(entry.length)
-                        .read_to_end(&mut content)
+                    let mut content = vec![0; entry.length.try_into().unwrap()];
+                    entry
+                        .read_range(&mut file, 0, &mut content, &mut ReadScratch::new(), || {
+                            false
+                        })
                         .unwrap();
                     assert_eq!(
                         content,
@@ -291,6 +441,7 @@ fn failed_player_copy_preserves_previous_export_and_overwrite_requires_embedded_
     let player = root.join("player");
     fs::write(&player, "player fixture").unwrap();
     let mut options = ExportOptions {
+        resource_target: std::env::consts::OS.into(),
         output: root.join("release"),
         overwrite: false,
         pack_bytes: std::num::NonZeroU64::new(1024).unwrap(),

@@ -31,6 +31,9 @@ pub struct PlayerOptions {
     pub asset_packages: Option<Vec<std::path::PathBuf>>,
     /// Explicit loose overrides for an archive-backed work.
     pub asset_overlay: Option<std::path::PathBuf>,
+    /// Resource directory overlay, defaulting to the host OS name.
+    /// This selects assets independently of the player platform.
+    pub resource_target: String,
     /// Canonical language tags resolved through the same asset service as images and media.
     pub catalogs: crate::localization::CatalogIndex,
     pub media: crate::media::MediaOptions,
@@ -48,6 +51,7 @@ impl Default for PlayerOptions {
             assets: Default::default(),
             asset_packages: None,
             asset_overlay: None,
+            resource_target: std::env::consts::OS.into(),
             catalogs: Default::default(),
             media: Default::default(),
             title: "Reel".into(),

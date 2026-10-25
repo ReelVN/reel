@@ -5,10 +5,12 @@ use reel_cli::{
     localization::{check_project, prepare_project},
     project,
 };
-use reel_package::{archive::ArchiveIndex, distribution::LooseResources};
+use reel_package::{
+    archive::{ArchiveIndex, ReadScratch},
+    distribution::LooseResources,
+};
 use std::{
     fs::{self, File},
-    io::{Read, Seek, SeekFrom},
     path::Path,
 };
 
@@ -21,10 +23,11 @@ fn translation(archive: &Path, key: &str) -> String {
     let mut file = File::open(archive).unwrap();
     let index = ArchiveIndex::read(&mut file).unwrap();
     let entry = index.get(key).unwrap();
-    file.seek(SeekFrom::Start(entry.offset)).unwrap();
-    let mut text = String::new();
-    file.take(entry.length).read_to_string(&mut text).unwrap();
-    text
+    let mut text = vec![0; entry.length.try_into().unwrap()];
+    entry
+        .read_range(&mut file, 0, &mut text, &mut ReadScratch::new(), || false)
+        .unwrap();
+    String::from_utf8(text).unwrap()
 }
 fn source(body: &str) -> String {
     format!(
@@ -227,6 +230,7 @@ fn exports_keep_inline_translations_in_editable_source_and_reject_collisions() {
     let loaded = project::load(root).unwrap_or_else(|e| panic!("{:?}", e.failure));
     let checked = loaded.check().unwrap();
     let mut options = ExportOptions {
+        resource_target: std::env::consts::OS.into(),
         output: root.join("build/export/debug"),
         overwrite: false,
         resources: vec![],

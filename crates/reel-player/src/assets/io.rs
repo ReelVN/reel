@@ -2,7 +2,7 @@ use super::worker::{Worker, check_completion};
 mod directory;
 mod pack;
 use reel_core::{
-    budget::{BudgetCategory, OwnedBytes, QueueLimits},
+    budget::{BudgetCategory, BudgetPool, OwnedBytes, QueueLimits},
     identity::{AssetSource, ContentVersion, IoId},
     io::*,
     queue::{charge, invalid},
@@ -41,17 +41,37 @@ impl DirectoryIo {
             wake,
         ))
     }
+    /// Resolves logical paths through the selected resource directory overlay.
+    pub fn for_target(
+        root: PathBuf,
+        target: String,
+        limits: QueueLimits,
+        wake: WakeSignal,
+    ) -> Result<Self, IoError> {
+        let files = directory::Files::for_target(root, limits.max_requests as usize, target)?;
+        Ok(Self(FileIo::new(Files::Directory(files), limits, wake)))
+    }
 }
 impl PackIo {
     /// Mounts only archive indexes. An optional development overlay takes precedence;
     /// only missing loose files fall through to the selected archive entry.
+    /// Compressed entries share one fixed workspace charged to `temporary` until
+    /// the IO worker exits. Raw-only mounts allocate no decoding workspace.
     pub fn open(
         paths: impl IntoIterator<Item = PathBuf>,
         overlay: Option<PathBuf>,
+        target: String,
+        temporary: &BudgetPool,
         limits: QueueLimits,
         wake: WakeSignal,
     ) -> Result<Self, IoError> {
-        let files = pack::Files::open(paths, overlay, limits.max_requests as usize)?;
+        let files = pack::Files::open(
+            paths,
+            overlay,
+            target,
+            temporary,
+            limits.max_requests as usize,
+        )?;
         Ok(Self(FileIo::new(Files::Pack(files), limits, wake)))
     }
 }
@@ -85,6 +105,10 @@ struct ReadFile<'a> {
     length: u64,
     version: ContentVersion,
     stamp: Option<SystemTime>,
+    compressed: Option<(
+        &'a reel_package::archive::Entry,
+        &'a mut reel_package::archive::ReadScratch,
+    )>,
 }
 impl<'a> ReadFile<'a> {
     fn directory(file: &'a mut directory::OpenFile) -> Self {
@@ -94,7 +118,32 @@ impl<'a> ReadFile<'a> {
             length: file.length,
             version: file.version,
             stamp: Some(file.modified),
+            compressed: None,
         }
+    }
+    fn read_at(
+        &mut self,
+        offset: u64,
+        output: &mut [u8],
+        cancelled: &AtomicBool,
+    ) -> Result<(), IoError> {
+        if let Some((entry, scratch)) = &mut self.compressed {
+            return entry
+                .read_range(self.file, offset, output, scratch, || {
+                    cancelled.load(Ordering::Acquire)
+                })
+                .map_err(io_error);
+        }
+        self.file
+            .seek(SeekFrom::Start(self.offset + offset))
+            .map_err(io_error)?;
+        for chunk in output.chunks_mut(reel_package::archive::BLOCK_BYTES) {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(failure("read cancelled"));
+            }
+            self.file.read_exact(chunk).map_err(io_error)?;
+        }
+        Ok(())
     }
     fn verify(&self) -> Result<(), IoError> {
         if let Some(modified) = self.stamp
@@ -139,24 +188,16 @@ impl FileIo {
                                 let completion = r.completion;
                                 let result = (|| {
                                     let mut files = files.lock().unwrap();
-                                    let file = files.open(&r.resource, cancelled)?;
+                                    let mut file = files.open(&r.resource, cancelled)?;
                                     if r.offset > file.length {
                                         return Err(failure("asset read starts after EOF"));
                                     }
                                     let len = u64::from(r.len).min(file.length - r.offset) as usize;
-                                    file.file
-                                        .seek(SeekFrom::Start(file.offset + r.offset))
-                                        .map_err(io_error)?;
                                     let mut data = Vec::new();
                                     data.try_reserve_exact(len)
                                         .map_err(|e| failure(e.to_string()))?;
                                     data.resize(len, 0);
-                                    for chunk in data.chunks_mut(64 << 10) {
-                                        if cancelled.load(Ordering::Acquire) {
-                                            return Err(failure("read cancelled"));
-                                        }
-                                        file.file.read_exact(chunk).map_err(io_error)?;
-                                    }
+                                    file.read_at(r.offset, &mut data, cancelled)?;
                                     file.verify()?;
                                     let version = file.version;
                                     let eof = r.offset + len as u64 == file.length;

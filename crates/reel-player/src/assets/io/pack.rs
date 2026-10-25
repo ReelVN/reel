@@ -1,26 +1,32 @@
 use super::{ReadFile, directory, failure, io_error};
 use reel_core::{
+    budget::{BudgetCategory, BudgetPool, BudgetTicket},
     identity::{AssetSource, ContentVersion},
     io::{IoError, IoErrorCode},
 };
-use reel_package::archive::ArchiveIndex;
+use reel_package::archive::{self, ArchiveIndex, EntryStorage, ReadScratch};
 use std::{collections::BTreeMap, fs::File, path::PathBuf, sync::atomic::AtomicBool};
 
 struct Entry {
     archive: usize,
-    offset: u64,
-    length: u64,
-    version: ContentVersion,
+    descriptor: archive::Entry,
+}
+struct Workspace {
+    scratch: ReadScratch,
+    _ticket: BudgetTicket,
 }
 pub(super) struct Files {
     archives: Vec<File>,
     entries: BTreeMap<String, Entry>,
     overlay: Option<directory::Files>,
+    workspace: Option<Workspace>,
 }
 impl Files {
     pub(super) fn open(
         paths: impl IntoIterator<Item = PathBuf>,
         overlay: Option<PathBuf>,
+        target: String,
+        temporary: &BudgetPool,
         cache_capacity: usize,
     ) -> Result<Self, IoError> {
         let mut archives = Vec::new();
@@ -34,18 +40,37 @@ impl Files {
                     entry.path.clone(),
                     Entry {
                         archive: archives.len(),
-                        offset: entry.offset,
-                        length: entry.length,
-                        version: ContentVersion(entry.version),
+                        descriptor: entry.clone(),
                     },
                 );
             }
             archives.push(file);
         }
+        let overlay = overlay
+            .map(|root| directory::Files::for_target(root, cache_capacity, target))
+            .transpose()?;
+        let workspace = if entries
+            .values()
+            .any(|e| matches!(e.descriptor.storage, EntryStorage::Blocks { .. }))
+        {
+            let ticket = temporary
+                .reserve(archive::SCRATCH_BYTES as u64)
+                .map_err(|e| failure(format!("archive workspace: {}", e.message)))?;
+            if ticket.category() != BudgetCategory::Temporary {
+                return Err(failure("archive workspace requires a temporary budget"));
+            }
+            Some(Workspace {
+                scratch: ReadScratch::new(),
+                _ticket: ticket,
+            })
+        } else {
+            None
+        };
         Ok(Self {
             archives,
             entries,
-            overlay: overlay.map(|root| directory::Files::new(root, cache_capacity)),
+            overlay,
+            workspace,
         })
     }
     pub(super) fn entry(
@@ -64,12 +89,20 @@ impl Files {
             code: IoErrorCode::NotFound,
             message: format!("asset not found in mounted archives: {}", source.key.0),
         })?;
+        let descriptor = &entry.descriptor;
+        let compressed = match descriptor.storage {
+            EntryStorage::Raw => None,
+            EntryStorage::Blocks { .. } => {
+                Some((descriptor, &mut self.workspace.as_mut().unwrap().scratch))
+            }
+        };
         Ok(ReadFile {
             file: &mut self.archives[entry.archive],
-            offset: entry.offset,
-            length: entry.length,
-            version: entry.version,
+            offset: descriptor.offset,
+            length: descriptor.length,
+            version: ContentVersion(descriptor.version),
             stamp: None,
+            compressed,
         })
     }
 }
