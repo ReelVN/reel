@@ -65,6 +65,55 @@ fn value(vm: &mut Vm, function: bc::FunctionId) -> Value {
 }
 
 #[test]
+fn completed_signatures_share_across_modules_without_merging_functions_or_defaults() {
+    let compilation = compile(&[
+        (
+            "shared",
+            "pub fn identity(value:int)->int{value} pub fn first(value:int=1)->int{value}",
+        ),
+        (
+            "main",
+            "use shared::{identity,first}; fn same(value:int)->int{value+1} fn renamed(other:int)->int{other} fn second(value:int=2)->int{value} fn rest(...values){values.len()} fn main(){identity(value:36)+same(value:0)+renamed(other:1)+first()+second()+rest(0)}",
+        ),
+    ]);
+    let p = compilation.program.package();
+    let function = |name: &str| {
+        p.functions
+            .iter()
+            .enumerate()
+            .find(|(_, f)| p.symbols[f.name.index()] == name)
+            .unwrap()
+    };
+    let (identity, identity_fn) = function("identity");
+    let (same, same_fn) = function("same");
+    assert_ne!(identity, same);
+    assert_eq!(identity_fn.signature, same_fn.signature);
+    assert_ne!(identity_fn.signature, function("renamed").1.signature);
+    assert_ne!(
+        function("first").1.signature,
+        function("second").1.signature
+    );
+    assert!(
+        p.signatures
+            .iter()
+            .enumerate()
+            .all(|(index, signature)| !p.signatures[..index].contains(signature))
+    );
+    let entry = bc::FunctionId(function("main").0 as u32);
+    let encoded = bc::encode(p, bc::Limits::default()).unwrap();
+    let program = bc::VerifiedProgram::decode(&encoded, bc::Limits::default()).unwrap();
+    let mut vm = Vm::load(
+        program,
+        bc::RuntimeSupport::default(),
+        VmLimits::default(),
+        SessionEpoch(1),
+    )
+    .unwrap();
+    value(&mut vm, compilation.initializer);
+    assert_eq!(value(&mut vm, entry).as_int(), Some(42));
+}
+
+#[test]
 fn repeated_text_is_shared_across_modules_and_defaults_after_roundtrip() {
     let compilation = compile(&[
         ("shared", r#"pub fn word(value = "共同文本") { value }"#),
