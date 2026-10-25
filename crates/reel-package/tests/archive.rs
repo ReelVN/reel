@@ -35,7 +35,7 @@ fn resource_and_text_archives_share_streaming_format_and_exact_content_versions(
             entry
                 .read_range(&mut input, 0, &mut payload, &mut scratch, || false)
                 .unwrap();
-            let expected = match entry.path.as_str() {
+            let expected = match entry.path.as_ref() {
                 "video/intro.mp4" => &b"video payload"[..],
                 "locales/zh-CN/第一章.ftl" => &b"chapter = hello"[..],
                 "empty" => &b""[..],
