@@ -228,7 +228,12 @@ fn run_library(
     options.canvas_size = Some([960, 544]);
     let launcher = crate::launcher::Launcher::new(
         game_root,
-        crate::assets::Assets::directory(options.assets.clone()),
+        crate::assets::Assets::packaged(
+            options.assets.clone(),
+            vec!["app0:/launcher.rpk".into()],
+            None,
+        )
+        .map_err(|error| error.message)?,
         error,
         {
             let notify = native.host.wake_callback();

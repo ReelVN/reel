@@ -3428,6 +3428,7 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "png",
+ "reel-package",
  "serde_json",
 ]
 
