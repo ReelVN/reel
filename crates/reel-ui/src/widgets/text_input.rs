@@ -1133,6 +1133,8 @@ impl Widget for TextInput {
             }
             return;
         }
+        let reopen_ime = ctx.is_focus_target()
+            && matches!(event, PointerEvent::Down(e) if e.button.is_none_or(|b| b == PointerButton::Primary));
         let (position, extend) = match event {
             PointerEvent::Down(e) if e.button.is_none_or(|b| b == PointerButton::Primary) => {
                 ctx.request_focus();
@@ -1159,7 +1161,7 @@ impl Widget for TextInput {
         }
         self.keep_caret_visible();
         self.publish_selection(ctx, before);
-        if composing {
+        if composing || reopen_ime {
             ctx.reset_ime();
         }
         ctx.set_ime_area(self.ime_area());

@@ -47,6 +47,7 @@ struct Signals {
     exit: Cell<bool>,
     visible: Cell<bool>,
     title: RefCell<String>,
+    text: super::vita_text::Signals,
 }
 /// Fixed-display host. Native controller, wake and power objects stay in the
 /// platform adapter; author code sees the ordinary stage and window capabilities.
@@ -164,6 +165,12 @@ impl Host for VitaHost {
             }
             RenderRootSignal::SetTitle(title) => {
                 *signals.title.borrow_mut() = title;
+            }
+            signal @ (RenderRootSignal::StartIme
+            | RenderRootSignal::EndIme
+            | RenderRootSignal::ImeMoved(..)) => {
+                signals.text.receive(&signal);
+                let _ = wake.signal();
             }
             _ => {}
         }
@@ -470,6 +477,7 @@ impl NativeLoop {
         // Carry held input through the boundary until release. A launch-confirm press
         // must not become a second confirmation in the newly mounted game.
         let mut input = input::Input::default();
+        let mut text = super::vita_text::TextInput::<native::ime::Keyboard>::default();
         let mut suspended = false;
         let mut closing = false;
         #[cfg(feature = "profiling")]
@@ -484,11 +492,13 @@ impl NativeLoop {
                     match event.kind {
                         PowerKind::Suspending if !suspended => {
                             input.cancel(player)?;
+                            text.cancel(|event| player.text_event(event).map(|_| ()))?;
                             player.suspend(host)?;
                             suspended = true;
                         }
                         PowerKind::Resumed if suspended => {
                             player.resume(host)?;
+                            player.text_event(reel_ui::core::TextEvent::WindowFocusChange(true))?;
                             suspended = false;
                         }
                         _ => {}
@@ -497,6 +507,7 @@ impl NativeLoop {
                 }
                 if host.signals.exit.get() || player.exit_requested() {
                     if !closing {
+                        text.cancel(|event| player.text_event(event).map(|_| ()))?;
                         player.close()?;
                         closing = true;
                     }
@@ -519,13 +530,27 @@ impl NativeLoop {
                 let probe_started = std::time::Instant::now();
                 let poll_deadline = MonoTime(now.0.saturating_add(16_000_000));
                 let sample = controls.sample()?;
-                if return_to_library && input.return_to_library(&sample) {
+                let keyboard_was_active = text.active();
+                if !keyboard_was_active && return_to_library && input.return_to_library(&sample) {
                     host.signals.exit.set(true);
                     continue;
                 }
                 {
                     let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Input);
-                    input.sample(sample, now, host.size, player)?;
+                    if !keyboard_was_active {
+                        input.sample(sample, now, host.size, player)?;
+                    }
+                    text.update(&host.signals.text, |event| {
+                        player.text_event(event).map(|_| ())
+                    })?;
+                    if keyboard_was_active || text.active() {
+                        if !keyboard_was_active {
+                            input.cancel(player)?;
+                        }
+                        // Native keyboard owns held controls until their release;
+                        // closing it cannot leak its confirm/touch into the story.
+                        input.suppress(sample);
+                    }
                 }
                 player.poll_completions()?;
                 player.tick(host)?;
@@ -558,6 +583,7 @@ impl NativeLoop {
         // Always close shared services before the graphics context and native wake
         // registrations disappear, including error exits from input or rendering.
         host.event_time = None;
+        let keyboard_cleanup = text.cancel(|event| player.text_event(event).map(|_| ()));
         let cleanup = (|| -> Result<(), Error> {
             if !closing {
                 player.close()?;
@@ -570,7 +596,7 @@ impl NativeLoop {
             Ok(())
         })();
         // Preserve the event/render failure when closing also reports an error.
-        let result = result.and(cleanup);
+        let result = result.and(keyboard_cleanup).and(cleanup);
         #[cfg(feature = "profiling")]
         {
             let outcome = result
