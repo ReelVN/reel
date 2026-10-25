@@ -38,6 +38,9 @@ pub struct MediaOptions {
     pub queue_bytes: u64,
     #[cfg(feature = "video")]
     pub video: video::VideoLimits,
+    /// Worker-owned video decoding selected by the platform assembly.
+    #[cfg(feature = "video")]
+    pub video_decoder: Option<Arc<dyn reel_media::video::VideoDecoderFactory>>,
 }
 impl Default for MediaOptions {
     fn default() -> Self {
@@ -50,6 +53,17 @@ impl Default for MediaOptions {
             queue_bytes: 64 << 20,
             #[cfg(feature = "video")]
             video: video::VideoLimits::default(),
+            #[cfg(feature = "video")]
+            video_decoder: {
+                #[cfg(feature = "video-software")]
+                {
+                    Some(Arc::new(reel_media::video::SoftwareVideoDecoderFactory))
+                }
+                #[cfg(not(feature = "video-software"))]
+                {
+                    None
+                }
+            },
         }
     }
 }
@@ -1095,5 +1109,5 @@ mod tests;
 #[cfg(feature = "video")]
 pub mod video;
 
-#[cfg(all(test, feature = "video"))]
+#[cfg(all(test, feature = "video-software"))]
 mod video_tests;

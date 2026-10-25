@@ -137,6 +137,67 @@ fn root_main_is_not_a_project_and_check_validates_the_fixed_main() {
 }
 
 #[test]
+fn resource_preparation_and_export_share_rules_and_report_content_cache_hits() {
+    let temporary = temporary();
+    let root = temporary.path();
+    write(root, "src/main.aside", "fn main() { 1 }");
+    fs::create_dir_all(root.join("resources/ui")).unwrap();
+    image::RgbaImage::from_pixel(13, 7, image::Rgba([80, 120, 160, 255]))
+        .save(root.join("resources/ui/panel.png"))
+        .unwrap();
+    write(
+        root,
+        "resources.toml",
+        "[[targets.vita]]\nmatch = 'ui/**'\nconvert = 'texture'\nscale = 0.5\nformat = 'rgba8'\n",
+    );
+    let first = success(command(
+        root,
+        &[
+            "prepare-resources",
+            "--resource-target",
+            "vita",
+            "--format",
+            "json",
+        ],
+    ));
+    assert_eq!(first["status"], "prepared");
+    assert_eq!(first["report"]["converted"], 1);
+    let next = success(command(
+        root,
+        &[
+            "prepare-resources",
+            "--resource-target",
+            "vita",
+            "--memory-bytes",
+            "1",
+            "--format",
+            "json",
+        ],
+    ));
+    assert_eq!(next["report"]["converted"], 0);
+    assert_eq!(next["report"]["reused"], 1);
+    success(command(
+        root,
+        &["export", "--resource-target", "vita", "--format", "json"],
+    ));
+    let output = fs::read(root.join("build/export/debug/resources/ui/panel.png")).unwrap();
+    let (header, _) = reel_core::texture::TextureHeader::parse(&output).unwrap();
+    assert_eq!(header.descriptor().layout.logical_size, [13, 7]);
+    assert_eq!(header.descriptor().layout.content_size, [6, 3]);
+    assert!(
+        fs::read(root.join("resources/ui/panel.png"))
+            .unwrap()
+            .starts_with(b"\x89PNG")
+    );
+    assert_eq!(
+        command(root, &["prepare-resources", "--memory-bytes", "0"])
+            .status
+            .code(),
+        Some(2)
+    );
+}
+
+#[test]
 fn default_builds_replace_after_success_and_explicit_outputs_keep_overwrite_choice() {
     let temporary = temporary();
     let root = temporary.path();

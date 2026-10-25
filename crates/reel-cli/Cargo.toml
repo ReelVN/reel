@@ -36,6 +36,8 @@ lsp-types = "=0.97.0"
 aside-vm = { path = "../aside-vm" }
 codespan-reporting = "=0.13.1"
 serde_json = "=1.0.154"
+toml = "=1.1.6"
+globset = "=0.4.20"
 reel-package = { path = "../reel-package" }
 reel-engine = { path = "../reel-engine" }
 reel-core = { path = "../reel-core" }
@@ -44,6 +46,7 @@ rgbcx = "=0.1.2"
 bc-crunch = "=0.1.2"
 reel-player = { path = "../reel-player" }
 reel-storage = { path = "../reel-storage" }
+reel-media = { path = "../reel-media", default-features = false, features = ["encode"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "=0.2.190"

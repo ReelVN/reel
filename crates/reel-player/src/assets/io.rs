@@ -11,6 +11,7 @@ use reel_core::{
     wake::WakeSignal,
 };
 use std::{
+    collections::BTreeMap,
     fs::File,
     io::{Read, Seek, SeekFrom},
     path::PathBuf,
@@ -51,6 +52,22 @@ impl DirectoryIo {
         let files = directory::Files::for_target(root, limits.max_requests as usize, target)?;
         Ok(Self(FileIo::new(Files::Directory(files), limits, wake)))
     }
+    /// Reads logical resources from selected physical files, retaining ordinary
+    /// range IO, content identity and bounded descriptor caching.
+    pub fn selected(
+        files: BTreeMap<String, PathBuf>,
+        limits: QueueLimits,
+        wake: WakeSignal,
+    ) -> Self {
+        Self(FileIo::new(
+            Files::Directory(directory::Files::selected(
+                files,
+                limits.max_requests as usize,
+            )),
+            limits,
+            wake,
+        ))
+    }
 }
 impl PackIo {
     /// Mounts only archive indexes. An optional development overlay takes precedence;
@@ -65,13 +82,23 @@ impl PackIo {
         limits: QueueLimits,
         wake: WakeSignal,
     ) -> Result<Self, IoError> {
-        let files = pack::Files::open(
-            paths,
-            overlay,
-            target,
-            temporary,
-            limits.max_requests as usize,
-        )?;
+        let overlay = overlay
+            .map(|root| directory::Files::for_target(root, limits.max_requests as usize, target))
+            .transpose()?;
+        let files = pack::Files::open(paths, overlay, temporary)?;
+        Ok(Self(FileIo::new(Files::Pack(files), limits, wake)))
+    }
+    /// Mounts archives beneath a logical-to-physical resource selection. Archive
+    /// entries supply resources absent from the selected file map.
+    pub fn selected(
+        paths: impl IntoIterator<Item = PathBuf>,
+        selected: BTreeMap<String, PathBuf>,
+        temporary: &BudgetPool,
+        limits: QueueLimits,
+        wake: WakeSignal,
+    ) -> Result<Self, IoError> {
+        let overlay = directory::Files::selected(selected, limits.max_requests as usize);
+        let files = pack::Files::open(paths, Some(overlay), temporary)?;
         Ok(Self(FileIo::new(Files::Pack(files), limits, wake)))
     }
 }

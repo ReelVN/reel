@@ -1,12 +1,16 @@
 //! Offline image conversion into portable linear-premultiplied texture blocks.
-use image::{ColorType, DynamicImage, ImageReader, RgbaImage, imageops, metadata::Cicp};
+use image::{
+    ColorType, DynamicImage, ImageDecoder, ImageReader, RgbaImage, imageops, metadata::Cicp,
+};
+use reel_core::budget::{BudgetCategory, BudgetPool, QueueLimits};
 use reel_core::texture::{
     ColorEncoding, TextureCodec, TextureDescriptor, TextureFormat, TextureHeader, TextureLayout,
 };
 use std::path::Path;
 
 /// `Auto` uses BC1 for opaque images and BC3 for images with transparency.
-#[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
+#[derive(Clone, Copy, Debug, Default, clap::ValueEnum, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Format {
     #[default]
     Auto,
@@ -31,6 +35,35 @@ pub struct Options {
 /// BC blocks remain compressed at runtime. An additional lossless BC envelope is
 /// used only when it reduces file size. Existing output files are preserved.
 pub fn prepare(source: &Path, output: &Path, options: Options) -> Result<TextureHeader, String> {
+    prepare_bounded(
+        source,
+        output,
+        options,
+        crate::resource_conversion::MEMORY_BYTES,
+    )
+    .map(|(header, _)| header)
+}
+
+/// Prepare artwork within an explicit pixel and codec workspace reservation.
+/// Returns the header and reserved peak bytes. The estimate covers decoded
+/// pixels, linear conversion, separable resize, padded RGBA and BC encoding;
+/// image decoder allocations are separately limited within the same estimate.
+pub fn prepare_bounded(
+    source: &Path,
+    output: &Path,
+    options: Options,
+    memory_bytes: u64,
+) -> Result<(TextureHeader, u64), String> {
+    prepare_scaled_bounded(source, output, options, 1., memory_bytes)
+}
+
+pub(crate) fn prepare_scaled_bounded(
+    source: &Path,
+    output: &Path,
+    options: Options,
+    scale: f64,
+    memory_bytes: u64,
+) -> Result<(TextureHeader, u64), String> {
     if output
         .extension()
         .is_none_or(|extension| extension != "reel-texture")
@@ -40,7 +73,7 @@ pub fn prepare(source: &Path, output: &Path, options: Options) -> Result<Texture
     if output.exists() {
         return Err("output already exists; choose a new output path".into());
     }
-    let reader = ImageReader::open(source)
+    let mut reader = ImageReader::open(source)
         .map_err(|e| e.to_string())?
         .with_guessed_format()
         .map_err(|e| e.to_string())?;
@@ -50,8 +83,64 @@ pub fn prepare(source: &Path, output: &Path, options: Options) -> Result<Texture
     ) {
         return Err("original image must be PNG or JPEG".into());
     }
-    let pixels = reader.decode().map_err(|e| e.to_string())?;
-    prepare_decoded(pixels, output, options)
+    let mut limits = image::Limits::no_limits();
+    limits.max_alloc = Some(memory_bytes);
+    reader.limits(limits);
+    let decoder = reader.into_decoder().map_err(|e| e.to_string())?;
+    let dimensions = decoder.dimensions();
+    let logical = [dimensions.0, dimensions.1];
+    let content = scaled_content_size(logical, options.max_size, scale)?;
+    let mut storage = content;
+    for axis in &mut storage {
+        *axis = if options.power_of_two {
+            (*axis)
+                .max(8)
+                .checked_next_power_of_two()
+                .ok_or("stored image dimensions overflow")?
+        } else {
+            axis.checked_add(3)
+                .ok_or("stored image dimensions overflow")?
+                / 4
+                * 4
+        };
+    }
+    // Pinned image 0.25.10: into_rgba32f holds at most the PNG16 source (8 B/px)
+    // and float destination (16 B/px); apply_color_space then works in place.
+    // Triangle resize keeps original float pixels, width*new_height float
+    // intermediate, float result and a growing f32 weight vector (<=8 B/axis).
+    // Quantization holds float content and padded RGBA8. The later BC phase
+    // releases RGBA8 before envelope compression; 16 B/stored px also covers
+    // bc-crunch 0.1.2's doubling encoder/count vectors and rgbcx's BC output.
+    let original_pixels = u128::from(logical[0]) * u128::from(logical[1]);
+    let content_pixels = u128::from(content[0]) * u128::from(content[1]);
+    let intermediate_pixels = u128::from(logical[0]) * u128::from(content[1]);
+    let stored_pixels = u128::from(storage[0]) * u128::from(storage[1]);
+    let cast = original_pixels * 24;
+    let resize = if content != logical {
+        (original_pixels + intermediate_pixels + content_pixels) * 16
+            + u128::from(logical[0].max(logical[1])) * 8
+    } else {
+        0
+    };
+    let quantize = content_pixels * 16 + stored_pixels * 4;
+    let encode = stored_pixels * 16;
+    let workspace = u64::try_from(cast.max(resize).max(quantize).max(encode) + (1 << 20))
+        .map_err(|_| "image workspace size overflow")?;
+    let pool = BudgetPool::new(
+        BudgetCategory::Temporary,
+        QueueLimits {
+            max_requests: 1,
+            max_bytes: memory_bytes,
+        },
+    );
+    let _reservation = pool.reserve(workspace).map_err(|error| {
+        format!(
+            "texture preparation needs {workspace} workspace bytes; limit is {memory_bytes}: {}",
+            error.message
+        )
+    })?;
+    let pixels = DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
+    prepare_decoded_scaled(pixels, output, options, scale).map(|header| (header, workspace))
 }
 
 /// Encode already decoded artwork with the same filtering, block and publication
@@ -61,22 +150,35 @@ pub(crate) fn prepare_decoded(
     output: &Path,
     options: Options,
 ) -> Result<TextureHeader, String> {
-    let (descriptor, pixels) = prepare_pixels(pixels, options)?;
+    prepare_decoded_scaled(pixels, output, options, 1.)
+}
+
+fn prepare_decoded_scaled(
+    pixels: DynamicImage,
+    output: &Path,
+    options: Options,
+    scale: f64,
+) -> Result<TextureHeader, String> {
+    let (descriptor, pixels) = prepare_pixels(pixels, options, scale)?;
     let [width, height] = descriptor.layout.storage_size;
     let blocks = match descriptor.format {
         TextureFormat::Rgba8 => pixels.into_raw(),
-        TextureFormat::Bc1Rgb | TextureFormat::Bc3Rgba => rgbcx::encode(
-            width,
-            height,
-            pixels.as_raw(),
-            if descriptor.format == TextureFormat::Bc1Rgb {
-                rgbcx::Format::Bc1
-            } else {
-                rgbcx::Format::Bc3
-            },
-            rgbcx::Quality::Balanced,
-        )
-        .map_err(|e| e.to_string())?,
+        TextureFormat::Bc1Rgb | TextureFormat::Bc3Rgba => {
+            let blocks = rgbcx::encode(
+                width,
+                height,
+                pixels.as_raw(),
+                if descriptor.format == TextureFormat::Bc1Rgb {
+                    rgbcx::Format::Bc1
+                } else {
+                    rgbcx::Format::Bc3
+                },
+                rgbcx::Quality::Balanced,
+            )
+            .map_err(|e| e.to_string())?;
+            drop(pixels);
+            blocks
+        }
         _ => unreachable!("offline conversion selects RGBA8, BC1 or BC3"),
     };
     let (codec, payload) = if descriptor.format.is_compressed() {
@@ -136,15 +238,29 @@ fn content_size(original: [u32; 2], bounds: Option<[u32; 2]>) -> Result<[u32; 2]
     })
 }
 
+fn scaled_content_size(
+    original: [u32; 2],
+    bounds: Option<[u32; 2]>,
+    scale: f64,
+) -> Result<[u32; 2], String> {
+    if scale < 1. {
+        Ok(original.map(|axis| (f64::from(axis) * scale).floor().max(1.) as u32))
+    } else {
+        content_size(original, bounds)
+    }
+}
+
 fn prepare_pixels(
-    mut original: DynamicImage,
+    original: DynamicImage,
     options: Options,
+    scale: f64,
 ) -> Result<(TextureDescriptor, RgbaImage), String> {
     let logical_size = [original.width(), original.height()];
     if logical_size.contains(&0) {
         return Err("image dimensions must be positive".into());
     }
-    let content_size = content_size(logical_size, options.max_size)?;
+    let content_size = scaled_content_size(logical_size, options.max_size, scale)?;
+    let mut original = DynamicImage::ImageRgba32F(original.into_rgba32f());
     original
         .convert_color_space(Cicp::SRGB_LINEAR, Default::default(), ColorType::Rgba32F)
         .map_err(|e| e.to_string())?;
@@ -229,6 +345,7 @@ mod tests {
                 power_of_two: true,
                 format: Format::Rgba8,
             },
+            1.,
         )
         .unwrap();
         assert_eq!(descriptor.layout.logical_size, [2, 1]);
@@ -240,5 +357,6 @@ mod tests {
             [960, 540]
         );
         assert_eq!(content_size([32, 16], Some([960, 544])).unwrap(), [32, 16]);
+        assert_eq!(scaled_content_size([13, 7], None, 0.5).unwrap(), [6, 3]);
     }
 }

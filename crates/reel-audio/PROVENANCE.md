@@ -14,6 +14,10 @@ PCM retirement are owned by `reel-media`.
 The host reader contract is codec-independent. Shared source timelines, decoder
 factories and the static/window preparation policy are maintained in `reel-media`;
 the Symphonia packet decoder keeps its reservation and cancellation checkpoints.
+Codec construction can be supplied by the media adapter, and Opus seeks include
+the RFC 7845 80 ms pre-roll before publishing audible PCM.
+Packet conversion reuses worker PCM capacity, with growth and old/new storage
+overlap reserved before allocation.
 
 `tests/fixtures/short-tone.mp3` is an original synthetic 660 Hz tone under the
 crate license. Its priming/padding packets exercise zero-frame decode and EOF.

@@ -262,6 +262,14 @@ pub fn export(
             }
         }
     }
+    let resources =
+        crate::resource_conversion::prepare_selected(&loaded.project_root, &target, resources)?
+            .files;
+    if resources.values().any(|path| path.starts_with(&output)) {
+        return Err(io::Error::other(
+            "export output contains a prepared resource input",
+        ));
+    }
     let mut names = BTreeSet::new();
     for name in resources.keys().chain(text.keys()) {
         if !names.insert(name) {

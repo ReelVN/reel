@@ -139,6 +139,28 @@ impl Assets {
             ))
         })
     }
+    /// Uses prepared logical resources directly from their physical files.
+    /// Optional archives supply catalogs and other entries outside the selection.
+    pub fn selected(
+        options: AssetOptions,
+        files: BTreeMap<String, PathBuf>,
+        packages: Option<Vec<PathBuf>>,
+    ) -> Result<Self, IoError> {
+        let limits = options.queue_limits();
+        Self::try_with_adapters(options, |wake, temporary| {
+            let io: Box<dyn AssetIo> = match packages {
+                Some(paths) => Box::new(PackIo::selected(
+                    paths,
+                    files,
+                    temporary,
+                    limits,
+                    wake.clone(),
+                )?),
+                None => Box::new(DirectoryIo::selected(files, limits, wake.clone())),
+            };
+            Ok((io, Box::new(ImageExecutor::new(limits, wake))))
+        })
+    }
     /// Release archives are the sole source unless a loose-file overlay is explicit.
     pub fn packaged(
         options: AssetOptions,

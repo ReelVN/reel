@@ -33,6 +33,32 @@ reel export --release --resource-target vita
 
 这两个命令使用当前平台播放器预览、导出选定素材。开发版复制所选资源，发布版打包为统一逻辑路径。
 
+在项目根添加 `resources.toml`，可以自动生成目标平台的素材副本：
+
+```toml
+[[targets.vita]]
+match = "images/**/*.{png,jpg,jpeg}"
+convert = "texture"
+scale = 0.5
+format = "auto"
+power_of_two = true
+
+[[targets.vita]]
+match = "audio/**/*.{wav,ogg,mp3,flac}"
+convert = "opus"
+bitrate = 96000
+```
+
+规则按顺序取首个匹配，未匹配的文件直接使用原内容；`convert = "copy"` 可保留特定文件。先选取公共素材和平台覆盖，再应用转换。纹理缩放保留原有逻辑尺寸和 `source_rect` 坐标；原脚本中的图片、音频路径继续使用。
+
+```sh
+reel prepare-resources --resource-target vita
+reel dev --resource-target vita
+reel export --release --resource-target vita
+```
+
+`prepare-resources` 提前准备并报告转换结果；`dev`、`run` 和 `export` 也会按配置准备。缓存位于 `build/resources/`，源码、参数或工具变化时更新相关副本。离线转换逐个处理资源；`prepare-resources --memory-bytes` 可指定转换工作区限额。
+
 在项目根运行 `reel fmt` 整理源码，`reel fmt --check` 检查排版。格式化使用 4 空格缩进和 100 字符目标行宽，长调用紧凑排列参数。英文 API 文档由 Rust 声明生成，可在编辑器中悬停或跳转查看。
 
 下文的完整项目包含 `main`；其余片段放在相应函数或组件中，沿用上下文中的变量。提供示例使用的字体和素材后运行。仓库共享素材位于 `examples/assets/`；通过 `--assets` 可另选资源根。
