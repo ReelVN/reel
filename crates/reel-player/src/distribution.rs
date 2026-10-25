@@ -1,5 +1,6 @@
 //! Runtime ASB loading and relocatable resource resolution, shared by platform hosts.
 //! Author project discovery and source compilation belong to the CLI.
+use crate::assets::file::File;
 use aside_vm::bytecode::{self as bc, TextPool};
 use reel_engine::aside::source::CompiledStory;
 use reel_package::{
@@ -8,7 +9,6 @@ use reel_package::{
 };
 use std::{
     collections::BTreeMap,
-    fs::{self, File},
     io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
 };
@@ -111,7 +111,12 @@ pub fn load(path: &Path, project_resources: Option<&Path>) -> io::Result<LoadedD
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."))
         .canonicalize()?;
-    let bytes = fs::read(path)?;
+    let mut file = File::open(path)?;
+    let length = usize::try_from(file.metadata()?.len()).map_err(io::Error::other)?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(length).map_err(io::Error::other)?;
+    file.read_to_end(&mut bytes)?;
+    drop(file);
     let mut package = reel_package::decode(&bytes, Default::default()).map_err(io::Error::other)?;
     // The decoded package owns its fields; release the ASB before loading text.
     drop(bytes);

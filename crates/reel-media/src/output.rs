@@ -30,6 +30,7 @@ struct Telemetry {
     silent_frames: AtomicUsize,
     realtime_denied: AtomicUsize,
     dirty: AtomicBool,
+    notify_failed: AtomicBool,
 }
 impl Telemetry {
     fn new() -> Self {
@@ -38,6 +39,7 @@ impl Telemetry {
             silent_frames: AtomicUsize::new(0),
             realtime_denied: AtomicUsize::new(0),
             dirty: AtomicBool::new(false),
+            notify_failed: AtomicBool::new(false),
         }
     }
     fn reset(&self) {
@@ -61,6 +63,9 @@ impl Shared {
     }
     /// One atomic decides whether this call entered before or after close.
     fn enter(&self) -> Option<CallGuard<'_>> {
+        if self.metrics.notify_failed.load(Ordering::Acquire) {
+            return None;
+        }
         self.gate
             .compare_exchange(0, ACTIVE, Ordering::AcqRel, Ordering::Acquire)
             .ok()
@@ -109,6 +114,7 @@ impl Shared {
     }
     #[cfg(any(
         test,
+        all(feature = "vita-output", target_os = "vita"),
         all(
             feature = "cpal-output",
             any(target_os = "linux", target_os = "windows", target_os = "macos")
@@ -119,6 +125,12 @@ impl Shared {
         self.metrics.dirty.store(true, Ordering::Release);
     }
     fn error(&self) -> Option<AudioError> {
+        if self.metrics.notify_failed.load(Ordering::Acquire) {
+            return Some(AudioError::new(
+                AudioErrorKind::DeviceFailure,
+                "audio notification worker failed; rebuild output",
+            ));
+        }
         match self.fault.load(Ordering::Acquire) {
             1 => Some(AudioError::new(
                 AudioErrorKind::DeviceFailure,
@@ -145,25 +157,38 @@ impl Drop for CallGuard<'_> {
 
 struct Notifier {
     shutdown: Arc<AtomicBool>,
+    available: Arc<crate::worker_event::WorkerEvent>,
     thread: Option<JoinHandle<()>>,
 }
 impl Notifier {
     fn new(metrics: Arc<Telemetry>, wake: WakeSignal) -> Result<Self, AudioError> {
         let shutdown = Arc::new(AtomicBool::new(false));
         let quitting = shutdown.clone();
-        let thread = thread::Builder::new()
-            .name("reel-audio-notify".into())
+        let available = Arc::new(
+            crate::worker_event::WorkerEvent::new()
+                .map_err(|error| AudioError::new(AudioErrorKind::Unavailable, error))?,
+        );
+        let event = available.clone();
+        let builder = thread::Builder::new().name("reel-audio-notify".into());
+        #[cfg(target_os = "vita")]
+        let builder = builder.stack_size(128 << 10);
+        let thread = builder
             .spawn(move || {
                 while !quitting.load(Ordering::Acquire) {
                     if metrics.dirty.swap(false, Ordering::AcqRel) {
                         wake.wake();
                     }
-                    thread::park_timeout(Duration::from_millis(2));
+                    if event.wait(Some(Duration::from_millis(2))).is_err() {
+                        metrics.notify_failed.store(true, Ordering::Release);
+                        wake.wake();
+                        break;
+                    }
                 }
             })
             .map_err(|e| AudioError::new(AudioErrorKind::Unavailable, e.to_string()))?;
         Ok(Self {
             shutdown,
+            available,
             thread: Some(thread),
         })
     }
@@ -172,7 +197,7 @@ impl Drop for Notifier {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Release);
         if let Some(t) = self.thread.take() {
-            t.thread().unpark();
+            let _ = self.available.signal();
             let _ = t.join();
         }
     }
@@ -305,6 +330,9 @@ pub(crate) trait Driver {
     ) -> Result<Self::Stream, AudioError>;
     fn play(&mut self, stream: &Self::Stream) -> Result<(), AudioError>;
     fn pause(&mut self, stream: &Self::Stream) -> Result<(), AudioError>;
+    /// Finish native release after fill entry has closed. Failure retains any
+    /// native storage still borrowed by the device in the driver.
+    fn close(&mut self, stream: Self::Stream) -> Result<(), AudioError>;
     fn verify(&self, format: &AudioFormat) -> Result<(), AudioError>;
 }
 
@@ -341,7 +369,13 @@ impl<D: Driver> DrivenOutput<D> {
         })
     }
     fn current_epoch(&self) -> OutputEpoch {
-        OutputEpoch(self.epoch.0 + u64::from(self.shared.fault.load(Ordering::Acquire) != 0))
+        OutputEpoch(
+            self.epoch.0
+                + u64::from(
+                    self.shared.fault.load(Ordering::Acquire) != 0
+                        || self.shared.metrics.notify_failed.load(Ordering::Acquire),
+                ),
+        )
     }
     fn reject(fill: PcmFill, error: AudioError) -> Rejected<PcmFill> {
         let code = match error.kind {
@@ -369,6 +403,9 @@ impl<D: Driver> AudioOutput for DrivenOutput<D> {
         self.driver.capabilities()
     }
     fn configure(&mut self, request: AudioRequest) -> Result<AudioFormat, AudioError> {
+        if self.shared.metrics.notify_failed.load(Ordering::Acquire) {
+            return Err(self.shared.error().expect("notification worker failed"));
+        }
         if self.state != AudioState::Stopped {
             return Err(AudioError::new(
                 AudioErrorKind::Busy,
@@ -390,6 +427,12 @@ impl<D: Driver> AudioOutput for DrivenOutput<D> {
         Ok(format)
     }
     fn start(&mut self, fill: PcmFill) -> Result<(), Rejected<PcmFill>> {
+        if self.shared.metrics.notify_failed.load(Ordering::Acquire) {
+            return Err(Self::reject(
+                fill,
+                self.shared.error().expect("notification worker failed"),
+            ));
+        }
         if self.state != AudioState::Stopped {
             return Err(Self::reject(
                 fill,
@@ -435,7 +478,7 @@ impl<D: Driver> AudioOutput for DrivenOutput<D> {
             Err(e) => return Err(Self::reject(fill, e)),
         };
         if let Err(e) = self.driver.play(&stream) {
-            drop(stream);
+            let _ = self.driver.close(stream);
             return Err(Self::reject(fill, e));
         }
         // Native play success is acceptance. A late native error is now status.
@@ -548,10 +591,13 @@ impl<D: Driver> AudioOutput for DrivenOutput<D> {
             .stream
             .as_ref()
             .and_then(|s| self.driver.pause(s).err());
-        drop(self.stream.take());
+        let close_error = self
+            .stream
+            .take()
+            .and_then(|stream| self.driver.close(stream).err());
         self.state = AudioState::Stopped;
         self.wake.wake();
-        if let Some(e) = prior_error.or(pause_error) {
+        if let Some(e) = prior_error.or(pause_error).or(close_error) {
             self.control_error = Some(e.clone());
             Err(e)
         } else {
@@ -565,7 +611,9 @@ impl<D: Driver> Drop for DrivenOutput<D> {
         if let Some(slot) = self.fill_slot.take() {
             slot.discard();
         }
-        drop(self.stream.take());
+        if let Some(stream) = self.stream.take() {
+            let _ = self.driver.close(stream);
+        }
     }
 }
 
@@ -574,6 +622,10 @@ pub(crate) struct OfflineDriver {
 }
 impl Driver for OfflineDriver {
     type Stream = Callback;
+    fn close(&mut self, stream: Self::Stream) -> Result<(), AudioError> {
+        drop(stream);
+        Ok(())
+    }
     fn capabilities(&self) -> AudioCaps {
         AudioCaps {
             clock: AudioClockCapability::Estimated,
@@ -686,9 +738,12 @@ macro_rules! output_methods {
         }
     };
 }
-#[cfg(all(
-    feature = "cpal-output",
-    any(target_os = "linux", target_os = "windows", target_os = "macos")
+#[cfg(any(
+    all(feature = "vita-output", target_os = "vita"),
+    all(
+        feature = "cpal-output",
+        any(target_os = "linux", target_os = "windows", target_os = "macos")
+    )
 ))]
 pub(crate) use output_methods;
 impl AudioOutput for OfflineOutput {

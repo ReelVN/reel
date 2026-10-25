@@ -73,57 +73,8 @@ pub struct Renderer {
     glyphs: super::glyph_cache::GlyphCache,
     targets: super::target_cache::TargetCache,
 }
-pub(super) struct Budgets {
-    pub(super) targets: BudgetPool,
-    pub(super) resources: BudgetPool,
-    pub(super) transient: BudgetPool,
-}
-pub(super) struct Reservation {
-    pub(super) _shared: Option<BudgetTicket>,
-    pub(super) _local: BudgetTicket,
-}
-impl Budgets {
-    pub(super) fn new(limits: super::GpuLimits) -> Self {
-        let pool = |category, max_bytes| {
-            BudgetPool::new(
-                category,
-                QueueLimits {
-                    max_requests: u32::MAX,
-                    max_bytes,
-                },
-            )
-        };
-        Self {
-            targets: pool(BudgetCategory::Offscreen, limits.target_bytes),
-            resources: pool(BudgetCategory::GpuResource, limits.resource_bytes),
-            transient: pool(BudgetCategory::Temporary, limits.transient_bytes),
-        }
-    }
-}
-pub(super) fn reserve(
-    pool: &BudgetPool,
-    local: &BudgetPool,
-    bytes: u64,
-    limit: u64,
-    domain: &'static str,
-) -> Result<Reservation, GpuError> {
-    // Test the preparation's own live demand first. Other preparations cannot
-    // hide a request which already exceeds this preparation's own quota.
-    let local = local.reserve(bytes).map_err(|_| GpuError::Budget {
-        domain,
-        requested: bytes,
-        available: limit.saturating_sub(local.usage().bytes),
-    })?;
-    let shared = pool.reserve(bytes).map_err(|_| GpuError::Pressure {
-        domain,
-        requested: bytes,
-        available: limit.saturating_sub(pool.usage().bytes),
-    })?;
-    Ok(Reservation {
-        _shared: Some(shared),
-        _local: local,
-    })
-}
+pub(super) use crate::common::renderer::{Budgets, Reservation, reserve};
+
 impl Renderer {
     pub fn gpu(&self) -> &Gpu {
         &self.gpu
@@ -297,8 +248,7 @@ impl Renderer {
             targets = targets.max(1 + plan(second)?).max(3);
         }
         let quality = self.gpu.quality_for_targets(size, targets)?;
-        let pipelines = self.pipelines.get(&self.gpu, quality)?;
-        let required = super::image_plan::collect(
+        let plan = super::image_plan::collect(
             std::iter::once(frame).chain(second.map(|(frame, _)| frame)),
             self.gpu.device.limits().max_texture_dimension_2d,
             capture,
@@ -312,21 +262,40 @@ impl Renderer {
                 )?);
                 Ok(())
             },
-            |program| {
-                pipelines
-                    .masks
-                    .get(&self.gpu, quality, program, &self.budgets.resources)?;
-                Ok(())
-            },
         )?;
+        for mask in &plan.masks {
+            if mask.definition.program.sources().len() + 3
+                > self
+                    .gpu
+                    .device
+                    .limits()
+                    .max_sampled_textures_per_shader_stage as usize
+            {
+                return Err(GpuError::Unsupported {
+                    at: mask.at,
+                    record: "mask exceeds device sampled texture capacity",
+                });
+            }
+        }
+        // Image admission checks residency and the minimum staging overlap
+        // before it creates an encoder, texture or mask pipeline.
         let images = self.images.prepare(
             &self.gpu,
-            &required,
+            &plan.images,
             &self.budgets,
             &budget_scope,
             &self.admission,
             &self.glyphs,
         )?;
+        let pipelines = self.pipelines.get(&self.gpu, quality)?;
+        for mask in plan.masks {
+            pipelines.masks.get(
+                &self.gpu,
+                quality,
+                &mask.definition.program,
+                &self.budgets.resources,
+            )?;
+        }
         for image in images.values() {
             tickets.push(Reservation {
                 _shared: None,

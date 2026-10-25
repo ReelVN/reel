@@ -1,6 +1,13 @@
 //! Same-filesystem publication shared by package builds and player storage.
 //! Files are synced before publication, and failed writes preserve the destination.
+#[cfg(not(target_os = "vita"))]
 mod desktop;
+#[cfg(any(target_os = "vita", test))]
+mod generation;
+#[cfg(not(target_os = "vita"))]
+use desktop as platform;
+#[cfg(target_os = "vita")]
+use generation as platform;
 use std::{
     fs, io,
     path::{Path, PathBuf},
@@ -20,25 +27,26 @@ pub fn publish(
     overwrite: bool,
     fill: impl FnOnce(&mut dyn io::Write) -> io::Result<()>,
 ) -> io::Result<Published> {
-    desktop::publish(target, overwrite, fill)
+    platform::publish(target, overwrite, fill)
 }
 
 /// Open the published contents as a standard file.
 pub fn open(target: &Path) -> io::Result<fs::File> {
-    desktop::open(target)
+    platform::open(target)
 }
 
 /// Remove the logical file. Warnings describe failures after deletion committed;
 /// an error means the logical file was not removed.
 pub fn remove(target: &Path) -> io::Result<Published> {
-    desktop::remove(target)
+    platform::remove(target)
 }
 
-/// Enumerate regular files in a directory, excluding subdirectories and staging.
+/// Enumerate published logical files, excluding directories and staging.
 pub fn entries(directory: &Path) -> io::Result<impl Iterator<Item = io::Result<PathBuf>> + use<>> {
-    desktop::entries(directory)
+    platform::entries(directory)
 }
 
+#[cfg(not(target_os = "vita"))]
 fn destination(target: &Path) -> io::Result<PathBuf> {
     // Resolve the existing directory before constructing either rename path.
     // Windows app-data virtualization may redirect file creation to another
@@ -99,6 +107,12 @@ impl Drop for Staging {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
+    fn read(path: &Path) -> io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        open(path)?.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
     fn directory() -> Staging {
         let root =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/reel-artifacts/storage-tests");
@@ -109,13 +123,13 @@ mod tests {
     fn failed_write_preserves_old_file_and_cleans_own_staging() {
         let dir = directory();
         let target = dir.path.join("old.asb");
-        fs::write(&target, b"original").unwrap();
+        publish(&target, false, |file| file.write_all(b"original")).unwrap();
         let result = publish(&target, true, |file| {
             file.write_all(b"partial")?;
             Err(io::Error::other("injected write failure"))
         });
         assert!(result.is_err());
-        assert_eq!(fs::read(&target).unwrap(), b"original");
+        assert_eq!(read(&target).unwrap(), b"original");
         assert_eq!(fs::read_dir(&dir.path).unwrap().count(), 1);
     }
     #[test]
@@ -124,25 +138,25 @@ mod tests {
         let target = dir.path.join("race.asb");
         let result = publish(&target, false, |file| {
             file.write_all(b"candidate")?;
-            fs::write(&target, b"other writer")
+            publish(&target, false, |file| file.write_all(b"other writer")).map(|_| ())
         });
         assert_eq!(result.err().unwrap().kind(), io::ErrorKind::AlreadyExists);
-        assert_eq!(fs::read(&target).unwrap(), b"other writer");
+        assert_eq!(read(&target).unwrap(), b"other writer");
         assert_eq!(fs::read_dir(&dir.path).unwrap().count(), 1);
     }
     #[test]
     fn overwrite_replaces_only_after_complete_write() {
         for dir in [directory(), Staging::new(&std::env::temp_dir()).unwrap()] {
             let target = dir.path.join("replace.asb");
-            fs::write(&target, b"old").unwrap();
+            publish(&target, false, |file| file.write_all(b"old")).unwrap();
             let result = publish(&target, true, |file| {
                 file.write_all(b"new")?;
-                assert_eq!(fs::read(&target)?, b"old");
+                assert_eq!(read(&target)?, b"old");
                 Ok(())
             })
             .unwrap();
             assert!(result.cleanup_warning.is_none());
-            assert_eq!(fs::read(&target).unwrap(), b"new");
+            assert_eq!(read(&target).unwrap(), b"new");
             assert_eq!(fs::read_dir(&dir.path).unwrap().count(), 1);
         }
     }

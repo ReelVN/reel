@@ -1,4 +1,6 @@
 //! Platform implementations selected by target and enabled devices.
+#[cfg(all(feature = "vita", target_os = "vita"))]
+pub mod vita;
 #[cfg(feature = "winit")]
 pub mod winit;
 

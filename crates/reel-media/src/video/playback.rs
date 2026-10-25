@@ -1,5 +1,6 @@
 //! Bounded worker playback and mixer-owned PCM consumption.
 use super::{DecodedPacket, MediaRead, VideoDecoderFactory, VideoFrame, VideoInfo};
+use crate::worker_event::WorkerEvent;
 use reel_audio::{
     Frame,
     info::Info,
@@ -12,7 +13,7 @@ use reel_core::{
 use std::{
     collections::VecDeque,
     sync::{
-        Arc, Condvar, Mutex,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, Ordering},
     },
     thread::{self, JoinHandle},
@@ -118,9 +119,22 @@ struct State {
 }
 struct Shared {
     state: Mutex<State>,
-    available: Condvar,
+    available: WorkerEvent,
     transport: Arc<Transport>,
     wake: WakeSignal,
+}
+impl Shared {
+    fn signal(&self) {
+        if let Err(error) = self.available.signal() {
+            self.transport.cancelled.store(true, Ordering::Release);
+            self.state
+                .lock()
+                .unwrap()
+                .terminal
+                .get_or_insert(VideoTerminal::Failed(error));
+            self.wake.wake();
+        }
+    }
 }
 #[derive(Clone, Copy)]
 struct Sample {
@@ -267,7 +281,7 @@ impl VideoPlayback {
                 eof: false,
                 terminal: None,
             }),
-            available: Condvar::new(),
+            available: WorkerEvent::new()?,
             transport: Arc::new(Transport {
                 paused: AtomicBool::new(options.paused),
                 cancelled: Arc::new(AtomicBool::new(false)),
@@ -279,8 +293,10 @@ impl VideoPlayback {
             wake,
         });
         let background = shared.clone();
-        let worker = thread::Builder::new()
-            .name("reel-video-decode".into())
+        let builder = thread::Builder::new().name("reel-video-decode".into());
+        #[cfg(target_os = "vita")]
+        let builder = builder.stack_size(512 << 10);
+        let worker = builder
             .spawn(move || {
                 let result = decode(source, options, budget, &background, decoder.as_ref());
                 let mut state = background.state.lock().unwrap();
@@ -339,7 +355,7 @@ impl VideoPlayback {
             .transport
             .paused
             .store(paused, Ordering::Release);
-        self.shared.available.notify_all();
+        self.shared.signal();
     }
     pub fn tick(&mut self, elapsed: Duration) {
         let transport = &self.shared.transport;
@@ -369,7 +385,7 @@ impl VideoPlayback {
             state.terminal = Some(VideoTerminal::Completed);
         }
         drop(state);
-        self.shared.available.notify_one();
+        self.shared.signal();
         self.reap();
     }
     pub fn take_frame(&mut self) -> Option<VideoFrameLease> {
@@ -384,7 +400,7 @@ impl VideoPlayback {
         }
         drop(state);
         if frame.is_some() {
-            self.shared.available.notify_one();
+            self.shared.signal();
         }
         frame
     }
@@ -408,7 +424,7 @@ impl VideoPlayback {
         state.frames.clear();
         state.audio = None;
         drop(state);
-        self.shared.available.notify_all();
+        self.shared.signal();
         self.shared.wake.wake();
         self.reap();
     }
@@ -488,10 +504,18 @@ fn decode(
                 }
                 frame.duration = frame.duration.min(end - frame.pts);
                 let mut state = shared.state.lock().unwrap();
+                let blocked = state.frames.len() >= options.queued_video_frames;
+                if blocked {
+                    drop(state);
+                    decoder.set_paused(true)?;
+                    state = shared.state.lock().unwrap();
+                }
                 while state.frames.len() >= options.queued_video_frames
                     && !shared.transport.cancelled.load(Ordering::Acquire)
                 {
-                    state = shared.available.wait(state).unwrap();
+                    drop(state);
+                    shared.available.wait(None)?;
+                    state = shared.state.lock().unwrap();
                 }
                 if shared.transport.cancelled.load(Ordering::Acquire) {
                     return Ok(());
@@ -506,6 +530,9 @@ fn decode(
                     state.terminal = Some(VideoTerminal::Completed);
                 }
                 drop(state);
+                if blocked {
+                    decoder.set_paused(false)?;
+                }
                 shared.wake.wake();
                 if options.poster {
                     return Ok(());
@@ -516,6 +543,7 @@ fn decode(
                 let step = 1. / f64::from(packet.sample_rate);
                 let endpoint = options.end.map_or(f64::INFINITY, |e| e.as_secs_f64());
                 let mut index = 0;
+                let mut blocked = false;
                 while *position < packet.pts || index < packet.frames.len() {
                     if shared.transport.cancelled.load(Ordering::Acquire) {
                         return Ok(());
@@ -540,13 +568,16 @@ fn decode(
                             }
                         }
                         Err(_) => {
-                            let state = shared.state.lock().unwrap();
-                            let _ = shared
-                                .available
-                                .wait_timeout(state, Duration::from_millis(5))
-                                .unwrap();
+                            if !blocked {
+                                decoder.set_paused(true)?;
+                                blocked = true;
+                            }
+                            shared.available.wait(Some(Duration::from_millis(5)))?;
                         }
                     }
+                }
+                if blocked {
+                    decoder.set_paused(false)?;
                 }
             }
         }

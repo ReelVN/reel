@@ -21,6 +21,7 @@ mod maintenance;
 mod mixer;
 mod output;
 mod pcm;
+mod worker_event;
 pub use contracts::*;
 pub use maintenance::{AudioReclaimService, ReclaimLimits, ReclaimStatus};
 pub use mixer::{
@@ -28,6 +29,11 @@ pub use mixer::{
 };
 pub use output::{OfflineOutput, UnderrunSignal, bounded_pcm_queue};
 pub use pcm::DeviceSample;
+
+#[cfg(all(feature = "vita-output", target_os = "vita"))]
+mod vita;
+#[cfg(all(feature = "vita-output", target_os = "vita"))]
+pub use vita::VitaOutput;
 
 #[cfg(feature = "video")]
 pub mod video;

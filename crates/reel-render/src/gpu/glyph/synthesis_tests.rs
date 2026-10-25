@@ -87,6 +87,7 @@ fn cjk_synthetic_bold_expands_every_glyph_and_reuses_raster_scratch() {
                             crate::gpu::glyph::RasterLimits {
                                 available: u64::MAX,
                                 max_dimension: 8192,
+                                budget: pool.clone(),
                             },
                         )
                         .unwrap()

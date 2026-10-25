@@ -1,7 +1,11 @@
 //! Open descriptors pin the selected file while range reads share its digest.
 //! Hashing happens once on the IO worker, using fixed scratch space. Packaged
 //! sources can supply the release digest directly without this directory cost.
-use super::{failure, io_error};
+use super::{
+    failure,
+    file::{self, File, Metadata},
+    io_error,
+};
 use reel_core::{
     identity::{AssetSource, ContentVersion},
     io::{IoError, IoErrorCode},
@@ -10,7 +14,6 @@ use reel_package::resource_target::ResourceTarget;
 use std::{
     borrow::Cow,
     collections::{BTreeMap, HashMap},
-    fs::{File, Metadata},
     io::Read,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
@@ -105,7 +108,7 @@ impl Files {
     ) -> Result<&mut OpenFile, IoError> {
         self.sequence += 1;
         let path = self.source.resolve(&source.key.0)?;
-        let metadata = std::fs::metadata(&path).map_err(io_error)?;
+        let metadata = file::metadata(&path).map_err(io_error)?;
         let cached = self.open.get(&source.key.0).is_some_and(|file| {
             file.path.as_path() == path.as_ref()
                 && same(&metadata, file.length, file.modified).unwrap_or(false)
@@ -205,7 +208,7 @@ mod tests {
         assert_eq!(read(&mut files, "bg/room.bin").unwrap(), b"common");
         let variant = root.join("@vita/bg/room.bin");
         fs::write(&variant, b"target").unwrap();
-        File::options()
+        fs::File::options()
             .write(true)
             .open(&variant)
             .unwrap()

@@ -149,6 +149,10 @@ impl CpalDriver {
 }
 impl Driver for CpalDriver {
     type Stream = cpal::Stream;
+    fn close(&mut self, stream: Self::Stream) -> Result<(), AudioError> {
+        drop(stream);
+        Ok(())
+    }
     fn capabilities(&self) -> AudioCaps {
         self.capabilities.clone()
     }

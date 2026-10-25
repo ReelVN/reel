@@ -168,6 +168,7 @@ fn transformed_text_raster_keeps_logical_metrics_and_scales_fill_and_outline() {
             super::super::glyph::RasterLimits {
                 available: u64::MAX,
                 max_dimension: 8192,
+                budget: pool.clone(),
             },
         )
         .unwrap()
@@ -182,6 +183,7 @@ fn transformed_text_raster_keeps_logical_metrics_and_scales_fill_and_outline() {
             super::super::glyph::RasterLimits {
                 available: u64::MAX,
                 max_dimension: 8192,
+                budget: pool.clone(),
             },
         )
         .unwrap()
@@ -332,7 +334,8 @@ fn long_text_reuses_atlas_and_batches_glyphs_across_frames_and_aborted_preparati
             at,
             super::super::glyph::RasterLimits {
                 available: 1,
-                max_dimension: 8192
+                max_dimension: 8192,
+                budget: pool.clone(),
             }
         ),
         Err(GpuError::Budget {
@@ -350,7 +353,8 @@ fn long_text_reuses_atlas_and_batches_glyphs_across_frames_and_aborted_preparati
             at,
             super::super::glyph::RasterLimits {
                 available: u64::MAX,
-                max_dimension: 1
+                max_dimension: 1,
+                budget: pool.clone(),
             }
         ),
         Err(GpuError::Unsupported {
@@ -719,22 +723,17 @@ fn image_restore_fixture(
 #[test]
 fn image_plan_deduplicates_both_transition_inputs_before_admission() {
     let (frame, _, handles) = image_restore_fixture([4, 4], true);
-    let plan = super::super::image_plan::collect(
-        [&frame, &frame].into_iter(),
-        4096,
-        false,
-        |_| Ok(()),
-        |_| Ok(()),
-    )
-    .unwrap();
-    assert_eq!(plan.len(), handles.len());
-    for item in &plan {
+    let plan =
+        super::super::image_plan::collect([&frame, &frame].into_iter(), 4096, false, |_| Ok(()))
+            .unwrap();
+    assert_eq!(plan.images.len(), handles.len());
+    for item in &plan.images {
         assert!(handles.contains(&item.source.handle()));
         assert_eq!(item.resident, 4 * 4 * 8);
         assert_eq!(item.staging, 4 * 256);
     }
     assert!(matches!(
-        super::super::image_plan::collect([&frame].into_iter(), 2, false, |_| Ok(()), |_| Ok(())),
+        super::super::image_plan::collect([&frame].into_iter(), 2, false, |_| Ok(())),
         Err(GpuError::InvalidSize)
     ));
 }
@@ -742,19 +741,12 @@ fn image_plan_deduplicates_both_transition_inputs_before_admission() {
 #[test]
 fn capture_plans_omit_excluded_image_uploads_and_isolated_targets() {
     let (frame, _, handles) = image_restore_fixture([4, 4], false);
-    let normal = super::super::image_plan::collect(
-        [&frame].into_iter(),
-        4096,
-        false,
-        |_| Ok(()),
-        |_| Ok(()),
-    )
-    .unwrap();
+    let normal =
+        super::super::image_plan::collect([&frame].into_iter(), 4096, false, |_| Ok(())).unwrap();
     let captured =
-        super::super::image_plan::collect([&frame].into_iter(), 4096, true, |_| Ok(()), |_| Ok(()))
-            .unwrap();
-    assert_eq!(normal.len(), handles.len());
-    assert!(captured.is_empty());
+        super::super::image_plan::collect([&frame].into_iter(), 4096, true, |_| Ok(())).unwrap();
+    assert_eq!(normal.images.len(), handles.len());
+    assert!(captured.images.is_empty());
     assert!(!frame.commands().is_empty());
 
     let pool = pool();
@@ -1367,16 +1359,10 @@ fn capture_global_transition_keeps_old_content_when_new_content_is_excluded() {
         .unwrap();
     while !build.step(step_budget()).unwrap().complete {}
     let frame = build.finish().unwrap();
-    let images = crate::gpu::image_plan::collect(
-        std::iter::once(&frame),
-        8192,
-        true,
-        |_| Ok(()),
-        |_| Ok(()),
-    )
-    .unwrap();
+    let images =
+        crate::gpu::image_plan::collect(std::iter::once(&frame), 8192, true, |_| Ok(())).unwrap();
     assert_eq!(
-        images.len(),
+        images.images.len(),
         3,
         "old accepted drawing remains an input to the blend"
     );

@@ -7,6 +7,21 @@ use reel_ui::{
 };
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
+
+struct SampledImage<'a> {
+    view: &'a wgpu::TextureView,
+    format: Option<reel_core::texture::TextureFormat>,
+    yuv: Option<&'a super::video::Planes>,
+}
+impl<'a> SampledImage<'a> {
+    fn plain(view: &'a wgpu::TextureView) -> Self {
+        Self {
+            view,
+            format: None,
+            yuv: None,
+        }
+    }
+}
 impl Context<'_> {
     pub(super) fn mesh_allocation(&self) -> mesh::Allocation {
         mesh::Allocation::new(
@@ -198,11 +213,9 @@ impl Context<'_> {
                 return self.paint_mesh(
                     target,
                     &mesh,
-                    &white.view,
+                    SampledImage::plain(&white.view),
                     [false; 2],
                     Some(paint),
-                    None,
-                    None,
                 );
             }
         };
@@ -317,11 +330,9 @@ impl Context<'_> {
                 self.paint_mesh(
                     target,
                     &batch,
-                    &previous.view,
+                    SampledImage::plain(&previous.view),
                     [false; 2],
                     paint,
-                    None,
-                    None,
                 )?;
                 batch = mesh::Mesh::new(self.mesh_allocation());
             }
@@ -356,7 +367,13 @@ impl Context<'_> {
         }
         if let Some(page) = page {
             mesh::transform_glyphs(&mut batch, outer * run.transform, self.size, color, at)?;
-            self.paint_mesh(target, &batch, &page.view, [false; 2], paint, None, None)?;
+            self.paint_mesh(
+                target,
+                &batch,
+                SampledImage::plain(&page.view),
+                [false; 2],
+                paint,
+            )?;
         }
         Ok(())
     }
@@ -366,7 +383,7 @@ impl Context<'_> {
         mesh: &mesh::Mesh,
         image: &wgpu::TextureView,
     ) -> Result<(), GpuError> {
-        self.paint_mesh(target, mesh, image, [false; 2], None, None, None)
+        self.paint_mesh(target, mesh, SampledImage::plain(image), [false; 2], None)
     }
 
     pub(super) fn paint_resource(
@@ -386,7 +403,11 @@ impl Context<'_> {
         self.paint_mesh(
             target,
             mesh,
-            &image.view,
+            SampledImage {
+                view: &image.view,
+                format: image.texture_format,
+                yuv: image.yuv.as_ref(),
+            },
             repeat,
             appearance.map(|appearance| {
                 let mut uniform = appearance_uniform(appearance);
@@ -408,8 +429,6 @@ impl Context<'_> {
                 }
                 uniform
             }),
-            image.texture_format,
-            image.yuv.as_ref(),
         )
     }
 
@@ -417,12 +436,15 @@ impl Context<'_> {
         &mut self,
         target: &Target,
         mesh: &mesh::Mesh,
-        image: &wgpu::TextureView,
+        image: SampledImage<'_>,
         repeat: [bool; 2],
         appearance: Option<super::gradient::Uniform>,
-        texture_format: Option<reel_core::texture::TextureFormat>,
-        yuv: Option<&super::video::Planes>,
     ) -> Result<(), GpuError> {
+        let SampledImage {
+            view: image,
+            format: texture_format,
+            yuv,
+        } = image;
         if mesh.indices.is_empty() || self.scissor.empty() {
             return Ok(());
         }
@@ -548,41 +570,7 @@ impl Context<'_> {
     }
 }
 
-fn appearance_uniform(appearance: ImageAppearance) -> [[f32; 4]; 9] {
-    let mut values = [[0.; 4]; 9];
-    // The ordinary shader path keeps its first branch and reads no other fields.
-    let mode = if appearance.alpha_layout == reel_ui::frame::ImageAlphaLayout::TopBottom {
-        3.
-    } else {
-        1.
-    };
-    values[4][3] = mode;
-    if let Some(gradient) = appearance.gradient {
-        let inverse = gradient.transform.inverse().as_coeffs();
-        values[..4].copy_from_slice(&gradient.colors);
-        values[4] = [
-            inverse[0] as f32,
-            inverse[2] as f32,
-            inverse[4] as f32,
-            mode,
-        ];
-        values[5] = [inverse[1] as f32, inverse[3] as f32, inverse[5] as f32, 1.];
-    }
-    let color = appearance.adjustment;
-    values[6] = [
-        color.gain[0],
-        color.gain[1],
-        color.gain[2],
-        color.saturation,
-    ];
-    values[7] = [
-        color.offset[0],
-        color.offset[1],
-        color.offset[2],
-        f32::from(!color.is_identity()),
-    ];
-    values
-}
+use crate::common::appearance::appearance_uniform;
 
 #[cfg(test)]
 mod tests {

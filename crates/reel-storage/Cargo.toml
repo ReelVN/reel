@@ -5,8 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
-[dependencies]
+[target.'cfg(not(target_os = "vita"))'.dependencies]
 atomic-write-file = "=0.3.1"
+
+[target.'cfg(target_os = "vita")'.dependencies]
+pvr-psp2-sys = { workspace = true, features = ["platform"] }
 
 [lints]
 workspace = true

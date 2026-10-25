@@ -53,6 +53,7 @@ pub(crate) struct ServiceShared {
     pub normal: Mutex<Producer<Envelope>>,
     teardown: Mutex<Producer<Envelope>>,
     pub pending: AtomicBool,
+    available: crate::worker_event::WorkerEvent,
     wake: WakeSignal,
     closing: AtomicBool,
     failed: AtomicBool,
@@ -130,6 +131,8 @@ impl AudioReclaimService {
             normal: Mutex::new(normal),
             teardown: Mutex::new(teardown),
             pending: AtomicBool::new(false),
+            available: crate::worker_event::WorkerEvent::new()
+                .map_err(|error| AudioError::new(AudioErrorKind::Unavailable, error))?,
             wake,
             closing: AtomicBool::new(false),
             failed: AtomicBool::new(false),
@@ -152,8 +155,10 @@ impl AudioReclaimService {
             abort_construction: AtomicBool::new(false),
         });
         let worker_shared = shared.clone();
-        let worker = thread::Builder::new()
-            .name("reel-audio-reclaim".into())
+        let builder = thread::Builder::new().name("reel-audio-reclaim".into());
+        #[cfg(target_os = "vita")]
+        let builder = builder.stack_size(256 << 10);
+        let worker = builder
             .spawn(move || run_worker(worker_shared, normal_consumer, teardown_consumer))
             .map_err(|e| AudioError::new(AudioErrorKind::Unavailable, e.to_string()))?;
         Ok(Self {
@@ -178,7 +183,9 @@ impl AudioReclaimService {
         }
         self.shared.closing.store(true, Ordering::Release);
         if let Some(worker) = self.worker.take() {
-            worker.thread().unpark();
+            if self.shared.available.signal().is_err() {
+                self.shared.record_error();
+            }
             if worker.join().is_err() {
                 self.shared.record_error();
             }
@@ -242,8 +249,8 @@ impl AudioReclaimService {
 impl Drop for AudioReclaimService {
     fn drop(&mut self) {
         self.shared.closing.store(true, Ordering::Release);
-        if let Some(worker) = self.worker.take() {
-            worker.thread().unpark();
+        if self.worker.take().is_some() {
+            let _ = self.shared.available.signal();
         } // detach, no join
     }
 }
@@ -449,6 +456,7 @@ fn run_worker(
     mut teardown: Consumer<Envelope>,
 ) {
     let mut prefer_teardown = false;
+    let mut wait_failed = false;
     loop {
         // Bounded fairness between ordinary work and reserved teardown.
         let work = if prefer_teardown {
@@ -509,7 +517,18 @@ fn run_worker(
             break;
         }
         if normal.is_empty() && teardown.is_empty() {
-            thread::park_timeout(Duration::from_millis(2));
+            if wait_failed {
+                // A failed native event stops accepting work, while this owner
+                // must still drain objects submitted by existing generations.
+                thread::sleep(Duration::from_millis(2));
+            } else if shared
+                .available
+                .wait(Some(Duration::from_millis(2)))
+                .is_err()
+            {
+                shared.record_error();
+                wait_failed = true;
+            }
         }
     }
 }

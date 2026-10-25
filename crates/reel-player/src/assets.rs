@@ -3,6 +3,7 @@ mod data;
 mod decode;
 pub use data::AssetDataLoader;
 mod io;
+pub(crate) use io::file;
 mod stream;
 pub use stream::{AssetStream, StreamControl};
 #[cfg(test)]
