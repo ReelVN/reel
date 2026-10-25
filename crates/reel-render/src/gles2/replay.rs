@@ -146,6 +146,7 @@ struct Stream<'a> {
     transition_next: usize,
     transitions_enabled: bool,
     commands: &'a [FrameCommand],
+    groups: crate::common::scopes::GroupPlan,
     next: usize,
     transform: Affine,
     scopes: Scopes<Scope<'a>>,
@@ -436,11 +437,16 @@ impl Context<'_> {
                             record: "group filters",
                         });
                     }
+                    let isolated = !current.groups.can_inline(current.next - 1);
                     current.scopes.push(
                         Kind::Group,
                         at,
                         Scope {
-                            target: self.target()?,
+                            target: if isolated {
+                                self.target()?
+                            } else {
+                                current.scopes.last().target.clone()
+                            },
                             mesh_clip: self.mesh_clip,
                             clip: group.clip.as_ref(),
                             mask: group.mask,
@@ -459,7 +465,7 @@ impl Context<'_> {
                                     && !current.drawing.transitions().is_empty(),
                             )
                             .map_or(self.scissor, |bounds| self.scissor.intersect(bounds)),
-                            isolated: true,
+                            isolated,
                         },
                         |bytes| self.transient(bytes),
                     )?;
@@ -619,6 +625,22 @@ impl Context<'_> {
         transform: Affine,
         scissor: Scissor,
     ) -> Result<Stream<'a>, GlesError> {
+        let capture = self.capture;
+        let groups = crate::common::scopes::GroupPlan::new(
+            commands,
+            offset,
+            drawing
+                .transitions()
+                .iter()
+                .filter(|_| transitions_enabled)
+                .map(|t| t.commands.clone()),
+            drawing
+                .capture_exclusions()
+                .iter()
+                .filter(|_| capture)
+                .cloned(),
+            |bytes| self.transient(bytes),
+        )?;
         Ok(Stream {
             drawing,
             offset,
@@ -627,6 +649,7 @@ impl Context<'_> {
                 .transitions()
                 .partition_point(|t| t.commands.start < offset.unwrap_or(0)),
             commands,
+            groups,
             next: 0,
             transform,
             scopes: Scopes::new(Scope {

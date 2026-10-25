@@ -226,6 +226,12 @@ impl Programs {
         size: [u32; 2],
     ) -> Result<(), GlesError> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Screen);
+        // This pass replaces the whole surface. Match WGPU's clear load op so
+        // tile renderers need not restore the previous swapchain image first.
+        {
+            let _clear = reel_core::profile::Scope::new(reel_core::profile::Phase::Clear);
+            context.clear(NativeTarget::Screen, [0., 0., 0., 1.])?;
+        }
         let mut values = Values::new();
         values.extend(self.present.int("u_image", 0));
         self.quad(
