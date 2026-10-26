@@ -1,4 +1,5 @@
 use std::{sync::Arc, time::Duration};
+mod rate;
 
 use crate::{
 	Decibels, Panning, StartTime, Tween,

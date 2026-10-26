@@ -40,6 +40,8 @@ pub(super) struct StaticSound {
 	fractional_position: f64,
 	volume: Parameter<Decibels>,
 	playback_rate: Parameter<PlaybackRate>,
+	rate_sequence: u64,
+	pending_rate: Option<super::RateChangeCommand>,
 	panning: Parameter<Panning>,
 	shared: Arc<Shared>,
 	queue: Option<QueueRenderer>,
@@ -68,6 +70,8 @@ impl StaticSound {
 		);
 		let starting_frame_index = transport.position;
 		let position = starting_frame_index as f64 / data.sample_rate as f64;
+		let playback_rate = Parameter::new(settings.playback_rate, PlaybackRate(1.0));
+		let initial_rate = playback_rate.value().0.to_bits();
 		let mut sound = Self {
 			command_readers,
 			sample_rate: data.sample_rate,
@@ -80,7 +84,9 @@ impl StaticSound {
 			transport,
 			fractional_position: 0.0,
 			volume: Parameter::new(settings.volume, Decibels::IDENTITY),
-			playback_rate: Parameter::new(settings.playback_rate, PlaybackRate(1.0)),
+			playback_rate,
+			rate_sequence: 0,
+			pending_rate: None,
 			panning: Parameter::new(settings.panning, Panning::CENTER),
 			shared: Arc::new(Shared {
 				state: AtomicU8::new(PlaybackState::Playing as u8),
@@ -88,6 +94,11 @@ impl StaticSound {
 				applied_seek: AtomicU64::new(0),
 				item: AtomicU64::new(0),
 				cursor_sequence: AtomicU64::new(0),
+				rate: AtomicU64::new(initial_rate),
+				rate_target: AtomicU64::new(initial_rate),
+				rate_remaining_seconds: AtomicU64::new(0),
+				rate_remaining_nanos: AtomicU64::new(0),
+				applied_rate: AtomicU64::new(0),
 			}),
 			queue: None,
 			retention: None,
@@ -383,7 +394,12 @@ impl StaticSound {
 	}
 
 	fn read_commands(&mut self) {
-		read_commands_into_parameters!(self, volume, playback_rate, panning);
+		read_commands_into_parameters!(self, volume, panning);
+		if let Some(command) = self.command_readers.set_playback_rate.read() {
+			// A seek can publish during this method. Keep the previous parameter
+			// and acknowledgement together until process actually applies the rate.
+			self.pending_rate = Some(command);
+		}
 		if let Some(loop_region) = self.command_readers.set_loop_region.read() {
 			self.transport.set_loop_region(
 				loop_region,
@@ -426,6 +442,24 @@ impl StaticSound {
 				.to_bits(),
 			Ordering::SeqCst,
 		);
+		let rate = self.playback_rate.value();
+		let (target, remaining) = self
+			.playback_rate
+			.fixed_transition()
+			.unwrap_or((rate, std::time::Duration::ZERO));
+		self.shared.rate.store(rate.0.to_bits(), Ordering::SeqCst);
+		self.shared
+			.rate_target
+			.store(target.0.to_bits(), Ordering::SeqCst);
+		self.shared
+			.rate_remaining_seconds
+			.store(remaining.as_secs(), Ordering::SeqCst);
+		self.shared
+			.rate_remaining_nanos
+			.store(u64::from(remaining.subsec_nanos()), Ordering::SeqCst);
+		self.shared
+			.applied_rate
+			.store(self.rate_sequence, Ordering::SeqCst);
 		self.shared.cursor_sequence.fetch_add(1, Ordering::SeqCst);
 	}
 }
@@ -462,7 +496,6 @@ impl Sound for StaticSound {
 		}
 		// update parameters
 		self.volume.update(dt * out.len() as f64, info);
-		self.playback_rate.update(dt * out.len() as f64, info);
 		self.panning.update(dt * out.len() as f64, info);
 		let changed_playback_state = self.playback_state_manager.update(
 			if self
@@ -482,6 +515,40 @@ impl Sound for StaticSound {
 		}
 
 		let will_never_start = self.start_time.update(dt * out.len() as f64, info);
+		let advancing = self.start_time == StartTime::Immediate
+			&& self.playback_state_manager.playback_state().is_advancing()
+			&& self
+				.queue
+				.as_ref()
+				.is_none_or(|queue| queue.started.load(Ordering::Acquire));
+		let rate_command = self.pending_rate.take();
+		if let Some(command) = rate_command {
+			if let Some(baseline) = command.baseline_after(self.rate_sequence) {
+				self.playback_rate.set(
+					crate::Value::Fixed(baseline),
+					Tween {
+						duration: std::time::Duration::ZERO,
+						..Default::default()
+					},
+				);
+				self.playback_rate.update(0.0, info);
+			}
+			self.playback_rate
+				.set(command.change.target, command.change.tween);
+		}
+		// Rate ramps use active transport time; zero-duration changes also apply
+		// while paused or waiting for the initial queue to be committed.
+		self.playback_rate.update(
+			if advancing {
+				dt * out.len() as f64
+			} else {
+				0.0
+			},
+			info,
+		);
+		if let Some(command) = rate_command {
+			self.rate_sequence = command.sequence;
+		}
 		if will_never_start {
 			self.playback_state_manager.mark_as_stopped();
 			self.update_shared_playback_state();
@@ -618,9 +685,36 @@ pub(super) struct Shared {
 	applied_seek: AtomicU64,
 	item: AtomicU64,
 	cursor_sequence: AtomicU64,
+	rate: AtomicU64,
+	rate_target: AtomicU64,
+	rate_remaining_seconds: AtomicU64,
+	rate_remaining_nanos: AtomicU64,
+	applied_rate: AtomicU64,
 }
 
 impl Shared {
+	pub fn playback(&self) -> (super::StaticSoundPlayback, u64) {
+		loop {
+			let sequence = self.cursor_sequence.load(Ordering::SeqCst);
+			if !sequence.is_multiple_of(2) {
+				continue;
+			}
+			let playback = super::StaticSoundPlayback {
+				item: self.item.load(Ordering::SeqCst),
+				position: self.position(),
+				rate: PlaybackRate(f64::from_bits(self.rate.load(Ordering::SeqCst))),
+				rate_target: PlaybackRate(f64::from_bits(self.rate_target.load(Ordering::SeqCst))),
+				rate_remaining: std::time::Duration::new(
+					self.rate_remaining_seconds.load(Ordering::SeqCst),
+					self.rate_remaining_nanos.load(Ordering::SeqCst) as u32,
+				),
+			};
+			let applied_rate = self.applied_rate.load(Ordering::SeqCst);
+			if self.cursor_sequence.load(Ordering::SeqCst) == sequence {
+				return (playback, applied_rate);
+			}
+		}
+	}
 	pub fn cursor(&self) -> (u64, f64) {
 		loop {
 			let sequence = self.cursor_sequence.load(Ordering::SeqCst);

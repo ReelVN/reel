@@ -43,9 +43,22 @@ fn rlib(messages: &str, crate_name: &str) -> PathBuf {
 
 #[test]
 fn physical_pcm_deallocation_precedes_owner_retirement_evidence() {
+    run_probe("owner_retirement_probe", &[]);
+}
+
+#[test]
+fn pcm_controls_and_rate_resampling_remain_allocation_free() {
+    run_probe("pcm_probe", &["--features", "decode"]);
+}
+
+fn run_probe(name: &str, features: &[&str]) {
+    // Cargo publishes one un-hashed reel_media.rlib. Keep it unchanged until
+    // the isolated observer has linked, including on Windows with open-file locks.
+    static BUILD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _build = BUILD.lock().unwrap();
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let root = manifest.parent().unwrap().parent().unwrap();
-    let artifacts = root.join("target/reel-artifacts/owner-retirement-probe");
+    let artifacts = root.join("target/reel-artifacts").join(name);
     std::fs::create_dir_all(&artifacts).unwrap();
     let build = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
         .current_dir(root)
@@ -55,8 +68,10 @@ fn physical_pcm_deallocation_precedes_owner_retirement_evidence() {
             "reel-media",
             "--no-default-features",
             "--locked",
+            "--offline",
             "--message-format=json",
         ])
+        .args(features)
         .output()
         .unwrap();
     assert!(
@@ -69,14 +84,14 @@ fn physical_pcm_deallocation_precedes_owner_retirement_evidence() {
     let media = rlib(&messages, "reel_media");
     let core = rlib(&messages, "reel_core");
     let executable = artifacts.join(format!(
-        "owner-retirement-probe-{}{}",
+        "{name}-{}{}",
         std::process::id(),
         std::env::consts::EXE_SUFFIX
     ));
     let compile = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()))
         .current_dir(root)
         .args(["--edition", "2024"])
-        .arg(manifest.join("tests/support/owner_retirement_probe.rs"))
+        .arg(manifest.join(format!("tests/support/{name}.rs")))
         .arg("--extern")
         .arg(format!("reel_media={}", media.display()))
         .arg("--extern")

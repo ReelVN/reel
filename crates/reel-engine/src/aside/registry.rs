@@ -702,6 +702,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 parameter("loop_start", Some(bc::Const::Int(0))),
                 parameter("loop_end", Some(bc::Const::Null)),
                 parameter("paused", Some(bc::Const::Bool(false))),
+                parameter("rate", Some(bc::Const::Int(1))),
             ],
             false,
         ),
@@ -725,6 +726,15 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ),
         (
             "pan",
+            vec![
+                parameter("activity", None),
+                parameter("value", None),
+                parameter("duration", Some(bc::Const::Int(0))),
+            ],
+            false,
+        ),
+        (
+            "rate",
             vec![
                 parameter("activity", None),
                 parameter("value", None),
@@ -1184,6 +1194,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     contracts.extend(super::masks::contracts());
     contracts.extend(super::effects::contracts());
     contracts.extend(super::gradients::contracts());
+    contracts.extend(super::stage::interaction_appearance::contracts());
     contracts
 }
 

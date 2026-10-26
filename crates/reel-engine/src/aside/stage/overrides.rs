@@ -191,13 +191,24 @@ pub(super) fn get(
     selected: Value,
     index: usize,
 ) -> Result<Value, HeapError> {
+    Ok(match selected_value(heap, selected, index)? {
+        Some(value) => value,
+        None => heap.table_entry(fields, (offset + index) as u32)?.1,
+    })
+}
+
+pub(super) fn selected_value(
+    heap: &Heap,
+    selected: Value,
+    index: usize,
+) -> Result<Option<Value>, HeapError> {
     if selected.tag() != ValueTag::Null {
         let reference = heap.sequence_get(selected, index as u32)?;
         if reference.tag() != ValueTag::Null {
-            return heap.property_argument(reference);
+            return heap.property_argument(reference).map(Some);
         }
     }
-    Ok(heap.table_entry(fields, (offset + index) as u32)?.1)
+    Ok(None)
 }
 
 impl StageBinding {

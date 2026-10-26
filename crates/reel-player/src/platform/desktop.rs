@@ -31,29 +31,9 @@ pub fn run_session_host() -> Result<(), Error> {
 /// On close, VM task and root retirement finishes before the native window exits.
 pub fn run_story(story: CompiledStory, mut options: PlayerOptions) -> Result<(), Error> {
     let session = Session::new(SessionId(1), Epoch(1))?;
-    let assets = if let Some(files) = options.resource_files.take() {
-        crate::assets::Assets::selected(
-            options.assets.clone(),
-            files,
-            options.asset_packages.clone(),
-        )
-        .map_err(|error| format!("cannot open prepared resources: {error:?}"))?
-    } else {
-        match &options.asset_packages {
-            Some(paths) => crate::assets::Assets::packaged_for_target(
-                options.assets.clone(),
-                paths.clone(),
-                options.asset_overlay.clone(),
-                options.resource_target.clone(),
-            )
-            .map_err(|error| format!("cannot open resource packages: {error:?}"))?,
-            None => crate::assets::Assets::directory_for_target(
-                options.assets.clone(),
-                options.resource_target.clone(),
-            )
-            .map_err(|error| format!("cannot open resource directory: {error:?}"))?,
-        }
-    };
+    let assets = options
+        .open_assets()
+        .map_err(|error| format!("cannot open story resources: {error:?}"))?;
     let driver =
         AsideSessionUi::from_compiled(session, story, &options.locale, VmLimits::default())?
             .with_asset_context(assets, options.catalogs.clone());

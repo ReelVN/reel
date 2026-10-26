@@ -11,6 +11,7 @@ use reel_engine::{
     audio::AudioLoopRegion,
 };
 use std::{cell::RefCell, rc::Rc, time::Instant};
+mod rate;
 
 #[derive(Clone)]
 pub(super) struct Output(Rc<RefCell<Option<OfflineOutput>>>);
@@ -103,6 +104,7 @@ pub(super) fn until(mut step: impl FnMut() -> bool) {
 }
 pub(super) fn request(looping: bool) -> AudioRequest {
     AudioRequest {
+        rate: Default::default(),
         source: "assets/chime.wav".into(),
         loop_region: looping.then(AudioLoopRegion::default),
         volume: 1.,
@@ -762,7 +764,7 @@ fn author_audio_source_and_bytecode_share_real_decode_playback_waits_and_retirem
         let tiny = audio.play("assets/chime.wav", start: 0.1, end: 0.100000001);
         if await tiny != "Completed" || audio.position(tiny) != 0.1 { throw "quantized empty segment"; }
         let crossfade = audio.play("assets/chime.wav", group: "music", looping: true, fade_in: 0.01);
-        let sound = audio.play("assets/chime.wav", group: "voice", end: 0.2);
+        let sound = audio.play("assets/chime.wav", group: "voice", end: 0.2, rate: 0.5);
         if audio.queue(sound, "assets/chime.wav", start: 0.03, end: 0.12) != null { throw "queue result"; }
         audio.queue(sound, "assets/chime.wav", start: 0.1, end: 0.18);
         pause(sound);
@@ -770,6 +772,7 @@ fn author_audio_source_and_bytecode_share_real_decode_playback_waits_and_retirem
         audio.seek(sound, 0.01);
         if audio.position(sound) != 0.01 { throw "latest seek"; }
         resume(sound);
+        if audio.rate(sound, 2, duration: 0.02) != sound { throw "rate result"; }
         audio.pan(sound, 1, duration: 0.01);
         audio.volume(sound, 0.5, duration: 0.01);
         if await sound != "Completed" || await sound != "Completed" { throw "completion"; }
@@ -789,7 +792,10 @@ fn author_audio_source_and_bytecode_share_real_decode_playback_waits_and_retirem
         try { audio.queue(sound, "assets/chime.wav", start: 0.1, end: 0.05); } catch error { invalid += 1; }
         try { await audio.play("assets/chime.wav", end: 1); } catch error { invalid += 1; }
         try { await audio.play("assets/chime.wav", end: 0.1, looping: true, loop_end: 0.2); } catch error { invalid += 1; }
-        if invalid != 10 { throw "audio validation"; }
+        try { audio.play("assets/chime.wav", rate: 0.2); } catch error { invalid += 1; }
+        try { audio.rate(crossfade, 4.1); } catch error { invalid += 1; }
+        try { audio.rate(crossfade, 1, duration: -1); } catch error { invalid += 1; }
+        if invalid != 13 { throw "audio validation"; }
         let music = audio.play("assets/chime.wav", looping: true);
         pause(music); audio.volume(music, 0); resume(music);
         stop(music);
@@ -864,9 +870,10 @@ fn bounded_audio_source_and_asb_restore_real_transport_and_queue_endpoints() {
         aside::{SessionVm, snapshot::SessionSnapshot},
     };
     let text = r#"fn main() {
-        let sound = audio.play("assets/chime.wav", start: 0.04, end: 0.08);
+        let sound = audio.play("assets/chime.wav", start: 0.04, end: 0.08, rate: 0.5);
         audio.queue(sound, "assets/chime.wav", start: 0.02, end: 0.12);
         pause(sound);
+        audio.rate(sound, 2, duration: 0.04);
         narrator("save bounded audio");
         if audio.position(sound) != 0.04 { throw "restored absolute position"; }
         resume(sound);

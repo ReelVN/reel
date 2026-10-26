@@ -431,6 +431,7 @@ impl StaticSoundData {
 			sound,
 			StaticSoundHandle {
 				pending_seek: (0, 0.0),
+				pending_rate: None,
 				command_writers,
 				shared,
 			},

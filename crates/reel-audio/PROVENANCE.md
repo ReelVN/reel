@@ -11,6 +11,12 @@ cancellation checkpoints, pending seek publication, interpolation-preserving
 PCM queues and worker-backed frame windows. Native device output and physical
 PCM retirement are owned by `reel-media`.
 
+Static transport rate ramps freeze while paused or held. Coalesced rate commands
+carry acknowledgement identities; the existing coherent cursor publication also
+contains the current rate, fixed target and remaining ramp for restoration. These
+add fixed-size command/atomic state and reuse the existing resampler and parameter
+interpolation, with no callback allocation or extra PCM storage.
+
 The host reader contract is codec-independent. Shared source timelines, decoder
 factories and the static/window preparation policy are maintained in `reel-media`;
 the Symphonia packet decoder keeps its reservation and cancellation checkpoints.

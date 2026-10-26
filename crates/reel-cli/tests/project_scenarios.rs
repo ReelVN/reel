@@ -14,7 +14,8 @@ use reel_engine::{
 };
 use reel_player::{
     aside_session::{AsideSessionUi, StoryState},
-    assets::AssetOptions,
+    assets::{AssetOptions, Assets},
+    player::PlayerOptions,
     saves::{DirectorySaves, RuntimeSaves, SaveService},
     story_runtime::StoryRuntime,
 };
@@ -104,6 +105,7 @@ fn execute_project_with_capture(
         "scenario clicks require GPU captures"
     );
     let advance_titles = scenario_advances();
+    let gpu = gpu_capture || std::env::var("REEL_SCENARIO_GPU").is_ok_and(|value| value == "1");
     assert!(
         !gpu_capture || advance_titles.is_empty(),
         "manual Advance markers use CPU presentation"
@@ -112,22 +114,58 @@ fn execute_project_with_capture(
         reel_cli::project::load(path).unwrap_or_else(|error| panic!("{:?}", error.failure));
     let checked = loaded.check().unwrap();
     let entry = reel_cli::project::ENTRY;
-    let artifact = reel_cli::build(&checked, Some(entry)).unwrap();
+    let artifact =
+        reel_cli::build_export(&checked, entry, reel_cli::BuildProfile::Release).unwrap();
+    let package_directory = tempfile::tempdir().unwrap();
+    let output = package_directory.path().join("distribution");
+    reel_cli::distribution::export(
+        &loaded,
+        &artifact,
+        &reel_cli::distribution::ExportOptions {
+            output: output.clone(),
+            overwrite: false,
+            resources: if loaded.assets().is_dir() {
+                vec![reel_cli::distribution::Mount {
+                    prefix: ".".into(),
+                    directory: loaded.assets(),
+                }]
+            } else {
+                Vec::new()
+            },
+            text: Vec::new(),
+            resource_target: std::env::consts::OS.into(),
+            pack_bytes: (64 << 20).try_into().unwrap(),
+            runtime: None,
+        },
+    )
+    .unwrap();
+    let mut source_options = PlayerOptions::default();
+    let (root, files) = reel_cli::playback::prepare_story_assets(
+        &loaded.project_root,
+        None,
+        &source_options.resource_target,
+        &checked.effects,
+    )
+    .unwrap();
+    source_options.assets.root = root;
+    source_options.resource_files = files;
+    let (packaged_story, packaged_options) =
+        reel_cli::playback::load(&output.join("game.asb"), None, std::env::consts::OS.into())
+            .unwrap();
     let mut audio_stats = Vec::new();
     let mut capture_stats = Vec::new();
-    for (kind, story) in [
-        ("source", reel_cli::into_story(checked, entry).unwrap()),
+    for (kind, story, mut options) in [
         (
-            "ASB",
-            reel_player::distribution::decode_story(&artifact.bytes).unwrap(),
+            "source",
+            reel_cli::into_story(checked, entry).unwrap(),
+            source_options,
         ),
+        ("ASB", packaged_story, packaged_options),
     ] {
-        let save_artifacts = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../target/reel-artifacts/scenario-saves");
-        std::fs::create_dir_all(&save_artifacts).unwrap();
-        let saves = tempfile::tempdir_in(save_artifacts).unwrap();
+        let saves = tempfile::tempdir().unwrap();
+        let assets = options.open_assets().unwrap();
         let mut audio = audio::AudioClock::default();
-        let media = audio.factory(loaded.assets());
+        let media = audio.factory(assets.clone());
         let driver = AsideSessionUi::from_compiled(
             Session::new(SessionId(1), Epoch(1)).unwrap(),
             story,
@@ -135,10 +173,7 @@ fn execute_project_with_capture(
             VmLimits::default(),
         )
         .unwrap()
-        .with_asset_options(AssetOptions {
-            root: loaded.assets(),
-            ..Default::default()
-        })
+        .with_asset_context(assets, options.catalogs)
         .with_media(media())
         .unwrap();
         let storage = SaveService::new(
@@ -152,8 +187,8 @@ fn execute_project_with_capture(
         let mut runtime = StoryRuntime::new(driver)
             .with_saves(RuntimeSaves::new(storage, 256 << 20))
             .with_media_factory(media);
-        let mut captures = if gpu_capture {
-            scenario_capture::ScenarioCapture::new(kind)
+        let mut captures = if gpu {
+            scenario_capture::ScenarioCapture::new(kind, gpu_capture)
         } else {
             scenario_capture::ScenarioCapture::cpu()
         };
@@ -343,6 +378,12 @@ fn execute_project_with_capture(
         if gpu_capture {
             eprintln!("{kind} GPU captures: {:?}", captures.stats());
             capture_stats.push(captures.stats());
+        } else {
+            assert_eq!(
+                captures.stats().count,
+                0,
+                "presentation-only scenario captured pixels"
+            );
         }
         eprintln!(
             "{kind}: {} completed; time_scale={time_scale}, frames={frame}, session_replacements={replacements}, audio={:?}",
@@ -755,6 +796,59 @@ fn project_scenario_mixes_audio_queue_across_save_restore_and_new_session() {
 }
 
 #[test]
+fn project_scenario_loads_effects_catalogs_images_and_audio_from_release_archives() {
+    let project = scenario_project();
+    image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 0, 255, 255]))
+        .save(project.path().join("resources/tile.png"))
+        .unwrap();
+    std::fs::write(
+        project.path().join("resources/chime.wav"),
+        include_bytes!("../../../examples/assets/chime.wav"),
+    )
+    .unwrap();
+    std::fs::write(
+        project.path().join("src/main.aside"),
+        r#"
+        fn tint(pixel, amount: float = 0.5) -> (float, float, float, float) {
+            let (r, g, b, a) = pixel.sample(pixel.uv);
+            (r, g, b * amount, a)
+        }
+        fn main() {
+            localization.set_locale("en");
+            let caption = tr("原文", {en: "Prepared resources"});
+            if caption != "Prepared resources" { throw "packaged translation missing"; }
+            let root = stack(width: 64, height: 64, effect: effect(tint)) {
+                image("tile.png", width: 64, height: 64);
+            };
+            stage.replace(root);
+            await stage.presented(owner: root);
+            let checkpoint = saves.save("resources");
+            await checkpoint;
+            if !checkpoint.restored {
+                await saves.load("resources");
+                throw "resource restore returned to old session";
+            }
+            await stage.presented(owner: root);
+            if tr("再见", {en: "Restored resources"}) != "Restored resources" {
+                throw "restored catalog missing";
+            }
+            if await audio.play("chime.wav", owner: root) != "Completed" {
+                throw "packaged audio failed";
+            }
+            root.remove();
+        }
+    "#,
+    )
+    .unwrap();
+    for mixed in execute_project(project.path(), Duration::from_secs(30)) {
+        assert!(
+            mixed.peak > 0.01,
+            "packaged audio produced no PCM: {mixed:?}"
+        );
+    }
+}
+
+#[test]
 fn project_scenario_media_position_cue_restores_with_real_audio() {
     let project = scenario_project();
     std::fs::write(
@@ -847,7 +941,10 @@ fn segmented_dialogue_resumes_after_deferred_skip_and_auto_advance() {
 #[test]
 fn offline_audio_clock_preserves_fractional_time_and_releases_retired_outputs() {
     let mut audio = audio::AudioClock::default();
-    let media = audio.factory(std::env::temp_dir());
+    let media = audio.factory(Assets::directory(AssetOptions {
+        root: std::env::temp_dir(),
+        ..Default::default()
+    }));
     let player = media();
     audio.advance(Duration::from_nanos(10_417));
     assert_eq!(audio.stats().frames, 0);

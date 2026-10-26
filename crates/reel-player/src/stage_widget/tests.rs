@@ -2649,10 +2649,8 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
     };
     *source_rect = None;
 
-    images.manifests.insert(
-        "atlas.png".into(),
-        images.manifests["background.reel-image"],
-    );
+    let manifest = images.manifests["background.reel-image"];
+    images.manifests.insert("atlas.png".into(), manifest);
     for (index, expected) in ["alpha_layout", "nine-slice", "repetition", "masks"]
         .into_iter()
         .enumerate()
@@ -2685,6 +2683,8 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
             invalid.image_requests(EffectShaderFormat::Wgsl).is_ok(),
             "filename extensions do not classify images"
         );
+        images.request_stage(&invalid);
+        assert!(images.poll().unwrap());
         let error = invalid.resolve_metadata(&images).unwrap_err();
         assert!(
             error.contains(expected) && error.contains("snow.aside:"),
@@ -2698,10 +2698,10 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
         unreachable!()
     };
     batch.source = "atlas.png".into();
-    images.manifests.insert(
-        "atlas.png".into(),
-        images.manifests["background.reel-image"],
-    );
+    images
+        .manifests
+        .insert("background.reel-image".into(), manifest);
+    images.manifests.insert("atlas.png".into(), manifest);
     images.request_stage(&view);
     assert!(images.poll().unwrap());
     let error = view.resolve_metadata(&images).unwrap_err();

@@ -34,6 +34,7 @@ pub enum MediaCommand {
     Finish,
     Volume { value: f64, duration: Duration },
     Pan { value: f64, duration: Duration },
+    Rate { value: f64, duration: Duration },
     FadeOut(Duration),
 }
 /// Nonblocking control-thread boundary. Results remain until taken; retired

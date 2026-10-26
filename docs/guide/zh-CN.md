@@ -346,14 +346,15 @@ await stage.presented(owner: scene);
 await run(tween(scene, opacity: 1, duration: 0.5));
 ```
 
-控件负责交互，子节点负责外观。用 `derive` 把悬停、按下或焦点状态连接到颜色与图片；`focus_visible` 适合键盘和手柄的焦点提示。
+用 `appearance` 复用控件的状态外观。背景、文字颜色、边框与变换直接作用于原节点；`focus_visible` 提示键盘和手柄焦点。各状态依次覆盖已指定的属性，作用域 `override` 保持最高优先级。图片等复合外观仍可由子节点和 `derive` 组合。
 
 ```aside
+let look = appearance(base: {background: "#304060", corner_radius: 6},
+    hover: {color: "#ffd580"}, pressed: {background: "#203040"},
+    focus_visible: {border_width: 2}, disabled: {opacity: 0.4});
 column(gap: 12) {
-    let control = button(width: 240, height: 48, decorated: false);
-    control.add(text("Hover me", color: derive(|| if control.hover { "#ffd580" } else { "#ffffff" })));
-    control;
-    text("Another component");
+    button("Hover me", width: 240, height: 48, decorated: false, appearance: look);
+    button("Another component", width: 240, height: 48, decorated: false, appearance: look);
 }
 ```
 
@@ -1338,12 +1339,15 @@ fn main() {
     pause(music);
     resume(music);
     audio.volume(music, 0.2, duration: 0.5);
-    let sound = audio.play("assets/chime.wav", pan: -0.5);
+    let sound = audio.play("assets/chime.wav", pan: -0.5, rate: 0.8);
+    audio.rate(sound, 1.2, duration: 0.15);
     await sound;
     audio.stop(music, fade: 0.5);
     await music;
 }
 ```
+
+`rate` 同时改变速度与音高：`2` 表示两倍速，音高提高一个八度。`audio.rate` 可在播放过程中渐变速率，暂停时渐变也暂停。位置始终以素材秒数表示。
 
 `audio.queue` 在同一活动后追加片段，适合前奏、循环段和尾奏。存档保留当前素材、位置和待播队列。
 

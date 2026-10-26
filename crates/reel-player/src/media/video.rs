@@ -298,6 +298,7 @@ impl MediaPlayer {
             MediaCommand::Pan { .. } | MediaCommand::FadeOut(_) => {
                 return Err("video pan and fade-out envelopes are not installed".into());
             }
+            MediaCommand::Rate { .. } => return Err("audio.rate requires an audio activity".into()),
         }
         Ok(())
     }

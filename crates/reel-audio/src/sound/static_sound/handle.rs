@@ -6,7 +6,7 @@ use crate::{
 	sound::{IntoOptionalRegion, PlaybackState},
 };
 
-use super::{CommandWriters, sound::Shared};
+use super::{CommandWriters, RateChangeCommand, sound::Shared};
 
 /// Controls a static sound.
 #[derive(Debug)]
@@ -14,9 +14,34 @@ pub struct StaticSoundHandle {
 	pub(super) command_writers: CommandWriters,
 	pub(super) shared: Arc<Shared>,
 	pub(super) pending_seek: (u64, f64),
+	pub(super) pending_rate: Option<RateChangeCommand>,
 }
 
 impl StaticSoundHandle {
+	/// Source cursor and fixed-rate ramp from one callback publication. Pending
+	/// absolute seeks and rate commands remain visible until acknowledged by PCM.
+	pub fn playback(&self) -> super::StaticSoundPlayback {
+		let (mut playback, applied_rate) = self.shared.playback();
+		if self.state() != PlaybackState::Stopped {
+			if self.pending_seek.0 != self.shared.applied_seek() {
+				playback.position = self.pending_seek.1;
+			}
+			if let Some(command) = self.pending_rate
+				&& command.sequence != applied_rate
+				&& let crate::Value::Fixed(target) = command.change.target
+			{
+				if let Some(baseline) = command.baseline_after(applied_rate) {
+					playback.rate = baseline;
+				}
+				if command.change.tween.duration.is_zero() {
+					playback.rate = target;
+				}
+				playback.rate_target = target;
+				playback.rate_remaining = command.change.tween.duration;
+			}
+		}
+		playback
+	}
 	/// Coherent segment identity and source-local content position.
 	pub fn queue_cursor(&self) -> (u64, f64) {
 		let (item, position) = self.shared.cursor();
@@ -137,97 +162,119 @@ impl StaticSoundHandle {
 		```
 		*/
 		volume: Decibels,
+	}
 
-		/**
-		Sets the playback rate of the sound.
+	/**
+	Sets the playback rate of the sound.
 
-		Changing the playback rate will change both the speed
-		and pitch of the sound.
+	Changing the playback rate will change both the speed
+	and pitch of the sound.
 
-		# Examples
+	# Examples
 
-		Set the playback rate of the sound immediately:
+	Set the playback rate of the sound immediately:
 
-		```no_run
-		# #[cfg(feature = "symphonia")]
-		# fn main() -> Result<(), Box<dyn std::error::Error>> {
-		# use reel_audio::{
-		# 	AudioManager, AudioManagerSettings, DefaultBackend,
-		# 	sound::static_sound::{StaticSoundData, StaticSoundSettings},
-		# };
-		# let mut manager = AudioManager::<DefaultBackend>::new(AudioManagerSettings::default())?;
-		# let mut sound = manager.play(StaticSoundData::from_file("sound.ogg")?)?;
-		use reel_audio::Tween;
+	```no_run
+	# #[cfg(feature = "symphonia")]
+	# fn main() -> Result<(), Box<dyn std::error::Error>> {
+	# use reel_audio::{
+	# 	AudioManager, AudioManagerSettings, DefaultBackend,
+	# 	sound::static_sound::{StaticSoundData, StaticSoundSettings},
+	# };
+	# let mut manager = AudioManager::<DefaultBackend>::new(AudioManagerSettings::default())?;
+	# let mut sound = manager.play(StaticSoundData::from_file("sound.ogg")?)?;
+	use reel_audio::Tween;
 
-		sound.set_playback_rate(0.5, Tween::default());
-		# Result::<(), Box<dyn std::error::Error>>::Ok(())
-		# }
-		# #[cfg(not(feature = "symphonia"))]
-		# fn main() {}
-		```
+	sound.set_playback_rate(0.5, Tween::default());
+	# Result::<(), Box<dyn std::error::Error>>::Ok(())
+	# }
+	# #[cfg(not(feature = "symphonia"))]
+	# fn main() {}
+	```
 
-		Smoothly transition the playback rate to a target value in semitones:
+	Smoothly transition the playback rate to a target value in semitones:
 
-		```no_run
-		# #[cfg(feature = "symphonia")]
-		# fn main() -> Result<(), Box<dyn std::error::Error>> {
-		# use reel_audio::{
-		# 	AudioManager, AudioManagerSettings, DefaultBackend,
-		# 	sound::static_sound::{StaticSoundData, StaticSoundSettings},
-		# };
-		# let mut manager = AudioManager::<DefaultBackend>::new(AudioManagerSettings::default())?;
-		# let mut sound = manager.play(StaticSoundData::from_file("sound.ogg")?)?;
-		use reel_audio::{Tween, Semitones};
-		use std::time::Duration;
+	```no_run
+	# #[cfg(feature = "symphonia")]
+	# fn main() -> Result<(), Box<dyn std::error::Error>> {
+	# use reel_audio::{
+	# 	AudioManager, AudioManagerSettings, DefaultBackend,
+	# 	sound::static_sound::{StaticSoundData, StaticSoundSettings},
+	# };
+	# let mut manager = AudioManager::<DefaultBackend>::new(AudioManagerSettings::default())?;
+	# let mut sound = manager.play(StaticSoundData::from_file("sound.ogg")?)?;
+	use reel_audio::{Tween, Semitones};
+	use std::time::Duration;
 
-		sound.set_playback_rate(Semitones(-2.0), Tween {
-			duration: Duration::from_secs(3),
-			..Default::default()
-		});
-		# Result::<(), Box<dyn std::error::Error>>::Ok(())
-		# }
-		# #[cfg(not(feature = "symphonia"))]
-		# fn main() {}
-		```
+	sound.set_playback_rate(Semitones(-2.0), Tween {
+		duration: Duration::from_secs(3),
+		..Default::default()
+	});
+	# Result::<(), Box<dyn std::error::Error>>::Ok(())
+	# }
+	# #[cfg(not(feature = "symphonia"))]
+	# fn main() {}
+	```
 
-		Link the playback rate to a modulator, smoothly transitioning from the current value:
+	Link the playback rate to a modulator, smoothly transitioning from the current value:
 
-		```no_run
-		# #[cfg(feature = "symphonia")]
-		# fn main() -> Result<(), Box<dyn std::error::Error>> {
-		use reel_audio::{
-			AudioManager, AudioManagerSettings, DefaultBackend,
-			sound::static_sound::{StaticSoundData, StaticSoundSettings},
-			modulator::tweener::TweenerBuilder,
-			Value, Easing, Mapping, Tween,
-			PlaybackRate,
+	```no_run
+	# #[cfg(feature = "symphonia")]
+	# fn main() -> Result<(), Box<dyn std::error::Error>> {
+	use reel_audio::{
+		AudioManager, AudioManagerSettings, DefaultBackend,
+		sound::static_sound::{StaticSoundData, StaticSoundSettings},
+		modulator::tweener::TweenerBuilder,
+		Value, Easing, Mapping, Tween,
+		PlaybackRate,
+	};
+	use std::time::Duration;
+
+	let mut manager = AudioManager::<DefaultBackend>::new(AudioManagerSettings::default())?;
+	let tweener = manager.add_modulator(TweenerBuilder {
+		initial_value: 0.5,
+	})?;
+	let mut sound = manager.play(StaticSoundData::from_file("sound.ogg")?)?;
+	sound.set_playback_rate(Value::FromModulator {
+		id: tweener.id(),
+		mapping: Mapping {
+			input_range: (0.0, 1.0),
+			output_range: (PlaybackRate(0.0), PlaybackRate(1.0)),
+			easing: Easing::Linear,
+		},
+	}, Tween {
+		duration: Duration::from_secs(3),
+		..Default::default()
+	});
+	# Result::<(), Box<dyn std::error::Error>>::Ok(())
+	# }
+	# #[cfg(not(feature = "symphonia"))]
+	# fn main() {}
+	```
+	*/
+	pub fn set_playback_rate(&mut self, rate: impl Into<crate::Value<PlaybackRate>>, tween: Tween) {
+		let sequence = self
+			.pending_rate
+			.map_or(0, |command| command.sequence)
+			.wrapping_add(1);
+		let target = rate.into();
+		let mut baseline = self.pending_rate.and_then(|command| command.baseline);
+		if tween.duration.is_zero()
+			&& tween.start_time == StartTime::Immediate
+			&& let crate::Value::Fixed(rate) = target
+		{
+			baseline = Some((sequence, rate));
+		}
+		let command = RateChangeCommand {
+			sequence,
+			baseline,
+			change: crate::command::ValueChangeCommand { target, tween },
 		};
-		use std::time::Duration;
+		self.pending_rate = Some(command);
+		self.command_writers.set_playback_rate.write(command);
+	}
 
-		let mut manager = AudioManager::<DefaultBackend>::new(AudioManagerSettings::default())?;
-		let tweener = manager.add_modulator(TweenerBuilder {
-			initial_value: 0.5,
-		})?;
-		let mut sound = manager.play(StaticSoundData::from_file("sound.ogg")?)?;
-		sound.set_playback_rate(Value::FromModulator {
-			id: tweener.id(),
-			mapping: Mapping {
-				input_range: (0.0, 1.0),
-				output_range: (PlaybackRate(0.0), PlaybackRate(1.0)),
-				easing: Easing::Linear,
-			},
-		}, Tween {
-			duration: Duration::from_secs(3),
-			..Default::default()
-		});
-		# Result::<(), Box<dyn std::error::Error>>::Ok(())
-		# }
-		# #[cfg(not(feature = "symphonia"))]
-		# fn main() {}
-		```
-		*/
-		playback_rate: PlaybackRate,
-
+	handle_param_setters! {
 		/**
 		Sets the panning of the sound, where `-1.0` is hard left,
 		`0.0` is center, and `1.0` is hard right.

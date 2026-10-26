@@ -251,6 +251,25 @@ impl StageBinding {
         controls::project_group(heap, value, &mut kind)?;
         text_input::project(heap, value, &mut kind)?;
         let selected = overrides::selection(heap, value)?;
+        let interaction_offset = (saved.shape.prefix() + NodeProperty::PROPERTIES.len()) as u32;
+        let disabled = overrides::get(
+            heap,
+            fields,
+            saved.shape.prefix(),
+            selected,
+            NodeProperty::Enabled.index(),
+        )?
+        .as_bool()
+            == Some(false);
+        interaction::publish(
+            heap,
+            value,
+            interaction_offset,
+            reel_ui::stage::InteractionState {
+                disabled,
+                ..Default::default()
+            },
+        )?;
         let mut props = read_props(
             heap,
             fields,
@@ -272,16 +291,6 @@ impl StageBinding {
             cache.accept(heap, value)?;
             Some(cache)
         };
-        let interaction_offset = (saved.shape.prefix() + NodeProperty::PROPERTIES.len()) as u32;
-        interaction::publish(
-            heap,
-            value,
-            interaction_offset,
-            reel_ui::stage::InteractionState {
-                disabled: !props.enabled,
-                ..Default::default()
-            },
-        )?;
         let id = NodeId(saved.id);
         if heap.host_payload(value, 0)?.as_int() != Some(saved.id as i64) {
             return Err(AdapterError::Input("saved node identity"));
@@ -293,11 +302,12 @@ impl StageBinding {
                 shape: saved.shape,
                 handle,
                 interaction_offset,
-                interaction_listening: heap
-                    .table_entry(fields, interaction::callback_field(interaction_offset))?
-                    .1
-                    .tag()
-                    != ValueTag::Null,
+                interaction_listening: interaction::listening(
+                    heap,
+                    fields,
+                    interaction_offset,
+                    selected,
+                )?,
                 fields_version: heap.info(fields)?.content_version,
                 projection_dirty: false,
                 overrides,

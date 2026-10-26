@@ -346,14 +346,15 @@ await stage.presented(owner: scene);
 await run(tween(scene, opacity: 1, duration: 0.5));
 ```
 
-The control handles interaction while its children define appearance. Connect hover, press or focus state to colors and images with `derive`; use `focus_visible` for keyboard and gamepad focus cues.
+Use `appearance` to share a control's interaction paint. Background, text color, borders and transforms apply directly to the existing node; `focus_visible` marks keyboard and gamepad focus. Each state overrides its specified properties, with scope overrides taking precedence. Children and `derive` still compose image-based or other compound appearances.
 
 ```aside
+let look = appearance(base: {background: "#304060", corner_radius: 6},
+    hover: {color: "#ffd580"}, pressed: {background: "#203040"},
+    focus_visible: {border_width: 2}, disabled: {opacity: 0.4});
 column(gap: 12) {
-    let control = button(width: 240, height: 48, decorated: false);
-    control.add(text("Hover me", color: derive(|| if control.hover { "#ffd580" } else { "#ffffff" })));
-    control;
-    text("Another component");
+    button("Hover me", width: 240, height: 48, decorated: false, appearance: look);
+    button("Another component", width: 240, height: 48, decorated: false, appearance: look);
 }
 ```
 
@@ -1338,12 +1339,15 @@ fn main() {
     pause(music);
     resume(music);
     audio.volume(music, 0.2, duration: 0.5);
-    let sound = audio.play("assets/chime.wav", pan: -0.5);
+    let sound = audio.play("assets/chime.wav", pan: -0.5, rate: 0.8);
+    audio.rate(sound, 1.2, duration: 0.15);
     await sound;
     audio.stop(music, fade: 0.5);
     await music;
 }
 ```
+
+`rate` changes speed and pitch together: `2` plays twice as fast and raises pitch by an octave. `audio.rate` can change it over active playback time; pausing also pauses the change. Positions remain source seconds.
 
 `audio.queue` appends segments to one activity for introductions, loops and endings. Saves retain the current resource, position and queued segments.
 

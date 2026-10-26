@@ -148,6 +148,105 @@ fn runtime(source: &str) -> StoryRuntime {
 }
 
 #[test]
+fn interaction_appearance_preserves_pointer_press_and_tracks_ancestor_disable() {
+    let publish = |story: &mut StoryRuntime, bridge: &mut PresentationBridge, root, frame| {
+        for _ in 0..16 {
+            story.driver_mut().unwrap().sync(bridge, root).unwrap();
+            if story.driver().adapter().stage_ready() {
+                present(story, bridge, root, frame);
+                return;
+            }
+            story.wake_input();
+            drain(story);
+        }
+        panic!("appearance layout feedback did not settle");
+    };
+    let mut story = runtime(
+        r##"fn main() {
+        let data = model({enabled: true, clicks: 0});
+        let look = appearance(base: {background: "#102030"}, hover: {background: "#ffffff"},
+            pressed: {scale_x: 0.98, color: "#000000"}, disabled: {background: "#303030"});
+        stage.replace(stack {
+            stack(enabled: bind(data.enabled)) {
+                button("Action", width: 100, height: 40, decorated: false, appearance: look,
+                    on_click: || {data.clicks += 1;});
+            };
+            button("Disable", x: 140, width: 100, height: 40, on_click: || {data.enabled = false;});
+            text(derive(|| f"clicks:{data.clicks}"), y: 80);
+        });
+    }"##,
+    );
+    drain(&mut story);
+    let (mut bridge, root) = mount(story.driver().ui());
+    publish(&mut story, &mut bridge, root, 1);
+    let id = story.driver().adapter().stage().nodes().find(|node|
+        matches!(&node.kind, NodeKind::Button { label: Some(label), .. } if label == "Action")).unwrap().id;
+    for (index, kind) in ["move", "down", "up"].into_iter().enumerate() {
+        story
+            .driver_mut()
+            .unwrap()
+            .handle_pointer(&mut bridge, mouse(kind, (50., 20.)))
+            .unwrap();
+        story.wake_input();
+        drain(&mut story);
+        if kind == "down" {
+            let props = &story.driver().adapter().stage().node(id).unwrap().props;
+            assert_eq!(props.scale_x, 0.98);
+            assert_eq!(props.color, [0, 0, 0, 255]);
+        }
+        publish(&mut story, &mut bridge, root, index as u64 + 2);
+    }
+    assert!(
+        story
+            .driver()
+            .adapter()
+            .stage()
+            .nodes()
+            .any(|node| matches!(&node.kind, NodeKind::Text(text) if text.as_ref() == "clicks:1"))
+    );
+    for kind in ["move", "down", "up"] {
+        story
+            .driver_mut()
+            .unwrap()
+            .handle_pointer(&mut bridge, mouse(kind, (180., 20.)))
+            .unwrap();
+    }
+    story.wake_input();
+    drain(&mut story);
+    publish(&mut story, &mut bridge, root, 5);
+    story.wake_input();
+    drain(&mut story);
+    assert_eq!(
+        story
+            .driver()
+            .adapter()
+            .stage()
+            .node(id)
+            .unwrap()
+            .props
+            .background,
+        Some([48, 48, 48, 255])
+    );
+    for kind in ["move", "down", "up"] {
+        story
+            .driver_mut()
+            .unwrap()
+            .handle_pointer(&mut bridge, mouse(kind, (50., 20.)))
+            .unwrap();
+    }
+    story.wake_input();
+    drain(&mut story);
+    assert!(
+        story
+            .driver()
+            .adapter()
+            .stage()
+            .nodes()
+            .any(|node| matches!(&node.kind, NodeKind::Text(text) if text.as_ref() == "clicks:1"))
+    );
+}
+
+#[test]
 fn radio_group_snapshot_rebuilds_binding_identity_and_restores_selection_without_focus() {
     use reel_engine::aside::{SessionVm, snapshot::SnapshotBudget};
     use reel_engine::{Epoch, SessionId, SessionIdentity};

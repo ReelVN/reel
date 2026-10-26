@@ -72,6 +72,28 @@ impl Default for PlayerOptions {
     }
 }
 
+impl PlayerOptions {
+    /// Open one shared asset service for rendering, localization and media.
+    /// Prepared files take precedence over archives; otherwise the configured
+    /// directory or archive overlay is resolved for the selected resource target.
+    /// Transfers prepared file mappings to the service without duplicating them.
+    pub fn open_assets(&mut self) -> Result<crate::assets::Assets, reel_core::io::IoError> {
+        use crate::assets::Assets;
+        if let Some(files) = self.resource_files.take() {
+            Assets::selected(self.assets.clone(), files, self.asset_packages.clone())
+        } else if let Some(packages) = &self.asset_packages {
+            Assets::packaged_for_target(
+                self.assets.clone(),
+                packages.clone(),
+                self.asset_overlay.clone(),
+                self.resource_target.clone(),
+            )
+        } else {
+            Assets::directory_for_target(self.assets.clone(), self.resource_target.clone())
+        }
+    }
+}
+
 /// A running player assembled from a renderer and portable host services.
 /// The platform owns device recovery and its event loop; this type owns the
 /// session, accepted view, resource readiness and logical time suspension.

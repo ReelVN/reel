@@ -88,6 +88,7 @@ impl CaptureBackend for Offscreen {
 
 pub struct ScenarioCapture {
     backend: Option<Offscreen>,
+    capture_enabled: bool,
     captures: CaptureService<GpuCapture>,
     pool: BudgetPool,
     accepted: Option<RenderFrame>,
@@ -97,34 +98,41 @@ pub struct ScenarioCapture {
     active_fonts: Vec<String>,
 }
 impl ScenarioCapture {
-    pub fn new(kind: &str) -> Self {
-        let capture_dir = std::env::var_os("REEL_SCENARIO_CAPTURE_DIR").map(|directory| {
-            let directory = PathBuf::from(directory).join(kind);
-            std::fs::create_dir_all(&directory).unwrap_or_else(|error| {
-                panic!("scenario capture {}: {error}", directory.display())
+    pub fn new(kind: &str, capture: bool) -> Self {
+        let capture_dir = capture
+            .then(|| std::env::var_os("REEL_SCENARIO_CAPTURE_DIR"))
+            .flatten()
+            .map(|directory| {
+                let directory = PathBuf::from(directory).join(kind);
+                std::fs::create_dir_all(&directory).unwrap_or_else(|error| {
+                    panic!("scenario capture {}: {error}", directory.display())
+                });
+                directory
             });
-            directory
-        });
         let gpu = pollster::block_on(Gpu::request(
             &wgpu::Instance::default(),
             None,
             DeviceGeneration(1),
             GpuLimits::default(),
         ))
-        .expect("REEL_SCENARIO_GPU_CAPTURE requires an available GPU adapter");
+        .expect("GPU scenario presentation requires an available GPU adapter");
         eprintln!("scenario GPU: {:?}", gpu.adapter.get_info());
-        Self::assemble(Some(Offscreen {
-            renderer: Renderer::new(gpu),
-            stats: CaptureStats::default(),
-            capture_dir,
-        }))
+        Self::assemble(
+            Some(Offscreen {
+                renderer: Renderer::new(gpu),
+                stats: CaptureStats::default(),
+                capture_dir,
+            }),
+            capture,
+        )
     }
     pub fn cpu() -> Self {
-        Self::assemble(None)
+        Self::assemble(None, false)
     }
-    fn assemble(backend: Option<Offscreen>) -> Self {
+    fn assemble(backend: Option<Offscreen>, capture_enabled: bool) -> Self {
         Self {
             backend,
+            capture_enabled,
             captures: CaptureService::new(128 << 20, WakeSignal::new(|| {})),
             pool: BudgetPool::new(
                 BudgetCategory::CpuOutput,
@@ -163,7 +171,7 @@ impl ScenarioCapture {
         backend.renderer.poll().unwrap();
         // Drain prior submissions before starting a readback; the production
         // capture service treats a rejected admission as the request's result.
-        if self.captures.busy() || !backend.renderer.has_pending() {
+        if self.capture_enabled && (self.captures.busy() || !backend.renderer.has_pending()) {
             self.captures
                 .drive(backend, driver, self.accepted.as_ref())
                 .unwrap()

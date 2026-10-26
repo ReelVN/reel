@@ -143,6 +143,7 @@ pub fn documentation() -> Vec<aside_host::NativeDocumentation> {
                 .or_else(|| super::masks::documentation(&contract.symbol))
                 .or_else(|| super::effects::documentation(&contract.symbol))
                 .or_else(|| super::gradients::documentation(&contract.symbol))
+                .or_else(|| super::stage::interaction_appearance::documentation(&contract.symbol))
                 .or_else(|| super::media::documentation(&contract.symbol))
                 .or_else(|| super::data::documentation(&contract.symbol))
                 .or_else(|| super::saves::documentation(&contract.symbol))
@@ -295,6 +296,7 @@ fn build_api() -> Api {
     super::masks::describe(&mut api);
     super::effects::describe(&mut api);
     super::gradients::describe(&mut api);
+    super::stage::interaction_appearance::describe(&mut api);
     super::capture::describe(&mut api);
     super::assets::describe(&mut api);
     super::window::describe(&mut api);

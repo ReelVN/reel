@@ -109,6 +109,7 @@ pub(super) mod controls;
 pub(super) mod flow;
 pub(super) mod input;
 mod interaction;
+pub(in crate::aside) mod interaction_appearance;
 pub(super) mod overrides;
 pub(super) mod popup;
 pub(super) mod scroll;
@@ -340,6 +341,10 @@ pub(super) enum NodeProperty {
     /// opacity, mask and blend. Null preserves the subtree's original colors.
     #[aside(name = "effect", ty = Any, doc_type = aside_host::source::nullable(aside_host::source::named("reel::types::Effect")), default = null, validate = super::effects::validate)]
     Effect,
+    /// Immutable interaction paint created by appearance. Selection overlays ordinary
+    /// values without writing bindings or replacing this node. Scope overrides win.
+    #[aside(name = "appearance", ty = Any, doc_type = aside_host::source::nullable(aside_host::source::named("reel::types::Appearance")), default = null, validate = interaction_appearance::validate)]
+    Appearance,
 }
 
 pub(super) struct StageBinding {
@@ -804,9 +809,12 @@ impl StageBinding {
                 shape,
                 handle: heap.handle(value)?,
                 interaction_offset: field_count as u32,
-                interaction_listening: args[prefix.len() + NodeProperty::OnInteraction.index()]
-                    .tag()
-                    != ValueTag::Null,
+                interaction_listening: interaction::listening(
+                    heap,
+                    fields,
+                    field_count as u32,
+                    Value::NULL,
+                )?,
                 fields_version: heap.info(fields)?.content_version,
                 projection_dirty: false,
                 overrides: None,
@@ -1154,14 +1162,9 @@ impl StageBinding {
             binding.mask_source = mask_source;
             binding.effect_source = effect_source;
             let fields = heap.host_fields(heap.import_handle(binding.handle)?)?;
-            binding.interaction_listening = heap
-                .table_entry(
-                    fields,
-                    interaction::callback_field(binding.interaction_offset),
-                )?
-                .1
-                .tag()
-                != ValueTag::Null;
+            let selected = overrides::selection(heap, host)?;
+            binding.interaction_listening =
+                interaction::listening(heap, fields, binding.interaction_offset, selected)?;
         }
         Ok(())
     }
@@ -2331,14 +2334,16 @@ fn read_props(
     effects: &super::source::EffectProducts,
     effect_projection: &mut super::effects::ProjectionCache,
 ) -> Result<NodeProps, AdapterError> {
+    let appearance = interaction_appearance::Selection::new(heap, fields, offset, selected)?;
     let get = |property: NodeProperty| -> Result<Value, AdapterError> {
-        Ok(overrides::get(
-            heap,
-            fields,
-            offset,
-            selected,
-            property.index(),
-        )?)
+        let index = property.index();
+        if let Some(value) = overrides::selected_value(heap, selected, index)? {
+            return Ok(value);
+        }
+        Ok(match appearance.get(index) {
+            Some(value) => value,
+            None => heap.table_entry(fields, (offset + index) as u32)?.1,
+        })
     };
     let background = get(NodeProperty::Background)?;
     validate_callback(heap, get(NodeProperty::OnInteraction)?)?;

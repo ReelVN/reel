@@ -1,6 +1,8 @@
 //! Platform-independent audio routing and transport shared by hosts and media.
 
 use std::time::Duration;
+mod rate;
+pub use rate::AudioRate;
 
 /// A half-open content interval. An absent end selects the end of the source.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

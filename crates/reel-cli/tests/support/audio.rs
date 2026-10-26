@@ -5,12 +5,11 @@ use reel_media::{
     AudioRequest, AudioStatus, CallbackTiming, ChannelLayout, OfflineOutput, PcmFill, SampleFormat,
 };
 use reel_player::{
-    assets::{AssetOptions, Assets},
+    assets::Assets,
     media::{MediaOptions, MediaPlayer},
 };
 use std::{
     cell::RefCell,
-    path::PathBuf,
     rc::{Rc, Weak},
     time::Duration,
 };
@@ -66,16 +65,13 @@ impl AudioClock {
     /// registrations let retiring outputs finish without retaining their PCM.
     pub fn factory(
         &self,
-        root: PathBuf,
+        assets: Assets,
     ) -> impl Fn() -> Box<dyn reel_engine::media::MediaBackend> + 'static {
         let outputs = self.outputs.clone();
         move || {
             let outputs = outputs.clone();
             Box::new(MediaPlayer::new(
-                Assets::directory(AssetOptions {
-                    root: root.clone(),
-                    ..Default::default()
-                }),
+                assets.clone(),
                 MediaOptions::default(),
                 WakeSignal::new(|| {}),
                 move |wake| {
