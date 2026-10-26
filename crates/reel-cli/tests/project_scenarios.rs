@@ -378,6 +378,12 @@ fn execute_project_with_capture(
         if gpu_capture {
             eprintln!("{kind} GPU captures: {:?}", captures.stats());
             capture_stats.push(captures.stats());
+        } else {
+            assert_eq!(
+                captures.stats().count,
+                0,
+                "presentation-only scenario captured pixels"
+            );
         }
         eprintln!(
             "{kind}: {} completed; time_scale={time_scale}, frames={frame}, session_replacements={replacements}, audio={:?}",

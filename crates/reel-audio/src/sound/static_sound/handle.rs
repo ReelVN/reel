@@ -6,7 +6,7 @@ use crate::{
 	sound::{IntoOptionalRegion, PlaybackState},
 };
 
-use super::{CommandWriters, sound::Shared};
+use super::{CommandWriters, RateChangeCommand, sound::Shared};
 
 /// Controls a static sound.
 #[derive(Debug)]
@@ -14,7 +14,7 @@ pub struct StaticSoundHandle {
 	pub(super) command_writers: CommandWriters,
 	pub(super) shared: Arc<Shared>,
 	pub(super) pending_seek: (u64, f64),
-	pub(super) pending_rate: Option<(u64, crate::command::ValueChangeCommand<PlaybackRate>)>,
+	pub(super) pending_rate: Option<RateChangeCommand>,
 }
 
 impl StaticSoundHandle {
@@ -26,15 +26,18 @@ impl StaticSoundHandle {
 			if self.pending_seek.0 != self.shared.applied_seek() {
 				playback.position = self.pending_seek.1;
 			}
-			if let Some((sequence, command)) = self.pending_rate
-				&& sequence != applied_rate
-				&& let crate::Value::Fixed(target) = command.target
+			if let Some(command) = self.pending_rate
+				&& command.sequence != applied_rate
+				&& let crate::Value::Fixed(target) = command.change.target
 			{
-				if command.tween.duration.is_zero() {
+				if let Some(baseline) = command.baseline_after(applied_rate) {
+					playback.rate = baseline;
+				}
+				if command.change.tween.duration.is_zero() {
 					playback.rate = target;
 				}
 				playback.rate_target = target;
-				playback.rate_remaining = command.tween.duration;
+				playback.rate_remaining = command.change.tween.duration;
 			}
 		}
 		playback
@@ -252,16 +255,23 @@ impl StaticSoundHandle {
 	pub fn set_playback_rate(&mut self, rate: impl Into<crate::Value<PlaybackRate>>, tween: Tween) {
 		let sequence = self
 			.pending_rate
-			.map_or(0, |(sequence, _)| sequence)
+			.map_or(0, |command| command.sequence)
 			.wrapping_add(1);
-		let command = crate::command::ValueChangeCommand {
-			target: rate.into(),
-			tween,
+		let target = rate.into();
+		let mut baseline = self.pending_rate.and_then(|command| command.baseline);
+		if tween.duration.is_zero()
+			&& tween.start_time == StartTime::Immediate
+			&& let crate::Value::Fixed(rate) = target
+		{
+			baseline = Some((sequence, rate));
+		}
+		let command = RateChangeCommand {
+			sequence,
+			baseline,
+			change: crate::command::ValueChangeCommand { target, tween },
 		};
-		self.pending_rate = Some((sequence, command));
-		self.command_writers
-			.set_playback_rate
-			.write((sequence, command));
+		self.pending_rate = Some(command);
+		self.command_writers.set_playback_rate.write(command);
 	}
 
 	handle_param_setters! {

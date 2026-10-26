@@ -64,7 +64,12 @@ impl<T: Tweenable> Parameter<T> {
 				..
 			} => Some((
 				target,
-				tween.duration.saturating_sub(Duration::from_secs_f64(time)),
+				// Rounding elapsed seconds to nanoseconds must not publish a
+				// finished snapshot while the f64 tween is still in progress.
+				tween
+					.duration
+					.saturating_sub(Duration::from_secs_f64(time))
+					.max(Duration::from_nanos(1)),
 			)),
 			_ => None,
 		}

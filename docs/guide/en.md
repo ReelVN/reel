@@ -1347,6 +1347,8 @@ fn main() {
 }
 ```
 
+`rate` changes speed and pitch together: `2` plays twice as fast and raises pitch by an octave. `audio.rate` can change it over active playback time; pausing also pauses the change. Positions remain source seconds.
+
 `audio.queue` appends segments to one activity for introductions, loops and endings. Saves retain the current resource, position and queued segments.
 
 ```aside

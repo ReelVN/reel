@@ -41,6 +41,7 @@ pub(super) struct StaticSound {
 	volume: Parameter<Decibels>,
 	playback_rate: Parameter<PlaybackRate>,
 	rate_sequence: u64,
+	pending_rate: Option<super::RateChangeCommand>,
 	panning: Parameter<Panning>,
 	shared: Arc<Shared>,
 	queue: Option<QueueRenderer>,
@@ -85,6 +86,7 @@ impl StaticSound {
 			volume: Parameter::new(settings.volume, Decibels::IDENTITY),
 			playback_rate,
 			rate_sequence: 0,
+			pending_rate: None,
 			panning: Parameter::new(settings.panning, Panning::CENTER),
 			shared: Arc::new(Shared {
 				state: AtomicU8::new(PlaybackState::Playing as u8),
@@ -393,9 +395,10 @@ impl StaticSound {
 
 	fn read_commands(&mut self) {
 		read_commands_into_parameters!(self, volume, panning);
-		if let Some((sequence, command)) = self.command_readers.set_playback_rate.read() {
-			self.playback_rate.set(command.target, command.tween);
-			self.rate_sequence = sequence;
+		if let Some(command) = self.command_readers.set_playback_rate.read() {
+			// A seek can publish during this method. Keep the previous parameter
+			// and acknowledgement together until process actually applies the rate.
+			self.pending_rate = Some(command);
 		}
 		if let Some(loop_region) = self.command_readers.set_loop_region.read() {
 			self.transport.set_loop_region(
@@ -518,6 +521,21 @@ impl Sound for StaticSound {
 				.queue
 				.as_ref()
 				.is_none_or(|queue| queue.started.load(Ordering::Acquire));
+		let rate_command = self.pending_rate.take();
+		if let Some(command) = rate_command {
+			if let Some(baseline) = command.baseline_after(self.rate_sequence) {
+				self.playback_rate.set(
+					crate::Value::Fixed(baseline),
+					Tween {
+						duration: std::time::Duration::ZERO,
+						..Default::default()
+					},
+				);
+				self.playback_rate.update(0.0, info);
+			}
+			self.playback_rate
+				.set(command.change.target, command.change.tween);
+		}
 		// Rate ramps use active transport time; zero-duration changes also apply
 		// while paused or waiting for the initial queue to be committed.
 		self.playback_rate.update(
@@ -528,6 +546,9 @@ impl Sound for StaticSound {
 			},
 			info,
 		);
+		if let Some(command) = rate_command {
+			self.rate_sequence = command.sequence;
+		}
 		if will_never_start {
 			self.playback_state_manager.mark_as_stopped();
 			self.update_shared_playback_state();

@@ -129,3 +129,86 @@ fn held_queue_freezes_rate_ramp_and_segments_share_the_transport_rate() {
 	assert!((state.rate.0 - 2.2).abs() < 1e-9);
 	assert!((state.position - 0.22).abs() < 0.003, "{state:?}");
 }
+
+#[test]
+fn pending_immediate_rate_is_the_start_of_the_next_ramp() {
+	let (mut sound, mut handle) = queue_data(1000, &vec![0.5; 10_000]).split();
+	let immediate = Tween {
+		duration: Duration::ZERO,
+		..Default::default()
+	};
+	handle.set_playback_rate(0.5, immediate);
+	assert_eq!(handle.playback().rate.0, 0.5);
+	let ramp = Tween {
+		duration: Duration::from_secs(1),
+		..Default::default()
+	};
+	handle.set_playback_rate(2.5, ramp);
+	assert_eq!(handle.playback().rate.0, 0.5);
+	handle.set_playback_rate(1.5, ramp);
+	assert_eq!(
+		handle.playback().rate.0,
+		0.5,
+		"coalescing must retain the accepted immediate value"
+	);
+	advance(&mut sound, 400);
+	assert!((handle.playback().rate.0 - 0.9).abs() < 1e-9);
+
+	// A later ramp must start at the live rate, not reapply the old immediate base.
+	handle.set_playback_rate(1.9, ramp);
+	assert!((handle.playback().rate.0 - 0.9).abs() < 1e-9);
+	advance(&mut sound, 200);
+	assert!((handle.playback().rate.0 - 1.1).abs() < 1e-9);
+}
+
+#[test]
+fn seek_cannot_acknowledge_an_unapplied_immediate_rate() {
+	let (mut sound, mut handle) = queue_data(1000, &vec![0.5; 10_000]).split();
+	handle.set_playback_rate(
+		0.5,
+		Tween {
+			duration: Duration::ZERO,
+			..Default::default()
+		},
+	);
+	handle.seek_to(0.1);
+	sound.on_start_processing();
+	let pending = handle.playback();
+	assert_eq!(
+		(
+			pending.rate.0,
+			pending.rate_target.0,
+			pending.rate_remaining
+		),
+		(0.5, 0.5, Duration::ZERO)
+	);
+	advance(&mut sound, 1);
+	assert_eq!(handle.playback().rate.0, 0.5);
+}
+
+#[test]
+fn unfinished_subnanosecond_rate_ramp_has_a_restorable_snapshot() {
+	let (mut sound, mut handle) = queue_data(48_000, &vec![0.5; 10_000]).split();
+	handle.set_playback_rate(
+		2.,
+		Tween {
+			duration: Duration::from_nanos(2_666_667),
+			..Default::default()
+		},
+	);
+	sound.on_start_processing();
+	sound.process(
+		&mut [Frame::ZERO; 128],
+		1. / 48_000.,
+		&MockInfoBuilder::new().build(),
+	);
+	sound.on_start_processing();
+	let state = handle.playback();
+	assert!(state.rate.0 < state.rate_target.0, "{state:?}");
+	assert_eq!(state.rate_remaining, Duration::from_nanos(1));
+	sound.process_one(1. / 48_000., &MockInfoBuilder::new().build());
+	sound.on_start_processing();
+	let finished = handle.playback();
+	assert_eq!(finished.rate, finished.rate_target);
+	assert_eq!(finished.rate_remaining, Duration::ZERO);
+}
