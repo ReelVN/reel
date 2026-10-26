@@ -59,6 +59,10 @@ const NAMES: &[&str] = &[
     "u_step5",
     "u_step6",
     "u_step7",
+    "u_coordinates[0]",
+    "u_fetches[0]",
+    "u_seed0",
+    "u_seed1",
 ];
 pub(super) type Values<'a> = SmallVec<[UniformValue<'a>; 24]>;
 pub(super) struct Shader {
@@ -141,6 +145,9 @@ pub(super) struct Programs {
     pub mask_8: Shader,
     pub mask_16: Shader,
     pub mask_16_compact: Shader,
+    pub mask_split_1: Shader,
+    pub mask_split_2: Shader,
+    pub mask_split_2_alpha: Shader,
     pub mask_32_compact: Shader,
     pub mask: Shader,
     pub mask_sample_chain: Shader,
@@ -155,7 +162,7 @@ pub(super) struct Programs {
 impl Programs {
     pub fn new(context: &native::Context, budget: &BudgetPool) -> Result<Self, GlesError> {
         let bytes = (size_of::<Self>()
-            + NAMES.len() * size_of::<Option<Uniform>>() * 24
+            + NAMES.len() * size_of::<Option<Uniform>>() * 27
             + 4 * size_of::<crate::common::mesh::Vertex>()
             + 6 * 4) as u64;
         let storage = budget
@@ -192,6 +199,9 @@ impl Programs {
             mask_8: Shader::new(context, shader_code!("mask_8"))?,
             mask_16: Shader::new(context, shader_code!("mask_16"))?,
             mask_16_compact: Shader::new(context, shader_code!("mask_16_compact"))?,
+            mask_split_1: Shader::new(context, shader_code!("mask_split_1"))?,
+            mask_split_2: Shader::new(context, shader_code!("mask_split_2"))?,
+            mask_split_2_alpha: Shader::new(context, shader_code!("mask_split_2_alpha"))?,
             mask_32_compact: Shader::new(context, shader_code!("mask_32_compact"))?,
             mask: Shader::new(context, shader_code!("mask"))?,
             mask_sample_chain: Shader::new(context, shader_code!("mask_sample_chain"))?,

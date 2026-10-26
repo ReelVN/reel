@@ -22,7 +22,7 @@ use reel_ui::{
     kurbo::{Affine, Rect},
     peniko::{Brush, Color, ImageAlphaType, ImageFormat},
     resources::{ColorEncoding, ResourceRegistry},
-    stage::MaskProgram,
+    stage::{MaskChannel, MaskOp, MaskProgram},
 };
 
 #[path = "support/mask_dag.rs"]
@@ -32,6 +32,17 @@ use mask_dag::operations;
 #[test]
 #[ignore = "requires a native GLES context"]
 fn full_mask_dag_completes_at_all_register_bank_capacities() {
+    submit_masks(false);
+}
+
+#[cfg(feature = "wgpu")]
+#[test]
+#[ignore = "requires an actual WGPU adapter"]
+fn split_masks_submit_parameter_updates_with_wgpu() {
+    submit_masks(true);
+}
+
+fn submit_masks(wgpu: bool) {
     let pool = pool();
     let mut registry = ResourceRegistry::new(4, 65536).unwrap();
     let handles: Vec<_> = (0..4)
@@ -61,15 +72,44 @@ fn full_mask_dag_completes_at_all_register_bank_capacities() {
                 .unwrap()
         })
         .collect();
-    let mut renderer = GlesBackend::headless([400, 300], GlesLimits::default()).unwrap();
+    let mut renderer =
+        (!wgpu).then(|| GlesBackend::headless([400, 300], GlesLimits::default()).unwrap());
+    #[cfg(feature = "wgpu")]
+    let mut wgpu_renderer = wgpu.then(|| {
+        use reel_render::gpu::{DeviceGeneration, Gpu, Renderer};
+        Renderer::new(
+            pollster::block_on(Gpu::request(
+                &wgpu::Instance::default(),
+                None,
+                DeviceGeneration(1),
+                Default::default(),
+            ))
+            .unwrap(),
+        )
+    });
     let mut events = Vec::new();
+    let mut shared_sample = operations()[..13].to_vec();
+    shared_sample[4] = MaskOp::Sample {
+        image: 0,
+        channel: MaskChannel::Gray,
+        coordinates: [0, 0, 1, 1],
+        repeat: 0,
+    };
+    let mut alpha_only = operations()[..13].to_vec();
+    if let MaskOp::Sample { channel, .. } = &mut alpha_only[4] {
+        *channel = MaskChannel::Alpha;
+    }
     let cases = [
         operations()[..8].to_vec(),
         operations()[..16].to_vec(),
         operations(),
         mask_dag::compact_operations(),
+        shared_sample,
+        alpha_only,
     ];
     for (case, operations) in cases.into_iter().enumerate() {
+        #[cfg(feature = "wgpu")]
+        let mut wgpu_resident = None;
         let count = operations.len();
         let program = MaskProgram::new(
             operations,
@@ -104,6 +144,28 @@ fn full_mask_dag_completes_at_all_register_bank_capacities() {
             let source = bridge.record(id).unwrap();
             let snapshot = registry.freeze(&handles, &pool).unwrap();
             let frame = build(source, snapshot, &pool);
+            #[cfg(feature = "wgpu")]
+            if let Some(wgpu_renderer) = &mut wgpu_renderer {
+                let prepared = wgpu_renderer.prepare(&frame).unwrap();
+                wgpu_renderer.submit(prepared).unwrap();
+                wgpu_renderer
+                    .gpu()
+                    .device
+                    .poll(wgpu::PollType::wait_indefinitely())
+                    .unwrap();
+                wgpu_renderer.poll().unwrap();
+                let bytes = wgpu_renderer.usage().resources;
+                if let Some(previous) = wgpu_resident {
+                    assert_eq!(
+                        bytes, previous,
+                        "split parameters reuse pipeline and CPU plan storage"
+                    );
+                }
+                wgpu_resident = Some(bytes);
+            }
+            let Some(renderer) = &mut renderer else {
+                continue;
+            };
             renderer
                 .configure(SurfaceInfo {
                     physical_size: [400, 300],
@@ -130,5 +192,7 @@ fn full_mask_dag_completes_at_all_register_bank_capacities() {
             }
         }
     }
-    renderer.close().unwrap();
+    if let Some(renderer) = renderer {
+        renderer.close().unwrap();
+    }
 }

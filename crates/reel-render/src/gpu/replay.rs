@@ -745,17 +745,18 @@ impl Context<'_> {
             blend,
         };
         if let Some((definition, uv)) = image_mask {
-            self.transient(
-                super::mask::parameter_cost(definition.images.len())
-                    + ((8 + definition.images.len()) * size_of::<wgpu::BindGroupEntry>()
-                        + definition.images.len() * size_of::<&wgpu::TextureView>())
-                        as u64,
-            )?;
             let pipeline = self.pipelines.masks.get(
                 self.gpu,
                 self.quality,
                 &definition.program,
+                definition.parameters,
                 &self.budgets.resources,
+            )?;
+            self.transient(
+                pipeline.parameter_cost(definition.images.len())
+                    + ((8 + definition.images.len()) * size_of::<wgpu::BindGroupEntry>()
+                        + definition.images.len() * size_of::<&wgpu::TextureView>())
+                        as u64,
             )?;
             let images = definition
                 .images
@@ -834,17 +835,18 @@ impl Context<'_> {
             1. / definition.bounds.height(),
         ) * Affine::translate((-definition.bounds.x0, -definition.bounds.y0))
             * transform.inverse();
-        self.transient(
-            super::mask::parameter_cost(definition.images.len())
-                + ((8 + definition.images.len()) * size_of::<wgpu::BindGroupEntry>()
-                    + definition.images.len() * size_of::<&wgpu::TextureView>())
-                    as u64,
-        )?;
         let pipeline = self.pipelines.masks.get(
             self.gpu,
             self.quality,
             &definition.program,
+            definition.parameters,
             &self.budgets.resources,
+        )?;
+        self.transient(
+            pipeline.parameter_cost(definition.images.len())
+                + ((8 + definition.images.len()) * size_of::<wgpu::BindGroupEntry>()
+                    + definition.images.len() * size_of::<&wgpu::TextureView>())
+                    as u64,
         )?;
         let images = definition
             .images
