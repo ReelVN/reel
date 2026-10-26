@@ -7,7 +7,7 @@
 
 mod core;
 mod curve;
-pub use curve::sample_curve;
+pub use curve::{curve_key, curve_key_count, sample_curve};
 mod math;
 mod random;
 mod source;

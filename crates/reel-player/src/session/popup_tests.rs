@@ -170,6 +170,231 @@ fn click(driver: &mut AsideSessionUi, bridge: &mut PresentationBridge, point: Po
     drive(driver);
 }
 #[test]
+fn source_and_asb_inline_text_fragments_preserve_edge_space_advance() {
+    const SOURCE: &str = r##"fn main(){
+        stage.replace(stack(width:640,height:420){
+            row(x:20,y:10,gap:0){
+                text("Add ",font_size:20,color:"#ff0000");
+                button(decorated:false,padding:0){text("Polychrome",font_size:20);}
+            }
+            text("Add Polychrome",x:20,y:50,font_size:20);
+            row(x:20,y:90,gap:0){text("  A  ",font_size:20);text(" B",font_size:20);}
+            text("  A   B",x:20,y:130,font_size:20);
+            row(x:20,y:170,gap:0){text("   ",font_size:20);text("C",font_size:20);}
+            text("   C",x:20,y:210,font_size:20);
+            row(x:20,y:250,gap:0){text("增强 ",font_size:20);text("倍率",font_size:20);}
+            text("增强 倍率",x:20,y:290,font_size:20);
+        });
+        narrator("wait");
+    }"##;
+    let mut fonts = vec![reel_ui::peniko::Blob::from(
+        include_bytes!(
+            "../../../../examples/author_arcade/resources/fonts/AtkinsonHyperlegible-Regular.ttf"
+        )
+        .to_vec(),
+    )];
+    if let Some(path) = std::env::var_os("REEL_SESSION_FONT") {
+        fonts.push(std::fs::read(path).unwrap().into());
+    }
+    for font in fonts {
+        for encoded in [false, true] {
+            let mut driver = story(SOURCE, encoded);
+            drive(&mut driver);
+            let (mut bridge, root) = mount_with_font(driver.ui(), Some(font.clone()));
+            let frame = present(&mut driver, &mut bridge, root, 1);
+            let base = SessionUi::stage_widget(&bridge, root).unwrap();
+            let geometry = |value: &str| {
+                let text = node(
+                    &driver,
+                    |kind| matches!(kind, NodeKind::Text(text) if text.as_ref() == value),
+                );
+                driver
+                    .ui()
+                    .read_geometry(
+                        &bridge,
+                        &frame,
+                        root,
+                        base,
+                        reel_engine::aside::GeometryQuery {
+                            sequence: 1,
+                            node: text,
+                            relative_to: None,
+                        },
+                    )
+                    .unwrap()
+            };
+            for (left_text, right_text, combined_text) in [
+                ("Add ", "Polychrome", "Add Polychrome"),
+                ("  A  ", " B", "  A   B"),
+                ("   ", "C", "   C"),
+                ("增强 ", "倍率", "增强 倍率"),
+            ] {
+                let left = geometry(left_text);
+                let right = geometry(right_text);
+                let combined = geometry(combined_text);
+                assert!(left.bounds[2] > 0., "space-only fragments retain advance");
+                assert!((left.bounds[0] + left.bounds[2] - right.bounds[0]).abs() < 0.001);
+                // Layout rounds node edges to pixels; text carets retain full advances.
+                assert!(
+                    (left.bounds[2] + right.bounds[2] - combined.bounds[2]).abs() <= 1.,
+                    "{combined_text:?}, encoded={encoded}: {} + {} != {}",
+                    left.bounds[2],
+                    right.bounds[2],
+                    combined.bounds[2]
+                );
+                let left_caret = left.text_caret.unwrap();
+                let right_caret = right.text_caret.unwrap();
+                let combined_caret = combined.text_caret.unwrap();
+                assert!((left_caret[0] - right.bounds[0]).abs() <= 1.);
+                assert!(
+                    (right_caret[0] - combined_caret[0]).abs() <= 1.,
+                    "fragment endpoints follow the same pixel snapping as their nodes"
+                );
+                assert!(
+                    ((left_caret[0] - left.bounds[0]) + (right_caret[0] - right.bounds[0])
+                        - (combined_caret[0] - combined.bounds[0]))
+                        .abs()
+                        < 0.001,
+                    "{combined_text:?}, encoded={encoded}: unrounded text advances agree"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn source_and_asb_nonmodal_hover_popup_preserves_fixed_and_natural_anchors() {
+    const SOURCE: &str = r#"fn main(){
+        let data=model({built:0,closed:0,clicks:0,hover:false,caption:"Help"});
+        let mut hint=null;
+        let anchor=button(ANCHOR_SIZE decorated:false,padding:0,
+            on_click:||{data.clicks+=1;data.caption="Updated Help";},
+            on_interaction:|e|{
+                data.hover=e.hover;
+                if e.hover && hint==null {
+                    data.built+=1;
+                    hint=e.target.add(popup(placement:"top-start",offset:12,
+                        modal:false,width:120,height:60){
+                            text(derive(||data.caption),width:120,height:60);
+                            PORTAL_CONTROL
+                        });
+                } else if !e.hover && hint!=null {
+                    data.closed+=1;hint.remove();hint=null;
+                }
+            }){text("AAA",font:"Reel Weight Fixture",font_size:30);};
+        stage.replace(stack(width:640,height:420){
+            column(x:200,y:200,width:200){row(width:200,justify:"center"){anchor;}}
+            text(derive(||f"counts:{data.built}:{data.closed}:{data.clicks}:{data.hover}"),y:380);
+        });
+        narrator("wait");
+    }"#;
+    for (fixed, encoded) in [(false, false), (false, true), (true, false), (true, true)] {
+        let source = SOURCE
+            .replace(
+                "ANCHOR_SIZE",
+                if fixed { "width:80,height:80," } else { "" },
+            )
+            .replace(
+                "PORTAL_CONTROL",
+                if fixed { "" } else { "button(\"Hint\");" },
+            );
+        let mut driver = story(&source, encoded);
+        drive(&mut driver);
+        let anchor = node(&driver, |kind| matches!(kind, NodeKind::Button { .. }));
+        let (mut bridge, root) = mount(&driver, false);
+        let first = present(&mut driver, &mut bridge, root, 1);
+        let widget = SessionUi::projected_node(&bridge, root, anchor).unwrap();
+        let original = bounds(&first, widget);
+        if fixed {
+            assert_eq!(original.size(), reel_ui::kurbo::Size::new(80., 80.));
+        }
+        let point = original.center();
+        let revision = first.geometry().get(widget).unwrap().input_revision;
+        let binding = driver.ui().binding.borrow().buttons[&anchor];
+        let mut hint_button = None;
+        for (index, kind) in ["move", "down", "up"].into_iter().enumerate() {
+            driver
+                .handle_pointer(&mut bridge, mouse(kind, (point.x, point.y)))
+                .unwrap();
+            drive(&mut driver);
+            let frame = present(&mut driver, &mut bridge, root, index as u64 + 2);
+            drive(&mut driver);
+            eprintln!(
+                "fixed={fixed} encoded={encoded} {kind}: bounds={:?}, hit={:?}, input_revision={}, binding={}",
+                bounds(&frame, widget),
+                frame.geometry().hit_test(point),
+                frame.geometry().get(widget).unwrap().input_revision,
+                driver.ui().binding.borrow().buttons[&anchor]
+            );
+            assert_eq!(
+                bounds(&frame, widget),
+                original,
+                "portal preserves anchor size"
+            );
+            assert_eq!(frame.geometry().hit_test(point), Some(widget));
+            assert_eq!(
+                frame.geometry().get(widget).unwrap().input_revision,
+                revision
+            );
+            assert_eq!(driver.ui().binding.borrow().buttons[&anchor], binding);
+            let popup = node(&driver, |kind| matches!(kind, NodeKind::Popup(_)));
+            let popup = SessionUi::projected_node(&bridge, root, popup).unwrap();
+            assert_eq!(bounds(&frame, popup).y1, original.y0 - 12.);
+            if !fixed {
+                let hint = node(
+                    &driver,
+                    |kind| matches!(kind, NodeKind::Button { label: Some(label), .. } if label == "Hint"),
+                );
+                assert!(driver.ui().binding.borrow().buttons.contains_key(&hint));
+                hint_button = Some(hint);
+            }
+            assert_eq!(
+                counter(&driver),
+                if kind == "up" {
+                    "counts:1:0:1:true"
+                } else {
+                    "counts:1:0:0:true"
+                },
+                "{kind}, fixed={fixed}, encoded={encoded}"
+            );
+        }
+        node(
+            &driver,
+            |kind| matches!(kind, NodeKind::Text(text) if text.as_ref() == "Updated Help"),
+        );
+        for sequence in 5..=8 {
+            let frame = present(&mut driver, &mut bridge, root, sequence);
+            drive(&mut driver);
+            assert_eq!(bounds(&frame, widget), original);
+            assert_eq!(frame.geometry().hit_test(point), Some(widget));
+            assert_eq!(
+                frame.geometry().get(widget).unwrap().input_revision,
+                revision
+            );
+            assert_eq!(driver.ui().binding.borrow().buttons[&anchor], binding);
+            assert_eq!(
+                counter(&driver),
+                "counts:1:0:1:true",
+                "stationary frame {sequence}, fixed={fixed}, encoded={encoded}"
+            );
+        }
+        driver
+            .handle_pointer(&mut bridge, mouse("move", (20., 350.)))
+            .unwrap();
+        drive(&mut driver);
+        present(&mut driver, &mut bridge, root, 9);
+        assert_eq!(counter(&driver), "counts:1:1:1:false");
+        assert_eq!(SessionUi::physical_stages(&bridge, root).count(), 1);
+        if let Some(hint) = hint_button {
+            assert!(
+                !driver.ui().binding.borrow().buttons.contains_key(&hint),
+                "retired popup buttons release their bindings"
+            );
+        }
+    }
+}
+
+#[test]
 fn source_and_asb_popups_float_outside_parent_clip_and_route_actual_callbacks() {
     const SOURCE: &str = r#"fn main(){
         let data=model({hits:0,closed:0,shift:0});

@@ -1,4 +1,5 @@
-// Supply your own assets/petal.png and fonts/body.ttf under --assets.
+// Supply assets/petal.png and fonts/body.ttf in resources/.
+use std::math::curve;
 fn main() {
     game.configure(title: "Sprite particles", width: 1280, height: 720, fonts: "fonts/body.ttf");
     let petals = particles("assets/petal.png", width: 1280, height: 20, seed: 42);
@@ -11,8 +12,9 @@ fn main() {
     await stage.presented(owner: petals);
     let falling = emit(
         petals, burst: 0, rate: 80, duration: 30, lifetime: 8, velocity_y: 90, velocity_x: 15,
-        spread_x: 30, size: 18, size_spread: 6, spin_spread: 60
+        spread_x: 30, size: 18, size_spread: 6, spin_spread: 60, prewarm: 8
     );
+    let envelope = curve([{time: 0, value: 0}, {time: 0.5, value: 1}, {time: 1, value: 0}]);
     scene.add(
         row(x: 24, y: 640, gap: 12) {
             button("Pause", on_click: || pause(falling));
@@ -21,9 +23,10 @@ fn main() {
             button(
                 "Burst",
                 on_click: || emit(
-                    spray, burst: 48, lifetime: 1, lifetime_spread: 0.4, velocity_y: -160,
-                    spread_x: 180, spread_y: 100, acceleration_y: 240, size: 18, size_spread: 6,
-                    size_end: 0
+                    spray, burst: 48, lifetime: 1, lifetime_spread: 0.4, velocity_y: 0,
+                    spread_x: 0, spread_y: 0, radial_speed: 180, radial_spread: 40,
+                    damping: 2, angle: 180, angle_spread: 180, size: 18, size_spread: 6,
+                    size_curve: envelope
                 )
             );
             button(

@@ -841,6 +841,8 @@ fn main() {
 
 Named actions map keyboard, mouse and gamepad controls to one behavior. Update continuous motion from a clock while input callbacks update intent. A focused text editor handles its keyboard and IME events.
 
+Use the read-only observable `source` and `layout` fields of `stage.input()` to select input hints. `source` identifies the last active input method; gamepad `layout` is `xbox`, `playstation`, `nintendo` or `generic`. The game supplies the icons.
+
 For pointer positions, use `input(on_pointer: |event| ...)` to read local `event.x`, `event.y`, and `event.phase`. Hover and drag movement produce `moved`; primary-button and touch gestures produce `pressed`, `released`, and `cancelled`. Custom drag controls use `event.dragging` to check whether the node owns an active drag.
 
 ```aside
@@ -1145,6 +1147,20 @@ let second = burst();
 await first;
 await second;
 spray.remove();
+```
+
+Use `size_curve` for size changes over normalized age. Prewarming fills the first frame with particles of different ages; radial speed and damping control their motion.
+
+```aside
+use std::math::curve;
+let glow = particles("assets/spark.png", width: 1280, height: 720, seed: 7);
+stage.replace(glow);
+let envelope = curve([{time: 0, value: 0}, {time: 0.5, value: 1}, {time: 1, value: 0}]);
+emit(glow, burst: 0, rate: 40, lifetime: 2, prewarm: 2,
+    velocity_y: 0, spread_x: 0, spread_y: 0,
+    size: 12, size_spread: 0, size_curve: envelope,
+    radial_speed: 40, radial_spread: 10, damping: 1,
+    angle: 180, angle_spread: 180, spin_spread: 0);
 ```
 
 `reveal_fade` controls progressive glyph opacity and `reveal_fade_step` sets the offset between graphemes. Text layout stays stable.

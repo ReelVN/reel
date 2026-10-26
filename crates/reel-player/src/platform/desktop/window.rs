@@ -387,6 +387,7 @@ impl State {
             completions: Vec::new(),
             window_state: Arc::new(Default::default()),
             window_request: None,
+            input_hints: Default::default(),
         };
         Ok(Self::assemble(player, instance, window, host))
     }

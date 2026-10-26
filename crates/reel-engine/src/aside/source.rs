@@ -148,6 +148,7 @@ pub fn documentation() -> Vec<aside_host::NativeDocumentation> {
                 .or_else(|| super::data::documentation(&contract.symbol))
                 .or_else(|| super::saves::documentation(&contract.symbol))
                 .or_else(|| super::window::documentation(&contract.symbol))
+                .or_else(|| super::input_hints::documentation(&contract.symbol))
                 .or_else(|| super::capture::documentation(&contract.symbol))
                 .or_else(|| super::assets::documentation(&contract.symbol))
                 .or_else(|| super::stage::input::documentation(&contract.symbol))
@@ -300,6 +301,7 @@ fn build_api() -> Api {
     super::capture::describe(&mut api);
     super::assets::describe(&mut api);
     super::window::describe(&mut api);
+    super::input_hints::describe(&mut api);
     super::particles::describe(&mut api);
     super::activity::describe_controls(&mut api);
     super::localization::describe(&mut api);
