@@ -84,7 +84,7 @@ fn layered_images_use_shared_image_defaults_and_keep_slots_across_restore_and_up
         let state=model({changed:false});
         let portrait=layered_image(|| if state.changed {
             [{source:"still.png",x:12,width:80,height:90,saturation:0.5,
-              brightness:[2,0.5,1],color_offset:0.1,source_rect:(4,5,16,32)}]
+              brightness:[2,0.5,1],color_offset:0.1,source_rect:(4,5,16,32),sampling:"nearest"}]
         } else {
             [{source:"still.png",x:7,width:80,height:90}]
         },x:23);
@@ -105,6 +105,7 @@ fn layered_images_use_shared_image_defaults_and_keep_slots_across_restore_and_up
         let NodeKind::Image {
             adjustment,
             source_rect,
+            sampling,
             ..
         } = initial.kind
         else {
@@ -112,6 +113,7 @@ fn layered_images_use_shared_image_defaults_and_keep_slots_across_restore_and_up
         };
         assert_eq!(adjustment, ImageColorAdjustment::default());
         assert_eq!(source_rect, None);
+        assert_eq!(sampling, reel_ui::peniko::ImageQuality::Medium);
         assert_eq!(initial.props.x, 7.);
         assert_eq!(initial.props.width, Some(80.));
         (session, vm) = restore(&session, &mut vm);
@@ -129,11 +131,20 @@ fn layered_images_use_shared_image_defaults_and_keep_slots_across_restore_and_up
             let NodeKind::Image {
                 adjustment,
                 source_rect,
+                sampling,
                 ..
             } = current.kind
             else {
                 unreachable!()
             };
+            assert_eq!(
+                sampling,
+                if changed {
+                    reel_ui::peniko::ImageQuality::Low
+                } else {
+                    reel_ui::peniko::ImageQuality::Medium
+                }
+            );
             if changed {
                 assert_eq!(current.props.x, 12.);
                 assert_eq!(source_rect, Some(Rect::new(4., 5., 20., 37.)));

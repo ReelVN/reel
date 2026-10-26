@@ -11,8 +11,8 @@
 //! and reversed edges. Hardware transcendental precision remains target-specific.
 
 use reel_ui::stage::effect::{
-    EffectBinary, EffectInput, EffectNodeId, EffectOp, EffectProgram, EffectTernary, EffectType,
-    EffectUnary, EffectValue,
+    EffectBinary, EffectInput, EffectNodeId, EffectOp, EffectProgram, EffectTernary,
+    EffectTextureChannel, EffectType, EffectUnary, EffectValue,
 };
 use std::collections::{BTreeMap, HashMap};
 
@@ -21,6 +21,8 @@ use std::collections::{BTreeMap, HashMap};
 /// normalized coordinates to source texture coordinates. Slot 4 is the logical
 /// rectangle (x, y, width, height); 5 is target size and source storage size;
 /// 6 is the source atlas window (origin x/y, extent x/y), in normalized units.
+/// Slot 0.w selects ordinary output (zero), scalar coverage (one), or inverted
+/// scalar coverage (two). Inversion follows coverage clamping.
 pub const CONTEXT_SLOTS: usize = 7;
 
 /// Complete prepared shader source; runtime backends load this product verbatim.
@@ -29,6 +31,8 @@ pub struct EffectFragment {
     pub source: String,
     pub parameters: ParameterLayout,
     pub output_type: EffectType,
+    /// Whether the complete entry point references the subtree source sampler.
+    pub source_sampler: bool,
 }
 
 /// Export the complete v1 fragment ABI without requiring a GPU feature.
@@ -38,7 +42,11 @@ pub struct EffectFragment {
 /// uniforms `reel_parameter_N`. Source targets have only base level, so ordinary
 /// texture2D samples level zero even in nonuniform branches. WGSL includes the
 /// fullscreen `vertex` and `fragment` entries and group zero bindings: source
-/// texture 0, linear clamp sampler 1, context 2, and vec4 parameter slots 3.
+/// texture 0 when used, linear clamp sampler 1, context 2, numeric parameters 3,
+/// texture metadata 4, and fixed external texture bindings starting at 5. Texture
+/// parameters have no numeric uniform slots. Each image has content scale,
+/// encoding/format flags and half-texel bounds; generated channel helpers access
+/// only the metadata required by their declared sample operations.
 ///
 /// Output is restricted to the local logical rectangle. Source samples clamp
 /// normalized local coordinates and the source atlas window at texel centers.
@@ -50,6 +58,7 @@ pub fn compile_fragment(
     max_source_bytes: usize,
 ) -> Result<EffectFragment, GenerateError> {
     let generated = generate(program, language, max_source_bytes)?;
+    let source_sampler = generated.samples_source || generated.output_type == EffectType::Float;
     let mut source = String::new();
     match language {
         Language::GlslEs100 => {
@@ -64,6 +73,11 @@ vec4 reel_source_sample(vec2 uv) {
     return texture2D(reel_source, vec2(q.x, 1.0 - q.y));
 }
 "#);
+            source.push_str(&texture_functions(
+                program,
+                language,
+                max_source_bytes.saturating_sub(source.len() + generated.function.len()),
+            )?);
             source.push_str(&generated.function);
             source.push_str(
                 r#"
@@ -75,7 +89,7 @@ void main() {
 "#,
             );
             if generated.output_type == EffectType::Float {
-                source.push_str("gl_FragColor = reel_source_sample(uv) * clamp(reel_effect(uv, position, reel_context[4].zw), 0.0, 1.0);\n}\n");
+                source.push_str("float coverage = clamp(reel_effect(uv, position, reel_context[4].zw), 0.0, 1.0); if (reel_context[0].w != 0.0) { if (reel_context[0].w > 1.0) { coverage = 1.0 - coverage; } gl_FragColor = vec4(coverage); } else { gl_FragColor = reel_source_sample(uv) * coverage; }\n}\n");
             } else {
                 source
                     .push_str("gl_FragColor = reel_effect(uv, position, reel_context[4].zw);\n}\n");
@@ -112,6 +126,11 @@ struct ReelEffectVarying { @builtin(position) position: vec4<f32> }
     return out;
 }
 "#);
+            source.push_str(&texture_functions(
+                program,
+                language,
+                max_source_bytes.saturating_sub(source.len() + generated.function.len()),
+            )?);
             source.push_str(&generated.function);
             source.push_str(
                 r#"
@@ -123,9 +142,28 @@ struct ReelEffectVarying { @builtin(position) position: vec4<f32> }
 "#,
             );
             if generated.output_type == EffectType::Float {
-                source.push_str("return reel_source_sample(uv) * clamp(reel_effect(uv, position, reel_context.slots[4].zw), 0.0, 1.0);\n}\n");
+                source.push_str("var coverage = clamp(reel_effect(uv, position, reel_context.slots[4].zw), 0.0, 1.0); if reel_context.slots[0].w != 0.0 { if reel_context.slots[0].w > 1.0 { coverage = 1.0 - coverage; } return vec4(coverage); } return reel_source_sample(uv) * coverage;\n}\n");
             } else {
                 source.push_str("return reel_effect(uv, position, reel_context.slots[4].zw);\n}\n");
+            }
+        }
+    }
+    if !source_sampler {
+        match language {
+            Language::GlslEs100 => {
+                source = source.replace("uniform sampler2D reel_source;\n", "");
+                let start = source.find("vec4 reel_source_sample(").unwrap();
+                let end = source[start..].find("\n}\n").unwrap() + start + 3;
+                source.replace_range(start..end, "");
+            }
+            Language::Wgsl => {
+                source = source.replace(
+                    "@group(0) @binding(0) var reel_source: texture_2d<f32>;\n",
+                    "",
+                );
+                let start = source.find("fn reel_source_sample(").unwrap();
+                let end = source[start..].find("\n}\n").unwrap() + start + 3;
+                source.replace_range(start..end, "");
             }
         }
     }
@@ -138,7 +176,93 @@ struct ReelEffectVarying { @builtin(position) position: vec4<f32> }
         source,
         parameters: generated.parameters,
         output_type: generated.output_type,
+        source_sampler,
     })
+}
+
+/// Fixed sampler helpers follow the graph's actual channel uses; no GPU opcode
+/// or resource-index interpreter is introduced by external image parameters.
+fn texture_functions(
+    program: &EffectProgram,
+    language: Language,
+    limit: usize,
+) -> Result<String, GenerateError> {
+    use std::fmt::Write;
+    let count = program.textures().len();
+    if count == 0 {
+        return Ok(String::new());
+    }
+    if count > limit / 16 {
+        return Err(GenerateError::SourceLimit { limit });
+    }
+    let mut channel_uses = vec![0_u8; count];
+    for node in program.nodes() {
+        if let EffectOp::TextureSample {
+            binding, channel, ..
+        } = node.op
+        {
+            channel_uses[binding as usize] |= match channel {
+                EffectTextureChannel::Color => 1,
+                EffectTextureChannel::Alpha => 2,
+                EffectTextureChannel::Gray => 4,
+            };
+        }
+    }
+    let mut code = String::new();
+    match language {
+        Language::GlslEs100 => {
+            writeln!(code, "uniform vec4 reel_texture_meta[{}];", count * 2).unwrap();
+        }
+        Language::Wgsl => {
+            writeln!(code, "struct ReelTextureMetadata {{ values: array<vec4<f32>,{}> }}\n@group(0) @binding(4) var<uniform> reel_texture_meta: ReelTextureMetadata;", count * 2).unwrap();
+        }
+    }
+    let gray = channel_uses.iter().any(|usage| usage & 4 != 0);
+    if gray {
+        code.push_str(match language {
+            Language::GlslEs100 => "vec3 reel_texture_encode(vec3 x){return mix(1.055*pow(max(x,vec3(0.0)),vec3(1.0/2.4))-0.055,12.92*x,step(x,vec3(0.0031308)));}\n",
+            Language::Wgsl => "fn reel_texture_encode(x:vec3<f32>)->vec3<f32>{return select(1.055*pow(max(x,vec3(0.0)),vec3(1.0/2.4))-0.055,12.92*x,x<=vec3(0.0031308));}\n",
+        });
+    }
+    for binding in 0..count {
+        let channels = channel_uses[binding];
+        if channels == 0 {
+            continue;
+        }
+        match language {
+            Language::GlslEs100 => {
+                writeln!(code, "uniform sampler2D reel_texture_{binding};\nvec4 reel_texture_{binding}_read(vec2 uv){{vec4 t=reel_texture_meta[{}];vec2 h=reel_texture_meta[{}].xy;vec4 s=texture2D(reel_texture_{binding},clamp(uv*t.xy,h,t.xy-h));if(t.w==1.0)s.a=1.0;if(t.w==2.0)s.rgb=min(s.rgb,vec3(s.a));return s;}}", binding*2,binding*2+1).unwrap();
+                if channels & 1 != 0 {
+                    writeln!(code,"vec4 reel_texture_{binding}_color(vec2 uv){{return reel_texture_{binding}_read(uv);}}").unwrap();
+                }
+                if channels & 2 != 0 {
+                    writeln!(code,"float reel_texture_{binding}_alpha(vec2 uv){{return reel_texture_{binding}_read(uv).a;}}").unwrap();
+                }
+                if channels & 4 != 0 {
+                    writeln!(code,"float reel_texture_{binding}_gray(vec2 uv){{vec4 s=reel_texture_{binding}_read(uv);vec3 rgb=s.a>0.0?clamp(s.rgb/s.a,0.0,1.0):vec3(0.0);if(reel_texture_meta[{}].z==0.0)rgb=reel_texture_encode(rgb);return dot(rgb,vec3(0.2126,0.7152,0.0722));}}",binding*2).unwrap();
+                }
+            }
+            Language::Wgsl => {
+                writeln!(code,"@group(0) @binding({}) var reel_texture_{binding}:texture_2d<f32>;\nfn reel_texture_{binding}_read(uv:vec2<f32>)->vec4<f32>{{let t=reel_texture_meta.values[{}];let h=reel_texture_meta.values[{}].xy;var s=textureSampleLevel(reel_texture_{binding},reel_sampler,clamp(uv*t.xy,h,t.xy-h),0.0);if t.w==1.0{{s.a=1.0;}}if t.w==2.0{{s=vec4(min(s.rgb,vec3(s.a)),s.a);}}return s;}}",5+binding,binding*2,binding*2+1).unwrap();
+                if channels & 1 != 0 {
+                    writeln!(code,"fn reel_texture_{binding}_color(uv:vec2<f32>)->vec4<f32>{{return reel_texture_{binding}_read(uv);}}").unwrap();
+                }
+                if channels & 2 != 0 {
+                    writeln!(code,"fn reel_texture_{binding}_alpha(uv:vec2<f32>)->f32{{return reel_texture_{binding}_read(uv).a;}}").unwrap();
+                }
+                if channels & 4 != 0 {
+                    writeln!(code,"fn reel_texture_{binding}_gray(uv:vec2<f32>)->f32{{let s=reel_texture_{binding}_read(uv);var rgb=vec3(0.0);if s.a>0.0{{rgb=clamp(s.rgb/s.a,vec3(0.0),vec3(1.0));}}if reel_texture_meta.values[{}].z==0.0{{rgb=reel_texture_encode(rgb);}}return dot(rgb,vec3(0.2126,0.7152,0.0722));}}",binding*2).unwrap();
+                }
+            }
+        }
+        if code.len() > limit {
+            return Err(GenerateError::SourceLimit { limit });
+        }
+    }
+    if code.len() > limit {
+        return Err(GenerateError::SourceLimit { limit });
+    }
+    Ok(code)
 }
 
 /// The shader language of a prepared pipeline.
@@ -596,6 +720,18 @@ impl Emitter<'_> {
                 EffectInput::Size => "size",
             }
             .into(),
+            EffectOp::TextureSample {
+                binding,
+                uv,
+                channel,
+            } => {
+                let suffix = match channel {
+                    EffectTextureChannel::Color => "color",
+                    EffectTextureChannel::Alpha => "alpha",
+                    EffectTextureChannel::Gray => "gray",
+                };
+                format!("reel_texture_{binding}_{suffix}({})", value(uv))
+            }
             EffectOp::SourceSample { uv } => {
                 let uv = value(uv);
                 self.samples_source = true;
@@ -738,7 +874,7 @@ impl Emitter<'_> {
 fn dependencies(op: &EffectOp) -> Vec<EffectNodeId> {
     match *op {
         EffectOp::Constant(_) | EffectOp::Parameter(_) | EffectOp::Input(_) => vec![],
-        EffectOp::SourceSample { uv } => vec![uv],
+        EffectOp::SourceSample { uv } | EffectOp::TextureSample { uv, .. } => vec![uv],
         EffectOp::Vec2(ids) => ids.to_vec(),
         EffectOp::Vec3(ids) => ids.to_vec(),
         EffectOp::Vec4(ids) => ids.to_vec(),

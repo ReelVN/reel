@@ -1098,6 +1098,8 @@ stage.replace(stack(width: 320, height: 180, background: "#204060") {
 });
 ```
 
+Use `sampling: "nearest"` on an image to preserve pixel edges; the default `"linear"` smooths scaling. Switching filtering shares the same image resource. Atlas crops and tiled images retain their source windows.
+
 Use `effect` to apply a drawing function to a node and its children. `Fragment.sample()` reads their composed color; return a color to replace it or a float to control coverage. Bind parameters to ordinary state so controls and animation can change the effect.
 
 ```aside
@@ -1117,6 +1119,28 @@ fn main() {
             text("After the rain", color: "#803020");
         };
     });
+}
+```
+
+Pass images to a drawing function with `texture(path)`. This example reveals a scene according to a noise image: the float returned by `effect` supplies `mask` coverage, while animation updates the bound progress. Images use the project resource paths and platform overrides.
+
+```aside
+use reel::types::{Fragment, Texture};
+
+fn dissolve(pixel: Fragment, noise: Texture, progress: float) -> float {
+    if noise.gray(pixel.uv) <= progress { 1.0 } else { 0.0 }
+}
+
+fn main() {
+    let scene = stack(width: 1280, height: 720, mask_progress: 0) {
+        image("assets/room.png", width: 1280, height: 720);
+    };
+    scene.mask = effect(dissolve, params: {
+        noise: texture("assets/noise.png"), progress: bind(scene.mask_progress)
+    });
+    stage.replace(scene);
+    await run(tween(scene, mask_progress: 1, duration: 1.2), owner: scene);
+    scene.mask = null;
 }
 ```
 

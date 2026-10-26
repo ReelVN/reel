@@ -60,6 +60,10 @@ pub struct EffectShaderDescriptor {
     pub format: EffectShaderFormat,
     /// One sixteen-byte uniform slot per parameter, in declaration order.
     pub parameters: Vec<EffectType>,
+    /// Number of separately typed whole-image bindings, in declaration order.
+    pub textures: u32,
+    /// Whether the compiled entry point references its subtree source sampler.
+    pub source_sampler: bool,
     /// Float is scalar coverage; Vec4 is linear premultiplied RGBA.
     pub output: EffectType,
 }
@@ -72,12 +76,27 @@ impl EffectShaderDescriptor {
         output: EffectType,
         raw: &[u8],
     ) -> Result<Self, EffectShaderPayloadError> {
+        Self::with_textures(definition, format, parameters, 0, true, output, raw)
+    }
+
+    /// Build one v1 fragment interface with numeric and texture inputs separated.
+    pub fn with_textures(
+        definition: EffectDefinitionId,
+        format: EffectShaderFormat,
+        parameters: Vec<EffectType>,
+        textures: u32,
+        source_sampler: bool,
+        output: EffectType,
+        raw: &[u8],
+    ) -> Result<Self, EffectShaderPayloadError> {
         let mut descriptor = Self {
             definition,
             shader_key: [0; 32],
             abi: EFFECT_SHADER_ABI,
             format,
             parameters,
+            textures,
+            source_sampler,
             output,
         };
         if !descriptor.is_valid() || raw.is_empty() {
@@ -92,6 +111,8 @@ impl EffectShaderDescriptor {
         hash.update(&self.abi.to_le_bytes());
         hash.update(&[format_byte(self.format), type_byte(self.output)]);
         hash.update(&(self.parameters.len() as u32).to_le_bytes());
+        hash.update(&self.textures.to_le_bytes());
+        hash.update(&[u8::from(self.source_sampler)]);
         for ty in &self.parameters {
             hash.update(&[type_byte(*ty)]);
         }
@@ -108,7 +129,7 @@ impl EffectShaderDescriptor {
         if !self.is_valid() || raw.is_empty() {
             return Err(EffectShaderPayloadError::Invalid);
         }
-        let capacity = 92usize
+        let capacity = 96usize
             .checked_add(self.parameters.len())
             .and_then(|v| v.checked_add(raw.len()))
             .ok_or(EffectShaderPayloadError::Limit)?;
@@ -117,11 +138,12 @@ impl EffectShaderDescriptor {
         bytes.extend_from_slice(&self.abi.to_le_bytes());
         bytes.push(format_byte(self.format));
         bytes.push(type_byte(self.output));
-        bytes.extend_from_slice(&[0, 0]);
+        bytes.extend_from_slice(&[u8::from(self.source_sampler), 0]);
         bytes.extend_from_slice(&(self.parameters.len() as u32).to_le_bytes());
         bytes.extend_from_slice(&self.definition);
         bytes.extend_from_slice(&self.shader_key);
         bytes.extend_from_slice(&(raw.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&self.textures.to_le_bytes());
         bytes.extend(self.parameters.iter().copied().map(type_byte));
         bytes.extend_from_slice(raw);
         Ok(bytes)
@@ -139,9 +161,10 @@ impl EffectShaderDescriptor {
         if bytes.len() > max_payload_bytes {
             return Err(Limit);
         }
-        if bytes.len() < 92 || &bytes[..8] != b"REELSHD1" || bytes[14..16] != [0, 0] {
+        if bytes.len() < 96 || &bytes[..8] != b"REELSHD1" || (bytes[14] > 1 || bytes[15] != 0) {
             return Err(Invalid);
         }
+        let source_sampler = bytes[14] != 0;
         let abi = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
         let format = match bytes[12] {
             0 => EffectShaderFormat::GlslEs100,
@@ -155,14 +178,15 @@ impl EffectShaderDescriptor {
         let shader_key = bytes[52..84].try_into().unwrap();
         let size = usize::try_from(u64::from_le_bytes(bytes[84..92].try_into().unwrap()))
             .map_err(|_| Invalid)?;
-        let start = 92usize.checked_add(count).ok_or(Invalid)?;
+        let textures = u32::from_le_bytes(bytes[92..96].try_into().unwrap());
+        let start = 96usize.checked_add(count).ok_or(Invalid)?;
         if size == 0 || start.checked_add(size) != Some(bytes.len()) {
             return Err(Invalid);
         }
         if abi != EFFECT_SHADER_ABI || !matches!(output, EffectType::Float | EffectType::Vec4) {
             return Err(Invalid);
         }
-        let parameters = bytes[92..start]
+        let parameters = bytes[96..start]
             .iter()
             .map(|&v| byte_type(v).ok_or(Invalid))
             .collect::<Result<Vec<_>, _>>()?;
@@ -173,6 +197,8 @@ impl EffectShaderDescriptor {
                 abi,
                 format,
                 parameters,
+                textures,
+                source_sampler,
                 output,
             },
             start..bytes.len(),
@@ -188,6 +214,7 @@ impl EffectShaderDescriptor {
     pub fn matches_instance(&self, instance: &EffectInstance) -> bool {
         self.is_valid()
             && self.definition == instance.definition()
+            && self.textures as usize == instance.textures().len()
             && self.output == instance.program().nodes()[instance.program().output().0 as usize].ty
             && self.parameters.iter().copied().eq(instance
                 .program()

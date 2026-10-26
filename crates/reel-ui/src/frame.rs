@@ -171,13 +171,19 @@ pub struct FrameEffect {
     pub definition: crate::stage::effect::EffectDefinitionId,
     pub shader: ResourceHandle,
     pub values: Vec<crate::stage::effect::EffectValue>,
+    /// Whole-image resource bindings retained by this frame's resource snapshot.
+    pub images: Vec<ResourceHandle>,
     /// Finite output domain in the node's local logical coordinates.
     pub bounds: Rect,
+    /// Invert clamped scalar coverage; preserved by retained scene archives.
+    pub coverage_invert: bool,
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FrameGroup {
     pub image_mask: Option<FrameImageMask>,
     pub effect: Option<FrameEffect>,
+    /// Scalar shader coverage applied after the subtree's color effect.
+    pub mask_effect: Option<FrameEffect>,
     #[serde(with = "wire::optional_clip")]
     pub clip: Option<Clip>,
     pub mask: Option<MaskUse>,
@@ -1102,9 +1108,17 @@ impl Building {
                 .binary_search_by_key(&cursor.position, |group| group.command)
             {
                 let group = &layer.groups[index];
-                if let Some(effect) = &group.effect {
+                for effect in group.effect.iter().chain(group.mask_effect.iter()) {
                     bytes = bytes
                         .checked_add(std::mem::size_of_val(effect.instance.values()))
+                        .and_then(|bytes| {
+                            bytes.checked_add(
+                                effect
+                                    .images
+                                    .len()
+                                    .checked_mul(size_of::<ResourceHandle>())?,
+                            )
+                        })
                         .ok_or_else(|| self.error(BuildErrorKind::Bytes))?;
                 }
                 if let Some(mask) = &group.image_mask {
@@ -1223,6 +1237,7 @@ impl Building {
                 effect_transform: Affine::IDENTITY,
                 image_mask: None,
                 effect: None,
+                mask_effect: None,
                 invert: 0.,
                 blend: None,
             })
@@ -1550,8 +1565,9 @@ fn validate_op(op: &FrameOp) -> Result<(), BuildErrorKind> {
         FrameOp::PushGroup(g) => {
             g.clip.as_ref().is_none_or(valid_clip)
                 && g.effect
-                    .as_ref()
-                    .is_none_or(|e| e.bounds.is_finite() && e.values.iter().all(|v| v.is_finite()))
+                    .iter()
+                    .chain(g.mask_effect.iter())
+                    .all(|e| e.bounds.is_finite() && e.values.iter().all(|v| v.is_finite()))
         }
         FrameOp::Draw(FrameDraw::Fill { shape, brush, .. }) => {
             valid_geometry(shape) && valid_brush(brush)
@@ -1844,16 +1860,47 @@ fn make_op(
                 effect_transform: effect,
                 image_mask,
                 effect: prepared_effect,
+                mask_effect: prepared_mask,
                 invert,
                 blend,
                 ..
             } = meta.ok_or(BuildErrorKind::MissingGroupMetadata)?;
-            let prepared_effect = prepared_effect.map(|value| {
+            let prepare_effect = |value: crate::core::PaintEffect, coverage: bool| {
                 let valid = resources.leases().iter().any(|lease| lease.handle() == value.shader.handle()
-                    && matches!(lease.data(), crate::resources::ResourceData::EffectShader { descriptor, .. } if descriptor.matches_instance(&value.instance)));
-                if !valid || !value.bounds.is_finite() { return Err(BuildErrorKind::InvalidRecord); }
-                Ok(FrameEffect { definition: value.instance.definition(), shader: value.shader.handle(), values: value.instance.values().to_vec(), bounds: value.bounds })
-            }).transpose()?;
+                    && matches!(lease.data(), crate::resources::ResourceData::EffectShader { descriptor, .. }
+                        if descriptor.matches_instance(&value.instance)
+                            && (!coverage || descriptor.output == crate::stage::effect::EffectType::Float)));
+                if !valid
+                    || !value.bounds.is_finite()
+                    || value.images.len() != value.instance.textures().len()
+                    || value.images.iter().any(|image| {
+                        !resources.leases().iter().any(|lease| {
+                            lease.handle() == image.handle()
+                                && matches!(
+                                    lease.data(),
+                                    crate::resources::ResourceData::Image { .. }
+                                        | crate::resources::ResourceData::Texture { .. }
+                                )
+                        })
+                    })
+                {
+                    return Err(BuildErrorKind::InvalidRecord);
+                }
+                Ok(FrameEffect {
+                    definition: value.instance.definition(),
+                    shader: value.shader.handle(),
+                    values: value.instance.values().to_vec(),
+                    images: value.images.iter().map(|image| image.handle()).collect(),
+                    bounds: value.bounds,
+                    coverage_invert: value.coverage_invert,
+                })
+            };
+            let prepared_effect = prepared_effect
+                .map(|value| prepare_effect(value, false))
+                .transpose()?;
+            let prepared_mask = prepared_mask
+                .map(|value| prepare_effect(value, true))
+                .transpose()?;
             let image_mask = image_mask
                 .map(|mask| {
                     if !mask.bounds.is_finite()
@@ -1890,6 +1937,7 @@ fn make_op(
                 FrameOp::PushGroup(FrameGroup {
                     image_mask,
                     effect: prepared_effect,
+                    mask_effect: prepared_mask,
                     clip: g.clip.as_ref().map(|c| empty_clip(c, t)),
                     mask,
                     filters: Vec::with_capacity(g.filters.len()),

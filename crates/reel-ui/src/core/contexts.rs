@@ -2579,6 +2579,15 @@ impl PaintCtx<'_> {
         }
     }
 
+    /// Apply scalar shader coverage after the subtree's color effect.
+    /// The prepared declaration and image leases persist across cached paints.
+    pub fn set_subtree_mask_effect(&mut self, effect: Option<super::PaintEffect>) {
+        match (&mut self.widget_state.subtree_mask_effect, effect) {
+            (Some(current), Some(effect)) => **current = effect,
+            (slot, effect) => *slot = effect.map(Box::new),
+        }
+    }
+
     /// Whether debug paint is enabled.
     ///
     /// If this property is set, your widget may draw additional debug information

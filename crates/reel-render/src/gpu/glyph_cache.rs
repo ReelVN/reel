@@ -8,7 +8,7 @@ use crate::common::resources::ResourceSource;
 use guillotiere::{AllocId, AtlasAllocator, size2};
 use reel_core::budget::{BudgetPool, BudgetTicket};
 use reel_ui::{
-    frame::{FrameDrawing, FrameGlyphRun, RecordLocation},
+    frame::{FrameDrawing, FrameGlyphRun, InkBounds, RecordLocation},
     resources::ResourceVersion,
 };
 use std::{
@@ -63,6 +63,87 @@ pub(super) struct FrameGlyphs {
     pub entries: HashMap<Key, Arc<Glyph>>,
     pages: HashSet<usize>,
 }
+
+/// Glyph resource preparation needs no quality tier, pipelines or render target.
+/// Its encoder, leases and charges move into the replay context after admission.
+pub(super) struct Preparation<'a> {
+    pub gpu: &'a Gpu,
+    pub encoder: &'a mut wgpu::CommandEncoder,
+    pub cache: &'a GlyphCache,
+    pub frame: &'a mut FrameGlyphs,
+    pub budgets: &'a Budgets,
+    pub local: &'a Budgets,
+    pub tickets: &'a mut Vec<Reservation>,
+    pub images: &'a super::image_cache::ImageCache,
+}
+impl crate::common::glyph_plan::Prepare for Preparation<'_> {
+    fn reserve(&mut self, bytes: u64) -> Result<(), GpuError> {
+        self.tickets.push(reserve(
+            &self.budgets.transient,
+            &self.local.transient,
+            bytes,
+            self.gpu.limits.transient_bytes,
+            "glyph preparation",
+        )?);
+        Ok(())
+    }
+
+    fn run(
+        &mut self,
+        drawing: &FrameDrawing,
+        run: &FrameGlyphRun,
+        density: f64,
+        at: RecordLocation,
+    ) -> Result<InkBounds, GpuError> {
+        let key = Arc::new(RunKey::new(run, density));
+        let mut ink = InkBounds::Empty;
+        for (index, position) in run.glyphs.iter().enumerate() {
+            let key = Key::new(key.clone(), position.id);
+            let glyph = if let Some(glyph) = self.frame.entries.get(&key) {
+                glyph.clone()
+            } else {
+                let glyph = match self.cache.get(&key) {
+                    Some(glyph) => glyph,
+                    None => self.cache.rasterize(
+                        self.gpu,
+                        self.encoder,
+                        drawing,
+                        run,
+                        density,
+                        index,
+                        at,
+                        self.budgets,
+                        self.local,
+                        self.tickets,
+                        self.images,
+                    )?,
+                };
+                GlyphCache::charge(
+                    self.frame,
+                    &glyph,
+                    &self.local.resources,
+                    self.gpu.limits.resource_bytes,
+                    self.tickets,
+                )?;
+                self.frame.entries.insert(key, glyph.clone());
+                glyph
+            };
+            if let Glyph::Image { offset, size, .. } = glyph.as_ref() {
+                ink = crate::common::glyph_plan::union(
+                    ink,
+                    InkBounds::Rect(crate::common::glyph_plan::bitmap_bounds(
+                        [position.x, position.y],
+                        *offset,
+                        *size,
+                        density,
+                    )),
+                );
+            }
+        }
+        Ok(ink)
+    }
+}
+
 impl GlyphCache {
     pub fn get(&self, key: &Key) -> Option<Arc<Glyph>> {
         self.entries.lock().unwrap().get(key).cloned()

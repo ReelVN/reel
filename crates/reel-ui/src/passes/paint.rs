@@ -97,6 +97,7 @@ impl LayerCollector {
                     effect_transform: Affine::IDENTITY,
                     image_mask: None,
                     effect: None,
+                    mask_effect: None,
                     invert: 0.,
                     blend: None,
                 });
@@ -154,11 +155,13 @@ impl LayerCollector {
             .as_deref()
             .filter(|mask| !mask.is_identity());
         let effect = state.subtree_effect.as_deref();
+        let mask_effect = state.subtree_mask_effect.as_deref();
         let opacity = state.subtree_opacity;
         let invert = state.subtree_invert;
         let blend = state.subtree_blend;
         if mask.is_none()
             && effect.is_none()
+            && mask_effect.is_none()
             && opacity == 1.
             && invert == 0.
             && blend == Default::default()
@@ -181,6 +184,7 @@ impl LayerCollector {
             effect_transform: transform,
             image_mask: mask.cloned(),
             effect: effect.cloned(),
+            mask_effect: mask_effect.cloned(),
             invert,
             blend: Some(blend),
         });
@@ -308,7 +312,11 @@ fn paint_viewport(
     border_to_window: Affine,
     content_to_window: Affine,
 ) -> Rect {
-    if let Some(effect) = &state.subtree_effect {
+    if let Some(effect) = state
+        .subtree_effect
+        .as_ref()
+        .or(state.subtree_mask_effect.as_ref())
+    {
         content_to_window.transform_rect_bbox(effect.bounds)
     } else {
         state.clip_path.map_or(parent, |clip| {
@@ -533,7 +541,8 @@ fn paint_widget(
     let previous_capture = layer_collector.capture_included;
     layer_collector.capture_included &= widget.capture_included();
     let subtree = layer_collector.begin_subtree(id, previous_suppression);
-    let effect_clip = has_clip && state.subtree_effect.is_some();
+    let effect_clip =
+        has_clip && (state.subtree_effect.is_some() || state.subtree_mask_effect.is_some());
     if effect_clip && !suppress_output {
         layer_collector.paint(id, |scene| {
             scene.push_clip(Clip::Fill {

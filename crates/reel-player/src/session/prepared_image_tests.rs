@@ -101,6 +101,7 @@ fn fixture_with_encoding(
     let image = stage
         .create(
             NodeKind::Image {
+                sampling: Default::default(),
                 source: source.into(),
                 fit: ObjectFit::Contain,
                 slice: None,
@@ -575,6 +576,7 @@ fn two_dimensional_shared_sources_use_composed_ancestor_rotation_zoom_and_hidden
         stage
             .create(
                 NodeKind::Image {
+                    sampling: Default::default(),
                     source: "world.reel-image".into(),
                     fit: ObjectFit::Contain,
                     slice: None,

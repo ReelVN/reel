@@ -10,5 +10,9 @@ use std::sync::Arc;
 pub struct PaintEffect {
     pub instance: Arc<EffectInstance>,
     pub shader: ResourceLease,
+    /// Immutable whole-image leases in the definition's texture binding order.
+    pub images: Vec<ResourceLease>,
     pub bounds: Rect,
+    /// Invert clamped scalar output when this effect supplies subtree coverage.
+    pub coverage_invert: bool,
 }

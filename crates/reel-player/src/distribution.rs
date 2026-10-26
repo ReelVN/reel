@@ -36,6 +36,10 @@ pub fn story_from_package(
                 bc::ModuleId(binding.module),
                 bc::FunctionId(binding.function),
                 products.definitions[binding.definition as usize].id,
+                match &binding.kind {
+                    reel_package::EffectBindingKind::Function => None,
+                    reel_package::EffectBindingKind::MaskTemplate { key } => Some(key.clone()),
+                },
             )
         })
         .collect::<Vec<_>>();

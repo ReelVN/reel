@@ -24,7 +24,7 @@ struct ImageAppearance {
     y: vec4<f32>,
     gain_saturation: vec4<f32>,
     offset_enabled: vec4<f32>,
-    // Visible/storage extent; z selects opaque BC1 (1) or premultiplied BC3 (2).
+    // Visible/storage extent; z selects BC1 (1) or BC3 (2); w selects nearest (1).
     texel_layout: vec4<f32>,
 }
 @group(0) @binding(2) var<uniform> appearance: ImageAppearance;
@@ -115,6 +115,10 @@ fn encoded_red(pixel: vec4<f32>) -> f32 {
 }
 fn image_alpha(uv: vec2<f32>) -> f32 {
     let size = vec2<i32>(textureDimensions(image));
+    if appearance.texel_layout.w == 1.0 {
+        let at = clamp(vec2<i32>(floor(uv * vec2<f32>(size))), vec2<i32>(0), size - 1);
+        return encoded_red(textureLoad(image, at, 0));
+    }
     let pixel = uv * vec2<f32>(size) - 0.5;
     let base = vec2<i32>(floor(pixel));
     let low = clamp(base, vec2<i32>(0), size - 1);

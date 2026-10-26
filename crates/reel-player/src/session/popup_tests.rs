@@ -23,7 +23,10 @@ fn story(code: &str, encoded: bool) -> AsideSessionUi {
         )
         .unwrap();
     }
-    AsideSessionUi::from_compiled(session(), compiled, "en", VmLimits::default()).unwrap()
+    let assets = crate::assets::tests::prepared_effect_assets(&compiled.effects);
+    AsideSessionUi::from_compiled(session(), compiled, "en", VmLimits::default())
+        .unwrap()
+        .with_assets(assets)
 }
 fn inside(frame: &RecordedSource, child: WidgetId, ancestor: WidgetId) -> bool {
     let mut record = frame.geometry().get(child).unwrap();
@@ -90,6 +93,15 @@ fn present(
     frame: u64,
 ) -> RecordedSource {
     driver.sync(bridge, root).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while driver.ui().images_pending() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "prepared source effects did not become ready"
+        );
+        std::thread::yield_now();
+        driver.sync(bridge, root).unwrap();
+    }
     let (recording, receipt) = driver
         .record(bridge, root, FrameId(frame))
         .unwrap()
@@ -882,6 +894,7 @@ fn popup_whole_and_prepared_images_share_resources_and_retire_with_their_logical
                 root,
                 Stage::default(),
                 NodeKind::Image {
+                    sampling: Default::default(),
                     source_rect: None,
                     source: ImageSource::from("assets/panels.png"),
                     origin: None,
@@ -958,6 +971,7 @@ fn ineligible_popup_images_do_not_block_visible_content_or_load_resources() {
         let image = stage
             .create(
                 NodeKind::Image {
+                    sampling: Default::default(),
                     source_rect: None,
                     source: ImageSource::from("missing.png"),
                     origin: None,

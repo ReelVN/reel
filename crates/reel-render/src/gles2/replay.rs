@@ -31,6 +31,7 @@ pub(super) struct Context<'a> {
     pub image_cache: &'a mut Images,
     pub glyph_cache: &'a mut draw::GlyphCache,
     pub glyphs: Vec<Rc<draw::Glyph>>,
+    pub glyph_plan: crate::common::glyph_plan::Plan,
     pub effect_cache: &'a mut super::effect::Cache,
     pub mask_cache: &'a mut crate::common::mask::split::Cache,
     pub effects: Vec<Rc<super::effect::Compiled>>,
@@ -93,6 +94,7 @@ pub(super) fn prepare(
         image_cache,
         glyph_cache,
         glyphs: Vec::new(),
+        glyph_plan: Default::default(),
         effect_cache,
         mask_cache,
         effects: Vec::new(),
@@ -110,7 +112,17 @@ pub(super) fn prepare(
         f64::from(size[0]) / frame.info().logical_size[0],
         f64::from(size[1]) / frame.info().logical_size[1],
     );
-    let output = context.stream(frame.drawing(), transform);
+    let output = crate::common::glyph_plan::Plan::collect(
+        std::iter::once(frame),
+        transform,
+        gpu.capabilities().max_texture_size,
+        capture,
+        &mut context,
+    )
+    .and_then(|plan| {
+        context.glyph_plan = plan;
+        context.stream(frame.drawing(), transform)
+    });
     // Keep the compatible high-water pool across effect endpoints. Residency
     // pressure and output-size changes retire it at the admission boundary.
     context.glyphs.extend(context.glyph_cache.take_uploads());
@@ -137,7 +149,9 @@ struct Scope<'a> {
     mask: Option<reel_ui::frame::MaskUse>,
     image_mask: Option<(&'a reel_ui::frame::FrameImageMask, Affine)>,
     effect: Option<(&'a reel_ui::frame::FrameEffect, Affine)>,
+    mask_effect: Option<(&'a reel_ui::frame::FrameEffect, Affine)>,
     source_parent: Option<(Affine, [u32; 2], Scissor)>,
+    source_view: Option<crate::common::source_view::SourceView>,
     opacity: f32,
     invert: f32,
     blend: reel_ui::frame::BlendMode,
@@ -200,17 +214,31 @@ impl Context<'_> {
                     })?;
             // The previous frame's presentation draw precedes this clear on the
             // same GLES queue. Capture outputs use a separate allocation set.
-            let index = self.targets.len();
-            if self
+            let index = self
+                .targets
+                .iter()
+                .filter(|target| target.size == self.size)
+                .count();
+            let target = if let Some(target) = self
                 .target_cache
-                .get(index)
-                .is_some_and(|target| target.size != self.size)
+                .iter()
+                .filter(|target| target.size == self.size)
+                .nth(index)
             {
-                self.target_cache.truncate(index);
-            }
-            let target = if let Some(target) = self.target_cache.get(index) {
                 target.clone()
             } else {
+                // Retain distinct size buckets across animation and allocation
+                // order changes. Existing byte budgets bound the idle pool.
+                if bytes
+                    > self
+                        .limits
+                        .target_bytes
+                        .saturating_sub(self.budgets.targets.usage().bytes)
+                {
+                    self.target_cache.retain(|target| {
+                        self.targets.iter().any(|live| live.same_allocation(target))
+                    });
+                }
                 let target = match Target::new(
                     self.gpu,
                     self.size,
@@ -421,7 +449,9 @@ impl Context<'_> {
                             mask: None,
                             image_mask: None,
                             effect: None,
+                            mask_effect: None,
                             source_parent: None,
+                            source_view: None,
                             opacity: 1.,
                             invert: 0.,
                             blend: Default::default(),
@@ -476,6 +506,7 @@ impl Context<'_> {
                         });
                     }
                     let isolated = !current.groups.can_inline(current.next - 1);
+                    let ink = self.glyph_plan.group_ink(group);
                     let output_scissor = Scissor::group_bounds(
                         group,
                         transform,
@@ -483,7 +514,31 @@ impl Context<'_> {
                         current.transitions_enabled && !current.drawing.transitions().is_empty(),
                     )
                     .map_or(self.scissor, |bounds| self.scissor.intersect(bounds));
-                    let source_parent = if let Some(effect) = &group.effect {
+                    let mut source_view = isolated
+                        .then(|| {
+                            crate::common::source_view::SourceView::group(
+                                group,
+                                ink,
+                                transform,
+                                self.size,
+                                self.scissor,
+                                current.transitions_enabled
+                                    && !current.drawing.transitions().is_empty(),
+                                self.gpu.capabilities().max_texture_size,
+                            )
+                        })
+                        .flatten();
+                    let source_parent = if let Some(view) = source_view {
+                        self.flush_draws()?;
+                        let parent = (current.transform, self.size, view.parent_rect);
+                        current.transform = view.frame_to_source(transform);
+                        current.size = view.storage_size;
+                        self.size = view.storage_size;
+                        self.mesh_clip = None;
+                        Some(parent)
+                    } else if let Some(effect) =
+                        group.effect.as_ref().or(group.mask_effect.as_ref())
+                    {
                         let source = crate::common::effect_plan::source_layout(
                             effect,
                             group.effect_to_target,
@@ -493,6 +548,17 @@ impl Context<'_> {
                         )?;
                         self.flush_draws()?;
                         let parent = (current.transform, self.size, output_scissor);
+                        if group.mask_effect.is_some() {
+                            source_view = Some(crate::common::source_view::SourceView::local(
+                                source.size,
+                                if transform.determinant() == 0. {
+                                    Affine::scale(0.)
+                                } else {
+                                    source.frame_to_source * transform.inverse()
+                                },
+                                output_scissor,
+                            ));
+                        }
                         current.transform = source.frame_to_source;
                         current.size = source.size;
                         self.size = source.size;
@@ -512,10 +578,15 @@ impl Context<'_> {
                             },
                             mesh_clip: self.mesh_clip,
                             source_parent,
+                            source_view,
                             clip: group.clip.as_ref(),
                             mask: group.mask,
                             effect: group
                                 .effect
+                                .as_ref()
+                                .map(|effect| (effect, transform * group.effect_to_target)),
+                            mask_effect: group
+                                .mask_effect
                                 .as_ref()
                                 .map(|effect| (effect, transform * group.effect_to_target)),
                             image_mask: group
@@ -525,7 +596,9 @@ impl Context<'_> {
                             opacity: group.composite.alpha,
                             invert: group.invert,
                             blend: group.composite.blend,
-                            scissor: if source_parent.is_some() {
+                            scissor: if let Some(view) = source_view {
+                                view.source_rect
+                            } else if source_parent.is_some() {
                                 Scissor::full(self.size)
                             } else {
                                 output_scissor
@@ -546,6 +619,42 @@ impl Context<'_> {
                     if group.isolated {
                         self.flush_draws()?;
                     }
+                    let mut source = group.target;
+                    if let Some((coverage, to_parent)) = group.mask_effect {
+                        let view = group.source_view.expect("local coverage source");
+                        self.scissor = group.scissor;
+                        if let Some((effect, to_parent)) = group.effect {
+                            let processed = self.effect(
+                                current.drawing,
+                                effect,
+                                view.parent_to_source * to_parent,
+                                &source,
+                                entry.at,
+                            )?;
+                            self.recycle_target(source)?;
+                            source = processed;
+                        }
+                        let mask = self.effect_coverage(
+                            current.drawing,
+                            coverage,
+                            view.parent_to_source * to_parent,
+                            &source,
+                            Affine::IDENTITY,
+                            entry.at,
+                        )?;
+                        let covered = self.target()?;
+                        self.combine(
+                            &covered,
+                            &source.view,
+                            &mask.view,
+                            1.,
+                            0.,
+                            CompositeOperation::AlphaMask,
+                        )?;
+                        self.recycle_target(source)?;
+                        self.recycle_target(mask)?;
+                        source = covered;
+                    }
                     if let Some((outer, size, _)) = group.source_parent {
                         current.transform = outer;
                         current.size = size;
@@ -562,8 +671,23 @@ impl Context<'_> {
                             .source_parent
                             .map_or(group.scissor, |(_, _, scissor)| scissor),
                     );
-                    let mut source = group.target;
-                    if let Some((effect, transform)) = group.effect {
+                    if let Some(view) = group.source_view.filter(|_| group.mask_effect.is_none()) {
+                        self.combine_view(
+                            &current.scopes.last().target,
+                            &source,
+                            view,
+                            group.opacity,
+                            group.invert,
+                        )?;
+                        self.recycle_target(source)?;
+                        continue;
+                    }
+                    if let Some(view) = group.source_view.filter(|_| group.mask_effect.is_some()) {
+                        let projected = self.target()?;
+                        self.project_source(&projected, &source, view.parent_to_source, entry.at)?;
+                        self.recycle_target(source)?;
+                        source = projected;
+                    } else if let Some((effect, transform)) = group.effect {
                         let processed =
                             self.effect(current.drawing, effect, transform, &source, entry.at)?;
                         self.recycle_target(source)?;
@@ -743,7 +867,9 @@ impl Context<'_> {
                 mask: None,
                 image_mask: None,
                 effect: None,
+                mask_effect: None,
                 source_parent: None,
+                source_view: None,
                 opacity: 1.,
                 invert: 0.,
                 blend: Default::default(),
@@ -764,7 +890,28 @@ impl Context<'_> {
         operation: CompositeOperation,
     ) -> Result<(), GlesError> {
         self.composition(
-            target, source, mask, source, alpha, invert, operation, 0, None,
+            target, source, mask, source, alpha, invert, operation, 0, None, [0; 2],
+        )
+    }
+    fn combine_view(
+        &mut self,
+        target: &Target,
+        source: &Target,
+        view: crate::common::source_view::SourceView,
+        alpha: f32,
+        invert: f32,
+    ) -> Result<(), GlesError> {
+        self.composition(
+            target,
+            &source.view,
+            &source.view,
+            &source.view,
+            alpha,
+            invert,
+            CompositeOperation::SourceOver,
+            0,
+            None,
+            view.origin(),
         )
     }
     fn composition(
@@ -778,6 +925,7 @@ impl Context<'_> {
         operation: CompositeOperation,
         blend: u32,
         expression: Option<&Target>,
+        source_origin: [u32; 2],
     ) -> Result<(), GlesError> {
         self.flush_draws()?;
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Composite);
@@ -817,6 +965,16 @@ impl Context<'_> {
             values.extend(shader.int(name, unit));
         }
         values.extend(shader.vec4("u_params", [alpha, mode, progress, 0.]));
+        let source_size = source.size().map(|n| n as f32);
+        values.extend(shader.vec4(
+            "u_source_uv",
+            [
+                self.size[0] as f32 / source_size[0],
+                self.size[1] as f32 / source_size[1],
+                -(source_origin[0] as f32) / source_size[0],
+                -(source_origin[1] as f32) / source_size[1],
+            ],
+        ));
         values.extend(shader.float("u_invert", invert));
         values.extend(shader.float("u_blend", blend as f32));
         values.extend(shader.float("u_has_expression", f32::from(expression.is_some())));
@@ -903,6 +1061,7 @@ impl Context<'_> {
             operation,
             blend,
             expression.as_ref(),
+            [0; 2],
         )?;
         if let Some(backdrop) = backdrop {
             self.recycle_target(backdrop)?;
@@ -944,6 +1103,7 @@ impl Context<'_> {
             operation,
             0,
             expression.as_ref(),
+            [0; 2],
         )?;
         if let Some(expression) = expression {
             self.recycle_target(expression)?;

@@ -3,7 +3,7 @@ use reel_ui::frame::{FrameDraw, FrameDrawing, ImageAppearance, RecordLocation};
 use reel_ui::{
     imaging::record::Clip,
     kurbo::{Affine, Rect},
-    peniko::{Brush, Extend, Fill, color::LinearSrgb},
+    peniko::{Brush, Extend, Fill, ImageQuality, color::LinearSrgb},
 };
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -12,16 +12,19 @@ pub(super) struct PaintBatch {
     target: Target,
     geometry: crate::common::draw_batch::Batch<PaintState>,
 }
+#[derive(PartialEq)]
 struct VideoState {
     chroma: [wgpu::TextureView; 2],
     color: wgpu::Buffer,
 }
+#[derive(PartialEq)]
 struct PaintState {
     image: wgpu::TextureView,
     texture_format: Option<reel_core::texture::TextureFormat>,
     coverage: bool,
     yuv: Option<VideoState>,
     repeat: [bool; 2],
+    quality: ImageQuality,
     appearance: Option<super::gradient::Uniform>,
     direct: Option<mesh::DirectPaint>,
     scissor: super::targets::Scissor,
@@ -32,6 +35,7 @@ struct SampledImage<'a> {
     coverage: bool,
     format: Option<reel_core::texture::TextureFormat>,
     yuv: Option<&'a super::video::Planes>,
+    quality: ImageQuality,
 }
 impl<'a> SampledImage<'a> {
     fn coverage(view: &'a wgpu::TextureView) -> Self {
@@ -46,10 +50,46 @@ impl<'a> SampledImage<'a> {
             coverage: false,
             format: None,
             yuv: None,
+            quality: ImageQuality::Medium,
         }
     }
 }
 impl Context<'_> {
+    /// Sample a complete linear source through its actual local-to-parent map.
+    /// Submission of the sampling draw precedes retirement of its scratch target.
+    pub(super) fn project_source(
+        &mut self,
+        target: &Target,
+        source: &Target,
+        parent_to_source: Affine,
+        at: RecordLocation,
+    ) -> Result<(), GpuError> {
+        if parent_to_source.determinant() == 0. {
+            return Ok(());
+        }
+        self.flush_draws()?;
+        let mut mesh = mesh::Mesh::new(self.mesh_allocation());
+        mesh.quad(
+            Rect::new(0., 0., f64::from(source.size[0]), f64::from(source.size[1])),
+            Rect::new(0., 0., 1., 1.),
+        )?;
+        mesh::transform_glyphs(
+            &mut mesh,
+            parent_to_source.inverse(),
+            self.size,
+            [1.; 4],
+            at,
+        )?;
+        self.paint_mesh(
+            target,
+            mesh,
+            SampledImage::plain(&source.view),
+            [false; 2],
+            None,
+        )?;
+        self.flush_draws()
+    }
+
     pub(super) fn mesh_allocation(&self) -> mesh::Allocation {
         mesh::Allocation::new(
             self.budgets,
@@ -177,20 +217,27 @@ impl Context<'_> {
         };
         self.composite_supported(composite, at)?;
         let mut mesh = mesh::tessellate(shape, fill, stroke, at, self.mesh_allocation())?;
-        let (image, uv, color, repeat, appearance) = match brush {
+        let (image, uv, color, repeat, appearance, quality) = match brush {
             Brush::Solid(c) => {
                 let color = c
                     .convert::<LinearSrgb>()
                     .premultiply()
                     .components
                     .map(|v| v * composite.alpha);
-                (self.white()?, Affine::IDENTITY, color, [false; 2], None)
+                (
+                    self.white()?,
+                    Affine::IDENTITY,
+                    color,
+                    [false; 2],
+                    None,
+                    ImageQuality::Medium,
+                )
             }
             Brush::Image(brush) => {
-                if brush.sampler.quality != reel_ui::peniko::ImageQuality::Medium {
+                if brush.sampler.quality == ImageQuality::High {
                     return Err(GpuError::Unsupported {
                         at,
-                        record: "non-bilinear image sampling",
+                        record: "high-quality image sampling",
                     });
                 }
                 if brush.sampler.x_extend == Extend::Reflect
@@ -217,6 +264,7 @@ impl Context<'_> {
                         .image
                         .appearance
                         .map(|appearance| appearance.transformed(outer)),
+                    brush.sampler.quality,
                 )
             }
             Brush::Gradient(gradient) => {
@@ -254,7 +302,7 @@ impl Context<'_> {
             ));
         }
         mesh::transform(&mut mesh, outer * transform, self.size, uv, color, at)?;
-        self.paint_resource(target, mesh, &image, repeat, appearance)
+        self.paint_resource(target, mesh, &image, repeat, appearance, quality)
     }
     pub(super) fn image_resource(
         &self,
@@ -271,7 +319,7 @@ impl Context<'_> {
     }
     fn glyphs(
         &mut self,
-        frame: &FrameDrawing,
+        _frame: &FrameDrawing,
         target: &Target,
         run: &reel_ui::frame::FrameGlyphRun,
         outer: Affine,
@@ -311,35 +359,15 @@ impl Context<'_> {
         let run_key = Arc::new(super::glyph_cache::RunKey::new(run, density));
         for index in 0..run.glyphs.len() {
             let key = super::glyph_cache::Key::new(run_key.clone(), run.glyphs[index].id);
-            let glyph = if let Some(glyph) = self.glyphs.entries.get(&key) {
-                glyph.clone()
-            } else {
-                let glyph = match self.glyph_cache.get(&key) {
-                    Some(glyph) => glyph,
-                    None => self.glyph_cache.rasterize(
-                        self.gpu,
-                        &mut self.encoder,
-                        frame,
-                        run,
-                        density,
-                        index,
-                        at,
-                        self.budgets,
-                        &self.budget_scope,
-                        &mut self.tickets,
-                        self.image_cache,
-                    )?,
-                };
-                super::glyph_cache::GlyphCache::charge(
-                    &mut self.glyphs,
-                    &glyph,
-                    &self.budget_scope.resources,
-                    self.gpu.limits.resource_bytes,
-                    &mut self.tickets,
-                )?;
-                self.glyphs.entries.insert(key, glyph.clone());
-                glyph
-            };
+            let glyph = self
+                .glyphs
+                .entries
+                .get(&key)
+                .cloned()
+                .ok_or(GpuError::Unsupported {
+                    at,
+                    record: "glyph missing from preparation",
+                })?;
             let super::glyph_cache::Glyph::Image {
                 page: glyph_page,
                 origin,
@@ -364,13 +392,11 @@ impl Context<'_> {
                 batch = mesh::Mesh::new(self.mesh_allocation());
             }
             page = Some(glyph_page.clone());
-            let x = f64::from(run.glyphs[index].x) + offset[0] / density;
-            let y = f64::from(run.glyphs[index].y) + offset[1] / density;
-            let bounds = Rect::new(
-                x,
-                y,
-                x + f64::from(size[0]) / density,
-                y + f64::from(size[1]) / density,
+            let bounds = crate::common::glyph_plan::bitmap_bounds(
+                [run.glyphs[index].x, run.glyphs[index].y],
+                *offset,
+                *size,
+                density,
             );
             let visible = (outer * run.transform)
                 .transform_rect_bbox(bounds)
@@ -420,6 +446,7 @@ impl Context<'_> {
         image: &super::resources::Image,
         repeat: [bool; 2],
         appearance: Option<ImageAppearance>,
+        quality: ImageQuality,
     ) -> Result<(), GpuError> {
         if appearance
             .and_then(|appearance| appearance.gradient)
@@ -435,6 +462,7 @@ impl Context<'_> {
                 coverage: false,
                 format: image.texture_format,
                 yuv: image.yuv.as_ref(),
+                quality,
             },
             repeat,
             appearance.map(|appearance| {
@@ -447,7 +475,7 @@ impl Context<'_> {
                         Some(reel_core::texture::TextureFormat::Bc3Rgba) => 2.,
                         _ => 0.,
                     },
-                    0.,
+                    f32::from(quality == ImageQuality::Low),
                 ];
                 if uniform[4][3] == 3.
                     && image.yuv.is_none()
@@ -473,6 +501,7 @@ impl Context<'_> {
             coverage,
             format: texture_format,
             yuv,
+            quality,
         } = image;
         if mesh.indices.is_empty() || self.scissor.empty() {
             return Ok(());
@@ -505,6 +534,7 @@ impl Context<'_> {
                 color: planes.color.clone(),
             }),
             repeat,
+            quality,
             appearance,
             scissor: self.scissor,
         };
@@ -568,6 +598,7 @@ impl Context<'_> {
                 texture_format,
                 yuv,
                 repeat,
+                quality,
                 appearance,
                 ..
             } = &entry.state;
@@ -594,8 +625,12 @@ impl Context<'_> {
                     usage: wgpu::BufferUsages::UNIFORM,
                 })
             });
-            let sampler =
-                &self.pipelines.samplers[usize::from(repeat[0]) + 2 * usize::from(repeat[1])];
+            let samplers = if *quality == ImageQuality::Low {
+                &self.pipelines.nearest_samplers
+            } else {
+                &self.pipelines.samplers
+            };
+            let sampler = &samplers[usize::from(repeat[0]) + 2 * usize::from(repeat[1])];
             let appearance = appearance_buffer
                 .as_ref()
                 .unwrap_or_else(|| match texture_format {

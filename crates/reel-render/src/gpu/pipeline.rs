@@ -109,6 +109,8 @@ pub(super) struct CompositeParams {
     pub invert: f32,
     pub operation: CompositeOperation,
     pub blend: u32,
+    /// Integer parent pixels preceding the source's top-left storage texel.
+    pub source_origin: [u32; 2],
 }
 pub(super) struct CompositeInputs<'a> {
     pub source: &'a wgpu::TextureView,
@@ -132,6 +134,7 @@ pub struct Pipelines {
     pub paint_layout: wgpu::BindGroupLayout,
     pub composite_layout: wgpu::BindGroupLayout,
     pub samplers: [wgpu::Sampler; 4],
+    pub nearest_samplers: [wgpu::Sampler; 4],
     pub plain_appearance: wgpu::Buffer,
     pub block_appearance: [wgpu::Buffer; 2],
     pub masks: super::mask::Cache,
@@ -334,25 +337,29 @@ impl Pipelines {
         #[cfg(test)]
         counts
             .samplers
-            .fetch_add(4, std::sync::atomic::Ordering::Relaxed);
-        let samplers = std::array::from_fn(|index| {
-            device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("linear premultiplied"),
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
-                address_mode_u: if index & 1 != 0 {
-                    wgpu::AddressMode::Repeat
-                } else {
-                    wgpu::AddressMode::ClampToEdge
-                },
-                address_mode_v: if index & 2 != 0 {
-                    wgpu::AddressMode::Repeat
-                } else {
-                    wgpu::AddressMode::ClampToEdge
-                },
-                ..Default::default()
+            .fetch_add(8, std::sync::atomic::Ordering::Relaxed);
+        let create_samplers = |filter| {
+            std::array::from_fn(|index| {
+                device.create_sampler(&wgpu::SamplerDescriptor {
+                    label: Some("premultiplied image sampling"),
+                    mag_filter: filter,
+                    min_filter: filter,
+                    address_mode_u: if index & 1 != 0 {
+                        wgpu::AddressMode::Repeat
+                    } else {
+                        wgpu::AddressMode::ClampToEdge
+                    },
+                    address_mode_v: if index & 2 != 0 {
+                        wgpu::AddressMode::Repeat
+                    } else {
+                        wgpu::AddressMode::ClampToEdge
+                    },
+                    ..Default::default()
+                })
             })
-        });
+        };
+        let samplers = create_samplers(wgpu::FilterMode::Linear);
+        let nearest_samplers = create_samplers(wgpu::FilterMode::Nearest);
         let plain_appearance = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("plain image appearance"),
             contents: &[0u8; 144],
@@ -384,6 +391,7 @@ impl Pipelines {
             paint_layout,
             composite_layout,
             samplers,
+            nearest_samplers,
             plain_appearance,
             block_appearance,
             masks: super::mask::Cache::default(),
@@ -411,8 +419,8 @@ impl Pipelines {
             softness.to_bits(),
             params.invert.to_bits(),
             params.blend,
-            0,
-            0,
+            (params.source_origin[0] as f32).to_bits(),
+            (params.source_origin[1] as f32).to_bits(),
         ];
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("composite params"),

@@ -5,19 +5,20 @@ use aside_compiler::{
 };
 use reel_ui::stage::effect::{
     EffectBinary as Binary, EffectInput, EffectNode, EffectNodeId as Id, EffectOp as Op,
-    EffectParameter, EffectProgram, EffectType as Ty, EffectUnary as Unary,
-    EffectValue as Constant,
+    EffectParameter, EffectProgram, EffectTextureChannel, EffectTextureParameter, EffectType as Ty,
+    EffectUnary as Unary, EffectValue as Constant,
 };
 use std::{collections::HashMap, sync::Arc};
 
 mod collect;
 mod lower;
+mod masks;
 pub use collect::collect_effects;
 pub(super) use collect::{bind_project, bind_single, collect_registered};
 mod products;
 pub use products::{
     EffectDefinition, EffectDefinitionId, EffectLoadLimits, EffectLocation, EffectOrigin,
-    EffectProductError, EffectProducts, decode_definition, encode_definition,
+    EffectProductError, EffectProducts, decode_definition, encode_definition, encode_mask_template,
 };
 #[cfg(test)]
 mod tests;
@@ -71,6 +72,8 @@ impl Default for EffectCompileLimits {
 #[derive(Debug)]
 pub struct CompiledEffect {
     pub entry: EffectFunction,
+    /// A proven existing mask constructor graph using the same shader definition.
+    pub mask: Option<Arc<reel_ui::stage::MaskProgram>>,
     pub program: Arc<EffectProgram>,
     /// One location per expression, indexed by EffectNodeId.
     pub node_sources: Vec<EffectSource>,
@@ -148,6 +151,7 @@ pub fn compile_effect(
         return Err(compiler.error(site, "effect function requires a fragment first parameter"));
     }
     let mut parameters = Vec::new();
+    let mut textures = Vec::new();
     let mut arguments = vec![Value::Fragment];
     let mut defaults = Frame {
         module: entry.module,
@@ -155,6 +159,19 @@ pub fn compile_effect(
     };
     for parameter in function.parameters.iter().skip(1) {
         let symbol = &module.symbols()[parameter.symbol.0 as usize];
+        if matches!(&module.types()[symbol.ty.0 as usize], h::Type::Named(name) if module.hir().name(*name) == "reel::types::Texture")
+        {
+            if parameter.default.is_some() {
+                return Err(
+                    compiler.error(site, "Texture parameters require an explicit texture value")
+                );
+            }
+            arguments.push(Value::Texture(textures.len() as u32));
+            textures.push(EffectTextureParameter {
+                name: module.hir().name(symbol.name).into(),
+            });
+            continue;
+        }
         let ty = drawing_type(module, symbol.ty).ok_or_else(|| EffectDiagnostic {
             module: module.source_path().into(),
             span: symbol.declaration,
@@ -185,24 +202,26 @@ pub fn compile_effect(
     let result = compiler.function(entry, arguments, site)?;
     let output = compiler.node(site, result)?;
     let nodes = std::mem::take(&mut compiler.nodes);
-    let program = EffectProgram::new(parameters, nodes, output).map_err(|error| {
-        let source = match &error {
-            reel_ui::stage::effect::EffectValidationError::Node { id, .. } => {
-                compiler.sources.get(id.0 as usize).copied()
-            }
-            _ => None,
-        };
-        source.map_or_else(
-            || compiler.error(site, error.to_string()),
-            |source| EffectDiagnostic {
-                module: modules[source.module].source_path().into(),
-                span: source.span,
-                message: error.to_string(),
-            },
-        )
-    })?;
+    let program =
+        EffectProgram::with_textures(parameters, textures, nodes, output).map_err(|error| {
+            let source = match &error {
+                reel_ui::stage::effect::EffectValidationError::Node { id, .. } => {
+                    compiler.sources.get(id.0 as usize).copied()
+                }
+                _ => None,
+            };
+            source.map_or_else(
+                || compiler.error(site, error.to_string()),
+                |source| EffectDiagnostic {
+                    module: modules[source.module].source_path().into(),
+                    span: source.span,
+                    message: error.to_string(),
+                },
+            )
+        })?;
     Ok(CompiledEffect {
         entry,
+        mask: None,
         program,
         node_sources: compiler.sources,
         source_files: modules
@@ -242,6 +261,7 @@ enum Value {
     Node(Id),
     Tuple(Vec<Value>),
     Fragment,
+    Texture(u32),
     Function(EffectFunction),
     Native { module: usize, binding: usize },
     Null,

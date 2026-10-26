@@ -67,16 +67,71 @@ fn program(color: bool) -> Arc<EffectProgram> {
     .unwrap()
 }
 fn frames(language: Language, color: bool) -> Vec<RenderFrame> {
-    let program = program(color);
+    frames_with_texture(language, color, false)
+}
+fn frames_with_texture(language: Language, color: bool, external: bool) -> Vec<RenderFrame> {
+    frames_with_inputs(language, color, external, false)
+}
+fn frames_with_inputs(
+    language: Language,
+    color: bool,
+    external: bool,
+    coverage: bool,
+) -> Vec<RenderFrame> {
+    let mut program = program(color);
+    if external {
+        let mut nodes = program.nodes().to_vec();
+        nodes.push(EffectNode {
+            ty: EffectType::Float,
+            op: EffectOp::TextureSample {
+                binding: 0,
+                uv: EffectNodeId(1),
+                channel: EffectTextureChannel::Gray,
+            },
+        });
+        nodes.push(EffectNode {
+            ty: EffectType::Float,
+            op: EffectOp::TextureSample {
+                binding: 0,
+                uv: EffectNodeId(1),
+                channel: EffectTextureChannel::Alpha,
+            },
+        });
+        nodes.push(EffectNode {
+            ty: EffectType::Float,
+            op: EffectOp::Binary {
+                op: EffectBinary::Multiply,
+                left: EffectNodeId(0),
+                right: EffectNodeId(3),
+            },
+        });
+        nodes.push(EffectNode {
+            ty: EffectType::Float,
+            op: EffectOp::Binary {
+                op: EffectBinary::Multiply,
+                left: EffectNodeId(5),
+                right: EffectNodeId(4),
+            },
+        });
+        program = EffectProgram::with_textures(
+            program.parameters().to_vec(),
+            vec![EffectTextureParameter { name: "ink".into() }],
+            nodes,
+            EffectNodeId(6),
+        )
+        .unwrap();
+    }
     let fragment = compile_fragment(&program, language, 32768).unwrap();
     let format = match language {
         Language::GlslEs100 => EffectShaderFormat::GlslEs100,
         Language::Wgsl => EffectShaderFormat::Wgsl,
     };
-    let descriptor = EffectShaderDescriptor::new(
+    let descriptor = EffectShaderDescriptor::with_textures(
         [3; 32],
         format,
         vec![EffectType::Float],
+        program.textures().len() as u32,
+        fragment.source_sampler,
         fragment.output_type,
         fragment.source.as_bytes(),
     )
@@ -101,6 +156,27 @@ fn frames(language: Language, color: bool) -> Vec<RenderFrame> {
             bytes,
         )
         .unwrap();
+    let texture = external.then(|| {
+        registry
+            .register_image(
+                ResourceVersion {
+                    key: AssetKey("effect-external-image".into()),
+                    version: ContentVersion([8; 32]),
+                },
+                OwnedBytes::new(
+                    vec![
+                        0, 0, 0, 255, 32, 64, 96, 128, 128, 64, 32, 192, 255, 255, 255, 255,
+                    ],
+                    pool.reserve(16).unwrap(),
+                )
+                .unwrap(),
+                [2, 2],
+                reel_ui::peniko::ImageFormat::Rgba8,
+                reel_ui::peniko::ImageAlphaType::Alpha,
+                reel_ui::resources::ColorEncoding::Srgb,
+            )
+            .unwrap()
+    });
     let mut frames = Vec::new();
     for index in 0..3 {
         let mut scene = Scene::new();
@@ -118,16 +194,30 @@ fn frames(language: Language, color: bool) -> Vec<RenderFrame> {
         widget.clip = !color;
         widget.inner.clip = Rect::new(0., 0., 80., 70.);
         widget.opacity = 0.75;
-        widget.effect = Some(PaintEffect {
-            instance: EffectInstance::new(
+        let paint = PaintEffect {
+            instance: EffectInstance::with_textures(
                 [3; 32],
                 program.clone(),
                 vec![EffectValue::Float((index as f32 * 0.5).to_bits())],
+                if external {
+                    vec!["effect-external-image".into()]
+                } else {
+                    vec![]
+                },
             )
             .unwrap(),
             shader: registry.acquire(shader).unwrap(),
+            images: texture
+                .map(|handle| vec![registry.acquire(handle).unwrap()])
+                .unwrap_or_default(),
             bounds: Rect::new(0., 0., if color { 100. } else { 240. }, 80.),
-        });
+            coverage_invert: coverage,
+        };
+        if coverage {
+            widget.mask_effect = Some(paint);
+        } else {
+            widget.effect = Some(paint);
+        }
         let mut bridge = if color {
             widget_bridge(widget, Affine::translate((18., 12.)) * Affine::rotate(0.1))
         } else {
@@ -146,7 +236,12 @@ fn frames(language: Language, color: bool) -> Vec<RenderFrame> {
         };
         let mut build = FrameBuild::new(
             bridge.record(FrameId(index + 1)).unwrap(),
-            registry.freeze(&[shader], &pool).unwrap(),
+            registry
+                .freeze(
+                    &std::iter::once(shader).chain(texture).collect::<Vec<_>>(),
+                    &pool,
+                )
+                .unwrap(),
             FrameInfo {
                 logical_size: [160., 120.],
                 physical_size: SIZE,
@@ -161,7 +256,11 @@ fn frames(language: Language, color: bool) -> Vec<RenderFrame> {
             .commands()
             .iter()
             .find_map(|command| match &command.op {
-                FrameOp::PushGroup(group) if group.effect.is_some() => Some(group),
+                FrameOp::PushGroup(group)
+                    if group.effect.is_some() || group.mask_effect.is_some() =>
+                {
+                    Some(group)
+                }
                 _ => None,
             })
             .unwrap();
@@ -169,8 +268,20 @@ fn frames(language: Language, color: bool) -> Vec<RenderFrame> {
             matches!(group.ink_bounds,InkBounds::Rect(rect) if rect.width()>0. && rect.height()>0.)
         );
         assert_eq!(
-            group.effect.as_ref().unwrap().values,
+            group
+                .effect
+                .as_ref()
+                .or(group.mask_effect.as_ref())
+                .unwrap()
+                .values,
             vec![EffectValue::Float((index as f32 * 0.5).to_bits())]
+        );
+        assert_eq!(
+            group
+                .mask_effect
+                .as_ref()
+                .is_some_and(|effect| effect.coverage_invert),
+            coverage
         );
         frames.push(frame);
     }
@@ -203,7 +314,18 @@ fn frames(language: Language, color: bool) -> Vec<RenderFrame> {
     };
     while !restore.step(budget).unwrap().build.complete {}
     let restored = restore.finish().unwrap();
-    assert!(restored.drawing().commands().iter().any(|command|matches!(&command.op,FrameOp::PushGroup(group) if group.effect.as_ref().is_some_and(|effect|effect.values==vec![EffectValue::Float(0.5f32.to_bits())]))));
+    assert!(restored.drawing().commands().iter().any(|command|matches!(&command.op,FrameOp::PushGroup(group) if group.effect.as_ref().or(group.mask_effect.as_ref()).is_some_and(|effect|effect.values==vec![EffectValue::Float(0.5f32.to_bits())] && effect.coverage_invert == coverage))));
+    if let Some(texture) = texture {
+        assert!(
+            retained
+                .drawing()
+                .resources()
+                .leases()
+                .iter()
+                .any(|lease| lease.handle() == texture)
+        );
+        registry.retire(texture);
+    }
     registry.retire(shader);
     frames
 }
@@ -214,6 +336,8 @@ fn prepared_effect_frame_retains_bounds_values_and_shader() {
         for color in [false, true] {
             let _ = frames(language, color);
         }
+        let _ = frames_with_texture(language, false, true);
+        let _ = frames_with_inputs(language, false, true, true);
     }
 }
 
@@ -222,21 +346,26 @@ fn prepared_effect_frame_retains_bounds_values_and_shader() {
 #[ignore = "requires an actual WGPU adapter"]
 fn wgpu_prepared_effects_submit_scalar_and_empty_source_color() {
     use reel_render::gpu::{DeviceGeneration, Gpu, GpuLimits, Renderer};
-    // Admission includes two output-size targets and a complete local source,
-    // including its offscreen/clipped portions, before selecting a quality tier.
-    let gpu = pollster::block_on(Gpu::request(
-        &wgpu::Instance::default(),
-        None,
-        DeviceGeneration(1),
-        GpuLimits {
-            target_bytes: 4 * SIZE[0] as u64 * SIZE[1] as u64 * 4,
-            ..Default::default()
-        },
-    ))
-    .unwrap();
-    let mut renderer = Renderer::new(gpu);
-    for color in [false, true] {
-        let frames = frames(Language::Wgsl, color);
+    for (color, external, coverage) in [
+        (false, false, false),
+        (true, false, false),
+        (false, true, false),
+        (false, true, true),
+    ] {
+        // Scalar masks also retain the local coverage and covered source.
+        let target_bytes = (if coverage { 5 } else { 4 }) * SIZE[0] as u64 * SIZE[1] as u64 * 4;
+        let gpu = pollster::block_on(Gpu::request(
+            &wgpu::Instance::default(),
+            None,
+            DeviceGeneration(1),
+            GpuLimits {
+                target_bytes,
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+        let mut renderer = Renderer::new(gpu);
+        let frames = frames_with_inputs(Language::Wgsl, color, external, coverage);
         let mut resident = None;
         for frame in &frames {
             let prepared = renderer.prepare(frame).unwrap();
@@ -268,16 +397,21 @@ fn gles_prepared_effects_submit_scalar_and_empty_source_color() {
         AlphaMode, RenderBackend, RenderEvent, SurfaceInfo,
         gles2::{GlesBackend, GlesLimits},
     };
-    let mut renderer = GlesBackend::headless(
-        SIZE,
-        GlesLimits {
-            target_bytes: 3 * SIZE[0] as u64 * SIZE[1] as u64 * 4,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    for color in [false, true] {
-        let frames = frames(Language::GlslEs100, color);
+    for (color, external, coverage) in [
+        (false, false, false),
+        (true, false, false),
+        (false, true, false),
+        (false, true, true),
+    ] {
+        let mut renderer = GlesBackend::headless(
+            SIZE,
+            GlesLimits {
+                target_bytes: (if coverage { 5 } else { 3 }) * SIZE[0] as u64 * SIZE[1] as u64 * 4,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let frames = frames_with_inputs(Language::GlslEs100, color, external, coverage);
         renderer
             .configure(SurfaceInfo {
                 physical_size: SIZE,
@@ -312,6 +446,6 @@ fn gles_prepared_effects_submit_scalar_and_empty_source_color() {
             }
             resident = Some(bytes);
         }
+        renderer.close().unwrap();
     }
-    renderer.close().unwrap();
 }

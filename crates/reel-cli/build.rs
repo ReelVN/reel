@@ -29,7 +29,6 @@ fn main() -> io::Result<()> {
         "crates/reel-media/src/encode.rs",
         "crates/reel-media/src/decode.rs",
         "crates/reel-media/src/decode",
-        "crates/reel-core/src/audio.rs",
         "crates/reel-audio/src/frame.rs",
         "crates/reel-audio/src/sound/symphonia.rs",
         "crates/reel-audio/src/sound/streaming/decoder.rs",

@@ -84,9 +84,9 @@ pub(in crate::aside) enum ImageField {
     /// Source-pixel window (x, y, width, height); null selects the whole source.
     /// Components and endpoints must be finite float32 drawing values, with positive dimensions.
     /// Out-of-texture coordinates use edge padding. Fit, slice and repeat use this window.
-    /// Bilinear sampling stays inside the window without shrinking its pixel mapping.
+    /// Sampling stays inside the window without shrinking its pixel mapping.
     /// Image and video share this property, bindings and execution snapshots.
-    /// Prepared .reel-image sources do not support source_rect.
+    /// Prepared image tiles retain their sampling gutters at window boundaries.
     ///
     /// ```aside
     /// let frames = [(0, 0, 64, 64), (64, 0, 64, 64)];
@@ -102,6 +102,17 @@ pub(in crate::aside) enum ImageField {
     /// Whole images, prepared textures and decoded video frames support top_bottom.
     #[aside(name="alpha_layout",ty=String,default="native")]
     AlphaLayout,
+    /// Image filtering: linear blends adjacent texels; nearest preserves pixel edges.
+    /// Scaling, source_rect, tiled images and packed alpha use the same source window.
+    /// Changing filtering updates paint and shares the existing decoded texture.
+    /// A subtree effect receives this rendered image; its own source sampling is linear.
+    ///
+    /// ```aside
+    /// let icon = image("images/icon.png", sampling: "nearest", width: 128, height: 128);
+    /// icon.sampling = "linear";
+    /// ```
+    #[aside(name="sampling",ty=String,default="linear")]
+    Sampling,
 }
 #[derive(Properties)]
 #[expect(

@@ -2567,6 +2567,7 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
     let background = stage
         .create(
             NodeKind::Image {
+                sampling: Default::default(),
                 source_rect: None,
                 source: "background.reel-image".into(),
                 origin: Some("snow.aside:2:3".into()),
@@ -2763,6 +2764,7 @@ fn decoded_frames_preserve_geometry_skip_asset_io_and_release_pixels_with_last_v
     );
     let mut registry = ResourceRegistry::new(4, 64 << 10).unwrap();
     let kind = |source, source_rect| NodeKind::Image {
+        sampling: Default::default(),
         source_rect,
         source,
         origin: None,

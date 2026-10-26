@@ -268,3 +268,73 @@ fn export_prepares_destination_formats_and_reuses_sgx_binary_for_new_defaults() 
         "default-only changes reuse the SGX binary without rewriting it"
     );
 }
+
+#[test]
+fn existing_mask_dag_uses_exported_effect_products_and_reuses_code_after_asb_loading() {
+    let source = r#"
+fn main() {
+    let gray = mask.gray("mask.png", x: mask.param("x"), repeat: "x");
+    let alpha = mask.alpha("mask.png");
+    let curve = mask.clamp(mask.add(mask.multiply(mask.subtract(mask.param("progress"), gray), 3), 1));
+    let coverage = mask.multiply(curve, alpha);
+    stage.replace(stack(width: 960, height: 544, mask: coverage, mask_progress: 0.35, mask_x: 0.125));
+}
+"#;
+    let temporary = project(source);
+    let checked = checked(temporary.path());
+    let (_, definition, mask) = checked
+        .effects
+        .binding_records()
+        .find(|(_, _, mask)| mask.is_some_and(|mask| mask.operations().len() == 12))
+        .expect("the existing two-sample DAG is a static template");
+    let mask = mask.unwrap();
+    assert_eq!(mask.sources().len(), 1);
+    let prepared =
+        prepare_effects::prepare(temporary.path(), &checked.effects, Target::Desktop).unwrap();
+    let products = descriptors(&prepared.files);
+    for format in [EffectShaderFormat::Wgsl, EffectShaderFormat::GlslEs100] {
+        let path = format.asset_path(definition);
+        assert_eq!(products[&path].textures, 1);
+        assert_eq!(products[&path].parameters.len(), 4);
+        let envelope = fs::read(&prepared.files[&path]).unwrap();
+        let (_, raw) =
+            EffectShaderDescriptor::decode_payload(&envelope, prepare_effects::MAX_SHADER_BYTES)
+                .unwrap();
+        let shader = std::str::from_utf8(&envelope[raw]).unwrap();
+        assert!(shader.contains("reel_texture_0"));
+        assert!(
+            !shader.contains("u_ops"),
+            "the prepared graph executes static expressions"
+        );
+    }
+    let artifact = reel_cli::build_with_profile(
+        &checked,
+        Some("main::main"),
+        reel_cli::BuildProfile::Release,
+    )
+    .unwrap();
+    let package = reel_package::decode(&artifact.bytes, Default::default()).unwrap();
+    assert!(package.effects().bindings.iter().any(|binding| matches!(
+        binding.kind,
+        reel_package::EffectBindingKind::MaskTemplate { .. }
+    )));
+    let story = reel_player::distribution::story_from_package(package).unwrap();
+    assert_eq!(story.effects.mask_definition(mask).unwrap().id, definition);
+    let reused =
+        prepare_effects::prepare(temporary.path(), &story.effects, Target::Desktop).unwrap();
+    assert_eq!(reused.report.converted, 0);
+    assert_eq!(reused.report.reused as usize, prepared.files.len());
+    fs::write(
+        temporary.path().join("src/main.aside"),
+        source.replace("mask.png", "other.png"),
+    )
+    .unwrap();
+    let changed_paths = project::load(temporary.path())
+        .unwrap_or_else(|error| panic!("{:?}", error.failure))
+        .check()
+        .unwrap();
+    assert!(
+        changed_paths.effects.by_id(definition).is_some(),
+        "image names are instance data, outside the compiled definition identity"
+    );
+}

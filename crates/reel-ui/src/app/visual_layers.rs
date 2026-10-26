@@ -40,6 +40,8 @@ pub struct GroupMetadata {
     pub image_mask: Option<PaintImageMask>,
     /// Typed prepared fragment applied before group coverage and compositing.
     pub effect: Option<crate::core::PaintEffect>,
+    /// Scalar shader coverage applied after the subtree's color effect.
+    pub mask_effect: Option<crate::core::PaintEffect>,
     /// sRGB inversion of the completed subtree before coverage and opacity.
     pub invert: f32,
     /// Subtree blend retained when the Imaging record cannot express it.
@@ -94,7 +96,9 @@ impl VisualLayerPlan {
                 });
             }
             if let Some(group) = layer.groups.iter().find(|group| {
-                group.effect.is_some() || group.blend.is_some_and(|blend| blend.imaging().is_none())
+                group.effect.is_some()
+                    || group.mask_effect.is_some()
+                    || group.blend.is_some_and(|blend| blend.imaging().is_none())
             }) {
                 return Err(crate::frame::BuildError {
                     kind: crate::frame::BuildErrorKind::UnsupportedRecord,

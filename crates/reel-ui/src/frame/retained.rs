@@ -548,7 +548,7 @@ fn resource_handles(command: &FrameCommand) -> impl Iterator<Item = ResourceHand
             &[][..],
         ),
         FrameOp::PushGroup(g) => (
-            g.effect.as_ref().map(|effect| effect.shader),
+            None,
             None,
             g.image_mask.as_ref().map_or(&[][..], |mask| &mask.images),
         ),
@@ -559,6 +559,15 @@ fn resource_handles(command: &FrameCommand) -> impl Iterator<Item = ResourceHand
         .into_iter()
         .flatten()
         .chain(images.iter().copied())
+        .chain(
+            match &command.op {
+                FrameOp::PushGroup(group) => Some(group),
+                _ => None,
+            }
+            .into_iter()
+            .flat_map(|group| group.effect.iter().chain(group.mask_effect.iter()))
+            .flat_map(|effect| std::iter::once(effect.shader).chain(effect.images.iter().copied())),
+        )
 }
 pub(crate) fn command_resources(
     command: &FrameCommand,
@@ -606,9 +615,15 @@ pub(crate) fn command_payload_bytes(command: &FrameCommand) -> u64 {
         FrameOp::PushClip(value) => clip(value),
         FrameOp::PushGroup(group) => {
             group.clip.as_ref().map_or(0, clip)
-                + group.effect.as_ref().map_or(0, |effect| {
-                    effect.values.capacity() * size_of::<crate::stage::effect::EffectValue>()
-                })
+                + group
+                    .effect
+                    .iter()
+                    .chain(group.mask_effect.iter())
+                    .map(|effect| {
+                        effect.values.capacity() * size_of::<crate::stage::effect::EffectValue>()
+                            + effect.images.capacity() * size_of::<ResourceHandle>()
+                    })
+                    .sum::<usize>()
                 + group.filters.capacity() * size_of::<Filter>()
                 + group.image_mask.as_ref().map_or(0, |mask| {
                     mask.images.capacity() * size_of::<ResourceHandle>()

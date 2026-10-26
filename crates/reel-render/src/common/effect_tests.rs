@@ -275,6 +275,33 @@ fn complete_fragments_keep_source_sampling_and_parameter_abi() {
     }
 }
 
+#[test]
+fn scalar_coverage_inversion_follows_clamping_in_both_shader_languages() {
+    let mut graph = Graph::default();
+    let output = graph.float(2.0);
+    let program = graph.finish(output);
+    for language in [Language::GlslEs100, Language::Wgsl] {
+        let shader = compile_fragment(&program, language, 16384).unwrap();
+        let clamp = shader.source.find("coverage = clamp(").unwrap();
+        let invert = shader.source.find("coverage = 1.0 - coverage").unwrap();
+        assert!(
+            clamp < invert,
+            "inverted coverage is one minus clamped output"
+        );
+        assert!(shader.source.contains(".w > 1.0"));
+        #[cfg(feature = "wgpu")]
+        if language == Language::Wgsl {
+            let module = wgpu::naga::front::wgsl::parse_str(&shader.source).unwrap();
+            wgpu::naga::valid::Validator::new(
+                wgpu::naga::valid::ValidationFlags::all(),
+                wgpu::naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .unwrap();
+        }
+    }
+}
+
 /// Every operation is the root of its own graph: dead-code elimination cannot
 /// hide an unsupported spelling or overload from the real shader compilers.
 fn operation_programs() -> Vec<(String, Arc<EffectProgram>)> {
@@ -609,5 +636,63 @@ fn export_anonymous_effect_fragments() {
             generated.source.len(),
             generated.parameters.byte_len()
         );
+    }
+}
+
+#[cfg(feature = "wgpu")]
+#[test]
+fn typed_external_textures_emit_fixed_bindings_and_validate_wgsl() {
+    use reel_ui::stage::effect::{EffectTextureChannel, EffectTextureParameter};
+    use wgpu::naga;
+    let mut nodes = vec![EffectNode {
+        ty: EffectType::Vec2,
+        op: EffectOp::Input(EffectInput::Uv),
+    }];
+    for (index, channel) in [
+        EffectTextureChannel::Color,
+        EffectTextureChannel::Alpha,
+        EffectTextureChannel::Gray,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let ty = if channel == EffectTextureChannel::Color {
+            EffectType::Vec4
+        } else {
+            EffectType::Float
+        };
+        nodes.push(EffectNode {
+            ty,
+            op: EffectOp::TextureSample {
+                binding: 0,
+                uv: EffectNodeId(0),
+                channel,
+            },
+        });
+        let program = EffectProgram::with_textures(
+            vec![],
+            vec![EffectTextureParameter { name: "ink".into() }],
+            nodes.clone(),
+            EffectNodeId(index as u32 + 1),
+        )
+        .unwrap();
+        for language in [Language::GlslEs100, Language::Wgsl] {
+            let fragment = compile_fragment(&program, language, 32768).unwrap();
+            assert!(fragment.source.contains("reel_texture_0"));
+            assert!(!fragment.source.contains("u_ops"));
+            assert_eq!(
+                fragment.source_sampler,
+                channel != EffectTextureChannel::Color
+            );
+            if language == Language::Wgsl {
+                let module = naga::front::wgsl::parse_str(&fragment.source).unwrap();
+                naga::valid::Validator::new(
+                    naga::valid::ValidationFlags::all(),
+                    naga::valid::Capabilities::all(),
+                )
+                .validate(&module)
+                .unwrap();
+            }
+        }
     }
 }

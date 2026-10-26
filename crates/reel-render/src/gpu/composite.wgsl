@@ -1,4 +1,4 @@
-struct Params { opacity: f32, mode: u32, progress: f32, softness: f32, invert: f32, blend: u32 /*MASK_FIELDS*/ };
+struct Params { opacity: f32, mode: u32, progress: f32, softness: f32, invert: f32, blend: u32, source_origin: vec2<f32> /*MASK_FIELDS*/ };
 @group(0) @binding(0) var source: texture_2d<f32>;
 @group(0) @binding(1) var mask: texture_2d<f32>;
 @group(0) @binding(2) var linear_sampler: sampler;
@@ -30,7 +30,7 @@ fn linear_srgb(encoded: vec3<f32>) -> vec3<f32> {
 fn expression_coverage(position: vec2<f32>) -> f32 { return 1.0; }
 /*END_MASK_COVERAGE*/
 fn covered_source(v: Varying) -> vec4<f32> {
-    var s = textureSample(source, linear_sampler, v.uv);
+    var s = textureSample(source, linear_sampler, (v.pos.xy - params.source_origin) / vec2<f32>(textureDimensions(source)));
     if params.invert != 0.0 && s.a > 0.0 {
         let encoded = encoded_srgb(clamp(s.rgb / s.a, vec3(0.0), vec3(1.0)));
         s = vec4(linear_srgb(mix(encoded, vec3(1.0) - encoded, params.invert)) * s.a, s.a);
@@ -53,11 +53,11 @@ fn subtract(s: vec4<f32>, d: vec4<f32>) -> vec4<f32> {
 }
 
 @fragment fn source_over(v: Varying) -> @location(0) vec4<f32> {
-    return textureSample(source, linear_sampler, v.uv) * params.opacity;
+    return textureSample(source, linear_sampler, (v.pos.xy - params.source_origin) / vec2<f32>(textureDimensions(source))) * params.opacity;
 }
 
 @fragment fn alpha_mask(v: Varying) -> @location(0) vec4<f32> {
-    return textureSample(source, linear_sampler, v.uv) * clamp(textureSample(mask, linear_sampler, v.uv).a, 0.0, 1.0) * params.opacity;
+    return textureSample(source, linear_sampler, (v.pos.xy - params.source_origin) / vec2<f32>(textureDimensions(source))) * clamp(textureSample(mask, linear_sampler, v.uv).a, 0.0, 1.0) * params.opacity;
 }
 
 @fragment fn fragment(v: Varying) -> @location(0) vec4<f32> {

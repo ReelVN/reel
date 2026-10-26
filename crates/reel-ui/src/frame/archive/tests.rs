@@ -53,6 +53,7 @@ fn group() -> FrameGroup {
     FrameGroup {
         image_mask: None,
         effect: None,
+        mask_effect: None,
         clip: None,
         mask: None,
         filters: Vec::new(),

@@ -133,6 +133,55 @@ pub(crate) fn context(
         .then_some(slots)
 }
 
+/// Explicitly map parent frame pixels to the supplied source storage. Coverage
+/// consumers pass this view instead of inferring the source domain from its size.
+pub(crate) fn map_source(
+    context: &mut [[f32; 4]; crate::effect::CONTEXT_SLOTS],
+    effect: &FrameEffect,
+    to_target: Affine,
+    frame_to_source: Affine,
+    source_size: [u32; 2],
+) {
+    let bounds = effect.bounds;
+    let uv_to_frame = to_target
+        * Affine::translate((bounds.x0, bounds.y0))
+        * Affine::scale_non_uniform(bounds.width(), bounds.height());
+    let uv_to_source = Affine::scale_non_uniform(
+        1.0 / f64::from(source_size[0]),
+        1.0 / f64::from(source_size[1]),
+    ) * frame_to_source
+        * uv_to_frame;
+    let [a, b, c, d, e, f] = uv_to_source.as_coeffs();
+    context[2] = [a as f32, c as f32, e as f32, 0.0];
+    context[3] = [b as f32, d as f32, f as f32, 0.0];
+}
+/// Common fixed image metadata: content scale/encoding/format plus texel centers.
+pub(crate) fn texture_metadata(
+    layout: reel_core::texture::TextureLayout,
+    encoding: reel_ui::resources::ColorEncoding,
+    format: Option<reel_core::texture::TextureFormat>,
+) -> [[f32; 4]; 2] {
+    use reel_core::texture::TextureFormat;
+    [
+        [
+            layout.content_size[0] as f32 / layout.storage_size[0] as f32,
+            layout.content_size[1] as f32 / layout.storage_size[1] as f32,
+            f32::from(encoding == reel_ui::resources::ColorEncoding::Linear),
+            match format {
+                Some(TextureFormat::Bc1Rgb) => 1.0,
+                Some(TextureFormat::Bc3Rgba) => 2.0,
+                _ => 0.0,
+            },
+        ],
+        [
+            0.5 / layout.storage_size[0] as f32,
+            0.5 / layout.storage_size[1] as f32,
+            0.0,
+            0.0,
+        ],
+    ]
+}
+
 pub(crate) fn slot(value: EffectValue) -> [f32; 4] {
     match value {
         EffectValue::Bool(v) => [u8::from(v) as f32, 0., 0., 0.],
@@ -162,7 +211,9 @@ mod tests {
                 generation: 1,
             },
             values: vec![],
+            images: vec![],
             bounds: reel_ui::kurbo::Rect::new(4., 8., 104., 58.),
+            coverage_invert: false,
         };
         let transform = Affine::translate((30., 20.))
             * Affine::rotate(0.3)

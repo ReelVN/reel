@@ -50,7 +50,7 @@ fn main() {{
 #[test]
 fn source_function_bindings_survive_debug_release_and_reencoding() {
     let checked = checked(SHADER, "edge");
-    assert_eq!(checked.effects.bindings().len(), 2);
+    assert_eq!(checked.effects.bindings().count(), 2);
     assert_eq!(checked.effects.definitions().len(), 2);
     for profile in [
         reel_cli::BuildProfile::Debug,
@@ -138,7 +138,7 @@ fn main() { let a = effect(first); let b = effect(second, {amount: 0.7}); }
         "shared.aside",
     )
     .unwrap();
-    assert_eq!(shared.effects.bindings().len(), 2);
+    assert_eq!(shared.effects.bindings().count(), 2);
     assert_eq!(
         shared.effects.definitions().len(),
         1,
@@ -166,7 +166,7 @@ fn package_and_engine_validate_distinct_effect_boundaries() {
         match mutation {
             0 => products.bindings[0].module = u32::MAX,
             1 => products.bindings[0].definition = u32::MAX,
-            2 => products.bindings.push(products.bindings[0]),
+            2 => products.bindings.push(products.bindings[0].clone()),
             _ => products.definitions[0].id[0] ^= 1,
         }
         assert!(matches!(
