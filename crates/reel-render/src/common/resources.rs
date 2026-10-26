@@ -1,4 +1,16 @@
 use super::GpuError;
+/// Cached device storage borrows resource identity without owning its CPU payload.
+/// Retirement closes new leases; existing frames remain valid until their final
+/// lease is released, including while an upload is still progressing.
+pub(crate) struct ImageSource {
+    pub(crate) version: reel_ui::resources::ResourceVersion,
+    pub(crate) lease: reel_ui::resources::ResourceWeak,
+}
+impl ImageSource {
+    pub(crate) fn retained(&self, evicted: &[reel_ui::resources::ResourceVersion]) -> bool {
+        !self.lease.is_released() && !evicted.contains(&self.version)
+    }
+}
 pub fn upload_cost(size: [u32; 2]) -> Result<u64, GpuError> {
     // Convert directly into mapped staging. Only staging and GPU residency coexist.
     let row = u64::from(size[0])

@@ -1,4 +1,5 @@
 use super::{Gpu, GpuError};
+pub(super) use crate::common::resources::ImageSource;
 use reel_core::texture::{TextureDescriptor, TextureFormat, TextureLayout};
 use reel_ui::frame::RecordLocation;
 use reel_ui::peniko::ImageFormat;
@@ -7,9 +8,7 @@ use reel_ui::peniko::{
     ImageAlphaType,
     color::{AlphaColor, LinearSrgb, PremulColor, Srgb},
 };
-use reel_ui::resources::{
-    ColorEncoding, ResourceData, ResourceLease, ResourceVersion, ResourceWeak,
-};
+use reel_ui::resources::{ColorEncoding, ResourceData, ResourceLease};
 
 use crate::common::resources::rgba8_linear_f16;
 
@@ -49,10 +48,6 @@ impl Image {
         let [x, y] = self.layout.uv_scale();
         reel_ui::kurbo::Affine::scale_non_uniform(x, y)
     }
-}
-pub(super) struct ImageSource {
-    pub(super) version: ResourceVersion,
-    pub(super) lease: ResourceWeak,
 }
 pub(super) fn image_rows(
     gpu: &Gpu,

@@ -64,14 +64,13 @@ impl ImageCache {
         }
         self.partial.lock().unwrap().retain(|_, pending| {
             let source = pending.image.source.as_ref().unwrap();
-            !source.lease.is_released() && !versions.contains(&source.version)
+            source.retained(versions)
         });
         self.images.lock().unwrap().retain(|_, image| {
             let source = image.source.as_ref().unwrap();
             // Dead video entries are an allocation pool, still charged to the
             // same resource budget. Reuse additionally requires no GPU reader.
-            image.yuv.is_some()
-                || (!source.lease.is_released() && !versions.contains(&source.version))
+            image.yuv.is_some() || source.retained(versions)
         });
     }
 
