@@ -173,19 +173,30 @@ fn workspace(
     let tile_workspace = match encoding {
         Encoding::Png => tile_pixels * 16,
         Encoding::ReelTexture => {
-            let [width, height] = [width, height].map(|axis| {
+            let content = [width, height];
+            let [width, height] = content.map(|axis| {
                 if options.power_of_two {
                     axis.max(8).checked_next_power_of_two()
                 } else {
                     axis.checked_add(3).map(|value| value / 4 * 4)
                 }
             });
-            let stored_pixels = u128::from(width.ok_or("tile storage size overflow")?)
-                * u128::from(height.ok_or("tile storage size overflow")?);
+            let storage = [
+                width.ok_or("tile storage size overflow")?,
+                height.ok_or("tile storage size overflow")?,
+            ];
+            let stored_pixels = u128::from(storage[0]) * u128::from(storage[1]);
             // Pinned image/texture converter: source RGBA8 + linear RGBA32F
             // conversion, float-to-padded RGBA8, then bounded BC/envelope vectors.
             (tile_pixels * 24)
                 .max(tile_pixels * 16 + stored_pixels * 4)
+                .max(
+                    if matches!(options.format, crate::prepare_texture::Format::Rgba8) {
+                        0
+                    } else {
+                        crate::prepare_texture::bc_workspace(content, storage)
+                    },
+                )
                 .max(stored_pixels * 16)
         }
     };

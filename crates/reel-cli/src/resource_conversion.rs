@@ -10,6 +10,8 @@
 //! Texture rules with `format = "rgba8"` may select `dither = "ordered"` to spread
 //! linear RGB rounding across a fixed 8x8 pattern; the default is `"none"`.
 //! Alpha remains undithered. Ordered dithering does not apply to block formats or tiles.
+//! BC textures and tiles select color fitting against the filtered source's
+//! displayed error while retaining the selected format and GPU byte count.
 //! Tile rules retain the logical image path and publish adjacent pyramid tiles.
 //! `tile_size` defaults to 510 content pixels plus a one-pixel gutter per side;
 //! `first_level = 1` starts at half density. `format` and `power_of_two` apply to

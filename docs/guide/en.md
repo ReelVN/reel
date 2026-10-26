@@ -73,7 +73,7 @@ size = [960, 544]
 bitrate = 4000000
 ```
 
-The first matching rule applies; unmatched files retain their original content. Use `convert = "copy"` to preserve specific files. Selection resolves common assets and target overrides before conversion. Texture scaling preserves logical dimensions and `source_rect` coordinates. Scripts keep their existing image and audio paths.
+The first matching rule applies; unmatched files retain their original content. Use `convert = "copy"` to preserve specific files. Selection resolves common assets and target overrides before conversion. Texture scaling preserves logical dimensions and `source_rect` coordinates. Scripts keep their existing image and audio paths. BC textures and tiles choose encoding quality automatically while retaining the selected format's GPU storage size.
 
 For smooth gradients, place a texture rule with `format = "rgba8"` and `dither = "ordered"` before the general texture rule. Dithering distributes color quantization error and preserves alpha; RGBA8 uses eight times the texture memory of BC1. For a single file, run `reel prepare-texture image.png --output image.reel-texture --format rgba8 --dither ordered`.
 
