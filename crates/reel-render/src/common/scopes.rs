@@ -10,6 +10,8 @@ pub(crate) struct GroupPlan {
 struct PlannedGroup {
     start: usize,
     source_over: bool,
+    output_source_over: bool,
+    retained_boundary: bool,
 }
 impl GroupPlan {
     pub(crate) fn new(
@@ -40,6 +42,7 @@ impl GroupPlan {
             });
             if boundary && let Some(group) = stack.last_mut() {
                 group.source_over = false;
+                group.retained_boundary = true;
             }
             match &command.op {
                 FrameOp::PushGroup(group) => {
@@ -47,6 +50,8 @@ impl GroupPlan {
                         &mut stack,
                         PlannedGroup {
                             start: index,
+                            output_source_over: group.composite.blend == Default::default(),
+                            retained_boundary: boundary,
                             source_over: !boundary
                                 && group.composite.alpha == 1.
                                 && group.composite.blend == Default::default()
@@ -67,8 +72,15 @@ impl GroupPlan {
                     };
                     if group.source_over {
                         inline[group.start / 8] |= 1 << (group.start % 8);
-                    } else if let Some(parent) = stack.last_mut() {
+                    }
+                    // An isolated child's internal draws see its own transparent
+                    // target. Only its final composite can depend on the parent
+                    // backdrop. Preserve retained boundaries through every ancestor.
+                    if let Some(parent) = stack.last_mut()
+                        && (!group.output_source_over || group.retained_boundary)
+                    {
                         parent.source_over = false;
+                        parent.retained_boundary |= group.retained_boundary;
                     }
                 }
                 FrameOp::PushContext(_) | FrameOp::PopContext => {}
@@ -349,7 +361,7 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_source_over_groups_inline_but_destination_blends_keep_isolation() {
+    fn isolated_child_internals_do_not_require_parent_isolation() {
         let mut commands = vec![
             command(0, FrameOp::PushGroup(ordinary_group())),
             translucent_fill(1),
@@ -375,13 +387,40 @@ mod tests {
             composite.blend = reel_ui::peniko::Mix::Multiply.into();
         }
         let dependent = plan(&commands);
-        assert!(!dependent.can_inline(0) && !dependent.can_inline(2));
+        assert!(dependent.can_inline(0) && !dependent.can_inline(2));
+        if let FrameOp::PushGroup(group) = &mut commands[2].op {
+            group.composite.blend = reel_ui::peniko::Mix::Multiply.into();
+        }
+        let dependent_output = plan(&commands);
+        assert!(!dependent_output.can_inline(0) && !dependent_output.can_inline(2));
+        if let FrameOp::PushGroup(group) = &mut commands[2].op {
+            group.composite.blend = Default::default();
+        }
         commands[3] = translucent_fill(3);
         if let FrameOp::PushGroup(group) = &mut commands[2].op {
             group.composite.alpha = 0.5;
         }
         let faded = plan(&commands);
-        assert!(!faded.can_inline(2));
+        assert!(faded.can_inline(0) && !faded.can_inline(2));
+        if let FrameOp::PushGroup(group) = &mut commands[2].op {
+            group.mask = Some(reel_ui::frame::MaskUse {
+                mask: 0,
+                transform: reel_ui::kurbo::Affine::IDENTITY,
+            });
+        }
+        let masked = plan(&commands);
+        assert!(masked.can_inline(0) && !masked.can_inline(2));
+        for (transitions, captures) in [(vec![4..4], vec![]), (vec![], vec![3..5])] {
+            let retained = GroupPlan::new(
+                &commands,
+                Some(0),
+                transitions.into_iter(),
+                captures.into_iter(),
+                |_| Ok(()),
+            )
+            .unwrap();
+            assert!(!retained.can_inline(0) && !retained.can_inline(2));
+        }
     }
 
     #[test]

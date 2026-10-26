@@ -1,5 +1,6 @@
 pub(super) use super::programs::Target;
 use super::*;
+use crate::common::resources::ImageSource;
 use reel_core::texture::{TextureFormat, TextureLayout};
 use reel_ui::{
     frame::RecordLocation,
@@ -16,7 +17,7 @@ pub(super) struct Image {
     pub format: Option<TextureFormat>,
     pub encoding: ColorEncoding,
     pub coverage: bool,
-    pub source: Option<ResourceWeak>,
+    pub source: Option<ImageSource>,
     _storage: BudgetTicket,
 }
 impl Image {
@@ -130,14 +131,15 @@ impl Images {
     }
     pub fn prune(&mut self, versions: &[ResourceVersion]) {
         self.entries.retain(|_, image| {
-            image.source.as_ref().is_some_and(|source| {
-                source
-                    .upgrade()
-                    .is_some_and(|lease| !lease.is_retired() && !versions.contains(lease.version()))
-            })
+            image
+                .source
+                .as_ref()
+                .is_some_and(|source| source.retained(versions))
         });
         self.pending.retain(|_, pending| {
-            !pending.source.is_retired() && !versions.contains(pending.source.version())
+            // The pending upload itself owns a valid pre-retirement lease.
+            // prepare() discards it when the next demand no longer includes it.
+            !versions.contains(pending.source.version())
         });
     }
     fn make_room(&mut self, budget: &BudgetPool, cost: u64, limit: u64) {
@@ -317,7 +319,10 @@ impl Images {
             format,
             encoding,
             coverage: false,
-            source: Some(source.downgrade()),
+            source: Some(ImageSource {
+                version: source.version().clone(),
+                lease: source.downgrade(),
+            }),
             _storage: storage,
         });
         Ok(Pending {

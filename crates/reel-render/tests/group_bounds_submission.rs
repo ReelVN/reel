@@ -163,6 +163,183 @@ fn source_over_frame() -> RenderFrame {
     frame
 }
 
+fn nested_isolation_frame() -> RenderFrame {
+    let mut scene = Scene::new();
+    for index in 0..GROUPS {
+        scene.push_group(Group::default());
+        scene.push_group(Group {
+            composite: Composite {
+                alpha: 0.5,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let transform = Affine::translate((
+            20. + (index % 4) as f64 * 220.,
+            20. + (index / 4) as f64 * 120.,
+        ));
+        for x in [0., 40.] {
+            fill(&mut scene, Rect::new(x, 0., x + 80., 60.), transform);
+        }
+        scene.pop_group();
+        scene.pop_group();
+    }
+    let mut widget = RecordWidget::new(scene);
+    widget.clip = false;
+    let mut bridge = widget_bridge(widget, Affine::IDENTITY);
+    let pool = pool();
+    let mut build = FrameBuild::new(
+        bridge.record(FrameId(4)).unwrap(),
+        empty_snapshot(&pool),
+        FrameInfo {
+            logical_size: [960., 544.],
+            physical_size: SIZE,
+        },
+        limits(),
+        &pool,
+    )
+    .unwrap();
+    while !build.step(step_budget()).unwrap().complete {}
+    let frame = build.finish().unwrap();
+    assert_eq!(
+        frame
+            .commands()
+            .iter()
+            .filter(|c| matches!(c.op, FrameOp::PushGroup(_)))
+            .count(),
+        GROUPS as usize * 2
+    );
+    frame
+}
+
+const NESTED_TARGETS: u64 = 2;
+
+#[cfg(feature = "wgpu")]
+#[test]
+#[ignore = "requires an actual native WGPU adapter"]
+fn wgpu_nested_isolation_keeps_only_required_targets() {
+    use reel_render::gpu::{DeviceGeneration, Gpu, GpuLimits, Renderer};
+    let frame = nested_isolation_frame();
+    let gpu = pollster::block_on(Gpu::request(
+        &wgpu::Instance::default(),
+        None,
+        DeviceGeneration(1),
+        GpuLimits {
+            target_bytes: TARGET_BYTES * NESTED_TARGETS,
+            ..Default::default()
+        },
+    ))
+    .unwrap();
+    let mut renderer = Renderer::new(gpu);
+    let mut warm = std::time::Instant::now();
+    for index in 0..=8 {
+        let prepared = renderer.prepare(&frame).unwrap();
+        assert_eq!(renderer.usage().targets, TARGET_BYTES * NESTED_TARGETS);
+        renderer.submit(prepared).unwrap();
+        renderer
+            .gpu()
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        renderer.poll().unwrap();
+        if index == 0 {
+            warm = std::time::Instant::now();
+        }
+    }
+    eprintln!(
+        "wgpu nested_isolation warm_frames=8 targets={NESTED_TARGETS} target_bytes={} submit_complete_us={}",
+        TARGET_BYTES * NESTED_TARGETS,
+        warm.elapsed().as_micros()
+    );
+}
+
+#[cfg(feature = "gles2")]
+#[test]
+#[ignore = "requires a native GLES context"]
+fn gles_nested_isolation_keeps_only_required_targets() {
+    use reel_render::gles2::{GlesBackend, GlesLimits};
+    use reel_render::{AlphaMode, RenderBackend, RenderEvent, SurfaceInfo};
+    use reel_ui::resources::ColorEncoding;
+    let _serial = GLES_TEST_LOCK.lock().unwrap();
+    let frame = nested_isolation_frame();
+    let mut renderer = GlesBackend::headless(
+        SIZE,
+        GlesLimits {
+            target_bytes: TARGET_BYTES * NESTED_TARGETS,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    renderer
+        .configure(SurfaceInfo {
+            physical_size: SIZE,
+            scale_factor: 1.,
+            surface_epoch: frame.surface_epoch(),
+            color_encoding: ColorEncoding::Srgb,
+            alpha_mode: AlphaMode::Opaque,
+        })
+        .unwrap();
+    let mut warm = std::time::Instant::now();
+    let mut events = Vec::new();
+    for index in 0..=8 {
+        #[cfg(feature = "profiling")]
+        let before = reel_core::profile::Sample::snapshot();
+        renderer.render_present(&frame, || {}).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            events.clear();
+            renderer.poll(&mut events, 32).unwrap();
+            if events
+                .iter()
+                .any(|e| matches!(e, RenderEvent::RenderFinished { .. }))
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "nested submission did not complete"
+            );
+            std::thread::yield_now();
+        }
+        #[cfg(feature = "profiling")]
+        {
+            use reel_core::profile::{Phase, Sample};
+            let delta = Sample::snapshot().delta(before);
+            assert_eq!(
+                delta.calls[Phase::SourceComposite as usize],
+                GROUPS * (NESTED_TARGETS - 1)
+            );
+            // The root target and final screen are both cleared once.
+            assert_eq!(
+                delta.calls[Phase::Clear as usize],
+                2 + GROUPS * (NESTED_TARGETS - 1)
+            );
+            assert_eq!(
+                delta.calls[Phase::TargetCreate as usize],
+                if index == 0 { NESTED_TARGETS } else { 0 }
+            );
+            if index == 1 {
+                eprintln!(
+                    "gles nested_isolation per_frame clear={} composite={} draw={} buffer_create={}",
+                    delta.calls[Phase::Clear as usize],
+                    delta.calls[Phase::Composite as usize],
+                    delta.calls[Phase::Draw as usize],
+                    delta.calls[Phase::BufferCreate as usize]
+                );
+            }
+        }
+        if index == 0 {
+            warm = std::time::Instant::now();
+        }
+    }
+    eprintln!(
+        "gles nested_isolation warm_frames=8 targets={NESTED_TARGETS} target_bytes={} submit_complete_us={}",
+        TARGET_BYTES * NESTED_TARGETS,
+        warm.elapsed().as_micros()
+    );
+    renderer.close().unwrap();
+}
+
 #[cfg(feature = "wgpu")]
 #[test]
 #[ignore = "requires an actual native WGPU adapter"]
