@@ -117,6 +117,9 @@ pub(super) struct CompositeInputs<'a> {
 }
 pub struct Pipelines {
     pub paint: wgpu::RenderPipeline,
+    pub coverage: wgpu::RenderPipeline,
+    #[cfg(test)]
+    pub coverage_draws: std::sync::atomic::AtomicUsize,
     pub direct: [wgpu::RenderPipeline; 3],
     #[cfg(test)]
     pub direct_draws: [std::sync::atomic::AtomicUsize; 3],
@@ -206,6 +209,19 @@ impl Pipelines {
             &paint_layout,
             include_str!("paint.wgsl"),
             true,
+            #[cfg(test)]
+            Some(counts),
+        );
+        let coverage = pipeline_entry(
+            device,
+            quality,
+            &paint_layout,
+            include_str!("paint.wgsl"),
+            true,
+            FragmentOutput {
+                entry: "fragment_coverage",
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+            },
             #[cfg(test)]
             Some(counts),
         );
@@ -353,6 +369,9 @@ impl Pipelines {
         });
         Self {
             paint,
+            coverage,
+            #[cfg(test)]
+            coverage_draws: Default::default(),
             direct,
             #[cfg(test)]
             direct_draws: Default::default(),

@@ -138,6 +138,12 @@ fn image_alpha(uv: vec2<f32>) -> f32 {
     }
     return tint(v, pixel * v.color);
 }
+// Glyph atlas alpha is linear coverage; expand the single sampled channel
+// before the existing premultiplied color and gradient operations.
+@fragment fn fragment_coverage(v: VertexOut) -> @location(0) vec4<f32> {
+    let alpha = textureSample(image, image_sampler, v.uv).r;
+    return tint(v, vec4<f32>(alpha) * v.color);
+}
 @fragment fn fragment_direct(v: VertexOut) -> @location(0) vec4<f32> {
     return textureSample(image, image_sampler, v.uv) * v.color;
 }

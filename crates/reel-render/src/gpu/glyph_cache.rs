@@ -15,7 +15,6 @@ use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, Mutex, Weak},
 };
-use wgpu::util::DeviceExt;
 
 pub(super) use crate::common::glyph_key::{Key, RunKey};
 pub(super) struct Page {
@@ -176,7 +175,7 @@ impl GlyphCache {
                 512.min(max).max(requested.width as u32),
                 512.min(max).max(requested.height as u32),
             ];
-            let bytes = u64::from(size[0]) * u64::from(size[1]) * 4;
+            let bytes = u64::from(size[0]) * u64::from(size[1]);
             images.make_room(&budgets.resources, bytes, gpu.limits.resource_bytes);
             self.make_room(&budgets.resources, bytes, gpu.limits.resource_bytes);
             // Check this preparation's demand before sharing the page globally.
@@ -207,7 +206,7 @@ impl GlyphCache {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
+                format: wgpu::TextureFormat::R8Unorm,
                 usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
@@ -243,32 +242,38 @@ impl GlyphCache {
             unreachable!()
         };
         // Upload the transparent border too: a recycled rectangle may contain old glyph pixels.
-        let row = (requested.width as u32 * 4).div_ceil(256) * 256;
+        let row = (requested.width as u32).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let cost = u64::from(row) * requested.height as u64;
-        images.make_room(&budgets.resources, cost * 2, gpu.limits.resource_bytes);
-        self.make_room(&budgets.resources, cost * 2, gpu.limits.resource_bytes);
+        images.make_room(&budgets.resources, cost, gpu.limits.resource_bytes);
+        self.make_room(&budgets.resources, cost, gpu.limits.resource_bytes);
         tickets.push(reserve(
             &budgets.resources,
             &local.resources,
-            cost * 2,
+            cost,
             gpu.limits.resource_bytes,
             "glyph upload",
         )?);
-        let mut bytes = vec![0; cost as usize];
-        for y in 0..bitmap.size[1] as usize {
-            for x in 0..bitmap.size[0] as usize {
-                let alpha = bitmap.alpha[y * bitmap.size[0] as usize + x];
-                let start = (y + 1) * row as usize + (x + 1) * 4;
-                bytes[start..start + 4].fill(alpha);
-            }
-        }
-        let staging = gpu
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("glyph atlas upload"),
-                contents: &bytes,
-                usage: wgpu::BufferUsages::COPY_SRC,
+        let staging = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("glyph atlas upload"),
+            size: cost,
+            usage: wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: true,
+        });
+        {
+            let mut mapping = staging
+                .slice(..)
+                .get_mapped_range_mut()
+                .map_err(|error| GpuError::Device(error.to_string()))?;
+            let mut bytes = mapping.slice(..);
+            bytes.fill(0);
+            bitmap.padded_rows(row as usize, |start, source| {
+                bytes
+                    .slice(start..start + source.len())
+                    .copy_from_slice(source)
             });
+        }
+        staging.unmap();
         encoder.copy_buffer_to_texture(
             wgpu::TexelCopyBufferInfo {
                 buffer: &staging,

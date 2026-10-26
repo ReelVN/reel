@@ -302,6 +302,11 @@ fn wgpu_glyph_cache_borrows_font_until_final_completed_frame() {
             .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         renderer.poll().unwrap();
+        assert_eq!(
+            renderer.usage().resources,
+            512 * 512,
+            "single-channel atlas page"
+        );
         close_font(&mut registry, handle, retired);
         #[cfg(feature = "profiling")]
         let before = reel_core::profile::Sample::snapshot();
