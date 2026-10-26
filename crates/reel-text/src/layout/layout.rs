@@ -41,13 +41,14 @@ impl<B: Brush> Layout<B> {
         &self.data.styles
     }
 
-    /// Returns the width of the layout.
+    /// Returns the maximum line advance excluding trailing whitespace.
+    /// Use [`Self::full_width`] for a text node's natural inline size.
     pub fn width(&self) -> f32 {
         self.data.width
     }
 
-    /// Returns the width of the layout, including the width of any trailing
-    /// whitespace.
+    /// Returns the maximum full line advance, including trailing whitespace.
+    /// This is a typographic advance rather than a glyph ink bounding box.
     pub fn full_width(&self) -> f32 {
         self.data.full_width
     }

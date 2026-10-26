@@ -397,12 +397,20 @@ impl StageView {
                     || SceneWidget::content_changed(&a.node.kind, &b.node.kind)
                     || a.node.props.visible != b.node.props.visible
                     || a.node.props.enabled != b.node.props.enabled
-                    || a.children.len() != b.children.len()
                 {
                     return false;
                 }
                 if !Arc::ptr_eq(&a.children, &b.children) {
-                    pending.extend(a.children.iter().zip(b.children.iter()));
+                    // Portals keep logical ownership but render outside this control.
+                    let mut a = a.physical_children();
+                    let mut b = b.physical_children();
+                    loop {
+                        match (a.next(), b.next()) {
+                            (Some(a), Some(b)) => pending.push((a, b)),
+                            (None, None) => break,
+                            _ => return false,
+                        }
+                    }
                 }
             }
             true
@@ -425,7 +433,10 @@ impl StageView {
                         if !same_content(a, b) {
                             return false;
                         }
-                        continue;
+                        // Buttons inside owned portals still need their own bindings.
+                        if !a.popup_branch() && !b.popup_branch() {
+                            continue;
+                        }
                     }
                     (true, false) | (false, true) => return false,
                     _ => {}
