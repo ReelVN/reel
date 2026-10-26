@@ -15,9 +15,11 @@ pub(super) struct Cache(Mutex<State>);
 struct State {
     entries: Vec<Entry>,
     storage: Option<BudgetTicket>,
+    split: crate::common::mask::split::Cache,
 }
 struct Entry {
     builtin: bool,
+    split: bool,
     hash: u64,
     operations: Vec<MaskOp>,
     images: usize,
@@ -29,6 +31,11 @@ pub(super) struct Compiled {
     layout: wgpu::BindGroupLayout,
     normal: wgpu::RenderPipeline,
     blend: wgpu::RenderPipeline,
+    split_plan: Option<Arc<crate::common::mask::split::AccountedPlan>>,
+}
+pub(super) struct Prepared {
+    pub(super) pipeline: Arc<Compiled>,
+    split: Option<crate::common::mask::split::Prepared>,
 }
 fn reserve(budget: &BudgetPool, bytes: usize, gpu: &Gpu) -> Result<BudgetTicket, GpuError> {
     budget.reserve(bytes as u64).map_err(|_| GpuError::Budget {
@@ -58,6 +65,7 @@ fn resize(
 impl Cache {
     pub(super) fn prune(&self) {
         let mut state = self.0.lock().unwrap();
+        state.split.prune();
         let previous = state.entries.len();
         state.entries.retain_mut(|entry| {
             entry.programs.retain(|p| p.strong_count() != 0);
@@ -83,13 +91,44 @@ impl Cache {
         gpu: &Gpu,
         quality: Quality,
         program: &Arc<MaskProgram>,
+        parameters: [f32; 5],
         budget: &BudgetPool,
-    ) -> Result<Arc<Compiled>, GpuError> {
+    ) -> Result<Prepared, GpuError> {
         self.prune();
         let mut state = self.0.lock().unwrap();
         let hash = program.structure_hash();
+        let matches = |entry: &&Entry| {
+            entry.hash == hash
+                && entry.operations == program.operations()
+                && entry.images == program.sources().len()
+        };
+        let existing_plan = state
+            .entries
+            .iter()
+            .filter(matches)
+            .find_map(|entry| entry.pipeline.split_plan.clone());
+        let has_general = state
+            .entries
+            .iter()
+            .filter(matches)
+            .any(|entry| !entry.split);
+        let split = if let Some(plan) = existing_plan {
+            // A cache eviction must not change the selected pipeline between
+            // frame admission and replay. The compiled pipeline owns its plan.
+            state.split.get(program, parameters, budget).or_else(|| {
+                plan.plan
+                    .evaluate(program, parameters)
+                    .map(|values| crate::common::mask::split::Prepared { plan, values })
+            })
+        } else if !has_general && crate::common::mask::plan(program).is_none() {
+            state.split.get(program, parameters, budget)
+        } else {
+            None
+        };
+        let split_plan = split.as_ref().map(|split| &split.plan.plan);
         if let Some(entry) = state.entries.iter_mut().find(|entry| {
             entry.hash == hash
+                && entry.split == split.is_some()
                 && (entry
                     .programs
                     .iter()
@@ -98,7 +137,10 @@ impl Cache {
                         && entry.images == program.sources().len())
         }) {
             if entry.builtin {
-                return Ok(entry.pipeline.clone());
+                return Ok(Prepared {
+                    pipeline: entry.pipeline.clone(),
+                    split,
+                });
             }
             if !entry
                 .programs
@@ -116,19 +158,22 @@ impl Cache {
                 }
                 entry.programs.push(Arc::downgrade(program));
             }
-            return Ok(entry.pipeline.clone());
+            return Ok(Prepared {
+                pipeline: entry.pipeline.clone(),
+                split,
+            });
         }
         // Count formatting bytes before allocating the source. Driver-private compiler
         // storage is owned by wgpu; generated source and cache metadata are charged here.
         let mut count = Counter(0);
-        shader(program, &mut count).unwrap();
+        shader_with_split(program, split_plan, &mut count).unwrap();
         let _construction = reserve(
             budget,
             count.0 + (8 + program.sources().len()) * size_of::<wgpu::BindGroupLayoutEntry>(),
             gpu,
         )?;
         let mut code = String::with_capacity(count.0);
-        shader(program, &mut code).unwrap();
+        shader_with_split(program, split_plan, &mut code).unwrap();
         let builtin = program.is_image_threshold();
         let bytes = size_of_val(program.operations())
             + if builtin {
@@ -193,11 +238,13 @@ impl Cache {
                 layout,
                 normal,
                 blend,
+                split_plan: split.as_ref().map(|split| split.plan.clone()),
             }
         })?;
         let compiled = Arc::new(compiled);
         state.entries.push(Entry {
             builtin,
+            split: split.is_some(),
             hash,
             operations: program.operations().to_vec(),
             images: program.sources().len(),
@@ -209,7 +256,10 @@ impl Cache {
             pipeline: compiled.clone(),
             storage,
         });
-        Ok(compiled)
+        Ok(Prepared {
+            pipeline: compiled,
+            split,
+        })
     }
     pub(super) fn prepare_builtin(
         &self,
@@ -231,6 +281,7 @@ impl Cache {
             gpu,
             quality,
             &MaskProgram::image("image-threshold".into()),
+            [0.; 5],
             budget,
         )?;
         Ok(())
@@ -251,11 +302,11 @@ pub(super) struct Inputs<'a> {
     pub images: Vec<&'a super::resources::Image>,
 }
 /// GPU parameter storage plus a spill allocation only beyond the four-image inline capacity.
-pub(super) fn parameter_cost(images: usize) -> u64 {
-    let bytes = 96 + images as u64 * 16;
-    bytes * if images > 4 { 2 } else { 1 }
-}
-impl Compiled {
+impl Prepared {
+    pub(super) fn parameter_cost(&self, images: usize) -> u64 {
+        let bytes = 96 + images as u64 * 16 + if self.split.is_some() { 64 } else { 0 };
+        bytes * if images > 4 { 2 } else { 1 }
+    }
     #[expect(
         clippy::too_many_arguments,
         reason = "the draw call borrows GPU resources and receives per-node mask parameters"
@@ -273,9 +324,11 @@ impl Compiled {
     ) {
         let matrix = transform.as_coeffs();
         let (mode, progress, softness) = pipeline::operation_words(params.operation);
-        let mut words =
-            smallvec::SmallVec::<[u32; 40]>::with_capacity(24 + inputs.images.len() * 4);
-        words.resize(24 + inputs.images.len() * 4, 0);
+        let base_words = 24 + inputs.images.len() * 4;
+        let mut words = smallvec::SmallVec::<[u32; 56]>::with_capacity(
+            base_words + if self.split.is_some() { 16 } else { 0 },
+        );
+        words.resize(base_words, 0);
         words[..8].copy_from_slice(&[
             params.opacity.to_bits(),
             mode,
@@ -321,6 +374,17 @@ impl Compiled {
                     },
                 ]
                 .map(f32::to_bits),
+            );
+        }
+        if let Some(split) = &self.split {
+            words.extend(split.values.seeds.map(f32::to_bits));
+            words.extend(
+                split
+                    .values
+                    .coordinates
+                    .into_iter()
+                    .flatten()
+                    .map(f32::to_bits),
             );
         }
         let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -375,7 +439,7 @@ impl Compiled {
         );
         let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("mask expression"),
-            layout: &self.layout,
+            layout: &self.pipeline.layout,
             entries: &bindings,
         });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -387,9 +451,9 @@ impl Compiled {
             occlusion_query_set: None,
         });
         pass.set_pipeline(if params.blend == 0 && !params.operation.replaces() {
-            &self.normal
+            &self.pipeline.normal
         } else {
-            &self.blend
+            &self.pipeline.blend
         });
         params.scissor.apply(&mut pass);
         pass.set_bind_group(0, &group, &[]);
@@ -397,7 +461,15 @@ impl Compiled {
     }
 }
 
+#[cfg(test)]
 fn shader(program: &MaskProgram, code: &mut impl std::fmt::Write) -> std::fmt::Result {
+    shader_with_split(program, None, code)
+}
+fn shader_with_split(
+    program: &MaskProgram,
+    split: Option<&crate::common::mask::split::SplitPlan>,
+    code: &mut impl std::fmt::Write,
+) -> std::fmt::Result {
     let shared_threshold_sample = match crate::common::mask::plan(program) {
         Some(crate::common::mask::Plan::ImageThreshold { alpha, gray }) => Some((alpha, gray)),
         _ => None,
@@ -417,6 +489,9 @@ fn shader(program: &MaskProgram, code: &mut impl std::fmt::Write) -> std::fmt::R
             program.sources().len()
         )?;
     }
+    if split.is_some() {
+        code.write_str(", split_seeds: array<vec4<f32>,2>, split_coordinates: array<vec4<f32>,2>")?;
+    }
     code.write_str(before_coverage)?;
     code.write_str(after_coverage)?;
     code.write_str("\n@group(0) @binding(5) var repeat_x: sampler;\n@group(0) @binding(6) var repeat_y: sampler;\n@group(0) @binding(7) var repeat_xy: sampler;\n")?;
@@ -429,6 +504,9 @@ fn shader(program: &MaskProgram, code: &mut impl std::fmt::Write) -> std::fmt::R
         .unwrap();
     }
     code.write_str("\nfn mask_smooth(a:f32,b:f32,x:f32)->f32 { if a==b { return select(0.0,1.0,x>=a); } let t=clamp((x-a)/(b-a),0.0,1.0); return t*t*(3.0-2.0*t); }\nfn mask_gray(s:vec4<f32>)->f32 { if s.a<=0.0 { return 0.0; } return dot(encoded_srgb(clamp(s.rgb/s.a,vec3(0.0),vec3(1.0))),vec3(0.2126,0.7152,0.0722)); }\nfn expression_coverage(position:vec2<f32>)->f32 { let uv=vec2(dot(params.mask_uv0.xy,position)+params.mask_uv0.z,dot(params.mask_uv1.xy,position)+params.mask_uv1.z); if any(uv<vec2(0.0)) || any(uv>vec2(1.0)) { return 0.0; }\n")?;
+    if let Some(split) = split {
+        return split_expression(split, code);
+    }
     let registers = crate::common::mask::RegisterPlan::new(program);
     if let Some(plan) = &registers {
         for index in 0..plan.register_count() {
@@ -507,6 +585,61 @@ fn shader(program: &MaskProgram, code: &mut impl std::fmt::Write) -> std::fmt::R
     Ok(())
 }
 
+fn split_expression(
+    plan: &crate::common::mask::split::SplitPlan,
+    code: &mut impl std::fmt::Write,
+) -> std::fmt::Result {
+    for slot in 0..8 {
+        writeln!(
+            code,
+            "var n{slot}=params.split_seeds[{}][{}];",
+            slot / 4,
+            slot % 4
+        )?;
+    }
+    for (i, fetch) in plan.fetches().enumerate() {
+        let image = fetch.image;
+        writeln!(
+            code,
+            "let c{i}=params.split_coordinates[{i}];var at{i}=uv*c{i}.zw+c{i}.xy;"
+        )?;
+        if fetch.repeat & 1 != 0 {
+            writeln!(code, "at{i}.x=fract(at{i}.x);")?;
+        }
+        if fetch.repeat & 2 != 0 {
+            writeln!(code, "at{i}.y=fract(at{i}.y);")?;
+        }
+        writeln!(
+            code,
+            "let t{i}=params.mask_texels[{image}];let h{i}=0.5/vec2<f32>(textureDimensions(image_{image}));var s{i}=textureSampleLevel(image_{image},linear_sampler,clamp(at{i}*t{i}.xy,h{i},t{i}.xy-h{i}),0.0);if t{i}.w==1.0{{s{i}.a=1.0;}}if t{i}.w==2.0{{s{i}=vec4<f32>(min(s{i}.rgb,vec3<f32>(s{i}.a)),s{i}.a);}}"
+        )?;
+        if let Some(slot) = fetch.alpha {
+            writeln!(code, "n{slot}=s{i}.a;")?;
+        }
+        if let Some(slot) = fetch.gray {
+            writeln!(
+                code,
+                "n{slot}=select(mask_gray(s{i}),dot(clamp(s{i}.rgb/max(s{i}.a,1.0e-20),vec3(0.0),vec3(1.0)),vec3(0.2126,0.7152,0.0722)),t{i}.z!=0.0);"
+            )?;
+        }
+    }
+    let number = |bits| format!("{:.9e}", f32::from_bits(bits));
+    for instruction in plan.instructions() {
+        let expression = match instruction.operation {
+            MaskOp::Add(a, b) => format!("n{a}+n{b}"),
+            MaskOp::Subtract(a, b) => format!("n{a}-n{b}"),
+            MaskOp::Multiply(a, b) => format!("n{a}*n{b}"),
+            MaskOp::Pow(_, p) if f32::from_bits(p) == 0. => "1.0".into(),
+            MaskOp::Pow(a, p) => format!("pow(max(n{a},0.0),{})", number(p)),
+            MaskOp::Clamp(a, low, high) => format!("clamp(n{a},{},{})", number(low), number(high)),
+            MaskOp::Smoothstep(a, b, x) => format!("mask_smooth(n{a},n{b},n{x})"),
+            _ => unreachable!("split arithmetic contains no sampling or uniform leaf"),
+        };
+        writeln!(code, "n{}={expression};", instruction.destination)?;
+    }
+    writeln!(code, "return clamp(n{},0.0,1.0); }}", plan.result())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -555,6 +688,31 @@ mod tests {
             } else {
                 assert!(source.contains("let n32="));
             }
+        }
+    }
+
+    #[test]
+    fn split_masks_validate_static_samples_and_parameter_layout() {
+        for length in [8, 12, 13] {
+            let program = MaskProgram::new(
+                dag_fixture::operations()[..length].to_vec(),
+                vec!["a".into(), "b".into(), "c".into(), "d".into()],
+            )
+            .unwrap();
+            let split = crate::common::mask::split::SplitPlan::new(&program).unwrap();
+            let mut source = String::new();
+            shader_with_split(&program, Some(&split), &mut source).unwrap();
+            assert_eq!(
+                source.matches("textureSampleLevel(image_").count(),
+                split.fetch_count()
+            );
+            let module = wgpu::naga::front::wgsl::parse_str(&source).unwrap();
+            wgpu::naga::valid::Validator::new(
+                wgpu::naga::valid::ValidationFlags::all(),
+                wgpu::naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .unwrap();
         }
     }
 }

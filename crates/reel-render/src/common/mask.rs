@@ -10,6 +10,7 @@ use reel_ui::stage::{MaskChannel, MaskOp, MaskProgram};
 
 mod registers;
 pub(crate) use registers::RegisterPlan;
+pub(crate) mod split;
 
 const NODES: usize = 32;
 pub(crate) const STEPS: usize = 8;
@@ -215,7 +216,7 @@ mod tests {
         }
         nodes.last().unwrap().clamp(0., 1.)
     }
-    fn operation_value(
+    pub(super) fn operation_value(
         operation: &MaskOp,
         parameters: [f32; 5],
         alpha: f32,

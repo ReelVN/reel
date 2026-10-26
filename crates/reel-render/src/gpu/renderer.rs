@@ -310,6 +310,7 @@ impl Renderer {
                 &self.gpu,
                 quality,
                 &mask.definition.program,
+                mask.definition.parameters,
                 &self.budgets.resources,
             )?;
         }

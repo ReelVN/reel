@@ -91,6 +91,7 @@ pub struct GlesBackend {
     images: Images,
     glyphs: draw::GlyphCache,
     effects: effect::Cache,
+    masks: crate::common::mask::split::Cache,
     targets: Vec<resources::Target>,
     info: Option<SurfaceInfo>,
     suspended: bool,
@@ -154,6 +155,7 @@ impl GlesBackend {
             images: Default::default(),
             glyphs: Default::default(),
             effects: Default::default(),
+            masks: Default::default(),
             targets: Vec::new(),
             info: None,
             suspended: false,
@@ -189,6 +191,7 @@ impl GlesBackend {
         self.events.clear();
         self.images = Images::default();
         self.glyphs = draw::GlyphCache::default();
+        self.masks = Default::default();
         self.targets.clear();
         self.drain_failed = false;
         Ok(())
@@ -238,6 +241,7 @@ impl GlesBackend {
         size: [u32; 2],
         capture: bool,
     ) -> Result<replay::Prepared, GlesError> {
+        self.masks.prune();
         if self.drain_failed {
             return Err(GlesError::NativeDeviceLost(
                 "GPU failure could not be drained".into(),
@@ -390,6 +394,7 @@ impl GlesBackend {
             &mut self.images,
             &mut self.glyphs,
             &mut self.effects,
+            &mut self.masks,
             targets,
             images,
             frame,

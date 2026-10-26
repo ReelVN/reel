@@ -106,6 +106,14 @@ impl Context<'_> {
             self.mask_sample(&target, definition, uv, simple, None)?;
             return Ok(target);
         }
+        if let Some(split) = self.mask_cache.get(
+            &definition.program,
+            definition.parameters,
+            &self.budgets.resources,
+        ) {
+            self.mask_split(&target, definition, uv, split)?;
+            return Ok(target);
+        }
         let capacity = operation_capacity(definition.program.operations().len());
         let registers = (capacity > 8)
             .then(|| crate::common::mask::RegisterPlan::new(&definition.program))
@@ -192,6 +200,96 @@ impl Context<'_> {
             self.gl_scissor(),
         )?;
         Ok(target)
+    }
+
+    fn mask_split(
+        &self,
+        target: &Target,
+        definition: &FrameImageMask,
+        uv: Affine,
+        split: crate::common::mask::split::Prepared,
+    ) -> Result<(), GlesError> {
+        let plan = &split.plan.plan;
+        let count = plan.fetch_count();
+        let shader = if count == 1 {
+            &self.programs.mask_split_1
+        } else if plan.fetches().all(|fetch| fetch.gray.is_none()) {
+            &self.programs.mask_split_2_alpha
+        } else {
+            &self.programs.mask_split_2
+        };
+        let mut images = smallvec::SmallVec::<[&native::Texture; 2]>::new();
+        let mut texels = [[0.; 4]; 2];
+        let mut dimensions = [[0.; 4]; 2];
+        let mut fetches = [[0.; 4]; 2];
+        for (index, fetch) in plan.fetches().enumerate() {
+            let image = self
+                .images
+                .get(&definition.images[fetch.image as usize])
+                .ok_or_else(|| GlesError::Device("mask image is not resident".into()))?;
+            images.push(&image.texture);
+            texels[index] = [
+                image.layout.content_size[0] as f32 / image.layout.storage_size[0] as f32,
+                image.layout.content_size[1] as f32 / image.layout.storage_size[1] as f32,
+                f32::from(image.encoding == ColorEncoding::Linear),
+                match image.format {
+                    Some(PixelFormat::Bc1Rgb) => 1.,
+                    Some(PixelFormat::Bc3Rgba) => 2.,
+                    _ => 0.,
+                },
+            ];
+            dimensions[index] = [
+                image.layout.storage_size[0] as f32,
+                image.layout.storage_size[1] as f32,
+                0.,
+                0.,
+            ];
+            fetches[index] = [
+                f32::from(fetch.repeat),
+                fetch.alpha.map_or(-1., f32::from),
+                fetch.gray.map_or(-1., f32::from),
+                0.,
+            ];
+        }
+        let mut operations = [[0.; 4]; 16];
+        for (output, instruction) in operations.iter_mut().zip(plan.instructions()) {
+            *output = encode_compact(&instruction.operation, u32::from(instruction.destination));
+        }
+        let mut values = Values::new();
+        values.extend(shader.int("u_image0", 0));
+        if count == 2 {
+            values.extend(shader.int("u_image1", 1));
+        }
+        values.extend(shader.array("u_ops[0]", &operations[..if count == 1 { 8 } else { 16 }]));
+        values.extend(shader.array("u_coordinates[0]", &split.values.coordinates[..count]));
+        values.extend(shader.array("u_fetches[0]", &fetches[..count]));
+        values.extend(shader.array("u_texels[0]", &texels[..count]));
+        values.extend(shader.array("u_dimensions[0]", &dimensions[..count]));
+        values.extend(shader.vec4("u_seed0", split.values.seeds[..4].try_into().unwrap()));
+        values.extend(shader.vec4("u_seed1", split.values.seeds[4..].try_into().unwrap()));
+        values.extend(shader.vec4(
+            "u_flags",
+            [
+                plan.instructions().count() as f32,
+                f32::from(plan.result()),
+                0.,
+                0.,
+            ],
+        ));
+        let [a, b, c, d, e, f] = uv.as_coeffs().map(|v| v as f32);
+        values.extend(shader.vec4("u_uv0", [a, c, e, 0.]));
+        values.extend(shader.vec4("u_uv1", [b, d, f, 0.]));
+        values.extend(shader.vec2("u_output_size", self.size.map(|v| v as f32)));
+        self.programs.quad(
+            self.gpu,
+            native::Target::Framebuffer(&target.framebuffer),
+            self.size,
+            shader,
+            &images,
+            &values,
+            native::Blend::Replace,
+            self.gl_scissor(),
+        )
     }
 
     fn mask_sample(

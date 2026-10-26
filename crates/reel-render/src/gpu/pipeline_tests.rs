@@ -264,7 +264,13 @@ fn initialization_reuses_builtin_mask_without_holding_program_or_images() {
         let weak = Arc::downgrade(&first);
         let a = pipelines
             .masks
-            .get(&renderer.gpu, quality, &first, &renderer.budgets.resources)
+            .get(
+                &renderer.gpu,
+                quality,
+                &first,
+                [0.; 5],
+                &renderer.budgets.resources,
+            )
             .unwrap();
         drop(first);
         assert!(weak.upgrade().is_none());
@@ -272,9 +278,15 @@ fn initialization_reuses_builtin_mask_without_holding_program_or_images() {
         let second = MaskProgram::image("different".into());
         let b = pipelines
             .masks
-            .get(&renderer.gpu, quality, &second, &renderer.budgets.resources)
+            .get(
+                &renderer.gpu,
+                quality,
+                &second,
+                [0.; 5],
+                &renderer.budgets.resources,
+            )
             .unwrap();
-        assert!(Arc::ptr_eq(&a, &b));
+        assert!(Arc::ptr_eq(&a.pipeline, &b.pipeline));
         assert_eq!(pipelines.masks.len(), 1);
     }
     renderer.prepare_pipelines().unwrap();
@@ -344,6 +356,7 @@ fn zero_progress_transition_prepares_custom_mask_before_acceptance() {
             &renderer.gpu,
             quality,
             &program,
+            [0.; 5],
             &renderer.budgets.resources,
         )
         .unwrap();
@@ -355,10 +368,11 @@ fn zero_progress_transition_prepares_custom_mask_before_acceptance() {
             &renderer.gpu,
             quality,
             &program,
+            [0.; 5],
             &renderer.budgets.resources,
         )
         .unwrap();
-    assert!(Arc::ptr_eq(&first, &second));
+    assert!(Arc::ptr_eq(&first.pipeline, &second.pipeline));
     drop((zero, middle));
     drop(program);
     pipelines.masks.prune();
@@ -1449,16 +1463,17 @@ fn composed_masks_transform_sample_animate_and_retire() {
                 &renderer.gpu,
                 quality,
                 &program,
+                [0.; 5],
                 &renderer.budgets.resources,
             )
             .unwrap();
         if let Some(weak) = &pipeline_identity {
             assert!(Arc::ptr_eq(
-                &compiled,
+                &compiled.pipeline,
                 &std::sync::Weak::upgrade(weak).unwrap()
             ));
         } else {
-            pipeline_identity = Some(Arc::downgrade(&compiled));
+            pipeline_identity = Some(Arc::downgrade(&compiled.pipeline));
         }
         assert_eq!(pipelines.masks.len(), 1);
         let pixels = renderer.readback(prepared).unwrap();
@@ -1499,12 +1514,13 @@ fn composed_masks_transform_sample_animate_and_retire() {
             &renderer.gpu,
             quality,
             &equivalent,
+            [0.; 5],
             &renderer.budgets.resources,
         )
         .unwrap();
     assert!(
         Arc::ptr_eq(
-            &compiled,
+            &compiled.pipeline,
             &pipeline_identity.as_ref().unwrap().upgrade().unwrap()
         ),
         "changing image paths preserves a shared structure pipeline"
@@ -1597,7 +1613,7 @@ fn mask_expression_math_edges_and_budget_admission() {
     assert!(matches!(
         pipelines
             .masks
-            .get(&renderer.gpu, quality, &program, &empty),
+            .get(&renderer.gpu, quality, &program, [0.; 5], &empty),
         Err(GpuError::Budget { .. })
     ));
     assert_eq!(empty.usage().bytes, 0);
@@ -1619,6 +1635,7 @@ fn mask_expression_math_edges_and_budget_admission() {
                 &renderer.gpu,
                 quality,
                 &program,
+                [0.; 5],
                 &renderer.budgets.resources
             )
             .is_err()

@@ -71,6 +71,21 @@ fn compile_shaders() {
         }
         shaders.push((name.to_owned(), stage, source));
     }
+    println!("cargo:rerun-if-changed=src/gles2/shaders/mask_split.glsl");
+    let split = std::fs::read_to_string("src/gles2/shaders/mask_split.glsl")
+        .expect("read split mask template");
+    for (name, fetches, math, alpha) in [
+        ("mask_split_1", 1, 8, false),
+        ("mask_split_2", 2, 16, false),
+        ("mask_split_2_alpha", 2, 16, true),
+    ] {
+        let alpha = if alpha {
+            "\n#define REEL_MASK_ALPHA_ONLY"
+        } else {
+            ""
+        };
+        shaders.push((name.into(), Stage::Fragment, split.replacen("#version 100", &format!("#version 100\n#define REEL_MASK_FETCHES {fetches}\n#define REEL_MASK_MATH {math}{alpha}"), 1)));
+    }
     println!("cargo:rerun-if-changed=src/gles2/shaders/mask_sample.glsl");
     let mask_sample = std::fs::read_to_string("src/gles2/shaders/mask_sample.glsl")
         .expect("read simple mask template");
