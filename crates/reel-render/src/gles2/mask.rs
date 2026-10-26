@@ -55,6 +55,11 @@ fn encode_operation(operation: &MaskOp) -> [f32; 4] {
         MaskOp::ImageThreshold { alpha, gray } => [10., alpha as f32, gray as f32, 0.],
     }
 }
+fn encode_compact(operation: &MaskOp, destination: u32) -> [f32; 4] {
+    let mut encoded = encode_operation(operation);
+    encoded[0] += 16. * destination as f32;
+    encoded
+}
 impl Context<'_> {
     /// Apply a single-sample mask while compositing the already isolated source.
     /// Coverage stays highp through the final blend instead of visiting RGBA8.
@@ -101,9 +106,18 @@ impl Context<'_> {
             self.mask_sample(&target, definition, uv, simple, None)?;
             return Ok(target);
         }
+        let capacity = operation_capacity(definition.program.operations().len());
+        let registers = (capacity > 8)
+            .then(|| crate::common::mask::RegisterPlan::new(&definition.program))
+            .flatten()
+            .filter(|plan| plan.register_count() <= 8);
         let mut operations = [[0.; 4]; OPERATION_CAPACITY];
         for (index, operation) in definition.program.operations().iter().enumerate() {
-            operations[index] = encode_operation(operation);
+            operations[index] = if let Some(plan) = &registers {
+                encode_compact(&plan.operation(operation), plan.destination(index))
+            } else {
+                encode_operation(operation)
+            };
         }
         let white = self.white()?;
         let mut images = Vec::with_capacity(4);
@@ -136,10 +150,11 @@ impl Context<'_> {
         while images.len() < 4 {
             images.push(white.clone());
         }
-        let capacity = operation_capacity(definition.program.operations().len());
-        let shader = match capacity {
-            8 => &self.programs.mask_8,
-            16 => &self.programs.mask_16,
+        let shader = match (capacity, registers.is_some()) {
+            (8, _) => &self.programs.mask_8,
+            (16, true) => &self.programs.mask_16_compact,
+            (32, true) => &self.programs.mask_32_compact,
+            (16, false) => &self.programs.mask_16,
             _ => &self.programs.mask,
         };
         let mut values = Values::new();
@@ -310,13 +325,21 @@ mod tests {
                 for y in 0..32 {
                     let sx = 31 - x;
                     let sy = 31 - y;
-                    let value = encode_operation(&MaskOp::Sample {
+                    let operation = MaskOp::Sample {
                         image: 3,
                         channel: MaskChannel::Gray,
                         coordinates: [x, y, sx, sy],
                         repeat,
-                    });
+                    };
+                    let value = encode_operation(&operation);
                     assert_eq!(value[0..2], [3., 3.]);
+                    for destination in [0, 7, 31] {
+                        let encoded = encode_compact(&operation, destination);
+                        let actual_destination = (encoded[0] / 16.).floor();
+                        assert_eq!(actual_destination, destination as f32);
+                        assert_eq!(encoded[0] - actual_destination * 16., value[0]);
+                        assert_eq!(encoded[1..], value[1..]);
+                    }
                     // Decode with the same floating point operations as GLSL.
                     assert_eq!(
                         [value[2] % 32., (value[2] / 32.).floor()],

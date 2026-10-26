@@ -57,6 +57,17 @@ fn compile_shaders() {
                     ),
                 ));
             }
+            for capacity in [16, 32] {
+                shaders.push((
+                    format!("mask_{capacity}_compact"),
+                    stage,
+                    source.replacen(
+                        "#version 100",
+                        &format!("#version 100\n#define REEL_MASK_NODES {capacity}\n#define REEL_MASK_SLOTS 8"),
+                        1,
+                    ),
+                ));
+            }
         }
         shaders.push((name.to_owned(), stage, source));
     }

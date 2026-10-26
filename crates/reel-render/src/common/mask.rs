@@ -1,12 +1,15 @@
-//! Bounded recognition of masks that need one sample and an ordered scalar chain.
+//! Bounded scalar storage planning and recognition of simple sampled masks.
 #![cfg_attr(
     not(any(test, all(feature = "gles2", feature = "wgpu"))),
     allow(
         dead_code,
-        reason = "WGPU shares threshold classification; GLES also consumes the evaluated scalar chain"
+        reason = "register planning is shared; evaluated scalar chains are specific to GLES"
     )
 )]
 use reel_ui::stage::{MaskChannel, MaskOp, MaskProgram};
+
+mod registers;
+pub(crate) use registers::RegisterPlan;
 
 const NODES: usize = 32;
 pub(crate) const STEPS: usize = 8;
@@ -202,44 +205,166 @@ mod tests {
     fn oracle(program: &MaskProgram, parameters: [f32; 5], alpha: f32, gray: f32) -> f32 {
         let mut nodes: Vec<f32> = Vec::new();
         for operation in program.operations() {
-            let at = |index: u32| nodes[index as usize];
-            nodes.push(match *operation {
-                MaskOp::Constant(bits) => f32::from_bits(bits),
-                MaskOp::Parameter(index) => parameters[index as usize],
-                MaskOp::Sample { channel, .. } => match channel {
-                    MaskChannel::Alpha => alpha,
-                    MaskChannel::Gray => gray,
-                },
-                MaskOp::Add(a, b) => at(a) + at(b),
-                MaskOp::Subtract(a, b) => at(a) - at(b),
-                MaskOp::Multiply(a, b) => at(a) * at(b),
-                MaskOp::Clamp(a, low, high) => {
-                    at(a).clamp(f32::from_bits(low), f32::from_bits(high))
-                }
-                MaskOp::ImageThreshold { alpha, gray } => {
-                    if parameters[0] <= 0. {
-                        0.
-                    } else if parameters[0] >= 1. {
-                        1.
-                    } else {
-                        let gray = if parameters[4] != 0. {
-                            1. - at(gray)
-                        } else {
-                            at(gray)
-                        };
-                        at(alpha)
-                            * if parameters[1] > 0. {
-                                ((parameters[0] * (1. + parameters[1]) - gray) / parameters[1])
-                                    .clamp(0., 1.)
-                            } else {
-                                f32::from(gray <= parameters[0])
-                            }
-                    }
-                }
-                _ => panic!("unexpected oracle operation"),
-            });
+            nodes.push(operation_value(
+                operation,
+                parameters,
+                alpha,
+                gray,
+                |index| nodes[index as usize],
+            ));
         }
         nodes.last().unwrap().clamp(0., 1.)
+    }
+    fn operation_value(
+        operation: &MaskOp,
+        parameters: [f32; 5],
+        alpha: f32,
+        gray: f32,
+        at: impl Fn(u32) -> f32,
+    ) -> f32 {
+        match *operation {
+            MaskOp::Constant(bits) => f32::from_bits(bits),
+            MaskOp::Parameter(index) => parameters[index as usize],
+            MaskOp::Sample { channel, .. } => match channel {
+                MaskChannel::Alpha => alpha,
+                MaskChannel::Gray => gray,
+            },
+            MaskOp::Add(a, b) => at(a) + at(b),
+            MaskOp::Subtract(a, b) => at(a) - at(b),
+            MaskOp::Multiply(a, b) => at(a) * at(b),
+            MaskOp::Pow(a, bits) => {
+                let exponent = f32::from_bits(bits);
+                if exponent == 0. {
+                    1.
+                } else {
+                    at(a).max(0.).powf(exponent)
+                }
+            }
+            MaskOp::Smoothstep(a, b, x) => {
+                let (a, b, x) = (at(a), at(b), at(x));
+                if a == b {
+                    f32::from(x >= a)
+                } else {
+                    let t = ((x - a) / (b - a)).clamp(0., 1.);
+                    t * t * (3. - 2. * t)
+                }
+            }
+            MaskOp::Clamp(a, low, high) => at(a).clamp(f32::from_bits(low), f32::from_bits(high)),
+            MaskOp::ImageThreshold { alpha, gray } => {
+                if parameters[0] <= 0. {
+                    0.
+                } else if parameters[0] >= 1. {
+                    1.
+                } else {
+                    let gray = if parameters[4] != 0. {
+                        1. - at(gray)
+                    } else {
+                        at(gray)
+                    };
+                    at(alpha)
+                        * if parameters[1] > 0. {
+                            ((parameters[0] * (1. + parameters[1]) - gray) / parameters[1])
+                                .clamp(0., 1.)
+                        } else {
+                            f32::from(gray <= parameters[0])
+                        }
+                }
+            }
+        }
+    }
+
+    mod dag_fixture {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/support/mask_dag.rs"
+        ));
+    }
+
+    #[test]
+    fn register_reuse_preserves_every_instruction_read_and_float_result() {
+        let operations = dag_fixture::operations();
+        let cases = [
+            operations[..8].to_vec(),
+            operations[..12].to_vec(),
+            operations[..16].to_vec(),
+            operations,
+            dag_fixture::compact_operations(),
+        ];
+        for (case, operations) in cases.into_iter().enumerate() {
+            let count = operations.len();
+            let program = MaskProgram::new(
+                operations,
+                vec!["a".into(), "b".into(), "c".into(), "d".into()],
+            )
+            .unwrap();
+            let plan = RegisterPlan::new(&program).unwrap();
+            assert!(plan.register_count() < count);
+            if case == 3 {
+                assert!(
+                    plan.register_count() > 8,
+                    "full DAG covers the fallback banks"
+                );
+            }
+            if case == 4 {
+                assert!(
+                    plan.register_count() <= 8,
+                    "long DAG covers the compact banks"
+                );
+            }
+            for progress in [-0.0, 0.35, 1., f32::MAX] {
+                let params = [progress, 0.2, -0.25, 0.75, 0.];
+                let mut original = Vec::<f32>::new();
+                let mut values = [f32::NAN; NODES];
+                for (i, op) in program.operations().iter().enumerate() {
+                    let mapped = plan.operation(op);
+                    let mut before = Vec::new();
+                    registers::visit_reads(op, |r| before.push(original[r as usize].to_bits()));
+                    let mut after = Vec::new();
+                    registers::visit_reads(&mapped, |r| after.push(values[r as usize].to_bits()));
+                    assert_eq!(before, after, "instruction {i}, {op:?}");
+                    let expected =
+                        operation_value(op, params, 0.37, 0.73, |r| original[r as usize]);
+                    let value =
+                        operation_value(&mapped, params, 0.37, 0.73, |r| values[r as usize]);
+                    assert_eq!(expected.to_bits(), value.to_bits(), "instruction {i}");
+                    original.push(expected);
+                    values[plan.destination(i) as usize] = value;
+                }
+                assert_eq!(
+                    values[plan.destination(count - 1) as usize]
+                        .clamp(0., 1.)
+                        .to_bits(),
+                    oracle(&program, params, 0.37, 0.73).to_bits()
+                );
+            }
+        }
+        // An unused NaN-producing branch must not contaminate a reused slot.
+        let program = MaskProgram::new(
+            vec![
+                constant(f32::MAX),
+                constant(2.),
+                MaskOp::Multiply(0, 1),
+                MaskOp::Subtract(2, 2),
+                constant(-0.),
+            ],
+            vec![],
+        )
+        .unwrap();
+        let plan = RegisterPlan::new(&program).unwrap();
+        assert_eq!(plan.register_count(), 2);
+        assert_eq!(plan.operation(&program.operations()[4]), constant(-0.));
+        let mut values = [0.; NODES];
+        for (i, op) in program.operations().iter().enumerate() {
+            let value =
+                operation_value(&plan.operation(op), [0.; 5], 0., 0., |r| values[r as usize]);
+            values[plan.destination(i) as usize] = value;
+        }
+        assert_eq!(
+            values[plan.destination(4) as usize].to_bits(),
+            (-0_f32).to_bits()
+        );
+        let larger = MaskProgram::new(vec![constant(1.); 33], vec![]).unwrap();
+        assert!(RegisterPlan::new(&larger).is_none());
     }
     fn chain_value(input: &Evaluated, mut sample: f32) -> f32 {
         for [operation, operand, high, _] in input.steps {
