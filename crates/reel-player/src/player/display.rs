@@ -86,6 +86,31 @@ where
         };
         let configuration = match request.command {
             WindowCommand::Configure(configuration) => configuration,
+            WindowCommand::Focus { target } => {
+                let focused = story
+                    .driver()
+                    .adapter()
+                    .focus_target_permits_input(target)?
+                    && story.driver().ui().request_focus(
+                        &mut self.presentation.bridge,
+                        self.root_id,
+                        target,
+                    );
+                if story
+                    .driver_mut()?
+                    .adapter_mut()
+                    .complete_window_request(request.id, Ok(WindowReply::Focused(focused)))?
+                {
+                    story.wake_input();
+                }
+                if focused {
+                    story
+                        .driver_mut()?
+                        .sync_input(&mut self.presentation.bridge, self.root_id)?;
+                    self.invalidate();
+                }
+                return Ok(());
+            }
             WindowCommand::MovePointer { position, owner } => {
                 let destination = if story
                     .driver()

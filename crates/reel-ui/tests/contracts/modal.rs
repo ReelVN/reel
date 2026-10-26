@@ -461,3 +461,57 @@ fn modal_activation_follows_acceptance_and_clear_preserves_restoration() {
     bridge.resolve(accept(&closed));
     assert_eq!(bridge.root().focused_widget(), Some(f.outside));
 }
+
+#[test]
+fn explicit_focus_requires_visible_accepted_control_and_respects_modal_gates() {
+    let f = fixture();
+    let mut bridge = PresentationBridge::new(f.root, SurfaceEpoch(1), bridge_limits()).unwrap();
+    assert!(!bridge.request_focus(f.first));
+    bridge.edit_widget(f.panel, |mut w| {
+        let mut panel = w.downcast::<StageGroup>();
+        panel.ctx.set_stashed(&mut panel.widget.children[1].0, true);
+    });
+    let initial = bridge.record(FrameId(1)).unwrap();
+    bridge.resolve(accept(&initial));
+    assert!(bridge.request_focus(f.first));
+    assert!(!bridge.request_focus(f.second));
+    bridge.edit_widget(f.panel, |mut w| {
+        let mut panel = w.downcast::<StageGroup>();
+        panel
+            .ctx
+            .set_stashed(&mut panel.widget.children[1].0, false);
+    });
+    assert!(
+        !bridge.request_focus(f.second),
+        "live visibility awaits acceptance"
+    );
+    let skipped = bridge.record(FrameId(2)).unwrap();
+    bridge.resolve(notice(&skipped, PresentationOutcome::Skipped));
+    assert!(!bridge.request_focus(f.second));
+    assert_eq!(bridge.root().focused_widget(), Some(f.first));
+    let visible = bridge.record(FrameId(3)).unwrap();
+    bridge.resolve(accept(&visible));
+    assert!(bridge.request_focus(f.second));
+    bridge.edit_widget(f.first, |mut w| w.ctx.set_disabled(true));
+    assert!(!bridge.request_focus(f.first));
+    assert_eq!(bridge.root().focused_widget(), Some(f.second));
+    bridge.edit_widget(f.first, |mut w| w.ctx.set_disabled(false));
+    bridge.edit_widget(f.panel, |mut w| {
+        w.ctx.set_interactive(false, false);
+        w.ctx.set_modal(true);
+    });
+    let modal = bridge.record(FrameId(4)).unwrap();
+    bridge.resolve(accept(&modal));
+    assert!(!bridge.request_focus(f.outside));
+    assert!(
+        !bridge.request_focus(f.panel),
+        "container is not a focusable control"
+    );
+    assert!(bridge.request_focus(f.first));
+    bridge.set_input_gates(&[f.second]).unwrap();
+    assert!(!bridge.request_focus(f.second));
+    assert_eq!(bridge.root().focused_widget(), Some(f.first));
+    bridge.clear();
+    assert!(!bridge.request_focus(f.second));
+    assert_eq!(bridge.root().focused_widget(), Some(f.first));
+}

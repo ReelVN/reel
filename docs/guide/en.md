@@ -957,6 +957,16 @@ if display.capabilities.fullscreen {
 }
 ```
 
+`stage.focus` transfers keyboard or controller focus after the frame containing current changes is accepted. Here Next becomes visible before awaiting the handoff. The returned `FocusOperation` extends `WindowOperation` and awaits to bool. That result is false when the target is hidden, disabled, retired or outside the modal scope, preserving the existing focus. `owner` defaults to the current scope; scope exit cancels an unfinished request.
+
+```aside
+let next = button("Next", visible: false);
+stage.replace(column { button("Skip"); next; });
+await stage.presented();
+next.visible = true;
+let focused = await stage.focus(next);
+```
+
 `text_input` edits a single line and `text_area` edits multiple lines. Bind them to business fields so control writeback and other views share one state.
 
 ```aside
