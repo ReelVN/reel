@@ -955,7 +955,7 @@ if display.capabilities.fullscreen {
 }
 ```
 
-`stage.focus` 在包含当前变更的画面被接受后，把键盘或手柄焦点交给目标。下面的 Next 从隐藏切换为可见，再等待交接结果。返回值为 bool；目标隐藏、禁用、退休或处于模态范围外时为 false，原焦点继续保留。`owner` 默认当前作用域，作用域结束会取消未完成请求。
+`stage.focus` 在包含当前变更的画面被接受后，把键盘或手柄焦点交给目标。下面的 Next 从隐藏切换为可见，再等待交接结果。返回的 `FocusOperation` 继承 `WindowOperation`，await 结果为 bool；目标隐藏、禁用、退休或处于模态范围外时为 false，原焦点继续保留。`owner` 默认当前作用域，作用域结束会取消未完成请求。
 
 ```aside
 let next = button("Next", visible: false);

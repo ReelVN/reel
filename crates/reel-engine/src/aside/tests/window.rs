@@ -231,16 +231,19 @@ fn pointer_derives_track_changes_restore_null_and_release_retired_consumers() {
 #[test]
 fn focus_requests_wait_for_acceptance_and_preserve_owned_results_source_asb() {
     use crate::aside::window::{WindowCommand, WindowReply};
-    let code = r#"fn opening() {
+    let code = r#"use reel::types::{FocusOperation, WindowOperation};
+    fn opening() {
         let next = button("Next", visible: false);
         let panel = stack(children: [next, button("Skip")]);
         stage.replace(panel);
         next.visible = true;
-        let request = stage.focus(next);
+        let request: FocusOperation = stage.focus(next);
+        let base: WindowOperation = request;
         let mut busy = false;
         try { stage.focus(next); } catch error { busy = true; }
         if !busy { throw "unbounded focus requests"; }
-        if !await request { throw "focus declined"; }
+        let focused: bool = await request;
+        if !focused { throw "focus declined"; }
         if await stage.focus(next) { throw "expected false"; }
         let cancelled = stage.focus(next, owner: panel);
         panel.remove();

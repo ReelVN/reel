@@ -284,3 +284,19 @@ fn speech_literal_wait_results_and_bound_methods_execute_from_source_and_asb() {
         .is_err()
     );
 }
+
+#[test]
+fn focus_declaration_accepts_owned_nodes_and_awaits_bool() {
+    source::compile_module(
+        r#"use reel::types::{Node,Scope,FocusOperation,WindowOperation};
+        fn focus(target:Node, owner:Node|Scope|null)->bool {
+            let request:FocusOperation=stage.focus(target,owner:owner);
+            let operation:WindowOperation=request;
+            await request
+        }"#,
+        "focus_types",
+        "focus_types.aside",
+        1,
+    )
+    .unwrap();
+}

@@ -497,7 +497,7 @@ fn explicit_focus_requires_visible_accepted_control_and_respects_modal_gates() {
     assert_eq!(bridge.root().focused_widget(), Some(f.second));
     bridge.edit_widget(f.first, |mut w| w.ctx.set_disabled(false));
     bridge.edit_widget(f.panel, |mut w| {
-        w.ctx.set_interactive(false, true);
+        w.ctx.set_interactive(false, false);
         w.ctx.set_modal(true);
     });
     let modal = bridge.record(FrameId(4)).unwrap();

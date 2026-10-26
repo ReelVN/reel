@@ -44,7 +44,7 @@ fn late_next_focus_waits_for_accepted_frame_and_routes_confirm_source_asb() {
         present(&mut story, &mut bridge, root, 1);
         let node = |label: &str| {
             story.driver().adapter().stage().nodes().find(|node| {
-            matches!(&node.kind, NodeKind::Button { label: Some(text), .. } if text.as_ref() == label)
+            matches!(&node.kind, NodeKind::Button { label: Some(text), .. } if text.as_str() == label)
         }).unwrap().id
         };
         let next = node("Next");

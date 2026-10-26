@@ -278,7 +278,11 @@ impl SessionVm {
         command: WindowCommand,
         owner: Value,
     ) -> Result<(), AdapterError> {
-        let result = self.results.create_window(&mut self.vm, owner)?;
+        let result = if matches!(command, WindowCommand::Focus { .. }) {
+            self.results.create_focus(&mut self.vm, owner)?
+        } else {
+            self.results.create_window(&mut self.vm, owner)?
+        };
         if matches!(command, WindowCommand::MovePointer { .. })
             && !self.window.info.capabilities.pointer_move
         {
@@ -416,7 +420,8 @@ aside_host::native_documentation! {
         "reel::stage::move_pointer";
         /// Request keyboard/controller focus on an author control. Waits for an accepted
         /// frame containing stage changes made before this call, then applies focus through
-        /// the current input/modal scope. Returns an awaitable bool: true when focused,
+        /// the current input/modal scope. Returns a FocusOperation, a WindowOperation
+        /// subtype whose awaited result is bool: true when focused,
         /// false when the target is hidden, disabled, retired or not focusable in that frame.
         /// A declined request preserves the existing focus. Successful explicit handoff
         /// displays the focus indicator. Owner defaults to the current scope; retirement
@@ -441,7 +446,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
     api.refine("reel::stage::pointer", nullable(TypeHint::Table), &[]);
     api.refine(
         "reel::stage::focus",
-        named("reel::types::WindowOperation"),
+        named("reel::types::FocusOperation"),
         &[("target", named("reel::types::Node"))],
     );
     api.refine(
