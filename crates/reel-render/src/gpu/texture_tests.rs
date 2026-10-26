@@ -429,9 +429,23 @@ fn prepared_bc_textures_submit_exact_storage_and_preserve_sampling_metadata() {
             )
             .unwrap();
         let lease = registry.acquire(handle).unwrap();
+        let expected_layout = TextureLayout {
+            storage_size: if format == TextureFormat::Rgba8 {
+                [16, 8]
+            } else {
+                [16, 16]
+            },
+            ..descriptor.layout
+        };
+        let resident = format.byte_len(expected_layout.storage_size).unwrap();
         assert_eq!(
-            resources::texture_costs(descriptor).unwrap(),
-            (length, 256 * (16 / format.block_size()) as u64)
+            resources::texture_costs(
+                crate::common::resources::TextureUploadLayout::new(descriptor).unwrap()
+            ),
+            (
+                resident,
+                256 * u64::from(expected_layout.storage_size[1] / format.block_size())
+            )
         );
         for variant in 0..6 {
             let frame = frame(lease.clone(), variant, &pool);
@@ -456,9 +470,9 @@ fn prepared_bc_textures_submit_exact_storage_and_preserve_sampling_metadata() {
             };
             let image = &prepared.images[&handle];
             assert_eq!(image.texture.format(), resources::texture_format(format));
-            assert_eq!(image.layout, descriptor.layout);
-            assert_eq!(image.residency.as_ref().unwrap().bytes(), length);
-            assert_eq!(image.size, [16, 16]);
+            assert_eq!(image.layout, expected_layout);
+            assert_eq!(image.residency.as_ref().unwrap().bytes(), resident);
+            assert_eq!(image.size, expected_layout.storage_size);
             assert_eq!(
                 renderer
                     .gpu
