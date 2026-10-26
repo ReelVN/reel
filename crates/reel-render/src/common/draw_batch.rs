@@ -7,8 +7,9 @@ pub(crate) struct Entry<T> {
     pub state: T,
 }
 pub(crate) struct Batch<T> {
-    pub mesh: Mesh,
+    // Mesh's reservation includes this Vec's capacity; free it before the mesh.
     pub entries: Vec<Entry<T>>,
+    pub mesh: Mesh,
 }
 impl<T> Batch<T> {
     /// Transfer the first mesh and its capacity tickets without copying geometry.
