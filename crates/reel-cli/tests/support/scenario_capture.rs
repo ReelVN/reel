@@ -97,21 +97,24 @@ pub struct ScenarioCapture {
     active_fonts: Vec<String>,
 }
 impl ScenarioCapture {
-    pub fn new(kind: &str) -> Self {
-        let capture_dir = std::env::var_os("REEL_SCENARIO_CAPTURE_DIR").map(|directory| {
-            let directory = PathBuf::from(directory).join(kind);
-            std::fs::create_dir_all(&directory).unwrap_or_else(|error| {
-                panic!("scenario capture {}: {error}", directory.display())
+    pub fn new(kind: &str, capture: bool) -> Self {
+        let capture_dir = capture
+            .then(|| std::env::var_os("REEL_SCENARIO_CAPTURE_DIR"))
+            .flatten()
+            .map(|directory| {
+                let directory = PathBuf::from(directory).join(kind);
+                std::fs::create_dir_all(&directory).unwrap_or_else(|error| {
+                    panic!("scenario capture {}: {error}", directory.display())
+                });
+                directory
             });
-            directory
-        });
         let gpu = pollster::block_on(Gpu::request(
             &wgpu::Instance::default(),
             None,
             DeviceGeneration(1),
             GpuLimits::default(),
         ))
-        .expect("REEL_SCENARIO_GPU_CAPTURE requires an available GPU adapter");
+        .expect("GPU scenario presentation requires an available GPU adapter");
         eprintln!("scenario GPU: {:?}", gpu.adapter.get_info());
         Self::assemble(Some(Offscreen {
             renderer: Renderer::new(gpu),

@@ -72,6 +72,25 @@ pub fn run(
     saves: Option<PathBuf>,
     resource_target: String,
 ) -> Result<(), String> {
+    let (story, mut options) = load(path, assets, resource_target)?;
+    options.save_directory = saves;
+    launch(story, options)
+}
+
+/// Prepare an ASB using the same resource selection as the platform player.
+/// Embedding hosts can supply their own presentation, audio and storage services
+/// while retaining the package's catalogs, shaders and resource conversions.
+pub fn load(
+    path: &Path,
+    assets: Option<PathBuf>,
+    resource_target: String,
+) -> Result<
+    (
+        reel_engine::aside::source::CompiledStory,
+        reel_player::player::PlayerOptions,
+    ),
+    String,
+> {
     let project_resources = project_resources(path).map_err(|error| error.to_string())?;
     let loaded = reel_player::distribution::load(path, project_resources.as_deref())
         .map_err(|error| error.to_string())?;
@@ -93,10 +112,9 @@ pub fn run(
     options.asset_packages = Some(loaded.packages);
     options.asset_overlay = assets;
     options.catalogs = std::sync::Arc::new(loaded.catalogs);
-    options.save_directory = saves;
     options.resource_target = resource_target;
     options.resource_files = resource_files;
-    launch(story, options)
+    Ok((story, options))
 }
 
 pub fn standalone(executable: &Path, saves: Option<PathBuf>) -> Result<(), String> {

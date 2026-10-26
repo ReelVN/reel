@@ -324,19 +324,15 @@ pub fn run_story(
 
 fn run_story_on(
     story: reel_engine::aside::source::CompiledStory,
-    options: PlayerOptions,
+    mut options: PlayerOptions,
     native: &mut NativeLoop,
     backend: &mut GlesBackend,
 ) -> Result<(), Error> {
     use reel_engine::{Epoch, Session, SessionId, aside::VmLimits};
     let mounting = reel_core::profile::Scope::new(reel_core::profile::Phase::Mount);
-    let assets = crate::assets::Assets::packaged_for_target(
-        options.assets.clone(),
-        options.asset_packages.clone().unwrap_or_default(),
-        options.asset_overlay.clone(),
-        "vita".into(),
-    )
-    .map_err(|error| format!("Vita resources: {error:?}"))?;
+    let assets = options
+        .open_assets()
+        .map_err(|error| format!("Vita resources: {error:?}"))?;
     let notify = native.host.wake_callback();
     let signal = WakeSignal::new(move || notify());
     let media_options = options.media.clone();
