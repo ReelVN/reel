@@ -148,6 +148,21 @@ impl SessionUi {
         let point = transform * reel_ui::kurbo::Point::new(position[0], position[1]);
         Some([point.x, point.y])
     }
+    /// Apply author focus through the same accepted stage and modal input geometry.
+    pub(crate) fn request_focus(
+        &self,
+        bridge: &mut PresentationBridge,
+        root: WidgetId,
+        target: reel_ui::stage::NodeId,
+    ) -> bool {
+        if self.accepted_stage(bridge, root).is_none() {
+            return false;
+        }
+        let Some(target) = Self::projected_node(bridge, root, target) else {
+            return false;
+        };
+        bridge.request_focus(target)
+    }
     /// Record the actual widget tree and its projection identity in one operation.
     /// Pending model edits cannot advance the watermark until sync publishes them.
     pub fn record(

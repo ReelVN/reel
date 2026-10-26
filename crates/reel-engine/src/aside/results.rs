@@ -223,6 +223,10 @@ impl Results {
         Ok(self.requested)
     }
 
+    pub(super) fn presentation_reached(&self, request: u64) -> bool {
+        request <= self.presented
+    }
+
     pub(super) fn presentation_roots(&self) -> impl Iterator<Item = RootToken> + '_ {
         self.presentations.iter().copied()
     }

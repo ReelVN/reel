@@ -353,6 +353,11 @@ impl PresentationBridge {
     pub fn focus_on(&mut self, target: Option<WidgetId>) -> bool {
         self.root.focus_on(target)
     }
+    /// Apply explicit focus only to a visible, enabled, focusable control in the
+    /// accepted input/modal scope. A declined request preserves the existing focus.
+    pub fn request_focus(&mut self, target: WidgetId) -> bool {
+        self.root.request_focus(target)
+    }
     /// Pause input without applying disabled styles or changing widget properties.
     pub fn set_input_gates(&mut self, roots: &[WidgetId]) -> Result<(), InputBudgetExceeded> {
         if self.root.global_state.input_gates.as_ref() == roots {

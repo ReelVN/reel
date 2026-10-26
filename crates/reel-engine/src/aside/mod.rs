@@ -648,7 +648,8 @@ impl SessionVm {
             "reel::window::info"
             | "reel::window::configure"
             | "reel::stage::pointer"
-            | "reel::stage::move_pointer" => {
+            | "reel::stage::move_pointer"
+            | "reel::stage::focus" => {
                 self.dispatch_window(ticket, &symbol)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }

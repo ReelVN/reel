@@ -955,6 +955,16 @@ if display.capabilities.fullscreen {
 }
 ```
 
+`stage.focus` 在包含当前变更的画面被接受后，把键盘或手柄焦点交给目标。下面的 Next 从隐藏切换为可见，再等待交接结果。返回值为 bool；目标隐藏、禁用、退休或处于模态范围外时为 false，原焦点继续保留。`owner` 默认当前作用域，作用域结束会取消未完成请求。
+
+```aside
+let next = button("Next", visible: false);
+stage.replace(column { button("Skip"); next; });
+await stage.presented();
+next.visible = true;
+let focused = await stage.focus(next);
+```
+
 `text_input` 编辑单行文本，`text_area` 编辑多行文本。绑定到业务字段后，控件写回与其他视图更新共用同一状态。
 
 ```aside
