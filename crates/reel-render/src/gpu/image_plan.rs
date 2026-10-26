@@ -13,6 +13,7 @@ pub(super) struct Required<'a> {
     pub(super) resident: u64,
     pub(super) staging: u64,
     pub(super) minimum_staging: u64,
+    pub(super) texture: Option<crate::common::resources::TextureUploadLayout>,
 }
 pub(super) struct Plan<'a> {
     pub(super) images: Vec<Required<'a>>,
@@ -31,9 +32,10 @@ pub(super) fn collect<'a>(
         .into_iter()
         .map(|item| {
             let (resident, staging, minimum_staging) = match item.source.data() {
-                ResourceData::Texture { descriptor, .. } => {
-                    let (resident, staging) = resources::texture_costs(*descriptor)?;
-                    (resident, staging, resources::texture_row_bytes(*descriptor))
+                ResourceData::Texture { .. } => {
+                    let upload = item.texture.expect("planned texture");
+                    let (resident, staging) = resources::texture_costs(upload);
+                    (resident, staging, resources::texture_row_bytes(upload))
                 }
                 ResourceData::Image { image, .. } => {
                     let size = [image.width, image.height];
@@ -56,6 +58,7 @@ pub(super) fn collect<'a>(
                 resident,
                 staging,
                 minimum_staging,
+                texture: item.texture,
             })
         })
         .collect::<Result<_, GpuError>>()?;

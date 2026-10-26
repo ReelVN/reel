@@ -152,9 +152,9 @@ impl ImageCache {
             }
             let row = match item.source.data() {
                 ResourceData::Image { image, .. } => Some(resources::row_bytes(image.width)),
-                ResourceData::Texture { descriptor, .. } => {
-                    Some(resources::texture_row_bytes(*descriptor))
-                }
+                ResourceData::Texture { .. } => Some(resources::texture_row_bytes(
+                    item.texture.expect("planned texture"),
+                )),
                 _ => None,
             };
             let staging_limit = if let Some(row) = row {
@@ -273,7 +273,8 @@ impl ImageCache {
                     break;
                 }
             } else if let ResourceData::Texture { descriptor, .. } = item.source.data() {
-                let row_bytes = resources::texture_row_bytes(*descriptor);
+                let layout = item.texture.expect("planned texture");
+                let row_bytes = resources::texture_row_bytes(layout);
                 if let Entry::Vacant(entry) = partial.entry(handle) {
                     let storage = reserve(
                         &budgets.transient,
@@ -283,7 +284,7 @@ impl ImageCache {
                         "partial texture upload",
                     )?;
                     let residency = reserve_gpu(item.resident)?;
-                    let mut image = resources::create_texture(gpu, *descriptor, item.at)?;
+                    let mut image = resources::create_texture(gpu, *descriptor, layout, item.at)?;
                     image.residency = Some(residency);
                     image.source = Some(resources::ImageSource {
                         version: item.source.version().clone(),
@@ -292,8 +293,7 @@ impl ImageCache {
                     entry.insert(Partial {
                         image: Arc::new(image),
                         next_row: 0,
-                        total_rows: descriptor.layout.storage_size[1]
-                            / descriptor.format.block_size(),
+                        total_rows: layout.rows,
                         _storage: storage,
                     });
                 }
@@ -323,6 +323,7 @@ impl ImageCache {
                     &mut encoder,
                     item.source,
                     &pending.image,
+                    layout,
                     pending.next_row..next_row,
                 )?;
                 work_remaining = work_remaining.saturating_sub(row_bytes * u64::from(count));

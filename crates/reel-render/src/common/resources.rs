@@ -1,4 +1,64 @@
 use super::GpuError;
+use reel_core::texture::{TextureDescriptor, TextureFormat, TextureLayout};
+
+/// Upload a compact prefix of each immutable payload row. Both power-of-two
+/// storage and 32-aligned tiled storage have the same packed allocation extent
+/// on the supported backends; no new edge pixels are synthesized here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TextureUploadLayout {
+    pub(crate) layout: TextureLayout,
+    pub(crate) source_row_bytes: u64,
+    pub(crate) row_bytes: u64,
+    pub(crate) rows: u32,
+    pub(crate) resident_bytes: u64,
+}
+impl TextureUploadLayout {
+    pub(crate) fn new(descriptor: TextureDescriptor) -> Result<Self, GpuError> {
+        descriptor.byte_len().map_err(|_| GpuError::InvalidSize)?;
+        let mut layout = descriptor.layout;
+        if descriptor.format == TextureFormat::Rgba8 {
+            let content = layout.content_size;
+            let candidate = |round: fn(u32) -> Option<u32>| {
+                round(content[0])
+                    .zip(round(content[1]))
+                    .map(|(w, h)| [w, h])
+            };
+            let pixels = |size: [u32; 2]| u64::from(size[0]) * u64::from(size[1]);
+            for size in [
+                candidate(u32::checked_next_power_of_two),
+                candidate(|n| n.checked_add(31).map(|n| n & !31)),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if size
+                    .iter()
+                    .zip(descriptor.layout.storage_size)
+                    .all(|(&n, source)| n <= source)
+                    && pixels(size) < pixels(layout.storage_size)
+                {
+                    layout.storage_size = size;
+                }
+            }
+        }
+        Ok(Self {
+            layout,
+            source_row_bytes: descriptor
+                .format
+                .row_bytes(descriptor.layout.storage_size[0])
+                .ok_or(GpuError::InvalidSize)?,
+            row_bytes: descriptor
+                .format
+                .row_bytes(layout.storage_size[0])
+                .ok_or(GpuError::InvalidSize)?,
+            rows: layout.storage_size[1] / descriptor.format.block_size(),
+            resident_bytes: descriptor
+                .format
+                .byte_len(layout.storage_size)
+                .ok_or(GpuError::InvalidSize)?,
+        })
+    }
+}
 /// Cached device storage borrows resource identity without owning its CPU payload.
 /// Retirement closes new leases; existing frames remain valid until their final
 /// lease is released, including while an upload is still progressing.
@@ -142,6 +202,70 @@ fn translucent_linear_f16(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn texture_upload_compacts_padding_without_expanding_small_or_block_storage() {
+        for (content, storage, expected) in [
+            ([960, 544], [1024, 1024], [960, 544]),
+            ([8, 8], [8, 8], [8, 8]),
+            ([12, 270], [16, 512], [16, 512]),
+            ([12, 270], [32, 512], [16, 512]),
+            ([20, 270], [32, 512], [32, 288]),
+            ([8, 100], [8, 2048], [8, 128]),
+            ([32, 8], [64, 16], [32, 8]),
+            ([31, 17], [31, 17], [31, 17]),
+            ([4095, 1080], [4096, 4096], [4096, 1088]),
+        ] {
+            let descriptor = TextureDescriptor {
+                format: TextureFormat::Rgba8,
+                source_encoding: ColorEncoding::Linear,
+                layout: TextureLayout {
+                    logical_size: [1920, 1080],
+                    content_size: content,
+                    storage_size: storage,
+                },
+            };
+            let upload = TextureUploadLayout::new(descriptor).unwrap();
+            assert_eq!(upload.layout.storage_size, expected);
+            assert_eq!(upload.layout.content_size, content);
+            assert_eq!(upload.layout.logical_size, descriptor.layout.logical_size);
+            assert_eq!(upload.source_row_bytes, u64::from(storage[0]) * 4);
+            assert_eq!(upload.row_bytes, u64::from(expected[0]) * 4);
+            assert_eq!(upload.rows, expected[1]);
+            assert_eq!(
+                upload.resident_bytes,
+                u64::from(expected[0]) * u64::from(expected[1]) * 4
+            );
+            for axis in 0..2 {
+                let source = descriptor.layout.uv_scale()[axis] * f64::from(storage[axis]);
+                let target = upload.layout.uv_scale()[axis] * f64::from(expected[axis]);
+                assert!(
+                    (source - target).abs() < 1e-12,
+                    "authored coordinates retain the same content texel"
+                );
+            }
+        }
+        for format in [
+            TextureFormat::Bc1Rgb,
+            TextureFormat::Bc3Rgba,
+            TextureFormat::LinearRgba16Float,
+            TextureFormat::Bgra8,
+        ] {
+            let descriptor = TextureDescriptor {
+                format,
+                source_encoding: ColorEncoding::Linear,
+                layout: TextureLayout {
+                    logical_size: [1920, 1080],
+                    content_size: [960, 544],
+                    storage_size: [1024, 1024],
+                },
+            };
+            let upload = TextureUploadLayout::new(descriptor).unwrap();
+            assert_eq!(upload.layout, descriptor.layout);
+            assert_eq!(upload.resident_bytes, descriptor.byte_len().unwrap());
+            assert_eq!(upload.source_row_bytes, upload.row_bytes);
+        }
+    }
 
     #[test]
     fn unorm_upload_preserves_color_and_hidden_alpha() {

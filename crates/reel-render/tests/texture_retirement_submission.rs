@@ -22,18 +22,25 @@ use reel_ui::{
 const SIZE: [u32; 2] = [64, 48];
 const IMAGE_BYTES: u64 = 32 * 8 * 4;
 const ROW_BYTES: u64 = 32 * 4;
+const PAYLOAD_BYTES: u64 = 64 * 16 * 4;
 
 fn retired_frame() -> (RenderFrame, ResourceWeak) {
     let pool = pool();
     let mut registry = ResourceRegistry::new(2, 8192).unwrap();
     let bytes = OwnedBytes::new(
-        vec![128; IMAGE_BYTES as usize],
-        pool.reserve(IMAGE_BYTES).unwrap(),
+        vec![128; PAYLOAD_BYTES as usize],
+        pool.reserve(PAYLOAD_BYTES).unwrap(),
     )
     .unwrap();
     let descriptor = TextureDescriptor {
         format: TextureFormat::Rgba8,
-        layout: TextureLayout::identity([32, 8]),
+        // Both axes have removable offline padding. The source stride stays
+        // 64 pixels while GPU copies use 32, and the last eight rows are skipped.
+        layout: TextureLayout {
+            logical_size: [32, 8],
+            content_size: [32, 8],
+            storage_size: [64, 16],
+        },
         source_encoding: ColorEncoding::Linear,
     };
     let handle = registry

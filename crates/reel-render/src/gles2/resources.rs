@@ -3,7 +3,6 @@ use super::*;
 use crate::common::resources::ImageSource;
 use reel_core::texture::{TextureFormat, TextureLayout};
 use reel_ui::{
-    frame::RecordLocation,
     peniko::{ImageAlphaType, ImageFormat},
     resources::ResourceData,
 };
@@ -83,11 +82,14 @@ impl Images {
                             record: "native BC texture dimensions",
                         });
                     }
-                    let bytes = descriptor.byte_len().map_err(|_| GlesError::InvalidSize)?;
+                    let upload = item.texture.expect("planned texture");
+                    let bytes = upload.resident_bytes;
                     (
                         bytes,
                         if descriptor.format.is_compressed() {
                             bytes
+                        } else if upload.source_row_bytes != upload.row_bytes {
+                            upload.row_bytes
                         } else {
                             0
                         },
@@ -194,9 +196,10 @@ impl Images {
         gpu: &native::Context,
         budgets: &Budgets,
         limits: crate::common::GpuLimits,
-        source: &ResourceLease,
-        at: RecordLocation,
+        item: &crate::common::image_plan::Required<'_>,
     ) -> Result<Pending, GlesError> {
+        let source = item.source;
+        let at = item.at;
         let (layout, format, encoding, kind, bytes) = match source.data() {
             ResourceData::Image { image, encoding } => {
                 if image.format != ImageFormat::Rgba8 {
@@ -213,13 +216,16 @@ impl Images {
                     u64::from(image.width) * u64::from(image.height) * 4,
                 )
             }
-            ResourceData::Texture { descriptor, .. } => (
-                descriptor.layout,
-                Some(descriptor.format),
-                descriptor.source_encoding,
-                0.,
-                descriptor.byte_len().map_err(|_| GlesError::InvalidSize)?,
-            ),
+            ResourceData::Texture { descriptor, .. } => {
+                let upload = item.texture.expect("planned texture");
+                (
+                    upload.layout,
+                    Some(descriptor.format),
+                    descriptor.source_encoding,
+                    0.,
+                    upload.resident_bytes,
+                )
+            }
             ResourceData::Yuv420(image) => (
                 TextureLayout::identity(image.size()),
                 None,
@@ -365,7 +371,7 @@ impl Images {
                 continue;
             }
             if !self.pending.contains_key(&source.handle()) {
-                let pending = self.allocate(gpu, budgets, limits, source, item.at)?;
+                let pending = self.allocate(gpu, budgets, limits, item)?;
                 if pending
                     .image
                     .format
@@ -410,7 +416,7 @@ fn progress(
                 image.alpha_type,
             ),
             ResourceData::Texture { descriptor, bytes } => (
-                descriptor.layout.storage_size,
+                pending.image.layout.storage_size,
                 descriptor
                     .format
                     .row_bytes(descriptor.layout.storage_size[0])
@@ -446,6 +452,8 @@ fn progress(
         }
         let row = if let ResourceData::Yuv420(image) = pending.source.data() {
             image.row_bytes(pending.plane) as usize
+        } else if let Some(format) = pending.image.format {
+            format.row_bytes(size[0]).ok_or(GlesError::InvalidSize)? as usize
         } else {
             stride
         };

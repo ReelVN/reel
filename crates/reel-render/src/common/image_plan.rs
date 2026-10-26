@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 pub(crate) struct Required<'a> {
     pub(crate) source: &'a ResourceLease,
     pub(crate) at: RecordLocation,
+    pub(crate) texture: Option<super::resources::TextureUploadLayout>,
 }
 
 pub(crate) struct Mask<'a> {
@@ -165,8 +166,13 @@ pub(crate) fn collect<'a>(
                 at,
                 record: "missing image lease",
             })?;
+            let mut texture = None;
             let size = match source.data() {
-                ResourceData::Texture { descriptor, .. } => descriptor.layout.storage_size,
+                ResourceData::Texture { descriptor, .. } => {
+                    let upload = super::resources::TextureUploadLayout::new(*descriptor)?;
+                    texture = Some(upload);
+                    upload.layout.storage_size
+                }
                 ResourceData::Image { image, .. } => {
                     if image.format != ImageFormat::Rgba8 {
                         return Err(GpuError::Unsupported {
@@ -187,7 +193,15 @@ pub(crate) fn collect<'a>(
             if size.contains(&0) || size.iter().any(|&n| n > max_dimension) {
                 return Err(GpuError::InvalidSize);
             }
-            push_stack(&mut plan.images, Required { source, at }, &mut reserve)?;
+            push_stack(
+                &mut plan.images,
+                Required {
+                    source,
+                    at,
+                    texture,
+                },
+                &mut reserve,
+            )?;
         }
     }
     Ok(plan)

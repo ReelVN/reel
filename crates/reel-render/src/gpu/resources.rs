@@ -1,5 +1,6 @@
 use super::{Gpu, GpuError};
 pub(super) use crate::common::resources::ImageSource;
+use crate::common::resources::TextureUploadLayout;
 use reel_core::texture::{TextureDescriptor, TextureFormat, TextureLayout};
 use reel_ui::frame::RecordLocation;
 use reel_ui::peniko::ImageFormat;
@@ -165,22 +166,19 @@ pub(super) fn texture_format(format: TextureFormat) -> wgpu::TextureFormat {
         TextureFormat::Bc3Rgba => wgpu::TextureFormat::Bc3RgbaUnorm,
     }
 }
-pub(super) fn texture_row_bytes(descriptor: TextureDescriptor) -> u64 {
-    descriptor
-        .format
-        .row_bytes(descriptor.layout.storage_size[0])
-        .unwrap()
-        .div_ceil(256)
-        * 256
+pub(super) fn texture_row_bytes(upload: TextureUploadLayout) -> u64 {
+    upload.row_bytes.div_ceil(256) * 256
 }
-pub(super) fn texture_costs(descriptor: TextureDescriptor) -> Result<(u64, u64), GpuError> {
-    let resident = descriptor.byte_len().map_err(|_| GpuError::InvalidSize)?;
-    let rows = u64::from(descriptor.layout.storage_size[1] / descriptor.format.block_size());
-    Ok((resident, texture_row_bytes(descriptor) * rows))
+pub(super) fn texture_costs(upload: TextureUploadLayout) -> (u64, u64) {
+    (
+        upload.resident_bytes,
+        texture_row_bytes(upload) * u64::from(upload.rows),
+    )
 }
 pub(super) fn create_texture(
     gpu: &Gpu,
     descriptor: TextureDescriptor,
+    upload: TextureUploadLayout,
     at: RecordLocation,
 ) -> Result<Image, GpuError> {
     if descriptor.format.is_compressed()
@@ -194,7 +192,7 @@ pub(super) fn create_texture(
             record: "BC texture compression",
         });
     }
-    let size = descriptor.layout.storage_size;
+    let size = upload.layout.storage_size;
     if size
         .iter()
         .any(|&n| n > gpu.device.limits().max_texture_dimension_2d)
@@ -224,7 +222,7 @@ pub(super) fn create_texture(
         view: texture.create_view(&Default::default()),
         texture,
         size,
-        layout: descriptor.layout,
+        layout: upload.layout,
         texture_format: Some(descriptor.format),
         encoding: descriptor.source_encoding,
         yuv: None,
@@ -238,16 +236,14 @@ pub(super) fn texture_rows(
     encoder: &mut wgpu::CommandEncoder,
     source: &ResourceLease,
     target: &Image,
+    upload: TextureUploadLayout,
     rows: std::ops::Range<u32>,
 ) -> Result<(), GpuError> {
     let ResourceData::Texture { descriptor, bytes } = source.data() else {
         return Err(GpuError::InvalidSize);
     };
-    let row = texture_row_bytes(*descriptor);
-    let packed = descriptor
-        .format
-        .row_bytes(descriptor.layout.storage_size[0])
-        .unwrap();
+    let row = texture_row_bytes(upload);
+    let packed = upload.row_bytes;
     let count = rows.end - rows.start;
     #[cfg(test)]
     gpu.upload_creations
@@ -267,7 +263,7 @@ pub(super) fn texture_rows(
             .map_err(|e| GpuError::Device(e.to_string()))?;
         let mut mapping = mapping.slice(..);
         for y in 0..count {
-            let src = (u64::from(rows.start + y) * packed) as usize;
+            let src = (u64::from(rows.start + y) * upload.source_row_bytes) as usize;
             let dest = u64::from(y) * row;
             mapping
                 .slice(dest as usize..(dest + packed) as usize)
