@@ -33,6 +33,18 @@ pub struct GlyphBitmap {
     _storage: reel_core::budget::BudgetTicket,
 }
 
+impl GlyphBitmap {
+    /// Visit alpha rows inside an already-zeroed one-pixel border. The caller
+    /// owns and accounts for its row stride and ordinary or write-only storage.
+    pub(crate) fn padded_rows(&self, stride: usize, mut write: impl FnMut(usize, &[u8])) {
+        let width = self.size[0] as usize;
+        for (y, source) in self.alpha.chunks_exact(width).enumerate() {
+            let start = (y + 1) * stride + 1;
+            write(start, source);
+        }
+    }
+}
+
 pub struct RasterLimits {
     pub available: u64,
     pub max_dimension: u32,
@@ -252,5 +264,33 @@ fn cap(cap: kurbo::Cap) -> zeno::Cap {
         kurbo::Cap::Butt => zeno::Cap::Butt,
         kurbo::Cap::Square => zeno::Cap::Square,
         kurbo::Cap::Round => zeno::Cap::Round,
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn glyph_alpha_padding_preserves_coverage_and_zero_border() {
+    let budgets = super::renderer::Budgets::new(super::GpuLimits::default());
+    let bitmap = GlyphBitmap {
+        x: 0.,
+        y: 0.,
+        size: [2, 2],
+        alpha: vec![0, 255, 17, 89],
+        _storage: budgets.transient.reserve(4).unwrap(),
+    };
+    for stride in [4, 8, 256] {
+        let mut output = vec![0; 4 * stride];
+        bitmap.padded_rows(stride, |start, source| {
+            output[start..start + source.len()].copy_from_slice(source)
+        });
+        for (index, &value) in output.iter().enumerate() {
+            let (x, y) = (index % stride, index / stride);
+            let expected = if (1..=2).contains(&x) && (1..=2).contains(&y) {
+                bitmap.alpha[(y - 1) * 2 + x - 1]
+            } else {
+                0
+            };
+            assert_eq!(value, expected, "stride={stride} position={x},{y}");
+        }
     }
 }

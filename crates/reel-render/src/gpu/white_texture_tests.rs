@@ -414,9 +414,12 @@ fn transformed_text_raster_keeps_logical_metrics_and_scales_fill_and_outline() {
     assert!(fills > 0 && strokes > 0);
 }
 
-#[test]
-#[ignore = "requires actual graphics adapter and REEL_R01_TEST_FONT"]
-fn long_text_reuses_atlas_and_batches_glyphs_across_frames_and_aborted_preparations() {
+fn long_text_fixture() -> (
+    BudgetPool,
+    reel_ui::resources::ResourceRegistry,
+    reel_ui::resources::ResourceHandle,
+    RenderFrame,
+) {
     use reel_ui::{
         app::{RenderRoot, RenderRootOptions, WindowSizePolicy},
         core::*,
@@ -424,7 +427,6 @@ fn long_text_reuses_atlas_and_batches_glyphs_across_frames_and_aborted_preparati
         peniko::Blob,
         resources::{ResourceData, ResourceRegistry},
     };
-    use std::sync::atomic::Ordering;
     let pool = pool();
     let bytes = std::fs::read(std::env::var("REEL_R01_TEST_FONT").unwrap()).unwrap();
     let reservation = pool.reserve(bytes.len() as u64).unwrap();
@@ -475,6 +477,14 @@ fn long_text_reuses_atlas_and_batches_glyphs_across_frames_and_aborted_preparati
         registry.freeze(&[handle], &pool).unwrap(),
         &pool,
     );
+    (pool, registry, handle, frame)
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter and REEL_R01_TEST_FONT"]
+fn long_text_reuses_atlas_and_batches_glyphs_across_frames_and_aborted_preparations() {
+    use std::sync::atomic::Ordering;
+    let (pool, mut registry, handle, frame) = long_text_fixture();
     let glyph_count: usize = frame
         .commands()
         .iter()
@@ -571,7 +581,10 @@ fn long_text_reuses_atlas_and_batches_glyphs_across_frames_and_aborted_preparati
     let warm = renderer.gpu.upload_creations.snapshot();
     let resident = renderer.usage().resources;
     let target_resident = renderer.usage().targets;
-    assert!(resident <= 2 << 20, "atlas residency {resident}");
+    assert!(
+        resident <= 2 * 512 * 512,
+        "single-channel atlas residency {resident}"
+    );
     let started = Instant::now();
     let draws = renderer.gpu.upload_creations.draws.load(Ordering::Relaxed);
     for _ in 0..120 {
@@ -617,6 +630,75 @@ fn long_text_reuses_atlas_and_batches_glyphs_across_frames_and_aborted_preparati
         "final completed frame releases cached glyph pages"
     );
 }
+#[test]
+#[ignore = "requires native WGPU and REEL_R01_TEST_FONT; no pixel readback"]
+fn long_text_single_channel_atlas_submits_and_reuses_coverage() {
+    use std::sync::atomic::Ordering;
+    let (_pool, _registry, _handle, frame) = long_text_fixture();
+    let glyph_count: usize = frame
+        .commands()
+        .iter()
+        .filter_map(|command| match &command.op {
+            reel_ui::frame::FrameOp::Draw(reel_ui::frame::FrameDraw::GlyphRun(run)) => {
+                Some(run.glyphs.len())
+            }
+            _ => None,
+        })
+        .sum();
+    assert!(glyph_count > 4000);
+    let mut renderer = renderer(Default::default());
+    let discarded = renderer.prepare(&frame).unwrap();
+    let accepted = renderer.prepare(&frame).unwrap();
+    let pipelines = renderer
+        .pipelines
+        .get(&renderer.gpu, accepted.quality())
+        .unwrap();
+    let cold_resource_peak = renderer.budgets.resources.usage().peak_bytes;
+    drop(discarded);
+    renderer.submit(accepted).unwrap();
+    renderer
+        .gpu
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    renderer.poll().unwrap();
+    assert_eq!(renderer.pipelines.creations.snapshot(), [3, 10, 10, 10, 4]);
+    let resident = renderer.usage().resources;
+    assert!(resident > 0 && resident <= 2 * 512 * 512);
+    assert_eq!(resident % (512 * 512), 0);
+    let uploads = renderer.gpu.upload_creations.snapshot();
+    let coverage = pipelines.coverage_draws.load(Ordering::Relaxed);
+    let draws = renderer.gpu.upload_creations.draws.load(Ordering::Relaxed);
+    let start = Instant::now();
+    for _ in 0..8 {
+        renderer.submit(renderer.prepare(&frame).unwrap()).unwrap();
+        renderer
+            .gpu
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        renderer.poll().unwrap();
+        assert_eq!(renderer.usage().resources, resident);
+    }
+    assert_eq!(renderer.gpu.upload_creations.snapshot(), uploads);
+    let coverage = pipelines.coverage_draws.load(Ordering::Relaxed) - coverage;
+    assert!(coverage > 0 && coverage / 8 < glyph_count / 10);
+    assert_eq!(
+        renderer.gpu.upload_creations.draws.load(Ordering::Relaxed) - draws,
+        coverage
+    );
+    assert!(
+        pipelines
+            .direct_draws
+            .iter()
+            .all(|count| count.load(Ordering::Relaxed) == 0)
+    );
+    eprintln!(
+        "glyphs={glyph_count} atlas_bytes={resident} cold_resource_peak={cold_resource_peak} warm_frames=8 uploads=0 coverage_draws={coverage} submit_complete_us={}",
+        start.elapsed().as_micros()
+    );
+}
+
 fn usage(renderer: &Renderer) -> [u64; 3] {
     let u = renderer.usage();
     [u.targets, u.resources, u.transient]

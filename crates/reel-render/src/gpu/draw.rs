@@ -19,6 +19,7 @@ struct VideoState {
 struct PaintState {
     image: wgpu::TextureView,
     texture_format: Option<reel_core::texture::TextureFormat>,
+    coverage: bool,
     yuv: Option<VideoState>,
     repeat: [bool; 2],
     appearance: Option<super::gradient::Uniform>,
@@ -28,13 +29,21 @@ struct PaintState {
 
 struct SampledImage<'a> {
     view: &'a wgpu::TextureView,
+    coverage: bool,
     format: Option<reel_core::texture::TextureFormat>,
     yuv: Option<&'a super::video::Planes>,
 }
 impl<'a> SampledImage<'a> {
+    fn coverage(view: &'a wgpu::TextureView) -> Self {
+        Self {
+            coverage: true,
+            ..Self::plain(view)
+        }
+    }
     fn plain(view: &'a wgpu::TextureView) -> Self {
         Self {
             view,
+            coverage: false,
             format: None,
             yuv: None,
         }
@@ -348,7 +357,7 @@ impl Context<'_> {
                 self.paint_mesh(
                     target,
                     batch,
-                    SampledImage::plain(&previous.view),
+                    SampledImage::coverage(&previous.view),
                     [false; 2],
                     paint,
                 )?;
@@ -388,7 +397,7 @@ impl Context<'_> {
             self.paint_mesh(
                 target,
                 batch,
-                SampledImage::plain(&page.view),
+                SampledImage::coverage(&page.view),
                 [false; 2],
                 paint,
             )?;
@@ -423,6 +432,7 @@ impl Context<'_> {
             mesh,
             SampledImage {
                 view: &image.view,
+                coverage: false,
                 format: image.texture_format,
                 yuv: image.yuv.as_ref(),
             },
@@ -460,6 +470,7 @@ impl Context<'_> {
     ) -> Result<(), GpuError> {
         let SampledImage {
             view: image,
+            coverage,
             format: texture_format,
             yuv,
         } = image;
@@ -483,11 +494,11 @@ impl Context<'_> {
             self.flush_draws()?;
         }
         let state = PaintState {
-            direct: yuv
-                .is_none()
+            direct: (!coverage && yuv.is_none())
                 .then(|| mesh.direct_paint(repeat, appearance.as_ref(), texture_format))
                 .flatten(),
             image: image.clone(),
+            coverage,
             texture_format,
             yuv: yuv.map(|planes| VideoState {
                 chroma: planes.chroma.clone(),
@@ -653,7 +664,13 @@ impl Context<'_> {
         pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
         for (entry, group) in batch.geometry.entries.iter().zip(&groups) {
             let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Draw);
-            pass.set_pipeline(if entry.state.yuv.is_some() {
+            pass.set_pipeline(if entry.state.coverage {
+                #[cfg(test)]
+                self.pipelines
+                    .coverage_draws
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                &self.pipelines.coverage
+            } else if entry.state.yuv.is_some() {
                 &self.pipelines.yuv
             } else if let Some(direct) = entry.state.direct {
                 let index = match direct {

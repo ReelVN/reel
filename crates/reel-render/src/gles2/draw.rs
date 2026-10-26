@@ -206,12 +206,9 @@ impl GlyphCache {
             "glyph staging",
         )?;
         let mut data = vec![0; bytes];
-        for y in 0..bitmap.size[1] as usize {
-            data[(y + 1) * stride + 1..(y + 1) * stride + 1 + bitmap.size[0] as usize]
-                .copy_from_slice(
-                    &bitmap.alpha[y * bitmap.size[0] as usize..(y + 1) * bitmap.size[0] as usize],
-                );
-        }
+        bitmap.padded_rows(stride, |start, source| {
+            data[start..start + source.len()].copy_from_slice(source)
+        });
         gpu.upload(
             &page.texture,
             [origin[0] - 1, origin[1] - 1],
