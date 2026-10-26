@@ -68,6 +68,19 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         });
         api.types.push(descriptor);
     }
+    let base = api
+        .types
+        .iter()
+        .find(|ty| ty.name == "reel::types::WindowOperation")
+        .unwrap();
+    let mut focus = NamedType::new(
+        "reel::types::FocusOperation",
+        "An owned explicit stage focus request whose awaited result is bool.",
+        Vec::new(),
+    )
+    .extends(base);
+    focus.await_result = Some(TypeHint::Bool);
+    api.types.push(focus);
     api.refine("reel::when", named("reel::types::Condition"), &[]);
     geometry::types::describe(api);
 }
@@ -221,6 +234,10 @@ impl Results {
             .ok_or(AdapterError::Input("presentation sequence exhausted"))?;
         self.changed();
         Ok(self.requested)
+    }
+
+    pub(super) fn presentation_reached(&self, request: u64) -> bool {
+        request <= self.presented
     }
 
     pub(super) fn presentation_roots(&self) -> impl Iterator<Item = RootToken> + '_ {
@@ -514,6 +531,14 @@ impl Results {
     ) -> Result<Value, AdapterError> {
         self.create(vm, owner, Kind::Window)
     }
+    pub(super) fn create_focus(
+        &mut self,
+        vm: &mut Vm,
+        owner: Value,
+    ) -> Result<Value, AdapterError> {
+        let ty = vm.heap().host_type("reel::types::FocusOperation")?;
+        self.create_typed(vm, owner, Kind::Window, Some(ty))
+    }
     pub(super) fn create_capture(
         &mut self,
         vm: &mut Vm,
@@ -595,7 +620,9 @@ impl Results {
         ];
         let object = heap.alloc_host(
             fields,
-            &slots[..if matches!(kind, Kind::Presentation | Kind::Condition | Kind::AssetRead) {
+            &slots[..if matches!(kind, Kind::Presentation | Kind::Condition | Kind::AssetRead)
+                || (kind == Kind::Window && ty.is_some())
+            {
                 6
             } else if kind == Kind::Particle {
                 5

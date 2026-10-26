@@ -54,6 +54,26 @@ impl RenderRoot {
                 GeometryView::Live => true,
             }
     }
+    /// Focus one control using its accepted geometry and current input eligibility.
+    /// Returns false without moving focus when the target has not been presented,
+    /// is hidden/disabled, is outside the accepted modal scope, or rejects focus.
+    /// A successful explicit handoff displays the ordinary navigation focus indicator.
+    pub fn request_focus(&mut self, id: WidgetId) -> bool {
+        if !matches!(
+            self.global_state.input_geometry_source,
+            InputGeometrySource::Presented(Some(_))
+        ) || !self.permits_input(id)
+            || !self.widget_arena.get_state(id).accepts_focus
+        {
+            return false;
+        }
+        self.global_state.next_focused_widget = Some(id);
+        self.global_state.focus_anchor = Some(id);
+        crate::passes::event::set_focus_visible(self, true);
+        self.run_rewrite_passes();
+        self.global_state.focused_widget == Some(id)
+    }
+
     pub(crate) fn input_scope(&self, view: GeometryView<'_>) -> Option<WidgetId> {
         match view {
             GeometryView::Live => self.global_state.modal_scope,

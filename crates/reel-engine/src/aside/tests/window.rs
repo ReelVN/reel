@@ -265,3 +265,97 @@ fn pointer_derives_track_changes_restore_null_and_release_retired_consumers() {
         );
     }
 }
+
+#[test]
+fn focus_requests_wait_for_acceptance_and_preserve_owned_results_source_asb() {
+    use crate::aside::window::{WindowCommand, WindowReply};
+    let code = r#"use reel::types::{FocusOperation, WindowOperation};
+    fn opening() {
+        let next = button("Next", visible: false);
+        let panel = stack(children: [next, button("Skip")]);
+        stage.replace(panel);
+        next.visible = true;
+        let request: FocusOperation = stage.focus(next);
+        let base: WindowOperation = request;
+        let mut busy = false;
+        try { stage.focus(next); } catch error { busy = true; }
+        if !busy { throw "unbounded focus requests"; }
+        let focused: bool = await request;
+        if !focused { throw "focus declined"; }
+        if await stage.focus(next) { throw "expected false"; }
+        let cancelled = stage.focus(next, owner: panel);
+        panel.remove();
+        let mut rejected = false;
+        try { await cancelled; } catch error { rejected = true; }
+        if !rejected { throw "retired focus owner"; }
+        let live = stack();
+        stage.replace(live);
+        let scoped = scope(body: |s| stage.focus(live));
+        rejected = false;
+        try { await scoped; } catch error { rejected = true; }
+        if !rejected { throw "default focus scope"; }
+        narrator("focused");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, true);
+        collect(&mut vm);
+        assert_eq!(vm.presentation_request(), 1);
+        assert!(!vm.has_window_requests());
+        assert!(vm.take_window_request().unwrap().is_none());
+        vm.accept_presentation(&session, 0).unwrap();
+        assert!(vm.take_window_request().unwrap().is_none());
+        vm.accept_presentation(&session, 1).unwrap();
+        assert!(vm.has_window_requests());
+        let request = vm.take_window_request().unwrap().unwrap();
+        let WindowCommand::Focus { target } = request.command else {
+            panic!("focus request");
+        };
+        assert!(vm.focus_target_permits_input(target).unwrap());
+        vm.complete_window_request(request.id, Ok(WindowReply::Focused(true)))
+            .unwrap();
+        models::drive(&mut vm, &mut session, true);
+        assert_eq!(vm.presentation_request(), 2);
+        assert!(vm.take_window_request().unwrap().is_none());
+        vm.accept_presentation(&session, 2).unwrap();
+        let request = vm.take_window_request().unwrap().unwrap();
+        vm.complete_window_request(request.id, Ok(WindowReply::Focused(false)))
+            .unwrap();
+        models::drive(&mut vm, &mut session, true);
+        assert!(!vm.focus_target_permits_input(target).unwrap());
+        assert!(vm.take_window_request().unwrap().is_none());
+        assert!(!vm.has_window_requests());
+        assert!(matches!(session.view().interaction,
+            Some(crate::InteractionView::Dialogue(d)) if d.text() == "focused"));
+    }
+}
+
+#[test]
+fn focus_target_retirement_declines_with_live_owner_source_asb() {
+    use crate::aside::window::{WindowCommand, WindowReply};
+    let code = r#"fn opening() {
+        let target = button("Next");
+        let panel = stack(children: [target, button("Skip")]);
+        stage.replace(panel);
+        let request = stage.focus(target, owner: panel);
+        target.remove();
+        if await request { throw "retired target focused"; }
+        narrator("retired target");
+    }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, true);
+        vm.accept_presentation(&session, vm.presentation_request())
+            .unwrap();
+        let request = vm.take_window_request().unwrap().unwrap();
+        let WindowCommand::Focus { target } = request.command else {
+            panic!("focus request");
+        };
+        assert!(!vm.focus_target_permits_input(target).unwrap());
+        vm.complete_window_request(request.id, Ok(WindowReply::Focused(false)))
+            .unwrap();
+        models::drive(&mut vm, &mut session, true);
+        assert!(matches!(session.view().interaction,
+            Some(crate::InteractionView::Dialogue(d)) if d.text() == "retired target"));
+    }
+}

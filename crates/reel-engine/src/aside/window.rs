@@ -8,11 +8,19 @@ use std::sync::Arc;
 #[derive(Clone, Copy, Debug)]
 pub enum WindowCommand {
     Configure(WindowConfiguration),
-    MovePointer { position: [f64; 2], owner: NodeId },
+    MovePointer {
+        position: [f64; 2],
+        owner: NodeId,
+    },
+    /// Focus a control after the frame carrying this request has been accepted.
+    Focus {
+        target: NodeId,
+    },
 }
 pub enum WindowReply {
     Configured(Arc<WindowInfo>),
     PointerMoved(bool),
+    Focused(bool),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,6 +37,7 @@ struct Pending {
     request: WindowRequest,
     root: RootToken,
     claimed: bool,
+    presentation: Option<u64>,
 }
 #[derive(Default)]
 pub(super) struct Window {
@@ -138,10 +147,24 @@ impl SessionVm {
         Ok(())
     }
     pub fn has_window_requests(&self) -> bool {
-        !self.revoked && self.window.pending.as_ref().is_some_and(|p| !p.claimed)
+        !self.revoked
+            && self.window.pending.as_ref().is_some_and(|pending| {
+                !pending.claimed
+                    && pending
+                        .presentation
+                        .is_none_or(|request| self.results.presentation_reached(request))
+            })
     }
     pub fn pointer_owner_permits_input(&self, owner: NodeId) -> Result<bool, AdapterError> {
         self.stage.permits_input(self.vm.heap(), owner)
+    }
+    /// Check current script ownership and input flags before applying focus.
+    /// A target retired while its request waits returns false.
+    pub fn focus_target_permits_input(&self, target: NodeId) -> Result<bool, AdapterError> {
+        if self.stage.scene.node(target).is_none() {
+            return Ok(false);
+        }
+        self.stage.permits_input(self.vm.heap(), target)
     }
     pub(super) fn dispatch_window(
         &mut self,
@@ -174,6 +197,17 @@ impl SessionVm {
             return Err(AdapterError::Input("window request is Busy"));
         }
         let args = self.vm.host_arguments(ticket)?;
+        if symbol == "reel::stage::focus" {
+            let target = self.stage.id(self.vm.heap(), args[0])?;
+            let owner = if args[1].tag() == ValueTag::Null {
+                self.default_activity_owner(ticket.task)?
+            } else {
+                args[1]
+            };
+            super::scopes::validate_owner(self.vm.heap(), &self.stage, owner)?;
+            self.submit_window(ticket, WindowCommand::Focus { target }, owner)?;
+            return Ok(());
+        }
         if symbol == "reel::stage::move_pointer" {
             let position = [stage::number(args[0])?, stage::number(args[1])?];
             let owner = args[2];
@@ -244,7 +278,11 @@ impl SessionVm {
         command: WindowCommand,
         owner: Value,
     ) -> Result<(), AdapterError> {
-        let result = self.results.create_window(&mut self.vm, owner)?;
+        let result = if matches!(command, WindowCommand::Focus { .. }) {
+            self.results.create_focus(&mut self.vm, owner)?
+        } else {
+            self.results.create_window(&mut self.vm, owner)?
+        };
         if matches!(command, WindowCommand::MovePointer { .. })
             && !self.window.info.capabilities.pointer_move
         {
@@ -257,6 +295,13 @@ impl SessionVm {
             self.issued = None;
             return Ok(());
         }
+        let presentation = if let WindowCommand::Focus { target } = command {
+            let target = self.stage.value(self.vm.heap(), target)?;
+            results::attach(self.vm.heap_mut(), result, target)?;
+            Some(self.results.request_presentation()?)
+        } else {
+            None
+        };
         let root = self
             .vm
             .heap_mut()
@@ -272,6 +317,7 @@ impl SessionVm {
             },
             root,
             claimed: false,
+            presentation,
         });
         self.vm.respond(ticket, HostResponse::Ready(result))?;
         self.issued = None;
@@ -279,7 +325,12 @@ impl SessionVm {
     }
     pub fn take_window_request(&mut self) -> Result<Option<WindowRequest>, AdapterError> {
         self.maintain_window_result()?;
-        let Some(pending) = self.window.pending.as_mut().filter(|p| !p.claimed) else {
+        let Some(pending) = self.window.pending.as_mut().filter(|pending| {
+            !pending.claimed
+                && pending
+                    .presentation
+                    .is_none_or(|request| self.results.presentation_reached(request))
+        }) else {
             return Ok(None);
         };
         pending.claimed = true;
@@ -305,8 +356,8 @@ impl SessionVm {
                     self.window.info = info;
                     results::TaskResult::Returned(result)
                 }
-                Ok(WindowReply::PointerMoved(moved)) => {
-                    results::TaskResult::Returned(Value::bool(moved))
+                Ok(WindowReply::PointerMoved(applied) | WindowReply::Focused(applied)) => {
+                    results::TaskResult::Returned(Value::bool(applied))
                 }
                 Err(message) => results::TaskResult::Rejected(text::alloc_string(
                     self.vm.heap_mut(),
@@ -315,6 +366,9 @@ impl SessionVm {
                 )?),
             };
             results::finish_task(self.vm.heap_mut(), object, outcome)?;
+        }
+        if matches!(pending.request.command, WindowCommand::Focus { .. }) {
+            results::attach(self.vm.heap_mut(), object, Value::NULL)?;
         }
         self.vm.heap_mut().release_root(root)?;
         self.window.pending = None;
@@ -325,6 +379,9 @@ impl SessionVm {
         if let Some(pending) = &self.window.pending {
             let object = self.vm.heap().root_value(pending.root)?;
             if !pending.claimed && !results::pending(self.vm.heap_mut(), object)? {
+                if matches!(pending.request.command, WindowCommand::Focus { .. }) {
+                    results::attach(self.vm.heap_mut(), object, Value::NULL)?;
+                }
                 self.vm.heap_mut().release_root(pending.root)?;
                 self.window.pending = None;
                 self.results.changed();
@@ -361,6 +418,15 @@ aside_host::native_documentation! {
         /// is unsupported or declined, true when applied. Owner retirement cancels the result;
         /// a concurrent pending window request is rejected.
         "reel::stage::move_pointer";
+        /// Request keyboard/controller focus on an author control. Waits for an accepted
+        /// frame containing stage changes made before this call, then applies focus through
+        /// the current input/modal scope. Returns a FocusOperation, a WindowOperation
+        /// subtype whose awaited result is bool: true when focused,
+        /// false when the target is hidden, disabled, retired or not focusable in that frame.
+        /// A declined request preserves the existing focus. Successful explicit handoff
+        /// displays the focus indicator. Owner defaults to the current scope; retirement
+        /// cancels an unfinished request. Shares the bounded window-request slot.
+        "reel::stage::focus";
     }
 }
 pub(super) fn describe(api: &mut aside_host::source::Api) {
@@ -378,6 +444,11 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         ],
     );
     api.refine("reel::stage::pointer", nullable(TypeHint::Table), &[]);
+    api.refine(
+        "reel::stage::focus",
+        named("reel::types::FocusOperation"),
+        &[("target", named("reel::types::Node"))],
+    );
     api.refine(
         "reel::stage::move_pointer",
         named("reel::types::WindowOperation"),
