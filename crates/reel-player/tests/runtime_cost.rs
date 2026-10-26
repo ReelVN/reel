@@ -334,6 +334,57 @@ fn live_delta(region: &Region<'_, System>) -> i128 {
 }
 
 #[test]
+#[ignore = "measures host-side allocation and elapsed time"]
+fn pending_asset_maintenance_cost() {
+    use reel_core::{
+        budget::QueueLimits,
+        test_support::{CooperativeExecutor, FakeClock, MemoryAssetIo},
+    };
+    use reel_player::assets::{AssetKind, AssetOptions, Assets};
+
+    let mut reused_storage = true;
+    for count in [1, 16, 64] {
+        let limits = QueueLimits {
+            max_requests: 64,
+            max_bytes: 1 << 20,
+        };
+        let assets = Assets::with_adapters(AssetOptions::default(), |wake| {
+            (
+                Box::new(MemoryAssetIo::new(limits, limits, wake.clone())),
+                Box::new(CooperativeExecutor::new(FakeClock::default(), limits, wake)),
+            )
+        });
+        let requests = (0..count)
+            .map(|index| assets.request(format!("pending/{index}"), AssetKind::Image))
+            .collect::<Vec<_>>();
+        // The existing memory adapter holds admitted descriptions until an
+        // explicit completion, keeping IO and decode work out of this measure.
+        assets.maintain();
+        assert!(assets.pending_io());
+        let region = Region::new(GLOBAL);
+        let started = Instant::now();
+        for _ in 0..600 {
+            assets.maintain();
+        }
+        let elapsed = started.elapsed();
+        let stats = region.change();
+        eprintln!(
+            "pending_assets={count} ticks=600 elapsed_ns={} allocations={} allocated_bytes={}",
+            elapsed.as_nanos(),
+            stats.allocations,
+            stats.bytes_allocated
+        );
+        for request in requests {
+            assert!(assets.poll(request).unwrap().is_none());
+        }
+        assets.close();
+        assert!(!assets.pending_io());
+        reused_storage &= stats.allocations == 0;
+    }
+    assert!(reused_storage, "waiting IO must reuse its request map");
+}
+
+#[test]
 fn history_and_script_collection_clear_reclaim_before_sleeping() {
     for clear in ["game.reading().clear_history();", "history.clear();"] {
         let source = if clear.starts_with("game") {
