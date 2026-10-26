@@ -378,6 +378,16 @@ fn pan(value: Value) -> Result<f64, AdapterError> {
     }
     Ok(value)
 }
+
+fn rate(value: Value) -> Result<f64, AdapterError> {
+    let value = super::stage::number(value)?;
+    if !crate::audio::AudioRate::constant(value).is_valid() {
+        return Err(AdapterError::Input(
+            "audio rate must be finite and between 0.25 and 4",
+        ));
+    }
+    Ok(value)
+}
 fn group(name: &str) -> Result<AudioGroup, AdapterError> {
     match name {
         "music" => Ok(AudioGroup::Music),
@@ -688,6 +698,7 @@ impl SessionVm {
                 source,
                 loop_region,
                 volume,
+                rate: crate::audio::AudioRate::constant(rate(args[12])?),
                 group,
                 pan,
                 fade_in,
@@ -836,6 +847,10 @@ impl SessionVm {
                     },
                     "reel::audio::pan" => MediaCommand::Pan {
                         value: pan(args[1])?,
+                        duration: duration(args[2])?,
+                    },
+                    "reel::audio::rate" => MediaCommand::Rate {
+                        value: rate(args[1])?,
                         duration: duration(args[2])?,
                     },
                     "reel::audio::stop" => MediaCommand::FadeOut(duration(args[1])?),
@@ -1143,6 +1158,8 @@ aside_host::native_documentation! {
         /// Start audio playback and return an awaitable media activity immediately.
         /// `source` is an asset path; `group` is music, voice, effects or ui.
         /// Volume is finite and nonnegative; pan is in -1..1. All times are seconds.
+        /// `rate` defaults to 1 and is in 0.25..4; speed and pitch change together.
+        /// Positions and loop bounds use source seconds at every rate.
         /// `start`/`end` select the playback interval; a non-null end must follow start.
         /// With `looping: true`, `loop_start`/`loop_end` select the repeated interval.
         /// `fade_in` ramps the initial volume; `paused: true` prepares a paused transport.
@@ -1167,6 +1184,13 @@ aside_host::native_documentation! {
         /// Set an activity's stereo pan in -1..1, optionally ramping over `duration`
         /// seconds. Returns the same activity without waiting for the ramp.
         "reel::audio::pan";
+        /// Set audio content speed in 0.25..4, changing pitch with speed. A rate
+        /// of 2 consumes twice as much source content per output second.
+        /// `duration` defaults to 0; positive durations interpolate linearly in
+        /// active playback seconds. Pausing freezes the ramp, and immediate changes
+        /// apply while paused. Queued items share the transport rate. Snapshots
+        /// preserve its current value and remaining ramp. Returns the activity.
+        "reel::audio::rate";
         /// Stop a media activity, fading out over `fade` seconds when requested.
         /// Returns the same activity immediately; await it to observe the terminal result.
         /// Stopping an already terminal activity preserves its recorded outcome.
@@ -1235,13 +1259,13 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
                     "looping" | "paused" => TypeHint::Bool,
                     "end" | "loop_end" => nullable(number()),
                     "volume" | "pan" | "fade_in" | "start" | "loop_start" | "value"
-                    | "duration" | "fade" | "seconds" => number(),
+                    | "duration" | "fade" | "seconds" | "rate" => number(),
                     _ => parameter.ty.clone(),
                 };
             }
             let function = symbol.rsplit("::").next().unwrap();
             signature.result = match function {
-                "volume" | "pan" | "stop" => named("reel::types::Playback"),
+                "volume" | "pan" | "stop" | "rate" => named("reel::types::Playback"),
                 "queue" | "seek" | "group_volume" => TypeHint::Null,
                 "at" => named("reel::types::MediaCue"),
                 _ => signature.result.clone(),

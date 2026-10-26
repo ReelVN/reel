@@ -9,6 +9,39 @@ pub(super) fn callback_field(interaction_offset: u32) -> u32 {
         + NodeProperty::OnInteraction.index() as u32
 }
 
+pub(super) fn listening(
+    heap: &Heap,
+    fields: Value,
+    interaction_offset: u32,
+    selected: Value,
+) -> Result<bool, HeapError> {
+    let offset = interaction_offset - NodeProperty::PROPERTIES.len() as u32;
+    if heap
+        .table_entry(fields, callback_field(interaction_offset))?
+        .1
+        .tag()
+        != ValueTag::Null
+    {
+        return Ok(true);
+    }
+    let appearance = overrides::get(
+        heap,
+        fields,
+        offset as usize,
+        selected,
+        NodeProperty::Appearance.index(),
+    )?;
+    if appearance.tag() != ValueTag::Null {
+        for state in 2..=5 {
+            let entries = heap.host_payload(appearance, state)?;
+            if entries.tag() != ValueTag::Null && heap.sequence_len(entries)? != 0 {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 pub(super) fn publish(
     heap: &mut Heap,
     host: Value,

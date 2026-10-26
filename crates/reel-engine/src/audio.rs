@@ -1,6 +1,6 @@
 //! Portable audio request and playback state.
 use crate::media::MediaResult;
-pub use reel_core::audio::{AudioGroup, AudioLoopRegion};
+pub use reel_core::audio::{AudioGroup, AudioLoopRegion, AudioRate};
 use std::time::Duration;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -8,6 +8,9 @@ pub struct AudioRequest {
     pub source: String,
     pub loop_region: Option<AudioLoopRegion>,
     pub volume: f64,
+    /// Content speed and any remaining linear rate transition. Defaults to 1.
+    #[serde(default)]
+    pub rate: AudioRate,
     pub group: AudioGroup,
     pub pan: f64,
     pub fade_in: Duration,

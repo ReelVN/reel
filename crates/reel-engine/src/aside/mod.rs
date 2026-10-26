@@ -681,6 +681,20 @@ impl SessionVm {
                 self.issued = None;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
+            "reel::appearance" => {
+                let args = self.vm.host_arguments(ticket)?.to_vec();
+                let value = stage::interaction_appearance::create(
+                    self.vm.heap_mut(),
+                    &args,
+                    self.read_limit,
+                )?;
+                self.stage
+                    .types
+                    .mark(self.vm.heap_mut(), value, "reel::types::Appearance")?;
+                self.vm.respond(ticket, HostResponse::Ready(value))?;
+                self.issued = None;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
             "reel::effect" => {
                 let args = self.vm.host_arguments(ticket)?.to_vec();
                 let function = self.vm.unbound_function(args[0])?;
@@ -766,6 +780,7 @@ impl SessionVm {
             | "reel::audio::await"
             | "reel::audio::group_volume"
             | "reel::audio::pan"
+            | "reel::audio::rate"
             | "reel::audio::seek"
             | "reel::audio::at"
             | "reel::video::at"

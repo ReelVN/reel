@@ -20,7 +20,7 @@ use reel_audio::{
 #[cfg(test)]
 use reel_core::wake::WakeSignal;
 use reel_core::{
-    audio::AudioLoopRegion,
+    audio::{AudioLoopRegion, AudioRate},
     budget::{BudgetPool, BudgetTicket},
     result::{RejectCode, RejectReason, Rejected},
 };
@@ -178,6 +178,12 @@ impl DecodedSound {
     pub fn with_pan(mut self, pan: f32) -> Self {
         self.data.settings.panning = reel_audio::Panning(pan).into();
         self
+    }
+    /// Set bounded content speed before admission without changing PCM ownership.
+    pub fn with_playback_rate(mut self, rate: f64) -> Result<Self, AudioError> {
+        validate_rate(rate)?;
+        self.data.settings.playback_rate = rate.into();
+        Ok(self)
     }
     pub fn with_fade_in(mut self, duration: Duration) -> Self {
         self.data.settings.fade_in_tween = (!duration.is_zero()).then(|| tween(duration));
@@ -843,6 +849,19 @@ impl Playback {
     pub fn queue_cursor(&self) -> (u64, f64) {
         self.handle.queue_cursor()
     }
+    /// Coherent source cursor and rate ramp, including unapplied control commands.
+    pub fn snapshot(&self) -> (u64, f64, AudioRate) {
+        let state = self.handle.playback();
+        (
+            state.item,
+            state.position,
+            AudioRate {
+                value: state.rate.0,
+                target: state.rate_target.0,
+                remaining: state.rate_remaining,
+            },
+        )
+    }
     pub fn position_seconds(&self) -> f64 {
         self.handle.position()
     }
@@ -881,6 +900,12 @@ impl Playback {
         self.handle.set_panning(pan, tween(duration));
         Ok(())
     }
+    /// Change speed and pitch through the existing coalesced transport command.
+    pub fn set_playback_rate(&mut self, rate: f64, duration: Duration) -> Result<(), AudioError> {
+        validate_rate(rate)?;
+        self.handle.set_playback_rate(rate, tween(duration));
+        Ok(())
+    }
     pub fn fade_out(&mut self, duration: Duration) {
         self.handle.stop(tween(duration));
     }
@@ -902,6 +927,16 @@ fn validate_db(db: f32) -> Result<f32, AudioError> {
         ));
     }
     Ok(db.max(Decibels::SILENCE.0))
+}
+fn validate_rate(rate: f64) -> Result<(), AudioError> {
+    if AudioRate::constant(rate).is_valid() {
+        Ok(())
+    } else {
+        Err(AudioError::new(
+            AudioErrorKind::InvalidRequest,
+            "audio rate must be finite and between 0.25 and 4",
+        ))
+    }
 }
 fn immediate() -> Tween {
     tween(Duration::ZERO)

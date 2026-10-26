@@ -54,6 +54,22 @@ impl<T: Tweenable> Parameter<T> {
 		self.raw_value
 	}
 
+	/// Fixed target and remaining tween time, for transport snapshot publication.
+	pub(crate) fn fixed_transition(&self) -> Option<(T, Duration)> {
+		match self.state {
+			State::Tweening {
+				target: Value::Fixed(target),
+				time,
+				tween,
+				..
+			} => Some((
+				target,
+				tween.duration.saturating_sub(Duration::from_secs_f64(time)),
+			)),
+			_ => None,
+		}
+	}
+
 	/// Returns the previous actual value of the parameter.
 	#[must_use]
 	pub fn previous_value(&self) -> T {

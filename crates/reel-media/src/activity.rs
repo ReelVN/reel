@@ -53,6 +53,7 @@ pub struct AudioActivityEvent {
     pub terminal: AudioActivityTerminal,
     pub position_seconds: f64,
     pub item: u64,
+    pub rate: reel_core::audio::AudioRate,
 }
 /// Borrowed logical state; no native handle or PCM alias escapes the ledger.
 #[derive(Debug)]
@@ -63,6 +64,7 @@ pub struct AudioActivitySnapshot<'a> {
     pub resource: &'a ResourceVersion,
     pub group: AudioGroup,
     pub volume_db: f32,
+    pub rate: reel_core::audio::AudioRate,
     pub position_seconds: f64,
     pub item: u64,
     pub terminal: Option<AudioActivityTerminal>,
@@ -77,7 +79,7 @@ struct Entry {
     playback: Playback,
     stopping: bool,
     terminal: Option<AudioActivityTerminal>,
-    terminal_cursor: (u64, f64),
+    terminal_cursor: (u64, f64, reel_core::audio::AudioRate),
     // Last: native control handle/resource key must be gone before publication.
     _descriptor: DescriptorRelease,
 }
@@ -97,7 +99,7 @@ impl Entry {
         if self.terminal.is_some() {
             return false;
         }
-        self.terminal_cursor = self.playback.queue_cursor();
+        self.terminal_cursor = self.playback.snapshot();
         let position_seconds = self.terminal_cursor.1;
         let terminal = match terminal {
             AudioActivityTerminal::Completed { .. } => {
@@ -420,7 +422,7 @@ impl AudioActivityService {
             playback,
             stopping: false,
             terminal: None,
-            terminal_cursor: (0, 0.0),
+            terminal_cursor: (0, 0.0, Default::default()),
             _descriptor: descriptor,
         });
         self.maintenance_remaining = self.entries.len();
@@ -435,10 +437,10 @@ impl AudioActivityService {
         // Read Stopped before its final cursor: the callback publishes that cursor
         // before its terminal state. A live cursor is one coherent source/position.
         let stopped = e.playback.is_stopped();
-        let (item, position_seconds) = if e.terminal.is_some() {
+        let (item, position_seconds, rate) = if e.terminal.is_some() {
             e.terminal_cursor
         } else {
-            e.playback.queue_cursor()
+            e.playback.snapshot()
         };
         Some(AudioActivitySnapshot {
             id: e.id,
@@ -447,6 +449,7 @@ impl AudioActivityService {
             resource: &e.resource,
             group: e.group,
             volume_db: e.volume_db,
+            rate,
             position_seconds,
             item,
             terminal: e
@@ -561,6 +564,17 @@ impl AudioActivityService {
     }
     pub fn set_pan(&mut self, id: MediaId, pan: f32, duration: Duration) -> Result<(), AudioError> {
         self.live_mut(id)?.playback.set_pan(pan, duration)
+    }
+    /// Set the queue transport's content rate. Pause freezes a timed transition.
+    pub fn set_playback_rate(
+        &mut self,
+        id: MediaId,
+        rate: f64,
+        duration: Duration,
+    ) -> Result<(), AudioError> {
+        self.live_mut(id)?
+            .playback
+            .set_playback_rate(rate, duration)
     }
     /// Keep the activity identity and terminal wait while changing content position.
     pub fn seek(&mut self, id: MediaId, position: Duration) -> Result<Duration, AudioError> {
@@ -761,6 +775,7 @@ impl AudioActivityService {
                             terminal,
                             position_seconds: e.position_seconds(),
                             item: e.terminal_cursor.0,
+                            rate: e.terminal_cursor.2,
                         });
                     }
                 }

@@ -110,6 +110,10 @@ struct Segment {
     descriptor: BudgetTicket,
 }
 impl Entry {
+    fn observe(&mut self, state: &reel_media::AudioActivitySnapshot<'_>) {
+        self.advance_to(state.item, Duration::from_secs_f64(state.position_seconds));
+        self.request.rate = state.rate;
+    }
     fn advance_to(&mut self, item: u64, position: Duration) {
         while self
             .queue
@@ -419,7 +423,7 @@ impl MediaPlayer {
                 if let Phase::Playing(media) = entry.phase
                     && let Some(state) = service.snapshot(media)
                 {
-                    entry.advance_to(state.item, Duration::from_secs_f64(state.position_seconds));
+                    entry.observe(&state);
                 }
                 for segment in entry.queue.drain(..) {
                     cancel_segment(&self.assets, &mut self.worker, segment.key, &segment.phase);
@@ -448,7 +452,7 @@ impl MediaPlayer {
                     .as_ref()
                     .and_then(|service| service.snapshot(media))
             {
-                entry.advance_to(state.item, Duration::from_secs_f64(state.position_seconds));
+                entry.observe(&state);
             }
             for segment in entry.queue.drain(..) {
                 cancel_segment(&self.assets, &mut self.worker, segment.key, &segment.phase);
@@ -593,6 +597,9 @@ impl MediaBackend for MediaPlayer {
             .map_or(entry.request.start_position, |state| {
                 Duration::from_secs_f64(state.position_seconds)
             });
+        if let Some(state) = &state {
+            request.rate = state.rate;
+        }
         Ok(MediaPlayback::Audio(reel_engine::audio::AudioPlayback {
             request,
             queue: entry
@@ -618,6 +625,9 @@ impl MediaBackend for MediaPlayer {
         }
         if !(-1.0..=1.0).contains(&request.pan) {
             return Err("audio pan must be between -1 and 1".into());
+        }
+        if !request.rate.is_valid() {
+            return Err("audio rate and target must be finite and between 0.25 and 4".into());
         }
         if self.audio_capacity_full() {
             return Err("audio activity capacity exhausted".into());
@@ -714,7 +724,7 @@ impl MediaBackend for MediaPlayer {
                 .as_ref()
                 .and_then(|service| service.snapshot(media))
         {
-            entry.advance_to(state.item, Duration::from_secs_f64(state.position_seconds));
+            entry.observe(&state);
         }
         if matches!(entry.phase, Phase::Done(_)) {
             return Ok(());
@@ -760,6 +770,20 @@ impl MediaBackend for MediaPlayer {
                         .map_err(|e| e.to_string())?;
                 }
                 entry.request.pan = value;
+            }
+            MediaCommand::Rate { value, duration } => {
+                let rate = entry.request.rate.change(value, duration);
+                if !rate.is_valid() {
+                    return Err("audio rate must be finite and between 0.25 and 4".into());
+                }
+                if let Phase::Playing(media) = entry.phase {
+                    self.service
+                        .as_mut()
+                        .unwrap()
+                        .set_playback_rate(media, value, duration)
+                        .map_err(|error| error.to_string())?;
+                }
+                entry.request.rate = rate;
             }
             MediaCommand::FadeOut(duration) => {
                 if let Phase::Playing(media) = entry.phase {
@@ -854,7 +878,7 @@ impl MediaBackend for MediaPlayer {
             if let Phase::Playing(media) = entry.phase
                 && let Some(state) = self.service.as_ref().unwrap().snapshot(media)
             {
-                entry.advance_to(state.item, Duration::from_secs_f64(state.position_seconds));
+                entry.observe(&state);
             }
             let mut loader = SegmentLoader {
                 assets: &self.assets,
@@ -888,6 +912,8 @@ impl MediaBackend for MediaPlayer {
                     unreachable!()
                 };
                 let sound = (*sound)
+                    .with_playback_rate(entry.request.rate.value)
+                    .expect("rate validated at activity admission")
                     .with_volume_db(db(entry.request.volume))
                     .with_pan(entry.request.pan as f32)
                     .with_fade_in(entry.request.fade_in);
@@ -900,6 +926,15 @@ impl MediaBackend for MediaPlayer {
                     sound,
                 }) {
                     Ok(media) => {
+                        if !entry.request.rate.remaining.is_zero() {
+                            service
+                                .set_playback_rate(
+                                    media,
+                                    entry.request.rate.target,
+                                    entry.request.rate.remaining,
+                                )
+                                .expect("new held activity with validated rate");
+                        }
                         self.playing.insert(media.0, id);
                         if entry.tail != 0 {
                             service
@@ -987,6 +1022,7 @@ impl MediaBackend for MediaPlayer {
                     && let Some(entry) = self.entries.get_mut(&id)
                 {
                     entry.advance_to(event.item, Duration::from_secs_f64(event.position_seconds));
+                    entry.request.rate = event.rate;
                     for segment in entry.queue.drain(..) {
                         cancel_segment(&self.assets, &mut self.worker, segment.key, &segment.phase);
                     }

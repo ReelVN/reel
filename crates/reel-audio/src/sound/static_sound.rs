@@ -38,6 +38,21 @@ pub use handle::*;
 pub use queue::{QueueClosed, QueuedStaticSound, StaticSoundQueue};
 pub use settings::*;
 
+/// One coherent source cursor and fixed-rate transition observation.
+#[derive(Clone, Copy, Debug)]
+pub struct StaticSoundPlayback {
+	/// Current queued source identity, or zero for the initial source.
+	pub item: u64,
+	/// Position in seconds within the current source.
+	pub position: f64,
+	/// Current content speed.
+	pub rate: PlaybackRate,
+	/// Fixed tween target; equals the current value for an idle/modulated rate.
+	pub rate_target: PlaybackRate,
+	/// Remaining active playback time for the fixed rate tween.
+	pub rate_remaining: std::time::Duration,
+}
+
 use crate::{
 	Decibels, Panning, PlaybackRate, StartTime, command::ValueChangeCommand,
 	command_writers_and_readers, tween::Tween,
@@ -47,7 +62,7 @@ use super::Region;
 
 command_writers_and_readers! {
 	set_volume: ValueChangeCommand<Decibels>,
-	set_playback_rate: ValueChangeCommand<PlaybackRate>,
+	set_playback_rate: (u64, ValueChangeCommand<PlaybackRate>),
 	set_panning: ValueChangeCommand<Panning>,
 	set_loop_region: Option<Region>,
 	pause: Tween,
