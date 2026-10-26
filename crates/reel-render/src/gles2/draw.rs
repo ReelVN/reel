@@ -49,7 +49,7 @@ struct GlyphImage {
     offset: [f64; 2],
 }
 pub(super) struct Glyph {
-    source: ResourceWeak,
+    source: crate::common::resources::ResourceSource,
     image: Option<GlyphImage>,
 }
 impl Drop for Glyph {
@@ -73,12 +73,8 @@ pub(super) struct GlyphCache {
 }
 impl GlyphCache {
     pub fn prune(&mut self, versions: &[ResourceVersion]) {
-        self.entries.retain(|_, glyph| {
-            glyph
-                .source
-                .upgrade()
-                .is_some_and(|source| !source.is_retired() && !versions.contains(source.version()))
-        });
+        self.entries
+            .retain(|_, glyph| glyph.source.retained(versions));
         self.pages.retain(|page| page.strong_count() != 0);
     }
     pub fn take_uploads(&mut self) -> Vec<Rc<Glyph>> {
@@ -100,16 +96,17 @@ impl GlyphCache {
         at: RecordLocation,
     ) -> Result<Rc<Glyph>, GlesError> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GlyphRaster);
-        let source = frame
-            .resources()
-            .leases()
-            .iter()
-            .find(|r| r.handle() == run.font)
-            .ok_or(GlesError::Unsupported {
-                at,
-                record: "missing font",
-            })?
-            .downgrade();
+        let source = crate::common::resources::ResourceSource::new(
+            frame
+                .resources()
+                .leases()
+                .iter()
+                .find(|r| r.handle() == run.font)
+                .ok_or(GlesError::Unsupported {
+                    at,
+                    record: "missing font",
+                })?,
+        );
         let max = gpu.capabilities().max_texture_size;
         let Some(bitmap) = glyph::rasterize(
             &mut self.raster,

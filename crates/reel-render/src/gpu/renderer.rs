@@ -200,6 +200,7 @@ impl Renderer {
             }
         });
         self.images.retire(&[]);
+        self.glyphs.retire(&[]);
         self.pipelines.prune_masks();
         Ok(resources_available)
     }

@@ -605,8 +605,16 @@ fn long_text_reuses_atlas_and_batches_glyphs_across_frames_and_aborted_preparati
     renderer.retire(&[]);
     assert_eq!(
         renderer.usage().resources,
+        resident,
+        "the old frame still owns the font"
+    );
+    drop(runs);
+    drop(frame);
+    renderer.retire(&[]);
+    assert_eq!(
+        renderer.usage().resources,
         0,
-        "font retirement releases glyph pages after observed completion"
+        "final completed frame releases cached glyph pages"
     );
 }
 fn usage(renderer: &Renderer) -> [u64; 3] {
