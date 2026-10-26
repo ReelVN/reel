@@ -4,6 +4,44 @@ use reel_core::window::{WindowCapabilities, WindowInfo, WindowPlatform};
 use std::sync::Arc;
 
 #[test]
+fn input_hints_are_typed_observable_and_refresh_after_restore() {
+    use reel_ui::input::{GamepadLayout, InputHints, InputSource};
+    let code = r#"use reel::types::InputInfo;
+        fn opening() {
+            let info: InputInfo = stage.input();
+            stage.replace(text(value: derive(|| info.source + ":" + info.layout)));
+            narrator("save");
+        }"#;
+    let shown = |vm: &SessionVm| {
+        let root = vm.stage().node(vm.stage().root().unwrap()).unwrap();
+        let reel_ui::stage::NodeKind::Text(value) = &root.kind else {
+            panic!("text");
+        };
+        value.to_string()
+    };
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, false);
+        assert_eq!(shown(&vm), "unknown:generic");
+        let hints = InputHints {
+            source: InputSource::Gamepad,
+            layout: GamepadLayout::PlayStation,
+        };
+        assert!(vm.set_input_hints(hints).unwrap());
+        models::drive(&mut vm, &mut session, false);
+        assert_eq!(shown(&vm), "gamepad:playstation");
+        assert!(!vm.set_input_hints(hints).unwrap());
+        assert!(!vm.has_runnable_tasks());
+        (session, vm) = restore_session(&session, &vm);
+        models::drive(&mut vm, &mut session, false);
+        assert_eq!(shown(&vm), "unknown:generic");
+        vm.set_input_hints(hints).unwrap();
+        models::drive(&mut vm, &mut session, false);
+        assert_eq!(shown(&vm), "gamepad:playstation");
+    }
+}
+
+#[test]
 fn platform_snapshot_and_configure_use_current_host_from_source_and_asb() {
     let code = r#"fn opening() {
         if window.info().platform != "unknown" { throw "headless platform"; }

@@ -6,7 +6,21 @@ impl<B> Player<B>
 where
     B: RenderBackend + CaptureBackend<Error = <B as RenderBackend>::Error>,
 {
+    pub(crate) fn publish_input_hints(&mut self) -> Result<(), Error> {
+        if let Some(PlayerSession::Aside { story, .. }) = &mut self.session {
+            if !story.capturing()
+                && story
+                    .driver_mut()?
+                    .adapter_mut()
+                    .set_input_hints(self.input_hints.hints())?
+            {
+                story.wake_input();
+            }
+        }
+        Ok(())
+    }
     pub(crate) fn publish_pointer_info(&mut self) -> Result<(), Error> {
+        self.publish_input_hints()?;
         if let Some(PlayerSession::Aside { story, .. }) = &mut self.session {
             if story.capturing() {
                 return Ok(());

@@ -121,6 +121,7 @@ pub struct Player<B: RenderBackend + CaptureBackend> {
     pub(crate) captures: crate::capture::CaptureService<B::Capture>,
     pub(crate) window_state: Arc<reel_core::window::WindowInfo>,
     pub(crate) window_request: Option<reel_engine::aside::window::WindowRequestId>,
+    pub(crate) input_hints: reel_ui::input::InputTracker,
 }
 impl<B> Player<B>
 where
@@ -225,6 +226,7 @@ where
             ),
             window_state: Arc::new(Default::default()),
             window_request: None,
+            input_hints: Default::default(),
         };
         player.publish_window_info(host)?;
         Ok(player)
@@ -659,6 +661,8 @@ where
 
     /// Dispatch translated text, keyboard or action input to the accepted view.
     pub fn text_event(&mut self, event: TextEvent) -> Result<Handled, Error> {
+        self.input_hints.text(&event);
+        self.publish_input_hints()?;
         let lost_focus = matches!(event, TextEvent::WindowFocusChange(false));
         let cancelling = lost_focus
             || matches!(&event, TextEvent::Navigation(e) if e.phase == reel_ui::input::ActionPhase::Cancelled)
@@ -739,6 +743,8 @@ where
 
     /// Dispatch a translated pointer event using frozen accepted geometry.
     pub fn dispatch_pointer(&mut self, event: PointerEvent) -> Result<(), Error> {
+        self.input_hints.pointer(&event);
+        self.publish_input_hints()?;
         if self.settings_pending()
             && !matches!(event, PointerEvent::Cancel(_) | PointerEvent::Leave(_))
         {

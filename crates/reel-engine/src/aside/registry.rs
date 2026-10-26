@@ -138,6 +138,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
     }
     for (name, fields) in [
         ("pointer", &[][..]),
+        ("input", &[][..]),
         ("move_pointer", &["x", "y", "owner"][..]),
     ] {
         contracts.push(NativeContract {

@@ -841,6 +841,8 @@ fn main() {
 
 命名动作把键盘、鼠标和手柄映射到同一行为。连续移动用时钟更新；输入回调更新玩家意图。文本编辑时，聚焦编辑器处理自己的键盘和输入法事件。
 
+用 `stage.input()` 的只读可观察字段 `source` 和 `layout` 选择输入提示。`source` 表示最后使用的输入方式，手柄的 `layout` 为 `xbox`、`playstation`、`nintendo` 或 `generic`；作品提供对应图标。
+
 需要指针位置时，用 `input(on_pointer: |event| ...)` 读取节点内的 `event.x`、`event.y` 和 `event.phase`。悬停与拖动都会产生 `moved`；主按钮或触摸产生 `pressed`、`released` 和 `cancelled`。自定义拖动控件用 `event.dragging` 判断该节点是否持有拖动。
 
 ```aside

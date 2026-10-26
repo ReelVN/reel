@@ -14,6 +14,7 @@ use budget::SliceMinimum;
 pub use budget::{NativeBudget, SessionBudget};
 pub mod capture;
 mod game;
+mod input_hints;
 pub use game::GameSettings;
 mod choice;
 mod content_identity;
@@ -266,6 +267,7 @@ pub struct SessionVm {
     captures: capture::Captures,
     asset_reads: assets::AssetReads,
     window: window::Window,
+    input_hints: input_hints::State,
     particles: particles::Particles,
     standard: aside_std::StandardLibrary,
     media: media::Media,
@@ -371,6 +373,7 @@ impl SessionVm {
             captures: capture::Captures::default(),
             asset_reads: assets::AssetReads::default(),
             window: window::Window::default(),
+            input_hints: input_hints::State::default(),
             particles: particles::Particles::default(),
             standard,
             media: media::Media::default(),
@@ -643,6 +646,10 @@ impl SessionVm {
             }
             "reel::stage::transition" => {
                 self.dispatch_transition(ticket)?;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
+            "reel::stage::input" => {
+                self.dispatch_input_hints(ticket)?;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
             "reel::window::info"
@@ -1625,6 +1632,7 @@ impl SessionVm {
         self.asset_reads.close();
         self.transitions = transitions::Transitions::default();
         self.window = window::Window::default();
+        self.input_hints = input_hints::State::default();
         self.particles.clear();
         self.activities.revoke(self.vm.heap_mut())?;
         self.stage.revoke(self.vm.heap_mut())?;
