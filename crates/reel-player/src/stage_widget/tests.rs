@@ -2639,7 +2639,7 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
         *source_rect = Some(Rect::new(0., 0., 64., 64.));
     }
     assert!(
-        view.image_requests().is_ok(),
+        view.image_requests(EffectShaderFormat::Wgsl).is_ok(),
         "prepared atlas regions share image geometry"
     );
     let root = Arc::make_mut(view.root.as_mut().unwrap());
@@ -2678,11 +2678,11 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
             2 => *repeat = [true; 2],
             _ => {
                 node.props.mask = Some(reel_ui::stage::MaskProgram::image("atlas.png".into()));
-                node.props.mask_origin = Some("snow.aside:11:5".into());
+                node.props.appearance_origin = Some("snow.aside:11:5".into());
             }
         }
         assert!(
-            invalid.image_requests().is_ok(),
+            invalid.image_requests(EffectShaderFormat::Wgsl).is_ok(),
             "filename extensions do not classify images"
         );
         let error = invalid.resolve_metadata(&images).unwrap_err();
@@ -2790,7 +2790,7 @@ fn decoded_frames_preserve_geometry_skip_asset_io_and_release_pixels_with_last_v
     assert!(!f.ui.images_pending());
     assert!(
         StageView::capture(&f.stage)
-            .image_requests()
+            .image_requests(EffectShaderFormat::Wgsl)
             .unwrap()
             .required
             .is_empty()
@@ -2843,7 +2843,7 @@ fn decoded_frames_preserve_geometry_skip_asset_io_and_release_pixels_with_last_v
             .unwrap();
         assert!(
             StageView::capture(&f.stage)
-                .image_requests()
+                .image_requests(EffectShaderFormat::Wgsl)
                 .unwrap()
                 .required
                 .is_empty()

@@ -5,6 +5,9 @@
 )]
 #[cfg(any(feature = "wgpu", feature = "gles2"))]
 mod common;
+/// CPU-only generation of complete prepared stage-effect fragments.
+#[path = "common/effect.rs"]
+pub mod effect;
 #[cfg(feature = "gles2")]
 pub mod gles2;
 #[cfg(feature = "wgpu")]
@@ -63,6 +66,8 @@ pub enum RenderEffect {
     AlphaMask,
     LuminanceMask,
     ImageMask,
+    /// Prepared typed subtree fragments with immutable code and live uniforms.
+    ShaderEffect,
     Filters,
     External,
 }
@@ -560,6 +565,7 @@ impl RenderBackend for RecordingBackend {
                 RenderEffect::AlphaMask,
                 RenderEffect::LuminanceMask,
                 RenderEffect::ImageMask,
+                RenderEffect::ShaderEffect,
                 RenderEffect::Filters,
                 RenderEffect::External,
             ],

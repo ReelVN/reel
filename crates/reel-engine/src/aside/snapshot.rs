@@ -20,6 +20,7 @@ fn registry() -> &'static SnapshotRegistry {
             ("reel.result", results::readonly),
             ("reel.media", media::readonly),
             ("reel.auto-condition", narrative::auto_condition_validator),
+            ("reel.effect", effects::validate_parameter),
         ] {
             registry.register_validator(name, 1, validator).unwrap();
         }
@@ -371,6 +372,7 @@ impl SessionVm {
             media,
             catalogs,
             source_catalogs: None,
+            effect_products: std::sync::Arc::default(),
             limits,
             complete: false,
         })
@@ -388,6 +390,16 @@ self_cell::self_cell! {
 /// Movable restoration state for event loops; each step uses the same work budget.
 pub struct OwnedSessionRestore(RestoreCell);
 impl OwnedSessionRestore {
+    /// Supply this program's effect definitions before restoring stage nodes.
+    pub fn with_effect_products(
+        mut self,
+        products: std::sync::Arc<source::EffectProducts>,
+    ) -> Result<Self, AdapterError> {
+        self.0.with_dependent_mut(|_, cursor| {
+            cursor.as_mut().unwrap().select_effect_products(products)
+        })?;
+        Ok(self)
+    }
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         mut image: SessionSnapshot,
@@ -507,10 +519,31 @@ pub struct SessionRestore<'a> {
     media: Option<Box<dyn crate::media::MediaBackend>>,
     catalogs: Option<Box<dyn crate::localization::CatalogLoader>>,
     source_catalogs: Option<super::localization::SourceCatalogs>,
+    effect_products: std::sync::Arc<source::EffectProducts>,
     limits: VmLimits,
     complete: bool,
 }
 impl SessionRestore<'_> {
+    /// Supply this program's effect definitions before restoring stage nodes.
+    pub fn with_effect_products(
+        mut self,
+        products: std::sync::Arc<source::EffectProducts>,
+    ) -> Result<Self, AdapterError> {
+        self.select_effect_products(products)?;
+        Ok(self)
+    }
+    fn select_effect_products(
+        &mut self,
+        products: std::sync::Arc<source::EffectProducts>,
+    ) -> Result<(), AdapterError> {
+        if self.candidate.is_some() {
+            return Err(AdapterError::Input(
+                "select effect definitions before restoring adapter state",
+            ));
+        }
+        self.effect_products = products;
+        Ok(())
+    }
     /// Supply the source compilation's shared catalogs before restoring adapter
     /// records. The same source index remains available after restoration.
     pub fn with_source_catalogs(
@@ -547,6 +580,9 @@ impl SessionRestore<'_> {
                         self.limits,
                     )?);
                     let runtime = self.candidate.as_mut().unwrap();
+                    runtime
+                        .stage
+                        .set_effect_products(runtime.vm.heap(), self.effect_products.clone())?;
                     if let Some(source) = self.source_catalogs.take() {
                         runtime.set_source_catalogs(source)?;
                     }

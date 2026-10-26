@@ -352,6 +352,8 @@ mod tests {
         )
         .unwrap()
         .with_source_catalogs(live.adapter().source_catalogs())
+        .unwrap()
+        .with_effect_products(live.adapter().effect_products())
         .unwrap();
         while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
         let (mut session, mut vm) = restore.finish().unwrap();

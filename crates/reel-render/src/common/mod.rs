@@ -4,6 +4,8 @@ mod error;
 pub use error::SurfaceFailure;
 pub use error::{GpuError, GpuLimits};
 pub(crate) mod appearance;
+pub(crate) mod effect_cache;
+pub(crate) mod effect_plan;
 pub(crate) mod glyph;
 pub(crate) mod gradient;
 pub(crate) mod image_plan;

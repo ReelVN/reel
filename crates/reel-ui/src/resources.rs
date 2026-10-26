@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Prepared resource identities. Blob IDs are lookup hints, never content digests.
+mod effect;
 use crate::peniko::{Blob, FontData, ImageAlphaType, ImageData, ImageFormat};
+pub use effect::{
+    EFFECT_SHADER_ABI, EffectShaderDescriptor, EffectShaderFormat, EffectShaderPayloadError,
+};
 use reel_core::budget::{
     BudgetCategory, BudgetPool, BudgetTicket, BudgetUsage, OwnedBytes, QueueLimits,
 };
@@ -24,6 +28,11 @@ pub struct ResourceHandle {
 pub use reel_core::texture::ColorEncoding;
 #[derive(Debug)]
 pub enum ResourceData {
+    /// A complete immutable platform fragment with its portable parameter schema.
+    EffectShader {
+        descriptor: EffectShaderDescriptor,
+        bytes: Blob<u8>,
+    },
     /// Validated native sample bytes, in portable row-major layout and linear premultiplied color.
     Texture {
         descriptor: TextureDescriptor,
@@ -42,6 +51,7 @@ pub enum ResourceData {
 impl ResourceData {
     fn blob(&self) -> Option<&Blob<u8>> {
         match self {
+            Self::EffectShader { bytes, .. } => Some(bytes),
             Self::Texture { bytes, .. } => Some(bytes),
             Self::Image { image, .. } => Some(&image.data),
             Self::Font(font) => Some(font),
@@ -50,6 +60,16 @@ impl ResourceData {
     }
     fn same_source(&self, other: &Self) -> bool {
         match (self, other) {
+            (
+                Self::EffectShader {
+                    descriptor: a,
+                    bytes: ab,
+                },
+                Self::EffectShader {
+                    descriptor: b,
+                    bytes: bb,
+                },
+            ) => a == b && same_blob(ab, bb),
             (
                 Self::Texture {
                     descriptor: a,
@@ -302,6 +322,21 @@ impl ResourceRegistry {
         let bytes = self.owned_blob(bytes)?;
         self.register_inner(version, ResourceData::Texture { descriptor, bytes }, None)
     }
+    /// Transfer a complete platform shader into the ordinary immutable resource
+    /// ledger. Every lease and cloned blob retains its original byte reservation.
+    pub fn register_effect_shader(
+        &mut self,
+        version: ResourceVersion,
+        descriptor: EffectShaderDescriptor,
+        bytes: OwnedBytes,
+    ) -> Result<ResourceHandle, ResourceError> {
+        let bytes = self.owned_blob(bytes)?;
+        self.register_inner(
+            version,
+            ResourceData::EffectShader { descriptor, bytes },
+            None,
+        )
+    }
     /// Import producer-accounted planar pixels. The storage Arc retains the
     /// producer's budget reservation; the registry charges its own descriptors.
     pub fn register_yuv420(
@@ -337,6 +372,13 @@ impl ResourceRegistry {
         data: ResourceData,
         ticket: Option<BudgetTicket>,
     ) -> Result<ResourceHandle, ResourceError> {
+        if let ResourceData::EffectShader { descriptor, bytes } = &data
+            && (!descriptor.matches_bytes(bytes.data())
+                || (descriptor.format != EffectShaderFormat::Sgx543
+                    && std::str::from_utf8(bytes.data()).is_err()))
+        {
+            return Err(ResourceError::InvalidData);
+        }
         if let ResourceData::Texture { descriptor, bytes } = &data {
             descriptor
                 .validate(bytes.len())
@@ -387,7 +429,13 @@ impl ResourceRegistry {
         let bytes = size_of::<Resource>()
             + size_of::<BudgetTicket>()
             + 4 * size_of::<usize>()
-            + version.key.0.capacity();
+            + version.key.0.capacity()
+            + match &data {
+                ResourceData::EffectShader { descriptor, .. } => {
+                    descriptor.parameters.capacity() * size_of::<crate::stage::effect::EffectType>()
+                }
+                _ => 0,
+            };
         let descriptor = self
             .descriptors
             .reserve(bytes as u64)

@@ -164,9 +164,20 @@ pub struct FrameImageMask {
     pub bounds: Rect,
     pub parameters: [f32; 5],
 }
+/// A frozen shader use; the resource descriptor supplies its immutable parameter
+/// schema and output type. Values belong to this frame, while code remains leased.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct FrameEffect {
+    pub definition: crate::stage::effect::EffectDefinitionId,
+    pub shader: ResourceHandle,
+    pub values: Vec<crate::stage::effect::EffectValue>,
+    /// Finite output domain in the node's local logical coordinates.
+    pub bounds: Rect,
+}
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FrameGroup {
     pub image_mask: Option<FrameImageMask>,
+    pub effect: Option<FrameEffect>,
     #[serde(with = "wire::optional_clip")]
     pub clip: Option<Clip>,
     pub mask: Option<MaskUse>,
@@ -1089,16 +1100,23 @@ impl Building {
             if let Ok(index) = layer
                 .groups
                 .binary_search_by_key(&cursor.position, |group| group.command)
-                && let Some(mask) = &layer.groups[index].image_mask
             {
-                bytes = bytes
-                    .checked_add(
-                        mask.images
-                            .len()
-                            .checked_mul(size_of::<ResourceHandle>())
-                            .ok_or_else(|| self.error(BuildErrorKind::Bytes))?,
-                    )
-                    .ok_or_else(|| self.error(BuildErrorKind::Bytes))?;
+                let group = &layer.groups[index];
+                if let Some(effect) = &group.effect {
+                    bytes = bytes
+                        .checked_add(std::mem::size_of_val(effect.instance.values()))
+                        .ok_or_else(|| self.error(BuildErrorKind::Bytes))?;
+                }
+                if let Some(mask) = &group.image_mask {
+                    bytes = bytes
+                        .checked_add(
+                            mask.images
+                                .len()
+                                .checked_mul(size_of::<ResourceHandle>())
+                                .ok_or_else(|| self.error(BuildErrorKind::Bytes))?,
+                        )
+                        .ok_or_else(|| self.error(BuildErrorKind::Bytes))?;
+                }
             }
         }
         if (bytes as u64)
@@ -1204,6 +1222,7 @@ impl Building {
                 owner: c.owner,
                 effect_transform: Affine::IDENTITY,
                 image_mask: None,
+                effect: None,
                 invert: 0.,
                 blend: None,
             })
@@ -1326,7 +1345,9 @@ impl Building {
                     unreachable!()
                 };
                 // Filters and shaped glyphs may extend arbitrarily beyond layout boxes.
-                group.ink_bounds = if group.filters.is_empty() {
+                group.ink_bounds = if let Some(effect) = &group.effect {
+                    InkBounds::Rect(effect.bounds).transformed(group.effect_to_target)
+                } else if group.filters.is_empty() {
                     scope.ink
                 } else {
                     InkBounds::Unbounded
@@ -1526,7 +1547,12 @@ fn valid_filter(f: Filter) -> bool {
 fn validate_op(op: &FrameOp) -> Result<(), BuildErrorKind> {
     let valid = match op {
         FrameOp::PushClip(c) => valid_clip(c),
-        FrameOp::PushGroup(g) => g.clip.as_ref().is_none_or(valid_clip),
+        FrameOp::PushGroup(g) => {
+            g.clip.as_ref().is_none_or(valid_clip)
+                && g.effect
+                    .as_ref()
+                    .is_none_or(|e| e.bounds.is_finite() && e.values.iter().all(|v| v.is_finite()))
+        }
         FrameOp::Draw(FrameDraw::Fill { shape, brush, .. }) => {
             valid_geometry(shape) && valid_brush(brush)
         }
@@ -1817,10 +1843,17 @@ fn make_op(
                 owner,
                 effect_transform: effect,
                 image_mask,
+                effect: prepared_effect,
                 invert,
                 blend,
                 ..
             } = meta.ok_or(BuildErrorKind::MissingGroupMetadata)?;
+            let prepared_effect = prepared_effect.map(|value| {
+                let valid = resources.leases().iter().any(|lease| lease.handle() == value.shader.handle()
+                    && matches!(lease.data(), crate::resources::ResourceData::EffectShader { descriptor, .. } if descriptor.matches_instance(&value.instance)));
+                if !valid || !value.bounds.is_finite() { return Err(BuildErrorKind::InvalidRecord); }
+                Ok(FrameEffect { definition: value.instance.definition(), shader: value.shader.handle(), values: value.instance.values().to_vec(), bounds: value.bounds })
+            }).transpose()?;
             let image_mask = image_mask
                 .map(|mask| {
                     if !mask.bounds.is_finite()
@@ -1856,6 +1889,7 @@ fn make_op(
                 LocalId::Group(*id),
                 FrameOp::PushGroup(FrameGroup {
                     image_mask,
+                    effect: prepared_effect,
                     clip: g.clip.as_ref().map(|c| empty_clip(c, t)),
                     mask,
                     filters: Vec::with_capacity(g.filters.len()),

@@ -24,26 +24,69 @@ pub fn with_catalogs(
     let Some(archive) = &prepared.archive else {
         return Ok(artifact.bytes.clone());
     };
-    let manifest = Distribution {
-        text: Some(
+    update_manifest(artifact, |manifest| {
+        manifest.text = Some(
             archive
                 .file_name()
                 .and_then(|name| name.to_str())
                 .ok_or_else(|| io::Error::other("catalog archive filename must be UTF-8"))?
                 .into(),
-        ),
-        resources: Vec::new(),
-        catalogs: prepared.catalogs.clone(),
-        loose: Some(LooseResources::Project),
+        );
+        manifest.catalogs = prepared.catalogs.clone();
+        Ok(())
+    })
+}
+
+/// Prepare and publish shader resources beside an ASB, retaining its catalog
+/// index and all existing resource archives.
+pub fn with_effects(
+    artifact: &Artifact,
+    project: &Path,
+    output: &Path,
+    target: crate::prepare_effects::Target,
+) -> io::Result<Vec<u8>> {
+    let prepared = crate::prepare_effects::prepare(project, &artifact.effects, target)?;
+    let Some(archive) = crate::prepare_effects::archive(&prepared, output)? else {
+        return Ok(artifact.bytes.clone());
     };
+    update_manifest(artifact, |manifest| {
+        let name = archive
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| io::Error::other("effect archive filename must be UTF-8"))?
+            .to_owned();
+        if !manifest.resources.contains(&name) {
+            manifest.resources.push(name);
+        }
+        Ok(())
+    })
+}
+
+fn update_manifest(
+    artifact: &Artifact,
+    update: impl FnOnce(&mut Distribution) -> io::Result<()>,
+) -> io::Result<Vec<u8>> {
     let limits = reel_package::Limits::default();
     let package = reel_package::decode(&artifact.bytes, limits).map_err(io::Error::other)?;
+    let mut manifest = package.distribution().cloned().unwrap_or(Distribution {
+        text: None,
+        resources: Vec::new(),
+        catalogs: BTreeMap::new(),
+        loose: Some(LooseResources::Project),
+    });
+    update(&mut manifest)?;
     let bytecode = package
         .program()
         .encode(limits.bytecode)
         .map_err(io::Error::other)?;
-    reel_package::encode(&bytecode, package.metadata(), Some(&manifest), limits)
-        .map_err(io::Error::other)
+    reel_package::encode(
+        &bytecode,
+        package.metadata(),
+        Some(&manifest),
+        package.effects(),
+        limits,
+    )
+    .map_err(io::Error::other)
 }
 
 pub fn player_path(cli: &Path) -> PathBuf {
@@ -271,9 +314,17 @@ pub fn export(
             }
         }
     }
-    let resources =
+    let mut resources =
         crate::resource_conversion::prepare_selected(&loaded.project_root, &target, resources)?
             .files;
+    crate::prepare_effects::merge(
+        &mut resources,
+        crate::prepare_effects::prepare(
+            &loaded.project_root,
+            &artifact.effects,
+            crate::prepare_effects::Target::for_export(target.as_str()),
+        )?,
+    )?;
     if resources.values().any(|path| path.starts_with(&output)) {
         return Err(io::Error::other(
             "export output contains a prepared resource input",
@@ -365,8 +416,14 @@ pub fn export(
             .program()
             .encode(limits.bytecode)
             .map_err(io::Error::other)?;
-        let encoded = reel_package::encode(&bytecode, package.metadata(), Some(&manifest), limits)
-            .map_err(io::Error::other)?;
+        let encoded = reel_package::encode(
+            &bytecode,
+            package.metadata(),
+            Some(&manifest),
+            package.effects(),
+            limits,
+        )
+        .map_err(io::Error::other)?;
         File::create_new(staging.join(MAIN_PACKAGE))?.write_all(&encoded)?;
         let runtime_bytes = runtime_files.iter().try_fold(0u64, |total, (name, file)| {
             copy(file, &staging.join(name)).map(|bytes| total + bytes)

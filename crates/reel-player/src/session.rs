@@ -831,6 +831,8 @@ pub struct SessionUi {
     stage: Option<StageView>,
     stage_dirty: bool,
     pending_stage: Option<StageView>,
+    image_demand_dirty: bool,
+    image_layout_pending: bool,
     virtual_images_ready: bool,
     pub(crate) images_waiting_presentation: bool,
     images: crate::images::Images,
@@ -878,6 +880,8 @@ impl SessionUi {
             stage: None,
             stage_dirty: false,
             pending_stage: None,
+            image_demand_dirty: false,
+            image_layout_pending: false,
             virtual_images_ready: false,
             images_waiting_presentation: false,
             playback: Default::default(),
@@ -972,7 +976,8 @@ impl SessionUi {
                 self.pause_dialogue();
                 self.reading_modal = modal;
             }
-            self.images.request_stage(&view);
+            self.image_demand_dirty = true;
+            self.image_layout_pending = false;
             let mut binding = self.binding.borrow_mut();
             if scope_changed {
                 self.stamp.advance_revision = self.stamp.advance_revision.wrapping_add(1);
@@ -1007,10 +1012,11 @@ impl SessionUi {
     }
     /// Configure before creating a widget or driving the story.
     pub fn with_asset_options(mut self, options: crate::assets::AssetOptions) -> Self {
+        let format = self.images.shader_format;
         self.images = crate::images::Images::new(crate::assets::Assets::directory(options));
-        if let Some(view) = &self.pending_stage {
-            self.images.request_stage(view);
-        }
+        self.images.shader_format = format;
+        self.image_demand_dirty = self.pending_stage.is_some() || self.stage.is_some();
+        self.image_layout_pending = false;
         self
     }
     pub fn with_assets(mut self, assets: crate::assets::Assets) -> Self {
@@ -1018,13 +1024,22 @@ impl SessionUi {
         self
     }
     pub(crate) fn set_assets(&mut self, assets: crate::assets::Assets) {
+        let format = self.images.shader_format;
         self.images = crate::images::Images::new(assets);
-        if let Some(view) = &self.pending_stage {
-            self.images.request_stage(view);
-        }
+        self.images.shader_format = format;
+        self.image_demand_dirty = self.pending_stage.is_some() || self.stage.is_some();
+        self.image_layout_pending = false;
     }
     pub fn assets(&self) -> crate::assets::Assets {
         self.images.assets.clone()
+    }
+    /// Select the prepared fragment representation used by this presentation host.
+    pub fn set_effect_shader_format(&mut self, format: reel_ui::resources::EffectShaderFormat) {
+        if self.images.shader_format != format {
+            self.images.shader_format = format;
+            self.image_demand_dirty = self.pending_stage.is_some() || self.stage.is_some();
+            self.image_layout_pending = false;
+        }
     }
     pub(crate) fn adopt_presentation(&mut self) {
         self.clear_presented();
@@ -1035,7 +1050,7 @@ impl SessionUi {
         self.images.set_waker(wake);
     }
     pub fn images_pending(&self) -> bool {
-        self.pending_stage.is_some()
+        self.pending_stage.is_some() || self.image_demand_dirty
     }
     pub(crate) fn images_block_presentation(&self) -> bool {
         self.images_pending() && !self.virtual_images_ready
@@ -1064,6 +1079,8 @@ impl SessionUi {
     }
     pub(crate) fn close_resources(&mut self) {
         self.pending_stage = None;
+        self.image_demand_dirty = false;
+        self.image_layout_pending = false;
         self.virtual_images_ready = false;
         self.images_waiting_presentation = false;
         self.images.close();
@@ -1086,6 +1103,8 @@ impl SessionUi {
     }
     pub fn clear_presented(&mut self) {
         self.pause_dialogue();
+        self.image_demand_dirty = self.pending_stage.is_some() || self.stage.is_some();
+        self.image_layout_pending = false;
         let mut binding = self.binding.borrow_mut();
         *binding = InputBinding {
             button_revision: binding.button_revision,
@@ -1106,6 +1125,12 @@ impl SessionUi {
     ) -> Result<(), Error> {
         bridge.set_focus_fallback(Some(self.input_fallback.unwrap_or(root_id)));
         self.virtual_images_ready = false;
+        if !self.prepare_image_requests(bridge, root_id)? {
+            self.images_waiting_presentation = true;
+            self.pause_dialogue();
+            self.binding.borrow_mut().accepted = None;
+            return Ok(());
+        }
         let images_ready = self.images.poll()?;
         if self.images.metadata_ready() && !self.images.manifests.is_empty() {
             if !self.prepare_tiles(bridge, root_id)? {
@@ -1115,7 +1140,7 @@ impl SessionUi {
             }
         } else if images_ready {
             if let Some(mut view) = self.pending_stage.take() {
-                view.resolve_images(&self.images.loaded)?;
+                view.resolve_metadata(&self.images)?;
                 self.stage = Some(view);
                 self.stage_dirty = true;
                 self.images.commit();
@@ -1222,6 +1247,55 @@ impl SessionUi {
         }
         self.sync_popups(bridge, root_id);
         Ok(())
+    }
+    /// Fixed image dimensions let the existing candidate layout decide raster
+    /// demand before IO. Repeated polls of that candidate reuse the same demand.
+    fn prepare_image_requests(
+        &mut self,
+        bridge: &mut PresentationBridge,
+        root_id: WidgetId,
+    ) -> Result<bool, Error> {
+        if !self.image_demand_dirty {
+            return Ok(true);
+        }
+        let Some(candidate) = self.pending_stage.as_ref().or(self.stage.as_ref()) else {
+            self.image_demand_dirty = false;
+            return Ok(true);
+        };
+        if !self.image_layout_pending {
+            let requests = candidate.layout_image_requests(self.images.shader_format)?;
+            if !requests.deferred_images {
+                self.images.request_stage_images(Ok(requests));
+                self.image_demand_dirty = false;
+                return Ok(true);
+            }
+            if !self.images.requests_ready(&requests) {
+                self.images.request_stage_images(Ok(requests));
+                self.image_layout_pending = true;
+            }
+        }
+        if self.image_layout_pending {
+            self.images.poll()?;
+            if !self.images.metadata_ready() {
+                return Ok(false);
+            }
+        }
+        let mut layout = candidate.clone();
+        layout.resolve_layout_images(&self.images)?;
+        bridge.edit_widget(Self::stage_widget(bridge, root_id).unwrap(), |mut stage| {
+            StageWidget::sync(&mut stage.downcast::<StageWidget>(), &layout);
+        });
+        self.sync_popup_view(bridge, root_id, Some(&layout));
+        let outside = StageWidget::offscreen_images(bridge.root(), root_id);
+        self.images.request_stage_images(
+            candidate.viewport_image_requests(&outside, self.images.shader_format),
+        );
+        if self.pending_stage.is_none() {
+            self.pending_stage = Some(layout);
+        }
+        self.image_demand_dirty = false;
+        self.image_layout_pending = false;
+        Ok(true)
     }
     fn prepare_tiles(
         &mut self,
@@ -1438,6 +1512,17 @@ impl SessionUi {
             }
         }
         let events = self.take_events();
+        if events.iter().any(|event| {
+            matches!(
+                event,
+                reel_ui::stage::NodeEvent::Scroll(_)
+                    | reel_ui::stage::NodeEvent::Change(_)
+                    | reel_ui::stage::NodeEvent::Text(_)
+            )
+        }) {
+            self.image_demand_dirty = self.pending_stage.is_some() || self.stage.is_some();
+            self.image_layout_pending = false;
+        }
         if events.iter().any(|event| {
             matches!(
                 event,

@@ -3,6 +3,7 @@
 
 //! Author-owned scene composition, shared by the script host and presentation.
 mod camera;
+pub mod effect;
 mod flow;
 pub use flow::{FlowOptions, GridOptions, Justify};
 mod image;
@@ -450,7 +451,10 @@ pub struct NodeProps {
     pub anchor_y: f64,
     /// Whole-image threshold mask in the node's local layout rectangle.
     pub mask: Option<Arc<MaskProgram>>,
-    pub mask_origin: Option<Arc<str>>,
+    /// Transform the completed subtree before its group opacity, mask and blend.
+    /// Scalar results are coverage; RGBA results are linear premultiplied color.
+    pub effect: Option<Arc<effect::EffectInstance>>,
+    pub appearance_origin: Option<Arc<str>>,
     pub mask_progress: f64,
     pub mask_softness: f64,
     pub mask_invert: bool,
@@ -514,7 +518,8 @@ impl Default for NodeProps {
             anchor_x: 0.,
             anchor_y: 0.,
             mask: None,
-            mask_origin: None,
+            effect: None,
+            appearance_origin: None,
             mask_progress: 1.,
             mask_softness: 0.06,
             mask_invert: false,

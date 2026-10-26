@@ -36,6 +36,36 @@ pub fn prepare_assets(
     Ok((root, prepared.map(|prepared| prepared.files)))
 }
 
+/// Prepare a compiled source session, including cached desktop effect shaders.
+/// The material preview target remains independent of the executing backend.
+pub fn prepare_story_assets(
+    project_root: &Path,
+    explicit: Option<PathBuf>,
+    resource_target: &str,
+    effects: &reel_engine::aside::source::EffectProducts,
+) -> io::Result<(PathBuf, Option<ResourceFiles>)> {
+    let (root, files) = prepare_assets(project_root, explicit, resource_target)?;
+    if effects.is_empty() {
+        return Ok((root, files));
+    }
+    let mut files = match files {
+        Some(files) => files,
+        None if root.is_dir() => {
+            reel_package::resource_target::ResourceTarget::parse(resource_target)?.collect(&root)?
+        }
+        None => BTreeMap::new(),
+    };
+    crate::prepare_effects::merge(
+        &mut files,
+        crate::prepare_effects::prepare(
+            project_root,
+            effects,
+            crate::prepare_effects::Target::Desktop,
+        )?,
+    )?;
+    Ok((root, Some(files)))
+}
+
 pub fn run(
     path: &Path,
     assets: Option<PathBuf>,

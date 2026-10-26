@@ -27,6 +27,7 @@ pub struct RecordWidget {
     pub invert: f32,
     pub blend: reel_ui::frame::BlendMode,
     pub mask: Option<PaintImageMask>,
+    pub effect: Option<PaintEffect>,
     pub capture_included: bool,
     pub resource_draws: Vec<(ResourceLease, Rect, Affine, reel_ui::peniko::ImageSampler)>,
 }
@@ -49,6 +50,7 @@ impl RecordWidget {
             invert: 0.,
             blend: Default::default(),
             mask: None,
+            effect: None,
             capture_included: true,
             resource_draws: Vec::new(),
         }
@@ -85,6 +87,7 @@ impl Widget for RecordWidget {
     }
     fn pre_paint(&mut self, c: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, p: &mut Painter<'_>) {
         c.set_subtree_composite(self.opacity, self.invert, self.blend, self.mask.clone());
+        c.set_subtree_effect(self.effect.clone());
         p.replay(&self.pre)
     }
     fn paint(&mut self, c: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, p: &mut Painter<'_>) {

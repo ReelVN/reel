@@ -101,7 +101,11 @@ impl StoryRuntime {
                         Some(driver.catalog_loader()),
                     )
                     .and_then(|restore| {
-                        restore.with_source_catalogs(driver.adapter().source_catalogs())
+                        restore
+                            .with_source_catalogs(driver.adapter().source_catalogs())
+                            .and_then(|restore| {
+                                restore.with_effect_products(driver.adapter().effect_products())
+                            })
                     });
                     match restored {
                         Ok(restore) => {

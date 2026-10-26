@@ -38,18 +38,10 @@ fn external_gallery_native_frame_cost() {
 fn exercise(event_loop: &ActiveEventLoop) {
     use reel_engine::{
         Epoch, Session, SessionId,
-        aside::{VmLimits, source::CompiledStory},
+        aside::VmLimits,
     };
     let bytes = std::fs::read(std::env::var_os("REEL_SCROLL_ASB").unwrap()).unwrap();
-    let (program, metadata) = reel_package::decode(&bytes, reel_package::Limits::default())
-        .unwrap()
-        .into_parts();
-    let compiled = CompiledStory {
-        program,
-        initializer: aside_vm::bytecode::FunctionId(metadata.initializer.function_id),
-        entry: aside_vm::bytecode::FunctionId(metadata.game_entry.unwrap().function_id),
-        catalogs: Default::default(),
-    };
+    let compiled = crate::distribution::decode_story(&bytes).unwrap();
     let assets = crate::assets::AssetOptions {
         root: std::env::var_os("REEL_SCROLL_ASSETS").unwrap().into(),
         ..Default::default()

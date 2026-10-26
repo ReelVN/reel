@@ -71,11 +71,19 @@ pub enum GpuError {
         at: RecordLocation,
         reason: String,
     },
+    Shader {
+        at: RecordLocation,
+        asset: String,
+        source: Box<GpuError>,
+    },
     Readback(String),
 }
 impl GpuError {
     pub fn is_retryable(&self) -> bool {
-        matches!(self, Self::Busy | Self::Pressure { .. })
+        match self {
+            Self::Shader { source, .. } => source.is_retryable(),
+            _ => matches!(self, Self::Busy | Self::Pressure { .. }),
+        }
     }
 }
 impl std::fmt::Display for GpuError {
@@ -83,12 +91,20 @@ impl std::fmt::Display for GpuError {
         write!(f, "{self:?}")
     }
 }
-impl std::error::Error for GpuError {}
+impl std::error::Error for GpuError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Shader { source, .. } => Some(source.as_ref()),
+            _ => None,
+        }
+    }
+}
 
 impl crate::BackendError for GpuError {
     fn kind(&self) -> crate::FailureKind {
         use crate::FailureKind;
         match self {
+            Self::Shader { source, .. } => source.kind(),
             Self::Busy | Self::Pressure { .. } => FailureKind::Pressure,
             Self::Budget { .. }
             | Self::Unsupported { .. }

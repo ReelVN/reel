@@ -16,6 +16,7 @@ pub mod distribution;
 pub mod editor;
 pub mod localization;
 pub mod playback;
+pub mod prepare_effects;
 pub mod prepare_font;
 pub mod prepare_image;
 pub mod prepare_texture;
@@ -62,6 +63,7 @@ pub struct Checked {
     pub compilation: lowering::ProjectCompilation,
     pub modules: Vec<reel_package::ModuleMetadata>,
     pub catalogs: std::sync::Arc<source::CatalogProducts>,
+    pub effects: std::sync::Arc<source::EffectProducts>,
 }
 
 /// Compile and verify source, retaining the program, entry and module metadata.
@@ -94,6 +96,7 @@ pub fn check_sources_with_progress(
     let ProjectSourceCompilation {
         compilation,
         catalogs,
+        effects,
     } = source::compile_project_with_progress(inputs, aliases, 1, progress).map_err(|failure| {
         let mut failure = source_failure(failure);
         for diagnostic in &mut failure.diagnostics {
@@ -114,12 +117,29 @@ pub fn check_sources_with_progress(
         compilation,
         modules: metadata,
         catalogs,
+        effects,
     })
 }
 
 pub fn source_failure(failure: SourceError) -> Failure {
     use aside_compiler::DiagnosticCode;
     match failure {
+        SourceError::Effect(failure) => {
+            let mut result = error(
+                "effect",
+                DiagnosticCode::InvalidCall,
+                failure.span,
+                failure.message,
+            );
+            result.diagnostics[0].source = Some(failure.module);
+            result
+        }
+        SourceError::EffectProduct(failure) => error(
+            "effect",
+            DiagnosticCode::InvalidHir,
+            TextRange::empty(0.into()),
+            failure.to_string(),
+        ),
         SourceError::Translation(failure) => {
             let mut result = error(
                 "localization",
@@ -216,6 +236,7 @@ pub fn into_story(checked: Checked, entry: &str) -> Result<CompiledStory, Failur
         initializer: checked.compilation.initializer,
         entry: bc::FunctionId(entry.function_id),
         catalogs: checked.catalogs,
+        effects: checked.effects,
     })
 }
 

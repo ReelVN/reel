@@ -50,9 +50,15 @@ fn fixture() -> (AsideSessionUi, PresentationBridge, WidgetId, Receiver<()>) {
 fn fixture_with_assets(
     assets: crate::assets::Assets,
 ) -> (AsideSessionUi, PresentationBridge, WidgetId, Receiver<()>) {
+    fixture_with_source(STORY, assets)
+}
+fn fixture_with_source(
+    source: &str,
+    assets: crate::assets::Assets,
+) -> (AsideSessionUi, PresentationBridge, WidgetId, Receiver<()>) {
     let mut driver = AsideSessionUi::from_source(
         super::tests::session(),
-        STORY,
+        source,
         "main",
         1,
         "main",
@@ -255,6 +261,238 @@ fn image_pixel_ids(frame: &RenderFrame) -> Vec<u64> {
 fn author_image_pipeline_preserves_atomic_scene_identity_and_final_frame() {
     image_pipeline(fixture());
     image_pipeline(fixture_with_assets(crate::assets::tests::memory_assets()));
+}
+
+#[test]
+fn fixed_rasters_wait_for_camera_entry_and_preserve_natural_size_and_accepted_frame() {
+    let source = r#"
+fn main() {
+    let view = camera(width: 300, height: 150, camera_x: 150, camera_y: 75) {
+        image("assets/panels.png", x: 2000);
+        image("assets/sun.jpg", x: 1000, width: 96, height: 96);
+        image("missing-offscreen.png", x: 4000, width: 96, height: 96);
+    };
+    stage.replace(view);
+    narrator("A");
+    view.camera_x = 1048;
+    view.camera_rotation = 15;
+    narrator("B");
+}
+"#;
+    let (mut driver, mut bridge, root, wake) =
+        fixture_with_source(source, crate::assets::tests::memory_assets());
+    drive(&mut driver);
+    settle(&mut driver, &mut bridge, root, &wake);
+    assert_eq!(driver.ui().images.loads, 1);
+    assert_eq!(driver.ui().images.pool.usage().bytes, 160 * 90 * 4);
+    assert!(driver.ui().images.is_required("assets/panels.png"));
+    assert!(!driver.ui().images.is_required("assets/sun.jpg"));
+    assert!(!driver.ui().images.is_required("missing-offscreen.png"));
+    let mut id = 1;
+    let first = frame(&mut driver, &mut bridge, root, id);
+    let retained = image_pixel_ids(&first);
+    advance(&mut driver, &mut bridge, root, &mut id);
+    drive(&mut driver);
+    driver.sync(&mut bridge, root).unwrap();
+    assert!(driver.ui().images_pending());
+    assert_eq!(driver.ui().images.loads, 2);
+    assert!(
+        driver
+            .record(&mut bridge, root, FrameId(id + 1))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(image_pixel_ids(&first), retained);
+    settle(&mut driver, &mut bridge, root, &wake);
+    let _ = frame(&mut driver, &mut bridge, root, id + 1);
+    assert!(driver.ui().images.is_required("assets/sun.jpg"));
+    assert!(!driver.ui().images.is_required("missing-offscreen.png"));
+    for _ in 0..4 {
+        driver.sync(&mut bridge, root).unwrap();
+    }
+    assert_eq!(driver.ui().images.loads, 2);
+}
+
+#[test]
+fn native_scroll_loads_a_newly_exposed_raster_before_accepting_the_view() {
+    use reel_ui::{
+        core::{
+            PointerId, PointerInfo, PointerScrollEvent, PointerState, PointerType, ScrollDelta,
+        },
+        dpi::PhysicalPosition,
+    };
+    let source = r#"
+fn main() {
+    stage.replace(scroll(width: 300, height: 150) {
+        stack(width: 300, height: 1400) {
+            image("assets/panels.png", width: 160, height: 90);
+            image("assets/sun.jpg", y: 1000, width: 96, height: 96);
+        };
+    });
+    narrator("A");
+}
+"#;
+    let (mut driver, mut bridge, root, wake) =
+        fixture_with_source(source, crate::assets::tests::memory_assets());
+    drive(&mut driver);
+    settle(&mut driver, &mut bridge, root, &wake);
+    let _first = frame(&mut driver, &mut bridge, root, 1);
+    assert_eq!(driver.ui().images.loads, 1);
+    driver
+        .handle_pointer(
+            &mut bridge,
+            PointerEvent::Scroll(PointerScrollEvent {
+                pointer: PointerInfo {
+                    pointer_id: Some(PointerId::PRIMARY),
+                    persistent_device_id: None,
+                    pointer_type: PointerType::Mouse,
+                },
+                state: PointerState {
+                    position: PhysicalPosition::new(50., 50.),
+                    ..Default::default()
+                },
+                delta: ScrollDelta::PixelDelta(PhysicalPosition::new(0., 1000.)),
+            }),
+        )
+        .unwrap();
+    driver.sync(&mut bridge, root).unwrap();
+    assert!(driver.ui().images_pending());
+    assert!(
+        driver
+            .record(&mut bridge, root, FrameId(2))
+            .unwrap()
+            .is_none()
+    );
+    settle(&mut driver, &mut bridge, root, &wake);
+    assert_eq!(driver.ui().images.loads, 2);
+    assert!(driver.ui().images.is_required("assets/sun.jpg"));
+    assert!(!driver.ui().images.is_required("assets/panels.png"));
+    let _ = frame(&mut driver, &mut bridge, root, 2);
+}
+
+#[test]
+fn effect_shader_admission_reuses_io_and_leases_for_parameter_changes() {
+    use reel_ui::{
+        resources::{EffectShaderDescriptor, EffectShaderFormat, ResourceData},
+        stage::{NodeKind, NodeProps, Stage, effect::*},
+    };
+    let program = EffectProgram::new(
+        vec![EffectParameter {
+            name: "coverage".into(),
+            ty: EffectType::Float,
+            default: None,
+        }],
+        vec![EffectNode {
+            ty: EffectType::Float,
+            op: EffectOp::Parameter(0),
+        }],
+        EffectNodeId(0),
+    )
+    .unwrap();
+    let definition = [17; 32];
+    let format = EffectShaderFormat::Wgsl;
+    let source = format.asset_path(definition);
+    let raw = b"@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }";
+    let descriptor = EffectShaderDescriptor::new(
+        definition,
+        format,
+        vec![EffectType::Float],
+        EffectType::Float,
+        raw,
+    )
+    .unwrap();
+    let directory = std::env::temp_dir().join(format!(
+        "reel-effect-admission-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let path = directory.join(&source);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, descriptor.encode_payload(raw).unwrap()).unwrap();
+    let mut stage = Stage::default();
+    let effect = |value: f32| {
+        EffectInstance::new(
+            definition,
+            program.clone(),
+            vec![EffectValue::Float(value.to_bits())],
+        )
+        .unwrap()
+    };
+    let node = stage
+        .create(
+            NodeKind::Stack,
+            NodeProps {
+                width: Some(100.),
+                height: Some(100.),
+                effect: Some(effect(0.5)),
+                clip: true,
+                ..Default::default()
+            },
+            vec![],
+        )
+        .unwrap();
+    stage.replace(node).unwrap();
+    let mut ui = SessionUi::new(super::tests::session())
+        .unwrap()
+        .with_asset_options(AssetOptions {
+            root: directory.clone(),
+            ..Default::default()
+        });
+    let (send, wake) = mpsc::channel();
+    ui.set_resource_waker(Arc::new(move || {
+        let _ = send.send(());
+    }));
+    ui.set_stage(&stage);
+    let (mut bridge, root) = super::tests::mount(&ui);
+    ui.sync(&mut bridge, root).unwrap();
+    assert!(ui.images_block_presentation());
+    while ui.images_pending() {
+        wake.recv_timeout(Duration::from_secs(10)).unwrap();
+        ui.sync(&mut bridge, root).unwrap();
+    }
+    assert_eq!(ui.images.loads, 1);
+    let lease = &ui.image_resources()[0];
+    let handle = lease.handle();
+    assert!(matches!(lease.data(), ResourceData::EffectShader { .. }));
+    let retained = bridge.record(FrameId(1)).unwrap();
+    let layer = retained
+        .plan()
+        .layers
+        .iter()
+        .find(|layer| layer.groups.iter().any(|group| group.effect.is_some()))
+        .unwrap();
+    let group = layer
+        .groups
+        .iter()
+        .find(|group| group.effect.is_some())
+        .unwrap();
+    let reel_ui::app::VisualLayerKind::Scene(scene) = &layer.kind else {
+        panic!()
+    };
+    assert!(group.command > 0);
+    assert!(
+        matches!(
+            scene.commands()[group.command - 1],
+            reel_ui::imaging::record::Command::PushClip(_)
+        ),
+        "the node's clip must wrap the effect result, not cut its source"
+    );
+    let mut props = stage.node(node).unwrap().props.clone();
+    props.effect = Some(effect(0.75));
+    stage.update(node, NodeKind::Stack, props).unwrap();
+    ui.set_stage(&stage);
+    ui.sync(&mut bridge, root).unwrap();
+    assert!(!ui.images_pending());
+    assert_eq!(ui.images.loads, 1);
+    assert_eq!(ui.image_resources()[0].handle(), handle);
+    drop(retained);
+    drop(bridge);
+    drop(ui);
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
 }
 fn image_pipeline(
     (mut driver, mut bridge, root, wake): (

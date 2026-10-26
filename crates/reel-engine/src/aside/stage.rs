@@ -336,6 +336,10 @@ pub(super) enum NodeProperty {
     /// axis. text_input and text_area accept only horizontal-tb.
     #[aside(name = "writing_mode", ty = String, default = "horizontal-tb", validate = validate_writing_mode)]
     WritingMode,
+    /// Apply a compiled drawing function to this node's completed subtree, before
+    /// opacity, mask and blend. Null preserves the subtree's original colors.
+    #[aside(name = "effect", ty = Any, doc_type = aside_host::source::nullable(aside_host::source::named("reel::types::Effect")), default = null, validate = super::effects::validate)]
+    Effect,
 }
 
 pub(super) struct StageBinding {
@@ -345,6 +349,8 @@ pub(super) struct StageBinding {
     pub(super) types: super::source::HostTypes,
     pub(super) text_filter_function: Option<aside_vm::bytecode::FunctionId>,
     pub scene: Stage,
+    pub(super) effect_products: Arc<super::source::EffectProducts>,
+    effect_projection: super::effects::ProjectionCache,
     pub retirement_revision: u64,
     handles: BTreeMap<NodeId, NodeBinding>,
     root: Option<RootToken>,
@@ -365,6 +371,7 @@ struct NodeBinding {
     text_history: Option<Box<text_input::History>>,
     text_source: Option<HeapHandle>,
     mask_source: Option<HeapHandle>,
+    effect_source: Option<(HeapHandle, u64)>,
     text_listening: bool,
     /// Weak identity stamp only: never dereferenced or treated as a GC root.
     radio_option: Option<Value>,
@@ -417,6 +424,8 @@ impl StageBinding {
             types: super::source::HostTypes::new(heap)?,
             text_filter_function: None,
             scene: Stage::default(),
+            effect_products: Arc::default(),
+            effect_projection: Default::default(),
             retirement_revision: 0,
             handles: BTreeMap::new(),
             root: None,
@@ -427,6 +436,16 @@ impl StageBinding {
 
     fn property_key(&mut self, heap: &mut Heap, name: &'static str) -> Result<Value, HeapError> {
         self.property_keys.key(heap, name)
+    }
+    pub(super) fn set_effect_products(
+        &mut self,
+        heap: &Heap,
+        products: Arc<super::source::EffectProducts>,
+    ) -> Result<(), AdapterError> {
+        let projection = super::effects::ProjectionCache::admit(heap, &products)?;
+        self.effect_products = products;
+        self.effect_projection = projection;
+        Ok(())
     }
     pub(super) fn replace_view(
         &mut self,
@@ -507,6 +526,7 @@ impl StageBinding {
             let value = heap.import_handle(binding.handle)?;
             if heap.info(heap.host_fields(value)?)?.content_version != binding.fields_version
                 || binding.projection_dirty
+                || super::effects::changed(heap, binding.effect_source)?
                 || binding
                     .overrides
                     .as_ref()
@@ -618,7 +638,7 @@ impl StageBinding {
             heap.table_store(fields, index as u32, key, *argument)?;
         }
         let shape = snapshot::Shape::from_symbol(symbol);
-        let mask_origin = origin.as_deref().map(Arc::from);
+        let appearance_origin = origin.as_deref().map(Arc::from);
         let (mut kind, input_declaration) = if shape == snapshot::Shape::Input {
             let (kind, declaration) = input::prepare(heap, fields)?;
             (kind, Some(declaration))
@@ -632,10 +652,13 @@ impl StageBinding {
             Value::NULL,
             read_limit,
             None,
-            mask_origin,
+            appearance_origin,
+            &self.effect_products,
+            &mut self.effect_projection,
         )?;
         validate_text_props(&kind, &props)?;
         let mask_source = mask_handle(heap, fields, prefix.len(), Value::NULL)?;
+        let effect_source = effect_stamp(heap, fields, prefix.len(), Value::NULL)?;
         let mut children = Vec::new();
         let references = heap.alloc_array(&[])?;
         if matches!(
@@ -803,6 +826,7 @@ impl StageBinding {
                 },
                 text_listening: symbol == "reel::text" && args[1].tag() != ValueTag::Null,
                 mask_source,
+                effect_source,
                 radio_option: (symbol == "reel::radio").then_some(args[0]),
             },
         );
@@ -889,6 +913,7 @@ impl StageBinding {
             };
             if version == binding.fields_version
                 && !binding.projection_dirty
+                && !super::effects::changed(heap, binding.effect_source)?
                 && !binding
                     .overrides
                     .as_ref()
@@ -1073,8 +1098,10 @@ impl StageBinding {
                 offset,
                 selected,
                 read_limit,
-                Some((binding.mask_source, &node.props)),
-                node.props.mask_origin.clone(),
+                Some((binding.mask_source, binding.effect_source, &node.props)),
+                node.props.appearance_origin.clone(),
+                &self.effect_products,
+                &mut self.effect_projection,
             )?;
             overrides::apply_offsets(heap, value, &mut props)?;
             validate_text_props(&kind, &props)?;
@@ -1082,14 +1109,15 @@ impl StageBinding {
                 validate_virtual_props(&props)?;
             }
             let mask_source = mask_handle(heap, fields, offset, selected)?;
+            let effect_source = effect_stamp(heap, fields, offset, selected)?;
             let version = if matches!(kind, NodeKind::TextInput { .. }) {
                 heap.info(fields)?.content_version
             } else {
                 version
             };
-            updates.push((id, kind, props, version, mask_source));
+            updates.push((id, kind, props, version, mask_source, effect_source));
         }
-        for (id, kind, props, version, mask_source) in updates {
+        for (id, kind, props, version, mask_source, effect_source) in updates {
             let mut kind = kind;
             let host = heap.import_handle(self.handles[&id].handle)?;
             text_input::project(heap, host, &mut kind)?;
@@ -1124,6 +1152,7 @@ impl StageBinding {
                 cache.accept(heap, heap.import_handle(binding.handle)?)?;
             }
             binding.mask_source = mask_source;
+            binding.effect_source = effect_source;
             let fields = heap.host_fields(heap.import_handle(binding.handle)?)?;
             binding.interaction_listening = heap
                 .table_entry(
@@ -1138,6 +1167,7 @@ impl StageBinding {
     }
 
     pub fn sync(&mut self, heap: &mut Heap, read_limit: usize) -> Result<(), AdapterError> {
+        self.effect_projection.collect();
         let stamp = |heap: &Heap, scene: &Stage| {
             (
                 heap.id(),
@@ -2115,6 +2145,17 @@ fn mask_handle(
         heap.handle(value).map(Some)
     }
 }
+fn effect_stamp(
+    heap: &Heap,
+    fields: Value,
+    offset: usize,
+    selected: Value,
+) -> Result<Option<(HeapHandle, u64)>, HeapError> {
+    super::effects::stamp(
+        heap,
+        overrides::get(heap, fields, offset, selected, NodeProperty::Effect.index())?,
+    )
+}
 fn font_weight(value: Value) -> Result<f64, AdapterError> {
     let weight = number(value)?;
     if (1. ..=1000.).contains(&weight) {
@@ -2285,8 +2326,10 @@ fn read_props(
     offset: usize,
     selected: Value,
     read_limit: usize,
-    previous: Option<(Option<HeapHandle>, &NodeProps)>,
-    mask_origin: Option<Arc<str>>,
+    previous: Option<(Option<HeapHandle>, Option<(HeapHandle, u64)>, &NodeProps)>,
+    appearance_origin: Option<Arc<str>>,
+    effects: &super::source::EffectProducts,
+    effect_projection: &mut super::effects::ProjectionCache,
 ) -> Result<NodeProps, AdapterError> {
     let get = |property: NodeProperty| -> Result<Value, AdapterError> {
         Ok(overrides::get(
@@ -2303,21 +2346,31 @@ fn read_props(
     validate_mask(heap, mask)?;
     let mask = if mask.tag() == ValueTag::Null {
         None
-    } else if let Some((Some(handle), props)) = previous
+    } else if let Some((Some(handle), _, props)) = previous
         && handle == heap.handle(mask)?
     {
         props.mask.clone()
     } else {
         Some(super::masks::project(heap, mask, read_limit)?)
     };
+    let effect = get(NodeProperty::Effect)?;
+    let effect_stamp = super::effects::stamp(heap, effect)?;
+    let effect = if let Some((_, stamp, props)) = previous
+        && stamp == effect_stamp
+    {
+        props.effect.clone()
+    } else {
+        effect_projection.project(heap, effect, effects)?
+    };
     let default_font;
-    let font = if let Some((_, props)) = previous {
+    let font = if let Some((_, _, props)) = previous {
         &props.font
     } else {
         default_font = NodeProps::default().font;
         &default_font
     };
     Ok(NodeProps {
+        effect,
         flex: nonnegative(get(NodeProperty::Flex)?)?,
         x: number(get(NodeProperty::X)?)?,
         y: number(get(NodeProperty::Y)?)?,
@@ -2384,7 +2437,7 @@ fn read_props(
         anchor_x: number(get(NodeProperty::AnchorX)?)?,
         anchor_y: number(get(NodeProperty::AnchorY)?)?,
         mask,
-        mask_origin,
+        appearance_origin,
         mask_progress: mask_progress(get(NodeProperty::MaskProgress)?)?,
         mask_softness: nonnegative(get(NodeProperty::MaskSoftness)?)?,
         mask_invert: boolean(get(NodeProperty::MaskInvert)?)?,

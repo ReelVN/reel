@@ -118,10 +118,10 @@ fn particle_frame(compressed: bool) -> (RenderFrame, BudgetPool) {
         .unwrap();
     stage.replace(id).unwrap();
     let mut view = StageView::capture(&stage);
-    view.resolve_images(&BTreeMap::from([(
-        "sprite".into(),
-        registry.acquire(handle).unwrap(),
-    )]))
+    view.resolve_images(
+        &BTreeMap::from([("sprite".into(), registry.acquire(handle).unwrap())]),
+        EffectShaderFormat::Wgsl,
+    )
     .unwrap();
     let widget = NewWidget::new(StageWidget::new(Some(&view)));
     let root = RenderRoot::new(

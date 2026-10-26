@@ -1085,6 +1085,28 @@ stage.replace(stack(width: 320, height: 180, background: "#204060") {
 });
 ```
 
+Use `effect` to apply a drawing function to a node and its children. `Fragment.sample()` reads their composed color; return a color to replace it or a float to control coverage. Bind parameters to ordinary state so controls and animation can change the effect.
+
+```aside
+use reel::types::Fragment;
+
+fn tint(pixel: Fragment, amount: float = 0.5) -> (float, float, float, float) {
+    let (r, g, b, a) = pixel.sample();
+    (r * amount, g, b, a)
+}
+
+fn main() {
+    let state = model({amount: 0.5});
+    let paint = effect(tint, params: {amount: bind(state.amount)});
+    stage.replace(column(gap: 16) {
+        slider(value: bind(state.amount), min: 0, max: 1, step: 0.01, width: 320);
+        stack(width: 320, height: 180, background: "#ffffff", effect: paint) {
+            text("After the rain", color: "#803020");
+        };
+    });
+}
+```
+
 Continuous particles suit rain, snow or falling objects. One particle node shares the image, while an emission activity controls rate and lifetime.
 
 ```aside

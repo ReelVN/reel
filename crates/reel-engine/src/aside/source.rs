@@ -14,7 +14,14 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
+mod effects;
 mod translations;
+pub use effects::{
+    CompiledEffect, EffectCompileLimits, EffectDefinition, EffectDefinitionId, EffectDiagnostic,
+    EffectFunction, EffectLoadLimits, EffectLocation, EffectOrigin, EffectProductError,
+    EffectProducts, EffectSource, collect_effects, compile_effect, decode_definition,
+    encode_definition, resolve_effect_function,
+};
 pub use translations::{
     TranslationAnalysis, TranslationDiagnostic, TranslationHole, TranslationSite,
     TranslationVariant, analyze_translations, extract_translations,
@@ -134,6 +141,7 @@ pub fn documentation() -> Vec<aside_host::NativeDocumentation> {
                 .or_else(|| super::transitions::documentation(&contract.symbol))
                 .or_else(|| super::results::geometry::documentation(&contract.symbol))
                 .or_else(|| super::masks::documentation(&contract.symbol))
+                .or_else(|| super::effects::documentation(&contract.symbol))
                 .or_else(|| super::gradients::documentation(&contract.symbol))
                 .or_else(|| super::media::documentation(&contract.symbol))
                 .or_else(|| super::data::documentation(&contract.symbol))
@@ -175,6 +183,8 @@ pub struct CompiledStory {
     /// Source compilation products, consumed by `SessionVm::load_story`.
     /// Bytecode assets use an empty product and their indexed asset loader.
     pub catalogs: Arc<CatalogProducts>,
+    /// Validated effect definitions indexed by final linked FunctionId.
+    pub effects: Arc<EffectProducts>,
 }
 
 impl CompiledStory {
@@ -231,6 +241,8 @@ pub enum SourceError {
     ProjectAnalysis(aside_compiler::semantic::ProjectAnalysis),
     ProjectLowering(lowering::ProjectError),
     Translation(TranslationDiagnostic),
+    Effect(EffectDiagnostic),
+    EffectProduct(EffectProductError),
 }
 impl std::fmt::Display for SourceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -244,12 +256,14 @@ pub struct SourceCompilation {
     pub module: AnalyzedModule,
     pub compilation: lowering::Compilation,
     pub catalogs: Arc<CatalogProducts>,
+    pub effects: Arc<EffectProducts>,
 }
 
 /// Verified project products without retained source-analysis arenas.
 pub struct ProjectSourceCompilation {
     pub compilation: lowering::ProjectCompilation,
     pub catalogs: Arc<CatalogProducts>,
+    pub effects: Arc<EffectProducts>,
 }
 
 /// The author CLI and runtime share this resolver and trusted native registry.
@@ -279,6 +293,7 @@ fn build_api() -> Api {
     super::rich_text::describe(&mut api);
     super::narrative::describe(&mut api);
     super::masks::describe(&mut api);
+    super::effects::describe(&mut api);
     super::gradients::describe(&mut api);
     super::capture::describe(&mut api);
     super::assets::describe(&mut api);
@@ -553,6 +568,8 @@ pub fn compile_module(
         .map_err(SourceError::Analysis)?;
     let (catalogs, expansions) =
         extract_translations(std::slice::from_ref(&module)).map_err(SourceError::Translation)?;
+    let effects =
+        effects::collect_registered(std::slice::from_ref(&module)).map_err(SourceError::Effect)?;
     let compiled = aside_host::lower(
         &module,
         contracts(),
@@ -571,10 +588,12 @@ pub fn compile_module(
         aside_host::BuildError::Format(error) => SourceError::Format(error),
         aside_host::BuildError::Lowering(error) => SourceError::Lowering(error),
     })?;
+    let effects = effects::bind_single(effects, &compiled).map_err(SourceError::EffectProduct)?;
     Ok(SourceCompilation {
         module,
         compilation: compiled,
         catalogs: Arc::new(catalogs),
+        effects: Arc::new(effects),
     })
 }
 
@@ -588,6 +607,7 @@ pub fn compile_story(
         module,
         compilation: compiled,
         catalogs,
+        effects,
     } = compile_module(source, module_path, module_path, content_version)?;
     // The compiler initializes module function globals at runtime; their
     // GlobalDef.linked_function is intentionally None. Select the real HIR
@@ -614,6 +634,7 @@ pub fn compile_story(
         initializer: compiled.entry,
         entry,
         catalogs,
+        effects,
     };
     story.validate()?;
     Ok(story)
@@ -660,6 +681,11 @@ pub fn compile_project_with_progress(
 
     let (catalogs, expansions) =
         extract_translations(&modules).map_err(SourceError::Translation)?;
+    let effects = effects::collect_registered(&modules).map_err(SourceError::Effect)?;
+    let module_paths = modules
+        .iter()
+        .map(|module| module.canonical_path().to_owned())
+        .collect::<Vec<_>>();
 
     let compilation = aside_host::lower_project_with_progress(
         modules,
@@ -679,9 +705,12 @@ pub fn compile_project_with_progress(
     )
     .map_err(SourceError::ProjectLowering)?;
 
+    let effects = effects::bind_project(effects, &module_paths, &compilation)
+        .map_err(SourceError::EffectProduct)?;
     Ok(ProjectSourceCompilation {
         compilation,
         catalogs: Arc::new(catalogs),
+        effects: Arc::new(effects),
     })
 }
 

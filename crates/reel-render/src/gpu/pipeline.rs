@@ -26,6 +26,7 @@ impl PipelineSlots {
         for slot in &self.slots {
             if let Some(pipelines) = slot.lock().unwrap().as_ref() {
                 pipelines.masks.prune();
+                pipelines.effects.prune();
             }
         }
     }
@@ -131,6 +132,7 @@ pub struct Pipelines {
     pub plain_appearance: wgpu::Buffer,
     pub block_appearance: [wgpu::Buffer; 2],
     pub masks: super::mask::Cache,
+    pub effects: super::effect::Cache,
 }
 pub(super) fn texture(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
@@ -366,6 +368,7 @@ impl Pipelines {
             plain_appearance,
             block_appearance,
             masks: super::mask::Cache::default(),
+            effects: super::effect::Cache::default(),
         }
     }
     pub(super) fn composite(

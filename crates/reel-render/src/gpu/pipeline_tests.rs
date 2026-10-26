@@ -493,10 +493,17 @@ fn subtree_blend_mask_clip_and_backdrop_fit_the_planned_target_budget() {
             drawing.pop_group();
             let frame = frame(drawing, [400, 300], &pool);
             let expected_targets = if masked || clipped { 4 } else { 3 };
-            let planned =
-                super::super::targets::peak_targets(&frame, [400, 300], false, 4, |_| Ok(()))
-                    .unwrap();
-            assert_eq!(planned, expected_targets);
+            let planned = super::super::targets::target_pixels(
+                &frame,
+                None,
+                [400, 300],
+                false,
+                4,
+                u32::MAX,
+                |_| Ok(()),
+            )
+            .unwrap();
+            assert_eq!(planned, expected_targets * 400 * 300);
             // Exactly one-sample RGBA16F storage: an omitted backdrop in planning
             // would choose a quality whose replay does not fit this budget.
             let mut renderer = renderer(super::super::GpuLimits {
