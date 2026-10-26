@@ -465,12 +465,40 @@ pub fn tessellate(
     allocation: Allocation,
 ) -> Result<Mesh, GpuError> {
     let stroke_options = stroke.map(|s| stroke_options(s, at)).transpose()?;
-    let mut mesh = Mesh {
-        vertices: Vec::new(),
-        indices: Vec::new(),
-        allocation,
-        error: None,
-    };
+    let mut mesh = Mesh::new(allocation);
+    if let (Geometry::Rect(rect), None) = (shape, stroke) {
+        let [mut x0, mut y0, mut x1, mut y1] =
+            [rect.x0, rect.y0, rect.x1, rect.y1].map(|v| v as f32);
+        if ![x0, y0, x1, y1].into_iter().all(f32::is_finite) {
+            return Err(GpuError::Unsupported {
+                at,
+                record: "geometry outside float32 range",
+            });
+        }
+        // Keep Lyon's exact vertex order, diagonal and winding so transformed
+        // UVs and rectangle clipping see the same mesh as the path route.
+        // Degenerate rectangles retain that route's vertex/error behavior.
+        if x0 != x1 && y0 != y1 {
+            if x0 > x1 {
+                std::mem::swap(&mut x0, &mut x1);
+            }
+            if y0 > y1 {
+                std::mem::swap(&mut y0, &mut y1);
+            }
+            mesh.allocation.grow(&mut mesh.vertices, 4)?;
+            mesh.allocation.grow(&mut mesh.indices, 6)?;
+            mesh.vertices.extend(
+                [[x0, y0], [x1, y0], [x0, y1], [x1, y1]].map(|position| Vertex {
+                    position,
+                    uv: [0.; 2],
+                    color: [1.; 4],
+                    source_window: [0.; 4],
+                }),
+            );
+            mesh.indices.extend([1, 0, 2, 1, 2, 3]);
+            return Ok(mesh);
+        }
+    }
     for e in elements(shape) {
         let valid = |p: Point| (p.x as f32).is_finite() && (p.y as f32).is_finite();
         let finite = match e {
@@ -719,6 +747,89 @@ fn transform_vertices(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rectangle_fill_matches_path_mesh_through_transforms_and_clipping() {
+        let limits = super::super::GpuLimits::default();
+        let shared = Budgets::new(limits);
+        let local = Budgets::new(limits);
+        let allocation = || Allocation::new(&shared, &local, limits.transient_bytes, 1 << 20);
+        let at = RecordLocation {
+            fragment: 2,
+            command: 7,
+            mask_depth: 0,
+            owner: reel_ui::widgets::Label::new("").prepare().id(),
+        };
+        let equal = |a: &Mesh, b: &Mesh| {
+            assert_eq!(a.indices, b.indices);
+            assert_eq!(
+                bytemuck::cast_slice::<_, u8>(&a.vertices),
+                bytemuck::cast_slice::<_, u8>(&b.vertices),
+            );
+        };
+        for rect in [
+            Rect::new(0., 0., 30., 20.),
+            Rect::new(30., 0., 0., 20.),
+            Rect::new(0., 20., 30., 0.),
+            Rect::new(30., 20., 0., 0.),
+            Rect::new(-0., -0., 30.25, 20.5),
+            Rect::new(-11.25, -5.5, 2.125, 7.75),
+            Rect::new(2., 3., 2., 20.),
+            Rect::new(2., 3., 30., 3.),
+            Rect::new(2., 3., 2., 3.),
+            Rect::new(1., 2., 1.0000000001, 3.),
+            Rect::new(0., 0., f64::from(f32::MIN_POSITIVE), 1.),
+        ] {
+            for fill in [Fill::NonZero, Fill::EvenOdd] {
+                for outer in [
+                    Affine::IDENTITY,
+                    Affine::translate((13.5, 7.25)) * Affine::scale(0.6666667),
+                    Affine::translate((40., 30.)) * Affine::scale_non_uniform(-1.25, 0.75),
+                    Affine::translate((20., 10.)) * Affine::rotate(0.17),
+                    Affine::new([1., 0.3, -0.2, 1., 10., 20.]),
+                ] {
+                    let mut direct =
+                        tessellate(&Geometry::Rect(rect), fill, None, at, allocation()).unwrap();
+                    let mut path = tessellate(
+                        &Geometry::Path(rect.to_path(0.1)),
+                        fill,
+                        None,
+                        at,
+                        allocation(),
+                    )
+                    .unwrap();
+                    equal(&direct, &path);
+                    let uv = Affine::scale_non_uniform(0.05, -0.03) * Affine::translate((-4., 6.));
+                    for mesh in [&mut direct, &mut path] {
+                        transform(mesh, outer, [96, 64], uv, [0.2, 0.1, 0.3, 0.4], at).unwrap();
+                    }
+                    equal(&direct, &path);
+                    let clip = RectClip {
+                        bounds: [-0.65, -0.25, 0.1, 0.8],
+                    };
+                    match (
+                        direct.clipped(clip, allocation()).unwrap(),
+                        path.clipped(clip, allocation()).unwrap(),
+                    ) {
+                        (None, None) => (),
+                        (Some(a), Some(b)) => equal(&a, &b),
+                        _ => panic!("identical meshes must take the same clip path"),
+                    }
+                }
+            }
+        }
+        for x in [f64::NAN, f64::INFINITY, -f64::INFINITY, 1e100] {
+            assert!(matches!(
+                tessellate(
+                    &Geometry::Rect(Rect::new(x, 0., 1., 1.)),
+                    Fill::NonZero, None, at, allocation(),
+                ),
+                Err(GpuError::Unsupported { at: location, .. }) if location == at
+            ));
+        }
+        assert_eq!(shared.transient.usage().bytes, 0);
+        assert_eq!(local.transient.usage().bytes, 0);
+    }
 
     #[test]
     fn direct_paint_keeps_windows_repetition_styles_and_block_alpha_distinct() {
