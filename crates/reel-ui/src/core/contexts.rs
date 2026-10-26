@@ -2570,6 +2570,15 @@ impl PaintCtx<'_> {
         }
     }
 
+    /// Process the completed subtree before its opacity, mask and blend.
+    /// The prepared declaration persists across cached paints.
+    pub fn set_subtree_effect(&mut self, effect: Option<super::PaintEffect>) {
+        match (&mut self.widget_state.subtree_effect, effect) {
+            (Some(current), Some(effect)) => **current = effect,
+            (slot, effect) => *slot = effect.map(Box::new),
+        }
+    }
+
     /// Whether debug paint is enabled.
     ///
     /// If this property is set, your widget may draw additional debug information

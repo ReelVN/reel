@@ -548,7 +548,7 @@ fn resource_handles(command: &FrameCommand) -> impl Iterator<Item = ResourceHand
             &[][..],
         ),
         FrameOp::PushGroup(g) => (
-            None,
+            g.effect.as_ref().map(|effect| effect.shader),
             None,
             g.image_mask.as_ref().map_or(&[][..], |mask| &mask.images),
         ),
@@ -606,6 +606,9 @@ pub(crate) fn command_payload_bytes(command: &FrameCommand) -> u64 {
         FrameOp::PushClip(value) => clip(value),
         FrameOp::PushGroup(group) => {
             group.clip.as_ref().map_or(0, clip)
+                + group.effect.as_ref().map_or(0, |effect| {
+                    effect.values.capacity() * size_of::<crate::stage::effect::EffectValue>()
+                })
                 + group.filters.capacity() * size_of::<Filter>()
                 + group.image_mask.as_ref().map_or(0, |mask| {
                     mask.images.capacity() * size_of::<ResourceHandle>()

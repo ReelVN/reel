@@ -1,5 +1,6 @@
 use super::{
-    Budget, CodePackage, Error, ErrorKind, Limits, Metadata, distribution::Distribution, require,
+    Budget, CodePackage, EffectProducts, Error, ErrorKind, Limits, Metadata,
+    distribution::Distribution, require,
 };
 use aside_vm::bytecode as bc;
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -11,14 +12,16 @@ pub const INDEX_ENTRY_LEN: usize = 56;
 const B01: u32 = 1;
 const METADATA: u32 = 2;
 const DISTRIBUTION: u32 = 3;
+const EFFECTS: u32 = 4;
 const REQUIRED: u32 = 1;
 
-/// Canonical writer: header, B01, metadata, distribution, index; no padding or timestamps.
+/// Canonical writer: header, B01, metadata, distribution, effects, index; no padding or timestamps.
 /// Reuses the serialization's verified program for metadata validation.
 pub fn encode(
     encoded: &bc::EncodedProgram,
     metadata: &Metadata,
     distribution: Option<&Distribution>,
+    effects: &EffectProducts,
     limits: Limits,
 ) -> Result<Vec<u8>, Error> {
     let bytecode = encoded.as_bytes();
@@ -29,6 +32,12 @@ pub fn encode(
         "B01 byte budget exceeded",
     )?;
     metadata.validate(encoded.program(), bytecode, limits, &mut budget)?;
+    effects.validate(encoded.program(), limits, &mut budget)?;
+    let effect_bytes = if effects.is_empty() {
+        Vec::new()
+    } else {
+        effects.encode(limits)?
+    };
     let json = json_bytes(metadata, limits)?;
     budget.charge(json.len())?;
     let distribution = distribution
@@ -41,7 +50,8 @@ pub fn encode(
         .transpose()?;
     let distribution_bytes = distribution.as_deref().unwrap_or_default();
     budget.charge(distribution_bytes.len())?;
-    let section_count = 2 + usize::from(distribution.is_some());
+    let section_count =
+        2 + usize::from(distribution.is_some()) + usize::from(!effect_bytes.is_empty());
     require(
         limits.max_sections >= section_count,
         ErrorKind::Limit,
@@ -51,6 +61,7 @@ pub fn encode(
         .checked_add(bytecode.len())
         .and_then(|n| n.checked_add(json.len()))
         .and_then(|n| n.checked_add(distribution_bytes.len()))
+        .and_then(|n| n.checked_add(effect_bytes.len()))
         .ok_or_else(|| Error::new(ErrorKind::Limit, "container size overflow"))?;
     let total = index_offset
         .checked_add(section_count * INDEX_ENTRY_LEN)
@@ -68,6 +79,7 @@ pub fn encode(
     out.extend_from_slice(bytecode);
     out.extend_from_slice(&json);
     out.extend_from_slice(distribution_bytes);
+    out.extend_from_slice(&effect_bytes);
     index_entry(&mut out, B01, HEADER_LEN, bytecode);
     index_entry(&mut out, METADATA, HEADER_LEN + bytecode.len(), &json);
     if distribution.is_some() {
@@ -76,6 +88,14 @@ pub fn encode(
             DISTRIBUTION,
             HEADER_LEN + bytecode.len() + json.len(),
             distribution_bytes,
+        );
+    }
+    if !effect_bytes.is_empty() {
+        index_entry(
+            &mut out,
+            EFFECTS,
+            HEADER_LEN + bytecode.len() + json.len() + distribution_bytes.len(),
+            &effect_bytes,
         );
     }
     out[..8].copy_from_slice(MAGIC);
@@ -127,10 +147,16 @@ pub fn decode(input: &[u8], limits: Limits) -> Result<CodePackage, Error> {
     let program = bc::VerifiedProgram::decode(b01, limits.bytecode)
         .map_err(|e| Error::new(ErrorKind::Bytecode, e.to_string()))?;
     metadata.validate(&program, b01, limits, &mut budget)?;
+    let effects = payload(input, &sections, EFFECTS)
+        .map(|bytes| EffectProducts::decode(bytes, limits, &mut budget))
+        .transpose()?
+        .unwrap_or_default();
+    effects.validate(&program, limits, &mut budget)?;
     Ok(CodePackage {
         program,
         metadata,
         distribution,
+        effects,
     })
 }
 
@@ -246,7 +272,7 @@ fn parse_index(
         let flags = u32_at(entry, 4);
         require(kinds.insert(kind), Encoding, "duplicate section kind")?;
         require(flags & !REQUIRED == 0, Version, "unknown section flags")?;
-        let known = matches!(kind, B01 | METADATA | DISTRIBUTION);
+        let known = matches!(kind, B01 | METADATA | DISTRIBUTION | EFFECTS);
         require(
             known || flags & REQUIRED == 0,
             Version,
@@ -269,7 +295,7 @@ fn parse_index(
                 Limit,
                 "B01 byte budget exceeded",
             )?;
-        } else if matches!(kind, METADATA | DISTRIBUTION) {
+        } else if matches!(kind, METADATA | DISTRIBUTION | EFFECTS) {
             require(
                 section.len() <= limits.max_metadata_bytes,
                 Limit,

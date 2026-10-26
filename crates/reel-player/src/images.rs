@@ -10,7 +10,7 @@ use reel_ui::{
 pub(crate) mod tiles;
 #[cfg(test)]
 use reel_core::budget::BudgetPool;
-use reel_ui::resources::ResourceLease;
+use reel_ui::resources::{EffectShaderFormat, ResourceLease};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -35,6 +35,8 @@ pub(crate) struct Images {
     wanted: BTreeMap<String, Option<String>>,
     mounted: BTreeSet<String>,
     encoded: BTreeMap<String, Arc<[u8]>>,
+    shader_sources: BTreeSet<String>,
+    pub(crate) shader_format: EffectShaderFormat,
     displayed: BTreeSet<String>,
     pending: Vec<Pending>,
     failure: Option<String>,
@@ -57,6 +59,12 @@ impl Images {
             wanted: BTreeMap::new(),
             mounted: BTreeSet::new(),
             encoded: BTreeMap::new(),
+            shader_sources: BTreeSet::new(),
+            shader_format: if cfg!(target_os = "vita") {
+                EffectShaderFormat::Sgx543
+            } else {
+                EffectShaderFormat::Wgsl
+            },
             displayed: BTreeSet::new(),
             pending: Vec::new(),
             failure: None,
@@ -71,18 +79,36 @@ impl Images {
     pub fn has_result_pending(&self) -> bool {
         self.assets.needs_poll()
     }
+    #[cfg(test)]
     pub fn request_stage(&mut self, view: &crate::stage_widget::StageView) {
-        match view.image_requests() {
+        self.request_stage_images(view.image_requests(self.shader_format));
+    }
+    pub(crate) fn request_stage_images(
+        &mut self,
+        requests: Result<crate::stage_widget::ImageRequests, String>,
+    ) {
+        match requests {
             Ok(requests) => {
                 self.encoded = requests.encoded;
+                self.shader_sources = requests.shaders;
                 self.request_mounted(requests.required, requests.mounted);
             }
             Err(error) => {
                 self.encoded.clear();
+                self.shader_sources.clear();
                 self.request(BTreeMap::new());
                 self.failure = Some(error);
             }
         }
+    }
+    pub(crate) fn requests_ready(&self, requests: &crate::stage_widget::ImageRequests) -> bool {
+        requests
+            .required
+            .keys()
+            .all(|source| self.loaded.contains_key(source) || self.manifests.contains_key(source))
+    }
+    pub(crate) fn is_required(&self, source: &str) -> bool {
+        self.wanted.contains_key(source)
     }
     pub fn request(&mut self, wanted: BTreeMap<String, Option<String>>) {
         let mounted = wanted.keys().cloned().collect();
@@ -140,6 +166,9 @@ impl Images {
                 result
                     .map(|image| match image {
                         ImageAsset::Tiled(manifest) => {
+                            if self.shader_sources.contains(&pending.source) {
+                                return Err("effect shaders require prepared shader data".into());
+                            }
                             if self.tiles.contains_key(&pending.source) {
                                 return Err("image tiles must contain raster data".into());
                             }
@@ -197,7 +226,14 @@ impl Images {
                 };
                 id
             } else {
-                self.assets.request(source.clone(), AssetKind::Image)
+                self.assets.request(
+                    source.clone(),
+                    if self.shader_sources.contains(&source) {
+                        AssetKind::EffectShader
+                    } else {
+                        AssetKind::Image
+                    },
+                )
             };
             self.push_pending(Pending {
                 source,
@@ -241,7 +277,12 @@ impl Images {
             .get(owner)
             .and_then(|origin| origin.as_deref())
             .unwrap_or("stage");
-        format!("{origin}: image {source:?}: {error}")
+        let kind = if self.shader_sources.contains(source) {
+            "effect shader"
+        } else {
+            "image"
+        };
+        format!("{origin}: {kind} {source:?}: {error}")
     }
     pub(crate) fn request_tiles(&mut self, tiles: BTreeMap<String, TileDemand>) -> bool {
         let changed = self.tiles != tiles;
@@ -385,6 +426,7 @@ impl Images {
         self.tiles.clear();
         self.manifests.clear();
         self.encoded.clear();
+        self.shader_sources.clear();
         self.skipped.clear();
         self.failure = None;
         self.commit();

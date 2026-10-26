@@ -67,28 +67,7 @@ pub(super) struct Shader {
 }
 impl Shader {
     fn new(context: &native::Context, fragment: ShaderCode<'_>) -> Result<Self, GlesError> {
-        let program = context.create_program(
-            shader_code!("vertex"),
-            fragment,
-            &[
-                AttributeBinding {
-                    location: 0,
-                    name: "a_position",
-                },
-                AttributeBinding {
-                    location: 1,
-                    name: "a_uv",
-                },
-                AttributeBinding {
-                    location: 2,
-                    name: "a_color",
-                },
-                AttributeBinding {
-                    location: 3,
-                    name: "a_window",
-                },
-            ],
-        )?;
+        let program = create_program(context, fragment)?;
         let uniforms = NAMES.iter().map(|name| program.uniform(name)).collect();
         Ok(Self { program, uniforms })
     }
@@ -115,6 +94,34 @@ impl Shader {
         self.uniform(name)
             .map(|u| UniformValue::Vec4Array(u, value))
     }
+}
+pub(super) fn create_program(
+    context: &native::Context,
+    fragment: ShaderCode<'_>,
+) -> Result<Program, GlesError> {
+    let program = context.create_program(
+        shader_code!("vertex"),
+        fragment,
+        &[
+            AttributeBinding {
+                location: 0,
+                name: "a_position",
+            },
+            AttributeBinding {
+                location: 1,
+                name: "a_uv",
+            },
+            AttributeBinding {
+                location: 2,
+                name: "a_color",
+            },
+            AttributeBinding {
+                location: 3,
+                name: "a_window",
+            },
+        ],
+    )?;
+    Ok(program)
 }
 pub(super) struct Programs {
     pub rgba: Shader,
@@ -278,6 +285,7 @@ pub(super) fn attributes() -> [VertexAttribute; 4] {
 }
 #[derive(Clone)]
 pub(super) struct Target {
+    pub size: [u32; 2],
     pub view: Texture,
     pub framebuffer: Framebuffer,
     _storage: Rc<BudgetTicket>,
@@ -313,6 +321,7 @@ impl Target {
         Ok(Self {
             view,
             framebuffer,
+            size,
             _storage: Rc::new(storage),
         })
     }

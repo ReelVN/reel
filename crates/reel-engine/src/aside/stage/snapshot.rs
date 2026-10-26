@@ -214,7 +214,7 @@ impl StageBinding {
             id: node.id.0,
             handle: self.handles[&node.id].handle,
             shape: self.handles[&node.id].shape,
-            origin: node.props.mask_origin.as_deref().map(str::to_owned),
+            origin: node.props.appearance_origin.as_deref().map(str::to_owned),
         })
     }
     pub(in crate::aside) fn restore_node(
@@ -230,7 +230,7 @@ impl StageBinding {
         };
         let value = heap.import_handle(handle)?;
         let fields = heap.host_fields(value)?;
-        let mask_origin = saved.origin.as_deref().map(Arc::from);
+        let appearance_origin = saved.origin.as_deref().map(Arc::from);
         let restored_input = if saved.shape == Shape::Input {
             Some(input::restore(heap, value, fields)?)
         } else {
@@ -258,10 +258,13 @@ impl StageBinding {
             selected,
             limit,
             None,
-            mask_origin,
+            appearance_origin,
+            &self.effect_products,
+            &mut self.effect_projection,
         )?;
         overrides::apply_offsets(heap, value, &mut props)?;
         let mask_source = mask_handle(heap, fields, saved.shape.prefix(), selected)?;
+        let effect_source = effect_stamp(heap, fields, saved.shape.prefix(), selected)?;
         let overrides = if selected.tag() == ValueTag::Null {
             None
         } else {
@@ -299,6 +302,7 @@ impl StageBinding {
                 projection_dirty: false,
                 overrides,
                 mask_source,
+                effect_source,
                 input,
                 text_history: None,
                 text_source: if matches!(

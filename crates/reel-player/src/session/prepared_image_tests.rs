@@ -163,6 +163,32 @@ fn bc_tiles_load_as_blocks_and_bind_each_visible_draw() {
         fixture_with_encoding(TileEncoding::ReelTexture);
     settle(&mut ui, &mut bridge, widget, &wake);
     assert!(ui.images.loaded.len() >= 2);
+    let image = bridge.edit_widget(
+        SessionUi::stage_widget(&bridge, widget).unwrap(),
+        |mut stage| {
+            StageWidget::image_widgets(&mut stage.downcast::<StageWidget>())
+                .remove(0)
+                .1
+        },
+    );
+    let geometry = bridge.layout_geometry().unwrap();
+    let record = geometry.get(image.widget).unwrap();
+    let manifest = ui.images.manifests[&image.source];
+    let ordinary = crate::images::tiles::visible_tiles(manifest, &image, &geometry).0;
+    let mut effect_source = image;
+    effect_source.effect_domain = Some((
+        geometry.records()[record.parent.unwrap()].id,
+        record
+            .window_transform
+            .transform_rect_bbox(record.size.to_rect()),
+    ));
+    let complete = crate::images::tiles::visible_tiles(manifest, &effect_source, &geometry).0;
+    assert!(ordinary.tiles.len() < complete.tiles.len());
+    assert_eq!(
+        complete.tiles.len(),
+        manifest.width.div_ceil(manifest.tile_edge) as usize,
+        "an effect can sample source tiles beyond its parent's visible clip"
+    );
     assert!(ui.images.loaded.values().all(|lease|matches!(lease.data(),ResourceData::Texture{descriptor,..} if descriptor.format.is_compressed())));
     assert!(
         ui.images.pool.usage().bytes < 30_000,

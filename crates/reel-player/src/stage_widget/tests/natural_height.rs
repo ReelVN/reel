@@ -481,15 +481,7 @@ fn natural_scroll_motion(wheel: bool, external: bool) {
         }
         let mut compiled = if external {
             let bytes = std::fs::read(std::env::var_os("REEL_SCROLL_ASB").unwrap()).unwrap();
-            let (program, metadata) = reel_package::decode(&bytes, reel_package::Limits::default())
-                .unwrap()
-                .into_parts();
-            reel_engine::aside::source::CompiledStory {
-                program,
-                initializer: aside_vm::bytecode::FunctionId(metadata.initializer.function_id),
-                entry: aside_vm::bytecode::FunctionId(metadata.game_entry.unwrap().function_id),
-                catalogs: Default::default(),
-            }
+            crate::distribution::decode_story(&bytes).unwrap()
         } else {
             reel_engine::aside::source::compile_story(code, "list", 1, "main").unwrap()
         };

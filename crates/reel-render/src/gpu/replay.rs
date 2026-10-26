@@ -26,6 +26,7 @@ pub(super) struct Context<'a> {
     pub(super) image_cache: &'a super::image_cache::ImageCache,
     pub(super) glyph_cache: &'a super::glyph_cache::GlyphCache,
     pub(super) glyphs: super::glyph_cache::FrameGlyphs,
+    pub(super) effects: Vec<Arc<super::effect::Compiled>>,
     pub(super) white: Option<Arc<resources::Image>>,
     pub(super) target_cache: &'a super::target_cache::TargetCache,
     pub(super) target_allocations: Vec<Arc<super::target_cache::Allocation>>,
@@ -39,6 +40,8 @@ struct Scope<'a> {
     clip: Option<&'a Clip>,
     mask: Option<reel_ui::frame::MaskUse>,
     image_mask: Option<(&'a reel_ui::frame::FrameImageMask, Affine)>,
+    effect: Option<(&'a reel_ui::frame::FrameEffect, Affine)>,
+    source_parent: Option<(Affine, [u32; 2], Scissor)>,
     opacity: f32,
     invert: f32,
     blend: reel_ui::frame::BlendMode,
@@ -71,6 +74,7 @@ struct Stream<'a> {
     commands: &'a [FrameCommand],
     groups: crate::common::scopes::GroupPlan,
     next: usize,
+    size: [u32; 2],
     transform: Affine,
     scopes: Scopes<Scope<'a>>,
     pending: Option<Pending<'a>>,
@@ -78,8 +82,12 @@ struct Stream<'a> {
 impl Context<'_> {
     pub(super) fn target(&mut self) -> Result<Target, GpuError> {
         self.flush_draws()?;
-        let target = if let Some(target) = self.available_targets.pop() {
-            target
+        let target = if let Some(index) = self
+            .available_targets
+            .iter()
+            .rposition(|target| target.size == self.size)
+        {
+            self.available_targets.swap_remove(index)
         } else {
             let cost = target_bytes(self.size, self.quality)?;
             let local = self
@@ -207,6 +215,7 @@ impl Context<'_> {
                 let Some(parent) = streams.last_mut() else {
                     return Ok(finished);
                 };
+                self.size = parent.size;
                 self.scissor = parent.scopes.last().scissor;
                 match parent.pending.take().expect("suspended composition") {
                     Pending::Mask(mask) => {
@@ -309,6 +318,8 @@ impl Context<'_> {
                             mesh_clip: mesh_clip.or(self.mesh_clip),
                             mask: None,
                             image_mask: None,
+                            effect: None,
+                            source_parent: None,
                             opacity: 1.,
                             invert: 0.,
                             blend: Default::default(),
@@ -363,6 +374,31 @@ impl Context<'_> {
                         });
                     }
                     let isolated = !current.groups.can_inline(current.next - 1);
+                    let output_scissor = Scissor::group_bounds(
+                        group,
+                        transform,
+                        self.size,
+                        current.transitions_enabled && !current.drawing.transitions().is_empty(),
+                    )
+                    .map_or(self.scissor, |bounds| self.scissor.intersect(bounds));
+                    let source_parent = if let Some(effect) = &group.effect {
+                        let source = crate::common::effect_plan::source_layout(
+                            effect,
+                            group.effect_to_target,
+                            transform,
+                            self.gpu.device.limits().max_texture_dimension_2d,
+                            at,
+                        )?;
+                        self.flush_draws()?;
+                        let parent = (current.transform, self.size, output_scissor);
+                        current.transform = source.frame_to_source;
+                        current.size = source.size;
+                        self.size = source.size;
+                        self.mesh_clip = None;
+                        Some(parent)
+                    } else {
+                        None
+                    };
                     current.scopes.push(
                         Kind::Group,
                         at,
@@ -373,8 +409,13 @@ impl Context<'_> {
                                 current.scopes.last().target.clone()
                             },
                             mesh_clip: self.mesh_clip,
+                            source_parent,
                             clip: group.clip.as_ref(),
                             mask: group.mask,
+                            effect: group
+                                .effect
+                                .as_ref()
+                                .map(|effect| (effect, transform * group.effect_to_target)),
                             image_mask: group
                                 .image_mask
                                 .as_ref()
@@ -382,14 +423,11 @@ impl Context<'_> {
                             opacity: group.composite.alpha,
                             invert: group.invert,
                             blend: group.composite.blend,
-                            scissor: Scissor::group_bounds(
-                                group,
-                                transform,
-                                self.size,
-                                current.transitions_enabled
-                                    && !current.drawing.transitions().is_empty(),
-                            )
-                            .map_or(self.scissor, |bounds| self.scissor.intersect(bounds)),
+                            scissor: if source_parent.is_some() {
+                                Scissor::full(self.size)
+                            } else {
+                                output_scissor
+                            },
                             isolated,
                         },
                         |bytes| self.transient(bytes),
@@ -403,14 +441,32 @@ impl Context<'_> {
                     };
                     let entry = current.scopes.pop(kind, at)?;
                     let group = entry.value;
+                    if group.isolated {
+                        self.flush_draws()?;
+                    }
+                    if let Some((outer, size, _)) = group.source_parent {
+                        current.transform = outer;
+                        current.size = size;
+                        self.size = size;
+                    }
+                    let transform = current.transform;
                     self.scissor = current.scopes.last().scissor;
                     self.mesh_clip = current.scopes.last().mesh_clip;
                     if !group.isolated {
                         continue;
                     }
-                    self.flush_draws()?;
-                    self.scissor = self.scissor.intersect(group.scissor);
+                    self.scissor = self.scissor.intersect(
+                        group
+                            .source_parent
+                            .map_or(group.scissor, |(_, _, scissor)| scissor),
+                    );
                     let mut source = group.target;
+                    if let Some((effect, transform)) = group.effect {
+                        let processed =
+                            self.effect(current.drawing, effect, transform, &source, entry.at)?;
+                        self.recycle_target(source)?;
+                        source = processed;
+                    }
                     if let Some(clip) = group.clip {
                         let coverage = self.target()?;
                         self.clip(&coverage, clip, transform, entry.at)?;
@@ -576,6 +632,7 @@ impl Context<'_> {
             commands,
             groups,
             next: 0,
+            size: self.size,
             transform,
             scopes: Scopes::new(Scope {
                 target: self.target()?,
@@ -583,6 +640,8 @@ impl Context<'_> {
                 clip: None,
                 mask: None,
                 image_mask: None,
+                effect: None,
+                source_parent: None,
                 opacity: 1.,
                 invert: 0.,
                 blend: Default::default(),

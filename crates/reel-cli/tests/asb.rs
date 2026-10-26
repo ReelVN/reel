@@ -244,6 +244,7 @@ fn private_entry_uses_the_linked_module_declaration_and_project_initializer() {
             &read.program().encode(Default::default()).unwrap(),
             m,
             None,
+            read.effects(),
             Limits::default()
         )
         .unwrap(),
@@ -523,6 +524,7 @@ fn embedded_distribution_roundtrips_and_seek_reader_skips_code_payloads() {
         &package.program().encode(Default::default()).unwrap(),
         package.metadata(),
         Some(&manifest),
+        package.effects(),
         Limits::default(),
     )
     .unwrap();

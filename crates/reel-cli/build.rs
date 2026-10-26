@@ -29,6 +29,12 @@ fn main() -> io::Result<()> {
     ];
     let video = ["crates/reel-cli/src/prepare_video.rs"];
     let font = ["crates/reel-cli/src/prepare_font.rs"];
+    let effects = [
+        "crates/reel-cli/src/prepare_effects.rs",
+        "crates/reel-render/src/common/effect.rs",
+        "crates/reel-ui/src/resources/effect.rs",
+        "crates/reel-ui/src/stage/effect.rs",
+    ];
     let mut watched = BTreeSet::new();
     for (kind, sources) in [
         ("TEXTURE", texture.as_slice()),
@@ -60,6 +66,28 @@ fn main() -> io::Result<()> {
             hash.finalize().to_hex()
         );
     }
+    let lock = fs::read_to_string(root.join("Cargo.lock"))?;
+    // Shader products depend on their generator and the pinned compiler, not
+    // unrelated image/audio dependencies or the absolute checkout location.
+    let mut hash = blake3::Hasher::new();
+    field(&mut hash, b"Reel effect compiler v1");
+    for source in effects {
+        let path = root.join(source);
+        watched.insert(path.clone());
+        field(&mut hash, source.as_bytes());
+        field(&mut hash, &fs::read(path)?);
+    }
+    let compiler = lock
+        .split("[[package]]")
+        .find(|entry| entry.lines().any(|line| line == "name = \"pvr-compiler\""))
+        .ok_or_else(|| io::Error::other("missing pinned effect compiler"))?;
+    let compiler_id = blake3::hash(compiler.as_bytes()).to_hex();
+    field(&mut hash, compiler_id.as_bytes());
+    println!("cargo:rustc-env=REEL_EFFECT_COMPILER={compiler_id}");
+    println!(
+        "cargo:rustc-env=REEL_CONVERTER_EFFECT={}",
+        hash.finalize().to_hex()
+    );
     // Directory watches also detect newly added media implementation files.
     for path in watched {
         println!("cargo:rerun-if-changed={}", path.display());

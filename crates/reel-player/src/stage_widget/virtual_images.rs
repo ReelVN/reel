@@ -52,6 +52,59 @@ impl StageView {
 }
 
 impl StageWidget {
+    /// Inspect composed live geometry before starting raster IO. Fixed-size
+    /// images can participate in this layout without an image child or pixels.
+    /// The physical tree includes popup placement, camera transforms and scroll clips.
+    pub(crate) fn offscreen_images(
+        root: &reel_ui::app::RenderRoot,
+        root_id: WidgetId,
+    ) -> Vec<NodeId> {
+        fn visit(widget: WidgetRef<'_, dyn Widget>, viewport: Rect, outside: &mut Vec<NodeId>) {
+            if widget.ctx().is_stashed() || widget.is_cursor() {
+                return;
+            }
+            let viewport = crate::images::tiles::clipped_viewport(
+                viewport,
+                widget.ctx().window_transform(),
+                widget.ctx().clip_path(),
+            );
+            if let Some(scene) = widget.downcast::<SceneWidget>() {
+                // Virtual lists own overscan prefetch and partial presentation.
+                // Effects may sample source content at a different position.
+                if !scene.projection.image_branch
+                    || scene.node.props.effect.is_some()
+                    || matches!(scene.node.kind, NodeKind::VirtualList(_))
+                {
+                    return;
+                }
+                if scene.projection.has_fixed_image_size() {
+                    let bounds = widget
+                        .ctx()
+                        .window_transform()
+                        .transform_rect_bbox(widget.ctx().content_box());
+                    // Keep one physical pixel for raster edge coverage.
+                    let edge = 1. / widget.ctx().scale_factor();
+                    let visible = bounds.inflate(edge, edge).intersect(viewport);
+                    if bounds.is_finite() && (visible.width() <= 0. || visible.height() <= 0.) {
+                        outside.push(scene.node.id);
+                    }
+                }
+            }
+            for child in widget.children() {
+                visit(child, viewport, outside);
+            }
+        }
+        let mut outside = Vec::new();
+        let widget = root.get_widget(root_id).unwrap();
+        let viewport = widget
+            .ctx()
+            .window_transform()
+            .transform_rect_bbox(widget.ctx().content_box());
+        visit(widget, viewport, &mut outside);
+        outside.sort_unstable();
+        outside
+    }
+
     /// Inspect the one current layout tree. Ready consecutive rows must cover the
     /// viewport, and every row whose painted subtree reaches it must be ready.
     pub(crate) fn virtual_images_visible_ready(
@@ -60,6 +113,7 @@ impl StageWidget {
         candidate: &StageView,
         geometry: &reel_ui::app::PresentedGeometryView,
         images: &BTreeMap<String, ResourceLease>,
+        format: EffectShaderFormat,
     ) -> bool {
         fn visit(
             stage: &StageWidget,
@@ -67,6 +121,7 @@ impl StageWidget {
             node: &SceneNode,
             geometry: &reel_ui::app::PresentedGeometryView,
             images: &BTreeMap<String, ResourceLease>,
+            format: EffectShaderFormat,
         ) -> bool {
             if !node.node.props.visible {
                 return true;
@@ -98,12 +153,13 @@ impl StageWidget {
                         .iter()
                         .find(|child| child.node.id == row.node)
                         .unwrap();
-                    let ready = StageView::image_requests_for(Some(child)).is_ok_and(|requests| {
-                        requests
-                            .required
-                            .keys()
-                            .all(|source| images.contains_key(source))
-                    });
+                    let ready =
+                        StageView::image_requests_for(Some(child), format).is_ok_and(|requests| {
+                            requests
+                                .required
+                                .keys()
+                                .all(|source| images.contains_key(source))
+                        });
                     let actual = stage
                         .nodes
                         .get(&row.node)
@@ -153,11 +209,11 @@ impl StageWidget {
                 }
             }
             node.physical_children()
-                .all(|child| visit(stage, root, child, geometry, images))
+                .all(|child| visit(stage, root, child, geometry, images, format))
         }
         candidate
             .root
             .as_ref()
-            .is_some_and(|node| visit(self, root, node, geometry, images))
+            .is_some_and(|node| visit(self, root, node, geometry, images, format))
     }
 }

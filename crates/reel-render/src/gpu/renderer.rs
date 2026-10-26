@@ -32,6 +32,7 @@ pub struct Prepared {
     tickets: Vec<Reservation>,
     images: HashMap<reel_ui::resources::ResourceHandle, Arc<super::resources::Image>>,
     glyphs: super::glyph_cache::FrameGlyphs,
+    effects: Vec<Arc<super::effect::Compiled>>,
     targets: Vec<Arc<super::target_cache::Allocation>>,
     budget_scope: Budgets,
     admission: BudgetTicket,
@@ -57,6 +58,7 @@ struct Inflight {
     _tickets: Vec<Reservation>,
     _images: HashMap<reel_ui::resources::ResourceHandle, Arc<super::resources::Image>>,
     _glyphs: super::glyph_cache::FrameGlyphs,
+    _effects: Vec<Arc<super::effect::Compiled>>,
     _targets: Vec<Arc<super::target_cache::Allocation>>,
     _admission: BudgetTicket,
 }
@@ -242,8 +244,14 @@ impl Renderer {
             // sample counts can need different clip targets and must be admitted
             // using the same coverage policy as replay.
             let mut plan_tickets = Vec::new();
-            let mut plan = |frame| {
-                super::targets::peak_targets(frame, size, capture, samples, |bytes| {
+            let targets = super::targets::target_pixels(
+                frame,
+                second.map(|(frame, _)| frame),
+                size,
+                capture,
+                samples,
+                self.gpu.device.limits().max_texture_dimension_2d,
+                |bytes| {
                     plan_tickets.push(reserve(
                         &self.budgets.transient,
                         &budget_scope.transient,
@@ -252,12 +260,8 @@ impl Renderer {
                         "transient",
                     )?);
                     Ok(())
-                })
-            };
-            let mut targets = plan(frame)?;
-            if let Some((second, _)) = second {
-                targets = targets.max(1 + plan(second)?).max(3);
-            }
+                },
+            )?;
             previous_plan = Some((samples, targets));
             Ok(targets)
         })?;
@@ -337,6 +341,7 @@ impl Renderer {
             image_cache: &self.images,
             glyph_cache: &self.glyphs,
             glyphs: Default::default(),
+            effects: Vec::new(),
             white: None,
             target_cache: &self.targets,
             target_allocations: Vec::new(),
@@ -377,6 +382,7 @@ impl Renderer {
             tickets: ctx.tickets,
             images: ctx.images,
             glyphs: ctx.glyphs,
+            effects: ctx.effects,
             targets: ctx.target_allocations,
             budget_scope: ctx.budget_scope,
             admission,
@@ -420,6 +426,7 @@ impl Renderer {
             _tickets: prepared.tickets,
             _images: prepared.images,
             _glyphs: prepared.glyphs,
+            _effects: prepared.effects,
             _targets: prepared.targets,
             _admission: prepared.admission,
         });

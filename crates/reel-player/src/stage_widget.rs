@@ -10,7 +10,7 @@ use reel_ui::{
         Background, BorderColor, BorderWidth, ContentColor, CornerRadius, ThumbColor, ThumbRadius,
         TrackColor, TrackThickness,
     },
-    resources::{ResourceData, ResourceLease},
+    resources::{EffectShaderFormat, ResourceData, ResourceLease},
     stage::{
         ControlValue, InteractionState, NodeChange, NodeClick, NodeEvent, NodeId, NodeInteraction,
         NodeKind, NodeProps, NodeRevision, NodeText, NodeVirtualList, Stage, StageIdentity,
@@ -78,6 +78,7 @@ struct SceneNode {
 }
 #[derive(Clone, Default)]
 struct SceneImages {
+    effect_shader: Option<ResourceLease>,
     image: Option<ImageData>,
     image_resource: Option<ResourceLease>,
     mask_images: Arc<[ResourceLease]>,
@@ -86,7 +87,9 @@ struct SceneImages {
 }
 impl PartialEq for SceneImages {
     fn eq(&self, other: &Self) -> bool {
-        self.image.as_ref().map(|i| i.data.id()) == other.image.as_ref().map(|i| i.data.id())
+        self.effect_shader.as_ref().map(ResourceLease::handle)
+            == other.effect_shader.as_ref().map(ResourceLease::handle)
+            && self.image.as_ref().map(|i| i.data.id()) == other.image.as_ref().map(|i| i.data.id())
             && self.image_resource.as_ref().map(ResourceLease::handle)
                 == other.image_resource.as_ref().map(ResourceLease::handle)
             && self
@@ -104,6 +107,11 @@ impl PartialEq for SceneImages {
     }
 }
 impl SceneNode {
+    fn has_fixed_image_size(&self) -> bool {
+        matches!(self.node.kind, NodeKind::Image { .. })
+            && self.node.props.width.is_some()
+            && self.node.props.height.is_some()
+    }
     fn popup_branch(&self) -> bool {
         matches!(self.node.kind, NodeKind::Popup(_)) || self.children_summary.popup
     }
@@ -150,6 +158,8 @@ pub(crate) struct ImageRequests {
     pub required: BTreeMap<String, Option<String>>,
     pub mounted: std::collections::BTreeSet<String>,
     pub encoded: BTreeMap<String, std::sync::Arc<[u8]>>,
+    pub shaders: std::collections::BTreeSet<String>,
+    pub deferred_images: bool,
 }
 impl StageView {
     #[cfg(test)]
@@ -278,6 +288,7 @@ impl StageView {
             };
             let image_branch = matches!(node.kind, NodeKind::Image { .. } | NodeKind::Particles(_))
                 || node.props.mask.is_some()
+                || node.props.effect.is_some()
                 || children_summary.image;
             let button_branch =
                 matches!(node.kind, NodeKind::Button { .. }) || children_summary.button;
@@ -301,6 +312,9 @@ impl StageView {
             }
             if node.props.mask.is_none() {
                 images.mask_images = Arc::from([]);
+            }
+            if node.props.effect.is_none() {
+                images.effect_shader = None;
             }
             Arc::new(SceneNode {
                 node,
@@ -446,18 +460,48 @@ impl StageView {
                 .collect(),
         )
     }
-    pub fn image_requests(&self) -> Result<ImageRequests, String> {
-        Self::image_requests_for(self.root.as_ref())
+    #[cfg(test)]
+    pub fn image_requests(&self, format: EffectShaderFormat) -> Result<ImageRequests, String> {
+        Self::image_requests_for(self.root.as_ref(), format)
     }
-    fn image_requests_for(root: Option<&Arc<SceneNode>>) -> Result<ImageRequests, String> {
+    fn image_requests_for(
+        root: Option<&Arc<SceneNode>>,
+        format: EffectShaderFormat,
+    ) -> Result<ImageRequests, String> {
+        Self::collect_image_requests(root, format, |_, _| true)
+    }
+    pub(crate) fn layout_image_requests(
+        &self,
+        format: EffectShaderFormat,
+    ) -> Result<ImageRequests, String> {
+        Self::collect_image_requests(self.root.as_ref(), format, |node, cursor| {
+            cursor || !node.has_fixed_image_size()
+        })
+    }
+    pub(crate) fn viewport_image_requests(
+        &self,
+        outside: &[NodeId],
+        format: EffectShaderFormat,
+    ) -> Result<ImageRequests, String> {
+        Self::collect_image_requests(self.root.as_ref(), format, |node, cursor| {
+            cursor || outside.binary_search(&node.node.id).is_err()
+        })
+    }
+    fn collect_image_requests(
+        root: Option<&Arc<SceneNode>>,
+        format: EffectShaderFormat,
+        required: impl Fn(&SceneNode, bool) -> bool,
+    ) -> Result<ImageRequests, String> {
         let mut requests = BTreeMap::new();
         let mut mounted = std::collections::BTreeSet::new();
         let mut encoded = BTreeMap::new();
+        let mut shaders = std::collections::BTreeSet::new();
+        let mut deferred_images = false;
         let mut pending: Vec<_> = root
             .into_iter()
-            .map(|node| (node, true, true, false))
+            .map(|node| (node, true, true, false, false))
             .collect();
-        while let Some((node, parent_visible, parent_enabled, has_parent)) = pending.pop() {
+        while let Some((node, parent_visible, parent_enabled, has_parent, cursor)) = pending.pop() {
             if !node.image_branch {
                 continue;
             }
@@ -465,10 +509,11 @@ impl StageView {
             let enabled = parent_enabled
                 && node.node.props.enabled
                 && !matches!(node.node.kind, NodeKind::Cursor);
+            let cursor = cursor || matches!(node.node.kind, NodeKind::Cursor);
             pending.extend(
                 node.children
                     .iter()
-                    .map(|child| (child, visible, enabled, true)),
+                    .map(|child| (child, visible, enabled, true, cursor)),
             );
             if let Some((source, _)) = image_source(&node.node.kind) {
                 mounted.insert(source.to_owned());
@@ -476,13 +521,31 @@ impl StageView {
             if let Some(mask) = &node.node.props.mask {
                 mounted.extend(mask.sources().iter().map(|source| source.to_string()));
             }
+            if let Some(effect) = &node.node.props.effect {
+                let source = format.asset_path(effect.definition());
+                mounted.insert(source.clone());
+                if visible {
+                    requests.entry(source.clone()).or_insert_with(|| {
+                        node.node
+                            .props
+                            .appearance_origin
+                            .as_deref()
+                            .map(str::to_owned)
+                    });
+                    shaders.insert(source);
+                }
+            }
             if !visible {
                 continue;
             }
             if let Some((source, origin)) = image_source(&node.node.kind) {
-                requests
-                    .entry(source.to_owned())
-                    .or_insert_with(|| origin.clone());
+                if required(node, cursor) {
+                    requests
+                        .entry(source.to_owned())
+                        .or_insert_with(|| origin.clone());
+                } else {
+                    deferred_images = true;
+                }
             }
             if let NodeKind::Image { source, .. } = &node.node.kind
                 && let Some(bytes) = source.bytes()
@@ -490,7 +553,7 @@ impl StageView {
                 encoded.insert(source.key().to_owned(), bytes.clone());
             }
             for source in node.node.props.mask.iter().flat_map(|mask| mask.sources()) {
-                let origin = node.node.props.mask_origin.as_deref();
+                let origin = node.node.props.appearance_origin.as_deref();
                 requests
                     .entry(source.to_string())
                     .or_insert_with(|| origin.map(str::to_owned));
@@ -500,11 +563,15 @@ impl StageView {
             required: requests,
             mounted,
             encoded,
+            shaders,
+            deferred_images,
         })
     }
+    #[cfg(test)]
     pub fn resolve_images(
         &mut self,
         images: &BTreeMap<String, ResourceLease>,
+        format: EffectShaderFormat,
     ) -> Result<(), String> {
         self.resources.clear();
         let mut handles = std::collections::BTreeSet::new();
@@ -512,6 +579,13 @@ impl StageView {
             let mut resolved = SceneImages::default();
             if !visible {
                 return resolved;
+            }
+            if let Some(effect) = &node.node.props.effect {
+                let lease = &images[&format.asset_path(effect.definition())];
+                resolved.effect_shader = Some(lease.clone());
+                if handles.insert(lease.handle()) {
+                    self.resources.push(lease.clone());
+                }
             }
             if let Some((source, _)) = image_source(&node.node.kind) {
                 let lease = &images[source];
@@ -551,6 +625,19 @@ impl StageView {
         Ok(())
     }
     pub fn resolve_metadata(&mut self, images: &crate::images::Images) -> Result<(), String> {
+        self.resolve_metadata_for(images, true)
+    }
+    pub(crate) fn resolve_layout_images(
+        &mut self,
+        images: &crate::images::Images,
+    ) -> Result<(), String> {
+        self.resolve_metadata_for(images, false)
+    }
+    fn resolve_metadata_for(
+        &mut self,
+        images: &crate::images::Images,
+        required_only: bool,
+    ) -> Result<(), String> {
         self.resources.clear();
         let mut resources = std::collections::BTreeSet::new();
         let mut failure = None;
@@ -559,13 +646,25 @@ impl StageView {
             if !visible || failure.is_some() {
                 return resolved;
             }
+            if let Some(effect) = &node.node.props.effect
+                && let Some(lease) = images
+                    .loaded
+                    .get(&images.shader_format.asset_path(effect.definition()))
+            {
+                resolved.effect_shader = Some(lease.clone());
+                if resources.insert(lease.handle()) {
+                    self.resources.push(lease.clone());
+                }
+            }
             if let Some(lease) = image_resource(&node.node.kind) {
                 resolved.image_resource = Some(lease.clone());
                 if resources.insert(lease.handle()) {
                     self.resources.push(lease.clone());
                 }
             }
-            if let Some((source, origin)) = image_source(&node.node.kind) {
+            if let Some((source, origin)) = image_source(&node.node.kind)
+                && (!required_only || images.is_required(source))
+            {
                 if let Some(manifest) = images.manifests.get(source) {
                     let restriction = match &node.node.kind {
                         NodeKind::Particles(_) => {
@@ -615,7 +714,11 @@ impl StageView {
                 {
                     failure = Some(format!(
                         "{}: mask image {source:?}: masks require a whole PNG, JPEG or .reel-texture image",
-                        node.node.props.mask_origin.as_deref().unwrap_or("stage")
+                        node.node
+                            .props
+                            .appearance_origin
+                            .as_deref()
+                            .unwrap_or("stage")
                     ));
                     return resolved;
                 }
@@ -755,10 +858,19 @@ impl StageWidget {
     ) -> Vec<(NodeId, crate::images::tiles::ImageGeometry)> {
         fn visit(
             this: &mut WidgetMut<'_, SceneWidget>,
+            mut effect_domain: Option<(WidgetId, Rect)>,
             out: &mut Vec<(NodeId, crate::images::tiles::ImageGeometry)>,
         ) {
             if !this.widget.node.props.visible || !this.widget.projection.image_branch {
                 return;
+            }
+            if this.widget.node.props.effect.is_some() {
+                effect_domain = Some((
+                    this.ctx.widget_id(),
+                    this.ctx
+                        .window_transform()
+                        .transform_rect_bbox(this.widget.size.to_rect()),
+                ));
             }
             if let (
                 Some(image),
@@ -777,12 +889,13 @@ impl StageWidget {
                         widget: image.id(),
                         fit: *fit,
                         source_rect: *source_rect,
+                        effect_domain,
                     },
                 ));
             }
             for (_, pod) in &mut this.widget.children {
                 if let Some(mut child) = this.ctx.get_mut(pod) {
-                    visit(&mut child, out);
+                    visit(&mut child, effect_domain, out);
                 }
             }
         }
@@ -790,7 +903,7 @@ impl StageWidget {
         if let Some(root) = &mut this.widget.root
             && let Some(mut root) = this.ctx.get_mut(root)
         {
-            visit(&mut root, &mut out);
+            visit(&mut root, None, &mut out);
         }
         out
     }
@@ -996,6 +1109,7 @@ impl VirtualListState {
 }
 
 struct SceneWidget {
+    effect_shader: Option<ResourceLease>,
     node: Arc<SceneProperties>,
     projection: Arc<SceneNode>,
     sync_dirty: bool,
@@ -1344,6 +1458,7 @@ impl SceneWidget {
                 .then(|| view.images.image_resource.clone())
                 .flatten(),
             mask_images: view.images.mask_images.clone(),
+            effect_shader: view.images.effect_shader.clone(),
             image: Self::image_widget(view),
             image_size: view.image_size(),
             children: view
@@ -1382,6 +1497,20 @@ impl SceneWidget {
         #[cfg(test)]
         {
             this.widget.syncs += 1;
+        }
+        if this
+            .widget
+            .effect_shader
+            .as_ref()
+            .map(ResourceLease::handle)
+            != view
+                .images
+                .effect_shader
+                .as_ref()
+                .map(ResourceLease::handle)
+        {
+            this.widget.effect_shader = view.images.effect_shader.clone();
+            this.ctx.request_render();
         }
         if !this
             .widget
@@ -2804,6 +2933,18 @@ impl Widget for SceneWidget {
         }
     }
     fn pre_paint(&mut self, ctx: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, _: &mut Painter<'_>) {
+        ctx.set_subtree_effect(
+            self.node
+                .props
+                .effect
+                .as_ref()
+                .zip(self.effect_shader.as_ref())
+                .map(|(instance, shader)| PaintEffect {
+                    instance: instance.clone(),
+                    shader: shader.clone(),
+                    bounds: self.size.to_rect(),
+                }),
+        );
         let mask = self
             .node
             .props

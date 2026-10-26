@@ -14,8 +14,8 @@ use crate::app::{
 };
 use crate::core::recorded_paint::{CachedPaint, RecordingSink};
 use crate::core::{
-    DefaultProperties, PaintCtx, PaintImageMask, PaintLayerMode, PropertiesRef, PropertyArena,
-    WidgetArenaNode, WidgetId,
+    DefaultProperties, PaintCtx, PaintLayerMode, PropertiesRef, PropertyArena, WidgetArenaNode,
+    WidgetId, WidgetState,
 };
 use crate::imaging::record::{Clip, Command, Geometry, Group, Scene};
 use crate::imaging::{Composite, PaintSink, Painter};
@@ -96,6 +96,7 @@ impl LayerCollector {
                     owner,
                     effect_transform: Affine::IDENTITY,
                     image_mask: None,
+                    effect: None,
                     invert: 0.,
                     blend: None,
                 });
@@ -144,15 +145,24 @@ impl LayerCollector {
 
     fn push_subtree_composite(
         &mut self,
-        mask: Option<&PaintImageMask>,
-        opacity: f32,
-        invert: f32,
-        blend: crate::frame::BlendMode,
+        state: &WidgetState,
         transform: Affine,
         owner: WidgetId,
     ) -> bool {
-        let mask = mask.filter(|mask| !mask.is_identity());
-        if mask.is_none() && opacity == 1. && invert == 0. && blend == Default::default() {
+        let mask = state
+            .subtree_image_mask
+            .as_deref()
+            .filter(|mask| !mask.is_identity());
+        let effect = state.subtree_effect.as_deref();
+        let opacity = state.subtree_opacity;
+        let invert = state.subtree_invert;
+        let blend = state.subtree_blend;
+        if mask.is_none()
+            && effect.is_none()
+            && opacity == 1.
+            && invert == 0.
+            && blend == Default::default()
+        {
             return false;
         }
         let group = Group {
@@ -170,6 +180,7 @@ impl LayerCollector {
             owner,
             effect_transform: transform,
             image_mask: mask.cloned(),
+            effect: effect.cloned(),
             invert,
             blend: Some(blend),
         });
@@ -291,6 +302,21 @@ impl LayerCollector {
 }
 
 // --- MARK: PAINT WIDGET
+fn paint_viewport(
+    state: &WidgetState,
+    parent: Rect,
+    border_to_window: Affine,
+    content_to_window: Affine,
+) -> Rect {
+    if let Some(effect) = &state.subtree_effect {
+        content_to_window.transform_rect_bbox(effect.bounds)
+    } else {
+        state.clip_path.map_or(parent, |clip| {
+            parent.intersect(border_to_window.transform_rect_bbox(clip))
+        })
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "recursive paint pass borrows disjoint tree and cache state"
@@ -371,10 +397,13 @@ fn paint_widget(
     let is_stashed = state.is_stashed;
 
     let border_box_to_window = layer_collector.transform * border_box_to_layer_transform;
-    let viewport = state.clip_path.map_or(parent_viewport, |clip| {
-        parent_viewport.intersect(border_box_to_window.transform_rect_bbox(clip))
-    });
     let content_to_window = border_box_to_window.pre_translate(state.border_box_translation());
+    let mut viewport = paint_viewport(
+        state,
+        parent_viewport,
+        border_box_to_window,
+        content_to_window,
+    );
     let inverse = content_to_window.inverse();
     let local_viewport = inverse
         .is_finite()
@@ -443,6 +472,23 @@ fn paint_widget(
                 1 => widget.paint(&mut ctx, &props, &mut painter),
                 _ => widget.post_paint(&mut ctx, &props, &mut painter),
             }
+            if phase == 0 {
+                // Pre-paint can install or remove an effect in this frame. Its
+                // complete source domain must reach text painting and children.
+                let next = paint_viewport(
+                    state,
+                    parent_viewport,
+                    border_box_to_window,
+                    content_to_window,
+                );
+                if next != viewport {
+                    viewport = next;
+                    let local = inverse
+                        .is_finite()
+                        .then(|| inverse.transform_rect_bbox(viewport));
+                    state.request_paint |= widget.set_paint_viewport(local);
+                }
+            }
         }
     }
 
@@ -487,15 +533,18 @@ fn paint_widget(
     let previous_capture = layer_collector.capture_included;
     layer_collector.capture_included &= widget.capture_included();
     let subtree = layer_collector.begin_subtree(id, previous_suppression);
+    let effect_clip = has_clip && state.subtree_effect.is_some();
+    if effect_clip && !suppress_output {
+        layer_collector.paint(id, |scene| {
+            scene.push_clip(Clip::Fill {
+                transform: border_box_to_layer_transform,
+                shape: Geometry::Rect(state.clip_path.unwrap()),
+                fill_rule: Fill::NonZero,
+            });
+        });
+    }
     let has_composite_group = !suppress_output
-        && layer_collector.push_subtree_composite(
-            state.subtree_image_mask.as_deref(),
-            state.subtree_opacity,
-            state.subtree_invert,
-            state.subtree_blend,
-            content_box_to_layer_transform,
-            id,
-        );
+        && layer_collector.push_subtree_composite(state, content_box_to_layer_transform, id);
 
     if !suppress_output {
         let Some((pre_scene, scene, _)) = &mut scene_cache.get(&id) else {
@@ -518,7 +567,7 @@ fn paint_widget(
             },
         );
 
-        if let Some(clip) = state.clip_path {
+        if let Some(clip) = state.clip_path.filter(|_| !effect_clip) {
             // The clip path is stored in border-box space, so need to use that transform.
             layer_collector.paint(id, |scene| {
                 scene.push_clip(Clip::Fill {
@@ -606,7 +655,7 @@ fn paint_widget(
             });
         }
 
-        if has_clip {
+        if has_clip && !effect_clip {
             layer_collector.paint(id, |scene| scene.pop_clip());
         }
 
@@ -644,6 +693,9 @@ fn paint_widget(
 
     if has_composite_group {
         layer_collector.paint(id, |scene| scene.pop_group());
+    }
+    if effect_clip && !suppress_output {
+        layer_collector.paint(id, |scene| scene.pop_clip());
     }
 
     layer_collector.end_subtree(subtree);

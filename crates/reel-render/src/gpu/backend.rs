@@ -113,6 +113,7 @@ impl RenderBackend for WgpuBackend {
                 RenderEffect::AlphaMask,
                 RenderEffect::LuminanceMask,
                 RenderEffect::ImageMask,
+                RenderEffect::ShaderEffect,
                 RenderEffect::Filters,
             ],
             max_texture_size: max,

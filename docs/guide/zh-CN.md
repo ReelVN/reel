@@ -1085,6 +1085,28 @@ stage.replace(stack(width: 320, height: 180, background: "#204060") {
 });
 ```
 
+用 `effect` 将绘制函数应用到节点及其子树。`Fragment.sample()` 读取子树合成后的颜色；返回颜色替换结果，或返回浮点数控制覆盖率。参数绑定普通状态后，控件和动画都可以改变效果。
+
+```aside
+use reel::types::Fragment;
+
+fn tint(pixel: Fragment, amount: float = 0.5) -> (float, float, float, float) {
+    let (r, g, b, a) = pixel.sample();
+    (r * amount, g, b, a)
+}
+
+fn main() {
+    let state = model({amount: 0.5});
+    let paint = effect(tint, params: {amount: bind(state.amount)});
+    stage.replace(column(gap: 16) {
+        slider(value: bind(state.amount), min: 0, max: 1, step: 0.01, width: 320);
+        stack(width: 320, height: 180, background: "#ffffff", effect: paint) {
+            text("After the rain", color: "#803020");
+        };
+    });
+}
+```
+
 连续粒子用于雨、雪或飘落物。一个粒子节点共享素材，由发射活动控制节奏与寿命。
 
 ```aside

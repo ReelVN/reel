@@ -583,7 +583,8 @@ fn image_resolution_and_removal_invalidate_only_the_resource_branch() {
                 }
             });
         } else {
-            next.resolve_images(&BTreeMap::new()).unwrap();
+            next.resolve_images(&BTreeMap::new(), EffectShaderFormat::Wgsl)
+                .unwrap();
         }
         sync(&mut root, widget, &next);
         let parent = scene(&root, widget);
@@ -608,7 +609,9 @@ fn image_resolution_and_removal_invalidate_only_the_resource_branch() {
         .update(picture, NodeKind::Stack, NodeProps::default())
         .unwrap();
     let mut removed = StageView::update(&stage, Some(&view));
-    removed.resolve_images(&BTreeMap::new()).unwrap();
+    removed
+        .resolve_images(&BTreeMap::new(), EffectShaderFormat::Wgsl)
+        .unwrap();
     let projected = &removed.root.as_ref().unwrap().children[1];
     assert!(!projected.image_branch);
     assert!(projected.images == SceneImages::default());

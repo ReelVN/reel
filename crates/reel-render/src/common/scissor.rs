@@ -98,9 +98,9 @@ impl Scissor {
         let bounds = (outer * *transform).transform_rect_bbox(*rect);
         Self::conservative_bounds(bounds, size)
     }
-    /// Bound a completed group's source in frame coordinates, independently of
-    /// its effect-local mask transform. Masks, opacity and RGB inversion cannot
-    /// add coverage outside this source. Only zero-source identity blends qualify.
+    /// Bound a completed group's output in frame coordinates, independently of
+    /// its effect-local transform. FrameBuild includes shader effects' logical
+    /// output domain. Only zero-source identity blends qualify.
     /// Retained transitions can draw an older, larger source absent from this ink.
     pub fn group_bounds(
         group: &FrameGroup,
@@ -161,6 +161,7 @@ mod tests {
     fn group(ink_bounds: InkBounds) -> FrameGroup {
         FrameGroup {
             image_mask: None,
+            effect: None,
             clip: None,
             mask: None,
             filters: Vec::new(),

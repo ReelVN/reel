@@ -52,6 +52,7 @@ fn restore(value: &SavedRetainedScene) -> Result<RetainedScene, RetainError> {
 fn group() -> FrameGroup {
     FrameGroup {
         image_mask: None,
+        effect: None,
         clip: None,
         mask: None,
         filters: Vec::new(),

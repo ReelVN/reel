@@ -94,6 +94,7 @@ pub struct Artifact {
     pub bytecode_bytes: usize,
     pub text_pool: Option<bc::TextPool>,
     pub catalogs: std::sync::Arc<reel_engine::aside::source::CatalogProducts>,
+    pub effects: std::sync::Arc<reel_engine::aside::source::EffectProducts>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -284,7 +285,9 @@ fn build_inner(
     };
     drop(release);
     let limits = rp::Limits::default();
-    let bytes = rp::encode(&bytecode, &metadata, None, limits).map_err(|e| fail(e.to_string()))?;
+    let effects = package_effects(&checked.effects, bytecode.program()).map_err(fail)?;
+    let bytes = rp::encode(&bytecode, &metadata, None, &effects, limits)
+        .map_err(|e| fail(e.to_string()))?;
     Ok(Artifact {
         blake3: rp::digest(&bytes),
         bytes,
@@ -293,7 +296,34 @@ fn build_inner(
         bytecode_bytes: bytecode.as_bytes().len(),
         text_pool,
         catalogs: checked.catalogs.clone(),
+        effects: checked.effects.clone(),
     })
+}
+
+fn package_effects(
+    effects: &reel_engine::aside::source::EffectProducts,
+    program: &bc::VerifiedProgram,
+) -> Result<rp::EffectProducts, String> {
+    let mut products = rp::EffectProducts::default();
+    let mut indices = std::collections::BTreeMap::new();
+    for definition in effects.definitions() {
+        let index = u32::try_from(products.definitions.len())
+            .map_err(|_| "effect definition index overflow")?;
+        indices.insert(definition.id, index);
+        products.definitions.push(rp::EffectDefinition {
+            id: definition.id,
+            bytes: reel_engine::aside::source::encode_definition(&definition.program)
+                .map_err(|e| e.to_string())?,
+        });
+    }
+    for (function, definition) in effects.bindings() {
+        products.bindings.push(rp::EffectBinding {
+            module: program.package().functions[function.index()].module.0,
+            function: function.0,
+            definition: indices[&definition],
+        });
+    }
+    Ok(products)
 }
 
 fn without_debug(p: &bc::RuntimePackage) -> bc::RuntimePackage {

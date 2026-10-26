@@ -17,6 +17,7 @@ mod dialogue_append;
 mod dialogue_history;
 mod documentation;
 mod dynamic_stage;
+mod effects;
 mod flow_layout;
 mod frame_animation;
 mod geometry;

@@ -34,6 +34,7 @@ mod scopes;
 pub mod transitions;
 pub use results::geometry::{GeometryQuery, GeometryReplies, GeometryReply, NodeGeometry};
 mod conditions;
+mod effects;
 mod gradients;
 mod masks;
 mod rich_text;
@@ -297,10 +298,15 @@ impl SessionVm {
     ) -> Result<Self, AdapterError> {
         story.validate()?;
         let mut vm = Self::load(session, story.program, limits)?;
+        vm.stage.set_effect_products(vm.vm.heap(), story.effects)?;
         if !story.catalogs.catalogs.is_empty() {
             vm.set_source_catalogs(localization::SourceCatalogs::from_products(story.catalogs))?;
         }
         Ok(vm)
+    }
+    /// Share compiled effect definitions when starting or restoring this program.
+    pub fn effect_products(&self) -> std::sync::Arc<source::EffectProducts> {
+        self.stage.effect_products.clone()
     }
     pub fn load(
         session: &Session,
@@ -675,6 +681,27 @@ impl SessionVm {
                 self.issued = None;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
+            "reel::effect" => {
+                let args = self.vm.host_arguments(ticket)?.to_vec();
+                let function = self.vm.unbound_function(args[0])?;
+                let definition =
+                    self.stage
+                        .effect_products
+                        .get(function)
+                        .ok_or(AdapterError::Input(
+                            "effect function has no compiled definition",
+                        ))?;
+                let value = effects::create(self.vm.heap_mut(), function, definition, args[1])?;
+                self.stage
+                    .types
+                    .mark(self.vm.heap_mut(), value, "reel::types::Effect")?;
+                self.vm.respond(ticket, HostResponse::Ready(value))?;
+                self.issued = None;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
+            "reel::fragment::sample" => Err(AdapterError::Input(
+                "fragment sampling is evaluated inside a compiled effect",
+            )),
             name if name.starts_with("reel::mask::") => {
                 let args = self.vm.host_arguments(ticket)?.to_vec();
                 let value = masks::create(self.vm.heap_mut(), &name[12..], &args, self.read_limit)?;

@@ -1,0 +1,270 @@
+//! Prepared effects travel through the same archives as other game resources.
+use reel_cli::{
+    prepare_effects::{self, Target},
+    project,
+};
+use reel_package::archive::{ArchiveIndex, ReadScratch};
+use reel_ui::resources::{EffectShaderDescriptor, EffectShaderFormat};
+use std::{
+    collections::BTreeMap,
+    fs::{self, File},
+    path::Path,
+    process::Command,
+};
+
+const SOURCE: &str = r#"
+fn reveal(pixel, progress: float = 0.25) -> float {
+    let (r, g, b, a) = pixel.sample(pixel.uv);
+    if progress > 0.5 { return a; }
+    r * progress
+}
+fn tint(pixel, amount: float = 0.2) -> (float, float, float, float) {
+    let (r, g, b, a) = pixel.sample(pixel.uv);
+    (r * amount, g, b, a)
+}
+fn main() {
+    let coverage = effect(reveal, {progress: 0.4});
+    let color = effect(tint);
+    tr("原文", {["en-US"]: "Localized"});
+}
+"#;
+
+fn project(source: &str) -> tempfile::TempDir {
+    let temporary = tempfile::tempdir().unwrap();
+    fs::create_dir_all(temporary.path().join("src")).unwrap();
+    fs::create_dir_all(temporary.path().join("resources")).unwrap();
+    fs::write(temporary.path().join("src/main.aside"), source).unwrap();
+    fs::write(
+        temporary.path().join("resources/marker"),
+        b"ordinary resource",
+    )
+    .unwrap();
+    temporary
+}
+fn checked(root: &Path) -> reel_cli::Checked {
+    project::load(root)
+        .unwrap_or_else(|error| panic!("{:?}", error.failure))
+        .check()
+        .unwrap()
+}
+fn descriptors(
+    files: &BTreeMap<String, std::path::PathBuf>,
+) -> BTreeMap<String, EffectShaderDescriptor> {
+    files
+        .iter()
+        .map(|(name, path)| {
+            let bytes = fs::read(path).unwrap();
+            let (descriptor, raw) =
+                EffectShaderDescriptor::decode_payload(&bytes, prepare_effects::MAX_SHADER_BYTES)
+                    .unwrap();
+            assert!(descriptor.matches_bytes(&bytes[raw]));
+            assert_eq!(descriptor.format.asset_path(descriptor.definition), *name);
+            (name.clone(), descriptor)
+        })
+        .collect()
+}
+
+#[test]
+fn desktop_cache_reuses_code_across_defaults_and_rebuilds_damaged_products() {
+    let temporary = project(SOURCE);
+    let root = temporary.path();
+    let first = checked(root);
+    assert!(
+        !root.join("build").exists(),
+        "checking source performs no shader IO"
+    );
+    let prepared = prepare_effects::prepare(root, &first.effects, Target::Desktop).unwrap();
+    assert_eq!(prepared.report.converted, 4);
+    let original = descriptors(&prepared.files);
+    let unchanged = prepare_effects::prepare(root, &first.effects, Target::Desktop).unwrap();
+    assert_eq!(
+        (unchanged.report.converted, unchanged.report.reused),
+        (0, 4)
+    );
+    assert_eq!(unchanged.files, prepared.files);
+    let corrupt = prepared.files.values().next().unwrap();
+    fs::write(corrupt, b"interrupted cache payload").unwrap();
+    let repaired = prepare_effects::prepare(root, &first.effects, Target::Desktop).unwrap();
+    assert_eq!((repaired.report.converted, repaired.report.reused), (1, 3));
+    assert_eq!(descriptors(&repaired.files), original);
+    fs::write(
+        root.join("src/main.aside"),
+        SOURCE
+            .replace("progress: float = 0.25", "renamed: float = 0.75")
+            .replace("progress >", "renamed >")
+            .replace("r * progress", "r * renamed")
+            .replace("{progress: 0.4}", "{renamed: 0.4}"),
+    )
+    .unwrap();
+    let changed = checked(root);
+    let rebuilt = prepare_effects::prepare(root, &changed.effects, Target::Desktop).unwrap();
+    assert_eq!((rebuilt.report.converted, rebuilt.report.reused), (2, 2));
+    let keys = |items: &BTreeMap<String, EffectShaderDescriptor>| {
+        let mut keys = items.values().map(|d| d.shader_key).collect::<Vec<_>>();
+        keys.sort();
+        keys
+    };
+    assert_eq!(
+        keys(&descriptors(&rebuilt.files)),
+        keys(&original),
+        "names/defaults change definitions while keeping compiled code identity"
+    );
+    let (_, files) =
+        reel_cli::playback::prepare_story_assets(root, None, "vita", &changed.effects).unwrap();
+    let files = files.unwrap();
+    assert!(files.contains_key("marker"));
+    assert_eq!(
+        files
+            .keys()
+            .filter(|name| name.ends_with(".reel-effect"))
+            .count(),
+        4
+    );
+    assert!(
+        files.keys().all(|name| !name.ends_with("/sgx.reel-effect")),
+        "preview assets cannot change the desktop shader backend"
+    );
+}
+
+fn archive_products(archive: &Path) -> Vec<EffectShaderDescriptor> {
+    let mut file = File::open(archive).unwrap();
+    let index = ArchiveIndex::read(&mut file).unwrap();
+    index
+        .entries()
+        .filter(|entry| entry.path.ends_with(".reel-effect"))
+        .map(|entry| {
+            let mut bytes = vec![0; entry.length as usize];
+            entry
+                .read_range(&mut file, 0, &mut bytes, &mut ReadScratch::new(), || false)
+                .unwrap();
+            let (descriptor, raw) =
+                EffectShaderDescriptor::decode_payload(&bytes, bytes.len()).unwrap();
+            assert!(descriptor.matches_bytes(&bytes[raw]));
+            descriptor
+        })
+        .collect()
+}
+
+#[test]
+fn build_publishes_movable_asb_and_shader_archive_with_catalogs() {
+    let temporary = project(SOURCE);
+    let root = temporary.path();
+    for profile in ["debug", "release"] {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_reel"));
+        command
+            .current_dir(root)
+            .args(["build", "--format", "json"]);
+        if profile == "release" {
+            command.arg("--release");
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let package = root.join(format!("build/{profile}/game.asb"));
+        let loaded = reel_player::distribution::load(&package, None).unwrap();
+        assert_eq!(loaded.catalogs.len(), 1);
+        assert_eq!(loaded.package.distribution().unwrap().resources.len(), 1);
+        let descriptors = loaded
+            .packages
+            .iter()
+            .flat_map(|path| archive_products(path))
+            .collect::<Vec<_>>();
+        assert_eq!(descriptors.len(), 4);
+        let relocated = tempfile::tempdir().unwrap();
+        fs::copy(&package, relocated.path().join("game.asb")).unwrap();
+        for archive in &loaded.packages {
+            fs::copy(archive, relocated.path().join(archive.file_name().unwrap())).unwrap();
+        }
+        let detached =
+            reel_player::distribution::load(&relocated.path().join("game.asb"), None).unwrap();
+        let story = reel_player::distribution::story_from_package(detached.package).unwrap();
+        assert_eq!(story.effects.definitions().len(), 2);
+        for descriptor in &descriptors {
+            assert!(
+                story
+                    .effects
+                    .definitions()
+                    .any(|d| d.id == descriptor.definition)
+            );
+        }
+    }
+}
+
+#[test]
+fn export_prepares_destination_formats_and_reuses_sgx_binary_for_new_defaults() {
+    let temporary = project(SOURCE);
+    let root = temporary.path();
+    let loaded = project::load(root).unwrap_or_else(|error| panic!("{:?}", error.failure));
+    let checked = loaded.check().unwrap();
+    let artifact =
+        reel_cli::build_export(&checked, project::ENTRY, reel_cli::BuildProfile::Release).unwrap();
+    let options = reel_cli::distribution::ExportOptions {
+        output: root.join("build/export"),
+        overwrite: false,
+        resources: vec![reel_cli::distribution::Mount {
+            prefix: ".".into(),
+            directory: loaded.assets(),
+        }],
+        text: vec![],
+        resource_target: if pvr_compiler::AVAILABLE {
+            "vita"
+        } else {
+            "desktop"
+        }
+        .into(),
+        pack_bytes: 1_048_576.try_into().unwrap(),
+        runtime: None,
+    };
+    reel_cli::distribution::export(&loaded, &artifact, &options).unwrap();
+    let output = reel_player::distribution::load(&options.output.join("game.asb"), None).unwrap();
+    let descriptors = output
+        .packages
+        .iter()
+        .flat_map(|path| archive_products(path))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        descriptors.len(),
+        if pvr_compiler::AVAILABLE { 2 } else { 4 }
+    );
+    if !pvr_compiler::AVAILABLE {
+        assert!(
+            prepare_effects::prepare(root, &checked.effects, Target::Vita)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("Linux build host")
+        );
+        return;
+    }
+    assert!(
+        descriptors
+            .iter()
+            .all(|d| d.format == EffectShaderFormat::Sgx543)
+    );
+    let code_files = || {
+        fs::read_dir(root.join("build/resources/objects"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "sgx"))
+            .map(|path| {
+                let modified = fs::metadata(&path).unwrap().modified().unwrap();
+                (path, modified)
+            })
+            .collect::<BTreeMap<_, _>>()
+    };
+    let before = code_files();
+    assert_eq!(before.len(), 2);
+    fs::write(root.join("src/main.aside"), SOURCE.replace("0.25", "0.75")).unwrap();
+    let changed = self::checked(root);
+    let prepared = prepare_effects::prepare(root, &changed.effects, Target::Vita).unwrap();
+    assert_eq!((prepared.report.converted, prepared.report.reused), (1, 1));
+    assert_eq!(
+        code_files(),
+        before,
+        "default-only changes reuse the SGX binary without rewriting it"
+    );
+}

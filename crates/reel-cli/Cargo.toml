@@ -40,6 +40,9 @@ toml = "=1.1.6"
 globset = "=0.4.20"
 reel-package = { path = "../reel-package" }
 reel-engine = { path = "../reel-engine" }
+reel-render = { path = "../reel-render" }
+reel-ui = { path = "../reel-ui" }
+pvr-compiler = { git = "https://github.com/jhq223/pvr-compiler.git", rev = "21f382885f7250149ff9fde4d21ad17769cda325" }
 reel-core = { path = "../reel-core" }
 image = { workspace = true, features = ["png", "jpeg"] }
 rgbcx = "=0.1.2"

@@ -175,6 +175,7 @@ impl Transitions {
                 let kind = match asset.kind {
                     RetainedAssetKind::Image => AssetKind::Image,
                     RetainedAssetKind::Font => AssetKind::Font,
+                    RetainedAssetKind::EffectShader => AssetKind::EffectShader,
                 };
                 work.asset = Some((
                     slot,

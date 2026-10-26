@@ -70,6 +70,7 @@ pub struct LoadId(u64);
 pub enum AssetKind {
     Image,
     Font,
+    EffectShader,
     Bytes,
 }
 enum Phase {
@@ -575,7 +576,7 @@ impl Service {
                         .is_none_or(|version| version == read.version);
                     load.source.version = Some(read.version);
                     load.input = Some(Arc::new(read.bytes));
-                    load.phase = if load.kind == AssetKind::Font {
+                    load.phase = if matches!(load.kind, AssetKind::Font | AssetKind::EffectShader) {
                         Phase::Decode
                     } else {
                         Phase::Probe
@@ -732,14 +733,14 @@ impl Service {
                     load.input.take().unwrap(),
                 );
             }
-            Phase::Decode if load.kind == AssetKind::Font => {
+            Phase::Decode if matches!(load.kind, AssetKind::Font | AssetKind::EffectShader) => {
                 let input = load.input.take().unwrap();
                 let ticket = self
                     .output
                     .reserve(input.as_slice().len() as u64)
-                    .map_err(|e| format!("font resident budget: {}", e.message))?;
+                    .map_err(|e| format!("asset resident budget: {}", e.message))?;
                 let (bytes, old_ticket) = Arc::try_unwrap(input)
-                    .expect("font input has one owner")
+                    .expect("undecoded resource input has one owner")
                     .into_parts();
                 let bytes = OwnedBytes::new(bytes, ticket).map_err(|e| e.reason.message)?;
                 drop(old_ticket);
@@ -848,11 +849,35 @@ fn register(load: &Load, data: OwnedBytes) -> Result<ResourceLease, String> {
         key: load.source.key.clone(),
         version: load.source.version.expect("read returns a fixed version"),
     };
-    let mut registry = ResourceRegistry::new(1, 1024 + version.key.0.capacity() as u64)
-        .map_err(|e| format!("asset descriptor: {e:?}"))?;
+    let (data, shader) = if load.kind == AssetKind::EffectShader {
+        let (descriptor, raw) = reel_ui::resources::EffectShaderDescriptor::decode_payload(
+            data.as_slice(),
+            data.as_slice().len(),
+        )
+        .map_err(|e| format!("effect shader: {e}"))?;
+        let (mut bytes, ticket) = data.into_parts();
+        let len = raw.len();
+        bytes.copy_within(raw, 0);
+        bytes.truncate(len);
+        (
+            OwnedBytes::new(bytes, ticket).map_err(|e| e.reason.message)?,
+            Some(descriptor),
+        )
+    } else {
+        (data, None)
+    };
+    let schema_bytes = shader.as_ref().map_or(0, |shader| {
+        shader.parameters.capacity() * size_of::<reel_ui::stage::effect::EffectType>()
+    });
+    let mut registry = ResourceRegistry::new(
+        1,
+        1024 + version.key.0.capacity() as u64 + schema_bytes as u64,
+    )
+    .map_err(|e| format!("asset descriptor: {e:?}"))?;
     let handle = match load.kind {
         AssetKind::Bytes => return Err("raw bytes do not use the UI registry".into()),
         AssetKind::Font => registry.register_font(version, data),
+        AssetKind::EffectShader => registry.register_effect_shader(version, shader.unwrap(), data),
         AssetKind::Image if load.texture.is_some() => registry.register_texture(
             version,
             TexturePayload::new(load.texture.unwrap(), data).map_err(|e| e.to_string())?,
@@ -887,6 +912,7 @@ fn shared_resource(
             (load.kind, kind),
             (AssetKind::Image, RetainedAssetKind::Image)
                 | (AssetKind::Font, RetainedAssetKind::Font)
+                | (AssetKind::EffectShader, RetainedAssetKind::EffectShader)
         ) {
             return None;
         }
@@ -904,6 +930,7 @@ fn remember_resource(
     let kind = match kind {
         AssetKind::Image => RetainedAssetKind::Image,
         AssetKind::Font => RetainedAssetKind::Font,
+        AssetKind::EffectShader => RetainedAssetKind::EffectShader,
         AssetKind::Bytes => unreachable!(),
     };
     origins.retain(|_, (weak, _)| !weak.is_released());

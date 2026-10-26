@@ -107,10 +107,11 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
             && let Some(story) = cache.read()
         {
             progress.phase("Preparing resources");
-            let (assets, resource_files) = match reel_cli::playback::prepare_assets(
+            let (assets, resource_files) = match reel_cli::playback::prepare_story_assets(
                 cache.project_root(),
                 args.playback.assets.clone(),
                 &args.playback.resource_target,
+                &story.effects,
             ) {
                 Ok(resources) => resources,
                 Err(error) => {
@@ -265,6 +266,21 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
                 };
                 artifact.blake3 = reel_package::digest(&artifact.bytes);
             }
+            progress.phase("Preparing effect shaders");
+            artifact.bytes = match reel_cli::distribution::with_effects(
+                &artifact,
+                &loaded.project_root,
+                &archive_directory,
+                reel_cli::prepare_effects::Target::Desktop,
+            ) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    progress.stop();
+                    failure(json_format, "effects", Some(path), &error.to_string())?;
+                    return Ok(1);
+                }
+            };
+            artifact.blake3 = reel_package::digest(&artifact.bytes);
             progress.phase("Writing build");
             let published = match reel_cli::output::write(
                 &output,
@@ -389,10 +405,11 @@ fn source_command(command: SourceCommand) -> io::Result<u8> {
                 writeln!(io::stderr().lock(), "warning: compilation cache: {error}")?;
             }
             progress.phase("Preparing resources");
-            let (assets, resource_files) = match reel_cli::playback::prepare_assets(
+            let (assets, resource_files) = match reel_cli::playback::prepare_story_assets(
                 &loaded.project_root,
                 args.playback.assets,
                 &args.playback.resource_target,
+                &checked.effects,
             ) {
                 Ok(resources) => resources,
                 Err(error) => {

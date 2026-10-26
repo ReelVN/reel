@@ -13,6 +13,7 @@ mod validate;
 pub enum RetainedAssetKind {
     Image,
     Font,
+    EffectShader,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -24,6 +25,10 @@ pub struct RetainedAsset {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 enum InlineResource {
+    EffectShader {
+        descriptor: crate::resources::EffectShaderDescriptor,
+        bytes: peniko::Blob<u8>,
+    },
     Texture {
         descriptor: reel_core::texture::TextureDescriptor,
         bytes: peniko::Blob<u8>,
@@ -36,8 +41,17 @@ enum InlineResource {
     Yuv(#[serde(with = "wire::yuv")] reel_core::image::Yuv420Image),
 }
 impl InlineResource {
+    fn metadata_bytes(&self) -> usize {
+        match self {
+            Self::EffectShader { descriptor, .. } => {
+                descriptor.parameters.capacity() * size_of::<crate::stage::effect::EffectType>()
+            }
+            _ => 0,
+        }
+    }
     fn bytes(&self) -> usize {
         match self {
+            Self::EffectShader { bytes, .. } => bytes.len(),
             Self::Texture { bytes, .. } => bytes.len(),
             Self::Image { image, .. } => image.data.len(),
             Self::Font(font) => font.len(),
@@ -46,6 +60,10 @@ impl InlineResource {
     }
     fn data(&self) -> ResourceData {
         match self {
+            Self::EffectShader { descriptor, bytes } => ResourceData::EffectShader {
+                descriptor: descriptor.clone(),
+                bytes: bytes.clone(),
+            },
             Self::Texture { descriptor, bytes } => ResourceData::Texture {
                 descriptor: *descriptor,
                 bytes: bytes.clone(),
@@ -250,6 +268,17 @@ impl RetainedScene {
                             .resize(ticket.bytes() - key_bytes as u64)
                             .map_err(|_| retained::error(BuildErrorKind::Bytes))?;
                         SavedResourceKind::Inline(match lease.data() {
+                            ResourceData::EffectShader { descriptor, bytes } => {
+                                snapshot_charge(
+                                    &mut ticket,
+                                    descriptor.parameters.len()
+                                        * size_of::<crate::stage::effect::EffectType>(),
+                                )?;
+                                InlineResource::EffectShader {
+                                    descriptor: descriptor.clone(),
+                                    bytes: bytes.clone(),
+                                }
+                            }
                             ResourceData::Texture { descriptor, bytes } => {
                                 InlineResource::Texture {
                                     descriptor: *descriptor,
@@ -275,6 +304,12 @@ impl RetainedScene {
                         live_bytes: 512
                             + lease.version().key.0.capacity() as u64
                             + match lease.data() {
+                                ResourceData::EffectShader { bytes, descriptor } => {
+                                    bytes.len() as u64
+                                        + (descriptor.parameters.capacity()
+                                            * size_of::<crate::stage::effect::EffectType>())
+                                            as u64
+                                }
                                 ResourceData::Texture { bytes, .. } => bytes.len() as u64,
                                 ResourceData::Image { image, .. } => image.data.len() as u64,
                                 ResourceData::Font(font) => font.len() as u64,
@@ -329,6 +364,10 @@ fn asset_matches(asset: &RetainedAsset, lease: &ResourceLease) -> bool {
             RetainedAssetKind::Image,
             ResourceData::Image { .. } | ResourceData::Texture { .. }
         ) | (RetainedAssetKind::Font, ResourceData::Font(_))
+            | (
+                RetainedAssetKind::EffectShader,
+                ResourceData::EffectShader { .. }
+            )
     )
 }
 
@@ -400,6 +439,7 @@ impl SavedRetainedScene {
                 }
                 SavedResourceKind::Inline(data) => {
                     resource.live_bytes.max(data.bytes() as u64 + 512)
+                        + data.metadata_bytes() as u64
                 }
             });
         std::iter::once(archive).chain(nodes).chain(resources)
@@ -481,6 +521,7 @@ enum ResourceKind {
     Image,
     Video,
     Font,
+    EffectShader,
 }
 #[derive(Clone, Copy)]
 struct ReboundResource {
@@ -563,6 +604,7 @@ impl RetainedRestore {
                 }
                 let lease = self.leases[index].as_ref().unwrap();
                 let kind = match lease.data() {
+                    ResourceData::EffectShader { .. } => ResourceKind::EffectShader,
                     ResourceData::Image { .. } | ResourceData::Texture { .. } => {
                         ResourceKind::Image
                     }
@@ -754,6 +796,14 @@ impl RetainedRestore {
                 }
                 let mut command = command.clone();
                 remap_command(&mut command, &build.handles)?;
+                if let FrameOp::PushGroup(group) = &command.op
+                    && let Some(effect) = &group.effect
+                    && !build.resources.iter().any(|lease| lease.handle() == effect.shader
+                        && matches!(lease.data(), ResourceData::EffectShader { descriptor, .. }
+                            if descriptor.definition == effect.definition && descriptor.accepts(&effect.values)))
+                {
+                    return Err(retained::error(BuildErrorKind::InvalidRecord));
+                }
                 if let Some(id) = mask {
                     Arc::get_mut(build.masks.get_mut(&id).unwrap())
                         .unwrap()
@@ -895,6 +945,11 @@ fn remap_command(
             Some(&mut glyphs.brush)
         }
         FrameOp::PushGroup(group) => {
+            if let Some(effect) = &mut group.effect {
+                remap(&mut effect.shader, handles, |kind| {
+                    kind == ResourceKind::EffectShader
+                })?;
+            }
             if let Some(mask) = &mut group.image_mask {
                 remap_mask(mask, handles)?;
             }
@@ -905,7 +960,7 @@ fn remap_command(
     };
     if let Some(Brush::Image(image)) = brush {
         remap(&mut image.image.resource, handles, |kind| {
-            kind != ResourceKind::Font
+            matches!(kind, ResourceKind::Image | ResourceKind::Video)
         })?;
     }
     Ok(())

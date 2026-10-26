@@ -87,6 +87,7 @@ impl SessionUi {
                         candidate,
                         geometry,
                         &self.images.loaded,
+                        self.images.shader_format,
                     )
                 })
         };

@@ -15,11 +15,13 @@ Each 56-byte index record contains `kind:u32`, `flags:u32`, `offset:u64`,
 | 1 | Verified Aside bytecode | Required |
 | 2 | UTF-8 JSON code metadata, schema 1 | Required |
 | 3 | UTF-8 JSON `Distribution` | Exported projects |
+| 4 | Effect definitions and linked function bindings | Projects using compiled effects |
 
 Known sections set flags=1 (required when present). Kinds are unique; nonempty
 ranges are disjoint and outside the header/index. Unknown required sections
 fail. Full decoding hash-checks all payloads, including optional unknown sections.
-Writers emit header, bytecode, metadata, optional distribution and index.
+Writers emit header, bytecode, metadata, optional distribution, optional effects
+and index.
 Container writers receive immutable serialized bytecode paired with its verified
 program and validate metadata against that shared program.
 
@@ -37,6 +39,29 @@ Full decoding verifies section digests, metadata and bytecode. The seekable
 distribution reader checks only header/index/distribution using the same index,
 JSON, path and limit validation. Resource archives are read by their owning
 loaders. Wire encoding is in [codec.rs](src/codec.rs).
+
+## Effect products v1
+
+Section 4 starts with `definition_count:u32, binding_count:u32`. Definitions
+follow in table order, each encoded as `blake3:[u8;32], length:u64, bytes:[u8;length]`.
+Each following binding is `module:u32, function:u32, definition:u32`, using final
+linked bytecode ids and a zero-based definition-table index. Trailing data is
+invalid. Definition digests and function bindings are unique; every definition
+must be referenced. The bound function belongs to the specified module, is Plain,
+and has no captures. The package validates lengths, digests and these bytecode
+relationships before returning opaque products. Existing metadata-byte, record
+and work budgets apply. The engine validates the typed definition before runtime
+admission; the package has no UI dependency.
+
+Canonical definition bytes start with `REELFXD1`, followed by the postcard tuple
+`(parameters, nodes, output)` using the shared UI effect declarations' stable
+field and variant order. Parameters include names, types and finite f32 defaults;
+nodes retain finite f32 bits and preceding-node references. The digest covers the
+whole definition including the prefix. Source paths, HIR function ids, source
+spans, native handles and live instance values are excluded. The engine decoder
+bounds table allocations and reconstructs the shared validated EffectProgram.
+These products survive debug stripping and ASB re-encoding. GPU-target artifacts
+are prepared separately from this portable definition identity.
 
 ## Resource and text archives v1
 

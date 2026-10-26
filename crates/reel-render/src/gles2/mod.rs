@@ -1,5 +1,6 @@
 //! GLES rendering of the common immutable frame and resource contracts.
 mod draw;
+mod effect;
 mod mask;
 mod programs;
 mod replay;
@@ -89,6 +90,7 @@ pub struct GlesBackend {
     _group: BudgetGroup,
     images: Images,
     glyphs: draw::GlyphCache,
+    effects: effect::Cache,
     targets: Vec<resources::Target>,
     info: Option<SurfaceInfo>,
     suspended: bool,
@@ -151,6 +153,7 @@ impl GlesBackend {
             _group: group,
             images: Default::default(),
             glyphs: Default::default(),
+            effects: Default::default(),
             targets: Vec::new(),
             info: None,
             suspended: false,
@@ -246,6 +249,7 @@ impl GlesBackend {
         }
         self.images.prune(&[]);
         self.glyphs.prune(&[]);
+        self.effects.prune();
         let local = Budgets::new(limits);
         let mut plan_tickets = Vec::new();
         let planning = reel_core::profile::Scope::new(reel_core::profile::Phase::ImagePlan);
@@ -385,6 +389,7 @@ impl GlesBackend {
             self.options.limits.common(),
             &mut self.images,
             &mut self.glyphs,
+            &mut self.effects,
             targets,
             images,
             frame,
@@ -490,6 +495,7 @@ impl RenderBackend for GlesBackend {
                 RenderEffect::AlphaMask,
                 RenderEffect::LuminanceMask,
                 RenderEffect::ImageMask,
+                RenderEffect::ShaderEffect,
             ],
             max_texture_size: self.context.capabilities().max_texture_size,
             max_offscreen_size: self.context.capabilities().max_texture_size,
@@ -563,6 +569,7 @@ impl RenderBackend for GlesBackend {
     fn retire(&mut self, resources: &[ResourceVersion]) {
         self.images.prune(resources);
         self.glyphs.prune(resources);
+        self.effects.prune();
     }
     fn poll(
         &mut self,
@@ -588,6 +595,7 @@ impl RenderBackend for GlesBackend {
         out.extend(self.events.drain(..limit.min(self.events.len())));
         self.images.prune(&[]);
         self.glyphs.prune(&[]);
+        self.effects.prune();
         Ok(())
     }
     fn has_pending(&self) -> bool {

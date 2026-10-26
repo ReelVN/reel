@@ -41,12 +41,17 @@ impl TargetCache {
         pool: &BudgetPool,
         cost: u64,
     ) -> Result<Arc<Allocation>, GpuError> {
-        if let Some(entries) = self.0.lock().unwrap().as_ref()
-            && entries.size == size
+        if let Some(entries) = self.0.lock().unwrap().as_mut()
             && entries.quality == quality
-            && let Some(target) = entries.slots.get(index)
         {
-            return Ok(target.clone());
+            if let Some(target) = entries.slots.get(index)
+                && target.target.size == size
+            {
+                return Ok(target.clone());
+            }
+            // Frame allocation order changed. Drop only cache ownership of the
+            // obsolete tail; prepared/in-flight owners keep their reservations.
+            entries.slots.truncate(index);
         }
         let resident = pool.reserve(cost).map_err(|_| GpuError::Pressure {
             domain: "targets",

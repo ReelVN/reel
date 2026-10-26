@@ -6,6 +6,7 @@
 mod class_set;
 mod contexts;
 mod default_properties;
+mod effect;
 mod events;
 mod image_mask;
 mod layer;
@@ -31,6 +32,7 @@ mod widget_tag;
 
 pub use contexts::*;
 pub use default_properties::*;
+pub use effect::*;
 pub use events::*;
 pub use image_mask::*;
 pub use layer::*;

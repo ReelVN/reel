@@ -3,6 +3,8 @@
 pub mod archive;
 mod codec;
 mod declarations;
+mod effects;
+pub use effects::{EffectBinding, EffectDefinition, EffectDefinitionId, EffectProducts};
 pub mod distribution;
 mod metadata;
 pub mod resource_target;
@@ -89,6 +91,7 @@ pub struct CodePackage {
     program: bc::VerifiedProgram,
     metadata: Metadata,
     distribution: Option<distribution::Distribution>,
+    effects: EffectProducts,
 }
 impl CodePackage {
     /// Bind the external immutable text storage before runtime admission.
@@ -108,8 +111,13 @@ impl CodePackage {
     pub fn distribution(&self) -> Option<&distribution::Distribution> {
         self.distribution.as_ref()
     }
-    pub fn into_parts(self) -> (bc::VerifiedProgram, Metadata) {
-        (self.program, self.metadata)
+    /// Opaque definitions with bindings already checked against the bytecode.
+    pub fn effects(&self) -> &EffectProducts {
+        &self.effects
+    }
+    /// Transfer code, metadata and effect products together to engine admission.
+    pub fn into_parts(self) -> (bc::VerifiedProgram, Metadata, EffectProducts) {
+        (self.program, self.metadata, self.effects)
     }
 }
 pub fn digest(bytes: &[u8]) -> String {

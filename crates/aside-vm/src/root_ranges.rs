@@ -1,9 +1,13 @@
 //! Generational descriptors and the shared byte book. Never stores Value addresses.
 use crate::slots::{RangeKey, index};
 use crate::{Heap, HeapError, HeapId, RootKind, RootOwner, SessionEpoch};
-use std::cell::Cell;
+use std::cell::{Cell, OnceCell};
 use std::marker::PhantomData;
 use std::rc::Rc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RootRangeToken {
@@ -76,6 +80,8 @@ pub(crate) struct ByteBook {
     pub heap_alive: Cell<bool>,
     pub attachment: Cell<Option<u64>>,
     pub provider_alive: Cell<bool>,
+    shared_refunds: OnceCell<Arc<AtomicUsize>>,
+    shared_bytes: Cell<usize>,
 }
 // Rc's two counts plus value; conservative stack/slot accounting is separate.
 pub(crate) const BOOK_BYTES: u64 =
@@ -93,12 +99,16 @@ impl HeapBudgetUsage {
             heap_alive: Cell::new(true),
             attachment: Cell::new(None),
             provider_alive: Cell::new(false),
+            shared_refunds: OnceCell::new(),
+            shared_bytes: Cell::new(0),
         }))
     }
     pub fn charged_bytes(&self) -> u64 {
+        self.collect_shared_refunds();
         self.0.used.get()
     }
     pub fn peak_charged_bytes(&self) -> u64 {
+        self.collect_shared_refunds();
         self.0.peak.get()
     }
     pub fn remaining_bytes(&self) -> u64 {
@@ -112,8 +122,25 @@ impl HeapBudgetUsage {
     pub fn reserve(&self, bytes: u64) -> Result<Reservation, HeapError> {
         Reservation::new(self, bytes)
     }
+    /// Admit storage whose final owner may be released by another thread.
+    /// Ordinary VM allocations retain their non-atomic fast path.
+    pub fn reserve_shared(&self, bytes: u64) -> Result<SharedHeapReservation, HeapError> {
+        self.collect_shared_refunds();
+        self.reserve(bytes)?.into_shared()
+    }
+    fn collect_shared_refunds(&self) {
+        if let Some(refunds) = self.0.shared_refunds.get() {
+            let bytes = refunds.swap(0, Ordering::Acquire);
+            self.0.shared_bytes.set(self.0.shared_bytes.get() - bytes);
+            self.refund(bytes as u64);
+        }
+    }
     pub(crate) fn ensure(&self, bytes: u64) -> Result<(), HeapError> {
-        if bytes > self.remaining_bytes() {
+        if bytes <= self.0.limit.saturating_sub(self.0.used.get()) {
+            return Ok(());
+        }
+        self.collect_shared_refunds();
+        if bytes > self.0.limit.saturating_sub(self.0.used.get()) {
             Err(HeapError::ResourceLimit {
                 requested: bytes,
                 used: self.charged_bytes(),
@@ -161,6 +188,32 @@ impl Reservation {
     pub fn bytes(&self) -> u64 {
         self.bytes
     }
+    /// Transfer this charge to a sendable final-owner token without refunding it.
+    pub fn into_shared(mut self) -> Result<SharedHeapReservation, HeapError> {
+        self.usage.collect_shared_refunds();
+        let bytes = usize::try_from(self.bytes).map_err(|_| HeapError::InvalidLimits)?;
+        let outstanding = self
+            .usage
+            .0
+            .shared_bytes
+            .get()
+            .checked_add(bytes)
+            .ok_or(HeapError::InvalidLimits)?;
+        if self.usage.0.shared_refunds.get().is_none() {
+            let overhead = (size_of::<AtomicUsize>() + 2 * size_of::<usize>()) as u64;
+            self.usage.ensure(overhead)?;
+            self.usage
+                .0
+                .shared_refunds
+                .set(Arc::new(AtomicUsize::new(0)))
+                .unwrap();
+            self.usage.charge(overhead);
+        }
+        let refunds = self.usage.0.shared_refunds.get().unwrap().clone();
+        self.usage.0.shared_bytes.set(outstanding);
+        self.bytes = 0;
+        Ok(SharedHeapReservation { refunds, bytes })
+    }
     /// Adjust accounting before growing or after releasing host-owned storage.
     pub fn resize(&mut self, bytes: u64) -> Result<(), HeapError> {
         if bytes > self.bytes {
@@ -176,6 +229,61 @@ impl Reservation {
 impl Drop for Reservation {
     fn drop(&mut self) {
         self.usage.refund(self.bytes);
+    }
+}
+
+/// A storage charge released with its last owning allocation. It contains no VM
+/// handles and keeps the refund mailbox alive after the original heap is dropped.
+pub struct SharedHeapReservation {
+    refunds: Arc<AtomicUsize>,
+    bytes: usize,
+}
+impl SharedHeapReservation {
+    /// Bytes retained by this allocation owner.
+    pub fn bytes(&self) -> u64 {
+        self.bytes as u64
+    }
+}
+impl Drop for SharedHeapReservation {
+    fn drop(&mut self) {
+        self.refunds.fetch_add(self.bytes, Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+mod shared_reservation_tests {
+    use super::*;
+
+    #[test]
+    fn ordinary_reservations_keep_the_refund_mailbox_unallocated() {
+        let usage = HeapBudgetUsage::new(4096);
+        let before = usage.charged_bytes();
+        let mut charge = usage.reserve(256).unwrap();
+        charge.resize(512).unwrap();
+        drop(charge);
+        assert_eq!(usage.charged_bytes(), before);
+        assert!(usage.0.shared_refunds.get().is_none());
+    }
+
+    #[test]
+    fn shared_final_release_refunds_statistics_and_allocation_pressure() {
+        let usage = HeapBudgetUsage::new(4096);
+        let shared = usage.reserve_shared(1024).unwrap();
+        let before = usage.charged_bytes();
+        std::thread::spawn(move || drop(shared)).join().unwrap();
+        assert_eq!(usage.charged_bytes(), before - 1024);
+        let shared = usage.reserve_shared(1024).unwrap();
+        let fill = usage.reserve(usage.remaining_bytes()).unwrap();
+        std::thread::spawn(move || drop(shared)).join().unwrap();
+        // No statistics read between the final release and the allocation.
+        let reused = usage.reserve(1024).unwrap();
+        assert_eq!(usage.charged_bytes(), usage.limit());
+        drop((fill, reused));
+        let final_owner = usage.reserve_shared(64).unwrap();
+        drop(usage);
+        std::thread::spawn(move || drop(final_owner))
+            .join()
+            .unwrap();
     }
 }
 

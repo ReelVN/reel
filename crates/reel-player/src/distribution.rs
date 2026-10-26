@@ -27,7 +27,31 @@ pub fn decode_story(bytes: &[u8]) -> Result<CompiledStory, reel_package::Error> 
 pub fn story_from_package(
     package: reel_package::CodePackage,
 ) -> Result<CompiledStory, reel_package::Error> {
-    let (program, metadata) = package.into_parts();
+    let (program, metadata, products) = package.into_parts();
+    let bindings = products
+        .bindings
+        .iter()
+        .map(|binding| {
+            (
+                bc::ModuleId(binding.module),
+                bc::FunctionId(binding.function),
+                products.definitions[binding.definition as usize].id,
+            )
+        })
+        .collect::<Vec<_>>();
+    let effects = reel_engine::aside::source::EffectProducts::decode(
+        &program,
+        products
+            .definitions
+            .into_iter()
+            .map(|definition| (definition.id, definition.bytes)),
+        bindings,
+        Default::default(),
+    )
+    .map_err(|error| reel_package::Error {
+        kind: reel_package::ErrorKind::Metadata,
+        detail: error.to_string(),
+    })?;
     let entry = metadata.game_entry.ok_or_else(|| reel_package::Error {
         kind: reel_package::ErrorKind::Metadata,
         detail: "code package has no game entry".into(),
@@ -37,6 +61,7 @@ pub fn story_from_package(
         initializer: bc::FunctionId(metadata.initializer.function_id),
         entry: bc::FunctionId(entry.function_id),
         catalogs: Default::default(),
+        effects: std::sync::Arc::new(effects),
     })
 }
 

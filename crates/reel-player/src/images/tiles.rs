@@ -6,6 +6,8 @@ pub(crate) struct ImageGeometry {
     pub widget: WidgetId,
     pub fit: ObjectFit,
     pub source_rect: Option<Rect>,
+    /// Nearest effect source boundary and its complete logical window-space box.
+    pub effect_domain: Option<(WidgetId, Rect)>,
 }
 #[derive(Clone, Default)]
 pub(crate) struct ImageRegion {
@@ -25,6 +27,18 @@ impl TileDemand {
     }
 }
 
+/// Conservative window-space clipping shared by raster and tiled image demand.
+/// Rotated clips use their enclosing rectangle; uncertainty keeps the resource.
+pub(crate) fn clipped_viewport(viewport: Rect, transform: Affine, clip: Option<Rect>) -> Rect {
+    if let Some(clip) = clip {
+        let bounds = transform.transform_rect_bbox(clip);
+        if bounds.is_finite() {
+            return viewport.intersect(bounds);
+        }
+    }
+    viewport
+}
+
 /// Use exactly the widget geometry used by paint and accepted-frame input.
 pub(crate) fn visible_tiles(
     manifest: PreparedImage,
@@ -37,17 +51,27 @@ pub(crate) fn visible_tiles(
         return (region, tiles);
     };
     let root = geometry.get(geometry.root_id()).unwrap();
-    let mut visible = root
-        .window_transform
-        .transform_rect_bbox(root.size.to_rect());
+    let mut visible = image.effect_domain.map_or_else(
+        || {
+            root.window_transform
+                .transform_rect_bbox(root.size.to_rect())
+        },
+        |(_, bounds)| bounds,
+    );
     let mut ancestor = Some(record);
     while let Some(node) = ancestor {
         if node.is_stashed {
             return (region, tiles);
         }
-        if let Some(clip) = node.clip_path {
-            visible = visible.intersect(node.window_transform.transform_rect_bbox(clip));
+        // The effect samples its complete logical source. Its own group clip
+        // and all outer clips are applied after the fragment has run.
+        if image
+            .effect_domain
+            .is_some_and(|(boundary, _)| boundary == node.id)
+        {
+            break;
         }
+        visible = clipped_viewport(visible, node.window_transform, node.clip_path);
         ancestor = node.parent.map(|index| &geometry.records()[index]);
     }
     let image_size = Size::new(f64::from(manifest.width), f64::from(manifest.height));
