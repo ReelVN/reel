@@ -451,7 +451,10 @@ fn decode(
     shared: &Shared,
     factory: &dyn VideoDecoderFactory,
 ) -> Result<(), String> {
-    let mut decoder = factory.open(source, budget.clone(), shared.transport.cancelled.clone())?;
+    let mut decoder = {
+        let _profile = reel_core::profile::Scope::new(reel_core::profile::Phase::VideoOpen);
+        factory.open(source, budget.clone(), shared.transport.cancelled.clone())?
+    };
     if let Some(end) = options.end {
         decoder.set_end(end.as_secs_f64());
     }
@@ -490,7 +493,11 @@ fn decode(
         let mut scratch = budget
             .reserve(plane_bytes.max(1024 * 8))
             .map_err(|e| e.message)?;
-        let Some(packet) = decoder.next_packet()? else {
+        let packet = {
+            let _profile = reel_core::profile::Scope::new(reel_core::profile::Phase::VideoDecode);
+            decoder.next_packet()?
+        };
+        let Some(packet) = packet else {
             if options.poster {
                 return Err("video contains no picture at the saved position".into());
             }

@@ -140,6 +140,8 @@ impl Host for VitaHost {
         }
     }
     fn set_title(&mut self, title: &str) {
+        #[cfg(feature = "profiling")]
+        eprintln!("[reel-probe] title={title}");
         *self.signals.title.borrow_mut() = title.into();
     }
     fn set_visible(&mut self, visible: bool) {
@@ -177,16 +179,66 @@ impl Host for VitaHost {
     }
 }
 
-/// Show immediate child directories containing `game.asb`. Each selected work
-/// owns its `saves/` directory. One native loop and graphics device survive player
-/// changes. Player resources are dropped and GPU work drained before the next
-/// player mounts. Game shutdown and SELECT + START return to the library.
-pub fn run_launcher(game_root: &Path, module_directory: &Path) -> Result<(), Error> {
-    #[cfg(feature = "profiling")]
-    let _live_probe = crate::probe::Live::start()?;
-    let (mut native, mut backend) = NativeLoop::new(module_directory)?;
-    let result = run_launcher_on(game_root, &mut native, &mut backend);
-    close_backend(result, backend)
+/// One native event loop and graphics device shared by successive sessions.
+/// Session resources retire at each boundary; device programs survive until
+/// `run` closes the application. Native module loading occurs once per run.
+pub struct Runtime {
+    native: NativeLoop,
+    backend: GlesBackend,
+}
+
+impl Runtime {
+    /// Create the native device, run the application, and close it explicitly.
+    /// Shutdown errors retain the application's original error when both fail.
+    pub fn run<T>(
+        module_directory: &Path,
+        application: impl FnOnce(&mut Self) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let (native, backend) = NativeLoop::new(module_directory)?;
+        let mut runtime = Self { native, backend };
+        let result = application(&mut runtime);
+        close_backend(result, runtime.backend)
+    }
+
+    /// Borrow the application's renderer for native drawing. A subsequent
+    /// player session drains submitted work and retires these session resources.
+    pub fn renderer(&mut self) -> &mut GlesBackend {
+        &mut self.backend
+    }
+
+    /// Show child directories containing `game.asb`. Each work owns its `saves/`
+    /// directory. Game exit and SELECT + START return to this library.
+    pub fn run_launcher(&mut self, game_root: &Path) -> Result<(), Error> {
+        #[cfg(feature = "profiling")]
+        let _live_probe = crate::probe::Live::start()?;
+        self.backend.reset_session()?;
+        let result = run_launcher_on(game_root, &mut self.native, &mut self.backend);
+        reset_after_session(&mut self.backend, &result)?;
+        result
+    }
+
+    /// Load a relocatable ASB distribution using the retained device. The host
+    /// supplies this work's persistent-data directory independently of title ID.
+    pub fn run_package(&mut self, package: &Path, save_directory: &Path) -> Result<(), Error> {
+        self.backend.reset_session()?;
+        self.native.begin_session(&self.backend);
+        let result = run_package_on(package, save_directory, &mut self.native, &mut self.backend);
+        reset_after_session(&mut self.backend, &result)?;
+        result
+    }
+
+    /// Run a compiled story with native controllers and power callbacks.
+    pub fn run_story(
+        &mut self,
+        story: reel_engine::aside::source::CompiledStory,
+        options: PlayerOptions,
+    ) -> Result<(), Error> {
+        self.backend.reset_session()?;
+        self.native.begin_session(&self.backend);
+        let result = run_story_on(story, options, &mut self.native, &mut self.backend);
+        reset_after_session(&mut self.backend, &result)?;
+        result
+    }
 }
 
 fn run_launcher_on(
@@ -263,18 +315,6 @@ fn run_library(
         .unwrap_or(crate::launcher::Outcome::Exit))
 }
 
-/// Load the same relocatable ASB distribution used by desktop exports. The host
-/// supplies this work's persistent-data directory independently of the title ID.
-pub fn run_package(
-    package: &Path,
-    save_directory: &Path,
-    module_directory: &Path,
-) -> Result<(), Error> {
-    let (mut native, mut backend) = NativeLoop::new(module_directory)?;
-    let result = run_package_on(package, save_directory, &mut native, &mut backend);
-    close_backend(result, backend)
-}
-
 fn run_package_on(
     package: &Path,
     save_directory: &Path,
@@ -309,17 +349,6 @@ fn run_package_on(
     let story = crate::distribution::story_from_package(loaded.package)?;
     drop(loading);
     run_story_on(story, options, native, backend)
-}
-
-/// Run an already compiled story with native controllers and power callbacks.
-pub fn run_story(
-    story: reel_engine::aside::source::CompiledStory,
-    options: PlayerOptions,
-    module_directory: &Path,
-) -> Result<(), Error> {
-    let (mut native, mut backend) = NativeLoop::new(module_directory)?;
-    let result = run_story_on(story, options, &mut native, &mut backend);
-    close_backend(result, backend)
 }
 
 fn run_story_on(
