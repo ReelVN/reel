@@ -156,7 +156,7 @@ pub(crate) struct Allocation {
     local: BudgetPool,
     limit: u64,
     max_buffer: u64,
-    _tickets: Vec<Reservation>,
+    ticket: Option<Reservation>,
 }
 impl Allocation {
     pub(crate) fn new(
@@ -170,8 +170,48 @@ impl Allocation {
             local: budget_scope.transient.clone(),
             limit,
             max_buffer,
-            _tickets: Vec::new(),
+            ticket: None,
         }
+    }
+    fn resize(&mut self, bytes: u64) -> Result<(), GpuError> {
+        let Some(ticket) = &mut self.ticket else {
+            self.ticket = Some(reserve(
+                &self.shared,
+                &self.local,
+                bytes,
+                self.limit,
+                "mesh scratch",
+            )?);
+            return Ok(());
+        };
+        let previous = ticket._local.bytes();
+        if bytes == previous {
+            return Ok(());
+        }
+        let requested = bytes.saturating_sub(previous);
+        ticket._local.resize(bytes).map_err(|_| GpuError::Budget {
+            domain: "mesh scratch",
+            requested,
+            available: self.limit.saturating_sub(self.local.usage().bytes),
+        })?;
+        if ticket
+            ._shared
+            .as_mut()
+            .expect("mesh retains both reservations")
+            .resize(bytes)
+            .is_err()
+        {
+            ticket
+                ._local
+                .resize(previous)
+                .expect("restoring a smaller reservation cannot exhaust its budget");
+            return Err(GpuError::Pressure {
+                domain: "mesh scratch",
+                requested,
+                available: self.limit.saturating_sub(self.shared.usage().bytes),
+            });
+        }
+        Ok(())
     }
     fn grow<T>(&mut self, storage: &mut Vec<T>, additional: usize) -> Result<(), GpuError> {
         let required = storage
@@ -193,17 +233,24 @@ impl Allocation {
         let growth = storage
             .capacity()
             .max(additional)
-            .min((available / stride) as usize)
+            .min(((available / stride) as usize).saturating_sub(storage.capacity()))
             .min(max_elements - storage.capacity())
             .max(required - storage.capacity());
-        self._tickets.push(reserve(
-            &self.shared,
-            &self.local,
-            growth as u64 * stride,
-            self.limit,
-            "mesh scratch",
-        )?);
-        storage.reserve_exact(storage.capacity() + growth - storage.len());
+        let previous = self
+            .ticket
+            .as_ref()
+            .map_or(0, |ticket| ticket._local.bytes());
+        let old_bytes = storage.capacity() as u64 * stride;
+        let capacity = storage.capacity() + growth;
+        // A relocating reserve can keep the old and new allocation alive at
+        // once. Retain that peak before allocation, then charge actual capacity.
+        self.resize(
+            previous
+                .checked_add(capacity as u64 * stride)
+                .ok_or(GpuError::InvalidSize)?,
+        )?;
+        storage.reserve_exact(capacity - storage.len());
+        self.resize(previous - old_bytes + storage.capacity() as u64 * stride)?;
         Ok(())
     }
 }
@@ -747,6 +794,56 @@ fn transform_vertices(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mesh_growth_charges_relocation_peak_and_rolls_back_both_ledgers() {
+        let limits = super::super::GpuLimits {
+            transient_bytes: 600,
+            ..Default::default()
+        };
+        let shared = Budgets::new(limits);
+        let local = Budgets::new(limits);
+        let mut mesh = Mesh::new(Allocation::new(&shared, &local, 600, 1 << 20));
+        mesh.quad(Rect::new(0., 0., 4., 3.), Rect::ZERO).unwrap();
+        let original = bytemuck::cast_slice::<_, u8>(&mesh.vertices).to_vec();
+        let pointer = mesh.vertices.as_ptr();
+        assert_eq!(shared.transient.usage().bytes, 216);
+        assert_eq!(local.transient.usage().tickets, 1);
+
+        // Other scratch in this preparation is a local admission failure.
+        let local_pressure = local.transient.reserve(1).unwrap();
+        assert!(matches!(
+            mesh.quad(Rect::new(5., 0., 9., 3.), Rect::ZERO),
+            Err(GpuError::Budget { requested: 384, .. })
+        ));
+        assert_eq!(shared.transient.usage().bytes, 216);
+        assert_eq!(local.transient.usage().bytes, 217);
+        assert_eq!(mesh.vertices.as_ptr(), pointer);
+        assert_eq!(bytemuck::cast_slice::<_, u8>(&mesh.vertices), original);
+        drop(local_pressure);
+
+        let pressure = shared.transient.reserve(1).unwrap();
+        assert!(matches!(
+            mesh.quad(Rect::new(5., 0., 9., 3.), Rect::ZERO),
+            Err(GpuError::Pressure { requested: 384, .. })
+        ));
+        assert_eq!(shared.transient.usage().bytes, 217);
+        assert_eq!(local.transient.usage().bytes, 216);
+        assert_eq!(local.transient.usage().tickets, 1);
+        assert_eq!(mesh.vertices.as_ptr(), pointer);
+        assert_eq!(bytemuck::cast_slice::<_, u8>(&mesh.vertices), original);
+        drop(pressure);
+
+        mesh.quad(Rect::new(5., 0., 9., 3.), Rect::ZERO).unwrap();
+        for usage in [shared.transient.usage(), local.transient.usage()] {
+            assert_eq!(usage.bytes, 432);
+            assert_eq!(usage.peak_bytes, 600, "216 old + 384 replacement vertices");
+            assert_eq!(usage.tickets, 1);
+        }
+        drop(mesh);
+        assert_eq!(shared.transient.usage().bytes, 0);
+        assert_eq!(local.transient.usage().bytes, 0);
+    }
 
     #[test]
     fn rectangle_fill_matches_path_mesh_through_transforms_and_clipping() {
