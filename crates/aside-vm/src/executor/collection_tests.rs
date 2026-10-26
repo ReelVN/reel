@@ -1328,6 +1328,128 @@ fn pause_point_lookup(vm: &mut Vm, table: Value, context: Context) -> TaskId {
     task
 }
 
+fn warm_point_lookup(vm: &mut Vm, table: Value) -> Value {
+    let root = vm
+        .heap_mut()
+        .add_root(RootOwner(8), RootKind::Host, table)
+        .unwrap();
+    let task = vm
+        .start(FunctionId(0), &[table], RootOwner(9), Context::Ordinary)
+        .unwrap();
+    let RunOutcome::Returned(delivery) = terminal(vm, task) else {
+        panic!("warm lookup failed")
+    };
+    let value = vm.delivery_value(delivery).unwrap();
+    vm.discard_delivery(delivery).unwrap();
+    vm.heap_mut().release_root(root).unwrap();
+    value
+}
+
+#[test]
+fn member_position_hints_recheck_each_shape_and_host_write_validator() {
+    for host in [false, true] {
+        for write in [false, true] {
+            let mut vm = load(point_lookup_package(false, write));
+            for position in [2, 0, 1] {
+                let fields = vm.heap_mut().alloc_table().unwrap();
+                for index in 0..3 {
+                    let name = if index == position {
+                        "position".into()
+                    } else {
+                        format!("other{index}")
+                    };
+                    let key = vm.heap_mut().alloc_string(&name).unwrap();
+                    vm.heap_mut()
+                        .table_store(fields, index, key, Value::int(42))
+                        .unwrap();
+                }
+                let target = if host {
+                    vm.heap_mut().alloc_host(fields, &[], None).unwrap()
+                } else {
+                    fields
+                };
+                let before = vm.work_probe.member_hint_hits.get();
+                assert_eq!(
+                    warm_point_lookup(&mut vm, target).as_int(),
+                    Some(if write { 126 } else { 42 })
+                );
+                // A different object's key at the stale position cannot select its value.
+                assert_eq!(vm.work_probe.member_hint_hits.get(), before);
+                assert_eq!(
+                    warm_point_lookup(&mut vm, target).as_int(),
+                    Some(if write { 126 } else { 42 })
+                );
+                assert_eq!(vm.work_probe.member_hint_hits.get(), before + 1);
+                let (key, _) = vm.heap().table_entry(fields, position).unwrap();
+                vm.heap_mut()
+                    .table_store(fields, position, key, Value::int(84))
+                    .unwrap();
+                assert_eq!(
+                    warm_point_lookup(&mut vm, target).as_int(),
+                    Some(if write { 126 } else { 84 })
+                );
+            }
+        }
+    }
+    let mut vm = load(point_lookup_package(false, true));
+    let fields = vm.heap_mut().alloc_table().unwrap();
+    let key = vm.heap_mut().alloc_string("position").unwrap();
+    vm.heap_mut()
+        .table_store(fields, 0, key, Value::int(42))
+        .unwrap();
+    let host = vm
+        .heap_mut()
+        .alloc_host(fields, &[], Some(|_, _, _, _| Err(HeapError::TypeMismatch)))
+        .unwrap();
+    let root = vm
+        .heap_mut()
+        .add_root(RootOwner(8), RootKind::Host, host)
+        .unwrap();
+    for expected_hits in 0..2 {
+        let task = vm
+            .start(FunctionId(0), &[host], RootOwner(9), Context::Ordinary)
+            .unwrap();
+        let RunOutcome::Fault(delivery) = terminal(&mut vm, task) else {
+            panic!("write validator was bypassed")
+        };
+        assert_eq!(
+            vm.delivery_fault(delivery).unwrap().unwrap().kind,
+            FaultKind::Type
+        );
+        vm.discard_delivery(delivery).unwrap();
+        assert_eq!(vm.work_probe.member_hint_hits.get(), expected_hits);
+        assert_eq!(
+            vm.heap().table_entry(fields, 0).unwrap().1.as_int(),
+            Some(42)
+        );
+    }
+    vm.heap_mut().release_root(root).unwrap();
+}
+
+fn pause_matched_lookup(vm: &mut Vm, task: TaskId) {
+    for _ in 0..1000 {
+        if matches!(vm.active.frames.data.last(),Some(Frame::Script(s)) if s.table_work.is_some_and(|work|work.matched()))
+        {
+            return;
+        }
+        let outcome = vm
+            .run_slice(
+                task,
+                SliceBudget {
+                    instructions: 1,
+                    work: vm.last_usage.required_work.max(1),
+                    allocation_bytes: VALUE_CHUNK_BYTES.max(vm.last_usage.required_allocation),
+                    ..Default::default()
+                },
+                || 0,
+            )
+            .unwrap();
+        gc(vm);
+        assert!(matches!(outcome, RunOutcome::BudgetYield(_)), "{outcome:?}");
+    }
+    panic!("lookup never matched");
+}
+
 #[test]
 fn point_lookup_survives_value_updates_but_rejects_structural_changes() {
     check_point_lookup_value_and_structure_changes(false);
@@ -1356,6 +1478,9 @@ fn check_point_lookup_value_and_structure_changes(restore: bool) {
                 if model {
                     vm.heap_mut().observe_model_object(table).unwrap();
                 }
+                if !indexed {
+                    warm_point_lookup(&mut vm, table);
+                }
                 // Diverge content and structure versions before capture. Equal
                 // counters would hide restoring the wrong version semantics.
                 vm.heap_mut()
@@ -1366,6 +1491,10 @@ fn check_point_lookup_value_and_structure_changes(restore: bool) {
                     vm.heap().info(table).unwrap().structure_version
                 );
                 let mut task = pause_point_lookup(&mut vm, table, Context::Ordinary);
+                if !indexed {
+                    pause_matched_lookup(&mut vm, task);
+                    assert!(vm.work_probe.member_hint_hits.get() > 0);
+                }
                 if restore {
                     let registry = SnapshotRegistry::default();
                     let mut capture = vm.snapshot_begin(&registry).unwrap();
@@ -1475,6 +1604,7 @@ fn derived_point_lookup_observes_the_field_read_at_commit() {
         .table_store(table, 1, repeat, Value::bool(false))
         .unwrap();
     vm.heap_mut().observe_model_object(table).unwrap();
+    warm_point_lookup(&mut vm, table);
     let output = vm.heap_mut().alloc_derived(Value::NULL).unwrap();
     let root = vm
         .heap_mut()
@@ -1482,6 +1612,8 @@ fn derived_point_lookup_observes_the_field_read_at_commit() {
         .unwrap();
     vm.heap_mut().begin_derived(output).unwrap();
     let task = pause_point_lookup(&mut vm, table, Context::Derived);
+    pause_matched_lookup(&mut vm, task);
+    assert!(vm.work_probe.member_hint_hits.get() > 0);
     vm.heap_mut()
         .table_store(table, 0, position, Value::int(84))
         .unwrap();
@@ -1524,6 +1656,9 @@ fn derived_host_lookup_rejects_changed_structure_before_resolving_old_entry() {
                 .unwrap();
             let host = vm.heap_mut().alloc_host(fields, &[], None).unwrap();
             vm.heap_mut().observe_host_properties(host, 0, 2).unwrap();
+            if !indexed {
+                warm_point_lookup(&mut vm, host);
+            }
             let output = vm.heap_mut().alloc_derived(Value::NULL).unwrap();
             let root = vm
                 .heap_mut()
