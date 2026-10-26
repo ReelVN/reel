@@ -1,7 +1,7 @@
 //! Build-time converter identities used with source content and normalized recipes.
 //!
 //! CLI/player/UI changes leave these identities unchanged. Converter sources,
-//! locked dependencies and the build platform determine each identity. External
+//! transitive codec dependencies and the build platform determine each identity. External
 //! codec/interpreter identities are supplied separately by the relevant adapter.
 
 /// Return the implementation identity for a normalized conversion recipe kind.

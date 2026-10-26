@@ -4,6 +4,8 @@ use std::{
     env, fs, io,
     path::{Path, PathBuf},
 };
+#[path = "build_support/locked_dependencies.rs"]
+mod locked_dependencies;
 
 fn main() -> io::Result<()> {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").map_err(io::Error::other)?);
@@ -15,6 +17,7 @@ fn main() -> io::Result<()> {
 
     let texture = [
         "crates/reel-cli/src/prepare_texture.rs",
+        "crates/reel-cli/src/prepare_texture/quality.rs",
         "crates/reel-core/src/texture.rs",
     ];
     let mut tiles = texture.to_vec();
@@ -23,9 +26,14 @@ fn main() -> io::Result<()> {
         "crates/reel-core/src/prepared_image.rs",
     ]);
     let opus = [
-        "crates/reel-media/src",
+        "crates/reel-media/src/encode.rs",
+        "crates/reel-media/src/decode.rs",
+        "crates/reel-media/src/decode",
         "crates/reel-core/src/audio.rs",
         "crates/reel-audio/src/frame.rs",
+        "crates/reel-audio/src/sound/symphonia.rs",
+        "crates/reel-audio/src/sound/streaming/decoder.rs",
+        "crates/reel-audio/src/sound/streaming/decoder/symphonia.rs",
     ];
     let video = ["crates/reel-cli/src/prepare_video.rs"];
     let font = ["crates/reel-cli/src/prepare_font.rs"];
@@ -36,15 +44,34 @@ fn main() -> io::Result<()> {
         "crates/reel-ui/src/stage/effect.rs",
     ];
     let mut watched = BTreeSet::new();
-    for (kind, sources) in [
-        ("TEXTURE", texture.as_slice()),
-        ("TILES", tiles.as_slice()),
-        ("OPUS", opus.as_slice()),
-        ("VIDEO", video.as_slice()),
-        ("FONT", font.as_slice()),
+    let lock_path = root.join("Cargo.lock");
+    let lock = fs::read_to_string(&lock_path)?;
+    watched.insert(lock_path);
+    let dependencies = locked_dependencies::LockedDependencies::parse(&lock)?;
+    for (kind, sources, dependency_roots) in [
+        (
+            "TEXTURE",
+            texture.as_slice(),
+            ["image", "rgbcx", "bc-crunch"].as_slice(),
+        ),
+        (
+            "TILES",
+            tiles.as_slice(),
+            ["image", "rgbcx", "bc-crunch"].as_slice(),
+        ),
+        (
+            "OPUS",
+            opus.as_slice(),
+            ["opus", "ogg", "rubato", "symphonia"].as_slice(),
+        ),
+        (
+            "VIDEO",
+            video.as_slice(),
+            ["serde", "serde_json"].as_slice(),
+        ),
+        ("FONT", font.as_slice(), [].as_slice()),
     ] {
         let mut files = BTreeSet::new();
-        collect(&root.join("Cargo.lock"), &mut files, &mut watched)?;
         for source in sources {
             collect(&root.join(source), &mut files, &mut watched)?;
         }
@@ -53,6 +80,10 @@ fn main() -> io::Result<()> {
         field(&mut hash, kind.as_bytes());
         field(&mut hash, host.as_bytes());
         field(&mut hash, target.as_bytes());
+        field(
+            &mut hash,
+            dependencies.fingerprint(dependency_roots)?.as_bytes(),
+        );
         for path in files {
             // Checkout locations do not affect generated payloads. Names and
             // contents are length-delimited, ordered and relative to the workspace.
@@ -66,7 +97,6 @@ fn main() -> io::Result<()> {
             hash.finalize().to_hex()
         );
     }
-    let lock = fs::read_to_string(root.join("Cargo.lock"))?;
     // Shader products depend on their generator and the pinned compiler, not
     // unrelated image/audio dependencies or the absolute checkout location.
     let mut hash = blake3::Hasher::new();

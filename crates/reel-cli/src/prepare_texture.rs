@@ -7,6 +7,7 @@ use reel_core::texture::{
     ColorEncoding, TextureCodec, TextureDescriptor, TextureFormat, TextureHeader, TextureLayout,
 };
 use std::path::Path;
+mod quality;
 
 /// `Auto` uses BC1 for opaque images and BC3 for images with transparency.
 #[derive(Clone, Copy, Debug, Default, clap::ValueEnum, serde::Serialize, serde::Deserialize)]
@@ -73,6 +74,8 @@ impl Options {
 /// Filtering uses linear-premultiplied colors; padding repeats the content edge.
 /// BC blocks remain compressed at runtime. An additional lossless BC envelope is
 /// used only when it reduces file size. Existing output files are preserved.
+/// BC fitting compares displayed colors, gradients and translucent edges against
+/// the filtered source, refining affected images at the same GPU payload size.
 pub fn prepare(source: &Path, output: &Path, options: Options) -> Result<TextureHeader, String> {
     prepare_bounded(
         source,
@@ -163,7 +166,13 @@ pub(crate) fn prepare_scaled_bounded(
         0
     };
     let quantize = content_pixels * 16 + stored_pixels * 4;
-    let encode = stored_pixels * 16;
+    let encode = if !matches!(options.format, Format::Rgba8) {
+        // The float reference and baseline blocks survive one candidate's fit
+        // and decode. Envelope compression later releases the float reference.
+        bc_workspace(content, storage)
+    } else {
+        0
+    };
     let workspace = u64::try_from(cast.max(resize).max(quantize).max(encode) + (1 << 20))
         .map_err(|_| "image workspace size overflow")?;
     let pool = BudgetPool::new(
@@ -180,7 +189,15 @@ pub(crate) fn prepare_scaled_bounded(
         )
     })?;
     let pixels = DynamicImage::from_decoder(decoder).map_err(|e| e.to_string())?;
-    prepare_decoded_scaled(pixels, output, options, scale).map(|header| (header, workspace))
+    prepare_decoded_scaled(pixels, output, options, scale).map(|result| (result, workspace))
+}
+
+/// Peak BC fitting, quality measurement and envelope storage after source decode.
+pub(crate) fn bc_workspace(content: [u32; 2], storage: [u32; 2]) -> u128 {
+    let content_pixels = u128::from(content[0]) * u128::from(content[1]);
+    let stored_pixels = u128::from(storage[0]) * u128::from(storage[1]);
+    (content_pixels * 16 + stored_pixels * 6 + quality::scratch_bytes(content[0]))
+        .max(stored_pixels * 16)
 }
 
 /// Encode already decoded artwork with the same filtering, block and publication
@@ -199,28 +216,14 @@ fn prepare_decoded_scaled(
     options: Options,
     scale: f64,
 ) -> Result<TextureHeader, String> {
-    let (descriptor, pixels) = prepare_pixels(pixels, options, scale)?;
+    let (descriptor, linear) = prepare_linear(pixels, options, scale)?;
     let [width, height] = descriptor.layout.storage_size;
     let blocks = match descriptor.format {
-        TextureFormat::Rgba8 => pixels.into_raw(),
-        TextureFormat::Bc1Rgb | TextureFormat::Bc3Rgba => {
-            let blocks = rgbcx::encode(
-                width,
-                height,
-                pixels.as_raw(),
-                if descriptor.format == TextureFormat::Bc1Rgb {
-                    rgbcx::Format::Bc1
-                } else {
-                    rgbcx::Format::Bc3
-                },
-                rgbcx::Quality::Balanced,
-            )
-            .map_err(|e| e.to_string())?;
-            drop(pixels);
-            blocks
-        }
+        TextureFormat::Rgba8 => quantized_pixels(&linear, descriptor, options.dither).into_raw(),
+        TextureFormat::Bc1Rgb | TextureFormat::Bc3Rgba => quality::encode(&linear, descriptor)?,
         _ => unreachable!("offline conversion selects RGBA8, BC1 or BC3"),
     };
+    drop(linear);
     let (codec, payload) = if descriptor.format.is_compressed() {
         let compressed = bc_crunch::compress(
             width,
@@ -290,11 +293,22 @@ fn scaled_content_size(
     }
 }
 
+#[cfg(test)]
 fn prepare_pixels(
     original: DynamicImage,
     options: Options,
     scale: f64,
 ) -> Result<(TextureDescriptor, RgbaImage), String> {
+    let (descriptor, linear) = prepare_linear(original, options, scale)?;
+    let pixels = quantized_pixels(&linear, descriptor, options.dither);
+    Ok((descriptor, pixels))
+}
+
+fn prepare_linear(
+    original: DynamicImage,
+    options: Options,
+    scale: f64,
+) -> Result<(TextureDescriptor, image::Rgba32FImage), String> {
     options.validate()?;
     let logical_size = [original.width(), original.height()];
     if logical_size.contains(&0) {
@@ -355,12 +369,24 @@ fn prepare_pixels(
     descriptor.byte_len().map_err(|e| e.to_string())?;
     // RGB and alpha remain linear premultiplied when quantized. The decoder does
     // not interpret these bytes as an sRGB image or premultiply them a second time.
-    let pixels = RgbaImage::from_fn(storage_size[0], storage_size[1], |x, y| {
+    Ok((descriptor, linear))
+}
+
+fn quantized_pixels(
+    linear: &image::Rgba32FImage,
+    descriptor: TextureDescriptor,
+    dither: Dither,
+) -> RgbaImage {
+    let TextureLayout {
+        content_size,
+        storage_size,
+        ..
+    } = descriptor.layout;
+    RgbaImage::from_fn(storage_size[0], storage_size[1], |x, y| {
         let coordinates = [x.min(content_size[0] - 1), y.min(content_size[1] - 1)];
         let pixel = linear.get_pixel(coordinates[0], coordinates[1]);
-        image::Rgba(quantize(pixel.0, options.dither, coordinates))
-    });
-    Ok((descriptor, pixels))
+        image::Rgba(quantize(pixel.0, dither, coordinates))
+    })
 }
 
 fn ordered_offset([x, y]: [u32; 2]) -> f32 {
