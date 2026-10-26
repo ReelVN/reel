@@ -122,7 +122,11 @@ impl Scissor {
             }
             _ => return None,
         }
-        match group.ink_bounds {
+        Self::ink_bounds(group.ink_bounds, outer, size)
+    }
+    /// Conservative physical coverage, including the rasterization edge margin.
+    pub fn ink_bounds(ink: InkBounds, outer: Affine, size: [u32; 2]) -> Option<Self> {
+        match ink {
             InkBounds::Empty => Some(Self::full([0, 0])),
             InkBounds::Unbounded => None,
             InkBounds::Rect(rect) => {
@@ -162,6 +166,7 @@ mod tests {
         FrameGroup {
             image_mask: None,
             effect: None,
+            mask_effect: None,
             clip: None,
             mask: None,
             filters: Vec::new(),

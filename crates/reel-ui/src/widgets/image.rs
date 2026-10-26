@@ -33,9 +33,8 @@ const IMAGE_SCALE: f64 = 1.0;
 ///
 /// The underlying image uses `Arc` for buffer data, making it cheap to clone.
 ///
-/// This currently uses bilinear interpolation, which falls down when the image is
-/// larger than its layout size (e.g. it is in a constrained layout smaller
-/// than the image size).
+/// Filtering defaults to bilinear interpolation. Nearest filtering preserves
+/// pixel edges while sharing the same image storage.
 ///
 /// You can change the sizing of the image with the [`ObjectFit`] property.
 pub struct Image {
@@ -44,6 +43,7 @@ pub struct Image {
     tiles: Vec<ImageTile>,
     tiled_size: Size,
     source_rect: Option<Rect>,
+    sampling: crate::peniko::ImageQuality,
     alpha_layout: crate::frame::ImageAlphaLayout,
     slice: Option<Insets>,
     slice_scale: f64,
@@ -71,18 +71,27 @@ pub struct ImageTile {
 
 // --- MARK: BUILDERS
 impl Image {
+    /// Select per-draw filtering without copying or replacing image storage.
+    pub fn with_sampling(mut self, sampling: crate::peniko::ImageQuality) -> Self {
+        self.sampling = sampling;
+        self
+    }
+
     /// Creates an image drawing widget from an image buffer.
     ///
     /// By default, the image will be scaled to fully fit within the container.
     /// ([`ObjectFit::Contain`]).
     #[inline]
     pub fn new(image_data: impl Into<ImageBrush>) -> Self {
+        let image_data = image_data.into();
+        let sampling = image_data.sampler.quality;
         Self {
-            image_data: Some(image_data.into()),
+            image_data: Some(image_data),
             resource: None,
             tiles: Vec::new(),
             tiled_size: Size::ZERO,
             source_rect: None,
+            sampling,
             alpha_layout: Default::default(),
             slice: None,
             slice_scale: 1.,
@@ -105,6 +114,7 @@ impl Image {
             tiles,
             tiled_size: size,
             source_rect: None,
+            sampling: Default::default(),
             alpha_layout: Default::default(),
             slice: None,
             slice_scale: 1.,
@@ -234,6 +244,14 @@ impl Image {
 
 // --- MARK: WIDGETMUT
 impl Image {
+    /// Change filtering while preserving layout, resource identity and input owners.
+    pub fn set_sampling(this: &mut WidgetMut<'_, Self>, sampling: crate::peniko::ImageQuality) {
+        if this.widget.sampling != sampling {
+            this.widget.sampling = sampling;
+            this.ctx.request_render();
+        }
+    }
+
     /// Change packed alpha interpretation and update the natural image dimensions.
     pub fn set_alpha_layout(
         this: &mut WidgetMut<'_, Self>,
@@ -482,6 +500,7 @@ impl Image {
 
     fn sampler(&self) -> crate::peniko::ImageSampler {
         crate::peniko::ImageSampler {
+            quality: self.sampling,
             x_extend: if self.repeat[0] {
                 Extend::Repeat
             } else {

@@ -27,10 +27,20 @@ impl<T> Batch<T> {
     pub fn full(&self, next: &Mesh) -> bool {
         self.entries.len() >= 64 || self.mesh.bytes().saturating_add(next.bytes()) > 256 * 1024
     }
-    pub fn push(&mut self, mesh: Mesh, state: T) -> Result<(), GpuError> {
-        self.mesh.reserve_entries(&mut self.entries)?;
+    pub fn push(&mut self, mesh: Mesh, state: T) -> Result<(), GpuError>
+    where
+        T: PartialEq,
+    {
+        let merge = self.entries.last().is_some_and(|last| last.state == state);
+        if !merge {
+            self.mesh.reserve_entries(&mut self.entries)?;
+        }
         let range = self.mesh.append(&mesh)?;
-        self.entries.push(Entry { range, state });
+        if merge {
+            self.entries.last_mut().unwrap().range.end = range.end;
+        } else {
+            self.entries.push(Entry { range, state });
+        }
         Ok(())
     }
 }
@@ -90,6 +100,36 @@ mod tests {
         drop(batch);
         assert_eq!(shared.transient.usage().bytes, 0);
         assert_eq!(local.transient.usage().bytes, 0);
+    }
+
+    #[test]
+    fn adjacent_equal_states_merge_without_reordering_across_a_change() {
+        let limits = GpuLimits::default();
+        let shared = Budgets::new(limits);
+        let local = Budgets::new(limits);
+        let mesh = || {
+            let mut mesh = Mesh::new(Allocation::new(
+                &shared,
+                &local,
+                limits.transient_bytes,
+                1 << 26,
+            ));
+            mesh.quad(Rect::new(0., 0., 8., 8.), Rect::ZERO).unwrap();
+            mesh
+        };
+        let mut batch = Batch::new(mesh(), 1).unwrap();
+        batch.push(mesh(), 1).unwrap();
+        batch.push(mesh(), 2).unwrap();
+        batch.push(mesh(), 1).unwrap();
+        assert_eq!(
+            batch
+                .entries
+                .iter()
+                .map(|e| (e.state, e.range.clone()))
+                .collect::<Vec<_>>(),
+            vec![(1, 0..12), (2, 12..18), (1, 18..24)]
+        );
+        assert_eq!(batch.mesh.indices.len(), 24);
     }
 
     #[test]

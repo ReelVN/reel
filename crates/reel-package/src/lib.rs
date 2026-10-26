@@ -4,7 +4,9 @@ pub mod archive;
 mod codec;
 mod declarations;
 mod effects;
-pub use effects::{EffectBinding, EffectDefinition, EffectDefinitionId, EffectProducts};
+pub use effects::{
+    EffectBinding, EffectBindingKind, EffectDefinition, EffectDefinitionId, EffectProducts,
+};
 pub mod distribution;
 mod metadata;
 pub mod resource_target;

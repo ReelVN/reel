@@ -125,6 +125,13 @@ pub(crate) fn collect<'a>(
                         _ => &[],
                     },
                     FrameOp::PushGroup(group) => {
+                        for effect in group.effect.iter().chain(group.mask_effect.iter()) {
+                            for &handle in &effect.images {
+                                if used_handles.insert(handle) {
+                                    push_stack(&mut used, (handle, at), &mut reserve)?;
+                                }
+                            }
+                        }
                         if let Some(mask) = group.mask
                             && visited.insert(mask.mask)
                         {

@@ -186,7 +186,7 @@ fn direct_paint_submits_each_alpha_policy_and_keeps_regional_draws_general() {
         }
     }
     assert_eq!(expected, [1, 1, 1]);
-    assert_eq!(renderer.pipelines.creations.snapshot(), [3, 10, 10, 10, 4]);
+    assert_eq!(renderer.pipelines.creations.snapshot(), [3, 10, 10, 10, 8]);
     assert_eq!(renderer.usage().transient, renderer.usage().cached_geometry);
 }
 

@@ -12,6 +12,68 @@ const PNG: &[u8] = include_bytes!("../../../../examples/assets/panels.png");
 const JPEG: &[u8] = include_bytes!("../../../../examples/assets/sun.jpg");
 mod packed;
 
+/// Supply compiled source/ASB definitions through the ordinary asset IO and
+/// shader-envelope admission path used by the exported player.
+pub(crate) fn prepared_effect_assets(
+    products: &reel_engine::aside::source::EffectProducts,
+) -> Assets {
+    use reel_render::effect::{Language, compile_fragment};
+    use reel_ui::resources::{EffectShaderDescriptor, EffectShaderFormat};
+    Assets::with_adapters(AssetOptions::default(), |wake| {
+        let limits = QueueLimits {
+            max_requests: 32,
+            max_bytes: 64 << 20,
+        };
+        let input = BudgetPool::new(BudgetCategory::CpuInput, limits);
+        let mut io = MemoryAssetIo::new(limits, limits, wake.clone());
+        for definition in products.definitions() {
+            for (language, format) in [
+                (Language::Wgsl, EffectShaderFormat::Wgsl),
+                (Language::GlslEs100, EffectShaderFormat::GlslEs100),
+            ] {
+                let fragment = compile_fragment(&definition.program, language, 4 << 20).unwrap();
+                let descriptor = EffectShaderDescriptor::with_textures(
+                    definition.id,
+                    format,
+                    definition
+                        .program
+                        .parameters()
+                        .iter()
+                        .map(|p| p.ty)
+                        .collect(),
+                    definition.program.textures().len() as u32,
+                    fragment.source_sampler,
+                    fragment.output_type,
+                    fragment.source.as_bytes(),
+                )
+                .unwrap();
+                let bytes = descriptor
+                    .encode_payload(fragment.source.as_bytes())
+                    .unwrap();
+                let version = ResourceVersion {
+                    key: AssetKey(format.asset_path(definition.id)),
+                    version: ContentVersion(*blake3::hash(&bytes).as_bytes()),
+                };
+                let bytes =
+                    OwnedBytes::new(bytes.clone(), input.reserve(bytes.len() as u64).unwrap())
+                        .unwrap();
+                io.insert_asset(
+                    version,
+                    MemoryAsset {
+                        bytes,
+                        media_type: None,
+                    },
+                )
+                .unwrap();
+            }
+        }
+        (
+            Box::new(MemoryHost(io, None)),
+            Box::new(ImageExecutor::new(limits, wake)),
+        )
+    })
+}
+
 #[test]
 fn prepared_texture_worker_preserves_blocks_and_uses_bounded_workspace() {
     use reel_core::texture::*;

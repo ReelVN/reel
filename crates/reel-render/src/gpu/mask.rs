@@ -336,8 +336,8 @@ impl Prepared {
             softness.to_bits(),
             params.invert.to_bits(),
             params.blend,
-            0,
-            0,
+            (params.source_origin[0] as f32).to_bits(),
+            (params.source_origin[1] as f32).to_bits(),
         ]);
         words[8..16].copy_from_slice(
             &[
@@ -481,7 +481,9 @@ fn shader_with_split(
     let (before_coverage, rest) = rest.split_once("/*MASK_COVERAGE*/").unwrap();
     let (_, after_coverage) = rest.split_once("/*END_MASK_COVERAGE*/").unwrap();
     code.write_str(before_fields)?;
-    code.write_str(", padding: vec2<f32>, mask_uv0: vec4<f32>, mask_uv1: vec4<f32>, mask_values: vec4<f32>, mask_flags: vec4<f32>")?;
+    code.write_str(
+        ", mask_uv0: vec4<f32>, mask_uv1: vec4<f32>, mask_values: vec4<f32>, mask_flags: vec4<f32>",
+    )?;
     if !program.sources().is_empty() {
         write!(
             code,

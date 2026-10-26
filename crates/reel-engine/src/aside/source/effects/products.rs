@@ -35,6 +35,7 @@ struct EffectBinding {
     function: bc::FunctionId,
     definition: EffectDefinitionId,
     origin: EffectOrigin,
+    mask: Option<Arc<reel_ui::stage::MaskProgram>>,
 }
 
 /// Function-level diagnostic data reconstructed from ordinary bytecode metadata.
@@ -121,10 +122,13 @@ impl Default for EffectLoadLimits {
 impl EffectProducts {
     /// Resolve a real function from this package without executing its body.
     pub fn get(&self, function: bc::FunctionId) -> Option<&Arc<EffectDefinition>> {
-        let binding = &self.bindings[self
+        let first = self
             .bindings
-            .binary_search_by_key(&function, |binding| binding.function)
-            .ok()?];
+            .partition_point(|binding| binding.function < function);
+        let binding = self.bindings[first..]
+            .iter()
+            .take_while(|binding| binding.function == function)
+            .find(|binding| binding.mask.is_none())?;
         self.definition(binding.definition)
     }
     /// Definitions in lexicographic content-id order, shared by every binding.
@@ -132,13 +136,48 @@ impl EffectProducts {
         self.definitions.iter()
     }
     /// Final linked FunctionId and content identity, in FunctionId order.
-    pub fn bindings(
-        &self,
-    ) -> impl ExactSizeIterator<Item = (bc::FunctionId, EffectDefinitionId)> + '_ {
+    pub fn bindings(&self) -> impl Iterator<Item = (bc::FunctionId, EffectDefinitionId)> + '_ {
         self.bindings
             .iter()
+            .filter(|binding| binding.mask.is_none())
             .map(|binding| (binding.function, binding.definition))
     }
+    /// Source owners and typed function/mask-template uses for ASB packaging.
+    pub fn binding_records(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            bc::FunctionId,
+            EffectDefinitionId,
+            Option<&reel_ui::stage::MaskProgram>,
+        ),
+    > {
+        self.bindings.iter().map(|binding| {
+            (
+                binding.function,
+                binding.definition,
+                binding.mask.as_deref(),
+            )
+        })
+    }
+    /// Resolve a construction once. Animation revisions retain the chosen definition.
+    pub fn mask_definition(
+        &self,
+        mask: &reel_ui::stage::MaskProgram,
+    ) -> Option<&Arc<EffectDefinition>> {
+        let binding = self.bindings.iter().find(|binding| {
+            binding.mask.as_ref().is_some_and(|template| {
+                template.operations() == mask.operations()
+                    && template.sources().len() == mask.sources().len()
+            })
+        })?;
+        self.definition(binding.definition)
+    }
+    /// Resolve a definition already retained by an accepted mask instance.
+    pub fn by_id(&self, id: EffectDefinitionId) -> Option<&Arc<EffectDefinition>> {
+        self.definition(id)
+    }
+
     /// Whether this source/package has no compiled effect functions.
     pub fn is_empty(&self) -> bool {
         self.bindings.is_empty()
@@ -167,7 +206,10 @@ impl EffectProducts {
             + self
                 .bindings
                 .iter()
-                .map(|binding| binding.origin.storage_bytes())
+                .map(|binding| {
+                    binding.origin.storage_bytes()
+                        + binding.mask.as_ref().map_or(0, |mask| mask.storage_bytes())
+                })
                 .sum::<usize>()
     }
     fn definition(&self, id: EffectDefinitionId) -> Option<&Arc<EffectDefinition>> {
@@ -181,12 +223,31 @@ impl EffectProducts {
         program: &bc::VerifiedProgram,
         function: bc::FunctionId,
         definition: EffectDefinitionId,
+        mask: Option<Arc<reel_ui::stage::MaskProgram>>,
     ) -> Result<(), EffectProductError> {
+        if mask.is_none()
+            && self
+                .bindings
+                .iter()
+                .any(|binding| binding.function == function && binding.mask.is_none())
+        {
+            return Err(EffectProductError(
+                "duplicate effect function binding".into(),
+            ));
+        }
+        if let Some(mask) = &mask {
+            if self.bindings.iter().any(|binding| {
+                binding.mask.as_ref().is_some_and(|other| {
+                    other.operations() == mask.operations()
+                        && other.sources().len() == mask.sources().len()
+                })
+            }) {
+                return Ok(());
+            }
+        }
         let index = self
             .bindings
-            .binary_search_by_key(&function, |binding| binding.function)
-            .err()
-            .ok_or_else(|| EffectProductError("duplicate effect function binding".into()))?;
+            .partition_point(|binding| binding.function <= function);
         self.bindings
             .try_reserve(1)
             .map_err(|error| EffectProductError(error.to_string()))?;
@@ -196,6 +257,7 @@ impl EffectProducts {
                 function,
                 definition,
                 origin: EffectOrigin::from_function(program, function),
+                mask,
             },
         );
         Ok(())
@@ -206,10 +268,11 @@ impl EffectProducts {
         code: &bc::VerifiedProgram,
         function: bc::FunctionId,
         program: Arc<EffectProgram>,
+        mask: Option<Arc<reel_ui::stage::MaskProgram>>,
     ) -> Result<(), EffectProductError> {
         let bytes = encode_definition(&program)?;
         let id = *blake3::hash(&bytes).as_bytes();
-        self.bind(code, function, id)?;
+        self.bind(code, function, id, mask)?;
         if let Err(index) = self
             .definitions
             .binary_search_by_key(&id, |definition| definition.id)
@@ -228,7 +291,14 @@ impl EffectProducts {
     pub fn decode(
         program: &bc::VerifiedProgram,
         definitions: impl IntoIterator<Item = (EffectDefinitionId, Vec<u8>)>,
-        bindings: impl IntoIterator<Item = (bc::ModuleId, bc::FunctionId, EffectDefinitionId)>,
+        bindings: impl IntoIterator<
+            Item = (
+                bc::ModuleId,
+                bc::FunctionId,
+                EffectDefinitionId,
+                Option<Vec<u8>>,
+            ),
+        >,
         mut limits: EffectLoadLimits,
     ) -> Result<Self, EffectProductError> {
         let storage_limit = limits.storage_bytes;
@@ -268,13 +338,20 @@ impl EffectProducts {
         {
             return Err(EffectProductError("duplicate effect definition".into()));
         }
-        for (module, function, definition) in bindings {
+        let mut functions = std::collections::BTreeSet::new();
+        for (module, function, definition, mask_key) in bindings {
+            if mask_key.is_none() && !functions.insert(function) {
+                return Err(EffectProductError(
+                    "duplicate effect function binding".into(),
+                ));
+            }
+            let mask = mask_key.as_deref().map(decode_mask_template).transpose()?;
             let Some(code) = program.package().functions.get(function.index()) else {
                 return Err(EffectProductError("effect function out of range".into()));
             };
             if code.module != module
-                || code.kind != bc::FunctionKind::Plain
-                || !code.captures.is_empty()
+                || (mask.is_none()
+                    && (code.kind != bc::FunctionKind::Plain || !code.captures.is_empty()))
             {
                 return Err(EffectProductError(
                     "effect function must be plain, unbound and in its declared module".into(),
@@ -283,29 +360,60 @@ impl EffectProducts {
             let Some(effect) = products.definition(definition) else {
                 return Err(EffectProductError("effect definition is missing".into()));
             };
+            if let Some(mask) = &mask {
+                let lowered = reel_ui::stage::effect::lower_mask(mask)
+                    .ok_or_else(|| EffectProductError("unsupported static mask template".into()))?;
+                if lowered.as_ref() != effect.program.as_ref() {
+                    return Err(EffectProductError(
+                        "mask template differs from its compiled definition".into(),
+                    ));
+                }
+                products.bindings.push(EffectBinding {
+                    function,
+                    definition,
+                    origin: EffectOrigin::from_function(program, function),
+                    mask: Some(mask.clone()),
+                });
+                continue;
+            }
             let signature = &program.package().signatures[code.signature.index()];
             if signature.rest.is_some()
-                || signature.parameters.len() != effect.program.parameters().len() + 1
+                || signature.parameters.len()
+                    != effect.program.parameters().len() + effect.program.textures().len() + 1
             {
                 return Err(EffectProductError(
                     "effect parameter count differs from its function".into(),
                 ));
             }
             let package = program.package();
-            if signature
-                .parameters
-                .iter()
-                .skip(1)
-                .zip(effect.program.parameters())
-                .any(|(parameter, effect)| {
-                    package.symbols[parameter.name.index()] != effect.name.as_ref()
-                        || !matches_type(package, parameter.ty, effect.ty)
-                        || parameter.default.is_some() != effect.default.is_some()
-                })
-            {
-                return Err(EffectProductError(
-                    "effect parameter schema differs from its function".into(),
-                ));
+            let mut numeric = effect.program.parameters().iter();
+            let mut textures = effect.program.textures().iter();
+            for parameter in signature.parameters.iter().skip(1) {
+                let name = package.symbols[parameter.name.index()].as_str();
+                let valid = if let Some(texture) = effect
+                    .program
+                    .textures()
+                    .iter()
+                    .find(|texture| texture.name.as_ref() == name)
+                {
+                    let ordered = textures
+                        .next()
+                        .is_some_and(|next| next.name == texture.name);
+                    ordered
+                        && parameter.default.is_none()
+                        && matches!(&package.types[parameter.ty.index()], bc::TypeDef::Named { name, .. } if matches!(package.symbols[name.index()].as_str(), "Texture" | "reel::types::Texture"))
+                } else {
+                    numeric.next().is_some_and(|effect| {
+                        name == effect.name.as_ref()
+                            && matches_type(package, parameter.ty, effect.ty)
+                            && parameter.default.is_some() == effect.default.is_some()
+                    })
+                };
+                if !valid {
+                    return Err(EffectProductError(
+                        "effect parameter schema differs from its function".into(),
+                    ));
+                }
             }
             let output = effect.program.nodes()[effect.program.output().0 as usize].ty;
             if package.types[signature.return_type.index()]
@@ -324,20 +432,12 @@ impl EffectProducts {
                 function,
                 definition,
                 origin: EffectOrigin::from_function(program, function),
+                mask: None,
             });
         }
         products
             .bindings
             .sort_unstable_by_key(|binding| binding.function);
-        if products
-            .bindings
-            .windows(2)
-            .any(|pair| pair[0].function == pair[1].function)
-        {
-            return Err(EffectProductError(
-                "duplicate effect function binding".into(),
-            ));
-        }
         let used = products
             .bindings
             .iter()
@@ -378,11 +478,71 @@ fn matches_type(package: &bc::RuntimePackage, ty: bc::TypeId, effect: Ty) -> boo
     }
 }
 
+/// Canonical key for one existing mask topology, independent of asset paths.
+pub fn encode_mask_template(
+    mask: &reel_ui::stage::MaskProgram,
+) -> Result<Vec<u8>, EffectProductError> {
+    postcard::to_allocvec(&(mask.operations(), mask.sources().len() as u32))
+        .map_err(|error| EffectProductError(error.to_string()))
+}
+fn decode_mask_template(
+    bytes: &[u8],
+) -> Result<Arc<reel_ui::stage::MaskProgram>, EffectProductError> {
+    struct Key;
+    impl<'de> Visitor<'de> for Key {
+        type Value = Arc<reel_ui::stage::MaskProgram>;
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a bounded mask template")
+        }
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut storage = 32 * size_of::<reel_ui::stage::MaskOp>();
+            let operations = seq
+                .next_element_seed(VectorSeed {
+                    count: 32,
+                    storage: &mut storage,
+                    marker: PhantomData,
+                })?
+                .ok_or_else(|| de::Error::custom("missing mask operations"))?;
+            let images: u32 = seq
+                .next_element()?
+                .ok_or_else(|| de::Error::custom("missing mask image count"))?;
+            if images > 4 {
+                return Err(de::Error::custom(
+                    "mask template image count exceeds supported capacity",
+                ));
+            }
+            reel_ui::stage::MaskProgram::new(
+                operations,
+                (0..images)
+                    .map(|i| Arc::from(format!("image_{i}")))
+                    .collect(),
+            )
+            .map_err(de::Error::custom)
+        }
+    }
+    let mut de = postcard::Deserializer::from_bytes(bytes);
+    let mask = de::Deserializer::deserialize_tuple(&mut de, 2, Key)
+        .map_err(|e| EffectProductError(e.to_string()))?;
+    if !de
+        .finalize()
+        .map_err(|e| EffectProductError(e.to_string()))?
+        .is_empty()
+    {
+        return Err(EffectProductError("trailing mask template bytes".into()));
+    }
+    Ok(mask)
+}
+
 /// Canonical v1 bytes use the shared UI enums' declaration order and finite f32 bits.
 /// Source locations, source function numbering and instance values are excluded.
 pub fn encode_definition(program: &EffectProgram) -> Result<Vec<u8>, EffectProductError> {
-    let payload = postcard::to_allocvec(&(program.parameters(), program.nodes(), program.output()))
-        .map_err(|e| EffectProductError(e.to_string()))?;
+    let payload = postcard::to_allocvec(&(
+        program.parameters(),
+        program.textures(),
+        program.nodes(),
+        program.output(),
+    ))
+    .map_err(|e| EffectProductError(e.to_string()))?;
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(MAGIC.len() + payload.len())
@@ -459,7 +619,7 @@ impl<'de> DeserializeSeed<'de> for DefinitionSeed {
         self,
         deserializer: D,
     ) -> Result<Self::Value, D::Error> {
-        deserializer.deserialize_tuple(3, self)
+        deserializer.deserialize_tuple(4, self)
     }
 }
 impl<'de> Visitor<'de> for DefinitionSeed {
@@ -476,6 +636,38 @@ impl<'de> Visitor<'de> for DefinitionSeed {
                 marker: PhantomData,
             })?
             .ok_or_else(|| de::Error::custom("missing effect parameters"))?;
+        #[derive(Deserialize)]
+        struct Texture<'a> {
+            #[serde(borrow)]
+            name: &'a str,
+        }
+        let textures: Vec<Texture<'de>> = seq
+            .next_element_seed(VectorSeed {
+                count: self
+                    .limits
+                    .parameters
+                    .saturating_sub(parameters.len())
+                    .min(self.input_len),
+                storage: &mut storage,
+                marker: PhantomData,
+            })?
+            .ok_or_else(|| de::Error::custom("missing effect textures"))?;
+        let texture_bytes = textures
+            .iter()
+            .try_fold(
+                textures.len() * size_of::<EffectTextureParameter>(),
+                |sum, texture| sum.checked_add(texture.name.len() + 2 * size_of::<usize>()),
+            )
+            .ok_or_else(|| de::Error::custom("effect texture storage overflow"))?;
+        storage = storage
+            .checked_sub(texture_bytes)
+            .ok_or_else(|| de::Error::custom("effect texture storage budget exceeded"))?;
+        let textures = textures
+            .into_iter()
+            .map(|texture| EffectTextureParameter {
+                name: texture.name.into(),
+            })
+            .collect();
         let nodes: Vec<EffectNode> = seq
             .next_element_seed(VectorSeed {
                 count: self.limits.nodes.min(self.input_len),
@@ -507,7 +699,7 @@ impl<'de> Visitor<'de> for DefinitionSeed {
             ty: p.ty,
             default: p.default,
         }));
-        EffectProgram::new(owned, nodes, output).map_err(de::Error::custom)
+        EffectProgram::with_textures(owned, textures, nodes, output).map_err(de::Error::custom)
     }
 }
 
@@ -620,7 +812,15 @@ mod tests {
             },
         ] {
             let mut bytes = MAGIC.to_vec();
-            bytes.extend(postcard::to_allocvec(&(parameters.clone(), vec![node], Id(0))).unwrap());
+            bytes.extend(
+                postcard::to_allocvec(&(
+                    parameters.clone(),
+                    Vec::<EffectTextureParameter>::new(),
+                    vec![node],
+                    Id(0),
+                ))
+                .unwrap(),
+            );
             assert!(decode_definition(&bytes, Default::default()).is_err());
         }
     }

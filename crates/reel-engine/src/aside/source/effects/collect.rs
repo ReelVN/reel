@@ -88,11 +88,13 @@ pub(in crate::aside::source) fn collect_registered(
     else {
         return Ok(Vec::new());
     };
-    collect_effects(
+    let mut entries = collect_effects(
         modules,
         &contract.reference(),
         EffectCompileLimits::default(),
-    )
+    )?;
+    entries.extend(super::masks::collect(modules));
+    Ok(entries)
 }
 
 pub(in crate::aside::source) fn bind_single(
@@ -111,7 +113,7 @@ pub(in crate::aside::source) fn bind_single(
                 )
             })?
             .output;
-        products.insert(&compiled.program, function, entry.program)?;
+        products.insert(&compiled.program, function, entry.program, entry.mask)?;
     }
     Ok(products)
 }
@@ -140,7 +142,7 @@ pub(in crate::aside::source) fn bind_project(
                 )
             })?
             .output;
-        products.insert(&compiled.program, function, entry.program)?;
+        products.insert(&compiled.program, function, entry.program, entry.mask)?;
     }
     Ok(products)
 }

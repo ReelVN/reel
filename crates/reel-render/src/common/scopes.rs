@@ -59,6 +59,7 @@ impl GroupPlan {
                                 && group.mask.is_none()
                                 && group.image_mask.is_none()
                                 && group.effect.is_none()
+                                && group.mask_effect.is_none()
                                 && group.filters.is_empty()
                                 && group.invert == 0.,
                         },
@@ -170,6 +171,7 @@ pub(crate) fn inline_group_fill(
         || group.mask.is_some()
         || group.image_mask.is_some()
         || group.effect.is_some()
+        || group.mask_effect.is_some()
         || !group.filters.is_empty()
         || group.invert != 0.
         || group.composite.blend != Default::default()
@@ -318,6 +320,7 @@ mod tests {
         FrameGroup {
             image_mask: None,
             effect: None,
+            mask_effect: None,
             clip: None,
             mask: None,
             filters: vec![],
@@ -524,6 +527,7 @@ mod tests {
         let mut group = FrameGroup {
             image_mask: None,
             effect: None,
+            mask_effect: None,
             clip: None,
             mask: None,
             filters: vec![],

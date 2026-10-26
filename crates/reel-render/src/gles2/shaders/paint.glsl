@@ -54,6 +54,7 @@ float encoded_red(vec4 color){
  return clamp(value,0.0,1.0);
 }
 float alpha_sample(vec2 uv){
+ if(u_appearance[8].w==1.0)return encoded_red(texture2D(u_image,flip_uv(uv)));
  vec2 pixel=uv*u_dimensions-0.5,base=floor(pixel),t=fract(pixel);
  vec2 a=(clamp(base,vec2(0.0),u_dimensions-1.0)+0.5)/u_dimensions;
  vec2 b=(clamp(base+1.0,vec2(0.0),u_dimensions-1.0)+0.5)/u_dimensions;

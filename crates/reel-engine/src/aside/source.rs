@@ -20,7 +20,7 @@ pub use effects::{
     CompiledEffect, EffectCompileLimits, EffectDefinition, EffectDefinitionId, EffectDiagnostic,
     EffectFunction, EffectLoadLimits, EffectLocation, EffectOrigin, EffectProductError,
     EffectProducts, EffectSource, collect_effects, compile_effect, decode_definition,
-    encode_definition, resolve_effect_function,
+    encode_definition, encode_mask_template, resolve_effect_function,
 };
 pub use translations::{
     TranslationAnalysis, TranslationDiagnostic, TranslationHole, TranslationSite,

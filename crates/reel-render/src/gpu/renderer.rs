@@ -303,38 +303,6 @@ impl Renderer {
         self.glyphs.retire(&[]);
         let budget_scope = Budgets::new(self.gpu.limits);
         let mut tickets = Vec::new();
-        let mut previous_plan = None;
-        let (quality, _) = self.gpu.quality_for_targets(size, |samples| {
-            if let Some((previous_samples, targets)) = previous_plan
-                && previous_samples == samples
-            {
-                return Ok(targets);
-            }
-            // Planning storage is released when the traversal finishes. Candidate
-            // sample counts can need different clip targets and must be admitted
-            // using the same coverage policy as replay.
-            let mut plan_tickets = Vec::new();
-            let targets = super::targets::target_pixels(
-                frame,
-                second.map(|(frame, _)| frame),
-                size,
-                capture,
-                samples,
-                self.gpu.device.limits().max_texture_dimension_2d,
-                |bytes| {
-                    plan_tickets.push(reserve(
-                        &self.budgets.transient,
-                        &budget_scope.transient,
-                        bytes,
-                        self.gpu.limits.transient_bytes,
-                        "transient",
-                    )?);
-                    Ok(())
-                },
-            )?;
-            previous_plan = Some((samples, targets));
-            Ok(targets)
-        })?;
         let plan = super::image_plan::collect(
             std::iter::once(frame).chain(second.map(|(frame, _)| frame)),
             self.gpu.device.limits().max_texture_dimension_2d,
@@ -364,8 +332,8 @@ impl Renderer {
                 });
             }
         }
-        // Image admission checks residency and the minimum staging overlap
-        // before it creates an encoder, texture or mask pipeline.
+        // Cold image uploads may yield Busy. Complete that admission before
+        // preparing glyphs so retries cannot discard and rerasterize their work.
         let images = self.images.prepare(
             &self.gpu,
             &plan.images,
@@ -374,6 +342,61 @@ impl Renderer {
             &self.admission,
             &self.glyphs,
         )?;
+        let transform = Affine::scale_non_uniform(
+            f64::from(size[0]) / frame.info().logical_size[0],
+            f64::from(size[1]) / frame.info().logical_size[1],
+        );
+        let mut encoder = self.gpu.device.create_command_encoder(&Default::default());
+        let mut glyphs = super::glyph_cache::FrameGlyphs::default();
+        let glyph_plan = crate::common::glyph_plan::Plan::collect(
+            std::iter::once(frame).chain(second.map(|(frame, _)| frame)),
+            transform,
+            self.gpu.device.limits().max_texture_dimension_2d,
+            capture,
+            &mut super::glyph_cache::Preparation {
+                gpu: &self.gpu,
+                encoder: &mut encoder,
+                cache: &self.glyphs,
+                frame: &mut glyphs,
+                budgets: &self.budgets,
+                local: &budget_scope,
+                tickets: &mut tickets,
+                images: &self.images,
+            },
+        )?;
+        let mut previous_plan = None;
+        let (quality, _) = self.gpu.quality_for_targets(size, |samples| {
+            if let Some((previous_samples, targets)) = previous_plan
+                && previous_samples == samples
+            {
+                return Ok(targets);
+            }
+            // Planning storage is released when the traversal finishes. Candidate
+            // sample counts can need different clip targets and must be admitted
+            // using the same coverage policy as replay.
+            let mut plan_tickets = Vec::new();
+            let targets = super::targets::target_pixels(
+                frame,
+                second.map(|(frame, _)| frame),
+                size,
+                capture,
+                samples,
+                self.gpu.device.limits().max_texture_dimension_2d,
+                &glyph_plan,
+                |bytes| {
+                    plan_tickets.push(reserve(
+                        &self.budgets.transient,
+                        &budget_scope.transient,
+                        bytes,
+                        self.gpu.limits.transient_bytes,
+                        "transient",
+                    )?);
+                    Ok(())
+                },
+            )?;
+            previous_plan = Some((samples, targets));
+            Ok(targets)
+        })?;
         let pipelines = self.pipelines.get(&self.gpu, quality)?;
         for mask in plan.masks {
             pipelines.masks.get(
@@ -401,7 +424,7 @@ impl Renderer {
         let mut ctx = Context {
             capture,
             gpu: &self.gpu,
-            encoder: self.gpu.device.create_command_encoder(&Default::default()),
+            encoder,
             pipelines,
             quality,
             size,
@@ -411,7 +434,8 @@ impl Renderer {
             images,
             image_cache: &self.images,
             glyph_cache: &self.glyphs,
-            glyphs: Default::default(),
+            glyphs,
+            glyph_plan,
             effects: Vec::new(),
             white: None,
             target_cache: &self.targets,

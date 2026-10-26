@@ -114,7 +114,7 @@ pub fn prepare_with_input(
                         } else {
                             fragment.source.into_bytes()
                         };
-                        let descriptor = EffectShaderDescriptor::new(
+                        let descriptor = EffectShaderDescriptor::with_textures(
                             definition.id,
                             format,
                             fragment
@@ -123,6 +123,8 @@ pub fn prepare_with_input(
                                 .iter()
                                 .map(|slot| slot.ty)
                                 .collect(),
+                            definition.program.textures().len() as u32,
+                            fragment.source_sampler,
                             fragment.output_type,
                             &raw,
                         )
@@ -185,6 +187,7 @@ fn valid_product(bytes: &[u8], definition: &EffectDefinition, format: EffectShad
         |(descriptor, raw)| {
             descriptor.definition == definition.id
                 && descriptor.format == format
+                && descriptor.textures as usize == definition.program.textures().len()
                 && descriptor.output
                     == definition.program.nodes()[definition.program.output().0 as usize].ty
                 && descriptor.parameters.iter().copied().eq(definition

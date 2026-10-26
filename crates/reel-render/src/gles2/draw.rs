@@ -11,10 +11,12 @@ use crate::common::{
 };
 use guillotiere::{AllocId, AtlasAllocator, size2};
 use reel_ui::{
-    frame::{FrameDraw, FrameDrawing, FrameGlyphRun, FrameOp, ImageAppearance, RecordLocation},
+    frame::{
+        FrameDraw, FrameDrawing, FrameGlyphRun, FrameOp, ImageAppearance, InkBounds, RecordLocation,
+    },
     imaging::{Composite, record::Clip},
     kurbo::{Affine, Rect},
-    peniko::{Brush, Extend, Fill, color::LinearSrgb},
+    peniko::{Brush, Extend, Fill, ImageQuality, color::LinearSrgb},
 };
 use std::{cell::RefCell, rc::Weak, sync::Arc};
 
@@ -22,6 +24,7 @@ pub(super) struct PaintBatch {
     target: Target,
     geometry: crate::common::draw_batch::Batch<PaintState>,
 }
+#[derive(PartialEq)]
 struct PaintState {
     texture: native::Texture,
     planes: smallvec::SmallVec<[native::Texture; 2]>,
@@ -30,6 +33,7 @@ struct PaintState {
     dimensions: [u32; 2],
     appearance: [[f32; 4]; 9],
     repeat: [bool; 2],
+    quality: ImageQuality,
     coverage: bool,
     direct: Option<mesh::DirectPaint>,
     scissor: Option<[u32; 4]>,
@@ -219,7 +223,111 @@ impl GlyphCache {
         Ok(glyph)
     }
 }
+
+impl crate::common::glyph_plan::Prepare for Context<'_> {
+    fn reserve(&mut self, bytes: u64) -> Result<(), GlesError> {
+        self.transient(bytes)
+    }
+
+    fn run(
+        &mut self,
+        frame: &FrameDrawing,
+        run: &FrameGlyphRun,
+        density: f64,
+        at: RecordLocation,
+    ) -> Result<InkBounds, GlesError> {
+        let key = Arc::new(RunKey::new(run, density));
+        let mut ink = InkBounds::Empty;
+        for (index, position) in run.glyphs.iter().enumerate() {
+            let key = Key::new(key.clone(), position.id);
+            let glyph = if let Some(glyph) = self.glyph_cache.entries.get(&key) {
+                glyph.clone()
+            } else {
+                let glyph = self.glyph_cache.rasterize(
+                    self.gpu,
+                    self.budgets,
+                    self.limits,
+                    frame,
+                    run,
+                    density,
+                    index,
+                    at,
+                )?;
+                self.glyph_cache.entries.insert(key, glyph.clone());
+                glyph
+            };
+            if let Some(image) = &glyph.image {
+                ink = crate::common::glyph_plan::union(
+                    ink,
+                    InkBounds::Rect(crate::common::glyph_plan::bitmap_bounds(
+                        [position.x, position.y],
+                        image.offset,
+                        image.size,
+                        density,
+                    )),
+                );
+            }
+            // Pin the region during all later uploads, including another run's
+            // pressure eviction, and transfer it to the submitted Work object.
+            crate::common::scopes::push_stack(&mut self.glyphs, glyph, |bytes| {
+                let ticket = crate::common::renderer::reserve(
+                    &self.budgets.transient,
+                    &self.budget_scope.transient,
+                    bytes,
+                    self.limits.transient_bytes,
+                    "glyph references",
+                )?;
+                self.tickets.push(ticket);
+                Ok(())
+            })?;
+        }
+        Ok(ink)
+    }
+}
+
 impl Context<'_> {
+    /// Project a complete linear offscreen source back into its parent pixels.
+    /// Flush both sides of the dependency before its scratch storage is reused.
+    pub(super) fn project_source(
+        &mut self,
+        target: &Target,
+        source: &Target,
+        parent_to_source: Affine,
+        at: RecordLocation,
+    ) -> Result<(), GlesError> {
+        if parent_to_source.determinant() == 0. {
+            return Ok(());
+        }
+        self.flush_draws()?;
+        let mut mesh = mesh::Mesh::new(self.mesh_allocation());
+        mesh.quad(
+            Rect::new(0., 0., f64::from(source.size[0]), f64::from(source.size[1])),
+            Rect::new(0., 1., 1., 0.),
+        )?;
+        mesh::transform_glyphs(
+            &mut mesh,
+            parent_to_source.inverse(),
+            self.size,
+            [1.; 4],
+            at,
+        )?;
+        self.paint_mesh(
+            target,
+            mesh,
+            &source.view,
+            &[],
+            0.,
+            &[[0.; 4]; 4],
+            source.size,
+            [[0.; 4]; 9],
+            [false; 2],
+            false,
+            None,
+            ImageQuality::Medium,
+        )?;
+        self.flush_draws()
+    }
+
     pub fn mesh_allocation(&self) -> mesh::Allocation {
         mesh::Allocation::new(
             self.budgets,
@@ -274,7 +382,7 @@ impl Context<'_> {
             at,
         )?;
         let white = self.white()?;
-        self.paint_resource(target, mesh, &white, [false; 2], None)
+        self.paint_resource(target, mesh, &white, [false; 2], None, ImageQuality::Medium)
     }
     pub fn draw(
         &mut self,
@@ -343,10 +451,10 @@ impl Context<'_> {
                     color,
                     at,
                 )?;
-                self.paint_resource(target, mesh, &white, [false; 2], None)
+                self.paint_resource(target, mesh, &white, [false; 2], None, ImageQuality::Medium)
             }
             Brush::Image(brush) => {
-                if brush.sampler.quality != reel_ui::peniko::ImageQuality::Medium
+                if brush.sampler.quality == ImageQuality::High
                     || brush.sampler.x_extend == Extend::Reflect
                     || brush.sampler.y_extend == Extend::Reflect
                 {
@@ -386,6 +494,7 @@ impl Context<'_> {
                         .image
                         .appearance
                         .map(|appearance| appearance.transformed(outer)),
+                    brush.sampler.quality,
                 )
             }
             Brush::Gradient(gradient) => {
@@ -418,6 +527,7 @@ impl Context<'_> {
                     [false; 2],
                     false,
                     white.format,
+                    ImageQuality::Medium,
                 )
             }
         }
@@ -469,7 +579,7 @@ impl Context<'_> {
             {
                 break;
             }
-            if brush.sampler.quality != reel_ui::peniko::ImageQuality::Medium
+            if brush.sampler.quality == ImageQuality::High
                 || brush.sampler.x_extend == Extend::Reflect
                 || brush.sampler.y_extend == Extend::Reflect
             {
@@ -502,13 +612,14 @@ impl Context<'_> {
                 &image,
                 repeat,
                 first_brush.image.appearance.map(|p| p.transformed(outer)),
+                first_brush.sampler.quality,
             )?;
         }
         Ok(count)
     }
     fn draw_glyphs(
         &mut self,
-        frame: &FrameDrawing,
+        _frame: &FrameDrawing,
         target: &Target,
         run: &FrameGlyphRun,
         outer: Affine,
@@ -548,23 +659,15 @@ impl Context<'_> {
         let mut batch = mesh::Mesh::new(self.mesh_allocation());
         for index in 0..run.glyphs.len() {
             let key = Key::new(key.clone(), run.glyphs[index].id);
-            let glyph = if let Some(glyph) = self.glyph_cache.entries.get(&key) {
-                glyph.clone()
-            } else {
-                let glyph = self.glyph_cache.rasterize(
-                    self.gpu,
-                    self.budgets,
-                    self.limits,
-                    frame,
-                    run,
-                    density,
-                    index,
-                    at,
-                )?;
-                self.glyph_cache.entries.insert(key, glyph.clone());
-                glyph
-            };
-            self.glyphs.push(glyph.clone());
+            let glyph =
+                self.glyph_cache
+                    .entries
+                    .get(&key)
+                    .cloned()
+                    .ok_or(GlesError::Unsupported {
+                        at,
+                        record: "glyph missing from preparation",
+                    })?;
             let Some(image) = &glyph.image else {
                 continue;
             };
@@ -582,13 +685,11 @@ impl Context<'_> {
                 }
             }
             page = Some(image.page.clone());
-            let x = f64::from(run.glyphs[index].x) + image.offset[0] / density;
-            let y = f64::from(run.glyphs[index].y) + image.offset[1] / density;
-            let bounds = Rect::new(
-                x,
-                y,
-                x + f64::from(image.size[0]) / density,
-                y + f64::from(image.size[1]) / density,
+            let bounds = crate::common::glyph_plan::bitmap_bounds(
+                [run.glyphs[index].x, run.glyphs[index].y],
+                image.offset,
+                image.size,
+                density,
             );
             let uv = Rect::new(
                 f64::from(image.origin[0]) / f64::from(image.page.size[0]),
@@ -623,6 +724,7 @@ impl Context<'_> {
             [false; 2],
             true,
             None,
+            ImageQuality::Medium,
         )
     }
     fn paint_resource(
@@ -632,6 +734,7 @@ impl Context<'_> {
         image: &Image,
         repeat: [bool; 2],
         appearance: Option<ImageAppearance>,
+        quality: ImageQuality,
     ) -> Result<(), GlesError> {
         if appearance
             .and_then(|a| a.gradient)
@@ -648,7 +751,7 @@ impl Context<'_> {
                 Some(PixelFormat::Bc3Rgba) => 2.,
                 _ => 0.,
             },
-            0.,
+            f32::from(quality == ImageQuality::Low),
         ];
         if values[4][3] == 3. && image.kind == 0. && image.encoding == ColorEncoding::Linear {
             values[4][3] = 4.;
@@ -665,6 +768,7 @@ impl Context<'_> {
             repeat,
             image.coverage,
             image.format,
+            quality,
         )
     }
     fn paint_mesh(
@@ -680,6 +784,7 @@ impl Context<'_> {
         repeat: [bool; 2],
         coverage: bool,
         format: Option<PixelFormat>,
+        quality: ImageQuality,
     ) -> Result<(), GlesError> {
         if mesh.indices.is_empty() || self.scissor.empty() {
             return Ok(());
@@ -711,6 +816,7 @@ impl Context<'_> {
             dimensions,
             appearance,
             repeat,
+            quality,
             coverage,
             scissor: self.gl_scissor(),
         };
@@ -770,6 +876,7 @@ impl Context<'_> {
                 dimensions,
                 appearance,
                 repeat,
+                quality,
                 coverage,
                 direct,
                 scissor,
@@ -822,22 +929,29 @@ impl Context<'_> {
                 }
             }
             let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Draw);
-            self.gpu.draw(native::Draw {
-                target: native::Target::Framebuffer(&batch.target.framebuffer),
-                size: self.size,
-                program: &shader.program,
-                vertices,
-                indices: Some(indices),
-                range: entry.range,
-                textures: &[
-                    &texture,
-                    planes.first().unwrap_or(&texture),
-                    planes.get(1).or(planes.first()).unwrap_or(&texture),
-                ],
-                uniforms: &values,
-                blend: native::Blend::Premultiplied,
-                scissor,
-            })?;
+            self.gpu.draw_filtered(
+                native::Draw {
+                    target: native::Target::Framebuffer(&batch.target.framebuffer),
+                    size: self.size,
+                    program: &shader.program,
+                    vertices,
+                    indices: Some(indices),
+                    range: entry.range,
+                    textures: &[
+                        &texture,
+                        planes.first().unwrap_or(&texture),
+                        planes.get(1).or(planes.first()).unwrap_or(&texture),
+                    ],
+                    uniforms: &values,
+                    blend: native::Blend::Premultiplied,
+                    scissor,
+                },
+                if quality == ImageQuality::Low {
+                    native::TextureFilter::Nearest
+                } else {
+                    native::TextureFilter::Linear
+                },
+            )?;
         }
         Ok(())
     }

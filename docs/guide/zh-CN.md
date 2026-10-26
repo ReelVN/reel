@@ -1088,6 +1088,8 @@ stage.replace(stack(width: 320, height: 180, background: "#204060") {
 });
 ```
 
+图像的 `sampling: "nearest"` 保留像素边缘，默认 `"linear"` 平滑缩放。切换采样方式复用同一图片资源；图集裁切和分块图片沿用各自的源窗口。
+
 用 `effect` 将绘制函数应用到节点及其子树。`Fragment.sample()` 读取子树合成后的颜色；返回颜色替换结果，或返回浮点数控制覆盖率。参数绑定普通状态后，控件和动画都可以改变效果。
 
 ```aside
@@ -1107,6 +1109,28 @@ fn main() {
             text("After the rain", color: "#803020");
         };
     });
+}
+```
+
+用 `texture(path)` 为绘制函数传入图片。下例按噪声图的灰度显露场景：`effect` 返回的浮点数用作 `mask`，动画更新绑定的进度。图片沿用项目资源路径和平台覆盖规则。
+
+```aside
+use reel::types::{Fragment, Texture};
+
+fn dissolve(pixel: Fragment, noise: Texture, progress: float) -> float {
+    if noise.gray(pixel.uv) <= progress { 1.0 } else { 0.0 }
+}
+
+fn main() {
+    let scene = stack(width: 1280, height: 720, mask_progress: 0) {
+        image("assets/room.png", width: 1280, height: 720);
+    };
+    scene.mask = effect(dissolve, params: {
+        noise: texture("assets/noise.png"), progress: bind(scene.mask_progress)
+    });
+    stage.replace(scene);
+    await run(tween(scene, mask_progress: 1, duration: 1.2), owner: scene);
+    scene.mask = null;
 }
 ```
 
@@ -1139,7 +1163,7 @@ await second;
 spray.remove();
 ```
 
-逐字透明度由 按年龄变化的尺寸用 `size_curve` 表达。预热让首帧已有不同年龄的粒子，径向速度和阻尼控制散开后的运动。
+按年龄变化的尺寸用 `size_curve` 表达。预热让首帧已有不同年龄的粒子，径向速度和阻尼控制散开后的运动。
 
 ```aside
 use std::math::curve;

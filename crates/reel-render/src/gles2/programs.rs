@@ -29,6 +29,7 @@ const NAMES: &[&str] = &[
     "u_image_flip",
     "u_coverage",
     "u_source",
+    "u_source_uv",
     "u_mask",
     "u_backdrop",
     "u_expression",
@@ -305,6 +306,9 @@ pub(super) struct Target {
     _storage: Rc<BudgetTicket>,
 }
 impl Target {
+    pub fn same_allocation(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self._storage, &other._storage)
+    }
     pub fn new(
         context: &native::Context,
         size: [u32; 2],

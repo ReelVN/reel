@@ -129,7 +129,7 @@ fn ordered_draw_segments_share_uploads_across_scissors_and_stop_at_groups() {
     assert_eq!(prepared.quality().samples, 1);
     assert_eq!(
         renderer.gpu.upload_creations.draws.load(Ordering::Relaxed),
-        15
+        4
     );
     assert_eq!(
         renderer
@@ -662,7 +662,7 @@ fn long_text_single_channel_atlas_submits_and_reuses_coverage() {
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
     renderer.poll().unwrap();
-    assert_eq!(renderer.pipelines.creations.snapshot(), [3, 10, 10, 10, 4]);
+    assert_eq!(renderer.pipelines.creations.snapshot(), [3, 10, 10, 10, 8]);
     let resident = renderer.usage().resources;
     assert!(resident > 0 && resident <= 2 * 512 * 512);
     assert_eq!(resident % (512 * 512), 0);
@@ -1052,16 +1052,30 @@ fn capture_plans_omit_excluded_image_uploads_and_isolated_targets() {
     widget.capture_included = false;
     let frame = frame_from_widget(widget, empty_snapshot(&pool), &pool);
     assert!(
-        super::super::targets::target_pixels(&frame, None, [400, 300], false, 4, u32::MAX, |_| Ok(
-            ()
-        ))
+        super::super::targets::target_pixels(
+            &frame,
+            None,
+            [400, 300],
+            false,
+            4,
+            u32::MAX,
+            &crate::common::glyph_plan::Plan::default(),
+            |_| Ok(())
+        )
         .unwrap()
             > 400 * 300
     );
     assert_eq!(
-        super::super::targets::target_pixels(&frame, None, [400, 300], true, 4, u32::MAX, |_| Ok(
-            ()
-        ))
+        super::super::targets::target_pixels(
+            &frame,
+            None,
+            [400, 300],
+            true,
+            4,
+            u32::MAX,
+            &crate::common::glyph_plan::Plan::default(),
+            |_| Ok(())
+        )
         .unwrap(),
         400 * 300
     );
@@ -1623,6 +1637,68 @@ fn sprite_batches_share_uploads_and_respect_paint_boundaries() {
 }
 
 #[test]
+#[ignore = "requires actual graphics adapter; submits without pixel readback"]
+fn image_sampling_changes_split_batches_and_share_resident_texture() {
+    use reel_ui::{
+        peniko::{ImageBrush, ImageQuality},
+        resources::ResourceData,
+    };
+    use std::sync::atomic::Ordering;
+    let pool = pool();
+    let (_original, registry, handles) = image_restore_fixture([4, 4], true);
+    let lease = registry.acquire(handles[0]).unwrap();
+    let ResourceData::Image { image, .. } = lease.data() else {
+        unreachable!()
+    };
+    let make_frame = |qualities: &[ImageQuality]| {
+        let mut scene = Scene::new();
+        for (index, &quality) in qualities.iter().enumerate() {
+            scene.draw(Draw::Fill {
+                transform: Affine::translate((index as f64 * 50., 0.)),
+                fill_rule: Default::default(),
+                brush: Brush::Image(ImageBrush::new(image.clone()).with_quality(quality)),
+                brush_transform: None,
+                shape: Geometry::Rect(Rect::new(0., 0., 40., 40.)),
+                composite: Composite::default(),
+            });
+        }
+        frame_with_snapshot(scene, registry.freeze(&handles[..1], &pool).unwrap(), &pool)
+    };
+    let mut renderer = renderer(Default::default());
+    for (first, second) in [
+        (ImageQuality::Low, ImageQuality::Medium),
+        (ImageQuality::Medium, ImageQuality::Low),
+    ] {
+        let frame = make_frame(&[first, first, second, second, first]);
+        let draws = renderer.gpu.upload_creations.draws.load(Ordering::Relaxed);
+        let prepared = renderer.prepare(&frame).unwrap();
+        assert_eq!(
+            renderer.gpu.upload_creations.draws.load(Ordering::Relaxed) - draws,
+            3,
+            "each consecutive sampling mode forms one ordered batch"
+        );
+        counts(&renderer, 1);
+        renderer.submit(prepared).unwrap();
+        renderer
+            .gpu
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        renderer.poll().unwrap();
+        assert_eq!(renderer.usage().resources, 4 * 4 * 8);
+    }
+    let frame = make_frame(&[ImageQuality::High]);
+    assert!(matches!(
+        renderer.prepare(&frame),
+        Err(GpuError::Unsupported {
+            record: "high-quality image sampling",
+            ..
+        })
+    ));
+    counts(&renderer, 1);
+}
+
+#[test]
 fn capture_global_transition_keeps_old_content_when_new_content_is_excluded() {
     use reel_ui::frame::{FrameTransition, RetainBuild};
     let pool = pool();
@@ -1671,8 +1747,17 @@ fn capture_global_transition_keeps_old_content_when_new_content_is_excluded() {
         "old accepted drawing remains an input to the blend"
     );
     assert!(
-        crate::gpu::targets::target_pixels(&frame, None, [64, 48], true, 4, u32::MAX, |_| Ok(()))
-            .unwrap()
+        crate::gpu::targets::target_pixels(
+            &frame,
+            None,
+            [64, 48],
+            true,
+            4,
+            u32::MAX,
+            &crate::common::glyph_plan::Plan::default(),
+            |_| Ok(())
+        )
+        .unwrap()
             > 64 * 48
     );
 }

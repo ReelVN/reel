@@ -139,3 +139,63 @@ fn opening() {
     std::thread::spawn(move || drop(first)).join().unwrap();
     assert!(retained - usage.charged_bytes() >= storage as u64);
 }
+
+#[test]
+fn texture_parameters_and_scalar_masks_update_in_source_and_asb() {
+    let code = r##"
+use reel::types::{Fragment, Texture};
+fn channel(pixel: Fragment, ink: Texture, amount: float = 0.5) -> float {
+    let (r, g, b, a) = ink.sample(pixel.uv);
+    if amount > 0.5 { return ink.gray(pixel.uv) * a; }
+    ink.alpha(pixel.uv) * amount
+}
+fn color(pixel: Fragment) -> (float, float, float, float) { (1.0, 0.0, 0.0, 1.0) }
+fn opening() {
+    let state = model({ink: texture("mask-a.png"), amount: 0.25});
+    let paint = effect(channel, params: {ink: bind(state.ink), amount: bind(state.amount)});
+    let node = stack(width: 64, height: 64, mask: paint);
+    stage.replace(node);
+    narrator("first");
+    state.ink = texture("mask-b.reel-texture");
+    state.amount = 0.75;
+    narrator("second");
+    let mut rejected = false;
+    try { state.ink = "wrong-type"; } catch e { rejected = true; }
+    if !rejected { throw "Texture accepted a string"; }
+    rejected = false;
+    try { node.mask = effect(color); } catch e { rejected = true; }
+    if !rejected { throw "mask accepted RGBA output"; }
+    narrator("checked");
+}
+"##;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, false);
+        let mask = |vm: &SessionVm| {
+            vm.stage()
+                .node(vm.stage().root().unwrap())
+                .unwrap()
+                .props
+                .mask_effect
+                .clone()
+                .unwrap()
+        };
+        let first = mask(&vm);
+        assert_eq!(first.textures()[0].as_ref(), "mask-a.png");
+        assert_eq!(first.values(), &[EffectValue::Float(0.25_f32.to_bits())]);
+        assert_eq!(first.program().parameters().len(), 1);
+        assert_eq!(first.program().textures()[0].name.as_ref(), "ink");
+        advance(&mut vm, &mut session);
+        let second = mask(&vm);
+        assert_eq!(second.textures()[0].as_ref(), "mask-b.reel-texture");
+        assert_eq!(second.values(), &[EffectValue::Float(0.75_f32.to_bits())]);
+        assert!(Arc::ptr_eq(first.program(), second.program()));
+        assert_eq!(
+            first.textures()[0].as_ref(),
+            "mask-a.png",
+            "retained instance stays immutable"
+        );
+        advance(&mut vm, &mut session);
+        assert_eq!(mask(&vm).textures()[0].as_ref(), "mask-b.reel-texture");
+    }
+}

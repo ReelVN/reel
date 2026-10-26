@@ -13,12 +13,21 @@ pub struct EffectDefinition {
     pub bytes: Vec<u8>,
 }
 
-/// A final linked function selects one entry in the definition table.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The entry that selects a shared compiled definition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EffectBindingKind {
+    /// A typed effect function called by the author.
+    Function,
+    /// A pure mask construction template; bytes are validated by the engine.
+    MaskTemplate { key: Vec<u8> },
+}
+/// A final linked source owner and typed use of one shared definition.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EffectBinding {
     pub module: u32,
     pub function: u32,
     pub definition: u32,
+    pub kind: EffectBindingKind,
 }
 
 /// Compiler products retained independently of debug information and GPU targets.
@@ -76,13 +85,23 @@ impl EffectProducts {
                 .ok_or_else(|| Error::new(ErrorKind::Metadata, "effect function out of range"))?;
             require(
                 function.module.0 == binding.module
-                    && function.kind == bc::FunctionKind::Plain
-                    && function.captures.is_empty(),
+                    && (!matches!(binding.kind, EffectBindingKind::Function)
+                        || (function.kind == bc::FunctionKind::Plain
+                            && function.captures.is_empty())),
                 ErrorKind::Metadata,
                 "effect function must belong to its module and be plain without captures",
             )?;
+            if let EffectBindingKind::MaskTemplate { key } = &binding.kind {
+                budget.charge(key.len())?;
+                require(
+                    !key.is_empty(),
+                    ErrorKind::Metadata,
+                    "empty mask template key",
+                )?;
+            }
             require(
-                functions.insert(binding.function),
+                !matches!(binding.kind, EffectBindingKind::Function)
+                    || functions.insert(binding.function),
                 ErrorKind::Metadata,
                 "duplicate effect function binding",
             )?;
@@ -106,8 +125,13 @@ impl EffectProducts {
         let definitions = count(self.definitions.len())?;
         let bindings = count(self.bindings.len())?;
         let mut length = 8usize
-            .checked_add(self.bindings.len().checked_mul(12).ok_or_else(size_error)?)
+            .checked_add(self.bindings.len().checked_mul(17).ok_or_else(size_error)?)
             .ok_or_else(size_error)?;
+        for binding in &self.bindings {
+            if let EffectBindingKind::MaskTemplate { key } = &binding.kind {
+                length = length.checked_add(key.len()).ok_or_else(size_error)?;
+            }
+        }
         for definition in &self.definitions {
             length = length
                 .checked_add(40)
@@ -131,9 +155,19 @@ impl EffectProducts {
             bytes.extend_from_slice(&definition.bytes);
         }
         for binding in &self.bindings {
+            let key = match &binding.kind {
+                EffectBindingKind::Function => &[][..],
+                EffectBindingKind::MaskTemplate { key } => key.as_slice(),
+            };
+            bytes.push(u8::from(matches!(
+                binding.kind,
+                EffectBindingKind::MaskTemplate { .. }
+            )));
             for value in [binding.module, binding.function, binding.definition] {
                 bytes.extend_from_slice(&value.to_le_bytes());
             }
+            bytes.extend_from_slice(&count(key.len())?.to_le_bytes());
+            bytes.extend_from_slice(key);
         }
         Ok(bytes)
     }
@@ -155,7 +189,7 @@ impl EffectProducts {
         )?;
         let fixed = definitions
             .checked_mul(40)
-            .and_then(|n| bindings.checked_mul(12).and_then(|b| n.checked_add(b)))
+            .and_then(|n| bindings.checked_mul(17).and_then(|b| n.checked_add(b)))
             .ok_or_else(size_error)?;
         require(
             fixed <= input.len(),
@@ -171,8 +205,19 @@ impl EffectProducts {
                     .map_err(|_| size_error())?;
             take(&mut scan, length)?;
         }
+        for _ in 0..bindings {
+            let kind = take(&mut scan, 1)?[0];
+            take(&mut scan, 12)?;
+            let length = u32::from_le_bytes(take(&mut scan, 4)?.try_into().unwrap()) as usize;
+            require(
+                kind <= 1 && ((kind == 0) == (length == 0)),
+                ErrorKind::Encoding,
+                "invalid effect binding kind",
+            )?;
+            take(&mut scan, length)?;
+        }
         require(
-            scan.len() == bindings * 12,
+            scan.is_empty(),
             ErrorKind::Encoding,
             "effect product length mismatch",
         )?;
@@ -199,13 +244,34 @@ impl EffectProducts {
             products.definitions.push(EffectDefinition { id, bytes });
         }
         for _ in 0..bindings {
+            let kind = take(&mut input, 1)?[0];
             let mut word = || -> Result<u32, Error> {
                 Ok(u32::from_le_bytes(take(&mut input, 4)?.try_into().unwrap()))
             };
+            let module = word()?;
+            let function = word()?;
+            let definition = word()?;
+            let length = word()? as usize;
+            let key = take(&mut input, length)?;
+            let kind = if kind == 0 {
+                EffectBindingKind::Function
+            } else {
+                EffectBindingKind::MaskTemplate {
+                    key: {
+                        let mut owned = Vec::new();
+                        owned
+                            .try_reserve_exact(length)
+                            .map_err(|error| Error::new(ErrorKind::Limit, error.to_string()))?;
+                        owned.extend_from_slice(key);
+                        owned
+                    },
+                }
+            };
             products.bindings.push(EffectBinding {
-                module: word()?,
-                function: word()?,
-                definition: word()?,
+                module,
+                function,
+                definition,
+                kind,
             });
         }
         Ok(products)
@@ -240,6 +306,7 @@ mod tests {
                 module: 1,
                 function: 2,
                 definition: 0,
+                kind: EffectBindingKind::Function,
             }],
         };
         let encoded = products.encode(limits).unwrap();

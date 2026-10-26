@@ -120,6 +120,7 @@ impl Shape {
                 adjustment: read_image_adjustment(heap, fields)?,
                 source_rect: read_source_rect(heap, get(11)?)?,
                 alpha_layout: read_alpha_layout(heap, get(12)?)?,
+                sampling: read_sampling(heap, get(13)?)?,
                 origin,
             },
             Self::Particles => {

@@ -64,6 +64,7 @@ fn scene(
     let image = stage
         .create(
             NodeKind::Image {
+                sampling: Default::default(),
                 source: source.into(),
                 fit: ObjectFit::Contain,
                 slice: None,

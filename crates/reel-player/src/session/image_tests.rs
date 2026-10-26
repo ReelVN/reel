@@ -376,123 +376,165 @@ fn effect_shader_admission_reuses_io_and_leases_for_parameter_changes() {
         resources::{EffectShaderDescriptor, EffectShaderFormat, ResourceData},
         stage::{NodeKind, NodeProps, Stage, effect::*},
     };
-    let program = EffectProgram::new(
-        vec![EffectParameter {
-            name: "coverage".into(),
-            ty: EffectType::Float,
-            default: None,
-        }],
-        vec![EffectNode {
-            ty: EffectType::Float,
-            op: EffectOp::Parameter(0),
-        }],
-        EffectNodeId(0),
-    )
-    .unwrap();
-    let definition = [17; 32];
-    let format = EffectShaderFormat::Wgsl;
-    let source = format.asset_path(definition);
-    let raw = b"@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }";
-    let descriptor = EffectShaderDescriptor::new(
-        definition,
-        format,
-        vec![EffectType::Float],
-        EffectType::Float,
-        raw,
-    )
-    .unwrap();
-    let directory = std::env::temp_dir().join(format!(
-        "reel-effect-admission-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    let path = directory.join(&source);
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(&path, descriptor.encode_payload(raw).unwrap()).unwrap();
-    let mut stage = Stage::default();
-    let effect = |value: f32| {
-        EffectInstance::new(
+    for coverage in [false, true] {
+        let program = EffectProgram::with_textures(
+            vec![EffectParameter {
+                name: "coverage".into(),
+                ty: EffectType::Float,
+                default: None,
+            }],
+            vec![EffectTextureParameter {
+                name: "noise".into(),
+            }],
+            vec![EffectNode {
+                ty: EffectType::Float,
+                op: EffectOp::Parameter(0),
+            }],
+            EffectNodeId(0),
+        )
+        .unwrap();
+        let definition = [17; 32];
+        let format = EffectShaderFormat::Wgsl;
+        let source = format.asset_path(definition);
+        let raw = b"@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }";
+        let descriptor = EffectShaderDescriptor::with_textures(
             definition,
-            program.clone(),
-            vec![EffectValue::Float(value.to_bits())],
+            format,
+            vec![EffectType::Float],
+            1,
+            true,
+            EffectType::Float,
+            raw,
         )
-        .unwrap()
-    };
-    let node = stage
-        .create(
-            NodeKind::Stack,
-            NodeProps {
-                width: Some(100.),
-                height: Some(100.),
-                effect: Some(effect(0.5)),
-                clip: true,
+        .unwrap();
+        let directory = std::env::temp_dir().join(format!(
+            "reel-effect-admission-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = directory.join(&source);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, descriptor.encode_payload(raw).unwrap()).unwrap();
+        let image = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/assets/panels.png");
+        std::fs::copy(image, directory.join("noise.png")).unwrap();
+        let mut stage = Stage::default();
+        let effect = |value: f32| {
+            EffectInstance::with_textures(
+                definition,
+                program.clone(),
+                vec![EffectValue::Float(value.to_bits())],
+                vec!["noise.png".into()],
+            )
+            .unwrap()
+        };
+        let node = stage
+            .create(
+                NodeKind::Stack,
+                NodeProps {
+                    width: Some(100.),
+                    height: Some(100.),
+                    effect: (!coverage).then(|| effect(0.5)),
+                    mask_effect: coverage.then(|| effect(0.5)),
+                    mask_invert: coverage,
+                    clip: true,
+                    ..Default::default()
+                },
+                vec![],
+            )
+            .unwrap();
+        stage.replace(node).unwrap();
+        let mut ui = SessionUi::new(super::tests::session())
+            .unwrap()
+            .with_asset_options(AssetOptions {
+                root: directory.clone(),
                 ..Default::default()
-            },
-            vec![],
-        )
-        .unwrap();
-    stage.replace(node).unwrap();
-    let mut ui = SessionUi::new(super::tests::session())
-        .unwrap()
-        .with_asset_options(AssetOptions {
-            root: directory.clone(),
-            ..Default::default()
-        });
-    let (send, wake) = mpsc::channel();
-    ui.set_resource_waker(Arc::new(move || {
-        let _ = send.send(());
-    }));
-    ui.set_stage(&stage);
-    let (mut bridge, root) = super::tests::mount(&ui);
-    ui.sync(&mut bridge, root).unwrap();
-    assert!(ui.images_block_presentation());
-    while ui.images_pending() {
-        wake.recv_timeout(Duration::from_secs(10)).unwrap();
+            });
+        let (send, wake) = mpsc::channel();
+        ui.set_resource_waker(Arc::new(move || {
+            let _ = send.send(());
+        }));
+        ui.set_stage(&stage);
+        let (mut bridge, root) = super::tests::mount(&ui);
         ui.sync(&mut bridge, root).unwrap();
+        assert!(ui.images_block_presentation());
+        while ui.images_pending() {
+            wake.recv_timeout(Duration::from_secs(10)).unwrap();
+            ui.sync(&mut bridge, root).unwrap();
+        }
+        assert_eq!(ui.images.loads, 2);
+        assert_eq!(ui.image_resources().len(), 2);
+        let lease = ui
+            .image_resources()
+            .iter()
+            .find(|lease| matches!(lease.data(), ResourceData::EffectShader { .. }))
+            .unwrap();
+        let handle = lease.handle();
+        assert!(matches!(lease.data(), ResourceData::EffectShader { .. }));
+        let retained = bridge.record(FrameId(1)).unwrap();
+        let layer = retained
+            .plan()
+            .layers
+            .iter()
+            .find(|layer| {
+                layer
+                    .groups
+                    .iter()
+                    .any(|group| group.effect.is_some() || group.mask_effect.is_some())
+            })
+            .unwrap();
+        let group = layer
+            .groups
+            .iter()
+            .find(|group| group.effect.is_some() || group.mask_effect.is_some())
+            .unwrap();
+        let reel_ui::app::VisualLayerKind::Scene(scene) = &layer.kind else {
+            panic!()
+        };
+        assert!(group.command > 0);
+        assert!(
+            matches!(
+                scene.commands()[group.command - 1],
+                reel_ui::imaging::record::Command::PushClip(_)
+            ),
+            "the node's clip must wrap the effect result, not cut its source"
+        );
+        let prepared = group
+            .effect
+            .as_ref()
+            .or(group.mask_effect.as_ref())
+            .unwrap();
+        assert_eq!(prepared.images.len(), 1);
+        assert_eq!(prepared.coverage_invert, coverage);
+        assert!(matches!(
+            prepared.images[0].data(),
+            ResourceData::Image { .. }
+        ));
+        let mut props = stage.node(node).unwrap().props.clone();
+        if coverage {
+            props.mask_effect = Some(effect(0.75));
+        } else {
+            props.effect = Some(effect(0.75));
+        }
+        stage.update(node, NodeKind::Stack, props).unwrap();
+        ui.set_stage(&stage);
+        ui.sync(&mut bridge, root).unwrap();
+        assert!(!ui.images_pending());
+        assert_eq!(ui.images.loads, 2);
+        assert!(
+            ui.image_resources()
+                .iter()
+                .any(|lease| lease.handle() == handle)
+        );
+        drop(retained);
+        drop(bridge);
+        drop(ui);
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
     }
-    assert_eq!(ui.images.loads, 1);
-    let lease = &ui.image_resources()[0];
-    let handle = lease.handle();
-    assert!(matches!(lease.data(), ResourceData::EffectShader { .. }));
-    let retained = bridge.record(FrameId(1)).unwrap();
-    let layer = retained
-        .plan()
-        .layers
-        .iter()
-        .find(|layer| layer.groups.iter().any(|group| group.effect.is_some()))
-        .unwrap();
-    let group = layer
-        .groups
-        .iter()
-        .find(|group| group.effect.is_some())
-        .unwrap();
-    let reel_ui::app::VisualLayerKind::Scene(scene) = &layer.kind else {
-        panic!()
-    };
-    assert!(group.command > 0);
-    assert!(
-        matches!(
-            scene.commands()[group.command - 1],
-            reel_ui::imaging::record::Command::PushClip(_)
-        ),
-        "the node's clip must wrap the effect result, not cut its source"
-    );
-    let mut props = stage.node(node).unwrap().props.clone();
-    props.effect = Some(effect(0.75));
-    stage.update(node, NodeKind::Stack, props).unwrap();
-    ui.set_stage(&stage);
-    ui.sync(&mut bridge, root).unwrap();
-    assert!(!ui.images_pending());
-    assert_eq!(ui.images.loads, 1);
-    assert_eq!(ui.image_resources()[0].handle(), handle);
-    drop(retained);
-    drop(bridge);
-    drop(ui);
-    std::fs::remove_file(path).unwrap();
-    std::fs::remove_dir_all(directory).unwrap();
 }
 fn image_pipeline(
     (mut driver, mut bridge, root, wake): (

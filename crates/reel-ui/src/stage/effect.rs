@@ -16,6 +16,8 @@ use std::{
     hash::{Hash, Hasher},
     sync::Arc,
 };
+mod mask;
+pub use mask::lower_mask;
 
 /// Drawing values use float32 components; vectors correspond to fixed-size tuples.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -88,11 +90,14 @@ pub struct EffectInstance {
     program: Arc<EffectProgram>,
     values: crate::peniko::Blob<EffectValue>,
     values_storage: usize,
+    textures: Vec<Arc<str>>,
 }
 impl PartialEq for EffectInstance {
     fn eq(&self, other: &Self) -> bool {
-        self.definition == other.definition && self.program == other.program
+        self.definition == other.definition
+            && self.program == other.program
             && self.values() == other.values()
+            && self.textures == other.textures
     }
 }
 impl Eq for EffectInstance {}
@@ -105,9 +110,26 @@ impl EffectInstance {
         program: Arc<EffectProgram>,
         values: Vec<EffectValue>,
     ) -> Result<Arc<Self>, EffectInstanceError> {
-        let storage = size_of::<Vec<EffectValue>>() + 2 * size_of::<usize>()
+        Self::with_textures(definition, program, values, Vec::new())
+    }
+
+    /// Create an immutable numeric/image parameter tuple for one static definition.
+    pub fn with_textures(
+        definition: EffectDefinitionId,
+        program: Arc<EffectProgram>,
+        values: Vec<EffectValue>,
+        textures: Vec<Arc<str>>,
+    ) -> Result<Arc<Self>, EffectInstanceError> {
+        let storage = size_of::<Vec<EffectValue>>()
+            + 2 * size_of::<usize>()
             + values.capacity() * size_of::<EffectValue>();
-        Self::from_owned_values(definition, program, crate::peniko::Blob::new(Arc::new(values)), storage)
+        Self::from_owned_inputs(
+            definition,
+            program,
+            crate::peniko::Blob::new(Arc::new(values)),
+            storage,
+            textures,
+        )
     }
 
     /// Retain typed parameters with their host-owned storage and final-release
@@ -119,13 +141,37 @@ impl EffectInstance {
         values: crate::peniko::Blob<EffectValue>,
         storage_bytes: usize,
     ) -> Result<Arc<Self>, EffectInstanceError> {
+        Self::from_owned_inputs(definition, program, values, storage_bytes, Vec::new())
+    }
+
+    /// Admit numeric values and whole-image asset sources as separate typed inputs.
+    /// Sources retain their logical asset names; preparation owns decoded leases.
+    pub fn from_owned_inputs(
+        definition: EffectDefinitionId,
+        program: Arc<EffectProgram>,
+        values: crate::peniko::Blob<EffectValue>,
+        storage_bytes: usize,
+        textures: Vec<Arc<str>>,
+    ) -> Result<Arc<Self>, EffectInstanceError> {
+        if textures.len() != program.textures().len()
+            || textures
+                .iter()
+                .any(|path| path.is_empty() || path.ends_with(".reel-image"))
+        {
+            return Err(EffectInstanceError::Parameter {
+                index: values.len(),
+                reason: "texture inputs must name whole images or prepared textures",
+            });
+        }
         if values.len() != program.parameters().len() {
             return Err(EffectInstanceError::Count {
                 expected: program.parameters().len(),
                 actual: values.len(),
             });
         }
-        for (index, (value, parameter)) in values.data().iter().zip(program.parameters()).enumerate() {
+        for (index, (value, parameter)) in
+            values.data().iter().zip(program.parameters()).enumerate()
+        {
             if value.ty() != parameter.ty {
                 return Err(EffectInstanceError::Parameter {
                     index,
@@ -144,6 +190,7 @@ impl EffectInstance {
             program,
             values,
             values_storage: storage_bytes,
+            textures,
         }))
     }
 
@@ -162,11 +209,22 @@ impl EffectInstance {
         self.values.data()
     }
 
+    /// Whole-image asset names in texture declaration order, independent of uniforms.
+    pub fn textures(&self) -> &[Arc<str>] {
+        &self.textures
+    }
+
     /// Instance storage excluding the separately shared program allocation.
     pub fn storage_bytes(&self) -> usize {
         size_of::<Self>()
             + 2 * size_of::<usize>()
             + self.values_storage
+            + self.textures.capacity() * size_of::<Arc<str>>()
+            + self
+                .textures
+                .iter()
+                .map(|path| path.len() + 2 * size_of::<usize>())
+                .sum::<usize>()
     }
 }
 
@@ -194,6 +252,24 @@ pub struct EffectParameter {
     pub name: Arc<str>,
     pub ty: EffectType,
     pub default: Option<EffectValue>,
+}
+
+/// A whole-image resource parameter. Texture bindings never occupy numeric slots.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EffectTextureParameter {
+    /// Author-facing parameter name shared by source checking and instance binding.
+    pub name: Arc<str>,
+}
+
+/// The result requested from a whole-image resource at normalized coordinates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum EffectTextureChannel {
+    /// Linear premultiplied RGBA.
+    Color,
+    /// Image coverage, including compressed-format alpha rules.
+    Alpha,
+    /// The existing mask grayscale channel after filtering and color decoding.
+    Gray,
 }
 
 /// An expression identity within one program; references always point backwards.
@@ -281,6 +357,13 @@ pub enum EffectOp {
     SourceSample {
         uv: EffectNodeId,
     },
+    /// Sample one declared texture binding. Coordinates have type Vec2 and clamp
+    /// to the content's texel centers; channel controls the typed result.
+    TextureSample {
+        binding: u32,
+        uv: EffectNodeId,
+        channel: EffectTextureChannel,
+    },
     Vec2([EffectNodeId; 2]),
     Vec3([EffectNodeId; 3]),
     Vec4([EffectNodeId; 4]),
@@ -353,6 +436,7 @@ impl std::error::Error for EffectValidationError {}
 #[derive(Debug, PartialEq, Eq)]
 pub struct EffectProgram {
     parameters: Vec<EffectParameter>,
+    textures: Vec<EffectTextureParameter>,
     nodes: Vec<EffectNode>,
     output: EffectNodeId,
     structure_hash: u64,
@@ -366,9 +450,20 @@ impl EffectProgram {
         nodes: Vec<EffectNode>,
         output: EffectNodeId,
     ) -> Result<Arc<Self>, EffectValidationError> {
+        Self::with_textures(parameters, Vec::new(), nodes, output)
+    }
+
+    /// Validate numeric expressions and separately declared texture bindings.
+    pub fn with_textures(
+        parameters: Vec<EffectParameter>,
+        textures: Vec<EffectTextureParameter>,
+        nodes: Vec<EffectNode>,
+        output: EffectNodeId,
+    ) -> Result<Arc<Self>, EffectValidationError> {
         if nodes.is_empty()
             || nodes.len() > u32::MAX as usize
             || parameters.len() > u32::MAX as usize
+            || textures.len() > u32::MAX as usize
         {
             return Err(EffectValidationError::Storage);
         }
@@ -386,12 +481,28 @@ impl EffectProgram {
                 ));
             }
         }
+        for (index, texture) in textures.iter().enumerate() {
+            if texture.name.is_empty() || !names.insert(texture.name.as_ref()) {
+                return Err(EffectValidationError::Parameter {
+                    index,
+                    reason: "names must be nonempty and unique",
+                });
+            }
+        }
         for (index, node) in nodes.iter().enumerate() {
             let id = EffectNodeId(index as u32);
             let ty = node
                 .op
                 .result_type(&nodes[..index], &parameters)
                 .map_err(|reason| EffectValidationError::Node { id, reason })?;
+            if let EffectOp::TextureSample { binding, .. } = node.op
+                && binding as usize >= textures.len()
+            {
+                return Err(EffectValidationError::Node {
+                    id,
+                    reason: "unknown texture binding",
+                });
+            }
             if ty != node.ty {
                 return Err(EffectValidationError::Node {
                     id,
@@ -407,6 +518,7 @@ impl EffectProgram {
         }
         let mut hash = std::collections::hash_map::DefaultHasher::new();
         parameters.len().hash(&mut hash);
+        textures.len().hash(&mut hash);
         for parameter in &parameters {
             parameter.ty.hash(&mut hash);
         }
@@ -414,6 +526,7 @@ impl EffectProgram {
         output.hash(&mut hash);
         Ok(Arc::new(Self {
             parameters,
+            textures,
             nodes,
             output,
             structure_hash: hash.finish(),
@@ -423,6 +536,11 @@ impl EffectProgram {
     /// Parameter declarations in stable slot order.
     pub fn parameters(&self) -> &[EffectParameter] {
         &self.parameters
+    }
+
+    /// Texture resource declarations in stable binding order.
+    pub fn textures(&self) -> &[EffectTextureParameter] {
+        &self.textures
     }
 
     /// Expressions in dependency order. This order is not an execution schedule.
@@ -444,6 +562,7 @@ impl EffectProgram {
     /// Program reuse ignores parameter names and defaults, which belong to instances.
     pub fn same_structure(&self, other: &Self) -> bool {
         self.output == other.output
+            && self.textures.len() == other.textures.len()
             && self.nodes == other.nodes
             && self
                 .parameters
@@ -458,6 +577,12 @@ impl EffectProgram {
         size_of::<Self>()
             + 2 * size_of::<usize>()
             + self.parameters.capacity() * size_of::<EffectParameter>()
+            + self.textures.capacity() * size_of::<EffectTextureParameter>()
+            + self
+                .textures
+                .iter()
+                .map(|p| p.name.len() + 2 * size_of::<usize>())
+                .sum::<usize>()
             + self.nodes.capacity() * size_of::<EffectNode>()
             + self
                 .parameters
@@ -520,6 +645,16 @@ impl EffectOp {
                 } else {
                     Err("source sample coordinates must be Vec2")
                 }
+            }
+            Self::TextureSample { uv, channel, .. } => {
+                if get(uv)? != EffectType::Vec2 {
+                    return Err("texture sample coordinates must be Vec2");
+                }
+                Ok(if channel == EffectTextureChannel::Color {
+                    EffectType::Vec4
+                } else {
+                    EffectType::Float
+                })
             }
             Self::Vec2(ids) => construct(&ids, EffectType::Vec2),
             Self::Vec3(ids) => construct(&ids, EffectType::Vec3),

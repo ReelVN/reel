@@ -48,6 +48,18 @@ impl Cache {
                 record: "effect uniforms exceed the device capacity",
             });
         }
+        if descriptor
+            .textures
+            .saturating_add(u32::from(descriptor.source_sampler))
+            > gpu.device.limits().max_sampled_textures_per_shader_stage
+            || descriptor.textures as u64 * 32
+                > u64::from(gpu.device.limits().max_uniform_buffer_binding_size)
+        {
+            return Err(GpuError::Unsupported {
+                at,
+                record: "effect textures exceed the device capacity",
+            });
+        }
         let mut cache = self.0.lock().unwrap();
         if let Some(compiled) = cache.get(
             descriptor.shader_key,
@@ -66,17 +78,34 @@ impl Cache {
             size_of::<Compiled>() + 2 * size_of::<usize>(),
             gpu.limits.resource_bytes,
         )?;
+        let entry_capacity = 3
+            + usize::from(descriptor.source_sampler)
+            + usize::from(descriptor.textures != 0)
+            + descriptor.textures as usize;
+        let _layout_storage = effect_cache::reserve(
+            budget,
+            entry_capacity * size_of::<wgpu::BindGroupLayoutEntry>(),
+            gpu.limits.resource_bytes,
+        )?;
         let compiled = pipeline::validated(gpu, || {
+            let mut entries = Vec::with_capacity(entry_capacity);
+            entries.extend([
+                pipeline::sampler(1),
+                pipeline::uniform(2),
+                pipeline::uniform(3),
+            ]);
+            if descriptor.source_sampler {
+                entries.push(pipeline::texture(0));
+            }
+            if descriptor.textures != 0 {
+                entries.push(pipeline::uniform(4));
+                entries.extend((0..descriptor.textures).map(|i| pipeline::texture(5 + i)));
+            }
             let layout = gpu
                 .device
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                     label: Some("prepared effect"),
-                    entries: &[
-                        pipeline::texture(0),
-                        pipeline::sampler(1),
-                        pipeline::uniform(2),
-                        pipeline::uniform(3),
-                    ],
+                    entries: &entries,
                 });
             let pipeline = pipeline::pipeline_entry(
                 &gpu.device,
@@ -121,6 +150,36 @@ impl Context<'_> {
         source: &Target,
         at: RecordLocation,
     ) -> Result<Target, GpuError> {
+        self.effect_draw(drawing, effect, transform, source, None, at)
+    }
+    /// Evaluate scalar coverage with the caller's explicit frame-to-source view.
+    pub(super) fn effect_coverage(
+        &mut self,
+        drawing: &FrameDrawing,
+        effect: &FrameEffect,
+        transform: Affine,
+        source: &Target,
+        source_frame_to_pixels: Affine,
+        at: RecordLocation,
+    ) -> Result<Target, GpuError> {
+        self.effect_draw(
+            drawing,
+            effect,
+            transform,
+            source,
+            Some(source_frame_to_pixels),
+            at,
+        )
+    }
+    fn effect_draw(
+        &mut self,
+        drawing: &FrameDrawing,
+        effect: &FrameEffect,
+        transform: Affine,
+        source: &Target,
+        source_view: Option<Affine>,
+        at: RecordLocation,
+    ) -> Result<Target, GpuError> {
         self.flush_draws()?;
         let shader = effect_plan::shader(drawing, effect, at)?;
         let compiled = self.pipelines.effects.get(
@@ -131,15 +190,30 @@ impl Context<'_> {
             at,
         )?;
         let output = self.target()?;
-        let Some(context) = effect_plan::context(effect, transform, self.size, source.size) else {
+        let Some(mut context) = effect_plan::context(effect, transform, self.size, source.size)
+        else {
             return Ok(output);
         };
+        if let Some(view) = source_view {
+            context[0][3] = if effect.coverage_invert { 2.0 } else { 1.0 };
+            effect_plan::map_source(&mut context, effect, transform, view, source.size);
+        }
         if self.scissor.empty() {
             return Ok(output);
         }
-        // Charge CPU packing plus the two independent uniform buffer allocations.
+        // Reserve all owned packing vectors and GPU uniform payloads together.
         let parameter_bytes = effect.values.len().max(1) * 16;
-        self.transient((2 * parameter_bytes + size_of_val(&context)) as u64)?;
+        let entry_capacity = 3
+            + usize::from(shader.descriptor.source_sampler)
+            + usize::from(!effect.images.is_empty())
+            + effect.images.len();
+        let metadata_capacity = effect.images.len() * 2;
+        self.transient(
+            (2 * parameter_bytes
+                + size_of_val(&context)
+                + 2 * metadata_capacity * size_of::<[f32; 4]>()
+                + entry_capacity * size_of::<wgpu::BindGroupEntry<'_>>()) as u64,
+        )?;
         let parameters = if effect.values.is_empty() {
             vec![[0.; 4]]
         } else {
@@ -161,30 +235,58 @@ impl Context<'_> {
         };
         let context = uniform("effect coordinates", bytemuck::cast_slice(&context));
         let parameters = uniform("effect parameters", bytemuck::cast_slice(&parameters));
+        let mut entries = Vec::with_capacity(entry_capacity);
+        entries.extend([
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&self.pipelines.samplers[0]),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: context.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: parameters.as_entire_binding(),
+            },
+        ]);
+        if shader.descriptor.source_sampler {
+            entries.push(wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&source.view),
+            });
+        }
+        let mut metadata = Vec::with_capacity(metadata_capacity);
+        for (index, handle) in effect.images.iter().enumerate() {
+            let image = self.images.get(handle).ok_or(GpuError::InvalidRecord {
+                at,
+                record: "effect texture is not resident",
+            })?;
+            entries.push(wgpu::BindGroupEntry {
+                binding: 5 + index as u32,
+                resource: wgpu::BindingResource::TextureView(&image.view),
+            });
+            metadata.extend(effect_plan::texture_metadata(
+                image.layout,
+                image.encoding,
+                image.texture_format,
+            ));
+        }
+        let metadata = (!metadata.is_empty())
+            .then(|| uniform("effect image metadata", bytemuck::cast_slice(&metadata)));
+        if let Some(metadata) = &metadata {
+            entries.push(wgpu::BindGroupEntry {
+                binding: 4,
+                resource: metadata.as_entire_binding(),
+            });
+        }
         let bindings = self
             .gpu
             .device
             .create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("prepared effect"),
                 layout: &compiled.layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&source.view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.pipelines.samplers[0]),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: context.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: parameters.as_entire_binding(),
-                    },
-                ],
+                entries: &entries,
             });
         let mut held = std::mem::take(&mut self.effects);
         let retained = crate::common::scopes::push_stack(&mut held, compiled.clone(), |bytes| {

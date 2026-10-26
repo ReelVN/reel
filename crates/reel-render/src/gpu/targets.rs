@@ -4,6 +4,9 @@ use reel_ui::frame::{
     FrameCommand, FrameDrawing, FrameGroup, FrameOp, RenderFrame, SceneTransition,
 };
 use reel_ui::kurbo::Affine;
+#[cfg(test)]
+#[path = "target_plan_tests.rs"]
+mod plan_tests;
 
 /// Account the physical high-water allocation in each size bucket. Queue-ordered
 /// reuse is valid only within a bucket; nonoverlapping differently sized sources
@@ -74,6 +77,8 @@ struct Scope<'a> {
     clip: bool,
     group: Option<&'a FrameGroup>,
     restore: Option<(Affine, [u32; 2])>,
+    parent_scissor: Scissor,
+    source_view: bool,
 }
 enum Pending<'a> {
     Old(&'a SceneTransition),
@@ -92,6 +97,7 @@ struct Stream<'a> {
     scopes: Vec<Scope<'a>>,
     transform: Affine,
     size: [u32; 2],
+    scissor: Scissor,
 }
 #[expect(
     clippy::too_many_arguments,
@@ -104,6 +110,7 @@ fn stream<'a>(
     transitions_enabled: bool,
     transform: Affine,
     size: [u32; 2],
+    scissor: Scissor,
     capture: bool,
     scratch: &mut Scratch,
     reserve: &mut impl FnMut(u64) -> Result<(), GpuError>,
@@ -138,6 +145,7 @@ fn stream<'a>(
         scopes: Vec::new(),
         transform,
         size,
+        scissor,
     })
 }
 /// Plan the same streams and target lifetimes as replay, in storage pixels.
@@ -149,6 +157,7 @@ pub(super) fn target_pixels(
     capture: bool,
     samples: u32,
     max_dimension: u32,
+    glyph_plan: &crate::common::glyph_plan::Plan,
     mut reserve: impl FnMut(u64) -> Result<(), GpuError>,
 ) -> Result<u64, GpuError> {
     let mut scratch = Scratch::default();
@@ -164,6 +173,7 @@ pub(super) fn target_pixels(
             true,
             transform,
             size,
+            Scissor::full(size),
             capture,
             &mut scratch,
             &mut reserve,
@@ -191,6 +201,7 @@ pub(super) fn target_pixels(
                         * transition.parent_to_window
                         * transition.previous.to_parent(),
                     current.size,
+                    current.scissor,
                     capture,
                     &mut scratch,
                     &mut reserve,
@@ -225,6 +236,7 @@ pub(super) fn target_pixels(
                             false,
                             parent.transform,
                             parent.size,
+                            parent.scissor,
                             capture,
                             &mut scratch,
                             &mut reserve,
@@ -247,6 +259,11 @@ pub(super) fn target_pixels(
             let at = command.origin.at;
             match &command.op {
                 FrameOp::PushClip(clip) => {
+                    let parent_scissor = current.scissor;
+                    current.scissor =
+                        Scissor::from_clip(clip, current.transform, current.size, samples)
+                            .or_else(|| Scissor::clip_bounds(clip, current.transform, current.size))
+                            .map_or(parent_scissor, |s| parent_scissor.intersect(s));
                     let direct_mesh = samples == 1
                         && crate::common::scopes::flat_clip(
                             current.drawing,
@@ -276,6 +293,8 @@ pub(super) fn target_pixels(
                             clip: isolated,
                             group: None,
                             restore: None,
+                            parent_scissor,
+                            source_view: false,
                         },
                         &mut reserve,
                     )?;
@@ -307,7 +326,31 @@ pub(super) fn target_pixels(
                         continue;
                     }
                     let isolated = !current.groups.can_inline(current.next - 1);
-                    let restore = if let Some(effect) = &group.effect {
+                    let parent_scissor = current.scissor;
+                    let ink = glyph_plan.group_ink(group);
+                    let view = isolated
+                        .then(|| {
+                            crate::common::source_view::SourceView::group(
+                                group,
+                                ink,
+                                current.transform,
+                                current.size,
+                                parent_scissor,
+                                current.transitions_enabled
+                                    && !current.drawing.transitions().is_empty(),
+                                max_dimension,
+                            )
+                        })
+                        .flatten();
+                    let restore = if let Some(view) = view {
+                        let restore = (current.transform, current.size);
+                        current.transform = view.frame_to_source(current.transform);
+                        current.size = view.storage_size;
+                        current.scissor = view.source_rect;
+                        Some(restore)
+                    } else if let Some(effect) =
+                        group.effect.as_ref().or(group.mask_effect.as_ref())
+                    {
                         let source = crate::common::effect_plan::source_layout(
                             effect,
                             group.effect_to_target,
@@ -318,8 +361,17 @@ pub(super) fn target_pixels(
                         let restore = (current.transform, current.size);
                         current.transform = source.frame_to_source;
                         current.size = source.size;
+                        current.scissor = Scissor::full(source.size);
                         Some(restore)
                     } else {
+                        current.scissor = Scissor::group_bounds(
+                            group,
+                            current.transform,
+                            current.size,
+                            current.transitions_enabled
+                                && !current.drawing.transitions().is_empty(),
+                        )
+                        .map_or(parent_scissor, |s| parent_scissor.intersect(s));
                         None
                     };
                     if isolated {
@@ -332,19 +384,38 @@ pub(super) fn target_pixels(
                             clip: group.clip.is_some(),
                             group: Some(group),
                             restore,
+                            parent_scissor,
+                            source_view: view.is_some(),
                         },
                         &mut reserve,
                     )?;
                 }
                 FrameOp::PopClip | FrameOp::PopGroup => {
                     let scope = current.scopes.pop().expect("validated scope");
+                    current.scissor = scope.parent_scissor;
                     if !scope.isolated {
                         continue;
                     }
                     let mut source = current.size;
+                    if let Some(group) = scope.group.filter(|group| group.mask_effect.is_some()) {
+                        // Color effects, coverage and their product are produced
+                        // in the complete local domain before one projection.
+                        if group.effect.is_some() {
+                            scratch.acquire(source, &mut reserve)?;
+                            scratch.release(source);
+                        }
+                        scratch.acquire(source, &mut reserve)?;
+                        scratch.acquire(source, &mut reserve)?;
+                        scratch.release(source);
+                        scratch.release(source);
+                    }
                     if let Some((transform, parent_size)) = scope.restore {
                         current.transform = transform;
                         current.size = parent_size;
+                        if scope.source_view {
+                            scratch.release(source);
+                            continue;
+                        }
                         scratch.acquire(parent_size, &mut reserve)?;
                         scratch.release(source);
                         source = parent_size;
@@ -381,6 +452,7 @@ pub(super) fn target_pixels(
                             false,
                             current.transform * mask.transform,
                             current.size,
+                            current.scissor,
                             capture,
                             &mut scratch,
                             &mut reserve,

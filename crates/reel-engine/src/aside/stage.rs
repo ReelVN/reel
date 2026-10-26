@@ -272,7 +272,7 @@ pub(super) enum NodeProperty {
     #[aside(name = "text_outline_color", ty = String, default = "#000000", validate = validate_color)]
     TextOutlineColor,
     /// Image or composed mask applied to this subtree; null disables masking.
-    #[aside(name = "mask", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Union(vec![aside_compiler::semantic::TypeHint::String,aside_host::source::number(),aside_host::source::named("reel::types::Mask")])), default = null, validate = validate_mask)]
+    #[aside(name = "mask", ty = Any, doc_type = aside_host::source::nullable(aside_compiler::semantic::TypeHint::Union(vec![aside_compiler::semantic::TypeHint::String,aside_host::source::number(),aside_host::source::named("reel::types::Mask"),aside_host::source::named("reel::types::Effect")])), default = null, validate = validate_mask)]
     Mask,
     /// Reveal threshold for the subtree mask.
     #[aside(name = "mask_progress", ty = Any, doc_type = aside_host::source::number(), default = 1, validate = validate_mask_progress, animatable)]
@@ -375,7 +375,7 @@ struct NodeBinding {
     input: Option<Box<input::State>>,
     text_history: Option<Box<text_input::History>>,
     text_source: Option<HeapHandle>,
-    mask_source: Option<HeapHandle>,
+    mask_source: Option<(HeapHandle, u64)>,
     effect_source: Option<(HeapHandle, u64)>,
     text_listening: bool,
     /// Weak identity stamp only: never dereferenced or treated as a GC root.
@@ -532,6 +532,7 @@ impl StageBinding {
             if heap.info(heap.host_fields(value)?)?.content_version != binding.fields_version
                 || binding.projection_dirty
                 || super::effects::changed(heap, binding.effect_source)?
+                || mask_changed(heap, binding.mask_source)?
                 || binding
                     .overrides
                     .as_ref()
@@ -922,6 +923,7 @@ impl StageBinding {
             if version == binding.fields_version
                 && !binding.projection_dirty
                 && !super::effects::changed(heap, binding.effect_source)?
+                && !mask_changed(heap, binding.mask_source)?
                 && !binding
                     .overrides
                     .as_ref()
@@ -1093,6 +1095,7 @@ impl StageBinding {
                         adjustment: read_image_adjustment(heap, fields)?,
                         source_rect: read_source_rect(heap, heap.table_entry(fields, 11)?.1)?,
                         alpha_layout: read_alpha_layout(heap, heap.table_entry(fields, 12)?.1)?,
+                        sampling: read_sampling(heap, heap.table_entry(fields, 13)?.1)?,
                         origin: origin.clone(),
                     },
                     registry::IMAGE_PREFIX.len(),
@@ -1676,6 +1679,14 @@ fn read_fit(heap: &Heap, value: Value) -> Result<reel_ui::properties::ObjectFit,
     }
 }
 
+fn read_sampling(heap: &Heap, value: Value) -> Result<reel_ui::peniko::ImageQuality, AdapterError> {
+    match text::read_string(heap, value, 16)?.as_str() {
+        "nearest" => Ok(reel_ui::peniko::ImageQuality::Low),
+        "linear" => Ok(reel_ui::peniko::ImageQuality::Medium),
+        _ => Err(AdapterError::Input("sampling must be nearest or linear")),
+    }
+}
+
 fn read_alpha_layout(
     heap: &Heap,
     value: Value,
@@ -1919,6 +1930,9 @@ pub(super) fn validate_image_property(
         12 => read_alpha_layout(heap, value)
             .map(|_| ())
             .map_err(|_| HeapError::TypeMismatch),
+        13 => read_sampling(heap, value)
+            .map(|_| ())
+            .map_err(|_| HeapError::TypeMismatch),
         _ => validate_layout_property(heap, index - registry::IMAGE_PREFIX.len() as u32, value),
     }
 }
@@ -2128,6 +2142,9 @@ pub(super) fn validate_mask(heap: &Heap, value: Value) -> Result<(), HeapError> 
     if value.tag() == ValueTag::Null {
         return Ok(());
     }
+    if super::effects::is_effect(heap, value) {
+        return super::effects::validate_mask(heap, value);
+    }
     let info = heap.info(value)?;
     if info.kind == ObjectKind::String && info.len != 0 {
         Ok(())
@@ -2135,17 +2152,31 @@ pub(super) fn validate_mask(heap: &Heap, value: Value) -> Result<(), HeapError> 
         super::masks::validate(heap, value)
     }
 }
+fn mask_changed(heap: &Heap, stamp: Option<(HeapHandle, u64)>) -> Result<bool, HeapError> {
+    let Some((handle, _)) = stamp else {
+        return Ok(false);
+    };
+    if super::effects::is_effect(heap, heap.import_handle(handle)?) {
+        super::effects::changed(heap, stamp)
+    } else {
+        Ok(false)
+    }
+}
 fn mask_handle(
     heap: &Heap,
     fields: Value,
     offset: usize,
     selected: Value,
-) -> Result<Option<HeapHandle>, HeapError> {
+) -> Result<Option<(HeapHandle, u64)>, HeapError> {
     let value = overrides::get(heap, fields, offset, selected, NodeProperty::Mask.index())?;
     if value.tag() == ValueTag::Null {
         Ok(None)
     } else {
-        heap.handle(value).map(Some)
+        if super::effects::is_effect(heap, value) {
+            super::effects::stamp(heap, value)
+        } else {
+            heap.handle(value).map(|handle| Some((handle, 0)))
+        }
     }
 }
 fn effect_stamp(
@@ -2329,7 +2360,11 @@ fn read_props(
     offset: usize,
     selected: Value,
     read_limit: usize,
-    previous: Option<(Option<HeapHandle>, Option<(HeapHandle, u64)>, &NodeProps)>,
+    previous: Option<(
+        Option<(HeapHandle, u64)>,
+        Option<(HeapHandle, u64)>,
+        &NodeProps,
+    )>,
     appearance_origin: Option<Arc<str>>,
     effects: &super::source::EffectProducts,
     effect_projection: &mut super::effects::ProjectionCache,
@@ -2349,10 +2384,22 @@ fn read_props(
     validate_callback(heap, get(NodeProperty::OnInteraction)?)?;
     let mask = get(NodeProperty::Mask)?;
     validate_mask(heap, mask)?;
-    let mask = if mask.tag() == ValueTag::Null {
+    let mask_effect = if super::effects::is_effect(heap, mask) {
+        let instance = effect_projection.project(heap, mask, effects)?;
+        if instance.as_ref().is_some_and(|effect| {
+            effect.program().nodes()[effect.program().output().0 as usize].ty
+                != reel_ui::stage::effect::EffectType::Float
+        }) {
+            return Err(AdapterError::Input("mask requires a scalar effect"));
+        }
+        instance
+    } else {
+        None
+    };
+    let mask = if mask.tag() == ValueTag::Null || mask_effect.is_some() {
         None
     } else if let Some((Some(handle), _, props)) = previous
-        && handle == heap.handle(mask)?
+        && handle.0 == heap.handle(mask)?
     {
         props.mask.clone()
     } else {
@@ -2374,8 +2421,9 @@ fn read_props(
         default_font = NodeProps::default().font;
         &default_font
     };
-    Ok(NodeProps {
+    let mut props = NodeProps {
         effect,
+        mask_effect,
         flex: nonnegative(get(NodeProperty::Flex)?)?,
         x: number(get(NodeProperty::X)?)?,
         y: number(get(NodeProperty::Y)?)?,
@@ -2448,5 +2496,35 @@ fn read_props(
         mask_invert: boolean(get(NodeProperty::MaskInvert)?)?,
         mask_x: mask_offset(get(NodeProperty::MaskX)?)?,
         mask_y: mask_offset(get(NodeProperty::MaskY)?)?,
-    })
+    };
+    if props.mask_effect.is_none()
+        && let Some(mask) = &props.mask
+    {
+        let unchanged = previous.and_then(|(_, _, prior)| {
+            prior
+                .mask
+                .as_ref()
+                .filter(|old| Arc::ptr_eq(mask, old))
+                .map(|_| prior)
+        });
+        let prior = unchanged.and_then(|prior| prior.mask_effect.as_ref());
+        // A construction that did not match a prepared template stays dynamic;
+        // animation changes never repeat the negative structural lookup.
+        if unchanged.is_some() && prior.is_none() {
+            return Ok(props);
+        }
+        props.mask_effect = effect_projection.project_mask(
+            heap,
+            mask,
+            [
+                props.mask_progress as f32,
+                props.mask_softness.min(f32::MAX as f64) as f32,
+                props.mask_x as f32,
+                props.mask_y as f32,
+            ],
+            effects,
+            prior,
+        )?;
+    }
+    Ok(props)
 }

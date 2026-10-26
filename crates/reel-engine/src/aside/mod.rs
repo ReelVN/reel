@@ -702,6 +702,19 @@ impl SessionVm {
                 self.issued = None;
                 Ok(NativeDispatch::Ready { work: 1 })
             }
+            "reel::texture" => {
+                let path = self.vm.host_arguments(ticket)?[0];
+                let value = effects::create_texture(self.vm.heap_mut(), path, self.read_limit)?;
+                self.stage
+                    .types
+                    .mark(self.vm.heap_mut(), value, "reel::types::Texture")?;
+                self.vm.respond(ticket, HostResponse::Ready(value))?;
+                self.issued = None;
+                Ok(NativeDispatch::Ready { work: 1 })
+            }
+            name if name.starts_with("reel::texture::") => Err(AdapterError::Input(
+                "texture sampling is evaluated inside a compiled effect",
+            )),
             "reel::effect" => {
                 let args = self.vm.host_arguments(ticket)?.to_vec();
                 let function = self.vm.unbound_function(args[0])?;

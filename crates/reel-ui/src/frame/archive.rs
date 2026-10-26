@@ -796,13 +796,22 @@ impl RetainedRestore {
                 }
                 let mut command = command.clone();
                 remap_command(&mut command, &build.handles)?;
-                if let FrameOp::PushGroup(group) = &command.op
-                    && let Some(effect) = &group.effect
-                    && !build.resources.iter().any(|lease| lease.handle() == effect.shader
-                        && matches!(lease.data(), ResourceData::EffectShader { descriptor, .. }
-                            if descriptor.definition == effect.definition && descriptor.accepts(&effect.values)))
-                {
-                    return Err(retained::error(BuildErrorKind::InvalidRecord));
+                if let FrameOp::PushGroup(group) = &command.op {
+                    for (effect, coverage) in group
+                        .effect
+                        .iter()
+                        .map(|effect| (effect, false))
+                        .chain(group.mask_effect.iter().map(|effect| (effect, true)))
+                    {
+                        if !build.resources.iter().any(|lease| lease.handle() == effect.shader
+                            && matches!(lease.data(), ResourceData::EffectShader { descriptor, .. }
+                                if descriptor.definition == effect.definition
+                                    && descriptor.accepts(&effect.values)
+                                    && descriptor.textures as usize == effect.images.len()
+                                    && (!coverage || descriptor.output == crate::stage::effect::EffectType::Float))) {
+                            return Err(retained::error(BuildErrorKind::InvalidRecord));
+                        }
+                    }
                 }
                 if let Some(id) = mask {
                     Arc::get_mut(build.masks.get_mut(&id).unwrap())
@@ -945,10 +954,13 @@ fn remap_command(
             Some(&mut glyphs.brush)
         }
         FrameOp::PushGroup(group) => {
-            if let Some(effect) = &mut group.effect {
+            for effect in group.effect.iter_mut().chain(group.mask_effect.iter_mut()) {
                 remap(&mut effect.shader, handles, |kind| {
                     kind == ResourceKind::EffectShader
                 })?;
+                for image in &mut effect.images {
+                    remap(image, handles, |kind| kind == ResourceKind::Image)?;
+                }
             }
             if let Some(mask) = &mut group.image_mask {
                 remap_mask(mask, handles)?;

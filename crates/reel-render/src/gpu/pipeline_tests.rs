@@ -64,7 +64,7 @@ fn counts(renderer: &Renderer, sets: usize) {
     assert_eq!(renderer.pipelines.initialized_count(), sets);
     assert_eq!(
         renderer.pipelines.creations.snapshot(),
-        [3 * sets, 10 * sets, 10 * sets, 10 * sets, 4 * sets]
+        [3 * sets, 10 * sets, 10 * sets, 10 * sets, 8 * sets]
     );
 }
 
@@ -515,6 +515,7 @@ fn subtree_blend_mask_clip_and_backdrop_fit_the_planned_target_budget() {
                 false,
                 4,
                 u32::MAX,
+                &crate::common::glyph_plan::Plan::default(),
                 |_| Ok(()),
             )
             .unwrap();
@@ -898,7 +899,7 @@ fn pipeline_reuse_cold_warm_cpu_distribution() {
         cold.sort_unstable();
         warm.sort_unstable();
         eprintln!(
-            "paired_samples=30 size={:?} quality={:?} cold_p50_us={:.3} cold_p95_us={:.3} warm_p50_us={:.3} warm_p95_us={:.3}; per_renderer_creations=[3,5,5,5,4]",
+            "paired_samples=30 size={:?} quality={:?} cold_p50_us={:.3} cold_p95_us={:.3} warm_p50_us={:.3} warm_p95_us={:.3}; per_renderer_creations=[3,10,10,10,8]",
             frame.info().physical_size,
             quality.unwrap(),
             cold[14].as_secs_f64() * 1e6,
@@ -1102,7 +1103,7 @@ fn pipeline_reuse_cross_slot_concurrency_preserves_outer_scope_stack() {
             assert_eq!(renderer.pipelines.initialized_count(), 0);
             assert_eq!(
                 renderer.pipelines.creations.snapshot(),
-                [3, 5, 5, 5, 4],
+                [3, 10, 10, 10, 8],
                 "one failed constructor becomes sticky before another tier constructs"
             );
         } else {

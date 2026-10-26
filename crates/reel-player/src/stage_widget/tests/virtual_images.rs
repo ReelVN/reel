@@ -97,6 +97,7 @@ fn fixture_with_overflow(descendant: Option<bool>) -> (Fixture, NodeId, NodeId, 
         .stage
         .create(
             NodeKind::Image {
+                sampling: Default::default(),
                 source: "waiting.png".into(),
                 fit: reel_ui::properties::ObjectFit::Contain,
                 slice: None,

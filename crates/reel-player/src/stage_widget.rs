@@ -76,9 +76,55 @@ struct SceneNode {
     modal: Option<NodeId>,
     images: SceneImages,
 }
+#[derive(Clone)]
+struct ResolvedEffect {
+    shader: ResourceLease,
+    images: Arc<[ResourceLease]>,
+}
+impl ResolvedEffect {
+    fn resolve(
+        effect: &reel_ui::stage::effect::EffectInstance,
+        images: &BTreeMap<String, ResourceLease>,
+        format: EffectShaderFormat,
+    ) -> Option<Self> {
+        let shader = images.get(&format.asset_path(effect.definition()))?.clone();
+        let images = effect
+            .textures()
+            .iter()
+            .map(|source| images.get(source.as_ref()).cloned())
+            .collect::<Option<Vec<_>>>()?
+            .into();
+        Some(Self { shader, images })
+    }
+    fn leases(&self) -> impl Iterator<Item = &ResourceLease> {
+        std::iter::once(&self.shader).chain(self.images.iter())
+    }
+    fn paint(
+        &self,
+        instance: &Arc<reel_ui::stage::effect::EffectInstance>,
+        bounds: Rect,
+        coverage_invert: bool,
+    ) -> PaintEffect {
+        PaintEffect {
+            instance: instance.clone(),
+            shader: self.shader.clone(),
+            images: self.images.to_vec(),
+            bounds,
+            coverage_invert,
+        }
+    }
+}
+impl PartialEq for ResolvedEffect {
+    fn eq(&self, other: &Self) -> bool {
+        self.leases()
+            .map(ResourceLease::handle)
+            .eq(other.leases().map(ResourceLease::handle))
+    }
+}
 #[derive(Clone, Default)]
 struct SceneImages {
-    effect_shader: Option<ResourceLease>,
+    effect: Option<ResolvedEffect>,
+    mask_effect: Option<ResolvedEffect>,
     image: Option<ImageData>,
     image_resource: Option<ResourceLease>,
     mask_images: Arc<[ResourceLease]>,
@@ -87,8 +133,8 @@ struct SceneImages {
 }
 impl PartialEq for SceneImages {
     fn eq(&self, other: &Self) -> bool {
-        self.effect_shader.as_ref().map(ResourceLease::handle)
-            == other.effect_shader.as_ref().map(ResourceLease::handle)
+        self.effect == other.effect
+            && self.mask_effect == other.mask_effect
             && self.image.as_ref().map(|i| i.data.id()) == other.image.as_ref().map(|i| i.data.id())
             && self.image_resource.as_ref().map(ResourceLease::handle)
                 == other.image_resource.as_ref().map(ResourceLease::handle)
@@ -289,6 +335,7 @@ impl StageView {
             let image_branch = matches!(node.kind, NodeKind::Image { .. } | NodeKind::Particles(_))
                 || node.props.mask.is_some()
                 || node.props.effect.is_some()
+                || node.props.mask_effect.is_some()
                 || children_summary.image;
             let button_branch =
                 matches!(node.kind, NodeKind::Button { .. }) || children_summary.button;
@@ -314,7 +361,10 @@ impl StageView {
                 images.mask_images = Arc::from([]);
             }
             if node.props.effect.is_none() {
-                images.effect_shader = None;
+                images.effect = None;
+            }
+            if node.props.mask_effect.is_none() {
+                images.mask_effect = None;
             }
             Arc::new(SceneNode {
                 node,
@@ -532,9 +582,16 @@ impl StageView {
             if let Some(mask) = &node.node.props.mask {
                 mounted.extend(mask.sources().iter().map(|source| source.to_string()));
             }
-            if let Some(effect) = &node.node.props.effect {
+            for effect in node
+                .node
+                .props
+                .effect
+                .iter()
+                .chain(node.node.props.mask_effect.iter())
+            {
                 let source = format.asset_path(effect.definition());
                 mounted.insert(source.clone());
+                mounted.extend(effect.textures().iter().map(|source| source.to_string()));
                 if visible {
                     requests.entry(source.clone()).or_insert_with(|| {
                         node.node
@@ -544,6 +601,15 @@ impl StageView {
                             .map(str::to_owned)
                     });
                     shaders.insert(source);
+                    for source in effect.textures() {
+                        requests.entry(source.to_string()).or_insert_with(|| {
+                            node.node
+                                .props
+                                .appearance_origin
+                                .as_deref()
+                                .map(str::to_owned)
+                        });
+                    }
                 }
             }
             if !visible {
@@ -591,11 +657,17 @@ impl StageView {
             if !visible {
                 return resolved;
             }
-            if let Some(effect) = &node.node.props.effect {
-                let lease = &images[&format.asset_path(effect.definition())];
-                resolved.effect_shader = Some(lease.clone());
-                if handles.insert(lease.handle()) {
-                    self.resources.push(lease.clone());
+            for (effect, destination) in [
+                (&node.node.props.effect, &mut resolved.effect),
+                (&node.node.props.mask_effect, &mut resolved.mask_effect),
+            ] {
+                *destination = effect
+                    .as_ref()
+                    .and_then(|effect| ResolvedEffect::resolve(effect, images, format));
+                for lease in destination.iter().flat_map(ResolvedEffect::leases) {
+                    if handles.insert(lease.handle()) {
+                        self.resources.push(lease.clone());
+                    }
                 }
             }
             if let Some((source, _)) = image_source(&node.node.kind) {
@@ -657,15 +729,36 @@ impl StageView {
             if !visible || failure.is_some() {
                 return resolved;
             }
-            if let Some(effect) = &node.node.props.effect
-                && let Some(lease) = images
-                    .loaded
-                    .get(&images.shader_format.asset_path(effect.definition()))
-            {
-                resolved.effect_shader = Some(lease.clone());
-                if resources.insert(lease.handle()) {
-                    self.resources.push(lease.clone());
+            for (effect, destination) in [
+                (&node.node.props.effect, &mut resolved.effect),
+                (&node.node.props.mask_effect, &mut resolved.mask_effect),
+            ] {
+                let Some(effect) = effect else { continue };
+                if let Some(source) = effect
+                    .textures()
+                    .iter()
+                    .find(|source| images.manifests.contains_key(source.as_ref()))
+                {
+                    failure = Some(format!(
+                        "{}: effect texture {source:?}: effects require a whole PNG, JPEG or .reel-texture image",
+                        node.node
+                            .props
+                            .appearance_origin
+                            .as_deref()
+                            .unwrap_or("stage")
+                    ));
+                    break;
                 }
+                *destination =
+                    ResolvedEffect::resolve(effect, &images.loaded, images.shader_format);
+                for lease in destination.iter().flat_map(ResolvedEffect::leases) {
+                    if resources.insert(lease.handle()) {
+                        self.resources.push(lease.clone());
+                    }
+                }
+            }
+            if failure.is_some() {
+                return resolved;
             }
             if let Some(lease) = image_resource(&node.node.kind) {
                 resolved.image_resource = Some(lease.clone());
@@ -875,7 +968,9 @@ impl StageWidget {
             if !this.widget.node.props.visible || !this.widget.projection.image_branch {
                 return;
             }
-            if this.widget.node.props.effect.is_some() {
+            if this.widget.node.props.effect.is_some()
+                || this.widget.node.props.mask_effect.is_some()
+            {
                 effect_domain = Some((
                     this.ctx.widget_id(),
                     this.ctx
@@ -1120,7 +1215,8 @@ impl VirtualListState {
 }
 
 struct SceneWidget {
-    effect_shader: Option<ResourceLease>,
+    effect: Option<ResolvedEffect>,
+    mask_effect: Option<ResolvedEffect>,
     node: Arc<SceneProperties>,
     projection: Arc<SceneNode>,
     sync_dirty: bool,
@@ -1188,6 +1284,7 @@ impl SceneWidget {
             slice_center,
             source_rect,
             alpha_layout,
+            sampling,
             ..
         } = &view.node.kind
         else {
@@ -1213,6 +1310,7 @@ impl SceneWidget {
                     image
                         .with_source_rect(*source_rect)
                         .with_alpha_layout(*alpha_layout)
+                        .with_sampling(*sampling)
                         .with_color(color(view.node.props.color))
                         .with_slice(*slice, *slice_scale, *slice_center)
                         .with_pattern(*repeat, *tile_scale, *corner_colors)
@@ -1469,7 +1567,8 @@ impl SceneWidget {
                 .then(|| view.images.image_resource.clone())
                 .flatten(),
             mask_images: view.images.mask_images.clone(),
-            effect_shader: view.images.effect_shader.clone(),
+            effect: view.images.effect.clone(),
+            mask_effect: view.images.mask_effect.clone(),
             image: Self::image_widget(view),
             image_size: view.image_size(),
             children: view
@@ -1509,18 +1608,11 @@ impl SceneWidget {
         {
             this.widget.syncs += 1;
         }
-        if this
-            .widget
-            .effect_shader
-            .as_ref()
-            .map(ResourceLease::handle)
-            != view
-                .images
-                .effect_shader
-                .as_ref()
-                .map(ResourceLease::handle)
+        if this.widget.effect != view.images.effect
+            || this.widget.mask_effect != view.images.mask_effect
         {
-            this.widget.effect_shader = view.images.effect_shader.clone();
+            this.widget.effect = view.images.effect.clone();
+            this.widget.mask_effect = view.images.mask_effect.clone();
             this.ctx.request_render();
         }
         if !this
@@ -1786,6 +1878,7 @@ impl SceneWidget {
                     slice_center,
                     source_rect,
                     alpha_layout,
+                    sampling,
                     ..
                 },
             ) = (&mut this.widget.image, &view.node.kind)
@@ -1797,6 +1890,7 @@ impl SceneWidget {
             // This also clears slicing when a whole image switches to tiles.
             Image::set_source_rect(&mut image, *source_rect);
             Image::set_alpha_layout(&mut image, *alpha_layout);
+            Image::set_sampling(&mut image, *sampling);
             Image::set_slice(&mut image, *slice, *slice_scale, *slice_center);
             Image::set_pattern(&mut image, *repeat, *tile_scale, *corner_colors);
             Image::set_color_adjustment(&mut image, *adjustment);
@@ -2949,11 +3043,17 @@ impl Widget for SceneWidget {
                 .props
                 .effect
                 .as_ref()
-                .zip(self.effect_shader.as_ref())
-                .map(|(instance, shader)| PaintEffect {
-                    instance: instance.clone(),
-                    shader: shader.clone(),
-                    bounds: self.size.to_rect(),
+                .zip(self.effect.as_ref())
+                .map(|(instance, resolved)| resolved.paint(instance, self.size.to_rect(), false)),
+        );
+        ctx.set_subtree_mask_effect(
+            self.node
+                .props
+                .mask_effect
+                .as_ref()
+                .zip(self.mask_effect.as_ref())
+                .map(|(instance, resolved)| {
+                    resolved.paint(instance, self.size.to_rect(), self.node.props.mask_invert)
                 }),
         );
         let mask = self
@@ -2961,6 +3061,7 @@ impl Widget for SceneWidget {
             .props
             .mask
             .as_ref()
+            .filter(|_| self.node.props.mask_effect.is_none())
             .filter(|mask| !mask.is_image_threshold() || self.node.props.mask_progress < 1.);
         ctx.set_subtree_composite(
             self.node.props.opacity as f32,

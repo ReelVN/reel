@@ -50,9 +50,26 @@ fn composed_mask_source_asb_snapshot_and_parameter_identity() {
             2
         );
         assert!(!original.is_image_threshold());
+        let compiled = vm
+            .stage()
+            .node(root)
+            .unwrap()
+            .props
+            .mask_effect
+            .clone()
+            .expect("existing constructor DAG selects the prepared effect definition");
+        assert_eq!(compiled.textures(), original.sources());
         advance(&mut vm, &mut session);
         let props = &vm.stage().node(root).unwrap().props;
         assert_eq!((props.mask_x, props.mask_progress), (0.25, 1.));
+        assert!(Arc::ptr_eq(
+            compiled.program(),
+            props.mask_effect.as_ref().unwrap().program()
+        ));
+        assert_eq!(
+            props.mask_effect.as_ref().unwrap().values()[0],
+            reel_ui::stage::effect::EffectValue::Float(1_f32.to_bits())
+        );
         assert!(Arc::ptr_eq(&original, props.mask.as_ref().unwrap()));
         let mut capture = vm.snapshot_begin(&session).unwrap();
         while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
@@ -70,6 +87,8 @@ fn composed_mask_source_asb_snapshot_and_parameter_identity() {
             None,
             None,
         )
+        .unwrap()
+        .with_effect_products(vm.effect_products())
         .unwrap();
         while !restore.step(SnapshotBudget { units: 1 }).unwrap().complete {}
         let (mut restored_session, mut restored) = restore.finish().unwrap();
@@ -77,6 +96,10 @@ fn composed_mask_source_asb_snapshot_and_parameter_identity() {
         let props = &restored.stage().node(restored_root).unwrap().props;
         assert_eq!((props.mask_x, props.mask_progress), (0.25, 1.));
         assert_eq!(props.mask.as_ref().unwrap().as_ref(), original.as_ref());
+        assert!(Arc::ptr_eq(
+            compiled.program(),
+            props.mask_effect.as_ref().unwrap().program()
+        ));
         let weak = Arc::downgrade(props.mask.as_ref().unwrap());
         advance(&mut restored, &mut restored_session);
         assert!(
@@ -93,6 +116,47 @@ fn composed_mask_source_asb_snapshot_and_parameter_identity() {
         assert!(vm.stage().node(root).unwrap().props.mask.is_none());
         drop(original);
         collect(&mut vm);
+    }
+}
+
+#[test]
+fn pure_mask_helpers_keep_call_arguments_independent_in_static_products() {
+    let code = r#"
+fn stencil(path, offset) {
+    let sampled = mask.gray(path, x: offset);
+    mask.multiply(sampled, mask.param("progress"))
+}
+fn opening() {
+    stage.replace(row() {
+        stack(mask: stencil("first.png", 0.125));
+        stack(mask: stencil("second.png", 0.375));
+    });
+    narrator("ready");
+}
+"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, false);
+        let root = vm.stage().node(vm.stage().root().unwrap()).unwrap();
+        for (&child, (path, offset)) in root
+            .children
+            .iter()
+            .zip([("first.png", 0.125_f32), ("second.png", 0.375_f32)])
+        {
+            let props = &vm.stage().node(child).unwrap().props;
+            let mask = props.mask.as_ref().unwrap();
+            assert_eq!(mask.sources()[0].as_ref(), path);
+            assert!(
+                mask.operations()
+                    .contains(&reel_ui::stage::MaskOp::Constant(offset.to_bits()))
+            );
+            let compiled = props
+                .mask_effect
+                .as_ref()
+                .expect("pure helper uses the shared compiled definition");
+            assert_eq!(compiled.textures(), mask.sources());
+        }
+        assert_eq!(root.children.len(), 2);
     }
 }
 #[test]

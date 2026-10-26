@@ -315,6 +315,8 @@ pub enum NodeKind {
         alpha_layout: crate::frame::ImageAlphaLayout,
         /// Visible-color pixel window; None selects the alpha layout's whole color region.
         source_rect: Option<crate::kurbo::Rect>,
+        /// Per-draw filtering; nearest and linear share the same source resource.
+        sampling: crate::peniko::ImageQuality,
         fit: ObjectFit,
         /// Nine-slice borders in source pixels, or ordinary object-fit drawing.
         slice: Option<Insets>,
@@ -454,6 +456,8 @@ pub struct NodeProps {
     /// Transform the completed subtree before its group opacity, mask and blend.
     /// Scalar results are coverage; RGBA results are linear premultiplied color.
     pub effect: Option<Arc<effect::EffectInstance>>,
+    /// A scalar compiled effect evaluated in the final group mask stage.
+    pub mask_effect: Option<Arc<effect::EffectInstance>>,
     pub appearance_origin: Option<Arc<str>>,
     pub mask_progress: f64,
     pub mask_softness: f64,
@@ -519,6 +523,7 @@ impl Default for NodeProps {
             anchor_y: 0.,
             mask: None,
             effect: None,
+            mask_effect: None,
             appearance_origin: None,
             mask_progress: 1.,
             mask_softness: 0.06,

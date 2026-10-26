@@ -7,6 +7,7 @@ pub(crate) mod appearance;
 pub(crate) mod effect_cache;
 pub(crate) mod effect_plan;
 pub(crate) mod glyph;
+pub(crate) mod glyph_plan;
 pub(crate) mod gradient;
 pub(crate) mod image_plan;
 pub(crate) mod mask;
@@ -16,7 +17,8 @@ pub(crate) mod resources;
 pub(crate) mod scopes;
 
 pub(crate) mod scissor;
+pub(crate) mod source_view;
 
 pub(crate) mod draw_batch;
-pub(crate) mod glyph_key;
 pub(crate) mod geometry;
+pub(crate) mod glyph_key;

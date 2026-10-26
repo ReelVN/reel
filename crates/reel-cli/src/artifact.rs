@@ -316,11 +316,19 @@ fn package_effects(
                 .map_err(|e| e.to_string())?,
         });
     }
-    for (function, definition) in effects.bindings() {
+    for (function, definition, mask) in effects.binding_records() {
         products.bindings.push(rp::EffectBinding {
             module: program.package().functions[function.index()].module.0,
             function: function.0,
             definition: indices[&definition],
+            kind: if let Some(mask) = mask {
+                rp::EffectBindingKind::MaskTemplate {
+                    key: reel_engine::aside::source::encode_mask_template(mask)
+                        .map_err(|e| e.to_string())?,
+                }
+            } else {
+                rp::EffectBindingKind::Function
+            },
         });
     }
     Ok(products)

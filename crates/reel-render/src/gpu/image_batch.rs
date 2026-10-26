@@ -28,7 +28,7 @@ fn quad(command: &FrameCommand) -> Option<Quad<'_>> {
         return None;
     };
     if composite.blend != Composite::default().blend
-        || brush.sampler.quality != ImageQuality::Medium
+        || brush.sampler.quality == ImageQuality::High
         || brush.sampler.x_extend == Extend::Reflect
         || brush.sampler.y_extend == Extend::Reflect
     {
@@ -62,6 +62,7 @@ impl Context<'_> {
                 break;
             };
             if quad.brush.image.resource != handle
+                || quad.brush.sampler.quality != first.brush.sampler.quality
                 || quad.brush.sampler.x_extend != first.brush.sampler.x_extend
                 || quad.brush.sampler.y_extend != first.brush.sampler.y_extend
                 || quad.brush.image.appearance != first.brush.image.appearance
@@ -115,6 +116,7 @@ impl Context<'_> {
                 .image
                 .appearance
                 .map(|appearance| appearance.transformed(outer)),
+            first.brush.sampler.quality,
         )?;
         Ok(count)
     }

@@ -491,13 +491,20 @@ impl Compiler<'_> {
             optional: false,
             ..
         } = hir.node(callee).form
-            && hir.name(key.name.unwrap()) == "sample"
+            && matches!(hir.name(key.name.unwrap()), "sample" | "alpha" | "gray")
             && self.callable(Site(frame.module, callee)).is_none()
         {
-            if self.expression(frame, object)? != Value::Fragment {
-                return Err(self.error(site, "sample requires the fragment context"));
+            let receiver = self.expression(frame, object)?;
+            let method = hir.name(key.name.unwrap());
+            if !matches!(receiver, Value::Fragment | Value::Texture(_))
+                || (receiver == Value::Fragment && method != "sample")
+            {
+                return Err(self.error(site, "sampling requires Fragment or Texture"));
             }
             let args = self.arguments(frame, arguments)?;
+            if matches!(receiver, Value::Texture(_)) && args.is_empty() {
+                return Err(self.error(site, "Texture sampling requires normalized uv coordinates"));
+            }
             if args.len() > 1
                 || args
                     .first()
@@ -513,11 +520,28 @@ impl Compiler<'_> {
             if self.nodes[uv.0 as usize].ty != Ty::Vec2 {
                 return Err(self.error(site, "sample coordinates require a two-float tuple"));
             }
-            return Ok(Value::Node(self.push(
-                site,
-                Ty::Vec4,
-                Op::SourceSample { uv },
-            )?));
+            let (ty, op) = if let Value::Texture(binding) = receiver {
+                let channel = match method {
+                    "alpha" => EffectTextureChannel::Alpha,
+                    "gray" => EffectTextureChannel::Gray,
+                    _ => EffectTextureChannel::Color,
+                };
+                (
+                    if channel == EffectTextureChannel::Color {
+                        Ty::Vec4
+                    } else {
+                        Ty::Float
+                    },
+                    Op::TextureSample {
+                        binding,
+                        uv,
+                        channel,
+                    },
+                )
+            } else {
+                (Ty::Vec4, Op::SourceSample { uv })
+            };
+            return Ok(Value::Node(self.push(site, ty, op)?));
         }
         let callable = self.expression(frame, callee)?;
         let arguments = self.arguments(frame, arguments)?;
@@ -723,10 +747,11 @@ impl Compiler<'_> {
                 Value::Node(id) => drawing_type(module, ty) == Some(self.nodes[id.0 as usize].ty),
                 _ => false,
             },
-            h::Type::Named(name) => {
-                module.hir().name(*name) == "reel::types::Fragment"
-                    && matches!(value, Value::Fragment)
-            }
+            h::Type::Named(name) => match module.hir().name(*name) {
+                "reel::types::Fragment" => matches!(value, Value::Fragment),
+                "reel::types::Texture" => matches!(value, Value::Texture(_)),
+                _ => false,
+            },
             _ => false,
         };
         if valid {
