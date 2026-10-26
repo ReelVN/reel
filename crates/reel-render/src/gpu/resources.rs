@@ -1,5 +1,5 @@
 use super::{Gpu, GpuError};
-pub(super) use crate::common::resources::ImageSource;
+pub(super) use crate::common::resources::ResourceSource;
 use crate::common::resources::TextureUploadLayout;
 use reel_core::texture::{TextureDescriptor, TextureFormat, TextureLayout};
 use reel_ui::frame::RecordLocation;
@@ -44,7 +44,7 @@ pub struct Image {
     pub(super) encoding: ColorEncoding,
     pub(super) yuv: Option<super::video::Planes>,
     pub(super) residency: Option<reel_core::budget::BudgetTicket>,
-    pub(super) source: Option<ImageSource>,
+    pub(super) source: Option<ResourceSource>,
 }
 impl Image {
     pub(super) fn uv_transform(&self) -> reel_ui::kurbo::Affine {

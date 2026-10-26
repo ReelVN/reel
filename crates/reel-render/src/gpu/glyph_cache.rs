@@ -4,11 +4,12 @@ use super::{
     Gpu, GpuError, glyph,
     renderer::{Budgets, Reservation, reserve},
 };
+use crate::common::resources::ResourceSource;
 use guillotiere::{AllocId, AtlasAllocator, size2};
 use reel_core::budget::{BudgetPool, BudgetTicket};
 use reel_ui::{
     frame::{FrameDrawing, FrameGlyphRun, RecordLocation},
-    resources::{ResourceLease, ResourceVersion},
+    resources::ResourceVersion,
 };
 use std::{
     collections::{HashMap, HashSet},
@@ -25,18 +26,18 @@ pub(super) struct Page {
     residency: BudgetTicket,
 }
 pub(super) enum Glyph {
-    Empty(ResourceLease),
+    Empty(ResourceSource),
     Image {
         page: Arc<Page>,
         allocation: AllocId,
         origin: [u32; 2],
         size: [u32; 2],
         offset: [f64; 2],
-        source: ResourceLease,
+        source: ResourceSource,
     },
 }
 impl Glyph {
-    fn source(&self) -> &ResourceLease {
+    fn source(&self) -> &ResourceSource {
         match self {
             Self::Empty(source) | Self::Image { source, .. } => source,
         }
@@ -70,15 +71,16 @@ impl GlyphCache {
     pub fn publish(&self, frame: &FrameGlyphs) {
         let mut entries = self.entries.lock().unwrap();
         for (key, glyph) in &frame.entries {
-            if !glyph.source().is_retired() {
+            if glyph.source().retained(&[]) {
                 entries.insert(key.clone(), glyph.clone());
             }
         }
     }
     pub fn retire(&self, versions: &[ResourceVersion]) {
-        self.entries.lock().unwrap().retain(|_, glyph| {
-            !glyph.source().is_retired() && !versions.contains(glyph.source().version())
-        });
+        self.entries
+            .lock()
+            .unwrap()
+            .retain(|_, glyph| glyph.source().retained(versions));
     }
     pub fn make_room(&self, pool: &BudgetPool, cost: u64, limit: u64) {
         if cost > limit.saturating_sub(pool.usage().bytes) {
@@ -123,6 +125,18 @@ impl GlyphCache {
         tickets: &mut Vec<Reservation>,
         images: &super::image_cache::ImageCache,
     ) -> Result<Arc<Glyph>, GpuError> {
+        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GlyphRaster);
+        let source = ResourceSource::new(
+            frame
+                .resources()
+                .leases()
+                .iter()
+                .find(|resource| resource.handle() == run.font)
+                .ok_or(GpuError::Unsupported {
+                    at,
+                    record: "missing font lease",
+                })?,
+        );
         let max = gpu.device.limits().max_texture_dimension_2d;
         let available = gpu
             .limits
@@ -146,13 +160,6 @@ impl GlyphCache {
             },
         )?
         else {
-            let source = frame
-                .resources()
-                .leases()
-                .iter()
-                .find(|r| r.handle() == run.font)
-                .unwrap()
-                .clone();
             return Ok(Arc::new(Glyph::Empty(source)));
         };
         let requested = size2(bitmap.size[0] as i32 + 2, bitmap.size[1] as i32 + 2);
@@ -230,13 +237,7 @@ impl GlyphCache {
             ],
             size: bitmap.size,
             offset: [bitmap.x, bitmap.y],
-            source: frame
-                .resources()
-                .leases()
-                .iter()
-                .find(|r| r.handle() == run.font)
-                .unwrap()
-                .clone(),
+            source,
         });
         let Glyph::Image { page, origin, .. } = glyph.as_ref() else {
             unreachable!()

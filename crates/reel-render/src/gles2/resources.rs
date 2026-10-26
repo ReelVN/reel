@@ -1,6 +1,6 @@
 pub(super) use super::programs::Target;
 use super::*;
-use crate::common::resources::ImageSource;
+use crate::common::resources::ResourceSource;
 use reel_core::texture::{TextureFormat, TextureLayout};
 use reel_ui::{
     peniko::{ImageAlphaType, ImageFormat},
@@ -16,7 +16,7 @@ pub(super) struct Image {
     pub format: Option<TextureFormat>,
     pub encoding: ColorEncoding,
     pub coverage: bool,
-    pub source: Option<ImageSource>,
+    pub source: Option<ResourceSource>,
     _storage: BudgetTicket,
 }
 impl Image {
@@ -325,7 +325,7 @@ impl Images {
             format,
             encoding,
             coverage: false,
-            source: Some(ImageSource {
+            source: Some(ResourceSource {
                 version: source.version().clone(),
                 lease: source.downgrade(),
             }),

@@ -212,7 +212,7 @@ impl ImageCache {
                     let mut image = resources::create_image(gpu, [source.width, source.height])?;
                     image.encoding = *encoding;
                     image.residency = Some(residency);
-                    image.source = Some(resources::ImageSource {
+                    image.source = Some(resources::ResourceSource {
                         version: item.source.version().clone(),
                         lease: item.source.downgrade(),
                     });
@@ -286,7 +286,7 @@ impl ImageCache {
                     let residency = reserve_gpu(item.resident)?;
                     let mut image = resources::create_texture(gpu, *descriptor, layout, item.at)?;
                     image.residency = Some(residency);
-                    image.source = Some(resources::ImageSource {
+                    image.source = Some(resources::ResourceSource {
                         version: item.source.version().clone(),
                         lease: item.source.downgrade(),
                     });
@@ -353,7 +353,7 @@ impl ImageCache {
                 let upload = reserve_gpu(item.staging)?;
                 let mut image = super::video::upload(gpu, &mut encoder, source, recycled)?;
                 image.residency = Some(residency);
-                image.source = Some(resources::ImageSource {
+                image.source = Some(resources::ResourceSource {
                     version: item.source.version().clone(),
                     lease: item.source.downgrade(),
                 });
