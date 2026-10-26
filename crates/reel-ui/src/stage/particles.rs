@@ -8,8 +8,10 @@ use reel_core::{
     result::{RejectCode, RejectReason},
 };
 use std::{ops::RangeInclusive, sync::Arc};
+mod curve;
+pub use curve::ParticleCurve;
 
-#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ParticleConfig {
     pub rate: f64,
     pub burst: u64,
@@ -22,6 +24,14 @@ pub struct ParticleConfig {
     pub size: f64,
     pub size_spread: f64,
     pub size_end: Option<f64>,
+    pub size_curve: Option<ParticleCurve>,
+    pub angle: f64,
+    pub angle_spread: f64,
+    pub radial_speed: f64,
+    pub radial_spread: f64,
+    pub direction: f64,
+    pub direction_spread: f64,
+    pub damping: f64,
     pub opacity: [f64; 2],
     pub spin: f64,
     pub spin_spread: f64,
@@ -36,7 +46,7 @@ pub struct ParticleFrame {
 }
 
 /// One immutable emission; elapsed time is based on the shared node clock.
-#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ParticleEmission {
     pub sequence: u64,
     pub config: ParticleConfig,
@@ -185,7 +195,8 @@ impl ParticleConfig {
         // Fixed SplitMix64 finalizer maps (seed, birth index, lane) to samples.
         // Counter addressing permits random access after skipped frames without
         // replaying an RNG or retaining a particle array. Lanes 0..5 remain
-        // birth x/y, velocity x/y, size, angular velocity; lane 6 is lifetime.
+        // birth x/y, velocity x/y, size, angular velocity; lanes 6..9 are
+        // lifetime, birth angle, radial speed and direction.
         let mut z = self
             .seed
             .wrapping_add(index.wrapping_mul(0x9e3779b97f4a7c15))
@@ -212,18 +223,50 @@ impl ParticleConfig {
             (age / lifetime).clamp(0., 1.)
         };
         let size = self.size + (2. * random(4) - 1.) * self.size_spread;
+        let radial = self.radial_speed + (2. * random(8) - 1.) * self.radial_spread;
+        let radial_velocity = if radial == 0. {
+            [0., 0.]
+        } else {
+            let angle =
+                (self.direction + (2. * random(9) - 1.) * self.direction_spread).to_radians();
+            let (sin, cos) = angle.sin_cos();
+            [radial * cos, radial * sin]
+        };
+        // Integrate dv/dt = acceleration - damping * velocity analytically.
+        let (travel, accelerated) = if self.damping == 0. {
+            (age, 0.5 * age * age)
+        } else {
+            let x = self.damping * age;
+            if x.abs() < 1e-4 {
+                (
+                    age * (1. - x / 2. + x * x / 6.),
+                    age * age * (0.5 - x / 6. + x * x / 24.),
+                )
+            } else {
+                let travel = -(-x).exp_m1() / self.damping;
+                (travel, (age - travel) / self.damping)
+            }
+        };
+        let size = size + (self.size_end.unwrap_or(size) - size) * progress;
         Sprite {
             position: std::array::from_fn(|axis| {
                 frame.origin[axis]
                     + random(axis as u64) * frame.extent[axis]
                     + (self.velocity[axis]
+                        + radial_velocity[axis]
                         + (2. * random(axis as u64 + 2) - 1.) * self.spread[axis])
-                        * age
-                    + 0.5 * self.acceleration[axis] * age * age
+                        * travel
+                    + self.acceleration[axis] * accelerated
             }),
-            size: size + (self.size_end.unwrap_or(size) - size) * progress,
+            size: size
+                * self
+                    .size_curve
+                    .as_ref()
+                    .map_or(1., |curve| curve.sample(progress).max(0.)),
             opacity: self.opacity[0] + (self.opacity[1] - self.opacity[0]) * progress,
-            rotation: (self.spin + (2. * random(5) - 1.) * self.spin_spread) * age,
+            rotation: self.angle
+                + (2. * random(7) - 1.) * self.angle_spread
+                + (self.spin + (2. * random(5) - 1.) * self.spin_spread) * age,
         }
     }
 }
@@ -245,6 +288,14 @@ mod tests {
             size: 8.,
             size_spread: 0.,
             size_end: None,
+            size_curve: None,
+            angle: 0.,
+            angle_spread: 0.,
+            radial_speed: 0.,
+            radial_spread: 0.,
+            direction: 0.,
+            direction_spread: 180.,
+            damping: 0.,
             opacity: [1., 0.],
             spin: 30.,
             spin_spread: 0.,
@@ -282,7 +333,7 @@ mod tests {
         frame.elapsed = 1_000_000.;
         assert_eq!(config.live_range(frame).count(), 8);
         frame.extent = [100., 100.];
-        let mut other = config;
+        let mut other = config.clone();
         other.seed = 43;
         assert_ne!(
             config.sample(frame, 4_000_000),

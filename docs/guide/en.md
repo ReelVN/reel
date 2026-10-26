@@ -1139,6 +1139,20 @@ await second;
 spray.remove();
 ```
 
+Use `size_curve` for size changes over normalized age. Prewarming fills the first frame with particles of different ages; radial speed and damping control their motion.
+
+```aside
+use std::math::curve;
+let glow = particles("assets/spark.png", width: 1280, height: 720, seed: 7);
+stage.replace(glow);
+let envelope = curve([{time: 0, value: 0}, {time: 0.5, value: 1}, {time: 1, value: 0}]);
+emit(glow, burst: 0, rate: 40, lifetime: 2, prewarm: 2,
+    velocity_y: 0, spread_x: 0, spread_y: 0,
+    size: 12, size_spread: 0, size_curve: envelope,
+    radial_speed: 40, radial_spread: 10, damping: 1,
+    angle: 180, angle_spread: 180, spin_spread: 0);
+```
+
 `reveal_fade` controls progressive glyph opacity and `reveal_fade_step` sets the offset between graphemes. Text layout stays stable.
 
 ```aside
