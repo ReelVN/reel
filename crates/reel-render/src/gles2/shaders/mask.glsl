@@ -3,6 +3,9 @@ precision highp float;
 #ifndef REEL_MASK_NODES
 #define REEL_MASK_NODES 32
 #endif
+#ifndef REEL_MASK_SLOTS
+#define REEL_MASK_SLOTS REEL_MASK_NODES
+#endif
 uniform sampler2D u_image0,u_image1,u_image2,u_image3;
 uniform vec4 u_ops[REEL_MASK_NODES],u_texels[4],u_dimensions[4];
 uniform vec4 u_uv0,u_uv1,u_values,u_flags;
@@ -16,15 +19,16 @@ float smooth_mask(float a,float b,float x){if(a==b)return step(a,x);float t=clam
 // on SGX. Explicit vector banks keep every value in registers. The loop still
 // reads immutable uniform instructions; expanding its evaluator caused spills.
 vec4 bank0,bank1;
-#if REEL_MASK_NODES > 8
+#if REEL_MASK_SLOTS > 8
 vec4 bank2,bank3;
 #endif
-#if REEL_MASK_NODES > 16
+#if REEL_MASK_SLOTS > 16
 vec4 bank4,bank5,bank6,bank7;
 #endif
 
 // Select components without arithmetic mixing: an unused NaN or infinity must
-// not contaminate a different node. All references name earlier validated slots.
+// not contaminate a different node. Every reference reads a value written by an
+// earlier validated instruction, even when a slot is reused after its last read.
 float read_lane(vec4 value,float lane){
  if(lane<0.5)return value.x;
  if(lane<1.5)return value.y;
@@ -33,10 +37,10 @@ float read_lane(vec4 value,float lane){
 }
 float read_node(float index){
  if(index<4.0)return read_lane(bank0,index);
-#if REEL_MASK_NODES > 8
+#if REEL_MASK_SLOTS > 8
  if(index<8.0)return read_lane(bank1,index-4.0);
  if(index<12.0)return read_lane(bank2,index-8.0);
-#if REEL_MASK_NODES > 16
+#if REEL_MASK_SLOTS > 16
  if(index<16.0)return read_lane(bank3,index-12.0);
  if(index<20.0)return read_lane(bank4,index-16.0);
  if(index<24.0)return read_lane(bank5,index-20.0);
@@ -59,10 +63,10 @@ vec4 write_lane(vec4 bank,float lane,float value){
 void write_node(int index,float value){
  float f=float(index);
  if(index<4){bank0=write_lane(bank0,f,value);return;}
-#if REEL_MASK_NODES > 8
+#if REEL_MASK_SLOTS > 8
  if(index<8){bank1=write_lane(bank1,f-4.0,value);return;}
  if(index<12){bank2=write_lane(bank2,f-8.0,value);return;}
-#if REEL_MASK_NODES > 16
+#if REEL_MASK_SLOTS > 16
  if(index<16){bank3=write_lane(bank3,f-12.0,value);return;}
  if(index<20){bank4=write_lane(bank4,f-16.0,value);return;}
  if(index<24){bank5=write_lane(bank5,f-20.0,value);return;}
@@ -105,17 +109,27 @@ void main(){
  vec2 uv=vec2(dot(u_uv0.xyz,position),dot(u_uv1.xyz,position));
  if(any(lessThan(uv,vec2(0.0)))||any(greaterThan(uv,vec2(1.0)))){gl_FragColor=vec4(0.0);return;}
  bank0=vec4(0.0);bank1=vec4(0.0);
-#if REEL_MASK_NODES > 8
+#if REEL_MASK_SLOTS > 8
  bank2=vec4(0.0);bank3=vec4(0.0);
 #endif
-#if REEL_MASK_NODES > 16
+#if REEL_MASK_SLOTS > 16
  bank4=vec4(0.0);bank5=vec4(0.0);bank6=vec4(0.0);bank7=vec4(0.0);
 #endif
  float value=0.0;
  for(int i=0;i<REEL_MASK_NODES;i++){
   if(i>=u_count)break;
+#if REEL_MASK_SLOTS < REEL_MASK_NODES
+  // Operands finish reading before their expired register holds this result.
+  // The opcode occupies four low bits; the destination occupies five high bits.
+  vec4 instruction=u_ops[i];
+  float destination=floor(instruction.x/16.0);
+  instruction.x-=destination*16.0;
+  value=evaluate(instruction,uv);
+  write_node(int(destination),value);
+#else
   value=evaluate(u_ops[i],uv);
   write_node(i,value);
+#endif
  }
  gl_FragColor=vec4(clamp(value,0.0,1.0));
 }

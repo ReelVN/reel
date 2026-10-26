@@ -140,6 +140,8 @@ pub(super) struct Programs {
     pub alpha_mask: Shader,
     pub mask_8: Shader,
     pub mask_16: Shader,
+    pub mask_16_compact: Shader,
+    pub mask_32_compact: Shader,
     pub mask: Shader,
     pub mask_sample_chain: Shader,
     pub mask_threshold: Shader,
@@ -153,7 +155,7 @@ pub(super) struct Programs {
 impl Programs {
     pub fn new(context: &native::Context, budget: &BudgetPool) -> Result<Self, GlesError> {
         let bytes = (size_of::<Self>()
-            + NAMES.len() * size_of::<Option<Uniform>>() * 22
+            + NAMES.len() * size_of::<Option<Uniform>>() * 24
             + 4 * size_of::<crate::common::mesh::Vertex>()
             + 6 * 4) as u64;
         let storage = budget
@@ -189,6 +191,8 @@ impl Programs {
             alpha_mask: Shader::new(context, shader_code!("alpha_mask"))?,
             mask_8: Shader::new(context, shader_code!("mask_8"))?,
             mask_16: Shader::new(context, shader_code!("mask_16"))?,
+            mask_16_compact: Shader::new(context, shader_code!("mask_16_compact"))?,
+            mask_32_compact: Shader::new(context, shader_code!("mask_32_compact"))?,
             mask: Shader::new(context, shader_code!("mask"))?,
             mask_sample_chain: Shader::new(context, shader_code!("mask_sample_chain"))?,
             mask_threshold: Shader::new(context, shader_code!("mask_threshold"))?,

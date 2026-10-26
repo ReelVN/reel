@@ -429,7 +429,19 @@ fn shader(program: &MaskProgram, code: &mut impl std::fmt::Write) -> std::fmt::R
         .unwrap();
     }
     code.write_str("\nfn mask_smooth(a:f32,b:f32,x:f32)->f32 { if a==b { return select(0.0,1.0,x>=a); } let t=clamp((x-a)/(b-a),0.0,1.0); return t*t*(3.0-2.0*t); }\nfn mask_gray(s:vec4<f32>)->f32 { if s.a<=0.0 { return 0.0; } return dot(encoded_srgb(clamp(s.rgb/s.a,vec3(0.0),vec3(1.0))),vec3(0.2126,0.7152,0.0722)); }\nfn expression_coverage(position:vec2<f32>)->f32 { let uv=vec2(dot(params.mask_uv0.xy,position)+params.mask_uv0.z,dot(params.mask_uv1.xy,position)+params.mask_uv1.z); if any(uv<vec2(0.0)) || any(uv>vec2(1.0)) { return 0.0; }\n")?;
-    for (i, operation) in program.operations().iter().enumerate() {
+    let registers = crate::common::mask::RegisterPlan::new(program);
+    if let Some(plan) = &registers {
+        for index in 0..plan.register_count() {
+            writeln!(code, "var n{index}:f32=0.0;")?;
+        }
+    }
+    for (i, original) in program.operations().iter().enumerate() {
+        let remapped = registers.as_ref().map(|plan| plan.operation(original));
+        let operation = remapped.as_ref().unwrap_or(original);
+        let destination = registers
+            .as_ref()
+            .map_or(i as u32, |plan| plan.destination(i));
+        let declaration = if registers.is_some() { "" } else { "let " };
         let expression = match *operation {
             MaskOp::Constant(bits) => number(bits),
             MaskOp::Parameter(p) => format!("params.mask_values[{p}]"),
@@ -446,7 +458,7 @@ fn shader(program: &MaskProgram, code: &mut impl std::fmt::Write) -> std::fmt::R
                 {
                     writeln!(
                         code,
-                        "let n{i}=select(mask_gray(sample_{alpha}),dot(clamp(sample_{alpha}.rgb/max(sample_{alpha}.a,1.0e-20),vec3(0.0),vec3(1.0)),vec3(0.2126,0.7152,0.0722)),texels_{alpha}.z!=0.0);"
+                        "{declaration}n{destination}=select(mask_gray(sample_{alpha}),dot(clamp(sample_{alpha}.rgb/max(sample_{alpha}.a,1.0e-20),vec3(0.0),vec3(1.0)),vec3(0.2126,0.7152,0.0722)),texels_{alpha}.z!=0.0);"
                     )?;
                     continue;
                 }
@@ -485,9 +497,12 @@ fn shader(program: &MaskProgram, code: &mut impl std::fmt::Write) -> std::fmt::R
                 format!("n{alpha}*threshold_{i}")
             }
         };
-        writeln!(code, "let n{i}={expression};").unwrap();
+        writeln!(code, "{declaration}n{destination}={expression};").unwrap();
     }
-    let result = program.operations().len() - 1;
+    let last = program.operations().len() - 1;
+    let result = registers
+        .as_ref()
+        .map_or(last as u32, |plan| plan.destination(last));
     writeln!(code, "return clamp(n{result},0.0,1.0); }}").unwrap();
     Ok(())
 }
@@ -501,8 +516,45 @@ mod tests {
         let mut source = String::new();
         shader(&MaskProgram::image("mask".into()), &mut source).unwrap();
         assert_eq!(source.matches("textureSampleLevel(image_").count(), 1);
-        assert!(source.contains("let n2=sample_2.a;"));
-        assert!(source.contains("let n3=select(mask_gray(sample_2)"));
-        assert!(source.contains("let n4=n2*threshold_4;"));
+        assert!(source.contains("n2=sample_2.a;"));
+        assert!(source.contains("n0=select(mask_gray(sample_2)"));
+        assert!(source.contains("n0=n2*threshold_4;"));
+    }
+
+    mod dag_fixture {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/support/mask_dag.rs"
+        ));
+    }
+
+    #[test]
+    fn scalar_register_masks_validate_as_static_wgsl() {
+        for operations in [
+            dag_fixture::operations(),
+            dag_fixture::compact_operations(),
+            vec![MaskOp::Constant(1_f32.to_bits()); 33],
+        ] {
+            let program = MaskProgram::new(
+                operations,
+                vec!["a".into(), "b".into(), "c".into(), "d".into()],
+            )
+            .unwrap();
+            let mut source = String::new();
+            shader(&program, &mut source).unwrap();
+            let module = wgpu::naga::front::wgsl::parse_str(&source).unwrap();
+            wgpu::naga::valid::Validator::new(
+                wgpu::naga::valid::ValidationFlags::all(),
+                wgpu::naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .unwrap();
+            if let Some(plan) = crate::common::mask::RegisterPlan::new(&program) {
+                assert_eq!(source.matches(":f32=0.0;").count(), plan.register_count());
+                assert!(source.contains("coords_4=uv*vec2("));
+            } else {
+                assert!(source.contains("let n32="));
+            }
+        }
     }
 }

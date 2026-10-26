@@ -22,53 +22,12 @@ use reel_ui::{
     kurbo::{Affine, Rect},
     peniko::{Brush, Color, ImageAlphaType, ImageFormat},
     resources::{ColorEncoding, ResourceRegistry},
-    stage::{MaskChannel, MaskOp, MaskProgram},
+    stage::MaskProgram,
 };
 
-fn operations() -> Vec<MaskOp> {
-    use MaskChannel::{Alpha, Gray};
-    use MaskOp::*;
-    let sample = |image, channel, coordinates, repeat| Sample {
-        image,
-        channel,
-        coordinates,
-        repeat,
-    };
-    vec![
-        Constant(0_f32.to_bits()),
-        Constant(1_f32.to_bits()),
-        Parameter(0),
-        sample(0, Alpha, [0, 0, 1, 1], 0),
-        sample(1, Gray, [2, 0, 1, 1], 1),
-        Subtract(3, 4),
-        Multiply(5, 2),
-        Clamp(6, 0_f32.to_bits(), 1_f32.to_bits()),
-        Constant(2_f32.to_bits()),
-        Pow(7, 2_f32.to_bits()),
-        Constant((-1_f32).to_bits()),
-        Add(9, 10),
-        Smoothstep(10, 1, 11),
-        sample(2, Gray, [7, 2, 1, 1], 2),
-        Subtract(12, 13),
-        Clamp(14, (-2_f32).to_bits(), 2_f32.to_bits()),
-        sample(3, Alpha, [15, 14, 2, 1], 3),
-        Pow(16, 0_f32.to_bits()),
-        Add(15, 17),
-        Multiply(18, 8),
-        Clamp(19, (-1_f32).to_bits(), 3_f32.to_bits()),
-        Smoothstep(0, 0, 20),
-        Pow(20, 0.5_f32.to_bits()),
-        Subtract(22, 17),
-        Multiply(23, 13),
-        Add(24, 21),
-        sample(3, Gray, [23, 25, 2, 9], 3),
-        Smoothstep(17, 10, 26),
-        Subtract(27, 26),
-        Add(28, 18),
-        Multiply(29, 7),
-        Clamp(30, 0_f32.to_bits(), 1_f32.to_bits()),
-    ]
-}
+#[path = "support/mask_dag.rs"]
+mod mask_dag;
+use mask_dag::operations;
 
 #[test]
 #[ignore = "requires a native GLES context"]
@@ -104,9 +63,16 @@ fn full_mask_dag_completes_at_all_register_bank_capacities() {
         .collect();
     let mut renderer = GlesBackend::headless([400, 300], GlesLimits::default()).unwrap();
     let mut events = Vec::new();
-    for (case, count) in [8, 16, 32].into_iter().enumerate() {
+    let cases = [
+        operations()[..8].to_vec(),
+        operations()[..16].to_vec(),
+        operations(),
+        mask_dag::compact_operations(),
+    ];
+    for (case, operations) in cases.into_iter().enumerate() {
+        let count = operations.len();
         let program = MaskProgram::new(
-            operations()[..count].to_vec(),
+            operations,
             (0..4)
                 .map(|index| format!("image-{index}").into())
                 .collect(),
