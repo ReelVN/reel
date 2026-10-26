@@ -3430,7 +3430,14 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "png",
+ "pvr-compiler",
+ "pvr-psp2-sys",
+ "reel-core",
  "reel-package",
+ "reel-player",
+ "reel-render",
+ "reel-storage",
+ "reel-ui",
  "serde_json",
 ]
 

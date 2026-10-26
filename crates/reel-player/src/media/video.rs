@@ -27,6 +27,15 @@ pub(super) struct Movies {
     budget: BudgetPool,
 }
 impl Movies {
+    #[cfg(feature = "profiling")]
+    pub(super) fn profile(&self, phase: &str) {
+        eprintln!(
+            "[reel-media] {phase} video={} retiring={} decoded={:?}",
+            self.entries.len(),
+            self.retiring.len(),
+            self.budget.usage()
+        );
+    }
     pub fn new(limits: &VideoLimits) -> Self {
         Self {
             entries: BTreeMap::new(),

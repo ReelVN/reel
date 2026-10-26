@@ -246,6 +246,8 @@ pub struct MediaPlayer {
     suspended: bool,
     failure: Option<String>,
     reclaim_pending: bool,
+    #[cfg(feature = "profiling")]
+    profile_at: std::time::Instant,
 }
 impl MediaPlayer {
     #[cfg(feature = "video")]
@@ -344,6 +346,8 @@ impl MediaPlayer {
             suspended: false,
             failure: None,
             reclaim_pending: false,
+            #[cfg(feature = "profiling")]
+            profile_at: std::time::Instant::now(),
         };
         // Device preparation belongs to host assembly, before executing scripts.
         // Games without audio can still run if this host has no output device.
@@ -517,6 +521,21 @@ impl MediaPlayer {
     }
     pub fn pcm_usage(&self) -> reel_core::budget::BudgetUsage {
         self.pcm.usage()
+    }
+    #[cfg(feature = "profiling")]
+    fn profile(&self, phase: &str) {
+        let output = self
+            .output
+            .as_ref()
+            .map(|output| (output.status(), output.clock_observation().generated_frames));
+        eprintln!(
+            "[reel-media] {phase} output={output:?} pcm={:?} audio={} reclaim={:?}",
+            self.pcm.usage(),
+            self.entries.len(),
+            self.reclaim.as_ref().map(|reclaim| reclaim.status())
+        );
+        #[cfg(feature = "video")]
+        self.movies.profile(phase);
     }
 }
 fn db(volume: f64) -> f32 {
@@ -833,6 +852,11 @@ impl MediaBackend for MediaPlayer {
         self.stop_entry(id, false);
     }
     fn maintain(&mut self, elapsed: Duration) {
+        #[cfg(feature = "profiling")]
+        if self.profile_at.elapsed() >= Duration::from_secs(1) {
+            self.profile_at = std::time::Instant::now();
+            self.profile("playing");
+        }
         self.wake.acknowledge();
         self.assets.maintain();
         self.output_failure();
@@ -1114,6 +1138,8 @@ impl MediaBackend for MediaPlayer {
         if let Some(output) = &mut self.output {
             let _ = output.stop();
         }
+        #[cfg(feature = "profiling")]
+        self.profile("stopped");
         self.output = None;
         self.service = None; // Existing deferred teardown owns all accepted PCM.
         self.reclaim_pending = false;

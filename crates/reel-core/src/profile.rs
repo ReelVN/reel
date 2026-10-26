@@ -33,8 +33,12 @@ pub enum Phase {
     SourceComposite,
     CoverageComposite,
     EffectComposite,
+    AudioMix,
+    AudioDecode,
+    VideoOpen,
+    VideoDecode,
 }
-pub const NAMES: [&str; 26] = [
+pub const NAMES: [&str; 30] = [
     "input",
     "tick",
     "vm",
@@ -61,6 +65,10 @@ pub const NAMES: [&str; 26] = [
     "source_composite",
     "coverage_composite",
     "effect_composite",
+    "audio_mix",
+    "audio_decode",
+    "video_open",
+    "video_decode",
 ];
 
 /// Times one phase. Repeated calls contribute their duration and count.

@@ -248,6 +248,7 @@ impl Callback {
         }
     }
     pub fn render<T: DeviceSample>(&mut self, data: &mut [T], timing: CallbackTiming) {
+        let _profile = reel_core::profile::Scope::new(reel_core::profile::Phase::AudioMix);
         data.fill(T::from_pcm(0.0));
         let Some(_entered) = self.shared.enter() else {
             return;

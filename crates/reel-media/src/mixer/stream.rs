@@ -112,7 +112,12 @@ impl Window {
                 continue;
             }
             if next >= packet_start + packet_len {
-                if !decoder.decode(&self.stopped)? {
+                let decoded = {
+                    let _profile =
+                        reel_core::profile::Scope::new(reel_core::profile::Phase::AudioDecode);
+                    decoder.decode(&self.stopped)?
+                };
+                if !decoded {
                     self.status.set_len(next);
                     if next == 0 {
                         return Err("audio contains no PCM frames".into());
