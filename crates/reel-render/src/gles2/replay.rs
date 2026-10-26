@@ -37,7 +37,8 @@ pub(super) struct Context<'a> {
     pub target_cache: &'a mut Vec<Target>,
     pub targets: Vec<Target>,
     pub available_targets: Vec<Target>,
-    pub buffers: Vec<(native::VertexBuffer, native::IndexBuffer)>,
+    pub geometry_cache: &'a mut super::geometry::Cache,
+    pub buffers: Vec<super::geometry::Storage>,
     pub paint_batch: Option<draw::PaintBatch>,
     pub scissor: Scissor,
     pub mesh_clip: Option<crate::common::mesh::RectClip>,
@@ -49,11 +50,18 @@ pub(super) struct Work {
     _glyphs: Vec<Rc<draw::Glyph>>,
     _effects: Vec<Rc<super::effect::Compiled>>,
     _targets: Vec<Target>,
-    _buffers: Vec<(native::VertexBuffer, native::IndexBuffer)>,
+    buffers: std::cell::RefCell<Vec<super::geometry::Storage>>,
 }
 pub(super) struct Prepared {
     pub output: Target,
     _work: Work,
+}
+impl Prepared {
+    pub fn recycle_geometry(&self, cache: &mut super::geometry::Cache) {
+        for storage in self._work.buffers.borrow_mut().drain(..) {
+            cache.put(storage);
+        }
+    }
 }
 pub(super) fn prepare(
     gpu: &native::Context,
@@ -65,6 +73,7 @@ pub(super) fn prepare(
     effect_cache: &mut super::effect::Cache,
     mask_cache: &mut crate::common::mask::split::Cache,
     target_cache: &mut Vec<Target>,
+    geometry_cache: &mut super::geometry::Cache,
     images: HashMap<ResourceHandle, Rc<Image>>,
     frame: &RenderFrame,
     size: [u32; 2],
@@ -90,6 +99,7 @@ pub(super) fn prepare(
         target_cache,
         targets: Vec::new(),
         available_targets: Vec::new(),
+        geometry_cache,
         buffers: Vec::new(),
         paint_batch: None,
         scissor: Scissor::full(size),
@@ -110,7 +120,7 @@ pub(super) fn prepare(
         _glyphs: context.glyphs,
         _effects: context.effects,
         _targets: context.targets,
-        _buffers: context.buffers,
+        buffers: std::cell::RefCell::new(context.buffers),
     };
     match output {
         Ok(output) => Ok(Prepared {

@@ -20,6 +20,7 @@ mod readback;
 pub use capture::GpuCapture;
 pub use present::SurfacePass;
 mod draw;
+mod geometry;
 mod image_batch;
 mod image_cache;
 mod image_plan;

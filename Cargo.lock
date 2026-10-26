@@ -3221,7 +3221,7 @@ dependencies = [
 [[package]]
 name = "pvr-psp2-sys"
 version = "0.1.3"
-source = "git+https://github.com/jhq223/pvr-psp2-sys.git?rev=0472a06c4e284cebb9b2ce3a6c0dde4470337753#0472a06c4e284cebb9b2ce3a6c0dde4470337753"
+source = "git+https://github.com/jhq223/pvr-psp2-sys.git?rev=4960424de282f98a65e4241c076d61e36c05fbbb#4960424de282f98a65e4241c076d61e36c05fbbb"
 dependencies = [
  "glow 0.18.0",
  "khronos-egl",
@@ -3535,6 +3535,7 @@ dependencies = [
  "reel-core",
  "reel-ui",
  "smallvec",
+ "stats_alloc",
  "swash",
  "wgpu",
 ]
