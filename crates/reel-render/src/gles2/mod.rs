@@ -1,6 +1,7 @@
 //! GLES rendering of the common immutable frame and resource contracts.
 mod draw;
 mod effect;
+mod geometry;
 mod mask;
 mod programs;
 mod replay;
@@ -23,7 +24,7 @@ pub struct GlesLimits {
     pub resource_bytes: u64,
     /// Simultaneous physical RGBA8 render targets, in bytes.
     pub target_bytes: u64,
-    /// CPU staging and live per-submission geometry, in bytes.
+    /// CPU staging, in-flight geometry and evictable completed geometry, in bytes.
     pub transient_bytes: u64,
     /// Shared ceiling across all three pools, in bytes.
     pub total_bytes: u64,
@@ -93,6 +94,7 @@ pub struct GlesBackend {
     effects: effect::Cache,
     masks: crate::common::mask::split::Cache,
     targets: Vec<resources::Target>,
+    geometry: geometry::Cache,
     info: Option<SurfaceInfo>,
     suspended: bool,
     next_submission: u64,
@@ -157,6 +159,7 @@ impl GlesBackend {
             effects: Default::default(),
             masks: Default::default(),
             targets: Vec::new(),
+            geometry: Default::default(),
             info: None,
             suspended: false,
             next_submission: 1,
@@ -176,6 +179,11 @@ impl GlesBackend {
     pub fn usage(&self) -> reel_core::budget::BudgetUsage {
         self._group.usage()
     }
+    /// Completed geometry capacity, including allocation metadata, retained as
+    /// an evictable subset of `usage().bytes` in the transient budget.
+    pub fn cached_geometry_bytes(&self) -> u64 {
+        self.geometry.bytes()
+    }
     /// Drain all submitted work before releasing a departed player's resources.
     /// Call only after that player and its captures have been dropped. The native
     /// device and offline programs remain owned by this backend for the next player.
@@ -193,6 +201,7 @@ impl GlesBackend {
         self.glyphs = draw::GlyphCache::default();
         self.masks = Default::default();
         self.targets.clear();
+        self.geometry.clear();
         self.drain_failed = false;
         Ok(())
     }
@@ -226,6 +235,7 @@ impl GlesBackend {
         if matches!(result, Err(GlesError::Pressure { .. })) && !self.drain_failed {
             let resident = self._group.usage().bytes;
             self.targets.clear();
+            self.geometry.clear();
             // Glyph and geometry demand is discovered during replay. Retry once
             // when evicting the unused scratch pool actually released capacity.
             // In-flight owners keep their allocations until completion.
@@ -396,6 +406,7 @@ impl GlesBackend {
             &mut self.effects,
             &mut self.masks,
             targets,
+            &mut self.geometry,
             images,
             frame,
             size,
@@ -589,6 +600,9 @@ impl RenderBackend for GlesBackend {
                 break;
             }
             let flight = self.flights.pop_front().unwrap();
+            if let Some(prepared) = &flight._prepared {
+                prepared.recycle_geometry(&mut self.geometry);
+            }
             if flight.upload {
                 self.events.push_back(RenderEvent::ResourcesAvailable);
             }
@@ -657,6 +671,7 @@ impl crate::capture::CaptureBackend for GlesBackend {
         let Some(prepared) = capture.prepared.take() else {
             return Ok(None);
         };
+        prepared.recycle_geometry(&mut self.geometry);
         let bytes = u64::from(capture.size[0]) * u64::from(capture.size[1]) * 4;
         let ticket = capture
             .output

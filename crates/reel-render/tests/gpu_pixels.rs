@@ -271,7 +271,7 @@ fn whole_group_opacity_and_nested_masks_clips() {
             close(pixel(&pixels, 2, 32), [0., 0., 0.5, 0.5]);
             assert_eq!(renderer.usage().targets, 0);
             assert_eq!(renderer.usage().resources, 0);
-            assert_eq!(renderer.usage().transient, 0);
+            assert_eq!(renderer.usage().transient, renderer.usage().cached_geometry);
         }
     }
 
@@ -300,7 +300,7 @@ fn whole_group_opacity_and_nested_masks_clips() {
     ));
     assert_eq!(renderer.usage().targets, 0);
     assert_eq!(renderer.usage().resources, 0);
-    assert_eq!(renderer.usage().transient, 0);
+    assert_eq!(renderer.usage().transient, renderer.usage().cached_geometry);
 }
 #[test]
 #[ignore = "requires an actual graphics adapter"]
@@ -746,7 +746,7 @@ fn rgba_encodings_and_alpha_modes_match_independent_linear_pixels() {
             assert!(registry.retire(handle));
             renderer.poll().unwrap();
             assert_eq!(renderer.usage().resources, 0);
-            assert_eq!(renderer.usage().transient, 0);
+            assert_eq!(renderer.usage().transient, renderer.usage().cached_geometry);
         }
     }
 }

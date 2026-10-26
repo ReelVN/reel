@@ -8,6 +8,9 @@ mod fixture;
 mod r01_fixture;
 
 use r01_fixture::*;
+use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
+#[global_allocator]
+static GLOBAL: &StatsAlloc<std::alloc::System> = &INSTRUMENTED_SYSTEM;
 use reel_core::identity::FrameId;
 use reel_ui::{
     frame::{FrameBuild, FrameInfo, FrameOp, InkBounds, RenderFrame},
@@ -232,20 +235,50 @@ fn wgpu_nested_isolation_keeps_only_required_targets() {
     .unwrap();
     let mut renderer = Renderer::new(gpu);
     let mut warm = std::time::Instant::now();
+    let mut warm_allocations = 0;
+    let mut warm_bytes = 0;
+    let mut warm_submit_us = 0;
+    let mut peak_live = 0;
     for index in 0..=8 {
+        let region = Region::new(GLOBAL);
+        let submitting = std::time::Instant::now();
+        #[cfg(feature = "profiling")]
+        let before = reel_core::profile::Sample::snapshot();
         let prepared = renderer.prepare(&frame).unwrap();
         assert_eq!(renderer.usage().targets, TARGET_BYTES * NESTED_TARGETS);
+        peak_live = peak_live.max(renderer.usage().transient);
         renderer.submit(prepared).unwrap();
+        let submit_us = submitting.elapsed().as_micros();
         renderer
             .gpu()
             .device
             .poll(wgpu::PollType::wait_indefinitely())
             .unwrap();
         renderer.poll().unwrap();
+        #[cfg(feature = "profiling")]
+        {
+            use reel_core::profile::{Phase, Sample};
+            let delta = Sample::snapshot().delta(before);
+            assert_eq!(
+                delta.calls[Phase::BufferCreate as usize],
+                if index == 0 { GROUPS } else { 0 }
+            );
+        }
+        assert_eq!(renderer.usage().transient, renderer.usage().cached_geometry);
+        if index > 0 {
+            let allocation = region.change();
+            warm_allocations += allocation.allocations;
+            warm_bytes += allocation.bytes_allocated;
+            warm_submit_us += submit_us;
+        }
         if index == 0 {
             warm = std::time::Instant::now();
         }
     }
+    eprintln!(
+        "wgpu geometry_cost warm_allocations={warm_allocations} warm_allocated_bytes={warm_bytes} submit_us={warm_submit_us} transient_live_peak={peak_live} cached={}",
+        renderer.usage().cached_geometry
+    );
     eprintln!(
         "wgpu nested_isolation warm_frames=8 targets={NESTED_TARGETS} target_bytes={} submit_complete_us={}",
         TARGET_BYTES * NESTED_TARGETS,
@@ -280,11 +313,19 @@ fn gles_nested_isolation_keeps_only_required_targets() {
         })
         .unwrap();
     let mut warm = std::time::Instant::now();
+    let mut warm_allocations = 0;
+    let mut warm_bytes = 0;
+    let mut warm_submit_us = 0;
+    let mut peak_live = 0;
     let mut events = Vec::new();
     for index in 0..=8 {
+        let region = Region::new(GLOBAL);
+        let submitting = std::time::Instant::now();
         #[cfg(feature = "profiling")]
         let before = reel_core::profile::Sample::snapshot();
         renderer.render_present(&frame, || {}).unwrap();
+        peak_live = peak_live.max(renderer.usage().peak_bytes);
+        let submit_us = submitting.elapsed().as_micros();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             events.clear();
@@ -318,6 +359,10 @@ fn gles_nested_isolation_keeps_only_required_targets() {
                 delta.calls[Phase::TargetCreate as usize],
                 if index == 0 { NESTED_TARGETS } else { 0 }
             );
+            assert_eq!(
+                delta.calls[Phase::BufferCreate as usize],
+                if index == 0 { GROUPS } else { 0 }
+            );
             if index == 1 {
                 eprintln!(
                     "gles nested_isolation per_frame clear={} composite={} draw={} buffer_create={}",
@@ -328,10 +373,20 @@ fn gles_nested_isolation_keeps_only_required_targets() {
                 );
             }
         }
+        if index > 0 {
+            let allocation = region.change();
+            warm_allocations += allocation.allocations;
+            warm_bytes += allocation.bytes_allocated;
+            warm_submit_us += submit_us;
+        }
         if index == 0 {
             warm = std::time::Instant::now();
         }
     }
+    eprintln!(
+        "gles geometry_cost warm_allocations={warm_allocations} warm_allocated_bytes={warm_bytes} submit_us={warm_submit_us} total_peak={peak_live} cached={}",
+        renderer.cached_geometry_bytes()
+    );
     eprintln!(
         "gles nested_isolation warm_frames=8 targets={NESTED_TARGETS} target_bytes={} submit_complete_us={}",
         TARGET_BYTES * NESTED_TARGETS,
@@ -638,10 +693,15 @@ fn gles_retained_targets_yield_to_geometry_pressure() {
         }
         let usage = renderer.usage();
         assert!(usage.peak_bytes <= total_bytes);
-        completed.push(usage.bytes);
+        completed.push((usage.bytes, renderer.cached_geometry_bytes()));
     }
-    assert!(completed[0] >= TARGET_BYTES * 3);
-    assert_eq!(completed[0] - completed[1], TARGET_BYTES * 2);
+    assert!(completed[0].0 >= TARGET_BYTES * 3);
+    // Geometry remains accounted after completion. Excluding that measured
+    // residency must still show exactly two retired scratch allocations.
+    assert_eq!(
+        (completed[0].0 - completed[0].1) - (completed[1].0 - completed[1].1),
+        TARGET_BYTES * 2,
+    );
     renderer.close().unwrap();
 }
 

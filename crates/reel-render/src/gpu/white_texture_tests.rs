@@ -146,7 +146,159 @@ fn ordered_draw_segments_share_uploads_across_scissors_and_stop_at_groups() {
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
     renderer.poll().unwrap();
+    let cached = renderer.usage().cached_geometry;
+    assert!(cached > 0);
+    assert_eq!(renderer.usage().transient, cached);
+    // Two prepared encoders must each own their uploads. Cancelling one cannot
+    // rewrite the other's pending geometry or return either slot before a fence.
+    let first = renderer.prepare(&frame).unwrap();
+    assert_eq!(
+        renderer
+            .gpu
+            .upload_creations
+            .mesh_buffers
+            .load(Ordering::Relaxed),
+        6
+    );
+    let cancelled = renderer.prepare(&frame).unwrap();
+    assert_eq!(
+        renderer
+            .gpu
+            .upload_creations
+            .mesh_buffers
+            .load(Ordering::Relaxed),
+        12
+    );
+    drop(cancelled);
+    renderer.submit(first).unwrap();
+    renderer
+        .gpu
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    renderer.poll().unwrap();
+    assert_eq!(renderer.usage().transient, cached);
+    assert_eq!(renderer.usage().cached_geometry, cached);
+    let warm = renderer.prepare(&frame).unwrap();
+    assert_eq!(
+        renderer
+            .gpu
+            .upload_creations
+            .mesh_buffers
+            .load(Ordering::Relaxed),
+        12
+    );
+    renderer.submit(warm).unwrap();
+    renderer
+        .gpu
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    renderer.poll().unwrap();
+    assert_eq!(renderer.usage().transient, cached);
+    assert_eq!(
+        renderer
+            .gpu
+            .upload_creations
+            .geometry_retries
+            .load(Ordering::Relaxed),
+        0
+    );
+    assert_eq!(
+        renderer
+            .gpu
+            .upload_creations
+            .geometry_staging
+            .load(Ordering::Relaxed),
+        6
+    );
+    let capture = renderer
+        .prepare_capture(&frame, frame.info().physical_size)
+        .unwrap();
+    assert!(
+        capture
+            .geometry
+            .iter()
+            .all(|slot| !slot.storage.has_staging())
+    );
+    assert_eq!(renderer.usage().cached_geometry, 0);
+    assert_eq!(
+        renderer
+            .gpu
+            .upload_creations
+            .geometry_staging
+            .load(Ordering::Relaxed),
+        6
+    );
+    drop(capture);
     assert_eq!(renderer.usage().transient, 0);
+    assert_eq!(renderer.admission.usage().tickets, 0);
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter; submits without pixel readback"]
+fn geometry_staging_yields_to_whole_frame_admission() {
+    use std::sync::atomic::Ordering;
+    let mut scene = Scene::new();
+    for _ in 0..16 {
+        scene.push_group(Group {
+            composite: Composite {
+                alpha: 0.5,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        for _ in 0..8 {
+            fill(&mut scene, Color::WHITE);
+        }
+        scene.pop_group();
+    }
+    let frame = frame(scene, &pool());
+    let baseline = renderer(Default::default());
+    let original = baseline
+        .prepare_cached(
+            &frame,
+            None,
+            frame.info().physical_size,
+            false,
+            &super::super::geometry::UploadPolicy::new(false),
+        )
+        .unwrap();
+    let required = original.budget_scope.transient.usage().peak_bytes;
+    drop(original);
+    drop(baseline);
+    let mut renderer = renderer(super::super::GpuLimits {
+        transient_bytes: required,
+        ..Default::default()
+    });
+    for expected_retries in 1..=2 {
+        let prepared = renderer.prepare(&frame).unwrap();
+        assert_eq!(
+            renderer
+                .gpu
+                .upload_creations
+                .geometry_retries
+                .load(Ordering::Relaxed),
+            expected_retries
+        );
+        assert!(
+            prepared
+                .geometry
+                .iter()
+                .all(|slot| !slot.storage.has_staging())
+        );
+        assert!(prepared.budget_scope.transient.usage().peak_bytes <= required);
+        renderer.submit(prepared).unwrap();
+        renderer
+            .gpu
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        renderer.poll().unwrap();
+        assert_eq!(renderer.usage().transient, 0);
+        assert_eq!(renderer.usage().cached_geometry, 0);
+    }
+    eprintln!("geometry low-budget immutable_peak={required} frames=2 bounded_retries=2");
 }
 
 #[test]
@@ -463,6 +615,7 @@ fn usage(renderer: &Renderer) -> [u64; 3] {
 }
 fn empty(renderer: &Renderer) {
     renderer.targets.clear();
+    renderer.geometry.clear();
     assert_eq!(usage(renderer), [0; 3]);
     assert_eq!(renderer.admission.usage().tickets, 0);
     assert_eq!(renderer.budgets.resources.usage().tickets, 0);
@@ -1361,7 +1514,7 @@ fn sprite_batches_share_uploads_and_respect_paint_boundaries() {
         let batches = if boundary { 2 } else { 1 };
         assert_eq!(
             std::array::from_fn::<_, 3, _>(|i| after[i] - before[i]),
-            [batches, batches * 2, batches]
+            [batches, if boundary { 0 } else { 2 }, batches]
         );
         renderer.submit(prepared).unwrap();
         renderer
@@ -1371,8 +1524,8 @@ fn sprite_batches_share_uploads_and_respect_paint_boundaries() {
             .unwrap();
         renderer.poll().unwrap();
         eprintln!(
-            "{particles} sprites group_boundary={boundary}: draws={batches}, mesh_uploads={}, brush_groups={batches}, prepare={preparation:?}, prepare_submit_complete={:?}, transient_peak_bytes={transient_peak}, image_peak_bytes={resources_peak}",
-            batches * 2,
+            "{particles} sprites group_boundary={boundary}: draws={batches}, buffer_creations={}, brush_groups={batches}, prepare={preparation:?}, prepare_submit_complete={:?}, transient_peak_bytes={transient_peak}, image_peak_bytes={resources_peak}",
+            after[1] - before[1],
             start.elapsed()
         );
     }

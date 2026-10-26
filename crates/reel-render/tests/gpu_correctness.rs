@@ -72,7 +72,7 @@ fn draw_and_clip_strokes_accept_small_miters_without_panic_or_leak() {
                 }
                 assert_eq!(renderer.usage().targets, 0);
                 assert_eq!(renderer.usage().resources, 0);
-                assert_eq!(renderer.usage().transient, 0);
+                assert_eq!(renderer.usage().transient, renderer.usage().cached_geometry);
             }
         }
     }
@@ -211,7 +211,7 @@ fn dashed_draw_and_clip_follow_offsets_patterns_and_closed_curves() {
     assert!(
         matches!(renderer.prepare(&overflowing), Err(GpuError::Unsupported {at: actual, ..}) if actual == at)
     );
-    assert_eq!(renderer.usage().transient, 0);
+    assert_eq!(renderer.usage().transient, renderer.usage().cached_geometry);
     assert_eq!(renderer.usage().targets, 0);
 
     // Actual emitted mesh capacity remains governed by the existing quota.
@@ -409,5 +409,5 @@ fn deeply_nested_masks_use_target_budget_and_preserve_pixels() {
     let pixels = exact.readback(exact.prepare(&frame).unwrap()).unwrap();
     assert!(pixels.iter().any(|p| p[3] > 0.9));
     assert_eq!(exact.usage().targets, 0);
-    assert_eq!(exact.usage().transient, 0);
+    assert_eq!(exact.usage().transient, exact.usage().cached_geometry);
 }

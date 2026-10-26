@@ -518,7 +518,6 @@ impl Context<'_> {
         if mesh.indices.is_empty() {
             return Ok(());
         }
-        self.transient(mesh.bytes() as u64)?;
         self.transient(
             (batch.geometry.entries.len() * size_of::<wgpu::BindGroup>()
                 + batch
@@ -530,23 +529,27 @@ impl Context<'_> {
                     * 144) as u64,
         )?;
         let device = &self.gpu.device;
-        let allocating = reel_core::profile::Scope::new(reel_core::profile::Phase::BufferCreate);
-        let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("reel segment vertices"),
-            contents: bytemuck::cast_slice(&mesh.vertices),
-            usage: wgpu::BufferUsages::VERTEX,
+        let (storage, local) = self.geometry_cache.acquire(
+            self.gpu,
+            self.budgets,
+            &self.budget_scope,
+            mesh,
+            self.geometry_policy,
+        )?;
+        self.tickets.push(super::renderer::Reservation {
+            _shared: None,
+            _local: local,
         });
-        let indices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("reel segment indices"),
-            contents: bytemuck::cast_slice(&mesh.indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-        drop(allocating);
-        #[cfg(test)]
-        self.gpu
-            .upload_creations
-            .mesh_buffers
-            .fetch_add(2, std::sync::atomic::Ordering::Relaxed);
+        storage
+            .storage
+            .upload(&mut self.encoder, storage.capacity, mesh)?;
+        if storage.storage.has_staging() {
+            self.geometry_policy.staged.set(true);
+        }
+        self.geometry.push(storage);
+        let storage = &self.geometry.last().expect("retained geometry").storage;
+        let vertices = &storage.vertices;
+        let indices = &storage.indices;
         let mut groups = Vec::with_capacity(batch.geometry.entries.len());
         for entry in &batch.geometry.entries {
             let PaintState {

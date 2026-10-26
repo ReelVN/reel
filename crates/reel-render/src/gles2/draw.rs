@@ -1,6 +1,6 @@
 use super::*;
 use super::{
-    programs::{Target, Values, attributes},
+    programs::{Target, Values},
     replay::Context,
 };
 use crate::common::{
@@ -741,17 +741,32 @@ impl Context<'_> {
         if mesh.indices.is_empty() {
             return Ok(());
         }
-        self.transient(
-            (mesh.vertices.len() * size_of::<mesh::Vertex>() + mesh.indices.len() * 4) as u64,
+        let (storage, local, created) = super::geometry::acquire(
+            self.geometry_cache,
+            self.gpu,
+            self.budgets,
+            &self.budget_scope,
+            self.limits,
+            mesh,
         )?;
-        let allocating = reel_core::profile::Scope::new(reel_core::profile::Phase::BufferCreate);
-        let vertices =
+        self.tickets.push(crate::common::renderer::Reservation {
+            _shared: None,
+            _local: local,
+        });
+        self.buffers.push(storage);
+        let storage = &mut self
+            .buffers
+            .last_mut()
+            .expect("retained draw buffers")
+            .storage;
+        if !created {
             self.gpu
-                .vertex_buffer(bytemuck::cast_slice(&mesh.vertices), 12, &attributes())?;
-        let indices = self.gpu.index_buffer(&mesh.indices)?;
-        drop(allocating);
-        self.buffers.push((vertices, indices));
-        let (vertices, indices) = self.buffers.last().expect("retained draw buffers");
+                .update_vertices(&mut storage.vertices, bytemuck::cast_slice(&mesh.vertices))?;
+            self.gpu
+                .update_indices(&mut storage.indices, &mesh.indices)?;
+        }
+        let vertices = &storage.vertices;
+        let indices = &storage.indices;
         for entry in batch.geometry.entries {
             let PaintState {
                 texture,

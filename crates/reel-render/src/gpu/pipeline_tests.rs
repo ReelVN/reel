@@ -243,7 +243,7 @@ fn nv12_submit_preserves_producer_and_reuses_only_matching_completed_planes() {
         .unwrap();
     renderer.poll().unwrap();
     assert!(third_pixels.upgrade().is_none());
-    assert_eq!(renderer.usage().transient, 0);
+    assert_eq!(renderer.usage().transient, renderer.usage().cached_geometry);
     assert_eq!(pool.usage().bytes, 0);
 }
 
@@ -465,6 +465,7 @@ fn subtree_blend_pixels_preserve_transparency_and_nested_opacity() {
 }
 fn empty(renderer: &Renderer) {
     renderer.targets.clear();
+    renderer.geometry.clear();
     let usage = renderer.usage();
     assert_eq!([usage.targets, usage.resources, usage.transient], [0; 3]);
     assert_eq!(renderer.admission.usage().tickets, 0);

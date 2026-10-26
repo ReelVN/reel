@@ -21,6 +21,8 @@ pub(super) struct UploadCreations {
     pub(super) copies: std::sync::atomic::AtomicUsize,
     pub(super) draws: std::sync::atomic::AtomicUsize,
     pub(super) mesh_buffers: std::sync::atomic::AtomicUsize,
+    pub(super) geometry_retries: std::sync::atomic::AtomicUsize,
+    pub(super) geometry_staging: std::sync::atomic::AtomicUsize,
     pub(super) brush_groups: std::sync::atomic::AtomicUsize,
     pub(super) appearance_buffers: std::sync::atomic::AtomicUsize,
 }

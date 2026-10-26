@@ -34,6 +34,9 @@ pub(super) struct Context<'a> {
     pub(super) scissor: Scissor,
     pub(super) mesh_clip: Option<crate::common::mesh::RectClip>,
     pub(super) paint_batch: Option<super::draw::PaintBatch>,
+    pub(super) geometry_policy: &'a super::geometry::UploadPolicy,
+    pub(super) geometry_cache: &'a super::geometry::Cache,
+    pub(super) geometry: Vec<super::geometry::Storage>,
 }
 struct Scope<'a> {
     target: Target,

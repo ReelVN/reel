@@ -20,6 +20,9 @@ pub struct Usage {
     pub targets: u64,
     pub resources: u64,
     pub transient: u64,
+    /// Completed geometry, staging and allocation metadata retained as an
+    /// evictable subset of `transient`; in-flight storage is excluded.
+    pub cached_geometry: u64,
 }
 pub struct Prepared {
     pub(super) capture: Option<Arc<super::capture::ReadbackStorage>>,
@@ -34,6 +37,7 @@ pub struct Prepared {
     glyphs: super::glyph_cache::FrameGlyphs,
     effects: Vec<Arc<super::effect::Compiled>>,
     targets: Vec<Arc<super::target_cache::Allocation>>,
+    geometry: Vec<super::geometry::Storage>,
     budget_scope: Budgets,
     admission: BudgetTicket,
     generation: super::DeviceGeneration,
@@ -61,6 +65,7 @@ struct Inflight {
     _effects: Vec<Arc<super::effect::Compiled>>,
     _targets: Vec<Arc<super::target_cache::Allocation>>,
     _admission: BudgetTicket,
+    geometry: Vec<super::geometry::Storage>,
 }
 pub struct Renderer {
     pub(super) gpu: Gpu,
@@ -74,6 +79,7 @@ pub struct Renderer {
     images: super::image_cache::ImageCache,
     glyphs: super::glyph_cache::GlyphCache,
     targets: super::target_cache::TargetCache,
+    geometry: super::geometry::Cache,
 }
 pub(super) use crate::common::renderer::{Budgets, Reservation, reserve};
 
@@ -102,6 +108,7 @@ impl Renderer {
             images: Default::default(),
             glyphs: Default::default(),
             targets: Default::default(),
+            geometry: Default::default(),
         }
     }
     /// Prepare the device's supported quality tiers and built-in image masks
@@ -134,6 +141,7 @@ impl Renderer {
             targets: self.budgets.targets.usage().bytes,
             resources: self.budgets.resources.usage().bytes,
             transient: self.budgets.transient.usage().bytes,
+            cached_geometry: self.geometry.bytes(),
         }
     }
     pub fn poll(&mut self) -> Result<Vec<u64>, GpuError> {
@@ -164,14 +172,27 @@ impl Renderer {
         if resources_available {
             limit -= 1;
         }
-        self.inflight.retain(|s| {
-            if limit != 0 && s.done.load(Ordering::Acquire) {
+        for submission in &self.inflight {
+            if submission.done.load(Ordering::Acquire) {
+                for slot in &submission.geometry {
+                    slot.storage.ready()?;
+                }
+            }
+        }
+        self.inflight.retain_mut(|s| {
+            if limit != 0
+                && s.done.load(Ordering::Acquire)
+                && s.geometry
+                    .iter()
+                    .all(|slot| slot.storage.ready().unwrap_or(false))
+            {
                 if s.capture.is_none() {
                     completed(
                         s.id,
                         s._frames.last().expect("submission owns its output frame"),
                     );
                 }
+                self.geometry.recycle(&mut s.geometry);
                 limit -= 1;
                 false
             } else {
@@ -227,6 +248,54 @@ impl Renderer {
         second: Option<(&RenderFrame, f32)>,
         size: [u32; 2],
         capture: bool,
+    ) -> Result<Prepared, GpuError> {
+        // Capture reserves its output and readback after replay. Keep that
+        // original admission path free of optional reusable staging.
+        if capture {
+            self.geometry.clear();
+        }
+        let policy = super::geometry::UploadPolicy::new(!capture);
+        let result = self.prepare_cached(frame, second, size, capture, &policy);
+        let fallback = policy.staged.get()
+            && matches!(
+                result,
+                Err(GpuError::Budget {
+                    domain: "transient" | "mesh scratch" | "geometry",
+                    ..
+                } | GpuError::Pressure {
+                    domain: "transient" | "mesh scratch" | "geometry",
+                    ..
+                })
+            );
+        if fallback || matches!(result, Err(GpuError::Pressure { .. })) {
+            let resident = self.budgets.transient.usage().bytes;
+            self.geometry.clear();
+            if fallback || self.budgets.transient.usage().bytes < resident {
+                #[cfg(test)]
+                self.gpu
+                    .upload_creations
+                    .geometry_retries
+                    .fetch_add(1, Ordering::Relaxed);
+                // The failed encoder is already dropped. Geometry uploads only
+                // belong to that encoder, so immutable replay cannot publish it.
+                return self.prepare_cached(
+                    frame,
+                    second,
+                    size,
+                    capture,
+                    &super::geometry::UploadPolicy::new(!capture && !fallback),
+                );
+            }
+        }
+        result
+    }
+    fn prepare_cached(
+        &self,
+        frame: &RenderFrame,
+        second: Option<(&RenderFrame, f32)>,
+        size: [u32; 2],
+        capture: bool,
+        geometry_policy: &super::geometry::UploadPolicy,
     ) -> Result<Prepared, GpuError> {
         self.gpu.check()?;
         self.images.retire(&[]);
@@ -350,6 +419,9 @@ impl Renderer {
             scissor: super::targets::Scissor::full(size),
             mesh_clip: None,
             paint_batch: None,
+            geometry_policy,
+            geometry_cache: &self.geometry,
+            geometry: Vec::new(),
         };
         let transform = Affine::scale_non_uniform(
             f64::from(size[0]) / frame.info().logical_size[0],
@@ -385,6 +457,7 @@ impl Renderer {
             glyphs: ctx.glyphs,
             effects: ctx.effects,
             targets: ctx.target_allocations,
+            geometry: ctx.geometry,
             budget_scope: ctx.budget_scope,
             admission,
             generation: self.gpu.generation,
@@ -430,6 +503,7 @@ impl Renderer {
             _effects: prepared.effects,
             _targets: prepared.targets,
             _admission: prepared.admission,
+            geometry: prepared.geometry,
         });
         self.gpu.check()?;
         Ok(id)
