@@ -667,15 +667,16 @@ impl Service {
                 load.input = None;
             }
         }
-        let ids = self.loads.keys().copied().collect::<Vec<_>>();
-        for id in ids {
-            let mut load = self.loads.remove(&id).unwrap();
-            if let Err(error) = self.advance(&mut load) {
+        // Advancing requests borrows the adapters and budgets while retaining
+        // the request map's nodes and traversal order.
+        let mut loads = std::mem::take(&mut self.loads);
+        for load in loads.values_mut() {
+            if let Err(error) = self.advance(load) {
                 load.phase = Phase::Done(Err(error));
                 load.input = None;
             }
-            self.loads.insert(id, load);
         }
+        self.loads = loads;
         self.streams.submit(
             self.io.as_mut().unwrap().as_mut(),
             &self.input,
