@@ -46,6 +46,7 @@ impl GamepadSource {
                     if !send(InputEvent::Connected {
                         device,
                         name: gamepad.name().into(),
+                        layout: layout(&gamepad),
                     }) {
                         return;
                     }
@@ -67,6 +68,7 @@ impl GamepadSource {
                             Some(InputEvent::Connected {
                                 device,
                                 name: gilrs.gamepad(event.id).name().into(),
+                                layout: layout(&gilrs.gamepad(event.id)),
                             })
                         }
                         E::Disconnected => devices.remove(&event.id).map(InputEvent::Disconnected),
@@ -97,6 +99,28 @@ impl GamepadSource {
 impl Drop for GamepadSource {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
+    }
+}
+
+fn layout(gamepad: &gilrs::Gamepad<'_>) -> reel_ui::input::GamepadLayout {
+    recognized_layout(gamepad.vendor_id(), gamepad.product_id())
+}
+
+fn recognized_layout(vendor: Option<u16>, product: Option<u16>) -> reel_ui::input::GamepadLayout {
+    use reel_ui::input::GamepadLayout as L;
+    // USB product identities, also used by SDL's controller classification.
+    // Mapping to positional controls alone does not establish the printed labels.
+    match (vendor, product) {
+        (Some(0x054c), Some(0x0268 | 0x05c4 | 0x09cc | 0x0ba0 | 0x0ce6 | 0x0df2)) => L::PlayStation,
+        (
+            Some(0x045e),
+            Some(
+                0x028e | 0x028f | 0x02d1 | 0x02dd | 0x02e0 | 0x02e3 | 0x02ea | 0x02fd | 0x0b00
+                | 0x0b05 | 0x0b12 | 0x0b13,
+            ),
+        ) => L::Xbox,
+        (Some(0x057e), Some(0x2006 | 0x2007 | 0x2009 | 0x200e)) => L::Nintendo,
+        _ => L::Generic,
     }
 }
 

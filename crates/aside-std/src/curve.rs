@@ -252,9 +252,15 @@ pub(super) fn construct(
         let root = vm.heap().sequence_get(keys, info.len / 2)?;
         let first = vm.heap().sequence_get(keys, 0)?;
         let fields = vm.heap_mut().alloc_table()?;
-        let curve = vm
-            .heap_mut()
-            .alloc_immutable_host(fields, &[Value::int(TAG), root, first])?;
+        let curve = vm.heap_mut().alloc_immutable_host(
+            fields,
+            &[
+                Value::int(TAG),
+                root,
+                first,
+                Value::int(i64::from(info.len)),
+            ],
+        )?;
         let ty = vm.heap().host_type(crate::source::CURVE)?;
         vm.heap_mut().set_host_type(curve, ty)?;
         vm.respond(ticket, HostResponse::Ready(curve))?;
@@ -336,4 +342,49 @@ pub fn sample_curve(heap: &Heap, receiver: Value, time: f64) -> Result<f64, Heap
     let b = number(heap, before, 4)?;
     let c = number(heap, before, 5)?;
     Ok(((a * progress + b) * progress + c) * progress + value)
+}
+
+/// Number of compiled keys available for native projection. The curve stays
+/// rooted by the caller throughout projection, just as during sampling.
+pub fn curve_key_count(heap: &Heap, receiver: Value) -> Result<u32, HeapError> {
+    if heap.host_payload(receiver, 0)?.as_int() != Some(TAG) {
+        return Err(HeapError::TypeMismatch);
+    }
+    Ok(heap
+        .host_payload(receiver, 3)?
+        .as_int()
+        .ok_or(HeapError::TypeMismatch)? as u32)
+}
+
+/// Read one ordered compiled key: time, value, interpolation mode (0 linear,
+/// 1 step, 2 cubic), and cubic coefficients a/b/c. Repeated times are preserved.
+pub fn curve_key(heap: &Heap, receiver: Value, index: u32) -> Result<[f64; 6], HeapError> {
+    let mut end = curve_key_count(heap, receiver)?;
+    if index >= end {
+        return Err(HeapError::OutOfBounds);
+    }
+    let mut start = 0;
+    let mut node = heap.host_payload(receiver, 1)?;
+    loop {
+        let middle = start + (end - start) / 2;
+        if index == middle {
+            return Ok([
+                number(heap, node, 0)?,
+                number(heap, node, 1)?,
+                heap.sequence_get(node, 2)?
+                    .as_int()
+                    .ok_or(HeapError::TypeMismatch)? as f64,
+                number(heap, node, 3)?,
+                number(heap, node, 4)?,
+                number(heap, node, 5)?,
+            ]);
+        }
+        if index < middle {
+            end = middle;
+            node = heap.sequence_get(node, LEFT)?;
+        } else {
+            start = middle + 1;
+            node = heap.sequence_get(node, RIGHT)?;
+        }
+    }
 }

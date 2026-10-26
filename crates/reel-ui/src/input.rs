@@ -5,6 +5,8 @@
 use crate::core::{PointerButton, keyboard::Code};
 mod navigation;
 pub use navigation::*;
+mod hints;
+pub use hints::{GamepadLayout, InputHints, InputSource, InputTracker};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum InputDeviceId {
@@ -56,6 +58,7 @@ pub enum InputEvent {
     Connected {
         device: InputDeviceId,
         name: String,
+        layout: GamepadLayout,
     },
     Disconnected(InputDeviceId),
     /// Revoke all held controls at an input ownership boundary.

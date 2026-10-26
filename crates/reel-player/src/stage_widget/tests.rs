@@ -1296,6 +1296,14 @@ fn particle_bounds_follow_each_captured_extent_after_resize_and_append() {
         size: 24.,
         size_spread: 8.,
         size_end: None,
+        size_curve: None,
+        angle: 0.,
+        angle_spread: 0.,
+        radial_speed: 0.,
+        radial_spread: 0.,
+        direction: 0.,
+        direction_spread: 180.,
+        damping: 0.,
         opacity: [1., 1.],
         spin: 90.,
         spin_spread: 40.,
@@ -1326,7 +1334,7 @@ fn particle_bounds_follow_each_captured_extent_after_resize_and_append() {
                 .enumerate()
                 .map(|(i, frame)| ParticleEmission {
                     sequence: i as u64,
-                    config,
+                    config: config.clone(),
                     frame: *frame,
                     started: 0.,
                     paused: false,

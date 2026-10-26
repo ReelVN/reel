@@ -2,6 +2,68 @@ use super::*;
 use reel_ui::stage::{NodeKind, particles::ParticleNode};
 
 #[test]
+fn particle_envelope_radial_motion_prewarm_pause_and_restore() {
+    let code = r#"use std::math::curve;
+        fn opening() {
+            let p = particles("spark.png", seed: 42);
+            stage.replace(p);
+            let active = emit(p, burst: 0, rate: 64, lifetime: 2, prewarm: 2,
+                velocity_x: 0, velocity_y: 0, spread_x: 0, spread_y: 0,
+                radial_speed: 100, radial_spread: 20, damping: 2,
+                angle: 180, angle_spread: 180, spin_spread: 0,
+                size: 10, size_spread: 0,
+                size_curve: curve([{time: 0, value: 0}, {time: 0.5, value: 1}, {time: 1, value: 0}]));
+            narrator("running"); pause(active);
+            narrator("paused"); resume(active);
+            narrator("resumed"); p.remove();
+            narrator("retired");
+        }"#;
+    let mut canonical = None;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, false);
+        let first = batch(&vm);
+        assert_eq!(first.samples().count(), 128);
+        let emission = &first.batches[0];
+        let frame = emission.frame_at(0.);
+        assert_eq!(emission.config.sample(frame, 128).size, 0.);
+        assert_eq!(emission.config.sample(frame, 64).size, 10.);
+        assert_eq!(emission.config.sample(frame, 0).size, 0.);
+        let sprites: Vec<_> = first.samples().collect();
+        for axis in 0..2 {
+            assert!(sprites.iter().any(|p| p.position[axis] > 20.));
+            assert!(sprites.iter().any(|p| p.position[axis] < -20.));
+        }
+        assert!(sprites.iter().any(|p| p.rotation > 270.));
+        assert!(sprites.iter().any(|p| p.rotation < 90.));
+        if let Some(expected) = &canonical {
+            assert_eq!(&sprites, expected);
+        } else {
+            canonical = Some(sprites);
+        }
+        let (mut split_session, mut split) = scopes::restored(&mut vm, &session);
+        for tick in 1..=60 {
+            activities::advance_clock(&mut split, &split_session, f64::from(tick) / 60., 32);
+        }
+        activities::advance_clock(&mut vm, &session, 1., 32);
+        assert_eq!(
+            batch(&vm).samples().collect::<Vec<_>>(),
+            batch(&split).samples().collect::<Vec<_>>()
+        );
+        dialogue(&mut split, &mut split_session);
+        let paused = batch(&split).samples().collect::<Vec<_>>();
+        (split_session, split) = scopes::restored(&mut split, &split_session);
+        activities::advance_clock(&mut split, &split_session, 8., 32);
+        assert_eq!(paused, batch(&split).samples().collect::<Vec<_>>());
+        dialogue(&mut split, &mut split_session);
+        activities::advance_clock(&mut split, &split_session, 8.5, 32);
+        assert_ne!(paused, batch(&split).samples().collect::<Vec<_>>());
+        dialogue(&mut split, &mut split_session);
+        assert!(!split.particles.has_active());
+    }
+}
+
+#[test]
 fn is_checked_node_keeps_particle_type_in_owned_task_after_restore() {
     let code = r#"use reel::types::{Node,ParticlesNode};
         fn spray(node:Node) {

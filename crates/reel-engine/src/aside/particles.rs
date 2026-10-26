@@ -10,6 +10,15 @@ aside_host::native_documentation! {
         /// births; lifetime, velocity, acceleration, size, opacity and spin control motion.
         /// A repeated emit adds a batch. Pause freezes it; stop clears it. Finite batches
         /// can finish; owner retirement cancels them. State and random sequence survive saves.
+        /// `size_curve: Curve | null` multiplies the interpolated size at normalized age
+        /// 0..1; negative multipliers clamp to zero. `angle` and `angle_spread` set the
+        /// initial rotation in degrees. `radial_speed` and `radial_spread` add a uniformly
+        /// sampled speed to Cartesian velocity; `direction` and `direction_spread`
+        /// choose its direction in degrees (0 points right; 180 spread covers the circle).
+        /// Spreads are symmetric half-ranges. `damping` is nonnegative linear drag per
+        /// second, integrated with acceleration. `prewarm` advances emission before
+        /// the first frame; duration still specifies future emission time after the call.
+        /// Prewarming samples only living births and does not replay elapsed frames.
         "reel::emit";
     }
 }
@@ -18,7 +27,10 @@ use aside_vm::{Heap, HeapError, HeapReservation, RootKind, RootToken, Value, Val
 use reel_core::budget::{BudgetCategory, BudgetPool, QueueLimits};
 use reel_ui::stage::{
     NodeId, NodeKind,
-    particles::{ParticleBatches, ParticleConfig, ParticleEmission, ParticleFrame, ParticleNode},
+    particles::{
+        ParticleBatches, ParticleConfig, ParticleCurve, ParticleEmission, ParticleFrame,
+        ParticleNode,
+    },
 };
 use std::collections::VecDeque;
 
@@ -74,6 +86,15 @@ pub(super) fn emission_parameters() -> Vec<aside_host::NativeParameter> {
         ("x", number(0.)),
         ("y", number(0.)),
         ("owner", Some(Const::Null)),
+        ("size_curve", Some(Const::Null)),
+        ("angle", number(0.)),
+        ("angle_spread", number(0.)),
+        ("radial_speed", number(0.)),
+        ("radial_spread", number(0.)),
+        ("direction", number(0.)),
+        ("direction_spread", number(180.)),
+        ("damping", number(0.)),
+        ("prewarm", number(0.)),
     ]
     .into_iter()
     .map(|(name, default)| aside_host::NativeParameter {
@@ -96,6 +117,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
                 match parameter.name.as_str() {
                     "node" => named("reel::types::ParticlesNode"),
                     "burst" => TypeHint::Int,
+                    "size_curve" => nullable(named("std::math::Curve")),
                     "duration" | "size_end" => nullable(number()),
                     _ => number(),
                 },
@@ -157,6 +179,14 @@ fn configuration(args: &[Value], seed: u64) -> Result<ParticleConfig, AdapterErr
         opacity: [n(15)?, n(16)?],
         spin: n(17)?,
         spin_spread: n(18)?,
+        size_curve: None,
+        angle: n(23)?,
+        angle_spread: n(24)?,
+        radial_speed: n(25)?,
+        radial_spread: n(26)?,
+        direction: n(27)?,
+        direction_spread: n(28)?,
+        damping: n(29)?,
     };
     validate_configuration(&config)?;
     Ok(config)
@@ -170,6 +200,13 @@ fn validate_configuration(config: &ParticleConfig) -> Result<(), AdapterError> {
         config.size_spread,
         config.spin,
         config.spin_spread,
+        config.angle,
+        config.angle_spread,
+        config.radial_speed,
+        config.radial_spread,
+        config.direction,
+        config.direction_spread,
+        config.damping,
     ]
     .into_iter()
     .chain(config.velocity)
@@ -190,6 +227,12 @@ fn validate_configuration(config: &ParticleConfig) -> Result<(), AdapterError> {
         || config.size_spread > config.size
         || config.size_end.is_some_and(|size| size < 0.)
         || config.spin_spread < 0.
+        || config.angle_spread < 0.
+        || config.radial_speed < 0.
+        || config.radial_spread < 0.
+        || config.radial_spread > config.radial_speed
+        || config.direction_spread < 0.
+        || config.damping < 0.
         || config.opacity.iter().any(|v| !(0. ..=1.).contains(v))
         || !(config.rate * config.max_lifetime()).is_finite()
         || config.rate * config.max_lifetime() + config.burst as f64 >= u64::MAX as f64
@@ -262,7 +305,7 @@ impl Live {
     fn projection(&self) -> ParticleEmission {
         ParticleEmission {
             sequence: self.sequence,
-            config: self.config,
+            config: self.config.clone(),
             frame: self.frame,
             started: self.started,
             paused: self.paused,
@@ -315,6 +358,11 @@ impl Particles {
                 // Emission configuration now belongs to adapter records rather
                 // than constructor fields: restoration uses the same boundary.
                 validate_configuration(&live.config)?;
+                if let Some(curve) = &mut live.config.size_curve {
+                    curve
+                        .admit(self.pool(heap))
+                        .map_err(|_| AdapterError::Allocation)?;
+                }
                 live.root = map.root(live.root)?;
                 let batches = self.project(
                     heap,
@@ -333,6 +381,17 @@ impl Particles {
         self.revision = retirement_revision;
         Ok(())
     }
+    fn pool(&mut self, heap: &Heap) -> &BudgetPool {
+        self.projection_pool.get_or_insert_with(|| {
+            BudgetPool::new(
+                BudgetCategory::CpuOutput,
+                QueueLimits {
+                    max_requests: u32::MAX,
+                    max_bytes: heap.budget_usage().limit(),
+                },
+            )
+        })
+    }
     /// Admission prepares the replacement before changing either the activity
     /// or the stage. Old UI views retain their independent CPU-output lease.
     fn project(
@@ -346,15 +405,6 @@ impl Particles {
         let NodeKind::Particles(node) = &stage.node(target).unwrap().kind else {
             unreachable!()
         };
-        let pool = self.projection_pool.get_or_insert_with(|| {
-            BudgetPool::new(
-                BudgetCategory::CpuOutput,
-                QueueLimits {
-                    max_requests: u32::MAX,
-                    max_bytes: heap.budget_usage().limit(),
-                },
-            )
-        });
         // Maintenance rotates its queue; saved records therefore need not
         // arrive in paint order. Sequence remains the single ordering source.
         let at = node
@@ -368,10 +418,11 @@ impl Particles {
             node.batches.len() - usize::from(replacing) + usize::from(replacement.is_some());
         let entries = node.batches[..at]
             .iter()
-            .copied()
+            .cloned()
             .chain(replacement)
-            .chain(node.batches[at + usize::from(replacing)..].iter().copied());
-        ParticleBatches::try_new(pool, count, entries).map_err(|_| AdapterError::Allocation)
+            .chain(node.batches[at + usize::from(replacing)..].iter().cloned());
+        ParticleBatches::try_new(self.pool(heap), count, entries)
+            .map_err(|_| AdapterError::Allocation)
     }
     #[cfg(test)]
     pub(super) fn projection_pool(&self) -> &BudgetPool {
@@ -504,8 +555,33 @@ impl SessionVm {
         Ok(work)
     }
 
-    pub(super) fn dispatch_emit(&mut self, ticket: HostTicket) -> Result<(), AdapterError> {
+    pub(super) fn dispatch_emit(
+        &mut self,
+        ticket: HostTicket,
+        budget: super::NativeBudget,
+    ) -> Result<super::NativeDispatch, AdapterError> {
         let args = self.vm.host_arguments(ticket)?;
+        let curve = args[22];
+        let count = if curve.tag() == ValueTag::Null {
+            0
+        } else {
+            aside_std::curve_key_count(self.vm.heap(), curve)?
+        };
+        let required_work = count
+            .saturating_mul(count.max(1).ilog2() + 2)
+            .saturating_add(1);
+        if budget.with_minimum(required_work) < required_work {
+            return Ok(super::NativeDispatch::BudgetYield {
+                work: 0,
+                required_work,
+            });
+        }
+        let prewarm = stage::number(args[30])?;
+        if !prewarm.is_finite() || prewarm < 0. {
+            return Err(AdapterError::Input(
+                "particle prewarm must be finite and nonnegative",
+            ));
+        }
         let target = args[0];
         let id = self.stage.id(self.vm.heap(), target)?;
         let duration = if args[3].tag() == ValueTag::Null {
@@ -539,13 +615,20 @@ impl SessionVm {
         let seed = batch
             .seed
             .wrapping_add(sequence.wrapping_mul(0xa0761d6478bd642f));
-        let config = configuration(args, seed)?;
+        let mut config = configuration(args, seed)?;
         let origin = [stage::number(args[19])?, stage::number(args[20])?];
         let duration = if config.rate == 0. {
             Some(0.)
         } else {
-            duration
+            duration.map(|duration| duration + prewarm)
         };
+        if !((prewarm + config.max_lifetime()).is_finite())
+            || prewarm * config.rate + config.burst as f64 >= u64::MAX as f64
+        {
+            return Err(AdapterError::Input(
+                "particle prewarm exceeds representable range",
+            ));
+        }
         if duration.is_some_and(|d| {
             !(d + config.max_lifetime()).is_finite()
                 || d * config.rate + config.burst as f64 >= u64::MAX as f64
@@ -553,6 +636,22 @@ impl SessionVm {
             return Err(AdapterError::Input(
                 "emission duration exceeds representable range",
             ));
+        }
+        if count != 0 {
+            let pool = self.particles.pool(self.vm.heap());
+            let mut ticket = pool
+                .reserve(ParticleCurve::bytes(count as usize))
+                .map_err(|_| AdapterError::Allocation)?;
+            let mut keys = Vec::new();
+            keys.try_reserve_exact(count as usize)
+                .map_err(|_| AdapterError::Allocation)?;
+            ticket
+                .resize(ParticleCurve::bytes(keys.capacity()))
+                .map_err(|_| AdapterError::Allocation)?;
+            for index in 0..count {
+                keys.push(aside_std::curve_key(self.vm.heap(), curve, index)?);
+            }
+            config.size_curve = Some(ParticleCurve::new(keys, ticket));
         }
         let completion = duration.map(|duration| Completion::new(&config, duration));
         // Capture current effective dimensions, including scope overrides and
@@ -578,7 +677,7 @@ impl SessionVm {
         )?;
         let completed = if completion
             .as_ref()
-            .is_some_and(|end| end.next == 0 && end.end == 0.)
+            .is_some_and(|end| end.next == 0 && end.end <= prewarm)
         {
             Some(self.vm.heap_mut().alloc_string("Completed")?)
         } else {
@@ -586,13 +685,13 @@ impl SessionVm {
         };
         let frame = ParticleFrame {
             origin,
-            elapsed: 0.,
+            elapsed: prewarm,
             duration,
             extent,
         };
         let projection = ParticleEmission {
             sequence,
-            config,
+            config: config.clone(),
             frame,
             started: self.particles.time,
             paused: false,
@@ -648,7 +747,9 @@ impl SessionVm {
         }
         self.vm.respond(ticket, HostResponse::Ready(result))?;
         self.issued = None;
-        Ok(())
+        Ok(super::NativeDispatch::Ready {
+            work: required_work,
+        })
     }
     fn end_emission(&mut self, index: usize, status: &str) -> Result<(), AdapterError> {
         let live = &self.particles.live[index];
@@ -712,7 +813,7 @@ impl SessionVm {
                         &self.stage.scene,
                         target,
                         sequence,
-                        Some(projection),
+                        Some(projection.clone()),
                     )?;
                     let live = &mut self.particles.live[index];
                     live.frame = projection.frame;

@@ -11,9 +11,10 @@ static GLOBAL: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
 fn particle_clock_and_sprite_sampling_reuse_constant_storage() {
     for rate in [64, 1024, 10000] {
         let (session, mut vm) = prepared(
-            &r#"fn opening() {
+            &r#"use std::math::curve; fn opening() {
             let snow=particles("snow.png",width:1920); stage.replace(snow);
-            emit(snow,burst:0,rate:10000,lifetime:2);
+            emit(snow,burst:0,rate:10000,lifetime:2,prewarm:2,radial_speed:20,damping:1,angle_spread:180,
+                size_curve:curve([{time:0,value:0},{time:0.5,value:1},{time:1,value:0}]));
         }"#
             .replace("10000", &rate.to_string()),
         );

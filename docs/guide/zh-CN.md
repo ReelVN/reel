@@ -841,6 +841,8 @@ fn main() {
 
 命名动作把键盘、鼠标和手柄映射到同一行为。连续移动用时钟更新；输入回调更新玩家意图。文本编辑时，聚焦编辑器处理自己的键盘和输入法事件。
 
+用 `stage.input()` 的只读可观察字段 `source` 和 `layout` 选择输入提示。`source` 表示最后使用的输入方式，手柄的 `layout` 为 `xbox`、`playstation`、`nintendo` 或 `generic`；作品提供对应图标。
+
 需要指针位置时，用 `input(on_pointer: |event| ...)` 读取节点内的 `event.x`、`event.y` 和 `event.phase`。悬停与拖动都会产生 `moved`；主按钮或触摸产生 `pressed`、`released` 和 `cancelled`。自定义拖动控件用 `event.dragging` 判断该节点是否持有拖动。
 
 ```aside
@@ -1136,6 +1138,21 @@ await first;
 await second;
 spray.remove();
 ```
+
+逐字透明度由 按年龄变化的尺寸用 `size_curve` 表达。预热让首帧已有不同年龄的粒子，径向速度和阻尼控制散开后的运动。
+
+```aside
+use std::math::curve;
+let glow = particles("assets/spark.png", width: 1280, height: 720, seed: 7);
+stage.replace(glow);
+let envelope = curve([{time: 0, value: 0}, {time: 0.5, value: 1}, {time: 1, value: 0}]);
+emit(glow, burst: 0, rate: 40, lifetime: 2, prewarm: 2,
+    velocity_y: 0, spread_x: 0, spread_y: 0,
+    size: 12, size_spread: 0, size_curve: envelope,
+    radial_speed: 40, radial_spread: 10, damping: 1,
+    angle: 180, angle_spread: 180, spin_spread: 0);
+```
+
 
 逐字透明度由 `reveal_fade` 控制，`reveal_fade_step` 设置相邻字素的进度差。正文布局保持稳定。
 

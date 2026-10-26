@@ -113,6 +113,7 @@ impl Input {
             player.text_event(TextEvent::Input(InputEvent::Connected {
                 device: InputDeviceId::Gamepad(1),
                 name: "PlayStation Vita".into(),
+                layout: reel_ui::input::GamepadLayout::PlayStation,
             }))?;
             self.connected = true;
         }
