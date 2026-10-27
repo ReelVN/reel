@@ -1,11 +1,6 @@
 //! Storage admission contracts use geometry fixtures without GPU readback.
 use super::*;
-#[allow(dead_code, reason = "shared UI fixture")]
-#[path = "../../../reel-ui/tests/support/fixture.rs"]
-mod fixture;
-#[allow(dead_code, reason = "shared immutable frame fixture")]
-#[path = "../../../reel-ui/tests/support/r01_fixture.rs"]
-mod r01_fixture;
+use crate::test_support::r01_fixture;
 use reel_core::identity::FrameId;
 use reel_ui::{
     frame::{FrameBuild, FrameInfo, InkBounds},

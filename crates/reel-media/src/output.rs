@@ -776,7 +776,7 @@ pub fn bounded_pcm_queue(
     let (producer, mut consumer) = RingBuffer::<[f32; 2]>::new(capacity_frames);
     let fill: PcmFill = Box::new(move |out| {
         let mut missing = 0;
-        for frame in out.chunks_exact_mut(2) {
+        for frame in out.as_chunks_mut::<2>().0 {
             if let Ok([left, right]) = consumer.pop() {
                 frame[0] = left;
                 frame[1] = right;

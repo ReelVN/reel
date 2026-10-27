@@ -232,6 +232,7 @@ fn nested_isolation_frame() -> RenderFrame {
     frame
 }
 
+#[cfg(feature = "gles2")]
 const NESTED_TARGETS: u64 = 2;
 // The isolated 120 x 60 source includes raster padding and rounds to a 32-pixel bucket.
 const NESTED_TARGET_BYTES: u64 = TARGET_BYTES + 128 * 64 * 4;
@@ -256,7 +257,11 @@ fn wgpu_independent_groups_batch_within_the_target_budget() {
 fn wgpu_isolation(width: u64, atlas: bool) {
     use reel_render::gpu::{DeviceGeneration, Gpu, GpuLimits, Renderer};
     let frame = nested_isolation_frame();
-    let target_bytes = if atlas { ATLAS_TARGET_BYTES } else { TARGET_BYTES + width * (NESTED_TARGET_BYTES - TARGET_BYTES) };
+    let target_bytes = if atlas {
+        ATLAS_TARGET_BYTES
+    } else {
+        TARGET_BYTES + width * (NESTED_TARGET_BYTES - TARGET_BYTES)
+    };
     let gpu = pollster::block_on(Gpu::request(
         &wgpu::Instance::default(),
         None,
@@ -279,10 +284,7 @@ fn wgpu_isolation(width: u64, atlas: bool) {
         #[cfg(feature = "profiling")]
         let before = reel_core::profile::Sample::snapshot();
         let prepared = renderer.prepare(&frame).unwrap();
-        assert_eq!(
-            renderer.usage().targets,
-            target_bytes
-        );
+        assert_eq!(renderer.usage().targets, target_bytes);
         peak_live = peak_live.max(renderer.usage().transient);
         renderer.submit(prepared).unwrap();
         let submit_us = submitting.elapsed().as_micros();
@@ -349,7 +351,11 @@ fn gles_isolation(width: u64, atlas: bool) {
     use reel_ui::resources::ColorEncoding;
     let _serial = GLES_TEST_LOCK.lock().unwrap();
     let frame = nested_isolation_frame();
-    let target_bytes = if atlas { ATLAS_TARGET_BYTES } else { TARGET_BYTES + width * (NESTED_TARGET_BYTES - TARGET_BYTES) };
+    let target_bytes = if atlas {
+        ATLAS_TARGET_BYTES
+    } else {
+        TARGET_BYTES + width * (NESTED_TARGET_BYTES - TARGET_BYTES)
+    };
     let mut renderer = GlesBackend::headless(
         SIZE,
         GlesLimits {
@@ -412,11 +418,19 @@ fn gles_isolation(width: u64, atlas: bool) {
             // The root target and final screen are both cleared once.
             assert_eq!(
                 delta.calls[Phase::Clear as usize],
-                2 + if atlas { GROUPS / width } else { GROUPS * (NESTED_TARGETS - 1) }
+                2 + if atlas {
+                    GROUPS / width
+                } else {
+                    GROUPS * (NESTED_TARGETS - 1)
+                }
             );
             assert_eq!(
                 delta.calls[Phase::TargetCreate as usize],
-                if index == 0 { if atlas { 2 } else { 1 + width } } else { 0 }
+                if index == 0 {
+                    if atlas { 2 } else { 1 + width }
+                } else {
+                    0
+                }
             );
             assert_eq!(
                 delta.calls[Phase::BufferCreate as usize],

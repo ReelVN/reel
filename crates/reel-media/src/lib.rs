@@ -25,7 +25,8 @@ mod worker_event;
 pub use contracts::*;
 pub use maintenance::{AudioReclaimService, ReclaimLimits, ReclaimStatus};
 pub use mixer::{
-    DecodedSound, DecodedSoundRequest, KiraMixer, MixerLimits, Playback, ReclaimProgress,
+    DecodeLimits, DecodedSound, DecodedSoundRequest, KiraMixer, MixerLimits, Playback,
+    ReclaimProgress,
 };
 pub use output::{OfflineOutput, UnderrunSignal, bounded_pcm_queue};
 pub use pcm::DeviceSample;

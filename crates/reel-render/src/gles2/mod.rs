@@ -17,12 +17,21 @@ use std::{
     rc::Rc,
 };
 
+/// Device references and their shared resource admission limits.
+#[derive(Clone, Copy)]
+struct DeviceResources<'a> {
+    gpu: &'a native::Context,
+    budgets: &'a Budgets,
+    limits: crate::common::GpuLimits,
+}
+
 /// Device resource ceilings, all sharing one simultaneous-memory limit.
 #[derive(Clone, Copy, Debug)]
 pub struct GlesLimits {
     /// Cached image, glyph atlas and persistent draw resources, in bytes.
     pub resource_bytes: u64,
-    /// Simultaneous physical RGBA8 render targets, in bytes.
+    /// Simultaneous physical RGBA8 render targets, in bytes. Defaults to 48 MiB;
+    /// storage is charged on demand within the shared total ceiling.
     pub target_bytes: u64,
     /// CPU staging, in-flight geometry and evictable completed geometry, in bytes.
     pub transient_bytes: u64,
@@ -38,7 +47,7 @@ impl Default for GlesLimits {
     fn default() -> Self {
         Self {
             resource_bytes: 64 << 20,
-            target_bytes: 24 << 20,
+            target_bytes: 48 << 20,
             transient_bytes: 8 << 20,
             total_bytes: 96 << 20,
             max_inflight: 2,
@@ -282,23 +291,24 @@ impl GlesBackend {
         self.effects.prune();
         let local = Budgets::new(limits);
         let mut plan_tickets = Vec::new();
-        let planning = reel_core::profile::Scope::new(reel_core::profile::Phase::ImagePlan);
-        let plan = crate::common::image_plan::collect(
-            std::iter::once(frame),
-            self.context.capabilities().max_texture_size,
-            capture,
-            |bytes| {
-                plan_tickets.push(crate::common::renderer::reserve(
-                    &self.budgets.transient,
-                    &local.transient,
-                    bytes,
-                    limits.transient_bytes,
-                    "image plan",
-                )?);
-                Ok(())
-            },
-        )?;
-        drop(planning);
+        let plan = {
+            let _planning = reel_core::profile::Scope::new(reel_core::profile::Phase::ImagePlan);
+            crate::common::image_plan::collect(
+                std::iter::once(frame),
+                self.context.capabilities().max_texture_size,
+                capture,
+                |bytes| {
+                    plan_tickets.push(crate::common::renderer::reserve(
+                        &self.budgets.transient,
+                        &local.transient,
+                        bytes,
+                        limits.transient_bytes,
+                        "image plan",
+                    )?);
+                    Ok(())
+                },
+            )?
+        };
         let image_growth = self.images.validate(
             &plan.images,
             self.context.capabilities(),
@@ -357,17 +367,20 @@ impl GlesBackend {
         let mut images = HashMap::new();
         let mut touched = Vec::new();
         let mut quota = limits.image_upload_bytes_per_prepare;
-        let uploading = reel_core::profile::Scope::new(reel_core::profile::Phase::Upload);
-        let upload = self.images.prepare(
-            &self.context,
-            &self.budgets,
-            limits,
-            &plan.images,
-            &mut quota,
-            &mut images,
-            &mut touched,
-        );
-        drop(uploading);
+        let upload = {
+            let _uploading = reel_core::profile::Scope::new(reel_core::profile::Phase::Upload);
+            self.images.prepare(
+                DeviceResources {
+                    gpu: &self.context,
+                    budgets: &self.budgets,
+                    limits,
+                },
+                &plan.images,
+                &mut quota,
+                &mut images,
+                &mut touched,
+            )
+        };
         drop(plan);
         drop(plan_tickets);
         let ready = match upload {
@@ -414,16 +427,20 @@ impl GlesBackend {
             &mut self.targets
         };
         match replay::prepare(
-            &self.context,
+            DeviceResources {
+                gpu: &self.context,
+                budgets: &self.budgets,
+                limits: self.options.limits.common(),
+            },
             &self.programs,
-            &self.budgets,
-            self.options.limits.common(),
-            &mut self.images,
-            &mut self.glyphs,
-            &mut self.effects,
-            &mut self.masks,
-            targets,
-            &mut self.geometry,
+            replay::Caches {
+                images: &mut self.images,
+                glyphs: &mut self.glyphs,
+                effects: &mut self.effects,
+                masks: &mut self.masks,
+                targets,
+                geometry: &mut self.geometry,
+            },
             images,
             frame,
             size,
@@ -705,7 +722,7 @@ impl crate::capture::CaptureBackend for GlesBackend {
             let (top, bottom) = rgba.split_at_mut(opposite * row);
             top[y * row..(y + 1) * row].swap_with_slice(&mut bottom[..row]);
         }
-        for pixel in rgba.chunks_exact_mut(4) {
+        for pixel in rgba.as_chunks_mut::<4>().0 {
             for channel in &mut pixel[..3] {
                 let x = f32::from(*channel) / 255.;
                 let s = if x <= 0.0031308 {

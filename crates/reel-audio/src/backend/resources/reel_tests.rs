@@ -87,7 +87,7 @@ fn reel_retirement_interleaving_retains_pcm_and_explicit_reclaim_has_quota() {
 			renderer.on_start_processing();
 			renderer.process(&mut pcm, 2);
 			let mut peak = [0.0f32; 2];
-			for f in pcm.chunks_exact(2) {
+			for f in pcm.as_chunks::<2>().0 {
 				for c in 0..2 {
 					if f[c].abs() > peak[c].abs() {
 						peak[c] = f[c];

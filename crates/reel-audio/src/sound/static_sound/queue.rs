@@ -83,7 +83,7 @@ impl StaticSoundQueue {
 	/// The caller reserves capacity before announcing; indices are consecutive.
 	pub fn announce(&self, index: u64) -> Result<(), QueueClosed> {
 		self.tail
-			.fetch_update(Ordering::AcqRel, Ordering::Acquire, |tail| {
+			.try_update(Ordering::AcqRel, Ordering::Acquire, |tail| {
 				(tail != u64::MAX).then_some(index)
 			})
 			.map(|_| ())

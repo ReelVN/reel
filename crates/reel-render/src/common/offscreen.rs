@@ -329,8 +329,8 @@ impl Plan {
 fn atlas(entries: &[Entry], max_dimension: u32) -> Option<([u32; 2], [[u32; 2]; 8])> {
     let mut sizes = [[0u32; 2]; 8];
     for (size, entry) in sizes.iter_mut().zip(entries) {
-        *size = [entry.view.parent_rect.width, entry.view.parent_rect.height]
-            .map(|value| value + 2);
+        *size =
+            [entry.view.parent_rect.width, entry.view.parent_rect.height].map(|value| value + 2);
     }
     let sizes = &sizes[..entries.len()];
     let mut best = None;

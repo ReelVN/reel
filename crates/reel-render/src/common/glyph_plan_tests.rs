@@ -1,10 +1,5 @@
 use super::*;
-#[allow(dead_code, reason = "shared maintained UI recording fixture")]
-#[path = "../../../reel-ui/tests/support/fixture.rs"]
-mod fixture;
-#[allow(dead_code, reason = "shared maintained UI recording fixture")]
-#[path = "../../../reel-ui/tests/support/r01_fixture.rs"]
-mod r01_fixture;
+use crate::test_support::r01_fixture;
 use reel_core::identity::{AssetKey, ContentVersion, FrameId, ResourceVersion};
 use reel_ui::{
     app::{RenderRoot, RenderRootOptions, VisualLayerKind, WindowSizePolicy},

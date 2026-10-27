@@ -38,6 +38,10 @@ struct Upload {
     _staging: Vec<BudgetTicket>,
     _admission: BudgetTicket,
     _storage: Reservation,
+    #[expect(
+        clippy::vec_box,
+        reason = "Each upload owns a separately charged allocation reused by the cache"
+    )]
     buffers: Vec<Box<super::upload::Buffer>>,
 }
 struct Copy {

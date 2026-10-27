@@ -106,7 +106,7 @@ impl PreparedImage {
         );
         let mut bytes = [0; 32];
         bytes[..8].copy_from_slice(Self::MAGIC);
-        for (chunk, value) in bytes[8..].chunks_exact_mut(4).zip([
+        for (chunk, value) in bytes[8..].as_chunks_mut::<4>().0.iter_mut().zip([
             self.width,
             self.height,
             self.tile_edge,
@@ -124,8 +124,10 @@ impl PreparedImage {
             return Err("expected a 32-byte REELIMG1 manifest");
         }
         let mut values = bytes[8..]
-            .chunks_exact(4)
-            .map(|b| u32::from_le_bytes(b.try_into().unwrap()));
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| u32::from_le_bytes(*b));
         let width = values.next().unwrap();
         let height = values.next().unwrap();
         let tile_edge = values.next().unwrap();

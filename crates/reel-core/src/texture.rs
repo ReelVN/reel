@@ -146,7 +146,7 @@ impl TextureDescriptor {
             || l.storage_size.contains(&0)
             || (0..2).any(|i| {
                 l.content_size[i] > l.storage_size[i]
-                    || l.storage_size[i] % self.format.block_size() != 0
+                    || !l.storage_size[i].is_multiple_of(self.format.block_size())
             })
         {
             return Err(TextureError::Dimensions);
@@ -264,7 +264,7 @@ impl TextureHeader {
             self.descriptor.layout.storage_size[0],
             self.descriptor.layout.storage_size[1],
         ];
-        for (chunk, value) in out[8..44].chunks_exact_mut(4).zip(words) {
+        for (chunk, value) in out[8..44].as_chunks_mut::<4>().0.iter_mut().zip(words) {
             chunk.copy_from_slice(&value.to_le_bytes());
         }
         out[44..52].copy_from_slice(

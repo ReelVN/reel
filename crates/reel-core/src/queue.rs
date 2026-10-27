@@ -143,15 +143,14 @@ impl<R, E> Queue<R, E> {
         // Default queues retain strict priority; only configured IO queues apply
         // the bounded urgent burst before choosing the next ordinary quantum.
         if self.realtime_slots != 0 && !self.pending[3].is_empty() {
-            if self.realtime_burst >= 4 {
-                if let Some(entry) = self.pending[..3]
+            if self.realtime_burst >= 4
+                && let Some(entry) = self.pending[..3]
                     .iter_mut()
                     .rev()
                     .find_map(|q| q.pop_front())
-                {
-                    self.realtime_burst = 0;
-                    return Some(entry);
-                }
+            {
+                self.realtime_burst = 0;
+                return Some(entry);
             }
             self.realtime_burst = self.realtime_burst.saturating_add(1).min(4);
             return self.pending[3].pop_front();

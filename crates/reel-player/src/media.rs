@@ -317,8 +317,10 @@ impl MediaPlayer {
                                     request.reader,
                                     length,
                                     request.pool,
-                                    request.threshold,
-                                    request.window,
+                                    reel_media::DecodeLimits {
+                                        static_threshold: request.threshold,
+                                        window_frames: request.window,
+                                    },
                                     Arc::new(move || cancel_control.cancel()),
                                     cancelled,
                                     decoder.as_ref(),

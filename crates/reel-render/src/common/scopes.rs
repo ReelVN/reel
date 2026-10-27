@@ -472,7 +472,10 @@ mod tests {
         }
         let masked = plan(&commands);
         assert!(masked.can_inline(0) && !masked.can_inline(2));
-        for (transitions, captures) in [(vec![4..4], vec![]), (vec![], vec![3..5])] {
+        for (transitions, captures) in [
+            (std::iter::once(4..4).collect::<Vec<_>>(), vec![]),
+            (vec![], std::iter::once(3..5).collect::<Vec<_>>()),
+        ] {
             let retained = GroupPlan::new(
                 &commands,
                 Some(0),
@@ -493,7 +496,10 @@ mod tests {
             translucent_fill(2),
             command(3, FrameOp::PopGroup),
         ];
-        for (transitions, capture) in [(vec![22..22], vec![]), (vec![], vec![21..23])] {
+        for (transitions, capture) in [
+            (std::iter::once(22..22).collect::<Vec<_>>(), vec![]),
+            (vec![], std::iter::once(21..23).collect::<Vec<_>>()),
+        ] {
             let blocked = GroupPlan::new(
                 &commands,
                 Some(20),
@@ -543,7 +549,7 @@ mod tests {
     fn group_plan_storage_is_compact_and_group_free_streams_allocate_nothing() {
         let fill = translucent_fill(0);
         GroupPlan::new(
-            &[fill.clone()],
+            std::slice::from_ref(&fill),
             Some(0),
             std::iter::empty(),
             std::iter::empty(),

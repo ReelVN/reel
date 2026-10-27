@@ -38,11 +38,13 @@ impl<T> RetiredImages<T> {
 
 /// Initialized CPU upload capacity. Native upload APIs finish reading this slice
 /// before returning, so later uploads may overwrite it without a GPU wait.
+#[cfg(any(feature = "gles2", test))]
 #[derive(Default)]
 pub(crate) struct UploadScratch {
     bytes: Vec<u8>,
     ticket: Option<reel_core::budget::BudgetTicket>,
 }
+#[cfg(any(feature = "gles2", test))]
 impl UploadScratch {
     pub(crate) fn capacity(&self) -> u64 {
         self.bytes.len() as u64

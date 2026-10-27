@@ -116,10 +116,7 @@ impl Scissor {
                 if matches!(
                     (blend.mix, blend.compose),
                     (Mix::Normal | Mix::Multiply | Mix::Screen, Compose::SrcOver)
-                ) =>
-            {
-                ()
-            }
+                ) => {}
             _ => return None,
         }
         Self::ink_bounds(group.ink_bounds, outer, size)

@@ -264,7 +264,11 @@ fn complete_fragments_keep_source_sampling_and_parameter_abi() {
         ));
         match language {
             Language::GlslEs100 => {
-                assert!(output.source.contains(&format!("uniform vec4 reel_context[{CONTEXT_SLOTS}]")));
+                assert!(
+                    output
+                        .source
+                        .contains(&format!("uniform vec4 reel_context[{CONTEXT_SLOTS}]"))
+                );
                 assert!(output.source.contains("texture2D(reel_source"));
             }
             Language::Wgsl => {

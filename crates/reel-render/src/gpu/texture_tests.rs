@@ -1,6 +1,7 @@
 //! Actual-device submission, allocation and authored-coordinate contracts; no readback.
 use super::super::{DeviceGeneration, GpuLimits, resources};
 use super::*;
+use crate::test_support::r01_fixture;
 use reel_core::{
     budget::{BudgetCategory, OwnedBytes, QueueLimits},
     identity::{AssetKey, ContentVersion, FrameId, ResourceVersion, SurfaceEpoch},
@@ -16,12 +17,6 @@ use reel_ui::{
     resources::{ResourceLease, ResourceRegistry, ResourceSnapshot},
     widgets::Image,
 };
-#[allow(dead_code, reason = "shared actual UI fixture")]
-#[path = "../../../reel-ui/tests/support/fixture.rs"]
-mod fixture;
-#[allow(dead_code, reason = "shared actual UI recording fixture")]
-#[path = "../../../reel-ui/tests/support/r01_fixture.rs"]
-mod r01_fixture;
 
 fn frame(lease: ResourceLease, variant: u32, pool: &BudgetPool) -> RenderFrame {
     let mut bridge = if matches!(variant, 5 | 8) {
@@ -600,7 +595,7 @@ fn retired_texture_storage_reuses_exact_footprints_and_preserves_reader_pins() {
             let length = descriptor.byte_len().unwrap();
             let mut pixels = vec![255; length as usize];
             if format == TextureFormat::LinearRgba16Float {
-                for sample in pixels.chunks_exact_mut(2) {
+                for sample in pixels.as_chunks_mut::<2>().0 {
                     sample.copy_from_slice(&0x3c00u16.to_le_bytes());
                 }
             }
@@ -652,7 +647,9 @@ fn retired_texture_storage_reuses_exact_footprints_and_preserves_reader_pins() {
                 }) + usize::from(version >= 8)
             );
             if version == 7 {
-                eprintln!("retired {format:?}: 8 versions, {created} texture allocations (former 8), source/GPU pins retained");
+                eprintln!(
+                    "retired {format:?}: 8 versions, {created} texture allocations (former 8), source/GPU pins retained"
+                );
             }
             if version == 2 {
                 reader = None;

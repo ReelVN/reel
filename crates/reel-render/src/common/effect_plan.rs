@@ -332,7 +332,9 @@ mod tests {
                             let row = context[7 + axis];
                             let sampled = row[0] * normalized[0] + row[1] * normalized[1] + row[2];
                             let expected = (target[axis] + origin[axis]) / source_size[axis] as f32;
-                            assert!((sampled - expected).abs() * (source_size[axis] as f32) < 0.0001);
+                            assert!(
+                                (sampled - expected).abs() * (source_size[axis] as f32) < 0.0001
+                            );
                             if source_size == target_size {
                                 assert_eq!(
                                     sampled.to_bits(),

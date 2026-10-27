@@ -581,7 +581,9 @@ fn native_generated_then_write_failure_invalidates_epoch_and_freezes_counts() {
         .borrow_mut()
         .render(&mut data, timing());
     assert!(
-        data.chunks_exact(2)
+        data.as_chunks::<2>()
+            .0
+            .iter()
             .any(|f| (f[0] - 0.1).abs() < 1e-6 && (f[1] + 0.2).abs() < 1e-6)
     );
     let generated = output.clock_observation();

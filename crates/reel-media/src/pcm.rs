@@ -56,7 +56,9 @@ impl Converter {
             stereo.fill(0.0);
             fill(stereo);
             for (input, output) in stereo
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .zip(device_chunk.chunks_exact_mut(channels))
             {
                 let left = if input[0].is_finite() { input[0] } else { 0.0 };
