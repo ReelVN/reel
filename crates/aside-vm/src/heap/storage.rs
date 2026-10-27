@@ -21,8 +21,8 @@ fn grow_queue(
     Ok(added)
 }
 
-fn grow_index<K: Copy>(
-    index: &mut Vec<Option<K>>,
+fn grow_index<T: Copy + Default>(
+    index: &mut Vec<T>,
     len: usize,
     usage: &HeapBudgetUsage,
 ) -> Result<u64, HeapError> {
@@ -30,12 +30,12 @@ fn grow_index<K: Copy>(
     if len <= index.len() {
         return Ok(0);
     }
-    let reservation = usage.reserve(len as u64 * size_of::<Option<K>>() as u64)?;
+    let reservation = usage.reserve(len as u64 * size_of::<T>() as u64)?;
     index
         .try_reserve_exact(len - index.len())
         .map_err(|_| HeapError::AllocationFailure)?;
-    index.resize(len, None);
-    let added = ((index.capacity() - old) * size_of::<Option<K>>()) as u64;
+    index.resize(len, T::default());
+    let added = ((index.capacity() - old) * size_of::<T>()) as u64;
     drop(reservation);
     usage.charge(added);
     Ok(added)
@@ -132,10 +132,16 @@ impl Heap {
         } else {
             0
         };
+        let words = slots.div_ceil(64);
+        let occupied_bytes = if words > self.range_occupied.len() {
+            (words * size_of::<u64>()) as u64
+        } else {
+            0
+        };
         (
             self.range_index.len().max(slots),
-            2 * slots as u64,
-            index_bytes + Slots::<RangeKey, RangeDescriptor>::bytes_for(capacity),
+            2 * slots as u64 + words as u64,
+            index_bytes + occupied_bytes + Slots::<RangeKey, RangeDescriptor>::bytes_for(capacity),
         )
     }
     pub(crate) fn ensure_range_slots(&mut self, additional: usize) -> Result<(), HeapError> {
@@ -144,6 +150,11 @@ impl Heap {
         }
         if let Some(capacity) = self.ranges.growth_capacity_for(additional) {
             self.reserved += grow_index(&mut self.range_index, capacity + 1, &self.usage)?;
+            self.reserved += grow_index(
+                &mut self.range_occupied,
+                (capacity + 1).div_ceil(64),
+                &self.usage,
+            )?;
             self.reserved += self.ranges.reserve(&self.usage, additional)?;
         }
         Ok(())

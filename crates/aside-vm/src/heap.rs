@@ -337,6 +337,7 @@ pub struct Heap {
     pub(crate) root_scan_len: usize,
     pub(crate) ranges: Slots<RangeKey, RangeDescriptor>,
     pub(crate) range_index: Vec<Option<RangeKey>>,
+    pub(crate) range_occupied: Vec<u64>,
     pub(crate) range_scan_len: usize,
     pub(crate) next_attachment: u64,
     pub(crate) usage: HeapBudgetUsage,
@@ -405,6 +406,7 @@ impl Heap {
             + (initial_roots as u64 + 1) * std::mem::size_of::<Option<RootKey>>() as u64
             + (initial_ranges as u64 + 1)
                 * (range_stride as u64 + std::mem::size_of::<Option<RangeKey>>() as u64)
+            + ((initial_ranges + 1).div_ceil(64) * size_of::<u64>()) as u64
             + BOOK_BYTES
             + std::mem::size_of::<Self>() as u64;
         if estimate > limits.max_bytes {
@@ -434,6 +436,7 @@ impl Heap {
             root_scan_len: 0,
             ranges: Slots::new(initial_ranges, limits.max_root_ranges as usize, retirement),
             range_index: vec![None; initial_ranges + 1],
+            range_occupied: vec![0; (initial_ranges + 1).div_ceil(64)],
             range_scan_len: 0,
             next_attachment: 0,
             usage,
@@ -474,6 +477,7 @@ impl Heap {
             + (heap.root_index.capacity() * std::mem::size_of::<Option<RootKey>>()) as u64
             + heap.ranges.reserved_bytes()
             + (heap.range_index.capacity() * std::mem::size_of::<Option<RangeKey>>()) as u64
+            + (heap.range_occupied.capacity() * size_of::<u64>()) as u64
             + BOOK_BYTES
             + ((heap.allocations.capacity()
                 + heap.gray.capacity()
@@ -1464,6 +1468,7 @@ impl Drop for Heap {
         self.ranges.drop_storage();
         drop(std::mem::take(&mut self.root_index));
         drop(std::mem::take(&mut self.range_index));
+        drop(std::mem::take(&mut self.range_occupied));
         drop(std::mem::take(&mut self.allocations));
         drop(std::mem::take(&mut self.gray));
         drop(std::mem::take(&mut self.release));
