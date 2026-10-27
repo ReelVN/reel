@@ -66,7 +66,7 @@ fn prepared_texture_archive_cost() {
                 .encode()
                 .to_vec();
             raw.extend(blocks);
-            writer.add(&entry.path, &mut raw.as_slice()).unwrap();
+            writer.add(entry.path, &mut raw.as_slice()).unwrap();
             eprintln!(
                 "texture\t{}\t{:?}\t{:?}\t{}\t{}\t{}\t{}",
                 entry.path,
@@ -84,7 +84,7 @@ fn prepared_texture_archive_cost() {
             if bytes.starts_with(b"\xff\xd8") {
                 kinds[3] += 1;
             }
-            writer.add(&entry.path, &mut bytes.as_slice()).unwrap();
+            writer.add(entry.path, &mut bytes.as_slice()).unwrap();
         }
     }
     writer.finish().unwrap();

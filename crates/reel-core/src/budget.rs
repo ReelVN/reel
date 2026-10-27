@@ -12,6 +12,8 @@ pub struct QueueLimits {
 pub enum BudgetCategory {
     CpuInput,
     CpuOutput,
+    /// Archive index records, paths and their bounded mounting workspace.
+    Metadata,
     Temporary,
     Completion,
     GpuResource,

@@ -67,6 +67,7 @@ struct Requests {
     completion: BudgetPool,
     output: BudgetPool,
     temporary: BudgetPool,
+    metadata: BudgetPool,
 }
 impl Requests {
     fn new() -> Self {
@@ -78,6 +79,13 @@ impl Requests {
                 QueueLimits {
                     max_requests: 1,
                     max_bytes: reel_package::archive::SCRATCH_BYTES as u64,
+                },
+            ),
+            metadata: BudgetPool::new(
+                BudgetCategory::Metadata,
+                QueueLimits {
+                    max_requests: 64,
+                    max_bytes: 32 << 20,
                 },
             ),
         }
@@ -139,15 +147,97 @@ fn bytes(event: &IoEvent) -> &[u8] {
     read.bytes.as_slice()
 }
 
-fn wait_for_workspace_release(pool: &BudgetPool) {
+fn wait_for_pool_release(pool: &BudgetPool) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while pool.usage().bytes != 0 {
         assert!(
             Instant::now() < deadline,
-            "closed IO worker retained its workspace"
+            "closed IO worker retained its physical storage"
         );
         std::thread::sleep(Duration::from_millis(1));
     }
+}
+
+#[test]
+fn raw_archive_metadata_is_admitted_and_retained_until_the_io_worker_exits() {
+    let fixture = Fixture::new();
+    let path = fixture.pack("raw.rpk", ArchiveKind::Resources, &[("bytes", b"raw")]);
+    let requests = Requests::new();
+    assert_eq!(requests.metadata.usage().bytes, 0);
+    let io = PackIo::open(
+        [path],
+        None,
+        "vita".into(),
+        &requests.temporary,
+        &requests.metadata,
+        LIMITS,
+        WakeSignal::new(|| {}),
+    )
+    .unwrap();
+    let usage = requests.metadata.usage();
+    assert!(usage.bytes > 0);
+    assert_eq!(usage.tickets, 2, "one index and one mount collection");
+    assert!(
+        usage.peak_bytes > usage.bytes,
+        "the parser releases its bounded input buffer"
+    );
+    assert_eq!(
+        requests.temporary.usage().bytes,
+        0,
+        "raw mounts need no decoder workspace"
+    );
+    drop(io);
+    wait_for_pool_release(&requests.metadata);
+    assert_eq!(requests.metadata.usage().tickets, 0);
+}
+
+#[test]
+fn rejected_metadata_and_later_invalid_mounts_release_every_prior_reservation() {
+    use reel_package::archive::ArchiveIndex;
+    let fixture = Fixture::new();
+    let path = fixture.pack("valid.rpk", ArchiveKind::Resources, &[("bytes", b"raw")]);
+    let index_bytes = ArchiveIndex::read(&mut File::open(&path).unwrap())
+        .unwrap()
+        .capacity_bytes();
+    let requests = Requests::new();
+    let insufficient = BudgetPool::new(
+        BudgetCategory::Metadata,
+        QueueLimits {
+            max_requests: 8,
+            max_bytes: index_bytes - 1,
+        },
+    );
+    assert!(
+        PackIo::open(
+            [path.clone()],
+            None,
+            "vita".into(),
+            &requests.temporary,
+            &insufficient,
+            LIMITS,
+            WakeSignal::new(|| {})
+        )
+        .is_err()
+    );
+    assert_eq!(insufficient.usage().bytes, 0);
+    assert_eq!(insufficient.usage().tickets, 0);
+    let invalid = fixture.0.join("invalid.rpk");
+    std::fs::write(&invalid, b"not an archive").unwrap();
+    assert!(
+        PackIo::open(
+            [path, invalid],
+            None,
+            "vita".into(),
+            &requests.temporary,
+            &requests.metadata,
+            LIMITS,
+            WakeSignal::new(|| {})
+        )
+        .is_err()
+    );
+    assert_eq!(requests.metadata.usage().bytes, 0);
+    assert_eq!(requests.metadata.usage().tickets, 0);
+    assert_eq!(requests.temporary.usage().bytes, 0);
 }
 
 #[test]
@@ -178,6 +268,7 @@ fn pack_mount_order_explicit_overlay_and_range_versions_use_one_io_contract() {
             overlay.clone(),
             std::env::consts::OS.into(),
             &requests.temporary,
+            &requests.metadata,
             LIMITS,
             wake.clone(),
         )
@@ -279,6 +370,7 @@ fn packed_reads_preserve_priority_cancel_queue_backpressure_and_budget_ownership
         None,
         std::env::consts::OS.into(),
         &requests.temporary,
+        &requests.metadata,
         QueueLimits {
             max_requests: 5, // Three ordinary owners plus two reserved media slots.
             ..LIMITS
@@ -382,9 +474,11 @@ fn verify_preemption(path: PathBuf, large_key: &str, media_key: &str) {
     let output = BudgetPool::new(BudgetCategory::CpuInput, limits);
     let completion = BudgetPool::new(BudgetCategory::Completion, limits);
     let temporary = BudgetPool::new(BudgetCategory::Temporary, limits);
+    let metadata = BudgetPool::new(BudgetCategory::Metadata, limits);
     let mut io = PackIo::observed(
         [path],
         &temporary,
+        &metadata,
         limits,
         wake.clone(),
         Arc::new(move |id, length, pointer, seeks| {
@@ -479,7 +573,7 @@ fn verify_preemption(path: PathBuf, large_key: &str, media_key: &str) {
         large_steps.last().unwrap().3
     );
     drop(io);
-    wait_for_workspace_release(&temporary);
+    wait_for_pool_release(&temporary);
 }
 
 #[test]
@@ -501,7 +595,7 @@ fn real_rpk_media_preempts_large_reads_through_the_actual_io_worker() {
                 && entry.length >= 65536
         })
         .unwrap();
-    verify_preemption(path, &large.path, &media.path);
+    verify_preemption(path, large.path, media.path);
 }
 
 #[test]
@@ -528,6 +622,7 @@ fn compressed_ranges_share_one_workspace_and_release_it_with_the_worker() {
             None,
             "vita".into(),
             &insufficient,
+            &requests.metadata,
             LIMITS,
             wake.clone()
         )
@@ -539,6 +634,7 @@ fn compressed_ranges_share_one_workspace_and_release_it_with_the_worker() {
         None,
         "vita".into(),
         &requests.temporary,
+        &requests.metadata,
         LIMITS,
         wake.clone(),
     )
@@ -554,7 +650,7 @@ fn compressed_ranges_share_one_workspace_and_release_it_with_the_worker() {
     requests.settled();
     assert_eq!(requests.temporary.usage().peak_bytes, SCRATCH_BYTES as u64);
     drop(io);
-    wait_for_workspace_release(&requests.temporary);
+    wait_for_pool_release(&requests.temporary);
 }
 
 #[test]
@@ -610,6 +706,6 @@ fn compressed_image_decoding_stays_within_the_shared_temporary_allowance() {
         assert!(pool.usage().peak_bytes <= limit);
         assert_eq!(pool.usage().bytes, SCRATCH_BYTES as u64);
         drop(assets);
-        wait_for_workspace_release(&pool);
+        wait_for_pool_release(&pool);
     }
 }

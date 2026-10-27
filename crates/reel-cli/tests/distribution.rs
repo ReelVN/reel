@@ -329,7 +329,7 @@ fn development_and_release_relocate_and_release_uses_only_declared_packages() {
                 assert_eq!(index.entries().len(), 1);
                 for entry in index.entries() {
                     if entry.length > options.pack_bytes.get() {
-                        assert_eq!(entry.path.as_ref(), "assets/01-large.bin");
+                        assert_eq!(entry.path, "assets/01-large.bin");
                     } else {
                         assert!(file.metadata().unwrap().len() <= options.pack_bytes.get());
                     }

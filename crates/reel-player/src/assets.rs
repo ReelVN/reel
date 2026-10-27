@@ -37,6 +37,9 @@ use std::{
 pub struct AssetOptions {
     pub root: PathBuf,
     pub resident_bytes: u64,
+    /// Independent archive metadata admission ceiling, including parsing peak.
+    /// The default 32 MiB is a limit; mounts reserve their actual capacities.
+    pub metadata_bytes: u64,
     /// Total encoded input ceiling. Streaming reserves min(128 KiB, one quarter)
     /// within this ceiling; ordinary resources must fit the remaining capacity.
     pub input_bytes: u64,
@@ -49,6 +52,7 @@ impl Default for AssetOptions {
         Self {
             root: ".".into(),
             resident_bytes: 256 << 20,
+            metadata_bytes: 32 << 20,
             input_bytes: 64 << 20,
             decode_bytes: 256 << 20,
         }
@@ -119,6 +123,7 @@ struct Service {
     input: BudgetPool,
     stream_input: BudgetPool,
     output: BudgetPool,
+    metadata: BudgetPool,
     temporary: BudgetPool,
     io_workspace_bytes: u64,
     completion: BudgetPool,
@@ -149,7 +154,7 @@ impl Assets {
     pub fn directory_for_target(options: AssetOptions, target: String) -> Result<Self, IoError> {
         let limits = options.queue_limits();
         let root = options.root.clone();
-        Self::try_with_adapters(options, |wake, _temporary| {
+        Self::try_with_adapters(options, |wake, _temporary, _metadata| {
             Ok((
                 Box::new(DirectoryIo::for_target(root, target, limits, wake.clone())?),
                 Box::new(ImageExecutor::new(limits, wake)),
@@ -164,12 +169,13 @@ impl Assets {
         packages: Option<Vec<PathBuf>>,
     ) -> Result<Self, IoError> {
         let limits = options.queue_limits();
-        Self::try_with_adapters(options, |wake, temporary| {
+        Self::try_with_adapters(options, |wake, temporary, metadata| {
             let io: Box<dyn AssetIo> = match packages {
                 Some(paths) => Box::new(PackIo::selected(
                     paths,
                     files,
                     temporary,
+                    metadata,
                     limits,
                     wake.clone(),
                 )?),
@@ -194,13 +200,14 @@ impl Assets {
         target: String,
     ) -> Result<Self, IoError> {
         let limits = options.queue_limits();
-        Self::try_with_adapters(options, |wake, temporary| {
+        Self::try_with_adapters(options, |wake, temporary, metadata| {
             Ok((
                 Box::new(PackIo::open(
                     paths,
                     overlay,
                     target,
                     temporary,
+                    metadata,
                     limits,
                     wake.clone(),
                 )?),
@@ -212,7 +219,7 @@ impl Assets {
         options: AssetOptions,
         create: impl FnOnce(WakeSignal) -> (Box<dyn AssetIo>, Box<dyn WorkExecutor>),
     ) -> Self {
-        Self::try_with_adapters(options, |wake, _temporary| {
+        Self::try_with_adapters(options, |wake, _temporary, _metadata| {
             Ok::<_, std::convert::Infallible>(create(wake))
         })
         .unwrap()
@@ -221,6 +228,7 @@ impl Assets {
         options: AssetOptions,
         create: impl FnOnce(
             WakeSignal,
+            &BudgetPool,
             &BudgetPool,
         ) -> Result<(Box<dyn AssetIo>, Box<dyn WorkExecutor>), E>,
     ) -> Result<Self, E> {
@@ -237,9 +245,16 @@ impl Assets {
                 max_bytes: options.decode_bytes,
             },
         );
-        let (io, executor) = create(wake.clone(), &temporary)?;
+        let metadata = BudgetPool::new(
+            BudgetCategory::Metadata,
+            QueueLimits {
+                max_requests: u32::MAX,
+                max_bytes: options.metadata_bytes,
+            },
+        );
+        let (io, executor) = create(wake.clone(), &temporary, &metadata)?;
         Ok(Self::assemble(
-            options, io, executor, wake, notify, temporary,
+            options, io, executor, wake, notify, temporary, metadata,
         ))
     }
     fn assemble(
@@ -249,6 +264,7 @@ impl Assets {
         wake: WakeSignal,
         notify: Notify,
         temporary: BudgetPool,
+        metadata: BudgetPool,
     ) -> Self {
         let pool = |category, bytes| {
             BudgetPool::new(
@@ -277,6 +293,7 @@ impl Assets {
             input: input_pool(options.ordinary_input_bytes()),
             stream_input: input_pool(options.stream_input_bytes()),
             output: pool(BudgetCategory::CpuOutput, options.resident_bytes),
+            metadata,
             io_workspace_bytes: temporary.usage().bytes,
             temporary,
             completion: pool(BudgetCategory::Completion, 1 << 20),
@@ -549,6 +566,11 @@ impl Assets {
     }
     pub fn temporary_pool(&self) -> BudgetPool {
         self.0.borrow().temporary.clone()
+    }
+    /// Archive index residency and mounting peak, independent of decode workspace.
+    /// Tickets remain charged until the IO worker releases their physical storage.
+    pub fn metadata_pool(&self) -> BudgetPool {
+        self.0.borrow().metadata.clone()
     }
 }
 impl Service {

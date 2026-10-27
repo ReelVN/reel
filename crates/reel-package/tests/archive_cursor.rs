@@ -17,7 +17,7 @@ struct Counted<R> {
     directories: usize,
 }
 impl<R> Counted<R> {
-    fn new(inner: R, entry: &Entry) -> Self {
+    fn new(inner: R, entry: &Entry<'_>) -> Self {
         let directory = match entry.storage {
             EntryStorage::Raw => 0..0,
             EntryStorage::Blocks { directory_offset } => {
@@ -65,7 +65,7 @@ fn resumable_directory_windows_survive_interleaving_and_validate_cursor_identity
     let index = ArchiveIndex::read(&mut Cursor::new(&bytes)).unwrap();
     let entry = index.get("large").unwrap();
     let media = index.get("media").unwrap();
-    let mut input = Counted::new(Cursor::new(&bytes), entry);
+    let mut input = Counted::new(Cursor::new(&bytes), &entry);
     let mut scratch = ReadScratch::new();
     let mut cursor = entry.read_cursor(0, payload.len()).unwrap();
     let mut result = vec![0; payload.len()];
@@ -92,7 +92,7 @@ fn resumable_directory_windows_survive_interleaving_and_validate_cursor_identity
         input.directories, 2,
         "259 quanta preserve the original two directory windows"
     );
-    let mut wrong = entry.clone();
+    let mut wrong = entry;
     wrong.length += 1;
     assert!(
         wrong
@@ -166,7 +166,7 @@ fn real_rpk_cursor_reports_io_and_throughput_without_repacking() {
         let mut durations = Vec::new();
         let mut stats = None;
         for _ in 0..5 {
-            let mut reader = Counted::new(File::open(&path).unwrap(), entry);
+            let mut reader = Counted::new(File::open(&path).unwrap(), &entry);
             let mut scratch = ReadScratch::new();
             let mut cursor = entry.read_cursor(0, output.len()).unwrap();
             let start = Instant::now();

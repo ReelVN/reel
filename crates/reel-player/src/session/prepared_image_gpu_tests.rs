@@ -109,6 +109,7 @@ fn scene(
         .with_asset_options(AssetOptions {
             root: directory.into(),
             resident_bytes: 12 << 20,
+            metadata_bytes: 32 << 20,
             decode_bytes: 8 << 20,
             input_bytes: 2 << 20,
         });

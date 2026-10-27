@@ -15,10 +15,21 @@ fn archive_index_mount_and_lookup_cost() {
     // The collection of owners belongs to the harness; the measured region
     // contains only the production index reader and its retained allocations.
     let mut indexes = Vec::with_capacity(paths.len());
+    let mut admitted_resident = 0;
+    let mut admitted_peak = 0;
     let started = Instant::now();
     let allocation = allocation_counter::measure(|| {
         for file in &mut files {
-            indexes.push(ArchiveIndex::read(file).unwrap());
+            let mut current = 0;
+            indexes.push(
+                ArchiveIndex::read_with_admission(file, |bytes| {
+                    current = bytes;
+                    admitted_peak = admitted_peak.max(admitted_resident + bytes);
+                    Ok(())
+                })
+                .unwrap(),
+            );
+            admitted_resident += current;
         }
     });
     let mount_ns = started.elapsed().as_nanos();
@@ -36,9 +47,7 @@ fn archive_index_mount_and_lookup_cost() {
     for _ in 0..8 {
         for index in &indexes {
             for entry in index.entries().step_by(97) {
-                let found = index
-                    .get(std::hint::black_box(entry.path.as_ref()))
-                    .unwrap();
+                let found = index.get(std::hint::black_box(entry.path)).unwrap();
                 assert_eq!(found.version, entry.version);
                 std::hint::black_box(found.offset);
                 lookups += 1;
@@ -53,6 +62,8 @@ fn archive_index_mount_and_lookup_cost() {
             "mount_ns": mount_ns, "lookup_ns": started.elapsed().as_nanos(), "lookups": lookups,
             "allocation_calls": allocation.count_total, "allocation_bytes": allocation.bytes_total,
             "resident_allocation_bytes": allocation.bytes_current,
+        "index_capacity_bytes": indexes.iter().map(ArchiveIndex::capacity_bytes).sum::<u64>(),
+        "admitted_resident_bytes": admitted_resident, "admitted_peak_bytes": admitted_peak,
             "peak_allocation_bytes": allocation.bytes_max,
             "cache_condition": "current OS cache; no cold-cache or target-device claim",
         })

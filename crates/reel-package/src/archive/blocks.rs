@@ -62,7 +62,7 @@ pub(super) fn directory_bytes(length: u64) -> Option<u64> {
         .checked_mul(RECORD_BYTES)
 }
 
-impl Entry {
+impl Entry<'_> {
     /// Prepare one logical range without reading payload or directory bytes.
     /// Retaining this cursor avoids rereading directory windows across quanta.
     pub fn read_cursor(&self, offset: u64, length: usize) -> io::Result<ReadCursor> {

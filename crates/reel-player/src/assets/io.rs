@@ -144,12 +144,13 @@ impl PackIo {
     pub(super) fn observed(
         paths: impl IntoIterator<Item = PathBuf>,
         temporary: &BudgetPool,
+        metadata: &BudgetPool,
         limits: QueueLimits,
         wake: WakeSignal,
         observer: ReadObserver,
     ) -> Result<Self, IoError> {
         Ok(Self(FileIo::build(
-            Files::Pack(pack::Files::open(paths, None, temporary)?),
+            Files::Pack(pack::Files::open(paths, None, temporary, metadata)?),
             limits,
             wake,
             Some(observer),
@@ -159,31 +160,36 @@ impl PackIo {
     /// only missing loose files fall through to the selected archive entry.
     /// Compressed entries share one fixed workspace charged to `temporary` until
     /// the IO worker exits. Raw-only mounts allocate no decoding workspace.
+    /// `metadata` admits index/mount capacities and parsing peak before allocation;
+    /// retained index storage stays charged until the IO worker releases it.
     pub fn open(
         paths: impl IntoIterator<Item = PathBuf>,
         overlay: Option<PathBuf>,
         target: String,
         temporary: &BudgetPool,
+        metadata: &BudgetPool,
         limits: QueueLimits,
         wake: WakeSignal,
     ) -> Result<Self, IoError> {
         let overlay = overlay
             .map(|root| directory::Files::for_target(root, limits.max_requests as usize, target))
             .transpose()?;
-        let files = pack::Files::open(paths, overlay, temporary)?;
+        let files = pack::Files::open(paths, overlay, temporary, metadata)?;
         Ok(Self(FileIo::new(Files::Pack(files), limits, wake)))
     }
     /// Mounts archives beneath a logical-to-physical resource selection. Archive
     /// entries supply resources absent from the selected file map.
+    /// Metadata admission and decoding workspace follow [`Self::open`].
     pub fn selected(
         paths: impl IntoIterator<Item = PathBuf>,
         selected: BTreeMap<String, PathBuf>,
         temporary: &BudgetPool,
+        metadata: &BudgetPool,
         limits: QueueLimits,
         wake: WakeSignal,
     ) -> Result<Self, IoError> {
         let overlay = directory::Files::selected(selected, limits.max_requests as usize);
-        let files = pack::Files::open(paths, Some(overlay), temporary)?;
+        let files = pack::Files::open(paths, Some(overlay), temporary, metadata)?;
         Ok(Self(FileIo::new(Files::Pack(files), limits, wake)))
     }
 }
@@ -218,7 +224,7 @@ struct ReadFile<'a> {
     version: ContentVersion,
     stamp: Option<SystemTime>,
     compressed: Option<(
-        &'a reel_package::archive::Entry,
+        reel_package::archive::Entry<'a>,
         &'a mut reel_package::archive::ReadScratch,
     )>,
 }

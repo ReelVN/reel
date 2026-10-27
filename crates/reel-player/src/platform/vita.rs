@@ -280,6 +280,7 @@ fn run_library(
     options.assets = crate::assets::AssetOptions {
         root: "app0:/".into(),
         resident_bytes: 32 << 20,
+        metadata_bytes: 32 << 20,
         input_bytes: 32 << 20,
         decode_bytes: 1 << 20,
     };
