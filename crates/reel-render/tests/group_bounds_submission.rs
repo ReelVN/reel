@@ -138,6 +138,23 @@ fn source_over_frame() -> RenderFrame {
     for _ in 0..4 {
         scene.pop_group();
     }
+    // A clipped single rectangle can carry its own group's opacity. Keep this
+    // in the one-target contract so both backends exercise the shared folding plan.
+    scene.push_group(Group {
+        composite: Composite {
+            alpha: 0.5,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    scene.push_clip(reel_ui::imaging::record::Clip::Fill {
+        transform: Affine::IDENTITY,
+        shape: Geometry::Rect(Rect::new(30., 40., 430., 340.)),
+        fill_rule: Default::default(),
+    });
+    fill(&mut scene, Rect::new(0., 0., 960., 544.), Affine::IDENTITY);
+    scene.pop_clip();
+    scene.pop_group();
     let mut widget = RecordWidget::new(scene);
     widget.clip = false;
     let mut bridge = widget_bridge(widget, Affine::IDENTITY);
@@ -161,7 +178,7 @@ fn source_over_frame() -> RenderFrame {
             .iter()
             .filter(|c| matches!(c.op, FrameOp::PushGroup(_)))
             .count(),
-        4
+        5
     );
     frame
 }
