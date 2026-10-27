@@ -33,6 +33,8 @@ const CASES: &[&str] = &[
     "rgba",
     "bc1",
     "bc3",
+    "bc1_region",
+    "bc3_region",
     "text",
     "offscreen",
     "mask_chain",

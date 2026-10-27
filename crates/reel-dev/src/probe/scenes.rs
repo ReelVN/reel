@@ -71,8 +71,11 @@ impl Assets {
             version: ContentVersion([index as u8; 32]),
         };
         let size = [256, 256];
-        let handle = if case == "bc1" || case == "bc3" || case == "resources" && index % 2 != 0 {
-            let format = if case == "bc1" {
+        let handle = if case.starts_with("bc1")
+            || case.starts_with("bc3")
+            || case == "resources" && index % 2 != 0
+        {
+            let format = if case.starts_with("bc1") {
                 TextureFormat::Bc1Rgb
             } else {
                 TextureFormat::Bc3Rgba
@@ -93,7 +96,15 @@ impl Assets {
                     TexturePayload::new(
                         TextureDescriptor {
                             format,
-                            layout: TextureLayout::identity(size),
+                            layout: if case.ends_with("_region") {
+                                TextureLayout {
+                                    logical_size: size,
+                                    content_size: [240, 248],
+                                    storage_size: size,
+                                }
+                            } else {
+                                TextureLayout::identity(size)
+                            },
                             source_encoding: ColorEncoding::Linear,
                         },
                         owned,
