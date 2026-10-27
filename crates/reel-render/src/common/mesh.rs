@@ -29,7 +29,7 @@ pub struct Vertex {
 /// Axis-aligned geometry clip in the same float32 clip space as draw vertices.
 /// Single-sample rasterization keeps this binary, so ordinary draws can be
 /// clipped individually without changing their source-over composition.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RectClip {
     bounds: [f32; 4],
 }
@@ -80,7 +80,7 @@ impl RectClip {
     }
 }
 /// Per-quad sampling data keeps different windows in the same texture batch.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Default, PartialEq)]
 pub(crate) struct ImageSampling {
     window: [f32; 4],
 }
@@ -171,6 +171,8 @@ pub struct Mesh {
     pub indices: Vec<u32>,
     allocation: Allocation,
     error: Option<GpuError>,
+    pub(crate) identity: Option<u64>,
+    pub(crate) clip_identity: Option<RectClip>,
 }
 pub(crate) struct Allocation {
     shared: BudgetPool,
@@ -180,6 +182,25 @@ pub(crate) struct Allocation {
     ticket: Option<Reservation>,
 }
 impl Allocation {
+    pub(crate) fn fresh(&self) -> Self {
+        Self {
+            shared: self.shared.clone(),
+            local: self.local.clone(),
+            limit: self.limit,
+            max_buffer: self.max_buffer,
+            ticket: None,
+        }
+    }
+    pub(crate) fn borrow_cached(
+        &self,
+        bytes: u64,
+    ) -> Result<reel_core::budget::BudgetTicket, GpuError> {
+        self.local.reserve(bytes).map_err(|_| GpuError::Budget {
+            domain: "mesh scratch",
+            requested: bytes,
+            available: self.limit.saturating_sub(self.local.usage().bytes),
+        })
+    }
     pub(crate) fn new(
         budgets: &Budgets,
         budget_scope: &Budgets,
@@ -234,7 +255,11 @@ impl Allocation {
         }
         Ok(())
     }
-    fn grow<T>(&mut self, storage: &mut Vec<T>, additional: usize) -> Result<(), GpuError> {
+    pub(crate) fn grow<T>(
+        &mut self,
+        storage: &mut Vec<T>,
+        additional: usize,
+    ) -> Result<(), GpuError> {
         let required = storage
             .len()
             .checked_add(additional)
@@ -276,6 +301,25 @@ impl Allocation {
     }
 }
 impl Mesh {
+    pub(crate) fn cache_copy(&self) -> Self {
+        Self {
+            vertices: self.vertices.clone(),
+            indices: self.indices.clone(),
+            error: None,
+            identity: self.identity,
+            clip_identity: self.clip_identity,
+            allocation: Allocation {
+                shared: self.allocation.shared.clone(),
+                local: self.allocation.shared.clone(),
+                limit: self.allocation.limit,
+                max_buffer: self.allocation.max_buffer,
+                ticket: None,
+            },
+        }
+    }
+    pub(crate) fn scratch_allocation(&self) -> Allocation {
+        self.allocation.fresh()
+    }
     /// Solid glyph color uses the atlas's linear coverage channel directly.
     /// Gradient or adjusted brushes retain their existing color operations.
     pub(crate) fn direct_coverage(
@@ -374,9 +418,6 @@ impl Mesh {
     pub(crate) fn bytes(&self) -> usize {
         self.vertices.len() * size_of::<Vertex>() + self.indices.len() * size_of::<u32>()
     }
-    pub(crate) fn reserve_entries<T>(&mut self, entries: &mut Vec<T>) -> Result<(), GpuError> {
-        self.allocation.grow(entries, 1)
-    }
     /// Clip triangles and linearly interpolate every authored vertex attribute.
     /// The fixed polygon scratch has at most seven vertices; output growth is
     /// reserved through the same transient ledger as ordinary tessellation.
@@ -389,6 +430,8 @@ impl Mesh {
             return Ok(None);
         }
         let mut output = Self::new(allocation);
+        output.identity = self.identity;
+        output.clip_identity = Some(clip);
         for triangle in self.indices.as_chunks::<3>().0 {
             let first = self.vertices[triangle[0] as usize];
             let mut polygon = [first; 8];
@@ -474,6 +517,8 @@ impl Mesh {
             indices: Vec::new(),
             allocation,
             error: None,
+            identity: None,
+            clip_identity: None,
         }
     }
     pub(crate) fn quad(&mut self, rect: Rect, uv: Rect) -> Result<(), GpuError> {

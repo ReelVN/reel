@@ -1,47 +1,233 @@
-//! Ordered geometry segments share an upload pair, with per-draw state intact.
-use super::{GpuError, mesh::Mesh};
-use std::ops::Range;
+//! Ordered immutable geometry segments retain the existing adjacent batching.
+use super::{
+    GpuError,
+    mesh::{Allocation, Mesh, RectClip},
+    recording_cache::Reference,
+};
+use std::ops::{Deref, Range};
 
 pub(crate) struct Entry<T> {
     pub range: Range<u32>,
     pub state: T,
 }
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct SegmentKey {
+    pub identity: Option<u64>,
+    pub clip: Option<RectClip>,
+    pub vertices: usize,
+    pub indices: usize,
+}
+pub(crate) struct Segment {
+    pub mesh: Reference,
+    pub key: SegmentKey,
+}
 pub(crate) struct Batch<T> {
-    // Mesh's reservation includes this Vec's capacity; free it before the mesh.
     pub entries: Vec<Entry<T>>,
-    pub mesh: Mesh,
+    pub segments: Vec<Segment>,
+    vertices: usize,
+    indices: usize,
+    bytes: usize,
+    allocation: Allocation,
+}
+// This temporary upload view stays on the stack; boxing adds an allocation to
+// every cold batch and does not reduce any retained collection.
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum Materialized<'a> {
+    Borrowed(&'a Mesh),
+    Owned(Mesh),
+}
+impl Deref for Materialized<'_> {
+    type Target = Mesh;
+    fn deref(&self) -> &Mesh {
+        match self {
+            Self::Borrowed(mesh) => mesh,
+            Self::Owned(mesh) => mesh,
+        }
+    }
 }
 impl<T> Batch<T> {
-    /// Transfer the first mesh and its capacity tickets without copying geometry.
-    pub fn new(mut mesh: Mesh, state: T) -> Result<Self, GpuError> {
-        let end = u32::try_from(mesh.indices.len()).map_err(|_| GpuError::InvalidSize)?;
-        let mut entries = Vec::new();
-        mesh.reserve_entries(&mut entries)?;
-        entries.push(Entry {
-            range: 0..end,
-            state,
-        });
-        Ok(Self { mesh, entries })
+    pub fn new(mesh: impl Into<Reference>, state: T) -> Result<Self, GpuError> {
+        let mesh = mesh.into();
+        let allocation = mesh.scratch_allocation();
+        let mut batch = Self {
+            entries: Vec::new(),
+            segments: Vec::new(),
+            vertices: 0,
+            indices: 0,
+            bytes: 0,
+            allocation,
+        };
+        batch.allocation.grow(&mut batch.entries, 1)?;
+        let range = batch.append(mesh)?;
+        batch.entries.push(Entry { range, state });
+        Ok(batch)
     }
-    /// A flush threshold, not a limit on a single authored mesh.
     pub fn full(&self, next: &Mesh) -> bool {
-        self.entries.len() >= 64 || self.mesh.bytes().saturating_add(next.bytes()) > 256 * 1024
+        self.entries.len() >= 64 || self.bytes.saturating_add(next.bytes()) > 256 * 1024
     }
-    pub fn push(&mut self, mesh: Mesh, state: T) -> Result<(), GpuError>
+    fn append(&mut self, mesh: Reference) -> Result<Range<u32>, GpuError> {
+        let end = self
+            .indices
+            .checked_add(mesh.indices.len())
+            .filter(|&n| n <= i32::MAX as usize)
+            .ok_or(GpuError::InvalidSize)?;
+        let vertices = self
+            .vertices
+            .checked_add(mesh.vertices.len())
+            .filter(|&n| n <= u32::MAX as usize)
+            .ok_or(GpuError::InvalidSize)?;
+        self.allocation.grow(&mut self.segments, 1)?;
+        let key = SegmentKey {
+            identity: mesh.identity,
+            clip: mesh.clip_identity,
+            vertices: mesh.vertices.len(),
+            indices: mesh.indices.len(),
+        };
+        self.bytes += mesh.bytes();
+        self.segments.push(Segment { mesh, key });
+        let range = self.indices as u32..end as u32;
+        self.vertices = vertices;
+        self.indices = end;
+        Ok(range)
+    }
+    pub fn push(&mut self, mesh: impl Into<Reference>, state: T) -> Result<(), GpuError>
     where
         T: PartialEq,
     {
         let merge = self.entries.last().is_some_and(|last| last.state == state);
         if !merge {
-            self.mesh.reserve_entries(&mut self.entries)?;
+            self.allocation.grow(&mut self.entries, 1)?;
         }
-        let range = self.mesh.append(&mesh)?;
+        let range = self.append(mesh.into())?;
         if merge {
             self.entries.last_mut().unwrap().range.end = range.end;
         } else {
             self.entries.push(Entry { range, state });
         }
         Ok(())
+    }
+    pub fn materialize(&self) -> Result<Materialized<'_>, GpuError> {
+        self.materialize_range(0..self.segments.len())
+    }
+    pub fn materialize_range(&self, range: Range<usize>) -> Result<Materialized<'_>, GpuError> {
+        if range.len() == 1 {
+            return Ok(Materialized::Borrowed(&self.segments[range.start].mesh));
+        }
+        let mut mesh = Mesh::new(self.allocation.fresh());
+        for segment in &self.segments[range] {
+            mesh.append(&segment.mesh)?;
+        }
+        Ok(Materialized::Owned(mesh))
+    }
+    pub fn capacity(&self) -> super::geometry::Capacity {
+        let narrow = self.vertices <= usize::from(u16::MAX) + 1;
+        super::geometry::Capacity {
+            vertices: (self.vertices * size_of::<super::mesh::Vertex>()) as u64,
+            indices: if narrow {
+                (self.indices.div_ceil(2) * 4) as u64
+            } else {
+                (self.indices * 4) as u64
+            },
+            index_format: if narrow {
+                super::indices::Format::U16
+            } else {
+                super::indices::Format::U32
+            },
+        }
+    }
+}
+
+/// Completed native buffers retain only segment identities and extents. The
+/// identities refer to immutable CPU meshes, so no source or atlas owner escapes.
+pub(crate) struct Layout {
+    keys: Vec<SegmentKey>,
+    ticket: reel_core::budget::BudgetTicket,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct UploadRange {
+    pub segments: Range<usize>,
+    pub vertices: Range<usize>,
+    pub indices: Range<usize>,
+}
+impl Layout {
+    /// Adjacent dirty segments become one transfer range, independent of draw
+    /// state boundaries. Byte alignment is applied after this common planning.
+    pub fn ranges<'a, T>(
+        &'a self,
+        batch: &'a Batch<T>,
+    ) -> impl Iterator<Item = UploadRange> + Clone + 'a {
+        let (mut next, mut vertex, mut index) = (0, 0, 0);
+        std::iter::from_fn(move || {
+            while next < batch.segments.len() {
+                let segment = &batch.segments[next];
+                if self.matches(next, segment.key) {
+                    vertex += segment.key.vertices;
+                    index += segment.key.indices;
+                    next += 1;
+                    continue;
+                }
+                let (start, first_vertex, first_index) = (next, vertex, index);
+                while next < batch.segments.len() && !self.matches(next, batch.segments[next].key) {
+                    vertex += batch.segments[next].key.vertices;
+                    index += batch.segments[next].key.indices;
+                    next += 1;
+                }
+                return Some(UploadRange {
+                    segments: start..next,
+                    vertices: first_vertex..vertex,
+                    indices: first_index..index,
+                });
+            }
+            None
+        })
+    }
+    pub fn bytes(&self) -> u64 {
+        self.ticket.bytes()
+    }
+    pub fn compatible<T>(&self, batch: &Batch<T>) -> bool {
+        self.keys.len() == batch.segments.len()
+            && self.keys.iter().zip(&batch.segments).all(|(old, next)| {
+                old.vertices == next.key.vertices && old.indices == next.key.indices
+            })
+    }
+    pub fn matches(&self, index: usize, key: SegmentKey) -> bool {
+        key.identity.is_some() && self.keys.get(index) == Some(&key)
+    }
+    pub fn score<T>(&self, batch: &Batch<T>) -> usize {
+        if !self.compatible(batch) {
+            return 0;
+        }
+        batch
+            .segments
+            .iter()
+            .enumerate()
+            .filter(|(i, s)| self.matches(*i, s.key))
+            .map(|(_, s)| s.mesh.bytes())
+            .sum()
+    }
+    pub fn record<T>(
+        layout: &mut Option<Self>,
+        batch: &Batch<T>,
+        budgets: &super::renderer::Budgets,
+        local: &super::renderer::Budgets,
+    ) -> Option<reel_core::budget::BudgetTicket> {
+        if let Some(layout) = layout
+            && layout.compatible(batch)
+        {
+            for (key, segment) in layout.keys.iter_mut().zip(&batch.segments) {
+                *key = segment.key;
+            }
+            return None;
+        }
+        *layout = None;
+        let bytes = (batch.segments.len() * size_of::<SegmentKey>()) as u64;
+        let local = local.transient.reserve(bytes).ok()?;
+        let ticket = budgets.transient.reserve(bytes).ok()?;
+        *layout = Some(Self {
+            keys: batch.segments.iter().map(|segment| segment.key).collect(),
+            ticket,
+        });
+        Some(local)
     }
 }
 
@@ -78,21 +264,24 @@ mod tests {
         let vertex_storage = first.vertices.as_ptr();
         let index_storage = first.indices.as_ptr();
         let mut batch = Batch::new(first, (1, [3, 4, 20, 30])).unwrap();
-        assert_eq!(batch.mesh.vertices.as_ptr(), vertex_storage);
-        assert_eq!(batch.mesh.indices.as_ptr(), index_storage);
+        assert_eq!(
+            batch.materialize().unwrap().vertices.as_ptr(),
+            vertex_storage
+        );
+        assert_eq!(batch.materialize().unwrap().indices.as_ptr(), index_storage);
         batch.push(second, (2, [10, 20, 50, 60])).unwrap();
         assert_eq!(batch.entries[0].range, 0..6);
         assert_eq!(batch.entries[1].range, 6..12);
         assert_eq!(batch.entries[0].state, (1, [3, 4, 20, 30]));
         assert_eq!(batch.entries[1].state, (2, [10, 20, 50, 60]));
         for (entry, original) in batch.entries.iter().zip(expected) {
-            for (combined, original) in batch.mesh.indices
+            for (combined, original) in batch.materialize().unwrap().indices
                 [entry.range.start as usize..entry.range.end as usize]
                 .iter()
                 .zip(original)
             {
                 assert_eq!(
-                    bytemuck::bytes_of(&batch.mesh.vertices[*combined as usize]),
+                    bytemuck::bytes_of(&batch.materialize().unwrap().vertices[*combined as usize]),
                     original
                 );
             }
@@ -129,7 +318,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(1, 0..12), (2, 12..18), (1, 18..24)]
         );
-        assert_eq!(batch.mesh.indices.len(), 24);
+        assert_eq!(batch.materialize().unwrap().indices.len(), 24);
     }
 
     #[test]
@@ -145,9 +334,84 @@ mod tests {
         let vertex_storage = mesh.vertices.as_ptr();
         let index_storage = mesh.indices.as_ptr();
         let batch = Batch::new(mesh, ()).unwrap();
-        assert_eq!(batch.mesh.vertices.as_ptr(), vertex_storage);
-        assert_eq!(batch.mesh.indices.as_ptr(), index_storage);
+        assert_eq!(
+            batch.materialize().unwrap().vertices.as_ptr(),
+            vertex_storage
+        );
+        assert_eq!(batch.materialize().unwrap().indices.as_ptr(), index_storage);
         assert!(batch.full(&Mesh::new(allocation())));
-        assert!(batch.mesh.indices.iter().copied().max().unwrap() > u32::from(u16::MAX));
+        assert!(
+            batch
+                .materialize()
+                .unwrap()
+                .indices
+                .iter()
+                .copied()
+                .max()
+                .unwrap()
+                > u32::from(u16::MAX)
+        );
+    }
+
+    #[test]
+    fn changed_ranges_coalesce_without_changing_adjacent_draw_batches() {
+        let limits = GpuLimits::default();
+        let shared = Budgets::new(limits);
+        let local = Budgets::new(limits);
+        let make = |ids: [u64; 5]| {
+            let mut batch = None;
+            for id in ids {
+                let mut mesh = Mesh::new(Allocation::new(
+                    &shared,
+                    &local,
+                    limits.transient_bytes,
+                    1 << 26,
+                ));
+                mesh.quad(Rect::new(0., 0., 1., 1.), Rect::ZERO).unwrap();
+                mesh.indices.truncate(3);
+                mesh.identity = Some(id);
+                if let Some(batch) = &mut batch {
+                    Batch::push(batch, mesh, 1).unwrap();
+                } else {
+                    batch = Some(Batch::new(mesh, 1).unwrap());
+                }
+            }
+            batch.unwrap()
+        };
+        let initial = make([1, 2, 3, 4, 5]);
+        let mut layout = None;
+        let _local = Layout::record(&mut layout, &initial, &shared, &local).unwrap();
+        let layout = layout.unwrap();
+        assert_eq!(layout.ranges(&initial).count(), 0);
+        let changed = make([1, 6, 7, 4, 8]);
+        assert_eq!(changed.entries.len(), 1);
+        assert_eq!(changed.entries[0].range, 0..15);
+        assert!(layout.compatible(&changed));
+        assert_eq!(
+            layout.ranges(&changed).collect::<Vec<_>>(),
+            vec![
+                UploadRange {
+                    segments: 1..3,
+                    vertices: 4..12,
+                    indices: 3..9
+                },
+                UploadRange {
+                    segments: 4..5,
+                    vertices: 16..20,
+                    indices: 12..15
+                },
+            ]
+        );
+        let middle = changed.materialize_range(1..3).unwrap();
+        assert_eq!(middle.indices, [0, 1, 2, 4, 5, 6]);
+        let mut unknown = make([1, 2, 3, 4, 5]);
+        for segment in &mut unknown.segments {
+            segment.key.identity = None;
+        }
+        assert_eq!(
+            layout.score(&unknown),
+            0,
+            "a full upload is selected without retained segments"
+        );
     }
 }

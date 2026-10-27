@@ -258,7 +258,7 @@ impl Renderer {
         }
         let policy = super::geometry::UploadPolicy::new(!capture);
         let result = self.prepare_cached(frame, second, size, capture, &policy);
-        let fallback = policy.staged.get()
+        let fallback = policy.optional.get()
             && matches!(
                 result,
                 Err(GpuError::Budget {
