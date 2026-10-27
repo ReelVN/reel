@@ -347,9 +347,18 @@ fn execute_project_with_capture(
                     captures.configure_driver(runtime.driver_mut().unwrap());
                     (bridge, root) = captures.bridge(runtime.driver());
                 }
+                if captures.drive(runtime.driver_mut().unwrap()) {
+                    runtime.wake_input();
+                }
+                captures.present(
+                    &mut runtime,
+                    &mut bridge,
+                    root,
+                    frame,
+                    logical_elapsed().as_nanos() as u64,
+                );
                 let driver = runtime.driver_mut().unwrap();
-                captures.drive(driver);
-                captures.present(driver, &mut bridge, root, frame);
+                let mut input = false;
                 // Enter press/release each use a newly accepted CPU frame, just
                 // like pointer input. Consume a marker only after the Session
                 // reports the actual manual advance on its current dialogue.
@@ -390,6 +399,7 @@ fn execute_project_with_capture(
                         .unwrap();
                     eprintln!("{kind}: manual Enter released={released}: {outcome:?}");
                     advance_phase = if released { 2 } else { 1 };
+                    input = true;
                 }
 
                 if pointer_events.is_empty()
@@ -418,8 +428,11 @@ fn execute_project_with_capture(
                 // tick and the actual accepted frame's input routing.
                 if let Some(event) = pointer_events.pop_front() {
                     driver.handle_pointer(&mut bridge, event).unwrap();
+                    input = true;
                 }
-                runtime.wake_input();
+                if input {
+                    runtime.wake_input();
+                }
             }
             // Give filesystem/resource workers CPU time between presentation attempts.
             std::thread::sleep(Duration::from_millis(1));

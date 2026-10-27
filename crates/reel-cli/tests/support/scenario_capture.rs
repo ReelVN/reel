@@ -9,6 +9,7 @@ use reel_player::{
     aside_session::AsideSessionUi,
     assets::{AssetKind, LoadId},
     capture::CaptureService,
+    story_runtime::StoryRuntime,
 };
 use reel_render::{
     capture::{CaptureBackend, CapturedPixels},
@@ -771,10 +772,11 @@ impl ScenarioCapture {
 
     pub fn present(
         &mut self,
-        driver: &mut AsideSessionUi,
+        runtime: &mut StoryRuntime,
         bridge: &mut PresentationBridge,
         root: WidgetId,
         frame: u64,
+        host_ns: u64,
     ) {
         if self.captures.busy() {
             return;
@@ -783,27 +785,22 @@ impl ScenarioCapture {
         let (candidate, receipt, title) = if let Some(pending) = self.pending.take() {
             pending
         } else {
+            let driver = runtime.driver_mut().unwrap();
             if !self.configure(driver, bridge) {
                 return;
             }
+            let was_runnable = driver.has_runnable_tasks();
             driver.sync(bridge, root).unwrap();
+            if !was_runnable && driver.has_runnable_tasks() {
+                // A newly measured layout can release callbacks. Internal
+                // continuation turns retain their existing producer cadence.
+                runtime.wake_input();
+            }
+            let driver = runtime.driver();
             let Some((source, receipt)) = driver.record(bridge, root, FrameId(frame)).unwrap()
             else {
                 return;
             };
-            let key = source.key();
-            if self.backend.is_none() && !receipt.needs_transition_drawing() {
-                assert_eq!(
-                    bridge.resolve(PresentationNotice::new(
-                        key,
-                        SurfaceEpoch(1),
-                        PresentationOutcome::Accepted(FrameId(frame)),
-                    )),
-                    NoticeResult::Accepted
-                );
-                driver.presented(bridge, &receipt).unwrap();
-                return;
-            }
             let leases = self
                 .fonts
                 .values()
@@ -851,6 +848,7 @@ impl ScenarioCapture {
         let key = candidate.key();
         let frame = candidate.frame_id().0;
         let size = candidate.info().physical_size;
+        let driver = runtime.driver();
         if let Some(backend) = &mut self.backend {
             let result = backend.present(&candidate);
             let usage = backend.usage();
@@ -937,13 +935,8 @@ impl ScenarioCapture {
             )),
             NoticeResult::Accepted
         );
-        driver
-            .presented_frame(
-                bridge,
-                &receipt,
-                &candidate,
-                driver.adapter().logical_time(),
-            )
+        runtime
+            .presented_frame(bridge, &receipt, &candidate, host_ns)
             .unwrap();
         self.accepted = Some(candidate);
         self.accepted_frames += 1;
