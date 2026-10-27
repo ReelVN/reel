@@ -958,15 +958,9 @@ impl Context<'_> {
             values.extend(shader.int(name, unit));
         }
         values.extend(shader.vec4("u_params", [alpha, mode, progress, 0.]));
-        let source_size = source.size().map(|n| n as f32);
         values.extend(shader.vec4(
             "u_source_uv",
-            [
-                self.size[0] as f32 / source_size[0],
-                self.size[1] as f32 / source_size[1],
-                -(source_origin[0] as f32) / source_size[0],
-                -(source_origin[1] as f32) / source_size[1],
-            ],
+            crate::common::source_view::uv_mapping(self.size, source.size(), source_origin),
         ));
         values.extend(shader.float("u_invert", invert));
         values.extend(shader.float("u_blend", blend as f32));

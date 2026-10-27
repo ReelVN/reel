@@ -199,7 +199,10 @@ impl Cache {
                 pipeline::texture(0),
                 pipeline::texture(1),
                 pipeline::sampler(2),
-                pipeline::uniform(3),
+                wgpu::BindGroupLayoutEntry {
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ..pipeline::uniform(3)
+                },
                 pipeline::texture(4),
                 pipeline::sampler(5),
                 pipeline::sampler(6),
@@ -304,7 +307,10 @@ pub(super) struct Inputs<'a> {
 /// GPU parameter storage plus a spill allocation only beyond the four-image inline capacity.
 impl Prepared {
     pub(super) fn parameter_cost(&self, images: usize) -> u64 {
-        let bytes = 96 + images as u64 * 16 + if self.split.is_some() { 64 } else { 0 };
+        let bytes = pipeline::COMPOSITE_BYTES
+            + 64
+            + images as u64 * 16
+            + if self.split.is_some() { 64 } else { 0 };
         bytes * if images > 4 { 2 } else { 1 }
     }
     #[expect(
@@ -323,23 +329,14 @@ impl Prepared {
         samplers: &[wgpu::Sampler; 4],
     ) {
         let matrix = transform.as_coeffs();
-        let (mode, progress, softness) = pipeline::operation_words(params.operation);
-        let base_words = 24 + inputs.images.len() * 4;
-        let mut words = smallvec::SmallVec::<[u32; 56]>::with_capacity(
+        let header = pipeline::COMPOSITE_WORDS;
+        let base_words = header + 16 + inputs.images.len() * 4;
+        let mut words = smallvec::SmallVec::<[u32; 60]>::with_capacity(
             base_words + if self.split.is_some() { 16 } else { 0 },
         );
         words.resize(base_words, 0);
-        words[..8].copy_from_slice(&[
-            params.opacity.to_bits(),
-            mode,
-            progress.to_bits(),
-            softness.to_bits(),
-            params.invert.to_bits(),
-            params.blend,
-            (params.source_origin[0] as f32).to_bits(),
-            (params.source_origin[1] as f32).to_bits(),
-        ]);
-        words[8..16].copy_from_slice(
+        words[..header].copy_from_slice(&params.uniform_words(target, inputs.source));
+        words[header..header + 8].copy_from_slice(
             &[
                 matrix[0] as f32,
                 matrix[2] as f32,
@@ -352,10 +349,13 @@ impl Prepared {
             ]
             .map(f32::to_bits),
         );
-        for (word, value) in words[16..21].iter_mut().zip(mask.parameters) {
+        for (word, value) in words[header + 8..header + 13]
+            .iter_mut()
+            .zip(mask.parameters)
+        {
             *word = value.to_bits();
         }
-        for (parameters, image) in words[24..]
+        for (parameters, image) in words[header + 16..]
             .as_chunks_mut::<4>()
             .0
             .iter_mut()

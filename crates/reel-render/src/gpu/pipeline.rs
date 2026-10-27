@@ -112,6 +112,38 @@ pub(super) struct CompositeParams {
     /// Integer parent pixels preceding the source's top-left storage texel.
     pub source_origin: [u32; 2],
 }
+pub(super) const COMPOSITE_WORDS: usize = 12;
+pub(super) const COMPOSITE_BYTES: u64 = (COMPOSITE_WORDS * size_of::<u32>()) as u64;
+impl CompositeParams {
+    pub(super) fn uniform_words(
+        &self,
+        target: &Target,
+        source: &wgpu::TextureView,
+    ) -> [u32; COMPOSITE_WORDS] {
+        let size = source.texture().size();
+        let uv = crate::common::source_view::uv_mapping(
+            target.size,
+            [size.width, size.height],
+            self.source_origin,
+        )
+        .map(f32::to_bits);
+        let (mode, progress, softness) = operation_words(self.operation);
+        [
+            self.opacity.to_bits(),
+            mode,
+            progress.to_bits(),
+            softness.to_bits(),
+            self.invert.to_bits(),
+            self.blend,
+            0,
+            0,
+            uv[0],
+            uv[1],
+            uv[2],
+            uv[3],
+        ]
+    }
+}
 pub(super) struct CompositeInputs<'a> {
     pub source: &'a wgpu::TextureView,
     pub mask: &'a wgpu::TextureView,
@@ -196,7 +228,7 @@ impl Pipelines {
                 texture(4),
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -414,17 +446,8 @@ impl Pipelines {
             mask,
             backdrop,
         } = inputs;
-        let (mode, progress, softness) = operation_words(params.operation);
-        let words = [
-            params.opacity.to_bits(),
-            mode,
-            progress.to_bits(),
-            softness.to_bits(),
-            params.invert.to_bits(),
-            params.blend,
-            (params.source_origin[0] as f32).to_bits(),
-            (params.source_origin[1] as f32).to_bits(),
-        ];
+        let mode = operation_words(params.operation).0;
+        let words = params.uniform_words(target, source);
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("composite params"),
             contents: bytemuck::cast_slice(&words),

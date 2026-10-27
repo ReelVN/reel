@@ -22,6 +22,7 @@ fn compile_shaders() {
     let mut shaders = Vec::new();
     for (name, stage) in [
         ("vertex", Stage::Vertex),
+        ("composite_vertex", Stage::Vertex),
         ("composite", Stage::Fragment),
         ("mask", Stage::Fragment),
         ("present", Stage::Fragment),

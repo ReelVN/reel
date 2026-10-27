@@ -764,7 +764,7 @@ impl Context<'_> {
         if self.scissor.empty() {
             return Ok(());
         }
-        self.transient(32)?;
+        self.transient(super::pipeline::COMPOSITE_BYTES)?;
         self.pipelines.composite(
             &self.gpu.device,
             &mut self.encoder,
@@ -797,7 +797,7 @@ impl Context<'_> {
         if self.scissor.empty() {
             return Ok(());
         }
-        self.transient(32)?;
+        self.transient(super::pipeline::COMPOSITE_BYTES)?;
         self.pipelines.composite(
             &self.gpu.device,
             &mut self.encoder,
@@ -914,7 +914,7 @@ impl Context<'_> {
                 &self.pipelines.samplers,
             );
         } else {
-            self.transient(32)?;
+            self.transient(super::pipeline::COMPOSITE_BYTES)?;
             self.pipelines.composite(
                 &self.gpu.device,
                 &mut self.encoder,
