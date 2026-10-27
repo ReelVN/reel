@@ -21,6 +21,7 @@ pub(super) struct ImageCache {
     images: Mutex<HashMap<ResourceHandle, Arc<Image>>>,
     uploads: Mutex<Vec<Upload>>,
     partial: Mutex<HashMap<ResourceHandle, Partial>>,
+    staging: Mutex<super::upload::Cache>,
 }
 
 struct Partial {
@@ -36,6 +37,7 @@ struct Upload {
     _staging: Vec<BudgetTicket>,
     _admission: BudgetTicket,
     _storage: Reservation,
+    buffers: Vec<Box<super::upload::Buffer>>,
 }
 struct Copy {
     _image: Arc<Image>,
@@ -44,6 +46,12 @@ struct Copy {
 }
 
 impl ImageCache {
+    pub(super) fn clear_idle_uploads(&self) -> bool {
+        let mut cache = self.staging.lock().unwrap();
+        let had_storage = cache.capacity() != 0;
+        cache.clear();
+        had_storage
+    }
     fn publish(&self, images: &HashMap<ResourceHandle, Arc<Image>>) {
         let mut cache = self.images.lock().unwrap();
         for (&handle, image) in images {
@@ -123,8 +131,11 @@ impl ImageCache {
         let storage = reserve(
             &budgets.transient,
             &local.transient,
-            (capacity * (size_of::<Copy>() + size_of::<BudgetTicket>()) + size_of::<Upload>())
-                as u64,
+            (capacity
+                * (size_of::<Copy>()
+                    + size_of::<BudgetTicket>()
+                    + size_of::<Box<super::upload::Buffer>>())
+                + size_of::<Upload>()) as u64,
             gpu.limits.transient_bytes,
             "image upload metadata",
         )?;
@@ -135,6 +146,7 @@ impl ImageCache {
             });
         let mut uploaded = Vec::with_capacity(capacity);
         let mut staging = Vec::with_capacity(capacity);
+        let mut buffers = Vec::with_capacity(capacity);
         let reserve_gpu = |bytes| {
             pool.reserve(bytes).map_err(|_| GpuError::Pressure {
                 domain: "image upload",
@@ -179,13 +191,29 @@ impl ImageCache {
             } else {
                 item.resident
             };
-            let minimum = resident + item.minimum_staging;
+            let cached_staging = self.staging.lock().unwrap().capacity();
+            let minimum = resident
+                + if cached_staging >= item.minimum_staging {
+                    0
+                } else {
+                    item.minimum_staging
+                };
             // Evict for this slice, rather than a whole-image staging buffer.
             // Only the minimum row is an admission requirement.
-            let preferred = resident + item.staging.min(staging_limit);
+            let preferred_upload = item.staging.min(staging_limit);
+            let preferred = resident
+                + if cached_staging >= preferred_upload {
+                    0
+                } else {
+                    preferred_upload
+                };
             glyphs.make_room(pool, preferred, limit);
             self.make_room(pool, preferred, limit);
-            let available = limit.saturating_sub(pool.usage().bytes);
+            let mut available = limit.saturating_sub(pool.usage().bytes);
+            if minimum > available && cached_staging < item.minimum_staging {
+                self.staging.lock().unwrap().clear();
+                available = limit.saturating_sub(pool.usage().bytes);
+            }
             if minimum > available {
                 deferred = Some(GpuError::Pressure {
                     domain: "image upload",
@@ -227,7 +255,10 @@ impl ImageCache {
                 let count = resources::rows_per_upload(
                     pending.image.size,
                     pending.next_row,
-                    limit.saturating_sub(pool.usage().bytes).min(staging_limit),
+                    limit
+                        .saturating_sub(pool.usage().bytes)
+                        .max(self.staging.lock().unwrap().capacity())
+                        .min(staging_limit),
                 );
                 if count == 0 {
                     deferred = Some(GpuError::Pressure {
@@ -238,14 +269,24 @@ impl ImageCache {
                     break;
                 }
                 let next_row = pending.next_row + count;
-                let upload =
-                    match reserve_gpu(resources::row_bytes(source.width) * u64::from(count)) {
-                        Ok(ticket) => ticket,
-                        Err(error) => {
-                            deferred = Some(error);
-                            break;
-                        }
-                    };
+                let upload_bytes = resources::row_bytes(source.width) * u64::from(count);
+                let upload = match self
+                    .staging
+                    .lock()
+                    .unwrap()
+                    .acquire(gpu, budgets, upload_bytes)
+                {
+                    Ok(ticket) => ticket,
+                    Err(error) => {
+                        deferred = Some(error);
+                        break;
+                    }
+                };
+                let one_off = if upload.is_none() {
+                    Some(reserve_gpu(upload_bytes)?)
+                } else {
+                    None
+                };
                 resources::image_rows(
                     gpu,
                     &mut encoder,
@@ -253,6 +294,7 @@ impl ImageCache {
                     item.at,
                     &pending.image,
                     pending.next_row..next_row,
+                    upload.as_deref(),
                 )?;
                 work_remaining = work_remaining.saturating_sub(row_bytes * u64::from(count));
                 converted = true;
@@ -261,7 +303,12 @@ impl ImageCache {
                     source: item.source.clone(),
                     next_row: Some(next_row),
                 });
-                staging.push(upload);
+                if let Some(upload) = upload {
+                    buffers.push(upload);
+                }
+                if let Some(one_off) = one_off {
+                    staging.push(one_off);
+                }
                 if next_row == source.height {
                     images.insert(handle, pending.image.clone());
                 } else {
@@ -298,7 +345,10 @@ impl ImageCache {
                     });
                 }
                 let pending = &partial[&handle];
-                let count = (limit.saturating_sub(pool.usage().bytes).min(staging_limit)
+                let count = (limit
+                    .saturating_sub(pool.usage().bytes)
+                    .max(self.staging.lock().unwrap().capacity())
+                    .min(staging_limit)
                     / row_bytes)
                     .min(u64::from(pending.total_rows - pending.next_row))
                     as u32;
@@ -311,12 +361,23 @@ impl ImageCache {
                     break;
                 }
                 let next_row = pending.next_row + count;
-                let upload = match reserve_gpu(row_bytes * u64::from(count)) {
+                let upload_bytes = row_bytes * u64::from(count);
+                let upload = match self
+                    .staging
+                    .lock()
+                    .unwrap()
+                    .acquire(gpu, budgets, upload_bytes)
+                {
                     Ok(ticket) => ticket,
                     Err(error) => {
                         deferred = Some(error);
                         break;
                     }
+                };
+                let one_off = if upload.is_none() {
+                    Some(reserve_gpu(upload_bytes)?)
+                } else {
+                    None
                 };
                 resources::texture_rows(
                     gpu,
@@ -325,6 +386,7 @@ impl ImageCache {
                     &pending.image,
                     layout,
                     pending.next_row..next_row,
+                    upload.as_deref(),
                 )?;
                 work_remaining = work_remaining.saturating_sub(row_bytes * u64::from(count));
                 converted = true;
@@ -333,7 +395,12 @@ impl ImageCache {
                     source: item.source.clone(),
                     next_row: Some(next_row),
                 });
-                staging.push(upload);
+                if let Some(upload) = upload {
+                    buffers.push(upload);
+                }
+                if let Some(one_off) = one_off {
+                    staging.push(one_off);
+                }
                 if next_row == pending.total_rows {
                     images.insert(handle, pending.image.clone());
                 } else {
@@ -392,11 +459,15 @@ impl ImageCache {
                 _staging: staging,
                 _admission: admitted,
                 _storage: storage,
+                buffers,
             });
             gpu.check()?;
         }
         match deferred {
-            Some(error) => Err(error),
+            Some(error) => {
+                self.staging.lock().unwrap().clear();
+                Err(error)
+            }
             None => Ok(images),
         }
     }
@@ -428,7 +499,20 @@ impl ImageCache {
     pub(super) fn poll(&self) -> bool {
         let mut uploads = self.uploads.lock().unwrap();
         let before = uploads.len();
-        uploads.retain(|upload| !upload.done.load(Ordering::Acquire));
+        let mut index = 0;
+        while index < uploads.len() {
+            if uploads[index].done.load(Ordering::Acquire)
+                && uploads[index].buffers.iter().all(|b| b.settled())
+            {
+                let mut upload = uploads.swap_remove(index);
+                let mut cache = self.staging.lock().unwrap();
+                for buffer in upload.buffers.drain(..) {
+                    cache.put(buffer);
+                }
+            } else {
+                index += 1;
+            }
+        }
         uploads.len() != before
     }
 

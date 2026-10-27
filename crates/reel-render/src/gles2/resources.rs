@@ -38,8 +38,12 @@ pub(super) struct Images {
     pending: HashMap<ResourceHandle, Pending>,
     white: Option<Rc<Image>>,
     failures: Vec<BudgetTicket>,
+    scratch: crate::common::resources::UploadScratch,
 }
 impl Images {
+    pub fn release_scratch(&mut self) {
+        self.scratch.clear();
+    }
     /// Validate the simultaneous image demand before issuing an upload command.
     pub fn validate(
         &self,
@@ -275,14 +279,11 @@ impl Images {
                 let ResourceData::Texture { bytes: blocks, .. } = source.data() else {
                     unreachable!()
                 };
-                let _staging = reserve(
+                let staging = self.scratch.get(
                     &budgets.transient,
-                    bytes,
                     limits.transient_bytes,
-                    "compressed upload staging",
+                    usize::try_from(bytes).map_err(|_| GlesError::InvalidSize)?,
                 )?;
-                let mut staging =
-                    vec![0; usize::try_from(bytes).map_err(|_| GlesError::InvalidSize)?];
                 gpu.create_bc_texture(
                     layout.storage_size,
                     if format == Some(TextureFormat::Bc1Rgb) {
@@ -291,7 +292,7 @@ impl Images {
                         native::TextureFormat::Bc3Rgba
                     },
                     blocks.data(),
-                    &mut staging,
+                    staging,
                 )?
             } else {
                 gpu.create_texture(
@@ -387,7 +388,7 @@ impl Images {
             }
             let pending = self.pending.get_mut(&source.handle()).unwrap();
             touched.push(pending.image.clone());
-            let complete = progress(gpu, budgets, limits, pending, quota)?;
+            let complete = progress(gpu, budgets, limits, pending, quota, &mut self.scratch)?;
             if complete {
                 let pending = self.pending.remove(&source.handle()).unwrap();
                 self.entries.insert(source.handle(), pending.image.clone());
@@ -405,6 +406,7 @@ fn progress(
     limits: crate::common::GpuLimits,
     pending: &mut Pending,
     quota: &mut u64,
+    scratch: &mut crate::common::resources::UploadScratch,
 ) -> Result<bool, GlesError> {
     loop {
         let (size, stride, pixels, convert, alpha) = match pending.source.data() {
@@ -467,16 +469,11 @@ fn progress(
         if convert || stride != row {
             let available = limits
                 .transient_bytes
-                .saturating_sub(budgets.transient.usage().bytes);
+                .saturating_sub(budgets.transient.usage().bytes)
+                .max(scratch.capacity());
             let rows = rows.min((available / row as u64).max(1).min(u64::from(u32::MAX)) as u32);
             let bytes = rows as usize * row;
-            let _staging = reserve(
-                &budgets.transient,
-                bytes as u64,
-                limits.transient_bytes,
-                "linear image staging",
-            )?;
-            let mut data = vec![0; bytes];
+            let data = scratch.get(&budgets.transient, limits.transient_bytes, bytes)?;
             let start = pending.row as usize * stride;
             if convert {
                 for (source, target) in pixels[start..start + rows as usize * stride]
@@ -495,7 +492,7 @@ fn progress(
                     target.copy_from_slice(&pixels[start + y * stride..start + y * stride + row]);
                 }
             }
-            gpu.upload(texture, [0, pending.row], [size[0], rows], &data, row)?;
+            gpu.upload(texture, [0, pending.row], [size[0], rows], data, row)?;
             pending.row += rows;
             *quota = quota.saturating_sub(bytes as u64);
         } else {

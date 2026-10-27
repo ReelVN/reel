@@ -1,6 +1,47 @@
 use super::GpuError;
 use reel_core::texture::{TextureDescriptor, TextureFormat, TextureLayout};
 
+/// Initialized CPU upload capacity. Native upload APIs finish reading this slice
+/// before returning, so later uploads may overwrite it without a GPU wait.
+#[derive(Default)]
+pub(crate) struct UploadScratch {
+    bytes: Vec<u8>,
+    ticket: Option<reel_core::budget::BudgetTicket>,
+}
+impl UploadScratch {
+    pub(crate) fn capacity(&self) -> u64 {
+        self.bytes.len() as u64
+    }
+    pub(crate) fn clear(&mut self) {
+        *self = Self::default();
+    }
+    pub(crate) fn get(
+        &mut self,
+        pool: &reel_core::budget::BudgetPool,
+        limit: u64,
+        bytes: usize,
+    ) -> Result<&mut [u8], GpuError> {
+        if self.bytes.len() < bytes {
+            self.clear();
+            if bytes as u64 > limit {
+                return Err(GpuError::Budget {
+                    domain: "image upload scratch",
+                    requested: bytes as u64,
+                    available: limit,
+                });
+            }
+            let ticket = pool.reserve(bytes as u64).map_err(|_| GpuError::Pressure {
+                domain: "image upload scratch",
+                requested: bytes as u64,
+                available: limit.saturating_sub(pool.usage().bytes),
+            })?;
+            self.bytes = vec![0; bytes];
+            self.ticket = Some(ticket);
+        }
+        Ok(&mut self.bytes[..bytes])
+    }
+}
+
 /// Upload a compact prefix of each immutable payload row. Both power-of-two
 /// storage and 32-aligned tiled storage have the same packed allocation extent
 /// on the supported backends; no new edge pixels are synthesized here.
@@ -208,6 +249,37 @@ fn translucent_linear_f16(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upload_scratch_retains_initialized_capacity_and_returns_its_budget_under_pressure() {
+        use reel_core::budget::{BudgetCategory, BudgetPool, QueueLimits};
+        let pool = BudgetPool::new(
+            BudgetCategory::Temporary,
+            QueueLimits {
+                max_requests: 4,
+                max_bytes: 4096,
+            },
+        );
+        let mut scratch = UploadScratch::default();
+        let first = scratch.get(&pool, 4096, 4096).unwrap();
+        let address = first.as_ptr();
+        first.fill(123);
+        for _ in 0..32 {
+            let next = scratch.get(&pool, 4096, 2048).unwrap();
+            assert_eq!(next.as_ptr(), address);
+            assert!(
+                next.iter().all(|byte| *byte == 123),
+                "reused initialized capacity is not zeroed again"
+            );
+        }
+        assert_eq!(pool.usage().bytes, 4096);
+        assert!(scratch.get(&pool, 4096, 8192).is_err());
+        assert_eq!(pool.usage().bytes, 0);
+        assert_eq!(scratch.capacity(), 0);
+        eprintln!(
+            "32 repeated upload slices: allocations=1 zero_initialized_bytes=4096 (former allocations=33 zero_initialized_bytes=69632)"
+        );
+    }
 
     #[test]
     fn texture_upload_compacts_padding_without_expanding_small_or_block_storage() {
