@@ -171,7 +171,10 @@ pub(super) enum NodeProperty {
     /// Color inversion strength, from 0 to 1.
     #[aside(name = "invert", ty = Any, doc_type = aside_host::source::number(), default = 0, validate = validate_invert, animatable)]
     Invert,
-    /// Blend the completed subtree: normal, add, subtract, multiply, or screen.
+    /// Blend the completed subtree: normal, add, subtract, multiply, screen,
+    /// overlay, hard_light, color_dodge, lighten, difference, soft_light, or linear_burn.
+    /// The separable modes blend straight linear RGB, then compose source-over.
+    /// Linear burn uses max(source + backdrop - 1, 0) per straight color channel.
     /// Subtract clamps linear premultiplied backdrop RGB minus source RGB to zero
     /// and preserves backdrop alpha. Opacity and masks scale the source once.
     #[aside(name = "blend", ty = String, default = "normal", validate = validate_blend)]
@@ -2105,10 +2108,10 @@ fn blend(heap: &Heap, value: Value) -> Result<reel_ui::frame::BlendMode, HeapErr
     use reel_ui::frame::BlendMode;
     use reel_ui::peniko::{Compose, Mix};
     let info = heap.info(value)?;
-    if info.kind != ObjectKind::String || info.len > 8 {
+    if info.kind != ObjectKind::String || info.len > 11 {
         return Err(HeapError::TypeMismatch);
     }
-    let mut bytes = [0; 8];
+    let mut bytes = [0; 11];
     heap.read_bytes(value, 0, &mut bytes[..info.len as usize])?;
     Ok(match &bytes[..info.len as usize] {
         b"normal" => BlendMode::default(),
@@ -2116,6 +2119,13 @@ fn blend(heap: &Heap, value: Value) -> Result<reel_ui::frame::BlendMode, HeapErr
         b"subtract" => BlendMode::Subtract,
         b"multiply" => Mix::Multiply.into(),
         b"screen" => Mix::Screen.into(),
+        b"overlay" => Mix::Overlay.into(),
+        b"hard_light" => Mix::HardLight.into(),
+        b"color_dodge" => Mix::ColorDodge.into(),
+        b"lighten" => Mix::Lighten.into(),
+        b"difference" => Mix::Difference.into(),
+        b"soft_light" => Mix::SoftLight.into(),
+        b"linear_burn" => BlendMode::LinearBurn,
         _ => return Err(HeapError::TypeMismatch),
     })
 }

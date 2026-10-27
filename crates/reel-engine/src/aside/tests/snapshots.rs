@@ -523,13 +523,14 @@ fn restore_real_story_stage_callbacks_narrative_random_and_concurrent_activities
         let first = rng.int(0, 1000000);
         let done = completion();
         let background = image("scene.png", stretch: "both", blend: "screen");
+        let burn = stack(blend: "linear_burn");
         let snow = particles("flake.png");
         let emission = emit(snow, burst:0, rate:5, lifetime:2);
         let mover = run(tween(background, x: 100, invert: 1, duration: 4, easing: "linear"));
         let task = spawn(|| { await run(delay(2)); data.score += 3; done.resolve(9); });
         let caption = text("score", x: bind(data.score), max_width: 140, align_x: 0.5);
         stage.replace(column() {
-            background; snow;
+            background; burn; snow;
             button("increase", on_click: |e| { data.score += 1; });
             caption;
             slider(value: bind(data.score), max: 20);
@@ -543,7 +544,7 @@ fn restore_real_story_stage_callbacks_narrative_random_and_concurrent_activities
         await task;
         finish(mover); stop(emission);
         if caption.max_width != 140 || caption.align_x != 0.5 { throw "lost layout constraints"; }
-        if background.blend != "screen" { throw "lost blend mode"; }
+        if background.blend != "screen" || burn.blend != "linear_burn" { throw "lost blend mode"; }
         if entries != 1 || data.score != 5 || background.x != 100 || background.invert != 1 { throw "replayed or lost state"; }
         narrator(f"done {rng.int(0, 1000000)}");
     }

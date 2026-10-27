@@ -1106,7 +1106,7 @@ stage.replace(scene);
 await run(tween(scene, invert: 1, duration: 0.4), owner: scene);
 ```
 
-`blend` controls a subtree against its background with `normal`, `add`, `subtract`, `multiply` or `screen`. The subtree is composed before blending.
+`blend` controls a subtree against its background with `normal`, `add`, `subtract`, `multiply`, `screen`, `overlay`, `hard_light`, `color_dodge`, `lighten`, `difference`, `soft_light` or `linear_burn`. The subtree is composed before blending.
 
 ```aside
 stage.replace(stack(width: 320, height: 180, background: "#204060") {

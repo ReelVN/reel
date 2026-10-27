@@ -31,6 +31,7 @@ pub(super) struct Compiled {
     layout: wgpu::BindGroupLayout,
     normal: wgpu::RenderPipeline,
     blend: wgpu::RenderPipeline,
+    extended_blend: wgpu::RenderPipeline,
     split_plan: Option<Arc<crate::common::mask::split::AccountedPlan>>,
 }
 pub(super) struct Prepared {
@@ -237,10 +238,24 @@ impl Cache {
                 #[cfg(test)]
                 None,
             );
+            let extended_blend = pipeline::pipeline_entry(
+                &gpu.device,
+                quality,
+                &layout,
+                &code,
+                false,
+                pipeline::FragmentOutput {
+                    entry: "extended_blend",
+                    blend: None,
+                },
+                #[cfg(test)]
+                None,
+            );
             Compiled {
                 layout,
                 normal,
                 blend,
+                extended_blend,
                 split_plan: split.as_ref().map(|split| split.plan.clone()),
             }
         })?;
@@ -452,6 +467,8 @@ impl Prepared {
         });
         pass.set_pipeline(if params.blend == 0 && !params.operation.replaces() {
             &self.pipeline.normal
+        } else if params.blend > 4 {
+            &self.pipeline.extended_blend
         } else {
             &self.pipeline.blend
         });

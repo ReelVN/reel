@@ -154,6 +154,7 @@ pub(super) struct Programs {
     pub video: Shader,
     pub video_appearance: Shader,
     pub composite: Shader,
+    pub extended_blend: Shader,
     pub source_over: Shader,
     pub alpha_mask: Shader,
     pub mask_8: Shader,
@@ -219,6 +220,11 @@ impl Programs {
                 context,
                 shader_code!("composite_vertex"),
                 shader_code!("composite"),
+            )?,
+            extended_blend: Shader::with_vertex(
+                context,
+                shader_code!("composite_vertex"),
+                shader_code!("extended_blend"),
             )?,
             source_over: Shader::with_vertex(
                 context,

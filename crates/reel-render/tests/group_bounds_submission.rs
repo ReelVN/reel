@@ -929,3 +929,122 @@ fn gles_simple_image_masks_composite_without_an_intermediate_target() {
         renderer.close().unwrap();
     }
 }
+
+fn separable_frame(blend: reel_ui::frame::BlendMode, masked: bool) -> RenderFrame {
+    let mut scene = Scene::new();
+    for x in [20., 80.] {
+        fill(
+            &mut scene,
+            Rect::new(x, 20., x + 140., 160.),
+            Affine::IDENTITY,
+        );
+    }
+    let mut widget = RecordWidget::new(scene);
+    widget.opacity = 0.6;
+    widget.blend = blend;
+    if masked {
+        widget.mask = Some(reel_ui::core::PaintImageMask {
+            program: reel_ui::stage::MaskProgram::new(
+                vec![reel_ui::stage::MaskOp::Constant(0.5_f32.to_bits())],
+                vec![],
+            )
+            .unwrap(),
+            images: vec![].into(),
+            bounds: Rect::new(0., 0., 400., 300.),
+            parameters: [0.; 5],
+        });
+    }
+    let mut bridge = widget_bridge(widget, Affine::IDENTITY);
+    let pool = pool();
+    let mut build = FrameBuild::new(
+        bridge.record(FrameId(1)).unwrap(),
+        empty_snapshot(&pool),
+        FrameInfo {
+            logical_size: [960., 544.],
+            physical_size: SIZE,
+        },
+        limits(),
+        &pool,
+    )
+    .unwrap();
+    while !build.step(step_budget()).unwrap().complete {}
+    build.finish().unwrap()
+}
+fn separable_modes() -> [reel_ui::frame::BlendMode; 7] {
+    use reel_ui::peniko::Mix;
+    [
+        Mix::Overlay.into(),
+        Mix::HardLight.into(),
+        Mix::ColorDodge.into(),
+        Mix::Lighten.into(),
+        Mix::Difference.into(),
+        Mix::SoftLight.into(),
+        reel_ui::frame::BlendMode::LinearBurn,
+    ]
+}
+
+#[cfg(feature = "wgpu")]
+#[test]
+#[ignore = "requires an actual WGPU adapter; submits without pixel readback"]
+fn wgpu_separable_blends_and_masks_submit() {
+    use reel_render::gpu::{DeviceGeneration, Gpu, Renderer};
+    let gpu = pollster::block_on(Gpu::request(
+        &wgpu::Instance::default(),
+        None,
+        DeviceGeneration(1),
+        Default::default(),
+    ))
+    .unwrap();
+    let mut renderer = Renderer::new(gpu);
+    for blend in separable_modes() {
+        for masked in [false, true] {
+            let frame = separable_frame(blend, masked);
+            let prepared = renderer.prepare(&frame).unwrap();
+            renderer.submit(prepared).unwrap();
+            renderer
+                .gpu()
+                .device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .unwrap();
+            renderer.poll().unwrap();
+        }
+    }
+}
+
+#[cfg(feature = "gles2")]
+#[test]
+#[ignore = "requires a native GLES context; submits without pixel readback"]
+fn gles_separable_blends_and_masks_submit() {
+    use reel_render::gles2::{GlesBackend, GlesLimits};
+    use reel_render::{AlphaMode, RenderBackend, RenderEvent, SurfaceInfo};
+    let _serial = GLES_TEST_LOCK.lock().unwrap();
+    let mut renderer = GlesBackend::headless(SIZE, GlesLimits::default()).unwrap();
+    let mut events = Vec::new();
+    for blend in separable_modes() {
+        for masked in [false, true] {
+            let frame = separable_frame(blend, masked);
+            renderer
+                .configure(SurfaceInfo {
+                    physical_size: SIZE,
+                    scale_factor: 1.,
+                    surface_epoch: frame.surface_epoch(),
+                    color_encoding: reel_ui::resources::ColorEncoding::Srgb,
+                    alpha_mode: AlphaMode::Opaque,
+                })
+                .unwrap();
+            renderer.render_present(&frame, || {}).unwrap();
+            loop {
+                events.clear();
+                renderer.poll(&mut events, 32).unwrap();
+                if events
+                    .iter()
+                    .any(|event| matches!(event, RenderEvent::RenderFinished { .. }))
+                {
+                    break;
+                }
+                std::thread::yield_now();
+            }
+        }
+    }
+    renderer.close().unwrap();
+}

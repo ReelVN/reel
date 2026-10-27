@@ -1106,7 +1106,7 @@ stage.replace(scene);
 await run(tween(scene, invert: 1, duration: 0.4), owner: scene);
 ```
 
-`blend` 控制子树与背景的混合，支持 `normal`、`add`、`subtract`、`multiply` 和 `screen`。子树先完成自身合成，再应用混合。
+`blend` 控制子树与背景的混合，支持 `normal`、`add`、`subtract`、`multiply`、`screen`、`overlay`、`hard_light`、`color_dodge`、`lighten`、`difference`、`soft_light` 和 `linear_burn`。子树先完成自身合成，再应用混合。
 
 ```aside
 stage.replace(stack(width: 320, height: 180, background: "#204060") {
