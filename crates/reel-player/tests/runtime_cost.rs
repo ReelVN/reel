@@ -423,6 +423,56 @@ fn history_and_script_collection_clear_reclaim_before_sleeping() {
 }
 
 #[test]
+fn one_table_removal_uses_allocation_pressure_while_clear_requests_reclamation() {
+    let mut runtime = runtime(
+        r#"
+        fn main() {
+            let retained = [];
+            for i in 0..1000 { retained.append([i]); }
+            let records = model({gone: [1], kept: [2]});
+            let alias = records.kept;
+            stage.replace(text(value: derive(|| f"left={records.len()}")));
+            await run(delay(1));
+            let removed = records.remove("gone");
+            if removed[0] != 1 || records.len() != 1 || alias[0] != 2 || retained.len() != 1000 {
+                throw "remove changed retained aliases";
+            }
+            await run(delay(1));
+            records.clear();
+            retained.clear();
+            if records.len() != 0 || alias[0] != 2 || removed[0] != 1 { throw "clear changed retained aliases"; }
+            await run(delay(1));
+        }
+    "#,
+    );
+    settle(&mut runtime, 0);
+    runtime.driver_mut().unwrap().begin_collection().unwrap();
+    while runtime.driver().adapter().vm().heap().phase() != GcPhase::Idle {
+        runtime
+            .driver_mut()
+            .unwrap()
+            .gc_step(Default::default())
+            .unwrap();
+    }
+    let before = runtime.driver().adapter().vm().heap().stats();
+    settle(&mut runtime, 2_000_000_000);
+    let removed = runtime.driver().adapter().vm().heap().stats();
+    assert_eq!(
+        removed.collections, before.collections,
+        "one removal must not rescan the retained heap"
+    );
+    assert!(!runtime.driver().adapter().vm().heap().collection_due());
+    assert!(runtime.driver().adapter().stage().nodes().any(|node| matches!(&node.kind, reel_ui::stage::NodeKind::Text(text) if text.as_ref() == "left=1")));
+    settle(&mut runtime, 4_000_000_000);
+    let cleared = runtime.driver().adapter().vm().heap().stats();
+    assert!(cleared.collections > removed.collections);
+    assert!(cleared.live_objects < before.live_objects / 2);
+    assert_eq!(cleared.pending_bytes, 0);
+    assert!(!runtime.driver().adapter().vm().heap().collection_due());
+    assert!(runtime.driver().adapter().stage().nodes().any(|node| matches!(&node.kind, reel_ui::stage::NodeKind::Text(text) if text.as_ref() == "left=0")));
+}
+
+#[test]
 fn finite_object_quota_can_reclaim_short_lived_values() {
     let driver = AsideSessionUi::from_source(
         Session::new(SessionId(91), Epoch(1)).unwrap(),
