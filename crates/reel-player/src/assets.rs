@@ -300,8 +300,9 @@ impl Assets {
         service.io_events.clear();
         service.work_events.clear();
     }
-    /// Create a decoder-worker reader using this service's adapters and budgets.
-    /// Call AssetStream::open/read/seek only on a worker; maintain stays on the host.
+    /// Create a media reader using this service's adapters and budgets.
+    /// Read/seek may block a decoder worker or native media callback. Maintain
+    /// stays on the host, which must keep polling until the reader closes.
     pub fn stream(
         &self,
         source: impl Into<String>,
@@ -315,7 +316,7 @@ impl Assets {
         if chunk == 0 {
             return Err("streaming requires a nonempty resource input budget".into());
         }
-        Ok(service.streams.create(source.into(), wake, chunk))
+        service.streams.create(source.into(), wake, chunk)
     }
     pub fn request(&self, source: impl Into<String>, kind: AssetKind) -> LoadId {
         self.request_source(

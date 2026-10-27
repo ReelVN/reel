@@ -510,15 +510,34 @@ fn worker_stream_reads_ranges_seeks_and_cancels_through_the_shared_asset_service
         assert_eq!(assets.0.borrow().input.usage().bytes, 0);
         assert_eq!(assets.0.borrow().completion.usage().bytes, 0);
         let (control, mut reader) = assets.stream("assets/panels.png").unwrap();
-        let waiter = std::thread::spawn(move || reader.open());
-        while !assets.needs_poll() {
-            std::thread::yield_now();
-        }
         control.cancel();
         assert_eq!(
-            waiter.join().unwrap().unwrap_err().kind(),
+            reader.open().unwrap_err().kind(),
             std::io::ErrorKind::BrokenPipe
         );
-        assets.close();
+        drop(reader);
+        drop(control);
+        assets.maintain();
+        for close_service in [false, true] {
+            let (control, mut reader) = assets.stream("assets/panels.png").unwrap();
+            let waiter = std::thread::spawn(move || reader.open());
+            while !assets.needs_poll() {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+            if close_service {
+                assets.close();
+            } else {
+                control.cancel();
+            }
+            assert_eq!(
+                waiter.join().unwrap().unwrap_err().kind(),
+                std::io::ErrorKind::BrokenPipe
+            );
+            drop(control);
+            assets.maintain();
+            assert_eq!(assets.0.borrow().input.usage().bytes, 0);
+            assert_eq!(assets.0.borrow().completion.usage().bytes, 0);
+        }
     }
 }

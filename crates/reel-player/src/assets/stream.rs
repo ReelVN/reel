@@ -1,5 +1,7 @@
-//! Blocking Read/Seek views for decoder workers. Only the worker waits; the
-//! shared resource service continues to own and poll its ordinary AssetIo lane.
+//! Blocking Read/Seek views for decoder workers and native media callbacks.
+//! The shared resource service owns and polls its ordinary AssetIo lane.
+#[cfg(target_os = "vita")]
+use pvr_psp2_sys::platform::wake::Wake;
 use reel_core::{
     budget::OwnedBytes,
     identity::{AssetKey, AssetSource, IoId, Priority, Scope},
@@ -7,9 +9,11 @@ use reel_core::{
     result::Terminal,
     wake::WakeSignal,
 };
+#[cfg(not(target_os = "vita"))]
+use std::sync::Condvar;
 use std::{
     io::{self, Read, Seek, SeekFrom},
-    sync::{Arc, Condvar, Mutex, Weak},
+    sync::{Arc, Mutex, MutexGuard, Weak},
 };
 
 #[derive(Clone, Copy)]
@@ -30,8 +34,35 @@ struct State {
 }
 struct Shared {
     state: Mutex<State>,
+    #[cfg(not(target_os = "vita"))]
     ready: Condvar,
+    #[cfg(target_os = "vita")]
+    ready: Arc<Wake>,
     wake: WakeSignal,
+}
+impl Shared {
+    fn notify(&self) {
+        #[cfg(not(target_os = "vita"))]
+        self.ready.notify_one();
+        #[cfg(target_os = "vita")]
+        self.ready.signal().expect("signal live asset stream event");
+    }
+
+    fn wait<'a>(&'a self, state: MutexGuard<'a, State>) -> io::Result<MutexGuard<'a, State>> {
+        #[cfg(not(target_os = "vita"))]
+        {
+            Ok(self.ready.wait(state).unwrap())
+        }
+        #[cfg(target_os = "vita")]
+        {
+            // AvPlayer calls Read on an SDK thread without pthread cancellation
+            // state. The kernel event retains notifications across this unlock;
+            // the caller rechecks the response/closed predicate after each wake.
+            drop(state);
+            self.ready.wait(None).map_err(io::Error::other)?;
+            Ok(self.state.lock().unwrap())
+        }
+    }
 }
 
 /// Cancelling wakes a decoder even while its IO completion is still in flight.
@@ -51,7 +82,7 @@ impl StreamControl {
     }
     pub fn cancel(&self) {
         self.0.state.lock().unwrap().closed = true;
-        self.0.ready.notify_all();
+        self.0.notify();
         self.0.wake.wake();
     }
 }
@@ -91,7 +122,7 @@ impl AssetStream {
             if let Some(result) = state.response.take() {
                 return result.map_err(io::Error::other);
             }
-            state = self.shared.ready.wait(state).unwrap();
+            state = self.shared.wait(state)?;
         }
     }
 }
@@ -153,7 +184,7 @@ impl Streams {
         source: String,
         wake: WakeSignal,
         chunk: u32,
-    ) -> (StreamControl, AssetStream) {
+    ) -> Result<(StreamControl, AssetStream), String> {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 source: AssetSource {
@@ -165,11 +196,14 @@ impl Streams {
                 response: None,
                 closed: false,
             }),
+            #[cfg(not(target_os = "vita"))]
             ready: Condvar::new(),
+            #[cfg(target_os = "vita")]
+            ready: Wake::new().map_err(|error| error.to_string())?,
             wake,
         });
         self.0.push(Arc::downgrade(&shared));
-        (
+        Ok((
             StreamControl(shared.clone()),
             AssetStream {
                 shared,
@@ -177,7 +211,7 @@ impl Streams {
                 length: None,
                 chunk,
             },
-        )
+        ))
     }
     pub(super) fn pending(&self) -> bool {
         self.0.iter().filter_map(Weak::upgrade).any(|s| {
@@ -218,7 +252,7 @@ impl Streams {
                 Terminal::Failed(e) => Err(e.message),
                 Terminal::Cancelled => Err("asset stream cancelled".into()),
             });
-            shared.ready.notify_one();
+            shared.notify();
             return true;
         }
         false
@@ -284,7 +318,7 @@ impl Streams {
                 Err(reason) if reason.retryable() => state.request = Some(request),
                 Err(reason) => {
                     state.response = Some(Err(reason.message));
-                    shared.ready.notify_one();
+                    shared.notify();
                 }
             }
         }
