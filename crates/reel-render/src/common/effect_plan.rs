@@ -18,6 +18,28 @@ pub(crate) struct SourceLayout {
     pub frame_to_source: Affine,
 }
 
+/// A sole effect child can transfer its result to the isolated parent. Exact
+/// grid equality preserves sample positions and avoids an intermediate copy;
+/// other composites retain their independent source and destination.
+pub(crate) fn forwards_source(
+    group: &reel_ui::frame::FrameGroup,
+    source: &SourceLayout,
+    parent_transform: Affine,
+    parent_size: [u32; 2],
+) -> bool {
+    source.size == parent_size
+        && source.frame_to_source == parent_transform
+        && group.effect.is_some()
+        && group.mask_effect.is_none()
+        && group.composite.alpha == 1.
+        && group.composite.blend == Default::default()
+        && group.invert == 0.
+        && group.clip.is_none()
+        && group.mask.is_none()
+        && group.image_mask.is_none()
+        && group.filters.is_empty()
+}
+
 /// Keep complete local effect results through dependencies that consume a
 /// projected source. A plain final source-over can project into its parent.
 pub(crate) fn direct_mask_projection(

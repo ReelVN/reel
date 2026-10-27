@@ -118,6 +118,7 @@ struct Scope<'a> {
     shared_source: bool,
     end_batch: bool,
     isolated: bool,
+    forward_source: bool,
     clip: bool,
     group: Option<&'a FrameGroup>,
     restore: Option<(Affine, [u32; 2])>,
@@ -369,6 +370,7 @@ pub(crate) fn target_pixels(
                             shared_source: false,
                             end_batch: false,
                             isolated,
+                            forward_source: false,
                             clip: isolated,
                             group: None,
                             restore: None,
@@ -418,6 +420,7 @@ pub(crate) fn target_pixels(
                             })
                             .flatten()
                     });
+                    let mut forward_source = false;
                     let restore = if let Some(view) = view {
                         let restore = (current.transform, current.size);
                         current.transform = view.frame_to_source(current.transform);
@@ -434,6 +437,14 @@ pub(crate) fn target_pixels(
                             max_dimension,
                             at,
                         )?;
+                        forward_source = current.groups.is_source_child(current.next - 1)
+                            && current.scopes.last().is_some_and(|scope| scope.isolated)
+                            && super::effect_plan::forwards_source(
+                                group,
+                                &source,
+                                current.transform,
+                                current.size,
+                            );
                         let restore = (current.transform, current.size);
                         current.transform = source.frame_to_source;
                         current.size = source.size;
@@ -450,7 +461,10 @@ pub(crate) fn target_pixels(
                         .map_or(parent_scissor, |s| parent_scissor.intersect(s));
                         None
                     };
-                    if isolated && batch.is_none_or(|entry| !entry.shared || entry.first) {
+                    if isolated
+                        && !forward_source
+                        && batch.is_none_or(|entry| !entry.shared || entry.first)
+                    {
                         scratch.acquire(current.size, &mut reserve)?;
                     }
                     super::scopes::push_stack(
@@ -465,6 +479,7 @@ pub(crate) fn target_pixels(
                             restore,
                             parent_scissor,
                             source_view: view.is_some(),
+                            forward_source,
                         },
                         &mut reserve,
                     )?;
@@ -473,6 +488,14 @@ pub(crate) fn target_pixels(
                     let scope = current.scopes.pop().expect("validated scope");
                     current.scissor = scope.parent_scissor;
                     if !scope.isolated {
+                        continue;
+                    }
+                    if scope.forward_source {
+                        let (transform, size) = scope.restore.expect("forwarded source domain");
+                        current.transform = transform;
+                        current.size = size;
+                        scratch.acquire(size, &mut reserve)?;
+                        scratch.release(size);
                         continue;
                     }
                     let mut source = current.size;

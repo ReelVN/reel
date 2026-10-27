@@ -232,7 +232,7 @@ fn nested_isolation_frame() -> RenderFrame {
     frame
 }
 
-#[cfg(feature = "gles2")]
+#[cfg(all(feature = "gles2", feature = "profiling"))]
 const NESTED_TARGETS: u64 = 2;
 // The isolated 120 x 60 source includes raster padding and rounds to a 32-pixel bucket.
 const NESTED_TARGET_BYTES: u64 = TARGET_BYTES + 128 * 64 * 4;

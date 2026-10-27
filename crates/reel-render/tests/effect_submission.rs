@@ -87,6 +87,16 @@ fn frames_with_mode(
     coverage: bool,
     plain: bool,
 ) -> Vec<RenderFrame> {
+    frames_with_chain(language, color, external, coverage, plain, 1)
+}
+fn frames_with_chain(
+    language: Language,
+    color: bool,
+    external: bool,
+    coverage: bool,
+    plain: bool,
+    depth: usize,
+) -> Vec<RenderFrame> {
     let mut program = program(color);
     if external {
         let mut nodes = program.nodes().to_vec();
@@ -227,6 +237,18 @@ fn frames_with_mode(
         } else {
             widget.effect = Some(paint);
         }
+        if depth > 1 {
+            widget.opacity = 1.;
+            for _ in 1..depth {
+                let mut parent = RecordWidget::new(Scene::new());
+                parent.clip = false;
+                parent.effect = widget.effect.clone();
+                parent
+                    .inner
+                    .add(widget.prepare(), Point::ZERO, Size::new(240., 80.));
+                widget = parent;
+            }
+        }
         let mut bridge = if color || plain {
             widget_bridge(widget, Affine::translate((18., 12.)) * Affine::rotate(0.1))
         } else {
@@ -355,15 +377,18 @@ fn prepared_effect_frame_retains_bounds_values_and_shader() {
 #[ignore = "requires an actual WGPU adapter"]
 fn wgpu_prepared_effects_submit_scalar_and_empty_source_color() {
     use reel_render::gpu::{DeviceGeneration, Gpu, GpuLimits, Renderer};
-    for (color, external, coverage, plain) in [
-        (false, false, false, false),
-        (true, false, false, false),
-        (false, true, false, false),
-        (false, true, true, false),
-        (false, true, true, true),
+    for (color, external, coverage, plain, depth) in [
+        (false, false, false, false, 1),
+        (true, false, false, false, 1),
+        (false, true, false, false, 1),
+        (false, true, true, false, 1),
+        (false, true, true, true, 1),
+        (false, false, false, true, 8),
     ] {
         // A plain scalar mask needs the parent plus two alternating local sources.
-        let target_bytes = (if plain {
+        let target_bytes = (if depth > 1 {
+            4
+        } else if plain {
             3
         } else if coverage {
             5
@@ -383,7 +408,7 @@ fn wgpu_prepared_effects_submit_scalar_and_empty_source_color() {
         ))
         .unwrap();
         let mut renderer = Renderer::new(gpu);
-        let frames = frames_with_mode(Language::Wgsl, color, external, coverage, plain);
+        let frames = frames_with_chain(Language::Wgsl, color, external, coverage, plain, depth);
         let mut resident = None;
         for frame in &frames {
             let prepared = renderer.prepare(frame).unwrap();
@@ -415,17 +440,20 @@ fn gles_prepared_effects_submit_scalar_and_empty_source_color() {
         AlphaMode, RenderBackend, RenderEvent, SurfaceInfo,
         gles2::{GlesBackend, GlesLimits},
     };
-    for (color, external, coverage, plain) in [
-        (false, false, false, false),
-        (true, false, false, false),
-        (false, true, false, false),
-        (false, true, true, false),
-        (false, true, true, true),
+    for (color, external, coverage, plain, depth) in [
+        (false, false, false, false, 1),
+        (true, false, false, false, 1),
+        (false, true, false, false, 1),
+        (false, true, true, false, 1),
+        (false, true, true, true, 1),
+        (false, false, false, true, 8),
     ] {
         let mut renderer = GlesBackend::headless(
             SIZE,
             GlesLimits {
-                target_bytes: (if plain {
+                target_bytes: (if depth > 1 {
+                    4
+                } else if plain {
                     3
                 } else if coverage {
                     5
@@ -438,7 +466,8 @@ fn gles_prepared_effects_submit_scalar_and_empty_source_color() {
             },
         )
         .unwrap();
-        let frames = frames_with_mode(Language::GlslEs100, color, external, coverage, plain);
+        let frames =
+            frames_with_chain(Language::GlslEs100, color, external, coverage, plain, depth);
         renderer
             .configure(SurfaceInfo {
                 physical_size: SIZE,

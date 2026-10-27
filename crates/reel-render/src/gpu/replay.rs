@@ -59,6 +59,7 @@ struct Scope<'a> {
     scissor: Scissor,
     mesh_clip: Option<crate::common::mesh::RectClip>,
     isolated: bool,
+    forward_source: bool,
 }
 struct MaskComposition<'a> {
     image_mask: Option<(&'a reel_ui::frame::FrameImageMask, Affine)>,
@@ -370,6 +371,7 @@ impl Context<'_> {
                                 .or_else(|| Scissor::clip_bounds(clip, transform, self.size))
                                 .map_or(self.scissor, |s| self.scissor.intersect(s)),
                             isolated,
+                            forward_source: false,
                         },
                         |bytes| self.transient(bytes),
                     )?;
@@ -443,6 +445,7 @@ impl Context<'_> {
                             })
                             .flatten()
                     });
+                    let mut forward_source = false;
                     let source_parent = if let Some(view) = source_view {
                         self.flush_draws()?;
                         let parent = (current.transform, self.size, view.parent_rect);
@@ -461,6 +464,11 @@ impl Context<'_> {
                             self.gpu.device.limits().max_texture_dimension_2d,
                             at,
                         )?;
+                        forward_source = current.groups.is_source_child(current.next - 1)
+                            && current.scopes.last().isolated
+                            && crate::common::effect_plan::forwards_source(
+                                group, &source, transform, self.size,
+                            );
                         self.flush_draws()?;
                         let parent = (current.transform, self.size, output_scissor);
                         if group.mask_effect.is_some() {
@@ -488,7 +496,10 @@ impl Context<'_> {
                         Scope {
                             scheduled: batch.map(|entry| entry.last),
                             shared_source: batch.is_some_and(|entry| entry.shared),
-                            target: if batch.is_some_and(|entry| entry.shared && !entry.first) {
+                            forward_source,
+                            target: if forward_source {
+                                current.scopes.last().target.clone()
+                            } else if batch.is_some_and(|entry| entry.shared && !entry.first) {
                                 current
                                     .deferred
                                     .last()
@@ -591,6 +602,19 @@ impl Context<'_> {
                             .source_parent
                             .map_or(group.scissor, |(_, _, scissor)| scissor),
                     );
+                    if group.forward_source {
+                        let (effect, effect_transform) = group.effect.expect("forwarded effect");
+                        let processed = self.effect(
+                            current.drawing,
+                            effect,
+                            effect_transform,
+                            &source,
+                            entry.at,
+                        )?;
+                        self.recycle_target(source)?;
+                        current.scopes.last_mut().target = processed;
+                        continue;
+                    }
                     if let Some(view) = group.source_view.filter(|_| group.mask_effect.is_none()) {
                         if let Some(last) = group.scheduled {
                             push_stack(
@@ -841,6 +865,7 @@ impl Context<'_> {
                 blend: Default::default(),
                 scissor,
                 isolated: true,
+                forward_source: false,
             }),
             pending: None,
         })

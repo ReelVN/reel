@@ -29,6 +29,131 @@ impl crate::common::glyph_plan::Prepare for NoGlyphs {
 }
 
 #[test]
+fn effect_chains_forward_the_complete_source_and_keep_two_scratch_targets() {
+    use reel_core::{
+        budget::OwnedBytes,
+        identity::{AssetKey, ContentVersion, ResourceVersion},
+    };
+    use reel_ui::{
+        core::{PaintEffect, Widget},
+        kurbo::{Point, Size},
+        resources::{EffectShaderDescriptor, EffectShaderFormat, ResourceRegistry},
+        stage::effect::*,
+    };
+    let pool = r01_fixture::pool();
+    let program = EffectProgram::new(
+        vec![],
+        vec![
+            EffectNode {
+                ty: EffectType::Vec2,
+                op: EffectOp::Input(EffectInput::Uv),
+            },
+            EffectNode {
+                ty: EffectType::Vec4,
+                op: EffectOp::SourceSample {
+                    uv: EffectNodeId(0),
+                },
+            },
+        ],
+        EffectNodeId(1),
+    )
+    .unwrap();
+    let fragment =
+        crate::effect::compile_fragment(&program, crate::effect::Language::GlslEs100, 16384)
+            .unwrap();
+    let descriptor = EffectShaderDescriptor::with_textures(
+        [4; 32],
+        EffectShaderFormat::GlslEs100,
+        vec![],
+        0,
+        true,
+        EffectType::Vec4,
+        fragment.source.as_bytes(),
+    )
+    .unwrap();
+    let mut registry = ResourceRegistry::new(1, 16384).unwrap();
+    let handle = registry
+        .register_effect_shader(
+            ResourceVersion {
+                key: AssetKey("effect-chain".into()),
+                version: ContentVersion(descriptor.shader_key),
+            },
+            descriptor,
+            OwnedBytes::new(
+                fragment.source.clone().into_bytes(),
+                pool.reserve(fragment.source.len() as u64).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let paint = PaintEffect {
+        instance: EffectInstance::new([4; 32], program, vec![]).unwrap(),
+        shader: registry.acquire(handle).unwrap(),
+        images: vec![],
+        bounds: Rect::new(0., 0., 160., 120.),
+        coverage_invert: false,
+    };
+    for depth in [1, 2, 4, 8] {
+        for opacity in [1., 0.5] {
+            let mut scene = Scene::new();
+            scene.draw(Draw::Fill {
+                transform: Affine::IDENTITY,
+                fill_rule: Default::default(),
+                brush: Brush::Solid(Color::WHITE),
+                brush_transform: None,
+                shape: Geometry::Rect(paint.bounds),
+                composite: Default::default(),
+            });
+            let mut widget = r01_fixture::RecordWidget::new(scene);
+            widget.clip = false;
+            widget.effect = Some(paint.clone());
+            widget.opacity = opacity;
+            for _ in 1..depth {
+                let mut parent = r01_fixture::RecordWidget::new(Scene::new());
+                parent.clip = false;
+                parent.effect = Some(paint.clone());
+                parent.opacity = opacity;
+                parent
+                    .inner
+                    .add(widget.prepare(), Point::ZERO, Size::new(160., 120.));
+                widget = parent;
+            }
+            let mut bridge = r01_fixture::widget_bridge(widget, Affine::IDENTITY);
+            let mut build = FrameBuild::new(
+                bridge.record(FrameId(1)).unwrap(),
+                registry.freeze(&[handle], &pool).unwrap(),
+                FrameInfo {
+                    logical_size: [160., 120.],
+                    physical_size: [160, 120],
+                },
+                r01_fixture::limits(),
+                &pool,
+            )
+            .unwrap();
+            while !build.step(r01_fixture::step_budget()).unwrap().complete {}
+            let frame = build.finish().unwrap();
+            for masks in [MaskExecution::Inline, MaskExecution::Sampled] {
+                let pixels = target_pixels(
+                    &frame,
+                    None,
+                    [160, 120],
+                    false,
+                    1,
+                    4096,
+                    &crate::common::glyph_plan::Plan::default(),
+                    &offscreen::Plan::default(),
+                    masks,
+                    |_| Ok(()),
+                )
+                .unwrap();
+                let count = if opacity == 1. { 3 } else { depth + 2 };
+                assert_eq!(pixels, 160 * 120 * count, "depth={depth} opacity={opacity}");
+            }
+        }
+    }
+}
+
+#[test]
 fn scalar_masks_keep_two_local_sources_and_project_plain_groups_into_the_parent() {
     use reel_core::budget::OwnedBytes;
     use reel_core::identity::{AssetKey, ContentVersion, ResourceVersion};
