@@ -67,6 +67,7 @@ impl VideoDecoderFactory for VitaVideoDecoderFactory {
             seek_position: 0.,
             poster: false,
             prefer_video: false,
+            pcm: super::pcm_pool::PcmPool::default(),
         }))
     }
 }
@@ -89,6 +90,7 @@ struct VitaDecoder {
     seek_position: f64,
     poster: bool,
     prefer_video: bool,
+    pcm: super::pcm_pool::PcmPool,
 }
 
 impl VitaDecoder {
@@ -159,8 +161,8 @@ impl VitaDecoder {
         if self.audio_done && !self.poster {
             return Ok(None);
         }
-        let mut frames = Vec::new();
-        match self.player.poll_audio(&mut frames)? {
+        let frames = self.pcm.prepare(&self.budget)?;
+        match self.player.poll_audio(frames)? {
             NativePoll::Ready(packet) => {
                 if self.poster {
                     return Err("poster decoder admitted unexpected audio".into());
@@ -182,7 +184,7 @@ impl VitaDecoder {
                 Ok(Some(AudioFrames {
                     pts: packet.pts + skip as f64 / rate,
                     sample_rate: packet.sample_rate,
-                    frames,
+                    frames: self.pcm.publish(),
                 }))
             }
             NativePoll::Pending => Ok(None),
@@ -194,6 +196,9 @@ impl VitaDecoder {
     }
 }
 impl VideoDecoder for VitaDecoder {
+    fn recycle_audio(&mut self, packet: AudioFrames, storage: BudgetTicket) {
+        self.pcm.recycle(packet.frames, storage);
+    }
     fn info(&self) -> &VideoInfo {
         &self.info
     }

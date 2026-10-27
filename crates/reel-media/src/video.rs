@@ -1,4 +1,6 @@
 //! Worker-owned video decoding and bounded playback using portable frames.
+#[cfg(any(test, all(feature = "vita", target_os = "vita")))]
+mod pcm_pool;
 mod playback;
 pub use playback::*;
 #[cfg(any(feature = "video-software", all(feature = "vita", target_os = "vita")))]
@@ -6,7 +8,7 @@ mod h264;
 #[cfg(feature = "video-software")]
 mod software;
 pub use crate::decode::MediaRead;
-use reel_core::budget::BudgetPool;
+use reel_core::budget::{BudgetPool, BudgetTicket};
 #[cfg(feature = "video-software")]
 pub use software::{MovieDecoder, SoftwareVideoDecoderFactory};
 #[cfg(all(feature = "vita", target_os = "vita"))]
@@ -89,6 +91,11 @@ pub trait VideoDecoder {
     /// no packet ready; Ready(None) means all tracks have ended. The worker owns
     /// readiness waits. Codec work observes the factory's shared stop flag.
     fn poll_packet(&mut self, demand: DecodeDemand) -> Result<Poll<Option<DecodedPacket>>, String>;
+    /// Return a PCM packet after its initialized samples have entered the bounded
+    /// sample queue. Called only on the decode worker; the ticket charges the
+    /// vector capacity until a pooling decoder reuses or releases that storage.
+    /// Decoders without retained output storage release both arguments here.
+    fn recycle_audio(&mut self, _packet: AudioFrames, _storage: BudgetTicket) {}
     /// Seek on the source timeline, retaining picture preroll and trimming PCM
     /// before the requested position. No previous packet storage is mutated.
     fn seek(&mut self, seconds: f64) -> Result<(), String>;

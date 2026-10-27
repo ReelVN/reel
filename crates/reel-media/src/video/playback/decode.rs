@@ -107,7 +107,8 @@ pub(super) fn decode(
         if let Some(packet) = pending.as_mut() {
             let (producer, _, position) = audio.as_mut().unwrap();
             if packet.publish(producer, position, end) {
-                pending = None;
+                let returned = pending.take().unwrap();
+                decoder.recycle_audio(returned.packet, returned._storage);
             }
         }
         if pending.is_none() && decoder.audio_finished() {
