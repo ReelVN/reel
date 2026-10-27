@@ -802,7 +802,7 @@ fn main() {
 }
 ```
 
-`popup` follows its trigger node and suits dropdowns or hints. `on_dismiss` handles outside clicks or the back action.
+`popup` follows its trigger node and receives input as a modal layer by default. Hover tooltips set `modal: false` so the anchor keeps receiving pointer interaction while the hint is visible. `on_dismiss` handles outside clicks or the back action.
 
 ```aside
 trigger.add(popup(placement: "bottom-start", offset: 4,

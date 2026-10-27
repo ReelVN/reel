@@ -802,7 +802,7 @@ fn main() {
 }
 ```
 
-`popup` 跟随触发节点定位，可用于下拉菜单和提示。`on_dismiss` 处理外部点击或返回动作。
+`popup` 跟随触发节点定位，默认以模态层接收输入。悬停提示设置 `modal: false`，使锚点在提示显示期间继续接收指针交互。`on_dismiss` 处理外部点击或返回动作。
 
 ```aside
 trigger.add(popup(placement: "bottom-start", offset: 4,
