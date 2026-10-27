@@ -3487,6 +3487,7 @@ dependencies = [
 name = "reel-package"
 version = "1.0.0"
 dependencies = [
+ "allocation-counter",
  "aside-vm",
  "blake3",
  "lz4_flex",
