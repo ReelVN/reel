@@ -261,7 +261,7 @@ fn unchanged_prefix_hits_while_parent_paint_transform_and_clip_invalidate() {
     let token = cache
         .start(key.clone(), 0, first.key(), &budgets.transient, 32 << 20)
         .unwrap();
-    cache.stage(token, (), 400 * 300);
+    cache.stage(token, (), 400 * 300 * 4);
     cache.complete(token);
     let stable = build(
         &mut bridge,
@@ -412,7 +412,7 @@ fn cold_frontier_requests_old_images_and_hot_input_requests_only_new_images() {
             32 << 20,
         )
         .unwrap();
-    cache.stage(token, (), 400 * 300);
+    cache.stage(token, (), 400 * 300 * 4);
     cache.complete(token);
     let hot = plan(&frame, &cache, &budgets);
     let demand =
@@ -598,7 +598,7 @@ fn cached_old_drawing_requests_no_glyph_raster_or_atlas_work() {
             32 << 20,
         )
         .unwrap();
-    cache.stage(token, (), 400 * 300);
+    cache.stage(token, (), 400 * 300 * 4);
     cache.complete(token);
     let hot = plan(&frame, &cache, &budgets);
     let mut glyphs = Glyphs(0);

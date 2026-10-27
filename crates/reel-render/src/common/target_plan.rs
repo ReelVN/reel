@@ -261,10 +261,10 @@ pub(crate) fn target_pixels(
         schedule,
         masks,
         selection,
-        cost: &|size| Ok(u64::from(size[0]) * u64::from(size[1])),
+        cost: &|size| Ok(u64::from(size[0]) * u64::from(size[1]) * 4),
     }
     .measure(reserve)
-    .map(|(pixels, _)| pixels)
+    .map(|(bytes, _)| bytes / 4)
 }
 
 /// One frame, its ordered schedule and its native target execution policy.
