@@ -319,6 +319,10 @@ pub struct VmStats {
     pub unwinds: u32,
     pub comparison_depth: u32,
     pub native_entries: u64,
+    /// Live weak method bindings reused by this VM; reset on restore.
+    pub native_binding_hits: u64,
+    /// Binding cache misses or values rejected by the GC cutoff; reset on restore.
+    pub native_binding_misses: u64,
     pub native_resumes: u64,
     /// Redundant whole-native-window initialization writes (removed in V03).
     pub native_null_publications: u64,

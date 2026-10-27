@@ -31,6 +31,7 @@ mod generator_tests;
 mod iterators;
 mod member_hints;
 mod models;
+mod native_bindings;
 mod reactive;
 pub(crate) mod snapshot;
 mod text;
@@ -531,11 +532,14 @@ pub struct Vm {
     constants: RootRangeToken,
     constant_cache: ChargedVec<Value>,
     member_hints: member_hints::MemberHints,
+    native_bindings: native_bindings::NativeBindings,
     heap: Heap,
     limits: VmLimits,
     control_charge: Reservation,
     next_id: u64,
     native_entries: u64,
+    native_binding_hits: u64,
+    native_binding_misses: u64,
     native_resumes: u64,
     native_null_publications: u64,
     slices: u64,
@@ -624,6 +628,8 @@ impl Vm {
                     .map(|t| t.equality_cursors.data.len())
                     .sum::<usize>()) as u32,
             native_entries: self.native_entries,
+            native_binding_hits: self.native_binding_hits,
+            native_binding_misses: self.native_binding_misses,
             native_resumes: self.native_resumes,
             native_null_publications: self.native_null_publications,
             slices: self.slices,

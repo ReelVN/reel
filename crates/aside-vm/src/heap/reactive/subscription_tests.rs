@@ -26,6 +26,7 @@ fn stable_subscription_cost() {
         let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
         let (source, outputs) = shared(&mut heap, count);
         let before = heap.property_traversal_work.get();
+        let memory_before = heap.stats();
         let started = std::time::Instant::now();
         for _ in 0..16 {
             for &output in &outputs {
@@ -35,9 +36,12 @@ fn stable_subscription_cost() {
             }
         }
         println!(
-            "subscriptions,count={count},rounds=16,elapsed_ns={},traversal_work={}",
+            "subscriptions,count={count},rounds=16,elapsed_ns={},traversal_work={},objects={},charged_bytes={},chunk_allocations={}",
             started.elapsed().as_nanos(),
-            heap.property_traversal_work.get() - before
+            heap.property_traversal_work.get() - before,
+            heap.stats().live_objects - memory_before.live_objects,
+            heap.stats().charged_bytes - memory_before.charged_bytes,
+            heap.stats().chunk_allocations - memory_before.chunk_allocations
         );
     }
 }

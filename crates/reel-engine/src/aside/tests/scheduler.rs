@@ -183,6 +183,8 @@ fn derived_clock_deadline_cost() {
     let mut queries = 0_u64;
     let mut instructions = 0_u64;
     let mut max_batch_ns = 0_u64;
+    let memory_before = vm.vm.heap().stats();
+    let bindings_before = vm.vm.stats();
     let started = std::time::Instant::now();
     for tick in 1..=20 {
         activities::advance_clock(&mut vm, &session, f64::from(tick) / 60., 64);
@@ -227,7 +229,12 @@ fn derived_clock_deadline_cost() {
         assert!(vm.stage_ready());
     }
     println!(
-        "derived_deadline,ticks=20,outputs=96,instructions={instructions},clock_queries={queries},elapsed_ns={},max_clock_interval_ns={max_batch_ns}",
-        started.elapsed().as_nanos()
+        "derived_deadline,ticks=20,outputs=96,instructions={instructions},clock_queries={queries},elapsed_ns={},max_clock_interval_ns={max_batch_ns},objects={},charged_bytes={},chunk_allocations={},binding_hits={},binding_misses={}",
+        started.elapsed().as_nanos(),
+        vm.vm.heap().stats().live_objects - memory_before.live_objects,
+        vm.vm.heap().stats().charged_bytes - memory_before.charged_bytes,
+        vm.vm.heap().stats().chunk_allocations - memory_before.chunk_allocations,
+        vm.vm.stats().native_binding_hits - bindings_before.native_binding_hits,
+        vm.vm.stats().native_binding_misses - bindings_before.native_binding_misses
     );
 }
