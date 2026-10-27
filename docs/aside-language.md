@@ -296,6 +296,8 @@ try {...} catch error {...} finally {...} 至少含 catch/finally 一个。throw
 
 ## 十五 VM 与可恢复宿主调用
 
+标准派生值的无参直线表达式在准入时证明后，使用一个普通脚本帧执行，并在尾部进入同一宿主提交续体。指令、源码位置、依赖读取、取消和快照沿用共同执行协议；完整故障保留逻辑宿主调用帧。复杂表达式与自定义观察者继续通过普通宿主回调执行。
+
 VM 使用显式调用帧、共享代码/常量、驻留符号、可复用参数区及可恢复中间状态。默认 Value 采用 16 字节显式标签与 64 位载荷，int64/float64 完整内联，堆对象通过完整代际句柄访问。Value 为可复制内部值，复制时由当前执行帧或显式宿主根负责保活。表示隐藏在 VM 私有存储接口后，字节码和快照使用各自规定的编码。32/64 位目标分别检查大小、对齐、算术及句柄往返。密集数值数据使用连续类型缓冲，避免每个元素支付动态 Value 标签成本。
 
 run_slice 接收指令、分配和时钟检查额度，返回 Returned、BudgetYield、HostCall、Waiting、Fault 或 ResourceBlocked。ResourceBlocked 表示建立完整故障记录所需的硬容量不足，其保留、恢复与取消规则见第二十三节。BudgetYield 不改变语言结果；全部临时根和继续位置都在 VM 状态中。HostCall 携带稳定函数符号、签名版本、TaskId、OwnerId、源位置和借用实参视图。宿主响应 HostCallResult 为 Ready(value)、Pending(wait_descriptor)、CallScript{callee,args,continuation}、Continue{continuation} 、Error(NewFault) 或 ForwardFault(fault_id)。Error 创建本次故障；ForwardFault 传播已保留的完整故障，具体契约见第二十三节。

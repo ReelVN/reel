@@ -6,7 +6,9 @@ pub(super) fn encode(
     dither: Dither,
 ) -> Result<Vec<u8>, String> {
     let capacity = descriptor.byte_len().map_err(|e| e.to_string())? as usize;
-    let mut bytes = Vec::with_capacity(capacity);
+    let direct = descriptor.mip_count == 1
+        && descriptor.storage_layout == reel_core::texture::TextureStorageLayout::Linear;
+    let mut bytes = Vec::with_capacity(if direct { 0 } else { capacity });
     if descriptor.mip_count > 1 {
         let size = descriptor.layout.storage_size;
         linear = image::Rgba32FImage::from_fn(size[0], size[1], |x, y| {
@@ -39,6 +41,9 @@ pub(super) fn encode(
             TextureFormat::Bc1Rgb | TextureFormat::Bc3Rgba => quality::encode(&linear, layer)?,
             _ => unreachable!("offline format"),
         };
+        if direct {
+            return Ok(blocks);
+        }
         if descriptor.storage_layout == reel_core::texture::TextureStorageLayout::GxmBcMorton {
             let start = bytes.len();
             bytes.resize(start + blocks.len(), 0);
