@@ -576,8 +576,8 @@ impl Vm {
     pub fn limits(&self) -> VmLimits {
         self.limits
     }
-    /// Completed slice count and the latest slice's quota usage, read in constant
-    /// time. Host responses, queue maintenance and GC leave these values unchanged.
+    /// Slice count and quota usage recorded by the most recent `run_slice` call.
+    /// Reads stored counters in constant time without traversing tasks.
     #[inline]
     pub fn last_slice_usage(&self) -> (u64, SliceUsage) {
         (self.slices, self.last_usage)
