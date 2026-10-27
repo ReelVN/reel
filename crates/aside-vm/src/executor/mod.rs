@@ -303,6 +303,9 @@ struct ScriptFrame {
 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum NativePhase {
+    PlannedCheck {
+        source: ArgSource,
+    },
     PlannedCopy {
         source: ArgSource,
         index: u32,

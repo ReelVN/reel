@@ -350,3 +350,31 @@ fn restore_rejects_a_valid_argument_plan_from_another_native() {
         }
     }
 }
+
+#[test]
+fn fixed_binding_checks_all_argument_reads_before_parameter_types() {
+    let mut observed = Vec::new();
+    for generic in [true, false] {
+        let (mut p, mut support) = fixture(1);
+        p.signatures[0].parameters[3].ty = TypeId(1);
+        support.natives[0].signature.parameters[3].ty = TypeId(1);
+        p.functions[0].code[2] = Instruction::new(Opcode::Clear, 2, 0, 0);
+        let program = verify(p, Limits::default()).unwrap();
+        let program = if generic {
+            program.without_native_call_plans()
+        } else {
+            program
+        };
+        let mut vm = Vm::load(program, support, VmLimits::default(), SessionEpoch(1)).unwrap();
+        let task = vm
+            .start(fixtures::ENTRY, &[], RootOwner(1), Context::Ordinary)
+            .unwrap();
+        let RunOutcome::Fault(delivery) = next(&mut vm, task) else {
+            panic!("argument read fault")
+        };
+        let info = vm.delivery_fault(delivery).unwrap().unwrap();
+        observed.push((info.kind, info.location));
+    }
+    assert_eq!(observed[0], observed[1]);
+    assert_eq!(observed[0].0, FaultKind::Uninitialized);
+}

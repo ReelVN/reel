@@ -481,6 +481,32 @@ impl Vm {
     ) -> Result<Option<RunOutcome>, VmError> {
         let top = self.active.frames.data.len() - 1;
         match n.phase {
+            NativePhase::PlannedCheck { source } => {
+                if !m.take(0, 1 + u64::from(n.argument_count), 0) {
+                    return Ok(Some(RunOutcome::BudgetYield(m.usage)));
+                }
+                let ArgSource::Caller { frame, descriptor } = source else {
+                    unreachable!()
+                };
+                let Frame::Script(caller) = self.active.frames.data[self.index(frame)?] else {
+                    unreachable!()
+                };
+                let Descriptor::Call(call) = &self.program.package().functions
+                    [caller.code.function.index()]
+                .descriptors[descriptor.index()] else {
+                    unreachable!()
+                };
+                let Arguments::Window(window) = call.arguments else {
+                    unreachable!()
+                };
+                match self
+                    .slots
+                    .borrow_initialized_window(caller.regs, window.start.0, window.len)
+                {
+                    Ok(_) => n.phase = NativePhase::PlannedCopy { source, index: 0 },
+                    Err(error) => self.native_fault(&mut n, heap_fault(error))?,
+                }
+            }
             NativePhase::PlannedCopy { source, index } => {
                 if index < n.argument_count {
                     if !m.take(0, 2 + self.type_checks.argument_extra(n.signature), 0) {

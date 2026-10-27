@@ -900,7 +900,9 @@ fn validate_frame(
                 if native != frame.native {
                     return Err(SnapshotError::Invalid("native argument plan callee".into()));
                 }
-                if let NativePhase::PlannedCopy { source, .. } = frame.phase {
+                if let NativePhase::PlannedCopy { source, .. }
+                | NativePhase::PlannedCheck { source } = frame.phase
+                {
                     let ArgSource::Caller {
                         frame: caller,
                         descriptor: actual,
@@ -924,6 +926,11 @@ fn validate_frame(
                 {
                     return Err(SnapshotError::Invalid("native argument plan schema".into()));
                 }
+            }
+            if matches!(frame.phase, NativePhase::PlannedCheck { .. })
+                && frame.argument_plan.is_none()
+            {
+                return Err(SnapshotError::Invalid("native argument plan entry".into()));
             }
             if let NativePhase::PlannedCopy { index, .. } = frame.phase
                 && (frame.argument_plan.is_none() || index > frame.argument_count)

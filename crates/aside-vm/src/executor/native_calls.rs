@@ -416,7 +416,7 @@ impl Vm {
             fault_count: 0,
             pending_fault: None,
             phase: if argument_plan.is_some() {
-                NativePhase::PlannedCopy { source, index: 0 }
+                NativePhase::PlannedCheck { source }
             } else {
                 NativePhase::Copy { source, index: 0 }
             },
