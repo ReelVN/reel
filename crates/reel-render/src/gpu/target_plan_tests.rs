@@ -14,6 +14,9 @@ use reel_ui::{
 
 struct NoGlyphs;
 impl crate::common::glyph_plan::Prepare for NoGlyphs {
+    fn finish(&mut self) -> Result<(), GpuError> {
+        Ok(())
+    }
     fn reserve(&mut self, _: u64) -> Result<(), GpuError> {
         Ok(())
     }

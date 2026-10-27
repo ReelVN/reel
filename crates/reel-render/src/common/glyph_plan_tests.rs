@@ -22,6 +22,9 @@ struct Probe {
     reserved: u64,
 }
 impl Prepare for Probe {
+    fn finish(&mut self) -> Result<(), GpuError> {
+        Ok(())
+    }
     fn reserve(&mut self, bytes: u64) -> Result<(), GpuError> {
         self.reserved += bytes;
         Ok(())

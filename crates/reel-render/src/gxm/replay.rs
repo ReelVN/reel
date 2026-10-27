@@ -51,6 +51,7 @@ pub(super) struct Context<'a> {
     pub image_cache: &'a mut Images,
     pub glyph_cache: &'a mut draw::GlyphCache,
     pub glyphs: Vec<Rc<draw::Glyph>>,
+    pub glyph_uploads: crate::common::glyph_upload::Batch<Rc<draw::Glyph>>,
     pub glyph_plan: crate::common::glyph_plan::Plan,
     pub offscreen: crate::common::offscreen::Plan,
     pub effect_cache: &'a mut super::effect::Cache,
@@ -137,6 +138,7 @@ pub(super) fn prepare(
         geometry: geometry_cache,
         retained: retained_cache,
     } = caches;
+    glyph_cache.begin_preparation();
     let mut context = Context {
         capture,
         gpu,
@@ -151,6 +153,7 @@ pub(super) fn prepare(
         image_cache,
         glyph_cache,
         glyphs: Vec::new(),
+        glyph_uploads: Default::default(),
         glyph_plan: Default::default(),
         offscreen: Default::default(),
         effect_cache,

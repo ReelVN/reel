@@ -30,7 +30,7 @@ pub struct GlyphBitmap {
     pub y: f64,
     pub size: [u32; 2],
     pub alpha: Vec<u8>,
-    _storage: reel_core::budget::BudgetTicket,
+    pub(super) _storage: reel_core::budget::BudgetTicket,
 }
 
 impl GlyphBitmap {

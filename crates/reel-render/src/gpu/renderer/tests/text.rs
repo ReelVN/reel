@@ -297,11 +297,12 @@ fn long_text_single_channel_atlas_submits_and_reuses_coverage() {
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
     renderer.poll().unwrap();
-    assert_eq!(renderer.pipelines.creations.snapshot(), [3, 18, 18, 18, 8]);
+    assert_eq!(renderer.pipelines.creations.snapshot(), [3, 19, 19, 19, 8]);
     let resident = renderer.usage().resources;
     assert!(resident > 0 && resident <= 2 * 512 * 512);
     assert_eq!(resident % (512 * 512), 0);
     let uploads = renderer.gpu.upload_creations.snapshot();
+    eprintln!("cold glyph upload counts={uploads:?} peak_resource_bytes={cold_resource_peak}");
     let coverage = pipelines.direct_draws[crate::common::mesh::DirectPaint::Coverage as usize]
         .load(Ordering::Relaxed);
     let draws = renderer.gpu.upload_creations.draws.load(Ordering::Relaxed);

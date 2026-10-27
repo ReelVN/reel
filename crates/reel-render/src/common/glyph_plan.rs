@@ -13,6 +13,7 @@ use reel_ui::{
 /// coordinates, including positioned glyphs, synthesis and raster coverage.
 pub(crate) trait Prepare {
     fn reserve(&mut self, bytes: u64) -> Result<(), GpuError>;
+    fn finish(&mut self) -> Result<(), GpuError>;
     fn run(
         &mut self,
         drawing: &FrameDrawing,
@@ -306,6 +307,7 @@ impl Plan {
             }
         }
         plan.groups.truncate(written);
+        prepare.finish()?;
         Ok(plan)
     }
 

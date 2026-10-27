@@ -515,6 +515,9 @@ fn cached_old_drawing_requests_no_glyph_raster_or_atlas_work() {
     };
     struct Glyphs(usize);
     impl glyph_plan::Prepare for Glyphs {
+        fn finish(&mut self) -> Result<(), GpuError> {
+            Ok(())
+        }
         fn reserve(&mut self, _: u64) -> Result<(), GpuError> {
             Ok(())
         }

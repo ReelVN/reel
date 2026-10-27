@@ -70,6 +70,7 @@ struct GlyphImage {
 pub(super) struct Glyph {
     source: crate::common::resources::ResourceSource,
     image: Option<GlyphImage>,
+    ready: std::cell::Cell<bool>,
 }
 impl Drop for Glyph {
     fn drop(&mut self) {
@@ -91,6 +92,46 @@ pub(super) struct GlyphCache {
     failures: Vec<super::ownership::NativeTicket>,
 }
 impl GlyphCache {
+    pub fn begin_preparation(&mut self) {
+        self.entries.retain(|_, glyph| glyph.ready.get());
+    }
+    pub fn flush_uploads(
+        &mut self,
+        device: DeviceResources<'_>,
+        uploads: &mut crate::common::glyph_upload::Batch<Rc<Glyph>>,
+    ) -> Result<(), GpuError> {
+        uploads.flush(
+            |a, b| {
+                Rc::ptr_eq(
+                    &a.image.as_ref().unwrap().page,
+                    &b.image.as_ref().unwrap().page,
+                )
+            },
+            |upload| {
+                let stride = upload.size[0] as usize;
+                let bytes = stride * upload.size[1] as usize;
+                let _staging = resources::reserve(
+                    &device.budgets.transient,
+                    bytes as u64,
+                    device.limits.transient_bytes,
+                    "glyph staging",
+                )?;
+                let mut data = vec![0; bytes];
+                upload.write_rows(stride, |start, source| {
+                    data[start..start + source.len()].copy_from_slice(source)
+                });
+                device.gpu.upload(
+                    &upload.owner.image.as_ref().unwrap().page.texture,
+                    upload.origin,
+                    upload.size,
+                    &data,
+                    stride,
+                )?;
+                Ok(())
+            },
+            |glyph| glyph.ready.set(true),
+        )
+    }
     pub fn prune_idle(&mut self) {
         self.entries.retain(|_, glyph| Rc::strong_count(glyph) > 1);
         self.pages.retain(|page| page.strong_count() != 0);
@@ -112,9 +153,9 @@ impl GlyphCache {
         device: DeviceResources<'_>,
         frame: &FrameDrawing,
         run: &FrameGlyphRun,
-        density: f64,
-        index: usize,
+        sample: (f64, usize),
         at: RecordLocation,
+        uploads: &mut crate::common::glyph_upload::Batch<Rc<Glyph>>,
     ) -> Result<Rc<Glyph>, GpuError> {
         let DeviceResources {
             gpu,
@@ -122,6 +163,7 @@ impl GlyphCache {
             limits,
         } = device;
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GlyphRaster);
+        let (density, index) = sample;
         let source = crate::common::resources::ResourceSource::new(
             frame
                 .resources()
@@ -153,6 +195,7 @@ impl GlyphCache {
             return Ok(Rc::new(Glyph {
                 source,
                 image: None,
+                ready: std::cell::Cell::new(true),
             }));
         };
         let requested = size2(bitmap.size[0] as i32 + 2, bitmap.size[1] as i32 + 2);
@@ -213,6 +256,7 @@ impl GlyphCache {
         ];
         let glyph = Rc::new(Glyph {
             source,
+            ready: std::cell::Cell::new(false),
             image: Some(GlyphImage {
                 page: page.clone(),
                 allocation: allocation.id,
@@ -222,30 +266,38 @@ impl GlyphCache {
             }),
         });
         self.pending_glyphs.push(glyph.clone());
-        let stride = requested.width as usize;
-        let bytes = stride * requested.height as usize;
-        let _staging = resources::reserve(
-            &budgets.transient,
-            bytes as u64,
-            limits.transient_bytes,
-            "glyph staging",
-        )?;
-        let mut data = vec![0; bytes];
-        bitmap.padded_rows(stride, |start, source| {
-            data[start..start + source.len()].copy_from_slice(source)
-        });
-        gpu.upload(
-            &page.texture,
+        if uploads.full(&bitmap) {
+            self.flush_uploads(
+                DeviceResources {
+                    gpu,
+                    budgets,
+                    limits,
+                },
+                uploads,
+            )?;
+        }
+        uploads.push(
+            glyph.clone(),
             [origin[0] - 1, origin[1] - 1],
-            [requested.width as u32, requested.height as u32],
-            &data,
-            stride,
+            bitmap,
+            &budgets.transient,
+            limits.transient_bytes,
         )?;
         Ok(glyph)
     }
 }
 
 impl crate::common::glyph_plan::Prepare for Context<'_> {
+    fn finish(&mut self) -> Result<(), GpuError> {
+        self.glyph_cache.flush_uploads(
+            DeviceResources {
+                gpu: self.gpu,
+                budgets: self.budgets,
+                limits: self.limits,
+            },
+            &mut self.glyph_uploads,
+        )
+    }
     fn reserve(&mut self, bytes: u64) -> Result<(), GpuError> {
         self.transient(bytes)
     }
@@ -272,9 +324,9 @@ impl crate::common::glyph_plan::Prepare for Context<'_> {
                     },
                     frame,
                     run,
-                    density,
-                    index,
+                    (density, index),
                     at,
+                    &mut self.glyph_uploads,
                 )?;
                 self.glyph_cache.entries.insert(key, glyph.clone());
                 glyph

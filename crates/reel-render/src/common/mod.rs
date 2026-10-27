@@ -9,6 +9,7 @@ pub(crate) mod effect_cache;
 pub(crate) mod effect_plan;
 pub(crate) mod glyph;
 pub(crate) mod glyph_plan;
+pub(crate) mod glyph_upload;
 pub(crate) mod gradient;
 pub(crate) mod image_coverage;
 pub(crate) mod image_plan;

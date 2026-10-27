@@ -510,6 +510,7 @@ impl Renderer {
                 capture,
                 &selection,
                 &mut super::glyph_cache::Preparation {
+                    uploads: Default::default(),
                     gpu: &self.gpu,
                     encoder: &mut encoder,
                     cache: &self.glyphs,
