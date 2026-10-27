@@ -452,27 +452,25 @@ impl Pipelines {
             effects: super::effect::Cache::default(),
         }
     }
-    pub(super) fn composite(
+    fn composite_group(
         &self,
         device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
         target: &Target,
         inputs: CompositeInputs<'_>,
-        params: CompositeParams,
-    ) {
+        params: &CompositeParams,
+    ) -> wgpu::BindGroup {
         let CompositeInputs {
             source,
             mask,
             backdrop,
         } = inputs;
-        let mode = operation_words(params.operation).0;
         let words = params.uniform_words(target, source);
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("composite params"),
             contents: bytemuck::cast_slice(&words),
             usage: wgpu::BufferUsages::UNIFORM,
         });
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("composite"),
             layout: &self.composite_layout,
             entries: &[
@@ -497,7 +495,29 @@ impl Pipelines {
                     resource: wgpu::BindingResource::TextureView(backdrop),
                 },
             ],
-        });
+        })
+    }
+    fn composite_pipeline(&self, params: &CompositeParams) -> &wgpu::RenderPipeline {
+        let mode = operation_words(params.operation).0;
+        if mode == 0 && params.invert == 0. && params.blend == 0 {
+            &self.source_over
+        } else if mode == 1 && params.invert == 0. && params.blend == 0 {
+            &self.alpha_mask
+        } else if params.blend == 0 && !params.operation.replaces() {
+            &self.composite
+        } else {
+            &self.composite_blend
+        }
+    }
+    pub(super) fn composite(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &Target,
+        inputs: CompositeInputs<'_>,
+        params: CompositeParams,
+    ) {
+        let group = self.composite_group(device, target, inputs, &params);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("whole group composite"),
             color_attachments: &[Some(target.attachment(params.clear))],
@@ -506,18 +526,43 @@ impl Pipelines {
             multiview_mask: None,
             occlusion_query_set: None,
         });
-        pass.set_pipeline(if mode == 0 && params.invert == 0. && params.blend == 0 {
-            &self.source_over
-        } else if mode == 1 && params.invert == 0. && params.blend == 0 {
-            &self.alpha_mask
-        } else if params.blend == 0 && !params.operation.replaces() {
-            &self.composite
-        } else {
-            &self.composite_blend
-        });
+        pass.set_pipeline(self.composite_pipeline(&params));
         params.scissor.apply(&mut pass);
         pass.set_bind_group(0, &group, &[]);
         pass.draw(0..3, 0..1);
+    }
+    /// Independent sources return to their parent in one ordered render pass.
+    pub(super) fn composite_batch<'a>(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &Target,
+        clear: bool,
+        inputs: impl Iterator<Item = (CompositeInputs<'a>, CompositeParams)>,
+    ) {
+        let groups: smallvec::SmallVec<[(wgpu::BindGroup, CompositeParams); 8]> = inputs
+            .filter(|(_, params)| !params.scissor.empty())
+            .map(|(inputs, params)| {
+                (
+                    self.composite_group(device, target, inputs, &params),
+                    params,
+                )
+            })
+            .collect();
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("ordered sibling composites"),
+            color_attachments: &[Some(target.attachment(clear))],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            multiview_mask: None,
+            occlusion_query_set: None,
+        });
+        for (group, params) in &groups {
+            pass.set_pipeline(self.composite_pipeline(params));
+            params.scissor.apply(&mut pass);
+            pass.set_bind_group(0, group, &[]);
+            pass.draw(0..3, 0..1);
+        }
     }
 }
 pub fn pipeline(

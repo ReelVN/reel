@@ -516,6 +516,8 @@ fn subtree_blend_mask_clip_and_backdrop_fit_the_planned_target_budget() {
                 4,
                 u32::MAX,
                 &crate::common::glyph_plan::Plan::default(),
+                &crate::common::offscreen::Plan::default(),
+                crate::common::target_plan::MaskExecution::Inline,
                 |_| Ok(()),
             )
             .unwrap();

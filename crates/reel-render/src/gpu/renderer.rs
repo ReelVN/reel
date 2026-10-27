@@ -364,37 +364,33 @@ impl Renderer {
                 images: &self.images,
             },
         )?;
-        let mut previous_plan = None;
-        let (quality, _) = self.gpu.quality_for_targets(size, |samples| {
-            if let Some((previous_samples, targets)) = previous_plan
-                && previous_samples == samples
-            {
-                return Ok(targets);
-            }
-            // Planning storage is released when the traversal finishes. Candidate
-            // sample counts can need different clip targets and must be admitted
-            // using the same coverage policy as replay.
-            let mut plan_tickets = Vec::new();
-            let targets = super::targets::target_pixels(
+        let mut offscreen = crate::common::offscreen::Plan::default();
+        let mut offscreen_tickets = Vec::new();
+        let (quality, _) = self.gpu.quality_for_targets(size, |quality| {
+            offscreen = Default::default();
+            offscreen_tickets.clear();
+            let (schedule, targets, retained) = crate::common::offscreen::Plan::choose(
                 frame,
                 second.map(|(frame, _)| frame),
                 size,
                 capture,
-                samples,
+                quality.samples,
                 self.gpu.device.limits().max_texture_dimension_2d,
                 &glyph_plan,
+                self.gpu.limits.target_bytes / super::targets::target_bytes([1, 1], quality)?,
+                crate::common::target_plan::MaskExecution::Inline,
                 |bytes| {
-                    plan_tickets.push(reserve(
+                    reserve(
                         &self.budgets.transient,
                         &budget_scope.transient,
                         bytes,
                         self.gpu.limits.transient_bytes,
                         "transient",
-                    )?);
-                    Ok(())
+                    )
                 },
             )?;
-            previous_plan = Some((samples, targets));
+            offscreen = schedule;
+            offscreen_tickets = retained;
             Ok(targets)
         })?;
         let pipelines = self.pipelines.get(&self.gpu, quality)?;
@@ -436,6 +432,7 @@ impl Renderer {
             glyph_cache: &self.glyphs,
             glyphs,
             glyph_plan,
+            offscreen,
             effects: Vec::new(),
             white: None,
             target_cache: &self.targets,
@@ -454,6 +451,8 @@ impl Renderer {
             f64::from(size[1]) / frame.info().logical_size[1],
         );
         let mut output = ctx.stream(frame.drawing(), transform)?;
+        ctx.offscreen = Default::default();
+        drop(offscreen_tickets);
         let mut frames = vec![frame.clone()];
         if let Some((second, progress)) = second {
             let b = ctx.stream(second.drawing(), transform)?;
