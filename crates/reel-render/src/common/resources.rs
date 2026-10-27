@@ -89,12 +89,44 @@ pub(crate) struct TextureUploadLayout {
     pub(crate) row_bytes: u64,
     pub(crate) rows: u32,
     pub(crate) resident_bytes: u64,
+    pub(crate) mip: u32,
+    pub(crate) offset: u64,
 }
 impl TextureUploadLayout {
+    /// Resolve a flat upload-row cursor without retaining per-level allocations.
+    #[cfg(any(feature = "wgpu", test))]
+    pub(crate) fn at_row(self, descriptor: TextureDescriptor, mut row: u32) -> (Self, u32) {
+        for mip in 0..descriptor.mip_count {
+            let size = self.layout.storage_size.map(|v| (v >> mip).max(1));
+            let rows = size[1].div_ceil(descriptor.format.block_size());
+            if row < rows {
+                return (
+                    Self {
+                        layout: TextureLayout {
+                            storage_size: size,
+                            ..self.layout
+                        },
+                        rows,
+                        mip,
+                        offset: descriptor.mip_offset(mip).expect("validated mip"),
+                        row_bytes: descriptor.format.row_bytes(size[0]).unwrap(),
+                        source_row_bytes: descriptor
+                            .format
+                            .row_bytes(descriptor.mip_size(mip)[0])
+                            .unwrap(),
+                        ..self
+                    },
+                    row,
+                );
+            }
+            row -= rows;
+        }
+        unreachable!("upload cursor within validated mip chain")
+    }
     pub(crate) fn new(descriptor: TextureDescriptor) -> Result<Self, GpuError> {
         descriptor.byte_len().map_err(|_| GpuError::InvalidSize)?;
         let mut layout = descriptor.layout;
-        if descriptor.format == TextureFormat::Rgba8 {
+        if descriptor.format == TextureFormat::Rgba8 && descriptor.mip_count == 1 {
             let content = layout.content_size;
             let candidate = |round: fn(u32) -> Option<u32>| {
                 round(content[0])
@@ -129,11 +161,21 @@ impl TextureUploadLayout {
                 .format
                 .row_bytes(layout.storage_size[0])
                 .ok_or(GpuError::InvalidSize)?,
-            rows: layout.storage_size[1] / descriptor.format.block_size(),
-            resident_bytes: descriptor
-                .format
-                .byte_len(layout.storage_size)
-                .ok_or(GpuError::InvalidSize)?,
+            rows: (0..descriptor.mip_count)
+                .map(|i| {
+                    (layout.storage_size[1] >> i)
+                        .max(1)
+                        .div_ceil(descriptor.format.block_size())
+                })
+                .sum(),
+            mip: 0,
+            offset: 0,
+            resident_bytes: TextureDescriptor {
+                layout,
+                ..descriptor
+            }
+            .byte_len()
+            .map_err(|_| GpuError::InvalidSize)?,
         })
     }
 }
@@ -445,5 +487,30 @@ mod tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod mip_tests {
+    use super::*;
+    #[test]
+    fn flat_progress_visits_each_level_and_charges_full_chain() {
+        let d = TextureDescriptor {
+            mip_count: 5,
+            storage_layout: Default::default(),
+            format: TextureFormat::Bc3Rgba,
+            layout: TextureLayout::identity([16, 8]),
+            source_encoding: reel_core::texture::ColorEncoding::Linear,
+        };
+        let upload = TextureUploadLayout::new(d).unwrap();
+        assert_eq!(upload.resident_bytes, 208);
+        assert_eq!(upload.rows, 6);
+        let mut bytes = 0;
+        for row in 0..upload.rows {
+            let (level, local) = upload.at_row(d, row);
+            assert!(local < level.rows);
+            bytes += level.row_bytes;
+        }
+        assert_eq!(bytes, 208);
     }
 }

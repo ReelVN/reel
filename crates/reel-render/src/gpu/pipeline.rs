@@ -438,6 +438,11 @@ impl Pipelines {
                     label: Some("premultiplied image sampling"),
                     mag_filter: filter,
                     min_filter: filter,
+                    mipmap_filter: if filter == wgpu::FilterMode::Nearest {
+                        wgpu::MipmapFilterMode::Nearest
+                    } else {
+                        wgpu::MipmapFilterMode::Linear
+                    },
                     address_mode_u: if index & 1 != 0 {
                         wgpu::AddressMode::Repeat
                     } else {

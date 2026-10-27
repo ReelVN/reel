@@ -178,7 +178,15 @@ impl TextureDescriptor {
     /// Validate dimensions and return the exact unwrapped byte extent.
     pub fn byte_len(self) -> Result<u64, TextureError> {
         let l = self.layout;
-        if self.mip_count != 1 {
+        if self.mip_count == 0
+            || self.mip_count
+                > 32 - l
+                    .storage_size
+                    .into_iter()
+                    .max()
+                    .unwrap_or(0)
+                    .leading_zeros()
+        {
             return Err(TextureError::Dimensions);
         }
         if self.storage_layout == TextureStorageLayout::GxmBcMorton
@@ -199,10 +207,28 @@ impl TextureDescriptor {
         {
             return Err(TextureError::Dimensions);
         }
-        self.format
-            .byte_len(l.storage_size)
-            .filter(|&n| n <= isize::MAX as u64)
+        (0..self.mip_count)
+            .try_fold(0u64, |total, level| {
+                total
+                    .checked_add(self.format.byte_len(self.mip_size(level))?)
+                    .filter(|&n| n <= isize::MAX as u64)
+            })
             .ok_or(TextureError::Length)
+    }
+    /// Stored texel extent at a level; each axis halves with a minimum of one.
+    pub fn mip_size(self, level: u32) -> [u32; 2] {
+        self.layout
+            .storage_size
+            .map(|axis| axis.checked_shr(level).unwrap_or(0).max(1))
+    }
+    /// Packed byte offset of a level in the validated contiguous payload.
+    pub fn mip_offset(self, level: u32) -> Option<u64> {
+        if level >= self.mip_count {
+            return None;
+        }
+        (0..level).try_fold(0u64, |sum, i| {
+            sum.checked_add(self.format.byte_len(self.mip_size(i))?)
+        })
     }
     /// Validate actual bytes at the resource boundary without decoding pixels.
     pub fn validate(self, bytes: usize) -> Result<(), TextureError> {
@@ -236,7 +262,8 @@ impl TexturePayload {
 pub enum TextureCodec {
     /// The file stores the descriptor's exact packed pixel/block extent.
     Raw,
-    /// bc-crunch range coding; only BC1 and BC3 descriptors accept this codec.
+    /// bc-crunch range coding; accepts one linear BC1/BC3 level.
+    /// Mip chains use Raw storage and the enclosing archive compression.
     BcCrunch,
 }
 /// REELTEX1: fixed little-endian metadata followed by exactly payload_len bytes.
@@ -270,6 +297,7 @@ impl TextureHeader {
             TextureCodec::Raw if payload_len != decoded => return Err(TextureError::Length),
             TextureCodec::BcCrunch
                 if !descriptor.format.is_compressed()
+                    || descriptor.mip_count != 1
                     || descriptor.storage_layout != TextureStorageLayout::Linear =>
             {
                 return Err(TextureError::Codec);
@@ -478,5 +506,44 @@ mod tests {
         assert_eq!(TextureHeader::parse(&file), Err(TextureError::Length));
         file.resize(TextureHeader::LEN + (1 << 20), 0);
         assert_eq!(TextureHeader::parse(&file).unwrap().1.len(), 1 << 20);
+    }
+}
+
+#[cfg(test)]
+mod mip_tests {
+    use super::*;
+    #[test]
+    fn packed_chain_offsets_and_envelope_validate_every_level() {
+        for (size, format, count, expected) in [
+            ([7, 3], TextureFormat::Rgba8, 3, 100),
+            ([16, 8], TextureFormat::Bc3Rgba, 5, 208),
+            ([8, 16], TextureFormat::Bc1Rgb, 5, 104),
+        ] {
+            let d = TextureDescriptor {
+                storage_layout: Default::default(),
+                mip_count: count,
+                format,
+                layout: TextureLayout::identity(size),
+                source_encoding: ColorEncoding::Linear,
+            };
+            assert_eq!(d.byte_len().unwrap(), expected);
+            let h = TextureHeader::new(d, TextureCodec::Raw, expected).unwrap();
+            assert_eq!(TextureHeader::decode(&h.encode()).unwrap().descriptor(), d);
+            let mut offset = 0;
+            for level in 0..count {
+                assert_eq!(d.mip_offset(level), Some(offset));
+                offset += format.byte_len(d.mip_size(level)).unwrap();
+            }
+            assert_eq!(offset, expected);
+            assert!(d.validate(expected as usize - 1).is_err());
+            assert!(
+                TextureDescriptor {
+                    mip_count: count + 1,
+                    ..d
+                }
+                .byte_len()
+                .is_err()
+            );
+        }
     }
 }

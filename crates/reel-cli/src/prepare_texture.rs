@@ -7,6 +7,7 @@ use reel_core::texture::{
     ColorEncoding, TextureCodec, TextureDescriptor, TextureFormat, TextureHeader, TextureLayout,
 };
 use std::path::Path;
+mod mips;
 mod quality;
 
 /// `Auto` uses BC1 for opaque images and BC3 for images with transparency.
@@ -51,6 +52,8 @@ pub struct Options {
     pub max_size: Option<[u32; 2]>,
     /// Pad each stored axis to a power of two, with a minimum of eight texels.
     pub power_of_two: bool,
+    /// Generate a complete mip chain in linear premultiplied color; default is one level.
+    pub mipmaps: bool,
     /// Prepare BC blocks in GXM Morton order for a Vita target package.
     pub gxm_layout: bool,
     pub format: Format,
@@ -174,8 +177,19 @@ pub(crate) fn prepare_scaled_bounded(
     } else {
         0
     };
-    let workspace = u64::try_from(cast.max(resize).max(quantize).max(encode) + (1 << 20))
-        .map_err(|_| "image workspace size overflow")?;
+    let mip_workspace = if options.mipmaps {
+        stored_pixels * 48 + bc_workspace(storage, storage)
+    } else {
+        0
+    };
+    let workspace = u64::try_from(
+        cast.max(resize)
+            .max(quantize)
+            .max(encode)
+            .max(mip_workspace)
+            + (1 << 20),
+    )
+    .map_err(|_| "image workspace size overflow")?;
     let pool = BudgetPool::new(
         BudgetCategory::Temporary,
         QueueLimits {
@@ -217,27 +231,7 @@ fn prepare_decoded_scaled(
     scale: f64,
 ) -> Result<TextureHeader, String> {
     let (descriptor, linear) = prepare_linear(pixels, options, scale)?;
-    let mut blocks = match descriptor.format {
-        TextureFormat::Rgba8 => quantized_pixels(&linear, descriptor, options.dither).into_raw(),
-        TextureFormat::Bc1Rgb | TextureFormat::Bc3Rgba => quality::encode(&linear, descriptor)?,
-        _ => unreachable!("offline conversion selects RGBA8, BC1 or BC3"),
-    };
-    drop(linear);
-    if descriptor.storage_layout == reel_core::texture::TextureStorageLayout::GxmBcMorton {
-        let block_bytes = descriptor.format.block_bytes() as usize;
-        let size = descriptor.layout.storage_size;
-        let mut reordered = vec![0; blocks.len()];
-        for y in 0..size[1] / 4 {
-            for x in 0..size[0] / 4 {
-                let src = (y as usize * size[0] as usize / 4 + x as usize) * block_bytes;
-                let dst = descriptor
-                    .storage_layout
-                    .block_offset(size, block_bytes, x, y);
-                reordered[dst..dst + block_bytes].copy_from_slice(&blocks[src..src + block_bytes]);
-            }
-        }
-        blocks = reordered;
-    }
+    let blocks = mips::encode(linear, descriptor, options.dither)?;
     let header = TextureHeader::new(descriptor, TextureCodec::Raw, blocks.len() as u64)
         .map_err(|e| e.to_string())?;
     let parent = output
@@ -357,7 +351,11 @@ fn prepare_linear(
         } else {
             reel_core::texture::TextureStorageLayout::Linear
         },
-        mip_count: 1,
+        mip_count: if options.mipmaps {
+            32 - storage_size.into_iter().max().unwrap().leading_zeros()
+        } else {
+            1
+        },
         format,
         source_encoding: ColorEncoding::Srgb,
         layout: TextureLayout {
@@ -655,6 +653,7 @@ mod tests {
             Options {
                 max_size: Some([1, 1]),
                 gxm_layout: false,
+                mipmaps: false,
                 power_of_two: true,
                 format: Format::Rgba8,
                 dither: Dither::None,

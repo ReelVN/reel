@@ -344,7 +344,6 @@ impl ImageCache {
                 }
             } else if let ResourceData::Texture { descriptor, .. } = item.source.data() {
                 let layout = item.texture.expect("planned texture");
-                let row_bytes = resources::texture_row_bytes(layout);
                 if let Entry::Vacant(entry) = partial.entry(handle) {
                     let storage = reserve(
                         &budgets.transient,
@@ -376,13 +375,14 @@ impl ImageCache {
                     });
                 }
                 let pending = &partial[&handle];
+                let (level, level_row) = layout.at_row(*descriptor, pending.next_row);
+                let row_bytes = resources::texture_row_bytes(level);
                 let count = (limit
                     .saturating_sub(pool.usage().bytes)
                     .max(self.staging.lock().unwrap().capacity())
                     .min(staging_limit)
                     / row_bytes)
-                    .min(u64::from(pending.total_rows - pending.next_row))
-                    as u32;
+                    .min(u64::from(level.rows - level_row)) as u32;
                 if count == 0 {
                     deferred = Some(GpuError::Pressure {
                         domain: "texture upload",
@@ -415,8 +415,8 @@ impl ImageCache {
                     &mut encoder,
                     item.source,
                     &pending.image,
-                    layout,
-                    pending.next_row..next_row,
+                    level,
+                    level_row..level_row + count,
                     upload.as_deref(),
                 )?;
                 work_remaining = work_remaining.saturating_sub(row_bytes * u64::from(count));
@@ -530,6 +530,7 @@ impl ImageCache {
                     ResourceData::Texture { descriptor, .. } => {
                         image.yuv.is_none()
                             && image.texture_format == Some(descriptor.format)
+                            && image.texture.mip_level_count() == descriptor.mip_count
                             && image.size
                                 == item.texture.expect("planned texture").layout.storage_size
                     }

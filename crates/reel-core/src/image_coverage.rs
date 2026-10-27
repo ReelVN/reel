@@ -95,6 +95,10 @@ impl ImageCoverage {
     /// enclosing every possible hardware alpha interpolation. BC1 is opaque;
     /// unsupported storage returns `None` and retains the ordinary geometry.
     pub fn texture(descriptor: TextureDescriptor, bytes: &[u8]) -> Option<Self> {
+        // Coarse mip filtering can spread alpha beyond the base-level coverage bands.
+        if descriptor.mip_count > 1 {
+            return None;
+        }
         descriptor.validate(bytes.len()).ok()?;
         let size = descriptor.layout.content_size;
         let storage = descriptor.layout.storage_size;

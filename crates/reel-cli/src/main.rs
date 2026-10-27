@@ -556,6 +556,7 @@ fn prepare_texture_command(args: commands::PrepareTexture) -> io::Result<u8> {
         max_size: args.size,
         gxm_layout: false,
         power_of_two: args.power_of_two,
+        mipmaps: args.mipmaps,
         format: args.format,
         dither: args.dither,
     };

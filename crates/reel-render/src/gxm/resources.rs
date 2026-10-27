@@ -245,6 +245,11 @@ impl Images {
                 });
             }
         };
+        let mip_count = if let ResourceData::Texture { descriptor, .. } = source.data() {
+            descriptor.mip_count
+        } else {
+            1
+        };
         let recycled = self
             .retired
             .take_if(|image| recyclable(image, item, bytes))
@@ -299,7 +304,11 @@ impl Images {
                     let texture = if let Some((texture, _)) = recycled_textures {
                         texture
                     } else {
-                        gpu.create_texture(layout.storage_size, native_format(format.unwrap()))?
+                        gpu.create_mip_texture(
+                            layout.storage_size,
+                            native_format(format.unwrap()),
+                            mip_count,
+                        )?
                     };
                     match descriptor.storage_layout {
                         reel_core::texture::TextureStorageLayout::Linear => {
@@ -314,9 +323,10 @@ impl Images {
                     if let Some((texture, _)) = recycled_textures {
                         texture
                     } else {
-                        gpu.create_texture(
+                        gpu.create_mip_texture(
                             layout.storage_size,
                             native_format(format.unwrap_or(TextureFormat::Rgba8)),
+                            mip_count,
                         )?
                     }
                 };
@@ -447,10 +457,12 @@ fn costs(item: &crate::common::image_plan::Required<'_>) -> Result<(u64, u64), G
         ResourceData::Texture { descriptor, .. } => {
             let upload = item.texture.expect("planned texture");
             Ok((
-                super::super::texture_bytes(
+                native::mip_texture_layout(
                     upload.layout.storage_size,
                     native_format(descriptor.format),
-                )?,
+                    descriptor.mip_count,
+                )?
+                .bytes as u64,
                 0,
             ))
         }
@@ -497,6 +509,7 @@ fn recyclable(
             ResourceData::Texture { descriptor, .. } => {
                 image.kind == 0.
                     && image.format == Some(descriptor.format)
+                    && image.texture.mip_count() == descriptor.mip_count
                     && image.layout.storage_size
                         == item.texture.expect("planned texture").layout.storage_size
             }
@@ -534,16 +547,29 @@ fn progress(
                 true,
                 image.alpha_type,
             ),
-            ResourceData::Texture { descriptor, bytes } => (
-                pending.image.layout.storage_size,
-                descriptor
-                    .format
-                    .row_bytes(descriptor.layout.storage_size[0])
-                    .ok_or(GpuError::InvalidSize)? as usize,
-                bytes.data(),
-                false,
-                ImageAlphaType::AlphaPremultiplied,
-            ),
+            ResourceData::Texture { descriptor, bytes } => {
+                if pending.plane >= descriptor.mip_count as usize {
+                    return Ok(true);
+                }
+                let size = if descriptor.mip_count == 1 {
+                    pending.image.layout.storage_size
+                } else {
+                    descriptor.mip_size(pending.plane as u32)
+                };
+                (
+                    size,
+                    descriptor
+                        .format
+                        .row_bytes(descriptor.mip_size(pending.plane as u32)[0])
+                        .ok_or(GpuError::InvalidSize)? as usize,
+                    &bytes.data()[descriptor
+                        .mip_offset(pending.plane as u32)
+                        .ok_or(GpuError::InvalidSize)?
+                        as usize..],
+                    false,
+                    ImageAlphaType::AlphaPremultiplied,
+                )
+            }
             ResourceData::Yuv420(image) => {
                 if pending.plane >= image.plane_count() {
                     return Ok(true);
@@ -559,7 +585,9 @@ fn progress(
             _ => unreachable!(),
         };
         if pending.row == size[1] {
-            if pending.image.kind != 0. {
+            if pending.image.kind != 0.
+                || matches!(pending.source.data(), ResourceData::Texture { .. })
+            {
                 pending.plane += 1;
                 pending.row = 0;
                 continue;
@@ -578,7 +606,9 @@ fn progress(
         };
         let rows = ((*quota / row as u64).max(1).min(u64::from(u32::MAX)) as u32)
             .min(size[1] - pending.row);
-        let texture = if pending.plane == 0 {
+        let texture = if pending.plane == 0
+            || matches!(pending.source.data(), ResourceData::Texture { .. })
+        {
             &pending.image.texture
         } else {
             &pending.image.planes[pending.plane - 1]
@@ -611,13 +641,25 @@ fn progress(
         } else {
             let start = pending.row as usize * stride;
             let span = (rows as usize - 1) * stride + row;
-            gpu.upload(
-                texture,
-                [0, pending.row],
-                [size[0], rows],
-                &pixels[start..start + span],
-                stride,
-            )?;
+            if matches!(pending.source.data(), ResourceData::Texture { descriptor, .. } if descriptor.mip_count > 1)
+            {
+                gpu.upload_mip_rows(
+                    texture,
+                    pending.plane as u32,
+                    pending.row,
+                    rows,
+                    &pixels[start..start + span],
+                    stride,
+                )?;
+            } else {
+                gpu.upload(
+                    texture,
+                    [0, pending.row],
+                    [size[0], rows],
+                    &pixels[start..start + span],
+                    stride,
+                )?;
+            }
             pending.row += rows;
             *quota = quota.saturating_sub(u64::from(rows) * row as u64);
         }

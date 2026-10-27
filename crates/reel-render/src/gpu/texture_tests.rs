@@ -693,3 +693,93 @@ fn retired_texture_storage_reuses_exact_footprints_and_preserves_reader_pins() {
     assert_eq!(renderer.budgets.resources.usage().bytes, 0);
     assert_eq!(pool.usage().bytes, 0);
 }
+
+#[test]
+#[ignore = "actual adapter mip submission; no pixel readback"]
+fn mip_chains_submit_every_level_with_exact_residency() {
+    let pool = BudgetPool::new(
+        BudgetCategory::CpuOutput,
+        QueueLimits {
+            max_requests: 128,
+            max_bytes: 8 << 20,
+        },
+    );
+    let mut registry = ResourceRegistry::new(4, 65536).unwrap();
+    let gpu = pollster::block_on(Gpu::request(
+        &wgpu::Instance::default(),
+        None,
+        DeviceGeneration(1),
+        GpuLimits::default(),
+    ))
+    .unwrap();
+    let mut renderer = Renderer::new(gpu);
+    for (i, (size, format)) in [
+        ([13u32, 7], TextureFormat::Rgba8),
+        ([16, 8], TextureFormat::Bc3Rgba),
+        ([8, 16], TextureFormat::Bc1Rgb),
+        ([32, 8], TextureFormat::Bc3Rgba),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let descriptor = TextureDescriptor {
+            storage_layout: if i == 3 {
+                TextureStorageLayout::GxmBcMorton
+            } else {
+                TextureStorageLayout::Linear
+            },
+            mip_count: 32 - size.into_iter().max().unwrap().leading_zeros(),
+            format,
+            layout: TextureLayout::identity(size),
+            source_encoding: ColorEncoding::Linear,
+        };
+        let bytes = descriptor.byte_len().unwrap();
+        let handle = registry
+            .register_texture(
+                ResourceVersion {
+                    key: AssetKey(format!("mips-{i}")),
+                    version: ContentVersion([i as u8; 32]),
+                },
+                TexturePayload::new(
+                    descriptor,
+                    OwnedBytes::new(vec![128; bytes as usize], pool.reserve(bytes).unwrap())
+                        .unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let frame = frame(registry.acquire(handle).unwrap(), 0, &pool);
+        let mut attempts = 0;
+        let prepared = loop {
+            attempts += 1;
+            assert!(attempts <= descriptor.mip_count + 3);
+            match renderer.prepare(&frame) {
+                Ok(p) => break p,
+                Err(e) if e.is_retryable() => {
+                    renderer
+                        .gpu
+                        .device
+                        .poll(wgpu::PollType::wait_indefinitely())
+                        .unwrap();
+                    renderer.poll().unwrap();
+                }
+                Err(e) => panic!("{e:?}"),
+            }
+        };
+        let image = &prepared.images[&handle];
+        assert_eq!(image.texture.mip_level_count(), descriptor.mip_count);
+        assert_eq!(image.residency.as_ref().unwrap().bytes(), bytes);
+        assert_eq!(image.layout, descriptor.layout);
+        eprintln!(
+            "mip-submit {format:?} {size:?}: levels={} resident={bytes} prepare_attempts={attempts}",
+            descriptor.mip_count
+        );
+        renderer.submit(prepared).unwrap();
+        renderer
+            .gpu
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        renderer.poll().unwrap();
+    }
+}

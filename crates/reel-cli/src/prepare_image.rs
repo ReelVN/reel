@@ -45,6 +45,12 @@ pub fn prepare_bounded(
     texture_options: crate::prepare_texture::Options,
     memory_bytes: u64,
 ) -> Result<(PreparedImage, u64), String> {
+    if texture_options.mipmaps {
+        return Err(
+            "mipmaps belongs to texture conversion; tiled images already own a level pyramid"
+                .into(),
+        );
+    }
     if texture_options.dither != crate::prepare_texture::Dither::None {
         return Err(
             "ordered dithering is supported by texture conversion, not tiled images".into(),
@@ -396,6 +402,7 @@ mod tests {
             .unwrap();
         let options = crate::prepare_texture::Options {
             gxm_layout: false,
+            mipmaps: false,
             power_of_two: true,
             ..Default::default()
         };
@@ -421,6 +428,7 @@ mod tests {
         .unwrap();
         let options = crate::prepare_texture::Options {
             gxm_layout: false,
+            mipmaps: false,
             power_of_two: true,
             format: crate::prepare_texture::Format::Rgba8,
             max_size: None,

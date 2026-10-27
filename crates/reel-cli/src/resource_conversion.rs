@@ -9,6 +9,9 @@
 //! `size = [width, height]` instead fits artwork inside an explicit box.
 //! Texture rules with `format = "rgba8"` may select `dither = "ordered"` to spread
 //! linear RGB rounding across a fixed 8x8 pattern; the default is `"none"`.
+//! Texture rules may opt into `mipmaps = true`; the default is a single level.
+//! Mips filter the padded linear-premultiplied storage and retain author coordinates.
+//! Tiles own their separate level pyramid and do not accept this option.
 //! Alpha remains undithered. Ordered dithering does not apply to block formats or tiles.
 //! BC textures and tiles select color fitting against the filtered source's
 //! displayed error while retaining the selected format and GPU byte count.
@@ -88,6 +91,7 @@ struct RuleInput {
     size: Option<[u32; 2]>,
     format: Option<prepare_texture::Format>,
     dither: Option<prepare_texture::Dither>,
+    mipmaps: Option<bool>,
     power_of_two: Option<bool>,
     bitrate: Option<u32>,
     tile_size: Option<u32>,
@@ -118,6 +122,7 @@ enum Recipe {
         format: prepare_texture::Format,
         power_of_two: bool,
         dither: prepare_texture::Dither,
+        mipmaps: bool,
     },
     Tiles {
         tile_size: u32,
@@ -156,6 +161,9 @@ impl RuleInput {
             .build()
             .map_err(invalid)?
             .compile_matcher();
+        if self.mipmaps.is_some() && !matches!(self.convert, Convert::Texture) {
+            return Err(invalid("mipmaps belongs to texture rules"));
+        }
         if self.dither.is_some() && !matches!(self.convert, Convert::Texture) {
             return Err(invalid("dither belongs to texture rules"));
         }
@@ -272,6 +280,7 @@ impl RuleInput {
                     size: self.size,
                     format,
                     dither,
+                    mipmaps: self.mipmaps.unwrap_or(false),
                     power_of_two: self.power_of_two.unwrap_or(false),
                 }
             }
@@ -720,6 +729,7 @@ fn convert(
                 format: *format,
                 power_of_two: *power_of_two,
                 dither: prepare_texture::Dither::None,
+                mipmaps: false,
             },
             memory_bytes,
         )
@@ -731,6 +741,7 @@ fn convert(
             format,
             power_of_two,
             dither,
+            mipmaps,
         } => {
             let options = prepare_texture::Options {
                 max_size: *size,
@@ -738,6 +749,7 @@ fn convert(
                 power_of_two: *power_of_two,
                 format: *format,
                 dither: *dither,
+                mipmaps: *mipmaps,
             };
             prepare_texture::prepare_scaled_bounded(source, output, options, *scale, memory_bytes)
                 .map(|(_, workspace)| workspace)

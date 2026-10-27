@@ -17,7 +17,7 @@ fn main() -> io::Result<()> {
 
     let texture = [
         "crates/reel-cli/src/prepare_texture.rs",
-        "crates/reel-cli/src/prepare_texture/quality.rs",
+        "crates/reel-cli/src/prepare_texture",
         "crates/reel-core/src/texture.rs",
     ];
     let mut tiles = texture.to_vec();

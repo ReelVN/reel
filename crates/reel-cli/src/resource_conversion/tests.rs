@@ -457,3 +457,40 @@ fn prepared_logical_paths_reach_the_player_and_both_export_profiles() {
         assets.close();
     }
 }
+
+#[test]
+fn mip_opt_in_changes_recipe_and_default_remains_single_level() {
+    let (directory, tool, target) = fixture();
+    let root = directory.path();
+    let config = "[[targets.vita]]\nmatch = 'images/**'\nconvert = 'texture'\nformat = 'rgba8'\n";
+    fs::write(root.join("resources.toml"), config).unwrap();
+    let plain = prepare(root, &tool, &target, MEMORY_BYTES).unwrap();
+    fs::write(
+        root.join("resources.toml"),
+        format!("{config}mipmaps = false\n"),
+    )
+    .unwrap();
+    let default = prepare(root, &tool, &target, MEMORY_BYTES).unwrap();
+    assert_eq!(plain.files, default.files);
+    fs::write(
+        root.join("resources.toml"),
+        format!("{config}mipmaps = true\n"),
+    )
+    .unwrap();
+    let mips = prepare(root, &tool, &target, MEMORY_BYTES).unwrap();
+    assert_ne!(plain.files, mips.files);
+    let cached = prepare(root, &tool, &target, MEMORY_BYTES).unwrap();
+    assert_eq!(cached.report.converted, 0);
+    fs::write(
+        root.join("resources.toml"),
+        "[[targets.vita]]\nmatch = 'images/**'\nconvert = 'tiles'\nmipmaps = true\n",
+    )
+    .unwrap();
+    assert!(
+        prepare(root, &tool, &target, MEMORY_BYTES)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("mipmaps belongs to texture rules")
+    );
+}
