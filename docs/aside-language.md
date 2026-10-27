@@ -78,6 +78,8 @@ int 加减乘、负号及整数除法溢出报错；MIN/-1 报错。int/int 的 
 
 `std::math::to_int(value)` 保留整数原值，将浮点数向零截断后转为 int。NaN、Infinity 和超出 int64 范围的值在调用处报告 `Type` 错误。
 
+`std::number::format(value, precision: 2, mode: "fixed")` 将 int 或 float 转成十进制 string。fixed 的 precision 为小数位数，范围 0..1024；scientific 的 precision 为有效数字总位数，范围 1..1024，输出小写 e、无正号或补零的十进制指数，例如 `1.000e12`。两种模式保留所请求的尾零，整数沿 int64 转换保留精度。舍入使用最接近值、中点取偶数；浮点转换直接针对当前二进制数值，因此两位小数的 `2.675` 为 `2.67`，一位小数的 `12.25` 为 `12.2`。负零保留负号，非有限值输出 `NaN`、`inf` 或 `-inf`。非法模式、非整数或越界精度、非数值输入在调用位置报告 Type。转换直接写入受 VM 文本额度约束的缓冲区；精度上界限制单次原生转换成本。源码、ASB 和 derive 使用同一接口。
+
 `std::math::curve(keys)` 构造不可变标量曲线，`curve.sample(time)` 返回指定时间的 float64 值。keys 为非空 array/tuple，元素为 `{time, value, mode: "linear", in_tangent: 0, out_tangent: 0}`；time/value 必需，其余字段可省略。所有数值及采样时间须有限，时间允许负值并按非递减顺序提供。mode 描述从该关键帧出发的区间：linear 线性插值，step 保持左值，cubic 使用左帧 out_tangent 与右帧 in_tangent 作三次 Hermite 插值，切线单位为值/秒。重复时刻表示瞬时跳变，恰在该时刻取最后一帧；到达该时刻之前的区间以第一帧为右端。首尾以外保持端值，单帧曲线为常量。插值保留超出端值的结果；中间运算遵循 float64 规则。
 
 构造按顺序复制关键帧数值，每个记录在一个构造步骤内读取；已复制记录随后改变不改写副本。构造期间外层数组内容变化报告 ConcurrentModification，部分结果随原生续体取消回收。构造与 sample 可在初始化和 derive 中调用；derive 追踪构造时实际读取的可观察数据及 sample 实参的读取。曲线本身只读，没有任务、节点 owner 或播放状态；保存恢复沿普通堆对象保留曲线和已取出的 sample 方法。记录只接受上述五个字段；非法形状、顺序、mode 和数值在相应原生调用位置报告。

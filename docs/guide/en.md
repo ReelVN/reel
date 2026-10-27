@@ -247,6 +247,14 @@ use std::math::to_int;
 let frame = to_int(1.25 * 20);
 ```
 
+Use `std::number::format` to choose decimal places or significant digits in scientific notation for numeric text. Formatting produces text while the stored value retains its precision; the project chooses separators and display thresholds. See the [standard declaration](../../crates/aside-std/src/number.rs) for rounding and ranges.
+
+```aside
+use std::number::format;
+let price = format(12.25, precision: 1);
+let total = format(123456789, precision: 4, mode: "scientific");
+```
+
 ## 3 Compose scenes and layout
 
 Functions return nodes, and trailing child blocks compose them. Use conditions, loops and local variables inside a block; returning `null` omits a node at that position. Placement, backgrounds and interaction share the same stage tree.

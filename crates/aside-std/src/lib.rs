@@ -9,6 +9,7 @@ mod core;
 mod curve;
 pub use curve::{curve_key, curve_key_count, sample_curve};
 mod math;
+mod number;
 mod random;
 mod source;
 mod time;
@@ -30,6 +31,7 @@ fn bindings() -> Vec<NativeBinding<StandardLibrary, NativeError>> {
         time::now::binding(),
         time::parts::binding(),
         time::format::binding(),
+        number::format::binding(),
     ];
     bindings.extend(math::bindings());
     bindings.push(curve::binding());

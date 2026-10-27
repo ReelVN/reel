@@ -247,6 +247,14 @@ use std::math::to_int;
 let frame = to_int(1.25 * 20);
 ```
 
+显示数值时，用 `std::number::format` 选择小数位数或科学计数法的有效数字位数。格式化只生成文本，业务数值继续保留原精度；分隔符和显示量级由作品决定。舍入规则与范围见[标准库声明](../../crates/aside-std/src/number.rs)。
+
+```aside
+use std::number::format;
+let price = format(12.25, precision: 1);
+let total = format(123456789, precision: 4, mode: "scientific");
+```
+
 ## 3 组合画面与布局
 
 函数返回节点，尾随子节点块组合它们。块内可使用条件、循环和局部变量；返回 `null` 表示这一处省略节点。位置、背景与交互都沿用同一棵舞台树。

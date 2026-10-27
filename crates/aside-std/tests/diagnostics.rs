@@ -3,13 +3,15 @@ use aside_host::{aside_compiler, aside_vm};
 use aside_vm::{RootOwner, SessionEpoch, Value, bytecode as bc, executor::*};
 
 fn drive(vm: &mut Vm, library: &mut aside_std::StandardLibrary, task: TaskId) -> DeliveryId {
+    // Admit the fixture's decoded code page as well as its diagnostic records.
+    const ALLOCATION_SLICE: u64 = 4096;
     loop {
         match vm
             .run_slice(
                 task,
                 SliceBudget {
                     instructions: 3,
-                    allocation_bytes: 2048,
+                    allocation_bytes: ALLOCATION_SLICE,
                     ..Default::default()
                 },
                 || 0,
@@ -21,7 +23,7 @@ fn drive(vm: &mut Vm, library: &mut aside_std::StandardLibrary, task: TaskId) ->
             }
             RunOutcome::BudgetYield(usage) => {
                 assert!(
-                    usage.required_allocation <= 2048,
+                    usage.required_allocation <= ALLOCATION_SLICE,
                     "diagnostic operation exceeds small allocation slice: {usage:?}"
                 );
             }
