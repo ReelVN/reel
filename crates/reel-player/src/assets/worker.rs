@@ -11,6 +11,7 @@ use std::{
         Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    time::{Duration, Instant},
 };
 
 struct Task<R> {
@@ -49,7 +50,7 @@ struct State<R, E> {
     closed: bool,
 }
 type Shared<R, E> = Arc<(Mutex<State<R, E>>, Condvar)>;
-type Handler<R, E> = dyn Fn(R, &AtomicBool) -> Step<R, E> + Send + Sync;
+type Handler<R, E> = dyn Fn(R, &AtomicBool, bool) -> Step<R, E> + Send + Sync;
 
 /// A continuation retains its queue slot, cancellation flag and request ID.
 /// Handlers must settle cancelled work at their next bounded step.
@@ -82,7 +83,7 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
             limits,
             wake,
             0,
-            move |request, cancelled| Step::Complete(handler(request, cancelled)),
+            move |request, cancelled, _| Step::Complete(handler(request, cancelled)),
             cancel_event,
         )
     }
@@ -90,7 +91,7 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
         limits: QueueLimits,
         wake: WakeSignal,
         realtime_slots: u32,
-        handler: impl Fn(R, &AtomicBool) -> Step<R, E> + Send + Sync + 'static,
+        handler: impl Fn(R, &AtomicBool, bool) -> Step<R, E> + Send + Sync + 'static,
         cancel_event: fn(&mut E),
     ) -> Self {
         let client = Client::new(wake);
@@ -147,6 +148,16 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
         bytes: u64,
         priority: Priority,
     ) -> Result<(), Rejected<R>> {
+        self.accept_before(id, request, bytes, priority, None)
+    }
+    pub fn accept_before(
+        &mut self,
+        id: u64,
+        request: R,
+        bytes: u64,
+        priority: Priority,
+        deadline: Option<reel_core::io::ReadDeadline>,
+    ) -> Result<(), Rejected<R>> {
         let mut state = self.state.0.lock().unwrap();
         if state.closed {
             return Err(Rejected {
@@ -160,29 +171,44 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
             if let Err(error) = std::thread::Builder::new()
                 .name("reel-resource".into())
                 .spawn(move || {
+                    let mut observed_quantum = Duration::ZERO;
                     'worker: loop {
-                        let mut entry = {
+                        let (mut entry, deadline) = {
                             let mut state = shared.0.lock().unwrap();
                             loop {
                                 if state.closed && state.queue.usage().pending == 0 {
                                     break 'worker;
                                 }
                                 if let Some(entry) = state.queue.pop() {
-                                    break entry;
+                                    let deadline = entry
+                                        .deadline()
+                                        .into_iter()
+                                        .chain(state.queue.earliest_deadline())
+                                        .min();
+                                    break (entry, deadline);
                                 }
                                 state = shared.1.wait(state).unwrap();
                             }
                         };
-                        let mut event =
-                            match handler(entry.request.request, &entry.request.cancelled) {
-                                Step::Complete(event) => event,
-                                Step::Continue(request) => {
-                                    entry.request.request = request;
-                                    let mut state = shared.0.lock().unwrap();
-                                    state.queue.requeue(entry);
-                                    continue;
-                                }
-                            };
+                        // Read ahead only when the next soft deadline has more
+                        // slack than the slowest observed bounded quantum.
+                        let started = Instant::now();
+                        let read_ahead = deadline.is_none_or(|deadline| {
+                            observed_quantum != Duration::ZERO
+                                && deadline.saturating_duration_since(started) > observed_quantum
+                        });
+                        let step =
+                            handler(entry.request.request, &entry.request.cancelled, read_ahead);
+                        observed_quantum = observed_quantum.max(started.elapsed());
+                        let mut event = match step {
+                            Step::Complete(event) => event,
+                            Step::Continue(request) => {
+                                entry.request.request = request;
+                                let mut state = shared.0.lock().unwrap();
+                                state.queue.requeue(entry);
+                                continue;
+                            }
+                        };
                         // Removing the live ID settles cancellation before queuing the terminal.
                         let mut state = shared.0.lock().unwrap();
                         let active = state.active.remove(&entry.slot.id).unwrap();
@@ -230,7 +256,7 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
         let cancelled = Arc::new(AtomicBool::new(false));
         state
             .queue
-            .accept(
+            .accept_before(
                 id,
                 Task {
                     request,
@@ -238,6 +264,7 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
                 },
                 bytes,
                 priority,
+                deadline,
             )
             .map_err(|error| {
                 if error.reason.code == RejectCode::Busy {
@@ -389,7 +416,7 @@ mod tests {
                 },
                 WakeSignal::new(|| {}),
                 2,
-                move |mut job: Job, cancelled| {
+                move |mut job: Job, cancelled, _| {
                     if job.id == 1 && job.left == 2 {
                         job.left -= 1;
                         started_tx.send(()).unwrap();

@@ -158,6 +158,7 @@ impl MediaPlayer {
             Box::new(stream),
             move || cancel.cancel(),
             VideoOptions {
+                io_deadline: Some(control.read_deadline()),
                 queued_video_frames: self.options.video.queued_pictures,
                 queued_audio_frames: self.options.video.queued_audio_frames,
                 start: position,

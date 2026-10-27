@@ -1,9 +1,10 @@
 use crate::{
     budget::QueueLimits,
     identity::Priority,
+    io::ReadDeadline,
     result::{RejectCode, RejectReason, Rejected},
 };
-use std::collections::VecDeque;
+use std::{collections::VecDeque, time::Instant};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct QueueUsage {
@@ -13,6 +14,8 @@ pub struct QueueUsage {
     pub peak_bytes: u64,
     pub pending: usize,
     pub completed: usize,
+    /// Deadline-bearing requests first dispatched after their soft service time.
+    pub deadline_misses: u64,
 }
 
 /// Linear permission to enqueue exactly one terminal record.
@@ -25,6 +28,14 @@ pub struct Entry<R> {
     pub slot: CompletionSlot,
     pub request: R,
     priority: usize,
+    deadline: Option<ReadDeadline>,
+    started: bool,
+}
+impl<R> Entry<R> {
+    /// Absolute soft deadline retained across bounded continuations.
+    pub fn deadline(&self) -> Option<Instant> {
+        self.deadline.as_ref().and_then(ReadDeadline::get)
+    }
 }
 struct Finished<E> {
     event: E,
@@ -71,6 +82,18 @@ impl<R, E> Queue<R, E> {
         bytes: u64,
         priority: Priority,
     ) -> Result<(), Rejected<R>> {
+        self.accept_before(id, request, bytes, priority, None)
+    }
+    /// Admit the same owning request with a soft monotonic deadline. Equal
+    /// deadlines retain FIFO order; priority and realtime fairness are preserved.
+    pub fn accept_before(
+        &mut self,
+        id: u64,
+        request: R,
+        bytes: u64,
+        priority: Priority,
+        deadline: Option<ReadDeadline>,
+    ) -> Result<(), Rejected<R>> {
         let priority = match priority {
             Priority::Prefetch => 0,
             Priority::Normal => 1,
@@ -114,6 +137,8 @@ impl<R, E> Queue<R, E> {
             },
             request,
             priority,
+            deadline,
+            started: false,
         });
         self.usage.requests += 1;
         self.ordinary_requests += u32::from(priority != 3);
@@ -139,24 +164,45 @@ impl<R, E> Queue<R, E> {
         }
         Ok(())
     }
+    /// Earliest admitted service time, including partially progressed requests.
+    pub fn earliest_deadline(&self) -> Option<Instant> {
+        self.pending().filter_map(Entry::deadline).min()
+    }
     pub fn pop(&mut self) -> Option<Entry<R>> {
-        // Default queues retain strict priority; only configured IO queues apply
-        // the bounded urgent burst before choosing the next ordinary quantum.
-        if self.realtime_slots != 0 && !self.pending[3].is_empty() {
+        self.pop_at(Instant::now())
+    }
+    /// Dispatch using an explicit monotonic observation, also useful to measure
+    /// scheduling traces without wall-clock sleeps.
+    pub fn pop_at(&mut self, now: Instant) -> Option<Entry<R>> {
+        let ordinary = || self.pending[..3].iter().rposition(|q| !q.is_empty());
+        let priority = if self.realtime_slots != 0 && !self.pending[3].is_empty() {
             if self.realtime_burst >= 4
-                && let Some(entry) = self.pending[..3]
-                    .iter_mut()
-                    .rev()
-                    .find_map(|q| q.pop_front())
+                && let Some(index) = ordinary()
             {
                 self.realtime_burst = 0;
-                return Some(entry);
+                index
+            } else {
+                self.realtime_burst = self.realtime_burst.saturating_add(1).min(4);
+                3
             }
-            self.realtime_burst = self.realtime_burst.saturating_add(1).min(4);
-            return self.pending[3].pop_front();
+        } else {
+            self.realtime_burst = 0;
+            self.pending.iter().rposition(|q| !q.is_empty())?
+        };
+        let index = self.pending[priority]
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, entry)| {
+                let deadline = entry.deadline();
+                (deadline.is_none(), deadline)
+            })
+            .map(|(index, _)| index)?;
+        let mut entry = self.pending[priority].remove(index).unwrap();
+        if !entry.started && entry.deadline().is_some_and(|deadline| now > deadline) {
+            self.usage.deadline_misses += 1;
         }
-        self.realtime_burst = 0;
-        self.pending.iter_mut().rev().find_map(|q| q.pop_front())
+        entry.started = true;
+        Some(entry)
     }
     pub fn take(&mut self, id: u64) -> Option<Entry<R>> {
         for queue in &mut self.pending {

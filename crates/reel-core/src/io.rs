@@ -6,6 +6,88 @@ use crate::{
     wake::WakeSignal,
 };
 
+/// A decoder-worker hint derived from actual buffered source duration. Deadlines
+/// are monotonic and soft: expiry changes scheduling order, never IO success.
+/// Clearing it while paused prevents a stale deadline surviving suspension.
+#[derive(Clone, Debug, Default)]
+pub struct ReadDeadline(std::sync::Arc<DeadlineState>);
+#[derive(Debug, Default)]
+struct DeadlineState {
+    value: std::sync::Mutex<DeadlineValue>,
+    _ticket: Option<BudgetTicket>,
+}
+#[derive(Debug)]
+struct DeadlineValue {
+    deadline: Option<std::time::Instant>,
+    paused: bool,
+    rate: f64,
+}
+impl Default for DeadlineValue {
+    fn default() -> Self {
+        Self {
+            deadline: None,
+            paused: false,
+            rate: 1.,
+        }
+    }
+}
+impl ReadDeadline {
+    /// Account this shared allocation until its last publisher or queued reader
+    /// releases it. Ticket lifetime is independent of stream cancellation.
+    pub fn charged(pool: &crate::budget::BudgetPool) -> Result<Self, RejectReason> {
+        let ticket = pool.reserve((size_of::<DeadlineState>() + 2 * size_of::<usize>()) as u64)?;
+        Ok(Self(std::sync::Arc::new(DeadlineState {
+            value: Default::default(),
+            _ticket: Some(ticket),
+        })))
+    }
+    /// Create an absolute monotonic hint for externally measured buffers.
+    pub fn at(deadline: std::time::Instant) -> Self {
+        Self(std::sync::Arc::new(DeadlineState {
+            value: std::sync::Mutex::new(DeadlineValue {
+                deadline: Some(deadline),
+                ..Default::default()
+            }),
+            _ticket: None,
+        }))
+    }
+    /// Publish decoded duration from a preparation worker, never the audio callback.
+    pub fn buffered(&self, duration: std::time::Duration) {
+        let mut value = self.0.value.lock().unwrap();
+        if !value.paused {
+            value.deadline = std::time::Instant::now().checked_add(duration.div_f64(value.rate));
+        }
+    }
+    /// Clear the current hint during suspension, cancellation or EOF.
+    pub fn clear(&self) {
+        self.0.value.lock().unwrap().deadline = None;
+    }
+    /// Suspend publication while playback is paused or a queued segment is held.
+    /// Resume requests prompt service until the decoder can publish a fresh buffer
+    /// measurement, including when it is already blocked inside an owning read.
+    pub fn pause(&self, paused: bool) {
+        let mut value = self.0.value.lock().unwrap();
+        if value.paused != paused {
+            value.paused = paused;
+            value.deadline = (!paused).then(std::time::Instant::now);
+        }
+    }
+    /// Set the maximum source speed across the active rate transition. A faster
+    /// consumer gets an earlier service time; callers validate playback rates.
+    pub fn rate(&self, rate: f64) {
+        assert!(rate.is_finite() && rate > 0.);
+        let mut value = self.0.value.lock().unwrap();
+        if value.rate != rate {
+            value.rate = rate;
+            value.deadline = (!value.paused).then(std::time::Instant::now);
+        }
+    }
+    /// Read the current absolute deadline, including updates after admission.
+    pub fn get(&self) -> Option<std::time::Instant> {
+        self.0.value.lock().unwrap().deadline
+    }
+}
+
 /// Visible replacement alone does not establish durability across process/device loss.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SaveDurability {
@@ -40,6 +122,8 @@ pub struct AssetInfo {
 
 #[derive(Debug)]
 pub struct ReadRequest {
+    /// Soft monotonic service deadline from the consumer's decoded buffer.
+    pub deadline: Option<ReadDeadline>,
     pub resource: AssetSource,
     pub offset: u64,
     pub len: u32,

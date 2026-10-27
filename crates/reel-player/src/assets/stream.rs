@@ -2,7 +2,7 @@
 use reel_core::{
     budget::{BudgetPool, BudgetTicket, OwnedBytes},
     identity::{AssetKey, AssetSource, Priority, Scope},
-    io::{AssetIo, DescribeRequest, IoEvent, IoPayload, ReadRequest},
+    io::{AssetIo, DescribeRequest, IoEvent, IoPayload, ReadDeadline, ReadRequest},
     result::{RejectCode, RejectReason, Terminal},
     wake::WakeSignal,
 };
@@ -31,6 +31,7 @@ struct State {
     closed: bool,
 }
 struct Shared {
+    deadline: ReadDeadline,
     state: Mutex<State>,
     reader: Mutex<Option<Box<dyn AssetIo + Send>>>,
     admission: Arc<Mutex<Admission>>,
@@ -97,6 +98,10 @@ impl Shared {
 #[derive(Clone)]
 pub struct StreamControl(Arc<Shared>);
 impl StreamControl {
+    /// Worker-owned deadline publisher for this stream's actual decoded buffer.
+    pub fn read_deadline(&self) -> ReadDeadline {
+        self.0.deadline.clone()
+    }
     /// Fixed source identity becomes available after the first describe.
     pub fn version(&self) -> Option<reel_core::identity::ResourceVersion> {
         let state = self.0.state.lock().unwrap();
@@ -109,6 +114,7 @@ impl StreamControl {
             })
     }
     pub fn cancel(&self) {
+        self.0.deadline.pause(true);
         let completion = {
             let mut state = self.0.state.lock().unwrap();
             state.closed = true;
@@ -182,6 +188,7 @@ impl AssetStream {
                 Err(error) => (Err(error.reason), Some(error.request.completion)),
             },
             Request::Read { offset, len } => match reader.read(ReadRequest {
+                deadline: Some(self.shared.deadline.clone()),
                 resource: source,
                 offset,
                 len,
@@ -357,6 +364,7 @@ impl Streams {
         io: &dyn AssetIo,
         input: BudgetPool,
         completion: BudgetPool,
+        metadata: BudgetPool,
         chunk: u32,
     ) -> Result<(StreamControl, AssetStream), String> {
         #[cfg(target_os = "vita")]
@@ -364,9 +372,11 @@ impl Streams {
         // Reserve the reader's one completion before it can wait. The same
         // ticket follows each request/terminal and is recycled after draining.
         let completion = completion.reserve(512).map_err(|reason| reason.message)?;
+        let deadline = ReadDeadline::charged(&metadata).map_err(|reason| reason.message)?;
         let shared = Arc::new_cyclic(|weak: &Weak<Shared>| {
             let target = weak.clone();
             Shared {
+                deadline,
                 state: Mutex::new(State {
                     source: AssetSource {
                         key: AssetKey(source),

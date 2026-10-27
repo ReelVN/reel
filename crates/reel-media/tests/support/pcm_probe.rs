@@ -304,7 +304,7 @@ fn streaming_callback_is_allocation_free() {
         std::io::Cursor::new(bytes),
         length,
         pool.clone(),
-        reel_media::DecodeLimits { static_threshold: 0, window_frames: 1024 },
+        reel_media::DecodeLimits { io_deadline: None, static_threshold: 0, window_frames: 1024 },
         Arc::new(|| {}),
         &AtomicBool::new(false),
         &reel_media::decode::SoftwareAudioDecoderFactory,

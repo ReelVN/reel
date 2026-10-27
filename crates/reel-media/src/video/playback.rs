@@ -24,8 +24,10 @@ use std::{
     time::Duration,
 };
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct VideoOptions {
+    /// Optional stream deadline refreshed by the decoder from queued media.
+    pub io_deadline: Option<reel_core::io::ReadDeadline>,
     pub queued_video_frames: usize,
     pub queued_audio_frames: usize,
     pub start: Duration,
@@ -40,6 +42,7 @@ pub struct VideoOptions {
 impl Default for VideoOptions {
     fn default() -> Self {
         Self {
+            io_deadline: None,
             queued_video_frames: 3,
             queued_audio_frames: 8192,
             start: Duration::ZERO,
@@ -125,6 +128,7 @@ struct Transport {
     gain: AtomicU32,
 }
 struct State {
+    position: f64,
     info: Option<VideoInfo>,
     audio: Option<StreamSoundData>,
     frames: VecDeque<VideoFrameLease>,
@@ -286,9 +290,13 @@ impl VideoPlayback {
         {
             return Err("video queues must be nonempty and end must follow start".into());
         }
+        if let Some(deadline) = &options.io_deadline {
+            deadline.pause(options.paused || options.poster);
+        }
         let position = options.start.as_secs_f64();
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
+                position,
                 info: None,
                 audio: None,
                 frames: VecDeque::with_capacity(options.queued_video_frames),
@@ -310,9 +318,19 @@ impl VideoPlayback {
         let builder = thread::Builder::new().name("reel-video-decode".into());
         #[cfg(target_os = "vita")]
         let builder = builder.stack_size(512 << 10);
+        let worker_options = options.clone();
         let worker = builder
             .spawn(move || {
-                let result = decode(source, options, budget, &background, decoder.as_ref());
+                let result = decode(
+                    source,
+                    worker_options.clone(),
+                    budget,
+                    &background,
+                    decoder.as_ref(),
+                );
+                if let Some(deadline) = &worker_options.io_deadline {
+                    deadline.clear();
+                }
                 let mut state = background.state.lock().unwrap();
                 if let Err(error) = result
                     && !background.transport.cancelled.load(Ordering::Acquire)
@@ -365,6 +383,9 @@ impl VideoPlayback {
         Ok(())
     }
     pub fn pause(&self, paused: bool) {
+        if let Some(deadline) = &self.options.io_deadline {
+            deadline.pause(paused || self.options.poster);
+        }
         self.shared
             .transport
             .paused
@@ -398,6 +419,7 @@ impl VideoPlayback {
         {
             state.terminal = Some(VideoTerminal::Completed);
         }
+        state.position = self.position;
         drop(state);
         self.shared.signal();
         self.reap();
@@ -428,6 +450,9 @@ impl VideoPlayback {
         self.finish(VideoTerminal::Cancelled);
     }
     fn finish(&mut self, result: VideoTerminal) {
+        if let Some(deadline) = &self.options.io_deadline {
+            deadline.clear();
+        }
         self.shared
             .transport
             .cancelled

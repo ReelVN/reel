@@ -16,8 +16,34 @@ const RECORD_BYTES: u64 = 16;
 pub struct ReadScratch {
     bytes: Box<[u8]>,
     cached: Option<DecodedBlock>,
+    encoded: Option<EncodedWindow>,
+    prefetch_records: u64,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct EncodedWindow {
+    version: [u8; 32],
+    entry_offset: u64,
+    relative: u64,
+    length: usize,
+    first: u64,
+    records: usize,
+}
+impl EncodedWindow {
+    fn contains(
+        &self,
+        version: [u8; 32],
+        entry_offset: u64,
+        relative: u64,
+        length: usize,
+    ) -> Option<usize> {
+        if self.version != version || self.entry_offset != entry_offset {
+            return None;
+        }
+        let start = usize::try_from(relative.checked_sub(self.relative)?).ok()?;
+        (start.checked_add(length)? <= self.length).then_some(start)
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DecodedBlock {
     version: [u8; 32],
@@ -30,6 +56,7 @@ struct DecodedBlock {
 /// owns no payload bytes and may be interleaved with other readers of the file.
 pub struct ReadCursor {
     records: [u8; 4096],
+    read_ahead: bool,
     first: u64,
     count: u64,
     start: u64,
@@ -41,12 +68,27 @@ pub struct ReadCursor {
     stored_length: u64,
     storage: EntryStorage,
 }
+impl ReadCursor {
+    /// Permit bounded adjacent compressed payloads to share the existing encoded
+    /// scratch. Disable when another admitted request approaches its deadline.
+    pub fn set_read_ahead(&mut self, enabled: bool) {
+        self.read_ahead = enabled;
+    }
+}
 impl ReadScratch {
+    /// Retire encoded bytes before changing the underlying archive file. Decoded
+    /// content remains reusable by its content digest across archives.
+    pub fn clear_encoded(&mut self) {
+        self.encoded = None;
+        self.prefetch_records = 256;
+    }
     /// Allocates exactly [`SCRATCH_BYTES`] bytes of reusable payload storage.
     pub fn new() -> Self {
         Self {
             bytes: vec![0; SCRATCH_BYTES].into_boxed_slice(),
             cached: None,
+            encoded: None,
+            prefetch_records: 256,
         }
     }
 }
@@ -77,11 +119,12 @@ impl Entry<'_> {
             })?;
         Ok(ReadCursor {
             records: [0; 4096],
+            read_ahead: true,
             first: 0,
             count: 0,
             start: offset,
             end,
-            last_block: end.saturating_sub(1) / BLOCK_BYTES as u64,
+            last_block: self.length.saturating_sub(1) / BLOCK_BYTES as u64,
             version: self.version,
             entry_offset: self.offset,
             entry_length: self.length,
@@ -90,8 +133,9 @@ impl Entry<'_> {
         })
     }
     /// Reads exactly `output.len()` logical bytes beginning at `offset`.
-    /// Only the addressed directory records and payload blocks are read. Records
-    /// are batched in 4 KiB of stack storage; adjacent payloads read sequentially.
+    /// Directory records use 4 KiB of stack storage. Adjacent compressed payloads
+    /// may prefetch into the existing 64 KiB encoded workspace, reusable by later
+    /// requests for the same immutable entry. Logical output ownership is unchanged.
     /// Cancellation returns [`io::ErrorKind::Interrupted`] and may leave a written
     /// prefix in `output`; callers publish their result only after success.
     /// Content digests identify bytes at packaging time; range reads validate
@@ -171,14 +215,37 @@ impl Entry<'_> {
                 output = &mut output[size..];
                 continue;
             }
+            if (block < cursor.first || block - cursor.first >= cursor.count)
+                && let Some(window) = scratch.encoded.as_ref()
+                && window.version == self.version
+                && window.entry_offset == self.offset
+                && block >= window.first
+                && block - window.first < window.records as u64
+            {
+                // The encoded window keeps its directory tail in the same 64 KiB.
+                let bytes = window.records * RECORD_BYTES as usize;
+                cursor.records[..bytes].copy_from_slice(&encoded[BLOCK_BYTES - bytes..]);
+                cursor.first = window.first;
+                cursor.count = window.records as u64;
+            }
             if block < cursor.first || block - cursor.first >= cursor.count {
                 let record_offset = block
                     .checked_mul(RECORD_BYTES)
                     .and_then(|relative| directory_offset.checked_add(relative))
                     .ok_or_else(|| invalid("archive block record offset overflow"))?;
                 cursor.first = block;
-                let count =
-                    (cursor.last_block - block + 1).min(cursor.records.len() as u64 / RECORD_BYTES);
+                let last = if cursor.read_ahead {
+                    cursor.last_block
+                } else {
+                    cursor.end.saturating_sub(1) / BLOCK_BYTES as u64
+                };
+                let count = (last - block + 1)
+                    .min(cursor.records.len() as u64 / RECORD_BYTES)
+                    .min(if cursor.read_ahead {
+                        scratch.prefetch_records
+                    } else {
+                        u64::MAX
+                    });
                 cursor.count = 0;
                 input.seek(SeekFrom::Start(record_offset))?;
                 read_exact(
@@ -205,6 +272,8 @@ impl Entry<'_> {
             {
                 return Err(invalid("invalid archive block record"));
             }
+            scratch.prefetch_records =
+                (BLOCK_BYTES / (stored + RECORD_BYTES as usize)).clamp(1, 256) as u64;
             let payload_offset = self
                 .offset
                 .checked_add(relative)
@@ -218,11 +287,64 @@ impl Entry<'_> {
                 read_exact(input, &mut output[..size], &mut cancelled)?;
                 next_payload = Some(position + size as u64);
             } else {
-                if next_payload != Some(payload_offset) {
-                    input.seek(SeekFrom::Start(payload_offset))?;
-                }
-                read_exact(input, &mut encoded[..stored], &mut cancelled)?;
-                next_payload = Some(payload_offset + stored as u64);
+                let encoded_start = if let Some(start) = scratch
+                    .encoded
+                    .as_ref()
+                    .and_then(|window| window.contains(self.version, self.offset, relative, stored))
+                {
+                    start
+                } else {
+                    let mut length = stored;
+                    let mut records = usize::from(stored + RECORD_BYTES as usize <= BLOCK_BYTES);
+                    if cursor.read_ahead {
+                        for following in block + 1..cursor.first + cursor.count {
+                            let at = ((following - cursor.first) * RECORD_BYTES) as usize;
+                            let record = &cursor.records[at..at + RECORD_BYTES as usize];
+                            let next_relative = u64::from_le_bytes(record[..8].try_into().unwrap());
+                            let next_stored =
+                                u32::from_le_bytes(record[8..12].try_into().unwrap()) as usize;
+                            let codec = u32::from_le_bytes(record[12..16].try_into().unwrap());
+                            let logical = (self.length - following * BLOCK_BYTES as u64)
+                                .min(BLOCK_BYTES as u64)
+                                as usize;
+                            if codec != 1
+                                || next_stored == 0
+                                || next_stored >= logical
+                                || next_relative != relative + length as u64
+                                || next_stored + (records + 1) * RECORD_BYTES as usize
+                                    > BLOCK_BYTES - length
+                                || next_relative
+                                    .checked_add(next_stored as u64)
+                                    .is_none_or(|end| end > self.stored_length)
+                            {
+                                break;
+                            }
+                            length += next_stored;
+                            records += 1;
+                        }
+                    }
+                    // A partial or failed read must never retain the old identity.
+                    scratch.encoded = None;
+                    if next_payload != Some(payload_offset) {
+                        input.seek(SeekFrom::Start(payload_offset))?;
+                    }
+                    read_exact(input, &mut encoded[..length], &mut cancelled)?;
+                    next_payload = Some(payload_offset + length as u64);
+                    let record_bytes = records * RECORD_BYTES as usize;
+                    let record_start = ((block - cursor.first) * RECORD_BYTES) as usize;
+                    encoded[BLOCK_BYTES - record_bytes..].copy_from_slice(
+                        &cursor.records[record_start..record_start + record_bytes],
+                    );
+                    scratch.encoded = Some(EncodedWindow {
+                        version: self.version,
+                        entry_offset: self.offset,
+                        relative,
+                        length,
+                        first: block,
+                        records,
+                    });
+                    0
+                };
                 check_cancelled(&mut cancelled)?;
                 let direct = within == 0 && size == logical_length;
                 let destination = if direct {
@@ -232,8 +354,11 @@ impl Entry<'_> {
                     scratch.cached = None;
                     &mut decoded[..logical_length]
                 };
-                let written = lz4_flex::block::decompress_into(&encoded[..stored], destination)
-                    .map_err(|error| invalid(format!("invalid archive LZ4 block: {error}")))?;
+                let written = lz4_flex::block::decompress_into(
+                    &encoded[encoded_start..encoded_start + stored],
+                    destination,
+                )
+                .map_err(|error| invalid(format!("invalid archive LZ4 block: {error}")))?;
                 if written != logical_length {
                     return Err(invalid("archive block decoded length mismatch"));
                 }

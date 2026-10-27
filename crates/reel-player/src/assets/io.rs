@@ -45,7 +45,12 @@ impl Reading {
             cursor: None,
         }
     }
-    fn step(&mut self, files: &mut Files, cancelled: &AtomicBool) -> Result<bool, IoError> {
+    fn step(
+        &mut self,
+        files: &mut Files,
+        cancelled: &AtomicBool,
+        read_ahead: bool,
+    ) -> Result<bool, IoError> {
         let mut file = files.open(&self.request.resource, cancelled)?;
         let length = if let Some(length) = self.length {
             length
@@ -80,11 +85,15 @@ impl Reading {
         let end = length.min(start + quantum);
         // Capacity is reserved once, but only the next quantum is initialized.
         self.data.resize(end, 0);
+        if let Some(cursor) = self.cursor.as_mut() {
+            cursor.set_read_ahead(read_ahead);
+        }
         file.read_at(
             offset,
             &mut self.data[start..end],
             self.cursor.as_deref_mut(),
             cancelled,
+            read_ahead,
         )?;
         Ok(end == length)
     }
@@ -241,6 +250,7 @@ impl<'a> ReadFile<'a> {
         output: &mut [u8],
         cursor: Option<&mut reel_package::archive::ReadCursor>,
         cancelled: &AtomicBool,
+        read_ahead: bool,
     ) -> Result<(), IoError> {
         if let Some((entry, scratch)) = &mut self.compressed {
             if let Some(cursor) = cursor {
@@ -250,8 +260,10 @@ impl<'a> ReadFile<'a> {
                     })
                     .map_err(io_error);
             }
+            let mut cursor = entry.read_cursor(offset, output.len()).map_err(io_error)?;
+            cursor.set_read_ahead(read_ahead);
             return entry
-                .read_range(self.file, offset, output, scratch, || {
+                .read_range_with_cursor(self.file, offset, output, scratch, &mut cursor, || {
                     cancelled.load(Ordering::Acquire)
                 })
                 .map_err(io_error);
@@ -290,7 +302,7 @@ impl FileIo {
                 limits,
                 wake,
                 2,
-                move |(id, request), cancelled| {
+                move |(id, request), cancelled, read_ahead| {
                     let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Read);
                     let (scope, completion, result) = match request {
                         Request::Describe(r) => {
@@ -311,7 +323,8 @@ impl FileIo {
                             (r.scope, r.completion, result)
                         }
                         Request::Read(mut reading) => {
-                            let result = reading.step(&mut files.lock().unwrap(), cancelled);
+                            let result =
+                                reading.step(&mut files.lock().unwrap(), cancelled, read_ahead);
                             #[cfg(test)]
                             if let Some(observer) = &observer {
                                 let seeks = match &*files.lock().unwrap() {
@@ -454,12 +467,14 @@ impl AssetIo for FileIo {
         };
         self.ids.accept(request, |id, request| {
             let priority = request.priority;
+            let deadline = request.deadline.clone();
             self.worker
-                .accept(
+                .accept_before(
                     id.0,
                     (id, Request::Read(Reading::new(request))),
                     bytes,
                     priority,
+                    deadline,
                 )
                 .map_err(|error| {
                     let (_, Request::Read(request)) = error.request else {
