@@ -463,18 +463,18 @@ fn render_cases(
 }
 
 #[cfg(target_os = "vita")]
-fn media_case(runtime: &mut reel_player::platform::vita::Runtime) -> Result {
+fn package_case(runtime: &mut reel_player::platform::vita::Runtime, case: &str) -> Result {
     use reel_player::saves::{DirectorySaves, SaveStorage};
-    marker("media", "START")?;
+    marker(case, "START")?;
     runtime.renderer().set_vsync(true)?;
-    let save_directory = directory().join("media");
+    let save_directory = directory().join(case);
     let saves = DirectorySaves::new(&save_directory, 8 << 20);
     saves
         .delete_data("probe-completed")
         .map_err(|error| error.to_string())?;
     let result = runtime
         .run_package(
-            std::path::Path::new("app0:/media/game.asb"),
+            &std::path::Path::new("app0:/").join(case).join("game.asb"),
             &save_directory,
         )
         .and_then(|()| {
@@ -483,16 +483,16 @@ fn media_case(runtime: &mut reel_player::platform::vita::Runtime) -> Result {
                 .map_err(|error| error.to_string())?
                 .is_none()
             {
-                return Err("media check ended before completion".into());
+                return Err(format!("{case} ended before completion").into());
             }
             Ok(())
         });
-    marker("media", if result.is_ok() { "PASS" } else { "ERROR" })?;
+    marker(case, if result.is_ok() { "PASS" } else { "ERROR" })?;
     result
 }
 
 fn run() -> Result {
-    let mut selected = "all".to_owned();
+    let mut selected = "authored".to_owned();
     let mut frames = 120;
     let mut trace = false;
     let mut vsync = true;
@@ -529,11 +529,13 @@ fn run() -> Result {
     if !(1..=10_000).contains(&frames) {
         return Err("frames must be in 1..10000".into());
     }
-    if !matches!(selected.as_str(), "all" | "render" | "matrix" | "media")
-        && !CASES.contains(&selected.as_str())
+    if !matches!(
+        selected.as_str(),
+        "authored" | "all" | "render" | "matrix" | "media"
+    ) && !CASES.contains(&selected.as_str())
     {
         return Err(format!(
-            "unknown case {selected}; available: all,render,matrix,media,{}",
+            "unknown case {selected}; available: authored,all,render,matrix,media,{}",
             CASES.join(",")
         )
         .into());
@@ -554,15 +556,21 @@ fn run() -> Result {
         reel_player::platform::vita::Runtime::run(
             std::path::Path::new("app0:/module"),
             |runtime| {
+                if selected == "authored" {
+                    return package_case(runtime, "authored");
+                }
                 render_cases(runtime.renderer(), &selected, frames, trace, vsync, flights)?;
                 if matches!(selected.as_str(), "all" | "matrix" | "media") {
-                    media_case(runtime)?;
+                    package_case(runtime, "media")?;
                 }
                 Ok(())
             },
         )?;
         #[cfg(not(target_os = "vita"))]
         {
+            if selected == "authored" {
+                return Err("authored device cases require Vita; run the source project with reel dev on desktop".into());
+            }
             let mut renderer = new_renderer()?;
             let result = render_cases(&mut renderer, &selected, frames, trace, vsync, flights);
             let close = renderer.close();

@@ -1,6 +1,6 @@
 //! Temporary, bounded device recording. Disk IO happens after the session closes.
 use crate::story_runtime::StoryRuntime;
-use reel_core::profile::{NAMES, Sample};
+use reel_core::profile::{GeometryUploads, NAMES, Sample};
 use std::{
     collections::VecDeque,
     io::{self, Write},
@@ -11,6 +11,7 @@ use std::{
 
 const WINDOWS: usize = 512;
 const SLOW: usize = 64;
+const SEGMENTS: usize = 64;
 static SERIAL: AtomicU32 = AtomicU32::new(0);
 static VM_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static GPU_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -142,6 +143,7 @@ impl Live {
                 use std::fmt::Write as _;
                 let start = Instant::now();
                 let mut previous = Sample::snapshot();
+                let mut geometry = GeometryUploads::snapshot();
                 let mut line = String::with_capacity(2048);
                 eprintln!("[reel-probe] live sampling started; elapsed us and completed calls; nested phases overlap; VM counters cumulative, last_* latest slice; gc_phase idle=0 mark=1 weak=2 sweep=3; fn/pc identify the last selected task; vm_sample advances on main-thread snapshots");
                 while !stopped.load(Ordering::Relaxed) {
@@ -155,6 +157,9 @@ impl Live {
                     let current = Sample::snapshot();
                     let delta = current.delta(previous);
                     previous = current;
+                    let current_geometry = GeometryUploads::snapshot();
+                    let uploads = current_geometry.delta(geometry);
+                    geometry = current_geometry;
                     line.clear();
                     let _ = write!(line, "[reel-probe] t_ms={} vm={} gpu={} active=", start.elapsed().as_millis(),
                         VM_BYTES.load(Ordering::Relaxed), GPU_BYTES.load(Ordering::Relaxed));
@@ -167,6 +172,7 @@ impl Live {
                             let _ = write!(line, "{name}:{}/{};", delta.micros[i], delta.calls[i]);
                         }
                     }
+                    let _ = write!(line, " geometry_upload={}/{}", uploads.bytes, uploads.calls);
                     append_vm(&mut line);
                     eprintln!("{line}");
                     VM_REQUESTED.store(true, Ordering::Relaxed);
@@ -197,6 +203,7 @@ struct Row {
     vm: u64,
     gpu: u64,
     phases: Sample,
+    geometry: GeometryUploads,
 }
 
 #[cfg(test)]
@@ -275,11 +282,14 @@ mod tests {
                 Instant::now() - std::time::Duration::from_millis(60),
                 None,
                 1024,
+                if index <= 300 { "First" } else { "Second" },
             );
         }
         assert_eq!(recording.windows.len(), WINDOWS);
         assert_eq!(recording.slow.len(), SLOW);
         assert_eq!(recording.total.loops, 600);
+        assert_eq!(recording.segments[0].1.loops, 300);
+        assert_eq!(recording.segment.1.loops, 300);
         assert_eq!(
             recording.total.phases.calls[reel_core::profile::Phase::Draw as usize],
             600
@@ -322,6 +332,8 @@ impl Row {
         self.max_present_gap = self.max_present_gap.max(other.max_present_gap);
         self.vm = self.vm.max(other.vm);
         self.gpu = self.gpu.max(other.gpu);
+        self.geometry.calls += other.geometry.calls;
+        self.geometry.bytes += other.geometry.bytes;
         for i in 0..NAMES.len() {
             self.phases.micros[i] += other.phases.micros[i];
             self.phases.calls[i] += other.phases.calls[i];
@@ -336,8 +348,11 @@ pub(crate) struct Recording {
     pending: Row,
     window_start: u64,
     last_present: Option<u64>,
+    last_geometry: GeometryUploads,
     windows: VecDeque<Row>,
     slow: VecDeque<Row>,
+    segment: (String, Row),
+    segments: VecDeque<(String, Row)>,
 }
 impl Recording {
     pub(crate) fn new() -> Self {
@@ -354,12 +369,21 @@ impl Recording {
             pending: Row::default(),
             window_start: 0,
             last_present: None,
+            last_geometry: GeometryUploads::snapshot(),
             windows: VecDeque::with_capacity(WINDOWS),
             slow: VecDeque::with_capacity(SLOW),
+            segment: (String::new(), Row::default()),
+            segments: VecDeque::with_capacity(SEGMENTS),
         }
     }
 
-    pub(crate) fn record(&mut self, started: Instant, story: Option<&StoryRuntime>, gpu: u64) {
+    pub(crate) fn record(
+        &mut self,
+        started: Instant,
+        story: Option<&StoryRuntime>,
+        gpu: u64,
+        title: &str,
+    ) {
         let vm = story.map_or(0, |story| {
             story
                 .driver()
@@ -375,6 +399,7 @@ impl Recording {
         let elapsed = self.started.elapsed().as_micros() as u64;
         let active = started.elapsed().as_micros() as u64;
         let phases = Sample::take();
+        let geometry = GeometryUploads::snapshot();
         let gap = if phases.calls[reel_core::profile::Phase::Present as usize] != 0 {
             self.last_present
                 .replace(elapsed)
@@ -391,9 +416,21 @@ impl Recording {
             vm,
             gpu,
             phases,
+            geometry: geometry.delta(self.last_geometry),
         };
+        self.last_geometry = geometry;
         self.total.add(row);
         self.pending.add(row);
+        if self.segment.0 != title {
+            let previous = std::mem::replace(&mut self.segment, (title.into(), Row::default()));
+            if previous.1.loops != 0 {
+                if self.segments.len() == SEGMENTS {
+                    self.segments.pop_front();
+                }
+                self.segments.push_back(previous);
+            }
+        }
+        self.segment.1.add(row);
         if active >= 50_000 {
             if self.slow.len() == SLOW {
                 self.slow.pop_front();
@@ -428,6 +465,13 @@ impl Recording {
             out,
             "recording_bytes\t{}",
             (WINDOWS + SLOW) * std::mem::size_of::<Row>()
+                + self.segments.capacity() * std::mem::size_of::<(String, Row)>()
+                + self
+                    .segments
+                    .iter()
+                    .map(|(label, _)| label.capacity())
+                    .sum::<usize>()
+                + self.segment.0.capacity()
         )?;
         writeln!(
             out,
@@ -439,33 +483,48 @@ impl Recording {
         )?;
         write!(
             out,
-            "kind\telapsed_us\tactive_us\tloops\tmax_loop_us\tmax_present_gap_us\tvm_peak_bytes\tgpu_peak_bytes"
+            "kind\tlabel\telapsed_us\tactive_us\tloops\tmax_loop_us\tmax_present_gap_us\tvm_peak_bytes\tgpu_peak_bytes\tgeometry_upload_bytes\tgeometry_upload_calls"
         )?;
         for name in NAMES {
             write!(out, "\t{name}_us\t{name}_calls")?;
         }
         writeln!(out)?;
-        fn row(out: &mut impl Write, kind: &str, r: Row) -> io::Result<()> {
+        fn row(out: &mut impl Write, kind: &str, label: &str, r: Row) -> io::Result<()> {
             write!(
                 out,
-                "{kind}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                r.elapsed, r.active, r.loops, r.max_loop, r.max_present_gap, r.vm, r.gpu
+                "{kind}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                label.replace(['\t', '\r', '\n'], " "),
+                r.elapsed,
+                r.active,
+                r.loops,
+                r.max_loop,
+                r.max_present_gap,
+                r.vm,
+                r.gpu,
+                r.geometry.bytes,
+                r.geometry.calls
             )?;
             for i in 0..NAMES.len() {
                 write!(out, "\t{}\t{}", r.phases.micros[i], r.phases.calls[i])?;
             }
             writeln!(out)
         }
-        row(&mut out, "startup", self.startup)?;
-        row(&mut out, "total", self.total)?;
+        row(&mut out, "startup", "", self.startup)?;
+        row(&mut out, "total", "", self.total)?;
+        for (label, r) in self.segments {
+            row(&mut out, "segment", &label, r)?;
+        }
+        if self.segment.1.loops != 0 {
+            row(&mut out, "segment", &self.segment.0, self.segment.1)?;
+        }
         for r in self.windows {
-            row(&mut out, "window", r)?;
+            row(&mut out, "window", "", r)?;
         }
         if self.pending.loops != 0 {
-            row(&mut out, "window", self.pending)?;
+            row(&mut out, "window", "", self.pending)?;
         }
         for r in self.slow {
-            row(&mut out, "slow", r)?;
+            row(&mut out, "slow", "", r)?;
         }
         out.flush()?;
         Ok(path)
