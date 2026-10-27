@@ -157,9 +157,9 @@ fn gray_progress_clamp_mask_executes_and_completes() {
         reel_core::profile::Sample::snapshot().calls
             [reel_core::profile::Phase::TargetCreate as usize]
             - targets_before,
-        3,
-        "small new images must reuse all three scratch targets"
+        2,
+        "paired, chain and threshold masks share the root and isolated source targets"
     );
     renderer.close().unwrap();
-    eprintln!("gles masks=general,chain,threshold progress_frames=12 all_submissions_completed");
+    eprintln!("gles masks=paired,chain,threshold progress_frames=12 all_submissions_completed");
 }

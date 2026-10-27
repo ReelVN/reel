@@ -19,10 +19,12 @@ pub(super) fn acquire(
     local: &Budgets,
     limits: crate::common::GpuLimits,
     mesh: &mesh::Mesh,
+    indices: &crate::common::indices::Upload<'_, crate::common::renderer::Reservation>,
 ) -> Result<(Storage, BudgetTicket, bool), GlesError> {
     let requested = Capacity {
         vertices: std::mem::size_of_val(mesh.vertices.as_slice()) as u64,
-        indices: std::mem::size_of_val(mesh.indices.as_slice()) as u64,
+        indices: indices.bytes().len() as u64,
+        index_format: indices.format(),
     };
     if let Some(storage) = cache.take(requested) {
         // A large cached slot must not reject a frame which fits exact storage.
@@ -62,7 +64,10 @@ pub(super) fn acquire(
         12,
         &super::programs::attributes(),
     )?;
-    let indices = gpu.index_buffer(&mesh.indices)?;
+    let indices = match indices {
+        crate::common::indices::Upload::Narrow { values, .. } => gpu.index_buffer_u16(values)?,
+        crate::common::indices::Upload::Wide(values) => gpu.index_buffer(values)?,
+    };
     Ok((
         Box::new(Allocation {
             capacity: requested,

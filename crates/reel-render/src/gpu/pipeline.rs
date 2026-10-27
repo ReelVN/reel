@@ -111,7 +111,7 @@ pub(super) struct CompositeParams {
     pub operation: CompositeOperation,
     pub blend: u32,
     /// Integer parent pixels preceding the source's top-left storage texel.
-    pub source_origin: [u32; 2],
+    pub source_origin: [i32; 2],
 }
 pub(super) const COMPOSITE_WORDS: usize = 12;
 pub(super) const COMPOSITE_BYTES: u64 = (COMPOSITE_WORDS * size_of::<u32>()) as u64;
@@ -155,9 +155,9 @@ pub struct Pipelines {
     pub coverage: wgpu::RenderPipeline,
     #[cfg(test)]
     pub coverage_draws: std::sync::atomic::AtomicUsize,
-    pub direct: [wgpu::RenderPipeline; 6],
+    pub direct: [wgpu::RenderPipeline; 7],
     #[cfg(test)]
-    pub direct_draws: [std::sync::atomic::AtomicUsize; 6],
+    pub direct_draws: [std::sync::atomic::AtomicUsize; 7],
     pub opaque: [wgpu::RenderPipeline; 2],
     #[cfg(test)]
     pub opaque_draws: [std::sync::atomic::AtomicUsize; 2],
@@ -271,6 +271,7 @@ impl Pipelines {
             "fragment_regional",
             "fragment_regional_bc1",
             "fragment_regional_bc3",
+            "fragment_direct_coverage",
         ]
         .map(|entry| {
             pipeline_entry(

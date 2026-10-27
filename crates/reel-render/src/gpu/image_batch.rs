@@ -55,6 +55,11 @@ impl Context<'_> {
         };
         let handle = first.brush.image.resource;
         let image = self.image_resource(handle, commands[0].origin.at)?;
+        let source = image
+            .source
+            .as_ref()
+            .and_then(|source| source.lease.upgrade());
+        let coverage = source.as_ref().and_then(|source| source.image_coverage());
         let mut batch = mesh::Mesh::new(self.mesh_allocation());
         let mut count = 0;
         for command in commands {
@@ -82,24 +87,35 @@ impl Context<'_> {
                 ));
             if visible.width() > 0. && visible.height() > 0. {
                 let uv = image.uv_transform() * quad.brush_transform;
-                batch.image_quad(
+                for bounds in crate::common::image_coverage::quads(
                     quad.bounds,
+                    quad.brush,
+                    quad.brush_transform,
                     transform,
-                    uv,
-                    self.size,
-                    mesh::ImagePaint {
-                        color: quad.brush.image.color.map(|channel| channel * quad.alpha),
-                        sampling: mesh::ImageSampling::with_layout(
-                            quad.brush.image.source_rect,
-                            image.layout,
-                            [
-                                quad.brush.sampler.x_extend == Extend::Repeat,
-                                quad.brush.sampler.y_extend == Extend::Repeat,
-                            ],
-                        ),
-                    },
-                    at,
-                )?;
+                    image.layout,
+                    coverage,
+                )
+                .iter()
+                {
+                    batch.image_quad(
+                        bounds,
+                        transform,
+                        uv,
+                        self.size,
+                        mesh::ImagePaint {
+                            color: quad.brush.image.color.map(|channel| channel * quad.alpha),
+                            sampling: mesh::ImageSampling::with_layout(
+                                quad.brush.image.source_rect,
+                                image.layout,
+                                [
+                                    quad.brush.sampler.x_extend == Extend::Repeat,
+                                    quad.brush.sampler.y_extend == Extend::Repeat,
+                                ],
+                            ),
+                        },
+                        at,
+                    )?;
+                }
             }
             count += 1;
         }

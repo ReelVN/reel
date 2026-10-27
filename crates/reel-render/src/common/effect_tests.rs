@@ -264,7 +264,7 @@ fn complete_fragments_keep_source_sampling_and_parameter_abi() {
         ));
         match language {
             Language::GlslEs100 => {
-                assert!(output.source.contains("uniform vec4 reel_context[7]"));
+                assert!(output.source.contains(&format!("uniform vec4 reel_context[{CONTEXT_SLOTS}]")));
                 assert!(output.source.contains("texture2D(reel_source"));
             }
             Language::Wgsl => {
@@ -288,7 +288,9 @@ fn scalar_coverage_inversion_follows_clamping_in_both_shader_languages() {
             clamp < invert,
             "inverted coverage is one minus clamped output"
         );
-        assert!(shader.source.contains(".w > 1.0"));
+        assert!(shader.source.contains("mode >= 2.0"));
+        assert!(shader.source.contains("mode == 1.0 || mode == 2.0"));
+        assert!(shader.source.contains("reel_implicit_source * coverage"));
         #[cfg(feature = "wgpu")]
         if language == Language::Wgsl {
             let module = wgpu::naga::front::wgsl::parse_str(&shader.source).unwrap();

@@ -26,6 +26,8 @@ void main(){
  color.a=1.0;
 #elif REEL_DIRECT == 2
  color.rgb=min(color.rgb,vec3(color.a));
+#elif REEL_DIRECT == 3
+ color=vec4(color.r);
 #endif
  gl_FragColor=color*v_color;
 }

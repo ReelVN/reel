@@ -10,6 +10,7 @@ use reel_ui::stage::{MaskChannel, MaskOp, MaskProgram};
 
 mod registers;
 pub(crate) use registers::RegisterPlan;
+pub(crate) mod paired;
 pub(crate) mod split;
 
 const NODES: usize = 32;

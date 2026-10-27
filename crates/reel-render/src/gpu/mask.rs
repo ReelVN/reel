@@ -505,7 +505,10 @@ fn shader_with_split(
         )
         .unwrap();
     }
-    code.write_str("\nfn mask_smooth(a:f32,b:f32,x:f32)->f32 { if a==b { return select(0.0,1.0,x>=a); } let t=clamp((x-a)/(b-a),0.0,1.0); return t*t*(3.0-2.0*t); }\nfn mask_gray(s:vec4<f32>)->f32 { if s.a<=0.0 { return 0.0; } return dot(encoded_srgb(clamp(s.rgb/s.a,vec3(0.0),vec3(1.0))),vec3(0.2126,0.7152,0.0722)); }\nfn expression_coverage(position:vec2<f32>)->f32 { let uv=vec2(dot(params.mask_uv0.xy,position)+params.mask_uv0.z,dot(params.mask_uv1.xy,position)+params.mask_uv1.z); if any(uv<vec2(0.0)) || any(uv>vec2(1.0)) { return 0.0; }\n")?;
+    code.write_str("\nfn mask_smooth(a:f32,b:f32,x:f32)->f32 { if a==b { return select(0.0,1.0,x>=a); } let t=clamp((x-a)/(b-a),0.0,1.0); return t*t*(3.0-2.0*t); }\nfn mask_gray(s:vec4<f32>,encoding:f32)->f32 { if s.a<=0.0 { return 0.0; } var rgb=clamp(s.rgb/s.a,vec3(0.0),vec3(1.0)); if encoding==0.0 { rgb=encoded_srgb(rgb); } return dot(rgb,vec3(0.2126,0.7152,0.0722)); }\nfn expression_coverage(position:vec2<f32>)->f32 { let uv=vec2(dot(params.mask_uv0.xy,position)+params.mask_uv0.z,dot(params.mask_uv1.xy,position)+params.mask_uv1.z); if any(uv<vec2(0.0)) || any(uv>vec2(1.0)) { return 0.0; }\n")?;
+    if let Some(paired) = crate::common::mask::paired::Plan::new(program) {
+        return paired_expression(program, &paired, code);
+    }
     if let Some(split) = split {
         return split_expression(split, code);
     }
@@ -538,7 +541,7 @@ fn shader_with_split(
                 {
                     writeln!(
                         code,
-                        "{declaration}n{destination}=select(mask_gray(sample_{alpha}),dot(clamp(sample_{alpha}.rgb/max(sample_{alpha}.a,1.0e-20),vec3(0.0),vec3(1.0)),vec3(0.2126,0.7152,0.0722)),texels_{alpha}.z!=0.0);"
+                        "{declaration}n{destination}=mask_gray(sample_{alpha},texels_{alpha}.z);"
                     )?;
                     continue;
                 }
@@ -555,9 +558,7 @@ fn shader_with_split(
                 )?;
                 match channel {
                     MaskChannel::Alpha => format!("sample_{i}.a"),
-                    MaskChannel::Gray => format!(
-                        "select(mask_gray(sample_{i}),dot(clamp(sample_{i}.rgb/max(sample_{i}.a,1.0e-20),vec3(0.0),vec3(1.0)),vec3(0.2126,0.7152,0.0722)),texels_{i}.z!=0.0)"
-                    ),
+                    MaskChannel::Gray => format!("mask_gray(sample_{i},texels_{i}.z)"),
                 }
             }
             MaskOp::Add(a, b) => format!("n{a}+n{b}"),
@@ -585,6 +586,81 @@ fn shader_with_split(
         .map_or(last as u32, |plan| plan.destination(last));
     writeln!(code, "return clamp(n{result},0.0,1.0); }}").unwrap();
     Ok(())
+}
+
+fn paired_expression(
+    program: &MaskProgram,
+    plan: &crate::common::mask::paired::Plan,
+    code: &mut impl std::fmt::Write,
+) -> std::fmt::Result {
+    use crate::common::mask::paired::Step;
+    let number = |bits| format!("{:.9e}", f32::from_bits(bits));
+    for (index, operation) in program.operations().iter().enumerate() {
+        if !plan.is_uniform(index) {
+            continue;
+        }
+        let value = match *operation {
+            MaskOp::Constant(bits) => number(bits),
+            MaskOp::Parameter(p) => format!("params.mask_values[{p}]"),
+            MaskOp::Add(a, b) => format!("u{a}+u{b}"),
+            MaskOp::Subtract(a, b) => format!("u{a}-u{b}"),
+            MaskOp::Multiply(a, b) => format!("u{a}*u{b}"),
+            MaskOp::Clamp(a, low, high) => format!("clamp(u{a},{},{})", number(low), number(high)),
+            _ => unreachable!("paired uniforms contain only basic scalar arithmetic"),
+        };
+        writeln!(code, "let u{index}={value};")?;
+    }
+    for (index, sample) in plan.samples.iter().enumerate() {
+        let image = sample.image;
+        let [x, y, sx, sy] = sample.coordinates;
+        writeln!(code, "var c{index}=uv*vec2(u{sx},u{sy})+vec2(u{x},u{y});")?;
+        if sample.repeat & 1 != 0 {
+            writeln!(code, "c{index}.x=fract(c{index}.x);")?;
+        }
+        if sample.repeat & 2 != 0 {
+            writeln!(code, "c{index}.y=fract(c{index}.y);")?;
+        }
+        writeln!(
+            code,
+            "let t{index}=params.mask_texels[{image}];let h{index}=0.5/vec2<f32>(textureDimensions(image_{image}));var s{index}=textureSampleLevel(image_{image},linear_sampler,clamp(c{index}*t{index}.xy,h{index},t{index}.xy-h{index}),0.0);if t{index}.w==1.0{{s{index}.a=1.0;}}"
+        )?;
+        if sample.channel == MaskChannel::Gray {
+            writeln!(
+                code,
+                "if t{index}.w==2.0{{s{index}=vec4(min(s{index}.rgb,vec3(s{index}.a)),s{index}.a);}}var p{index}=mask_gray(s{index},t{index}.z);"
+            )?;
+        } else {
+            writeln!(code, "var p{index}=s{index}.a;")?;
+        }
+    }
+    for (index, chain) in plan.chains.iter().enumerate() {
+        if index == 2 {
+            let operator = match plan.join {
+                1 => "+",
+                2 => "-",
+                3 => "*",
+                _ => unreachable!(),
+            };
+            writeln!(code, "var p2=p0{operator}p1;")?;
+        }
+        for step in chain.iter().flatten() {
+            let value = format!("p{index}");
+            let expression = match *step {
+                Step::Add(a) => format!("{value}+u{a}"),
+                Step::Subtract(a) => format!("{value}-u{a}"),
+                Step::SubtractFrom(a) => format!("u{a}-{value}"),
+                Step::Multiply(a) => format!("{value}*u{a}"),
+                Step::Pow(bits) if f32::from_bits(bits) == 0. => "1.0".into(),
+                Step::Pow(bits) => format!("pow(max({value},0.0),{})", number(bits)),
+                Step::Clamp(low, high) => {
+                    format!("clamp({value},{},{})", number(low), number(high))
+                }
+                Step::Smoothstep(a, b) => format!("mask_smooth(u{a},u{b},{value})"),
+            };
+            writeln!(code, "{value}={expression};")?;
+        }
+    }
+    code.write_str("return clamp(p2,0.0,1.0); }\n")
 }
 
 fn split_expression(
@@ -619,10 +695,7 @@ fn split_expression(
             writeln!(code, "n{slot}=s{i}.a;")?;
         }
         if let Some(slot) = fetch.gray {
-            writeln!(
-                code,
-                "n{slot}=select(mask_gray(s{i}),dot(clamp(s{i}.rgb/max(s{i}.a,1.0e-20),vec3(0.0),vec3(1.0)),vec3(0.2126,0.7152,0.0722)),t{i}.z!=0.0);"
-            )?;
+            writeln!(code, "n{slot}=mask_gray(s{i},t{i}.z);")?;
         }
     }
     let number = |bits| format!("{:.9e}", f32::from_bits(bits));
@@ -652,7 +725,7 @@ mod tests {
         shader(&MaskProgram::image("mask".into()), &mut source).unwrap();
         assert_eq!(source.matches("textureSampleLevel(image_").count(), 1);
         assert!(source.contains("n2=sample_2.a;"));
-        assert!(source.contains("n0=select(mask_gray(sample_2)"));
+        assert!(source.contains("n0=mask_gray(sample_2,texels_2.z)"));
         assert!(source.contains("n0=n2*threshold_4;"));
     }
 
@@ -715,6 +788,49 @@ mod tests {
             )
             .validate(&module)
             .unwrap();
+        }
+    }
+
+    #[test]
+    fn paired_masks_emit_two_static_channels_and_keep_each_scalar_chain() {
+        for first in [MaskChannel::Alpha, MaskChannel::Gray] {
+            for second in [MaskChannel::Alpha, MaskChannel::Gray] {
+                for repeat in 0..4 {
+                    let mut operations = dag_fixture::operations()[..13].to_vec();
+                    for (index, channel) in [(3, first), (4, second)] {
+                        if let MaskOp::Sample {
+                            channel: output,
+                            repeat: output_repeat,
+                            ..
+                        } = &mut operations[index]
+                        {
+                            *output = channel;
+                            *output_repeat = repeat;
+                        }
+                    }
+                    let program =
+                        MaskProgram::new(operations, vec!["a".into(), "b".into()]).unwrap();
+                    assert!(crate::common::mask::paired::Plan::new(&program).is_some());
+                    let mut source = String::new();
+                    shader(&program, &mut source).unwrap();
+                    assert_eq!(source.matches("textureSampleLevel(image_").count(), 2);
+                    assert_eq!(
+                        source.matches("=mask_gray(s").count(),
+                        usize::from(first == MaskChannel::Gray)
+                            + usize::from(second == MaskChannel::Gray)
+                    );
+                    assert!(source.contains("var p2=p0-p1;"));
+                    assert!(source.contains("p2=mask_smooth("));
+                    assert!(!source.contains("read_node"));
+                    let module = wgpu::naga::front::wgsl::parse_str(&source).unwrap();
+                    wgpu::naga::valid::Validator::new(
+                        wgpu::naga::valid::ValidationFlags::all(),
+                        wgpu::naga::valid::Capabilities::all(),
+                    )
+                    .validate(&module)
+                    .unwrap();
+                }
+            }
         }
     }
 }

@@ -63,6 +63,7 @@ impl Context<'_> {
         target: &Target,
         source: &Target,
         parent_to_source: Affine,
+        opacity: f32,
         at: RecordLocation,
     ) -> Result<(), GpuError> {
         if parent_to_source.determinant() == 0. {
@@ -79,7 +80,7 @@ impl Context<'_> {
             &mut mesh,
             parent_to_source.inverse(),
             self.size,
-            [1.; 4],
+            [opacity; 4],
             at,
         )?;
         self.paint_mesh(
@@ -524,14 +525,18 @@ impl Context<'_> {
         {
             self.flush_draws()?;
         }
-        let direct = (!coverage && yuv.is_none())
-            .then(|| mesh.direct_paint(repeat, appearance.as_ref(), texture_format))
-            .flatten();
+        let direct = if coverage {
+            mesh.direct_coverage(appearance.as_ref())
+        } else {
+            yuv.is_none()
+                .then(|| mesh.direct_paint(repeat, appearance.as_ref(), texture_format))
+                .flatten()
+        };
         let state = PaintState {
             direct,
             opaque: mesh.opaque_paint(direct),
             image: image.clone(),
-            coverage,
+            coverage: coverage && direct.is_none(),
             texture_format,
             yuv: yuv.map(|planes| VideoState {
                 chroma: planes.chroma.clone(),
@@ -574,11 +579,20 @@ impl Context<'_> {
                     * 144) as u64,
         )?;
         let device = &self.gpu.device;
+        let indices = crate::common::indices::Upload::new(mesh, |bytes| {
+            reserve(&self.budgets.transient, &self.budget_scope.transient, bytes,
+                self.gpu.limits.transient_bytes, "index packing")
+        })?;
+        let index_format = match indices.format() {
+            crate::common::indices::Format::U16 => wgpu::IndexFormat::Uint16,
+            crate::common::indices::Format::U32 => wgpu::IndexFormat::Uint32,
+        };
         let (storage, local) = self.geometry_cache.acquire(
             self.gpu,
             self.budgets,
             &self.budget_scope,
             mesh,
+            &indices,
             self.geometry_policy,
         )?;
         self.tickets.push(super::renderer::Reservation {
@@ -587,7 +601,7 @@ impl Context<'_> {
         });
         storage
             .storage
-            .upload(&mut self.encoder, storage.capacity, mesh)?;
+            .upload(&mut self.encoder, storage.capacity, mesh, indices.bytes())?;
         if storage.storage.has_staging() {
             self.geometry_policy.staged.set(true);
         }
@@ -704,7 +718,7 @@ impl Context<'_> {
             occlusion_query_set: None,
         });
         pass.set_vertex_buffer(0, vertices.slice(..));
-        pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+        pass.set_index_buffer(indices.slice(..), index_format);
         for (entry, group) in batch.geometry.entries.iter().zip(&groups) {
             let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Draw);
             pass.set_pipeline(if entry.state.coverage {

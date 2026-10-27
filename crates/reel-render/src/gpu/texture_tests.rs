@@ -150,7 +150,7 @@ fn direct_paint_submits_whole_and_regional_alpha_policies() {
             .contains(wgpu::Features::TEXTURE_COMPRESSION_BC)
     );
     let mut renderer = Renderer::new(gpu);
-    let mut expected = [0; 6];
+    let mut expected = [0; 7];
     let mut opaque = [0; 2];
     for (index, format) in [
         TextureFormat::Rgba8,
@@ -222,9 +222,9 @@ fn direct_paint_submits_whole_and_regional_alpha_policies() {
             renderer.poll().unwrap();
         }
     }
-    assert_eq!(expected, [2, 3, 2, 2, 2, 2]);
+    assert_eq!(expected, [2, 3, 2, 2, 2, 2, 0]);
     assert_eq!(opaque, [1; 2]);
-    assert_eq!(renderer.pipelines.creations.snapshot(), [3, 15, 15, 15, 8]);
+    assert_eq!(renderer.pipelines.creations.snapshot(), [3, 16, 16, 16, 8]);
     assert_eq!(renderer.usage().transient, renderer.usage().cached_geometry);
 }
 

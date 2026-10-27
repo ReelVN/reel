@@ -14,6 +14,7 @@ pub(super) const OPERATION_CAPACITY: usize = 32;
 // 32 operation vectors, two image arrays, four parameter/transform vectors,
 // the output size and the operation count. Scalar packing can use fewer slots.
 pub(super) const UNIFORM_VECTORS: u32 = OPERATION_CAPACITY as u32 + 4 + 4 + 4 + 1 + 1;
+const _: () = assert!(UNIFORM_VECTORS <= 64);
 
 const fn operation_capacity(count: usize) -> usize {
     if count <= 8 {
@@ -61,7 +62,7 @@ fn encode_compact(operation: &MaskOp, destination: u32) -> [f32; 4] {
     encoded
 }
 impl Context<'_> {
-    /// Apply a single-sample mask while compositing the already isolated source.
+    /// Apply a sampled mask while compositing the already isolated source.
     /// Coverage stays highp through the final blend instead of visiting RGBA8.
     pub fn composite_sample_mask(
         &mut self,
@@ -71,11 +72,19 @@ impl Context<'_> {
         transform: Affine,
         alpha: f32,
     ) -> Result<bool, GlesError> {
-        let Some(simple) = crate::common::mask::plan(&definition.program)
-            .and_then(|plan| plan.evaluate(&definition.program, definition.parameters))
-        else {
-            return Ok(false);
+        let simple = crate::common::mask::plan(&definition.program)
+            .and_then(|plan| plan.evaluate(&definition.program, definition.parameters));
+        let paired = if simple.is_none() {
+            crate::common::mask::paired::Plan::new(&definition.program).and_then(|plan| {
+                plan.evaluate(&definition.program, definition.parameters)
+                    .map(|values| (plan, values))
+            })
+        } else {
+            None
         };
+        if simple.is_none() && paired.is_none() {
+            return Ok(false);
+        }
         let Some(uv) = mask_uv(definition, transform) else {
             return Ok(true);
         };
@@ -83,7 +92,18 @@ impl Context<'_> {
         self.ensure_target(target)?;
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Composite);
         let _kind = reel_core::profile::Scope::new(reel_core::profile::Phase::EffectComposite);
-        self.mask_sample(target, definition, uv, simple, Some((source, alpha)))?;
+        if let Some(simple) = simple {
+            self.mask_sample(target, definition, uv, simple, Some((source, alpha)))?;
+        } else if let Some((plan, values)) = paired {
+            self.mask_paired(
+                target,
+                definition,
+                uv,
+                &plan,
+                &values,
+                Some((source, alpha)),
+            )?;
+        }
         Ok(true)
     }
     pub fn mask_expression(
@@ -107,6 +127,15 @@ impl Context<'_> {
             .and_then(|plan| plan.evaluate(&definition.program, definition.parameters))
         {
             self.mask_sample(&target, definition, uv, simple, None)?;
+            return Ok(target);
+        }
+        if let Some((plan, values)) = crate::common::mask::paired::Plan::new(&definition.program)
+            .and_then(|plan| {
+                plan.evaluate(&definition.program, definition.parameters)
+                    .map(|values| (plan, values))
+            })
+        {
+            self.mask_paired(&target, definition, uv, &plan, &values, None)?;
             return Ok(target);
         }
         if let Some(split) = self.mask_cache.get(
@@ -203,6 +232,77 @@ impl Context<'_> {
             self.gl_scissor(),
         )?;
         Ok(target)
+    }
+
+    fn mask_paired(
+        &self,
+        target: &Target,
+        definition: &FrameImageMask,
+        uv: Affine,
+        plan: &crate::common::mask::paired::Plan,
+        input: &crate::common::mask::paired::Values,
+        composite: Option<(&native::Texture, f32)>,
+    ) -> Result<(), GlesError> {
+        let channels = usize::from(plan.samples[0].channel == MaskChannel::Gray) * 2
+            + usize::from(plan.samples[1].channel == MaskChannel::Gray);
+        let shader = if composite.is_some() {
+            &self.programs.mask_paired_composite[channels]
+        } else {
+            &self.programs.mask_paired[channels]
+        };
+        let mut textures = smallvec::SmallVec::<[&native::Texture; 3]>::new();
+        let mut texels = [[0.; 4]; 2];
+        let mut dimensions = [[0.; 4]; 2];
+        for (index, sample) in plan.samples.iter().enumerate() {
+            let image = self
+                .images
+                .get(&definition.images[sample.image as usize])
+                .ok_or_else(|| GlesError::Device("mask image is not resident".into()))?;
+            textures.push(&image.texture);
+            texels[index] = crate::common::effect_plan::texture_metadata(
+                image.layout,
+                image.encoding,
+                image.format,
+            )[0];
+            dimensions[index] = [
+                image.layout.storage_size[0] as f32,
+                image.layout.storage_size[1] as f32,
+                f32::from(sample.repeat),
+                0.,
+            ];
+        }
+        let stream = input.stream(plan.join);
+        let mut values = Values::new();
+        values.extend(shader.int("u_image0", 0));
+        values.extend(shader.int("u_image1", 1));
+        if let Some((source, alpha)) = composite {
+            textures.push(source);
+            values.extend(shader.int("u_source", 2));
+            values.extend(shader.vec4("u_params", [alpha, 0., 0., 0.]));
+        }
+        values.extend(shader.array("u_coordinates[0]", &input.coordinates));
+        values.extend(shader.array("u_texels[0]", &texels));
+        values.extend(shader.array("u_dimensions[0]", &dimensions));
+        values.extend(shader.array("u_ops[0]", &stream.operations));
+        values.extend(shader.vec4("u_flags", stream.phases));
+        let [a, b, c, d, e, f] = uv.as_coeffs().map(|v| v as f32);
+        values.extend(shader.vec4("u_uv0", [a, c, e, 0.]));
+        values.extend(shader.vec4("u_uv1", [b, d, f, 0.]));
+        values.extend(shader.vec2("u_output_size", self.size.map(|v| v as f32)));
+        self.programs.quad(
+            self.gpu,
+            native::Target::Framebuffer(&target.framebuffer),
+            self.size,
+            shader,
+            &textures,
+            &values,
+            if composite.is_some() {
+                native::Blend::Premultiplied
+            } else {
+                native::Blend::Replace
+            },
+            self.gl_scissor(),
+        )
     }
 
     fn mask_split(
@@ -454,6 +554,5 @@ mod tests {
                 }
             }
         }
-        assert!(UNIFORM_VECTORS <= 64);
     }
 }

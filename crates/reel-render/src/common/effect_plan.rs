@@ -17,6 +17,22 @@ pub(crate) struct SourceLayout {
     pub size: [u32; 2],
     pub frame_to_source: Affine,
 }
+
+/// Keep complete local effect results through dependencies that consume a
+/// projected source. A plain final source-over can project into its parent.
+pub(crate) fn direct_mask_projection(
+    group: &reel_ui::frame::FrameGroup,
+    retained_transitions: bool,
+) -> bool {
+    group.mask_effect.is_some()
+        && !retained_transitions
+        && group.composite.blend == Default::default()
+        && group.invert == 0.
+        && group.clip.is_none()
+        && group.mask.is_none()
+        && group.image_mask.is_none()
+        && group.filters.is_empty()
+}
 pub(crate) fn source_layout(
     effect: &FrameEffect,
     effect_to_frame: Affine,
@@ -107,6 +123,8 @@ pub(crate) fn context(
         ]
     };
     let [a, b] = rows(target_to_uv);
+    let [implicit_a, implicit_b] =
+        rows(target_to_uv * Affine::scale_non_uniform(f64::from(size[0]), f64::from(size[1])));
     let slots = [
         a,
         b,
@@ -125,6 +143,8 @@ pub(crate) fn context(
             source_size[1] as f32,
         ],
         [0., 0., 1., 1.],
+        implicit_a,
+        implicit_b,
     ];
     slots
         .iter()
@@ -154,6 +174,16 @@ pub(crate) fn map_source(
     let [a, b, c, d, e, f] = uv_to_source.as_coeffs();
     context[2] = [a as f32, c as f32, e as f32, 0.0];
     context[3] = [b as f32, d as f32, f as f32, 0.0];
+    // The implicit current-pixel sample follows the actual source view directly,
+    // without the local UV inverse/forward round trip used by authored samples.
+    let implicit = Affine::scale_non_uniform(
+        1.0 / f64::from(source_size[0]),
+        1.0 / f64::from(source_size[1]),
+    ) * frame_to_source
+        * Affine::scale_non_uniform(f64::from(context[5][0]), f64::from(context[5][1]));
+    let [a, b, c, d, e, f] = implicit.as_coeffs();
+    context[7] = [a as f32, c as f32, e as f32, 0.0];
+    context[8] = [b as f32, d as f32, f as f32, 0.0];
 }
 /// Common fixed image metadata: content scale/encoding/format plus texel centers.
 pub(crate) fn texture_metadata(
@@ -241,6 +271,8 @@ mod tests {
         let source = layout.frame_to_source * target;
         assert!((row(2, uv[0], uv[1]) * layout.size[0] as f32 - source.x as f32).abs() < 1e-4);
         assert!((row(3, uv[0], uv[1]) * layout.size[1] as f32 - source.y as f32).abs() < 1e-4);
+        assert!((row(7, target.x as f32 / 960., target.y as f32 / 544.) - uv[0]).abs() < 1e-5);
+        assert!((row(8, target.x as f32 / 960., target.y as f32 / 544.) - uv[1]).abs() < 1e-5);
         // Output viewport/translation cannot truncate or move the source domain.
         let offscreen = source_layout(
             &effect,
@@ -258,5 +290,75 @@ mod tests {
         let last = [1. - first[0], 1. - first[1]];
         assert_eq!(first[0] * layout.size[0] as f32, 0.5);
         assert_eq!(last[0] * layout.size[0] as f32, 199.5);
+    }
+
+    #[test]
+    fn implicit_source_uses_the_local_pixel_grid_and_preserves_padded_content_centers() {
+        let effect = FrameEffect {
+            definition: [0; 32],
+            shader: reel_ui::resources::ResourceHandle {
+                registry: 1,
+                slot: 0,
+                generation: 1,
+            },
+            values: vec![],
+            images: vec![],
+            bounds: reel_ui::kurbo::Rect::new(4., 8., 104., 58.),
+            coverage_invert: false,
+        };
+        let target_size = [200, 38];
+        for transform in [
+            Affine::IDENTITY,
+            Affine::translate((-30., 55.))
+                * Affine::rotate(0.3)
+                * Affine::scale_non_uniform(2., 0.75),
+            Affine::scale_non_uniform(-0.25, 3.),
+        ] {
+            for (source_size, view, origin) in [
+                ([200, 38], Affine::IDENTITY, [0., 0.]),
+                ([256, 64], Affine::translate((8., 12.)), [8., 12.]),
+            ] {
+                let mut context = context(&effect, transform, target_size, source_size).unwrap();
+                map_source(&mut context, &effect, transform, view, source_size);
+                let mut largest_error = 0_f32;
+                for y in 0..target_size[1] {
+                    for x in 0..target_size[0] {
+                        let target = [x as f32 + 0.5, y as f32 + 0.5];
+                        let normalized = [
+                            target[0] / target_size[0] as f32,
+                            target[1] / target_size[1] as f32,
+                        ];
+                        for axis in 0..2 {
+                            let row = context[7 + axis];
+                            let sampled = row[0] * normalized[0] + row[1] * normalized[1] + row[2];
+                            let expected = (target[axis] + origin[axis]) / source_size[axis] as f32;
+                            assert!((sampled - expected).abs() * (source_size[axis] as f32) < 0.0001);
+                            if source_size == target_size {
+                                assert_eq!(
+                                    sampled.to_bits(),
+                                    normalized[axis].to_bits(),
+                                    "local source retains the original normalized sample grid"
+                                );
+                            }
+                            // SGX interpolation has a 15-bit mantissa. The
+                            // implicit local path uses the same varying grid as
+                            // ordinary source composition; record its error.
+                            let iterated = f32::from_bits(sampled.to_bits() & !0xff);
+                            largest_error = largest_error
+                                .max((iterated - expected).abs() * source_size[axis] as f32);
+                            let low = (origin[axis] + 0.5) / source_size[axis] as f32;
+                            let high = (origin[axis] + target_size[axis] as f32 - 0.5)
+                                / source_size[axis] as f32;
+                            assert_eq!(
+                                expected.clamp(low, high).to_bits(),
+                                expected.to_bits(),
+                                "padding does not enter the local source domain"
+                            );
+                        }
+                    }
+                }
+                assert!(largest_error <= 1. / 128.);
+            }
+        }
     }
 }

@@ -78,6 +78,15 @@ fn frames_with_inputs(
     external: bool,
     coverage: bool,
 ) -> Vec<RenderFrame> {
+    frames_with_mode(language, color, external, coverage, false)
+}
+fn frames_with_mode(
+    language: Language,
+    color: bool,
+    external: bool,
+    coverage: bool,
+    plain: bool,
+) -> Vec<RenderFrame> {
     let mut program = program(color);
     if external {
         let mut nodes = program.nodes().to_vec();
@@ -191,7 +200,7 @@ fn frames_with_inputs(
             });
         }
         let mut widget = RecordWidget::new(scene);
-        widget.clip = !color;
+        widget.clip = !color && !plain;
         widget.inner.clip = Rect::new(0., 0., 80., 70.);
         widget.opacity = 0.75;
         let paint = PaintEffect {
@@ -218,7 +227,7 @@ fn frames_with_inputs(
         } else {
             widget.effect = Some(paint);
         }
-        let mut bridge = if color {
+        let mut bridge = if color || plain {
             widget_bridge(widget, Affine::translate((18., 12.)) * Affine::rotate(0.1))
         } else {
             // The source is wider than the viewport and starts outside it.
@@ -346,14 +355,23 @@ fn prepared_effect_frame_retains_bounds_values_and_shader() {
 #[ignore = "requires an actual WGPU adapter"]
 fn wgpu_prepared_effects_submit_scalar_and_empty_source_color() {
     use reel_render::gpu::{DeviceGeneration, Gpu, GpuLimits, Renderer};
-    for (color, external, coverage) in [
-        (false, false, false),
-        (true, false, false),
-        (false, true, false),
-        (false, true, true),
+    for (color, external, coverage, plain) in [
+        (false, false, false, false),
+        (true, false, false, false),
+        (false, true, false, false),
+        (false, true, true, false),
+        (false, true, true, true),
     ] {
-        // Scalar masks also retain the local coverage and covered source.
-        let target_bytes = (if coverage { 5 } else { 4 }) * SIZE[0] as u64 * SIZE[1] as u64 * 4;
+        // A plain scalar mask needs the parent plus two alternating local sources.
+        let target_bytes = (if plain {
+            3
+        } else if coverage {
+            5
+        } else {
+            4
+        }) * SIZE[0] as u64
+            * SIZE[1] as u64
+            * 4;
         let gpu = pollster::block_on(Gpu::request(
             &wgpu::Instance::default(),
             None,
@@ -365,7 +383,7 @@ fn wgpu_prepared_effects_submit_scalar_and_empty_source_color() {
         ))
         .unwrap();
         let mut renderer = Renderer::new(gpu);
-        let frames = frames_with_inputs(Language::Wgsl, color, external, coverage);
+        let frames = frames_with_mode(Language::Wgsl, color, external, coverage, plain);
         let mut resident = None;
         for frame in &frames {
             let prepared = renderer.prepare(frame).unwrap();
@@ -397,21 +415,30 @@ fn gles_prepared_effects_submit_scalar_and_empty_source_color() {
         AlphaMode, RenderBackend, RenderEvent, SurfaceInfo,
         gles2::{GlesBackend, GlesLimits},
     };
-    for (color, external, coverage) in [
-        (false, false, false),
-        (true, false, false),
-        (false, true, false),
-        (false, true, true),
+    for (color, external, coverage, plain) in [
+        (false, false, false, false),
+        (true, false, false, false),
+        (false, true, false, false),
+        (false, true, true, false),
+        (false, true, true, true),
     ] {
         let mut renderer = GlesBackend::headless(
             SIZE,
             GlesLimits {
-                target_bytes: (if coverage { 5 } else { 3 }) * SIZE[0] as u64 * SIZE[1] as u64 * 4,
+                target_bytes: (if plain {
+                    3
+                } else if coverage {
+                    5
+                } else {
+                    3
+                }) * SIZE[0] as u64
+                    * SIZE[1] as u64
+                    * 4,
                 ..Default::default()
             },
         )
         .unwrap();
-        let frames = frames_with_inputs(Language::GlslEs100, color, external, coverage);
+        let frames = frames_with_mode(Language::GlslEs100, color, external, coverage, plain);
         renderer
             .configure(SurfaceInfo {
                 physical_size: SIZE,
