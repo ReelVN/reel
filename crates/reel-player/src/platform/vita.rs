@@ -508,6 +508,8 @@ impl NativeLoop {
         let mut closing = false;
         #[cfg(feature = "profiling")]
         let mut recording = crate::probe::Recording::new();
+        #[cfg(feature = "profiling")]
+        let mut next_memory_sample = MonoTime(0);
         let result = (|| -> Result<(), Error> {
             input = input::Input::new(controls.sample()?);
             loop {
@@ -586,13 +588,20 @@ impl NativeLoop {
                 }
                 #[cfg(feature = "profiling")]
                 {
-                    let gpu = player.backend.usage().bytes;
+                    let usage = player.backend.usage();
                     recording.record(
                         probe_started,
                         player.story_mut().as_deref(),
-                        gpu,
+                        usage.total(),
                         &host.signals.title.borrow(),
                     );
+                    if now >= next_memory_sample {
+                        next_memory_sample = MonoTime(now.0.saturating_add(1_000_000_000));
+                        eprintln!(
+                            "[reel-profile] gpu_memory renderer={usage:?} native={:?}",
+                            player.backend.native_memory_usage()
+                        );
+                    }
                 }
                 let now = host.monotonic_now();
                 let deadline = player
