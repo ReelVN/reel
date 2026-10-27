@@ -84,11 +84,14 @@ pub(super) struct Shader {
     uniforms: [Option<Uniform>; NAMES.len()],
 }
 impl Shader {
-    fn new(context: &native::Context, fragment: ShaderCode<'_>) -> Result<Self, GlesError> {
+    fn new(
+        context: &super::ownership::Device,
+        fragment: ShaderCode<'_>,
+    ) -> Result<Self, GlesError> {
         Self::with_vertex(context, shader_code!("vertex"), fragment)
     }
     fn with_vertex(
-        context: &native::Context,
+        context: &super::ownership::Device,
         vertex: ShaderCode<'_>,
         fragment: ShaderCode<'_>,
     ) -> Result<Self, GlesError> {
@@ -121,7 +124,7 @@ impl Shader {
     }
 }
 pub(super) fn create_program(
-    context: &native::Context,
+    context: &super::ownership::Device,
     fragment: ShaderCode<'_>,
     implicit_source: bool,
     padded: bool,
@@ -139,7 +142,7 @@ pub(super) fn create_program(
     )
 }
 fn create_program_with_vertex(
-    context: &native::Context,
+    context: &super::ownership::Device,
     vertex: ShaderCode<'_>,
     fragment: ShaderCode<'_>,
 ) -> Result<Program, GlesError> {
@@ -198,15 +201,16 @@ pub(super) struct Programs {
     pub present: Shader,
     pub vertices: VertexBuffer,
     pub indices: IndexBuffer,
-    _storage: BudgetTicket,
+    _storage: super::ownership::NativeTicket,
 }
 impl Programs {
-    pub fn new(context: &native::Context, budget: &BudgetPool) -> Result<Self, GlesError> {
+    pub fn new(context: &super::ownership::Device, budget: &BudgetPool) -> Result<Self, GlesError> {
         let bytes =
             (size_of::<Self>() + 4 * size_of::<crate::common::mesh::Vertex>() + 6 * 2) as u64;
         let storage = budget
             .reserve(bytes)
             .map_err(|e| GlesError::Device(e.message))?;
+        let storage = context.ticket(storage);
         let attributes = attributes();
         let data = [
             [-1., 1., 0., 0.],
@@ -313,7 +317,11 @@ impl Programs {
             _storage: storage,
         })
     }
-    pub fn quad(&self, context: &native::Context, quad: Quad<'_>) -> Result<(), GlesError> {
+    pub fn quad(
+        &self,
+        context: &super::ownership::Device,
+        quad: Quad<'_>,
+    ) -> Result<(), GlesError> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Draw);
         let Quad {
             target,
@@ -340,7 +348,7 @@ impl Programs {
     }
     pub fn present(
         &self,
-        context: &native::Context,
+        context: &super::ownership::Device,
         target: &resources::Target,
         size: [u32; 2],
     ) -> Result<(), GlesError> {
@@ -397,7 +405,7 @@ pub(super) struct Target {
     pub size: [u32; 2],
     pub view: Texture,
     pub framebuffer: Framebuffer,
-    _storage: Rc<BudgetTicket>,
+    _storage: Rc<super::ownership::NativeTicket>,
 }
 impl Target {
     pub fn source_uv(&self, parent: [u32; 2], origin: [i32; 2]) -> [f32; 4] {
@@ -412,12 +420,15 @@ impl Target {
     pub fn same_allocation(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self._storage, &other._storage)
     }
+    pub(super) fn cache_only(&self) -> bool {
+        Rc::strong_count(&self._storage) == 1
+    }
     pub fn new(
-        context: &native::Context,
+        context: &super::ownership::Device,
         size: [u32; 2],
         budget: &BudgetPool,
         limit: u64,
-    ) -> Result<Self, (GlesError, Option<BudgetTicket>)> {
+    ) -> Result<Self, (GlesError, Option<super::ownership::NativeTicket>)> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::TargetCreate);
         let bytes = context
             .target_layout(size)
@@ -433,6 +444,7 @@ impl Target {
                 None,
             )
         })?;
+        let storage = context.ticket(storage);
         let built = (|| {
             let view = context.create_texture(size, native::TextureFormat::Rgba8)?;
             let framebuffer = context.framebuffer(&view)?;

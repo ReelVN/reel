@@ -58,7 +58,7 @@ pub(super) struct Page {
     texture: native::Texture,
     allocator: RefCell<AtlasAllocator>,
     size: [u32; 2],
-    _storage: BudgetTicket,
+    _storage: super::ownership::NativeTicket,
 }
 struct GlyphImage {
     page: Rc<Page>,
@@ -88,7 +88,7 @@ pub(super) struct GlyphCache {
     pages: Vec<Weak<Page>>,
     raster: glyph::Rasterizer,
     pending_glyphs: Vec<Rc<Glyph>>,
-    failures: Vec<BudgetTicket>,
+    failures: Vec<super::ownership::NativeTicket>,
 }
 impl GlyphCache {
     pub fn prune_idle(&mut self) {
@@ -186,6 +186,7 @@ impl GlyphCache {
                 limits.resource_bytes,
                 "glyph atlas",
             )?;
+            let storage = gpu.ticket(storage);
             let texture = match gpu.create_texture(size, native::TextureFormat::Luma8) {
                 Ok(texture) => texture,
                 Err(error) => {

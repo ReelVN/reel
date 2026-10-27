@@ -405,9 +405,14 @@ fn accepted_notice_survives_frame_drop_and_render_completion() {
             &pool,
         );
         let expected_transform = frame.geometry().records()[0].window_transform;
-        assert!(presentation_notice::<RenderError>(
-            &frame, SurfaceEpoch(1), Ok(PresentOutcome::Preparing),
-        ).is_none());
+        assert!(
+            presentation_notice::<RenderError>(
+                &frame,
+                SurfaceEpoch(1),
+                Ok(PresentOutcome::Preparing),
+            )
+            .is_none()
+        );
         assert_eq!(bridge.pending_count(), 1);
         let result = backend.render_present(&frame, || {});
         let notice = presentation_notice(&frame, SurfaceEpoch(1), result).unwrap();

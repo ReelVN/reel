@@ -1,5 +1,6 @@
 //! Completed geometry storage; a slot is never shared with an active submission.
 use reel_core::budget::BudgetTicket;
+use std::borrow::Borrow;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Capacity {
@@ -18,19 +19,19 @@ impl Capacity {
     }
 }
 
-pub(crate) struct Allocation<T> {
+pub(crate) struct Allocation<T, R = BudgetTicket> {
     pub capacity: Capacity,
     pub storage: T,
-    pub ticket: BudgetTicket,
+    pub ticket: R,
 }
 
 /// A fixed handle bound complements the existing byte budget. Unusually large
 /// frames can use more allocations, but do not permanently enlarge this cache.
-pub(crate) struct Pool<T> {
-    slots: [Option<Box<Allocation<T>>>; 64],
+pub(crate) struct Pool<T, R = BudgetTicket> {
+    slots: [Option<Box<Allocation<T, R>>>; 64],
     next: usize,
 }
-impl<T> Default for Pool<T> {
+impl<T, R> Default for Pool<T, R> {
     fn default() -> Self {
         Self {
             slots: std::array::from_fn(|_| None),
@@ -38,12 +39,12 @@ impl<T> Default for Pool<T> {
         }
     }
 }
-impl<T> Pool<T> {
+impl<T, R: Borrow<BudgetTicket>> Pool<T, R> {
     pub fn take_matching(
         &mut self,
         requested: Capacity,
         score: impl Fn(&T) -> usize,
-    ) -> Option<Box<Allocation<T>>> {
+    ) -> Option<Box<Allocation<T, R>>> {
         let index = self
             .slots
             .iter()
@@ -58,7 +59,7 @@ impl<T> Pool<T> {
             .0;
         self.slots[index].take()
     }
-    pub fn take(&mut self, requested: Capacity) -> Option<Box<Allocation<T>>> {
+    pub fn take(&mut self, requested: Capacity) -> Option<Box<Allocation<T, R>>> {
         let index = self
             .slots
             .iter()
@@ -73,7 +74,7 @@ impl<T> Pool<T> {
             .0;
         self.slots[index].take()
     }
-    pub fn put(&mut self, allocation: Box<Allocation<T>>) {
+    pub fn put(&mut self, allocation: Box<Allocation<T, R>>) {
         // Completed allocations track recent demand. Keeping the first 64
         // sizes forever otherwise forces every later, larger frame to allocate.
         let index = (0..self.slots.len())
@@ -87,7 +88,7 @@ impl<T> Pool<T> {
         self.slots
             .iter()
             .flatten()
-            .map(|slot| slot.ticket.bytes())
+            .map(|slot| slot.ticket.borrow().bytes())
             .sum()
     }
     pub fn additional_bytes(&self, bytes: impl Fn(&T) -> u64) -> u64 {

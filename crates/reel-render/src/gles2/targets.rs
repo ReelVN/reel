@@ -33,42 +33,51 @@ impl Context<'_> {
                 .iter()
                 .filter(|target| target.view.size() == storage_size)
                 .count();
-            let mut target = if let Some(target) = self
-                .target_cache
-                .iter()
-                .filter(|target| target.view.size() == storage_size)
-                .nth(index)
-            {
-                target.clone()
+            let mut target = if let Some(target) = self.target_cache.get(storage_size, index) {
+                target
             } else {
-                // Retain distinct size buckets across animation and allocation
-                // order changes. Existing byte budgets bound the idle pool.
-                if bytes
-                    > self
-                        .limits
-                        .target_bytes
-                        .saturating_sub(self.budgets.targets.usage().bytes)
-                {
-                    self.target_cache.retain(|target| {
-                        self.targets.iter().any(|live| live.same_allocation(target))
-                    });
-                }
-                let target = match Target::new(
+                let mut allocation = Target::new(
                     self.gpu,
                     storage_size,
                     &self.budgets.targets,
                     self.limits.target_bytes,
-                ) {
+                );
+                // Only a refused reservation can be retried. An actual native
+                // failure keeps its original owner/ticket retirement path.
+                for recent in [false, true] {
+                    if !matches!(allocation, Err((GlesError::Pressure { .. }, None))) {
+                        break;
+                    }
+                    if self
+                        .target_cache
+                        .reclaim(self.offscreen.requirements(), recent)
+                    {
+                        allocation = Target::new(
+                            self.gpu,
+                            storage_size,
+                            &self.budgets.targets,
+                            self.limits.target_bytes,
+                        );
+                    }
+                }
+                let target = match allocation {
                     Ok(target) => target,
                     Err((error, storage)) => {
+                        if let Some(storage) = storage {
+                            self.failed_native.push(storage);
+                        }
                         self.tickets.push(Reservation {
-                            _shared: storage,
+                            _shared: None,
                             _local: local,
                         });
                         return Err(error);
                     }
                 };
-                self.target_cache.push(target.clone());
+                self.target_cache.insert(
+                    &target,
+                    &self.budgets.transient,
+                    self.limits.transient_bytes,
+                );
                 target
             };
             self.tickets.push(Reservation {

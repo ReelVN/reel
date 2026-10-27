@@ -21,10 +21,11 @@ impl<T> Default for Cache<T> {
     }
 }
 impl<T> Cache<T> {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "wgpu"))]
     pub(crate) fn capacity_bytes(&self) -> u64 {
         (self.slots.capacity() * size_of::<Slot<T>>()) as u64
     }
+    #[cfg(feature = "wgpu")]
     pub(crate) fn contains(&self, size: [u32; 2], mut same: impl FnMut(&T) -> bool) -> bool {
         let start = self.slots.partition_point(|slot| slot.size < size);
         self.slots[start..]

@@ -39,13 +39,14 @@ struct GroupPaint<'a> {
 
 pub(super) struct Context<'a> {
     pub capture: bool,
-    pub gpu: &'a native::Context,
+    pub gpu: &'a super::ownership::Device,
     pub programs: &'a programs::Programs,
     pub limits: crate::common::GpuLimits,
     pub size: [u32; 2],
     pub budgets: &'a Budgets,
     pub budget_scope: Budgets,
     pub tickets: Vec<Reservation>,
+    pub failed_native: Vec<super::ownership::NativeTicket>,
     pub images: HashMap<ResourceHandle, Rc<Image>>,
     pub image_cache: &'a mut Images,
     pub glyph_cache: &'a mut draw::GlyphCache,
@@ -55,7 +56,7 @@ pub(super) struct Context<'a> {
     pub effect_cache: &'a mut super::effect::Cache,
     pub mask_cache: &'a mut crate::common::mask::split::Cache,
     pub effects: Vec<Rc<super::effect::Compiled>>,
-    pub target_cache: &'a mut Vec<Target>,
+    pub target_cache: &'a mut super::target_cache::Cache,
     pub retained_cache: &'a crate::common::retained::Cache<Target, u8>,
     pub selection: std::sync::Arc<crate::common::retained::Plan>,
     pub retained_inputs: Vec<Target>,
@@ -73,6 +74,7 @@ pub(super) struct Context<'a> {
 }
 pub(super) struct Work {
     _tickets: Vec<Reservation>,
+    _failed_native: Vec<super::ownership::NativeTicket>,
     _images: HashMap<ResourceHandle, Rc<Image>>,
     _glyphs: Vec<Rc<draw::Glyph>>,
     _effects: Vec<Rc<super::effect::Compiled>>,
@@ -86,6 +88,9 @@ pub(super) struct Prepared {
     _work: Work,
 }
 impl Prepared {
+    pub fn targets(&self) -> &[Target] {
+        &self._work._targets
+    }
     pub fn recycle_geometry(&self, cache: &mut super::geometry::Cache) {
         for storage in self._work.buffers.borrow_mut().drain(..) {
             cache.put(storage);
@@ -97,7 +102,7 @@ pub(super) struct Caches<'a> {
     pub glyphs: &'a mut draw::GlyphCache,
     pub effects: &'a mut super::effect::Cache,
     pub masks: &'a mut crate::common::mask::split::Cache,
-    pub targets: &'a mut Vec<Target>,
+    pub targets: &'a mut super::target_cache::Cache,
     pub geometry: &'a mut super::geometry::Cache,
     pub retained: &'a crate::common::retained::Cache<Target, u8>,
 }
@@ -141,6 +146,7 @@ pub(super) fn prepare(
         budgets,
         budget_scope: Budgets::new(limits),
         tickets: Vec::new(),
+        failed_native: Vec::new(),
         images,
         image_cache,
         glyph_cache,
@@ -220,6 +226,7 @@ pub(super) fn prepare(
     context.glyphs.extend(context.glyph_cache.take_uploads());
     let work = Work {
         _tickets: context.tickets,
+        _failed_native: context.failed_native,
         _images: context.images,
         _glyphs: context.glyphs,
         _effects: context.effects,

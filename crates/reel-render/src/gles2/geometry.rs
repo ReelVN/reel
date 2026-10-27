@@ -10,7 +10,7 @@ pub(super) struct Buffers {
     pub indices: native::IndexBuffer,
     pub layout: Option<crate::common::draw_batch::Layout>,
 }
-pub(super) type Storage = Box<Allocation<Buffers>>;
+pub(super) type Storage = Box<Allocation<Buffers, super::ownership::NativeTicket>>;
 type GlyphGeometry = crate::common::recording_cache::Cache<
     crate::common::recording_cache::GlyphDependency,
     crate::common::recording_cache::Glyphs<
@@ -21,7 +21,7 @@ type GlyphGeometry = crate::common::recording_cache::Cache<
 impl Buffers {
     pub fn upload_segments<T>(
         &mut self,
-        gpu: &native::Context,
+        gpu: &super::ownership::Device,
         capacity: Capacity,
         batch: &crate::common::draw_batch::Batch<T>,
         budgets: &Budgets,
@@ -93,7 +93,7 @@ impl Buffers {
 }
 #[derive(Default)]
 pub(super) struct Cache {
-    pool: Pool<Buffers>,
+    pool: Pool<Buffers, super::ownership::NativeTicket>,
     pub cpu_disabled: bool,
     pub optional_used: bool,
     pub shapes: crate::common::recording_cache::Cache<
@@ -146,7 +146,7 @@ impl Cache {
 }
 pub(super) fn upload_batch<T>(
     cache: &mut Cache,
-    gpu: &native::Context,
+    gpu: &super::ownership::Device,
     budgets: &Budgets,
     local: &Budgets,
     limits: crate::common::GpuLimits,
@@ -220,7 +220,7 @@ pub(super) fn upload_batch<T>(
 
 pub(super) fn acquire(
     cache: &mut Cache,
-    gpu: &native::Context,
+    gpu: &super::ownership::Device,
     budgets: &Budgets,
     local: &Budgets,
     limits: crate::common::GpuLimits,
@@ -247,7 +247,7 @@ pub(super) fn acquire(
         }
     }
     let bytes = requested.bytes()
-        + size_of::<Allocation<Buffers>>() as u64
+        + size_of::<Allocation<Buffers, super::ownership::NativeTicket>>() as u64
         + std::mem::size_of_val(&super::programs::attributes()) as u64;
     let local = local
         .transient
@@ -272,6 +272,7 @@ pub(super) fn acquire(
         limits.transient_bytes,
         "geometry",
     )?;
+    let ticket = gpu.ticket(ticket);
     let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::BufferCreate);
     let vertices = gpu.vertex_buffer(
         bytemuck::cast_slice(&mesh.vertices),

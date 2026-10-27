@@ -1,7 +1,7 @@
 //! Prepared asset programs; Vita consumes only exported SGX binaries.
 use super::{GlesError, native, programs, replay::Context, resources::Target};
 use crate::common::{effect_cache, effect_plan};
-use reel_core::budget::{BudgetPool, BudgetTicket};
+use reel_core::budget::BudgetPool;
 use reel_ui::{
     frame::{FrameDrawing, FrameEffect, RecordLocation},
     kurbo::Affine,
@@ -25,11 +25,11 @@ pub(super) struct Compiled {
     parameters: Vec<Option<native::Uniform>>,
     textures: Vec<Option<native::Uniform>>,
     texture_meta: Option<native::Uniform>,
-    _storage: BudgetTicket,
+    _storage: super::ownership::NativeTicket,
 }
 
 fn compile(
-    gpu: &native::Context,
+    gpu: &super::ownership::Device,
     shader: &effect_plan::Shader<'_>,
     budget: &BudgetPool,
     limit: u64,
@@ -93,6 +93,7 @@ fn compile(
             + (count + descriptor.textures as usize) * size_of::<Option<native::Uniform>>(),
         limit,
     )?;
+    let storage = gpu.ticket(storage);
     let program = programs::create_program(
         gpu,
         code,
