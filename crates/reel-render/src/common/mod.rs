@@ -21,6 +21,7 @@ pub(crate) mod retained;
 pub(crate) mod scopes;
 
 pub(crate) mod offscreen;
+pub(crate) mod precision;
 pub(crate) mod scissor;
 pub(crate) mod source_view;
 pub(crate) mod target_cache;

@@ -397,11 +397,16 @@ impl Pipelines {
             #[cfg(test)]
             Some(counts),
         );
+        let bounded_composite = crate::common::precision::composite_wgsl(
+            include_str!("composite.wgsl"),
+            quality.format == wgpu::TextureFormat::Rgba8Unorm,
+            device.features().contains(wgpu::Features::SHADER_F16),
+        );
         let source_over = pipeline_entry(
             device,
             quality,
             &composite_layout,
-            include_str!("composite.wgsl"),
+            &bounded_composite,
             false,
             FragmentOutput {
                 entry: "source_over",
@@ -414,7 +419,7 @@ impl Pipelines {
             device,
             quality,
             &composite_layout,
-            include_str!("composite.wgsl"),
+            &bounded_composite,
             false,
             FragmentOutput {
                 entry: "alpha_mask",

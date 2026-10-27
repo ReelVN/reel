@@ -20,10 +20,10 @@ float3 encode(float3 x){return lerp(1.055*pow(max(x,float3(0.0)),float3(1.0/2.4)
 float3 linear(float3 x){return lerp(pow((x+0.055)/1.055,float3(2.4)),x/12.92,step(x,float3(0.04045)));}
 #ifdef REEL_SOURCE_OVER_ONLY
 void main(){
- reel_clip();reel_output=sample_source()*u_params.x;}
+ reel_clip();half4 color=tex2D(u_source,v_source_uv);half opacity=half(u_params.x);reel_output=color*opacity;}
 #elif defined(REEL_ALPHA_MASK_ONLY)
 void main(){
- reel_clip();reel_output=sample_source()*clamp(tex2D(u_mask,v_mask_uv).a,0.0,1.0)*u_params.x;}
+ reel_clip();half4 color=tex2D(u_source,v_source_uv);half coverage=tex2D(u_mask,v_mask_uv).a;half opacity=half(u_params.x);reel_output=color*coverage*opacity;}
 #else
 #ifdef REEL_EXTENDED_BLEND
 // W3C separable blend functions on straight linear RGB; linear burn extends this set.
