@@ -103,6 +103,7 @@ impl Vm {
             self.put(bound, 0, receiver)?;
         }
         let s = ScriptFrame {
+            derived_bridge: None,
             id,
             code: CodeRef {
                 function,

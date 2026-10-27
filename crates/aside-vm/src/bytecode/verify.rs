@@ -62,6 +62,7 @@ struct VerifiedData {
     opcode_uses: Vec<OpcodeUse>,
     member_symbols: Vec<SymbolId>,
     native_calls: native_calls::NativeCallPlans,
+    compact_derived: Vec<u32>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,6 +95,7 @@ struct DerivedLayouts {
     opcode_uses: Vec<OpcodeUse>,
     member_symbols: Vec<SymbolId>,
     native_calls: native_calls::NativeCallPlans,
+    compact_derived: Vec<u32>,
 }
 impl VerifiedProgram {
     pub(crate) fn shared_header_bytes(&self) -> usize {
@@ -540,6 +542,7 @@ fn publish(
             opcode_uses: layouts.opcode_uses,
             member_symbols: layouts.member_symbols,
             native_calls: layouts.native_calls,
+            compact_derived: layouts.compact_derived,
         }),
         None,
     )
@@ -1295,6 +1298,7 @@ impl ParameterLayouts {
     }
 }
 
+mod compact_derived;
 mod functions;
 mod native_calls;
 use functions::validate_function;

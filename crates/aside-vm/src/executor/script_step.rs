@@ -10,6 +10,29 @@ impl Vm {
         let top = self.active.frames.data.len() - 1;
         let signature = self.program.package().functions[s.code.function.index()].signature;
         match s.phase {
+            ScriptPhase::CompactBegin => {
+                let output = self.value(s.env, 3)?;
+                let allocate = self
+                    .heap
+                    .host_payload(output, crate::heap::DerivedSlot::Candidate as u32)?
+                    .same_bits(Value::NULL);
+                if !m.take(
+                    0,
+                    12,
+                    if allocate {
+                        crate::dependencies::BASE_BYTES
+                    } else {
+                        0
+                    },
+                ) {
+                    return Ok(false);
+                }
+                if let Err(error) = self.heap.begin_derived(output) {
+                    self.block_heap(error)?;
+                    return Ok(true);
+                }
+                s.phase = ScriptPhase::Body;
+            }
             ScriptPhase::GeneratorCreate => {
                 if !self.generator_create_step(&mut s, m)? {
                     return Ok(false);
@@ -705,6 +728,9 @@ impl Vm {
                 }
             }
             ScriptPhase::Release { reason } => {
+                if s.derived_bridge.is_some() && matches!(reason, ExitReason::Return) {
+                    return self.compact_derived_commit(s, m);
+                }
                 let error = match reason {
                     ExitReason::Throw(info) => Some(info),
                     _ => None,

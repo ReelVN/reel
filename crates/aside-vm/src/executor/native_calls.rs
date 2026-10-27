@@ -384,6 +384,7 @@ impl Vm {
             }
         };
         self.active.frames.data.push(Frame::Native(NativeFrame {
+            inline_argument: false,
             argument_plan,
             id,
             await_activation: matches!(source, ArgSource::Await { .. }).then_some(id.0),
@@ -425,7 +426,11 @@ impl Vm {
     }
     pub fn host_arguments(&self, ticket: HostTicket) -> Result<&[Value], VmError> {
         let n = self.ticket(ticket)?;
-        Ok(self.slots.borrow_initialized(n.bound)?)
+        Ok(if n.inline_argument {
+            self.slots.borrow_initialized_window(n.roots, 1, 1)?
+        } else {
+            self.slots.borrow_initialized(n.bound)?
+        })
     }
     /// Borrow only supplied arguments; omission remains distinct from explicit null.
     pub fn host_provided_arguments(
@@ -434,16 +439,22 @@ impl Vm {
     ) -> Result<ProvidedArguments<'_>, VmError> {
         let n = self.ticket(ticket)?;
         Ok(ProvidedArguments {
-            values: self
-                .slots
-                .borrow_initialized(if n.argument_plan.is_some() {
-                    n.bound
-                } else {
-                    n.args
-                })?,
-            positions: n
-                .argument_plan
-                .and_then(|plan| self.program.native_call_slots(plan)),
+            values: if n.inline_argument {
+                self.slots.borrow_initialized_window(n.roots, 1, 1)?
+            } else {
+                self.slots
+                    .borrow_initialized(if n.argument_plan.is_some() {
+                        n.bound
+                    } else {
+                        n.args
+                    })?
+            },
+            positions: if n.inline_argument {
+                Some(&[0])
+            } else {
+                n.argument_plan
+                    .and_then(|plan| self.program.native_call_slots(plan))
+            },
         })
     }
     /// Split the existing argument roots from mutable heap access for a native
@@ -455,16 +466,22 @@ impl Vm {
     ) -> Result<T, VmError> {
         let n = self.ticket(ticket)?;
         let provided = ProvidedArguments {
-            values: self
-                .slots
-                .borrow_initialized(if n.argument_plan.is_some() {
-                    n.bound
-                } else {
-                    n.args
-                })?,
-            positions: n
-                .argument_plan
-                .and_then(|plan| self.program.native_call_slots(plan)),
+            values: if n.inline_argument {
+                self.slots.borrow_initialized_window(n.roots, 1, 1)?
+            } else {
+                self.slots
+                    .borrow_initialized(if n.argument_plan.is_some() {
+                        n.bound
+                    } else {
+                        n.args
+                    })?
+            },
+            positions: if n.inline_argument {
+                Some(&[0])
+            } else {
+                n.argument_plan
+                    .and_then(|plan| self.program.native_call_slots(plan))
+            },
         };
         Ok(body(&mut self.heap, provided))
     }
@@ -578,7 +595,7 @@ impl Vm {
         self.select_task(ticket.task)
             .map_err(|_| VmError::InvalidTicket)?;
         let mut n = self.ticket(ticket)?;
-        self.prepare_native_response(n, ticket, &response)?;
+        self.prepare_native_response(&mut n, ticket, &response)?;
         match response {
             HostResponse::Ready(v) => {
                 self.put(n.roots, 0, v)?;

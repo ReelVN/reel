@@ -347,8 +347,14 @@ fn every_function_prepays_its_shared_parameter_scan_without_defaults() {
     let mut empty = p.signatures[0].clone();
     empty.parameters.clear();
     p.signatures.push(empty);
+    // Initialization bodies keep this probe independent of the parameterless
+    // standard-derived expression proof performed during the same admission.
     p.functions = (0..FUNCTIONS)
-        .map(|_| budget_function(1, PARAMETERS, 0))
+        .map(|_| {
+            let mut function = budget_function(1, PARAMETERS, 0);
+            function.context = Context::Init;
+            function
+        })
         .collect();
     let baseline = verify(p.clone(), limits()).unwrap().stats();
     for f in &mut p.functions {

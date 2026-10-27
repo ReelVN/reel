@@ -34,7 +34,7 @@ impl Vm {
     /// the root descriptor identity and can relocate the pool at this safe point.
     pub(super) fn prepare_native_response(
         &mut self,
-        native: NativeFrame,
+        native: &mut NativeFrame,
         ticket: HostTicket,
         response: &HostResponse<'_>,
     ) -> Result<(), VmError> {
@@ -60,7 +60,7 @@ impl Vm {
                 }
             }
             HostResponse::ForwardFault(id) => {
-                if !self.native_holds(native, id)? {
+                if !self.native_holds(*native, id)? {
                     return Err(VmError::InvalidFault);
                 }
                 self.native_pending_slot() + 1
@@ -88,6 +88,17 @@ impl Vm {
             }
         };
         self.slots.grow(&mut self.heap, native.roots, len)?;
+        if native.inline_argument && matches!(response, HostResponse::CallScript { .. }) {
+            // Root 1 will hold the new callback. Preserve the original supplied
+            // argument in ordinary windows before that root is overwritten.
+            let value = self.value(native.roots, 1)?;
+            self.slots.grow(&mut self.heap, native.args, 2)?;
+            self.slots.grow(&mut self.heap, native.bound, 1)?;
+            self.put(native.args, 0, Value::int(0))?;
+            self.put(native.args, 1, value)?;
+            self.put(native.bound, 0, value)?;
+            native.inline_argument = false;
+        }
         Ok(())
     }
 
