@@ -195,6 +195,8 @@ impl Runtime {
         application: impl FnOnce(&mut Self) -> Result<T, Error>,
     ) -> Result<T, Error> {
         let (native, backend) = NativeLoop::new(module_directory)?;
+        #[cfg(feature = "profiling")]
+        let _live_probe = crate::probe::Live::start()?;
         let mut runtime = Self { native, backend };
         let result = application(&mut runtime);
         close_backend(result, runtime.backend)
@@ -209,8 +211,6 @@ impl Runtime {
     /// Show child directories containing `game.asb`. Each work owns its `saves/`
     /// directory. Game exit and SELECT + START return to this library.
     pub fn run_launcher(&mut self, game_root: &Path) -> Result<(), Error> {
-        #[cfg(feature = "profiling")]
-        let _live_probe = crate::probe::Live::start()?;
         self.backend.reset_session()?;
         let result = run_launcher_on(game_root, &mut self.native, &mut self.backend);
         reset_after_session(&mut self.backend, &result)?;
