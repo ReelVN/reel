@@ -151,6 +151,9 @@ fn image_alpha(uv: vec2<f32>) -> f32 {
 @fragment fn fragment_direct(v: VertexOut) -> @location(0) vec4<f32> {
     return textureSample(image, image_sampler, v.uv) * v.color;
 }
+@fragment fn fragment_direct_coverage(v: VertexOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(textureSample(image, image_sampler, v.uv).r) * v.color;
+}
 @fragment fn fragment_direct_bc1(v: VertexOut) -> @location(0) vec4<f32> {
     let pixel = textureSample(image, image_sampler, v.uv);
     return vec4<f32>(pixel.rgb, 1.0) * v.color;

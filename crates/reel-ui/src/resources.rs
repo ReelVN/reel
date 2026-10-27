@@ -157,6 +157,7 @@ struct Resource {
     handle: ResourceHandle,
     version: ResourceVersion,
     data: ResourceData,
+    image_coverage: Option<reel_core::image_coverage::ImageCoverage>,
     retired: AtomicBool,
     // Opaque imported producer storage has its own accounting domain. This reservation
     // covers the frozen reference's declared extent; owned blobs carry their own ticket.
@@ -182,6 +183,12 @@ impl ResourceLease {
     }
     pub fn data(&self) -> &ResourceData {
         &self.0.data
+    }
+    /// Cached conservative alpha support in visible texels, including the
+    /// filtering border. Registration computes this once from immutable RGBA
+    /// pixels or BC3 blocks. Unsupported storage retains ordinary geometry.
+    pub fn image_coverage(&self) -> Option<&reel_core::image_coverage::ImageCoverage> {
+        self.0.image_coverage.as_ref()
     }
     pub fn downgrade(&self) -> ResourceWeak {
         ResourceWeak {
@@ -445,10 +452,23 @@ impl ResourceRegistry {
             slot: index as u32,
             generation,
         };
+        let image_coverage = match &data {
+            ResourceData::Image { image, .. } if image.format == ImageFormat::Rgba8 => {
+                reel_core::image_coverage::ImageCoverage::rgba8(
+                    [image.width, image.height],
+                    image.data.data(),
+                )
+            }
+            ResourceData::Texture { descriptor, bytes } => {
+                reel_core::image_coverage::ImageCoverage::texture(*descriptor, bytes.data())
+            }
+            _ => None,
+        };
         let lease = ResourceLease(Arc::new(Resource {
             handle,
             version,
             data,
+            image_coverage,
             retired: AtomicBool::new(false),
             _reference_ticket: ticket,
             descriptor_ticket: Arc::new(descriptor),

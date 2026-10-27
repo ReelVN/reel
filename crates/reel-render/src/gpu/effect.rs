@@ -91,7 +91,10 @@ impl Cache {
             let mut entries = Vec::with_capacity(entry_capacity);
             entries.extend([
                 pipeline::sampler(1),
-                pipeline::uniform(2),
+                wgpu::BindGroupLayoutEntry {
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ..pipeline::uniform(2)
+                },
                 pipeline::uniform(3),
             ]);
             if descriptor.source_sampler {
@@ -152,8 +155,8 @@ impl Context<'_> {
     ) -> Result<Target, GpuError> {
         self.effect_draw(drawing, effect, transform, source, None, at)
     }
-    /// Evaluate scalar coverage with the caller's explicit frame-to-source view.
-    pub(super) fn effect_coverage(
+    /// Multiply the complete local source by scalar coverage in one pass.
+    pub(super) fn effect_mask(
         &mut self,
         drawing: &FrameDrawing,
         effect: &FrameEffect,
@@ -195,7 +198,7 @@ impl Context<'_> {
             return Ok(output);
         };
         if let Some(view) = source_view {
-            context[0][3] = if effect.coverage_invert { 2.0 } else { 1.0 };
+            context[0][3] = if effect.coverage_invert { 3.0 } else { 0.0 };
             effect_plan::map_source(&mut context, effect, transform, view, source.size);
         }
         if self.scissor.empty() {

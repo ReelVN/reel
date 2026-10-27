@@ -16,14 +16,17 @@ use reel_ui::stage::effect::{
 };
 use std::collections::{BTreeMap, HashMap};
 
-/// The production source binding is seven float32 vec4 slots (112 bytes).
+/// The production source binding is nine float32 vec4 slots (144 bytes).
 /// Slots 0/1 map target pixels to local normalized coordinates; 2/3 map local
 /// normalized coordinates to source texture coordinates. Slot 4 is the logical
 /// rectangle (x, y, width, height); 5 is target size and source storage size;
 /// 6 is the source atlas window (origin x/y, extent x/y), in normalized units.
+/// Slots 7/8 map normalized target coordinates directly to the whole local
+/// source for the wrapper's implicit current-pixel sample.
 /// Slot 0.w selects ordinary output (zero), scalar coverage (one), or inverted
-/// scalar coverage (two). Inversion follows coverage clamping.
-pub const CONTEXT_SLOTS: usize = 7;
+/// scalar coverage (two), or source multiplied by inverted coverage (three).
+/// Inversion follows coverage clamping.
+pub const CONTEXT_SLOTS: usize = 9;
 
 /// Complete prepared shader source; runtime backends load this product verbatim.
 #[derive(Clone, Debug)]
@@ -37,8 +40,8 @@ pub struct EffectFragment {
 
 /// Export the complete v1 fragment ABI without requiring a GPU feature.
 ///
-/// GLES uses the renderer's standard `a_position/a_uv/a_color/a_window` vertex
-/// shader, `v_uv`, sampler `reel_source`, `reel_context[7]`, and individual vec4
+/// GLES uses the renderer's `a_position/a_uv` inputs, `v_uv`, sampler
+/// `reel_source`, `reel_context[9]`, and individual vec4
 /// uniforms `reel_parameter_N`. Source targets have only base level, so ordinary
 /// texture2D samples level zero even in nonuniform branches. WGSL includes the
 /// fullscreen `vertex` and `fragment` entries and group zero bindings: source
@@ -51,7 +54,10 @@ pub struct EffectFragment {
 /// Output is restricted to the local logical rectangle. Source samples clamp
 /// normalized local coordinates and the source atlas window at texel centers.
 /// Source and output are linear premultiplied colors; scalar output multiplies
-/// the unmodified source at the current local coordinates by clamped coverage.
+/// the unmodified whole local source at the current coordinates by coverage.
+/// That implicit sample uses an affine `reel_implicit_source_uv` vertex varying
+/// and hardware edge clamping. Explicit authored samples retain their fragment
+/// coordinate evaluation and texel/window clamps.
 pub fn compile_fragment(
     program: &EffectProgram,
     language: Language,
@@ -62,7 +68,10 @@ pub fn compile_fragment(
     let mut source = String::new();
     match language {
         Language::GlslEs100 => {
-            source.push_str("#version 100\nprecision highp float;\nvarying vec2 v_uv;\nuniform sampler2D reel_source;\nuniform vec4 reel_context[7];\n");
+            source.push_str("#version 100\nprecision highp float;\nvarying vec2 v_uv;\nuniform sampler2D reel_source;\nuniform vec4 reel_context[9];\n");
+            if generated.output_type == EffectType::Float {
+                source.push_str("varying vec2 reel_implicit_source_uv;\n");
+            }
             source.push_str(&generated.declarations);
             source.push_str(r#"
 vec4 reel_source_sample(vec2 uv) {
@@ -79,9 +88,12 @@ vec4 reel_source_sample(vec2 uv) {
                 max_source_bytes.saturating_sub(source.len() + generated.function.len()),
             )?);
             source.push_str(&generated.function);
+            source.push_str("\nvoid main() {\n");
+            if generated.output_type == EffectType::Float {
+                source.push_str("vec4 reel_implicit_source = texture2D(reel_source, reel_implicit_source_uv);\n");
+            }
             source.push_str(
                 r#"
-void main() {
     vec3 p = vec3(v_uv * reel_context[5].xy, 1.0);
     vec2 uv = vec2(dot(reel_context[0].xyz, p), dot(reel_context[1].xyz, p));
     if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) discard;
@@ -89,7 +101,7 @@ void main() {
 "#,
             );
             if generated.output_type == EffectType::Float {
-                source.push_str("float coverage = clamp(reel_effect(uv, position, reel_context[4].zw), 0.0, 1.0); if (reel_context[0].w != 0.0) { if (reel_context[0].w > 1.0) { coverage = 1.0 - coverage; } gl_FragColor = vec4(coverage); } else { gl_FragColor = reel_source_sample(uv) * coverage; }\n}\n");
+                source.push_str("float coverage = clamp(reel_effect(uv, position, reel_context[4].zw), 0.0, 1.0); float mode = reel_context[0].w; if (mode >= 2.0) { coverage = 1.0 - coverage; } if (mode == 1.0 || mode == 2.0) { gl_FragColor = vec4(coverage); } else { gl_FragColor = reel_implicit_source * coverage; }\n}\n");
             } else {
                 source
                     .push_str("gl_FragColor = reel_effect(uv, position, reel_context[4].zw);\n}\n");
@@ -98,7 +110,7 @@ void main() {
         Language::Wgsl => {
             source.push_str(
                 r#"
-struct ReelEffectContext { slots: array<vec4<f32>, 7> }
+struct ReelEffectContext { slots: array<vec4<f32>, 9> }
 @group(0) @binding(0) var reel_source: texture_2d<f32>;
 @group(0) @binding(1) var reel_sampler: sampler;
 @group(0) @binding(2) var<uniform> reel_context: ReelEffectContext;
@@ -118,14 +130,31 @@ fn reel_source_sample(uv: vec2<f32>) -> vec4<f32> {
     let sampled = clamp(q, reel_context.slots[6].xy + half_texel, reel_context.slots[6].xy + reel_context.slots[6].zw - half_texel);
     return textureSampleLevel(reel_source, reel_sampler, sampled, 0.0);
 }
-struct ReelEffectVarying { @builtin(position) position: vec4<f32> }
+"#);
+            if generated.output_type == EffectType::Float {
+                source.push_str("struct ReelEffectVarying { @builtin(position) position: vec4<f32>, @location(0) implicit_source_uv: vec2<f32> }\n");
+            } else {
+                source.push_str(
+                    "struct ReelEffectVarying { @builtin(position) position: vec4<f32> }\n",
+                );
+            }
+            source.push_str(
+                r#"
 @vertex fn vertex(@builtin(vertex_index) i: u32) -> ReelEffectVarying {
     let uv = vec2(f32((i << 1u) & 2u), f32(i & 2u));
     var out: ReelEffectVarying;
     out.position = vec4(uv * vec2(2.0, -2.0) + vec2(-1.0, 1.0), 0.0, 1.0);
+"#,
+            );
+            if generated.output_type == EffectType::Float {
+                source.push_str("let p = vec3(uv, 1.0);\nout.implicit_source_uv = vec2(dot(reel_context.slots[7].xyz, p), dot(reel_context.slots[8].xyz, p));\n");
+            }
+            source.push_str(
+                r#"
     return out;
 }
-"#);
+"#,
+            );
             source.push_str(&texture_functions(
                 program,
                 language,
@@ -133,8 +162,13 @@ struct ReelEffectVarying { @builtin(position) position: vec4<f32> }
             )?);
             source.push_str(&generated.function);
             source.push_str(
+                "\n@fragment fn fragment(v: ReelEffectVarying) -> @location(0) vec4<f32> {\n",
+            );
+            if generated.output_type == EffectType::Float {
+                source.push_str("let reel_implicit_source = textureSampleLevel(reel_source, reel_sampler, v.implicit_source_uv, 0.0);\n");
+            }
+            source.push_str(
                 r#"
-@fragment fn fragment(v: ReelEffectVarying) -> @location(0) vec4<f32> {
     let p = vec3(v.position.xy, 1.0);
     let uv = vec2(dot(reel_context.slots[0].xyz, p), dot(reel_context.slots[1].xyz, p));
     if any(uv < vec2(0.0)) || any(uv > vec2(1.0)) { discard; }
@@ -142,7 +176,7 @@ struct ReelEffectVarying { @builtin(position) position: vec4<f32> }
 "#,
             );
             if generated.output_type == EffectType::Float {
-                source.push_str("var coverage = clamp(reel_effect(uv, position, reel_context.slots[4].zw), 0.0, 1.0); if reel_context.slots[0].w != 0.0 { if reel_context.slots[0].w > 1.0 { coverage = 1.0 - coverage; } return vec4(coverage); } return reel_source_sample(uv) * coverage;\n}\n");
+                source.push_str("var coverage = clamp(reel_effect(uv, position, reel_context.slots[4].zw), 0.0, 1.0); let mode = reel_context.slots[0].w; if mode >= 2.0 { coverage = 1.0 - coverage; } if mode == 1.0 || mode == 2.0 { return vec4(coverage); } return reel_implicit_source * coverage;\n}\n");
             } else {
                 source.push_str("return reel_effect(uv, position, reel_context.slots[4].zw);\n}\n");
             }

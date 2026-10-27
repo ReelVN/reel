@@ -84,7 +84,12 @@ fn compile(
             + (count + descriptor.textures as usize) * size_of::<Option<native::Uniform>>(),
         limit,
     )?;
-    let program = programs::create_program(gpu, code).map_err(|error| GlesError::Shader {
+    let program = programs::create_program(
+        gpu,
+        code,
+        descriptor.output == reel_ui::stage::effect::EffectType::Float,
+    )
+    .map_err(|error| GlesError::Shader {
         at,
         asset: lease.version().key.0.clone(),
         source: Box::new(error),
@@ -118,8 +123,8 @@ impl Context<'_> {
     ) -> Result<Target, GlesError> {
         self.effect_draw(drawing, effect, transform, source, None, at)
     }
-    /// Evaluate a scalar definition as raw coverage using an explicit source view.
-    pub(super) fn effect_coverage(
+    /// Multiply the complete local source by scalar coverage in one pass.
+    pub(super) fn effect_mask(
         &mut self,
         drawing: &FrameDrawing,
         effect: &FrameEffect,
@@ -181,7 +186,7 @@ impl Context<'_> {
             return Ok(output);
         };
         if let Some(view) = source_view {
-            context[0][3] = if effect.coverage_invert { 2.0 } else { 1.0 };
+            context[0][3] = if effect.coverage_invert { 3.0 } else { 0.0 };
             effect_plan::map_source(&mut context, effect, transform, view, source.size);
         }
         if self.scissor.empty() {

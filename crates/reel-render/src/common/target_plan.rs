@@ -31,6 +31,9 @@ impl MaskExecution {
                         || super::mask::plan(&mask.program)
                             .and_then(|plan| plan.evaluate(&mask.program, mask.parameters))
                             .is_none()
+                            && super::mask::paired::Plan::new(&mask.program)
+                                .and_then(|plan| plan.evaluate(&mask.program, mask.parameters))
+                                .is_none()
                 })
             })
     }
@@ -112,6 +115,7 @@ impl Scratch {
 }
 struct Scope<'a> {
     defer: bool,
+    shared_source: bool,
     end_batch: bool,
     isolated: bool,
     clip: bool,
@@ -362,6 +366,7 @@ pub(crate) fn target_pixels(
                         &mut current.scopes,
                         Scope {
                             defer: false,
+                            shared_source: false,
                             end_batch: false,
                             isolated,
                             clip: isolated,
@@ -445,13 +450,14 @@ pub(crate) fn target_pixels(
                         .map_or(parent_scissor, |s| parent_scissor.intersect(s));
                         None
                     };
-                    if isolated {
+                    if isolated && batch.is_none_or(|entry| !entry.shared || entry.first) {
                         scratch.acquire(current.size, &mut reserve)?;
                     }
                     super::scopes::push_stack(
                         &mut current.scopes,
                         Scope {
                             defer: batch.is_some(),
+                            shared_source: batch.is_some_and(|entry| entry.shared),
                             end_batch: batch.is_some_and(|entry| entry.last),
                             isolated,
                             clip: group.clip.is_some(),
@@ -471,15 +477,13 @@ pub(crate) fn target_pixels(
                     }
                     let mut source = current.size;
                     if let Some(group) = scope.group.filter(|group| group.mask_effect.is_some()) {
-                        // Color effects, coverage and their product are produced
-                        // in the complete local domain before one projection.
+                        // Each effect replaces the complete local source. The
+                        // scalar mask writes its covered source in one pass.
                         if group.effect.is_some() {
                             scratch.acquire(source, &mut reserve)?;
                             scratch.release(source);
                         }
                         scratch.acquire(source, &mut reserve)?;
-                        scratch.acquire(source, &mut reserve)?;
-                        scratch.release(source);
                         scratch.release(source);
                     }
                     if let Some((transform, parent_size)) = scope.restore {
@@ -487,11 +491,13 @@ pub(crate) fn target_pixels(
                         current.size = parent_size;
                         if scope.source_view {
                             if scope.defer {
-                                super::scopes::push_stack(
-                                    &mut current.deferred,
-                                    source,
-                                    &mut reserve,
-                                )?;
+                                if !scope.shared_source || current.deferred.is_empty() {
+                                    super::scopes::push_stack(
+                                        &mut current.deferred,
+                                        source,
+                                        &mut reserve,
+                                    )?;
+                                }
                                 if scope.end_batch {
                                     for source in current.deferred.drain(..) {
                                         scratch.release(source);
@@ -500,6 +506,15 @@ pub(crate) fn target_pixels(
                             } else {
                                 scratch.release(source);
                             }
+                            continue;
+                        }
+                        if scope.group.is_some_and(|group| {
+                            super::effect_plan::direct_mask_projection(
+                                group,
+                                current.transitions_enabled && !current.drawing.transitions().is_empty(),
+                            )
+                        }) {
+                            scratch.release(source);
                             continue;
                         }
                         scratch.acquire(parent_size, &mut reserve)?;

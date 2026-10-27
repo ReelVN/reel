@@ -148,6 +148,7 @@ pub(crate) enum DirectPaint {
     RegionalRgba,
     RegionalBc1,
     RegionalBc3,
+    Coverage,
 }
 /// Fixed image shaders whose samples and interpolated vertex alpha are opaque.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -266,6 +267,12 @@ impl Allocation {
     }
 }
 impl Mesh {
+    /// Solid glyph color uses the atlas's linear coverage channel directly.
+    /// Gradient or adjusted brushes retain their existing color operations.
+    pub(crate) fn direct_coverage(&self, appearance: Option<&[[f32; 4]; 9]>) -> Option<DirectPaint> {
+        (self.direct_paint([false; 2], appearance, None) == Some(DirectPaint::Rgba))
+            .then_some(DirectPaint::Coverage)
+    }
     /// Prove opacity after clipping and before batching. Vertex alpha includes
     /// authored opacity and analytic edge coverage; multisample coverage stays
     /// with the rasterizer and remains equivalent under per-sample replacement.

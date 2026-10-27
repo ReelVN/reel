@@ -662,12 +662,12 @@ fn long_text_single_channel_atlas_submits_and_reuses_coverage() {
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
     renderer.poll().unwrap();
-    assert_eq!(renderer.pipelines.creations.snapshot(), [3, 15, 15, 15, 8]);
+    assert_eq!(renderer.pipelines.creations.snapshot(), [3, 16, 16, 16, 8]);
     let resident = renderer.usage().resources;
     assert!(resident > 0 && resident <= 2 * 512 * 512);
     assert_eq!(resident % (512 * 512), 0);
     let uploads = renderer.gpu.upload_creations.snapshot();
-    let coverage = pipelines.coverage_draws.load(Ordering::Relaxed);
+    let coverage = pipelines.direct_draws[crate::common::mesh::DirectPaint::Coverage as usize].load(Ordering::Relaxed);
     let draws = renderer.gpu.upload_creations.draws.load(Ordering::Relaxed);
     let start = Instant::now();
     for _ in 0..8 {
@@ -681,7 +681,7 @@ fn long_text_single_channel_atlas_submits_and_reuses_coverage() {
         assert_eq!(renderer.usage().resources, resident);
     }
     assert_eq!(renderer.gpu.upload_creations.snapshot(), uploads);
-    let coverage = pipelines.coverage_draws.load(Ordering::Relaxed) - coverage;
+    let coverage = pipelines.direct_draws[crate::common::mesh::DirectPaint::Coverage as usize].load(Ordering::Relaxed) - coverage;
     assert!(coverage > 0 && coverage / 8 < glyph_count / 10);
     assert_eq!(
         renderer.gpu.upload_creations.draws.load(Ordering::Relaxed) - draws,
@@ -691,6 +691,7 @@ fn long_text_single_channel_atlas_submits_and_reuses_coverage() {
         pipelines
             .direct_draws
             .iter()
+            .take(crate::common::mesh::DirectPaint::Coverage as usize)
             .all(|count| count.load(Ordering::Relaxed) == 0)
     );
     eprintln!(

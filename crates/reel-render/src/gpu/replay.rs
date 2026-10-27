@@ -43,12 +43,14 @@ pub(super) struct Context<'a> {
 }
 struct Scope<'a> {
     scheduled: Option<bool>,
+    shared_source: bool,
     target: Target,
     clip: Option<&'a Clip>,
     mask: Option<reel_ui::frame::MaskUse>,
     image_mask: Option<(&'a reel_ui::frame::FrameImageMask, Affine)>,
     effect: Option<(&'a reel_ui::frame::FrameEffect, Affine)>,
     mask_effect: Option<(&'a reel_ui::frame::FrameEffect, Affine)>,
+    direct_mask_projection: bool,
     source_parent: Option<(Affine, [u32; 2], Scissor)>,
     source_view: Option<crate::common::source_view::SourceView>,
     opacity: f32,
@@ -346,6 +348,7 @@ impl Context<'_> {
                         at,
                         Scope {
                             scheduled: None,
+                            shared_source: false,
                             target: if !isolated {
                                 current.scopes.last().target.clone()
                             } else {
@@ -357,6 +360,7 @@ impl Context<'_> {
                             image_mask: None,
                             effect: None,
                             mask_effect: None,
+                            direct_mask_projection: false,
                             source_parent: None,
                             source_view: None,
                             opacity: 1.,
@@ -479,7 +483,10 @@ impl Context<'_> {
                         at,
                         Scope {
                             scheduled: batch.map(|entry| entry.last),
-                            target: if isolated {
+                            shared_source: batch.is_some_and(|entry| entry.shared),
+                            target: if batch.is_some_and(|entry| entry.shared && !entry.first) {
+                                current.deferred.last().expect("active source atlas").source.clone()
+                            } else if isolated {
                                 self.target()?
                             } else {
                                 current.scopes.last().target.clone()
@@ -497,6 +504,10 @@ impl Context<'_> {
                                 .mask_effect
                                 .as_ref()
                                 .map(|effect| (effect, transform * group.effect_to_target)),
+                            direct_mask_projection: crate::common::effect_plan::direct_mask_projection(
+                                group,
+                                current.transitions_enabled && !current.drawing.transitions().is_empty(),
+                            ),
                             image_mask: group
                                 .image_mask
                                 .as_ref()
@@ -542,7 +553,7 @@ impl Context<'_> {
                             self.recycle_target(source)?;
                             source = processed;
                         }
-                        let mask = self.effect_coverage(
+                        let covered = self.effect_mask(
                             current.drawing,
                             coverage,
                             view.parent_to_source * to_parent,
@@ -550,17 +561,7 @@ impl Context<'_> {
                             Affine::IDENTITY,
                             entry.at,
                         )?;
-                        let covered = self.target()?;
-                        self.combine(
-                            &covered,
-                            &source.view,
-                            &mask.view,
-                            1.,
-                            0.,
-                            CompositeOperation::AlphaMask,
-                        )?;
                         self.recycle_target(source)?;
-                        self.recycle_target(mask)?;
                         source = covered;
                     }
                     if let Some((outer, size, _)) = group.source_parent {
@@ -595,8 +596,10 @@ impl Context<'_> {
                             if last {
                                 let mut pending = std::mem::take(&mut current.deferred);
                                 self.combine_views(&current.scopes.last().target, &pending)?;
-                                for item in pending.drain(..) {
-                                    self.recycle_target(item.source)?;
+                                for (index, item) in pending.drain(..).enumerate() {
+                                    if !group.shared_source || index == 0 {
+                                        self.recycle_target(item.source)?;
+                                    }
                                 }
                                 current.deferred = pending;
                             }
@@ -613,8 +616,19 @@ impl Context<'_> {
                         continue;
                     }
                     if let Some(view) = group.source_view.filter(|_| group.mask_effect.is_some()) {
+                        if group.direct_mask_projection {
+                            self.project_source(
+                                &current.scopes.last().target,
+                                &source,
+                                view.parent_to_source,
+                                group.opacity,
+                                entry.at,
+                            )?;
+                            self.recycle_target(source)?;
+                            continue;
+                        }
                         let projected = self.target()?;
-                        self.project_source(&projected, &source, view.parent_to_source, entry.at)?;
+                        self.project_source(&projected, &source, view.parent_to_source, 1., entry.at)?;
                         self.recycle_target(source)?;
                         source = projected;
                     } else if let Some((effect, transform)) = group.effect {
@@ -794,6 +808,7 @@ impl Context<'_> {
             transform,
             scopes: Scopes::new(Scope {
                 scheduled: None,
+                shared_source: false,
                 target: self.target()?,
                 mesh_clip: None,
                 clip: None,
@@ -801,6 +816,7 @@ impl Context<'_> {
                 image_mask: None,
                 effect: None,
                 mask_effect: None,
+                direct_mask_projection: false,
                 source_parent: None,
                 source_view: None,
                 opacity: 1.,

@@ -39,6 +39,7 @@ fn main() -> io::Result<()> {
     let effects = [
         "crates/reel-cli/src/prepare_effects.rs",
         "crates/reel-render/src/common/effect.rs",
+        "crates/reel-render/src/gles2/shaders/effect_vertex.glsl",
         "crates/reel-ui/src/resources/effect.rs",
         "crates/reel-ui/src/stage/effect.rs",
     ];

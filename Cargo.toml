@@ -12,7 +12,7 @@ unsafe_code = "forbid"
 
 [workspace.dependencies]
 reel-ui = { path = "crates/reel-ui", default-features = false }
-pvr-psp2-sys = { git = "https://github.com/jhq223/pvr-psp2-sys.git", rev = "8673f386276530f79fa27f360de82a5915ee7b10", default-features = false }
+pvr-psp2-sys = { git = "https://github.com/jhq223/pvr-psp2-sys.git", rev = "5b6acc5bfb0675f707666caf7090c52c34e2e07a", default-features = false }
 
 anymore = "=1.0.0"
 imaging = "=0.0.1"

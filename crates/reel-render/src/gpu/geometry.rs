@@ -57,11 +57,13 @@ impl Cache {
         budgets: &Budgets,
         local: &Budgets,
         mesh: &mesh::Mesh,
+        indices: &crate::common::indices::Upload<'_, super::renderer::Reservation>,
         policy: &UploadPolicy,
     ) -> Result<(Storage, BudgetTicket), GpuError> {
         let requested = Capacity {
             vertices: std::mem::size_of_val(mesh.vertices.as_slice()) as u64,
-            indices: std::mem::size_of_val(mesh.indices.as_slice()) as u64,
+            indices: indices.bytes().len() as u64,
+            index_format: indices.format(),
         };
         let mut pool = self.0.lock().unwrap();
         if policy.reuse
@@ -151,7 +153,7 @@ impl Cache {
                 gpu.device
                     .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                         label: Some("reel indices"),
-                        contents: bytemuck::cast_slice(&mesh.indices),
+                        contents: indices.bytes(),
                         usage: wgpu::BufferUsages::INDEX,
                     }),
                 None,
@@ -201,12 +203,12 @@ impl Buffers {
         encoder: &mut wgpu::CommandEncoder,
         capacity: Capacity,
         mesh: &mesh::Mesh,
+        indices: &[u8],
     ) -> Result<(), GpuError> {
         let Some(staging) = &self.staging else {
             return Ok(());
         };
         let vertices = bytemuck::cast_slice(&mesh.vertices);
-        let indices = bytemuck::cast_slice(&mesh.indices);
         {
             let mut mapping = staging
                 .slice(..)

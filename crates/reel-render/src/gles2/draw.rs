@@ -294,6 +294,7 @@ impl Context<'_> {
         target: &Target,
         source: &Target,
         parent_to_source: Affine,
+        opacity: f32,
         at: RecordLocation,
     ) -> Result<(), GlesError> {
         if parent_to_source.determinant() == 0. {
@@ -310,7 +311,7 @@ impl Context<'_> {
             &mut mesh,
             parent_to_source.inverse(),
             self.size,
-            [1.; 4],
+            [opacity; 4],
             at,
         )?;
         self.paint_mesh(
@@ -556,6 +557,11 @@ impl Context<'_> {
             return Ok(0);
         }
         let image = self.image_resource(first_brush.image.resource, first.origin.at)?;
+        let source = image
+            .source
+            .as_ref()
+            .and_then(|source| source.lease.upgrade());
+        let coverage = source.as_ref().and_then(|source| source.image_coverage());
         let repeat = [
             first_brush.sampler.x_extend == Extend::Repeat,
             first_brush.sampler.y_extend == Extend::Repeat,
@@ -587,24 +593,35 @@ impl Context<'_> {
             {
                 break;
             }
-            mesh.image_quad(
+            for bounds in crate::common::image_coverage::quads(
                 *rect,
+                brush,
+                brush_transform.unwrap_or(Affine::IDENTITY),
                 outer * *transform,
-                image.uv_transform() * brush_transform.unwrap_or(Affine::IDENTITY),
-                self.size,
-                mesh::ImagePaint {
-                    color: brush
-                        .image
-                        .color
-                        .map(|c| c * composite.alpha * brush.sampler.alpha),
-                    sampling: mesh::ImageSampling::with_layout(
-                        brush.image.source_rect,
-                        image.layout,
-                        repeat,
-                    ),
-                },
-                command.origin.at,
-            )?;
+                image.layout,
+                coverage,
+            )
+            .iter()
+            {
+                mesh.image_quad(
+                    bounds,
+                    outer * *transform,
+                    image.uv_transform() * brush_transform.unwrap_or(Affine::IDENTITY),
+                    self.size,
+                    mesh::ImagePaint {
+                        color: brush
+                            .image
+                            .color
+                            .map(|c| c * composite.alpha * brush.sampler.alpha),
+                        sampling: mesh::ImageSampling::with_layout(
+                            brush.image.source_rect,
+                            image.layout,
+                            repeat,
+                        ),
+                    },
+                    command.origin.at,
+                )?;
+            }
             count += 1;
         }
         if count != 0 {
@@ -807,9 +824,13 @@ impl Context<'_> {
         {
             self.flush_draws()?;
         }
-        let direct = (kind == 0. && !coverage)
-            .then(|| mesh.direct_paint(repeat, Some(&appearance), format))
-            .flatten();
+        let direct = if coverage {
+            mesh.direct_coverage(Some(&appearance))
+        } else {
+            (kind == 0.)
+                .then(|| mesh.direct_paint(repeat, Some(&appearance), format))
+                .flatten()
+        };
         let state = PaintState {
             direct,
             opaque: mesh.opaque_paint(direct),
@@ -846,6 +867,10 @@ impl Context<'_> {
             return Ok(());
         }
         self.ensure_target(&batch.target)?;
+        let packed_indices = crate::common::indices::Upload::new(mesh, |bytes| {
+            crate::common::renderer::reserve(&self.budgets.transient,
+                &self.budget_scope.transient, bytes, self.limits.transient_bytes, "index packing")
+        })?;
         let (storage, local, created) = super::geometry::acquire(
             self.geometry_cache,
             self.gpu,
@@ -853,6 +878,7 @@ impl Context<'_> {
             &self.budget_scope,
             self.limits,
             mesh,
+            &packed_indices,
         )?;
         self.tickets.push(crate::common::renderer::Reservation {
             _shared: None,
@@ -867,8 +893,12 @@ impl Context<'_> {
         if !created {
             self.gpu
                 .update_vertices(&mut storage.vertices, bytemuck::cast_slice(&mesh.vertices))?;
-            self.gpu
-                .update_indices(&mut storage.indices, &mesh.indices)?;
+            match &packed_indices {
+                crate::common::indices::Upload::Narrow { values, .. } =>
+                    self.gpu.update_indices_u16(&mut storage.indices, values)?,
+                crate::common::indices::Upload::Wide(values) =>
+                    self.gpu.update_indices(&mut storage.indices, values)?,
+            }
         }
         let vertices = &storage.vertices;
         let indices = &storage.indices;

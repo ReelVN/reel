@@ -68,7 +68,7 @@ const NAMES: &[&str] = &[
 pub(super) type Values<'a> = SmallVec<[UniformValue<'a>; 24]>;
 pub(super) struct Shader {
     pub program: Program,
-    uniforms: Vec<Option<Uniform>>,
+    uniforms: [Option<Uniform>; NAMES.len()],
 }
 impl Shader {
     fn new(context: &native::Context, fragment: ShaderCode<'_>) -> Result<Self, GlesError> {
@@ -80,7 +80,7 @@ impl Shader {
         fragment: ShaderCode<'_>,
     ) -> Result<Self, GlesError> {
         let program = create_program_with_vertex(context, vertex, fragment)?;
-        let uniforms = NAMES.iter().map(|name| program.uniform(name)).collect();
+        let uniforms = std::array::from_fn(|index| program.uniform(NAMES[index]));
         Ok(Self { program, uniforms })
     }
     fn uniform(&self, name: &str) -> Option<&Uniform> {
@@ -110,8 +110,9 @@ impl Shader {
 pub(super) fn create_program(
     context: &native::Context,
     fragment: ShaderCode<'_>,
+    implicit_source: bool,
 ) -> Result<Program, GlesError> {
-    create_program_with_vertex(context, shader_code!("vertex"), fragment)
+    create_program_with_vertex(context, if implicit_source { shader_code!("effect_vertex") } else { shader_code!("vertex") }, fragment)
 }
 fn create_program_with_vertex(
     context: &native::Context,
@@ -144,7 +145,7 @@ fn create_program_with_vertex(
 }
 pub(super) struct Programs {
     pub rgba: Shader,
-    pub direct: [Shader; 6],
+    pub direct: [Shader; 7],
     pub coverage: Shader,
     pub gradient: Shader,
     pub glyph_gradient: Shader,
@@ -167,6 +168,8 @@ pub(super) struct Programs {
     pub mask_threshold: Shader,
     pub mask_sample_chain_composite: Shader,
     pub mask_threshold_composite: Shader,
+    pub mask_paired: [Shader; 4],
+    pub mask_paired_composite: [Shader; 4],
     pub present: Shader,
     pub vertices: VertexBuffer,
     pub indices: IndexBuffer,
@@ -175,9 +178,8 @@ pub(super) struct Programs {
 impl Programs {
     pub fn new(context: &native::Context, budget: &BudgetPool) -> Result<Self, GlesError> {
         let bytes = (size_of::<Self>()
-            + NAMES.len() * size_of::<Option<Uniform>>() * 30
             + 4 * size_of::<crate::common::mesh::Vertex>()
-            + 6 * 4) as u64;
+            + 6 * 2) as u64;
         let storage = budget
             .reserve(bytes)
             .map_err(|e| GlesError::Device(e.message))?;
@@ -203,6 +205,7 @@ impl Programs {
                 Shader::new(context, shader_code!("paint_regional"))?,
                 Shader::new(context, shader_code!("paint_regional_bc1"))?,
                 Shader::new(context, shader_code!("paint_regional_bc3"))?,
+                Shader::new(context, shader_code!("paint_direct_coverage"))?,
             ],
             coverage: Shader::new(context, shader_code!("paint_coverage"))?,
             gradient: Shader::new(context, shader_code!("paint_gradient"))?,
@@ -244,9 +247,21 @@ impl Programs {
                 context,
                 shader_code!("mask_threshold_composite"),
             )?,
+            mask_paired: [
+                Shader::new(context, shader_code!("mask_paired_aa"))?,
+                Shader::new(context, shader_code!("mask_paired_ag"))?,
+                Shader::new(context, shader_code!("mask_paired_ga"))?,
+                Shader::new(context, shader_code!("mask_paired_gg"))?,
+            ],
+            mask_paired_composite: [
+                Shader::new(context, shader_code!("mask_paired_aa_composite"))?,
+                Shader::new(context, shader_code!("mask_paired_ag_composite"))?,
+                Shader::new(context, shader_code!("mask_paired_ga_composite"))?,
+                Shader::new(context, shader_code!("mask_paired_gg_composite"))?,
+            ],
             present: Shader::new(context, shader_code!("present"))?,
             vertices: context.vertex_buffer(bytemuck::cast_slice(&data), 12, &attributes)?,
-            indices: context.index_buffer(&[0, 1, 2, 0, 2, 3])?,
+            indices: context.index_buffer_u16(&[0, 1, 2, 0, 2, 3])?,
             _storage: storage,
         })
     }

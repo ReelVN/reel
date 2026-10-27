@@ -34,6 +34,132 @@ impl crate::common::glyph_plan::Prepare for NoGlyphs {
 }
 
 #[test]
+fn scalar_masks_keep_two_local_sources_and_project_plain_groups_into_the_parent() {
+    use reel_core::budget::OwnedBytes;
+    use reel_core::identity::{AssetKey, ContentVersion, ResourceVersion};
+    use reel_ui::{
+        core::PaintEffect,
+        resources::{EffectShaderDescriptor, EffectShaderFormat, ResourceRegistry},
+        stage::effect::*,
+    };
+    let size = [160, 120];
+    let pool = r01_fixture::pool();
+    let program = EffectProgram::new(
+        vec![],
+        vec![EffectNode {
+            ty: EffectType::Float,
+            op: EffectOp::Constant(EffectValue::Float(0.5_f32.to_bits())),
+        }],
+        EffectNodeId(0),
+    )
+    .unwrap();
+    let fragment =
+        crate::effect::compile_fragment(&program, crate::effect::Language::GlslEs100, 16384)
+            .unwrap();
+    let descriptor = EffectShaderDescriptor::with_textures(
+        [3; 32],
+        EffectShaderFormat::GlslEs100,
+        vec![],
+        0,
+        true,
+        EffectType::Float,
+        fragment.source.as_bytes(),
+    )
+    .unwrap();
+    let mut registry = ResourceRegistry::new(1, 16384).unwrap();
+    let handle = registry
+        .register_effect_shader(
+            ResourceVersion {
+                key: AssetKey("effect-mask".into()),
+                version: ContentVersion(descriptor.shader_key),
+            },
+            descriptor,
+            OwnedBytes::new(
+                fragment.source.clone().into_bytes(),
+                pool.reserve(fragment.source.len() as u64).unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let paint = PaintEffect {
+        instance: EffectInstance::new([3; 32], program, vec![]).unwrap(),
+        shader: registry.acquire(handle).unwrap(),
+        images: vec![],
+        bounds: Rect::new(0., 0., 240., 80.),
+        coverage_invert: true,
+    };
+    for (clip, invert, target_count) in [(false, 0., 3), (false, 0.5, 4), (true, 0., 5)] {
+        for color_effect in [false, true] {
+            let mut scene = Scene::new();
+            scene.draw(Draw::Fill {
+                transform: Affine::IDENTITY,
+                fill_rule: Default::default(),
+                brush: Brush::Solid(Color::WHITE),
+                brush_transform: None,
+                shape: Geometry::Rect(Rect::new(0., 0., 240., 80.)),
+                composite: Default::default(),
+            });
+            let mut widget = r01_fixture::RecordWidget::new(scene);
+            widget.clip = clip;
+            widget.inner.clip = Rect::new(0., 0., 80., 70.);
+            widget.opacity = 0.75;
+            widget.invert = invert;
+            widget.mask_effect = Some(paint.clone());
+            widget.effect = color_effect.then(|| paint.clone());
+            let mut bridge = r01_fixture::widget_bridge(
+                widget,
+                Affine::translate((-40., -18.)) * Affine::rotate(0.1),
+            );
+            let mut build = FrameBuild::new(
+                bridge.record(FrameId(1)).unwrap(),
+                registry.freeze(&[handle], &pool).unwrap(),
+                FrameInfo {
+                    logical_size: size.map(f64::from),
+                    physical_size: size,
+                },
+                r01_fixture::limits(),
+                &pool,
+            )
+            .unwrap();
+            while !build.step(r01_fixture::step_budget()).unwrap().complete {}
+            let frame = build.finish().unwrap();
+            for masks in [MaskExecution::Inline, MaskExecution::Sampled] {
+                let pixels = target_pixels(
+                    &frame,
+                    None,
+                    size,
+                    false,
+                    1,
+                    4096,
+                    &crate::common::glyph_plan::Plan::default(),
+                    &offscreen::Plan::default(),
+                    masks,
+                    |_| Ok(()),
+                )
+                .unwrap();
+                assert_eq!(
+                    pixels,
+                    target_count * 160 * 120,
+                    "clip={clip}, invert={invert}, color={color_effect}"
+                );
+            }
+            let group = frame
+                .commands()
+                .iter()
+                .find_map(|command| match &command.op {
+                    FrameOp::PushGroup(group) if group.mask_effect.is_some() => Some(group),
+                    _ => None,
+                })
+                .unwrap();
+            assert!(
+                !crate::common::effect_plan::direct_mask_projection(group, true),
+                "retained transition dependencies retain projection storage"
+            );
+        }
+    }
+}
+
+#[test]
 fn finite_group_admission_matches_clipped_physical_storage_for_every_sample_tier() {
     let size = [960, 544];
     let pool = r01_fixture::pool();
@@ -276,6 +402,66 @@ fn root_draws_delimit_batches_and_capture_exclusions_keep_their_own_stream() {
     .unwrap();
     assert!(schedule.is_empty());
     assert_eq!(pixels, 960 * 544);
+}
+
+#[test]
+fn atlas_regions_preserve_parent_samples_and_share_one_accounted_surface() {
+    let frame = sibling_frame(false, false);
+    let (plan, pixels, _) = offscreen::Plan::choose(
+        &frame,
+        None,
+        [960, 544],
+        false,
+        1,
+        4096,
+        &crate::common::glyph_plan::Plan::default(),
+        u64::MAX,
+        MaskExecution::Inline,
+        |_| Ok(()),
+    )
+    .unwrap();
+    let entries: Vec<_> = (0..frame.commands().len())
+        .filter_map(|i| plan.entry(i))
+        .collect();
+    assert_eq!(entries.len(), 8);
+    assert_eq!(entries.iter().filter(|e| e.first).count(), 1);
+    assert_eq!(entries.iter().filter(|e| e.last).count(), 1);
+    let size = entries[0].view.storage_size;
+    assert_eq!(size, [128, 544]);
+    assert_eq!(pixels, 960 * 544 + u64::from(size[0]) * u64::from(size[1]));
+    for (index, entry) in entries.iter().enumerate() {
+        assert!(entry.shared);
+        assert_eq!(entry.view.storage_size, size);
+        let rect = entry.view.source_rect;
+        assert!(rect.x > 0 && rect.y > 0);
+        assert!(rect.x + rect.width < size[0] && rect.y + rect.height < size[1]);
+        for other in &entries[..index] {
+            assert!(rect.intersect(other.view.source_rect).empty());
+        }
+        let origin = entry.view.origin();
+        let uv = crate::common::source_view::uv_mapping([960, 544], size, origin);
+        for (x, y) in [
+            (0.5, 0.5),
+            (f64::from(rect.width) - 0.5, f64::from(rect.height) - 0.5),
+        ] {
+            let parent = reel_ui::kurbo::Point::new(
+                f64::from(entry.view.parent_rect.x) + x,
+                f64::from(entry.view.parent_rect.y) + y,
+            );
+            let source = entry.view.parent_to_source * parent;
+            assert_eq!(source.x, f64::from(rect.x) + x);
+            assert_eq!(source.y, f64::from(rect.y) + y);
+            for (axis, (p, s)) in [(parent.x, source.x), (parent.y, source.y)]
+                .into_iter()
+                .enumerate()
+            {
+                let sampled =
+                    (p as f32 / [960., 544.][axis] * uv[axis] + uv[axis + 2]) * size[axis] as f32;
+                assert!((sampled - s as f32).abs() < 0.0001);
+            }
+        }
+    }
+    assert!(entries.iter().any(|e| e.view.origin()[1] < 0));
 }
 
 #[test]

@@ -14,7 +14,10 @@ use reel_ui::{
 #[derive(Clone, Copy)]
 pub(crate) struct Entry {
     pub push: usize,
+    pub first: bool,
     pub last: bool,
+    pub shared: bool,
+    source_size: [u32; 2],
     pub view: SourceView,
 }
 
@@ -74,11 +77,13 @@ impl Plan {
             (Self::default(), Vec::new())
         };
         let mut width = 8;
+        let mut shared = true;
         loop {
             if plan.is_empty() {
                 plan = Self::default();
                 retained.clear();
             }
+            plan.pack(max_dimension, shared);
             let mut traversal = Vec::new();
             let pixels = super::target_plan::target_pixels(
                 frame,
@@ -99,8 +104,37 @@ impl Plan {
             if pixels <= pixel_limit || plan.is_empty() {
                 return Ok((plan, pixels, retained));
             }
+            if shared && plan.entries.iter().any(|entry| entry.shared) {
+                shared = false;
+                continue;
+            }
             width /= 2;
             plan.narrow(width);
+            shared = true;
+        }
+    }
+
+    /// Pack independent sources into disjoint physical regions. A transparent
+    /// texel surrounds each region; sampling preserves the original pixel grid.
+    fn pack(&mut self, max_dimension: u32, shared: bool) {
+        let mut start = 0;
+        for end in 0..self.entries.len() {
+            if !self.entries[end].last {
+                continue;
+            }
+            let entries = &mut self.entries[start..=end];
+            for (index, entry) in entries.iter_mut().enumerate() {
+                entry.first = index == 0;
+                entry.shared = false;
+                entry.view = entry.view.placed(entry.source_size, [0; 2]);
+            }
+            if shared && let Some((size, offsets)) = atlas(entries, max_dimension) {
+                for (entry, offset) in entries.iter_mut().zip(offsets) {
+                    entry.shared = true;
+                    entry.view = entry.view.placed(size, offset);
+                }
+            }
+            start = end + 1;
         }
     }
 
@@ -195,7 +229,7 @@ impl Plan {
                         match &command.op {
                             FrameOp::PushGroup(_) => {
                                 depth += 1;
-                                leaf = false;
+                                leaf &= groups.can_inline(end);
                             }
                             FrameOp::PopGroup => {
                                 depth -= 1;
@@ -241,7 +275,10 @@ impl Plan {
                             &mut entries,
                             Entry {
                                 push: next,
+                                first: false,
                                 last: false,
+                                shared: false,
+                                source_size: view.storage_size,
                                 view,
                             },
                             |bytes| {
@@ -285,6 +322,54 @@ impl Plan {
         finish_run(&mut entries, &mut run_start);
         Ok((Self { entries }, retained))
     }
+}
+
+/// Enumerate the eight possible shelf widths without heap scratch. Only the
+/// complete allocation is bucketed; each source retains a transparent border.
+fn atlas(entries: &[Entry], max_dimension: u32) -> Option<([u32; 2], [[u32; 2]; 8])> {
+    let mut sizes = [[0u32; 2]; 8];
+    for (size, entry) in sizes.iter_mut().zip(entries) {
+        *size = [entry.view.parent_rect.width, entry.view.parent_rect.height]
+            .map(|value| value + 2);
+    }
+    let sizes = &sizes[..entries.len()];
+    let mut best = None;
+    // The widest individual footprint must fit in every candidate shelf.
+    let minimum = sizes.iter().map(|s| s[0]).max()?;
+    let mut width = 0;
+    for size in sizes {
+        width += size[0];
+        let limit = width.max(minimum).min(max_dimension);
+        let (mut x, mut y, mut row, mut used) = (0, 0, 0, 0);
+        let mut offsets = [[0; 2]; 8];
+        let mut fits = true;
+        for (index, &[w, h]) in sizes.iter().enumerate() {
+            if w > limit {
+                fits = false;
+                break;
+            }
+            if x + w > limit {
+                y += row;
+                x = 0;
+                row = 0;
+            }
+            offsets[index] = [x + 1, y + 1];
+            x += w;
+            row = row.max(h);
+            used = used.max(x);
+        }
+        let size = [used, y + row].map(|value| value.div_ceil(32) * 32);
+        if fits && size.into_iter().all(|value| value <= max_dimension) {
+            let pixels = u64::from(size[0]) * u64::from(size[1]);
+            if best.as_ref().is_none_or(|(old, _): &([u32; 2], _)| {
+                (pixels, size[0].max(size[1]))
+                    < (u64::from(old[0]) * u64::from(old[1]), old[0].max(old[1]))
+            }) {
+                best = Some((size, offsets));
+            }
+        }
+    }
+    best
 }
 
 fn finish_run(entries: &mut Vec<Entry>, start: &mut usize) {

@@ -7,7 +7,7 @@ use reel_ui::{
 
 /// Map normalized parent coordinates to a translated source's storage.
 /// Both backends interpolate this affine mapping before fragment sampling.
-pub(crate) fn uv_mapping(parent: [u32; 2], source: [u32; 2], origin: [u32; 2]) -> [f32; 4] {
+pub(crate) fn uv_mapping(parent: [u32; 2], source: [u32; 2], origin: [i32; 2]) -> [f32; 4] {
     [
         parent[0] as f32 / source[0] as f32,
         parent[1] as f32 / source[1] as f32,
@@ -97,8 +97,20 @@ impl SourceView {
         }
     }
 
-    pub fn origin(self) -> [u32; 2] {
-        [self.parent_rect.x, self.parent_rect.y]
+    pub fn origin(self) -> [i32; 2] {
+        [
+            self.parent_rect.x as i32 - self.source_rect.x as i32,
+            self.parent_rect.y as i32 - self.source_rect.y as i32,
+        ]
+    }
+
+    pub fn placed(mut self, storage_size: [u32; 2], offset: [u32; 2]) -> Self {
+        self.storage_size = storage_size;
+        self.source_rect.x = offset[0];
+        self.source_rect.y = offset[1];
+        let origin = self.origin();
+        self.parent_to_source = Affine::translate((-f64::from(origin[0]), -f64::from(origin[1])));
+        self
     }
 }
 

@@ -23,6 +23,7 @@ fn compile_shaders() {
     for (name, stage) in [
         ("vertex", Stage::Vertex),
         ("composite_vertex", Stage::Vertex),
+        ("effect_vertex", Stage::Vertex),
         ("composite", Stage::Fragment),
         ("mask", Stage::Fragment),
         ("present", Stage::Fragment),
@@ -88,6 +89,25 @@ fn compile_shaders() {
         shaders.push((name.into(), Stage::Fragment, split.replacen("#version 100", &format!("#version 100\n#define REEL_MASK_FETCHES {fetches}\n#define REEL_MASK_MATH {math}{alpha}"), 1)));
     }
     println!("cargo:rerun-if-changed=src/gles2/shaders/mask_sample.glsl");
+    println!("cargo:rerun-if-changed=src/gles2/shaders/mask_paired.glsl");
+    let paired = std::fs::read_to_string("src/gles2/shaders/mask_paired.glsl")
+        .expect("read paired mask template");
+    for (channels, defines) in [
+        ("aa", ""),
+        ("ag", "\n#define REEL_MASK_SECOND_GRAY"),
+        ("ga", "\n#define REEL_MASK_FIRST_GRAY"),
+        ("gg", "\n#define REEL_MASK_FIRST_GRAY\n#define REEL_MASK_SECOND_GRAY"),
+    ] {
+        for composite in [false, true] {
+            let suffix = if composite { "_composite" } else { "" };
+            let composite = if composite { "\n#define REEL_MASK_COMPOSITE" } else { "" };
+            shaders.push((
+                format!("mask_paired_{channels}{suffix}"),
+                Stage::Fragment,
+                paired.replacen("#version 100", &format!("#version 100{defines}{composite}"), 1),
+            ));
+        }
+    }
     let mask_sample = std::fs::read_to_string("src/gles2/shaders/mask_sample.glsl")
         .expect("read simple mask template");
     shaders.push((
@@ -127,6 +147,7 @@ fn compile_shaders() {
         ("paint_regional", 0, true),
         ("paint_regional_bc1", 1, true),
         ("paint_regional_bc3", 2, true),
+        ("paint_direct_coverage", 3, false),
     ] {
         let regional = if regional {
             "\n#define REEL_REGIONAL"
