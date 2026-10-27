@@ -130,7 +130,7 @@ impl<K: Keyboard> TextInput<K> {
         let mut events = Vec::new();
         if let Some((units, caret, composing)) = update.text {
             let prefix = usize::from(units.first() == Some(&1));
-            let caret = (caret as usize).checked_sub(prefix).unwrap_or(0);
+            let caret = (caret as usize).saturating_sub(prefix);
             let units = &units[prefix..];
             if caret > units.len() {
                 return Err("system keyboard caret exceeds its text".into());

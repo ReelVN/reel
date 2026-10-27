@@ -280,10 +280,12 @@ impl Launcher {
                 }
             }
         }
-        if self.loading_presented && self.error.is_none() && self.worker.is_idle() {
-            if let Some(game) = &self.loading {
-                self.outcome = Some(Outcome::Launch(game.package.clone()));
-            }
+        if self.loading_presented
+            && self.error.is_none()
+            && self.worker.is_idle()
+            && let Some(game) = &self.loading
+        {
+            self.outcome = Some(Outcome::Launch(game.package.clone()));
         }
         Ok(())
     }
@@ -292,12 +294,12 @@ impl Launcher {
         bridge: &PresentationBridge,
         frame: &crate::session::RecordedProjection,
     ) {
-        if self.ui.presented(bridge, frame) && self.loading.is_some() {
+        if self.ui.presented(bridge, frame)
+            && let Some(game) = &self.loading
+        {
             self.loading_presented = true;
             if self.worker.is_idle() && self.error.is_none() {
-                self.outcome = Some(Outcome::Launch(
-                    self.loading.as_ref().unwrap().package.clone(),
-                ));
+                self.outcome = Some(Outcome::Launch(game.package.clone()));
             }
         }
     }

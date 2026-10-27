@@ -18,6 +18,10 @@ pub enum WindowCommand {
         target: NodeId,
         visibility: FocusVisibility,
     },
+    /// Clear navigation focus within the owner's accepted input scope.
+    ClearFocus {
+        owner: Option<NodeId>,
+    },
 }
 pub enum WindowReply {
     Configured(Arc<WindowInfo>),
@@ -200,7 +204,7 @@ impl SessionVm {
         }
         let args = self.vm.host_arguments(ticket)?;
         if symbol == "reel::stage::focus" {
-            let target = self.stage.id(self.vm.heap(), args[0])?;
+            let target = args[0];
             let visibility = match text::read_string(self.vm.heap(), args[2], 16)?.as_str() {
                 "show" => FocusVisibility::Show,
                 "preserve" => FocusVisibility::Preserve,
@@ -216,7 +220,25 @@ impl SessionVm {
                 args[1]
             };
             super::scopes::validate_owner(self.vm.heap(), &self.stage, owner)?;
-            self.submit_window(ticket, WindowCommand::Focus { target, visibility }, owner)?;
+            let command = if target.tag() == ValueTag::Null {
+                let mut anchor = owner;
+                while super::scopes::is_scope(self.vm.heap(), anchor) {
+                    anchor = self.vm.heap().host_payload(anchor, 1)?;
+                }
+                WindowCommand::ClearFocus {
+                    owner: if anchor.tag() == ValueTag::Null {
+                        self.stage.scene.root()
+                    } else {
+                        Some(self.stage.id(self.vm.heap(), anchor)?)
+                    },
+                }
+            } else {
+                WindowCommand::Focus {
+                    target: self.stage.id(self.vm.heap(), target)?,
+                    visibility,
+                }
+            };
+            self.submit_window(ticket, command, owner)?;
             return Ok(());
         }
         if symbol == "reel::stage::move_pointer" {
@@ -289,7 +311,10 @@ impl SessionVm {
         command: WindowCommand,
         owner: Value,
     ) -> Result<(), AdapterError> {
-        let result = if matches!(command, WindowCommand::Focus { .. }) {
+        let result = if matches!(
+            command,
+            WindowCommand::Focus { .. } | WindowCommand::ClearFocus { .. }
+        ) {
             self.results.create_focus(&mut self.vm, owner)?
         } else {
             self.results.create_window(&mut self.vm, owner)?
@@ -306,12 +331,14 @@ impl SessionVm {
             self.issued = None;
             return Ok(());
         }
-        let presentation = if let WindowCommand::Focus { target, .. } = command {
-            let target = self.stage.value(self.vm.heap(), target)?;
-            results::attach(self.vm.heap_mut(), result, target)?;
-            Some(self.results.request_presentation()?)
-        } else {
-            None
+        let presentation = match command {
+            WindowCommand::Focus { target, .. } => {
+                let target = self.stage.value(self.vm.heap(), target)?;
+                results::attach(self.vm.heap_mut(), result, target)?;
+                Some(self.results.request_presentation()?)
+            }
+            WindowCommand::ClearFocus { .. } => Some(self.results.request_presentation()?),
+            _ => None,
         };
         let root = self
             .vm
@@ -334,13 +361,18 @@ impl SessionVm {
         self.issued = None;
         Ok(())
     }
-    pub fn take_window_request(&mut self) -> Result<Option<WindowRequest>, AdapterError> {
+    /// Claim ready work. Focus also requires current accepted host geometry,
+    /// which may have been invalidated by a resize after its script barrier.
+    pub fn take_window_request(
+        &mut self,
+        presentation_available: bool,
+    ) -> Result<Option<WindowRequest>, AdapterError> {
         self.maintain_window_result()?;
         let Some(pending) = self.window.pending.as_mut().filter(|pending| {
             !pending.claimed
-                && pending
-                    .presentation
-                    .is_none_or(|request| self.results.presentation_reached(request))
+                && pending.presentation.is_none_or(|request| {
+                    presentation_available && self.results.presentation_reached(request)
+                })
         }) else {
             return Ok(None);
         };
@@ -439,6 +471,10 @@ aside_host::native_documentation! {
         /// applied. Navigation or confirmation presses still display it normally.
         /// Owner defaults to the current scope; retirement
         /// cancels an unfinished request. Shares the bounded window-request slot.
+        /// A null target clears focus, its indicator and pending confirmation after
+        /// presentation. The owner's node anchor must belong to the current input
+        /// scope; an unanchored owner uses the stage root. Directional navigation,
+        /// Tab, pointer focus or an explicit handoff selects a control again.
         "reel::stage::focus";
     }
 }
@@ -461,7 +497,7 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
         "reel::stage::focus",
         named("reel::types::FocusOperation"),
         &[
-            ("target", named("reel::types::Node")),
+            ("target", nullable(named("reel::types::Node"))),
             ("visibility", TypeHint::String),
         ],
     );

@@ -988,7 +988,8 @@ mod editor_services {
     use serde_json::{Value, json};
     use support::Server;
 
-    const SERVICES: [&str; 8] = [
+    const SERVICES: [&str; 9] = [
+        "assets",
         "audio",
         "game",
         "localization",
@@ -1206,7 +1207,7 @@ mod editor_services {
 
     #[test]
     fn global_services_and_standard_module_aliases_hover_and_navigate_in_the_real_lsp() {
-        let source = "use std::time as clock;\nfn main(){\n game.configure(title: \"Example\", width: 960, height: 540);\n stage.replace(text(\"Hello\"));\n audio.play(\"sound.ogg\");\n localization.locale();\n saves.list();\n persistent.read(\"setting\");\n window.info();\n mask.gray(\"mask.png\");\n clock.now();\n}";
+        let source = "use std::time as clock;\nfn main(){\n game.configure(title: \"Example\", width: 960, height: 540);\n stage.replace(text(\"Hello\"));\n assets.read(\"data.bin\");\n audio.play(\"sound.ogg\");\n localization.locale();\n saves.list();\n persistent.read(\"setting\");\n window.info();\n mask.gray(\"mask.png\");\n clock.now();\n}";
         let executable = std::env::var_os("REEL_LSP_EXECUTABLE")
             .unwrap_or_else(|| env!("CARGO_BIN_EXE_reel-lsp").into());
         let mut client = Server::start(executable);

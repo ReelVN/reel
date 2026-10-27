@@ -76,7 +76,7 @@ impl CandidateGuard {
     fn retain(key: &CandidateKey) -> Option<Self> {
         key.identity
             .owners
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |owners| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |owners| {
                 (!key.identity.cancelled.load(Ordering::Acquire) && owners != 0)
                     .then(|| owners.checked_add(1))
                     .flatten()
@@ -91,7 +91,7 @@ impl Clone for CandidateGuard {
         self.key
             .identity
             .owners
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |owners| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |owners| {
                 owners.checked_add(1)
             })
             .expect("candidate guard count exhausted");
@@ -362,6 +362,10 @@ impl PresentationBridge {
         visibility: crate::input::FocusVisibility,
     ) -> bool {
         self.root.request_focus(target, visibility)
+    }
+    /// Clear author navigation focus within the owner's accepted input scope.
+    pub fn clear_focus(&mut self, owner: WidgetId) -> bool {
+        self.root.clear_focus(owner)
     }
     /// Pause input without applying disabled styles or changing widget properties.
     pub fn set_input_gates(&mut self, roots: &[WidgetId]) -> Result<(), InputBudgetExceeded> {

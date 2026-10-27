@@ -202,14 +202,14 @@ fn distribution_startup_cost() {
                 runtime.driver().adapter().vm().heap().stats()
             );
         }
-        let settled = if layout.is_none() {
-            !runtime.needs_tick() || runtime.tick_interval() > std::time::Duration::from_millis(1)
-        } else {
+        let settled = if let Some((_, _, count)) = &layout {
             !runtime.driver().adapter().activities_pending()
                 && runtime.driver().adapter().stage_ready()
-                && layout.as_ref().unwrap().2 > 0
+                && *count > 0
                 && !runtime.driver().ui().images_pending()
                 && elapsed_ms.saturating_sub(layout_last_work.1) >= 1000
+        } else {
+            !runtime.needs_tick() || runtime.tick_interval() > std::time::Duration::from_millis(1)
         };
         if elapsed_ms >= last_report + 1000 || settled || result.is_err() {
             last_report = elapsed_ms;

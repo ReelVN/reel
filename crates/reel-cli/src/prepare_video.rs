@@ -70,7 +70,7 @@ pub fn prepare(
         ));
     }
     let tools = Tools::discover()?;
-    let mut original = probe(&tools, source, false, memory_bytes)?;
+    let mut original = probe(tools, source, false, memory_bytes)?;
     let dimensions = fitted_size(original.size, options.size, options.alpha_layout)?;
     let workspace = workspace_bytes(original.size, dimensions)?;
     if workspace > memory_bytes {
@@ -78,7 +78,7 @@ pub fn prepare(
             "video preparation estimates {workspace} workspace bytes; limit is {memory_bytes}"
         )));
     }
-    original = probe(&tools, source, true, memory_bytes)?;
+    original = probe(tools, source, true, memory_bytes)?;
     let parent = output
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -169,7 +169,7 @@ pub fn prepare(
     ]);
     command.arg(temporary.as_os_str());
     run(&mut command, "FFmpeg video conversion")?;
-    let converted = probe(&tools, &temporary, true, memory_bytes)?;
+    let converted = probe(tools, &temporary, true, memory_bytes)?;
     validate(&original, &converted, dimensions)?;
     OpenOptions::new()
         .write(true)
@@ -242,7 +242,7 @@ fn fitted_size(source: [u32; 2], bounds: [u32; 2], alpha: AlphaLayout) -> io::Re
     }
     let height_alignment = match alpha {
         AlphaLayout::Native => 2,
-        AlphaLayout::TopBottom if source[1] % 2 == 0 => 4,
+        AlphaLayout::TopBottom if source[1].is_multiple_of(2) => 4,
         AlphaLayout::TopBottom => {
             return Err(invalid("top_bottom video must have an even source height"));
         }
@@ -628,7 +628,7 @@ mod tests {
             assert!(!output.exists());
             assert!(prepare(&source, &output, options, 128 << 20).unwrap() < 128 << 20);
             assert_eq!(
-                probe(&tools, &output, true, 128 << 20).unwrap().size,
+                probe(tools, &output, true, 128 << 20).unwrap().size,
                 expected
             );
             assert_eq!(

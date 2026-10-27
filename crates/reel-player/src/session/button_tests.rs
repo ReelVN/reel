@@ -1,4 +1,3 @@
-#[path = "focus_tests.rs"]
 mod focus;
 
 use super::tests::{mount, mouse, session};

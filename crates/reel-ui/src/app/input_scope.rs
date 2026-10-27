@@ -88,6 +88,24 @@ impl RenderRoot {
         }
     }
 
+    /// Clear author navigation focus through the accepted input scope.
+    pub fn clear_focus(&mut self, owner: WidgetId) -> bool {
+        if !matches!(
+            self.global_state.input_geometry_source,
+            InputGeometrySource::Presented(Some(_))
+        ) || !self.permits_input(owner)
+        {
+            return false;
+        }
+        crate::passes::navigation::cancel_all(self);
+        self.global_state.focus_cleared = true;
+        self.global_state.next_focused_widget = None;
+        self.global_state.focus_anchor = None;
+        crate::passes::event::set_focus_visible(self, false);
+        self.run_rewrite_passes();
+        true
+    }
+
     pub(crate) fn is_descendant(&self, id: WidgetId, ancestor: WidgetId) -> bool {
         let mut current = Some(id);
         while let Some(id) = current {
@@ -169,6 +187,7 @@ impl RenderRoot {
         let previous = self.global_state.modal_scope;
         let changed = next != previous;
         if changed {
+            self.global_state.focus_cleared = false;
             crate::passes::navigation::cancel_all(self);
             crate::passes::event::run_on_text_event_pass(
                 self,
@@ -189,6 +208,9 @@ impl RenderRoot {
             self.global_state.needs_pointer_pass = true;
         }
         if let Some(scope) = next {
+            if self.global_state.focus_cleared {
+                return false;
+            }
             if !changed
                 && self
                     .global_state

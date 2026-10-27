@@ -60,7 +60,7 @@ pub(super) fn add(
         h.set_field(tree, i * 3, Value::int(epoch))?;
         h.set_field(tree, i * 3 + 1, Value::int(measured + measured_delta))?;
         h.set_field(tree, i * 3 + 2, Value::float(height + height_delta))?;
-        i += i & i.wrapping_neg();
+        i += i.isolate_lowest_one();
     }
     Ok(())
 }

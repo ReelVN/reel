@@ -235,15 +235,15 @@ impl EffectProducts {
                 "duplicate effect function binding".into(),
             ));
         }
-        if let Some(mask) = &mask {
-            if self.bindings.iter().any(|binding| {
+        if let Some(mask) = &mask
+            && self.bindings.iter().any(|binding| {
                 binding.mask.as_ref().is_some_and(|other| {
                     other.operations() == mask.operations()
                         && other.sources().len() == mask.sources().len()
                 })
-            }) {
-                return Ok(());
-            }
+            })
+        {
+            return Ok(());
         }
         let index = self
             .bindings

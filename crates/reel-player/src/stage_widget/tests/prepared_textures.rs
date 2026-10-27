@@ -103,8 +103,7 @@ fn particle_frame(compressed: bool) -> (RenderFrame, BudgetPool) {
                 },
                 started: 0.,
                 paused: false,
-            }]
-            .into_iter(),
+            }],
         )
         .unwrap(),
     };

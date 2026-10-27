@@ -369,12 +369,11 @@ fn font_characters(
         let text = fs::read_to_string(&file)?;
         characters.extend(text.chars().map(u32::from));
         for rest in text.split("\\u{").skip(1) {
-            if let Some((hex, _)) = rest.split_once('}') {
-                if let Ok(value) = u32::from_str_radix(hex, 16) {
-                    if char::from_u32(value).is_some() {
-                        characters.insert(value);
-                    }
-                }
+            if let Some((hex, _)) = rest.split_once('}')
+                && let Ok(value) = u32::from_str_radix(hex, 16)
+                && char::from_u32(value).is_some()
+            {
+                characters.insert(value);
             }
         }
     }

@@ -277,10 +277,12 @@ impl StageBinding {
             saved.shape.prefix(),
             selected,
             limit,
-            None,
-            appearance_origin,
-            &self.effect_products,
-            &mut self.effect_projection,
+            property_values::PropertyContext {
+                previous: None,
+                appearance_origin,
+                effects: &self.effect_products,
+                effect_projection: &mut self.effect_projection,
+            },
         )?;
         overrides::apply_offsets(heap, value, &mut props)?;
         let mask_source = mask_handle(heap, fields, saved.shape.prefix(), selected)?;
