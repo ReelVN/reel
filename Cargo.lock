@@ -3522,7 +3522,6 @@ dependencies = [
  "self_cell",
  "serde",
  "smallvec",
- "stats_alloc",
  "ui-events-winit",
  "wgpu",
  "winit",

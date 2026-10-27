@@ -15,6 +15,8 @@ pub mod presentation;
 #[cfg(all(feature = "profiling", any(target_os = "vita", test)))]
 mod probe;
 pub mod story_runtime;
+#[cfg(test)]
+mod test_cost;
 
 pub mod aside_session;
 pub mod assets;

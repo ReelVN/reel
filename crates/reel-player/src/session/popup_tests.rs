@@ -1085,7 +1085,6 @@ fn popup_without_a_focusable_child_accepts_paired_back_dismissal() {
 #[ignore = "serial allocator check of steady popup projection; run with --test-threads=1"]
 fn popup_stable_projection_cost() {
     use reel_ui::stage::Stage;
-    use stats_alloc::{INSTRUMENTED_SYSTEM, Region};
     for popup in [false, true] {
         let mut stage = Stage::default();
         let (_, id) = popup_tree(&mut stage, vec![]);
@@ -1098,20 +1097,20 @@ fn popup_stable_projection_cost() {
         ui.sync(&mut bridge, root).unwrap();
         super::tests::accept(&mut ui, &mut bridge, root, 1);
         let before = SessionUi::projected_node(&bridge, root, id);
-        let region = Region::new(&INSTRUMENTED_SYSTEM);
         let start = std::time::Instant::now();
-        for _ in 0..120 {
-            ui.sync(&mut bridge, root).unwrap();
-        }
+        let stats = allocation_counter::measure(|| {
+            for _ in 0..120 {
+                ui.sync(&mut bridge, root).unwrap();
+            }
+        });
         let elapsed = start.elapsed();
-        let stats = region.change();
         assert_eq!(SessionUi::projected_node(&bridge, root, id), before);
-        assert_eq!(stats.allocations, 0, "stable popup sync does not allocate");
-        assert_eq!(stats.reallocations, 0);
+        assert_eq!(stats.count_total, 0, "stable popup sync does not allocate");
+        assert_eq!(stats.bytes_total, 0);
         eprintln!(
-            "popup={popup} stable_syncs=120 allocations={} reallocations={} elapsed_us={}",
-            stats.allocations,
-            stats.reallocations,
+            "popup={popup} stable_syncs=120 allocations={} allocated_bytes={} elapsed_us={}",
+            stats.count_total,
+            stats.bytes_total,
             elapsed.as_micros()
         );
     }

@@ -4,11 +4,7 @@ use reel_ui::{
     dpi::{PhysicalPosition, PhysicalSize},
     peniko::{Blob, ImageAlphaType, ImageFormat},
 };
-use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
-use std::{alloc::System, time::Instant};
-
-#[global_allocator]
-static ALLOCATOR: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
+use std::time::Instant;
 
 fn mount(view: &StageView) -> (RenderRoot, WidgetId) {
     let widget = StageWidget::new(Some(view)).prepare();
@@ -136,21 +132,22 @@ fn scroll_projection_and_sync_share_ten_thousand_text_nodes() {
         let start = Instant::now();
         let (stats, projection_time) = root.edit_widget(widget, |mut widget| {
             let mut widget = widget.downcast::<StageWidget>();
-            let region = Region::new(ALLOCATOR);
             let projection_start = Instant::now();
-            for index in 1..=200 {
-                stage
-                    .update(
-                        id,
-                        scroll(index as f64),
-                        stage.node(id).unwrap().props.clone(),
-                    )
-                    .unwrap();
-                let next = StageView::update(&stage, Some(&view));
-                StageWidget::sync(&mut widget, &next);
-                view = next;
-            }
-            (region.change(), projection_start.elapsed())
+            let stats = allocation_counter::measure(|| {
+                for index in 1..=200 {
+                    stage
+                        .update(
+                            id,
+                            scroll(index as f64),
+                            stage.node(id).unwrap().props.clone(),
+                        )
+                        .unwrap();
+                    let next = StageView::update(&stage, Some(&view));
+                    StageWidget::sync(&mut widget, &next);
+                    view = next;
+                }
+            });
+            (stats, projection_start.elapsed())
         });
         let elapsed = start.elapsed();
         let current = view.root.as_ref().unwrap();
@@ -173,17 +170,13 @@ fn scroll_projection_and_sync_share_ten_thousand_text_nodes() {
                 == 0
         }));
         eprintln!(
-            "{count} text nodes, 200 scroll updates: projection/sync={projection_time:?}, including final UI passes={elapsed:?}; allocations={}, reallocations={}, allocated_bytes={}, unchanged text nodes cloned=0, child syncs=0",
-            stats.allocations, stats.reallocations, stats.bytes_allocated
+            "{count} text nodes, 200 scroll updates: projection/sync={projection_time:?}, including final UI passes={elapsed:?}; allocation_calls={}, allocated_bytes={}, unchanged text nodes cloned=0, child syncs=0",
+            stats.count_total, stats.bytes_total
         );
         measurements.push(stats);
     }
-    assert_eq!(measurements[0].allocations, measurements[1].allocations);
-    assert_eq!(measurements[0].reallocations, measurements[1].reallocations);
-    assert_eq!(
-        measurements[0].bytes_allocated,
-        measurements[1].bytes_allocated
-    );
+    assert_eq!(measurements[0].count_total, measurements[1].count_total);
+    assert_eq!(measurements[0].bytes_total, measurements[1].bytes_total);
 }
 
 #[test]
