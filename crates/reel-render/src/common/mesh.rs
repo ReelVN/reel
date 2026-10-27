@@ -389,6 +389,7 @@ impl Mesh {
         })
     }
     /// Append already transformed geometry without changing primitive order.
+    #[cfg(test)]
     pub(crate) fn append(&mut self, mesh: &Self) -> Result<std::ops::Range<u32>, GpuError> {
         let vertex_start = u32::try_from(self.vertices.len()).map_err(|_| GpuError::InvalidSize)?;
         let start = u32::try_from(self.indices.len()).map_err(|_| GpuError::InvalidSize)?;

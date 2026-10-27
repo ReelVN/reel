@@ -9,7 +9,6 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicU8, Ordering},
 };
-use wgpu::util::DeviceExt;
 
 const MAPPED: u8 = 0;
 const PENDING: u8 = 1;
@@ -113,25 +112,14 @@ impl Cache {
         let (mut storage, local_ticket) = if partial {
             reused.take().unwrap()
         } else {
-            let materialized = batch.materialize()?;
-            let mesh = &*materialized;
-            let indices = crate::common::indices::Upload::new(mesh, |bytes| {
-                super::renderer::reserve(
-                    &budgets.transient,
-                    &local.transient,
-                    bytes,
-                    gpu.limits.transient_bytes,
-                    "index packing",
-                )
-            })?;
             let (storage, ticket) = if let Some(storage) = reused.take() {
                 storage
             } else {
-                self.acquire(gpu, budgets, local, mesh, &indices, policy)?
+                self.acquire(gpu, budgets, local, batch.full_view(), policy)?
             };
             storage
                 .storage
-                .upload(encoder, storage.capacity, mesh, indices.bytes())?;
+                .upload(encoder, storage.capacity, batch.full_view())?;
             (storage, ticket)
         };
         let metadata = if storage.storage.has_staging() {
@@ -201,15 +189,10 @@ impl Cache {
         gpu: &Gpu,
         budgets: &Budgets,
         local: &Budgets,
-        mesh: &mesh::Mesh,
-        indices: &crate::common::indices::Upload<'_, super::renderer::Reservation>,
+        view: crate::common::draw_batch::View<'_>,
         policy: &UploadPolicy,
     ) -> Result<(Storage, BudgetTicket), GpuError> {
-        let requested = Capacity {
-            vertices: std::mem::size_of_val(mesh.vertices.as_slice()) as u64,
-            indices: indices.bytes().len() as u64,
-            index_format: indices.format(),
-        };
+        let requested = view.capacity();
         let mut pool = self.pool.lock().unwrap();
         if policy.reuse
             && let Some(storage) = pool.take(requested)
@@ -297,21 +280,41 @@ impl Cache {
         } else {
             reel_core::profile::geometry_upload(requested.vertices);
             reel_core::profile::geometry_upload(requested.indices);
-            (
-                gpu.device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("reel vertices"),
-                        contents: bytemuck::cast_slice(&mesh.vertices),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    }),
-                gpu.device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("reel indices"),
-                        contents: indices.bytes(),
-                        usage: wgpu::BufferUsages::INDEX,
-                    }),
-                None,
-            )
+            let vertices = create(
+                "reel vertices",
+                requested.vertices,
+                wgpu::BufferUsages::VERTEX,
+                true,
+            );
+            let indices = create(
+                "reel indices",
+                requested.indices,
+                wgpu::BufferUsages::INDEX,
+                true,
+            );
+            {
+                let mut mapped = vertices
+                    .slice(..)
+                    .get_mapped_range_mut()
+                    .map_err(|error| GpuError::Device(error.to_string()))?;
+                view.vertices(|offset, bytes| {
+                    mapped
+                        .slice(offset..offset + bytes.len())
+                        .copy_from_slice(bytes)
+                });
+                let mut mapped = indices
+                    .slice(..)
+                    .get_mapped_range_mut()
+                    .map_err(|error| GpuError::Device(error.to_string()))?;
+                view.indices(|offset, bytes| {
+                    mapped
+                        .slice(offset..offset + bytes.len())
+                        .copy_from_slice(bytes)
+                });
+            }
+            vertices.unmap();
+            indices.unmap();
+            (vertices, indices, None)
         };
         gpu.check()?;
         #[cfg(test)]
@@ -383,23 +386,23 @@ impl Buffers {
             let mut index = 0;
             for (part, segment) in batch.segments.iter().enumerate() {
                 if !layout.matches(part, segment.key) {
-                    let bytes = bytemuck::cast_slice(&segment.mesh.vertices);
-                    let start = vertex * size_of::<mesh::Vertex>();
-                    mapping
-                        .slice(start..start + bytes.len())
-                        .copy_from_slice(bytes);
-                    let start = capacity.vertices as usize + index * width;
-                    let mut destination =
-                        mapping.slice(start..start + segment.mesh.indices.len() * width);
-                    for (index, &value) in segment.mesh.indices.iter().enumerate() {
-                        let mut slot = destination.slice(index * width..(index + 1) * width);
-                        let value = vertex as u32 + value;
-                        if width == 2 {
-                            slot.copy_from_slice(&(value as u16).to_le_bytes());
-                        } else {
-                            slot.copy_from_slice(&value.to_le_bytes());
-                        }
-                    }
+                    let view = batch.view(crate::common::draw_batch::UploadRange {
+                        segments: part..part + 1,
+                        vertices: vertex..vertex + segment.key.vertices,
+                        indices: index..index + segment.key.indices,
+                    });
+                    view.vertices(|offset, bytes| {
+                        let start = vertex * size_of::<mesh::Vertex>() + offset;
+                        mapping
+                            .slice(start..start + bytes.len())
+                            .copy_from_slice(bytes);
+                    });
+                    view.indices(|offset, bytes| {
+                        let start = capacity.vertices as usize + index * width + offset;
+                        mapping
+                            .slice(start..start + bytes.len())
+                            .copy_from_slice(bytes);
+                    });
                 } else if width == 2 {
                     // Re-emit the retained half-word included by an aligned
                     // neighbour copy; MAP_WRITE needs no preserved CPU contents.
@@ -480,35 +483,52 @@ impl Buffers {
         &self,
         encoder: &mut wgpu::CommandEncoder,
         capacity: Capacity,
-        mesh: &mesh::Mesh,
-        indices: &[u8],
+        view: crate::common::draw_batch::View<'_>,
     ) -> Result<(), GpuError> {
         let Some(staging) = &self.staging else {
             return Ok(());
         };
-        let vertices = bytemuck::cast_slice(&mesh.vertices);
+        let requested = view.capacity();
         {
             let mut mapping = staging
                 .slice(..)
                 .get_mapped_range_mut()
                 .map_err(|error| GpuError::Device(error.to_string()))?;
-            mapping.slice(..vertices.len()).copy_from_slice(vertices);
+            view.vertices(|offset, bytes| {
+                mapping
+                    .slice(offset..offset + bytes.len())
+                    .copy_from_slice(bytes)
+            });
             let offset = capacity.vertices as usize;
-            mapping
-                .slice(offset..offset + indices.len())
-                .copy_from_slice(indices);
+            view.indices(|start, bytes| {
+                mapping
+                    .slice(offset + start..offset + start + bytes.len())
+                    .copy_from_slice(bytes)
+            });
+            // An odd U16 count leaves one unused element in the aligned copy.
+            // Explicitly initialize it after a reusable mapping.
+            if requested.index_format == crate::common::indices::Format::U16 {
+                // Rewriting the final zero is only necessary when it is padding;
+                // the view supplies the exact byte extent below.
+                let end = view.index_bytes();
+                if end < requested.indices as usize {
+                    mapping
+                        .slice(offset + end..offset + requested.indices as usize)
+                        .copy_from_slice(&[0; 2]);
+                }
+            }
         }
         staging.unmap();
-        encoder.copy_buffer_to_buffer(staging, 0, &self.vertices, 0, vertices.len() as u64);
-        reel_core::profile::geometry_upload(vertices.len() as u64);
+        encoder.copy_buffer_to_buffer(staging, 0, &self.vertices, 0, requested.vertices);
+        reel_core::profile::geometry_upload(requested.vertices);
         encoder.copy_buffer_to_buffer(
             staging,
             capacity.vertices,
             &self.indices,
             0,
-            indices.len() as u64,
+            requested.indices,
         );
-        reel_core::profile::geometry_upload(indices.len() as u64);
+        reel_core::profile::geometry_upload(requested.indices);
         // WGPU schedules this only when this exact encoder is submitted. Dropping
         // an unsubmitted Prepared drops both its copy commands and these owners.
         self.remap(encoder, staging);

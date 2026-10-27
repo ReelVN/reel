@@ -1,4 +1,5 @@
 //! Choose one element width for an ordered geometry segment on both backends.
+#[cfg(test)]
 use super::{GpuError, mesh::Mesh};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -7,11 +8,13 @@ pub(crate) enum Format {
     U32,
 }
 
+#[cfg(test)]
 pub(crate) enum Upload<'a, R> {
     Narrow { values: Vec<u16>, _reservation: R },
     Wide(&'a [u32]),
 }
 
+#[cfg(test)]
 impl<'a, R> Upload<'a, R> {
     /// Mesh construction validates the vertex domain. Padding preserves WGPU's
     /// four-byte copy alignment; recorded draw ranges exclude that final zero.
