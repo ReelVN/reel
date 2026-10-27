@@ -231,6 +231,9 @@ impl GlesBackend {
         size: [u32; 2],
         capture: bool,
     ) -> Result<replay::Prepared, GlesError> {
+        if capture {
+            self.images.release_idle();
+        }
         let result = self.prepare_cached(frame, size, capture);
         if matches!(result, Err(GlesError::Pressure { .. })) && !self.drain_failed {
             let resident = self._group.usage().bytes;
@@ -357,7 +360,7 @@ impl GlesBackend {
         let ready = match upload {
             Ok(ready) => ready,
             Err(error) => {
-                self.images.release_scratch();
+                self.images.release_idle();
                 if !self.drain_error() {
                     self.failed_images.extend(touched);
                 }
@@ -415,7 +418,7 @@ impl GlesBackend {
         ) {
             Ok(prepared) => Ok(prepared),
             Err((error, work)) => {
-                self.images.release_scratch();
+                self.images.release_idle();
                 if !self.drain_error() {
                     self.failed_work.push(work);
                 }

@@ -37,6 +37,7 @@ struct SampledImage<'a> {
     format: Option<reel_core::texture::TextureFormat>,
     yuv: Option<&'a super::video::Planes>,
     quality: ImageQuality,
+    source: mesh::PaintSource,
 }
 impl<'a> SampledImage<'a> {
     fn coverage(view: &'a wgpu::TextureView) -> Self {
@@ -52,6 +53,7 @@ impl<'a> SampledImage<'a> {
             format: None,
             yuv: None,
             quality: ImageQuality::Medium,
+            source: mesh::PaintSource::Texture,
         }
     }
 }
@@ -129,8 +131,20 @@ impl Context<'_> {
             [1.; 4],
             at,
         )?;
+        self.paint_solid(target, mesh)
+    }
+    fn paint_solid(&mut self, target: &Target, mesh: mesh::Mesh) -> Result<(), GpuError> {
         let white = self.white()?;
-        self.paint(target, mesh, &white.view)
+        self.paint_mesh(
+            target,
+            mesh,
+            SampledImage {
+                source: mesh::PaintSource::Solid,
+                ..SampledImage::plain(&white.view)
+            },
+            [false; 2],
+            None,
+        )
     }
     fn white(&mut self) -> Result<Arc<resources::Image>, GpuError> {
         if let Some(image) = &self.white {
@@ -227,14 +241,15 @@ impl Context<'_> {
                     .premultiply()
                     .components
                     .map(|v| v * composite.alpha);
-                (
-                    self.white()?,
+                mesh::transform(
+                    &mut mesh,
+                    outer * transform,
+                    self.size,
                     Affine::IDENTITY,
                     color,
-                    [false; 2],
-                    None,
-                    ImageQuality::Medium,
-                )
+                    at,
+                )?;
+                return self.paint_solid(target, mesh);
             }
             Brush::Image(brush) => {
                 if brush.sampler.quality == ImageQuality::High {
@@ -433,15 +448,6 @@ impl Context<'_> {
         }
         Ok(())
     }
-    pub(super) fn paint(
-        &mut self,
-        target: &Target,
-        mesh: mesh::Mesh,
-        image: &wgpu::TextureView,
-    ) -> Result<(), GpuError> {
-        self.paint_mesh(target, mesh, SampledImage::plain(image), [false; 2], None)
-    }
-
     pub(super) fn paint_resource(
         &mut self,
         target: &Target,
@@ -466,6 +472,7 @@ impl Context<'_> {
                 format: image.texture_format,
                 yuv: image.yuv.as_ref(),
                 quality,
+                source: mesh::PaintSource::Texture,
             },
             repeat,
             appearance.map(|appearance| {
@@ -505,6 +512,7 @@ impl Context<'_> {
             format: texture_format,
             yuv,
             quality,
+            source,
         } = image;
         if mesh.indices.is_empty() || self.scissor.empty() {
             return Ok(());
@@ -529,7 +537,7 @@ impl Context<'_> {
             mesh.direct_coverage(appearance.as_ref())
         } else {
             yuv.is_none()
-                .then(|| mesh.direct_paint(repeat, appearance.as_ref(), texture_format))
+                .then(|| mesh.direct_paint(source, repeat, appearance.as_ref(), texture_format))
                 .flatten()
         };
         let state = PaintState {

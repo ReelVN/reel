@@ -64,7 +64,7 @@ fn counts(renderer: &Renderer, sets: usize) {
     assert_eq!(renderer.pipelines.initialized_count(), sets);
     assert_eq!(
         renderer.pipelines.creations.snapshot(),
-        [3 * sets, 16 * sets, 16 * sets, 16 * sets, 8 * sets]
+        [3 * sets, 18 * sets, 18 * sets, 18 * sets, 8 * sets]
     );
 }
 
@@ -1105,7 +1105,7 @@ fn pipeline_reuse_cross_slot_concurrency_preserves_outer_scope_stack() {
             assert_eq!(renderer.pipelines.initialized_count(), 0);
             assert_eq!(
                 renderer.pipelines.creations.snapshot(),
-                [3, 16, 16, 16, 8],
+                [3, 18, 18, 18, 8],
                 "one failed constructor becomes sticky before another tier constructs"
             );
         } else {

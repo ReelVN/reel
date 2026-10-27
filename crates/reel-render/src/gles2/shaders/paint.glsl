@@ -9,6 +9,9 @@ precision highp float;
 varying vec2 v_uv;
 varying vec4 v_color,v_window;
 #ifdef REEL_DIRECT
+#if REEL_DIRECT == 4
+void main(){gl_FragColor=v_color;}
+#else
 uniform sampler2D u_image;
 #ifdef REEL_REGIONAL
 uniform vec2 u_dimensions;
@@ -31,6 +34,7 @@ void main(){
 #endif
  gl_FragColor=color*v_color;
 }
+#endif
 #else
 uniform sampler2D u_image,u_chroma_u,u_chroma_v;
 uniform vec2 u_dimensions,u_output_size,u_repeat;

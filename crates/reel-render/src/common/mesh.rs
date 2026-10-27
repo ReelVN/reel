@@ -138,7 +138,14 @@ pub(crate) struct ImagePaint {
     pub(crate) color: [f32; 4],
     pub(crate) sampling: ImageSampling,
 }
-/// Fixed image programs preserve the resource's sampling and block-alpha contract.
+/// Sampling follows the actual paint source; a solid-colored glyph still samples
+/// its atlas and therefore uses `Texture`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PaintSource {
+    Solid,
+    Texture,
+}
+/// Fixed paint programs preserve solid color, coverage and block-alpha semantics.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(usize)]
 pub(crate) enum DirectPaint {
@@ -149,13 +156,15 @@ pub(crate) enum DirectPaint {
     RegionalBc1,
     RegionalBc3,
     Coverage,
+    Solid,
 }
-/// Fixed image shaders whose samples and interpolated vertex alpha are opaque.
+/// Fixed paint shaders whose source and interpolated vertex alpha are opaque.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(usize)]
 pub(crate) enum OpaquePaint {
     Bc1,
     RegionalBc1,
+    Solid,
 }
 pub struct Mesh {
     pub vertices: Vec<Vertex>,
@@ -269,9 +278,13 @@ impl Allocation {
 impl Mesh {
     /// Solid glyph color uses the atlas's linear coverage channel directly.
     /// Gradient or adjusted brushes retain their existing color operations.
-    pub(crate) fn direct_coverage(&self, appearance: Option<&[[f32; 4]; 9]>) -> Option<DirectPaint> {
-        (self.direct_paint([false; 2], appearance, None) == Some(DirectPaint::Rgba))
-            .then_some(DirectPaint::Coverage)
+    pub(crate) fn direct_coverage(
+        &self,
+        appearance: Option<&[[f32; 4]; 9]>,
+    ) -> Option<DirectPaint> {
+        (self.direct_paint(PaintSource::Texture, [false; 2], appearance, None)
+            == Some(DirectPaint::Rgba))
+        .then_some(DirectPaint::Coverage)
     }
     /// Prove opacity after clipping and before batching. Vertex alpha includes
     /// authored opacity and analytic edge coverage; multisample coverage stays
@@ -280,6 +293,7 @@ impl Mesh {
         let paint = match direct? {
             DirectPaint::Bc1 => OpaquePaint::Bc1,
             DirectPaint::RegionalBc1 => OpaquePaint::RegionalBc1,
+            DirectPaint::Solid => OpaquePaint::Solid,
             _ => return None,
         };
         self.vertices
@@ -287,11 +301,12 @@ impl Mesh {
             .all(|vertex| vertex.color[3] == 1.)
             .then_some(paint)
     }
-    /// Classify before batching: another draw in the same segment may have a
-    /// different source window. Zero windows delegate edge clamping to the
-    /// sampler; regional windows retain the fragment-time half-texel clamp.
+    /// Classify before batching: solid paint uses its prepared vertex color;
+    /// texture draws retain their own source windows. Zero windows delegate edge
+    /// clamping to the sampler; regional windows keep the half-texel clamp.
     pub(crate) fn direct_paint(
         &self,
+        source: PaintSource,
         repeat: [bool; 2],
         appearance: Option<&[[f32; 4]; 9]>,
         format: Option<reel_core::texture::TextureFormat>,
@@ -302,6 +317,9 @@ impl Mesh {
             })
         {
             return None;
+        }
+        if source == PaintSource::Solid {
+            return Some(DirectPaint::Solid);
         }
         let regional = self
             .vertices
@@ -987,12 +1005,19 @@ mod tests {
         ));
         mesh.quad(Rect::new(0., 0., 4., 4.), Rect::new(-1., -1., 2., 2.))
             .unwrap();
+        let solid = mesh.direct_paint(PaintSource::Solid, [false; 2], None, None);
+        assert_eq!(solid, Some(DirectPaint::Solid));
+        assert_eq!(mesh.opaque_paint(solid), Some(OpaquePaint::Solid));
+        assert_eq!(mesh.direct_coverage(None), Some(DirectPaint::Coverage));
         for (format, expected) in [
             (None, DirectPaint::Rgba),
             (Some(TextureFormat::Bc1Rgb), DirectPaint::Bc1),
             (Some(TextureFormat::Bc3Rgba), DirectPaint::Bc3),
         ] {
-            assert_eq!(mesh.direct_paint([false; 2], None, format), Some(expected));
+            assert_eq!(
+                mesh.direct_paint(PaintSource::Texture, [false; 2], None, format),
+                Some(expected)
+            );
             assert_eq!(
                 mesh.opaque_paint(Some(expected)),
                 (expected == DirectPaint::Bc1).then_some(OpaquePaint::Bc1)
@@ -1003,15 +1028,22 @@ mod tests {
         for alpha in [0., 0.5, f32::NAN] {
             mesh.vertices[3].color[3] = alpha;
             assert_eq!(mesh.opaque_paint(Some(DirectPaint::Bc1)), None);
+            assert_eq!(mesh.opaque_paint(solid), None);
         }
         mesh.vertices[3].color[3] = 1.;
         assert_eq!(mesh.opaque_paint(None), None);
-        assert_eq!(mesh.direct_paint([true, false], None, None), None);
-        assert_eq!(mesh.direct_paint([false, true], None, None), None);
+        assert_eq!(
+            mesh.direct_paint(PaintSource::Texture, [true, false], None, None),
+            None
+        );
+        assert_eq!(
+            mesh.direct_paint(PaintSource::Texture, [false, true], None, None),
+            None
+        );
         let mut appearance = [[0.; 4]; 9];
         appearance[4][3] = 1.;
         assert_eq!(
-            mesh.direct_paint([false; 2], Some(&appearance), None),
+            mesh.direct_paint(PaintSource::Texture, [false; 2], Some(&appearance), None),
             Some(DirectPaint::Rgba)
         );
         for (field, value) in [
@@ -1023,14 +1055,25 @@ mod tests {
         ] {
             let mut styled = appearance;
             styled[field.0][field.1] = value;
-            assert_eq!(mesh.direct_paint([false; 2], Some(&styled), None), None);
-            let direct = mesh.direct_paint([false; 2], Some(&styled), Some(TextureFormat::Bc1Rgb));
+            assert_eq!(
+                mesh.direct_paint(PaintSource::Texture, [false; 2], Some(&styled), None),
+                None
+            );
+            let direct = mesh.direct_paint(
+                PaintSource::Texture,
+                [false; 2],
+                Some(&styled),
+                Some(TextureFormat::Bc1Rgb),
+            );
             assert_eq!(mesh.opaque_paint(direct), None);
         }
         // One regional vertex is sufficient to reject the whole original draw.
         // In particular, do not infer eligibility from the first vertex.
         mesh.vertices[3].source_window = [0.25, 0.25, 0.5, 0.5];
-        assert_eq!(mesh.direct_paint([false; 2], None, None), None);
+        assert_eq!(
+            mesh.direct_paint(PaintSource::Texture, [false; 2], None, None),
+            None
+        );
         let layout = TextureLayout {
             logical_size: [3, 2],
             content_size: [3, 2],
@@ -1042,14 +1085,20 @@ mod tests {
             (Some(TextureFormat::Bc1Rgb), DirectPaint::RegionalBc1),
             (Some(TextureFormat::Bc3Rgba), DirectPaint::RegionalBc3),
         ] {
-            assert_eq!(mesh.direct_paint([false; 2], None, format), Some(expected));
+            assert_eq!(
+                mesh.direct_paint(PaintSource::Texture, [false; 2], None, format),
+                Some(expected)
+            );
             assert_eq!(
                 mesh.opaque_paint(Some(expected)),
                 (expected == DirectPaint::RegionalBc1).then_some(OpaquePaint::RegionalBc1)
             );
         }
         ImageSampling::with_layout(None, layout, [true, false]).apply(&mut mesh.vertices);
-        assert_eq!(mesh.direct_paint([false; 2], None, None), None);
+        assert_eq!(
+            mesh.direct_paint(PaintSource::Texture, [false; 2], None, None),
+            None
+        );
     }
     use reel_ui::core::Widget;
     #[test]

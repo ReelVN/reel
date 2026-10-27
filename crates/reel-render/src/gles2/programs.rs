@@ -145,7 +145,7 @@ fn create_program_with_vertex(
 }
 pub(super) struct Programs {
     pub rgba: Shader,
-    pub direct: [Shader; 7],
+    pub direct: [Shader; 8],
     pub coverage: Shader,
     pub gradient: Shader,
     pub glyph_gradient: Shader,
@@ -206,6 +206,7 @@ impl Programs {
                 Shader::new(context, shader_code!("paint_regional_bc1"))?,
                 Shader::new(context, shader_code!("paint_regional_bc3"))?,
                 Shader::new(context, shader_code!("paint_direct_coverage"))?,
+                Shader::new(context, shader_code!("paint_solid"))?,
             ],
             coverage: Shader::new(context, shader_code!("paint_coverage"))?,
             gradient: Shader::new(context, shader_code!("paint_gradient"))?,

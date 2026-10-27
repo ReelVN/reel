@@ -155,12 +155,12 @@ pub struct Pipelines {
     pub coverage: wgpu::RenderPipeline,
     #[cfg(test)]
     pub coverage_draws: std::sync::atomic::AtomicUsize,
-    pub direct: [wgpu::RenderPipeline; 7],
+    pub direct: [wgpu::RenderPipeline; 8],
     #[cfg(test)]
-    pub direct_draws: [std::sync::atomic::AtomicUsize; 7],
-    pub opaque: [wgpu::RenderPipeline; 2],
+    pub direct_draws: [std::sync::atomic::AtomicUsize; 8],
+    pub opaque: [wgpu::RenderPipeline; 3],
     #[cfg(test)]
-    pub opaque_draws: [std::sync::atomic::AtomicUsize; 2],
+    pub opaque_draws: [std::sync::atomic::AtomicUsize; 3],
     pub yuv: wgpu::RenderPipeline,
     pub yuv_layout: wgpu::BindGroupLayout,
     pub composite: wgpu::RenderPipeline,
@@ -272,6 +272,7 @@ impl Pipelines {
             "fragment_regional_bc1",
             "fragment_regional_bc3",
             "fragment_direct_coverage",
+            "fragment_solid",
         ]
         .map(|entry| {
             pipeline_entry(
@@ -288,7 +289,12 @@ impl Pipelines {
                 Some(counts),
             )
         });
-        let opaque = ["fragment_direct_bc1", "fragment_regional_bc1"].map(|entry| {
+        let opaque = [
+            "fragment_direct_bc1",
+            "fragment_regional_bc1",
+            "fragment_solid",
+        ]
+        .map(|entry| {
             pipeline_entry(
                 device,
                 quality,

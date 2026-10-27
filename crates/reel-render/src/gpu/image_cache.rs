@@ -22,6 +22,7 @@ pub(super) struct ImageCache {
     uploads: Mutex<Vec<Upload>>,
     partial: Mutex<HashMap<ResourceHandle, Partial>>,
     staging: Mutex<super::upload::Cache>,
+    retired: Mutex<crate::common::resources::RetiredImages<Arc<Image>>>,
 }
 
 struct Partial {
@@ -46,10 +47,12 @@ struct Copy {
 }
 
 impl ImageCache {
-    pub(super) fn clear_idle_uploads(&self) -> bool {
+    pub(super) fn clear_idle(&self) -> bool {
         let mut cache = self.staging.lock().unwrap();
-        let had_storage = cache.capacity() != 0;
+        let mut retired = self.retired.lock().unwrap();
+        let had_storage = cache.capacity() != 0 || retired.iter().next().is_some();
         cache.clear();
+        retired.clear();
         had_storage
     }
     fn publish(&self, images: &HashMap<ResourceHandle, Arc<Image>>) {
@@ -74,12 +77,13 @@ impl ImageCache {
             let source = pending.image.source.as_ref().unwrap();
             source.retained(versions)
         });
-        self.images.lock().unwrap().retain(|_, image| {
-            let source = image.source.as_ref().unwrap();
-            // Dead video entries are an allocation pool, still charged to the
-            // same resource budget. Reuse additionally requires no GPU reader.
-            image.yuv.is_some() || source.retained(versions)
-        });
+        let mut cache = self.images.lock().unwrap();
+        let mut retired = self.retired.lock().unwrap();
+        for (_, image) in
+            cache.extract_if(|_, image| !image.source.as_ref().unwrap().retained(versions))
+        {
+            retired.put(image);
+        }
     }
 
     pub(super) fn prepare(
@@ -182,9 +186,10 @@ impl ImageCache {
             } else {
                 item.staging
             };
-            let mut recycled = match item.source.data() {
-                ResourceData::Yuv420(image) => self.recycle_video(image.size(), image.layout()),
-                _ => None,
+            let mut recycled = if partial.contains_key(&handle) {
+                None
+            } else {
+                self.recycle(item)
             };
             let resident = if recycled.is_some() || partial.contains_key(&handle) {
                 0
@@ -236,10 +241,17 @@ impl ImageCache {
                         gpu.limits.transient_bytes,
                         "partial image upload",
                     )?;
-                    let residency = reserve_gpu(item.resident)?;
-                    let mut image = resources::create_image(gpu, [source.width, source.height])?;
+                    let mut image = if let Some(image) = recycled.take() {
+                        image
+                    } else {
+                        let residency = reserve_gpu(item.resident)?;
+                        let mut image =
+                            resources::create_image(gpu, [source.width, source.height])?;
+                        image.residency = Some(residency);
+                        image
+                    };
+                    image.layout = reel_core::texture::TextureLayout::identity(image.size);
                     image.encoding = *encoding;
-                    image.residency = Some(residency);
                     image.source = Some(resources::ResourceSource {
                         version: item.source.version().clone(),
                         lease: item.source.downgrade(),
@@ -330,9 +342,17 @@ impl ImageCache {
                         gpu.limits.transient_bytes,
                         "partial texture upload",
                     )?;
-                    let residency = reserve_gpu(item.resident)?;
-                    let mut image = resources::create_texture(gpu, *descriptor, layout, item.at)?;
-                    image.residency = Some(residency);
+                    let mut image = if let Some(image) = recycled.take() {
+                        image
+                    } else {
+                        let residency = reserve_gpu(item.resident)?;
+                        let mut image =
+                            resources::create_texture(gpu, *descriptor, layout, item.at)?;
+                        image.residency = Some(residency);
+                        image
+                    };
+                    image.layout = layout.layout;
+                    image.encoding = descriptor.source_encoding;
                     image.source = Some(resources::ResourceSource {
                         version: item.source.version().clone(),
                         lease: item.source.downgrade(),
@@ -476,24 +496,36 @@ impl ImageCache {
         !self.uploads.lock().unwrap().is_empty()
     }
 
-    fn recycle_video(
-        &self,
-        size: [u32; 2],
-        layout: reel_core::image::Yuv420Layout,
-    ) -> Option<Image> {
-        let mut cache = self.images.lock().unwrap();
-        let handle = *cache
-            .iter()
-            .find(|(_, image)| {
-                image
-                    .yuv
+    fn recycle(&self, item: &image_plan::Required<'_>) -> Option<Image> {
+        let image = self.retired.lock().unwrap().take_if(|image| {
+            reusable(image)
+                && image
+                    .residency
                     .as_ref()
-                    .is_some_and(|planes| planes.layout == layout)
-                    && image.size == size
-                    && reusable(image)
-            })?
-            .0;
-        Arc::try_unwrap(cache.remove(&handle).unwrap()).ok()
+                    .is_some_and(|ticket| ticket.bytes() == item.resident)
+                && match item.source.data() {
+                    ResourceData::Yuv420(source) => {
+                        image.size == source.size()
+                            && image
+                                .yuv
+                                .as_ref()
+                                .is_some_and(|planes| planes.layout == source.layout())
+                    }
+                    ResourceData::Image { image: source, .. } => {
+                        image.yuv.is_none()
+                            && image.texture_format.is_none()
+                            && image.size == [source.width, source.height]
+                    }
+                    ResourceData::Texture { descriptor, .. } => {
+                        image.yuv.is_none()
+                            && image.texture_format == Some(descriptor.format)
+                            && image.size
+                                == item.texture.expect("planned texture").layout.storage_size
+                    }
+                    _ => false,
+                }
+        })?;
+        Arc::try_unwrap(image).ok()
     }
 
     pub(super) fn poll(&self) -> bool {
@@ -520,6 +552,7 @@ impl ImageCache {
         // In-flight and prepared users hold their own Arc. Only unused cache
         // entries can release residency, without waiting for the device here.
         if cost > limit.saturating_sub(pool.usage().bytes) {
+            self.retired.lock().unwrap().clear();
             self.images.lock().unwrap().retain(|_, image| {
                 cost <= limit.saturating_sub(pool.usage().bytes) || Arc::strong_count(image) > 1
             });

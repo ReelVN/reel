@@ -148,6 +148,7 @@ fn compile_shaders() {
         ("paint_regional_bc1", 1, true),
         ("paint_regional_bc3", 2, true),
         ("paint_direct_coverage", 3, false),
+        ("paint_solid", 4, false),
     ] {
         let regional = if regional {
             "\n#define REEL_REGIONAL"

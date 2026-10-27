@@ -44,7 +44,7 @@ struct Varying { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
     return vec4(c.rgb, 1.0);
 }
 "#;
-        let pipeline = pipeline::pipeline(
+        let pipeline = pipeline::pipeline_entry(
             device,
             Quality {
                 format,
@@ -54,6 +54,10 @@ struct Varying { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> }
             &layout,
             shader,
             false,
+            pipeline::FragmentOutput {
+                entry: "fragment",
+                blend: None,
+            },
             #[cfg(test)]
             None,
         );

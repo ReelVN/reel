@@ -254,7 +254,7 @@ impl Renderer {
         // original admission path free of optional reusable staging.
         if capture {
             self.geometry.clear();
-            self.images.clear_idle_uploads();
+            self.images.clear_idle();
         }
         let policy = super::geometry::UploadPolicy::new(!capture);
         let result = self.prepare_cached(frame, second, size, capture, &policy);
@@ -272,7 +272,7 @@ impl Renderer {
         if fallback || matches!(result, Err(GpuError::Pressure { .. })) {
             let resident = self.budgets.transient.usage().bytes;
             self.geometry.clear();
-            let released_uploads = self.images.clear_idle_uploads();
+            let released_uploads = self.images.clear_idle();
             if fallback || self.budgets.transient.usage().bytes < resident || released_uploads {
                 #[cfg(test)]
                 self.gpu

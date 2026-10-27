@@ -39,10 +39,12 @@ pub(super) struct Images {
     white: Option<Rc<Image>>,
     failures: Vec<BudgetTicket>,
     scratch: crate::common::resources::UploadScratch,
+    retired: crate::common::resources::RetiredImages<Rc<Image>>,
 }
 impl Images {
-    pub fn release_scratch(&mut self) {
+    pub fn release_idle(&mut self) {
         self.scratch.clear();
+        self.retired.clear();
     }
     /// Validate the simultaneous image demand before issuing an upload command.
     pub fn validate(
@@ -56,6 +58,7 @@ impl Images {
         let mut additional = 0u64;
         let mut staging = 0;
         let mut pending_staging = 0;
+        let mut claimed = [false; 64];
         for item in required {
             let (bytes, upload) = match item.source.data() {
                 ResourceData::Image { image, .. } => (
@@ -115,9 +118,18 @@ impl Images {
             if !self.entries.contains_key(&item.source.handle()) {
                 pending_staging = pending_staging.max(upload);
                 if !self.pending.contains_key(&item.source.handle()) {
-                    additional = additional
-                        .checked_add(bytes)
-                        .ok_or(GlesError::InvalidSize)?;
+                    let reusable = self
+                        .retired
+                        .iter()
+                        .enumerate()
+                        .find(|(index, image)| !claimed[*index] && recyclable(image, item));
+                    if let Some((index, _)) = reusable {
+                        claimed[index] = true;
+                    } else {
+                        additional = additional
+                            .checked_add(bytes)
+                            .ok_or(GlesError::InvalidSize)?;
+                    }
                 }
             }
             staging = staging.max(upload);
@@ -136,12 +148,16 @@ impl Images {
             .ok_or(GlesError::InvalidSize)
     }
     pub fn prune(&mut self, versions: &[ResourceVersion]) {
-        self.entries.retain(|_, image| {
-            image
+        for (_, image) in self.entries.extract_if(|_, image| {
+            !image
                 .source
                 .as_ref()
                 .is_some_and(|source| source.retained(versions))
-        });
+        }) {
+            if image.kind == 0. && !image.coverage {
+                self.retired.put(image);
+            }
+        }
         self.pending.retain(|_, pending| {
             // The pending upload itself owns a valid pre-retirement lease.
             // prepare() discards it when the next demand no longer includes it.
@@ -150,6 +166,7 @@ impl Images {
     }
     fn make_room(&mut self, budget: &BudgetPool, cost: u64, limit: u64) {
         if cost > limit.saturating_sub(budget.usage().bytes) {
+            self.retired.clear();
             self.entries.retain(|_, image| Rc::strong_count(image) > 1);
         }
     }
@@ -250,13 +267,24 @@ impl Images {
                 });
             }
         };
-        self.make_room(&budgets.resources, bytes, limits.resource_bytes);
-        let storage = reserve(
-            &budgets.resources,
-            bytes,
-            limits.resource_bytes,
-            "image residency",
-        )?;
+        let recycled = self
+            .retired
+            .take_if(|image| recyclable(image, item))
+            .and_then(Rc::into_inner);
+        let (storage, recycled_texture) = if let Some(image) = recycled {
+            (image._storage, Some(image.texture))
+        } else {
+            self.make_room(&budgets.resources, bytes, limits.resource_bytes);
+            (
+                reserve(
+                    &budgets.resources,
+                    bytes,
+                    limits.resource_bytes,
+                    "image residency",
+                )?,
+                None,
+            )
+        };
         let built = (|| {
             let mut planes = Vec::new();
             let mut video = [[0.; 4]; 4];
@@ -284,27 +312,36 @@ impl Images {
                     limits.transient_bytes,
                     usize::try_from(bytes).map_err(|_| GlesError::InvalidSize)?,
                 )?;
-                gpu.create_bc_texture(
-                    layout.storage_size,
-                    if format == Some(TextureFormat::Bc1Rgb) {
-                        native::TextureFormat::Bc1Rgb
-                    } else {
-                        native::TextureFormat::Bc3Rgba
-                    },
-                    blocks.data(),
-                    staging,
-                )?
+                if let Some(texture) = recycled_texture {
+                    gpu.upload_bc_texture(&texture, blocks.data(), staging)?;
+                    texture
+                } else {
+                    gpu.create_bc_texture(
+                        layout.storage_size,
+                        if format == Some(TextureFormat::Bc1Rgb) {
+                            native::TextureFormat::Bc1Rgb
+                        } else {
+                            native::TextureFormat::Bc3Rgba
+                        },
+                        blocks.data(),
+                        staging,
+                    )?
+                }
             } else {
-                gpu.create_texture(
-                    layout.storage_size,
-                    match format {
-                        Some(TextureFormat::Bgra8) => native::TextureFormat::Bgra8,
-                        Some(TextureFormat::LinearRgba16Float) => {
-                            native::TextureFormat::Rgba16Float
-                        }
-                        _ => native::TextureFormat::Rgba8,
-                    },
-                )?
+                if let Some(texture) = recycled_texture {
+                    texture
+                } else {
+                    gpu.create_texture(
+                        layout.storage_size,
+                        match format {
+                            Some(TextureFormat::Bgra8) => native::TextureFormat::Bgra8,
+                            Some(TextureFormat::LinearRgba16Float) => {
+                                native::TextureFormat::Rgba16Float
+                            }
+                            _ => native::TextureFormat::Rgba8,
+                        },
+                    )?
+                }
             };
             Ok::<_, GlesError>((texture, planes, video))
         })();
@@ -400,6 +437,27 @@ impl Images {
         Ok(ready)
     }
 }
+fn recyclable(image: &Rc<Image>, item: &crate::common::image_plan::Required<'_>) -> bool {
+    Rc::strong_count(image) == 1
+        && image
+            .source
+            .as_ref()
+            .is_some_and(|source| source.lease.is_released())
+        && image.kind == 0.
+        && !image.coverage
+        && match item.source.data() {
+            ResourceData::Image { image: source, .. } => {
+                image.format.is_none() && image.layout.storage_size == [source.width, source.height]
+            }
+            ResourceData::Texture { descriptor, .. } => {
+                image.format == Some(descriptor.format)
+                    && image.layout.storage_size
+                        == item.texture.expect("planned texture").layout.storage_size
+            }
+            _ => false,
+        }
+}
+
 fn progress(
     gpu: &native::Context,
     budgets: &Budgets,
@@ -528,4 +586,143 @@ pub(super) fn reserve(
         requested: bytes,
         available: limit.saturating_sub(pool.usage().bytes),
     })
+}
+
+#[cfg(test)]
+mod retirement_tests {
+    use super::*;
+    use reel_core::{
+        budget::{BudgetCategory, OwnedBytes, QueueLimits},
+        identity::{AssetKey, ContentVersion},
+        texture::{TextureDescriptor, TexturePayload},
+    };
+    use reel_ui::resources::ResourceRegistry;
+
+    #[test]
+    #[ignore = "requires host EGL and BC support; uploads without pixel readback"]
+    fn retired_native_texture_storage_reuses_exact_footprints_and_budget() {
+        let gpu = native::Context::headless([8, 8], false).unwrap();
+        assert!(gpu.capabilities().bc);
+        let limits = crate::common::GpuLimits::default();
+        let budgets = Budgets::new(limits);
+        let pool = BudgetPool::new(
+            BudgetCategory::CpuOutput,
+            QueueLimits {
+                max_requests: 128,
+                max_bytes: 1 << 20,
+            },
+        );
+        let owner =
+            reel_ui::core::WidgetPod::new(reel_ui::widgets::Label::new("resource test")).id();
+        let mut images = Images::default();
+        for format in [
+            None,
+            Some(TextureFormat::Rgba8),
+            Some(TextureFormat::Bc1Rgb),
+            Some(TextureFormat::Bc3Rgba),
+        ] {
+            let mut identity = None;
+            for version in 0..8u8 {
+                let resource = ResourceVersion {
+                    key: AssetKey(format!("native-reuse-{format:?}")),
+                    version: ContentVersion([version; 32]),
+                };
+                let descriptor = TextureDescriptor {
+                    format: format.unwrap_or(TextureFormat::Rgba8),
+                    source_encoding: if version % 2 == 0 {
+                        ColorEncoding::Linear
+                    } else {
+                        ColorEncoding::Srgb
+                    },
+                    layout: TextureLayout {
+                        logical_size: [16 + u32::from(version), 16],
+                        content_size: [8, 8],
+                        storage_size: [8, 8],
+                    },
+                };
+                let length = descriptor.byte_len().unwrap();
+                let bytes =
+                    OwnedBytes::new(vec![255; length as usize], pool.reserve(length).unwrap())
+                        .unwrap();
+                let mut registry = ResourceRegistry::new(1, 65536).unwrap();
+                let handle = if format.is_some() {
+                    registry
+                        .register_texture(
+                            resource.clone(),
+                            TexturePayload::new(descriptor, bytes).unwrap(),
+                        )
+                        .unwrap()
+                } else {
+                    registry
+                        .register_image(
+                            resource.clone(),
+                            bytes,
+                            [8, 8],
+                            ImageFormat::Rgba8,
+                            ImageAlphaType::Alpha,
+                            descriptor.source_encoding,
+                        )
+                        .unwrap()
+                };
+                let source = registry.acquire(handle).unwrap();
+                let item = crate::common::image_plan::Required {
+                    source: &source,
+                    at: reel_ui::frame::RecordLocation {
+                        fragment: 0,
+                        command: 0,
+                        mask_depth: 0,
+                        owner,
+                    },
+                    texture: format.map(|_| {
+                        crate::common::resources::TextureUploadLayout::new(descriptor).unwrap()
+                    }),
+                };
+                let mut pending = images.allocate(&gpu, &budgets, limits, &item).unwrap();
+                if !format.is_some_and(TextureFormat::is_compressed) {
+                    let mut quota = u64::MAX;
+                    assert!(
+                        progress(
+                            &gpu,
+                            &budgets,
+                            limits,
+                            &mut pending,
+                            &mut quota,
+                            &mut images.scratch
+                        )
+                        .unwrap()
+                    );
+                }
+                if let Some(texture) = &identity {
+                    assert!(texture == &pending.image.texture);
+                } else {
+                    identity = Some(pending.image.texture.clone());
+                }
+                assert_eq!(pending.image.encoding, descriptor.source_encoding);
+                assert_eq!(
+                    pending.image.layout,
+                    if format.is_some() {
+                        descriptor.layout
+                    } else {
+                        TextureLayout::identity([8, 8])
+                    }
+                );
+                images.entries.insert(handle, pending.image.clone());
+                gpu.finish().unwrap();
+                registry.retire(handle);
+                images.prune(&[resource]);
+                drop(pending);
+                drop(source);
+                drop(registry);
+                assert_eq!(budgets.resources.usage().bytes, length);
+            }
+            drop(identity);
+            images.release_idle();
+            assert_eq!(budgets.resources.usage().bytes, 0);
+            assert_eq!(budgets.transient.usage().bytes, 0);
+            assert_eq!(pool.usage().bytes, 0);
+            eprintln!(
+                "native {format:?}: 8 resource versions retain one texture identity/reservation; cache clear releases all bytes"
+            );
+        }
+    }
 }
