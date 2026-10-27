@@ -3500,6 +3500,7 @@ dependencies = [
 name = "reel-player"
 version = "1.0.0"
 dependencies = [
+ "allocation-counter",
  "arboard",
  "aside-vm",
  "bc-crunch",

@@ -49,6 +49,7 @@ reel-media = { path = "../reel-media", default-features = false, features = ["de
 pvr-psp2-sys = { workspace = true, features = ["platform"] }
 
 [dev-dependencies]
+allocation-counter = "=0.8.1"
 stats_alloc = "=0.1.10"
 reel-core = { path = "../reel-core", features = ["test-support"] }
 
