@@ -951,9 +951,9 @@ impl Widget for SceneWidget {
             let [width, height] = image.data().image_size().expect("particle image resource");
             // A single widget, image resource and painter pass. Image alpha is
             // carried in the brush, avoiding one compositing group per sprite.
-            for sprite in batch.samples() {
+            self.particle_sampler.for_each(batch, |sprite| {
                 if sprite.opacity <= 0. || sprite.size <= 0. {
-                    continue;
+                    return;
                 }
                 let transform = Affine::translate((sprite.position[0], sprite.position[1]))
                     * Affine::rotate(sprite.rotation.to_radians())
@@ -970,7 +970,9 @@ impl Widget for SceneWidget {
                         ..Default::default()
                     },
                 );
-            }
+            });
+        } else {
+            self.particle_sampler = Default::default();
         }
         self.paint_selection(ctx, painter);
     }

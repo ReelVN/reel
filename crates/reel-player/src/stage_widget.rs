@@ -1240,6 +1240,7 @@ struct SceneWidget {
     image: Option<WidgetPod<Image>>,
     image_size: Size,
     particle_image: Option<ResourceLease>,
+    particle_sampler: reel_ui::stage::particles::ParticleSampler,
     mask_images: Arc<[ResourceLease]>,
     children: Vec<(Arc<SceneProperties>, WidgetPod<SceneWidget>)>,
     size: Size,
