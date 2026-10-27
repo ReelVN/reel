@@ -227,7 +227,10 @@ fn ordered_draw_segments_share_uploads_across_scissors_and_stop_at_groups() {
     renderer.poll().unwrap();
     let cached = renderer.usage().cached_geometry;
     assert!(cached > 0);
-    assert_eq!(renderer.usage().transient, cached);
+    assert_eq!(
+        renderer.usage().transient,
+        cached + renderer.targets.metadata_bytes()
+    );
     // Two prepared encoders must each own their uploads. Cancelling one cannot
     // rewrite the other's pending geometry or return either slot before a fence.
     let first = renderer.prepare(&frame).unwrap();
@@ -256,7 +259,10 @@ fn ordered_draw_segments_share_uploads_across_scissors_and_stop_at_groups() {
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
     renderer.poll().unwrap();
-    assert_eq!(renderer.usage().transient, cached);
+    assert_eq!(
+        renderer.usage().transient,
+        cached + renderer.targets.metadata_bytes()
+    );
     assert_eq!(renderer.usage().cached_geometry, cached);
     let warm = renderer.prepare(&frame).unwrap();
     assert_eq!(
@@ -274,7 +280,10 @@ fn ordered_draw_segments_share_uploads_across_scissors_and_stop_at_groups() {
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
     renderer.poll().unwrap();
-    assert_eq!(renderer.usage().transient, cached);
+    assert_eq!(
+        renderer.usage().transient,
+        cached + renderer.targets.metadata_bytes()
+    );
     assert_eq!(
         renderer
             .gpu
@@ -310,6 +319,11 @@ fn ordered_draw_segments_share_uploads_across_scissors_and_stop_at_groups() {
         6
     );
     drop(capture);
+    assert_eq!(
+        renderer.usage().transient,
+        renderer.targets.metadata_bytes()
+    );
+    renderer.targets.clear();
     assert_eq!(renderer.usage().transient, 0);
     assert_eq!(renderer.admission.usage().tickets, 0);
 }
