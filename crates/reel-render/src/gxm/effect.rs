@@ -99,7 +99,7 @@ impl Context<'_> {
         source: &Target,
         at: RecordLocation,
     ) -> Result<Target, GpuError> {
-        self.effect_draw(drawing, effect, transform, source, None, at)
+        self.effect_draw(drawing, effect, transform, source, None, None, at)
     }
     /// Multiply the complete local source by scalar coverage in one pass.
     pub(super) fn effect_mask(
@@ -117,9 +117,39 @@ impl Context<'_> {
             transform,
             source,
             Some(source_frame_to_pixels),
+            None,
             at,
         )
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "terminal effect retains its source and destination domains"
+    )]
+    pub(super) fn effect_into(
+        &mut self,
+        drawing: &FrameDrawing,
+        effect: &FrameEffect,
+        transform: Affine,
+        source: &Target,
+        target: &Target,
+        opacity: f32,
+        at: RecordLocation,
+    ) -> Result<(), GpuError> {
+        self.effect_draw(
+            drawing,
+            effect,
+            transform,
+            source,
+            None,
+            Some((target, opacity)),
+            at,
+        )
+        .map(|_| ())
+    }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one prepared effect and optional terminal composite"
+    )]
     fn effect_draw(
         &mut self,
         drawing: &FrameDrawing,
@@ -127,6 +157,7 @@ impl Context<'_> {
         transform: Affine,
         source: &Target,
         source_view: Option<Affine>,
+        terminal: Option<(&Target, f32)>,
         at: RecordLocation,
     ) -> Result<Target, GpuError> {
         self.flush_draws()?;
@@ -162,7 +193,11 @@ impl Context<'_> {
             )?;
             compiled
         };
-        let output = self.target()?;
+        let output = if let Some((target, _)) = terminal {
+            target.clone()
+        } else {
+            self.target()?
+        };
         let Some(mut context) = effect_plan::context(effect, transform, self.size, source.size)
         else {
             return Ok(output);
@@ -170,6 +205,10 @@ impl Context<'_> {
         if let Some(view) = source_view {
             context[0][3] = if effect.coverage_invert { 3.0 } else { 0.0 };
             effect_plan::map_source(&mut context, effect, transform, view, source.size);
+        }
+        if let Some((_, opacity)) = terminal {
+            context[1][3] = 1.0;
+            context[2][3] = opacity;
         }
         effect_plan::map_storage(&mut context, source.size, source.view.size());
         if self.scissor.empty() {
@@ -293,7 +332,11 @@ impl Context<'_> {
             range: 0..if padded { 54 } else { 6 },
             textures: &images,
             uniforms: &values,
-            blend: native::Blend::Replace,
+            blend: if terminal.is_some() {
+                native::Blend::Premultiplied
+            } else {
+                native::Blend::Replace
+            },
             scissor: self.native_scissor(),
         })?;
         Ok(output)

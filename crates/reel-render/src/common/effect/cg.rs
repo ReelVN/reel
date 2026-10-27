@@ -27,6 +27,17 @@ float4 reel_source_sample(float2 uv) {
 }
 "#);
     }
+    source.push_str(
+        r#"
+float4 reel_output(float4 color) {
+    float mode = reel_context[1].w;
+    if (mode == 0.0) return color;
+    float4 stored = color;
+    if (mode == 1.0) stored = floor(clamp(color, 0.0, 1.0) * 255.0 + 0.5) / 255.0;
+    return stored * reel_context[2].w;
+}
+"#,
+    );
     texture_functions(program, source_sampler, &mut source, limit)?;
     source.push_str(&generated.function);
     source.push_str("\nfloat4 main(float2 v_uv : TEXCOORD0, float4 fragment_position : WPOS");
@@ -49,9 +60,9 @@ float4 reel_source_sample(float2 uv) {
 "#,
     );
     if generated.output_type == EffectType::Float {
-        source.push_str("float coverage = clamp(reel_effect(uv, position, reel_context[4].zw), 0.0, 1.0); float mode = reel_context[0].w; if (mode >= 2.0) { coverage = 1.0 - coverage; } if (mode == 1.0 || mode == 2.0) { return float4(coverage); } return reel_implicit_source * coverage;\n}\n");
+        source.push_str("float coverage = clamp(reel_effect(uv, position, reel_context[4].zw), 0.0, 1.0); float mode = reel_context[0].w; if (mode >= 2.0) { coverage = 1.0 - coverage; } if (mode == 1.0 || mode == 2.0) { return reel_output(float4(coverage)); } return reel_output(reel_implicit_source * coverage);\n}\n");
     } else {
-        source.push_str("return reel_effect(uv, position, reel_context[4].zw);\n}\n");
+        source.push_str("return reel_output(reel_effect(uv, position, reel_context[4].zw));\n}\n");
     }
     if source.len() > limit {
         return Err(GenerateError::SourceLimit { limit });

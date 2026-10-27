@@ -814,6 +814,16 @@ impl Input<'_> {
                                 scratch.release(source, &mut reserve)?;
                                 continue;
                             }
+                            if scope.group.is_some_and(|group| {
+                                super::effect_plan::terminal_composite(
+                                    group,
+                                    samples,
+                                    capture || !current.drawing.transitions().is_empty(),
+                                )
+                            }) {
+                                scratch.release(source, &mut reserve)?;
+                                continue;
+                            }
                             scratch.acquire(parent_size, &mut reserve)?;
                             scratch.release(source, &mut reserve)?;
                             source = parent_size;

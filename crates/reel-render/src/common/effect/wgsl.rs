@@ -32,6 +32,18 @@ fn reel_source_sample(uv: vec2<f32>) -> vec4<f32> {
     return textureSampleLevel(reel_source, reel_sampler, sampled, 0.0);
 }
 "#);
+    source.push_str(
+        r#"
+fn reel_output(color: vec4<f32>) -> vec4<f32> {
+    let mode = reel_context.slots[1].w;
+    if mode == 0.0 { return color; }
+    var stored = color;
+    if mode == 1.0 { stored = floor(clamp(color, vec4(0.0), vec4(1.0)) * 255.0 + 0.5) / 255.0; }
+    if mode == 2.0 { stored = quantizeToF16(color); }
+    return stored * reel_context.slots[2].w;
+}
+"#,
+    );
     if generated.output_type == EffectType::Float {
         source.push_str("struct ReelEffectVarying { @builtin(position) position: vec4<f32>, @location(0) implicit_source_uv: vec2<f32> }\n");
     } else {
@@ -75,9 +87,11 @@ fn reel_source_sample(uv: vec2<f32>) -> vec4<f32> {
 "#,
     );
     if generated.output_type == EffectType::Float {
-        source.push_str("var coverage = clamp(reel_effect(uv, position, reel_context.slots[4].zw), 0.0, 1.0); let mode = reel_context.slots[0].w; if mode >= 2.0 { coverage = 1.0 - coverage; } if mode == 1.0 || mode == 2.0 { return vec4(coverage); } return reel_implicit_source * coverage;\n}\n");
+        source.push_str("var coverage = clamp(reel_effect(uv, position, reel_context.slots[4].zw), 0.0, 1.0); let mode = reel_context.slots[0].w; if mode >= 2.0 { coverage = 1.0 - coverage; } if mode == 1.0 || mode == 2.0 { return reel_output(vec4(coverage)); } return reel_output(reel_implicit_source * coverage);\n}\n");
     } else {
-        source.push_str("return reel_effect(uv, position, reel_context.slots[4].zw);\n}\n");
+        source.push_str(
+            "return reel_output(reel_effect(uv, position, reel_context.slots[4].zw));\n}\n",
+        );
     }
     if !source_sampler {
         source = source.replace(

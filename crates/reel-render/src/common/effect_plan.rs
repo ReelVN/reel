@@ -1,5 +1,7 @@
 //! Shared parameter, coordinate and resource admission for prepared effects.
 pub(crate) mod implicit_mesh;
+#[cfg(test)]
+mod terminal_tests;
 use super::GpuError;
 use reel_ui::{
     frame::{FrameDrawing, FrameEffect, RecordLocation},
@@ -66,6 +68,25 @@ pub(crate) fn direct_mask_projection(
 ) -> bool {
     group.mask_effect.is_some()
         && !retained_transitions
+        && group.composite.blend == Default::default()
+        && group.invert == 0.
+        && group.clip.is_none()
+        && group.mask.is_none()
+        && group.image_mask.is_none()
+        && group.filters.is_empty()
+}
+/// Fuse an effect's terminal opacity/source-over pass on the same output grid.
+/// Sampling still reads the complete isolated source. Masks, backdrop reads,
+/// capture/retained boundaries, inversion and multisample resolves remain passes.
+pub(crate) fn terminal_composite(
+    group: &reel_ui::frame::FrameGroup,
+    samples: u32,
+    boundary: bool,
+) -> bool {
+    samples == 1
+        && !boundary
+        && group.effect.is_some()
+        && group.mask_effect.is_none()
         && group.composite.blend == Default::default()
         && group.invert == 0.
         && group.clip.is_none()

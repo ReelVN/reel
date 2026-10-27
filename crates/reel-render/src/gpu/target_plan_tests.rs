@@ -156,7 +156,12 @@ fn effect_chains_forward_the_complete_source_and_keep_two_scratch_targets() {
                     )
                     .unwrap();
                     let expected = if transform == Affine::IDENTITY {
-                        160 * 120 * if opacity == 1. { 3 } else { depth + 2 }
+                        160 * 120
+                            * if opacity == 1. {
+                                if depth == 1 { 2 } else { 3 }
+                            } else {
+                                depth + 1
+                            }
                     } else {
                         let [a, b, c, d, _, _] = transform.as_coeffs();
                         let local =
@@ -166,9 +171,9 @@ fn effect_chains_forward_the_complete_source_and_keep_two_scratch_targets() {
                         } else if opacity == 1. {
                             2
                         } else {
-                            depth + 1
+                            depth
                         };
-                        2 * 160 * 120 + count * local
+                        160 * 120 + count * local
                     };
                     assert_eq!(
                         pixels, expected,

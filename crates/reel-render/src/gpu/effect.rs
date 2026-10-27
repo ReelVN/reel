@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use wgpu::util::DeviceExt;
 
 #[derive(Default)]
-pub(super) struct Cache(Mutex<[effect_cache::Cache<Arc<Compiled>>; 2]>);
+pub(super) struct Cache(Mutex<[effect_cache::Cache<Arc<Compiled>>; 4]>);
 pub(super) struct Compiled {
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
@@ -23,11 +23,16 @@ impl Cache {
             cache.prune();
         }
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "compiled effect variants and their budget owner"
+    )]
     fn get(
         &self,
         gpu: &Gpu,
         quality: Quality,
         padded: bool,
+        terminal: bool,
         shader: &effect_plan::Shader<'_>,
         budget: &BudgetPool,
         at: RecordLocation,
@@ -63,7 +68,7 @@ impl Cache {
             });
         }
         let mut caches = self.0.lock().unwrap();
-        let cache = &mut caches[usize::from(padded)];
+        let cache = &mut caches[usize::from(padded) + 2 * usize::from(terminal)];
         if let Some(compiled) = cache.get(
             descriptor.shader_key,
             lease,
@@ -121,7 +126,7 @@ impl Cache {
                 (padded, if padded { "vertex_padded" } else { "vertex" }),
                 pipeline::FragmentOutput {
                     entry: "fragment",
-                    blend: None,
+                    blend: terminal.then_some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                 },
                 #[cfg(test)]
                 None,
@@ -156,7 +161,7 @@ impl Context<'_> {
         source: &Target,
         at: RecordLocation,
     ) -> Result<Target, GpuError> {
-        self.effect_draw(drawing, effect, transform, source, None, at)
+        self.effect_draw(drawing, effect, transform, source, None, None, at)
     }
     /// Multiply the complete local source by scalar coverage in one pass.
     pub(super) fn effect_mask(
@@ -174,9 +179,39 @@ impl Context<'_> {
             transform,
             source,
             Some(source_frame_to_pixels),
+            None,
             at,
         )
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "terminal effect retains its source and destination domains"
+    )]
+    pub(super) fn effect_into(
+        &mut self,
+        drawing: &FrameDrawing,
+        effect: &FrameEffect,
+        transform: Affine,
+        source: &Target,
+        target: &Target,
+        opacity: f32,
+        at: RecordLocation,
+    ) -> Result<(), GpuError> {
+        self.effect_draw(
+            drawing,
+            effect,
+            transform,
+            source,
+            None,
+            Some((target, opacity)),
+            at,
+        )
+        .map(|_| ())
+    }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one prepared effect and optional terminal composite"
+    )]
     fn effect_draw(
         &mut self,
         drawing: &FrameDrawing,
@@ -184,6 +219,7 @@ impl Context<'_> {
         transform: Affine,
         source: &Target,
         source_view: Option<Affine>,
+        terminal: Option<(&Target, f32)>,
         at: RecordLocation,
     ) -> Result<Target, GpuError> {
         self.flush_draws()?;
@@ -194,11 +230,16 @@ impl Context<'_> {
             self.gpu,
             self.quality,
             padded,
+            terminal.is_some(),
             &shader,
             &self.budgets.resources,
             at,
         )?;
-        let output = self.target()?;
+        let output = if let Some((target, _)) = terminal {
+            target.clone()
+        } else {
+            self.target()?
+        };
         let Some(mut context) = effect_plan::context(effect, transform, self.size, source.size)
         else {
             return Ok(output);
@@ -206,6 +247,14 @@ impl Context<'_> {
         if let Some(view) = source_view {
             context[0][3] = if effect.coverage_invert { 3.0 } else { 0.0 };
             effect_plan::map_source(&mut context, effect, transform, view, source.size);
+        }
+        if let Some((_, opacity)) = terminal {
+            context[1][3] = if self.quality.format == wgpu::TextureFormat::Rgba16Float {
+                2.0
+            } else {
+                1.0
+            };
+            context[2][3] = opacity;
         }
         effect_plan::map_storage(&mut context, source.size, source.storage_size());
         if self.scissor.empty() {
@@ -373,3 +422,6 @@ impl Context<'_> {
         Ok(output)
     }
 }
+
+#[cfg(test)]
+mod tests;

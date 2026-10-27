@@ -903,6 +903,25 @@ impl Context<'_> {
                         self.recycle_target(source)?;
                         source = projected;
                     } else if let Some((effect, transform)) = group.effect {
+                        if group.group.is_some_and(|definition| {
+                            crate::common::effect_plan::terminal_composite(
+                                definition,
+                                1,
+                                self.capture || !current.drawing.transitions().is_empty(),
+                            )
+                        }) {
+                            self.effect_into(
+                                current.drawing,
+                                effect,
+                                transform,
+                                &source,
+                                &current.scopes.last().target,
+                                group.opacity,
+                                entry.at,
+                            )?;
+                            self.recycle_target(source)?;
+                            continue;
+                        }
                         let processed =
                             self.effect(current.drawing, effect, transform, &source, entry.at)?;
                         self.recycle_target(source)?;

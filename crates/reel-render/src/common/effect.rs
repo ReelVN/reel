@@ -35,6 +35,12 @@ mod wgsl;
 /// Slot 0.w selects ordinary output (zero), scalar coverage (one), or inverted
 /// scalar coverage (two), or source multiplied by inverted coverage (three).
 /// Inversion follows coverage clamping.
+/// Slot 1.w selects a terminal source-over output: zero keeps ordinary output,
+/// one quantizes to RGBA8 UNORM, two rounds to binary16. Slot 2.w carries its
+/// opacity. Quantization precedes opacity, preserving the intermediate color
+/// domain. RGBA8 halfway ties permit one UNORM unit per intermediate channel;
+/// source-over bounds the resulting RGB error by two units and alpha by one.
+/// Terminal output is selected only for single-sample, uninverted source-over.
 pub const CONTEXT_SLOTS: usize = 9;
 
 /// Complete prepared shader source; runtime backends load this product verbatim.
