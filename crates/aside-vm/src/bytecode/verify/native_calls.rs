@@ -43,6 +43,26 @@ impl VerifiedProgram {
             .ok()
             .map(|i| i as u32)
     }
+    pub(crate) fn native_call_identity(
+        &self,
+        plan: u32,
+    ) -> Option<(FunctionId, DescriptorId, NativeId)> {
+        let &(function, descriptor, _, _) = self.0.native_calls.sites.get(plan as usize)?;
+        let Descriptor::Call(call) =
+            &self.0.package.functions[function as usize].descriptors[descriptor as usize]
+        else {
+            unreachable!()
+        };
+        let native = match call.target {
+            CallTarget::Native(id) => id,
+            CallTarget::Function(id) => match self.0.package.functions[id.index()].kind {
+                FunctionKind::Native(id) => id,
+                _ => unreachable!(),
+            },
+            _ => unreachable!(),
+        };
+        Some((FunctionId(function), DescriptorId(descriptor), native))
+    }
     pub(crate) fn native_call_slots(&self, plan: u32) -> Option<&[u32]> {
         let &(_, _, start, count) = self.0.native_calls.sites.get(plan as usize)?;
         self.0

@@ -288,3 +288,65 @@ fn cancellation_releases_each_partial_planned_argument_window() {
         review_tests::collect(&mut vm);
     }
 }
+
+#[test]
+fn restore_rejects_a_valid_argument_plan_from_another_native() {
+    let (mut p, mut support) = fixture(1);
+    let symbol = SymbolId(p.symbols.len() as u32);
+    p.symbols.push("host::other".into());
+    let mut native = p.natives[0].clone();
+    native.symbol = symbol;
+    p.natives.push(native);
+    let mut registration = support.natives[0].clone();
+    registration.symbol = "host::other".into();
+    support.natives.push(registration);
+    let Descriptor::Call(mut other) = p.functions[0].descriptors[0].clone() else {
+        unreachable!()
+    };
+    other.target = CallTarget::Native(NativeId(1));
+    p.functions[0].descriptors.push(Descriptor::Call(other));
+    let program = verify(p, Limits::default()).unwrap();
+    let other_plan = program
+        .native_call_plan(FunctionId(0), DescriptorId(1))
+        .unwrap();
+    let mut vm = Vm::load(
+        program,
+        support.clone(),
+        VmLimits::default(),
+        SessionEpoch(1),
+    )
+    .unwrap();
+    let task = vm
+        .start(fixtures::ENTRY, &[], RootOwner(1), Context::Ordinary)
+        .unwrap();
+    let RunOutcome::HostCall(_) = next(&mut vm, task) else {
+        panic!("native")
+    };
+    let Frame::Native(frame) = vm.active.frames.data.last_mut().unwrap() else {
+        unreachable!()
+    };
+    frame.argument_plan = Some(other_plan);
+    let registry = SnapshotRegistry::default();
+    let mut capture = vm.snapshot_begin(&registry).unwrap();
+    while !capture.step(SnapshotBudget { units: 1 }).unwrap().complete {}
+    let image = capture.finish().unwrap();
+    let mut restore = Vm::restore_begin(
+        &image,
+        vm.program().clone(),
+        support,
+        vm.limits,
+        SessionEpoch(2),
+        &registry,
+    )
+    .unwrap();
+    loop {
+        match restore.step(SnapshotBudget { units: 1 }) {
+            Err(crate::snapshot::SnapshotError::Invalid(message)) => {
+                assert_eq!(message, "native argument plan callee");
+                break;
+            }
+            Ok(progress) => assert!(!progress.complete, "foreign plan was accepted"),
+            other => panic!("{other:?}"),
+        }
+    }
+}

@@ -616,7 +616,8 @@ impl VmRestore<'_> {
             RecordKind::Frame => {
                 let mut frame: Frame = record.read()?;
                 rebase_frame(&mut frame, &self.map, &self.vm.program)?;
-                self.constant_validation = validate_frame(&frame, &self.vm)?;
+                let parent = self.task_mut(record.key)?.frames.data.last().copied();
+                self.constant_validation = validate_frame(&frame, &self.vm, parent)?;
                 append(&mut self.task_mut(record.key)?.frames, record.offset, frame)?;
             }
             RecordKind::Unwind => {
@@ -822,7 +823,11 @@ fn rebase_frame(
     }
     Ok(())
 }
-fn validate_frame(frame: &Frame, vm: &Vm) -> Result<Option<ConstantValidation>, SnapshotError> {
+fn validate_frame(
+    frame: &Frame,
+    vm: &Vm,
+    parent: Option<Frame>,
+) -> Result<Option<ConstantValidation>, SnapshotError> {
     match frame {
         Frame::Script(frame) => {
             let code = vm
@@ -891,6 +896,27 @@ fn validate_frame(frame: &Frame, vm: &Vm) -> Result<Option<ConstantValidation>, 
                     .program
                     .native_call_slots(plan)
                     .ok_or_else(|| SnapshotError::Invalid("native argument plan".into()))?;
+                let (function, descriptor, native) = vm.program.native_call_identity(plan).unwrap();
+                if native != frame.native {
+                    return Err(SnapshotError::Invalid("native argument plan callee".into()));
+                }
+                if let NativePhase::PlannedCopy { source, .. } = frame.phase {
+                    let ArgSource::Caller {
+                        frame: caller,
+                        descriptor: actual,
+                    } = source
+                    else {
+                        return Err(SnapshotError::Invalid("native argument plan source".into()));
+                    };
+                    let Some(Frame::Script(parent)) = parent.filter(|f| f.id() == caller) else {
+                        return Err(SnapshotError::Invalid("native argument plan caller".into()));
+                    };
+                    if parent.code.function != function || actual != descriptor {
+                        return Err(SnapshotError::Invalid(
+                            "native argument plan callsite".into(),
+                        ));
+                    }
+                }
                 if positions.len() != frame.argument_count as usize
                     || frame.receiver
                     || frame.bindings.is_some()
