@@ -3390,7 +3390,6 @@ dependencies = [
  "aside-host",
  "aside-lsp",
  "aside-vm",
- "bc-crunch",
  "blake3",
  "clap",
  "codespan-reporting",

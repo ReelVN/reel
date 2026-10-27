@@ -72,8 +72,8 @@ impl Options {
 
 /// Prepare PNG/JPEG artwork and atomically publish a new `.reel-texture` file.
 /// Filtering uses linear-premultiplied colors; padding repeats the content edge.
-/// BC blocks remain compressed at runtime. An additional lossless BC envelope is
-/// used only when it reduces file size. Existing output files are preserved.
+/// Pixel and BC payloads are stored ready for upload. Release archives compress
+/// these bytes in independently readable blocks. Existing output files are preserved.
 /// BC fitting compares displayed colors, gradients and translucent edges against
 /// the filtered source, refining affected images at the same GPU payload size.
 pub fn prepare(source: &Path, output: &Path, options: Options) -> Result<TextureHeader, String> {
@@ -151,9 +151,8 @@ pub(crate) fn prepare_scaled_bounded(
     // and float destination (16 B/px); apply_color_space then works in place.
     // Triangle resize keeps original float pixels, width*new_height float
     // intermediate, float result and a growing f32 weight vector (<=8 B/axis).
-    // Quantization holds float content and padded RGBA8. The later BC phase
-    // releases RGBA8 before envelope compression; 16 B/stored px also covers
-    // bc-crunch 0.1.2's doubling encoder/count vectors and rgbcx's BC output.
+    // Quantization holds float content and padded RGBA8. BC fitting and quality
+    // measurement retain the float reference, candidate blocks and RGBA scratch.
     let original_pixels = u128::from(logical[0]) * u128::from(logical[1]);
     let content_pixels = u128::from(content[0]) * u128::from(content[1]);
     let intermediate_pixels = u128::from(logical[0]) * u128::from(content[1]);
@@ -168,7 +167,7 @@ pub(crate) fn prepare_scaled_bounded(
     let quantize = content_pixels * 16 + stored_pixels * 4;
     let encode = if !matches!(options.format, Format::Rgba8) {
         // The float reference and baseline blocks survive one candidate's fit
-        // and decode. Envelope compression later releases the float reference.
+        // and decode.
         bc_workspace(content, storage)
     } else {
         0
@@ -196,8 +195,7 @@ pub(crate) fn prepare_scaled_bounded(
 pub(crate) fn bc_workspace(content: [u32; 2], storage: [u32; 2]) -> u128 {
     let content_pixels = u128::from(content[0]) * u128::from(content[1]);
     let stored_pixels = u128::from(storage[0]) * u128::from(storage[1]);
-    (content_pixels * 16 + stored_pixels * 6 + quality::scratch_bytes(content[0]))
-        .max(stored_pixels * 16)
+    content_pixels * 16 + stored_pixels * 6 + quality::scratch_bytes(content[0])
 }
 
 /// Encode already decoded artwork with the same filtering, block and publication
@@ -217,35 +215,14 @@ fn prepare_decoded_scaled(
     scale: f64,
 ) -> Result<TextureHeader, String> {
     let (descriptor, linear) = prepare_linear(pixels, options, scale)?;
-    let [width, height] = descriptor.layout.storage_size;
     let blocks = match descriptor.format {
         TextureFormat::Rgba8 => quantized_pixels(&linear, descriptor, options.dither).into_raw(),
         TextureFormat::Bc1Rgb | TextureFormat::Bc3Rgba => quality::encode(&linear, descriptor)?,
         _ => unreachable!("offline conversion selects RGBA8, BC1 or BC3"),
     };
     drop(linear);
-    let (codec, payload) = if descriptor.format.is_compressed() {
-        let compressed = bc_crunch::compress(
-            width,
-            height,
-            if descriptor.format == TextureFormat::Bc1Rgb {
-                bc_crunch::Format::Bc1
-            } else {
-                bc_crunch::Format::Bc3
-            },
-            &blocks,
-        )
+    let header = TextureHeader::new(descriptor, TextureCodec::Raw, blocks.len() as u64)
         .map_err(|e| e.to_string())?;
-        if compressed.len() < blocks.len() {
-            (TextureCodec::BcCrunch, compressed)
-        } else {
-            (TextureCodec::Raw, blocks)
-        }
-    } else {
-        (TextureCodec::Raw, blocks)
-    };
-    let header =
-        TextureHeader::new(descriptor, codec, payload.len() as u64).map_err(|e| e.to_string())?;
     let parent = output
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
@@ -253,7 +230,7 @@ fn prepare_decoded_scaled(
     let target = parent.join(output.file_name().ok_or("output filename is missing")?);
     let published = reel_storage::publish(&target, false, |file| {
         file.write_all(&header.encode())?;
-        file.write_all(&payload)
+        file.write_all(&blocks)
     })
     .map_err(|e| e.to_string())?;
     if let Some(warning) = published.cleanup_warning {
@@ -418,6 +395,44 @@ fn quantize(pixel: [f32; 4], dither: Dither, coordinates: [u32; 2]) -> [u8; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_formats_publish_upload_ready_payloads() {
+        let directory = tempfile::tempdir().unwrap();
+        for (format, expected) in [
+            (Format::Auto, TextureFormat::Bc3Rgba),
+            (Format::Bc1, TextureFormat::Bc1Rgb),
+            (Format::Bc3, TextureFormat::Bc3Rgba),
+            (Format::Rgba8, TextureFormat::Rgba8),
+        ] {
+            let path = directory.path().join(format!("{format:?}.reel-texture"));
+            let pixels = RgbaImage::from_fn(12, 9, |x, y| {
+                let alpha = if matches!(format, Format::Bc1) {
+                    255
+                } else {
+                    192
+                };
+                image::Rgba([(x * 17) as u8, (y * 23) as u8, 64, alpha])
+            });
+            prepare_decoded(
+                pixels.into(),
+                &path,
+                Options {
+                    format,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let bytes = std::fs::read(path).unwrap();
+            let (header, payload) = TextureHeader::parse(&bytes).unwrap();
+            assert_eq!(header.codec(), TextureCodec::Raw);
+            assert_eq!(header.descriptor().format, expected);
+            assert_eq!(
+                payload.len() as u64,
+                header.descriptor().byte_len().unwrap()
+            );
+        }
+    }
 
     #[test]
     fn ordered_dither_preserves_the_mean_of_subcode_gradients() {

@@ -13,6 +13,7 @@ use std::{
 
 const PNG: &[u8] = include_bytes!("../../../../examples/assets/panels.png");
 const JPEG: &[u8] = include_bytes!("../../../../examples/assets/sun.jpg");
+mod cost;
 mod packed;
 
 /// Supply compiled source/ASB definitions through the ordinary asset IO and

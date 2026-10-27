@@ -54,16 +54,8 @@ fn main() -> io::Result<()> {
     watched.insert(lock_path);
     let dependencies = locked_dependencies::LockedDependencies::parse(&lock)?;
     for (kind, sources, dependency_roots) in [
-        (
-            "TEXTURE",
-            texture.as_slice(),
-            ["image", "rgbcx", "bc-crunch"].as_slice(),
-        ),
-        (
-            "TILES",
-            tiles.as_slice(),
-            ["image", "rgbcx", "bc-crunch"].as_slice(),
-        ),
+        ("TEXTURE", texture.as_slice(), ["image", "rgbcx"].as_slice()),
+        ("TILES", tiles.as_slice(), ["image", "rgbcx"].as_slice()),
         (
             "OPUS",
             opus.as_slice(),
