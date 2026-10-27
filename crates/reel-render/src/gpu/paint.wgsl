@@ -159,6 +159,24 @@ fn image_alpha(uv: vec2<f32>) -> f32 {
     let pixel = textureSample(image, image_sampler, v.uv);
     return vec4<f32>(min(pixel.rgb, vec3<f32>(pixel.a)), pixel.a) * v.color;
 }
+fn regional_uv(v: VertexOut) -> vec2<f32> {
+    let half_texel = 0.5 / vec2<f32>(textureDimensions(image));
+    let inset = min(half_texel, v.source_window.zw * 0.5);
+    return clamp(clamp(v.uv, v.source_window.xy + inset,
+                       v.source_window.xy + v.source_window.zw - inset),
+                 half_texel, vec2<f32>(1.0) - half_texel);
+}
+@fragment fn fragment_regional(v: VertexOut) -> @location(0) vec4<f32> {
+    return textureSample(image, image_sampler, regional_uv(v)) * v.color;
+}
+@fragment fn fragment_regional_bc1(v: VertexOut) -> @location(0) vec4<f32> {
+    let pixel = textureSample(image, image_sampler, regional_uv(v));
+    return vec4<f32>(pixel.rgb, 1.0) * v.color;
+}
+@fragment fn fragment_regional_bc3(v: VertexOut) -> @location(0) vec4<f32> {
+    let pixel = textureSample(image, image_sampler, regional_uv(v));
+    return vec4<f32>(min(pixel.rgb, vec3<f32>(pixel.a)), pixel.a) * v.color;
+}
 @group(0) @binding(3) var chroma_u: texture_2d<f32>;
 @group(0) @binding(4) var chroma_v: texture_2d<f32>;
 struct VideoColor {

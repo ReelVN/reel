@@ -122,9 +122,9 @@ pub struct Pipelines {
     pub coverage: wgpu::RenderPipeline,
     #[cfg(test)]
     pub coverage_draws: std::sync::atomic::AtomicUsize,
-    pub direct: [wgpu::RenderPipeline; 3],
+    pub direct: [wgpu::RenderPipeline; 6],
     #[cfg(test)]
-    pub direct_draws: [std::sync::atomic::AtomicUsize; 3],
+    pub direct_draws: [std::sync::atomic::AtomicUsize; 6],
     pub yuv: wgpu::RenderPipeline,
     pub yuv_layout: wgpu::BindGroupLayout,
     pub composite: wgpu::RenderPipeline,
@@ -232,6 +232,9 @@ impl Pipelines {
             "fragment_direct",
             "fragment_direct_bc1",
             "fragment_direct_bc3",
+            "fragment_regional",
+            "fragment_regional_bc1",
+            "fragment_regional_bc3",
         ]
         .map(|entry| {
             pipeline_entry(

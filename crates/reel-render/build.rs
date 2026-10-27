@@ -119,17 +119,25 @@ fn compile_shaders() {
     println!("cargo:rerun-if-changed=src/gles2/shaders/paint.glsl");
     let paint =
         std::fs::read_to_string("src/gles2/shaders/paint.glsl").expect("read paint template");
-    for (name, alpha) in [
-        ("paint_direct", 0),
-        ("paint_direct_bc1", 1),
-        ("paint_direct_bc3", 2),
+    for (name, alpha, regional) in [
+        ("paint_direct", 0, false),
+        ("paint_direct_bc1", 1, false),
+        ("paint_direct_bc3", 2, false),
+        ("paint_regional", 0, true),
+        ("paint_regional_bc1", 1, true),
+        ("paint_regional_bc3", 2, true),
     ] {
+        let regional = if regional {
+            "\n#define REEL_REGIONAL"
+        } else {
+            ""
+        };
         shaders.push((
             name.to_owned(),
             Stage::Fragment,
             paint.replacen(
                 "#version 100",
-                &format!("#version 100\n#define REEL_DIRECT {alpha}"),
+                &format!("#version 100\n#define REEL_DIRECT {alpha}{regional}"),
                 1,
             ),
         ));

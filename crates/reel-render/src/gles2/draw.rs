@@ -883,11 +883,7 @@ impl Context<'_> {
             } = entry.state;
             let styled = appearance[5][3] != 0. || appearance[7][3] != 0.;
             let shader = if let Some(direct) = direct {
-                match direct {
-                    mesh::DirectPaint::Rgba => &self.programs.direct,
-                    mesh::DirectPaint::Bc1 => &self.programs.direct_bc1,
-                    mesh::DirectPaint::Bc3 => &self.programs.direct_bc3,
-                }
+                &self.programs.direct[direct as usize]
             } else if kind > 0. {
                 if styled {
                     &self.programs.video_appearance

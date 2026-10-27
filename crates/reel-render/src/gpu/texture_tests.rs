@@ -107,7 +107,7 @@ fn frame(lease: ResourceLease, variant: u32, pool: &BudgetPool) -> RenderFrame {
 
 #[test]
 #[ignore = "requires actual BC-capable graphics adapter; submits without pixel readback"]
-fn direct_paint_submits_each_alpha_policy_and_keeps_regional_draws_general() {
+fn direct_paint_submits_whole_and_regional_alpha_policies() {
     use std::sync::atomic::Ordering;
     let pool = BudgetPool::new(
         BudgetCategory::CpuOutput,
@@ -130,7 +130,7 @@ fn direct_paint_submits_each_alpha_policy_and_keeps_regional_draws_general() {
             .contains(wgpu::Features::TEXTURE_COMPRESSION_BC)
     );
     let mut renderer = Renderer::new(gpu);
-    let mut expected = [0; 3];
+    let mut expected = [0; 6];
     for (index, format) in [
         TextureFormat::Rgba8,
         TextureFormat::Bc1Rgb,
@@ -167,6 +167,8 @@ fn direct_paint_submits_each_alpha_policy_and_keeps_regional_draws_general() {
                 .unwrap();
             if variant == 0 {
                 expected[index] += 1;
+            } else if variant == 1 {
+                expected[index + 3] += 1;
             }
             assert_eq!(
                 pipelines
@@ -185,8 +187,8 @@ fn direct_paint_submits_each_alpha_policy_and_keeps_regional_draws_general() {
             renderer.poll().unwrap();
         }
     }
-    assert_eq!(expected, [1, 1, 1]);
-    assert_eq!(renderer.pipelines.creations.snapshot(), [3, 10, 10, 10, 8]);
+    assert_eq!(expected, [1; 6]);
+    assert_eq!(renderer.pipelines.creations.snapshot(), [3, 13, 13, 13, 8]);
     assert_eq!(renderer.usage().transient, renderer.usage().cached_geometry);
 }
 

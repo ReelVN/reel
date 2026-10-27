@@ -138,12 +138,16 @@ pub(crate) struct ImagePaint {
     pub(crate) color: [f32; 4],
     pub(crate) sampling: ImageSampling,
 }
-/// Whole-texture paint preserves the resource's block-format alpha contract.
+/// Fixed image programs preserve the resource's sampling and block-alpha contract.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
 pub(crate) enum DirectPaint {
     Rgba,
     Bc1,
     Bc3,
+    RegionalRgba,
+    RegionalBc1,
+    RegionalBc3,
 }
 pub struct Mesh {
     pub vertices: Vec<Vertex>,
@@ -268,17 +272,30 @@ impl Mesh {
             || appearance.is_some_and(|values| {
                 !matches!(values[4][3], 0. | 1.) || values[5][3] != 0. || values[7][3] != 0.
             })
-            || self
-                .vertices
-                .iter()
-                .any(|vertex| vertex.source_window != [0.; 4])
         {
             return None;
         }
-        Some(match format {
-            Some(reel_core::texture::TextureFormat::Bc1Rgb) => DirectPaint::Bc1,
-            Some(reel_core::texture::TextureFormat::Bc3Rgba) => DirectPaint::Bc3,
-            _ => DirectPaint::Rgba,
+        let regional = self
+            .vertices
+            .first()
+            .is_some_and(|v| v.source_window != [0.; 4]);
+        if self.vertices.iter().any(|v| {
+            if regional {
+                v.source_window[2] <= 0. || v.source_window[3] <= 0.
+            } else {
+                v.source_window != [0.; 4]
+            }
+        }) {
+            return None;
+        }
+        use reel_core::texture::TextureFormat::{Bc1Rgb, Bc3Rgba};
+        Some(match (regional, format) {
+            (false, Some(Bc1Rgb)) => DirectPaint::Bc1,
+            (false, Some(Bc3Rgba)) => DirectPaint::Bc3,
+            (false, _) => DirectPaint::Rgba,
+            (true, Some(Bc1Rgb)) => DirectPaint::RegionalBc1,
+            (true, Some(Bc3Rgba)) => DirectPaint::RegionalBc3,
+            (true, _) => DirectPaint::RegionalRgba,
         })
     }
     /// Append already transformed geometry without changing primitive order.
@@ -978,6 +995,14 @@ mod tests {
             storage_size: [4, 4],
         };
         ImageSampling::with_layout(None, layout, [false; 2]).apply(&mut mesh.vertices);
+        for (format, expected) in [
+            (None, DirectPaint::RegionalRgba),
+            (Some(TextureFormat::Bc1Rgb), DirectPaint::RegionalBc1),
+            (Some(TextureFormat::Bc3Rgba), DirectPaint::RegionalBc3),
+        ] {
+            assert_eq!(mesh.direct_paint([false; 2], None, format), Some(expected));
+        }
+        ImageSampling::with_layout(None, layout, [true, false]).apply(&mut mesh.vertices);
         assert_eq!(mesh.direct_paint([false; 2], None, None), None);
     }
     use reel_ui::core::Widget;

@@ -10,8 +10,18 @@ varying vec2 v_uv;
 varying vec4 v_color,v_window;
 #ifdef REEL_DIRECT
 uniform sampler2D u_image;
+#ifdef REEL_REGIONAL
+uniform vec2 u_dimensions;
+#endif
 void main(){
+#ifdef REEL_REGIONAL
+ vec2 half_texel=0.5/u_dimensions,span=v_window.zw;
+ vec2 inset=min(half_texel,span*0.5);
+ vec2 uv=clamp(clamp(v_uv,v_window.xy+inset,v_window.xy+span-inset),half_texel,vec2(1.0)-half_texel);
+ vec4 color=texture2D(u_image,uv);
+#else
  vec4 color=texture2D(u_image,v_uv);
+#endif
 #if REEL_DIRECT == 1
  color.a=1.0;
 #elif REEL_DIRECT == 2

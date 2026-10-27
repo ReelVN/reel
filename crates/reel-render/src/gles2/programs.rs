@@ -130,9 +130,7 @@ pub(super) fn create_program(
 }
 pub(super) struct Programs {
     pub rgba: Shader,
-    pub direct: Shader,
-    pub direct_bc1: Shader,
-    pub direct_bc3: Shader,
+    pub direct: [Shader; 6],
     pub coverage: Shader,
     pub gradient: Shader,
     pub glyph_gradient: Shader,
@@ -163,7 +161,7 @@ pub(super) struct Programs {
 impl Programs {
     pub fn new(context: &native::Context, budget: &BudgetPool) -> Result<Self, GlesError> {
         let bytes = (size_of::<Self>()
-            + NAMES.len() * size_of::<Option<Uniform>>() * 27
+            + NAMES.len() * size_of::<Option<Uniform>>() * 30
             + 4 * size_of::<crate::common::mesh::Vertex>()
             + 6 * 4) as u64;
         let storage = budget
@@ -184,9 +182,14 @@ impl Programs {
         });
         Ok(Self {
             rgba: Shader::new(context, shader_code!("paint_rgba"))?,
-            direct: Shader::new(context, shader_code!("paint_direct"))?,
-            direct_bc1: Shader::new(context, shader_code!("paint_direct_bc1"))?,
-            direct_bc3: Shader::new(context, shader_code!("paint_direct_bc3"))?,
+            direct: [
+                Shader::new(context, shader_code!("paint_direct"))?,
+                Shader::new(context, shader_code!("paint_direct_bc1"))?,
+                Shader::new(context, shader_code!("paint_direct_bc3"))?,
+                Shader::new(context, shader_code!("paint_regional"))?,
+                Shader::new(context, shader_code!("paint_regional_bc1"))?,
+                Shader::new(context, shader_code!("paint_regional_bc3"))?,
+            ],
             coverage: Shader::new(context, shader_code!("paint_coverage"))?,
             gradient: Shader::new(context, shader_code!("paint_gradient"))?,
             glyph_gradient: Shader::new(context, shader_code!("paint_glyph_gradient"))?,

@@ -708,11 +708,7 @@ impl Context<'_> {
             } else if entry.state.yuv.is_some() {
                 &self.pipelines.yuv
             } else if let Some(direct) = entry.state.direct {
-                let index = match direct {
-                    mesh::DirectPaint::Rgba => 0,
-                    mesh::DirectPaint::Bc1 => 1,
-                    mesh::DirectPaint::Bc3 => 2,
-                };
+                let index = direct as usize;
                 #[cfg(test)]
                 self.pipelines.direct_draws[index]
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
