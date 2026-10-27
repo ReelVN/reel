@@ -560,7 +560,9 @@ fn run() -> Result {
                     return package_case(runtime, "authored");
                 }
                 render_cases(runtime.renderer(), &selected, frames, trace, vsync, flights)?;
-                if matches!(selected.as_str(), "all" | "matrix" | "media") {
+                if selected == "all" {
+                    package_case(runtime, "authored")?;
+                } else if matches!(selected.as_str(), "matrix" | "media") {
                     package_case(runtime, "media")?;
                 }
                 Ok(())
