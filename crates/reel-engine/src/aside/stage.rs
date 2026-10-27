@@ -79,6 +79,8 @@ aside_host::native_documentation! {
         /// is outside or back; removing target closes it. Hiding or disabling an
         /// ancestor withdraws the layer. A popup without a parent stays unpresented.
         /// Dismissal follows the active modal scope.
+        /// Hover tooltips use modal:false so their anchor keeps receiving pointer
+        /// interaction while the popup is visible.
         ///
         /// ```aside
         /// fn main() {

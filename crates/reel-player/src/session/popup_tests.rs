@@ -286,22 +286,37 @@ fn source_and_asb_nonmodal_hover_popup_preserves_fixed_and_natural_anchors() {
                 if e.hover && hint==null {
                     data.built+=1;
                     hint=e.target.add(popup(placement:"top-start",offset:12,
-                        modal:false,width:120,height:60){
+                        modal:false){
                             text(derive(||data.caption),width:120,height:60);
                             PORTAL_CONTROL
                         });
                 } else if !e.hover && hint!=null {
                     data.closed+=1;hint.remove();hint=null;
                 }
-            }){text("AAA",font:"Reel Weight Fixture",font_size:30);};
+            }){ANCHOR_CONTENT};
         stage.replace(stack(width:640,height:420){
             column(x:200,y:200,width:200){row(width:200,justify:"center"){anchor;}}
             text(derive(||f"counts:{data.built}:{data.closed}:{data.clicks}:{data.hover}"),y:380);
         });
         narrator("wait");
     }"#;
-    for (fixed, encoded) in [(false, false), (false, true), (true, false), (true, true)] {
+    for (fixed, encoded, image) in [
+        (false, false, false),
+        (false, true, false),
+        (true, false, false),
+        (true, true, false),
+        (true, false, true),
+        (true, true, true),
+    ] {
         let source = SOURCE
+            .replace(
+                "ANCHOR_CONTENT",
+                if image {
+                    r#"image("panels.png",width:80,height:80,source_rect:(0,0,68,68));"#
+                } else {
+                    r#"text("AAA",font:"Reel Weight Fixture",font_size:30);"#
+                },
+            )
             .replace(
                 "ANCHOR_SIZE",
                 if fixed { "width:80,height:80," } else { "" },
@@ -311,6 +326,15 @@ fn source_and_asb_nonmodal_hover_popup_preserves_fixed_and_natural_anchors() {
                 if fixed { "" } else { "button(\"Hint\");" },
             );
         let mut driver = story(&source, encoded);
+        if image {
+            driver = driver.with_assets(crate::assets::Assets::directory(
+                crate::assets::AssetOptions {
+                    root: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../../examples/assets"),
+                    ..Default::default()
+                },
+            ));
+        }
         drive(&mut driver);
         let anchor = node(&driver, |kind| matches!(kind, NodeKind::Button { .. }));
         let (mut bridge, root) = mount(&driver, false);
