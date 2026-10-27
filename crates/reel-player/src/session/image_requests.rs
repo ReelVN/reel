@@ -70,47 +70,49 @@ impl SessionUi {
             });
         }
         self.sync_popup_view(bridge, root_id, candidate.as_ref().or(self.stage.as_ref()));
-        let mut widgets = bridge
-            .edit_widget(Self::stage_widget(bridge, root_id).unwrap(), |mut stage| {
-                StageWidget::image_widgets(&mut stage.downcast::<StageWidget>())
-            });
-        let count = bridge
-            .root()
-            .get_widget(root_id)
-            .unwrap()
-            .downcast::<SessionWidget>()
-            .unwrap()
-            .popup_layers
-            .len();
-        for index in 0..count {
-            let stage = bridge
+        let mut regions = std::collections::BTreeMap::new();
+        let mut demand: std::collections::BTreeMap<String, crate::images::TileDemand> =
+            std::collections::BTreeMap::new();
+        if !self.images.manifests.is_empty() {
+            let mut widgets = bridge
+                .edit_widget(Self::stage_widget(bridge, root_id).unwrap(), |mut stage| {
+                    StageWidget::image_widgets(&mut stage.downcast::<StageWidget>())
+                });
+            let count = bridge
                 .root()
                 .get_widget(root_id)
                 .unwrap()
                 .downcast::<SessionWidget>()
                 .unwrap()
-                .popup_layers[index]
-                .stage;
-            widgets.extend(bridge.edit_widget(stage, |mut widget| {
-                StageWidget::image_widgets(&mut widget.downcast::<StageWidget>())
-            }));
-        }
-        let geometry = bridge
-            .layout_geometry()
-            .map_err(|error| format!("image layout geometry: {error:?}"))?;
-        let mut regions = std::collections::BTreeMap::new();
-        let mut demand: std::collections::BTreeMap<String, crate::images::TileDemand> =
-            std::collections::BTreeMap::new();
-        for (id, image) in widgets {
-            if let Some(manifest) = self.images.manifests.get(&image.source) {
-                let (region, tiles) =
-                    crate::images::tiles::visible_tiles(*manifest, &image, &geometry);
-                regions.insert(id, region);
-                for (key, tile) in tiles {
-                    demand
-                        .entry(key)
-                        .and_modify(|previous| previous.required |= tile.required)
-                        .or_insert(tile);
+                .popup_layers
+                .len();
+            for index in 0..count {
+                let stage = bridge
+                    .root()
+                    .get_widget(root_id)
+                    .unwrap()
+                    .downcast::<SessionWidget>()
+                    .unwrap()
+                    .popup_layers[index]
+                    .stage;
+                widgets.extend(bridge.edit_widget(stage, |mut widget| {
+                    StageWidget::image_widgets(&mut widget.downcast::<StageWidget>())
+                }));
+            }
+            let geometry = bridge
+                .layout_geometry()
+                .map_err(|error| format!("image layout geometry: {error:?}"))?;
+            for (id, image) in widgets {
+                if let Some(manifest) = self.images.manifests.get(&image.source) {
+                    let (region, tiles) =
+                        crate::images::tiles::visible_tiles(*manifest, &image, &geometry);
+                    regions.insert(id, region);
+                    for (key, tile) in tiles {
+                        demand
+                            .entry(key)
+                            .and_modify(|previous| previous.required |= tile.required)
+                            .or_insert(tile);
+                    }
                 }
             }
         }
