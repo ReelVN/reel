@@ -1,4 +1,4 @@
-//! Temporary device probe; retained only on the diagnostic branch.
+//! Optional runtime profiling for host and device measurements.
 //! Nested phases overlap. Worker durations are attributed when work completes;
 //! their totals can exceed the main thread's elapsed time. Normal builds erase
 //! scopes and counters; profiling builds use fixed atomic arrays without IO.
@@ -75,6 +75,16 @@ pub const NAMES: [&str; 32] = [
     "composite_batch",
 ];
 
+/// Record bytes transferred into a geometry buffer by one upload operation.
+/// Builds without profiling erase this counter alongside timing scopes.
+#[inline]
+pub fn geometry_upload(bytes: u64) {
+    #[cfg(feature = "profiling")]
+    enabled::geometry_upload(bytes);
+    #[cfg(not(feature = "profiling"))]
+    let _ = bytes;
+}
+
 /// Times one phase. Repeated calls contribute their duration and count.
 pub struct Scope {
     #[cfg(feature = "profiling")]
@@ -112,6 +122,39 @@ mod enabled {
     static LAST_CALLS: [AtomicU64; NAMES.len()] = [const { AtomicU64::new(0) }; NAMES.len()];
     static ACTIVE: [AtomicU32; NAMES.len()] = [const { AtomicU32::new(0) }; NAMES.len()];
     static SINCE: [AtomicU64; NAMES.len()] = [const { AtomicU64::new(0) }; NAMES.len()];
+    static GEOMETRY_CALLS: AtomicU64 = AtomicU64::new(0);
+    static GEOMETRY_BYTES: AtomicU64 = AtomicU64::new(0);
+
+    pub(super) fn geometry_upload(bytes: u64) {
+        if bytes != 0 {
+            GEOMETRY_BYTES.fetch_add(bytes, Ordering::Relaxed);
+            GEOMETRY_CALLS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Cumulative geometry transfers. Cache hits contribute zero bytes.
+    #[derive(Clone, Copy, Default)]
+    pub struct GeometryUploads {
+        pub calls: u64,
+        pub bytes: u64,
+    }
+    impl GeometryUploads {
+        /// Counters are sampled independently; concurrent transfers may cross a row.
+        pub fn snapshot() -> Self {
+            Self {
+                calls: GEOMETRY_CALLS.load(Ordering::Relaxed),
+                bytes: GEOMETRY_BYTES.load(Ordering::Relaxed),
+            }
+        }
+
+        /// Transfers recorded between two observations.
+        pub fn delta(self, previous: Self) -> Self {
+            Self {
+                calls: self.calls.wrapping_sub(previous.calls),
+                bytes: self.bytes.wrapping_sub(previous.bytes),
+            }
+        }
+    }
 
     fn tracked(phase: Phase) -> bool {
         !matches!(
@@ -188,4 +231,4 @@ mod enabled {
     }
 }
 #[cfg(feature = "profiling")]
-pub use enabled::Sample;
+pub use enabled::{GeometryUploads, Sample};
