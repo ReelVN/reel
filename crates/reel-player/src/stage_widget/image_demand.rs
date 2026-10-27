@@ -90,7 +90,7 @@ fn props_match(a: &NodeProps, b: &NodeProps) -> bool {
         && effect_matches(&a.mask_effect, &b.mask_effect)
 }
 
-fn effect_matches(
+pub(super) fn effect_matches(
     a: &Option<Arc<reel_ui::stage::effect::EffectInstance>>,
     b: &Option<Arc<reel_ui::stage::effect::EffectInstance>>,
 ) -> bool {

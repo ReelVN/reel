@@ -42,7 +42,7 @@ impl SessionUi {
         self.sync_popup_view(bridge, root_id, Some(&layout));
         let outside = StageWidget::offscreen_images(bridge.root(), root_id);
         self.images.request_stage_images(
-            candidate.viewport_image_requests(&outside, self.images.shader_format),
+            candidate.viewport_image_requests(outside, self.images.shader_format),
         );
         if self.pending_stage.is_none() {
             self.pending_stage = Some(layout);

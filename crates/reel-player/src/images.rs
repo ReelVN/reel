@@ -36,6 +36,7 @@ pub(crate) struct Images {
     mounted: BTreeSet<String>,
     encoded: BTreeMap<String, Arc<[u8]>>,
     shader_sources: BTreeSet<String>,
+    request_index: Option<Arc<crate::stage_widget::ResourceIndex>>,
     pub(crate) shader_format: EffectShaderFormat,
     /// Advances when newly prepared content becomes available to projections.
     pub(crate) content_revision: u64,
@@ -66,6 +67,7 @@ impl Images {
             mounted: BTreeSet::new(),
             encoded: BTreeMap::new(),
             shader_sources: BTreeSet::new(),
+            request_index: None,
             shader_format: if cfg!(target_os = "vita") {
                 EffectShaderFormat::Gxp
             } else {
@@ -104,9 +106,36 @@ impl Images {
         }
         match requests {
             Ok(requests) => {
-                self.encoded = requests.encoded;
-                self.shader_sources = requests.shaders;
-                self.request_mounted(requests.required, requests.mounted);
+                if self.closed {
+                    return;
+                }
+                if self
+                    .request_index
+                    .as_ref()
+                    .is_none_or(|old| !Arc::ptr_eq(old, &requests.index))
+                {
+                    self.encoded = requests
+                        .index
+                        .encoded()
+                        .map(|(source, bytes)| (source.to_owned(), bytes.clone()))
+                        .collect();
+                    self.shader_sources = requests.index.shaders().map(str::to_owned).collect();
+                    self.mounted = requests.index.mounted().map(str::to_owned).collect();
+                    self.request_index = Some(requests.index.clone());
+                }
+                self.wanted
+                    .retain(|source, _| requests.origin(source).is_some());
+                for (source, origin) in requests.required() {
+                    if let Some(current) = self.wanted.get_mut(source) {
+                        if current.as_deref() != origin {
+                            *current = origin.map(str::to_owned);
+                        }
+                    } else {
+                        self.wanted
+                            .insert(source.to_owned(), origin.map(str::to_owned));
+                    }
+                }
+                self.reconcile_requests();
             }
             Err(error) => {
                 self.encoded.clear();
@@ -117,10 +146,9 @@ impl Images {
         }
     }
     pub(crate) fn requests_ready(&self, requests: &crate::stage_widget::ImageRequests) -> bool {
-        requests
-            .required
-            .keys()
-            .all(|source| self.loaded.contains_key(source) || self.manifests.contains_key(source))
+        requests.required().all(|(source, _)| {
+            self.loaded.contains_key(source) || self.manifests.contains_key(source)
+        })
     }
     pub(crate) fn is_required(&self, source: &str) -> bool {
         self.wanted.contains_key(source)
@@ -137,19 +165,23 @@ impl Images {
         if self.closed {
             return;
         }
+        self.request_index = None;
+        self.wanted = wanted;
+        self.mounted = mounted;
+        self.reconcile_requests();
+    }
+    fn reconcile_requests(&mut self) {
         self.pending.retain(|pending| {
-            let retain = wanted.contains_key(&pending.source)
+            let retain = self.wanted.contains_key(&pending.source)
                 || self
                     .tiles
                     .get(&pending.source)
-                    .is_some_and(|tile| wanted.contains_key(&tile.owner));
+                    .is_some_and(|tile| self.wanted.contains_key(&tile.owner));
             if !retain {
                 self.assets.cancel(pending.id);
             }
             retain
         });
-        self.wanted = wanted;
-        self.mounted = mounted;
         self.tiles
             .retain(|_, tile| self.wanted.contains_key(&tile.owner));
         self.skipped.clear();
@@ -447,6 +479,7 @@ impl Images {
         self.manifests.clear();
         self.encoded.clear();
         self.shader_sources.clear();
+        self.request_index = None;
         self.skipped.clear();
         self.failure = None;
         self.commit();

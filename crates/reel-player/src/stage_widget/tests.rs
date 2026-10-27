@@ -1185,8 +1185,9 @@ fn decoded_frames_preserve_geometry_skip_asset_io_and_release_pixels_with_last_v
         StageView::capture(&f.stage)
             .image_requests(EffectShaderFormat::Wgsl)
             .unwrap()
-            .required
-            .is_empty()
+            .required()
+            .next()
+            .is_none()
     );
     f.accept(&source);
     drop(source);
@@ -1238,8 +1239,9 @@ fn decoded_frames_preserve_geometry_skip_asset_io_and_release_pixels_with_last_v
             StageView::capture(&f.stage)
                 .image_requests(EffectShaderFormat::Wgsl)
                 .unwrap()
-                .required
-                .is_empty()
+                .required()
+                .next()
+                .is_none()
         );
         // Releasing producer registration before stage capture must be legal.
         assert!(registry.release(handle));

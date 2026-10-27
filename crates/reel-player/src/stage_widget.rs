@@ -30,6 +30,9 @@ use std::sync::Arc;
 pub(crate) struct NavigationSelection(pub NodeChange);
 mod flow;
 mod image_demand;
+mod resource_index;
+use resource_index::ResourceIndexCache;
+pub(crate) use resource_index::{ImageRequests, ResourceIndex};
 mod input;
 pub(crate) mod popup;
 #[cfg(test)]
@@ -49,6 +52,7 @@ pub(crate) struct StageView {
     pub(crate) identity: Option<StageIdentity>,
     root: Option<Arc<SceneNode>>,
     popups: Option<Arc<[popup::PopupSource]>>,
+    image_index: Arc<ResourceIndexCache>,
     pub resources: Arc<[ResourceLease]>,
 }
 #[derive(Clone, PartialEq)]
@@ -200,13 +204,6 @@ impl SceneNode {
             _ => size,
         }
     }
-}
-pub(crate) struct ImageRequests {
-    pub required: BTreeMap<String, Option<String>>,
-    pub mounted: std::collections::BTreeSet<String>,
-    pub encoded: BTreeMap<String, std::sync::Arc<[u8]>>,
-    pub shaders: std::collections::BTreeSet<String>,
-    pub deferred_images: bool,
 }
 impl StageView {
     #[cfg(test)]
@@ -384,6 +381,12 @@ impl StageView {
             .root()
             .map(|id| capture_node(stage, id, previous.and_then(|v| v.root.as_ref())));
         let popups = popup::sources(root.as_ref(), previous, stage.has_popups());
+        let image_index = previous
+            .filter(|old| resource_index::same_inputs(root.as_ref(), old.root.as_ref()))
+            .map_or_else(
+                || Arc::new(ResourceIndexCache::default()),
+                |old| old.image_index.clone(),
+            );
         Self {
             revision: stage.revision(),
             identity: Some(stage.identity().clone()),
@@ -392,6 +395,7 @@ impl StageView {
             feedback: false,
             root,
             popups,
+            image_index,
             resources: previous.map_or_else(|| Arc::from([]), |view| view.resources.clone()),
         }
     }
@@ -521,129 +525,6 @@ impl StageView {
                 })
                 .collect(),
         )
-    }
-    #[cfg(test)]
-    pub fn image_requests(&self, format: EffectShaderFormat) -> Result<ImageRequests, String> {
-        Self::image_requests_for(self.root.as_ref(), format)
-    }
-    fn image_requests_for(
-        root: Option<&Arc<SceneNode>>,
-        format: EffectShaderFormat,
-    ) -> Result<ImageRequests, String> {
-        Self::collect_image_requests(root, format, |_, _| true)
-    }
-    pub(crate) fn layout_image_requests(
-        &self,
-        format: EffectShaderFormat,
-    ) -> Result<ImageRequests, String> {
-        Self::collect_image_requests(self.root.as_ref(), format, |node, cursor| {
-            cursor || !node.has_fixed_image_size()
-        })
-    }
-    pub(crate) fn viewport_image_requests(
-        &self,
-        outside: &[NodeId],
-        format: EffectShaderFormat,
-    ) -> Result<ImageRequests, String> {
-        Self::collect_image_requests(self.root.as_ref(), format, |node, cursor| {
-            cursor || outside.binary_search(&node.node.id).is_err()
-        })
-    }
-    fn collect_image_requests(
-        root: Option<&Arc<SceneNode>>,
-        format: EffectShaderFormat,
-        required: impl Fn(&SceneNode, bool) -> bool,
-    ) -> Result<ImageRequests, String> {
-        let mut requests = BTreeMap::new();
-        let mut mounted = std::collections::BTreeSet::new();
-        let mut encoded = BTreeMap::new();
-        let mut shaders = std::collections::BTreeSet::new();
-        let mut deferred_images = false;
-        let mut pending: Vec<_> = root
-            .into_iter()
-            .map(|node| (node, true, true, false, false))
-            .collect();
-        while let Some((node, parent_visible, parent_enabled, has_parent, cursor)) = pending.pop() {
-            if !node.image_branch {
-                continue;
-            }
-            let visible = node.image_visible(parent_visible, parent_enabled, has_parent);
-            let enabled = parent_enabled
-                && node.node.props.enabled
-                && !matches!(node.node.kind, NodeKind::Cursor);
-            let cursor = cursor || matches!(node.node.kind, NodeKind::Cursor);
-            pending.extend(
-                node.children
-                    .iter()
-                    .map(|child| (child, visible, enabled, true, cursor)),
-            );
-            if let Some((source, _)) = image_source(&node.node.kind) {
-                mounted.insert(source.to_owned());
-            }
-            if let Some(mask) = &node.node.props.mask {
-                mounted.extend(mask.sources().iter().map(|source| source.to_string()));
-            }
-            for effect in node
-                .node
-                .props
-                .effect
-                .iter()
-                .chain(node.node.props.mask_effect.iter())
-            {
-                let source = format.asset_path(effect.definition());
-                mounted.insert(source.clone());
-                mounted.extend(effect.textures().iter().map(|source| source.to_string()));
-                if visible {
-                    requests.entry(source.clone()).or_insert_with(|| {
-                        node.node
-                            .props
-                            .appearance_origin
-                            .as_deref()
-                            .map(str::to_owned)
-                    });
-                    shaders.insert(source);
-                    for source in effect.textures() {
-                        requests.entry(source.to_string()).or_insert_with(|| {
-                            node.node
-                                .props
-                                .appearance_origin
-                                .as_deref()
-                                .map(str::to_owned)
-                        });
-                    }
-                }
-            }
-            if !visible {
-                continue;
-            }
-            if let Some((source, origin)) = image_source(&node.node.kind) {
-                if required(node, cursor) {
-                    requests
-                        .entry(source.to_owned())
-                        .or_insert_with(|| origin.clone());
-                } else {
-                    deferred_images = true;
-                }
-            }
-            if let NodeKind::Image { source, .. } = &node.node.kind
-                && let Some(bytes) = source.bytes()
-            {
-                encoded.insert(source.key().to_owned(), bytes.clone());
-            }
-            for source in node.node.props.mask.iter().flat_map(|mask| mask.sources()) {
-                let origin = node.node.props.appearance_origin.as_deref();
-                requests
-                    .entry(source.to_string())
-                    .or_insert_with(|| origin.map(str::to_owned));
-            }
-        }
-        Ok(ImageRequests {
-            required: requests,
-            mounted,
-            encoded,
-            shaders,
-            deferred_images,
-        })
     }
     #[cfg(test)]
     pub fn resolve_images(
