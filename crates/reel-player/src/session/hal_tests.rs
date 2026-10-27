@@ -19,6 +19,7 @@ use reel_ui::{
     frame::*,
     resources::{ColorEncoding, ResourceSnapshot},
 };
+mod preparation;
 
 struct Host {
     presents: usize,
@@ -115,6 +116,9 @@ struct Backend {
     polls: usize,
     resources_available: bool,
     configurations: Vec<SurfaceInfo>,
+    preparing: bool,
+    frames: Vec<reel_core::identity::FrameId>,
+    cancelled: Vec<reel_core::identity::FrameId>,
 }
 impl RenderBackend for Backend {
     type Error = RenderError;
@@ -134,10 +138,17 @@ impl RenderBackend for Backend {
         frame: &RenderFrame,
         before: impl FnOnce(),
     ) -> Result<PresentOutcome, RenderError> {
+        self.frames.push(frame.frame_id());
+        if std::mem::take(&mut self.preparing) {
+            return Ok(PresentOutcome::Preparing);
+        }
         if let Some(error) = self.refusal.take() {
             return Err(error);
         }
         self.inner.render_present(frame, before)
+    }
+    fn cancel_preparation(&mut self, frame: &RenderFrame) {
+        self.cancelled.push(frame.frame_id());
     }
     fn retire(&mut self, resources: &[ResourceVersion]) {
         self.inner.retire(resources);
@@ -262,6 +273,9 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
         polls: 0,
         resources_available: false,
         configurations: Vec::new(),
+        preparing: false,
+        frames: Vec::new(),
+        cancelled: Vec::new(),
     };
     let mut host = Host::default();
     let mut player = Player::new(
@@ -378,7 +392,13 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
             .x
     };
     assert_eq!(x(&mut player), 25.);
+    player.backend.preparing = true;
+    player.render(&mut host).unwrap();
+    assert!(player.presentation.is_preparing());
+    let preparing = *player.backend.frames.last().unwrap();
     player.suspend(&mut host).unwrap();
+    assert_eq!(player.backend.cancelled, [preparing]);
+    assert!(!player.presentation.is_preparing());
     assert!(player.presentation.bridge.accepted_key().is_none());
     let configurations = player.backend.configurations.len();
     host.metrics = DisplayMetrics {
@@ -413,7 +433,12 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
     let font = player.resources[0].downgrade();
     let font_version = player.resources[0].version().clone();
     let last = player.backend.inner.last_submission().unwrap();
+    player.backend.preparing = true;
+    player.render(&mut host).unwrap();
+    assert!(player.presentation.is_preparing());
+    let closing_candidate = *player.backend.frames.last().unwrap();
     player.close().unwrap();
+    assert_eq!(player.backend.cancelled, [preparing, closing_candidate]);
     for _ in 0..1000 {
         if player.close_complete() {
             break;
@@ -533,6 +558,9 @@ fn portable_host_runs_story_with_real_frames_input_refusal_suspend_and_close() {
         polls: 0,
         resources_available: false,
         configurations: Vec::new(),
+        preparing: false,
+        frames: Vec::new(),
+        cancelled: Vec::new(),
     };
     backend.configure(info).unwrap();
     let pool = BudgetPool::new(

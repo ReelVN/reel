@@ -273,6 +273,7 @@ where
             .handle_text_event(TextEvent::WindowFocusChange(false));
         self.presentation.bridge.cancel_pointer_inputs();
         self.pointer_event(PointerKind::Cancel)?;
+        self.presentation.cancel_preparation(&mut self.backend);
         self.presentation.suspend();
         self.backend.suspend();
         if let Some(session) = &mut self.session {
@@ -297,6 +298,7 @@ where
         Ok(())
     }
     pub(crate) fn invalidate_surface(&mut self, metrics: DisplayMetrics) -> Result<(), Error> {
+        self.presentation.cancel_preparation(&mut self.backend);
         let [width, height] = metrics.physical_size;
         self.size = PhysicalSize::new(width, height);
         self.epoch = self.epoch.checked_add(1).ok_or("surface epoch exhausted")?;
@@ -355,10 +357,15 @@ where
             ..Default::default()
         };
         let before = session.ui().projection_stamp();
+        let identity = session.ui().session().identity();
         let frame_was_ready = session.frame_ready();
         {
             let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Vm);
             session.tick(budget, now)?;
+        }
+        if identity != session.ui().session().identity() {
+            self.presentation.cancel_preparation(&mut self.backend);
+            self.recorded_projection = None;
         }
         if !self.closing && session.exit_requested() {
             return self.close();
@@ -433,6 +440,7 @@ where
             old.fonts != settings.fonts || old.canvas_size != settings.canvas_size
         });
         if layout_changed {
+            self.presentation.cancel_preparation(&mut self.backend);
             self.session.as_mut().unwrap().ui_mut()?.clear_presented();
         }
         let paths = settings.fonts.clone();
@@ -515,6 +523,7 @@ where
     /// Stop presentation and begin cancellation and resource retirement.
     pub fn close(&mut self) -> Result<(), Error> {
         self.closing = true;
+        self.presentation.cancel_preparation(&mut self.backend);
         self.presentation.suspend();
         if let Some(session) = &mut self.session {
             session.ui_mut()?.close_resources();
@@ -551,18 +560,23 @@ where
     /// Prepare and present ready content. Only acceptance publishes input geometry.
     pub fn render(&mut self, host: &mut impl Host) -> Result<(), Error> {
         // Candidate metadata layout is never eligible for paint/presentation.
-        if self
-            .session
-            .as_ref()
-            .is_some_and(|session| session.ui().images_block_presentation())
+        if !self.presentation.is_preparing()
+            && self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.ui().images_block_presentation())
         {
             return Ok(());
         }
         // Startup may span several VM slices before main supplies the font files.
-        if !self.is_diagnostic() && self.active_fonts.is_empty() {
+        if !self.presentation.is_preparing()
+            && !self.is_diagnostic()
+            && self.active_fonts.is_empty()
+        {
             return Ok(());
         }
-        if self.first_frame_pending
+        if !self.presentation.is_preparing()
+            && self.first_frame_pending
             && (self.settings_pending()
                 || !self
                     .session

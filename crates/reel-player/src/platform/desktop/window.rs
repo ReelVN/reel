@@ -954,7 +954,8 @@ mod tests {
             Ok::<_, reel_render::RenderError>(PresentOutcome::PresentAccepted(
                 old_frame.frame_id(),
             )),
-        );
+        )
+        .unwrap();
         let old_epoch = state.player.epoch;
         // Recovery negotiates a fresh configuration for the new device generation.
         let acquired = match state
