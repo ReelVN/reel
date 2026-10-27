@@ -486,6 +486,7 @@ pub fn target_bytes(size: [u32; 2], quality: Quality) -> Result<u64, GpuError> {
 
 #[derive(Clone)]
 pub struct Target {
+    pub(super) slot: usize,
     pub size: [u32; 2],
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
@@ -522,6 +523,7 @@ impl Target {
                 .create_view(&Default::default())
         });
         Self {
+            slot: 0,
             size,
             texture,
             view,

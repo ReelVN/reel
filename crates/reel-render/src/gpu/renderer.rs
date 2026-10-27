@@ -441,6 +441,7 @@ impl Renderer {
             target_cache: &self.targets,
             target_allocations: Vec::new(),
             available_targets: Vec::new(),
+            target_writes: Default::default(),
             scissor: super::targets::Scissor::full(size),
             mesh_clip: None,
             paint_batch: None,

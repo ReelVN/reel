@@ -53,7 +53,11 @@ impl GroupPlan {
                             output_source_over: group.composite.blend == Default::default(),
                             retained_boundary: boundary,
                             source_over: !boundary
-                                && group.composite.alpha == 1.
+                                && (group.composite.alpha == 1.
+                                    || matches!(
+                                        commands.get(index + 1).map(|c| &c.op),
+                                        Some(FrameOp::PopGroup)
+                                    ))
                                 && group.composite.blend == Default::default()
                                 && group.clip.is_none()
                                 && group.mask.is_none()

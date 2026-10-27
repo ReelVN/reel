@@ -18,6 +18,7 @@ pub(crate) mod scopes;
 
 pub(crate) mod scissor;
 pub(crate) mod source_view;
+pub(crate) mod target_writes;
 
 pub(crate) mod draw_batch;
 pub(crate) mod geometry;

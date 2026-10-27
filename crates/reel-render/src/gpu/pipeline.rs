@@ -104,6 +104,7 @@ impl CompositeOperation {
 }
 
 pub(super) struct CompositeParams {
+    pub clear: bool,
     pub scissor: super::targets::Scissor,
     pub opacity: f32,
     pub invert: f32,
@@ -481,7 +482,7 @@ impl Pipelines {
         });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("whole group composite"),
-            color_attachments: &[Some(target.attachment(false))],
+            color_attachments: &[Some(target.attachment(params.clear))],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             multiview_mask: None,

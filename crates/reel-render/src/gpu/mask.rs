@@ -444,7 +444,7 @@ impl Prepared {
         });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("masked subtree"),
-            color_attachments: &[Some(target.attachment(false))],
+            color_attachments: &[Some(target.attachment(params.clear))],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             multiview_mask: None,

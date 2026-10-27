@@ -233,6 +233,8 @@ fn nested_isolation_frame() -> RenderFrame {
 }
 
 const NESTED_TARGETS: u64 = 2;
+// The isolated 120 x 60 source includes raster padding and rounds to a 32-pixel bucket.
+const NESTED_TARGET_BYTES: u64 = TARGET_BYTES + 128 * 64 * 4;
 
 #[cfg(feature = "wgpu")]
 #[test]
@@ -245,7 +247,7 @@ fn wgpu_nested_isolation_keeps_only_required_targets() {
         None,
         DeviceGeneration(1),
         GpuLimits {
-            target_bytes: TARGET_BYTES * NESTED_TARGETS,
+            target_bytes: NESTED_TARGET_BYTES,
             ..Default::default()
         },
     ))
@@ -262,7 +264,7 @@ fn wgpu_nested_isolation_keeps_only_required_targets() {
         #[cfg(feature = "profiling")]
         let before = reel_core::profile::Sample::snapshot();
         let prepared = renderer.prepare(&frame).unwrap();
-        assert_eq!(renderer.usage().targets, TARGET_BYTES * NESTED_TARGETS);
+        assert_eq!(renderer.usage().targets, NESTED_TARGET_BYTES);
         peak_live = peak_live.max(renderer.usage().transient);
         renderer.submit(prepared).unwrap();
         let submit_us = submitting.elapsed().as_micros();
@@ -298,7 +300,7 @@ fn wgpu_nested_isolation_keeps_only_required_targets() {
     );
     eprintln!(
         "wgpu nested_isolation warm_frames=8 targets={NESTED_TARGETS} target_bytes={} submit_complete_us={}",
-        TARGET_BYTES * NESTED_TARGETS,
+        NESTED_TARGET_BYTES,
         warm.elapsed().as_micros()
     );
 }
@@ -315,7 +317,7 @@ fn gles_nested_isolation_keeps_only_required_targets() {
     let mut renderer = GlesBackend::headless(
         SIZE,
         GlesLimits {
-            target_bytes: TARGET_BYTES * NESTED_TARGETS,
+            target_bytes: NESTED_TARGET_BYTES,
             ..Default::default()
         },
     )
@@ -406,7 +408,7 @@ fn gles_nested_isolation_keeps_only_required_targets() {
     );
     eprintln!(
         "gles nested_isolation warm_frames=8 targets={NESTED_TARGETS} target_bytes={} submit_complete_us={}",
-        TARGET_BYTES * NESTED_TARGETS,
+        NESTED_TARGET_BYTES,
         warm.elapsed().as_micros()
     );
     renderer.close().unwrap();
@@ -858,7 +860,8 @@ fn gles_simple_image_masks_composite_without_an_intermediate_target() {
                 } else {
                     // Each offscreen target and the replaced output surface
                     // start with a full clear.
-                    (targets + 1, targets + 2, 1)
+                    // The two adjacent fills share one geometry batch.
+                    (targets + 1, targets + 1, 1)
                 };
                 assert_eq!(delta.calls[Phase::Clear as usize], clears);
                 assert_eq!(delta.calls[Phase::Draw as usize], draws);

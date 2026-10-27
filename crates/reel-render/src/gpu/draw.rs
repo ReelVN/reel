@@ -68,6 +68,7 @@ impl Context<'_> {
             return Ok(());
         }
         self.flush_draws()?;
+        self.ensure_sampled(&source.view);
         let mut mesh = mesh::Mesh::new(self.mesh_allocation());
         mesh.quad(
             Rect::new(0., 0., f64::from(source.size[0]), f64::from(source.size[1])),
@@ -689,7 +690,11 @@ impl Context<'_> {
         }
         let mut pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("reel ordered draw segment"),
-            color_attachments: &[Some(batch.target.attachment(false))],
+            color_attachments: &[Some(
+                batch
+                    .target
+                    .attachment(self.target_writes.take(batch.target.slot)),
+            )],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             multiview_mask: None,

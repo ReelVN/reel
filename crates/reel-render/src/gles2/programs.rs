@@ -329,6 +329,7 @@ pub(super) fn attributes() -> [VertexAttribute; 4] {
 }
 #[derive(Clone)]
 pub(super) struct Target {
+    pub slot: usize,
     pub size: [u32; 2],
     pub view: Texture,
     pub framebuffer: Framebuffer,
@@ -366,6 +367,7 @@ impl Target {
             Err(error) => return Err((error.into(), Some(storage))),
         };
         Ok(Self {
+            slot: 0,
             view,
             framebuffer,
             size,

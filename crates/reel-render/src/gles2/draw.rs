@@ -299,6 +299,7 @@ impl Context<'_> {
             return Ok(());
         }
         self.flush_draws()?;
+        self.ensure_sampled(&source.view)?;
         let mut mesh = mesh::Mesh::new(self.mesh_allocation());
         mesh.quad(
             Rect::new(0., 0., f64::from(source.size[0]), f64::from(source.size[1])),
@@ -841,6 +842,7 @@ impl Context<'_> {
         if mesh.indices.is_empty() {
             return Ok(());
         }
+        self.ensure_target(&batch.target)?;
         let (storage, local, created) = super::geometry::acquire(
             self.geometry_cache,
             self.gpu,

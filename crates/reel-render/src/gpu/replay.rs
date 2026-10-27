@@ -32,6 +32,7 @@ pub(super) struct Context<'a> {
     pub(super) target_cache: &'a super::target_cache::TargetCache,
     pub(super) target_allocations: Vec<Arc<super::target_cache::Allocation>>,
     pub(super) available_targets: Vec<Target>,
+    pub(super) target_writes: crate::common::target_writes::TargetWrites,
     pub(super) scissor: Scissor,
     pub(super) mesh_clip: Option<crate::common::mesh::RectClip>,
     pub(super) paint_batch: Option<super::draw::PaintBatch>,
@@ -124,23 +125,36 @@ impl Context<'_> {
                 _shared: None,
                 _local: local,
             });
-            let target = allocation.target.clone();
+            let mut target = allocation.target.clone();
+            target.slot = self.target_allocations.len();
             let mut allocations = std::mem::take(&mut self.target_allocations);
             let pushed = push_stack(&mut allocations, allocation, |bytes| self.transient(bytes));
             self.target_allocations = allocations;
             pushed?;
             target
         };
-        let _pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("clear isolated target"),
-            color_attachments: &[Some(target.attachment(true))],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            multiview_mask: None,
-            occlusion_query_set: None,
-        });
-        drop(_pass);
+        let mut writes = std::mem::take(&mut self.target_writes);
+        writes.begin(target.slot, |bytes| self.transient(bytes))?;
+        self.target_writes = writes;
         Ok(target)
+    }
+    pub(super) fn ensure_sampled(&mut self, source: &wgpu::TextureView) {
+        if let Some(slot) = self
+            .target_allocations
+            .iter()
+            .position(|a| a.target.view == *source)
+            && self.target_writes.take(slot)
+        {
+            let target = &self.target_allocations[slot].target;
+            let _pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("initialize empty source"),
+                color_attachments: &[Some(target.attachment(true))],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                multiview_mask: None,
+                occlusion_query_set: None,
+            });
+        }
     }
     /// All reads have been encoded before recycling. Later passes can overwrite
     /// the texture, but its reservation remains live through queue completion.
@@ -221,6 +235,7 @@ impl Context<'_> {
             let Some(command) = current.commands.get(current.next) else {
                 self.flush_draws()?;
                 let finished = streams.pop().unwrap().scopes.finish()?.target;
+                self.ensure_sampled(&finished.view);
                 let Some(parent) = streams.last_mut() else {
                     return Ok(finished);
                 };
@@ -765,6 +780,10 @@ impl Context<'_> {
             return Ok(());
         }
         self.transient(super::pipeline::COMPOSITE_BYTES)?;
+        self.ensure_sampled(source);
+        if !matches!(operation, CompositeOperation::SourceOver) {
+            self.ensure_sampled(mask);
+        }
         self.pipelines.composite(
             &self.gpu.device,
             &mut self.encoder,
@@ -775,6 +794,7 @@ impl Context<'_> {
                 backdrop: source,
             },
             super::pipeline::CompositeParams {
+                clear: self.target_writes.take(target.slot),
                 scissor: self.scissor,
                 opacity: alpha,
                 invert,
@@ -798,6 +818,7 @@ impl Context<'_> {
             return Ok(());
         }
         self.transient(super::pipeline::COMPOSITE_BYTES)?;
+        self.ensure_sampled(&source.view);
         self.pipelines.composite(
             &self.gpu.device,
             &mut self.encoder,
@@ -808,6 +829,7 @@ impl Context<'_> {
                 backdrop: &source.view,
             },
             super::pipeline::CompositeParams {
+                clear: self.target_writes.take(target.slot),
                 scissor: self.scissor,
                 opacity: alpha,
                 invert,
@@ -871,7 +893,10 @@ impl Context<'_> {
         } else {
             None
         };
+        self.ensure_sampled(source);
+        self.ensure_sampled(mask);
         let params = super::pipeline::CompositeParams {
+            clear: self.target_writes.take(target.slot),
             scissor: self.scissor,
             opacity: composite.alpha,
             invert,
@@ -983,6 +1008,8 @@ impl Context<'_> {
                     + definition.images.len() * size_of::<&wgpu::TextureView>())
                     as u64,
         )?;
+        self.ensure_sampled(old);
+        self.ensure_sampled(new);
         let images = definition
             .images
             .iter()
@@ -999,6 +1026,7 @@ impl Context<'_> {
                 images,
             },
             super::pipeline::CompositeParams {
+                clear: self.target_writes.take(target.slot),
                 scissor: self.scissor,
                 opacity: 1.,
                 invert: 0.,

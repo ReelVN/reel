@@ -38,6 +38,7 @@ pub(super) struct Context<'a> {
     pub target_cache: &'a mut Vec<Target>,
     pub targets: Vec<Target>,
     pub available_targets: Vec<Target>,
+    pub target_writes: crate::common::target_writes::TargetWrites,
     pub geometry_cache: &'a mut super::geometry::Cache,
     pub buffers: Vec<super::geometry::Storage>,
     pub paint_batch: Option<draw::PaintBatch>,
@@ -101,6 +102,7 @@ pub(super) fn prepare(
         target_cache,
         targets: Vec::new(),
         available_targets: Vec::new(),
+        target_writes: Default::default(),
         geometry_cache,
         buffers: Vec::new(),
         paint_batch: None,
@@ -219,7 +221,7 @@ impl Context<'_> {
                 .iter()
                 .filter(|target| target.size == self.size)
                 .count();
-            let target = if let Some(target) = self
+            let mut target = if let Some(target) = self
                 .target_cache
                 .iter()
                 .filter(|target| target.size == self.size)
@@ -261,13 +263,37 @@ impl Context<'_> {
                 _shared: None,
                 _local: local,
             });
+            target.slot = self.targets.len();
             self.targets.push(target.clone());
             target
         };
-        let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Clear);
-        self.gpu
-            .clear(native::Target::Framebuffer(&target.framebuffer), [0.; 4])?;
+        let mut writes = std::mem::take(&mut self.target_writes);
+        writes.begin(target.slot, |bytes| self.transient(bytes))?;
+        self.target_writes = writes;
         Ok(target)
+    }
+    pub(super) fn ensure_target(&mut self, target: &Target) -> Result<(), GlesError> {
+        if self.target_writes.take(target.slot) {
+            let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Clear);
+            self.gpu
+                .clear(native::Target::Framebuffer(&target.framebuffer), [0.; 4])?;
+        }
+        Ok(())
+    }
+    pub(super) fn ensure_sampled(&mut self, source: &native::Texture) -> Result<(), GlesError> {
+        if let Some(slot) = self
+            .targets
+            .iter()
+            .position(|target| target.view == *source)
+            && self.target_writes.take(slot)
+        {
+            let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Clear);
+            self.gpu.clear(
+                native::Target::Framebuffer(&self.targets[slot].framebuffer),
+                [0.; 4],
+            )?;
+        }
+        Ok(())
     }
     fn recycle_target(&mut self, target: Target) -> Result<(), GlesError> {
         self.available_targets.push(target);
@@ -341,6 +367,7 @@ impl Context<'_> {
             let Some(command) = current.commands.get(current.next) else {
                 self.flush_draws()?;
                 let finished = streams.pop().unwrap().scopes.finish()?.target;
+                self.ensure_sampled(&finished.view)?;
                 let Some(parent) = streams.last_mut() else {
                     return Ok(finished);
                 };
@@ -948,6 +975,17 @@ impl Context<'_> {
         } else {
             &self.programs.composite
         };
+        self.ensure_sampled(source)?;
+        if !plain {
+            self.ensure_sampled(mask)?;
+        }
+        if blend != 0 {
+            self.ensure_sampled(backdrop)?;
+        }
+        if let Some(expression) = expression {
+            self.ensure_sampled(&expression.view)?;
+        }
+        self.ensure_target(target)?;
         let mut values = Values::new();
         for (name, unit) in [
             ("u_source", 0),

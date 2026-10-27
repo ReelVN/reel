@@ -201,6 +201,9 @@ impl Context<'_> {
         if self.scissor.empty() {
             return Ok(output);
         }
+        if shader.descriptor.source_sampler {
+            self.ensure_sampled(&source.view);
+        }
         // Reserve all owned packing vectors and GPU uniform payloads together.
         let parameter_bytes = effect.values.len().max(1) * 16;
         let entry_capacity = 3
@@ -297,7 +300,9 @@ impl Context<'_> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::EffectComposite);
         let mut pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("prepared effect"),
-            color_attachments: &[Some(output.attachment(false))],
+            color_attachments: &[Some(
+                output.attachment(self.target_writes.take(output.slot)),
+            )],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             multiview_mask: None,

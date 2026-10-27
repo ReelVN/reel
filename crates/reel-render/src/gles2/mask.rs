@@ -64,7 +64,7 @@ impl Context<'_> {
     /// Apply a single-sample mask while compositing the already isolated source.
     /// Coverage stays highp through the final blend instead of visiting RGBA8.
     pub fn composite_sample_mask(
-        &self,
+        &mut self,
         target: &Target,
         source: &native::Texture,
         definition: &FrameImageMask,
@@ -79,6 +79,8 @@ impl Context<'_> {
         let Some(uv) = mask_uv(definition, transform) else {
             return Ok(true);
         };
+        self.ensure_sampled(source)?;
+        self.ensure_target(target)?;
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Composite);
         let _kind = reel_core::profile::Scope::new(reel_core::profile::Phase::EffectComposite);
         self.mask_sample(target, definition, uv, simple, Some((source, alpha)))?;
@@ -100,6 +102,7 @@ impl Context<'_> {
         let Some(uv) = mask_uv(definition, transform) else {
             return Ok(target);
         };
+        self.ensure_target(&target)?;
         if let Some(simple) = crate::common::mask::plan(&definition.program)
             .and_then(|plan| plan.evaluate(&definition.program, definition.parameters))
         {
