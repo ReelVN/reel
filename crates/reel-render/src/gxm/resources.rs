@@ -281,23 +281,27 @@ impl Images {
                     }
                 } else if format.is_some_and(TextureFormat::is_compressed) {
                     // Compressed allocation is inseparable from its complete mip upload.
-                    let ResourceData::Texture { bytes: blocks, .. } = source.data() else {
+                    let ResourceData::Texture {
+                        descriptor,
+                        bytes: blocks,
+                    } = source.data()
+                    else {
                         unreachable!()
                     };
-                    if let Some((texture, _)) = recycled_textures {
-                        gpu.upload_bc_texture(&texture, blocks.data())?;
+                    let texture = if let Some((texture, _)) = recycled_textures {
                         texture
                     } else {
-                        gpu.create_bc_texture(
-                            layout.storage_size,
-                            if format == Some(TextureFormat::Bc1Rgb) {
-                                native::TextureFormat::Bc1Rgb
-                            } else {
-                                native::TextureFormat::Bc3Rgba
-                            },
-                            blocks.data(),
-                        )?
+                        gpu.create_texture(layout.storage_size, native_format(format.unwrap()))?
+                    };
+                    match descriptor.storage_layout {
+                        reel_core::texture::TextureStorageLayout::Linear => {
+                            gpu.upload_bc_texture(&texture, blocks.data())?
+                        }
+                        reel_core::texture::TextureStorageLayout::GxmBcMorton => {
+                            gpu.upload_bc_morton_texture(&texture, blocks.data())?
+                        }
                     }
+                    texture
                 } else {
                     if let Some((texture, _)) = recycled_textures {
                         texture

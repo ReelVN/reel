@@ -370,6 +370,8 @@ mod tests {
             ([4095, 1080], [4096, 4096], [4096, 1088]),
         ] {
             let descriptor = TextureDescriptor {
+                storage_layout: reel_core::texture::TextureStorageLayout::Linear,
+                mip_count: 1,
                 format: TextureFormat::Rgba8,
                 source_encoding: ColorEncoding::Linear,
                 layout: TextureLayout {
@@ -405,6 +407,8 @@ mod tests {
             TextureFormat::Bgra8,
         ] {
             let descriptor = TextureDescriptor {
+                storage_layout: reel_core::texture::TextureStorageLayout::Linear,
+                mip_count: 1,
                 format,
                 source_encoding: ColorEncoding::Linear,
                 layout: TextureLayout {

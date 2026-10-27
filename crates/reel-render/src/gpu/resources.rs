@@ -184,6 +184,12 @@ pub(super) fn create_texture(
     upload: TextureUploadLayout,
     at: RecordLocation,
 ) -> Result<Image, GpuError> {
+    if descriptor.storage_layout != reel_core::texture::TextureStorageLayout::Linear {
+        return Err(GpuError::Unsupported {
+            at,
+            record: "GXM texture block layout",
+        });
+    }
     if descriptor.format.is_compressed()
         && !gpu
             .device

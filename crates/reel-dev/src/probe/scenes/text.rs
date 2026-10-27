@@ -238,6 +238,8 @@ fn texture(
     let bytes = OwnedBytes::new(bytes, storage).map_err(|e| error(e.reason))?;
     let payload = TexturePayload::new(
         TextureDescriptor {
+            storage_layout: reel_core::texture::TextureStorageLayout::Linear,
+            mip_count: 1,
             format,
             layout: TextureLayout {
                 logical_size: content_size,

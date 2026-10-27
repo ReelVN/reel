@@ -291,6 +291,10 @@ fn tiled_recipe_keeps_logical_names_and_publishes_only_stored_levels() {
                 let bytes = fs::read(&first.files[&name]).unwrap();
                 let (header, _) = TextureHeader::parse(&bytes).unwrap();
                 assert_eq!(
+                    header.descriptor().storage_layout,
+                    reel_core::texture::TextureStorageLayout::GxmBcMorton
+                );
+                assert_eq!(
                     header.descriptor().layout.logical_size,
                     manifest.tile_dimensions(level, x, y).unwrap()
                 );

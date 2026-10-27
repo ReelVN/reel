@@ -96,6 +96,8 @@ impl Assets {
                     version.clone(),
                     TexturePayload::new(
                         TextureDescriptor {
+                            storage_layout: reel_core::texture::TextureStorageLayout::Linear,
+                            mip_count: 1,
                             format,
                             layout: if case.ends_with("_region") {
                                 TextureLayout {

@@ -592,13 +592,19 @@ fn prepare_with_rules<'a>(
                         .prefix(".prepare-")
                         .tempdir_in(&objects)?;
                     let staged_output = staging.path().join(output_name);
-                    let workspace = convert(&source, &staged_output, recipe, memory_bytes)
-                        .map_err(|error| {
-                            io::Error::other(format!(
-                                "resource {name:?} ({}): {error}",
-                                source.display()
-                            ))
-                        })?;
+                    let workspace = convert(
+                        &source,
+                        &staged_output,
+                        recipe,
+                        memory_bytes,
+                        target.as_str() == "vita",
+                    )
+                    .map_err(|error| {
+                        io::Error::other(format!(
+                            "resource {name:?} ({}): {error}",
+                            source.display()
+                        ))
+                    })?;
                     prepared.report.workspace_bytes =
                         prepared.report.workspace_bytes.max(workspace);
                     if hash_file(&source)? != source_hash {
@@ -672,7 +678,13 @@ fn insert_prepared(prepared: &mut Prepared, name: String, path: PathBuf) -> io::
     }
 }
 
-fn convert(source: &Path, output: &Path, recipe: &Recipe, memory_bytes: u64) -> io::Result<u64> {
+fn convert(
+    source: &Path,
+    output: &Path,
+    recipe: &Recipe,
+    memory_bytes: u64,
+    gxm_layout: bool,
+) -> io::Result<u64> {
     match recipe {
         Recipe::Font { characters } => {
             crate::prepare_font::prepare(source, output, characters, memory_bytes)
@@ -704,6 +716,7 @@ fn convert(source: &Path, output: &Path, recipe: &Recipe, memory_bytes: u64) -> 
             *first_level,
             prepare_texture::Options {
                 max_size: None,
+                gxm_layout,
                 format: *format,
                 power_of_two: *power_of_two,
                 dither: prepare_texture::Dither::None,
@@ -721,6 +734,7 @@ fn convert(source: &Path, output: &Path, recipe: &Recipe, memory_bytes: u64) -> 
         } => {
             let options = prepare_texture::Options {
                 max_size: *size,
+                gxm_layout,
                 power_of_two: *power_of_two,
                 format: *format,
                 dither: *dither,

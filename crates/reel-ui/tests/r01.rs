@@ -46,6 +46,8 @@ fn rotated_images_crop_object_fit_in_geometry_without_clip_layers() {
     let pool = pool();
     let mut registry = ResourceRegistry::new(1, 65536).unwrap();
     let descriptor = TextureDescriptor {
+        storage_layout: reel_core::texture::TextureStorageLayout::Linear,
+        mip_count: 1,
         format: TextureFormat::Bc1Rgb,
         source_encoding: ColorEncoding::Srgb,
         layout: TextureLayout::identity([64, 32]),
@@ -209,6 +211,8 @@ fn resource_draws_are_independent_cached_and_owned_until_the_last_recording() {
     let mut registry = ResourceRegistry::new(2, 65536).unwrap();
     let handles = [TextureFormat::Bc1Rgb, TextureFormat::Bc3Rgba].map(|format| {
         let descriptor = TextureDescriptor {
+            storage_layout: reel_core::texture::TextureStorageLayout::Linear,
+            mip_count: 1,
             format,
             source_encoding: ColorEncoding::Srgb,
             layout: TextureLayout {

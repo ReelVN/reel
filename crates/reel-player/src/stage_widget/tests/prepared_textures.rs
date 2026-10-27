@@ -27,6 +27,8 @@ fn particle_frame(compressed: bool) -> (RenderFrame, BudgetPool) {
     };
     let handle = if compressed {
         let descriptor = TextureDescriptor {
+            storage_layout: reel_core::texture::TextureStorageLayout::Linear,
+            mip_count: 1,
             format: TextureFormat::Bc3Rgba,
             source_encoding: ColorEncoding::Srgb,
             layout: TextureLayout {

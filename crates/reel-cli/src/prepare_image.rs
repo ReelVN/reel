@@ -175,7 +175,7 @@ fn workspace(
         Encoding::ReelTexture => {
             let content = [width, height];
             let [width, height] = content.map(|axis| {
-                if options.power_of_two {
+                if options.power_of_two || options.gxm_layout {
                     axis.max(8).checked_next_power_of_two()
                 } else {
                     axis.checked_add(3).map(|value| value / 4 * 4)
@@ -395,6 +395,7 @@ mod tests {
             .with_first_level(1)
             .unwrap();
         let options = crate::prepare_texture::Options {
+            gxm_layout: false,
             power_of_two: true,
             ..Default::default()
         };
@@ -419,6 +420,7 @@ mod tests {
         .save(&original)
         .unwrap();
         let options = crate::prepare_texture::Options {
+            gxm_layout: false,
             power_of_two: true,
             format: crate::prepare_texture::Format::Rgba8,
             max_size: None,

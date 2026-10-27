@@ -156,6 +156,8 @@ fn direct_paint_submits_whole_and_regional_alpha_policies() {
     .enumerate()
     {
         let descriptor = TextureDescriptor {
+            storage_layout: reel_core::texture::TextureStorageLayout::Linear,
+            mip_count: 1,
             format,
             source_encoding: ColorEncoding::Linear,
             layout: TextureLayout::identity([32, 32]),
@@ -267,6 +269,8 @@ fn typed_tiles_submit_mixed_raster_bc1_bc3_resources_with_exact_leases() {
                 .unwrap()
         } else {
             let descriptor = TextureDescriptor {
+                storage_layout: reel_core::texture::TextureStorageLayout::Linear,
+                mip_count: 1,
                 format,
                 source_encoding: ColorEncoding::Srgb,
                 layout: TextureLayout {
@@ -439,6 +443,8 @@ fn prepared_bc_textures_submit_exact_storage_and_preserve_sampling_metadata() {
     .enumerate()
     {
         let descriptor = TextureDescriptor {
+            storage_layout: reel_core::texture::TextureStorageLayout::Linear,
+            mip_count: 1,
             format,
             source_encoding: ColorEncoding::Srgb,
             layout: TextureLayout {
@@ -580,6 +586,8 @@ fn retired_texture_storage_reuses_exact_footprints_and_preserves_reader_pins() {
         for version in 0..10u8 {
             let storage_size = if version == 8 { [8, 16] } else { [8, 8] };
             let descriptor = TextureDescriptor {
+                storage_layout: reel_core::texture::TextureStorageLayout::Linear,
+                mip_count: 1,
                 format,
                 source_encoding: if version % 2 == 0 {
                     ColorEncoding::Srgb
