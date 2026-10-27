@@ -5,17 +5,13 @@
     reason = "the same SDK runner also fingerprints CLI cache products"
 )]
 mod gxp_compiler;
-#[cfg(any(feature = "gles2", feature = "gxm"))]
+#[cfg(feature = "gxm")]
 #[path = "build_support/shaders.rs"]
 mod shaders;
 
 fn main() {
-    #[cfg(any(feature = "gles2", feature = "gxm"))]
+    #[cfg(feature = "gxm")]
     let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
-    #[cfg(feature = "gles2")]
-    for shader in shaders::sources("src/gles2/shaders", "glsl", false) {
-        std::fs::write(output.join(format!("{}.glsl", shader.name)), shader.source).unwrap();
-    }
     #[cfg(feature = "gxm")]
     {
         use gxp_compiler::{Compiler, Stage};
@@ -26,7 +22,7 @@ fn main() {
         for path in compiler.tool_files().unwrap() {
             println!("cargo:rerun-if-changed={}", path.display());
         }
-        for shader in shaders::sources("src/gxm/shaders", "cg", true) {
+        for shader in shaders::sources() {
             let stage = if shader.vertex {
                 Stage::Vertex
             } else {

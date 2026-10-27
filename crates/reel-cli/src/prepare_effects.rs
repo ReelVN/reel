@@ -38,7 +38,7 @@ impl Target {
     }
     fn formats(self) -> &'static [EffectShaderFormat] {
         match self {
-            Self::Desktop => &[EffectShaderFormat::Wgsl, EffectShaderFormat::GlslEs100],
+            Self::Desktop => &[EffectShaderFormat::Wgsl],
             Self::Vita => &[EffectShaderFormat::Gxp],
         }
     }
@@ -117,10 +117,6 @@ pub fn prepare_with_input(
                         let language = match format {
                             EffectShaderFormat::Wgsl => Language::Wgsl,
                             EffectShaderFormat::Gxp => Language::Cg,
-                            EffectShaderFormat::GlslEs100 => Language::GlslEs100,
-                            EffectShaderFormat::Sgx543 => {
-                                unreachable!("SGX is not an export target")
-                            }
                         };
                         let fragment =
                             compile_fragment(&definition.program, language, MAX_SHADER_BYTES)

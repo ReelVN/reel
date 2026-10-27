@@ -23,9 +23,8 @@ impl std::error::Error for EffectShaderPayloadError {}
 /// Prepared fragment representation selected by the asset host for its backend.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum EffectShaderFormat {
-    GlslEs100,
+    /// WGSL source loaded by the desktop WGPU renderer.
     Wgsl,
-    Sgx543,
     /// Native Sony GXM program compiled offline from typed Cg source.
     Gxp,
 }
@@ -33,9 +32,7 @@ impl EffectShaderFormat {
     /// Target representation suffix used by the logical prepared-asset path.
     pub const fn suffix(self) -> &'static str {
         match self {
-            Self::GlslEs100 => "glsl",
             Self::Wgsl => "wgsl",
-            Self::Sgx543 => "sgx",
             Self::Gxp => "gxp",
         }
     }
@@ -170,9 +167,7 @@ impl EffectShaderDescriptor {
         let source_sampler = bytes[14] != 0;
         let abi = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
         let format = match bytes[12] {
-            0 => EffectShaderFormat::GlslEs100,
             1 => EffectShaderFormat::Wgsl,
-            2 => EffectShaderFormat::Sgx543,
             3 => EffectShaderFormat::Gxp,
             _ => return Err(Invalid),
         };
@@ -248,9 +243,7 @@ fn type_byte(ty: EffectType) -> u8 {
 }
 fn format_byte(format: EffectShaderFormat) -> u8 {
     match format {
-        EffectShaderFormat::GlslEs100 => 0,
         EffectShaderFormat::Wgsl => 1,
-        EffectShaderFormat::Sgx543 => 2,
         EffectShaderFormat::Gxp => 3,
     }
 }
@@ -279,21 +272,30 @@ mod tests {
             raw,
         )
         .unwrap();
-        let sgx = EffectShaderDescriptor::new(
+        let wgsl = EffectShaderDescriptor::new(
             [1; 32],
-            EffectShaderFormat::Sgx543,
+            EffectShaderFormat::Wgsl,
             vec![EffectType::Float],
             EffectType::Vec4,
             raw,
         )
         .unwrap();
-        assert_ne!(gxp.shader_key, sgx.shader_key);
+        assert_ne!(gxp.shader_key, wgsl.shader_key);
         let bytes = gxp.encode_payload(raw).unwrap();
         assert_eq!(bytes[12], 3);
         let (decoded, range) = EffectShaderDescriptor::decode_payload(&bytes, bytes.len()).unwrap();
         assert_eq!(decoded, gxp);
         assert_eq!(&bytes[range], raw);
         assert!(decoded.matches_bytes(raw));
+        assert_eq!(wgsl.encode_payload(raw).unwrap()[12], 1);
+        for retired in [0, 2] {
+            let mut retired_payload = bytes.clone();
+            retired_payload[12] = retired;
+            assert_eq!(
+                EffectShaderDescriptor::decode_payload(&retired_payload, retired_payload.len()),
+                Err(EffectShaderPayloadError::Invalid)
+            );
+        }
         assert!(
             EffectShaderFormat::Gxp
                 .asset_path([1; 32])
@@ -304,7 +306,7 @@ mod tests {
     fn prepared_envelope_preserves_schema_and_raw_range() {
         let descriptor = EffectShaderDescriptor::new(
             [17; 32],
-            EffectShaderFormat::GlslEs100,
+            EffectShaderFormat::Wgsl,
             vec![
                 EffectType::Bool,
                 EffectType::Float,
@@ -313,17 +315,17 @@ mod tests {
                 EffectType::Vec4,
             ],
             EffectType::Vec4,
-            b"void main() {}",
+            b"fn main() {}",
         )
         .unwrap();
-        let bytes = descriptor.encode_payload(b"void main() {}").unwrap();
+        let bytes = descriptor.encode_payload(b"fn main() {}").unwrap();
         let (decoded, range) = EffectShaderDescriptor::decode_payload(&bytes, bytes.len()).unwrap();
         assert_eq!(decoded, descriptor);
-        assert_eq!(&bytes[range], b"void main() {}");
+        assert_eq!(&bytes[range], b"fn main() {}");
         let mut other = descriptor.clone();
         other.definition = [99; 32];
-        assert!(other.matches_bytes(b"void main() {}"));
-        assert!(!other.matches_bytes(b"void main() { discard; }"));
+        assert!(other.matches_bytes(b"fn main() {}"));
+        assert!(!other.matches_bytes(b"fn main() { discard; }"));
         assert_eq!(
             EffectShaderDescriptor::decode_payload(&bytes, bytes.len() - 1),
             Err(EffectShaderPayloadError::Limit)

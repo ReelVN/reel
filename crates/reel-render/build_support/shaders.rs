@@ -1,25 +1,20 @@
-//! One variant inventory for the independently maintained GLSL and native Cg sources.
+//! Native Cg builtin shader variants compiled offline to GXP.
 
 pub struct Shader {
     pub name: String,
-    #[allow(dead_code)]
     pub vertex: bool,
     pub source: String,
 }
 
-pub fn sources(directory: &str, extension: &str, native: bool) -> Vec<Shader> {
+pub fn sources() -> Vec<Shader> {
     let mut shaders = Vec::new();
     let read = |name: &str| {
-        let path = format!("{directory}/{name}.{extension}");
+        let path = format!("src/gxm/shaders/{name}.cg");
         println!("cargo:rerun-if-changed={path}");
         std::fs::read_to_string(path).expect("read shader source")
     };
     let mut add = |name: &str, vertex, source: &str, defines: &str| {
-        let source = if native {
-            format!("{defines}\n{source}")
-        } else {
-            source.replacen("#version 100", &format!("#version 100\n{defines}"), 1)
-        };
+        let source = format!("{defines}\n{source}");
         shaders.push(Shader {
             name: name.into(),
             vertex,
@@ -190,9 +185,7 @@ pub fn sources(directory: &str, extension: &str, native: bool) -> Vec<Shader> {
         );
     }
     add("present", false, &read("present"), "");
-    if native {
-        add("clear_vertex", true, &read("clear_vertex"), "");
-        add("clear", false, &read("clear"), "");
-    }
+    add("clear_vertex", true, &read("clear_vertex"), "");
+    add("clear", false, &read("clear"), "");
     shaders
 }

@@ -66,31 +66,19 @@ fn program(color: bool) -> Arc<EffectProgram> {
     )
     .unwrap()
 }
-fn frames(language: Language, color: bool) -> Vec<RenderFrame> {
-    frames_with_texture(language, color, false)
+fn frames(color: bool) -> Vec<RenderFrame> {
+    frames_with_texture(color, false)
 }
-fn frames_with_texture(language: Language, color: bool, external: bool) -> Vec<RenderFrame> {
-    frames_with_inputs(language, color, external, false)
+fn frames_with_texture(color: bool, external: bool) -> Vec<RenderFrame> {
+    frames_with_inputs(color, external, false)
 }
-fn frames_with_inputs(
-    language: Language,
-    color: bool,
-    external: bool,
-    coverage: bool,
-) -> Vec<RenderFrame> {
-    frames_with_mode(language, color, external, coverage, false)
+fn frames_with_inputs(color: bool, external: bool, coverage: bool) -> Vec<RenderFrame> {
+    frames_with_mode(color, external, coverage, false)
 }
-fn frames_with_mode(
-    language: Language,
-    color: bool,
-    external: bool,
-    coverage: bool,
-    plain: bool,
-) -> Vec<RenderFrame> {
-    frames_with_chain(language, color, external, coverage, plain, 1)
+fn frames_with_mode(color: bool, external: bool, coverage: bool, plain: bool) -> Vec<RenderFrame> {
+    frames_with_chain(color, external, coverage, plain, 1)
 }
 fn frames_with_chain(
-    language: Language,
     color: bool,
     external: bool,
     coverage: bool,
@@ -140,11 +128,8 @@ fn frames_with_chain(
         )
         .unwrap();
     }
-    let fragment = compile_fragment(&program, language, 32768).unwrap();
-    let format = match language {
-        Language::GlslEs100 => EffectShaderFormat::GlslEs100,
-        Language::Wgsl => EffectShaderFormat::Wgsl,
-    };
+    let fragment = compile_fragment(&program, Language::Wgsl, 32768).unwrap();
+    let format = EffectShaderFormat::Wgsl;
     let descriptor = EffectShaderDescriptor::with_textures(
         [3; 32],
         format,
@@ -363,17 +348,16 @@ fn frames_with_chain(
 
 #[test]
 fn prepared_effect_frame_retains_bounds_values_and_shader() {
-    for language in [Language::GlslEs100, Language::Wgsl] {
-        for color in [false, true] {
-            let _ = frames(language, color);
-        }
-        let _ = frames_with_texture(language, false, true);
-        let _ = frames_with_inputs(language, false, true, true);
+    for color in [false, true] {
+        let _ = frames(color);
     }
+    let _ = frames_with_texture(false, true);
+    let _ = frames_with_inputs(false, true, true);
 }
 
-fn retained_effect_transition_frames(language: Language) -> Vec<RenderFrame> {
-    let old = frames_with_chain(language, false, false, false, true, 8).remove(0);
+#[cfg(feature = "wgpu")]
+fn retained_effect_transition_frames() -> Vec<RenderFrame> {
+    let old = frames_with_chain(false, false, false, true, 8).remove(0);
     let pool = pool();
     let mut retain = RetainBuild::new(&old, None, limits(), &pool).unwrap();
     let mut budget = step_budget();
@@ -426,13 +410,11 @@ fn retained_effect_transition_frames(language: Language) -> Vec<RenderFrame> {
 
 // Two sequential local domains need four exact scratch textures, but only two
 // shared physical textures. The output retains its exact presentation extent.
-fn mixed_extent_effect_frame(language: Language) -> RenderFrame {
+#[cfg(feature = "wgpu")]
+fn mixed_extent_effect_frame() -> RenderFrame {
     let program = program(false);
-    let fragment = compile_fragment(&program, language, 64 << 10).unwrap();
-    let format = match language {
-        Language::Wgsl => EffectShaderFormat::Wgsl,
-        Language::GlslEs100 => EffectShaderFormat::GlslEs100,
-    };
+    let fragment = compile_fragment(&program, Language::Wgsl, 64 << 10).unwrap();
+    let format = EffectShaderFormat::Wgsl;
     let descriptor = EffectShaderDescriptor::with_textures(
         [7; 32],
         format,
@@ -546,7 +528,7 @@ fn wgpu_sequential_effect_extents_share_physical_scratch_under_pressure() {
     ))
     .unwrap();
     let mut renderer = Renderer::new(gpu);
-    let frame = mixed_extent_effect_frame(Language::Wgsl);
+    let frame = mixed_extent_effect_frame();
     let prepared = renderer.prepare(&frame).unwrap();
     assert_eq!(prepared.size(), SIZE);
     assert_eq!(prepared.quality().format, wgpu::TextureFormat::Rgba8Unorm);
@@ -559,56 +541,6 @@ fn wgpu_sequential_effect_extents_share_physical_scratch_under_pressure() {
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
     assert_eq!(renderer.poll().unwrap().len(), 1);
-}
-
-#[cfg(feature = "gles2")]
-#[test]
-#[ignore = "requires a native GLES context; no readback"]
-fn gles_sequential_effect_extents_share_physical_scratch_under_pressure() {
-    use reel_render::{
-        AlphaMode, PresentOutcome, RenderBackend, SurfaceInfo,
-        gles2::{GlesBackend, GlesLimits},
-    };
-    let mut renderer = GlesBackend::headless(
-        SIZE,
-        GlesLimits {
-            target_bytes: 400_000,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    renderer
-        .configure(SurfaceInfo {
-            physical_size: SIZE,
-            scale_factor: 1.,
-            surface_epoch: reel_core::identity::SurfaceEpoch(1),
-            color_encoding: reel_ui::resources::ColorEncoding::Srgb,
-            alpha_mode: AlphaMode::Opaque,
-        })
-        .unwrap();
-    let frame = mixed_extent_effect_frame(Language::GlslEs100);
-    let mut presents = 0;
-    assert!(matches!(
-        renderer.render_present(&frame, || presents += 1).unwrap(),
-        PresentOutcome::PresentAccepted(_)
-    ));
-    assert_eq!(presents, 1);
-    let usage = renderer.usage();
-    assert_eq!(usage.targets, 345_600);
-    assert_eq!(usage.total(), usage.shared.unwrap().bytes);
-    assert!(usage.cached_geometry <= usage.transient);
-    let mut events = Vec::new();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while renderer.has_pending() {
-        renderer.poll(&mut events, 64).unwrap();
-        assert!(std::time::Instant::now() < deadline);
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-    assert!(
-        events
-            .iter()
-            .any(|event| matches!(event, reel_render::RenderEvent::RenderFinished { .. }))
-    );
 }
 
 #[cfg(feature = "wgpu")]
@@ -627,7 +559,7 @@ fn wgpu_retained_effects_prepare_once_under_a_split_target_budget() {
     ))
     .unwrap();
     let mut renderer = Renderer::new(gpu);
-    let frames = retained_effect_transition_frames(Language::Wgsl);
+    let frames = retained_effect_transition_frames();
     for (index, frame) in frames.iter().enumerate() {
         let mut phases = 0;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -715,76 +647,6 @@ fn wgpu_retained_effects_prepare_once_under_a_split_target_budget() {
     );
 }
 
-#[cfg(feature = "gles2")]
-#[test]
-#[ignore = "requires a native GLES context; no readback"]
-fn gles_retained_effects_prepare_once_under_a_split_target_budget() {
-    use reel_render::{
-        AlphaMode, PresentOutcome, RenderBackend, RenderEvent, SurfaceInfo,
-        gles2::{GlesBackend, GlesLimits},
-    };
-    let mut renderer = GlesBackend::headless(
-        SIZE,
-        GlesLimits {
-            target_bytes: u64::from(SIZE[0]) * u64::from(SIZE[1]) * 4 * 5,
-            ..Default::default()
-        },
-    )
-    .unwrap();
-    renderer
-        .configure(SurfaceInfo {
-            physical_size: SIZE,
-            scale_factor: 1.,
-            surface_epoch: reel_core::identity::SurfaceEpoch(1),
-            color_encoding: reel_ui::resources::ColorEncoding::Srgb,
-            alpha_mode: AlphaMode::Opaque,
-        })
-        .unwrap();
-    let frames = retained_effect_transition_frames(Language::GlslEs100);
-    let mut events = Vec::new();
-    for (index, frame) in frames.iter().enumerate() {
-        let mut phases = 0;
-        let mut presents = 0;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            match renderer.render_present(frame, || presents += 1) {
-                Ok(PresentOutcome::PresentAccepted(id)) => {
-                    assert_eq!(id, frame.frame_id());
-                    break;
-                }
-                Ok(PresentOutcome::Preparing) => {
-                    phases += 1;
-                    assert_eq!(presents, 0);
-                }
-                Err(error) if error.is_retryable() => {}
-                result => panic!("retained phase: {result:?}"),
-            }
-            events.clear();
-            renderer.poll(&mut events, 64).unwrap();
-            assert!(
-                !events
-                    .iter()
-                    .any(|event| matches!(event, RenderEvent::RenderFinished { .. })),
-                "dependency completion never accepts/presents a frame"
-            );
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        assert_eq!(presents, 1);
-        assert!(phases >= usize::from(index == 0));
-        if index != 0 {
-            assert_eq!(
-                phases, 0,
-                "hot retained result skips dependency preparation"
-            );
-        }
-        while renderer.has_pending() {
-            renderer.poll(&mut events, 64).unwrap();
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-    }
-}
-
 #[cfg(feature = "wgpu")]
 #[test]
 #[ignore = "requires an actual WGPU adapter"]
@@ -821,7 +683,7 @@ fn wgpu_prepared_effects_submit_scalar_and_empty_source_color() {
         ))
         .unwrap();
         let mut renderer = Renderer::new(gpu);
-        let frames = frames_with_chain(Language::Wgsl, color, external, coverage, plain, depth);
+        let frames = frames_with_chain(color, external, coverage, plain, depth);
         let mut resident = None;
         for frame in &frames {
             let prepared = renderer.prepare(frame).unwrap();
@@ -842,79 +704,5 @@ fn wgpu_prepared_effects_submit_scalar_and_empty_source_color() {
             }
             resident = Some(bytes);
         }
-    }
-}
-
-#[cfg(feature = "gles2")]
-#[test]
-#[ignore = "requires a native GLES context"]
-fn gles_prepared_effects_submit_scalar_and_empty_source_color() {
-    use reel_render::{
-        AlphaMode, RenderBackend, RenderEvent, SurfaceInfo,
-        gles2::{GlesBackend, GlesLimits},
-    };
-    for (color, external, coverage, plain, depth) in [
-        (false, false, false, false, 1),
-        (true, false, false, false, 1),
-        (false, true, false, false, 1),
-        (false, true, true, false, 1),
-        (false, true, true, true, 1),
-        (false, false, false, true, 8),
-    ] {
-        let mut renderer = GlesBackend::headless(
-            SIZE,
-            GlesLimits {
-                target_bytes: (if depth > 1 {
-                    4
-                } else if plain {
-                    3
-                } else if coverage {
-                    5
-                } else {
-                    3
-                }) * SIZE[0] as u64
-                    * SIZE[1] as u64
-                    * 4,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let frames =
-            frames_with_chain(Language::GlslEs100, color, external, coverage, plain, depth);
-        renderer
-            .configure(SurfaceInfo {
-                physical_size: SIZE,
-                scale_factor: 1.,
-                surface_epoch: frames[0].surface_epoch(),
-                color_encoding: reel_ui::resources::ColorEncoding::Srgb,
-                alpha_mode: AlphaMode::Opaque,
-            })
-            .unwrap();
-        let mut resident = None;
-        for frame in &frames {
-            renderer.render_present(frame, || {}).unwrap();
-            let start = std::time::Instant::now();
-            let mut events = Vec::new();
-            loop {
-                renderer.poll(&mut events, 32).unwrap();
-                if events
-                    .iter()
-                    .any(|event| matches!(event, RenderEvent::RenderFinished { .. }))
-                {
-                    break;
-                }
-                assert!(start.elapsed() < std::time::Duration::from_secs(10));
-                std::thread::yield_now();
-            }
-            let bytes = renderer.usage().total();
-            if let Some(previous) = resident {
-                assert_eq!(
-                    bytes, previous,
-                    "parameter updates reuse compiled shader storage"
-                );
-            }
-            resident = Some(bytes);
-        }
-        renderer.close().unwrap();
     }
 }
