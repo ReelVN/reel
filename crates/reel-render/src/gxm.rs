@@ -12,7 +12,9 @@ mod limits;
 /// Native presentation and simultaneous resource limits.
 #[derive(Clone, Debug)]
 pub struct GxmOptions {
+    /// Synchronize presentation with display refresh.
     pub vsync: bool,
+    /// Simultaneous GPU and transient resource ceilings.
     pub limits: GxmLimits,
 }
 impl Default for GxmOptions {
