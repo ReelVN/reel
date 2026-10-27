@@ -803,9 +803,14 @@ impl Vm {
                     }
                 };
                 let mut allocation = 0;
+                let planned = self
+                    .program
+                    .native_call_plan(s.code.function, DescriptorId(b))
+                    .is_some();
+                let native_count = if planned { 0 } else { count };
                 let cost = match d.target {
-                    CallTarget::Function(id) => self.script_push_cost(id, count),
-                    CallTarget::Native(id) => self.native_push_cost(id, count),
+                    CallTarget::Function(id) => self.script_push_cost(id, native_count),
+                    CallTarget::Native(id) => self.native_push_cost(id, native_count),
                     CallTarget::Register(r) => {
                         let target = self.slots.read(at(s.regs, r.0))?;
                         if self.is_text(target, ObjectKind::Class) {
@@ -827,7 +832,10 @@ impl Vm {
                     }
                 };
                 (
-                    cost.0 + self.active.unwinds.data.len() as u64 + 1,
+                    cost.0
+                        + self.active.unwinds.data.len() as u64
+                        + 1
+                        + 2 * self.program.native_call_lookup_work(),
                     allocation + cost.1,
                 )
             }
@@ -837,7 +845,13 @@ impl Vm {
                     .host_await(self.slots.read(at(s.regs, b))?)
                     .map(|id| self.native_push_cost(id, 1))
                     .unwrap_or((1, 0));
-                (cost.0 + self.active.unwinds.data.len() as u64 + 1, cost.1)
+                (
+                    cost.0
+                        + self.active.unwinds.data.len() as u64
+                        + 1
+                        + 2 * self.program.native_call_lookup_work(),
+                    cost.1,
+                )
             }
             Opcode::MakeClosure => {
                 let Descriptor::Closure { function, captures } = &f.descriptors[b as usize] else {

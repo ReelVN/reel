@@ -303,6 +303,10 @@ struct ScriptFrame {
 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 enum NativePhase {
+    PlannedCopy {
+        source: ArgSource,
+        index: u32,
+    },
     Copy {
         source: ArgSource,
         index: u32,
@@ -346,6 +350,7 @@ enum NativePhase {
 }
 #[derive(Clone, Copy, serde::Serialize, serde::Deserialize)]
 struct NativeFrame {
+    argument_plan: Option<u32>,
     id: FrameId,
     native: NativeId,
     signature: SignatureId,
@@ -1312,3 +1317,6 @@ fn test_pc(vm: &Vm, function: u32, ordinal: u32) -> Pc {
         |item| item.unwrap().0,
     ) as u32)
 }
+
+#[cfg(test)]
+mod native_plan_tests;

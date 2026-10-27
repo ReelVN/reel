@@ -64,7 +64,7 @@ fn parameter_layout_bytes(program: &VerifiedProgram) -> usize {
         .sum::<usize>();
     let opcode_capacity =
         instructions.min(INSTRUCTION_SPECS.len()) * size_of::<(u16, FunctionId, Pc)>();
-    program.stats().derived_capacity_bytes - opcode_capacity
+    program.stats().derived_capacity_bytes - opcode_capacity - program.native_call_capacity_bytes()
 }
 
 type Fixture = (&'static str, fn() -> BytecodePackage, &'static [u8]);

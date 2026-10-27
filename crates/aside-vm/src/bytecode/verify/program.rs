@@ -390,8 +390,9 @@ pub(super) fn validate_program(
     let script_parameter_cells = parameter_layouts.script_cells(&mut b)?;
     let module_bindings = module_bindings(p, &mut b)?;
     parameter_layouts.release(&mut b);
-    let derived_capacity_bytes = native_parameter_cells.capacity()
-        * std::mem::size_of::<(u32, u32)>()
+    let native_calls = native_calls::build(p, &native_parameter_cells, &mut b)?;
+    let derived_capacity_bytes = native_calls.capacity_bytes()
+        + native_parameter_cells.capacity() * std::mem::size_of::<(u32, u32)>()
         + script_parameter_cells.capacity() * std::mem::size_of::<(u32, u32)>()
         + module_bindings.offsets.capacity() * std::mem::size_of::<u32>()
         + module_bindings.values.capacity() * std::mem::size_of::<GlobalBinding>()
@@ -418,6 +419,7 @@ pub(super) fn validate_program(
             modules: module_bindings,
             opcode_uses,
             member_symbols,
+            native_calls,
         },
     ))
 }

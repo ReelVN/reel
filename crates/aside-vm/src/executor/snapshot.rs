@@ -886,6 +886,24 @@ fn validate_frame(frame: &Frame, vm: &Vm) -> Result<Option<ConstantValidation>, 
             {
                 return Err(SnapshotError::Invalid("native continuation schema".into()));
             }
+            if let Some(plan) = frame.argument_plan {
+                let positions = vm
+                    .program
+                    .native_call_slots(plan)
+                    .ok_or_else(|| SnapshotError::Invalid("native argument plan".into()))?;
+                if positions.len() != frame.argument_count as usize
+                    || frame.receiver
+                    || frame.bindings.is_some()
+                    || vm.heap.range_descriptor(frame.args)?.len != 0
+                {
+                    return Err(SnapshotError::Invalid("native argument plan schema".into()));
+                }
+            }
+            if let NativePhase::PlannedCopy { index, .. } = frame.phase
+                && (frame.argument_plan.is_none() || index > frame.argument_count)
+            {
+                return Err(SnapshotError::Invalid("native argument plan cursor".into()));
+            }
             let len = vm.heap.range_descriptor(frame.roots)?.len;
             let mut required = 3.max(2 + frame.continuation_len);
             if frame.fault_count != 0 {

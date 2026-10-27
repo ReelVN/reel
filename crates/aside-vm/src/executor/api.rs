@@ -95,17 +95,22 @@ pub struct HostTicket {
 #[derive(Clone, Copy)]
 pub struct ProvidedArguments<'a> {
     pub(super) values: &'a [Value],
+    pub(super) positions: Option<&'a [u32]>,
 }
 
 impl ProvidedArguments<'_> {
     pub fn len(&self) -> usize {
-        self.values.len() / 2
+        self.positions.map_or(self.values.len() / 2, |p| p.len())
     }
     pub fn is_empty(&self) -> bool {
-        self.values.is_empty()
+        self.len() == 0
     }
     /// Read an argument without allocating or repeating name binding.
     pub fn get(&self, index: usize) -> Option<(u32, Value)> {
+        if let Some(positions) = self.positions {
+            let position = *positions.get(index)?;
+            return Some((position, self.values[position as usize]));
+        }
         let pair = self
             .values
             .get(index.checked_mul(2)?..index.checked_mul(2)?.checked_add(2)?)?;
@@ -115,12 +120,7 @@ impl ProvidedArguments<'_> {
         ))
     }
     pub fn iter(&self) -> impl ExactSizeIterator<Item = (u32, Value)> + '_ {
-        self.values.as_chunks::<2>().0.iter().map(|pair| {
-            (
-                pair[0].as_int().expect("bound native argument index") as u32,
-                pair[1],
-            )
-        })
+        (0..self.len()).map(|index| self.get(index).expect("provided argument index"))
     }
 }
 impl HostTicket {

@@ -551,9 +551,9 @@ fn inherited_context_flags_accumulate_and_derived_write_fails_under_nowait_or_in
 fn reused_task_admission_reserves_execution_windows_and_respects_the_host_ceiling() {
     for maximum in [1024, u32::MAX] {
         let mut package = fixtures::helper_native();
-        // Keep a real caller working set: a leaf now needs only three native
-        // continuation roots, so the former empty frame no longer fills this cap.
-        package.functions[0].register_count = 492;
+        // Keep the live caller close to the ceiling after static native calls
+        // remove their duplicated name/value argument window.
+        package.functions[0].register_count = 494;
         let mut limits = VmLimits::default();
         limits.slots.initial_capacity = 1024;
         limits.slots.max_capacity = maximum;
