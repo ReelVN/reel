@@ -327,6 +327,7 @@ impl Context<'_> {
             false,
             None,
             ImageQuality::Medium,
+            mesh::PaintSource::Texture,
         )?;
         self.flush_draws()
     }
@@ -384,8 +385,25 @@ impl Context<'_> {
             [1.; 4],
             at,
         )?;
+        self.paint_solid(target, mesh)
+    }
+    fn paint_solid(&mut self, target: &Target, mesh: mesh::Mesh) -> Result<(), GlesError> {
         let white = self.white()?;
-        self.paint_resource(target, mesh, &white, [false; 2], None, ImageQuality::Medium)
+        self.paint_mesh(
+            target,
+            mesh,
+            &white.texture,
+            &[],
+            0.,
+            &[[0.; 4]; 4],
+            [1, 1],
+            [[0.; 4]; 9],
+            [false; 2],
+            false,
+            None,
+            ImageQuality::Medium,
+            mesh::PaintSource::Solid,
+        )
     }
     pub fn draw(
         &mut self,
@@ -440,7 +458,6 @@ impl Context<'_> {
         let mut mesh = mesh::tessellate(shape, fill, stroke, at, self.mesh_allocation())?;
         match brush {
             Brush::Solid(color) => {
-                let white = self.white()?;
                 let color = color
                     .convert::<LinearSrgb>()
                     .premultiply()
@@ -454,7 +471,7 @@ impl Context<'_> {
                     color,
                     at,
                 )?;
-                self.paint_resource(target, mesh, &white, [false; 2], None, ImageQuality::Medium)
+                self.paint_solid(target, mesh)
             }
             Brush::Image(brush) => {
                 if brush.sampler.quality == ImageQuality::High
@@ -531,6 +548,7 @@ impl Context<'_> {
                     false,
                     white.format,
                     ImageQuality::Medium,
+                    mesh::PaintSource::Texture,
                 )
             }
         }
@@ -744,6 +762,7 @@ impl Context<'_> {
             true,
             None,
             ImageQuality::Medium,
+            mesh::PaintSource::Texture,
         )
     }
     fn paint_resource(
@@ -788,6 +807,7 @@ impl Context<'_> {
             image.coverage,
             image.format,
             quality,
+            mesh::PaintSource::Texture,
         )
     }
     fn paint_mesh(
@@ -804,6 +824,7 @@ impl Context<'_> {
         coverage: bool,
         format: Option<PixelFormat>,
         quality: ImageQuality,
+        source: mesh::PaintSource,
     ) -> Result<(), GlesError> {
         if mesh.indices.is_empty() || self.scissor.empty() {
             return Ok(());
@@ -828,7 +849,7 @@ impl Context<'_> {
             mesh.direct_coverage(Some(&appearance))
         } else {
             (kind == 0.)
-                .then(|| mesh.direct_paint(repeat, Some(&appearance), format))
+                .then(|| mesh.direct_paint(source, repeat, Some(&appearance), format))
                 .flatten()
         };
         let state = PaintState {
@@ -868,8 +889,13 @@ impl Context<'_> {
         }
         self.ensure_target(&batch.target)?;
         let packed_indices = crate::common::indices::Upload::new(mesh, |bytes| {
-            crate::common::renderer::reserve(&self.budgets.transient,
-                &self.budget_scope.transient, bytes, self.limits.transient_bytes, "index packing")
+            crate::common::renderer::reserve(
+                &self.budgets.transient,
+                &self.budget_scope.transient,
+                bytes,
+                self.limits.transient_bytes,
+                "index packing",
+            )
         })?;
         let (storage, local, created) = super::geometry::acquire(
             self.geometry_cache,
@@ -894,10 +920,12 @@ impl Context<'_> {
             self.gpu
                 .update_vertices(&mut storage.vertices, bytemuck::cast_slice(&mesh.vertices))?;
             match &packed_indices {
-                crate::common::indices::Upload::Narrow { values, .. } =>
-                    self.gpu.update_indices_u16(&mut storage.indices, values)?,
-                crate::common::indices::Upload::Wide(values) =>
-                    self.gpu.update_indices(&mut storage.indices, values)?,
+                crate::common::indices::Upload::Narrow { values, .. } => {
+                    self.gpu.update_indices_u16(&mut storage.indices, values)?
+                }
+                crate::common::indices::Upload::Wide(values) => {
+                    self.gpu.update_indices(&mut storage.indices, values)?
+                }
             }
         }
         let vertices = &storage.vertices;

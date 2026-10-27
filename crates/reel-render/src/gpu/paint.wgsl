@@ -151,6 +151,10 @@ fn image_alpha(uv: vec2<f32>) -> f32 {
 @fragment fn fragment_direct(v: VertexOut) -> @location(0) vec4<f32> {
     return textureSample(image, image_sampler, v.uv) * v.color;
 }
+// Solid brush colors already include linear premultiplication and vertex coverage.
+@fragment fn fragment_solid(v: VertexOut) -> @location(0) vec4<f32> {
+    return v.color;
+}
 @fragment fn fragment_direct_coverage(v: VertexOut) -> @location(0) vec4<f32> {
     return vec4<f32>(textureSample(image, image_sampler, v.uv).r) * v.color;
 }

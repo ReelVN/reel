@@ -125,11 +125,29 @@ fn ordered_draw_segments_share_uploads_across_scissors_and_stop_at_groups() {
         target_bytes: 64 * 48 * 4 * 2,
         ..Default::default()
     });
-    let prepared = renderer.prepare(&frame).unwrap();
+    let mut prepared = renderer.prepare(&frame).unwrap();
     assert_eq!(prepared.quality().samples, 1);
+    let pipelines = renderer
+        .pipelines
+        .get(&renderer.gpu, prepared.quality())
+        .unwrap();
+    let solid = pipelines.direct_draws[crate::common::mesh::DirectPaint::Solid as usize]
+        .load(Ordering::Relaxed);
+    let opaque = pipelines.opaque_draws[crate::common::mesh::OpaquePaint::Solid as usize]
+        .load(Ordering::Relaxed);
+    assert!(
+        opaque > 0 && solid > opaque,
+        "opaque and translucent solids select their own blend policy"
+    );
+    assert_eq!(
+        pipelines.direct_draws[crate::common::mesh::DirectPaint::Coverage as usize]
+            .load(Ordering::Relaxed),
+        0
+    );
     assert_eq!(
         renderer.gpu.upload_creations.draws.load(Ordering::Relaxed),
-        4
+        5,
+        "opaque and translucent solids split the isolated group's ordered entries"
     );
     assert_eq!(
         renderer
@@ -139,6 +157,30 @@ fn ordered_draw_segments_share_uploads_across_scissors_and_stop_at_groups() {
             .load(Ordering::Relaxed),
         6
     );
+    let surface = renderer
+        .gpu
+        .device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("opaque solid presentation submission"),
+            size: wgpu::Extent3d {
+                width: 64,
+                height: 48,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+    crate::gpu::SurfacePass::new(&renderer.gpu.device, wgpu::TextureFormat::Rgba8UnormSrgb)
+        .unwrap()
+        .encode(
+            &renderer.gpu.device,
+            &mut prepared,
+            &surface.create_view(&Default::default()),
+        );
     renderer.submit(prepared).unwrap();
     renderer
         .gpu
@@ -662,12 +704,13 @@ fn long_text_single_channel_atlas_submits_and_reuses_coverage() {
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
     renderer.poll().unwrap();
-    assert_eq!(renderer.pipelines.creations.snapshot(), [3, 16, 16, 16, 8]);
+    assert_eq!(renderer.pipelines.creations.snapshot(), [3, 18, 18, 18, 8]);
     let resident = renderer.usage().resources;
     assert!(resident > 0 && resident <= 2 * 512 * 512);
     assert_eq!(resident % (512 * 512), 0);
     let uploads = renderer.gpu.upload_creations.snapshot();
-    let coverage = pipelines.direct_draws[crate::common::mesh::DirectPaint::Coverage as usize].load(Ordering::Relaxed);
+    let coverage = pipelines.direct_draws[crate::common::mesh::DirectPaint::Coverage as usize]
+        .load(Ordering::Relaxed);
     let draws = renderer.gpu.upload_creations.draws.load(Ordering::Relaxed);
     let start = Instant::now();
     for _ in 0..8 {
@@ -681,7 +724,9 @@ fn long_text_single_channel_atlas_submits_and_reuses_coverage() {
         assert_eq!(renderer.usage().resources, resident);
     }
     assert_eq!(renderer.gpu.upload_creations.snapshot(), uploads);
-    let coverage = pipelines.direct_draws[crate::common::mesh::DirectPaint::Coverage as usize].load(Ordering::Relaxed) - coverage;
+    let coverage = pipelines.direct_draws[crate::common::mesh::DirectPaint::Coverage as usize]
+        .load(Ordering::Relaxed)
+        - coverage;
     assert!(coverage > 0 && coverage / 8 < glyph_count / 10);
     assert_eq!(
         renderer.gpu.upload_creations.draws.load(Ordering::Relaxed) - draws,
