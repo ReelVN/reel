@@ -1221,7 +1221,8 @@ struct SceneWidget {
     projection: Arc<SceneNode>,
     sync_dirty: bool,
     button: ButtonBehavior,
-    interaction: InteractionState,
+    /// The first publication follows inherited state propagation in compose.
+    interaction: Option<InteractionState>,
     input: Option<NodeInput>,
     slider: Option<WidgetPod<Slider>>,
     label: Option<WidgetPod<Label>>,
@@ -1474,7 +1475,7 @@ impl SceneWidget {
             projection: view.clone(),
             sync_dirty: false,
             button: ButtonBehavior::default(),
-            interaction: InteractionState::default(),
+            interaction: None,
             input: match &view.node.kind {
                 NodeKind::Input {
                     bindings,
@@ -2130,10 +2131,10 @@ impl SceneWidget {
         next.pressed = available && (next.pressed || self.button.is_pressed());
         next.focused &= available;
         next.focus_visible &= next.focused;
-        if next == self.interaction {
+        if self.interaction == Some(next) {
             return None;
         }
-        self.interaction = next;
+        self.interaction = Some(next);
         Some(NodeEvent::Interaction(NodeInteraction {
             node: self.node.id,
             state: next,
@@ -2525,16 +2526,18 @@ impl Widget for SceneWidget {
             Update::ChildFocusChanged(value) => *value,
             _ => ctx.has_focus_target(),
         };
-        if let Some(event) = self.interaction(
-            InteractionState {
-                hover: ctx.has_hovered(),
-                pressed: ctx.has_active(),
-                focused,
-                focus_visible: ctx.focus_visible(),
-                disabled,
-            },
-            !disabled && !stashed && ctx.is_window_focused(),
-        ) {
+        if self.interaction.is_some()
+            && let Some(event) = self.interaction(
+                InteractionState {
+                    hover: ctx.has_hovered(),
+                    pressed: ctx.has_active(),
+                    focused,
+                    focus_visible: ctx.focus_visible(),
+                    disabled,
+                },
+                !disabled && !stashed && ctx.is_window_focused(),
+            )
+        {
             ctx.submit_action::<NodeEvent>(event);
         }
     }
@@ -2930,6 +2933,9 @@ impl Widget for SceneWidget {
         }
     }
     fn compose(&mut self, ctx: &mut ComposeCtx<'_>) {
+        if self.interaction.is_none() {
+            publish_interaction!(self, ctx);
+        }
         // A restored hidden scroll has not been laid out. Keep its pending
         // position until showing it supplies the actual viewport and content.
         if matches!(self.node.kind, NodeKind::Scroll { .. })
