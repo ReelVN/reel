@@ -26,6 +26,7 @@ Use pinned ordinary dependencies by default. Maintain required borrowed implemen
 
 ## Repository hygiene
 
+- Keep Rust implementation files within 1,500 lines; files containing tests may reach 2,000 lines. Split modules by responsibility, using idiomatic Rust module and file names. Place unit tests with their owning module, integration tests under `tests/`, and shared test helpers in dedicated modules.
 - Maintain borrowed UI code in the single `crates/reel-ui` workspace package, organized by responsibility through modules. Reel maintains subsequent changes according to its module responsibilities. Preserve the original Apache license, necessary copyright/NOTICE and concise provenance. Keep production `unsafe_code = "forbid"` and native window/GPU dependencies outside UI.
 - First-party validation tooling belongs in Rust tests or `crates/reel-dev`. Keep unchanged upstream tools with their documented source snapshot; do not use them to hide a second first-party implementation.
 - Write reproducible logs, measurements, screenshots and generated reports under ignored `target/reel-artifacts/` or temporary storage. Track only source, concise contracts and necessary immutable test inputs. Update consumers and preserve assertions before retiring a fixture or validation tool.

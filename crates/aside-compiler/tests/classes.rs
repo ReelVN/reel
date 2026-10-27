@@ -269,7 +269,7 @@ fn class_payload_charges_match_real_growth_at_inline_and_inheritance_boundaries(
             .unwrap();
         let mut allocation_bytes = 0;
         loop {
-            let before = vm.heap().stats().chunk_allocations;
+            let before = vm.heap().stats().payload_bytes;
             let outcome = vm
                 .run_slice(
                     task,
@@ -282,8 +282,8 @@ fn class_payload_charges_match_real_growth_at_inline_and_inheritance_boundaries(
                 )
                 .unwrap();
             let usage = vm.stats().usage;
-            let actual =
-                (vm.heap().stats().chunk_allocations - before) * aside_vm::VALUE_CHUNK_BYTES;
+            // The first value block is smaller than subsequent blocks.
+            let actual = vm.heap().stats().payload_bytes - before;
             assert_eq!(
                 usage.allocation_bytes, actual,
                 "a phase ending at capacity and an inherited method override do not append"

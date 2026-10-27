@@ -457,9 +457,12 @@ impl Heap {
             self.property_index_work
                 .set(self.property_index_work.get() + 3);
             let mut branch = [0; 12];
-            for (bytes, field) in branch
-                .chunks_exact_mut(4)
-                .zip([bit, children[0], children[1]])
+            for (bytes, field) in
+                branch
+                    .as_chunks_mut::<4>()
+                    .0
+                    .iter_mut()
+                    .zip([bit, children[0], children[1]])
             {
                 bytes.copy_from_slice(&field.to_le_bytes());
             }

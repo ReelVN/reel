@@ -100,6 +100,10 @@ mod semantic_guides {
     // from unresolved diagnostics. Their dynamic members remain runtime contracts.
     const PRELUDE: &[&str] = &[
         "audio",
+        "assets",
+        "appearance",
+        "effect",
+        "texture",
         "rich",
         "camera",
         "clock",
@@ -204,6 +208,7 @@ mod semantic_guides {
         });
         for (path, name) in [
             ("std::math", "curve"),
+            ("std::number", "format"),
             ("game::ui::title", "title"),
             ("game::story::opening", "opening"),
             ("game::ui::dialogue", "dialogue_view"),
@@ -215,6 +220,26 @@ mod semantic_guides {
                 exports: vec![ExternalSymbol::dynamic(name)],
             });
         }
+        resolver.insert(ModuleInterface {
+            canonical_path: "std::math".into(),
+            version: "guide-v1".into(),
+            exports: ["curve", "to_int"]
+                .into_iter()
+                .map(ExternalSymbol::dynamic)
+                .collect(),
+        });
+        resolver.insert(ModuleInterface {
+            canonical_path: "reel::types".into(),
+            version: "guide-v1".into(),
+            exports: ["Fragment", "Texture"]
+                .into_iter()
+                .map(|name| ExternalSymbol {
+                    type_only: true,
+                    ty: TypeHint::Named(format!("reel::types::{name}")),
+                    ..ExternalSymbol::dynamic(name)
+                })
+                .collect(),
+        });
         let mut errors = Vec::new();
         for (i, ((_, chinese), (_, english))) in zh.iter().zip(&en).enumerate() {
             let (name, entry) = SCENES[i];

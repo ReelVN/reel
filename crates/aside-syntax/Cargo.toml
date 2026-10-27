@@ -17,3 +17,6 @@ serde = { version = "=1.0.229", optional = true, default-features = false }
 
 [features]
 serde1 = ["serde", "text-size/serde"]
+
+[lints.rust]
+unsafe_code = "deny"

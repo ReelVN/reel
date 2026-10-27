@@ -194,7 +194,7 @@ pub(super) fn assert_local_structure(m: &hir::AnalyzedModule, c: &lowering::Comp
                 .map(Result::unwrap)
                 .filter(|(_, i)| {
                     if reset == bc::Opcode::Clear {
-                        clears(&i, operand)
+                        clears(i, operand)
                     } else {
                         i.opcode == reset as u16 && i.operands[0] == operand
                     }
@@ -343,7 +343,7 @@ fn root_exports_shadowing_forward_recursion_and_shared_capture_sources() {
             .indexed_iter()
             .map(Result::unwrap)
             .find(|(_, i)| {
-                (i.opcode == bc::Opcode::CellNew as u16 && i.operands[0] == b.0) || clears(&i, b.0)
+                (i.opcode == bc::Opcode::CellNew as u16 && i.operands[0] == b.0) || clears(i, b.0)
             })
             .map(|(pc, _)| pc)
             .unwrap();
