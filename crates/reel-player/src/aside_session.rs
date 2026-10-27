@@ -322,6 +322,10 @@ impl AsideSessionUi {
     pub fn ui(&self) -> &SessionUi {
         &self.ui
     }
+    /// Select the prepared effect shader representation consumed by this host's renderer.
+    pub fn set_effect_shader_format(&mut self, format: reel_ui::resources::EffectShaderFormat) {
+        self.ui.set_effect_shader_format(format);
+    }
     pub(crate) fn ui_mut(&mut self) -> &mut SessionUi {
         &mut self.ui
     }
