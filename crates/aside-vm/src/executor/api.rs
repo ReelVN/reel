@@ -168,6 +168,11 @@ pub struct SliceBudget {
     pub instructions: u32,
     pub work: u64,
     pub allocation_bytes: u64,
+    /// Optional soft deadline in the host's monotonic nanosecond clock. Check on
+    /// slice entry and host resumption, then at most every 32 internal execution
+    /// steps. An allocation or an operation charged at least 32 work units forces
+    /// the next boundary to check again. One indivisible operation can overrun
+    /// this deadline; instruction, work and allocation quotas remain exact.
     pub deadline_ns: Option<u64>,
 }
 impl Default for SliceBudget {

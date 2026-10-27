@@ -828,6 +828,7 @@ impl Vm {
         let mut meter = Meter {
             budget,
             usage: SliceUsage::default(),
+            clock_steps: 0,
         };
         let result = self.run(&mut meter, &mut now);
         self.code_window = crate::bytecode::CodeWindow::default();
@@ -847,7 +848,7 @@ impl Vm {
                     RunOutcome::Returned(t.id)
                 });
             }
-            if m.budget.deadline_ns.is_some_and(|d| now() >= d) {
+            if m.deadline_reached(now) {
                 return Ok(RunOutcome::BudgetYield(m.usage));
             }
             if self.active.cancelling {
@@ -1133,8 +1134,20 @@ fn vm_fault(e: VmError) -> FaultKind {
 struct Meter {
     budget: SliceBudget,
     usage: SliceUsage,
+    clock_steps: u8,
 }
 impl Meter {
+    fn deadline_reached(&mut self, now: &mut impl FnMut() -> u64) -> bool {
+        let Some(deadline) = self.budget.deadline_ns else {
+            return false;
+        };
+        if self.clock_steps != 0 {
+            self.clock_steps -= 1;
+            return false;
+        }
+        self.clock_steps = 31;
+        now() >= deadline
+    }
     fn admits(&mut self, instructions: u32, work: u64, allocation: u64) -> bool {
         self.usage.required_work = work;
         self.usage.required_allocation = allocation;
@@ -1149,6 +1162,10 @@ impl Meter {
         self.usage.instructions += instructions;
         self.usage.work += work;
         self.usage.allocation_bytes += allocation;
+        // Allocations and bulk work end the current clock batch immediately.
+        if allocation != 0 || work >= 32 {
+            self.clock_steps = 0;
+        }
         self.usage.required_work = 0;
         self.usage.required_allocation = 0;
         true
