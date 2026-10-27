@@ -316,6 +316,7 @@ pub struct Heap {
     evaluation: u64,
     binding_revision: u64,
     pub(crate) mutation_revision: u64,
+    host_retirement_revision: u64,
     property_proposal: Option<Value>,
     pub(crate) limits: HeapLimits,
     reserved: u64,
@@ -411,6 +412,7 @@ impl Heap {
             evaluation: 0,
             binding_revision: 1,
             mutation_revision: 0,
+            host_retirement_revision: 0,
             property_proposal: None,
             limits,
             reserved: estimate,
@@ -865,12 +867,19 @@ impl Heap {
         self.disconnect_reactive_source(host)?;
         self.disconnect_host_properties(host)?;
         let slots = self.host_payload_len(host)? + 4;
+        self.host_retirement_revision = self.host_retirement_revision.wrapping_add(1);
         for index in 0..slots {
             if index != 1 {
                 self.set_field(host, index, Value::NULL)?;
             }
         }
         Ok(())
+    }
+
+    /// Version of explicit host retirement, including hosts owned by other hosts.
+    /// Creation, ordinary property writes and GC do not advance this version.
+    pub fn host_retirement_revision(&self) -> u64 {
+        self.host_retirement_revision
     }
 
     /// Opt into per-field script write tracking. Storage is a traced, budgeted

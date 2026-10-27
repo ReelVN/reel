@@ -200,6 +200,7 @@ impl Vm {
         };
         self.select_slot(slot);
         self.active.task_id = Some(task);
+        self.task_index.data.push((serial, slot));
         self.active.task_owner = Some(owner);
         self.active.root_owner = RootOwner(u64::MAX.checked_sub(serial + 1).ok_or(VmError::Limit)?);
         if let Err(e) = self.push_script(
@@ -212,7 +213,7 @@ impl Vm {
             Effects::ALL,
             ReturnTo::Delivery,
         ) {
-            self.active.task_id = None;
+            self.forget_active_task();
             self.active.task_owner = None;
             return Err(e);
         }
@@ -261,6 +262,12 @@ impl Vm {
             let mut next = ChargedVec::new(&usage, capacity)?;
             next.data.append(&mut self.tasks.data);
             self.tasks = next;
+        }
+        if slot == self.task_index.data.capacity() {
+            let capacity = slot.saturating_mul(2).min(self.limits.max_tasks as usize);
+            let mut next = ChargedVec::new(&usage, capacity)?;
+            next.data.append(&mut self.task_index.data);
+            self.task_index = next;
         }
         let roots = self
             .limits

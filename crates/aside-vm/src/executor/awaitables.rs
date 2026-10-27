@@ -2,6 +2,13 @@
 use super::*;
 
 impl Vm {
+    /// Version of pending-wait invalidation by completion or task cancellation.
+    /// Hosts can reuse subscription checks until this version changes. New host
+    /// subscriptions must independently invalidate their own cached checks.
+    pub fn wait_revision(&self) -> u64 {
+        self.wait_revision
+    }
+
     /// Bind a host object to a trusted, unary native adapter in this loaded package.
     /// The adapter receives the object itself. Script properties cannot replace it.
     pub fn bind_awaitable(&mut self, object: Value, native: NativeId) -> Result<(), VmError> {

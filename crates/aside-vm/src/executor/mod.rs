@@ -517,7 +517,10 @@ pub struct Vm {
     slots: FrameSlots,
     active: TaskState,
     tasks: ChargedVec<TaskState>,
+    // Serial order makes identity queries independent of the pooled task layout.
+    task_index: ChargedVec<(u64, usize)>,
     active_slot: Option<usize>,
+    wait_revision: u64,
     scratch: ChargedVec<Value>,
     text_scratch: ChargedVec<u8>,
     native_cells: ChargedVec<bool>,
@@ -915,7 +918,7 @@ impl Vm {
                 }
                 self.active.cancelling = false;
                 self.active.task_owner = None;
-                self.active.task_id = None;
+                self.forget_active_task();
                 return Err(VmError::Idle);
             }
             if self.active.fault_build.is_some() {

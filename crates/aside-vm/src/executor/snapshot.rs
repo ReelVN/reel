@@ -263,6 +263,7 @@ impl Vm {
             constant_validation: None,
             callback_validation: None,
             generator_validation: None,
+            task_index_insert: None,
             complete: false,
         })
     }
@@ -403,12 +404,32 @@ pub struct VmRestore<'a> {
     constant_validation: Option<ConstantValidation>,
     callback_validation: Option<CallbackValidation>,
     generator_validation: Option<generators::GeneratorValidation>,
+    task_index_insert: Option<TaskIndexInsert>,
     complete: bool,
 }
+
+struct TaskIndexInsert {
+    entry: (u64, usize),
+    next: usize,
+    target: usize,
+}
+
 impl VmRestore<'_> {
     pub fn step(&mut self, budget: SnapshotBudget) -> Result<SnapshotProgress, SnapshotError> {
         let mut progress = SnapshotProgress::default();
         while !self.complete && progress.units < budget.units {
+            if let Some(insert) = &mut self.task_index_insert {
+                // Restored slots need not follow serial order. Move one entry
+                // per unit instead of hiding a whole pooled-task scan in a record.
+                self.vm.task_index.data[insert.next] = self.vm.task_index.data[insert.next - 1];
+                insert.next -= 1;
+                if insert.next == insert.target {
+                    self.vm.task_index.data[insert.target] = insert.entry;
+                    self.task_index_insert = None;
+                }
+                progress.units += 1;
+                continue;
+            }
             if let Some(validation) = &mut self.constant_validation {
                 if validation.step(&self.vm)? {
                     self.constant_validation = None;
@@ -527,6 +548,7 @@ impl VmRestore<'_> {
                     return Err(SnapshotError::Invalid("task count/selection".into()));
                 }
                 self.vm.tasks = ChargedVec::new(&self.vm.heap.budget_usage(), header.tasks)?;
+                self.vm.task_index = ChargedVec::new(&self.vm.heap.budget_usage(), header.tasks)?;
                 self.expected_tasks = header.tasks;
                 self.vm.active_slot = header.active_slot;
                 self.vm.globals = self.map.range(header.globals)?;
@@ -552,6 +574,35 @@ impl VmRestore<'_> {
                 }
                 let saved: SavedTask = record.read()?;
                 let task = saved.restore(&mut self.vm, &self.map)?;
+                if let Some(id) = task.task_id {
+                    let slot = if record.key == 0 {
+                        self.vm
+                            .active_slot
+                            .ok_or_else(|| SnapshotError::Invalid("active task slot".into()))?
+                    } else {
+                        record.key as usize - 1
+                    };
+                    let index = self
+                        .vm
+                        .task_index
+                        .data
+                        .binary_search_by_key(&id.serial, |&(serial, _)| serial)
+                        .map_or_else(Ok, |_| {
+                            Err(SnapshotError::Invalid("duplicate task identity".into()))
+                        })?;
+                    if self.vm.task_index.data.len() == self.vm.task_index.data.capacity() {
+                        return Err(SnapshotError::Invalid("excess task identities".into()));
+                    }
+                    let next = self.vm.task_index.data.len();
+                    self.vm.task_index.data.push((id.serial, slot));
+                    if next != index {
+                        self.task_index_insert = Some(TaskIndexInsert {
+                            entry: (id.serial, slot),
+                            next,
+                            target: index,
+                        });
+                    }
+                }
                 if record.key == 0 {
                     self.vm.active = task;
                 } else {
