@@ -186,7 +186,11 @@ mod tests {
             let mut limited_loader = AssetDataLoader::new(limited.clone());
             let over_budget = limited_loader.read("data/sample.bin", None).unwrap();
             let error = poll(&mut limited_loader, over_budget).err().unwrap();
-            assert!(error.contains("configured capacity"), "{error}");
+            assert!(
+                error.contains("ordinary input capacity is 768")
+                    && error.contains("256 reserved for streaming"),
+                "{error}"
+            );
             assert_eq!(limited.0.borrow().input.usage().bytes, 0);
         }
     }

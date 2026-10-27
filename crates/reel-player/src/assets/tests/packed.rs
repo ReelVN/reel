@@ -280,7 +280,7 @@ fn packed_reads_preserve_priority_cancel_queue_backpressure_and_budget_ownership
         std::env::consts::OS.into(),
         &requests.temporary,
         QueueLimits {
-            max_requests: 3,
+            max_requests: 5, // Three ordinary owners plus two reserved media slots.
             ..LIMITS
         },
         wake.clone(),
@@ -303,23 +303,205 @@ fn packed_reads_preserve_priority_cancel_queue_backpressure_and_budget_ownership
         .unwrap_err();
     assert_eq!(rejected.reason.code, RejectCode::Busy);
     drop(rejected);
+    let media_a = io
+        .read(requests.read("asset", 0, 4, None, Priority::Realtime))
+        .unwrap();
+    let media_b = io
+        .read(requests.read("asset", 0, 4, None, Priority::Realtime))
+        .unwrap();
+    let rejected = io
+        .read(requests.read("asset", 0, 4, None, Priority::Realtime))
+        .unwrap_err();
+    assert_eq!(rejected.reason.code, RejectCode::Busy);
+    drop(rejected);
     io.cancel(low);
     resume.send(()).unwrap();
-    let completed = events(&mut io, &wake, &receiver, 3);
+    let completed = events(&mut io, &wake, &receiver, 5);
     assert_eq!(
         completed.iter().map(|e| e.id).collect::<Vec<_>>(),
-        [visible, normal, low]
+        [media_a, media_b, visible, normal, low]
     );
     assert_eq!(bytes(&completed[0]), b"data");
     assert_eq!(bytes(&completed[1]), b"data");
-    assert!(matches!(completed[2].result, Terminal::Cancelled));
+    assert_eq!(bytes(&completed[2]), b"data");
+    assert_eq!(bytes(&completed[3]), b"data");
+    assert!(matches!(completed[4].result, Terminal::Cancelled));
     assert_eq!(
         requests.output.usage().bytes,
-        8,
-        "completed consumers own the two read tickets"
+        16,
+        "completed consumers own all four read tickets"
     );
     drop(completed);
     requests.settled();
+}
+
+#[test]
+fn media_preempts_large_packed_reads_between_quanta_without_reallocating_output() {
+    let fixture = Fixture::new();
+    let payload: Vec<u8> = (0..3 * reel_package::archive::BLOCK_BYTES + 17)
+        .map(|i| (i / 51) as u8)
+        .collect();
+    let path = fixture.pack(
+        "fair.rpk",
+        ArchiveKind::Resources,
+        &[("large", &payload), ("media", b"music")],
+    );
+    verify_preemption(path, "large", "media");
+}
+
+fn verify_preemption(path: PathBuf, large_key: &str, media_key: &str) {
+    let index = reel_package::archive::ArchiveIndex::read(&mut File::open(&path).unwrap()).unwrap();
+    let large_entry = index.get(large_key).unwrap();
+    let media_entry = index.get(media_key).unwrap();
+    let large_length = usize::try_from(large_entry.length).unwrap();
+    let media_length = media_entry.length.min(64 << 10) as usize;
+    let mut expected_media = vec![0; media_length];
+    media_entry
+        .read_range(
+            &mut File::open(&path).unwrap(),
+            0,
+            &mut expected_media,
+            &mut reel_package::archive::ReadScratch::new(),
+            || false,
+        )
+        .unwrap();
+    let (started_tx, started_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let gate = Mutex::new(resume_rx);
+    let observations = Arc::new(Mutex::new(Vec::new()));
+    let seen = observations.clone();
+    let first = AtomicBool::new(true);
+    let (sender, receiver) = mpsc::channel();
+    let wake = WakeSignal::new(move || {
+        let _ = sender.send(());
+    });
+    let limits = QueueLimits {
+        max_requests: 4,
+        max_bytes: 24 << 20,
+    };
+    let output = BudgetPool::new(BudgetCategory::CpuInput, limits);
+    let completion = BudgetPool::new(BudgetCategory::Completion, limits);
+    let temporary = BudgetPool::new(BudgetCategory::Temporary, limits);
+    let mut io = PackIo::observed(
+        [path],
+        &temporary,
+        limits,
+        wake.clone(),
+        Arc::new(move |id, length, pointer, seeks| {
+            seen.lock().unwrap().push((id, length, pointer, seeks));
+            if first.swap(false, Ordering::AcqRel) {
+                started_tx.send(()).unwrap();
+                gate.lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(3))
+                    .unwrap();
+            }
+        }),
+    )
+    .unwrap();
+    let read = |key: &str, length: usize, priority| ReadRequest {
+        resource: source(key, None),
+        offset: 0,
+        len: length as u32,
+        priority,
+        scope: Scope::Process,
+        output: output.reserve(length as u64).unwrap(),
+        completion: completion.reserve(512).unwrap(),
+    };
+    let large = io
+        .read(read(large_key, large_length, Priority::Visible))
+        .unwrap();
+    started_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    // Fill all ordinary slots while the first large quantum owns its one buffer.
+    let other = io
+        .read(read(media_key, media_length, Priority::Visible))
+        .unwrap();
+    let rejected = io
+        .read(read(media_key, media_length, Priority::Visible))
+        .unwrap_err();
+    assert_eq!(rejected.reason.code, RejectCode::Busy);
+    drop(rejected);
+    let media = io
+        .read(read(media_key, media_length, Priority::Realtime))
+        .unwrap();
+    resume_tx.send(()).unwrap();
+    let result = events(&mut io, &wake, &receiver, 3);
+    assert_eq!(
+        result.iter().map(|event| event.id).collect::<Vec<_>>(),
+        [media, other, large]
+    );
+    assert_eq!(bytes(&result[0]), expected_media);
+    assert_eq!(
+        blake3::hash(bytes(&result[2])).as_bytes(),
+        &large_entry.version
+    );
+    let observations = observations.lock().unwrap();
+    let media_at = observations
+        .iter()
+        .position(|(id, ..)| *id == media)
+        .unwrap();
+    let second_large = observations
+        .iter()
+        .position(|(id, length, ..)| *id == large && *length > 65536)
+        .unwrap();
+    assert!(media_at < second_large);
+    let large_steps: Vec<_> = observations
+        .iter()
+        .filter(|(id, ..)| *id == large)
+        .collect();
+    assert_eq!(
+        large_steps.iter().map(|(_, n, ..)| *n).collect::<Vec<_>>(),
+        (1..=large_length.div_ceil(65536))
+            .map(|step| (step * 65536).min(large_length))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        large_steps
+            .iter()
+            .all(|(_, _, pointer, _)| *pointer == large_steps[0].2)
+    );
+    assert_eq!(
+        large_steps.last().unwrap().3 - large_steps[1].3,
+        0,
+        "after returning from media, contiguous image quanta issue no extra native seeks"
+    );
+    drop(result);
+    assert_eq!(output.usage().bytes, 0);
+    assert_eq!(completion.usage().bytes, 0);
+    eprintln!(
+        "packed read {large_key}: media finishes between large blocks1/2; ordinary full preserves reserved admission; {} quanta share one output allocation; input peak={} cursor={} scratch={} native_seeks first={},resumed={},last={}",
+        large_steps.len(),
+        output.usage().peak_bytes,
+        size_of::<reel_package::archive::ReadCursor>(),
+        reel_package::archive::SCRATCH_BYTES,
+        large_steps[0].3,
+        large_steps[1].3,
+        large_steps.last().unwrap().3
+    );
+    drop(io);
+    wait_for_workspace_release(&temporary);
+}
+
+#[test]
+#[ignore = "uses an existing real RPK; set REEL_RPK_PATH"]
+fn real_rpk_media_preempts_large_reads_through_the_actual_io_worker() {
+    let path = PathBuf::from(std::env::var("REEL_RPK_PATH").expect("set REEL_RPK_PATH"));
+    let index = reel_package::archive::ArchiveIndex::read(&mut File::open(&path).unwrap()).unwrap();
+    let large = index
+        .entries()
+        .filter(|entry| entry.path.ends_with(".png"))
+        .max_by_key(|entry| entry.length)
+        .unwrap();
+    let media = index
+        .entries()
+        .find(|entry| {
+            [".mp3", ".ogg", ".wav"]
+                .iter()
+                .any(|suffix| entry.path.ends_with(suffix))
+                && entry.length >= 65536
+        })
+        .unwrap();
+    verify_preemption(path, &large.path, &media.path);
 }
 
 #[test]

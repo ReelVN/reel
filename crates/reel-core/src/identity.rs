@@ -71,4 +71,7 @@ pub enum Priority {
     #[default]
     Normal,
     Visible,
+    /// Time-sensitive streaming IO; adapters may reserve bounded admission and
+    /// alternate short urgent bursts with ordinary work.
+    Realtime,
 }

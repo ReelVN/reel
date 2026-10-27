@@ -24,6 +24,23 @@ struct DecodedBlock {
     length: u64,
     block: u64,
 }
+
+/// Directory state for one bounded, resumable logical read. Charge
+/// `size_of::<ReadCursor>()` when retaining it between worker quanta. The cursor
+/// owns no payload bytes and may be interleaved with other readers of the file.
+pub struct ReadCursor {
+    records: [u8; 4096],
+    first: u64,
+    count: u64,
+    start: u64,
+    end: u64,
+    last_block: u64,
+    version: [u8; 32],
+    entry_offset: u64,
+    entry_length: u64,
+    stored_length: u64,
+    storage: EntryStorage,
+}
 impl ReadScratch {
     /// Allocates exactly [`SCRATCH_BYTES`] bytes of reusable payload storage.
     pub fn new() -> Self {
@@ -46,6 +63,32 @@ pub(super) fn directory_bytes(length: u64) -> Option<u64> {
 }
 
 impl Entry {
+    /// Prepare one logical range without reading payload or directory bytes.
+    /// Retaining this cursor avoids rereading directory windows across quanta.
+    pub fn read_cursor(&self, offset: u64, length: usize) -> io::Result<ReadCursor> {
+        let end = offset
+            .checked_add(length as u64)
+            .filter(|end| *end <= self.length)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "archive read lies outside logical entry",
+                )
+            })?;
+        Ok(ReadCursor {
+            records: [0; 4096],
+            first: 0,
+            count: 0,
+            start: offset,
+            end,
+            last_block: end.saturating_sub(1) / BLOCK_BYTES as u64,
+            version: self.version,
+            entry_offset: self.offset,
+            entry_length: self.length,
+            stored_length: self.stored_length,
+            storage: self.storage,
+        })
+    }
     /// Reads exactly `output.len()` logical bytes beginning at `offset`.
     /// Only the addressed directory records and payload blocks are read. Records
     /// are batched in 4 KiB of stack storage; adjacent payloads read sequentially.
@@ -57,13 +100,35 @@ impl Entry {
         &self,
         input: &mut (impl Read + Seek),
         offset: u64,
+        output: &mut [u8],
+        scratch: &mut ReadScratch,
+        cancelled: impl FnMut() -> bool,
+    ) -> io::Result<()> {
+        let mut cursor = self.read_cursor(offset, output.len())?;
+        self.read_range_with_cursor(input, offset, output, scratch, &mut cursor, cancelled)
+    }
+
+    /// Fill a subrange of the cursor's original range. A caller must preserve
+    /// the same immutable entry and output ownership until its final quantum.
+    /// File position is reestablished on each call, so other reads may intervene.
+    pub fn read_range_with_cursor(
+        &self,
+        input: &mut (impl Read + Seek),
+        offset: u64,
         mut output: &mut [u8],
         scratch: &mut ReadScratch,
+        cursor: &mut ReadCursor,
         mut cancelled: impl FnMut() -> bool,
     ) -> io::Result<()> {
-        if offset
-            .checked_add(output.len() as u64)
-            .is_none_or(|end| end > self.length)
+        if offset < cursor.start
+            || offset
+                .checked_add(output.len() as u64)
+                .is_none_or(|end| end > cursor.end || end > self.length)
+            || cursor.version != self.version
+            || cursor.entry_offset != self.offset
+            || cursor.entry_length != self.length
+            || cursor.stored_length != self.stored_length
+            || cursor.storage != self.storage
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -86,10 +151,6 @@ impl Entry {
             return check_cancelled(&mut cancelled);
         };
         let (encoded, decoded) = scratch.bytes.split_at_mut(BLOCK_BYTES);
-        let last_block = (offset + output.len() as u64 - 1) / BLOCK_BYTES as u64;
-        let mut records = [0; 4096];
-        let mut first_record = 0;
-        let mut record_count = 0;
         let mut next_payload = None;
         let mut logical_offset = offset;
         while !output.is_empty() {
@@ -110,23 +171,26 @@ impl Entry {
                 output = &mut output[size..];
                 continue;
             }
-            if block < first_record || block - first_record >= record_count {
+            if block < cursor.first || block - cursor.first >= cursor.count {
                 let record_offset = block
                     .checked_mul(RECORD_BYTES)
                     .and_then(|relative| directory_offset.checked_add(relative))
                     .ok_or_else(|| invalid("archive block record offset overflow"))?;
-                first_record = block;
-                record_count = (last_block - block + 1).min(records.len() as u64 / RECORD_BYTES);
+                cursor.first = block;
+                let count =
+                    (cursor.last_block - block + 1).min(cursor.records.len() as u64 / RECORD_BYTES);
+                cursor.count = 0;
                 input.seek(SeekFrom::Start(record_offset))?;
                 read_exact(
                     input,
-                    &mut records[..(record_count * RECORD_BYTES) as usize],
+                    &mut cursor.records[..(count * RECORD_BYTES) as usize],
                     &mut cancelled,
                 )?;
+                cursor.count = count;
                 next_payload = None;
             }
-            let record_at = ((block - first_record) * RECORD_BYTES) as usize;
-            let record = &records[record_at..record_at + RECORD_BYTES as usize];
+            let record_at = ((block - cursor.first) * RECORD_BYTES) as usize;
+            let record = &cursor.records[record_at..record_at + RECORD_BYTES as usize];
             let relative = u64::from_le_bytes(record[..8].try_into().unwrap());
             let stored = u32::from_le_bytes(record[8..12].try_into().unwrap()) as usize;
             let codec = u32::from_le_bytes(record[12..16].try_into().unwrap());

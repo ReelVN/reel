@@ -6,7 +6,7 @@ use std::{
 };
 
 mod blocks;
-pub use blocks::{BLOCK_BYTES, ReadScratch, SCRATCH_BYTES};
+pub use blocks::{BLOCK_BYTES, ReadCursor, ReadScratch, SCRATCH_BYTES};
 
 pub const MAGIC: [u8; 8] = *b"REELPAK\0";
 pub const HEADER_LEN: u64 = 32;

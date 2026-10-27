@@ -289,7 +289,7 @@ impl Streams {
                     .describe(DescribeRequest {
                         resource: state.source.clone(),
                         scope: Scope::Process,
-                        priority: Priority::Visible,
+                        priority: Priority::Realtime,
                         completion: ticket,
                     })
                     .map_err(|e| e.reason),
@@ -306,7 +306,7 @@ impl Streams {
                         offset,
                         len,
                         scope: Scope::Process,
-                        priority: Priority::Visible,
+                        priority: Priority::Realtime,
                         output,
                         completion: ticket,
                     })
@@ -321,6 +321,11 @@ impl Streams {
                     shared.notify();
                 }
             }
+        }
+        if !self.0.is_empty() {
+            // Tiny input allowances may fit one chunk; rotate admission so the
+            // same stream cannot consume that sole reservation every host tick.
+            self.0.rotate_left(1);
         }
     }
 }
