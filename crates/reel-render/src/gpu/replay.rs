@@ -343,35 +343,28 @@ impl Context<'_> {
                     )?;
                 }
                 FrameOp::PushGroup(group) => {
-                    let boundary = current.transitions_enabled
-                        && current
-                            .drawing
-                            .transitions()
-                            .get(current.transition_next)
-                            .is_some_and(|t| {
-                                t.commands.start < current.offset.unwrap() + current.next + 2
-                            })
-                        || self.capture
-                            && current.offset.is_some_and(|offset| {
-                                current
-                                    .drawing
-                                    .capture_exclusion_end(offset + current.next)
-                                    .is_some()
-                            });
-                    if !boundary
-                        && let Some((draw, draw_at)) = crate::common::scopes::inline_group_fill(
-                            group,
-                            &current.commands[current.next..],
-                        )
-                    {
+                    if let Some(fill) = crate::common::scopes::inline_group_fill(
+                        group,
+                        &current.commands[current.next..],
+                        transform,
+                        self.size,
+                        self.quality.samples,
+                    ) && !fill.crosses_boundary(
+                        current.drawing,
+                        current.offset,
+                        current.next,
+                        current.transitions_enabled,
+                        self.capture,
+                    ) {
+                        self.scissor = self.scissor.intersect(fill.scissor);
                         self.draw(
                             current.drawing,
                             &current.scopes.last().target,
-                            &draw,
+                            &fill.draw,
                             transform,
-                            draw_at,
+                            fill.at,
                         )?;
-                        current.next += 2;
+                        current.next += fill.consumed;
                         continue;
                     }
                     blend_code(group.composite.blend).ok_or(GpuError::Unsupported {

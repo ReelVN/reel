@@ -300,29 +300,20 @@ pub(super) fn target_pixels(
                     )?;
                 }
                 FrameOp::PushGroup(group) => {
-                    let boundary = current.transitions_enabled
-                        && current
-                            .drawing
-                            .transitions()
-                            .get(current.transition_next)
-                            .is_some_and(|t| {
-                                t.commands.start < current.offset.unwrap() + current.next + 2
-                            })
-                        || capture
-                            && current.offset.is_some_and(|offset| {
-                                current
-                                    .drawing
-                                    .capture_exclusion_end(offset + current.next)
-                                    .is_some()
-                            });
-                    if !boundary
-                        && crate::common::scopes::inline_group_fill(
-                            group,
-                            &current.commands[current.next..],
-                        )
-                        .is_some()
-                    {
-                        current.next += 2;
+                    if let Some(fill) = crate::common::scopes::inline_group_fill(
+                        group,
+                        &current.commands[current.next..],
+                        current.transform,
+                        current.size,
+                        samples,
+                    ) && !fill.crosses_boundary(
+                        current.drawing,
+                        current.offset,
+                        current.next,
+                        current.transitions_enabled,
+                        capture,
+                    ) {
+                        current.next += fill.consumed;
                         continue;
                     }
                     let isolated = !current.groups.can_inline(current.next - 1);

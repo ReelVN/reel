@@ -159,13 +159,51 @@ pub(crate) fn flat_clip(
                 .any(|range| range.start < end && range.end > start))
 }
 
-/// A single source-over rectangle can carry its group's opacity directly.
+/// One rectangle and its pixel-aligned clips share the parent's target.
+/// The compiled draw already carries its context transform. Preserve the original
+/// command range for transition/capture admission and the draw location for errors.
+pub(crate) struct InlineFill {
+    pub draw: FrameDraw,
+    pub at: RecordLocation,
+    pub consumed: usize,
+    pub scissor: super::scissor::Scissor,
+}
+impl InlineFill {
+    pub fn crosses_boundary(
+        &self,
+        drawing: &reel_ui::frame::FrameDrawing,
+        offset: Option<usize>,
+        next: usize,
+        transitions: bool,
+        capture: bool,
+    ) -> bool {
+        let Some(offset) = offset else { return false };
+        let start = offset + next;
+        let end = start + self.consumed;
+        let retained = drawing.transitions();
+        let transition = retained.partition_point(|t| {
+            t.commands.end < start || t.commands.end == start && !t.commands.is_empty()
+        });
+        let exclusions = drawing.capture_exclusions();
+        let exclusion = exclusions.partition_point(|range| range.end <= start);
+        transitions
+            && retained
+                .get(transition)
+                .is_some_and(|t| t.commands.start < end)
+            || capture && exclusions.get(exclusion).is_some_and(|r| r.start < end)
+    }
+}
+
 /// Multiple draws and glyph runs retain isolation because their pixels can overlap.
-/// The caller keeps transition and capture boundaries outside this fused pair.
+/// Only clips with the same raster coverage as a scissor are folded into the draw.
 pub(crate) fn inline_group_fill(
     group: &FrameGroup,
     commands: &[FrameCommand],
-) -> Option<(FrameDraw, RecordLocation)> {
+    outer: reel_ui::kurbo::Affine,
+    size: [u32; 2],
+    samples: u32,
+) -> Option<InlineFill> {
+    use super::scissor::Scissor;
     use reel_ui::{imaging::record::Geometry, peniko::Brush};
     if group.clip.is_some()
         || group.mask.is_some()
@@ -178,46 +216,63 @@ pub(crate) fn inline_group_fill(
     {
         return None;
     }
-    let [
-        command,
-        FrameCommand {
-            op: FrameOp::PopGroup,
-            ..
-        },
-        ..,
-    ] = commands
-    else {
-        return None;
-    };
-    let FrameOp::Draw(FrameDraw::Fill {
-        shape: Geometry::Rect(rect),
-        transform,
-        fill_rule,
-        brush,
-        brush_transform,
-        composite,
-    }) = &command.op
-    else {
-        return None;
-    };
-    if composite.blend != Default::default() || !matches!(brush, Brush::Solid(_) | Brush::Image(_))
-    {
-        return None;
+    let mut scissor = Scissor::full(size);
+    let mut clips = 0_usize;
+    let mut draw = None;
+    for (index, command) in commands.iter().enumerate() {
+        match &command.op {
+            FrameOp::PushContext(_) | FrameOp::PopContext => {}
+            FrameOp::PushClip(clip) if draw.is_none() => {
+                scissor = scissor.intersect(Scissor::from_clip(clip, outer, size, samples)?);
+                clips += 1;
+            }
+            FrameOp::PopClip if draw.is_some() && clips > 0 => {
+                clips -= 1;
+            }
+            FrameOp::Draw(FrameDraw::Fill {
+                shape: Geometry::Rect(rect),
+                transform,
+                fill_rule,
+                brush,
+                brush_transform,
+                composite,
+            }) if draw.is_none()
+                && composite.blend == Default::default()
+                && matches!(brush, Brush::Solid(_) | Brush::Image(_)) =>
+            {
+                draw = Some((
+                    rect,
+                    transform,
+                    fill_rule,
+                    brush,
+                    brush_transform,
+                    composite,
+                    command.origin.at,
+                ));
+            }
+            FrameOp::PopGroup if clips == 0 => {
+                let (rect, transform, fill_rule, brush, brush_transform, composite, at) = draw?;
+                return Some(InlineFill {
+                    draw: FrameDraw::Fill {
+                        shape: Geometry::Rect(*rect),
+                        transform: *transform,
+                        fill_rule: *fill_rule,
+                        brush: brush.clone(),
+                        brush_transform: *brush_transform,
+                        composite: reel_ui::imaging::Composite {
+                            alpha: composite.alpha * group.composite.alpha,
+                            blend: composite.blend,
+                        },
+                    },
+                    at,
+                    consumed: index + 1,
+                    scissor,
+                });
+            }
+            _ => return None,
+        }
     }
-    Some((
-        FrameDraw::Fill {
-            shape: Geometry::Rect(*rect),
-            transform: *transform,
-            fill_rule: *fill_rule,
-            brush: brush.clone(),
-            brush_transform: *brush_transform,
-            composite: reel_ui::imaging::Composite {
-                alpha: composite.alpha * group.composite.alpha,
-                blend: composite.blend,
-            },
-        },
-        command.origin.at,
-    ))
+    None
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -563,25 +618,98 @@ mod tests {
             }),
         );
         let body = [draw.clone(), command(2, FrameOp::PopGroup)];
-        let (FrameDraw::Fill { composite, .. }, location) =
-            inline_group_fill(&group, &body).unwrap()
+        let InlineFill {
+            draw: FrameDraw::Fill { composite, .. },
+            at: location,
+            consumed,
+            ..
+        } = inline_group_fill(&group, &body, Affine::IDENTITY, [100, 100], 1).unwrap()
         else {
             panic!("fused rectangle");
         };
         assert_eq!(composite.alpha, 0.2);
+        assert_eq!(consumed, 2);
         assert_eq!(location, at(1));
         assert!(
             matches!(&body[0].op, FrameOp::Draw(FrameDraw::Fill { composite, .. }) if composite.alpha == 0.5)
         );
         // Overlapping drawing remains isolated; multiplying each draw's alpha
         // would change its composition inside the group.
-        assert!(inline_group_fill(&group, &[draw.clone(), draw, body[1].clone()]).is_none());
+        assert!(
+            inline_group_fill(
+                &group,
+                &[draw.clone(), draw, body[1].clone()],
+                Affine::IDENTITY,
+                [100, 100],
+                1
+            )
+            .is_none()
+        );
         group.invert = 1.;
-        assert!(inline_group_fill(&group, &body).is_none());
+        assert!(inline_group_fill(&group, &body, Affine::IDENTITY, [100, 100], 1).is_none());
         group.invert = 0.;
         group.composite.blend = reel_ui::peniko::Mix::Screen.into();
-        assert!(inline_group_fill(&group, &body).is_none());
+        assert!(inline_group_fill(&group, &body, Affine::IDENTITY, [100, 100], 1).is_none());
     }
+    #[test]
+    fn clipped_rectangle_opacity_preserves_raster_coverage_and_scope_limits() {
+        use reel_ui::{
+            imaging::record::{Clip, Geometry},
+            kurbo::{Affine, Rect},
+        };
+        let clip = |index, rect| {
+            command(
+                index,
+                FrameOp::PushClip(Clip::Fill {
+                    transform: Affine::IDENTITY,
+                    shape: Geometry::Rect(rect),
+                    fill_rule: Default::default(),
+                }),
+            )
+        };
+        let mut group = ordinary_group();
+        group.composite.alpha = 0.4;
+        let mut commands = vec![
+            clip(0, Rect::new(0., 0., 80., 70.)),
+            clip(1, Rect::new(10., 20., 90., 90.)),
+            translucent_fill(2),
+            command(3, FrameOp::PopClip),
+            command(4, FrameOp::PopClip),
+            command(5, FrameOp::PopGroup),
+        ];
+        for samples in [1, 4] {
+            let fill = inline_group_fill(&group, &commands, Affine::scale(2.), [200, 200], samples)
+                .unwrap();
+            assert_eq!(fill.consumed, 6);
+            assert_eq!(fill.at, at(2));
+            assert_eq!(
+                fill.scissor,
+                super::super::scissor::Scissor {
+                    x: 20,
+                    y: 40,
+                    width: 140,
+                    height: 100
+                }
+            );
+            assert!(
+                matches!(fill.draw, FrameDraw::Fill { composite, .. } if composite.alpha == 0.2)
+            );
+        }
+        commands[0] = clip(0, Rect::new(0.25, 0.25, 80., 70.));
+        assert!(inline_group_fill(&group, &commands, Affine::IDENTITY, [100, 100], 1).is_some());
+        assert!(inline_group_fill(&group, &commands, Affine::IDENTITY, [100, 100], 4).is_none());
+        // Sample-center edges and rotated clips keep their geometry coverage.
+        commands[0] = clip(0, Rect::new(0.5, 0.5, 80., 70.));
+        assert!(inline_group_fill(&group, &commands, Affine::IDENTITY, [100, 100], 1).is_none());
+        commands[0] = clip(0, Rect::new(0., 0., 80., 70.));
+        assert!(inline_group_fill(&group, &commands, Affine::rotate(0.2), [100, 100], 1).is_none());
+        commands.insert(3, translucent_fill(6));
+        assert!(inline_group_fill(&group, &commands, Affine::IDENTITY, [100, 100], 1).is_none());
+        commands.remove(3);
+        commands.remove(4);
+        assert!(inline_group_fill(&group, &commands, Affine::IDENTITY, [100, 100], 1).is_none());
+    }
+
     #[test]
     fn stack_growth_reserves_capacity_before_mutation_without_a_depth_ceiling() {
         let mut stack = Scopes::new(());
