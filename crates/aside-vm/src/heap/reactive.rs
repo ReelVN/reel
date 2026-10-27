@@ -4,6 +4,8 @@ use super::*;
 mod freshness;
 mod property_cycle;
 mod scan;
+#[cfg(test)]
+mod subscription_tests;
 pub(in crate::heap) use property_cycle::PropertyGraphProgress;
 use scan::DependencyCursor;
 
@@ -372,27 +374,29 @@ impl Heap {
                 },
             )?;
         }
-        let weak = self.host_payload(output, DerivedSlot::Weak as u32)?;
-        // Admit new edges before publishing the computed value. A failed evaluation
-        // never changes the last valid output; retained metadata stays GC-owned.
-        let mut inputs = DependencyCursor::new(dependencies);
-        while let Some((source, selector)) = inputs.next(self)? {
-            let key = self.key(source)?;
-            let mut subscribers = self.object(key)?.reactive_subscribers;
-            if subscribers.same_bits(Value::NULL) {
-                subscribers = self.alloc_array(&[])?;
-                self.barrier(subscribers)?;
-                self.objects.get_mut(key).unwrap().reactive_subscribers = subscribers;
-            }
-            self.packed_pair_push(subscribers, weak, selector)?;
-            self.reconnect_derived(source)?;
-        }
         let old = self.host_payload(output, DerivedSlot::Dependencies as u32)?;
-        if !old.same_bits(Value::NULL) {
-            let mut inputs = DependencyCursor::new(old);
+        if !self.same_derived_dependencies(old, dependencies)? {
+            let weak = self.host_payload(output, DerivedSlot::Weak as u32)?;
+            // Admit new edges before publishing the computed value. A failed evaluation
+            // never changes the last valid output; retained metadata stays GC-owned.
+            let mut inputs = DependencyCursor::new(dependencies);
             while let Some((source, selector)) = inputs.next(self)? {
-                // Remove one old occurrence, retaining the new subscription.
-                self.reactive_remove(source, weak, selector)?;
+                let key = self.key(source)?;
+                let mut subscribers = self.object(key)?.reactive_subscribers;
+                if subscribers.same_bits(Value::NULL) {
+                    subscribers = self.alloc_array(&[])?;
+                    self.barrier(subscribers)?;
+                    self.objects.get_mut(key).unwrap().reactive_subscribers = subscribers;
+                }
+                self.packed_pair_push(subscribers, weak, selector)?;
+                self.reconnect_derived(source)?;
+            }
+            if !old.same_bits(Value::NULL) {
+                let mut inputs = DependencyCursor::new(old);
+                while let Some((source, selector)) = inputs.next(self)? {
+                    // Remove one old occurrence, retaining the new subscription.
+                    self.reactive_remove(source, weak, selector)?;
+                }
             }
         }
         self.set_host_payload(output, DerivedSlot::Dependencies as u32, dependencies)?;
@@ -404,6 +408,40 @@ impl Heap {
             self.publish_host_property(property, result)?;
         }
         self.end_derived(output)
+    }
+
+    fn same_derived_dependencies(&self, old: Value, candidate: Value) -> Result<bool, HeapError> {
+        if old.same_bits(Value::NULL) {
+            return Ok(false);
+        }
+        let Payload::Dependencies(old) = &self.object(self.key(old)?)?.payload else {
+            unreachable!()
+        };
+        let Payload::Dependencies(candidate) = &self.object(self.key(candidate)?)?.payload else {
+            unreachable!()
+        };
+        if old.values.len != candidate.values.len {
+            return Ok(false);
+        }
+        let mut offset = 0;
+        while offset < old.values.len {
+            let before = old.values.segment(offset);
+            let after = candidate.values.segment(offset);
+            let count = before.len().min(after.len());
+            self.property_traversal_work
+                .set(self.property_traversal_work.get() + count as u64 * 8);
+            if !before[..count]
+                .iter()
+                .zip(&after[..count])
+                .all(|(before, after)| before.same_bits(*after))
+            {
+                return Ok(false);
+            }
+            offset += count as u32;
+        }
+        // Stable captures retain the already-admitted reverse edges. Their
+        // source identities include full generations and selectors remain exact.
+        Ok(true)
     }
 
     pub(crate) fn invalidate_reactive(
