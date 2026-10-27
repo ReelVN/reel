@@ -539,3 +539,152 @@ fn prepared_bc_textures_submit_exact_storage_and_preserve_sampling_metadata() {
         "frames/uploads/resources must release their CPU reservations"
     );
 }
+
+#[test]
+#[ignore = "requires actual BC-capable graphics adapter; submits without pixel readback"]
+fn retired_texture_storage_reuses_exact_footprints_and_preserves_reader_pins() {
+    use std::sync::atomic::Ordering;
+    let pool = BudgetPool::new(
+        BudgetCategory::CpuOutput,
+        QueueLimits {
+            max_requests: 512,
+            max_bytes: 8 << 20,
+        },
+    );
+    let gpu = pollster::block_on(Gpu::request(
+        &wgpu::Instance::default(),
+        None,
+        DeviceGeneration(1),
+        GpuLimits::default(),
+    ))
+    .unwrap();
+    assert!(
+        gpu.device
+            .features()
+            .contains(wgpu::Features::TEXTURE_COMPRESSION_BC)
+    );
+    let mut renderer = Renderer::new(gpu);
+    for (index, format) in [
+        TextureFormat::Rgba8,
+        TextureFormat::Bgra8,
+        TextureFormat::LinearRgba16Float,
+        TextureFormat::Bc1Rgb,
+        TextureFormat::Bc3Rgba,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let start = renderer
+            .gpu
+            .upload_creations
+            .textures
+            .load(Ordering::Relaxed);
+        let mut identity = None;
+        let mut reader = None;
+        let mut cpu_lease = None;
+        for version in 0..10u8 {
+            let storage_size = if version == 8 { [8, 16] } else { [8, 8] };
+            let descriptor = TextureDescriptor {
+                format,
+                source_encoding: if version % 2 == 0 {
+                    ColorEncoding::Srgb
+                } else {
+                    ColorEncoding::Linear
+                },
+                layout: TextureLayout {
+                    logical_size: [32 + u32::from(version), 24],
+                    content_size: storage_size,
+                    storage_size,
+                },
+            };
+            let length = descriptor.byte_len().unwrap();
+            let mut pixels = vec![255; length as usize];
+            if format == TextureFormat::LinearRgba16Float {
+                for sample in pixels.chunks_exact_mut(2) {
+                    sample.copy_from_slice(&0x3c00u16.to_le_bytes());
+                }
+            }
+            let bytes = OwnedBytes::new(pixels, pool.reserve(length).unwrap()).unwrap();
+            let resource = ResourceVersion {
+                key: AssetKey(format!("reuse-{index}")),
+                version: ContentVersion([version; 32]),
+            };
+            let mut registry = ResourceRegistry::new(1, 65536).unwrap();
+            let handle = registry
+                .register_texture(
+                    resource.clone(),
+                    TexturePayload::new(descriptor, bytes).unwrap(),
+                )
+                .unwrap();
+            let lease = registry.acquire(handle).unwrap();
+            if index == 4 && version == 1 {
+                cpu_lease = Some(lease.clone());
+            }
+            let frame = frame(lease, 0, &pool);
+            let prepared = renderer.prepare(&frame).unwrap();
+            let image = &prepared.images[&handle];
+            assert_eq!(image.layout, descriptor.layout);
+            assert_eq!(image.encoding, descriptor.source_encoding);
+            assert_eq!(image.residency.as_ref().unwrap().bytes(), length);
+            assert_eq!(image.texture.format(), resources::texture_format(format));
+            if index == 4 && version == 0 {
+                reader = Some(image.clone());
+            }
+            if index != 4 && version != 8 {
+                if let Some(texture) = &identity {
+                    assert_eq!(texture, &image.texture);
+                } else {
+                    identity = Some(image.texture.clone());
+                }
+            }
+            let created = renderer
+                .gpu
+                .upload_creations
+                .textures
+                .load(Ordering::Relaxed)
+                - start;
+            assert_eq!(
+                created,
+                (if index == 4 {
+                    usize::from(version.min(2)) + 1
+                } else {
+                    1
+                }) + usize::from(version >= 8)
+            );
+            if version == 7 {
+                eprintln!("retired {format:?}: 8 versions, {created} texture allocations (former 8), source/GPU pins retained");
+            }
+            if version == 2 {
+                reader = None;
+                cpu_lease = None;
+            }
+            renderer.submit(prepared).unwrap();
+            registry.retire(handle);
+            renderer.retire(&[resource]);
+            drop(frame);
+            drop(registry);
+            renderer
+                .gpu
+                .device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .unwrap();
+            renderer.poll().unwrap();
+        }
+        drop(identity);
+        drop(reader);
+        drop(cpu_lease);
+        assert_eq!(pool.usage().bytes, 0);
+        eprintln!(
+            "retired {format:?}: one extra footprint adds exactly one allocation; original footprint reuses again; total={}",
+            renderer
+                .gpu
+                .upload_creations
+                .textures
+                .load(Ordering::Relaxed)
+                - start
+        );
+    }
+    renderer.images.clear_idle();
+    assert_eq!(renderer.budgets.resources.usage().bytes, 0);
+    assert_eq!(pool.usage().bytes, 0);
+}

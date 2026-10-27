@@ -1,6 +1,41 @@
 use super::GpuError;
 use reel_core::texture::{TextureDescriptor, TextureFormat, TextureLayout};
 
+/// Recently retired storage candidates. A slot may still have external readers;
+/// adapters must require released source leases and unique ownership when taking
+/// it. Replacing or clearing a slot only releases this pool's own reference.
+pub(crate) struct RetiredImages<T> {
+    slots: [Option<T>; 64],
+    next: usize,
+}
+impl<T> Default for RetiredImages<T> {
+    fn default() -> Self {
+        Self {
+            slots: std::array::from_fn(|_| None),
+            next: 0,
+        }
+    }
+}
+impl<T> RetiredImages<T> {
+    pub(crate) fn put(&mut self, image: T) {
+        self.slots[self.next] = Some(image);
+        self.next = (self.next + 1) % self.slots.len();
+    }
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &T> {
+        self.slots.iter().flatten()
+    }
+    pub(crate) fn take_if(&mut self, matches: impl Fn(&T) -> bool) -> Option<T> {
+        let index = self
+            .slots
+            .iter()
+            .position(|slot| slot.as_ref().is_some_and(&matches))?;
+        self.slots[index].take()
+    }
+    pub(crate) fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// Initialized CPU upload capacity. Native upload APIs finish reading this slice
 /// before returning, so later uploads may overwrite it without a GPU wait.
 #[derive(Default)]
@@ -249,6 +284,44 @@ fn translucent_linear_f16(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retired_storage_is_bounded_recent_and_keeps_external_owners_accounted() {
+        use reel_core::budget::{BudgetCategory, BudgetPool, QueueLimits};
+        use std::sync::Arc;
+        let budget = BudgetPool::new(
+            BudgetCategory::GpuResource,
+            QueueLimits {
+                max_requests: 128,
+                max_bytes: 128 * 4096,
+            },
+        );
+        let mut retired = RetiredImages::default();
+        let held = Arc::new((0, budget.reserve(4096).unwrap()));
+        retired.put(held.clone());
+        assert!(
+            retired
+                .take_if(|image| Arc::strong_count(image) == 1)
+                .is_none()
+        );
+        for version in 1..=64 {
+            retired.put(Arc::new((version, budget.reserve(4096).unwrap())));
+        }
+        assert_eq!(retired.iter().count(), 64);
+        assert_eq!(
+            budget.usage().bytes,
+            65 * 4096,
+            "an evicted pool reference cannot release another reader's storage"
+        );
+        assert!(retired.iter().all(|image| image.0 > 0));
+        let newest = retired.take_if(|image| image.0 == 64).unwrap();
+        assert_eq!(newest.1.bytes(), 4096);
+        retired.clear();
+        assert_eq!(budget.usage().bytes, 8192);
+        drop(newest);
+        drop(held);
+        assert_eq!(budget.usage().bytes, 0);
+    }
 
     #[test]
     fn upload_scratch_retains_initialized_capacity_and_returns_its_budget_under_pressure() {

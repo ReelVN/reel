@@ -752,7 +752,7 @@ fn usage(renderer: &Renderer) -> [u64; 3] {
 fn empty(renderer: &Renderer) {
     renderer.targets.clear();
     renderer.geometry.clear();
-    renderer.images.clear_idle_uploads();
+    renderer.images.clear_idle();
     assert_eq!(usage(renderer), [0; 3]);
     assert_eq!(renderer.admission.usage().tickets, 0);
     assert_eq!(renderer.budgets.resources.usage().tickets, 0);
@@ -1003,6 +1003,31 @@ fn rectangle_clips_share_targets_and_preserve_group_opacity() {
         );
     }
     empty(&renderer);
+}
+
+#[test]
+#[ignore = "requires actual graphics adapter; submits without pixel readback"]
+fn retired_decoded_images_reuse_completed_storage_across_resource_versions() {
+    let mut renderer = renderer(Default::default());
+    for _ in 0..8 {
+        let (frame, mut registry, handles) = image_restore_fixture([8, 8], true);
+        let prepared = renderer.prepare(&frame).unwrap();
+        for image in prepared.images.values() {
+            assert_eq!(image.texture.format(), wgpu::TextureFormat::Rgba16Float);
+            assert_eq!(image.residency.as_ref().unwrap().bytes(), 8 * 8 * 8);
+        }
+        assert_eq!(renderer.gpu.upload_creations.snapshot()[0], 3);
+        let versions: Vec<_> = frame.resources().leases().iter().map(|lease| lease.version().clone()).collect();
+        renderer.submit(prepared).unwrap();
+        for handle in handles { registry.retire(handle); }
+        renderer.retire(&versions);
+        drop(frame);
+        drop(registry);
+        renderer.gpu.device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        renderer.poll().unwrap();
+    }
+    empty(&renderer);
+    eprintln!("decoded RGBA: 8 three-image sets create3 working F16 textures instead of24; cleared GPU/CPU reservations");
 }
 
 fn image_restore_fixture(
@@ -1287,7 +1312,7 @@ fn image_upload_slices_share_one_prepare_quota_and_release_abandoned_work() {
     }
     drop(frame);
     renderer.poll().unwrap();
-    renderer.images.clear_idle_uploads();
+    renderer.images.clear_idle();
     assert_eq!(renderer.usage().resources, 0);
     assert_eq!(renderer.usage().transient, 0);
 
@@ -1311,7 +1336,7 @@ fn image_upload_slices_share_one_prepare_quota_and_release_abandoned_work() {
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
     renderer.poll().unwrap();
-    renderer.images.clear_idle_uploads();
+    renderer.images.clear_idle();
     assert_eq!(renderer.usage().resources, 0);
     assert_eq!(renderer.usage().transient, 0);
 }
