@@ -94,6 +94,7 @@ pub(crate) fn run_compose_pass(root: &mut RenderRoot) {
     // If widgets have moved, pointer-related info may be stale.
     // For instance, the "hovered" widget may have moved and no longer be under the pointer.
     if root.root_state().needs_compose {
+        root.global_state.invalidate_geometry();
         root.global_state.needs_pointer_pass = true;
     }
 

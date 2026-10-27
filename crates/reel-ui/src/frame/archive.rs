@@ -885,6 +885,7 @@ impl RetainedRestore {
                 .map_err(|_| retained::error(BuildErrorKind::Bytes))?;
             self.drawings.push(Arc::new(FrameDrawing {
                 commands: build.commands,
+                recordings: Vec::new(),
                 capture_exclusions: build.capture_exclusions,
                 masks: build.masks,
                 transitions: build.transitions,

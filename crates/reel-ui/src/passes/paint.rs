@@ -10,14 +10,14 @@ use tracing::{info_span, trace};
 
 use crate::app::{
     CommandOwnerRange, GroupMetadata, RenderRoot, RenderRootState, SubtreePaint, VisualLayer,
-    VisualLayerKind, VisualLayerPlan,
+    VisualLayerKind, VisualLayerMetadata, VisualLayerPlan,
 };
-use crate::core::recorded_paint::{CachedPaint, RecordingSink};
+use crate::core::recorded_paint::{CachedPaint, RecordingSink, record_owner_range};
 use crate::core::{
     DefaultProperties, PaintCtx, PaintLayerMode, PropertiesRef, PropertyArena, WidgetArenaNode,
     WidgetId, WidgetState,
 };
-use crate::imaging::record::{Clip, Command, Geometry, Group, Scene};
+use crate::imaging::record::{Clip, Geometry, Group, Scene};
 use crate::imaging::{Composite, PaintSink, Painter};
 use crate::passes::{enter_span_if, recurse_on_children};
 use crate::util::get_debug_color;
@@ -80,7 +80,7 @@ impl LayerCollector {
 
     fn append(
         &mut self,
-        cached: &CachedPaint,
+        cached: &mut CachedPaint,
         transform: Affine,
         owner: WidgetId,
         image: crate::frame::ImagePaint,
@@ -89,58 +89,14 @@ impl LayerCollector {
             return;
         }
         self.finish_current_layer(false);
-        for (offset, command) in cached.scene.commands().iter().enumerate() {
-            if matches!(command, Command::PushGroup(_)) {
-                self.groups.push(GroupMetadata {
-                    command: offset,
-                    owner,
-                    effect_transform: Affine::IDENTITY,
-                    image_mask: None,
-                    effect: None,
-                    mask_effect: None,
-                    invert: 0.,
-                    blend: None,
-                });
-            }
-        }
         let end = cached.scene.commands().len();
-        let mut next = 0;
-        for binding in &cached.images {
-            let command = binding.command;
-            self.record_owner_range(next, command, owner, image, None);
-            self.record_owner_range(
-                command,
-                command + 1,
-                owner,
-                crate::frame::ImagePaint {
-                    resource: Some(crate::resources::ResourceImageBrush {
-                        resource: binding.resource.handle(),
-                        sampler: binding.sampler,
-                    }),
-                    sampling_transform: true,
-                    source_rect: binding.source_rect,
-                    ..image
-                },
-                Some(&binding.resource),
-            );
-            next = command + 1;
-        }
-        if !cached.images.is_empty()
-            || image.color != [1.; 4]
-            || image.appearance.is_some()
-            || image.resource.is_some()
-            || image.sampling_transform
-            || image.source_rect.is_some()
-        {
-            self.record_owner_range(next, end, owner, image, None);
-        }
+        let metadata = cached.metadata(owner, image);
         self.commands_before_layer += end;
         self.layers.push(VisualLayer {
             kind: VisualLayerKind::Scene(cached.scene.clone()),
             transform: self.transform * transform,
             widget_id: owner,
-            groups: std::mem::take(&mut self.groups),
-            command_owners: std::mem::take(&mut self.command_owners),
+            metadata: metadata.map(VisualLayerMetadata::Shared),
         });
     }
 
@@ -209,38 +165,7 @@ impl LayerCollector {
         image: crate::frame::ImagePaint,
         lease: Option<&crate::resources::ResourceLease>,
     ) {
-        let crate::frame::ImagePaint {
-            color: image_color,
-            appearance: image_appearance,
-            resource: image_resource,
-            sampling_transform: image_sampling_transform,
-            source_rect: image_source_rect,
-        } = image;
-        if start == end {
-            return;
-        }
-        if let Some(last) = self.command_owners.last_mut()
-            && last.owner == owner
-            && last.image_color == image_color
-            && last.image_appearance == image_appearance
-            && last.image_resource == image_resource
-            && last.image_source_rect == image_source_rect
-            && last.image_sampling_transform == image_sampling_transform
-            && last.commands.end == start
-        {
-            last.commands.end = end;
-        } else {
-            self.command_owners.push(CommandOwnerRange {
-                commands: start..end,
-                owner,
-                image_color,
-                image_appearance,
-                image_resource,
-                image_lease: lease.cloned(),
-                image_sampling_transform,
-                image_source_rect,
-            });
-        }
+        record_owner_range(&mut self.command_owners, start, end, owner, image, lease);
     }
 
     fn paint(&mut self, owner: WidgetId, draw: impl FnOnce(&mut Scene)) {
@@ -273,8 +198,12 @@ impl LayerCollector {
             kind: VisualLayerKind::Scene(scene.into()),
             transform: self.transform,
             widget_id: self.current_owner_id,
-            groups: std::mem::take(&mut self.groups),
-            command_owners: std::mem::take(&mut self.command_owners),
+            metadata: (!self.groups.is_empty() || !self.command_owners.is_empty()).then(|| {
+                VisualLayerMetadata::Inline {
+                    groups: std::mem::take(&mut self.groups),
+                    command_owners: std::mem::take(&mut self.command_owners),
+                }
+            }),
         });
     }
 
@@ -294,8 +223,7 @@ impl LayerCollector {
             },
             transform: self.transform,
             widget_id,
-            groups: Vec::new(),
-            command_owners: Vec::new(),
+            metadata: None,
         });
     }
 
@@ -556,7 +484,7 @@ fn paint_widget(
         && layer_collector.push_subtree_composite(state, content_box_to_layer_transform, id);
 
     if !suppress_output {
-        let Some((pre_scene, scene, _)) = &mut scene_cache.get(&id) else {
+        let Some((pre_scene, scene, _)) = scene_cache.get_mut(&id) else {
             debug_panic!(
                 "Error in paint pass: scene should have been cached earlier in this function."
             );
@@ -668,7 +596,7 @@ fn paint_widget(
             layer_collector.paint(id, |scene| scene.pop_clip());
         }
 
-        let Some((_, _, post_scene)) = &mut scene_cache.get(&id) else {
+        let Some((_, _, post_scene)) = scene_cache.get_mut(&id) else {
             debug_panic!(
                 "Error in paint pass: scene should have been cached earlier in this function."
             );

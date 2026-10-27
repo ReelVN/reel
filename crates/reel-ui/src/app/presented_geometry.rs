@@ -5,7 +5,7 @@
 use super::{RenderRoot, VisualLayerPlan};
 use crate::core::{WidgetArenaNode, WidgetId, WidgetState};
 use kurbo::{Affine, Insets, Point, Rect, Size, Vec2};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// Input geometry and scope policy. Presented(None) blocks interaction.
 #[derive(Clone, Debug)]
@@ -110,6 +110,11 @@ impl GeometryRecord {
 /// Complete immutable compact projection. No `WidgetState` or per-node path is retained.
 #[derive(Debug)]
 pub struct PresentedGeometryView {
+    storage: Arc<GeometryStorage>,
+    retention_guard: Option<Arc<dyn std::fmt::Debug + Send + Sync>>,
+}
+#[derive(Debug)]
+pub(crate) struct GeometryStorage {
     records: Vec<GeometryRecord>,
     children: Vec<usize>,
     ids: Vec<(WidgetId, usize)>,
@@ -118,10 +123,19 @@ pub struct PresentedGeometryView {
     root: usize,
     modal_scope: Option<WidgetId>,
     max_depth: usize,
-    retention_guard: Option<Arc<dyn std::fmt::Debug + Send + Sync>>,
+    accounting: OnceLock<Arc<dyn std::fmt::Debug + Send + Sync>>,
     scratch_peak_bytes: usize,
 }
 impl PresentedGeometryView {
+    pub(crate) fn storage_is_accounted(&self) -> bool {
+        self.storage.accounting.get().is_some()
+    }
+    pub(crate) fn account_storage(&self, guard: Arc<dyn std::fmt::Debug + Send + Sync>) {
+        self.storage
+            .accounting
+            .set(guard)
+            .expect("unaccounted geometry storage");
+    }
     /// Attach host accounting to the view itself, so every Arc lease retains its charge.
     /// Masonry does not interpret this guard or depend on the host budget implementation.
     pub fn with_retention_guard(mut self, guard: Arc<dyn std::fmt::Debug + Send + Sync>) -> Self {
@@ -132,46 +146,48 @@ impl PresentedGeometryView {
     }
     /// Registered node count.
     pub fn len(&self) -> usize {
-        self.records.len()
+        self.storage.records.len()
     }
     /// Whether this frame has no records.
     pub fn is_empty(&self) -> bool {
-        self.records.is_empty()
+        self.storage.records.is_empty()
     }
     /// Retained allocation capacities plus view header (Arc allocation overhead is host-owned).
     pub fn retained_bytes(&self) -> usize {
         size_of::<Self>()
-            + self.records.capacity() * size_of::<GeometryRecord>()
-            + self.children.capacity() * size_of::<usize>()
-            + self.ids.capacity() * size_of::<(WidgetId, usize)>()
-            + self.input_layers.capacity() * size_of::<WidgetId>()
+            + size_of::<GeometryStorage>()
+            + 2 * size_of::<usize>()
+            + self.storage.records.capacity() * size_of::<GeometryRecord>()
+            + self.storage.children.capacity() * size_of::<usize>()
+            + self.storage.ids.capacity() * size_of::<(WidgetId, usize)>()
+            + self.storage.input_layers.capacity() * size_of::<WidgetId>()
     }
     /// Peak explicit traversal stack and temporary child-ID heap storage during export.
     pub fn scratch_peak_bytes(&self) -> usize {
-        self.scratch_peak_bytes
+        self.storage.scratch_peak_bytes
     }
     /// DPI used by this record.
     pub fn scale_factor(&self) -> f64 {
-        self.scale_factor
+        self.storage.scale_factor
     }
     /// Root identity.
     pub(crate) fn navigation_ids(&self) -> impl Iterator<Item = WidgetId> + '_ {
-        self.records.iter().map(|record| record.id)
+        self.storage.records.iter().map(|record| record.id)
     }
     pub(crate) fn input_layers(&self) -> &[WidgetId] {
-        &self.input_layers
+        &self.storage.input_layers
     }
     pub fn root_id(&self) -> WidgetId {
-        self.records[self.root].id
+        self.storage.records[self.storage.root].id
     }
     /// Highest visible modal subtree captured by this frame.
     pub fn modal_scope(&self) -> Option<WidgetId> {
-        self.modal_scope
+        self.storage.modal_scope
     }
     pub(crate) fn contains_in_scope(&self, id: WidgetId, scope: WidgetId) -> bool {
         let mut index = self.index(id);
         while let Some(i) = index {
-            let record = &self.records[i];
+            let record = &self.storage.records[i];
             if record.id == scope {
                 return true;
             }
@@ -181,35 +197,36 @@ impl PresentedGeometryView {
     }
     /// Maximum retained path depth.
     pub fn max_depth(&self) -> usize {
-        self.max_depth
+        self.storage.max_depth
     }
     /// Complete contiguous records, including stashed nodes.
     pub fn records(&self) -> &[GeometryRecord] {
-        &self.records
+        &self.storage.records
     }
     /// Resolve an identity without falling back to live geometry.
     pub fn get(&self, id: WidgetId) -> Option<&GeometryRecord> {
-        self.index(id).map(|i| &self.records[i])
+        self.index(id).map(|i| &self.storage.records[i])
     }
     pub(crate) fn children_of(
         &self,
         id: WidgetId,
     ) -> impl DoubleEndedIterator<Item = WidgetId> + '_ {
         let range = self.get(id).map_or(0..0, |record| record.children.clone());
-        self.children[range]
+        self.storage.children[range]
             .iter()
-            .map(|&index| self.records[index].id)
+            .map(|&index| self.storage.records[index].id)
     }
     pub(crate) fn index(&self, id: WidgetId) -> Option<usize> {
-        self.ids
+        self.storage
+            .ids
             .binary_search_by_key(&id.to_raw(), |e| e.0.to_raw())
             .ok()
-            .map(|i| self.ids[i].1)
+            .map(|i| self.storage.ids[i].1)
     }
     pub(crate) fn child_ids(&self, index: usize) -> impl Iterator<Item = WidgetId> + '_ {
-        self.children[self.records[index].children.clone()]
+        self.storage.children[self.storage.records[index].children.clone()]
             .iter()
-            .map(|i| self.records[*i].id)
+            .map(|i| self.storage.records[*i].id)
     }
     /// Fill one caller-owned route in target-to-root order. Never allocate or partially route.
     pub fn path_into(
@@ -225,8 +242,8 @@ impl PresentedGeometryView {
                 path.clear();
                 return Err(GeometryError::Path);
             }
-            path.push(self.records[i].id);
-            index = self.records[i].parent;
+            path.push(self.storage.records[i].id);
+            index = self.storage.records[i].parent;
         }
         Ok(())
     }
@@ -245,7 +262,7 @@ impl PresentedGeometryView {
             p: Point,
             eligible: &impl Fn(WidgetId) -> bool,
         ) -> Option<WidgetId> {
-            let s = &v.records[i];
+            let s = &v.storage.records[i];
             let t = s.window_transform;
             if s.is_stashed
                 || !s.bounding_box.contains(p)
@@ -267,7 +284,7 @@ impl PresentedGeometryView {
                 return None;
             }
             if s.propagates_pointer_interaction {
-                for child in v.children[s.children.clone()].iter().rev() {
+                for child in v.storage.children[s.children.clone()].iter().rev() {
                     if let Some(id) = hit(v, *child, p, eligible) {
                         return Some(id);
                     }
@@ -275,7 +292,7 @@ impl PresentedGeometryView {
             }
             (s.accepts_pointer_interaction && s.size.to_rect().contains(local)).then_some(s.id)
         }
-        hit(self, self.root, pos, &eligible)
+        hit(self, self.storage.root, pos, &eligible)
     }
 }
 /// Fixed borrowed selection for a dispatch (never stored in `RenderRootState`).
@@ -314,7 +331,7 @@ impl<'a> GeometryView<'a> {
         if let ContextGeometry::Presented { view, index } = geometry {
             let mut ancestor = Some(index);
             while let Some(index) = ancestor {
-                let record = &view.records[index];
+                let record = &view.storage.records[index];
                 if record.is_stashed {
                     return None;
                 }
@@ -325,7 +342,7 @@ impl<'a> GeometryView<'a> {
     }
     pub(crate) fn scale(self, live: f64) -> f64 {
         match self {
-            Self::Presented(Some(v)) => v.scale_factor,
+            Self::Presented(Some(v)) => v.storage.scale_factor,
             _ => live,
         }
     }
@@ -336,7 +353,7 @@ impl<'a> ContextGeometry<'a> {
             Self::Live => Some(Self::Live),
             Self::Presented { view, index } => {
                 let child = view.index(id)?;
-                view.children[view.records[index].children.clone()]
+                view.storage.children[view.storage.records[index].children.clone()]
                     .contains(&child)
                     .then_some(Self::Presented { view, index: child })
             }
@@ -348,13 +365,13 @@ impl<'a> ContextGeometry<'a> {
     {
         match self {
             Self::Live => GeometryRef::Live(live),
-            Self::Presented { view, index } => GeometryRef::Presented(&view.records[index]),
+            Self::Presented { view, index } => GeometryRef::Presented(&view.storage.records[index]),
         }
     }
     pub(crate) fn scale(self, live: f64) -> f64 {
         match self {
             Self::Live => live,
-            Self::Presented { view, .. } => view.scale_factor,
+            Self::Presented { view, .. } => view.storage.scale_factor,
         }
     }
 }
@@ -422,11 +439,38 @@ impl GeometryRef<'_> {
     }
 }
 impl RenderRoot {
+    pub(crate) fn cached_presented_geometry(
+        &self,
+        limits: GeometryLimits,
+    ) -> Result<Option<PresentedGeometryView>, GeometryError> {
+        let cache = self.geometry_cache.borrow();
+        if cache.0 != self.global_state.geometry_revision {
+            return Ok(None);
+        }
+        let Some(storage) = cache.1.upgrade() else {
+            return Ok(None);
+        };
+        let view = PresentedGeometryView {
+            storage,
+            retention_guard: None,
+        };
+        if view
+            .retained_bytes()
+            .checked_add(view.scratch_peak_bytes())
+            .is_none_or(|bytes| bytes > limits.max_bytes)
+        {
+            return Err(GeometryError::Bytes);
+        }
+        Ok(Some(view))
+    }
     /// Export after compose/record, charging actual registered storage and traversal workspaces.
     pub fn capture_presented_geometry(
         &self,
         limits: GeometryLimits,
     ) -> Result<PresentedGeometryView, GeometryError> {
+        if let Some(view) = self.cached_presented_geometry(limits)? {
+            return Ok(view);
+        }
         struct Visit<'a> {
             node: crate::tree_arena::ArenaRef<'a, WidgetArenaNode>,
             parent: Option<(usize, usize)>,
@@ -452,7 +496,7 @@ impl RenderRoot {
         {
             return Err(GeometryError::Bytes);
         }
-        let mut view = PresentedGeometryView {
+        let mut storage = GeometryStorage {
             records: Vec::with_capacity(registered),
             children: Vec::with_capacity(registered - 1),
             ids: Vec::with_capacity(registered),
@@ -461,7 +505,7 @@ impl RenderRoot {
             root: 0,
             modal_scope: None,
             max_depth: 0,
-            retention_guard: None,
+            accounting: OnceLock::new(),
             scratch_peak_bytes: stack_bytes,
         };
         let root = self
@@ -497,29 +541,29 @@ impl RenderRoot {
             {
                 return Err(GeometryError::Bytes);
             }
-            view.scratch_peak_bytes = view.scratch_peak_bytes.max(scratch_bytes);
-            view.max_depth = view.max_depth.max(depth);
-            let index = view.records.len();
+            storage.scratch_peak_bytes = storage.scratch_peak_bytes.max(scratch_bytes);
+            storage.max_depth = storage.max_depth.max(depth);
+            let index = storage.records.len();
             if let Some((_, slot)) = parent {
-                view.children[slot] = index;
+                storage.children[slot] = index;
             }
-            let start = view.children.len();
+            let start = storage.children.len();
             let end = start + children.len();
-            view.children.resize(end, 0);
-            view.records.push(GeometryRecord::project(
+            storage.children.resize(end, 0);
+            storage.records.push(GeometryRecord::project(
                 &node.item.state,
                 parent.map(|(index, _)| index),
                 start..end,
             ));
-            view.records[index].virtual_revision =
+            storage.records[index].virtual_revision =
                 node.item.widget.virtual_children().map(|v| v.revision);
-            view.records[index].is_cursor = node.item.widget.is_cursor();
-            view.records[index].selection_group =
+            storage.records[index].is_cursor = node.item.widget.is_cursor();
+            storage.records[index].selection_group =
                 node.item.widget.selection_group().map(|group| group.id);
-            view.ids.push((node.item.state.id, index));
+            storage.ids.push((node.item.state.id, index));
             if node.item.state.is_modal && !node.item.state.is_stashed && !node.item.state.in_cursor
             {
-                view.modal_scope = Some(node.item.state.id);
+                storage.modal_scope = Some(node.item.state.id);
             }
             for (slot, child) in (start..end).zip(children).rev() {
                 pending.push(Visit {
@@ -529,8 +573,16 @@ impl RenderRoot {
                 });
             }
         }
-        view.ids.sort_unstable_by_key(|e| e.0.to_raw());
-        Ok(view)
+        storage.ids.sort_unstable_by_key(|e| e.0.to_raw());
+        let storage = Arc::new(storage);
+        *self.geometry_cache.borrow_mut() = (
+            self.global_state.geometry_revision,
+            Arc::downgrade(&storage),
+        );
+        Ok(PresentedGeometryView {
+            storage,
+            retention_guard: None,
+        })
     }
     /// Actual rewrite/layout/compose/paint and matching geometry in a single operation.
     pub fn record_presented_geometry(
@@ -690,6 +742,6 @@ impl PresentedGeometryView {
     pub fn bytes_for_nodes(n: usize) -> Option<usize> {
         n.checked_mul(size_of::<GeometryRecord>() + size_of::<(WidgetId, usize)>())?
             .checked_add(n.saturating_sub(1).checked_mul(size_of::<usize>())?)?
-            .checked_add(size_of::<Self>())
+            .checked_add(size_of::<Self>() + size_of::<GeometryStorage>() + 2 * size_of::<usize>())
     }
 }

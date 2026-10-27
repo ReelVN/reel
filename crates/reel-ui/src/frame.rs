@@ -18,7 +18,13 @@ use reel_core::{
     budget::{BudgetPool, BudgetTicket},
     identity::{FrameId, SurfaceEpoch},
 };
-use std::{collections::BTreeMap, mem::size_of, ops::Range, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    hash::{Hash, Hasher},
+    mem::size_of,
+    ops::Range,
+    sync::{Arc, Weak},
+};
 
 mod archive;
 mod blend;
@@ -78,7 +84,7 @@ pub struct BuildError {
     pub at: RecordLocation,
     pub kind: BuildErrorKind,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum LocalId {
     Clip(record::ClipId),
     Group(record::GroupId),
@@ -92,6 +98,43 @@ pub struct CommandOrigin {
     pub source: u32,
     pub local: LocalId,
     pub at: RecordLocation,
+}
+/// Stable identity of an immutable recording, including an embedded mask scene.
+///
+/// Equality uses the root allocation and its complete mask path. The weak root
+/// does not retain recording payloads. Consumers must check that it is live and
+/// include resolved transforms, resources and drawing state in their cache keys.
+/// This identity is process-local and is never written to retained archives.
+#[derive(Clone, Debug)]
+pub struct RecordingSource {
+    root: Weak<Scene>,
+    mask_path: Vec<record::MaskId>,
+}
+impl RecordingSource {
+    /// Root recording; upgrading it also keeps every embedded mask scene alive.
+    pub fn root(&self) -> &Weak<Scene> {
+        &self.root
+    }
+    /// Mask IDs from the root to this source; empty for the root scene itself.
+    pub fn mask_path(&self) -> &[record::MaskId] {
+        &self.mask_path
+    }
+    /// Whether the original immutable recording still has a strong owner.
+    pub fn is_live(&self) -> bool {
+        self.root.strong_count() != 0
+    }
+}
+impl PartialEq for RecordingSource {
+    fn eq(&self, other: &Self) -> bool {
+        Weak::ptr_eq(&self.root, &other.root) && self.mask_path == other.mask_path
+    }
+}
+impl Eq for RecordingSource {}
+impl Hash for RecordingSource {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.root.as_ptr().hash(state);
+        self.mask_path.hash(state);
+    }
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct FrameCommand {
@@ -332,6 +375,7 @@ struct FrameData {
 #[derive(Debug)]
 pub struct FrameDrawing {
     commands: Vec<FrameCommand>,
+    recordings: Vec<Option<RecordingSource>>,
     capture_exclusions: Vec<Range<usize>>,
     masks: BTreeMap<u32, Arc<FrameMask>>,
     resources: ResourceSnapshot,
@@ -341,6 +385,15 @@ pub struct FrameDrawing {
 }
 type FrameSubtree = crate::app::SubtreePaint;
 impl FrameDrawing {
+    /// Resolve a command's live recording identity and its local payload ID.
+    ///
+    /// Source indices only identify entries within this drawing. Compare the
+    /// returned recording identities across frames instead. External commands,
+    /// scope endings, expired recordings and restored archives return `None`.
+    pub fn recording(&self, origin: CommandOrigin) -> Option<(&RecordingSource, LocalId)> {
+        let source = self.recordings.get(origin.source as usize)?.as_ref()?;
+        (origin.local != LocalId::None && source.is_live()).then_some((source, origin.local))
+    }
     /// Sorted balanced command intervals omitted only during capture replay.
     pub fn capture_exclusions(&self) -> &[Range<usize>] {
         &self.capture_exclusions
@@ -447,13 +500,13 @@ impl Cursor {
         // Ranges are contiguous producer metadata. At most one neighbor is read
         // per prepaid commit; never scan after work exhaustion to diagnose it.
         if layer
-            .command_owners
+            .command_owners()
             .get(self.owner_range)
             .is_some_and(|r| r.commands.end == self.position)
         {
             self.owner_range += 1;
             self.owner = layer
-                .command_owners
+                .command_owners()
                 .get(self.owner_range)
                 .map_or(layer.widget_id, |r| r.owner);
         }
@@ -464,7 +517,7 @@ impl Cursor {
         self.owner_range = 0;
         if let Some(layer) = plan.layers.get(self.layer) {
             self.owner = layer
-                .command_owners
+                .command_owners()
                 .first()
                 .map_or(layer.widget_id, |r| r.owner);
         }
@@ -490,6 +543,7 @@ struct Building {
     resources: ResourceSnapshot,
     info: FrameInfo,
     commands: Vec<FrameCommand>,
+    recordings: Vec<Option<RecordingSource>>,
     masks: Vec<FrameMask>,
     cursors: Vec<Cursor>,
     mappings: Vec<MaskMapping>,
@@ -530,7 +584,7 @@ impl FrameBuild {
             mask_depth: 0,
             owner: source.plan.layers.first().map_or_else(
                 || source.geometry.records()[0].id,
-                |l| l.command_owners.first().map_or(l.widget_id, |r| r.owner),
+                |l| l.command_owners().first().map_or(l.widget_id, |r| r.owner),
             ),
         };
         let error = |kind| {
@@ -564,6 +618,15 @@ impl FrameBuild {
                 n.checked_add(
                     source
                         .plan
+                        .layers
+                        .len()
+                        .checked_mul(size_of::<Option<RecordingSource>>())?,
+                )
+            })
+            .and_then(|n| {
+                n.checked_add(
+                    source
+                        .plan
                         .subtrees
                         .capacity()
                         .checked_mul(size_of::<FrameSubtree>())?,
@@ -586,6 +649,18 @@ impl FrameBuild {
         let ticket = pool
             .reserve(initial as u64)
             .map_err(|_| error(BuildErrorKind::Bytes))?;
+        let recordings = source
+            .plan
+            .layers
+            .iter()
+            .map(|layer| match &layer.kind {
+                VisualLayerKind::Scene(scene) => Some(RecordingSource {
+                    root: Arc::downgrade(scene),
+                    mask_path: Vec::new(),
+                }),
+                VisualLayerKind::External { .. } => None,
+            })
+            .collect();
         let cursor = Cursor {
             layer: 0,
             path: Vec::new(),
@@ -606,6 +681,7 @@ impl FrameBuild {
                 resources,
                 info,
                 commands: Vec::with_capacity(main_count),
+                recordings,
                 masks: Vec::new(),
                 cursors,
                 mappings: Vec::new(),
@@ -677,6 +753,7 @@ impl FrameBuild {
             resources,
             info,
             commands,
+            recordings,
             masks,
             bytes,
             mut ticket,
@@ -721,6 +798,7 @@ impl FrameBuild {
                 geometry,
                 drawing: Arc::new(FrameDrawing {
                     commands,
+                    recordings,
                     capture_exclusions,
                     masks,
                     resources,
@@ -904,7 +982,7 @@ impl Building {
             let group_search = u64::from(
                 usize::BITS
                     - self.source.plan.layers[c.layer]
-                        .groups
+                        .groups()
                         .len()
                         .leading_zeros(),
             );
@@ -1018,11 +1096,12 @@ impl Building {
                 // Validate the already selected range once after prepayment.
                 // Owner was advanced by the prior commit, before any new spend.
                 let c = self.cursors.last().unwrap();
-                if c.stream.is_none() && !self.source.plan.layers[c.layer].command_owners.is_empty()
+                if c.stream.is_none()
+                    && !self.source.plan.layers[c.layer].command_owners().is_empty()
                 {
                     let layer = &self.source.plan.layers[c.layer];
                     layer
-                        .command_owners
+                        .command_owners()
                         .get(c.owner_range)
                         .filter(|range| {
                             range.commands.contains(&c.position) && range.owner == c.owner
@@ -1087,12 +1166,13 @@ impl Building {
                                 .path
                                 .len()
                                 .checked_add(1)?
-                                .checked_mul(size_of::<record::MaskId>())?,
+                                .checked_mul(2 * size_of::<record::MaskId>())?,
                         )
                     })
                     .and_then(|n| n.checked_add(growth_bytes(&self.masks)?))
                     .and_then(|n| n.checked_add(growth_bytes(&self.mappings)?))
                     .and_then(|n| n.checked_add(growth_bytes(&self.cursors)?))
+                    .and_then(|n| n.checked_add(growth_bytes(&self.recordings)?))
                     // Immutable mask Arc and conservative B-tree node storage at publication.
                     .and_then(|n| {
                         n.checked_add(size_of::<FrameMask>() + 2 * size_of::<usize>() + 1024)
@@ -1104,10 +1184,10 @@ impl Building {
         if matches!(command, Command::PushGroup(_)) && cursor.stream.is_none() {
             let layer = &self.source.plan.layers[cursor.layer];
             if let Ok(index) = layer
-                .groups
+                .groups()
                 .binary_search_by_key(&cursor.position, |group| group.command)
             {
-                let group = &layer.groups[index];
+                let group = &layer.groups()[index];
                 for effect in group.effect.iter().chain(group.mask_effect.iter()) {
                     bytes = bytes
                         .checked_add(std::mem::size_of_val(effect.instance.values()))
@@ -1204,9 +1284,19 @@ impl Building {
                 let mode = definition.mode;
                 let local = applied.mask;
                 let t = transform * applied.transform;
+                let VisualLayerKind::Scene(root) = &layer.kind else {
+                    unreachable!()
+                };
+                let root = Arc::downgrade(root);
+                let mut mask_path = Vec::with_capacity(c.path.len() + 1);
+                mask_path.extend_from_slice(&c.path);
+                mask_path.push(local);
                 reserve_slot(&mut self.masks).map_err(|()| allocation_error)?;
                 reserve_slot(&mut self.mappings).map_err(|()| allocation_error)?;
                 reserve_slot(&mut self.cursors).map_err(|()| allocation_error)?;
+                reserve_slot(&mut self.recordings).map_err(|()| allocation_error)?;
+                self.recordings
+                    .push(Some(RecordingSource { root, mask_path }));
                 self.masks.push(FrameMask {
                     mode,
                     commands: Vec::with_capacity(count),
@@ -1243,11 +1333,11 @@ impl Building {
             })
         } else {
             layer
-                .groups
+                .groups()
                 .binary_search_by_key(&c.position, |m| m.command)
                 .ok()
                 .map(|i| {
-                    let mut metadata = layer.groups[i].clone();
+                    let mut metadata = layer.groups()[i].clone();
                     metadata.effect_transform = layer.transform * metadata.effect_transform;
                     metadata
                 })
@@ -1255,7 +1345,7 @@ impl Building {
         let scene = Self::scene(&self.source, self.cursors.last().unwrap()).unwrap();
         let command = &scene.commands()[self.cursors.last().unwrap().position];
         let image = if c.stream.is_none() {
-            layer.command_owners.get(c.owner_range)
+            layer.command_owners().get(c.owner_range)
         } else {
             None
         };
@@ -1713,7 +1803,7 @@ fn empty_stroke(s: &Stroke) -> Stroke {
     stroke.dash_pattern.reserve_exact(s.dash_pattern.len());
     stroke
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ImagePaint {
     pub(crate) color: [f32; 4],
     pub(crate) appearance: Option<ImageAppearance>,
@@ -1730,6 +1820,15 @@ impl Default for ImagePaint {
             sampling_transform: false,
             source_rect: None,
         }
+    }
+}
+impl ImagePaint {
+    pub(crate) fn is_default(self) -> bool {
+        self.color == [1.; 4]
+            && self.appearance.is_none()
+            && self.resource.is_none()
+            && !self.sampling_transform
+            && self.source_rect.is_none()
     }
 }
 /// Frame images store local-to-source maps, including constant source axes.

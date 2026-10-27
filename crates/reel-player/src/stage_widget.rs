@@ -1110,8 +1110,10 @@ impl StageWidget {
         if this.widget.root_props.visible != props.visible {
             this.ctx.request_layout();
         }
+        if !this.widget.portal && transform_changed(&this.widget.root_props, &props) {
+            this.ctx.request_compose();
+        }
         this.widget.root_props = props;
-        this.ctx.request_compose();
     }
 }
 impl Widget for StageWidget {
@@ -1252,6 +1254,88 @@ struct SceneWidget {
     layouts: usize,
     #[cfg(test)]
     syncs: usize,
+    #[cfg(test)]
+    paint_work: [usize; 3],
+}
+fn transform_changed(old: &reel_ui::stage::NodeProps, new: &reel_ui::stage::NodeProps) -> bool {
+    [
+        old.x,
+        old.y,
+        old.rotation,
+        old.scale_x,
+        old.scale_y,
+        old.anchor_x,
+        old.anchor_y,
+    ] != [
+        new.x,
+        new.y,
+        new.rotation,
+        new.scale_x,
+        new.scale_y,
+        new.anchor_x,
+        new.anchor_y,
+    ]
+}
+fn composite_changed(old: &reel_ui::stage::NodeProps, new: &reel_ui::stage::NodeProps) -> bool {
+    old.opacity != new.opacity
+        || old.invert != new.invert
+        || old.blend != new.blend
+        || old.mask != new.mask
+        || old.effect != new.effect
+        || old.mask_effect != new.mask_effect
+        || old.mask_progress != new.mask_progress
+        || old.mask_softness != new.mask_softness
+        || old.mask_invert != new.mask_invert
+        || old.mask_x != new.mask_x
+        || old.mask_y != new.mask_y
+}
+fn decoration_changed(old: &SceneProperties, new: &SceneProperties) -> bool {
+    // Child widgets own text, image, editor and slider recording invalidation.
+    // These are the fields consumed directly by SceneWidget::paint.
+    let props = &old.props;
+    let next = &new.props;
+    if std::mem::discriminant(&old.kind) != std::mem::discriminant(&new.kind)
+        || props.background != next.background
+        || props.border_width != next.border_width
+        || props.border_color != next.border_color
+        || props.corner_radius != next.corner_radius
+        || props.decorated != next.decorated
+        || (props.color != next.color
+            && matches!(
+                new.kind,
+                NodeKind::Button { .. } | NodeKind::Toggle { .. } | NodeKind::Radio { .. }
+            ))
+    {
+        return true;
+    }
+    match &new.kind {
+        NodeKind::Particles(particles) => {
+            !matches!(&old.kind, NodeKind::Particles(previous) if previous == particles)
+        }
+        NodeKind::Toggle {
+            value, appearance, ..
+        } => {
+            !matches!(&old.kind, NodeKind::Toggle { value: previous, appearance: previous_appearance, .. } if previous == value && previous_appearance == appearance)
+        }
+        NodeKind::Radio { selected, .. } => {
+            !matches!(&old.kind, NodeKind::Radio { selected: previous, .. } if previous == selected)
+        }
+        NodeKind::Text(_)
+        | NodeKind::TextInput { .. }
+        | NodeKind::Button { .. }
+        | NodeKind::Slider { .. }
+        | NodeKind::Image { .. }
+        | NodeKind::Input { .. }
+        | NodeKind::Scroll { .. }
+        | NodeKind::Camera(_)
+        | NodeKind::Popup(_)
+        | NodeKind::Row(_)
+        | NodeKind::Column(_)
+        | NodeKind::Grid(_)
+        | NodeKind::VirtualList(_)
+        | NodeKind::Stack
+        | NodeKind::Cursor => false,
+    }
 }
 fn color(value: [u8; 4]) -> Color {
     Color::from_rgba8(value[0], value[1], value[2], value[3])
@@ -1602,6 +1686,8 @@ impl SceneWidget {
             layouts: 0,
             #[cfg(test)]
             syncs: 0,
+            #[cfg(test)]
+            paint_work: [0; 3],
         }
     }
     fn sync(
@@ -1622,7 +1708,7 @@ impl SceneWidget {
         {
             this.widget.effect = view.images.effect.clone();
             this.widget.mask_effect = view.images.mask_effect.clone();
-            this.ctx.request_render();
+            this.ctx.request_pre_paint();
         }
         if !this
             .widget
@@ -1632,7 +1718,7 @@ impl SceneWidget {
             .eq(view.images.mask_images.iter().map(ResourceLease::handle))
         {
             this.widget.mask_images = view.images.mask_images.clone();
-            this.ctx.request_render();
+            this.ctx.request_pre_paint();
         }
         if matches!(view.node.kind, NodeKind::Particles(_)) {
             if this
@@ -1659,12 +1745,12 @@ impl SceneWidget {
                     .as_ref()
                     .map(ResourceLease::handle)
             {
-                this.ctx.request_render();
+                this.ctx.request_paint_only();
             }
             this.widget.particle_image = view.images.image_resource.clone();
         }
         if this.widget.node.props.capture_included != view.node.props.capture_included {
-            this.ctx.request_render();
+            this.ctx.request_pre_paint();
         }
         let children_changed = this.widget.sync_dirty
             || !Arc::ptr_eq(&this.widget.projection.children, &view.children);
@@ -2042,8 +2128,10 @@ impl SceneWidget {
                     this.ctx.request_layout();
                 }
                 if *node != next.node {
+                    if transform_changed(&node.props, &next.node.props) {
+                        this.ctx.request_compose();
+                    }
                     *node = next.node.clone();
-                    this.ctx.request_compose();
                 }
                 let registered = if let Some(mut child) = this.ctx.get_mut(pod) {
                     content_changed |= Self::sync(&mut child, next, feedback, nodes);
@@ -2117,8 +2205,19 @@ impl SceneWidget {
             {
                 this.ctx.request_layout();
             }
-            if matches!(view.node.kind, NodeKind::Camera(_)) {
+            if matches!(view.node.kind, NodeKind::Camera(_))
+                && this.widget.node.kind != view.node.kind
+            {
                 this.ctx.request_compose();
+            }
+            if composite_changed(old, new) {
+                this.ctx.request_pre_paint();
+            }
+            if decoration_changed(&this.widget.node, &view.node) {
+                this.ctx.request_paint_only();
+            }
+            if this.widget.node.kind != view.node.kind {
+                this.ctx.request_accessibility_update();
             }
             let accepted_focus = this.widget.accepts_focus();
             this.widget.node = view.node.clone();
@@ -2128,7 +2227,6 @@ impl SceneWidget {
                     this.widget.accepts_focus(),
                 );
             }
-            this.ctx.request_render();
         }
         if content_changed && !feedback && this.widget.is_button() {
             this.widget.button.cancel();
@@ -2952,6 +3050,10 @@ impl Widget for SceneWidget {
         }
     }
     fn compose(&mut self, ctx: &mut ComposeCtx<'_>) {
+        #[cfg(test)]
+        {
+            self.paint_work[0] += 1;
+        }
         if self.interaction.is_none() {
             publish_interaction!(self, ctx);
         }
@@ -3063,6 +3165,10 @@ impl Widget for SceneWidget {
         }
     }
     fn pre_paint(&mut self, ctx: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, _: &mut Painter<'_>) {
+        #[cfg(test)]
+        {
+            self.paint_work[1] += 1;
+        }
         ctx.set_subtree_effect(
             self.node
                 .props
@@ -3107,6 +3213,10 @@ impl Widget for SceneWidget {
         );
     }
     fn paint(&mut self, ctx: &mut PaintCtx<'_>, _: &PropertiesRef<'_>, painter: &mut Painter<'_>) {
+        #[cfg(test)]
+        {
+            self.paint_work[2] += 1;
+        }
         let bounds = self.size.to_rect();
         let border = BorderWidth::all(Length::px(
             self.node

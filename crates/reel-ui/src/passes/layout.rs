@@ -538,6 +538,7 @@ pub(crate) fn run_layout_pass(root: &mut RenderRoot) {
     }
 
     let _span = info_span!("layout").entered();
+    root.global_state.invalidate_geometry();
     root.global_state.needs_pointer_pass = true;
 
     let window_size = root.get_kurbo_size();

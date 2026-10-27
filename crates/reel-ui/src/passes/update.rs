@@ -333,6 +333,7 @@ pub(crate) fn run_update_widget_tree_pass(root: &mut RenderRoot) {
         false,
     );
     if root.global_state.input_layer_order_dirty {
+        root.global_state.invalidate_geometry();
         root.global_state.input_layer_order_dirty = false;
         if !root.global_state.input_layers.is_empty() {
             // Rebuild only after a structural change. Pointer dispatch visits
@@ -496,6 +497,7 @@ fn update_stashed_for_widget(
         };
         widget.update(&mut ctx, &mut props, &Update::StashedChanged(stashed));
         state.is_stashed = stashed;
+        global_state.invalidate_geometry();
         global_state.needs_pointer_pass = true;
         state.needs_update_focusable = true;
 

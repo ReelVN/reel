@@ -677,6 +677,24 @@ impl Fixture {
         );
         nodes
     }
+    fn paint_work(&self) -> [usize; 3] {
+        fn walk(widget: WidgetRef<'_, dyn Widget>, work: &mut [usize; 3]) {
+            if let Some(scene) = widget.downcast::<SceneWidget>() {
+                for (total, count) in work.iter_mut().zip(scene.paint_work) {
+                    *total += count;
+                }
+            }
+            for child in widget.children() {
+                walk(child, work);
+            }
+        }
+        let mut work = [0; 3];
+        walk(
+            self.bridge.root().get_widget(self.widget).unwrap(),
+            &mut work,
+        );
+        work
+    }
     #[cfg(feature = "window")]
     fn render_frame(&mut self) -> RenderFrame {
         let source = self.record();
@@ -3066,7 +3084,7 @@ fn subtree_invert_updates_cached_composition_without_relayout() {
         .plan()
         .layers
         .iter()
-        .flat_map(|l| &l.groups)
+        .flat_map(|l| l.groups())
         .filter(|g| g.invert != 0.)
         .collect();
     assert_eq!(groups.len(), 1);
@@ -3083,7 +3101,7 @@ fn subtree_invert_updates_cached_composition_without_relayout() {
             .plan()
             .layers
             .iter()
-            .flat_map(|l| &l.groups)
+            .flat_map(|l| l.groups())
             .filter(|g| g.invert == 0.75)
             .count(),
         1
@@ -3099,7 +3117,7 @@ fn subtree_invert_updates_cached_composition_without_relayout() {
             .plan()
             .layers
             .iter()
-            .flat_map(|l| &l.groups)
+            .flat_map(|l| l.groups())
             .all(|g| g.invert == 0.)
     );
     assert_eq!(f.layouts(), layouts);

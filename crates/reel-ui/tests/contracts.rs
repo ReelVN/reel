@@ -177,7 +177,7 @@ fn callback_deletion_in_live_and_presented_hover_and_active() {
 }
 
 #[test]
-fn snapshot_keeps_one_maximum_ticket_until_last_view_drops() {
+fn snapshot_storage_is_shared_while_candidate_guards_remain_independent() {
     let f = SliderFixture::new();
     let payload = f
         .root
@@ -187,11 +187,11 @@ fn snapshot_keeps_one_maximum_ticket_until_last_view_drops() {
     let mut limits = bridge_limits();
     limits.geometry.max_bytes = payload + 4096;
     limits.max_candidates = 1;
-    limits.max_snapshot_bytes = limits.geometry.max_bytes as u64 + 256;
+    limits.max_snapshot_bytes = limits.geometry.max_bytes as u64 + 512;
     let mut bridge = PresentationBridge::new(f.root, SurfaceEpoch(1), limits).unwrap();
     let c = bridge.record(FrameId(1)).unwrap();
     let charge = bridge.snapshot_usage();
-    assert_eq!(charge.tickets, 1);
+    assert_eq!(charge.tickets, 2);
     assert!(
         charge.bytes >= limits.geometry.max_bytes as u64,
         "keep original export reservation continuously charged"
@@ -205,14 +205,15 @@ fn snapshot_keeps_one_maximum_ticket_until_last_view_drops() {
     drop(c);
     bridge.clear();
     assert_eq!(bridge.snapshot_usage(), charge);
-    assert!(matches!(
-        bridge.record(FrameId(2)),
-        Err(RecordError::SnapshotBudget)
-    ));
+    let c = bridge.record(FrameId(2)).unwrap();
+    assert!(std::ptr::eq(lease.records(), c.geometry().records()));
+    assert_eq!(bridge.snapshot_usage().tickets, 3);
     drop(lease);
+    bridge.resolve(notice(&c, PresentationOutcome::Skipped));
+    drop(c);
     assert_eq!(bridge.snapshot_usage().tickets, 0);
     assert_eq!(bridge.snapshot_usage().bytes, 0);
-    let c = bridge.record(FrameId(2)).unwrap();
+    let c = bridge.record(FrameId(3)).unwrap();
     bridge.resolve(notice(&c, PresentationOutcome::Skipped));
     drop(c);
     assert_eq!(bridge.snapshot_usage().bytes, 0);
@@ -241,9 +242,9 @@ fn retired_candidate_keys_keep_identity_allocations_bounded_and_charged() {
             other => panic!("unexpected record: {other:?}"),
         }
     }
-    assert_eq!(keys.len(), 2);
-    assert_eq!(busy, 62);
-    assert_eq!(bridge.snapshot_usage().tickets, 2);
+    assert_eq!(keys.len(), 3);
+    assert_eq!(busy, 61);
+    assert_eq!(bridge.snapshot_usage().tickets, 3);
     keys.clear();
     assert_eq!(bridge.snapshot_usage().tickets, 0);
     assert_eq!(bridge.snapshot_usage().bytes, 0);
@@ -588,6 +589,8 @@ fn snapshot_memory_path_storage_and_lease_recovery() {
     v.path_into(f.slider, &mut path, 3).unwrap();
     assert_eq!(path.len(), 3);
     limits.max_bytes = v.retained_bytes() + v.scratch_peak_bytes();
+    let payload = v.retained_bytes();
+    drop(v);
     let bytes = limits.max_bytes as u64 + 256;
     let mut bridge = PresentationBridge::new(
         f.root,
@@ -616,7 +619,7 @@ fn snapshot_memory_path_storage_and_lease_recovery() {
     bridge.clear();
     assert_eq!(
         bridge.snapshot_usage().tickets,
-        1,
+        2,
         "raw Arc lease keeps budget charged"
     );
     let start = Instant::now();
@@ -635,7 +638,7 @@ fn snapshot_memory_path_storage_and_lease_recovery() {
     assert_eq!(bridge.snapshot_usage().bytes, 0);
     println!(
         "budget actual_nodes=3 payload_bytes={} snapshot_limit_bytes={bytes}: full_candidate_reject={full_ns}ns retained_lease_reject={exhausted_ns}ns release_then_record={recovery_ns}ns; final_usage={:?}",
-        v.retained_bytes(),
+        payload,
         bridge.snapshot_usage()
     );
 }

@@ -137,6 +137,7 @@ fn animated_scene_projection_and_frame_cost() {
         let settle = f.record();
         f.accept(&settle);
         drop(settle);
+        let initial_work = f.paint_work();
 
         let pool = BudgetPool::new(
             BudgetCategory::CpuOutput,
@@ -210,6 +211,13 @@ fn animated_scene_projection_and_frame_cost() {
         }
         let frame_time = started.elapsed();
         let frame = region.change();
+        let work =
+            std::array::from_fn::<_, 3, _>(|index| f.paint_work()[index] - initial_work[index]);
+        assert_eq!(
+            &work[1..],
+            &[0, 0],
+            "moving scenery preserves local recordings"
+        );
         let geometry_region = Region::new(&INSTRUMENTED_SYSTEM);
         let geometry_started = Instant::now();
         for _ in 0..240 {
@@ -254,6 +262,42 @@ fn animated_scene_projection_and_frame_cost() {
             geometry_time.as_micros(),
             geometry.allocations,
             geometry.bytes_allocated
+        );
+        println!(
+            "animation_recording composes={} pre_paints={} paints={}",
+            work[0], work[1], work[2]
+        );
+        let stable = f.record();
+        f.accept(&stable);
+        let records = stable.geometry().records().as_ptr();
+        let initial_work = f.paint_work();
+        let opacity_region = Region::new(&INSTRUMENTED_SYSTEM);
+        let opacity_started = Instant::now();
+        for index in 0..240 {
+            f.edit(moving, |props| {
+                props.opacity = 0.5 + (index % 40) as f64 * 0.01
+            });
+            let frame = f.record();
+            assert_eq!(frame.geometry().records().as_ptr(), records);
+            f.accept(&frame);
+        }
+        let opacity_time = opacity_started.elapsed();
+        let opacity_allocations = opacity_region.change();
+        let work =
+            std::array::from_fn::<_, 3, _>(|index| f.paint_work()[index] - initial_work[index]);
+        assert_eq!(
+            work,
+            [0, 240, 0],
+            "opacity only changes subtree composition"
+        );
+        println!(
+            "animation_opacity frames=240 us={} allocations={} bytes={} geometry_reuses=240 composes={} pre_paints={} paints={}",
+            opacity_time.as_micros(),
+            opacity_allocations.allocations,
+            opacity_allocations.bytes_allocated,
+            work[0],
+            work[1],
+            work[2]
         );
     }
 }
