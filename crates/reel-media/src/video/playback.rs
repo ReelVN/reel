@@ -32,7 +32,7 @@ pub struct VideoOptions {
     /// Exclusive source endpoint, independent of looping. Hosts can queue the
     /// next segment against the same audio consumption clock.
     pub end: Option<Duration>,
-    /// Restore a terminal visual without admitting or decoding its audio track.
+    /// Restore a terminal visual without publishing its audio track.
     pub poster: bool,
     /// Initial transport state; decoding can prepare the first picture while paused.
     pub paused: bool,
@@ -336,7 +336,7 @@ impl VideoPlayback {
         self.shared.state.lock().unwrap().info.clone()
     }
     /// Admit this exactly once through MediaPlayer/KiraMixer. Until admission
-    /// the bounded audio queue stalls decode, rather than discarding the track.
+    /// the bounded audio queue pauses PCM delivery while video decoding continues.
     pub fn take_audio(&mut self) -> Option<StreamSoundData> {
         let data = self.shared.state.lock().unwrap().audio.take();
         self.audio_clock |= data.is_some();
