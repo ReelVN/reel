@@ -5,15 +5,15 @@
 //! ```sh
 //! cargo run -p reel-dev -- vita-assets --modules path/to/module \
 //!     --font path/to/font.ttf --font-license path/to/license.txt
-//! cargo +nightly vita build vpk -- --locked --release \
+//! cargo +nightly vita build vpk --locked --release \
 //!     -p reel-player --bin reel-vita --no-default-features --features vita
 //! ```
 //!
 //! Set the target's `CC`, `CXX` and `AR` to the VitaSDK cross tools. The render
 //! build compiles GLSL to embedded SGX binaries with the pinned host compiler.
-//! `cargo-vita` packages the ELF, platform metadata and `target/vita/assets`.
+//! `cargo-vita` packages the ELF, platform metadata and `runtime/vita/`.
 //! Its VPK contains `eboot.bin`, the four matching PVR modules under `module/`
-//! and the launcher font at `fonts/body.ttf`.
+//! and `launcher.rpk`, which contains the launcher font at `fonts/body.ttf`.
 use crate::{
     hal::{DisplayMetrics, Host, PlatformHost, WindowControl},
     player::{Player, PlayerOptions},

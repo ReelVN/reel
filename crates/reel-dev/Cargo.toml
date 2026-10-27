@@ -11,7 +11,6 @@ vita-probe = ["dep:reel-core", "dep:reel-ui", "dep:reel-render", "dep:reel-playe
 
 [dependencies]
 anyhow = "=1.0.104"
-png = "=0.18.1"
 reel-package = { path = "../reel-package" }
 serde_json = "=1.0.154"
 reel-storage = { path = "../reel-storage", optional = true }
@@ -37,7 +36,7 @@ required-features = ["vita-probe"]
 [package.metadata.vita]
 title_id = "REELP0002"
 title_name = "Reel GPU Probe"
-assets = "../../target/vita/probe-assets"
+assets = "runtime/vita"
 build_std = "std,panic_unwind"
 vita_make_fself_flags = ["-a", "0x2F00000000000001"]
 vita_mksfoex_flags = ["-d", "ATTRIBUTE2=12", "-s", "APP_VER=01.00", "-s", "VERSION=01.00"]

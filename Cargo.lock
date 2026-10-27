@@ -3428,7 +3428,6 @@ name = "reel-dev"
 version = "1.0.0"
 dependencies = [
  "anyhow",
- "png",
  "pvr-compiler",
  "pvr-psp2-sys",
  "reel-core",

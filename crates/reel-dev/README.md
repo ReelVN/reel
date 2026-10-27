@@ -32,6 +32,21 @@ Rust examples in compile and lint commands. Compiler execution fixtures are
 documented [beside their inputs](../aside-compiler/tests/fixtures/quirrel/README.md).
 Video tests require `cargo test --locked -p reel-media --features video`.
 
+Vita packages read fixed assets from `crates/reel-player/runtime/vita/` and
+`crates/reel-dev/runtime/vita/`. LiveArea images and the launcher font archive
+are maintained there. To update the launcher's font and native modules, run:
+
+```sh
+cargo run --locked -p reel-dev -- vita-assets --modules path/to/module \
+    --font path/to/font.ttf --font-license path/to/license.txt
+```
+
+The probe's ignored `authored/` and `media/` directories receive exported
+project packages; its `module/` receives the matching native modules.
+Build each application with `cargo +nightly vita build vpk --release --locked`
+and its package, binary and feature selection. Cargo's configured target
+directory owns the resulting VPK and executable files.
+
 Native diagnostics use the target display and audio device:
 
 ```sh

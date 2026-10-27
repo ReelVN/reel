@@ -1,4 +1,4 @@
-//! Assemble the native modules, launcher font and generated LiveArea artwork
+//! Update the native modules and launcher font in the fixed Vita runtime assets
 //! consumed by `reel-player`'s `package.metadata.vita.assets` directory.
 //! `cargo +nightly vita build vpk` owns executable conversion and VPK packaging.
 
@@ -13,14 +13,7 @@ const MODULES: [&str; 4] = [
     "libGLESv2.suprx",
 ];
 
-const LIVEAREA: &str = r#"<?xml version="1.0" encoding="utf-8"?>
-<livearea style="a1" format-ver="01.00" content-rev="1">
-    <livearea-background><image>bg0.png</image></livearea-background>
-    <gate><startup-image>startup.png</startup-image></gate>
-</livearea>
-"#;
-
-/// Prepare `target/vita/assets` for the launcher VPK on the current build host.
+/// Update `crates/reel-player/runtime/vita` for the launcher VPK.
 ///
 /// Arguments are `--modules DIR --font FILE --font-license FILE`. The module
 /// directory must contain all four PVR GLES modules. The supplied OpenType or
@@ -28,7 +21,7 @@ const LIVEAREA: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 /// `fonts/body.ttf` inside `launcher.rpk`; its content digest is computed during
 /// packaging so startup mounts only the archive index before loading the font.
 /// The font's redistribution license is copied to `licenses/launcher-font.txt`.
-/// Generated indexed PNG artwork uses the Vita LiveArea image dimensions.
+/// LiveArea artwork is maintained beside these inputs and remains unchanged.
 pub fn assets(args: &[String]) -> Result<()> {
     let mut modules = None;
     let mut font = None;
@@ -64,28 +57,14 @@ pub fn assets(args: &[String]) -> Result<()> {
         );
     }
 
-    let parent = crate::root().join("target/vita");
-    fs::create_dir_all(&parent)?;
-    let output = parent.join("assets");
-    let staging = parent.join(format!("assets-{}", std::process::id()));
-    fs::create_dir(&staging)?;
-    let result = assemble(&staging, modules, font, license).and_then(|()| {
-        if output.exists() {
-            fs::remove_dir_all(&output)?;
-        }
-        fs::rename(&staging, &output)?;
-        Ok(())
-    });
-    if result.is_err() {
-        let _ = fs::remove_dir_all(&staging);
-    }
-    result?;
+    let output = crate::root().join("crates/reel-player/runtime/vita");
+    assemble(&output, modules, font, license)?;
     println!("Vita launcher assets: {}", output.display());
     Ok(())
 }
 
 fn assemble(output: &Path, modules: &Path, font: &Path, license: &Path) -> Result<()> {
-    for name in ["module", "licenses", "sce_sys/livearea/contents"] {
+    for name in ["module", "licenses"] {
         fs::create_dir_all(output.join(name))?;
     }
     for name in MODULES {
@@ -98,53 +77,6 @@ fn assemble(output: &Path, modules: &Path, font: &Path, license: &Path) -> Resul
     archive.add("fonts/body.ttf", &mut fs::File::open(font)?)?;
     archive.finish()?;
     fs::copy(license, output.join("licenses/launcher-font.txt"))?;
-    fs::write(
-        output.join("sce_sys/livearea/contents/template.xml"),
-        LIVEAREA,
-    )?;
-    for (path, width, height, mark) in [
-        ("sce_sys/icon0.png", 128, 128, 108.),
-        ("sce_sys/pic0.png", 960, 544, 240.),
-        ("sce_sys/livearea/contents/bg0.png", 840, 500, 220.),
-        ("sce_sys/livearea/contents/startup.png", 280, 158, 126.),
-    ] {
-        artwork(&output.join(path), width, height, mark)?;
-    }
-    Ok(())
-}
-
-fn artwork(path: &Path, width: u32, height: u32, mark: f32) -> Result<()> {
-    // Flat geometric reel artwork needs only four colors. Keeping the source
-    // here makes all platform images reproducible without tracked binaries.
-    let palette = [16, 24, 42, 22, 35, 56, 78, 207, 184, 235, 244, 249];
-    let mut pixels = vec![0; (width * height) as usize];
-    for y in 0..height {
-        for x in 0..width {
-            let px = (x as f32 + 0.5 - width as f32 * 0.5) / mark;
-            let py = (y as f32 + 0.5 - height as f32 * 0.5) / mark;
-            let radius = px * px + py * py;
-            let mut color = u8::from((x + y) % 64 < 2);
-            if radius < 0.25 {
-                color = 2;
-                if radius < 0.0036
-                    || [(0.22, 0.), (-0.22, 0.), (0., 0.22), (0., -0.22)]
-                        .into_iter()
-                        .any(|(cx, cy)| (px - cx).powi(2) + (py - cy).powi(2) < 0.0144)
-                {
-                    color = 0;
-                }
-            }
-            if px > 0.30 && px < 0.56 && py > 0.28 && py < 0.40 {
-                color = 3;
-            }
-            pixels[(y * width + x) as usize] = color;
-        }
-    }
-    let mut encoder = png::Encoder::new(BufWriter::new(fs::File::create(path)?), width, height);
-    encoder.set_color(png::ColorType::Indexed);
-    encoder.set_depth(png::BitDepth::Eight);
-    encoder.set_palette(&palette[..]);
-    encoder.write_header()?.write_image_data(&pixels)?;
     Ok(())
 }
 
@@ -172,7 +104,13 @@ mod tests {
             .collect::<Vec<_>>();
         fs::write(&font, &bytes).unwrap();
         fs::write(&license, b"font redistribution license").unwrap();
+        fs::create_dir_all(output.join("sce_sys")).unwrap();
+        fs::write(output.join("sce_sys/icon0.png"), b"maintained artwork").unwrap();
         assemble(&output, &source, &font, &license).unwrap();
+        assert_eq!(
+            fs::read(output.join("sce_sys/icon0.png")).unwrap(),
+            b"maintained artwork"
+        );
         let mut archive = fs::File::open(output.join("launcher.rpk")).unwrap();
         let index = ArchiveIndex::read(&mut archive).unwrap();
         assert_eq!(index.kind(), ArchiveKind::Resources);
