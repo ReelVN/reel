@@ -214,6 +214,9 @@ impl VitaDecoder {
     }
 }
 impl VideoDecoder for VitaDecoder {
+    fn video_output_bytes(&self) -> u64 {
+        0
+    }
     fn recycle_audio(&mut self, packet: AudioFrames, storage: BudgetTicket) {
         self.pcm.recycle(packet.frames, storage);
     }

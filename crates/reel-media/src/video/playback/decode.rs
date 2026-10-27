@@ -94,8 +94,7 @@ pub(super) fn decode(
     };
     shared.state.lock().unwrap().info = Some(info.clone());
     shared.wake.wake();
-    let plane_bytes = u64::from(info.width) * u64::from(info.height)
-        + 2 * u64::from(info.width.div_ceil(2)) * u64::from(info.height.div_ceil(2));
+    let plane_bytes = decoder.video_output_bytes();
     let end = options.end.map_or(f64::INFINITY, |e| e.as_secs_f64());
     let mut pending: Option<PendingAudio> = None;
     let mut eof = false;

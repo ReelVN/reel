@@ -77,6 +77,14 @@ pub struct VideoInfo {
 pub trait VideoDecoder {
     /// Source picture dimensions, duration and optional PCM sample rate.
     fn info(&self) -> &VideoInfo;
+    /// Picture vector capacity the playback worker must reserve before polling.
+    /// Adapters whose returned immutable storage carries its own complete ticket
+    /// return zero; their allocations remain charged by the adapter's pool.
+    fn video_output_bytes(&self) -> u64 {
+        let info = self.info();
+        u64::from(info.width) * u64::from(info.height)
+            + 2 * u64::from(info.width.div_ceil(2)) * u64::from(info.height.div_ceil(2))
+    }
     /// Whether no further audio packets remain, including delayed codec output.
     fn audio_finished(&self) -> bool;
     /// Limit decoded output to an exclusive source-time endpoint in seconds.
