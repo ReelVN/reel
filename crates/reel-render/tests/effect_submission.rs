@@ -372,6 +372,232 @@ fn prepared_effect_frame_retains_bounds_values_and_shader() {
     }
 }
 
+fn retained_effect_transition_frames(language: Language) -> Vec<RenderFrame> {
+    let old = frames_with_chain(language, false, false, false, true, 8).remove(0);
+    let pool = pool();
+    let mut retain = RetainBuild::new(&old, None, limits(), &pool).unwrap();
+    let mut budget = step_budget();
+    loop {
+        let progress = retain.step(budget).unwrap();
+        if progress.complete {
+            break;
+        }
+        budget.max_units = budget.max_units.max(progress.minimum_units);
+        budget.max_bytes = budget.max_bytes.max(progress.minimum_bytes);
+    }
+    let previous = retain.finish().unwrap();
+    let mut bridge = widget_bridge(RecordWidget::new(Scene::new()), Affine::IDENTITY);
+    [0., 0.25, 0.75]
+        .into_iter()
+        .enumerate()
+        .map(|(index, progress)| {
+            let mut build = FrameBuild::new(
+                bridge.record(FrameId(index as u64 + 10)).unwrap(),
+                empty_snapshot(&pool),
+                FrameInfo {
+                    logical_size: SIZE.map(f64::from),
+                    physical_size: SIZE,
+                },
+                limits(),
+                &pool,
+            )
+            .unwrap();
+            build
+                .set_transitions(vec![reel_ui::frame::FrameTransition {
+                    root: None,
+                    previous: previous.clone(),
+                    progress,
+                    mask: None,
+                }])
+                .unwrap();
+            let mut budget = step_budget();
+            loop {
+                let progress = build.step(budget).unwrap();
+                if progress.complete {
+                    break;
+                }
+                budget.max_units = budget.max_units.max(progress.minimum_units);
+                budget.max_bytes = budget.max_bytes.max(progress.minimum_bytes);
+            }
+            build.finish().unwrap()
+        })
+        .collect()
+}
+
+#[cfg(feature = "wgpu")]
+#[test]
+#[ignore = "requires an actual WGPU adapter; no readback"]
+fn wgpu_retained_effects_prepare_once_under_a_split_target_budget() {
+    use reel_render::gpu::{DeviceGeneration, Gpu, GpuError, GpuLimits, Renderer};
+    let gpu = pollster::block_on(Gpu::request(
+        &wgpu::Instance::default(),
+        None,
+        DeviceGeneration(1),
+        GpuLimits {
+            target_bytes: u64::from(SIZE[0]) * u64::from(SIZE[1]) * 4 * 5,
+            ..Default::default()
+        },
+    ))
+    .unwrap();
+    let mut renderer = Renderer::new(gpu);
+    let frames = retained_effect_transition_frames(Language::Wgsl);
+    for (index, frame) in frames.iter().enumerate() {
+        let mut phases = 0;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match renderer.prepare(frame) {
+                Ok(prepared) => {
+                    renderer.submit(prepared).unwrap();
+                    break;
+                }
+                Err(GpuError::Preparing) => {
+                    phases += 1;
+                }
+                Err(error) if error.is_retryable() => {}
+                Err(error) => panic!("retained phase: {error}"),
+            }
+            renderer
+                .gpu()
+                .device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .unwrap();
+            renderer.poll().unwrap();
+            assert!(std::time::Instant::now() < deadline);
+        }
+        assert!(phases >= usize::from(index == 0));
+        if index != 0 {
+            assert_eq!(
+                phases, 0,
+                "hot retained result skips dependency preparation"
+            );
+        }
+        renderer
+            .gpu()
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        renderer.poll().unwrap();
+    }
+    let mut renderer = Renderer::new(
+        pollster::block_on(Gpu::request(
+            &wgpu::Instance::default(),
+            None,
+            DeviceGeneration(2),
+            GpuLimits {
+                target_bytes: u64::from(SIZE[0]) * u64::from(SIZE[1]) * 4 * 5,
+                ..Default::default()
+            },
+        ))
+        .unwrap(),
+    );
+    let frame = &frames[0];
+    loop {
+        match renderer.prepare(frame) {
+            Err(GpuError::Preparing) => break,
+            Err(error) if error.is_retryable() => {}
+            result => panic!(
+                "cold cancellation fixture must first prepare its retained dependency: {}",
+                result.err().map_or_else(
+                    || "unexpected complete frame".into(),
+                    |error| error.to_string()
+                )
+            ),
+        }
+        renderer
+            .gpu()
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        renderer.poll().unwrap();
+    }
+    renderer.cancel_preparation(frame);
+    assert!(
+        renderer.usage().targets > 0,
+        "submitted owners survive cancellation"
+    );
+    renderer
+        .gpu()
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    renderer.poll().unwrap();
+    assert_eq!(
+        renderer.usage().targets,
+        0,
+        "completed canceled dependencies release their targets"
+    );
+}
+
+#[cfg(feature = "gles2")]
+#[test]
+#[ignore = "requires a native GLES context; no readback"]
+fn gles_retained_effects_prepare_once_under_a_split_target_budget() {
+    use reel_render::{
+        AlphaMode, PresentOutcome, RenderBackend, RenderEvent, SurfaceInfo,
+        gles2::{GlesBackend, GlesLimits},
+    };
+    let mut renderer = GlesBackend::headless(
+        SIZE,
+        GlesLimits {
+            target_bytes: u64::from(SIZE[0]) * u64::from(SIZE[1]) * 4 * 5,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    renderer
+        .configure(SurfaceInfo {
+            physical_size: SIZE,
+            scale_factor: 1.,
+            surface_epoch: reel_core::identity::SurfaceEpoch(1),
+            color_encoding: reel_ui::resources::ColorEncoding::Srgb,
+            alpha_mode: AlphaMode::Opaque,
+        })
+        .unwrap();
+    let frames = retained_effect_transition_frames(Language::GlslEs100);
+    let mut events = Vec::new();
+    for (index, frame) in frames.iter().enumerate() {
+        let mut phases = 0;
+        let mut presents = 0;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match renderer.render_present(frame, || presents += 1) {
+                Ok(PresentOutcome::PresentAccepted(id)) => {
+                    assert_eq!(id, frame.frame_id());
+                    break;
+                }
+                Ok(PresentOutcome::Preparing) => {
+                    phases += 1;
+                    assert_eq!(presents, 0);
+                }
+                Err(error) if error.is_retryable() => {}
+                result => panic!("retained phase: {result:?}"),
+            }
+            events.clear();
+            renderer.poll(&mut events, 64).unwrap();
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event, RenderEvent::RenderFinished { .. })),
+                "dependency completion never accepts/presents a frame"
+            );
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(presents, 1);
+        assert!(phases >= usize::from(index == 0));
+        if index != 0 {
+            assert_eq!(
+                phases, 0,
+                "hot retained result skips dependency preparation"
+            );
+        }
+        while renderer.has_pending() {
+            renderer.poll(&mut events, 64).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+}
+
 #[cfg(feature = "wgpu")]
 #[test]
 #[ignore = "requires an actual WGPU adapter"]

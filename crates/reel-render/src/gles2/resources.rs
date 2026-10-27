@@ -42,6 +42,13 @@ pub(super) struct Images {
     retired: crate::common::resources::RetiredImages<Rc<Image>>,
 }
 impl Images {
+    pub fn retain_demand(&mut self, required: &[crate::common::image_plan::Required<'_>]) {
+        self.entries.retain(|handle, image| {
+            Rc::strong_count(image) > 1
+                || required.iter().any(|item| item.source.handle() == *handle)
+        });
+        self.retired.clear();
+    }
     pub fn release_idle(&mut self) {
         self.scratch.clear();
         self.retired.clear();

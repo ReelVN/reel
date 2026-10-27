@@ -67,11 +67,16 @@ impl UsagePeaks {
 struct SceneUsage {
     accepted: u64,
     rejected: u64,
+    preparing: u64,
     peaks: UsagePeaks,
     by_quality: BTreeMap<String, UsagePeaks>,
     minimum_rgba8_x1_refused: Option<u64>,
 }
-fn write_usage_report(kind: &str, scenes: &BTreeMap<String, SceneUsage>) {
+fn write_usage_report(
+    kind: &str,
+    scenes: &BTreeMap<String, SceneUsage>,
+    profile: Option<serde_json::Value>,
+) {
     let Some(directory) = std::env::var_os("REEL_SCENARIO_REPORT_DIR") else {
         return;
     };
@@ -82,6 +87,7 @@ fn write_usage_report(kind: &str, scenes: &BTreeMap<String, SceneUsage>) {
         "kind": kind,
         "sampling": "Public usage sampled after prepare/submit or refusal; caches and in-flight storage included. Component peaks are independent; simultaneous_total is one observed sum. GLES cumulative_shared_peak is its exact lifetime group high-water mark. Qualities are observed, not forced.",
         "scenes": scenes,
+        "retained_profile": profile,
     });
     std::fs::write(&path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     eprintln!("scenario usage report: {}", path.display());
@@ -225,6 +231,15 @@ enum ScenarioBackend {
     },
 }
 impl ScenarioBackend {
+    fn cancel_preparation(&mut self, frame: &RenderFrame) {
+        match self {
+            Self::Wgpu(backend) => backend.renderer.cancel_preparation(frame),
+            #[cfg(feature = "scenario-gles")]
+            Self::Gles { renderer, .. } => {
+                reel_render::RenderBackend::cancel_preparation(renderer.as_mut(), frame)
+            }
+        }
+    }
     fn target_bytes(&self) -> u64 {
         match self {
             Self::Wgpu(backend) => backend.target_bytes,
@@ -403,6 +418,16 @@ pub struct ScenarioCapture {
     last_quality: Option<Quality>,
     kind: String,
     scene_usage: BTreeMap<String, SceneUsage>,
+    pending: Option<(
+        RenderFrame,
+        reel_player::session::RecordedProjection,
+        String,
+    )>,
+    #[cfg(feature = "scenario-profile")]
+    profile_start: (
+        reel_core::profile::Sample,
+        reel_core::profile::RetainedCache,
+    ),
 }
 impl ScenarioCapture {
     pub fn new(kind: &str, capture: bool) -> Self {
@@ -514,6 +539,12 @@ impl ScenarioCapture {
             last_quality: None,
             kind: kind.into(),
             scene_usage: BTreeMap::new(),
+            pending: None,
+            #[cfg(feature = "scenario-profile")]
+            profile_start: (
+                reel_core::profile::Sample::snapshot(),
+                reel_core::profile::RetainedCache::snapshot(),
+            ),
         }
     }
 
@@ -574,7 +605,7 @@ impl ScenarioCapture {
                 self.last_rejection,
                 backend.usage()
             );
-            write_usage_report(&self.kind, &self.scene_usage);
+            write_usage_report(&self.kind, &self.scene_usage, self.profile());
         }
     }
 
@@ -586,6 +617,23 @@ impl ScenarioCapture {
                 #[cfg(feature = "scenario-gles")]
                 ScenarioBackend::Gles { .. } => CaptureStats::default(),
             })
+    }
+    fn profile(&self) -> Option<serde_json::Value> {
+        #[cfg(feature = "scenario-profile")]
+        {
+            let phases = reel_core::profile::Sample::snapshot().delta(self.profile_start.0);
+            let retained =
+                reel_core::profile::RetainedCache::snapshot().delta(self.profile_start.1);
+            let phase = reel_core::profile::Phase::RetainedPlan as usize;
+            let value = serde_json::json!({
+                "key_micros": phases.micros[phase], "key_builds": phases.calls[phase],
+                "hits": retained.hits, "misses": retained.misses, "key_bytes": retained.key_bytes,
+            });
+            eprintln!("scenario retained profile: {value}");
+            Some(value)
+        }
+        #[cfg(not(feature = "scenario-profile"))]
+        None
     }
 
     pub fn configure_driver(&self, driver: &mut AsideSessionUi) {
@@ -616,6 +664,7 @@ impl ScenarioCapture {
     }
 
     pub fn new_session(&mut self) {
+        self.cancel_pending();
         self.captures = CaptureService::new(128 << 20, WakeSignal::new(|| {}));
         self.accepted = None;
         self.size = None;
@@ -624,6 +673,13 @@ impl ScenarioCapture {
         self.active_fonts.clear();
         self.canvas_id = None;
         self.canvas_size = None;
+    }
+    pub fn cancel_pending(&mut self) {
+        if let Some((frame, _, _)) = self.pending.take()
+            && let Some(backend) = &mut self.backend
+        {
+            backend.cancel_preparation(&frame);
+        }
     }
 
     pub fn drive(&mut self, driver: &mut AsideSessionUi) -> bool {
@@ -720,68 +776,84 @@ impl ScenarioCapture {
         root: WidgetId,
         frame: u64,
     ) {
-        if self.captures.busy() || !self.configure(driver, bridge) {
+        if self.captures.busy() {
             return;
         }
-        driver.sync(bridge, root).unwrap();
-        let Some((source, receipt)) = driver.record(bridge, root, FrameId(frame)).unwrap() else {
-            return;
-        };
-        let key = source.key();
-        if self.backend.is_none() && !receipt.needs_transition_drawing() {
-            assert_eq!(
-                bridge.resolve(PresentationNotice::new(
-                    key,
-                    SurfaceEpoch(1),
-                    PresentationOutcome::Accepted(FrameId(frame)),
-                )),
-                NoticeResult::Accepted
-            );
-            driver.presented(bridge, &receipt).unwrap();
-            return;
-        }
-        let leases = self
-            .fonts
-            .values()
-            .chain(driver.ui().image_resources())
-            .chain(driver.transition_resources())
-            .cloned()
-            .map(Ok)
-            .collect::<Vec<_>>();
-        let resources = ResourceSnapshot::capture(leases.into_iter(), &self.pool).unwrap();
-        let size = self.size.unwrap();
-        let mut build = FrameBuild::new(
-            source,
-            resources,
-            FrameInfo {
-                logical_size: size.map(f64::from),
-                physical_size: size,
-            },
-            BuildLimits { max_bytes: 8 << 20 },
-            &self.pool,
-        )
-        .unwrap();
-        build
-            .set_transitions(receipt.frame_transitions().to_vec())
-            .unwrap();
-        let mut budget = StepBudget {
-            max_commands: 64,
-            max_units: 8192,
-            max_bytes: 64 << 10,
-        };
-        loop {
-            let progress = build.step(budget).unwrap();
-            if progress.complete {
-                break;
+        let continuing = self.pending.is_some();
+        let (candidate, receipt, title) = if let Some(pending) = self.pending.take() {
+            pending
+        } else {
+            if !self.configure(driver, bridge) {
+                return;
             }
-            budget.max_units = budget.max_units.max(progress.minimum_units);
-            budget.max_bytes = budget.max_bytes.max(progress.minimum_bytes);
-        }
-        let candidate = build.finish().unwrap();
+            driver.sync(bridge, root).unwrap();
+            let Some((source, receipt)) = driver.record(bridge, root, FrameId(frame)).unwrap()
+            else {
+                return;
+            };
+            let key = source.key();
+            if self.backend.is_none() && !receipt.needs_transition_drawing() {
+                assert_eq!(
+                    bridge.resolve(PresentationNotice::new(
+                        key,
+                        SurfaceEpoch(1),
+                        PresentationOutcome::Accepted(FrameId(frame)),
+                    )),
+                    NoticeResult::Accepted
+                );
+                driver.presented(bridge, &receipt).unwrap();
+                return;
+            }
+            let leases = self
+                .fonts
+                .values()
+                .chain(driver.ui().image_resources())
+                .chain(driver.transition_resources())
+                .cloned()
+                .map(Ok)
+                .collect::<Vec<_>>();
+            let resources = ResourceSnapshot::capture(leases.into_iter(), &self.pool).unwrap();
+            let size = self.size.unwrap();
+            let mut build = FrameBuild::new(
+                source,
+                resources,
+                FrameInfo {
+                    logical_size: size.map(f64::from),
+                    physical_size: size,
+                },
+                BuildLimits { max_bytes: 8 << 20 },
+                &self.pool,
+            )
+            .unwrap();
+            build
+                .set_transitions(receipt.frame_transitions().to_vec())
+                .unwrap();
+            let mut budget = StepBudget {
+                max_commands: 64,
+                max_units: 8192,
+                max_bytes: 64 << 10,
+            };
+            loop {
+                let progress = build.step(budget).unwrap();
+                if progress.complete {
+                    break;
+                }
+                budget.max_units = budget.max_units.max(progress.minimum_units);
+                budget.max_bytes = budget.max_bytes.max(progress.minimum_bytes);
+            }
+            let candidate = build.finish().unwrap();
+            (
+                candidate,
+                receipt,
+                driver.adapter().game_settings().title.clone(),
+            )
+        };
+        let key = candidate.key();
+        let frame = candidate.frame_id().0;
+        let size = candidate.info().physical_size;
         if let Some(backend) = &mut self.backend {
             let result = backend.present(&candidate);
             let usage = backend.usage();
-            let title = driver.adapter().game_settings().title.clone();
             let scene = self.scene_usage.entry(title.clone()).or_default();
             scene.peaks.observe(usage);
             match &result {
@@ -792,6 +864,9 @@ impl ScenarioCapture {
                         .entry(format!("{:?}x{}", quality.format, quality.samples))
                         .or_default()
                         .observe(usage);
+                }
+                Err(GpuError::Preparing) => {
+                    scene.preparing += 1;
                 }
                 Err(error) => {
                     scene.rejected += 1;
@@ -809,6 +884,13 @@ impl ScenarioCapture {
             }
             let quality = match result {
                 Ok(quality) => quality,
+                Err(error)
+                    if matches!(error, GpuError::Preparing)
+                        || continuing && error.is_retryable() =>
+                {
+                    self.pending = Some((candidate, receipt, title));
+                    return;
+                }
                 Err(error) if error.is_retryable() => {
                     self.rejected_frames += 1;
                     let rejection = error.to_string();
@@ -830,7 +912,7 @@ impl ScenarioCapture {
                 }
                 Err(error) => {
                     dump_topology(&candidate, &error, &driver.adapter().game_settings().title);
-                    write_usage_report(&self.kind, &self.scene_usage);
+                    write_usage_report(&self.kind, &self.scene_usage, self.profile());
                     panic!(
                         "scenario GPU frame={frame} title={:?} size={size:?}: {error}; usage={:?}",
                         driver.adapter().game_settings().title,

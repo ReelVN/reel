@@ -27,6 +27,7 @@ pub(crate) fn collect<'a>(
     frames: impl Iterator<Item = &'a RenderFrame>,
     max_dimension: u32,
     capture: bool,
+    selection: &super::retained::Plan,
     mut reserve: impl FnMut(u64) -> Result<(), GpuError>,
 ) -> Result<Plan<'a>, GpuError> {
     let mut plan = Plan {
@@ -67,18 +68,20 @@ pub(crate) fn collect<'a>(
         let mut streams = Vec::new();
         push_stack(&mut streams, (frame.commands(), Some(0)), &mut reserve)?;
         for transition in frame.transitions() {
-            if capture && !transition.capture_included {
+            if !selection.transition_needed(transition) || capture && !transition.capture_included {
                 continue;
             }
             let at = frame
                 .commands()
                 .get(transition.commands.start)
                 .map_or(fallback_at, |c| c.origin.at);
-            push_stack(
-                &mut drawings,
-                (transition.previous.drawing(), at),
-                &mut reserve,
-            )?;
+            if selection.old_needed(transition) {
+                push_stack(
+                    &mut drawings,
+                    (transition.previous.drawing(), at),
+                    &mut reserve,
+                )?;
+            }
             if let Some(mask) = &transition.mask {
                 // Progress zero still requires both images before the target is accepted.
                 push_stack(
@@ -108,6 +111,11 @@ pub(crate) fn collect<'a>(
                 }
                 let command = &commands[index];
                 index += 1;
+                if let Some(offset) = offset
+                    && !selection.selected(frame, offset + index - 1)
+                {
+                    continue;
+                }
                 let at = command.origin.at;
                 let handles: &[ResourceHandle] = match &command.op {
                     FrameOp::Draw(

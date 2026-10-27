@@ -39,8 +39,9 @@ pub enum Phase {
     VideoDecode,
     OffscreenPlan,
     CompositeBatch,
+    RetainedPlan,
 }
-pub const NAMES: [&str; 32] = [
+pub const NAMES: [&str; 33] = [
     "input",
     "tick",
     "vm",
@@ -73,7 +74,17 @@ pub const NAMES: [&str; 32] = [
     "video_decode",
     "offscreen_plan",
     "composite_batch",
+    "retained_plan",
 ];
+
+/// Record retained-result reuse and the dependency bytes encoded for its key.
+#[inline]
+pub fn retained_cache(hit: bool, bytes: u64) {
+    #[cfg(feature = "profiling")]
+    enabled::retained_cache(hit, bytes);
+    #[cfg(not(feature = "profiling"))]
+    let _ = (hit, bytes);
+}
 
 /// Record bytes transferred into a geometry buffer by one upload operation.
 /// Builds without profiling erase this counter alongside timing scopes.
@@ -124,6 +135,43 @@ mod enabled {
     static SINCE: [AtomicU64; NAMES.len()] = [const { AtomicU64::new(0) }; NAMES.len()];
     static GEOMETRY_CALLS: AtomicU64 = AtomicU64::new(0);
     static GEOMETRY_BYTES: AtomicU64 = AtomicU64::new(0);
+    static RETAINED_HITS: AtomicU64 = AtomicU64::new(0);
+    static RETAINED_MISSES: AtomicU64 = AtomicU64::new(0);
+    static RETAINED_KEY_BYTES: AtomicU64 = AtomicU64::new(0);
+
+    pub(super) fn retained_cache(hit: bool, bytes: u64) {
+        if hit {
+            RETAINED_HITS.fetch_add(1, Ordering::Relaxed);
+        } else {
+            RETAINED_MISSES.fetch_add(1, Ordering::Relaxed);
+        }
+        RETAINED_KEY_BYTES.fetch_add(bytes, Ordering::Relaxed);
+    }
+    /// Cumulative retained-result lookups. Key bytes contain paint dependencies.
+    #[derive(Clone, Copy, Default)]
+    pub struct RetainedCache {
+        pub hits: u64,
+        pub misses: u64,
+        pub key_bytes: u64,
+    }
+    impl RetainedCache {
+        /// Counters are independent observations of completed lookup work.
+        pub fn snapshot() -> Self {
+            Self {
+                hits: RETAINED_HITS.load(Ordering::Relaxed),
+                misses: RETAINED_MISSES.load(Ordering::Relaxed),
+                key_bytes: RETAINED_KEY_BYTES.load(Ordering::Relaxed),
+            }
+        }
+        /// Lookup work between two observations.
+        pub fn delta(self, previous: Self) -> Self {
+            Self {
+                hits: self.hits.wrapping_sub(previous.hits),
+                misses: self.misses.wrapping_sub(previous.misses),
+                key_bytes: self.key_bytes.wrapping_sub(previous.key_bytes),
+            }
+        }
+    }
 
     pub(super) fn geometry_upload(bytes: u64) {
         if bytes != 0 {
@@ -183,10 +231,18 @@ mod enabled {
         }
     }
     /// Completed phase work since the previous sample, across all threads.
-    #[derive(Clone, Copy, Default)]
+    #[derive(Clone, Copy)]
     pub struct Sample {
         pub micros: [u64; NAMES.len()],
         pub calls: [u64; NAMES.len()],
+    }
+    impl Default for Sample {
+        fn default() -> Self {
+            Self {
+                micros: [0; NAMES.len()],
+                calls: [0; NAMES.len()],
+            }
+        }
     }
     impl Sample {
         /// The main-thread collector is the sole consumer. Durations and counts
@@ -231,4 +287,4 @@ mod enabled {
     }
 }
 #[cfg(feature = "profiling")]
-pub use enabled::{GeometryUploads, Sample};
+pub use enabled::{GeometryUploads, RetainedCache, Sample};

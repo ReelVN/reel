@@ -16,6 +16,7 @@ pub(crate) mod mask;
 pub(crate) mod mesh;
 pub(crate) mod renderer;
 pub(crate) mod resources;
+pub(crate) mod retained;
 pub(crate) mod scopes;
 
 pub(crate) mod offscreen;

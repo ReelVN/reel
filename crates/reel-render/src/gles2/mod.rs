@@ -6,6 +6,7 @@ mod mask;
 mod programs;
 mod replay;
 mod resources;
+mod targets;
 pub use crate::common::GpuError as GlesError;
 use crate::common::renderer::Budgets;
 use crate::*;
@@ -89,6 +90,7 @@ struct Flight {
     _prepared: Option<Rc<replay::Prepared>>,
     _images: Vec<Rc<Image>>,
     upload: bool,
+    retained: Option<usize>,
 }
 /// The renderer owns its native context; the host supplies only portable lifecycle
 /// and presentation callbacks. Submitted resources survive until their GPU fence.
@@ -103,6 +105,7 @@ pub struct GlesBackend {
     effects: effect::Cache,
     masks: crate::common::mask::split::Cache,
     targets: Vec<resources::Target>,
+    retained: crate::common::retained::Cache<resources::Target, u8>,
     geometry: geometry::Cache,
     info: Option<SurfaceInfo>,
     suspended: bool,
@@ -168,6 +171,7 @@ impl GlesBackend {
             effects: Default::default(),
             masks: Default::default(),
             targets: Vec::new(),
+            retained: Default::default(),
             geometry: Default::default(),
             info: None,
             suspended: false,
@@ -210,6 +214,7 @@ impl GlesBackend {
         self.glyphs = draw::GlyphCache::default();
         self.masks = Default::default();
         self.targets.clear();
+        self.retained.clear();
         self.geometry.clear();
         self.drain_failed = false;
         Ok(())
@@ -245,7 +250,7 @@ impl GlesBackend {
         }
         self.geometry.cpu_disabled = false;
         self.geometry.optional_used = false;
-        let result = self.prepare_cached(frame, size, capture);
+        let result = self.prepare_cached(frame, size, capture, false);
         let fallback = self.geometry.optional_used
             && matches!(
                 result,
@@ -261,9 +266,18 @@ impl GlesBackend {
             // Glyph and geometry demand is discovered during replay. Retry once
             // when evicting the unused scratch pool actually released capacity.
             // In-flight owners keep their allocations until completion.
-            if fallback || self._group.usage().bytes < resident {
+            if fallback
+                || self._group.usage().bytes < resident
+                || matches!(result, Err(GlesError::Pressure { .. }))
+                    && self.retained.quality().is_some()
+            {
                 self.geometry.cpu_disabled = true;
-                let result = self.prepare_cached(frame, size, capture);
+                let result = self.prepare_cached(
+                    frame,
+                    size,
+                    capture,
+                    matches!(result, Err(GlesError::Pressure { .. })),
+                );
                 self.geometry.cpu_disabled = false;
                 return result;
             }
@@ -275,6 +289,7 @@ impl GlesBackend {
         frame: &RenderFrame,
         size: [u32; 2],
         capture: bool,
+        discard_unused: bool,
     ) -> Result<replay::Prepared, GlesError> {
         self.masks.prune();
         if self.drain_failed {
@@ -283,6 +298,9 @@ impl GlesBackend {
             ));
         }
         let limits = self.options.limits.common();
+        if !capture && self.retained.pending(&frame.key()) {
+            return Err(GlesError::Preparing);
+        }
         if self.flights.len() >= limits.max_inflight {
             return Err(GlesError::Busy);
         }
@@ -291,12 +309,45 @@ impl GlesBackend {
         self.effects.prune();
         let local = Budgets::new(limits);
         let mut plan_tickets = Vec::new();
+        let selection = std::sync::Arc::new(crate::common::retained::Plan::collect(
+            std::iter::once(frame),
+            size,
+            capture,
+            &self.budgets,
+            &local,
+            limits.transient_bytes,
+            |key| self.retained.lookup(key, 0, &frame.key()),
+            |bytes| {
+                plan_tickets.push(crate::common::renderer::reserve(
+                    &self.budgets.transient,
+                    &local.transient,
+                    bytes,
+                    limits.transient_bytes,
+                    "retained plan",
+                )?);
+                Ok(())
+            },
+        )?);
+        self.retained.retain(&selection);
+        let warm = selection
+            .warm
+            .map(|index| {
+                self.retained.start(
+                    selection.entries[index].key.clone(),
+                    0,
+                    frame.key(),
+                    &self.budgets.transient,
+                    limits.transient_bytes,
+                )
+            })
+            .transpose()?;
         let plan = {
             let _planning = reel_core::profile::Scope::new(reel_core::profile::Phase::ImagePlan);
             crate::common::image_plan::collect(
                 std::iter::once(frame),
                 self.context.capabilities().max_texture_size,
                 capture,
+                &selection,
                 |bytes| {
                     plan_tickets.push(crate::common::renderer::reserve(
                         &self.budgets.transient,
@@ -309,6 +360,10 @@ impl GlesBackend {
                 },
             )?
         };
+        if discard_unused && selection.has_cached() {
+            self.images.retain_demand(&plan.images);
+            self.glyphs.prune_idle();
+        }
         let image_growth = self.images.validate(
             &plan.images,
             self.context.capabilities(),
@@ -416,6 +471,7 @@ impl GlesBackend {
                 _prepared: None,
                 _images: touched,
                 upload: true,
+                retained: None,
             });
             return Err(GlesError::Busy);
         }
@@ -440,13 +496,32 @@ impl GlesBackend {
                 masks: &mut self.masks,
                 targets,
                 geometry: &mut self.geometry,
+                retained: &self.retained,
             },
             images,
             frame,
             size,
             capture,
+            selection,
+            warm,
         ) {
-            Ok(prepared) => Ok(prepared),
+            Ok(prepared) => {
+                if let Some(token) = prepared.retained {
+                    self.retained.stage(
+                        token,
+                        prepared.output.clone(),
+                        u64::from(prepared.output.size[0]) * u64::from(prepared.output.size[1]),
+                    );
+                    self.targets.clear();
+                    if let Err(error) = self.submit(frame, prepared, None) {
+                        self.retained.cancel(&frame.key());
+                        return Err(error);
+                    }
+                    Err(GlesError::Preparing)
+                } else {
+                    Ok(prepared)
+                }
+            }
             Err((error, work)) => {
                 self.images.release_idle();
                 if !self.drain_error() {
@@ -485,6 +560,7 @@ impl GlesBackend {
             _prepared: Some(prepared.clone()),
             _images: Vec::new(),
             upload: false,
+            retained: prepared.retained,
         });
         Ok((prepared, fence))
     }
@@ -557,6 +633,7 @@ impl RenderBackend for GlesBackend {
         }
     }
     fn configure(&mut self, info: SurfaceInfo) -> Result<(), GlesError> {
+        self.retained.clear();
         if info.physical_size != self.output_size()
             || info.surface_epoch.0 == 0
             || !info.scale_factor.is_finite()
@@ -598,7 +675,10 @@ impl RenderBackend for GlesBackend {
             .next_submission
             .checked_add(1)
             .ok_or(GlesError::IdentityExhausted)?;
-        let prepared = self.prepare(frame, info.physical_size, false)?;
+        let prepared = match self.prepare(frame, info.physical_size, false) {
+            Err(GlesError::Preparing) => return Ok(PresentOutcome::Preparing),
+            result => result?,
+        };
         if let Err(error) =
             self.programs
                 .present(&self.context, &prepared.output, info.physical_size)
@@ -622,6 +702,9 @@ impl RenderBackend for GlesBackend {
         self.glyphs.prune(resources);
         self.effects.prune();
     }
+    fn cancel_preparation(&mut self, frame: &RenderFrame) {
+        self.retained.cancel(&frame.key());
+    }
     fn poll(
         &mut self,
         out: &mut Vec<RenderEvent<GlesError>>,
@@ -638,7 +721,10 @@ impl RenderBackend for GlesBackend {
             if let Some(prepared) = &flight._prepared {
                 prepared.recycle_geometry(&mut self.geometry);
             }
-            if flight.upload {
+            if let Some(token) = flight.retained {
+                self.retained.complete(token);
+            }
+            if flight.upload || flight.retained.is_some() {
                 self.events.push_back(RenderEvent::ResourcesAvailable);
             }
             if let Some((id, frame)) = flight.submission {
@@ -656,6 +742,7 @@ impl RenderBackend for GlesBackend {
         !self.flights.is_empty() || !self.events.is_empty()
     }
     fn suspend(&mut self) {
+        self.retained.clear();
         self.suspended = true;
         self.info = None;
     }

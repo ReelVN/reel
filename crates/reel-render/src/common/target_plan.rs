@@ -126,10 +126,11 @@ struct Scope<'a> {
     source_view: bool,
 }
 enum Pending<'a> {
-    Old(&'a SceneTransition),
+    Old(&'a SceneTransition, Option<usize>),
     New {
         source: [u32; 2],
         mask_surface: bool,
+        cached: bool,
     },
     Mask {
         source: [u32; 2],
@@ -138,6 +139,7 @@ enum Pending<'a> {
     },
 }
 struct Stream<'a> {
+    retained_context: usize,
     scheduled: bool,
     deferred: Vec<[u32; 2]>,
     drawing: &'a FrameDrawing,
@@ -186,6 +188,7 @@ fn stream<'a>(
     )?;
     scratch.acquire(size, reserve)?;
     Ok(Stream {
+        retained_context: 0,
         scheduled: false,
         deferred: Vec::new(),
         drawing,
@@ -220,6 +223,7 @@ pub(crate) fn target_pixels(
     glyph_plan: &crate::common::glyph_plan::Plan,
     schedule: &offscreen::Plan,
     masks: MaskExecution,
+    selection: &super::retained::Plan,
     mut reserve: impl FnMut(u64) -> Result<(), GpuError>,
 ) -> Result<u64, GpuError> {
     let mut scratch = Scratch::default();
@@ -254,8 +258,35 @@ pub(crate) fn target_pixels(
                 if capture && !transition.capture_included {
                     continue;
                 }
-                current.pending = Some(Pending::Old(transition));
-                let child = stream(
+                let retained = selection.entry(current.retained_context, transition);
+                if let Some((_, entry)) = retained
+                    && entry.input.is_some()
+                {
+                    current.pending = Some(Pending::New {
+                        source: current.size,
+                        mask_surface: matches!(masks, MaskExecution::Sampled)
+                            && transition.mask.is_some()
+                            && transition.progress > 0.
+                            && transition.progress < 1.,
+                        cached: true,
+                    });
+                    let child = stream(
+                        current.drawing,
+                        &current.drawing.commands()[transition.commands.clone()],
+                        Some(transition.commands.start),
+                        false,
+                        current.transform,
+                        current.size,
+                        current.scissor,
+                        capture,
+                        &mut scratch,
+                        &mut reserve,
+                    )?;
+                    super::scopes::push_stack(&mut stack, child, &mut reserve)?;
+                    continue;
+                }
+                current.pending = Some(Pending::Old(transition, retained.map(|(index, _)| index)));
+                let mut child = stream(
                     transition.previous.drawing(),
                     transition.previous.drawing().commands(),
                     Some(0),
@@ -269,6 +300,7 @@ pub(crate) fn target_pixels(
                     &mut scratch,
                     &mut reserve,
                 )?;
+                child.retained_context = retained.map_or(0, |(index, _)| index + 1);
                 super::scopes::push_stack(&mut stack, child, &mut reserve)?;
                 continue;
             }
@@ -290,13 +322,21 @@ pub(crate) fn target_pixels(
                     break;
                 };
                 match parent.pending.take().expect("suspended target plan") {
-                    Pending::Old(transition) => {
+                    Pending::Old(transition, entry) => {
+                        if entry.is_some() && entry == selection.warm {
+                            return scratch.pixels().and_then(|pixels| {
+                                pixels
+                                    .checked_add(selection.persistent_pixels())
+                                    .ok_or(GpuError::InvalidSize)
+                            });
+                        }
                         parent.pending = Some(Pending::New {
                             source: finished.size,
                             mask_surface: matches!(masks, MaskExecution::Sampled)
                                 && transition.mask.is_some()
                                 && transition.progress > 0.
                                 && transition.progress < 1.,
+                            cached: false,
                         });
                         let child = stream(
                             parent.drawing,
@@ -315,9 +355,12 @@ pub(crate) fn target_pixels(
                     Pending::New {
                         source,
                         mask_surface,
+                        cached,
                     } => {
                         scratch.composite(parent.size, false, mask_surface, &mut reserve)?;
-                        scratch.release(source);
+                        if !cached {
+                            scratch.release(source);
+                        }
                         scratch.release(finished.size);
                     }
                     Pending::Mask {
@@ -627,7 +670,11 @@ pub(crate) fn target_pixels(
         scratch.release(size);
         scratch.release(size);
     }
-    scratch.pixels()
+    scratch.pixels().and_then(|pixels| {
+        pixels
+            .checked_add(selection.persistent_pixels())
+            .ok_or(GpuError::InvalidSize)
+    })
 }
 #[cfg(test)]
 mod tests {

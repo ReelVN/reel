@@ -42,9 +42,14 @@ fn retired_decoded_images_reuse_completed_storage_across_resource_versions() {
 #[test]
 fn image_plan_deduplicates_both_transition_inputs_before_admission() {
     let (frame, _, handles) = image_restore_fixture([4, 4], true);
-    let plan =
-        crate::gpu::image_plan::collect([&frame, &frame].into_iter(), 4096, false, |_| Ok(()))
-            .unwrap();
+    let plan = crate::gpu::image_plan::collect(
+        [&frame, &frame].into_iter(),
+        4096,
+        false,
+        &Default::default(),
+        |_| Ok(()),
+    )
+    .unwrap();
     assert_eq!(plan.images.len(), handles.len());
     for item in &plan.images {
         assert!(handles.contains(&item.source.handle()));
@@ -52,7 +57,13 @@ fn image_plan_deduplicates_both_transition_inputs_before_admission() {
         assert_eq!(item.staging, 4 * 256);
     }
     assert!(matches!(
-        crate::gpu::image_plan::collect([&frame].into_iter(), 2, false, |_| Ok(())),
+        crate::gpu::image_plan::collect(
+            [&frame].into_iter(),
+            2,
+            false,
+            &Default::default(),
+            |_| Ok(())
+        ),
         Err(GpuError::InvalidSize)
     ));
 }

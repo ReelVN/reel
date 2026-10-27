@@ -395,6 +395,7 @@ fn geometry_staging_yields_to_whole_frame_admission() {
             frame.info().physical_size,
             false,
             &crate::gpu::geometry::UploadPolicy::new(false),
+            false,
         )
         .unwrap();
     let required = original.budget_scope.transient.usage().peak_bytes;

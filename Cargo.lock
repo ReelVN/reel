@@ -3540,6 +3540,7 @@ dependencies = [
  "pvr-psp2-sys",
  "reel-core",
  "reel-ui",
+ "serde",
  "smallvec",
  "stats_alloc",
  "swash",

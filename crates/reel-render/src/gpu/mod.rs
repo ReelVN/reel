@@ -9,6 +9,7 @@ pub(crate) use crate::common::mesh;
 mod pipeline;
 mod renderer;
 mod resources;
+mod retained;
 mod video;
 pub use renderer::{Prepared, Renderer, Usage};
 mod capture;

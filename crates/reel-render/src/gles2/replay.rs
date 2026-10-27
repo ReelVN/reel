@@ -56,6 +56,11 @@ pub(super) struct Context<'a> {
     pub mask_cache: &'a mut crate::common::mask::split::Cache,
     pub effects: Vec<Rc<super::effect::Compiled>>,
     pub target_cache: &'a mut Vec<Target>,
+    pub retained_cache: &'a crate::common::retained::Cache<Target, u8>,
+    pub selection: std::sync::Arc<crate::common::retained::Plan>,
+    pub retained_inputs: Vec<Target>,
+    pub warm: Option<usize>,
+    pub warmed: bool,
     pub targets: Vec<Target>,
     pub available_targets: Vec<Target>,
     pub target_writes: crate::common::target_writes::TargetWrites,
@@ -72,10 +77,12 @@ pub(super) struct Work {
     _glyphs: Vec<Rc<draw::Glyph>>,
     _effects: Vec<Rc<super::effect::Compiled>>,
     _targets: Vec<Target>,
+    _retained_inputs: Vec<Target>,
     buffers: std::cell::RefCell<Vec<super::geometry::Storage>>,
 }
 pub(super) struct Prepared {
     pub output: Target,
+    pub retained: Option<usize>,
     _work: Work,
 }
 impl Prepared {
@@ -92,8 +99,13 @@ pub(super) struct Caches<'a> {
     pub masks: &'a mut crate::common::mask::split::Cache,
     pub targets: &'a mut Vec<Target>,
     pub geometry: &'a mut super::geometry::Cache,
+    pub retained: &'a crate::common::retained::Cache<Target, u8>,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one immutable frame and its native preparation owners"
+)]
 pub(super) fn prepare(
     device: DeviceResources<'_>,
     programs: &programs::Programs,
@@ -102,6 +114,8 @@ pub(super) fn prepare(
     frame: &RenderFrame,
     size: [u32; 2],
     capture: bool,
+    selection: std::sync::Arc<crate::common::retained::Plan>,
+    warm: Option<usize>,
 ) -> Result<Prepared, (GlesError, Work)> {
     let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Replay);
     let DeviceResources {
@@ -116,6 +130,7 @@ pub(super) fn prepare(
         masks: mask_cache,
         targets: target_cache,
         geometry: geometry_cache,
+        retained: retained_cache,
     } = caches;
     let mut context = Context {
         capture,
@@ -136,6 +151,11 @@ pub(super) fn prepare(
         mask_cache,
         effects: Vec::new(),
         target_cache,
+        retained_cache,
+        selection: selection.clone(),
+        retained_inputs: Vec::new(),
+        warm,
+        warmed: false,
         targets: Vec::new(),
         available_targets: Vec::new(),
         target_writes: Default::default(),
@@ -155,6 +175,7 @@ pub(super) fn prepare(
         transform,
         gpu.capabilities().max_texture_size,
         capture,
+        &selection,
         &mut context,
     )
     .and_then(|plan| {
@@ -169,6 +190,7 @@ pub(super) fn prepare(
             &context.glyph_plan,
             limits.target_bytes / 4,
             crate::common::target_plan::MaskExecution::Sampled,
+            &selection,
             |bytes| {
                 reserve(
                     &budgets.transient,
@@ -201,11 +223,13 @@ pub(super) fn prepare(
         _glyphs: context.glyphs,
         _effects: context.effects,
         _targets: context.targets,
+        _retained_inputs: context.retained_inputs,
         buffers: std::cell::RefCell::new(context.buffers),
     };
     match output {
         Ok(output) => Ok(Prepared {
             output,
+            retained: context.warmed.then_some(context.warm).flatten(),
             _work: work,
         }),
         Err(error) => Err((error, work)),
@@ -247,6 +271,8 @@ enum Pending<'a> {
     Transition {
         definition: &'a SceneTransition,
         previous: Option<Target>,
+        entry: Option<usize>,
+        cached: bool,
     },
 }
 struct DeferredComposite {
@@ -257,6 +283,7 @@ struct DeferredComposite {
     scissor: Scissor,
 }
 struct Stream<'a> {
+    retained_context: usize,
     scheduled: bool,
     deferred: Vec<DeferredComposite>,
     drawing: &'a FrameDrawing,
@@ -273,113 +300,6 @@ struct Stream<'a> {
     pending: Option<Pending<'a>>,
 }
 impl Context<'_> {
-    pub fn target(&mut self) -> Result<Target, GlesError> {
-        self.flush_draws()?;
-        let target = if let Some(index) = self
-            .available_targets
-            .iter()
-            .rposition(|target| target.size == self.size)
-        {
-            self.available_targets.swap_remove(index)
-        } else {
-            let bytes = u64::from(self.size[0]) * u64::from(self.size[1]) * 4;
-            let local =
-                self.budget_scope
-                    .targets
-                    .reserve(bytes)
-                    .map_err(|_| GlesError::Budget {
-                        domain: "offscreen targets",
-                        requested: bytes,
-                        available: self
-                            .limits
-                            .target_bytes
-                            .saturating_sub(self.budget_scope.targets.usage().bytes),
-                    })?;
-            // The previous frame's presentation draw precedes this clear on the
-            // same GLES queue. Capture outputs use a separate allocation set.
-            let index = self
-                .targets
-                .iter()
-                .filter(|target| target.size == self.size)
-                .count();
-            let mut target = if let Some(target) = self
-                .target_cache
-                .iter()
-                .filter(|target| target.size == self.size)
-                .nth(index)
-            {
-                target.clone()
-            } else {
-                // Retain distinct size buckets across animation and allocation
-                // order changes. Existing byte budgets bound the idle pool.
-                if bytes
-                    > self
-                        .limits
-                        .target_bytes
-                        .saturating_sub(self.budgets.targets.usage().bytes)
-                {
-                    self.target_cache.retain(|target| {
-                        self.targets.iter().any(|live| live.same_allocation(target))
-                    });
-                }
-                let target = match Target::new(
-                    self.gpu,
-                    self.size,
-                    &self.budgets.targets,
-                    self.limits.target_bytes,
-                ) {
-                    Ok(target) => target,
-                    Err((error, storage)) => {
-                        self.tickets.push(Reservation {
-                            _shared: storage,
-                            _local: local,
-                        });
-                        return Err(error);
-                    }
-                };
-                self.target_cache.push(target.clone());
-                target
-            };
-            self.tickets.push(Reservation {
-                _shared: None,
-                _local: local,
-            });
-            target.slot = self.targets.len();
-            self.targets.push(target.clone());
-            target
-        };
-        let mut writes = std::mem::take(&mut self.target_writes);
-        writes.begin(target.slot, |bytes| self.transient(bytes))?;
-        self.target_writes = writes;
-        Ok(target)
-    }
-    pub(super) fn ensure_target(&mut self, target: &Target) -> Result<(), GlesError> {
-        if self.target_writes.take(target.slot) {
-            let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Clear);
-            self.gpu
-                .clear(native::Target::Framebuffer(&target.framebuffer), [0.; 4])?;
-        }
-        Ok(())
-    }
-    pub(super) fn ensure_sampled(&mut self, source: &native::Texture) -> Result<(), GlesError> {
-        if let Some(slot) = self
-            .targets
-            .iter()
-            .position(|target| target.view == *source)
-            && self.target_writes.take(slot)
-        {
-            let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Clear);
-            self.gpu.clear(
-                native::Target::Framebuffer(&self.targets[slot].framebuffer),
-                [0.; 4],
-            )?;
-        }
-        Ok(())
-    }
-    fn recycle_target(&mut self, target: Target) -> Result<(), GlesError> {
-        self.available_targets.push(target);
-        Ok(())
-    }
     pub(super) fn stream(
         &mut self,
         frame: &FrameDrawing,
@@ -409,7 +329,52 @@ impl Context<'_> {
                     continue;
                 }
                 self.scissor = current.scopes.last().scissor;
-                let child = self.start_stream(
+                let retained = self
+                    .selection
+                    .entry(current.retained_context, transition)
+                    .map(|(index, entry)| {
+                        (
+                            index,
+                            entry
+                                .input
+                                .as_ref()
+                                .map(|input| self.retained_cache.output(input)),
+                        )
+                    });
+                let (entry, cached) =
+                    retained.map_or((None, None), |(index, output)| (Some(index), output));
+                if let Some(previous) = cached {
+                    let mut inputs = std::mem::take(&mut self.retained_inputs);
+                    let result =
+                        push_stack(&mut inputs, previous.clone(), |bytes| self.transient(bytes));
+                    self.retained_inputs = inputs;
+                    result?;
+                    let child = self.start_stream(
+                        current.drawing,
+                        &current.drawing.commands()[transition.commands.clone()],
+                        Some(transition.commands.start),
+                        false,
+                        current.transform,
+                        self.scissor,
+                    )?;
+                    self.combine(
+                        &child.scopes.last().target,
+                        &current.scopes.last().target.view,
+                        &current.scopes.last().target.view,
+                        1.,
+                        0.,
+                        CompositeOperation::Transition(0.),
+                    )?;
+                    current.pending = Some(Pending::Transition {
+                        definition: transition,
+                        previous: Some(previous),
+                        entry,
+                        cached: true,
+                    });
+                    push_stack(&mut streams, child, |bytes| self.transient(bytes))?;
+                    continue;
+                }
+                let mut child = self.start_stream(
                     transition.previous.drawing(),
                     transition.previous.drawing().commands(),
                     Some(0),
@@ -419,6 +384,7 @@ impl Context<'_> {
                         * transition.previous.to_parent(),
                     self.scissor,
                 )?;
+                child.retained_context = entry.map_or(0, |index| index + 1);
                 self.combine(
                     &child.scopes.last().target,
                     &current.scopes.last().target.view,
@@ -430,6 +396,8 @@ impl Context<'_> {
                 current.pending = Some(Pending::Transition {
                     definition: transition,
                     previous: None,
+                    entry,
+                    cached: false,
                 });
                 push_stack(&mut streams, child, |bytes| self.transient(bytes))?;
                 continue;
@@ -479,7 +447,13 @@ impl Context<'_> {
                     Pending::Transition {
                         definition,
                         previous: None,
+                        entry,
+                        cached,
                     } => {
+                        if entry.is_some() && entry == self.selection.warm {
+                            self.warmed = true;
+                            return Ok(finished);
+                        }
                         let child = self.start_stream(
                             parent.drawing,
                             &parent.drawing.commands()[definition.commands.clone()],
@@ -499,12 +473,16 @@ impl Context<'_> {
                         parent.pending = Some(Pending::Transition {
                             definition,
                             previous: Some(finished),
+                            entry,
+                            cached,
                         });
                         push_stack(&mut streams, child, |bytes| self.transient(bytes))?;
                     }
                     Pending::Transition {
                         definition,
                         previous: Some(previous),
+                        cached,
+                        ..
                     } => {
                         self.combine_transition(
                             &parent.scopes.last().target,
@@ -513,7 +491,9 @@ impl Context<'_> {
                             definition,
                             parent.transform,
                         )?;
-                        self.recycle_target(previous)?;
+                        if !cached {
+                            self.recycle_target(previous)?;
+                        }
                         self.recycle_target(finished)?;
                     }
                 }
@@ -1074,6 +1054,7 @@ impl Context<'_> {
             |bytes| self.transient(bytes),
         )?;
         Ok(Stream {
+            retained_context: 0,
             scheduled: false,
             deferred: Vec::new(),
             drawing,

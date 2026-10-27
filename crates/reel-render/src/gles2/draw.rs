@@ -91,6 +91,10 @@ pub(super) struct GlyphCache {
     failures: Vec<BudgetTicket>,
 }
 impl GlyphCache {
+    pub fn prune_idle(&mut self) {
+        self.entries.retain(|_, glyph| Rc::strong_count(glyph) > 1);
+        self.pages.retain(|page| page.strong_count() != 0);
+    }
     pub fn prune(&mut self, versions: &[ResourceVersion]) {
         self.entries
             .retain(|_, glyph| glyph.source.retained(versions));

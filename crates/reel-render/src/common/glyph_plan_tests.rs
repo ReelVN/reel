@@ -144,6 +144,7 @@ fn recorded_reveal_prepares_only_visible_glyphs_and_bounds_the_group() {
         Affine::scale(1.5),
         4096,
         false,
+        &Default::default(),
         &mut probe,
     )
     .unwrap();
@@ -171,6 +172,7 @@ fn recorded_reveal_prepares_only_visible_glyphs_and_bounds_the_group() {
         Affine::IDENTITY,
         4096,
         true,
+        &Default::default(),
         &mut probe,
     )
     .unwrap();

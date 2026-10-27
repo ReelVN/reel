@@ -33,6 +33,19 @@ fn scenario_project() -> tempfile::TempDir {
     project
 }
 
+#[test]
+fn project_scenario_accepts_explicit_exit_after_persistent_publication() {
+    let project = scenario_project();
+    std::fs::write(project.path().join("src/main.aside"), r#"
+fn main() {
+    await persistent.write("exit-published", true);
+    if await persistent.read("exit-published") != true { throw "persistent publication was not visible"; }
+    game.exit();
+}
+"#).unwrap();
+    execute_project(project.path(), Duration::from_secs(5));
+}
+
 fn execute_project(path: &Path, timeout: Duration) -> Vec<audio::AudioStats> {
     let clicks = scenario_clicks();
     execute_project_with_capture(
@@ -300,22 +313,32 @@ fn execute_project_with_capture(
                 runtime.driver().activities_pending(),
                 runtime.driver().projection_stamp()
             );
+            let requested_exit = runtime.driver().state() == StoryState::Cancelled
+                && runtime.driver().adapter().exit_requested()
+                && runtime.driver().fault().unwrap().is_none()
+                && runtime.driver().host_failure().is_none();
             assert!(
                 matches!(
                     runtime.driver().state(),
                     StoryState::Running | StoryState::Finished
-                ),
+                ) || requested_exit,
                 "{kind}: {:?}; fault={:?}; host={:?}",
                 runtime.driver().state(),
                 runtime.driver().fault(),
                 runtime.driver().host_failure()
             );
-            if runtime.driver().state() == StoryState::Finished && !runtime.needs_tick() {
+            if requested_exit {
+                captures.cancel_pending();
+            }
+            if (runtime.driver().state() == StoryState::Finished || requested_exit)
+                && !runtime.needs_tick()
+            {
+                captures.cancel_pending();
                 break;
             }
             // Mutable access would interrupt capture. Let the actual save worker and
             // restore protocol finish before accepting another frame.
-            if !runtime.capturing() {
+            if !runtime.capturing() && !requested_exit {
                 let next = runtime.driver().ui().session().identity();
                 if next != identity {
                     identity = next;

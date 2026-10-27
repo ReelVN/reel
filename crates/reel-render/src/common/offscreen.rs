@@ -54,6 +54,7 @@ impl Plan {
         glyphs: &glyph_plan::Plan,
         pixel_limit: u64,
         masks: super::target_plan::MaskExecution,
+        selection: &super::retained::Plan,
         mut reserve: impl FnMut(u64) -> Result<R, GpuError>,
     ) -> Result<(Self, u64, Vec<R>), GpuError> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::OffscreenPlan);
@@ -95,6 +96,7 @@ impl Plan {
                 glyphs,
                 &plan,
                 masks,
+                selection,
                 |bytes| {
                     traversal.push(reserve(bytes)?);
                     Ok(())

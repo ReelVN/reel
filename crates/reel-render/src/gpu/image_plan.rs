@@ -23,9 +23,10 @@ pub(super) fn collect<'a>(
     frames: impl Iterator<Item = &'a RenderFrame>,
     max_dimension: u32,
     capture: bool,
+    selection: &crate::common::retained::Plan,
     mut reserve: impl FnMut(u64) -> Result<(), GpuError>,
 ) -> Result<Plan<'a>, GpuError> {
-    let plan = image_plan::collect(frames, max_dimension, capture, &mut reserve)?;
+    let plan = image_plan::collect(frames, max_dimension, capture, selection, &mut reserve)?;
     reserve((plan.images.len() * size_of::<Required<'_>>()) as u64)?;
     let images = plan
         .images

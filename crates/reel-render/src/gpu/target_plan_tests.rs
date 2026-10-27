@@ -149,6 +149,7 @@ fn effect_chains_forward_the_complete_source_and_keep_two_scratch_targets() {
                         &crate::common::glyph_plan::Plan::default(),
                         &offscreen::Plan::default(),
                         masks,
+                        &Default::default(),
                         |_| Ok(()),
                     )
                     .unwrap();
@@ -278,6 +279,7 @@ fn scalar_masks_keep_two_local_sources_and_project_plain_groups_into_the_parent(
                     &crate::common::glyph_plan::Plan::default(),
                     &offscreen::Plan::default(),
                     masks,
+                    &Default::default(),
                     |_| Ok(()),
                 )
                 .unwrap();
@@ -363,6 +365,7 @@ fn finite_group_admission_matches_clipped_physical_storage_for_every_sample_tier
                 Affine::IDENTITY,
                 4096,
                 false,
+                &Default::default(),
                 &mut NoGlyphs,
             )
             .unwrap();
@@ -380,6 +383,7 @@ fn finite_group_admission_matches_clipped_physical_storage_for_every_sample_tier
                     &plan,
                     &offscreen::Plan::default(),
                     MaskExecution::Inline,
+                    &Default::default(),
                     |_| Ok(()),
                 )
                 .unwrap();
@@ -463,6 +467,7 @@ fn sibling_admission_counts_all_live_sources_and_keeps_original_composite_order(
                 &glyphs,
                 limit,
                 masks,
+                &Default::default(),
                 |_| Ok(()),
             )
             .unwrap();
@@ -504,6 +509,7 @@ fn root_draws_delimit_batches_and_capture_exclusions_keep_their_own_stream() {
         &glyphs,
         u64::MAX,
         MaskExecution::Inline,
+        &Default::default(),
         |_| Ok(()),
     )
     .unwrap();
@@ -529,6 +535,7 @@ fn root_draws_delimit_batches_and_capture_exclusions_keep_their_own_stream() {
         &glyphs,
         960 * 544 + 2 * 128 * 64,
         MaskExecution::Inline,
+        &Default::default(),
         |_| Ok(()),
     )
     .unwrap();
@@ -550,6 +557,7 @@ fn root_draws_delimit_batches_and_capture_exclusions_keep_their_own_stream() {
         &glyphs,
         u64::MAX,
         MaskExecution::Inline,
+        &Default::default(),
         |_| Ok(()),
     )
     .unwrap();
@@ -570,6 +578,7 @@ fn atlas_regions_preserve_parent_samples_and_share_one_accounted_surface() {
         &crate::common::glyph_plan::Plan::default(),
         u64::MAX,
         MaskExecution::Inline,
+        &Default::default(),
         |_| Ok(()),
     )
     .unwrap();
@@ -633,6 +642,7 @@ fn narrowing_releases_completed_traversal_reservations() {
             &glyphs,
             960 * 544 + source_count * 128 * 64,
             MaskExecution::Inline,
+            &Default::default(),
             |bytes| {
                 pool.reserve(bytes).map_err(|_| GpuError::Budget {
                     domain: "test planning",

@@ -150,7 +150,6 @@ impl TargetCache {
         }
     }
 
-    #[cfg(test)]
     pub(super) fn clear(&self) {
         *self.0.lock().unwrap() = None;
     }

@@ -11,6 +11,7 @@ default-run = "reel"
 default = []
 window = ["reel-player/window"]
 scenario-gles = ["reel-render/gles2"]
+scenario-profile = ["reel-render/profiling"]
 
 [[bin]]
 name = "reel"

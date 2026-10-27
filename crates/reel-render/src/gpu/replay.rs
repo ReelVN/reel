@@ -31,6 +31,12 @@ pub(super) struct Context<'a> {
     pub(super) effects: Vec<Arc<super::effect::Compiled>>,
     pub(super) white: Option<Arc<resources::Image>>,
     pub(super) target_cache: &'a super::target_cache::TargetCache,
+    pub(super) retained_cache:
+        &'a crate::common::retained::Cache<Arc<super::target_cache::Allocation>, Quality>,
+    pub(super) selection: Arc<crate::common::retained::Plan>,
+    pub(super) retained_inputs: Vec<Arc<super::target_cache::Allocation>>,
+    pub(super) warm: Option<usize>,
+    pub(super) warmed: bool,
     pub(super) target_allocations: Vec<Arc<super::target_cache::Allocation>>,
     pub(super) available_targets: Vec<Target>,
     pub(super) target_writes: crate::common::target_writes::TargetWrites,
@@ -76,6 +82,8 @@ enum Pending<'a> {
     Transition {
         definition: &'a SceneTransition,
         previous: Option<Target>,
+        entry: Option<usize>,
+        cached: bool,
     },
 }
 struct DeferredComposite {
@@ -86,6 +94,7 @@ struct DeferredComposite {
     scissor: Scissor,
 }
 struct Stream<'a> {
+    retained_context: usize,
     scheduled: bool,
     deferred: Vec<DeferredComposite>,
     drawing: &'a FrameDrawing,
@@ -211,7 +220,52 @@ impl Context<'_> {
                     continue;
                 }
                 self.scissor = current.scopes.last().scissor;
-                let child = self.start_stream(
+                let retained = self
+                    .selection
+                    .entry(current.retained_context, transition)
+                    .map(|(index, entry)| {
+                        (
+                            index,
+                            entry
+                                .input
+                                .as_ref()
+                                .map(|input| self.retained_cache.output(input)),
+                        )
+                    });
+                let (entry, cached) =
+                    retained.map_or((None, None), |(index, output)| (Some(index), output));
+                if let Some(previous) = cached {
+                    let target = previous.target.clone();
+                    let mut inputs = std::mem::take(&mut self.retained_inputs);
+                    let result = push_stack(&mut inputs, previous, |bytes| self.transient(bytes));
+                    self.retained_inputs = inputs;
+                    result?;
+                    let child = self.start_stream(
+                        current.drawing,
+                        &current.drawing.commands()[transition.commands.clone()],
+                        Some(transition.commands.start),
+                        false,
+                        current.transform,
+                        self.scissor,
+                    )?;
+                    self.combine(
+                        &child.scopes.last().target,
+                        &current.scopes.last().target.view,
+                        &current.scopes.last().target.view,
+                        1.,
+                        0.,
+                        CompositeOperation::Transition(0.),
+                    )?;
+                    current.pending = Some(Pending::Transition {
+                        definition: transition,
+                        previous: Some(target),
+                        entry,
+                        cached: true,
+                    });
+                    push_stack(&mut streams, child, |bytes| self.transient(bytes))?;
+                    continue;
+                }
+                let mut child = self.start_stream(
                     transition.previous.drawing(),
                     transition.previous.drawing().commands(),
                     Some(0),
@@ -221,6 +275,7 @@ impl Context<'_> {
                         * transition.previous.to_parent(),
                     self.scissor,
                 )?;
+                child.retained_context = entry.map_or(0, |index| index + 1);
                 self.combine(
                     &child.scopes.last().target,
                     &current.scopes.last().target.view,
@@ -232,6 +287,8 @@ impl Context<'_> {
                 current.pending = Some(Pending::Transition {
                     definition: transition,
                     previous: None,
+                    entry,
+                    cached: false,
                 });
                 push_stack(&mut streams, child, |bytes| self.transient(bytes))?;
                 continue;
@@ -279,7 +336,13 @@ impl Context<'_> {
                     Pending::Transition {
                         definition,
                         previous: None,
+                        entry,
+                        cached,
                     } => {
+                        if entry.is_some() && entry == self.selection.warm {
+                            self.warmed = true;
+                            return Ok(finished);
+                        }
                         let child = self.start_stream(
                             parent.drawing,
                             &parent.drawing.commands()[definition.commands.clone()],
@@ -299,12 +362,16 @@ impl Context<'_> {
                         parent.pending = Some(Pending::Transition {
                             definition,
                             previous: Some(finished),
+                            entry,
+                            cached,
                         });
                         push_stack(&mut streams, child, |bytes| self.transient(bytes))?;
                     }
                     Pending::Transition {
                         definition,
                         previous: Some(previous),
+                        cached,
+                        ..
                     } => {
                         self.combine_transition(
                             &parent.scopes.last().target,
@@ -313,7 +380,9 @@ impl Context<'_> {
                             definition,
                             parent.transform,
                         )?;
-                        self.recycle_target(previous)?;
+                        if !cached {
+                            self.recycle_target(previous)?;
+                        }
                         self.recycle_target(finished)?;
                     }
                 }
@@ -867,6 +936,7 @@ impl Context<'_> {
             |bytes| self.transient(bytes),
         )?;
         Ok(Stream {
+            retained_context: 0,
             scheduled: false,
             deferred: Vec::new(),
             drawing,
