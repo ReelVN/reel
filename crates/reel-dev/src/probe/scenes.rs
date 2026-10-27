@@ -74,7 +74,7 @@ impl Assets {
         let size = [256, 256];
         let handle = if case.starts_with("bc1")
             || case.starts_with("bc3")
-            || case == "resources" && index % 2 != 0
+            || case == "resources" && !index.is_multiple_of(2)
         {
             let format = if case.starts_with("bc1") {
                 TextureFormat::Bc1Rgb

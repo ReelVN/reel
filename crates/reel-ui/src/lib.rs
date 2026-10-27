@@ -15,10 +15,6 @@
     clippy::cast_possible_truncation,
     reason = "Explicit UI numeric boundaries inherited from the maintained widget engine"
 )]
-#![expect(
-    clippy::large_enum_variant,
-    reason = "NewWidget owns a widget and its construction state"
-)]
 
 pub use imaging;
 pub use peniko::color::palette;

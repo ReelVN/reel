@@ -439,12 +439,11 @@ impl Mesh {
                 *vertex = self.vertices[*index as usize];
             }
             let mut count = 3;
-            for edge in 0..4 {
+            for (edge, &bound) in clip.bounds.iter().enumerate() {
                 if count == 0 {
                     break;
                 }
                 let axis = edge % 2;
-                let bound = clip.bounds[edge];
                 let inside = |vertex: Vertex| {
                     if edge < 2 {
                         vertex.position[axis] >= bound

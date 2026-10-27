@@ -273,16 +273,18 @@ fn run_library(
     backend: &mut GxmBackend,
     error: Option<String>,
 ) -> Result<crate::launcher::Outcome, Error> {
-    let mut options = PlayerOptions::default();
-    options.assets = crate::assets::AssetOptions {
-        root: "app0:/".into(),
-        resident_bytes: 32 << 20,
-        metadata_bytes: 32 << 20,
-        input_bytes: 32 << 20,
-        decode_bytes: 1 << 20,
+    let options = PlayerOptions {
+        assets: crate::assets::AssetOptions {
+            root: "app0:/".into(),
+            resident_bytes: 32 << 20,
+            metadata_bytes: 32 << 20,
+            input_bytes: 32 << 20,
+            decode_bytes: 1 << 20,
+        },
+        frame_bytes: 4 << 20,
+        canvas_size: Some([960, 544]),
+        ..Default::default()
     };
-    options.frame_bytes = 4 << 20;
-    options.canvas_size = Some([960, 544]);
     let launcher = crate::launcher::Launcher::new(
         game_root,
         crate::assets::Assets::packaged(
@@ -524,12 +526,10 @@ impl NativeLoop {
                     }
                     host.event_time = None;
                 }
-                if host.signals.exit.get() || player.exit_requested() {
-                    if !closing {
-                        text.cancel(|event| player.text_event(event).map(|_| ()))?;
-                        player.close()?;
-                        closing = true;
-                    }
+                if (host.signals.exit.get() || player.exit_requested()) && !closing {
+                    text.cancel(|event| player.text_event(event).map(|_| ()))?;
+                    player.close()?;
+                    closing = true;
                 }
                 if closing {
                     player.tick(host)?;

@@ -137,15 +137,14 @@ impl Sampler {
                         work.join(",")
                     );
                     log(&line);
-                    if trace {
-                        if let Err(error) =
+                    if trace
+                        && let Err(error) =
                             reel_storage::publish(&directory().join("active.txt"), true, |file| {
                                 file.write_all(line.as_bytes())
                             })
-                        {
-                            log(format_args!("sample publication failed: {error}"));
-                            break;
-                        }
+                    {
+                        log(format_args!("sample publication failed: {error}"));
+                        break;
                     }
                 }
             })?;

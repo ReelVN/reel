@@ -205,7 +205,7 @@ fn texture(
                 let body = (1. - ((x - 192.) / (88. + y * 0.15)).abs()).min((y - 150.) / 24.);
                 let alpha = (head.max(body) * 4.).clamp(0., 1.);
                 let alpha = if bx * 4 >= content_size[0] { 0. } else { alpha };
-                let color = if index % 2 == 0 {
+                let color = if index.is_multiple_of(2) {
                     [160., 90., 56.]
                 } else {
                     [55., 105., 165.]
