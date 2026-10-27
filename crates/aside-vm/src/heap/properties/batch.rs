@@ -45,7 +45,7 @@ mod tests {
         heap: &mut Heap,
         values: &[i64],
         writable: bool,
-        validator: Option<HostPropertyValidator>,
+        validator: Option<&'static HostPropertyValidator>,
     ) -> Value {
         let fields = heap.alloc_table().unwrap();
         for (index, &value) in values.iter().enumerate() {
@@ -79,7 +79,7 @@ mod tests {
     #[test]
     fn authoritative_batch_publishes_readonly_values_and_keeps_connected_constraints_atomic() {
         let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
-        let source = host(&mut heap, &[0, 10, 5], false, Some(range));
+        let source = host(&mut heap, &[0, 10, 5], false, Some(&RANGE));
         let follower = host(&mut heap, &[5], true, None);
         let reference = heap.alloc_property_ref(id(source, 2), false).unwrap();
         heap.bind_host_property(id(follower, 0), reference).unwrap();
@@ -232,6 +232,8 @@ mod tests {
         assert!(heap.is_model_table(value).unwrap());
         assert!(heap.object(heap.key(nested).unwrap()).unwrap().model);
     }
+    static RANGE: HostPropertyValidator = HostPropertyValidator::new("test.range", 1, range);
+
     fn range(view: &PropertyRead<'_>, host: Value, _: u32, _: Value) -> Result<(), HeapError> {
         let fields = view.host_fields(host)?;
         let low = view
@@ -267,7 +269,7 @@ mod tests {
             [1, 0, 2],
             [2, 1, 0],
         ] {
-            let target = host(&mut heap, &[0, 1, 0], true, Some(range));
+            let target = host(&mut heap, &[0, 1, 0], true, Some(&RANGE));
             let next = [10, 20, 15];
             let writes = order.map(|field| (id(target, field), Value::int(next[field as usize])));
             heap.write_host_properties(&writes, true).unwrap();
@@ -305,7 +307,7 @@ mod tests {
         let sources = host(&mut heap, &[1, 20], true, None);
         let a = heap.alloc_property_ref(id(sources, 0), true).unwrap();
         let b = heap.alloc_property_ref(id(sources, 1), true).unwrap();
-        let target = host(&mut heap, &[0, 10, 1], true, Some(range));
+        let target = host(&mut heap, &[0, 10, 1], true, Some(&RANGE));
         heap.bind_host_property(id(target, 2), a).unwrap();
         assert_eq!(
             heap.write_host_properties(&[(id(target, 2), b)], true),
@@ -418,7 +420,7 @@ mod tests {
     #[test]
     fn repeated_scalar_configurations_reuse_charged_plan_capacity() {
         let mut heap = Heap::new(SessionEpoch(1), HeapLimits::default()).unwrap();
-        let target = host(&mut heap, &[0, 1, 0], true, Some(range));
+        let target = host(&mut heap, &[0, 1, 0], true, Some(&RANGE));
         heap.write_host_properties(
             &[
                 (id(target, 0), Value::int(10)),
@@ -1232,7 +1234,7 @@ impl Heap {
         if self.is_model_cell(property.host)? {
             self.validate_host_property(property.host, property.field, value)
         } else if let Some(validate) = self.object(self.key(property.host)?)?.host_validator {
-            validate(view, property.host, property.field, value)
+            validate.validate(view, property.host, property.field, value)
         } else {
             Ok(())
         }

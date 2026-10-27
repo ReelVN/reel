@@ -324,6 +324,9 @@ fn type_code(ty: EffectType) -> i64 {
     }
 }
 
+pub(super) static PARAMETER: aside_vm::HostPropertyValidator =
+    aside_vm::HostPropertyValidator::new("reel.effect", 1, validate_parameter);
+
 pub(super) fn validate_parameter(
     read: &PropertyRead<'_>,
     host: Value,
@@ -397,7 +400,7 @@ pub(super) fn create(
     payload.push(Value::int(type_code(
         definition.program.nodes()[definition.program.output().0 as usize].ty,
     )));
-    let effect = heap.alloc_host(fields, &payload, Some(validate_parameter))?;
+    let effect = heap.alloc_host(fields, &payload, Some(&PARAMETER))?;
     heap.observe_host_properties(effect, names.len() as u32, 0)?;
     for (index, input) in supplied.into_iter().enumerate() {
         if let Some(input) = input

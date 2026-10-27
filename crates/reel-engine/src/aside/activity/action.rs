@@ -64,7 +64,7 @@ fn description(
             Value::int(kind as i64),
             times,
         ],
-        Some(readonly),
+        Some(&READONLY),
     )?)
 }
 
@@ -329,6 +329,6 @@ pub(in crate::aside) fn tween(
             Value::int(Kind::Tween as i64),
             Value::NULL,
         ],
-        Some(readonly),
+        Some(&READONLY),
     )?)
 }

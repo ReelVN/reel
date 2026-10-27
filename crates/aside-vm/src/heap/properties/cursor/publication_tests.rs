@@ -1,5 +1,8 @@
 use super::*;
 
+static SELECTION: HostPropertyValidator =
+    HostPropertyValidator::new("test.selection", 1, selection);
+
 fn selection(view: &PropertyRead<'_>, host: Value, _: u32, _: Value) -> Result<(), HeapError> {
     let length = view.read(PropertyId { host, field: 0 })?.as_int().unwrap();
     let caret = view.read(PropertyId { host, field: 1 })?.as_int().unwrap();
@@ -16,7 +19,7 @@ fn service(heap: &mut Heap) -> Value {
         heap.table_store(fields, field, Value::int(field.into()), Value::int(0))
             .unwrap();
     }
-    let host = heap.alloc_host(fields, &[], Some(selection)).unwrap();
+    let host = heap.alloc_host(fields, &[], Some(&SELECTION)).unwrap();
     heap.observe_host_properties(host, 0, 2).unwrap();
     host
 }
@@ -193,9 +196,7 @@ fn publication_permission_and_original_inputs_survive_gc_and_snapshot() {
         heap.gc_step(crate::GcBudget::default()).unwrap();
     }
     let mut registry = SnapshotRegistry::default();
-    registry
-        .register_validator("test.selection", 1, selection)
-        .unwrap();
+    registry.register_validator(&SELECTION).unwrap();
     let mut image = VmSnapshot {
         version: VmSnapshot::FORMAT_VERSION,
         code: [0; 32],

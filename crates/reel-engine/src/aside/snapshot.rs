@@ -11,18 +11,15 @@ fn registry() -> &'static SnapshotRegistry {
         let mut registry = SnapshotRegistry::default();
         aside_std::register_snapshots(&mut registry).unwrap();
         stage::StageBinding::register_snapshots(&mut registry).unwrap();
-        for (name, validator) in [
-            (
-                "reel.character",
-                dialogue::immutable as aside_vm::HostPropertyValidator,
-            ),
-            ("reel.activity", activity::readonly),
-            ("reel.result", results::readonly),
-            ("reel.media", media::readonly),
-            ("reel.auto-condition", narrative::auto_condition_validator),
-            ("reel.effect", effects::validate_parameter),
+        for validator in [
+            &dialogue::IMMUTABLE,
+            &activity::READONLY,
+            &results::READONLY,
+            &media::READONLY,
+            &narrative::AUTO_CONDITION,
+            &effects::PARAMETER,
         ] {
-            registry.register_validator(name, 1, validator).unwrap();
+            registry.register_validator(validator).unwrap();
         }
         registry
     });

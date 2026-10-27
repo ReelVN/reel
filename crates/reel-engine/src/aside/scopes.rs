@@ -469,7 +469,7 @@ impl SessionVm {
                     Value::NULL,
                     Value::NULL,
                 ],
-                Some(results::readonly),
+                Some(&results::READONLY),
             )?;
             self.stage.types.mark(heap, object, "reel::types::Scope")?;
             let root = self

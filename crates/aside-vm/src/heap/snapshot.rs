@@ -389,7 +389,7 @@ pub(crate) fn allocate(
                 }
             };
             let validator = if meta.host_model_value {
-                Some(immutable as HostPropertyValidator)
+                Some(&IMMUTABLE_HOST)
             } else {
                 meta.validator
                     .as_ref()
@@ -422,9 +422,6 @@ pub(crate) fn allocate(
         _ => (),
     }
     Ok(())
-}
-fn immutable(_: &PropertyRead<'_>, _: Value, _: u32, _: Value) -> Result<(), HeapError> {
-    Err(HeapError::ReadOnly)
 }
 
 pub(crate) fn connect(

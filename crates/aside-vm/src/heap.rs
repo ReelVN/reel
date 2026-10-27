@@ -239,15 +239,57 @@ pub struct HeapStats {
     pub allocation_queue_len: u32,
 }
 
-/// Trusted, allocation-free validation at a host property's write boundary.
-/// The index identifies an existing own field. Read related properties through
-/// the supplied view to validate the complete proposed configuration. This
-/// callback must not execute script or wait; errors precede value publication.
-pub type HostPropertyValidator = fn(&PropertyRead<'_>, Value, u32, Value) -> Result<(), HeapError>;
+/// Static validation contract with a stable snapshot name and version.
+/// Hosts retain one reference to this descriptor; snapshot identity uses its
+/// declared name/version, independent of callback addresses or code generation.
+pub struct HostPropertyValidator {
+    name: &'static str,
+    version: u32,
+    callback: fn(&PropertyRead<'_>, Value, u32, Value) -> Result<(), HeapError>,
+}
+impl HostPropertyValidator {
+    /// Declare a trusted, allocation-free host property validator. The field
+    /// index identifies an existing own field; related proposed fields are read
+    /// through the supplied view. The callback cannot execute script or wait,
+    /// and errors precede publication. Register this descriptor before capture.
+    pub const fn new(
+        name: &'static str,
+        version: u32,
+        callback: fn(&PropertyRead<'_>, Value, u32, Value) -> Result<(), HeapError>,
+    ) -> Self {
+        Self {
+            name,
+            version,
+            callback,
+        }
+    }
+    /// Stable adapter name stored in snapshots.
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+    /// Contract version stored with the adapter name.
+    pub const fn version(&self) -> u32 {
+        self.version
+    }
+    fn validate(
+        &self,
+        view: &PropertyRead<'_>,
+        host: Value,
+        field: u32,
+        value: Value,
+    ) -> Result<(), HeapError> {
+        (self.callback)(view, host, field, value)
+    }
+}
+
+static IMMUTABLE_HOST: HostPropertyValidator =
+    HostPropertyValidator::new("aside.immutable-host", 1, |_, _, _, _| {
+        Err(HeapError::ReadOnly)
+    });
 
 pub(crate) struct Object {
     pub kind: ObjectKind,
-    pub host_validator: Option<HostPropertyValidator>,
+    pub host_validator: Option<&'static HostPropertyValidator>,
     pub host_model_value: bool,
     pub host_await: Option<crate::bytecode::NativeId>,
     pub host_call: Option<crate::bytecode::FunctionId>,
@@ -690,7 +732,7 @@ impl Heap {
         &mut self,
         fields: Value,
         payload: &[Value],
-        validator: Option<HostPropertyValidator>,
+        validator: Option<&'static HostPropertyValidator>,
     ) -> Result<Value, HeapError> {
         self.host_record(fields, payload, false, validator)
     }
@@ -702,12 +744,7 @@ impl Heap {
         fields: Value,
         payload: &[Value],
     ) -> Result<Value, HeapError> {
-        let host = self.host_record(
-            fields,
-            payload,
-            false,
-            Some(|_, _, _, _| Err(HeapError::ReadOnly)),
-        )?;
+        let host = self.host_record(fields, payload, false, Some(&IMMUTABLE_HOST))?;
         let key = self.key(host)?;
         self.objects.get_mut(key).unwrap().host_model_value = true;
         Ok(host)
@@ -721,7 +758,7 @@ impl Heap {
         &mut self,
         fields: Value,
         payload: &[Value],
-        validator: Option<HostPropertyValidator>,
+        validator: Option<&'static HostPropertyValidator>,
     ) -> Result<Value, HeapError> {
         self.host_record(fields, payload, true, validator)
     }
@@ -730,7 +767,7 @@ impl Heap {
         fields: Value,
         payload: &[Value],
         composable: bool,
-        validator: Option<HostPropertyValidator>,
+        validator: Option<&'static HostPropertyValidator>,
     ) -> Result<Value, HeapError> {
         self.table_len(fields)?;
         let mut values = Vec::with_capacity(payload.len() + 4);
@@ -848,7 +885,7 @@ impl Heap {
             };
         }
         if let Some(validate) = self.object(self.key(host)?)?.host_validator {
-            validate(&PropertyRead::current(self), host, index, value)?;
+            validate.validate(&PropertyRead::current(self), host, index, value)?;
         }
         Ok(())
     }

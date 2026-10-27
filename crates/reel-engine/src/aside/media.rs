@@ -329,6 +329,9 @@ fn settle_cue(heap: &mut Heap, cue: Value) -> Result<bool, AdapterError> {
     heap.set_host_payload(cue, Slot::Owner as u32, Value::NULL)?;
     Ok(true)
 }
+pub(super) static READONLY: aside_vm::HostPropertyValidator =
+    aside_vm::HostPropertyValidator::new("reel.media", 1, readonly);
+
 pub(super) fn readonly(
     _: &aside_vm::PropertyRead<'_>,
     _: Value,
@@ -943,7 +946,7 @@ impl SessionVm {
                 Value::NULL,
                 owner,
             ],
-            Some(readonly),
+            Some(&READONLY),
         )?;
         self.stage
             .types
@@ -1008,7 +1011,7 @@ impl SessionVm {
                 target_value,
                 owner_value,
             ],
-            Some(readonly),
+            Some(&READONLY),
         )?;
         self.stage
             .types

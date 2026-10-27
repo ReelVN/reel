@@ -61,46 +61,48 @@ impl From<postcard::Error> for SnapshotError {
     }
 }
 
-/// Names and versions are saved; function addresses never enter a checkpoint.
+/// Registered static validation contracts. Snapshots identify descriptors only
+/// by their declared name/version; callback addresses never establish identity.
 #[derive(Default)]
 pub struct SnapshotRegistry {
-    validators: Vec<(&'static str, u32, HostPropertyValidator)>,
+    validators: Vec<&'static HostPropertyValidator>,
 }
 impl SnapshotRegistry {
+    /// Register one descriptor per stable name. Repeated names are rejected,
+    /// including when their versions or callbacks differ.
     pub fn register_validator(
         &mut self,
-        name: &'static str,
-        version: u32,
-        validator: HostPropertyValidator,
+        validator: &'static HostPropertyValidator,
     ) -> Result<(), SnapshotError> {
-        if self.validators.iter().any(|&(n, _, _)| n == name) {
+        if self.validators.iter().any(|v| v.name() == validator.name()) {
             return Err(SnapshotError::Invalid(format!(
-                "duplicate snapshot adapter {name}"
+                "duplicate snapshot adapter {}",
+                validator.name()
             )));
         }
-        self.validators.push((name, version, validator));
+        self.validators.push(validator);
         Ok(())
     }
     pub(crate) fn identify(
         &self,
         key: u64,
-        validator: HostPropertyValidator,
+        validator: &'static HostPropertyValidator,
     ) -> Result<(String, u32), SnapshotError> {
         self.validators
             .iter()
-            .find(|&&(_, _, f)| std::ptr::fn_addr_eq(f, validator))
-            .map(|&(name, version, _)| (name.into(), version))
+            .find(|v| v.name() == validator.name() && v.version() == validator.version())
+            .map(|v| (v.name().into(), v.version()))
             .ok_or(SnapshotError::MissingAdapter { object: key })
     }
     pub(crate) fn resolve(
         &self,
         name: &str,
         version: u32,
-    ) -> Result<HostPropertyValidator, SnapshotError> {
+    ) -> Result<&'static HostPropertyValidator, SnapshotError> {
         self.validators
             .iter()
-            .find(|&&(n, v, _)| n == name && v == version)
-            .map(|&(_, _, f)| f)
+            .find(|v| v.name() == name && v.version() == version)
+            .copied()
             .ok_or_else(|| SnapshotError::AdapterVersion {
                 name: name.into(),
                 version,
@@ -326,3 +328,53 @@ impl SnapshotMap {
 }
 
 pub use crate::executor::snapshot::{VmCapture, VmRestore};
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+
+    static ORIGINAL: HostPropertyValidator =
+        HostPropertyValidator::new("test.identity", 1, |_, _, _, _| Err(HeapError::ReadOnly));
+    static COPY: HostPropertyValidator =
+        HostPropertyValidator::new("test.identity", 1, |_, _, _, _| {
+            Err(HeapError::TypeMismatch)
+        });
+    static OTHER: HostPropertyValidator =
+        HostPropertyValidator::new("test.other", 1, |_, _, _, _| Err(HeapError::ReadOnly));
+    static NEXT: HostPropertyValidator =
+        HostPropertyValidator::new("test.identity", 2, |_, _, _, _| Err(HeapError::ReadOnly));
+
+    #[test]
+    fn stable_identity_survives_distinct_descriptors_and_preserves_registration_contract() {
+        let mut registry = SnapshotRegistry::default();
+        registry.register_validator(&ORIGINAL).unwrap();
+        assert_eq!(
+            registry.identify(41, &COPY).unwrap(),
+            ("test.identity".into(), 1)
+        );
+        assert!(std::ptr::eq(
+            registry.resolve("test.identity", 1).unwrap(),
+            &ORIGINAL
+        ));
+        for validator in [&OTHER, &NEXT] {
+            assert!(matches!(
+                registry.identify(41, validator),
+                Err(SnapshotError::MissingAdapter { object: 41 })
+            ));
+        }
+        for validator in [&COPY, &NEXT] {
+            assert!(matches!(
+                registry.register_validator(validator),
+                Err(SnapshotError::Invalid(_))
+            ));
+        }
+        assert!(matches!(
+            registry.resolve("test.identity", 2),
+            Err(SnapshotError::AdapterVersion { version: 2, .. })
+        ));
+        assert_eq!(
+            std::mem::size_of::<Option<&'static HostPropertyValidator>>(),
+            std::mem::size_of::<usize>()
+        );
+    }
+}

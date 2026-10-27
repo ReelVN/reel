@@ -133,7 +133,7 @@ impl Activities {
             slots[RootSlot::PausedAt as usize] = Value::float(self.time);
             slots[RootSlot::Forcing as usize] = Value::bool(false);
             let activity =
-                heap.alloc_host(fields, &slots, if clock { None } else { Some(readonly) })?;
+                heap.alloc_host(fields, &slots, if clock { None } else { Some(&READONLY) })?;
             stage.types.mark(
                 heap,
                 activity,

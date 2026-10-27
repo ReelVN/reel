@@ -136,6 +136,10 @@ fn member_position_hints_recheck_each_shape_and_host_write_validator() {
             }
         }
     }
+    static VALIDATOR: crate::HostPropertyValidator =
+        crate::HostPropertyValidator::new("test.point", 1, |_, _, _, _| {
+            Err(HeapError::TypeMismatch)
+        });
     let mut vm = load(point_lookup_package(false, true));
     let fields = vm.heap_mut().alloc_table().unwrap();
     let key = vm.heap_mut().alloc_string("position").unwrap();
@@ -144,7 +148,7 @@ fn member_position_hints_recheck_each_shape_and_host_write_validator() {
         .unwrap();
     let host = vm
         .heap_mut()
-        .alloc_host(fields, &[], Some(|_, _, _, _| Err(HeapError::TypeMismatch)))
+        .alloc_host(fields, &[], Some(&VALIDATOR))
         .unwrap();
     let root = vm
         .heap_mut()

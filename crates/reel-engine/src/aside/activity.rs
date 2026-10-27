@@ -307,6 +307,9 @@ fn tagged(heap: &Heap, value: Value, tag: i64) -> Result<(), AdapterError> {
     }
     Ok(())
 }
+pub(super) static READONLY: aside_vm::HostPropertyValidator =
+    aside_vm::HostPropertyValidator::new("reel.activity", 1, readonly);
+
 pub(super) fn readonly(
     _: &aside_vm::PropertyRead<'_>,
     _: Value,
