@@ -12,7 +12,6 @@ use crate::{
     GreenToken, NodeOrToken, TextRange, TextSize,
     arc::{Arc, HeaderSlice, ThinArc},
     green::{GreenElement, GreenElementRef, SyntaxKind},
-    utility_types::static_assert,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -34,7 +33,7 @@ pub(crate) enum GreenChild {
     },
 }
 #[cfg(target_pointer_width = "64")]
-static_assert!(mem::size_of::<GreenChild>() == mem::size_of::<usize>() * 2);
+const _: () = assert!(mem::size_of::<GreenChild>() == mem::size_of::<usize>() * 2);
 
 type Repr = HeaderSlice<GreenNodeHead, [GreenChild]>;
 type ReprThin = HeaderSlice<GreenNodeHead, [GreenChild; 0]>;

@@ -250,43 +250,6 @@ impl Drop for SharedHeapReservation {
     }
 }
 
-#[cfg(test)]
-mod shared_reservation_tests {
-    use super::*;
-
-    #[test]
-    fn ordinary_reservations_keep_the_refund_mailbox_unallocated() {
-        let usage = HeapBudgetUsage::new(4096);
-        let before = usage.charged_bytes();
-        let mut charge = usage.reserve(256).unwrap();
-        charge.resize(512).unwrap();
-        drop(charge);
-        assert_eq!(usage.charged_bytes(), before);
-        assert!(usage.0.shared_refunds.get().is_none());
-    }
-
-    #[test]
-    fn shared_final_release_refunds_statistics_and_allocation_pressure() {
-        let usage = HeapBudgetUsage::new(4096);
-        let shared = usage.reserve_shared(1024).unwrap();
-        let before = usage.charged_bytes();
-        std::thread::spawn(move || drop(shared)).join().unwrap();
-        assert_eq!(usage.charged_bytes(), before - 1024);
-        let shared = usage.reserve_shared(1024).unwrap();
-        let fill = usage.reserve(usage.remaining_bytes()).unwrap();
-        std::thread::spawn(move || drop(shared)).join().unwrap();
-        // No statistics read between the final release and the allocation.
-        let reused = usage.reserve(1024).unwrap();
-        assert_eq!(usage.charged_bytes(), usage.limit());
-        drop((fill, reused));
-        let final_owner = usage.reserve_shared(64).unwrap();
-        drop(usage);
-        std::thread::spawn(move || drop(final_owner))
-            .join()
-            .unwrap();
-    }
-}
-
 // Field order is intentional: data deallocates before its reservation is refunded.
 pub(crate) struct ChargedVec<T> {
     pub data: Vec<T>,
@@ -354,5 +317,42 @@ impl Heap {
             .remove(token.key)
             .expect("checked range descriptor");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod shared_reservation_tests {
+    use super::*;
+
+    #[test]
+    fn ordinary_reservations_keep_the_refund_mailbox_unallocated() {
+        let usage = HeapBudgetUsage::new(4096);
+        let before = usage.charged_bytes();
+        let mut charge = usage.reserve(256).unwrap();
+        charge.resize(512).unwrap();
+        drop(charge);
+        assert_eq!(usage.charged_bytes(), before);
+        assert!(usage.0.shared_refunds.get().is_none());
+    }
+
+    #[test]
+    fn shared_final_release_refunds_statistics_and_allocation_pressure() {
+        let usage = HeapBudgetUsage::new(4096);
+        let shared = usage.reserve_shared(1024).unwrap();
+        let before = usage.charged_bytes();
+        std::thread::spawn(move || drop(shared)).join().unwrap();
+        assert_eq!(usage.charged_bytes(), before - 1024);
+        let shared = usage.reserve_shared(1024).unwrap();
+        let fill = usage.reserve(usage.remaining_bytes()).unwrap();
+        std::thread::spawn(move || drop(shared)).join().unwrap();
+        // No statistics read between the final release and the allocation.
+        let reused = usage.reserve(1024).unwrap();
+        assert_eq!(usage.charged_bytes(), usage.limit());
+        drop((fill, reused));
+        let final_owner = usage.reserve_shared(64).unwrap();
+        drop(usage);
+        std::thread::spawn(move || drop(final_owner))
+            .join()
+            .unwrap();
     }
 }

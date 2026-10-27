@@ -1,0 +1,651 @@
+//! Native callable binding, host tickets and continuations.
+use super::*;
+
+impl Vm {
+    /// Register a trusted callable host object. Its first native parameter is
+    /// the object itself; argument binding and effects share ordinary calls.
+    pub fn bind_callable(&mut self, object: Value, function: FunctionId) -> Result<(), VmError> {
+        self.validate_native_receiver(object, function)?;
+        self.heap.set_host_call(object, function)?;
+        Ok(())
+    }
+
+    pub(super) fn callable_receiver(&self, value: Value) -> Result<Option<Value>, VmError> {
+        match self.heap.info(value)?.kind {
+            ObjectKind::BoundNative => Ok(Some(self.heap.get_field(value, 3)?)),
+            ObjectKind::Host => {
+                self.heap.host_call(value)?;
+                Ok(Some(value))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub(super) fn shared_host_method(
+        &self,
+        object: Value,
+        key: Value,
+        name: Option<SymbolId>,
+    ) -> Result<Option<FunctionId>, HeapError> {
+        if let Some(name) = name {
+            return self.heap.shared_host_method(object, name);
+        }
+        if !self.heap.accepts_builtin(BuiltinType::String, key)? {
+            return Ok(None);
+        }
+        let Some(name) = self
+            .type_checks
+            .symbol(self.program.package(), &self.heap, key)?
+        else {
+            return Ok(None);
+        };
+        self.heap.shared_host_method(object, name)
+    }
+
+    pub(super) fn host_member_symbol(&self, frame: &ScriptFrame) -> Option<SymbolId> {
+        frame.member_symbol
+    }
+
+    /// Bind the receiver of an admitted native callable. The immutable value
+    /// traces its receiver and shares ordinary native argument preparation.
+    pub fn bind_native(&mut self, receiver: Value, function: FunctionId) -> Result<Value, VmError> {
+        self.validate_native_receiver(receiver, function)?;
+        let p = self.program.package();
+        let f = &p.functions[function.index()];
+
+        Ok(self.heap.alloc_record(
+            ObjectKind::BoundNative,
+            &[
+                Value::int(function.0 as i64),
+                Value::int(p.content_version as i64),
+                Value::int(f.module.0 as i64),
+                receiver,
+            ],
+        )?)
+    }
+
+    /// Bind a registered shared method of a live host receiver. Own fields are
+    /// excluded: this host API selects the trusted nominal type's method.
+    /// A missing method returns `None`; invalid or retired receivers fail through
+    /// ordinary heap validation. Name lookup reuses the loaded symbol index.
+    pub fn bind_host_method(
+        &mut self,
+        receiver: Value,
+        name: &str,
+    ) -> Result<Option<Value>, VmError> {
+        self.heap.host_fields(receiver)?;
+        let Some(symbol) = self.type_checks.symbol_str(self.program.package(), name) else {
+            return Ok(None);
+        };
+        self.heap
+            .shared_host_method(receiver, symbol)?
+            .map(|function| self.bind_native(receiver, function))
+            .transpose()
+    }
+
+    pub(super) fn validate_native_receiver(
+        &self,
+        receiver: Value,
+        function: FunctionId,
+    ) -> Result<(), VmError> {
+        let p = self.program.package();
+        let f = p
+            .functions
+            .get(function.index())
+            .ok_or(VmError::Contract("unknown native callable"))?;
+        if !matches!(f.kind, FunctionKind::Native(_)) {
+            return Err(VmError::Contract(
+                "receiver binding requires a native callable",
+            ));
+        }
+        let parameter = p.signatures[f.signature.index()]
+            .parameters
+            .first()
+            .filter(|p| p.default.is_none())
+            .ok_or(VmError::Contract(
+                "native receiver requires a first parameter",
+            ))?;
+        if !self
+            .type_checks
+            .accepts(p, &self.heap, parameter.ty, receiver)?
+        {
+            return Err(HeapError::TypeMismatch.into());
+        }
+        Ok(())
+    }
+
+    /// Resolve a function value that carries no receiver or captured environment.
+    /// The identity belongs to this verified program; no heap value crosses into
+    /// a replacement VM. Hosts validate the entry's signature and context.
+    pub fn unbound_function(&self, value: Value) -> Result<FunctionId, VmError> {
+        if self.heap.info(value)?.kind != ObjectKind::Closure {
+            return Err(VmError::Contract("entry must be an unbound function"));
+        }
+        let function = self.closure_function(value)?;
+        if !self.program.package().functions[function.index()]
+            .captures
+            .is_empty()
+        {
+            return Err(VmError::Contract("entry must not capture local state"));
+        }
+        Ok(function)
+    }
+
+    pub(super) fn closure_function(&self, closure: Value) -> Result<FunctionId, VmError> {
+        let closure = self.script_closure(closure)?;
+        let info = self.heap.info(closure)?;
+        if info.kind == ObjectKind::Host {
+            return Ok(self.heap.host_call(closure)?);
+        }
+        let bound = info.kind == ObjectKind::BoundNative;
+        if info.kind != ObjectKind::Closure && !bound {
+            return Err(VmError::Contract("callee is not a closure"));
+        }
+        let fi = self
+            .heap
+            .get_field(closure, 0)?
+            .as_int()
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or(VmError::Contract("invalid closure code"))?;
+        let version = self
+            .heap
+            .get_field(closure, 1)?
+            .as_int()
+            .ok_or(VmError::Contract("invalid closure version"))? as u64;
+        let f = self
+            .program
+            .package()
+            .functions
+            .get(fi as usize)
+            .ok_or(VmError::Contract("foreign closure code"))?;
+        if version != self.program.package().content_version
+            || self.heap.get_field(closure, 2)?.as_int() != Some(f.module.0 as i64)
+            || info.len != f.captures.len() as u32 + 3 + u32::from(bound)
+            || (bound && !matches!(f.kind, FunctionKind::Native(_)))
+        {
+            return Err(VmError::Contract("foreign closure environment/version"));
+        }
+        Ok(FunctionId(fi))
+    }
+    pub(super) fn argument_contract(&self, source: ArgSource, index: u32) -> Option<TypeId> {
+        let ArgSource::CheckedCaller { contract, .. } = source else {
+            return None;
+        };
+        let TypeDef::Function { parameters, .. } = &self.program.package().types[contract.index()]
+        else {
+            unreachable!()
+        };
+        parameters.get(index as usize).copied()
+    }
+
+    pub(super) fn argument_work(&self, source: ArgSource, index: u32) -> u64 {
+        1 + self
+            .argument_contract(source, index)
+            .map_or(0, |ty| 1 + self.type_checks.extra(ty))
+    }
+
+    pub(super) fn checked_argument(
+        &self,
+        source: ArgSource,
+        index: u32,
+    ) -> Result<(Value, Value), VmError> {
+        let (name, value) = self.argument(source, index)?;
+        if let Some(ty) = self.argument_contract(source, index)
+            && (name.as_int() != Some(-1)
+                || !self
+                    .type_checks
+                    .accepts(self.program.package(), &self.heap, ty, value)?)
+        {
+            return Err(HeapError::TypeMismatch.into());
+        }
+        Ok((name, value))
+    }
+
+    pub(super) fn argument(
+        &self,
+        source: ArgSource,
+        index: u32,
+    ) -> Result<(Value, Value), VmError> {
+        match source {
+            ArgSource::None => Err(VmError::Contract("external arguments already copied")),
+            ArgSource::Await { frame, value } => {
+                let Frame::Script(s) = self.active.frames.data[self.index(frame)?] else {
+                    return Err(VmError::Contract("await argument source"));
+                };
+                Ok((Value::int(-1), self.slots.read(at(s.regs, value.0))?))
+            }
+            ArgSource::Caller { frame, descriptor }
+            | ArgSource::CheckedCaller {
+                frame, descriptor, ..
+            } => {
+                let Frame::Script(s) = self.active.frames.data[self.index(frame)?] else {
+                    return Err(VmError::Contract("argument source"));
+                };
+                let Descriptor::Call(desc) = &self.program.package().functions
+                    [s.code.function.index()]
+                .descriptors[descriptor.index()] else {
+                    unreachable!()
+                };
+                match desc.arguments {
+                    Arguments::Window(w) => {
+                        // B01 verifies that names occupy the ordered window
+                        // tail; copying each argument needs no name-list scan.
+                        let positional = w.len as usize - desc.names.len();
+                        let name = (index as usize)
+                            .checked_sub(positional)
+                            .map_or(-1, |i| i64::from(desc.names[i].name.0));
+                        Ok((
+                            Value::int(name),
+                            self.slots.read(at(s.regs, w.start.0 + index))?,
+                        ))
+                    }
+                    Arguments::Packed(r) => {
+                        let packed = self.slots.read(at(s.regs, r.0))?;
+                        Ok((
+                            self.heap.get_field(packed, index * 2)?,
+                            self.heap.get_field(packed, index * 2 + 1)?,
+                        ))
+                    }
+                }
+            }
+            ArgSource::Native { frame, .. } => {
+                let Frame::Native(n) = self.active.frames.data[self.index(frame)?] else {
+                    unreachable!()
+                };
+                Ok((
+                    Value::int(-1),
+                    self.value(n.roots, 2 + self.limits.max_continuation_values + index)?,
+                ))
+            }
+            ArgSource::Sort { frame } => self.sort_argument(frame, index),
+            ArgSource::Prefix { frame, .. } => {
+                let range = match self.active.frames.data[self.index(frame)?] {
+                    Frame::Script(s) => s.bound,
+                    Frame::Native(n) => n.bindings.unwrap_or(n.bound),
+                };
+                Ok((Value::int(-1), self.value(range, index)?))
+            }
+        }
+    }
+    pub(super) fn push_native(
+        &mut self,
+        native: NativeId,
+        source: ArgSource,
+        count: u32,
+        site: NativeSite,
+    ) -> Result<(), VmError> {
+        self.push_native_bound(native, source, count, site, None)
+    }
+    pub(super) fn push_native_bound(
+        &mut self,
+        native: NativeId,
+        source: ArgSource,
+        count: u32,
+        site: NativeSite,
+        receiver: Option<Value>,
+    ) -> Result<(), VmError> {
+        let signature = self.program.package().natives[native.index()].signature;
+        let declared = self.program.package().signatures[signature.index()].effects;
+        let pure = declared.0 & (Effects::HOST | Effects::WRITE | Effects::WAIT) == 0;
+        // Calling a pure native is not itself an external side effect. Derived
+        // callbacks retain their allocation mask and cannot admit an impure native.
+        if (site.context.derived && !pure)
+            || (site.effects.0 & Effects::HOST == 0 && (!pure || declared.0 & !site.effects.0 != 0))
+        {
+            return Err(VmError::Effect);
+        }
+        if self.active.frames.data.len() == self.limits.max_frames as usize
+            || count > self.limits.max_arguments
+        {
+            return Err(VmError::Limit);
+        }
+        let sig = &self.program.package().signatures[signature.index()];
+        let n = sig.parameters.len() as u32 + u32::from(sig.rest.is_some());
+        let has_defaults = sig.parameters.iter().any(|p| p.default.is_some());
+        let needs_cells = self.native_cells.data[native.index()];
+        let values = 3
+            + u64::from(self.limits.max_continuation_values)
+            + u64::from(self.limits.max_arguments)
+            + u64::from(self.limits.max_native_faults)
+            + u64::from(count) * 2
+            + u64::from(n) * (1 + u64::from(needs_cells));
+        self.slots
+            .admit_windows(&mut self.heap, 3 + usize::from(needs_cells), values)?;
+        let id = FrameId(self.serial()?);
+        let args = self.open(site.owner, RootKind::Arguments, count * 2)?;
+        let bound = match self.open(site.owner, RootKind::Arguments, n) {
+            Ok(r) => r,
+            Err(e) => {
+                self.slots.release(&mut self.heap, args)?;
+                return Err(e);
+            }
+        };
+        if let Some(value) = receiver
+            && let Err(error) = self.put(bound, 0, value)
+        {
+            self.slots.release(&mut self.heap, bound)?;
+            self.slots.release(&mut self.heap, args)?;
+            return Err(error);
+        }
+        let bindings = if needs_cells {
+            match self.open(site.owner, RootKind::Arguments, n) {
+                Ok(r) => Some(r),
+                Err(e) => {
+                    self.slots.release(&mut self.heap, bound)?;
+                    self.slots.release(&mut self.heap, args)?;
+                    return Err(e);
+                }
+            }
+        } else {
+            None
+        };
+        let roots = match self.open(
+            site.owner,
+            RootKind::NativeContinuation,
+            3 + self.limits.max_continuation_values
+                + self.limits.max_arguments
+                + self.limits.max_native_faults,
+        ) {
+            Ok(r) => r,
+            Err(e) => {
+                if let Some(r) = bindings {
+                    self.slots.release(&mut self.heap, r)?;
+                }
+                self.slots.release(&mut self.heap, bound)?;
+                self.slots.release(&mut self.heap, args)?;
+                return Err(e);
+            }
+        };
+        self.active.frames.data.push(Frame::Native(NativeFrame {
+            id,
+            await_activation: matches!(source, ArgSource::Await { .. }).then_some(id.0),
+            native,
+            signature,
+            args,
+            bound,
+            bindings,
+            module: site.module,
+            has_defaults,
+            roots,
+            argument_count: count,
+            receiver: receiver.is_some(),
+            continuation_len: 0,
+            continuation_active: false,
+            continuation_version: 0,
+            continuation_stage: 0,
+            effects: Effects(
+                site.effects.0
+                    & self.program.package().signatures[signature.index()]
+                        .effects
+                        .0,
+            ),
+            context: site.context,
+            owner: site.owner,
+            location: site.location,
+            ret: site.ret,
+            callback_fault: None,
+            derived_output: None,
+            fault_count: 0,
+            pending_fault: None,
+            phase: NativePhase::Copy { source, index: 0 },
+        }));
+        Ok(())
+    }
+    pub fn host_arguments(&self, ticket: HostTicket) -> Result<&[Value], VmError> {
+        let n = self.ticket(ticket)?;
+        Ok(self.slots.borrow_initialized(n.bound)?)
+    }
+    /// Borrow only supplied arguments; omission remains distinct from explicit null.
+    pub fn host_provided_arguments(
+        &self,
+        ticket: HostTicket,
+    ) -> Result<ProvidedArguments<'_>, VmError> {
+        let n = self.ticket(ticket)?;
+        Ok(ProvidedArguments {
+            values: self.slots.borrow_initialized(n.args)?,
+        })
+    }
+    /// Split the existing argument roots from mutable heap access for a native
+    /// operation. The callback cannot resume the VM or outlive the native frame.
+    pub fn with_host_provided_arguments<T>(
+        &mut self,
+        ticket: HostTicket,
+        body: impl FnOnce(&mut Heap, ProvidedArguments<'_>) -> T,
+    ) -> Result<T, VmError> {
+        let args = self.ticket(ticket)?.args;
+        let provided = ProvidedArguments {
+            values: self.slots.borrow_initialized(args)?,
+        };
+        Ok(body(&mut self.heap, provided))
+    }
+    pub fn host_continuation(&self, ticket: HostTicket) -> Result<&[Value], VmError> {
+        let n = self.ticket(ticket)?;
+        // Open already published physical NULLs with clear initialized bits.
+        // Only values actually written by the adapter belong to this view.
+        self.initialized_prefix(n.roots, 2, n.continuation_len)
+    }
+    /// Original value of the current callback or continued-wait resume input.
+    pub fn host_resume_value(&self, ticket: HostTicket) -> Result<Value, VmError> {
+        let n = self.ticket(ticket)?;
+        if !matches!(
+            ticket.input,
+            NativeInput::CallbackReturned
+                | NativeInput::CallbackFault
+                | NativeInput::WaitingReturned
+                | NativeInput::WaitingFault
+        ) {
+            return Err(VmError::InvalidTicket);
+        }
+        self.value(n.roots, 0)
+    }
+    /// Compatibility alias for the unified resume-input getter.
+    pub fn host_callback_value(&self, ticket: HostTicket) -> Result<Value, VmError> {
+        self.host_resume_value(ticket)
+    }
+    pub fn host_callback_fault(&self, ticket: HostTicket) -> Result<Option<FaultInfo>, VmError> {
+        let n = self.ticket(ticket)?;
+        n.callback_fault
+            .map(|id| self.heap.fault_info(id).map_err(VmError::from))
+            .transpose()
+    }
+    pub fn host_faults(&self, ticket: HostTicket) -> Result<&[Value], VmError> {
+        let n = self.ticket(ticket)?;
+        self.initialized_prefix(n.roots, self.native_fault_base(), n.fault_count)
+    }
+    pub fn host_callback_cause(&self, ticket: HostTicket) -> Result<Option<Value>, VmError> {
+        let Some(info) = self.host_callback_fault(ticket)? else {
+            return Ok(None);
+        };
+        Ok(self
+            .heap
+            .fault_causes(info.id)?
+            .next(&self.heap)?
+            .map(|c| c.value))
+    }
+    pub(super) fn make_ticket(
+        &self,
+        n: NativeFrame,
+        task: TaskId,
+        serial: u64,
+        input: NativeInput,
+    ) -> HostTicket {
+        HostTicket {
+            heap: self.heap.id(),
+            epoch: self.heap.epoch(),
+            serial,
+            frame: n.id,
+            task,
+            native: n.native,
+            signature: n.signature,
+            abi_version: self.program.package().natives[n.native.index()].abi_version,
+            owner: n.owner,
+            location: n.location,
+            input,
+            context: n.context,
+            effects: n.effects,
+            await_activation: n.await_activation,
+            continuation: if input == NativeInput::Entry {
+                None
+            } else {
+                Some(ContinuationState {
+                    version: n.continuation_version,
+                    stage: n.continuation_stage,
+                })
+            },
+        }
+    }
+    pub(super) fn ticket(&self, ticket: HostTicket) -> Result<NativeFrame, VmError> {
+        let task = self.task(ticket.task).map_err(|_| VmError::InvalidTicket)?;
+        self.ticket_frame(task, ticket)
+    }
+    pub(super) fn ticket_frame(
+        &self,
+        task: &TaskState,
+        ticket: HostTicket,
+    ) -> Result<NativeFrame, VmError> {
+        if ticket.heap != self.heap.id() || ticket.epoch != self.heap.epoch() || task.cancelling {
+            return Err(VmError::InvalidTicket);
+        }
+        match task.frames.data.last() {
+            Some(Frame::Native(n)) if matches!(n.phase,NativePhase::Issued {serial,input} if self.make_ticket(*n,ticket.task,serial,input)==ticket) => {
+                Ok(*n)
+            }
+            _ => Err(VmError::InvalidTicket),
+        }
+    }
+    /// Acceptance is bounded by max_arguments/max_continuation_values; no callback
+    /// is executed here. All borrowed input values are rooted before ticket consumption.
+    pub fn respond(
+        &mut self,
+        ticket: HostTicket,
+        response: HostResponse<'_>,
+    ) -> Result<(), VmError> {
+        self.select_task(ticket.task)
+            .map_err(|_| VmError::InvalidTicket)?;
+        let mut n = self.ticket(ticket)?;
+        match response {
+            HostResponse::Ready(v) => {
+                self.put(n.roots, 0, v)?;
+                n.pending_fault = None;
+                n.phase = NativePhase::Commit(false);
+            }
+            HostResponse::Error(new) => {
+                self.check_new_fault(new)?;
+                self.put(n.roots, 0, new.value)?;
+                self.put(
+                    n.roots,
+                    self.native_pending_slot(),
+                    new.cause.map_or(Value::NULL, FaultId::as_value),
+                )?;
+                n.pending_fault = Some(FaultSeed {
+                    kind: new.code.kind,
+                    location: n.location,
+                    fault: None,
+                    explicit: new.cause,
+                    author_value: true,
+                    awaited: None,
+                });
+                n.phase = NativePhase::Commit(true);
+            }
+            HostResponse::ForwardFault(id) => {
+                if !self.native_holds(n, id)? {
+                    return Err(VmError::InvalidFault);
+                };
+                let value = self.heap.fault_value(id)?;
+                self.put(n.roots, 0, value)?;
+                self.put(n.roots, self.native_pending_slot(), id.as_value())?;
+                n.pending_fault = Some(self.forwarded_fault(n, id, true)?);
+                n.phase = NativePhase::Commit(true);
+            }
+            HostResponse::Pending(wait) => {
+                if wait != ticket.wait_id() {
+                    return Err(VmError::InvalidWait);
+                }
+                // NoWait constrains actual waiting, not the native's signature mask.
+                if no_wait(n.context) || n.effects.0 & Effects::WAIT == 0 {
+                    self.native_fault(&mut n, FaultKind::Effect)?;
+                } else {
+                    n.phase = NativePhase::Waiting(wait);
+                }
+            }
+            HostResponse::Continue(c) => {
+                self.save_continuation(&mut n, c)?;
+                n.phase = NativePhase::Continue;
+            }
+            HostResponse::CallScript {
+                closure,
+                arguments,
+                continuation,
+            } => {
+                if arguments.len() > self.limits.max_arguments as usize {
+                    return Err(VmError::Limit);
+                }
+                self.closure_function(closure)?;
+                for &v in arguments {
+                    self.heap.root_insertion_barrier(v)?;
+                }
+                self.save_continuation(&mut n, continuation)?;
+                self.put(n.roots, 1, closure)?;
+                for (i, &v) in arguments.iter().enumerate() {
+                    self.put(
+                        n.roots,
+                        2 + self.limits.max_continuation_values + i as u32,
+                        v,
+                    )?;
+                }
+                n.phase = NativePhase::Callback {
+                    count: arguments.len() as u32,
+                };
+            }
+        }
+        *self.active.frames.data.last_mut().unwrap() = Frame::Native(n);
+        Ok(())
+    }
+    pub fn respond_language_error(
+        &mut self,
+        ticket: HostTicket,
+        kind: FaultKind,
+        details: Value,
+    ) -> Result<(), VmError> {
+        self.select_task(ticket.task)
+            .map_err(|_| VmError::InvalidTicket)?;
+        let mut n = self.ticket(ticket)?;
+        self.native_fault(&mut n, kind)?;
+        self.put(n.roots, 0, details)?;
+        *self.active.frames.data.last_mut().unwrap() = Frame::Native(n);
+        Ok(())
+    }
+    pub(super) fn save_continuation(
+        &mut self,
+        n: &mut NativeFrame,
+        c: Continuation<'_>,
+    ) -> Result<(), VmError> {
+        if c.values.len() > self.limits.max_continuation_values as usize {
+            return Err(VmError::Limit);
+        }
+        if let FaultRetention::Replace(ids) = c.faults {
+            if ids.len() > self.limits.max_native_faults as usize {
+                return Err(VmError::Limit);
+            };
+            for &id in ids {
+                self.heap.fault_info(id)?;
+                self.heap.root_insertion_barrier(id.as_value())?;
+            }
+        }
+        for &v in c.values {
+            self.heap.root_insertion_barrier(v)?;
+        }
+        for (i, &v) in c.values.iter().enumerate() {
+            self.put(n.roots, 2 + i as u32, v)?;
+        }
+        for i in c.values.len() as u32..n.continuation_len {
+            self.put(n.roots, 2 + i, Value::NULL)?;
+        }
+        self.retain_native_faults(n, c.faults)?;
+        n.continuation_active = true;
+        n.continuation_len = c.values.len() as u32;
+        n.continuation_version = c.version;
+        n.continuation_stage = c.stage;
+        Ok(())
+    }
+}

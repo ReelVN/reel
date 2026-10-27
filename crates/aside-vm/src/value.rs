@@ -8,7 +8,7 @@ pub struct HeapId(pub(crate) u32);
 static NEXT_HEAP: AtomicU32 = AtomicU32::new(1);
 
 fn fresh_id(next: &AtomicU32) -> Option<HeapId> {
-    next.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+    next.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
         .ok()
         .map(HeapId)
 }

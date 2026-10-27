@@ -115,7 +115,7 @@ impl ProvidedArguments<'_> {
         ))
     }
     pub fn iter(&self) -> impl ExactSizeIterator<Item = (u32, Value)> + '_ {
-        self.values.chunks_exact(2).map(|pair| {
+        self.values.as_chunks::<2>().0.iter().map(|pair| {
             (
                 pair[0].as_int().expect("bound native argument index") as u32,
                 pair[1],

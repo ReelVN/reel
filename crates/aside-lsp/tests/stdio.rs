@@ -75,7 +75,7 @@ fn real_stdio_colors_names_and_completes_unfinished_declarations() {
         let mut found = false;
         let data = tokens["data"].as_array().unwrap();
         assert_eq!(data.len() % 5, 0);
-        for token in data.chunks_exact(5) {
+        for token in data.as_chunks::<5>().0 {
             let delta_line = token[0].as_u64().unwrap();
             token_line += delta_line;
             column = if delta_line == 0 { column } else { 0 } + token[1].as_u64().unwrap();

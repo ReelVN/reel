@@ -353,7 +353,7 @@ fn dynamic_calls_have_contiguous_windows_and_preserve_live_values() {
     {
         bc::instruction_spec(i.opcode)
             .unwrap()
-            .visit_registers(f, &i, |reg, access| {
+            .visit_registers(f, i, |reg, access| {
                 assert!(
                     !(reg.0 == saved_left
                         && matches!(access, bc::Access::Write | bc::Access::ReadWrite)),

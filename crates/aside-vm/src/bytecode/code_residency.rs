@@ -158,11 +158,11 @@ impl CodeStore {
                 .ok_or_else(|| encoding("execution code compressed extent"))?;
             let size = ((words as usize - page * PAGE_WORDS).min(PAGE_WORDS)) * 4;
             inflate(source, &mut scratch[..size])?;
-            for (local, raw) in scratch[..size].chunks_exact(4).enumerate() {
+            for (local, raw) in scratch[..size].as_chunks::<4>().0.iter().enumerate() {
                 let pc = page * PAGE_WORDS + local;
                 if pc == next {
                     boundaries[pc / 32] |= 1 << (pc % 32);
-                    let head = u32::from_le_bytes(raw.try_into().expect("four bytes"));
+                    let head = u32::from_le_bytes(*raw);
                     next = pc
                         .checked_add(1 + ((head >> 8) & 3) as usize)
                         .ok_or_else(|| encoding("execution word extent"))?;
