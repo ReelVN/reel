@@ -229,9 +229,19 @@ fn transition_starts_at_acceptance_after_preparation_and_suspension() {
             story
                 .presented_frame(&bridge, &receipt, &frame, accepted + 10_000_000)
                 .unwrap();
-            story
-                .tick(SliceBudget::default(), || accepted + 20_000_000)
-                .unwrap();
+            // Drain the prior clock turn before sampling the acceptance offset.
+            // Each deadline-free host call grants only one bounded work slice.
+            let sample = accepted + 20_000_000;
+            let logical_sample = story.logical_time_at(sample) as f64 / 1_000_000_000.;
+            for _ in 0..1000 {
+                story.tick(SliceBudget::default(), || sample).unwrap();
+                if story.driver().adapter().logical_time() == logical_sample
+                    && story.driver().adapter().stage_ready()
+                {
+                    break;
+                }
+            }
+            assert_eq!(story.driver().adapter().logical_time(), logical_sample);
             let progress = story
                 .driver()
                 .adapter()

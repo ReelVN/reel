@@ -545,7 +545,10 @@ fn run() -> Result {
         env!("REEL_PROBE_REVISION"),
         env!("REEL_PROBE_DIRTY")
     ));
-    let _sampler = Sampler::start(trace)?;
+    // Package sessions use the player's sampler, including VM task locations.
+    let _sampler = (selected != "authored")
+        .then(|| Sampler::start(trace))
+        .transpose()?;
     if matches!(selected.as_str(), "clear_swap" | "fence") {
         marker(&selected, "START")?;
         let result = native_case(&selected, frames);

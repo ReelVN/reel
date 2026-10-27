@@ -57,6 +57,7 @@ impl StoryRuntime {
         self.retiring = self.driver.replace(next);
         self.starting = None;
         self.logical_ns = 0;
+        self.clock_turn_pending = false;
         self.time_offset_ns = 0;
         self.suspended_ns = now_ns;
         self.runnable = true;

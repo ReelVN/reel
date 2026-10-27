@@ -29,6 +29,7 @@ pub struct StoryRuntime {
     retried_collection: bool,
     closing: bool,
     logical_ns: u64,
+    clock_turn_pending: bool,
     time_offset_ns: u64,
     suspended_at: Option<u64>,
     suspended_ns: u64,
@@ -53,6 +54,7 @@ impl StoryRuntime {
             retried_collection: false,
             closing: false,
             logical_ns: 0,
+            clock_turn_pending: false,
             time_offset_ns: 0,
             suspended_at: None,
             suspended_ns: 0,
@@ -356,30 +358,8 @@ impl StoryRuntime {
         {
             self.runnable = true;
         }
-        if !self.closing && self.needs_tick() {
-            self.logical_ns = self.logical_time_at(now());
-            let speed = self.driver().adapter().game_settings().text_speed;
-            let reading_changed = self
-                .driver
-                .as_mut()
-                .unwrap()
-                .ui_mut()
-                .advance_dialogue(self.logical_ns, speed)?;
-            if reading_changed && self.driver().has_runnable_tasks() {
-                self.runnable = true;
-            }
-            let progress = self
-                .driver
-                .as_mut()
-                .unwrap()
-                .advance_time(self.logical_ns as f64 / 1_000_000_000., 64)?;
-            if progress.woke
-                || (progress.work != 0
-                    && self.driver().adapter().task().is_none()
-                    && !self.driver().adapter().has_live_work())
-            {
-                self.runnable = true;
-            }
+        if !self.closing && self.needs_tick() && !self.clock_turn_pending {
+            self.advance_clock(now())?;
         }
         loop {
             if budget.deadline_ns.is_some_and(|deadline| now() >= deadline) {
@@ -389,10 +369,44 @@ impl StoryRuntime {
             if self.driver().adapter().virtual_feedback_boundary() {
                 return Ok(());
             }
-            if self.starting.is_some() || budget.deadline_ns.is_none() || !self.needs_work() {
+            if !self.needs_work() {
+                self.clock_turn_pending = false;
+                return Ok(());
+            }
+            if self.starting.is_some() || budget.deadline_ns.is_none() {
                 return Ok(());
             }
         }
+    }
+
+    fn advance_clock(&mut self, now_ns: u64) -> Result<(), Error> {
+        // Keep one clock batch across host deadlines until its observers settle
+        // and a script instruction completes. Then sample current time again.
+        self.clock_turn_pending = true;
+        self.logical_ns = self.logical_time_at(now_ns);
+        let speed = self.driver().adapter().game_settings().text_speed;
+        let reading_changed = self
+            .driver
+            .as_mut()
+            .unwrap()
+            .ui_mut()
+            .advance_dialogue(self.logical_ns, speed)?;
+        if reading_changed && self.driver().has_runnable_tasks() {
+            self.runnable = true;
+        }
+        let progress = self
+            .driver
+            .as_mut()
+            .unwrap()
+            .advance_time(self.logical_ns as f64 / 1_000_000_000., 64)?;
+        if progress.woke
+            || (progress.work != 0
+                && self.driver().adapter().task().is_none()
+                && !self.driver().adapter().has_live_work())
+        {
+            self.runnable = true;
+        }
+        Ok(())
     }
 
     /// Alternate VM and incremental GC work. Resource pressure completes a full
@@ -443,7 +457,18 @@ impl StoryRuntime {
         if !self.runnable {
             return Ok(());
         }
+        let settled = self.driver().adapter().stage_ready();
         let progress = self.driver.as_mut().unwrap().tick(budget, 256, now)?;
+        if settled
+            && !matches!(&progress, StoryProgress::Vm(RunOutcome::BudgetYield(usage))
+                if usage.instructions == 0)
+            && !matches!(
+                &progress,
+                StoryProgress::Decoding { .. } | StoryProgress::NativeBudgetYield { .. }
+            )
+        {
+            self.clock_turn_pending = false;
+        }
         match progress {
             StoryProgress::StartRequested(entry) => {
                 self.starting = Some(entry);

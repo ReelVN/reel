@@ -467,6 +467,66 @@ fn finite_object_quota_can_reclaim_short_lived_values() {
 }
 
 #[test]
+fn constructing_animated_layers_makes_progress_with_short_slices() {
+    let source = r#"
+        fn main() {
+            stage.replace(stack(width: 960, height: 544));
+            let world = stack(width: 1200, height: 720);
+            for i in 0..24 {
+                let x = 40 + (i % 8) * 140;
+                let layer = image("layer.png", x: x, width: 190, height: 254, opacity: 0.65);
+                world.add(layer);
+                run(repeat(sequence(
+                    tween(layer, x: x + 80, rotation: 12, opacity: 0.9,
+                        duration: 1.5, easing: "sine_in_out"),
+                    tween(layer, x: x, rotation: -8, opacity: 0.65,
+                        duration: 1.5, easing: "sine_in_out")
+                )), owner: world);
+            }
+            let sparks = particles("spark.png", x: 600, y: 300, seed: 17, blend: "add");
+            world.add(sparks);
+            let view = camera(width: 960, height: 544, camera_x: 600, camera_y: 360, clip: true) {
+                world;
+            };
+            game.configure(title: "constructed");
+            stage.replace(view);
+            await run(delay(0.01));
+            game.configure(title: "finished");
+        }
+    "#;
+    let mut runtime = runtime(source);
+    for step in 0..20_000 {
+        // Sampling time and entering the VM consume the whole first slice.
+        // A resumed turn must reach the VM before sampling another clock batch.
+        let mut now = step * 1_000_000;
+        runtime
+            .tick(
+                SliceBudget {
+                    deadline_ns: Some(now + 4),
+                    ..Default::default()
+                },
+                || {
+                    now += 1;
+                    now
+                },
+            )
+            .unwrap();
+        if runtime.driver().adapter().game_settings().title == "finished" {
+            return;
+        }
+    }
+    let adapter = runtime.driver().adapter();
+    panic!(
+        "construction stalled: nodes={} location={:?} stats={:?}",
+        adapter.stage().nodes().count(),
+        adapter
+            .task()
+            .and_then(|task| adapter.vm().task_location(task).unwrap()),
+        adapter.vm().stats()
+    );
+}
+
+#[test]
 #[ignore = "reproducible runtime allocation and latency measurement"]
 fn runtime_cost() {
     let rows = std::env::var("REEL_COST_ROWS")
