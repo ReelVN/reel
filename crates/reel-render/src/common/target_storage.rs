@@ -1,5 +1,6 @@
 //! Physical storage shared by scratch extents with compatible lifetimes.
 use super::{GpuError, scopes::push_stack};
+mod capacities;
 
 #[derive(Clone, Copy)]
 pub(crate) struct Event {

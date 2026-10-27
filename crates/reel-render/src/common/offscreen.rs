@@ -140,6 +140,21 @@ impl Plan {
                         storage_tickets.push(reserve(bytes)?);
                         Ok(())
                     })?;
+                    // Capacity reuse is optional. A tight transient budget keeps
+                    // the already admitted exact plan and its quality intact.
+                    if let Ok(Some((storage, tickets))) = super::target_storage::Plan::capacities(
+                        &plan.requirements,
+                        size,
+                        max_dimension,
+                        byte_limit.saturating_sub(selection.persistent_bytes()),
+                        cost,
+                        &mut reserve,
+                    ) {
+                        bytes = storage.bytes() + selection.persistent_bytes();
+                        plan.requirements = Default::default();
+                        storage_tickets = tickets;
+                        plan.storage = storage;
+                    }
                 }
                 retained.extend(storage_tickets);
                 return Ok((plan, bytes, retained));

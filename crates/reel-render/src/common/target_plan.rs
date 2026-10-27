@@ -16,6 +16,9 @@ struct Requirement {
     count: u64,
 }
 impl Requirements {
+    pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = ([u32; 2], u64)> + '_ {
+        self.0.iter().map(|entry| (entry.size, entry.count))
+    }
     #[cfg(test)]
     pub(crate) fn capacity_bytes(&self) -> u64 {
         (self.0.capacity() * size_of::<Requirement>()) as u64

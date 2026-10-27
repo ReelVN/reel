@@ -44,7 +44,7 @@ fn alternating_sizes_stay_warm_then_simple_frames_retire_cold_storage() {
         assert!(!cache.prune_cold(unique));
         assert_eq!(data.usage().bytes, 48);
     }
-    for _ in 0..2 {
+    for _ in 0..32 {
         let used = cache.get([2, 2], 0).unwrap().clone();
         cache.submitted();
         cache.mark_used([2, 2], |owner| Arc::ptr_eq(owner, &used));
@@ -105,6 +105,8 @@ fn shared_pressure_reclaims_optional_storage_and_pins_exact_multiplicity() {
     assert!(data.reserve(32).is_err());
     let required = requirements(&[([2, 2], 2)]);
     assert!(!cache.reclaim(&required, false, unique));
+    assert!(cache.reclaim(&required, true, unique));
+    assert!(cache.get([2, 2], 2).is_some());
     assert!(cache.reclaim(&required, true, unique));
     assert!(cache.get([2, 2], 1).is_some());
     assert!(cache.get([2, 2], 2).is_none());

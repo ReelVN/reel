@@ -6,6 +6,7 @@ struct Slot<T> {
     size: [u32; 2],
     value: T,
     age: u8,
+    uses: u8,
 }
 
 pub(crate) struct Cache<T> {
@@ -99,13 +100,13 @@ impl<T> Cache<T> {
                 size,
                 value,
                 age: 0,
+                uses: 0,
             },
         );
         true
     }
 
-    /// Only accepted submissions advance recency. Alternating neighboring size
-    /// buckets remain warm; repeated simple frames let old complex plans retire.
+    /// Only accepted submissions advance recency and reuse frequency.
     pub(crate) fn submitted(&mut self) {
         for slot in &mut self.slots {
             slot.age = slot.age.saturating_add(1);
@@ -120,13 +121,16 @@ impl<T> Cache<T> {
             .find(|slot| same(&slot.value))
         {
             slot.age = 0;
+            slot.uses = slot.uses.saturating_add(1);
         }
     }
 
     pub(crate) fn prune_cold(&mut self, mut unique: impl FnMut(&T) -> bool) -> bool {
         let before = self.slots.len();
-        self.slots
-            .retain(|slot| slot.age < 2 || !unique(&slot.value));
+        self.slots.retain(|slot| {
+            let retention = 2 + slot.uses.saturating_sub(1).saturating_mul(2).min(30);
+            slot.age < retention || !unique(&slot.value)
+        });
         self.slots.len() != before
     }
 
@@ -139,27 +143,40 @@ impl<T> Cache<T> {
         }
     }
 
-    /// Remove only independently reclaimable cache owners outside the plan's
-    /// physical multiplicity. Required owners and external readers stay pinned.
+    /// Reclaim one independent owner outside the plan's physical multiplicity.
+    /// Oldest owners go first; equal-age candidates prefer larger storage. The
+    /// caller retries admission before discarding another reusable target.
     pub(crate) fn reclaim(
         &mut self,
         required: &Requirements,
         recent: bool,
         mut unique: impl FnMut(&T) -> bool,
     ) -> bool {
-        let before = self.slots.len();
         let mut previous = None;
         let mut index = 0;
-        self.slots.retain(|slot| {
+        let mut candidate = None;
+        for (position, slot) in self.slots.iter().enumerate() {
             if previous == Some(slot.size) {
                 index += 1;
             } else {
                 previous = Some(slot.size);
                 index = 0;
             }
-            required.count(slot.size) > index || !recent && slot.age < 2 || !unique(&slot.value)
-        });
-        self.slots.len() != before
+            if required.count(slot.size) > index || !recent && slot.age < 2 || !unique(&slot.value)
+            {
+                continue;
+            }
+            let priority = (slot.age, u64::from(slot.size[0]) * u64::from(slot.size[1]));
+            if candidate.is_none_or(|(_, old)| priority > old) {
+                candidate = Some((position, priority));
+            }
+        }
+        if let Some((position, _)) = candidate {
+            self.slots.remove(position);
+            true
+        } else {
+            false
+        }
     }
 }
 

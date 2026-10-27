@@ -45,19 +45,20 @@ impl Context<'_> {
                 // Only a refused reservation can be retried. An actual native
                 // failure keeps its original owner/ticket retirement path.
                 for recent in [false, true] {
-                    if !matches!(allocation, Err((GpuError::Pressure { .. }, None))) {
-                        break;
-                    }
-                    if self
-                        .target_cache
-                        .reclaim(self.offscreen.requirements(), recent)
-                    {
-                        allocation = Target::new(
-                            self.gpu,
-                            storage_size,
-                            &self.budgets.targets,
-                            self.limits.target_bytes,
-                        );
+                    while matches!(allocation, Err((GpuError::Pressure { .. }, None))) {
+                        if self
+                            .target_cache
+                            .reclaim(self.offscreen.requirements(), recent)
+                        {
+                            allocation = Target::new(
+                                self.gpu,
+                                storage_size,
+                                &self.budgets.targets,
+                                self.limits.target_bytes,
+                            );
+                        } else {
+                            break;
+                        }
                     }
                 }
                 let target = match allocation {
