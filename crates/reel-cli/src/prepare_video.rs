@@ -4,12 +4,12 @@
 //! threads. Frame buffers are estimated before conversion; codec subprocess RSS
 //! is allocated by the external tools and is not a Reel budget-pool measurement.
 //! Tool selection and identity are cached for the current CLI process.
+use crate::prepare_media::{Tools as MediaTools, command, run, run_to_file};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{File, OpenOptions},
     io::{self, BufRead, BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
     sync::OnceLock,
 };
 
@@ -185,51 +185,6 @@ fn invalid(message: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.to_string())
 }
 
-fn command(tool: &Path) -> Command {
-    let mut command = Command::new(tool);
-    command.stdin(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0800_0000);
-    }
-    command
-}
-
-// Use files for child output so malformed media cannot grow an in-memory log.
-fn run(command: &mut Command, operation: &str) -> io::Result<Vec<u8>> {
-    let stdout = run_to_file(command, operation)?;
-    if stdout.metadata()?.len() > 1 << 20 {
-        return Err(io::Error::other(format!(
-            "{operation}: metadata exceeds 1 MiB"
-        )));
-    }
-    let mut bytes = Vec::new();
-    stdout.take(1 << 20).read_to_end(&mut bytes)?;
-    Ok(bytes)
-}
-
-fn run_to_file(command: &mut Command, operation: &str) -> io::Result<File> {
-    let mut stdout = tempfile::tempfile()?;
-    let mut stderr = tempfile::tempfile()?;
-    let status = command
-        .stdout(stdout.try_clone()?)
-        .stderr(stderr.try_clone()?)
-        .status()
-        .map_err(|error| io::Error::new(error.kind(), format!("{operation}: {error}")))?;
-    if !status.success() {
-        stderr.seek(SeekFrom::Start(0))?;
-        let mut bytes = Vec::new();
-        stderr.take(8192).read_to_end(&mut bytes)?;
-        return Err(io::Error::other(format!(
-            "{operation} failed ({status}): {}",
-            String::from_utf8_lossy(&bytes)
-        )));
-    }
-    stdout.seek(SeekFrom::Start(0))?;
-    Ok(stdout)
-}
-
 struct Tools {
     ffmpeg: PathBuf,
     ffprobe: PathBuf,
@@ -243,28 +198,10 @@ impl Tools {
         if let Some(tools) = TOOLS.get() {
             return Ok(tools);
         }
-        let ffmpeg = executable("ffmpeg")?;
-        let ffprobe = executable("ffprobe")?;
-        let mut identity = String::new();
-        for path in [&ffmpeg, &ffprobe] {
-            let mut hasher = blake3::Hasher::new();
-            let mut file = File::open(path)?;
-            let mut buffer = [0; 65536];
-            loop {
-                let length = file.read(&mut buffer)?;
-                if length == 0 {
-                    break;
-                }
-                hasher.update(&buffer[..length]);
-            }
-            let version = run(command(path).arg("-version"), "video tool version")?;
-            identity.push_str(&format!(
-                "{}\n{}\n{}\n",
-                path.display(),
-                hasher.finalize(),
-                String::from_utf8_lossy(&version)
-            ));
-        }
+        let common = MediaTools::discover()?;
+        let ffmpeg = common.ffmpeg.clone();
+        let ffprobe = common.ffprobe.clone();
+        let mut identity = common.identity.clone();
         let encoders = run(
             command(&ffmpeg).args(["-hide_banner", "-encoders"]),
             "FFmpeg encoder discovery",
@@ -297,26 +234,6 @@ impl Tools {
             identity,
         }))
     }
-}
-
-fn executable(name: &str) -> io::Result<PathBuf> {
-    let filename = if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.to_owned()
-    };
-    if let Some(paths) = std::env::var_os("PATH") {
-        for directory in std::env::split_paths(&paths) {
-            let path = directory.join(&filename);
-            if path.is_file() {
-                return path.canonicalize();
-            }
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::NotFound,
-        format!("video preparation requires {filename} on PATH; install FFmpeg and FFprobe"),
-    ))
 }
 
 fn fitted_size(source: [u32; 2], bounds: [u32; 2], alpha: AlphaLayout) -> io::Result<[u32; 2]> {

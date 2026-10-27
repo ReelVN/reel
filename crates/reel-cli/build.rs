@@ -26,6 +26,8 @@ fn main() -> io::Result<()> {
         "crates/reel-core/src/prepared_image.rs",
     ]);
     let opus = [
+        "crates/reel-cli/src/prepare_audio.rs",
+        "crates/reel-cli/src/prepare_media.rs",
         "crates/reel-media/src/encode.rs",
         "crates/reel-media/src/decode.rs",
         "crates/reel-media/src/decode",
@@ -34,7 +36,10 @@ fn main() -> io::Result<()> {
         "crates/reel-audio/src/sound/streaming/decoder.rs",
         "crates/reel-audio/src/sound/streaming/decoder/symphonia.rs",
     ];
-    let video = ["crates/reel-cli/src/prepare_video.rs"];
+    let video = [
+        "crates/reel-cli/src/prepare_video.rs",
+        "crates/reel-cli/src/prepare_media.rs",
+    ];
     let font = ["crates/reel-cli/src/prepare_font.rs"];
     let effects = [
         "crates/reel-cli/src/prepare_effects.rs",

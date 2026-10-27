@@ -25,6 +25,7 @@ const SERIAL: u32 = 0x5265_656c;
 
 /// Convert a seekable encoded source to deterministic Ogg/Opus on the caller's worker.
 ///
+/// Sources include WAV, Vorbis, FLAC, MP3 and Opus audio.
 /// Source mono/stereo channels are preserved at 48 kHz in 20 ms packets. Other source rates
 /// use Rubato's band-limited sinc resampler. The header pre-skip and final granule
 /// remove resampler/encoder delay and packet padding, preserving the audible length.
@@ -50,8 +51,31 @@ pub fn opus(
         budget.clone(),
         Arc::new(AtomicBool::new(false)),
     )?;
+    opus_decoded(decoder, output, bitrate, budget, cancelled)
+}
+
+/// Encode a worker-owned PCM decoder through the same bounded Opus pipeline.
+///
+/// The decoder retains ownership of its reusable packet and external resources.
+/// EOF must include decoder/transport success; an error leaves an unpublished
+/// partial output. Mono/stereo channels and the source timeline are preserved.
+/// `budget` accounts for encoder/resampler storage alongside the decoder's pool.
+pub fn opus_decoded(
+    decoder: Box<dyn AudioDecoder>,
+    output: impl Write,
+    bitrate: u32,
+    budget: BudgetPool,
+    cancelled: &AtomicBool,
+) -> Result<AudioInfo, String> {
+    if !(6000..=512_000).contains(&bitrate) {
+        return Err("Opus bitrate must be 6000..=512000 bits per second".into());
+    }
+    checkpoint(cancelled)?;
     let rate = decoder.info().sample_rate;
     let channels = usize::from(decoder.info().channels);
+    if !(1..=2).contains(&channels) {
+        return Err("Opus conversion requires mono or stereo audio".into());
+    }
     if !(8000..=384_000).contains(&rate) {
         return Err("Opus conversion requires an 8000..=384000 Hz source".into());
     }

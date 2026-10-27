@@ -8,6 +8,8 @@ pub use input::{InputError, read_source};
 mod artifact;
 mod conversion_identity;
 pub mod output;
+mod prepare_audio;
+mod prepare_media;
 pub use artifact::{
     Artifact, BuildProfile, build, build_export, build_with_profile, package_limits_json,
 };
