@@ -14,7 +14,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut finished = false;
     let mut lines = Vec::new();
     for _ in 0..10_000 {
+        vm.maintain_media()?;
         vm.maintain_localization()?;
+        vm.maintain_asset_reads(64)?;
         let reel_engine::aside::SessionStep::Vm(outcome) = vm.step(
             &mut session,
             reel_engine::aside::SessionBudget::Exact(SliceBudget {

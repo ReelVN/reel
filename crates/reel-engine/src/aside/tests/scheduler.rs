@@ -157,3 +157,77 @@ fn unchanged_waiting_scheduler_cost() {
         );
     }
 }
+
+#[test]
+#[ignore = "isolated derived-curve VM clock polling measurement"]
+fn derived_clock_deadline_cost() {
+    let code = r#"use std::math::{sin, cos, curve};
+    fn sample(timer, response) {
+        let time=timer.elapsed;
+        response.sample(time)+response.sample(time+0.1)+response.sample(time+0.2)
+            +response.sample(time+0.3)+response.sample(time+0.4)+response.sample(time+0.5)
+            +response.sample(time+0.6)+response.sample(time+0.7)+sin(time)+cos(time)
+    }
+    fn opening() {
+        let timer=clock(interval:1.0/60);
+        let response=curve([{time:0,value:0},{time:20,value:100}]);
+        let root=stack();
+        for i in 0..48 {
+            root.add(text("sample",x:derive(||sample(timer,response)),y:derive(||sample(timer,response))));
+        }
+        stage.replace(root);
+        narrator("ready");
+    }"#;
+    let (mut session, mut vm) = prepared(code, false);
+    drive(&mut vm, &mut session, false);
+    let mut queries = 0_u64;
+    let mut instructions = 0_u64;
+    let mut max_batch_ns = 0_u64;
+    let started = std::time::Instant::now();
+    for tick in 1..=20 {
+        activities::advance_clock(&mut vm, &session, f64::from(tick) / 60., 64);
+        for _ in 0..100_000 {
+            let slices = vm.vm.stats().slices;
+            let mut previous = None;
+            let outcome = vm
+                .step(
+                    &mut session,
+                    SessionBudget::Exact(SliceBudget {
+                        deadline_ns: Some(u64::MAX),
+                        ..Default::default()
+                    }),
+                    || {
+                        let now = started.elapsed().as_nanos() as u64;
+                        if let Some(previous) = previous {
+                            max_batch_ns = max_batch_ns.max(now - previous);
+                        }
+                        previous = Some(now);
+                        queries += 1;
+                        now
+                    },
+                )
+                .unwrap();
+            if vm.vm.stats().slices != slices {
+                instructions += u64::from(vm.vm.stats().usage.instructions);
+            }
+            match outcome {
+                SessionStep::Vm(RunOutcome::HostCall(ticket)) => {
+                    vm.dispatch(&mut session, ticket, "en", NativeBudget::Exact(64))
+                        .unwrap();
+                }
+                SessionStep::Vm(RunOutcome::Fault(id)) => panic!("{:?}", vm.vm.delivery_fault(id)),
+                SessionStep::Idle | SessionStep::Vm(RunOutcome::Waiting(_))
+                    if !vm.has_runnable_tasks() && !vm.activities_pending() =>
+                {
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(vm.stage_ready());
+    }
+    println!(
+        "derived_deadline,ticks=20,outputs=96,instructions={instructions},clock_queries={queries},elapsed_ns={},max_clock_interval_ns={max_batch_ns}",
+        started.elapsed().as_nanos()
+    );
+}

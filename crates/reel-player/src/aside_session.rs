@@ -155,6 +155,7 @@ impl AsideSessionUi {
         }
         self.vm.maintain_media()?;
         self.vm.maintain_localization()?;
+        self.vm.maintain_asset_reads(64)?;
         if self.vm.localization_pending() {
             return Ok(false);
         }

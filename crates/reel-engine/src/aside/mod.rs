@@ -632,6 +632,9 @@ impl SessionVm {
 
     /// Preserve BudgetYield and ResourceBlocked verbatim; neither is terminal.
     /// Pending input is routed before the next slice, never to vm.task_id().
+    /// The host polls media, localization and asset reads through their explicit
+    /// maintenance methods at each host turn and after external wakeups. Native
+    /// and derived reentry within that turn only advances local execution work.
     pub fn step(
         &mut self,
         session: &mut Session,

@@ -10,6 +10,13 @@ mod transition_timing;
 
 type Error = Box<dyn std::error::Error>;
 
+#[cfg(feature = "profiling")]
+struct ClockProfile {
+    started: std::time::Instant,
+    identity: reel_engine::SessionIdentity,
+    stats: aside_vm::executor::VmStats,
+}
+
 /// Backend-independent VM, activity and GC scheduler. Hosts supply monotonic
 /// time and call `wake_input` after submitting input to the session driver.
 pub struct StoryRuntime {
@@ -30,6 +37,8 @@ pub struct StoryRuntime {
     closing: bool,
     logical_ns: u64,
     clock_turn_pending: bool,
+    #[cfg(feature = "profiling")]
+    clock_profile: Option<ClockProfile>,
     time_offset_ns: u64,
     suspended_at: Option<u64>,
     suspended_ns: u64,
@@ -55,6 +64,8 @@ impl StoryRuntime {
             closing: false,
             logical_ns: 0,
             clock_turn_pending: false,
+            #[cfg(feature = "profiling")]
+            clock_profile: None,
             time_offset_ns: 0,
             suspended_at: None,
             suspended_ns: 0,
@@ -371,6 +382,8 @@ impl StoryRuntime {
             }
             if !self.needs_work() {
                 self.clock_turn_pending = false;
+                #[cfg(feature = "profiling")]
+                self.finish_clock_profile();
                 return Ok(());
             }
             if self.starting.is_some() || budget.deadline_ns.is_none() {
@@ -383,6 +396,14 @@ impl StoryRuntime {
         // Keep one clock batch across host deadlines until its observers settle
         // and a script instruction completes. Then sample current time again.
         self.clock_turn_pending = true;
+        #[cfg(feature = "profiling")]
+        {
+            self.clock_profile = Some(ClockProfile {
+                started: std::time::Instant::now(),
+                identity: self.driver().ui().session().identity(),
+                stats: self.driver().adapter().vm().stats(),
+            });
+        }
         self.logical_ns = self.logical_time_at(now_ns);
         let speed = self.driver().adapter().game_settings().text_speed;
         let reading_changed = self
@@ -468,6 +489,8 @@ impl StoryRuntime {
             )
         {
             self.clock_turn_pending = false;
+            #[cfg(feature = "profiling")]
+            self.finish_clock_profile();
         }
         match progress {
             StoryProgress::StartRequested(entry) => {
@@ -537,6 +560,31 @@ impl StoryRuntime {
             self.collecting = true;
         }
         Ok(())
+    }
+
+    #[cfg(feature = "profiling")]
+    fn finish_clock_profile(&mut self) {
+        let Some(profile) = self.clock_profile.take() else {
+            return;
+        };
+        let elapsed = profile.started.elapsed();
+        if elapsed < std::time::Duration::from_millis(50)
+            || profile.identity != self.driver().ui().session().identity()
+        {
+            return;
+        }
+        let stats = self.driver().adapter().vm().stats();
+        eprintln!(
+            "[reel-runtime] clock logical_ns={} wall_ms={:.3} native_entries={} native_resumes={} vm_slices={} collections={} live_objects={} heap_bytes={}",
+            self.logical_ns,
+            elapsed.as_secs_f64() * 1000.,
+            stats.native_entries - profile.stats.native_entries,
+            stats.native_resumes - profile.stats.native_resumes,
+            stats.slices - profile.stats.slices,
+            stats.heap.collections - profile.stats.heap.collections,
+            stats.heap.live_objects,
+            stats.heap.charged_bytes
+        );
     }
 
     fn location_text(&self, location: aside_vm::executor::Location) -> String {
@@ -645,6 +693,72 @@ mod tests {
             )
             .unwrap();
         clock
+    }
+
+    #[test]
+    fn external_asset_wake_polls_the_next_host_turn_after_the_vm_sleeps() {
+        use reel_core::{
+            budget::{BudgetCategory, BudgetPool, OwnedBytes, QueueLimits},
+            identity::ContentVersion,
+        };
+        use reel_engine::assets::{AssetData, AssetLoader};
+        use std::{cell::Cell, rc::Rc, sync::Arc};
+        struct Loader {
+            ready: Rc<Cell<bool>>,
+            bytes: Arc<OwnedBytes>,
+        }
+        impl AssetLoader for Loader {
+            fn read(&mut self, _: &str, _: Option<ContentVersion>) -> Result<u64, String> {
+                Ok(1)
+            }
+            fn poll(&mut self, _: u64) -> Option<Result<AssetData, String>> {
+                self.ready.get().then(|| {
+                    Ok(AssetData {
+                        version: ContentVersion([1; 32]),
+                        bytes: self.bytes.clone(),
+                    })
+                })
+            }
+            fn cancel(&mut self, _: u64) {}
+        }
+        let ready = Rc::new(Cell::new(false));
+        let pool = BudgetPool::new(
+            BudgetCategory::CpuInput,
+            QueueLimits {
+                max_requests: 1,
+                max_bytes: 16,
+            },
+        );
+        let bytes = Arc::new(OwnedBytes::new(vec![1, 2, 3], pool.reserve(3).unwrap()).unwrap());
+        let mut story = runtime(
+            r#"use reel::prelude::*; fn main(){
+            if (await assets.read("sample")).len()!=3 {throw "asset completion";}
+        }"#,
+        );
+        story
+            .driver_mut()
+            .unwrap()
+            .adapter_mut()
+            .set_asset_loader(Box::new(Loader {
+                ready: ready.clone(),
+                bytes,
+            }))
+            .unwrap();
+        drain(&mut story);
+        assert!(
+            !story.needs_tick(),
+            "submitted IO waits for its real completion wake"
+        );
+        story
+            .tick(SliceBudget::default(), || {
+                panic!("sleeping VM read the clock")
+            })
+            .unwrap();
+        ready.set(true);
+        story.wake_input();
+        assert!(story.needs_tick());
+        drain(&mut story);
+        assert_eq!(story.driver().state(), StoryState::Finished);
     }
 
     #[test]

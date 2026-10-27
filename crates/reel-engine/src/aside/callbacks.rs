@@ -748,9 +748,6 @@ impl SessionVm {
             // Cancellation may retire another owner; the next entry observes it.
             self.checked_callback_lifetimes = Some(lifetimes);
         }
-        self.maintain_media()?;
-        self.maintain_localization()?;
-        self.maintain_asset_reads(64)?;
         self.activities.maintain(&mut self.vm)?;
         self.maintain_particles(64)?;
         if self.particles.needs_work(self.stage.retirement_revision) {

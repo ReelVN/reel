@@ -59,6 +59,7 @@ fn session() -> Session {
 }
 fn next(vm: &mut SessionVm, session: &mut Session) -> RunOutcome {
     for _ in 0..10_000 {
+        poll_services(vm);
         let outcome = vm
             .step(
                 session,
@@ -77,6 +78,12 @@ fn next(vm: &mut SessionVm, session: &mut Session) -> RunOutcome {
         }
     }
     panic!("bounded test steps exhausted")
+}
+
+fn poll_services(vm: &mut SessionVm) {
+    vm.maintain_media().unwrap();
+    vm.maintain_localization().unwrap();
+    vm.maintain_asset_reads(64).unwrap();
 }
 fn setup(source: &str, context: Context) -> (Session, SessionVm) {
     let mut s = session();
