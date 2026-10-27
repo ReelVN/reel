@@ -11,6 +11,7 @@ pub(crate) struct Event {
 pub(crate) struct Plan {
     mappings: Vec<Mapping>,
     bytes: u64,
+    requirements: super::target_plan::Requirements,
 }
 
 struct Mapping {
@@ -35,6 +36,9 @@ struct Group {
 }
 
 impl Plan {
+    pub(crate) fn requirements(&self) -> &super::target_plan::Requirements {
+        &self.requirements
+    }
     pub(crate) fn storage_size(&self, logical: [u32; 2]) -> [u32; 2] {
         self.mappings
             .binary_search_by_key(&logical, |mapping| mapping.logical)
@@ -195,6 +199,13 @@ impl Plan {
         }
         let mut plan = Self::default();
         let mut retained = Vec::new();
+        plan.requirements = super::target_plan::Requirements::collect(
+            groups.iter().map(|group| (group.size, group.peak)),
+            |bytes| {
+                retained.push(reserve(bytes)?);
+                Ok(())
+            },
+        )?;
         for group in &groups {
             plan.bytes = plan
                 .bytes
@@ -319,10 +330,13 @@ mod tests {
             .unwrap();
         assert_eq!(plan.storage_size(b), a);
         assert_eq!(plan.bytes(), 2 * area(a));
+        assert_eq!(plan.requirements().count(a), 2);
+        assert_eq!(plan.requirements().count(b), 0);
         assert_eq!(
             pool.usage().bytes,
-            (plan.mappings.capacity() * size_of::<Mapping>()) as u64,
-            "only the submitted storage map keeps planning reservations"
+            (plan.mappings.capacity() * size_of::<Mapping>()) as u64
+                + plan.requirements.capacity_bytes(),
+            "only storage mappings and physical requirements remain reserved"
         );
         drop(plan);
         drop(tickets);

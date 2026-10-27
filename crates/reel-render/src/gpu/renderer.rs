@@ -61,6 +61,40 @@ pub(super) struct Inflight {
     _admission: BudgetTicket,
     geometry: Vec<super::geometry::Storage>,
 }
+struct CacheRetry {
+    cause: GpuError,
+    released: bool,
+}
+fn pressured_usage(cause: &GpuError, usage: Usage) -> Option<u64> {
+    match pressure_pool(cause)? {
+        BudgetCategory::Offscreen => Some(usage.targets),
+        BudgetCategory::GpuResource => Some(usage.resources),
+        BudgetCategory::Temporary => Some(usage.transient),
+        _ => unreachable!("renderer pressure uses its three allocation domains"),
+    }
+}
+fn pressure_pool(cause: &GpuError) -> Option<BudgetCategory> {
+    let GpuError::Pressure { domain, .. } = cause else {
+        return None;
+    };
+    match *domain {
+        "targets" => Some(BudgetCategory::Offscreen),
+        "image upload" | "texture upload" | "glyph atlas" | "glyph upload" => {
+            Some(BudgetCategory::GpuResource)
+        }
+        "transient"
+        | "mesh scratch"
+        | "geometry"
+        | "retained plan"
+        | "retained cache"
+        | "retained dependencies"
+        | "retained submission"
+        | "image plan"
+        | "image upload metadata"
+        | "glyph preparation" => Some(BudgetCategory::Temporary),
+        _ => None,
+    }
+}
 pub struct Renderer {
     pub(super) gpu: Gpu,
     pub(super) capture_output: Option<super::SurfacePass>,
@@ -232,6 +266,7 @@ impl Renderer {
         self.images.retire(&[]);
         self.glyphs.retire(&[]);
         self.pipelines.prune_masks();
+        self.targets.prune_cold();
         Ok(resources_available)
     }
     pub(super) fn retire(&self, resources: &[reel_core::identity::ResourceVersion]) {
@@ -313,7 +348,7 @@ impl Renderer {
             self.images.clear_idle();
         }
         let policy = super::geometry::UploadPolicy::new(!capture);
-        let result = self.prepare_cached(frame, second, size, capture, &policy, false);
+        let result = self.prepare_cached(frame, second, size, capture, &policy, None);
         let fallback = policy.optional.get()
             && matches!(
                 result,
@@ -326,31 +361,41 @@ impl Renderer {
                 })
             );
         if fallback || matches!(result, Err(GpuError::Pressure { .. })) {
-            let resident = self.budgets.transient.usage().bytes;
-            self.geometry.clear();
-            let released_uploads = self.images.clear_idle();
-            if fallback
-                || self.budgets.transient.usage().bytes < resident
-                || released_uploads
-                || matches!(result, Err(GpuError::Pressure { .. }))
-                    && self.retained.inputs.quality().is_some()
-            {
-                #[cfg(test)]
-                self.gpu
-                    .upload_creations
-                    .geometry_retries
-                    .fetch_add(1, Ordering::Relaxed);
-                // The failed encoder is already dropped. Geometry uploads only
-                // belong to that encoder, so immutable replay cannot publish it.
-                return self.prepare_cached(
-                    frame,
-                    second,
-                    size,
-                    capture,
-                    &super::geometry::UploadPolicy::new(!capture && !fallback),
-                    matches!(result, Err(GpuError::Pressure { .. })),
-                );
+            let cause = result.err().unwrap();
+            let resident = pressured_usage(&cause, self.usage());
+            if fallback || pressure_pool(&cause) == Some(BudgetCategory::Temporary) {
+                self.geometry.clear();
+                self.targets.release_idle();
             }
+            match pressure_pool(&cause) {
+                Some(BudgetCategory::Offscreen) => self.targets.prune_cold(),
+                Some(BudgetCategory::GpuResource) => {
+                    self.images.clear_idle();
+                }
+                _ => {}
+            }
+            #[cfg(test)]
+            self.gpu
+                .upload_creations
+                .geometry_retries
+                .fetch_add(1, Ordering::Relaxed);
+            // Rebuild demand before replaying. If optional cache reclamation
+            // releases no capacity, preserve the original pressure result.
+            return self.prepare_cached(
+                frame,
+                second,
+                size,
+                capture,
+                &super::geometry::UploadPolicy::new(!capture && !fallback),
+                Some(CacheRetry {
+                    released: fallback
+                        || resident.is_some_and(|before| {
+                            pressured_usage(&cause, self.usage())
+                                .is_some_and(|after| after < before)
+                        }),
+                    cause,
+                }),
+            );
         }
         result
     }
@@ -361,7 +406,7 @@ impl Renderer {
         size: [u32; 2],
         capture: bool,
         geometry_policy: &super::geometry::UploadPolicy,
-        discard_unused: bool,
+        mut retry: Option<CacheRetry>,
     ) -> Result<Prepared, GpuError> {
         loop {
             self.gpu.check()?;
@@ -410,10 +455,23 @@ impl Renderer {
                     Ok(())
                 },
             )?;
-            if discard_unused && selection.has_cached() {
-                self.images.retain_demand(&plan.images);
-                self.geometry.glyphs.lock().unwrap().clear();
-                self.glyphs.prune_idle();
+            if let Some(retry) = retry.take()
+                && matches!(retry.cause, GpuError::Pressure { .. })
+            {
+                let resident = pressured_usage(&retry.cause, self.usage());
+                if pressure_pool(&retry.cause) == Some(BudgetCategory::GpuResource) {
+                    self.images.retain_demand(&plan.images);
+                    self.geometry.glyphs.lock().unwrap().clear();
+                    self.glyphs.prune_idle();
+                }
+                if !retry.released
+                    && !resident.is_some_and(|before| {
+                        pressured_usage(&retry.cause, self.usage())
+                            .is_some_and(|after| after < before)
+                    })
+                {
+                    return Err(retry.cause);
+                }
             }
             for mask in &plan.masks {
                 if mask.definition.program.sources().len() + 3
@@ -752,9 +810,14 @@ impl Renderer {
         let id = self.next;
         self.next = id.checked_add(1).ok_or(GpuError::IdentityExhausted)?;
         let done = Arc::new(AtomicBool::new(false));
+        self.targets.reserve_metadata(
+            prepared.size,
+            prepared.quality,
+            &prepared.targets,
+            &self.budgets.transient,
+            self.gpu.limits.transient_bytes,
+        );
         self.gpu.queue.submit([prepared.encoder.finish()]);
-        self.targets
-            .publish(prepared.size, prepared.quality, &prepared.targets);
         self.glyphs.publish(&prepared.glyphs);
         let signal = done.clone();
         self.gpu
@@ -775,6 +838,11 @@ impl Renderer {
             geometry: prepared.geometry,
         });
         self.gpu.check()?;
+        self.targets.publish(
+            prepared.size,
+            prepared.quality,
+            &self.inflight.last().unwrap()._targets,
+        );
         Ok(id)
     }
 }

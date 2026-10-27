@@ -144,6 +144,7 @@ impl Context<'_> {
                     .count(),
                 &self.budgets.targets,
                 cost,
+                self.offscreen.requirements(),
             )?;
             self.tickets.push(Reservation {
                 _shared: None,

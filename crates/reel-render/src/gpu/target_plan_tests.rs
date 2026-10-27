@@ -681,6 +681,14 @@ fn narrowing_releases_completed_traversal_reservations() {
     let (schedule, pixels, retained) = plan(&tight, 1).unwrap();
     assert!(schedule.is_empty());
     assert_eq!(pixels, 960 * 544 + 128 * 64);
-    assert!(retained.is_empty());
+    assert_eq!(schedule.requirements().count([960, 544]), 1);
+    assert_eq!(schedule.requirements().count([128, 64]), 1);
+    assert_eq!(
+        tight.usage().bytes,
+        schedule.requirements().capacity_bytes(),
+        "only the selected physical requirements retain planning capacity"
+    );
+    drop(schedule);
+    drop(retained);
     assert_eq!(tight.usage().bytes, 0);
 }

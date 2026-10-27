@@ -7,6 +7,58 @@ use reel_ui::frame::{
 };
 use reel_ui::kurbo::Affine;
 
+/// Physical scratch multiplicities from the selected lifetime traversal.
+#[derive(Default)]
+pub(crate) struct Requirements(Vec<Requirement>);
+#[derive(Clone, Copy)]
+struct Requirement {
+    size: [u32; 2],
+    count: u64,
+}
+impl Requirements {
+    #[cfg(test)]
+    pub(crate) fn capacity_bytes(&self) -> u64 {
+        (self.0.capacity() * size_of::<Requirement>()) as u64
+    }
+    pub(crate) fn count(&self, size: [u32; 2]) -> u64 {
+        self.0
+            .binary_search_by_key(&size, |bucket| bucket.size)
+            .map_or(0, |index| self.0[index].count)
+    }
+
+    pub(crate) fn collect(
+        buckets: impl ExactSizeIterator<Item = ([u32; 2], u64)>,
+        mut reserve: impl FnMut(u64) -> Result<(), GpuError>,
+    ) -> Result<Self, GpuError> {
+        let mut result = Vec::new();
+        if buckets.len() != 0 {
+            let bytes = buckets
+                .len()
+                .checked_mul(size_of::<Requirement>())
+                .ok_or(GpuError::InvalidSize)?;
+            reserve(bytes as u64)?;
+            result.reserve_exact(buckets.len());
+            result.extend(buckets.map(|(size, count)| Requirement { size, count }));
+            result.sort_unstable_by_key(|bucket| bucket.size);
+            let mut count = 0;
+            for index in 0..result.len() {
+                let bucket = result[index];
+                if count != 0 && result[count - 1].size == bucket.size {
+                    result[count - 1].count = result[count - 1]
+                        .count
+                        .checked_add(bucket.count)
+                        .ok_or(GpuError::InvalidSize)?;
+                } else {
+                    result[count] = bucket;
+                    count += 1;
+                }
+            }
+            result.truncate(count);
+        }
+        Ok(Self(result))
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum MaskExecution {
     #[cfg_attr(
@@ -264,7 +316,7 @@ pub(crate) fn target_pixels(
         cost: &|size| Ok(u64::from(size[0]) * u64::from(size[1]) * 4),
     }
     .measure(reserve)
-    .map(|(bytes, _)| bytes / 4)
+    .map(|measured| measured.bytes / 4)
 }
 
 /// One frame, its ordered schedule and its native target execution policy.
@@ -283,11 +335,31 @@ pub(crate) struct Input<'a> {
     pub cost: &'a dyn Fn([u32; 2]) -> Result<u64, GpuError>,
 }
 
+pub(crate) struct Measured {
+    pub bytes: u64,
+    pub reusable: bool,
+    scratch: Scratch,
+}
+impl Measured {
+    pub(crate) fn requirements(
+        &self,
+        reserve: impl FnMut(u64) -> Result<(), GpuError>,
+    ) -> Result<Requirements, GpuError> {
+        Requirements::collect(
+            self.scratch
+                .buckets
+                .iter()
+                .map(|bucket| (bucket.size, bucket.peak)),
+            reserve,
+        )
+    }
+}
+
 impl Input<'_> {
     pub(crate) fn measure(
         &self,
         reserve: impl FnMut(u64) -> Result<(), GpuError>,
-    ) -> Result<(u64, bool), GpuError> {
+    ) -> Result<Measured, GpuError> {
         let scratch = self.walk(false, reserve)?;
         let reusable = scratch
             .buckets
@@ -300,7 +372,11 @@ impl Input<'_> {
             .cost(self.cost)?
             .checked_add(self.selection.persistent_bytes())
             .ok_or(GpuError::InvalidSize)?;
-        Ok((bytes, reusable))
+        Ok(Measured {
+            bytes,
+            reusable,
+            scratch,
+        })
     }
 
     /// Derive a physical storage map from the executor's exact target lifetimes.

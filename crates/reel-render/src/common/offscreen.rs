@@ -25,9 +25,17 @@ pub(crate) struct Entry {
 pub(crate) struct Plan {
     entries: Vec<Entry>,
     storage: super::target_storage::Plan,
+    requirements: super::target_plan::Requirements,
 }
 
 impl Plan {
+    pub(crate) fn requirements(&self) -> &super::target_plan::Requirements {
+        if self.storage.bytes() != 0 {
+            self.storage.requirements()
+        } else {
+            &self.requirements
+        }
+    }
     pub(crate) fn storage_size(&self, logical: [u32; 2]) -> [u32; 2] {
         self.storage.storage_size(logical)
     }
@@ -112,19 +120,27 @@ impl Plan {
                 selection,
                 cost,
             };
-            let (mut bytes, reusable) = input.measure(|bytes| {
+            let mut measured = Some(input.measure(|bytes| {
                 traversal.push(reserve(bytes)?);
                 Ok(())
-            })?;
-            drop(traversal);
+            })?);
+            let mut bytes = measured.as_ref().unwrap().bytes;
             let mut storage_tickets = Vec::new();
-            if bytes > byte_limit && reusable {
+            if bytes > byte_limit && measured.as_ref().unwrap().reusable {
+                drop(measured.take());
+                traversal.clear();
                 let (storage, shared_bytes, tickets) = input.storage(&mut reserve)?;
                 bytes = shared_bytes;
                 plan.storage = storage;
                 storage_tickets = tickets;
             }
             if bytes <= byte_limit || plan.is_empty() {
+                if plan.storage.bytes() == 0 {
+                    plan.requirements = measured.as_ref().unwrap().requirements(|bytes| {
+                        storage_tickets.push(reserve(bytes)?);
+                        Ok(())
+                    })?;
+                }
                 retained.extend(storage_tickets);
                 return Ok((plan, bytes, retained));
             }
