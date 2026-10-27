@@ -12,16 +12,16 @@ use reel_player::{
 };
 use reel_render::{
     capture::{CaptureBackend, CapturedPixels},
-    gpu::{DeviceGeneration, Gpu, GpuCapture, GpuError, GpuLimits, Renderer},
+    gpu::{DeviceGeneration, Gpu, GpuCapture, GpuError, GpuLimits, Quality, Renderer},
 };
 use reel_ui::{
     bridge::{NoticeResult, PresentationBridge, PresentationNotice, PresentationOutcome},
-    core::{WidgetId, WindowEvent},
+    core::{DefaultProperties, Widget, WidgetId, WindowEvent},
     dpi::PhysicalSize,
     frame::{BuildLimits, FrameBuild, FrameInfo, RenderFrame, StepBudget},
     resources::{ResourceData, ResourceLease, ResourceSnapshot},
 };
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 #[derive(Clone, Debug, Default)]
 pub struct CaptureStats {
@@ -30,6 +30,92 @@ pub struct CaptureStats {
     pub center: [u8; 4],
     pub right: [u8; 4],
     pub centers: Vec<[u8; 4]>,
+}
+
+// Command structure and scalar domains only; resource leases and image payloads
+// never enter this diagnostic artifact.
+fn dump_topology(frame: &RenderFrame, error: &GpuError, title: &str) {
+    use reel_ui::frame::FrameOp;
+    use std::io::Write;
+    let Some(directory) = std::env::var_os("REEL_SCENARIO_FAILURE_DIR") else {
+        return;
+    };
+    let directory = PathBuf::from(directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("rejected-topology.txt");
+    let mut output = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
+    writeln!(
+        output,
+        "title={title:?} error={error:?} frame={:?}",
+        frame.info()
+    )
+    .unwrap();
+    let mut pending = vec![("current".to_string(), frame.drawing())];
+    let mut seen = std::collections::HashSet::new();
+    while let Some((name, drawing)) = pending.pop() {
+        if !seen.insert(std::ptr::from_ref(drawing)) {
+            continue;
+        }
+        let effect = |effect: &reel_ui::frame::FrameEffect| {
+            let output = drawing.resources().leases().iter().find_map(|lease| {
+                if lease.handle() == effect.shader
+                    && let ResourceData::EffectShader { descriptor, .. } = lease.data()
+                {
+                    Some(descriptor.output)
+                } else {
+                    None
+                }
+            });
+            (
+                output,
+                effect.definition,
+                effect.bounds,
+                effect.shader,
+                effect.coverage_invert,
+            )
+        };
+        writeln!(
+            output,
+            "drawing={name} commands={}",
+            drawing.commands().len()
+        )
+        .unwrap();
+        for (label, commands) in std::iter::once(("body".to_string(), drawing.commands())).chain(
+            drawing
+                .masks()
+                .iter()
+                .map(|(id, mask)| (format!("mask-{id}"), mask.commands.as_slice())),
+        ) {
+            writeln!(output, "stream={label}").unwrap();
+            for (index, command) in commands.iter().enumerate() {
+                write!(output, "{index} {:?} ", command.origin.at).unwrap();
+                match &command.op {
+                    FrameOp::PushGroup(group) => writeln!(output,
+                        "PushGroup ink={:?} transform={:?} effect={:?} mask_effect={:?} alpha={} blend={:?} invert={} clip={:?} mask={:?} image_mask={:?} filters={:?}",
+                        group.ink_bounds, group.effect_to_target, group.effect.as_ref().map(effect),
+                        group.mask_effect.as_ref().map(effect), group.composite.alpha, group.composite.blend,
+                        group.invert, group.clip, group.mask, group.image_mask.as_ref().map(|mask| mask.bounds), group.filters),
+                    FrameOp::PushClip(clip) => writeln!(output, "PushClip {clip:?}"),
+                    FrameOp::PopClip => writeln!(output, "PopClip"),
+                    FrameOp::PopGroup => writeln!(output, "PopGroup"),
+                    FrameOp::PushContext(_) => writeln!(output, "PushContext"),
+                    FrameOp::PopContext => writeln!(output, "PopContext"),
+                    FrameOp::Draw(_) => writeln!(output, "Draw"),
+                    FrameOp::External(_) => writeln!(output, "External"),
+                }.unwrap();
+            }
+        }
+        for (index, transition) in drawing.transitions().iter().enumerate() {
+            writeln!(output, "transition {index} commands={:?} progress={} parent_to_window={:?} previous_to_parent={:?}",
+                transition.commands, transition.progress, transition.parent_to_window, transition.previous.to_parent()).unwrap();
+            pending.push((
+                format!("{name}/previous-{index}"),
+                transition.previous.drawing(),
+            ));
+        }
+    }
+    output.flush().unwrap();
+    eprintln!("scenario rejected command topology: {}", path.display());
 }
 
 // Renderer already implements the offscreen readback. The window adapter's
@@ -96,6 +182,13 @@ pub struct ScenarioCapture {
     fonts: BTreeMap<String, ResourceLease>,
     font_requests: BTreeMap<String, LoadId>,
     active_fonts: Vec<String>,
+    physical_size: Option<[u32; 2]>,
+    canvas_id: Option<WidgetId>,
+    canvas_size: Option<[u32; 2]>,
+    accepted_frames: u64,
+    rejected_frames: u64,
+    last_rejection: Option<String>,
+    last_quality: Option<Quality>,
 }
 impl ScenarioCapture {
     pub fn new(kind: &str, capture: bool) -> Self {
@@ -109,14 +202,23 @@ impl ScenarioCapture {
                 });
                 directory
             });
+        let mut limits = GpuLimits::default();
+        if let Ok(value) = std::env::var("REEL_SCENARIO_TARGET_BYTES") {
+            limits.target_bytes = value
+                .parse::<u64>()
+                .ok()
+                .filter(|&value| value != 0)
+                .expect("REEL_SCENARIO_TARGET_BYTES must be a positive byte count");
+        }
         let gpu = pollster::block_on(Gpu::request(
             &wgpu::Instance::default(),
             None,
             DeviceGeneration(1),
-            GpuLimits::default(),
+            limits,
         ))
         .expect("GPU scenario presentation requires an available GPU adapter");
         eprintln!("scenario GPU: {:?}", gpu.adapter.get_info());
+        eprintln!("scenario GPU target budget: {} bytes", limits.target_bytes);
         Self::assemble(
             Some(Offscreen {
                 renderer: Renderer::new(gpu),
@@ -146,6 +248,85 @@ impl ScenarioCapture {
             fonts: BTreeMap::new(),
             font_requests: BTreeMap::new(),
             active_fonts: Vec::new(),
+            physical_size: std::env::var("REEL_SCENARIO_PHYSICAL_SIZE")
+                .ok()
+                .map(|value| {
+                    let (width, height) = value
+                        .split_once('x')
+                        .expect("REEL_SCENARIO_PHYSICAL_SIZE expects WIDTHxHEIGHT");
+                    [width, height].map(|axis| {
+                        axis.parse::<u32>()
+                            .ok()
+                            .filter(|&axis| axis != 0)
+                            .expect("scenario physical dimensions must be positive u32 values")
+                    })
+                }),
+            canvas_id: None,
+            canvas_size: None,
+            accepted_frames: 0,
+            rejected_frames: 0,
+            last_rejection: None,
+            last_quality: None,
+        }
+    }
+
+    pub fn bridge(&mut self, driver: &AsideSessionUi) -> (PresentationBridge, WidgetId) {
+        let Some([width, height]) = self.physical_size else {
+            return super::support::bridge(driver);
+        };
+        use reel_ui::{
+            app::{RenderRoot, RenderRootOptions, WindowSizePolicy},
+            bridge::BridgeLimits,
+            widgets::Canvas,
+        };
+        let widget = driver.widget().prepare();
+        let root_id = widget.id();
+        let canvas = Canvas::viewport(widget).prepare();
+        self.canvas_id = Some(canvas.id());
+        let root = RenderRoot::new(
+            canvas,
+            |_| {},
+            RenderRootOptions {
+                default_properties: Arc::new(DefaultProperties::new()),
+                use_system_fonts: false,
+                size_policy: WindowSizePolicy::User,
+                size: PhysicalSize::new(width, height),
+                scale_factor: 1.,
+                default_font: None,
+            },
+        );
+        let bridge = PresentationBridge::new(
+            root,
+            SurfaceEpoch(1),
+            BridgeLimits {
+                geometry: reel_ui::app::GeometryLimits { max_bytes: 1 << 20 },
+                max_candidates: 4,
+                max_bridge_bytes: 64 << 10,
+                max_snapshot_bytes: 8 << 20,
+            },
+        )
+        .unwrap();
+        (bridge, root_id)
+    }
+
+    pub fn finish(&mut self) {
+        if let Some(backend) = &mut self.backend {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while backend.renderer.has_pending() {
+                backend.renderer.poll().unwrap();
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "scenario GPU completion stalled"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            eprintln!(
+                "scenario presentation: accepted={} rejected={} last_rejection={:?} usage={:?}",
+                self.accepted_frames,
+                self.rejected_frames,
+                self.last_rejection,
+                backend.renderer.usage()
+            );
         }
     }
 
@@ -155,6 +336,24 @@ impl ScenarioCapture {
             .map_or_else(CaptureStats::default, |backend| backend.stats.clone())
     }
 
+    pub fn window_point(
+        &self,
+        bridge: &PresentationBridge,
+        root: WidgetId,
+        point: [f64; 2],
+    ) -> [f64; 2] {
+        let geometry = bridge
+            .accepted_key()
+            .and_then(|key| bridge.accepted_geometry(key))
+            .expect("scenario input requires accepted geometry");
+        let transform = geometry
+            .get(root)
+            .expect("accepted session widget")
+            .window_transform;
+        let point = transform * reel_ui::kurbo::Point::new(point[0], point[1]);
+        [point.x, point.y]
+    }
+
     pub fn new_session(&mut self) {
         self.captures = CaptureService::new(128 << 20, WakeSignal::new(|| {}));
         self.accepted = None;
@@ -162,6 +361,8 @@ impl ScenarioCapture {
         self.fonts.clear();
         self.font_requests.clear();
         self.active_fonts.clear();
+        self.canvas_id = None;
+        self.canvas_size = None;
     }
 
     pub fn drive(&mut self, driver: &mut AsideSessionUi) -> bool {
@@ -182,7 +383,23 @@ impl ScenarioCapture {
 
     fn configure(&mut self, driver: &AsideSessionUi, bridge: &mut PresentationBridge) -> bool {
         let settings = driver.adapter().game_settings();
-        let size = settings.canvas_size.unwrap_or([640, 420]);
+        let canvas_size = settings.canvas_size.unwrap_or([640, 420]);
+        if self.canvas_size != Some(canvas_size) {
+            if let Some(id) = self.canvas_id {
+                bridge.edit_widget(id, |mut widget| {
+                    reel_ui::widgets::Canvas::set_size(
+                        &mut widget.downcast::<reel_ui::widgets::Canvas>(),
+                        Some(canvas_size),
+                    );
+                });
+                eprintln!(
+                    "scenario canvas={canvas_size:?} physical={:?}",
+                    self.physical_size
+                );
+            }
+            self.canvas_size = Some(canvas_size);
+        }
+        let size = self.physical_size.unwrap_or(canvas_size);
         if self.size != Some(size) {
             bridge.handle_window_event(WindowEvent::Resize(PhysicalSize::new(size[0], size[1])));
             self.size = Some(size);
@@ -304,6 +521,17 @@ impl ScenarioCapture {
             let prepared = match backend.renderer.prepare(&candidate) {
                 Ok(prepared) => prepared,
                 Err(error) if error.is_retryable() => {
+                    self.rejected_frames += 1;
+                    let rejection = error.to_string();
+                    if self.last_rejection.as_ref() != Some(&rejection) {
+                        dump_topology(&candidate, &error, &driver.adapter().game_settings().title);
+                        eprintln!(
+                            "scenario GPU rejected frame={frame} title={:?} size={size:?}: {error}; usage={:?}",
+                            driver.adapter().game_settings().title,
+                            backend.renderer.usage()
+                        );
+                        self.last_rejection = Some(rejection);
+                    }
                     bridge.resolve(PresentationNotice::new(
                         key,
                         SurfaceEpoch(1),
@@ -311,8 +539,24 @@ impl ScenarioCapture {
                     ));
                     return;
                 }
-                Err(error) => panic!("scenario GPU frame: {error}"),
+                Err(error) => {
+                    dump_topology(&candidate, &error, &driver.adapter().game_settings().title);
+                    panic!(
+                        "scenario GPU frame={frame} title={:?} size={size:?}: {error}; usage={:?}",
+                        driver.adapter().game_settings().title,
+                        backend.renderer.usage()
+                    )
+                }
             };
+            let quality = prepared.quality();
+            if self.last_quality != Some(quality) {
+                eprintln!(
+                    "scenario GPU frame={frame} title={:?} quality={quality:?} usage={:?}",
+                    driver.adapter().game_settings().title,
+                    backend.renderer.usage()
+                );
+                self.last_quality = Some(quality);
+            }
             backend.renderer.submit(prepared).unwrap();
         }
         assert_eq!(
@@ -332,5 +576,6 @@ impl ScenarioCapture {
             )
             .unwrap();
         self.accepted = Some(candidate);
+        self.accepted_frames += 1;
     }
 }

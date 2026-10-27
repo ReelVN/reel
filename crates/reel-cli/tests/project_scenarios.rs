@@ -16,7 +16,7 @@ use reel_player::{
     aside_session::{AsideSessionUi, StoryState},
     assets::{AssetOptions, Assets},
     player::PlayerOptions,
-    saves::{DirectorySaves, RuntimeSaves, SaveService},
+    saves::{DirectorySaves, RuntimeSaves, SaveService, SaveStorage},
     story_runtime::StoryRuntime,
 };
 use std::{
@@ -45,7 +45,7 @@ fn execute_project(path: &Path, timeout: Duration) -> Vec<audio::AudioStats> {
 }
 
 // JSON file: [[capture_ordinal, [canvas_x, canvas_y]], ...]. Coordinates use the
-// logical canvas, which this offscreen host presents at one pixel per unit.
+// logical canvas; the optional physical viewport uses the production Canvas mapping.
 fn scenario_clicks() -> Vec<(u64, [f64; 2])> {
     let Some(path) = std::env::var_os("REEL_SCENARIO_CLICKS") else {
         return Vec::new();
@@ -114,44 +114,76 @@ fn execute_project_with_capture(
         reel_cli::project::load(path).unwrap_or_else(|error| panic!("{:?}", error.failure));
     let checked = loaded.check().unwrap();
     let entry = reel_cli::project::ENTRY;
-    let artifact =
-        reel_cli::build_export(&checked, entry, reel_cli::BuildProfile::Release).unwrap();
     let package_directory = tempfile::tempdir().unwrap();
-    let output = package_directory.path().join("distribution");
-    reel_cli::distribution::export(
-        &loaded,
-        &artifact,
-        &reel_cli::distribution::ExportOptions {
-            output: output.clone(),
-            overwrite: false,
-            resources: if loaded.assets().is_dir() {
-                vec![reel_cli::distribution::Mount {
-                    prefix: ".".into(),
-                    directory: loaded.assets(),
-                }]
-            } else {
-                Vec::new()
-            },
-            text: Vec::new(),
-            resource_target: std::env::consts::OS.into(),
-            pack_bytes: (64 << 20).try_into().unwrap(),
-            runtime: None,
-        },
-    )
-    .unwrap();
-    let mut source_options = PlayerOptions::default();
-    let (root, files) = reel_cli::playback::prepare_story_assets(
-        &loaded.project_root,
-        None,
-        &source_options.resource_target,
-        &checked.effects,
-    )
-    .unwrap();
-    source_options.assets.root = root;
-    source_options.resource_files = files;
-    let (packaged_story, packaged_options) =
-        reel_cli::playback::load(&output.join("game.asb"), None, std::env::consts::OS.into())
+    let (source_options, packaged_story, packaged_options) = if let Some(path) =
+        std::env::var_os("REEL_SCENARIO_PACKAGE")
+    {
+        let distribution = reel_player::distribution::load(Path::new(&path), None).unwrap();
+        let story = reel_player::distribution::story_from_package(distribution.package).unwrap();
+        let options = |effects: &reel_engine::aside::source::EffectProducts| {
+            let shaders = reel_cli::prepare_effects::prepare(
+                &loaded.project_root,
+                effects,
+                reel_cli::prepare_effects::Target::Desktop,
+            )
             .unwrap();
+            PlayerOptions {
+                assets: AssetOptions {
+                    root: distribution.root.clone(),
+                    ..Default::default()
+                },
+                asset_packages: Some(distribution.packages.clone()),
+                asset_overlay: distribution.loose.clone(),
+                resource_target: "vita".into(),
+                resource_files: Some(shaders.files),
+                catalogs: distribution.catalogs.clone().into(),
+                ..Default::default()
+            }
+        };
+        eprintln!("scenario release assets: {:?}", distribution.packages);
+        let source_options = options(&checked.effects);
+        let packaged_options = options(&story.effects);
+        (source_options, story, packaged_options)
+    } else {
+        let artifact =
+            reel_cli::build_export(&checked, entry, reel_cli::BuildProfile::Release).unwrap();
+        let output = package_directory.path().join("distribution");
+        reel_cli::distribution::export(
+            &loaded,
+            &artifact,
+            &reel_cli::distribution::ExportOptions {
+                output: output.clone(),
+                overwrite: false,
+                resources: if loaded.assets().is_dir() {
+                    vec![reel_cli::distribution::Mount {
+                        prefix: ".".into(),
+                        directory: loaded.assets(),
+                    }]
+                } else {
+                    Vec::new()
+                },
+                text: Vec::new(),
+                resource_target: std::env::consts::OS.into(),
+                pack_bytes: (64 << 20).try_into().unwrap(),
+                runtime: None,
+            },
+        )
+        .unwrap();
+        let mut source_options = PlayerOptions::default();
+        let (root, files) = reel_cli::playback::prepare_story_assets(
+            &loaded.project_root,
+            None,
+            &source_options.resource_target,
+            &checked.effects,
+        )
+        .unwrap();
+        source_options.assets.root = root;
+        source_options.resource_files = files;
+        let (story, options) =
+            reel_cli::playback::load(&output.join("game.asb"), None, std::env::consts::OS.into())
+                .unwrap();
+        (source_options, story, options)
+    };
     let mut audio_stats = Vec::new();
     let mut capture_stats = Vec::new();
     for (kind, story, mut options) in [
@@ -176,8 +208,9 @@ fn execute_project_with_capture(
         .with_asset_context(assets, options.catalogs)
         .with_media(media())
         .unwrap();
+        let directory = Arc::new(DirectorySaves::new(saves.path(), 256 << 20));
         let storage = SaveService::new(
-            Arc::new(DirectorySaves::new(saves.path(), 256 << 20)),
+            directory.clone(),
             QueueLimits {
                 max_requests: 16,
                 max_bytes: 256 << 20,
@@ -193,7 +226,7 @@ fn execute_project_with_capture(
             scenario_capture::ScenarioCapture::cpu()
         };
         runtime.set_frame_capture_enabled(gpu_capture);
-        let (mut bridge, mut root) = support::bridge(runtime.driver());
+        let (mut bridge, mut root) = captures.bridge(runtime.driver());
         let mut identity = runtime.driver().ui().session().identity();
         let mut replacements = 0;
         let mut clicks = clicks.iter().peekable();
@@ -284,10 +317,10 @@ fn execute_project_with_capture(
             if !runtime.capturing() {
                 let next = runtime.driver().ui().session().identity();
                 if next != identity {
-                    (bridge, root) = support::bridge(runtime.driver());
                     identity = next;
                     replacements += 1;
                     captures.new_session();
+                    (bridge, root) = captures.bridge(runtime.driver());
                 }
                 let driver = runtime.driver_mut().unwrap();
                 captures.drive(driver);
@@ -347,9 +380,10 @@ fn execute_project_with_capture(
                         x < f64::from(size[0]) && y < f64::from(size[1]),
                         "scenario click is outside the accepted canvas"
                     );
+                    let [window_x, window_y] = captures.window_point(&bridge, root, [x, y]);
                     pointer_events.extend(support::click_events(
-                        x,
-                        y,
+                        window_x,
+                        window_y,
                         reel_ui::core::PointerType::Mouse,
                     ));
                     clicks.next();
@@ -366,6 +400,14 @@ fn execute_project_with_capture(
             std::thread::sleep(Duration::from_millis(1));
         }
         assert!(!runtime.driver().cleanup_pending());
+        if let Some(key) = std::env::var_os("REEL_SCENARIO_COMPLETED_KEY") {
+            let key = key.to_str().expect("scenario completion key must be UTF-8");
+            assert!(
+                directory.read_data(key).unwrap().is_some(),
+                "{kind}: missing persistent completion {key:?}"
+            );
+            eprintln!("{kind}: persistent completion {key:?} published");
+        }
         assert!(
             clicks.next().is_none() && pointer_events.is_empty(),
             "scenario ended before its configured clicks"
@@ -390,6 +432,7 @@ fn execute_project_with_capture(
             path.display(),
             audio.stats()
         );
+        captures.finish();
     }
     (audio_stats, capture_stats)
 }
