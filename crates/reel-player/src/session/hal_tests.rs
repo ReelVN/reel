@@ -20,6 +20,7 @@ use reel_ui::{
     resources::{ColorEncoding, ResourceSnapshot},
 };
 mod preparation;
+mod redraw;
 
 struct Host {
     presents: usize,

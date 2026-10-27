@@ -656,12 +656,26 @@ where
 
     /// Respond to exposure, preserving an accepted frame when no model changed.
     pub fn redraw_requested(&mut self, host: &mut impl Host) -> Result<(), Error> {
-        self.tick(host)?;
+        self.prepare_redraw(host)?;
         if self.closing {
             return Ok(());
         }
-        self.presentation.exposed();
         self.render(host)
+    }
+
+    /// Preserve a queued settled projection or retained GPU candidate through
+    /// recording. Hosts that tick before requesting redraw must not advance the
+    /// VM again and invalidate that projection before it can be submitted.
+    pub(crate) fn prepare_redraw(&mut self, host: &mut impl Host) -> Result<(), Error> {
+        let settled_projection = self.presentation.demand.model == crate::demand::Model::Pending
+            && self.session.as_ref().is_none_or(PlayerSession::frame_ready);
+        if !self.presentation.is_preparing() && !settled_projection {
+            self.tick(host)?;
+        }
+        if !self.closing {
+            self.presentation.exposed();
+        }
+        Ok(())
     }
     /// Hidden native windows need not receive redraw events. The event loop
     /// still advances startup using VM deadlines and resource completion wakes.

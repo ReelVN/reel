@@ -1746,11 +1746,10 @@ impl State {
         }
     }
     pub(crate) fn redraw_requested(&mut self) -> Result<(), Error> {
-        self.tick_story()?;
+        self.player.prepare_redraw(&mut self.host)?;
         if self.player.closing {
             return Ok(());
         }
-        self.player.presentation.exposed();
         self.render()
     }
     pub(crate) fn prepare_initial_frame(&mut self) -> Result<(), Error> {
