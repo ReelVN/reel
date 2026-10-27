@@ -345,7 +345,9 @@ fn run_package_on(
     options.media.video.decoded_bytes = 24 << 20;
     options.media.video.queued_pictures = 2;
     options.media.video.queued_audio_frames = 4096;
-    options.media.video_decoder = Some(Arc::new(reel_media::video::VitaVideoDecoderFactory));
+    options.media.video_decoder = Some(Arc::new(
+        reel_media::video::VitaVideoDecoderFactory::default(),
+    ));
     let story = crate::distribution::story_from_package(loaded.package)?;
     drop(loading);
     run_story_on(story, options, native, backend)

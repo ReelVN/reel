@@ -24,6 +24,10 @@ pub use reel_core::image::{Yuv420Layout, YuvColor, YuvMatrix, YuvTransfer};
 /// Owned top-down 8-bit YUV 4:2:0; no decoder-owned pointers escape.
 #[derive(Debug)]
 pub struct VideoFrame {
+    /// Optional immutable owned storage. When present, it owns its budget and
+    /// supplies the planes; the vector slots are empty. Native handles remain
+    /// behind the portable YUV storage interface.
+    pub storage: Option<Arc<dyn reel_core::image::Yuv420Storage>>,
     pub pts: f64,
     pub duration: f64,
     pub width: u32,
@@ -101,8 +105,9 @@ pub trait VideoDecoder {
     fn seek(&mut self, seconds: f64) -> Result<(), String>;
 }
 
-/// Opens a decoder on the playback worker. The worker separately charges returned
-/// picture storage and PCM queues; adapters charge additional owned buffers to
+/// Opens a decoder on the playback worker. The worker charges returned vector
+/// picture storage and PCM queues; optional owned picture storage and adapter
+/// buffers carry their own reservations from
 /// the supplied pool. The shared stop flag covers initialization, decode and waits.
 pub trait VideoDecoderFactory: std::fmt::Debug + Send + Sync {
     /// Own the seekable resource stream until the decoder has fenced its native

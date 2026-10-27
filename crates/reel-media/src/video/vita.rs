@@ -11,7 +11,7 @@ use std::sync::{
 use std::task::Poll;
 use vita_native::{
     app::memory::{MemoryBudget, MemoryReservation},
-    video::{Player, Poll as NativePoll},
+    video::{Nv12Pool, Player, Poll as NativePoll, SharedNv12},
 };
 
 #[derive(Debug)]
@@ -27,8 +27,28 @@ impl MemoryBudget for NativeBudget {
 
 /// Opens the bounded Vita H.264/AAC hardware profile on one preparation worker.
 /// The decoder itself is thread-bound; only owned NV12 and PCM cross workers.
-#[derive(Debug, Default)]
-pub struct VitaVideoDecoderFactory;
+#[derive(Debug)]
+pub struct VitaVideoDecoderFactory {
+    /// Maximum rounded physical capacity for owned sampled NV12 blocks.
+    pub frame_pool_bytes: u64,
+}
+impl Default for VitaVideoDecoderFactory {
+    fn default() -> Self {
+        Self {
+            frame_pool_bytes: 8 << 20,
+        }
+    }
+}
+#[derive(Debug)]
+struct NativeFrame(SharedNv12);
+impl reel_core::image::Yuv420Storage for NativeFrame {
+    fn plane(&self, index: usize) -> &[u8] {
+        self.0.plane(index)
+    }
+    fn native_storage(&self) -> Option<&(dyn std::any::Any + Send + Sync)> {
+        Some(&self.0)
+    }
+}
 impl VideoDecoderFactory for VitaVideoDecoderFactory {
     fn open(
         &self,
@@ -52,14 +72,19 @@ impl VideoDecoderFactory for VitaVideoDecoderFactory {
         };
         let audio_done = info.audio_sample_rate.is_none();
         let end = native.duration;
+        let frames = Nv12Pool::new(
+            [info.width, info.height],
+            self.frame_pool_bytes,
+            Arc::new(NativeBudget(budget.clone())),
+        )?;
         Ok(Box::new(VitaDecoder {
+            frames,
             player,
             info,
             color,
             budget,
             stopped,
             pending: None,
-            pending_storage: None,
             audio_done,
             video_done: false,
             end,
@@ -78,11 +103,10 @@ struct VitaDecoder {
     color: YuvColor,
     budget: BudgetPool,
     stopped: Arc<AtomicBool>,
-    // One picture of lookahead determines source duration from actual adjacent
-    // timestamps. It carries its own reservation while returned frames transfer
-    // into the common worker's separately reserved publication queue.
+    // One picture of lookahead determines duration from adjacent timestamps.
+    // Every picture retains its pool reservation through all CPU/GPU readers.
     pending: Option<VideoFrame>,
-    pending_storage: Option<BudgetTicket>,
+    frames: Nv12Pool,
     audio_done: bool,
     video_done: bool,
     end: f64,
@@ -100,27 +124,23 @@ impl VitaDecoder {
         }
         let width = self.info.width;
         let height = self.info.height;
-        let pixels = width as usize * height as usize;
-        let storage = &mut self.pending_storage;
-        let budget = &self.budget;
+        let Some(mut output) = self.frames.acquire()? else {
+            return Ok(None);
+        };
         let color = self.color;
         match self.player.poll_video(|source| {
-            if storage.is_none() {
-                *storage = Some(
-                    budget
-                        .reserve((pixels * 3 / 2) as u64)
-                        .map_err(|e| e.message)?,
-                );
-            }
-            let (picture, [y, uv]) = source.copy_owned()?;
+            let picture = source.copy_to_native(&mut output)?;
+            let shared = output.seal();
+            let [y_stride, uv_stride] = shared.strides();
             Ok(VideoFrame {
+                storage: Some(Arc::new(NativeFrame(shared))),
                 pts: picture.pts,
                 duration: 0.,
                 width,
                 height,
                 layout: Yuv420Layout::Nv12,
-                row_strides: [width, width, 0],
-                planes: [y, uv, Vec::new()],
+                row_strides: [y_stride, uv_stride, 0],
+                planes: std::array::from_fn(|_| Vec::new()),
                 color,
             })
         })? {
@@ -133,7 +153,6 @@ impl VitaDecoder {
                 if self.pending.as_ref().unwrap().pts >= self.video_end {
                     self.video_done = true;
                     self.pending = None;
-                    self.pending_storage = None;
                 }
                 previous.duration = previous
                     .duration
@@ -145,7 +164,6 @@ impl VitaDecoder {
             NativePoll::Pending => Ok(None),
             NativePoll::End => {
                 self.video_done = true;
-                self.pending_storage = None;
                 let Some(mut last) = self.pending.take() else {
                     return Ok(None);
                 };
@@ -250,7 +268,6 @@ impl VideoDecoder for VitaDecoder {
     fn seek(&mut self, seconds: f64) -> Result<(), String> {
         self.player.seek(seconds)?;
         self.pending = None;
-        self.pending_storage = None;
         self.video_done = false;
         self.audio_done = self.info.audio_sample_rate.is_none();
         self.seek_position = seconds;

@@ -16,6 +16,7 @@ pub(super) struct Image {
     pub format: Option<TextureFormat>,
     pub encoding: ColorEncoding,
     pub coverage: bool,
+    native_import: bool,
     pub source: Option<ResourceSource>,
     _storage: super::ownership::NativeTicket,
 }
@@ -130,7 +131,7 @@ impl Images {
                 .as_ref()
                 .is_some_and(|source| source.retained(versions))
         }) {
-            if !image.coverage {
+            if !image.coverage && !image.native_import {
                 self.retired.put(image);
             }
         }
@@ -184,6 +185,7 @@ impl Images {
             format: None,
             encoding: ColorEncoding::Linear,
             coverage: false,
+            native_import: false,
             source: None,
             _storage: storage,
         });
@@ -199,6 +201,8 @@ impl Images {
     ) -> Result<Pending, GpuError> {
         let source = item.source;
         let at = item.at;
+        let native_import =
+            matches!(source.data(), ResourceData::Yuv420(image) if native_frame(image).is_some());
         let (bytes, _) = costs(item)?;
         let (layout, format, encoding, kind) = match source.data() {
             ResourceData::Image { image, encoding } => {
@@ -267,7 +271,11 @@ impl Images {
                     video[..3].copy_from_slice(&image.rgb_rows());
                     video[3][0] =
                         f32::from(image.color().transfer == reel_core::image::YuvTransfer::Srgb);
-                    if let Some((texture, chroma)) = recycled_textures {
+                    if let Some(shared) = native_frame(image) {
+                        let [y, uv] = gpu.import_nv12(shared)?;
+                        planes.push(uv);
+                        y
+                    } else if let Some((texture, chroma)) = recycled_textures {
                         planes = chroma;
                         texture
                     } else {
@@ -332,6 +340,7 @@ impl Images {
             format,
             encoding,
             coverage: false,
+            native_import,
             source: Some(ResourceSource {
                 version: source.version().clone(),
                 lease: source.downgrade(),
@@ -446,6 +455,9 @@ fn costs(item: &crate::common::image_plan::Required<'_>) -> Result<(u64, u64), G
             ))
         }
         ResourceData::Yuv420(image) => {
+            if native_frame(image).is_some() {
+                return Ok((0, 0));
+            }
             let mut bytes = 0_u64;
             for index in 0..image.plane_count() {
                 let plane = super::super::texture_bytes(
@@ -474,6 +486,8 @@ fn recyclable(
             .is_some_and(|source| source.lease.is_released())
         && image._storage.bytes() == bytes
         && !image.coverage
+        && !image.native_import
+        && !matches!(item.source.data(), ResourceData::Yuv420(source) if native_frame(source).is_some())
         && match item.source.data() {
             ResourceData::Image { image: source, .. } => {
                 image.kind == 0.
@@ -508,6 +522,9 @@ fn progress(
     quota: &mut u64,
     scratch: &mut crate::common::resources::UploadScratch,
 ) -> Result<bool, GpuError> {
+    if pending.image.native_import {
+        return Ok(true);
+    }
     loop {
         let (size, stride, pixels, convert, alpha) = match pending.source.data() {
             ResourceData::Image { image, .. } => (
@@ -624,4 +641,17 @@ pub(super) fn reserve(
         requested: bytes,
         available: limit.saturating_sub(pool.usage().bytes),
     })
+}
+
+fn native_frame(image: &reel_core::image::Yuv420Image) -> Option<&vita_native::video::SharedNv12> {
+    let shared = image
+        .native_storage()?
+        .downcast_ref::<vita_native::video::SharedNv12>()?;
+    (image.layout() == reel_core::image::Yuv420Layout::Nv12
+        && image.size() == shared.size()
+        && (0..2).all(|index| {
+            image.row_stride(index) == shared.strides()[index]
+                && std::ptr::eq(image.plane(index), shared.plane(index))
+        }))
+    .then_some(shared)
 }

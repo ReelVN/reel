@@ -35,6 +35,12 @@ pub enum Yuv420Layout {
 pub trait Yuv420Storage: std::fmt::Debug + Send + Sync {
     /// Borrow one complete plane without transferring its allocation.
     fn plane(&self, index: usize) -> &[u8];
+    /// Optional immutable native owner for an adapter that can import this exact
+    /// storage. Ordinary CPU consumers continue reading the same plane slices.
+    /// The concrete owner and all platform handles belong to the platform adapter.
+    fn native_storage(&self) -> Option<&(dyn std::any::Any + Send + Sync)> {
+        None
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -56,6 +62,12 @@ pub enum ImageError {
 }
 
 impl Yuv420Image {
+    /// Optional opaque owner used by a platform import path; plane bytes remain
+    /// immutable and readable for adapters that use ordinary uploads.
+    pub fn native_storage(&self) -> Option<&(dyn std::any::Any + Send + Sync)> {
+        self.storage.native_storage()
+    }
+
     /// Validate tightly packed Y, U and V planes without copying their storage.
     pub fn new(
         size: [u32; 2],

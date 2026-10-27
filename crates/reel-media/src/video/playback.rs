@@ -62,8 +62,17 @@ pub struct ResidentFrame {
     _ticket: BudgetTicket,
 }
 impl reel_core::image::Yuv420Storage for ResidentFrame {
+    fn native_storage(&self) -> Option<&(dyn std::any::Any + Send + Sync)> {
+        self.frame
+            .storage
+            .as_ref()
+            .and_then(|storage| storage.native_storage())
+    }
     fn plane(&self, index: usize) -> &[u8] {
-        &self.frame.planes[index]
+        self.frame
+            .storage
+            .as_ref()
+            .map_or(&self.frame.planes[index], |storage| storage.plane(index))
     }
 }
 pub type VideoFrameLease = Arc<ResidentFrame>;

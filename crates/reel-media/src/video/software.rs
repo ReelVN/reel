@@ -429,6 +429,7 @@ impl MovieDecoder {
                     data
                 };
                 return Ok(Poll::Ready(Some(DecodedPacket::Video(VideoFrame {
+                    storage: None,
                     pts: vt.max(self.cursor.start),
                     duration,
                     width: width as u32,

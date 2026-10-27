@@ -9,7 +9,7 @@ publish = false
 default = []
 profiling = ["reel-core/profiling"]
 wgpu = ["dep:wgpu", "dep:lyon_tessellation", "dep:swash", "dep:bytemuck", "dep:pollster", "dep:half", "dep:guillotiere"]
-gxm = ["dep:vita-native", "vita-native/graphics", "dep:lyon_tessellation", "dep:swash", "dep:bytemuck", "dep:half", "dep:guillotiere"]
+gxm = ["dep:vita-native", "vita-native/graphics", "vita-native/video", "dep:lyon_tessellation", "dep:swash", "dep:bytemuck", "dep:half", "dep:guillotiere"]
 
 [dependencies]
 reel-ui.workspace = true
