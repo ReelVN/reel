@@ -36,6 +36,7 @@ struct PaintState {
     quality: ImageQuality,
     coverage: bool,
     direct: Option<mesh::DirectPaint>,
+    opaque: Option<mesh::OpaquePaint>,
     scissor: Option<[u32; 4]>,
 }
 
@@ -806,10 +807,12 @@ impl Context<'_> {
         {
             self.flush_draws()?;
         }
+        let direct = (kind == 0. && !coverage)
+            .then(|| mesh.direct_paint(repeat, Some(&appearance), format))
+            .flatten();
         let state = PaintState {
-            direct: (kind == 0. && !coverage)
-                .then(|| mesh.direct_paint(repeat, Some(&appearance), format))
-                .flatten(),
+            direct,
+            opaque: mesh.opaque_paint(direct),
             texture: texture.clone(),
             planes: planes.iter().cloned().collect(),
             kind,
@@ -881,6 +884,7 @@ impl Context<'_> {
                 quality,
                 coverage,
                 direct,
+                opaque,
                 scissor,
             } = entry.state;
             let styled = appearance[5][3] != 0. || appearance[7][3] != 0.;
@@ -941,7 +945,11 @@ impl Context<'_> {
                         planes.get(1).or(planes.first()).unwrap_or(&texture),
                     ],
                     uniforms: &values,
-                    blend: native::Blend::Premultiplied,
+                    blend: if opaque.is_some() {
+                        native::Blend::Replace
+                    } else {
+                        native::Blend::Premultiplied
+                    },
                     scissor,
                 },
                 if quality == ImageQuality::Low {

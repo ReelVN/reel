@@ -27,6 +27,7 @@ struct PaintState {
     quality: ImageQuality,
     appearance: Option<super::gradient::Uniform>,
     direct: Option<mesh::DirectPaint>,
+    opaque: Option<mesh::OpaquePaint>,
     scissor: super::targets::Scissor,
 }
 
@@ -523,10 +524,12 @@ impl Context<'_> {
         {
             self.flush_draws()?;
         }
+        let direct = (!coverage && yuv.is_none())
+            .then(|| mesh.direct_paint(repeat, appearance.as_ref(), texture_format))
+            .flatten();
         let state = PaintState {
-            direct: (!coverage && yuv.is_none())
-                .then(|| mesh.direct_paint(repeat, appearance.as_ref(), texture_format))
-                .flatten(),
+            direct,
+            opaque: mesh.opaque_paint(direct),
             image: image.clone(),
             coverage,
             texture_format,
@@ -717,7 +720,14 @@ impl Context<'_> {
                 #[cfg(test)]
                 self.pipelines.direct_draws[index]
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                &self.pipelines.direct[index]
+                if let Some(opaque) = entry.state.opaque {
+                    #[cfg(test)]
+                    self.pipelines.opaque_draws[opaque as usize]
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    &self.pipelines.opaque[opaque as usize]
+                } else {
+                    &self.pipelines.direct[index]
+                }
             } else {
                 &self.pipelines.paint
             });

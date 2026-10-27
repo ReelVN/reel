@@ -158,6 +158,9 @@ pub struct Pipelines {
     pub direct: [wgpu::RenderPipeline; 6],
     #[cfg(test)]
     pub direct_draws: [std::sync::atomic::AtomicUsize; 6],
+    pub opaque: [wgpu::RenderPipeline; 2],
+    #[cfg(test)]
+    pub opaque_draws: [std::sync::atomic::AtomicUsize; 2],
     pub yuv: wgpu::RenderPipeline,
     pub yuv_layout: wgpu::BindGroupLayout,
     pub composite: wgpu::RenderPipeline,
@@ -280,6 +283,18 @@ impl Pipelines {
                     entry,
                     blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                 },
+                #[cfg(test)]
+                Some(counts),
+            )
+        });
+        let opaque = ["fragment_direct_bc1", "fragment_regional_bc1"].map(|entry| {
+            pipeline_entry(
+                device,
+                quality,
+                &paint_layout,
+                include_str!("paint.wgsl"),
+                true,
+                FragmentOutput { entry, blend: None },
                 #[cfg(test)]
                 Some(counts),
             )
@@ -418,6 +433,9 @@ impl Pipelines {
             direct,
             #[cfg(test)]
             direct_draws: Default::default(),
+            opaque,
+            #[cfg(test)]
+            opaque_draws: Default::default(),
             yuv,
             yuv_layout,
             composite,
