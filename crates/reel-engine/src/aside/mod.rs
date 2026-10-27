@@ -662,6 +662,7 @@ impl SessionVm {
         budget: SessionBudget,
         now: impl FnMut() -> u64,
     ) -> Result<SessionStep, AdapterError> {
+        self.ordinary_step_executed = false;
         if self.exit_requested || self.start_requested.is_some() {
             self.live(session)?;
             return Ok(SessionStep::Idle);

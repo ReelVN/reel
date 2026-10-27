@@ -709,7 +709,6 @@ impl SessionVm {
         budget: SessionBudget,
         mut now: impl FnMut() -> u64,
     ) -> Result<SessionStep, AdapterError> {
-        self.ordinary_step_executed = false;
         self.live(session)?;
         if self
             .skip_input
