@@ -151,6 +151,95 @@ fn runtime(source: &str) -> StoryRuntime {
 }
 
 #[test]
+fn initial_interaction_state_tracks_bindings_and_ancestor_disable_from_source_and_asb() {
+    for encoded in [false, true] {
+        for parent_enabled in [false, true] {
+            let source = r##"fn main() {
+                let state = model({enabled: false, parent_enabled: false, done: false});
+                let panel = stack(enabled: bind(state.parent_enabled));
+                let control = panel.add(button(width: 100, height: 40,
+                    enabled: bind(state.enabled),
+                    on_interaction: |event| {
+                        if event.disabled != (!state.enabled || !state.parent_enabled) {
+                            throw "interaction published before inherited state settled";
+                        }
+                    }));
+                let status = text(derive(|| if state.done {"complete"}
+                    else if control.disabled {"disabled"} else {"enabled"}));
+                stage.replace(stack { panel; status; });
+                state.enabled = true;
+                state.parent_enabled = PARENT_ENABLED;
+                await stage.presented();
+                if !control.enabled || control.disabled != !PARENT_ENABLED
+                    || panel.disabled != !PARENT_ENABLED {
+                    throw "initial interaction differs from the mounted state";
+                }
+                state.parent_enabled = true;
+                await stage.presented();
+                if control.disabled { throw "enabled ancestor did not update interaction"; }
+                state.parent_enabled = false;
+                await stage.presented();
+                if !control.disabled { throw "disabled ancestor did not update interaction"; }
+                state.parent_enabled = true;
+                state.enabled = false;
+                await stage.presented();
+                if !control.disabled { throw "disabled control did not update interaction"; }
+                state.enabled = true;
+                await stage.presented();
+                if control.disabled { throw "enabled control did not update interaction"; }
+                state.done = true;
+                await completion();
+            }"##
+            .replace(
+                "PARENT_ENABLED",
+                if parent_enabled { "true" } else { "false" },
+            );
+            let mut compiled = reel_engine::aside::source::compile_story(
+                &source,
+                "initial_interaction",
+                1,
+                "main",
+            )
+            .unwrap();
+            if encoded {
+                use aside_vm::bytecode as bc;
+                let bytes = bc::encode(compiled.program.package(), bc::Limits::default()).unwrap();
+                compiled.program = bc::verify(
+                    bc::decode(&bytes, bc::Limits::default()).unwrap(),
+                    bc::Limits::default(),
+                )
+                .unwrap();
+            }
+            let mut story = StoryRuntime::new(
+                AsideSessionUi::from_compiled(session(), compiled, "en", VmLimits::default())
+                    .unwrap(),
+            );
+            drain(&mut story);
+            let (mut bridge, root) = mount(story.driver().ui());
+            for frame in 1..=5 {
+                for _ in 0..16 {
+                    story.driver_mut().unwrap().sync(&mut bridge, root).unwrap();
+                    story.wake_input();
+                    drain(&mut story);
+                    if story.driver().adapter().stage_ready() {
+                        break;
+                    }
+                }
+                present(&mut story, &mut bridge, root, frame);
+                story.wake_input();
+                drain(&mut story);
+            }
+            assert!(
+                story.driver().adapter().stage().nodes().any(
+                    |node| matches!(&node.kind, NodeKind::Text(text) if text.as_ref() == "complete")
+                ),
+                "asb={encoded} parent_enabled={parent_enabled}"
+            );
+        }
+    }
+}
+
+#[test]
 fn interaction_appearance_preserves_pointer_press_and_tracks_ancestor_disable() {
     let publish = |story: &mut StoryRuntime, bridge: &mut PresentationBridge, root, frame| {
         for _ in 0..16 {
