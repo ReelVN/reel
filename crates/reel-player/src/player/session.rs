@@ -180,7 +180,7 @@ impl PlayerSession {
                 story.driver_mut()?.sync(bridge, root)?;
                 // Publishing the reveal clock can invalidate derived UI even
                 // while the narrative task is waiting for the next click.
-                story.wake_input();
+                story.wake_ready();
                 Ok(())
             }
         }

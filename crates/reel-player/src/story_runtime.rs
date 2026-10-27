@@ -2,6 +2,8 @@
 use crate::aside_session::{AsideSessionUi, StoryProgress, StoryState};
 use reel_engine::aside::{GcBudget, RunOutcome, SliceBudget};
 #[cfg(test)]
+mod clock_sampling;
+#[cfg(test)]
 mod save_cost;
 mod saves;
 mod start;
@@ -37,6 +39,7 @@ pub struct StoryRuntime {
     closing: bool,
     logical_ns: u64,
     clock_turn_pending: bool,
+    clock_sample_requested: bool,
     #[cfg(feature = "profiling")]
     clock_profile: Option<ClockProfile>,
     #[cfg(feature = "profiling")]
@@ -66,6 +69,7 @@ impl StoryRuntime {
             closing: false,
             logical_ns: 0,
             clock_turn_pending: false,
+            clock_sample_requested: true,
             #[cfg(feature = "profiling")]
             clock_profile: None,
             #[cfg(feature = "profiling")]
@@ -102,11 +106,15 @@ impl StoryRuntime {
             return Ok(());
         }
         let accepted_time = self.logical_time_at(accepted_host_ns) as f64 / 1_000_000_000.;
+        let wait_revision = self.driver().adapter().vm().wait_revision();
+        let was_runnable = self.runnable;
         self.driver
             .as_mut()
             .unwrap()
             .presented_frame(bridge, receipt, frame, accepted_time)?;
-        self.wake_input();
+        self.wake_ready();
+        self.clock_sample_requested |= (!was_runnable && self.runnable)
+            || wait_revision != self.driver().adapter().vm().wait_revision();
         Ok(())
     }
     fn logical_time_at(&self, host_ns: u64) -> u64 {
@@ -184,6 +192,7 @@ impl StoryRuntime {
     }
     pub fn resume(&mut self, now_ns: u64) {
         self.driver.as_mut().unwrap().resume_media();
+        self.clock_sample_requested = true;
         if let Some(start) = self.suspended_at.take() {
             self.suspended_ns = self
                 .suspended_ns
@@ -276,14 +285,22 @@ impl StoryRuntime {
     }
 
     /// Resume ready callbacks and completed waits after host input or a resource
-    /// wake. A stage containing only event handlers remains asleep until a
-    /// callback or completed wait becomes runnable.
+    /// wake, requesting a fresh time sample before their next script segment.
+    /// A stage with event handlers sleeps until a callback or wait is ready.
     pub fn wake_input(&mut self) {
+        if self.wake_ready() {
+            self.clock_sample_requested = true;
+        }
+    }
+
+    pub(crate) fn wake_ready(&mut self) -> bool {
         if self.driver().state() == StoryState::Running
             && (self.driver().has_runnable_tasks() || self.driver().adapter().asset_reads_pending())
         {
             self.runnable = true;
+            return true;
         }
+        false
     }
 
     pub fn close(&mut self) -> Result<(), Error> {
@@ -322,6 +339,7 @@ impl StoryRuntime {
             && let Some(start) = self.capture_started.take()
         {
             self.suspended_ns += now_ns.saturating_sub(start);
+            self.clock_sample_requested = true;
         }
         if !self.frame_capture_enabled && self.capture.is_none() {
             let adapter = self.driver.as_mut().unwrap().adapter_mut();
@@ -331,6 +349,7 @@ impl StoryRuntime {
                     Err("frame capture is not installed by this host".into()),
                 )?;
                 self.runnable = true;
+                self.clock_sample_requested = true;
             }
         }
         if !self.window_control_enabled && self.capture.is_none() {
@@ -341,6 +360,7 @@ impl StoryRuntime {
                     Err("window control is not installed by this host".into()),
                 )?;
                 self.runnable = true;
+                self.clock_sample_requested = true;
             }
         }
         if self.maintain_saves(now_ns, budget)? {
@@ -360,6 +380,7 @@ impl StoryRuntime {
                 .adapter_mut()
                 .maintain_capture_results(64)?;
             self.runnable = true;
+            self.clock_sample_requested = true;
         }
         if self.driver.as_mut().unwrap().maintain_media()?
             | self.driver.as_mut().unwrap().maintain_localization()?
@@ -374,9 +395,22 @@ impl StoryRuntime {
                 && self.driver().state() == StoryState::Running)
         {
             self.runnable = true;
+            self.clock_sample_requested = true;
         }
         if !self.closing && self.needs_tick() && !self.clock_turn_pending {
-            self.advance_clock(now())?;
+            let sample = now();
+            let timed = self.needs_work()
+                && (self.driver().activities_need_time()
+                    || self.driver().ui().dialogue_needs_time());
+            let due = self
+                .logical_ns
+                .saturating_add(u64::try_from(self.time_interval().as_nanos()).unwrap_or(u64::MAX));
+            // VM/GC continuations preserve the current producer sample until
+            // its existing deadline. External wakes and idle starts sample
+            // immediately, including when no producer previously had a deadline.
+            if self.clock_sample_requested || !timed || self.logical_time_at(sample) >= due {
+                self.advance_clock(sample)?;
+            }
         }
         loop {
             if budget.deadline_ns.is_some_and(|deadline| now() >= deadline) {
@@ -408,6 +442,7 @@ impl StoryRuntime {
         // Keep one clock batch across host deadlines until its observers settle
         // and a script instruction completes. Then sample current time again.
         self.clock_turn_pending = true;
+        self.clock_sample_requested = false;
         #[cfg(feature = "profiling")]
         {
             self.clock_profile = Some(ClockProfile {
@@ -604,13 +639,15 @@ impl StoryRuntime {
                 })
                 .map(|location| self.location_text(location));
             eprintln!(
-                "[reel-runtime] progress logical_ns={} ready={} derived_pending={} runnable={} native_entries={} native_resumes={} vm_slices={} collections={} gc_units={} chunk_allocations={} live_objects={} pending_objects={} heap_bytes={} location={location:?}",
+                "[reel-runtime] progress logical_ns={} ready={} derived_pending={} runnable={} native_entries={} native_resumes={} binding_hits={} binding_misses={} vm_slices={} collections={} gc_units={} chunk_allocations={} live_objects={} pending_objects={} heap_bytes={} location={location:?}",
                 self.logical_ns,
                 self.driver().adapter().stage_ready(),
                 self.driver().adapter().vm().heap().derived_pending(),
                 self.runnable,
                 stats.native_entries - before.stats.native_entries,
                 stats.native_resumes - before.stats.native_resumes,
+                stats.native_binding_hits - before.stats.native_binding_hits,
+                stats.native_binding_misses - before.stats.native_binding_misses,
                 stats.slices - before.stats.slices,
                 stats.heap.collections - before.stats.heap.collections,
                 stats.heap.gc_units - before.stats.heap.gc_units,
