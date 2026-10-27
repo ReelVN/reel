@@ -7,15 +7,14 @@ where
     B: RenderBackend + CaptureBackend<Error = <B as RenderBackend>::Error>,
 {
     pub(crate) fn publish_input_hints(&mut self) -> Result<(), Error> {
-        if let Some(PlayerSession::Aside { story, .. }) = &mut self.session {
-            if !story.capturing()
-                && story
-                    .driver_mut()?
-                    .adapter_mut()
-                    .set_input_hints(self.input_hints.hints())?
-            {
-                story.wake_input();
-            }
+        if let Some(PlayerSession::Aside { story, .. }) = &mut self.session
+            && !story.capturing()
+            && story
+                .driver_mut()?
+                .adapter_mut()
+                .set_input_hints(self.input_hints.hints())?
+        {
+            story.wake_input();
         }
         Ok(())
     }
@@ -81,22 +80,44 @@ where
         if story.capturing() {
             return Ok(());
         }
-        let Some(request) = story.driver_mut()?.adapter_mut().take_window_request()? else {
+        let presentation_available = story
+            .driver()
+            .ui()
+            .accepted_stage(&self.presentation.bridge, self.root_id)
+            .is_some();
+        let Some(request) = story
+            .driver_mut()?
+            .adapter_mut()
+            .take_window_request(presentation_available)?
+        else {
             return Ok(());
         };
         let configuration = match request.command {
             WindowCommand::Configure(configuration) => configuration,
-            WindowCommand::Focus { target, visibility } => {
-                let focused = story
-                    .driver()
-                    .adapter()
-                    .focus_target_permits_input(target)?
-                    && story.driver().ui().request_focus(
-                        &mut self.presentation.bridge,
-                        self.root_id,
-                        target,
-                        visibility,
-                    );
+            WindowCommand::Focus { .. } | WindowCommand::ClearFocus { .. } => {
+                let focused = match request.command {
+                    WindowCommand::Focus { target, visibility } => {
+                        story
+                            .driver()
+                            .adapter()
+                            .focus_target_permits_input(target)?
+                            && story.driver().ui().request_focus(
+                                &mut self.presentation.bridge,
+                                self.root_id,
+                                target,
+                                visibility,
+                            )
+                    }
+                    WindowCommand::ClearFocus { owner: Some(owner) } => {
+                        story.driver().adapter().focus_target_permits_input(owner)?
+                            && story.driver().ui().clear_focus(
+                                &mut self.presentation.bridge,
+                                self.root_id,
+                                owner,
+                            )
+                    }
+                    _ => false,
+                };
                 if story
                     .driver_mut()?
                     .adapter_mut()

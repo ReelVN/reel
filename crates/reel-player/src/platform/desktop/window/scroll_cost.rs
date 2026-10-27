@@ -36,10 +36,7 @@ fn external_gallery_native_frame_cost() {
 }
 
 fn exercise(event_loop: &ActiveEventLoop) {
-    use reel_engine::{
-        Epoch, Session, SessionId,
-        aside::VmLimits,
-    };
+    use reel_engine::{Epoch, Session, SessionId, aside::VmLimits};
     let bytes = std::fs::read(std::env::var_os("REEL_SCROLL_ASB").unwrap()).unwrap();
     let compiled = crate::distribution::decode_story(&bytes).unwrap();
     let assets = crate::assets::AssetOptions {

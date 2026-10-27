@@ -300,11 +300,10 @@ impl StageBinding {
     pub(in crate::aside) fn cancel_text_composition(&mut self, node: reel_ui::stage::NodeId) {
         if let Some(binding) = self.handles.get_mut(&node)
             && let Some(queue) = binding.text_history.as_mut().and_then(|h| h.queue.as_mut())
+            && queue.cancel_composition()
         {
-            if queue.cancel_composition() {
-                binding.projection_dirty = true;
-                self.last_sync = None;
-            }
+            binding.projection_dirty = true;
+            self.last_sync = None;
         }
     }
 

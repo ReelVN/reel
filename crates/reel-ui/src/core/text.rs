@@ -934,7 +934,10 @@ mod reveal_tests {
             let outlined_runs = runs(&outlined);
             assert!(glyphs(&revealed).len() <= glyphs(&bold_scene).len());
             assert_eq!(outlined_runs.len(), reveal_runs.len() * 2);
-            for (plain, pair) in reveal_runs.iter().zip(outlined_runs.chunks_exact(2)) {
+            for (plain, pair) in reveal_runs
+                .iter()
+                .zip(outlined_runs.as_chunks::<2>().0.iter())
+            {
                 for drawn in pair {
                     assert_eq!(drawn.font_embolden, plain.font_embolden);
                     assert!(drawn.font_embolden.x > 0.);

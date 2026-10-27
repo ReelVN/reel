@@ -679,7 +679,7 @@ impl ProjectionCache {
         let bytes = size_of::<EffectInstance>()
             + 2 * size_of::<usize>()
             + storage
-            + mask.sources().len() * size_of::<Arc<str>>()
+            + std::mem::size_of_val(mask.sources())
             + mask
                 .sources()
                 .iter()

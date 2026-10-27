@@ -338,7 +338,8 @@ fn batch_image_reads_fill_existing_queue_and_superseded_results_retire() {
 fn encoded_image_batch_waits_for_input_capacity_without_failing() {
     const PNG: &[u8] = include_bytes!("../../../../examples/assets/panels.png");
     let mut images = Images::new(Assets::directory(AssetOptions {
-        input_bytes: PNG.len() as u64,
+        // Reserve the streaming quarter while admitting exactly one ordinary image.
+        input_bytes: (PNG.len() as u64 * 4).div_ceil(3),
         ..Default::default()
     }));
     let (send, wake) = mpsc::channel();

@@ -697,7 +697,7 @@ pub(crate) fn run(root: &mut RenderRoot, event: NavigationEvent) -> Handled {
     if event.action == NavigationAction::Confirm && event.phase == ActionPhase::Pressed {
         // Enter a menu without requiring a pointer. A dialogue with no focusable
         // controls uses its existing explicit fallback.
-        if root.global_state.focused_widget.is_none() {
+        if root.global_state.focused_widget.is_none() && !root.global_state.focus_cleared {
             let scope = root.input_scope(view).unwrap_or(root.root_id());
             root.global_state.next_focused_widget = find_first_focusable(root, &[], scope, true)
                 .map(|id| super::selection::entry(root, id));

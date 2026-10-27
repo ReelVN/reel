@@ -742,6 +742,9 @@ pub(crate) fn run_update_focus_pass(root: &mut RenderRoot) {
     }
 
     let prev_focused = root.global_state.focused_widget;
+    if root.global_state.next_focused_widget.is_some() {
+        root.global_state.focus_cleared = false;
+    }
     if prev_focused != root.global_state.next_focused_widget {
         super::navigation::cancel(root);
     }

@@ -376,10 +376,10 @@ impl Compiler<'_> {
             } if kind == H::Binary => {
                 let left = self.expression(frame, left)?;
                 if operator.kind == K::AndAnd || operator.kind == K::OrOr {
-                    if let Value::Bool(value) = left {
-                        if value == (operator.kind == K::OrOr) {
-                            return Ok(Value::Bool(value));
-                        }
+                    if let Value::Bool(value) = left
+                        && value == (operator.kind == K::OrOr)
+                    {
+                        return Ok(Value::Bool(value));
                     }
                     let right = self.expression(frame, right)?;
                     return if operator.kind == K::AndAnd {

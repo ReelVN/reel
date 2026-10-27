@@ -46,7 +46,7 @@ fn directory_size(root: &Path, cancelled: &AtomicBool) -> Result<u64, Error> {
                 pending.push(entry.path());
             } else if kind.is_file() {
                 // Resource volumes can exceed newlib's signed 32-bit stat size.
-                bytes += crate::assets::file::metadata(&entry.path())?.len();
+                bytes += crate::assets::file::metadata(entry.path().as_path())?.len();
             }
         }
     }

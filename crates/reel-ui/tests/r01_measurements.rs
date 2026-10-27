@@ -94,7 +94,7 @@ fn transparent_overlay_recording_cost() {
         empty_snapshot(&pool),
         &pool,
     ));
-    let region = Region::new(&ALLOCATOR);
+    let region = Region::new(ALLOCATOR);
     let start = Instant::now();
     let mut commands = 0;
     let mut groups = 0;

@@ -353,6 +353,7 @@ fn default_export_preserves_inputs_and_explicit_mounts_select_the_complete_set()
         fs::read_to_string(output.join("resources/game.asb")).unwrap(),
         "ordinary resource"
     );
+    let output = root.join("build/export/vita/debug");
     write(root, "resources/@vita/images/sample.bin", "vita resource");
     write(root, "resources/@vita/target-only.bin", "vita only");
     write(root, "resources/@other/excluded.bin", "other target");

@@ -26,6 +26,68 @@ fn compiled_runtime(code: &str, encoded: bool) -> StoryRuntime {
 }
 
 #[test]
+fn first_frame_focus_waits_for_the_new_control_source_asb() {
+    for encoded in [false, true] {
+        let mut story = compiled_runtime(
+            r#"fn main() {
+            let root = stack(width: 640, height: 420);
+            stage.replace(root);
+            let target = root.add(button(x: 200, y: 200, width: 160, height: 80));
+            if !await stage.focus(target, owner: root) { throw "initial focus declined"; }
+        }"#,
+            encoded,
+        );
+        assert!(!story.driver().adapter().has_window_requests());
+        let (mut bridge, root) = mount(story.driver().ui());
+        present(&mut story, &mut bridge, root, 1);
+        story.driver_mut().unwrap().clear_presented().unwrap();
+        assert!(story.driver().ui().accepted_stage(&bridge, root).is_none());
+        assert!(
+            story
+                .driver_mut()
+                .unwrap()
+                .adapter_mut()
+                .take_window_request(false)
+                .unwrap()
+                .is_none()
+        );
+        present(&mut story, &mut bridge, root, 2);
+        assert!(story.driver().ui().accepted_stage(&bridge, root).is_some());
+        let request = story
+            .driver_mut()
+            .unwrap()
+            .adapter_mut()
+            .take_window_request(true)
+            .unwrap()
+            .unwrap();
+        let WindowCommand::Focus { target, visibility } = request.command else {
+            panic!("focus request");
+        };
+        assert!(
+            story
+                .driver()
+                .adapter()
+                .focus_target_permits_input(target)
+                .unwrap()
+        );
+        assert!(
+            story
+                .driver()
+                .ui()
+                .request_focus(&mut bridge, root, target, visibility)
+        );
+        story
+            .driver_mut()
+            .unwrap()
+            .adapter_mut()
+            .complete_window_request(request.id, Ok(WindowReply::Focused(true)))
+            .unwrap();
+        story.wake_input();
+        drain(&mut story);
+    }
+}
+
+#[test]
 fn pointer_buttons_skip_navigation_and_update_focusability_source_asb() {
     let code = r#"fn main() {
         let state = model({navigable: false, clicks: 0});
@@ -55,7 +117,7 @@ fn pointer_buttons_skip_navigation_and_update_focusability_source_asb() {
             .driver_mut()
             .unwrap()
             .adapter_mut()
-            .take_window_request()
+            .take_window_request(true)
             .unwrap()
             .unwrap();
         assert!(
@@ -221,7 +283,7 @@ fn late_next_focus_waits_for_accepted_frame_and_routes_confirm_source_asb() {
                     .driver_mut()
                     .unwrap()
                     .adapter_mut()
-                    .take_window_request()
+                    .take_window_request(true)
                     .unwrap()
                     .is_none()
             );
@@ -255,7 +317,7 @@ fn late_next_focus_waits_for_accepted_frame_and_routes_confirm_source_asb() {
                 .driver_mut()
                 .unwrap()
                 .adapter_mut()
-                .take_window_request()
+                .take_window_request(true)
                 .unwrap()
                 .unwrap();
             let WindowCommand::Focus {
@@ -350,5 +412,145 @@ fn late_next_focus_waits_for_accepted_frame_and_routes_confirm_source_asb() {
             matches!(&node.kind, NodeKind::Text(value) if value.as_ref() == "result:true:1:true")
         }));
         }
+    }
+}
+
+#[test]
+fn clearing_focus_cancels_confirmation_and_respects_modal_scope_source_asb() {
+    for encoded in [false, true] {
+        let mut story = compiled_runtime(
+            r#"fn main() {
+            let state = model({clicks: 0});
+            let target = button("Target", width: 120, height: 60,
+                on_click: || { state.clicks += 1; });
+            let panel = stack(width: 640, height: 420, modal: true, children: [target]);
+            let root = stack(children: [panel, text(derive(|| f"clicks:{state.clicks}"))]);
+            stage.replace(root);
+            if !await stage.focus(target, owner: panel) { throw "initial focus"; }
+            if await stage.focus(null, owner: root) { throw "outside modal cleared focus"; }
+            if !await stage.focus(null, owner: panel) { throw "modal clear declined"; }
+        }"#,
+            encoded,
+        );
+        let (mut bridge, root) = mount(story.driver().ui());
+        let navigation =
+            |story: &mut StoryRuntime, bridge: &mut PresentationBridge, action, phase| {
+                story
+                    .driver_mut()
+                    .unwrap()
+                    .handle_text(
+                        bridge,
+                        TextEvent::Navigation(NavigationEvent {
+                            action,
+                            phase,
+                            value: if phase == ActionPhase::Pressed {
+                                1.
+                            } else {
+                                0.
+                            },
+                        }),
+                    )
+                    .unwrap();
+            };
+        for frame in 1..=3 {
+            present(&mut story, &mut bridge, root, frame);
+            let request = story
+                .driver_mut()
+                .unwrap()
+                .adapter_mut()
+                .take_window_request(true)
+                .unwrap()
+                .unwrap();
+            let applied =
+                match request.command {
+                    WindowCommand::Focus { target, visibility } => story
+                        .driver()
+                        .ui()
+                        .request_focus(&mut bridge, root, target, visibility),
+                    WindowCommand::ClearFocus { owner: Some(owner) } => {
+                        story.driver().ui().clear_focus(&mut bridge, root, owner)
+                    }
+                    _ => panic!("focus request"),
+                };
+            assert_eq!(applied, frame != 2);
+            story
+                .driver_mut()
+                .unwrap()
+                .adapter_mut()
+                .complete_window_request(request.id, Ok(WindowReply::Focused(applied)))
+                .unwrap();
+            if frame == 1 {
+                navigation(
+                    &mut story,
+                    &mut bridge,
+                    NavigationAction::Confirm,
+                    ActionPhase::Pressed,
+                );
+            }
+            story.wake_input();
+            drain(&mut story);
+        }
+        assert_eq!(bridge.root().focused_widget(), None);
+        // Acceptance of another frame must preserve the explicit empty selection.
+        present(&mut story, &mut bridge, root, 4);
+        assert_eq!(bridge.root().focused_widget(), None);
+        navigation(
+            &mut story,
+            &mut bridge,
+            NavigationAction::Confirm,
+            ActionPhase::Released,
+        );
+        navigation(
+            &mut story,
+            &mut bridge,
+            NavigationAction::Confirm,
+            ActionPhase::Pressed,
+        );
+        navigation(
+            &mut story,
+            &mut bridge,
+            NavigationAction::Confirm,
+            ActionPhase::Released,
+        );
+        story.wake_input();
+        drain(&mut story);
+        assert_eq!(bridge.root().focused_widget(), None);
+        assert!(
+            story
+                .driver()
+                .adapter()
+                .stage()
+                .nodes()
+                .any(|n| matches!(&n.kind, NodeKind::Text(s) if s.as_ref() == "clicks:0"))
+        );
+        navigation(
+            &mut story,
+            &mut bridge,
+            NavigationAction::Right,
+            ActionPhase::Pressed,
+        );
+        assert!(bridge.root().focused_widget().is_some());
+        navigation(
+            &mut story,
+            &mut bridge,
+            NavigationAction::Confirm,
+            ActionPhase::Pressed,
+        );
+        navigation(
+            &mut story,
+            &mut bridge,
+            NavigationAction::Confirm,
+            ActionPhase::Released,
+        );
+        story.wake_input();
+        drain(&mut story);
+        assert!(
+            story
+                .driver()
+                .adapter()
+                .stage()
+                .nodes()
+                .any(|n| matches!(&n.kind, NodeKind::Text(s) if s.as_ref() == "clicks:1"))
+        );
     }
 }

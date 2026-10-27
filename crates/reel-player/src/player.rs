@@ -651,7 +651,6 @@ where
     }
     /// Hidden native windows need not receive redraw events. The event loop
     /// still advances startup using VM deadlines and resource completion wakes.
-
     pub fn prepare_initial_frame(&mut self, host: &mut impl Host) -> Result<(), Error> {
         if self.first_frame_pending && !self.closing {
             self.render(host)?;
@@ -798,21 +797,22 @@ pub(crate) fn build_frame(
     session: Option<&PlayerSession>,
     recorded_projection: &mut Option<RecordedProjection>,
 ) -> Result<Option<RenderFrame>, Error> {
-    let recording = reel_core::profile::Scope::new(reel_core::profile::Phase::Record);
-    let source = if let Some(session) = session {
-        let Some((source, receipt)) = session.record(bridge, root, id)? else {
+    let source = {
+        let _recording = reel_core::profile::Scope::new(reel_core::profile::Phase::Record);
+        if let Some(session) = session {
+            let Some((source, receipt)) = session.record(bridge, root, id)? else {
+                *recorded_projection = None;
+                return Ok(None);
+            };
+            *recorded_projection = Some(receipt);
+            source
+        } else {
             *recorded_projection = None;
-            return Ok(None);
-        };
-        *recorded_projection = Some(receipt);
-        source
-    } else {
-        *recorded_projection = None;
-        bridge
-            .record(id)
-            .map_err(|error| format!("record: {error:?}"))?
+            bridge
+                .record(id)
+                .map_err(|error| format!("record: {error:?}"))?
+        }
     };
-    drop(recording);
     let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Compile);
     let images = session.map_or(&[][..], |session| session.ui().image_resources());
     let transitions = session.map_or(&[][..], PlayerSession::transition_resources);

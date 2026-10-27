@@ -105,6 +105,7 @@ pub(crate) struct RenderRootState {
 
     /// Widget that will be focused once the `update_focus` pass is run.
     pub(crate) next_focused_widget: Option<WidgetId>,
+    pub(crate) focus_cleared: bool,
 
     /// Most recently clicked/focused widget.
     ///
@@ -377,6 +378,7 @@ impl RenderRoot {
                 focus_visible: false,
                 focused_path: Vec::new(),
                 next_focused_widget: None,
+                focus_cleared: false,
                 focus_anchor: None,
                 navigation_target: None,
                 navigation_walk: Vec::new(),

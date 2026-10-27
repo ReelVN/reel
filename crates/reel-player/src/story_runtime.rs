@@ -318,7 +318,7 @@ impl StoryRuntime {
         }
         if !self.window_control_enabled && self.capture.is_none() {
             let adapter = self.driver.as_mut().unwrap().adapter_mut();
-            if let Some(request) = adapter.take_window_request()? {
+            if let Some(request) = adapter.take_window_request(true)? {
                 adapter.complete_window_request(
                     request.id,
                     Err("window control is not installed by this host".into()),
@@ -588,8 +588,10 @@ mod tests {
     fn hard_capacity_finishes_collection_and_reports_the_blocked_source() {
         let code =
             "fn main() { try { throw 1; } catch a { try { throw 2; } catch b { throw 3; } } }";
-        let mut limits = VmLimits::default();
-        limits.max_unwinds = 1;
+        let limits = VmLimits {
+            max_unwinds: 1,
+            ..Default::default()
+        };
         let driver = AsideSessionUi::from_source(
             Session::new(SessionId(74), Epoch(1)).unwrap(),
             code,

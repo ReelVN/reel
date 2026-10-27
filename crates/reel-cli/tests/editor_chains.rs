@@ -273,7 +273,7 @@ fn assert_method_token(tokens: &Value, initialized: &Value, source: &str, expres
     let expected = position(source, expression, false);
     let mut line = 0;
     let mut column = 0;
-    for token in tokens["data"].as_array().unwrap().chunks_exact(5) {
+    for token in tokens["data"].as_array().unwrap().as_chunks::<5>().0 {
         let delta_line = token[0].as_u64().unwrap();
         line += delta_line;
         column = if delta_line == 0 { column } else { 0 } + token[1].as_u64().unwrap();

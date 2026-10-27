@@ -94,7 +94,7 @@ impl SessionUi {
                 .map(|widget| widget.content.id()),
         }
     }
-    fn accepted_stage(
+    pub(crate) fn accepted_stage(
         &self,
         bridge: &PresentationBridge,
         root: WidgetId,
@@ -163,6 +163,17 @@ impl SessionUi {
             return false;
         };
         bridge.request_focus(target, visibility)
+    }
+    pub(crate) fn clear_focus(
+        &self,
+        bridge: &mut PresentationBridge,
+        root: WidgetId,
+        owner: reel_ui::stage::NodeId,
+    ) -> bool {
+        let Some(owner) = Self::projected_node(bridge, root, owner) else {
+            return false;
+        };
+        bridge.clear_focus(owner)
     }
     /// Record the actual widget tree and its projection identity in one operation.
     /// Pending model edits cannot advance the watermark until sync publishes them.

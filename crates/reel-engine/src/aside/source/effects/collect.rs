@@ -56,10 +56,8 @@ pub fn collect_effects(
                     positional += 1;
                     name
                 };
-                if name == "function" {
-                    if function.replace(value).is_some() {
-                        return Err(error(node.span, "duplicate effect function argument"));
-                    }
+                if name == "function" && function.replace(value).is_some() {
+                    return Err(error(node.span, "duplicate effect function argument"));
                 }
             }
             let function =

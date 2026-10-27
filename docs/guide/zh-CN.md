@@ -983,6 +983,8 @@ let focused = await stage.focus(next, visibility: "preserve");
 
 侧边操作可以用 `button(focusable: false, focus_on_pointer: false)` 接收鼠标悬停与点击，同时保留当前控件的焦点。`focusable: false` 会让方向键、Tab 和 `stage.focus` 跳过该按钮；显式交接返回 false。属性可绑定到模型，修改后沿当前舞台状态更新。
 
+用 `await stage.focus(null, owner: page)` 清除当前导航焦点和提示。`page` 须处于当前输入作用域；后续方向键或 Tab 重新进入控件导航，确认键交给页面处理。
+
 `text_input` 编辑单行文本，`text_area` 编辑多行文本。绑定到业务字段后，控件写回与其他视图更新共用同一状态。
 
 ```aside

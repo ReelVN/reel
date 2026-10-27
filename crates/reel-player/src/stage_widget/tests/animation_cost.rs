@@ -77,7 +77,7 @@ fn animated_scene_projection_and_frame_cost() {
                 stage
                     .create(
                         NodeKind::Button {
-                            label: Some(format!("Menu {index}").into()),
+                            label: Some(format!("Menu {index}")),
                             listening: true,
                             focus_on_pointer: true,
                             focusable: true,

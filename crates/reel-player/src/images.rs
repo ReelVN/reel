@@ -191,10 +191,10 @@ impl Images {
                             Ok(())
                         }
                         ImageAsset::Raster(lease) => {
-                            if let Some(tile) = self.tiles.get(&pending.source) {
-                                if lease.data().image_size() != Some(tile.dimensions) {
-                                    return Err("tile dimensions differ from manifest".into());
-                                }
+                            if let Some(tile) = self.tiles.get(&pending.source)
+                                && lease.data().image_size() != Some(tile.dimensions)
+                            {
+                                return Err("tile dimensions differ from manifest".into());
                             }
                             self.loaded.insert(pending.source.clone(), lease);
                             Ok(())

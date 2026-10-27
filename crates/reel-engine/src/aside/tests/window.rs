@@ -80,7 +80,7 @@ fn platform_snapshot_and_configure_use_current_host_from_source_and_asb() {
         assert!(!vm.has_runnable_tasks());
         advance(&mut session);
         models::drive(&mut vm, &mut session, false);
-        let request = vm.take_window_request().unwrap().unwrap();
+        let request = vm.take_window_request(true).unwrap().unwrap();
         let crate::aside::window::WindowCommand::Configure(configuration) = request.command else {
             panic!("configure request");
         };
@@ -144,7 +144,7 @@ fn pointer_requests_have_owned_results_and_one_pending_slot_from_source_and_asb(
     for encoded in [false, true] {
         let (mut session, mut vm) = models::prepared(code, encoded);
         models::drive(&mut vm, &mut session, false);
-        assert!(vm.take_window_request().unwrap().is_none());
+        assert!(vm.take_window_request(true).unwrap().is_none());
         vm.set_window_info(Arc::new(WindowInfo {
             capabilities: WindowCapabilities {
                 pointer_move: true,
@@ -154,7 +154,7 @@ fn pointer_requests_have_owned_results_and_one_pending_slot_from_source_and_asb(
         }));
         advance(&mut session);
         models::drive(&mut vm, &mut session, false);
-        let request = vm.take_window_request().unwrap().unwrap();
+        let request = vm.take_window_request(true).unwrap().unwrap();
         assert!(matches!(
             request.command,
             crate::aside::window::WindowCommand::MovePointer {
@@ -175,7 +175,7 @@ fn pointer_requests_have_owned_results_and_one_pending_slot_from_source_and_asb(
             .unwrap()
         );
         models::drive(&mut vm, &mut session, false);
-        assert!(vm.take_window_request().unwrap().is_none());
+        assert!(vm.take_window_request(true).unwrap().is_none());
         assert!(
             matches!(session.view().interaction, Some(crate::InteractionView::Dialogue(d)) if d.text()=="done")
         );
@@ -302,12 +302,12 @@ fn focus_requests_wait_for_acceptance_and_preserve_owned_results_source_asb() {
         collect(&mut vm);
         assert_eq!(vm.presentation_request(), 1);
         assert!(!vm.has_window_requests());
-        assert!(vm.take_window_request().unwrap().is_none());
+        assert!(vm.take_window_request(true).unwrap().is_none());
         vm.accept_presentation(&session, 0).unwrap();
-        assert!(vm.take_window_request().unwrap().is_none());
+        assert!(vm.take_window_request(true).unwrap().is_none());
         vm.accept_presentation(&session, 1).unwrap();
         assert!(vm.has_window_requests());
-        let request = vm.take_window_request().unwrap().unwrap();
+        let request = vm.take_window_request(true).unwrap().unwrap();
         let WindowCommand::Focus { target, .. } = request.command else {
             panic!("focus request");
         };
@@ -316,14 +316,14 @@ fn focus_requests_wait_for_acceptance_and_preserve_owned_results_source_asb() {
             .unwrap();
         models::drive(&mut vm, &mut session, true);
         assert_eq!(vm.presentation_request(), 2);
-        assert!(vm.take_window_request().unwrap().is_none());
+        assert!(vm.take_window_request(true).unwrap().is_none());
         vm.accept_presentation(&session, 2).unwrap();
-        let request = vm.take_window_request().unwrap().unwrap();
+        let request = vm.take_window_request(true).unwrap().unwrap();
         vm.complete_window_request(request.id, Ok(WindowReply::Focused(false)))
             .unwrap();
         models::drive(&mut vm, &mut session, true);
         assert!(!vm.focus_target_permits_input(target).unwrap());
-        assert!(vm.take_window_request().unwrap().is_none());
+        assert!(vm.take_window_request(true).unwrap().is_none());
         assert!(!vm.has_window_requests());
         assert!(matches!(session.view().interaction,
             Some(crate::InteractionView::Dialogue(d)) if d.text() == "focused"));
@@ -347,7 +347,7 @@ fn focus_target_retirement_declines_with_live_owner_source_asb() {
         models::drive(&mut vm, &mut session, true);
         vm.accept_presentation(&session, vm.presentation_request())
             .unwrap();
-        let request = vm.take_window_request().unwrap().unwrap();
+        let request = vm.take_window_request(true).unwrap().unwrap();
         let WindowCommand::Focus { target, .. } = request.command else {
             panic!("focus request");
         };
