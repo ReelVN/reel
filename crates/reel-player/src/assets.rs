@@ -300,8 +300,9 @@ impl Assets {
         service.io_events.clear();
         service.work_events.clear();
     }
-    /// Create a decoder-worker reader using this service's adapters and budgets.
-    /// Call AssetStream::open/read/seek only on a worker; maintain stays on the host.
+    /// Create a media reader using this service's adapters and budgets.
+    /// Read/seek may block a decoder worker or native media callback. Maintain
+    /// stays on the host, which must keep polling until the reader closes.
     pub fn stream(
         &self,
         source: impl Into<String>,
@@ -315,7 +316,7 @@ impl Assets {
         if chunk == 0 {
             return Err("streaming requires a nonempty resource input budget".into());
         }
-        Ok(service.streams.create(source.into(), wake, chunk))
+        service.streams.create(source.into(), wake, chunk)
     }
     pub fn request(&self, source: impl Into<String>, kind: AssetKind) -> LoadId {
         self.request_source(
@@ -754,7 +755,7 @@ impl Service {
                 load.phase = Phase::Done(result);
             }
             Phase::Probe | Phase::Decode => {
-                let probe = matches!(load.phase, Phase::Probe);
+                let mut probe = matches!(load.phase, Phase::Probe);
                 if probe
                     && load
                         .input
@@ -770,6 +771,67 @@ impl Service {
                     load.input = None;
                     load.phase = Phase::ImageManifest(manifest);
                     return Ok(());
+                }
+                if probe
+                    && load
+                        .input
+                        .as_ref()
+                        .unwrap()
+                        .as_slice()
+                        .starts_with(TextureHeader::MAGIC)
+                {
+                    // A prepared header is fixed-size, already bounded by the
+                    // completed read, and contains every allocation decision.
+                    // Keep real codec work on the worker; avoid its probe trip.
+                    let (header, _) = TextureHeader::parse(load.input.as_ref().unwrap().as_slice())
+                        .map_err(|e| e.to_string())?;
+                    let descriptor = header.descriptor();
+                    load.texture = Some(descriptor);
+                    load.size = descriptor.layout.logical_size;
+                    load.output = descriptor
+                        .byte_len()
+                        .expect("validated prepared descriptor");
+                    load.temporary = if header.codec() == TextureCodec::BcCrunch {
+                        decode::BC_CRUNCH_WORKSPACE_BYTES
+                    } else {
+                        0
+                    };
+                    load.phase = Phase::Decode;
+                    probe = false;
+                    if header.codec() == TextureCodec::Raw
+                        && let Some(lease) = shared_resource(&self.origins, load)
+                    {
+                        load.input = None;
+                        load.phase = Phase::Done(Ok(lease));
+                        return Ok(());
+                    }
+                    if header.codec() == TextureCodec::Raw
+                        && Arc::strong_count(load.input.as_ref().unwrap()) == 1
+                        && let Ok(ticket) = self
+                            .output
+                            .reserve(load.input.as_ref().unwrap().capacity() as u64)
+                    {
+                        // Preserve the original allocation and expose its
+                        // payload range. Retaining the small file header is
+                        // charged too. If that capacity cannot fit, the old
+                        // worker-copy path below retains its exact admission.
+                        let input = Arc::try_unwrap(load.input.take().unwrap())
+                            .expect("raw prepared input has one owner");
+                        let end = input.as_slice().len();
+                        let data = input
+                            .into_slice(TextureHeader::LEN..end)
+                            .map_err(|e| e.reason.message)?
+                            .with_ticket(ticket)
+                            .map_err(|e| e.reason.message)?;
+                        let result = register(load, data);
+                        if load.reloadable
+                            && let Ok(lease) = &result
+                        {
+                            remember_resource(&mut self.origins, load.kind, lease);
+                        }
+                        load.phase = Phase::Done(result);
+                        return Ok(());
+                    }
                 }
                 let decode_bytes = self.options.decode_bytes - self.io_workspace_bytes;
                 if !probe && load.temporary > decode_bytes {

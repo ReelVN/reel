@@ -75,7 +75,7 @@ pub(crate) fn prepared_effect_assets(
 }
 
 #[test]
-fn prepared_texture_worker_preserves_blocks_and_uses_bounded_workspace() {
+fn prepared_texture_preserves_blocks_and_uses_bounded_workspace() {
     use reel_core::texture::*;
     for format in [
         TextureFormat::Rgba8,
@@ -137,12 +137,119 @@ fn prepared_texture_worker_preserves_blocks_and_uses_bounded_workspace() {
             assert_eq!(data.data(), blocks);
             assert_eq!(lease.data().image_size(), Some([192, 108]));
             assert!(assets.temporary_pool().usage().peak_bytes <= 65536);
-            assert_eq!(assets.output_pool().usage().bytes, blocks.len() as u64);
+            assert_eq!(
+                assets.output_pool().usage().bytes,
+                if codec == TextureCodec::Raw {
+                    bytes.capacity() as u64
+                } else {
+                    blocks.len() as u64
+                }
+            );
             drop(lease);
             assets.cancel(id);
             assets.maintain();
             assert_eq!(assets.output_pool().usage().bytes, 0);
         }
+    }
+}
+
+#[test]
+fn prepared_texture_fast_path_avoids_probe_jobs_and_raw_payload_copies() {
+    use reel_core::{texture::*, work::*};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Counted(ImageExecutor, Arc<AtomicUsize>);
+    impl WorkExecutor for Counted {
+        fn capabilities(&self) -> WorkCaps {
+            self.0.capabilities()
+        }
+        fn submit(&mut self, request: WorkRequest) -> Result<WorkId, Rejected<WorkRequest>> {
+            self.1.fetch_add(1, Ordering::Relaxed);
+            self.0.submit(request)
+        }
+        fn cancel(&mut self, id: WorkId) {
+            self.0.cancel(id);
+        }
+        fn advance(&mut self, budget: WorkBudget) -> WorkProgress {
+            self.0.advance(budget)
+        }
+        fn drain(&mut self, out: &mut Vec<WorkEvent>, limit: usize) {
+            self.0.drain(out, limit);
+        }
+    }
+    let descriptor = TextureDescriptor {
+        format: TextureFormat::Bc3Rgba,
+        source_encoding: ColorEncoding::Linear,
+        layout: TextureLayout::identity([64, 64]),
+    };
+    let blocks = vec![0; descriptor.byte_len().unwrap() as usize];
+    for (codec, exact_budget, expected_jobs) in [
+        (TextureCodec::Raw, false, 0),
+        (TextureCodec::Raw, true, 1),
+        (TextureCodec::BcCrunch, false, 1),
+    ] {
+        let payload = if codec == TextureCodec::Raw {
+            blocks.clone()
+        } else {
+            bc_crunch::compress(64, 64, bc_crunch::Format::Bc3, &blocks).unwrap()
+        };
+        let mut file = TextureHeader::new(descriptor, codec, payload.len() as u64)
+            .unwrap()
+            .encode()
+            .to_vec();
+        file.extend(payload);
+        let jobs = Arc::new(AtomicUsize::new(0));
+        let assets = Assets::with_adapters(
+            AssetOptions {
+                input_bytes: 65536,
+                resident_bytes: if exact_budget {
+                    blocks.len() as u64
+                } else {
+                    65536
+                },
+                decode_bytes: 65536,
+                ..Default::default()
+            },
+            |wake| {
+                let limits = QueueLimits {
+                    max_requests: 32,
+                    max_bytes: 1 << 20,
+                };
+                (
+                    Box::new(MemoryHost(
+                        MemoryAssetIo::new(limits, limits, wake.clone()),
+                        None,
+                    )),
+                    Box::new(Counted(ImageExecutor::new(limits, wake), jobs.clone())),
+                )
+            },
+        );
+        let id = assets
+            .request_encoded("image.reel-texture".into(), &file)
+            .unwrap();
+        let address = assets.0.borrow().loads[&id]
+            .input
+            .as_ref()
+            .unwrap()
+            .as_slice()
+            .as_ptr();
+        let lease = load_until_done(&assets, id).unwrap();
+        let ResourceData::Texture { bytes, .. } = lease.data() else {
+            unreachable!()
+        };
+        assert_eq!(bytes.data(), blocks);
+        assert_eq!(jobs.load(Ordering::Relaxed), expected_jobs);
+        if codec == TextureCodec::Raw && !exact_budget {
+            assert_eq!(
+                bytes.data().as_ptr(),
+                address.wrapping_add(TextureHeader::LEN),
+                "raw payload retains the original read allocation"
+            );
+            assert_eq!(assets.0.borrow().input.usage().bytes, 0);
+        }
+        eprintln!(
+            "prepared texture {codec:?} exact_budget={exact_budget}: worker_jobs={expected_jobs} retained_bytes={}",
+            assets.output_pool().usage().bytes
+        );
     }
 }
 
@@ -510,15 +617,34 @@ fn worker_stream_reads_ranges_seeks_and_cancels_through_the_shared_asset_service
         assert_eq!(assets.0.borrow().input.usage().bytes, 0);
         assert_eq!(assets.0.borrow().completion.usage().bytes, 0);
         let (control, mut reader) = assets.stream("assets/panels.png").unwrap();
-        let waiter = std::thread::spawn(move || reader.open());
-        while !assets.needs_poll() {
-            std::thread::yield_now();
-        }
         control.cancel();
         assert_eq!(
-            waiter.join().unwrap().unwrap_err().kind(),
+            reader.open().unwrap_err().kind(),
             std::io::ErrorKind::BrokenPipe
         );
-        assets.close();
+        drop(reader);
+        drop(control);
+        assets.maintain();
+        for close_service in [false, true] {
+            let (control, mut reader) = assets.stream("assets/panels.png").unwrap();
+            let waiter = std::thread::spawn(move || reader.open());
+            while !assets.needs_poll() {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+            if close_service {
+                assets.close();
+            } else {
+                control.cancel();
+            }
+            assert_eq!(
+                waiter.join().unwrap().unwrap_err().kind(),
+                std::io::ErrorKind::BrokenPipe
+            );
+            drop(control);
+            assets.maintain();
+            assert_eq!(assets.0.borrow().input.usage().bytes, 0);
+            assert_eq!(assets.0.borrow().completion.usage().bytes, 0);
+        }
     }
 }

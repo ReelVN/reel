@@ -217,6 +217,7 @@ impl Drop for BudgetTicket {
 #[derive(Debug)]
 pub struct OwnedBytes {
     data: Vec<u8>,
+    range: std::ops::Range<usize>,
     ticket: BudgetTicket,
 }
 
@@ -234,15 +235,67 @@ impl OwnedBytes {
                 ),
             });
         }
-        Ok(Self { data, ticket })
+        let range = 0..data.len();
+        Ok(Self {
+            data,
+            range,
+            ticket,
+        })
     }
     pub fn as_slice(&self) -> &[u8] {
-        &self.data
+        &self.data[self.range.clone()]
+    }
+    /// Full retained allocation capacity, including bytes outside the view.
+    pub fn capacity(&self) -> usize {
+        self.data.capacity()
+    }
+    /// Restrict the immutable visible bytes without allocating or moving data.
+    /// The range is relative to the current view; the full backing allocation
+    /// and its reservation remain owned until the final consumer releases it.
+    pub fn into_slice(mut self, range: std::ops::Range<usize>) -> Result<Self, Rejected<Self>> {
+        if range.start > range.end || range.end > self.range.len() {
+            return Err(Rejected {
+                request: self,
+                reason: RejectReason::new(
+                    RejectCode::InvalidRequest,
+                    "byte view exceeds owned bytes",
+                ),
+            });
+        }
+        self.range = self.range.start + range.start..self.range.start + range.end;
+        Ok(self)
+    }
+    /// Transfer this allocation to an already reserved accounting domain.
+    /// Rejection returns both original ownership and the replacement ticket.
+    /// The source stays charged until the replacement is validated and installed;
+    /// the replacement must cover the complete retained vector capacity.
+    pub fn with_ticket(
+        mut self,
+        ticket: BudgetTicket,
+    ) -> Result<Self, Rejected<(Self, BudgetTicket)>> {
+        if self.data.capacity() as u64 > ticket.bytes() {
+            return Err(Rejected {
+                request: (self, ticket),
+                reason: RejectReason::new(
+                    RejectCode::InvalidRequest,
+                    "byte capacity exceeds replacement ticket",
+                ),
+            });
+        }
+        self.ticket = ticket;
+        Ok(self)
     }
     pub fn ticket(&self) -> &BudgetTicket {
         &self.ticket
     }
-    pub fn into_parts(self) -> (Vec<u8>, BudgetTicket) {
+    /// Recover a vector containing exactly the visible bytes. A restricted view
+    /// moves its bytes to the allocation's front in place, preserving capacity.
+    /// Immutable consumers should retain the view to avoid this compaction.
+    pub fn into_parts(mut self) -> (Vec<u8>, BudgetTicket) {
+        if self.range.start != 0 {
+            self.data.copy_within(self.range.clone(), 0);
+        }
+        self.data.truncate(self.range.len());
         (self.data, self.ticket)
     }
 }
