@@ -35,6 +35,7 @@ fn compile_shaders() {
             for (variant, define) in [
                 ("source_over", "REEL_SOURCE_OVER_ONLY"),
                 ("alpha_mask", "REEL_ALPHA_MASK_ONLY"),
+                ("extended_blend", "REEL_EXTENDED_BLEND"),
             ] {
                 shaders.push((
                     variant.to_owned(),

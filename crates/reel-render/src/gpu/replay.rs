@@ -1184,17 +1184,4 @@ impl Context<'_> {
     }
 }
 
-pub(super) fn blend_code(blend: reel_ui::frame::BlendMode) -> Option<u32> {
-    use reel_ui::frame::BlendMode;
-    use reel_ui::peniko::{Compose, Mix};
-    let BlendMode::Standard(blend) = blend else {
-        return Some(4);
-    };
-    match (blend.mix, blend.compose) {
-        (Mix::Normal, Compose::SrcOver) => Some(0),
-        (Mix::Normal, Compose::PlusLighter) => Some(1),
-        (Mix::Multiply, Compose::SrcOver) => Some(2),
-        (Mix::Screen, Compose::SrcOver) => Some(3),
-        _ => None,
-    }
-}
+pub(super) use crate::common::blend::code as blend_code;

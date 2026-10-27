@@ -53,6 +53,49 @@ fn subtract(s: vec4<f32>, d: vec4<f32>) -> vec4<f32> {
     return vec4(max(d.rgb - s.rgb, vec3(0.0)), d.a);
 }
 
+// W3C separable blend functions on straight linear RGB; linear burn extends this set.
+fn overlay(b: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
+    return mix(2.0 * b * s, 1.0 - 2.0 * (1.0 - b) * (1.0 - s), step(vec3(0.5), b));
+}
+fn hard_light(b: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
+    return mix(2.0 * b * s, 1.0 - 2.0 * (1.0 - b) * (1.0 - s), step(vec3(0.5), s));
+}
+// Keep the divisor finite at source one; backdrop zero takes priority.
+fn color_dodge(b: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
+    return max(min(vec3(1.0), b / max(1.0 - s, step(vec3(1.0), s))), step(vec3(1.0), s)) * sign(b);
+}
+fn lighten(b: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
+    return max(b, s);
+}
+fn difference(b: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
+    return abs(b - s);
+}
+fn soft_curve(b: vec3<f32>) -> vec3<f32> {
+    return mix(((16.0 * b - 12.0) * b + 4.0) * b, sqrt(b), step(vec3(0.25), b));
+}
+fn soft_light(b: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
+    return mix(b - (1.0 - 2.0 * s) * b * (1.0 - b), b + (2.0 * s - 1.0) * (soft_curve(b) - b), step(vec3(0.5), s));
+}
+fn linear_burn(b: vec3<f32>, s: vec3<f32>) -> vec3<f32> {
+    return max(b + s - 1.0, vec3(0.0));
+}
+fn separable(s: vec4<f32>, d: vec4<f32>, mode: u32) -> vec4<f32> {
+    // Zero-alpha colors contribute only the other input, without division.
+    if s.a == 0.0 { return d; }
+    if d.a == 0.0 { return s; }
+    let b = clamp(d.rgb / d.a, vec3(0.0), vec3(1.0));
+    let c = clamp(s.rgb / s.a, vec3(0.0), vec3(1.0));
+    var blended = vec3(0.0);
+    if mode == 5u { blended = overlay(b, c); }
+    else if mode == 6u { blended = hard_light(b, c); }
+    else if mode == 7u { blended = color_dodge(b, c); }
+    else if mode == 8u { blended = lighten(b, c); }
+    else if mode == 9u { blended = difference(b, c); }
+    else if mode == 10u { blended = soft_light(b, c); }
+    else { blended = linear_burn(b, c); }
+    return vec4(s.rgb * (1.0 - d.a) + d.rgb * (1.0 - s.a) + s.a * d.a * blended, s.a + d.a * (1.0 - s.a));
+}
+
 @fragment fn source_over(v: Varying) -> @location(0) vec4<f32> {
     return textureSample(source, linear_sampler, v.source_uv) * params.opacity;
 }
@@ -72,4 +115,8 @@ fn subtract(s: vec4<f32>, d: vec4<f32>) -> vec4<f32> {
         return vec4(s.rgb * d.rgb + s.rgb * (1.0 - d.a) + d.rgb * (1.0 - s.a), alpha);
     }
     return vec4(s.rgb + d.rgb - s.rgb * d.rgb, alpha);
+}
+
+@fragment fn extended_blend(v: Varying) -> @location(0) vec4<f32> {
+    return separable(covered_source(v), textureSample(backdrop, linear_sampler, v.uv), params.blend);
 }

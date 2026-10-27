@@ -9,6 +9,9 @@ pub enum BlendMode {
     /// Clamp backdrop RGB minus premultiplied source RGB to zero, preserving backdrop alpha.
     /// Group opacity and masks already scale the source before this operation.
     Subtract,
+    /// Blend straight linear RGB with max(source + backdrop - 1, 0), then
+    /// compose source-over. Group opacity and masks scale the source once.
+    LinearBurn,
 }
 impl Default for BlendMode {
     fn default() -> Self {
@@ -30,7 +33,7 @@ impl BlendMode {
     pub fn imaging(self) -> Option<peniko::BlendMode> {
         match self {
             Self::Standard(value) => Some(value),
-            Self::Subtract => None,
+            Self::Subtract | Self::LinearBurn => None,
         }
     }
 }

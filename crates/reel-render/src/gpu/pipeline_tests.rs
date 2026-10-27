@@ -64,7 +64,7 @@ fn counts(renderer: &Renderer, sets: usize) {
     assert_eq!(renderer.pipelines.initialized_count(), sets);
     assert_eq!(
         renderer.pipelines.creations.snapshot(),
-        [3 * sets, 18 * sets, 18 * sets, 18 * sets, 8 * sets]
+        [3 * sets, 19 * sets, 19 * sets, 19 * sets, 8 * sets]
     );
 }
 

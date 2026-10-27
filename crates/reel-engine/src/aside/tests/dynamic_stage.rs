@@ -365,6 +365,13 @@ fn blend_is_a_validated_reactive_node_property() {
         ("subtract", BlendMode::Subtract),
         ("multiply", Mix::Multiply.into()),
         ("screen", Mix::Screen.into()),
+        ("overlay", Mix::Overlay.into()),
+        ("hard_light", Mix::HardLight.into()),
+        ("color_dodge", Mix::ColorDodge.into()),
+        ("lighten", Mix::Lighten.into()),
+        ("difference", Mix::Difference.into()),
+        ("soft_light", Mix::SoftLight.into()),
+        ("linear_burn", BlendMode::LinearBurn),
     ] {
         let source = format!(
             r#"

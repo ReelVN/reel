@@ -167,6 +167,7 @@ pub struct Pipelines {
     pub source_over: wgpu::RenderPipeline,
     pub alpha_mask: wgpu::RenderPipeline,
     pub composite_blend: wgpu::RenderPipeline,
+    pub extended_blend: wgpu::RenderPipeline,
     pub paint_layout: wgpu::BindGroupLayout,
     pub composite_layout: wgpu::BindGroupLayout,
     pub samplers: [wgpu::Sampler; 4],
@@ -366,6 +367,19 @@ impl Pipelines {
             #[cfg(test)]
             Some(counts),
         );
+        let extended_blend = pipeline_entry(
+            device,
+            quality,
+            &composite_layout,
+            include_str!("composite.wgsl"),
+            false,
+            FragmentOutput {
+                entry: "extended_blend",
+                blend: None,
+            },
+            #[cfg(test)]
+            Some(counts),
+        );
         let source_over = pipeline_entry(
             device,
             quality,
@@ -449,6 +463,7 @@ impl Pipelines {
             source_over,
             alpha_mask,
             composite_blend,
+            extended_blend,
             paint_layout,
             composite_layout,
             samplers,
@@ -512,6 +527,8 @@ impl Pipelines {
             &self.alpha_mask
         } else if params.blend == 0 && !params.operation.replaces() {
             &self.composite
+        } else if params.blend > 4 {
+            &self.extended_blend
         } else {
             &self.composite_blend
         }
