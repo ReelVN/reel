@@ -967,6 +967,12 @@ next.visible = true;
 let focused = await stage.focus(next);
 ```
 
+The default handoff displays navigation focus. Use `visibility: "preserve"` to keep the indicator state current when the handoff is applied and prepare the next confirmation target during pointer use. Direction or confirmation presses then display navigation focus.
+
+```aside
+let focused = await stage.focus(next, visibility: "preserve");
+```
+
 `text_input` edits a single line and `text_area` edits multiple lines. Bind them to business fields so control writeback and other views share one state.
 
 ```aside

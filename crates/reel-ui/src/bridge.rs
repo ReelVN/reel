@@ -355,8 +355,13 @@ impl PresentationBridge {
     }
     /// Apply explicit focus only to a visible, enabled, focusable control in the
     /// accepted input/modal scope. A declined request preserves the existing focus.
-    pub fn request_focus(&mut self, target: WidgetId) -> bool {
-        self.root.request_focus(target)
+    /// The visibility policy is evaluated when this handoff is applied.
+    pub fn request_focus(
+        &mut self,
+        target: WidgetId,
+        visibility: crate::input::FocusVisibility,
+    ) -> bool {
+        self.root.request_focus(target, visibility)
     }
     /// Pause input without applying disabled styles or changing widget properties.
     pub fn set_input_gates(&mut self, roots: &[WidgetId]) -> Result<(), InputBudgetExceeded> {

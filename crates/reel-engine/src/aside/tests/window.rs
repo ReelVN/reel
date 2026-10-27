@@ -308,7 +308,7 @@ fn focus_requests_wait_for_acceptance_and_preserve_owned_results_source_asb() {
         vm.accept_presentation(&session, 1).unwrap();
         assert!(vm.has_window_requests());
         let request = vm.take_window_request().unwrap().unwrap();
-        let WindowCommand::Focus { target } = request.command else {
+        let WindowCommand::Focus { target, .. } = request.command else {
             panic!("focus request");
         };
         assert!(vm.focus_target_permits_input(target).unwrap());
@@ -348,7 +348,7 @@ fn focus_target_retirement_declines_with_live_owner_source_asb() {
         vm.accept_presentation(&session, vm.presentation_request())
             .unwrap();
         let request = vm.take_window_request().unwrap().unwrap();
-        let WindowCommand::Focus { target } = request.command else {
+        let WindowCommand::Focus { target, .. } = request.command else {
             panic!("focus request");
         };
         assert!(!vm.focus_target_permits_input(target).unwrap());

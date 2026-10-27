@@ -154,6 +154,7 @@ impl SessionUi {
         bridge: &mut PresentationBridge,
         root: WidgetId,
         target: reel_ui::stage::NodeId,
+        visibility: reel_ui::input::FocusVisibility,
     ) -> bool {
         if self.accepted_stage(bridge, root).is_none() {
             return false;
@@ -161,7 +162,7 @@ impl SessionUi {
         let Some(target) = Self::projected_node(bridge, root, target) else {
             return false;
         };
-        bridge.request_focus(target)
+        bridge.request_focus(target, visibility)
     }
     /// Record the actual widget tree and its projection identity in one operation.
     /// Pending model edits cannot advance the watermark until sync publishes them.

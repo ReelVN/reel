@@ -967,6 +967,12 @@ next.visible = true;
 let focused = await stage.focus(next);
 ```
 
+默认交接会显示导航焦点。用 `visibility: "preserve"` 保留交接应用时的指示状态，可以在鼠标操作期间预置下一次确认目标；随后按方向键或确认键会显示导航焦点。
+
+```aside
+let focused = await stage.focus(next, visibility: "preserve");
+```
+
 `text_input` 编辑单行文本，`text_area` 编辑多行文本。绑定到业务字段后，控件写回与其他视图更新共用同一状态。
 
 ```aside

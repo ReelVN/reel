@@ -2,6 +2,7 @@
 use super::{AdapterError, HostResponse, HostTicket, SessionVm, observable, results, stage, text};
 use aside_vm::{Heap, RootKind, RootToken, Value, ValueTag};
 use reel_core::window::{WindowConfiguration, WindowInfo};
+use reel_ui::input::FocusVisibility;
 use reel_ui::stage::NodeId;
 use std::sync::Arc;
 
@@ -15,6 +16,7 @@ pub enum WindowCommand {
     /// Focus a control after the frame carrying this request has been accepted.
     Focus {
         target: NodeId,
+        visibility: FocusVisibility,
     },
 }
 pub enum WindowReply {
@@ -199,13 +201,22 @@ impl SessionVm {
         let args = self.vm.host_arguments(ticket)?;
         if symbol == "reel::stage::focus" {
             let target = self.stage.id(self.vm.heap(), args[0])?;
+            let visibility = match text::read_string(self.vm.heap(), args[2], 16)?.as_str() {
+                "show" => FocusVisibility::Show,
+                "preserve" => FocusVisibility::Preserve,
+                _ => {
+                    return Err(AdapterError::Input(
+                        "focus visibility must be show or preserve",
+                    ));
+                }
+            };
             let owner = if args[1].tag() == ValueTag::Null {
                 self.default_activity_owner(ticket.task)?
             } else {
                 args[1]
             };
             super::scopes::validate_owner(self.vm.heap(), &self.stage, owner)?;
-            self.submit_window(ticket, WindowCommand::Focus { target }, owner)?;
+            self.submit_window(ticket, WindowCommand::Focus { target, visibility }, owner)?;
             return Ok(());
         }
         if symbol == "reel::stage::move_pointer" {
@@ -295,7 +306,7 @@ impl SessionVm {
             self.issued = None;
             return Ok(());
         }
-        let presentation = if let WindowCommand::Focus { target } = command {
+        let presentation = if let WindowCommand::Focus { target, .. } = command {
             let target = self.stage.value(self.vm.heap(), target)?;
             results::attach(self.vm.heap_mut(), result, target)?;
             Some(self.results.request_presentation()?)
@@ -423,8 +434,10 @@ aside_host::native_documentation! {
         /// the current input/modal scope. Returns a FocusOperation, a WindowOperation
         /// subtype whose awaited result is bool: true when focused,
         /// false when the target is hidden, disabled, retired or not focusable in that frame.
-        /// A declined request preserves the existing focus. Successful explicit handoff
-        /// displays the focus indicator. Owner defaults to the current scope; retirement
+        /// A declined request preserves the existing focus. `visibility: "show"` (default)
+        /// displays the focus indicator; "preserve" keeps its state when the handoff is
+        /// applied. Navigation or confirmation presses still display it normally.
+        /// Owner defaults to the current scope; retirement
         /// cancels an unfinished request. Shares the bounded window-request slot.
         "reel::stage::focus";
     }
@@ -447,7 +460,10 @@ pub(super) fn describe(api: &mut aside_host::source::Api) {
     api.refine(
         "reel::stage::focus",
         named("reel::types::FocusOperation"),
-        &[("target", named("reel::types::Node"))],
+        &[
+            ("target", named("reel::types::Node")),
+            ("visibility", TypeHint::String),
+        ],
     );
     api.refine(
         "reel::stage::move_pointer",

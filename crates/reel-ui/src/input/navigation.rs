@@ -6,6 +6,15 @@ use std::time::Duration;
 
 pub(crate) const DEFAULT_CONFIRM_CONTROL: Control = Control::Button(GamepadButton::South);
 
+/// Indicator policy applied when an explicit focus handoff succeeds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FocusVisibility {
+    /// Display navigation focus immediately.
+    Show,
+    /// Keep the indicator state current when the handoff is applied.
+    Preserve,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NavigationAction {
     Left,

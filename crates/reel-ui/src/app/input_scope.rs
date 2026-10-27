@@ -57,8 +57,12 @@ impl RenderRoot {
     /// Focus one control using its accepted geometry and current input eligibility.
     /// Returns false without moving focus when the target has not been presented,
     /// is hidden/disabled, is outside the accepted modal scope, or rejects focus.
-    /// A successful explicit handoff displays the ordinary navigation focus indicator.
-    pub fn request_focus(&mut self, id: WidgetId) -> bool {
+    /// The visibility policy is applied to the current indicator state on success.
+    pub fn request_focus(
+        &mut self,
+        id: WidgetId,
+        visibility: crate::input::FocusVisibility,
+    ) -> bool {
         if !matches!(
             self.global_state.input_geometry_source,
             InputGeometrySource::Presented(Some(_))
@@ -69,7 +73,9 @@ impl RenderRoot {
         }
         self.global_state.next_focused_widget = Some(id);
         self.global_state.focus_anchor = Some(id);
-        crate::passes::event::set_focus_visible(self, true);
+        if visibility == crate::input::FocusVisibility::Show {
+            crate::passes::event::set_focus_visible(self, true);
+        }
         self.run_rewrite_passes();
         self.global_state.focused_widget == Some(id)
     }
