@@ -47,6 +47,9 @@ pub enum GpuError {
     InvalidSize,
     IdentityExhausted,
     Busy,
+    /// Internal GPU work is continuing preparation of this exact candidate.
+    /// Retry the same frame after `ResourcesAvailable`; it has not been presented.
+    Preparing,
     /// Other prepared/in-flight submissions occupy quota needed by this request.
     /// Later records can still exceed the preparation's own quota on retry.
     Pressure {
@@ -82,7 +85,7 @@ impl GpuError {
     pub fn is_retryable(&self) -> bool {
         match self {
             Self::Shader { source, .. } => source.is_retryable(),
-            _ => matches!(self, Self::Busy | Self::Pressure { .. }),
+            _ => matches!(self, Self::Busy | Self::Preparing | Self::Pressure { .. }),
         }
     }
 }
@@ -105,7 +108,7 @@ impl crate::BackendError for GpuError {
         use crate::FailureKind;
         match self {
             Self::Shader { source, .. } => source.kind(),
-            Self::Busy | Self::Pressure { .. } => FailureKind::Pressure,
+            Self::Busy | Self::Preparing | Self::Pressure { .. } => FailureKind::Pressure,
             Self::Budget { .. }
             | Self::Unsupported { .. }
             | Self::InvalidRecord { .. }

@@ -311,6 +311,7 @@ impl ScenarioBackend {
                         degraded: false,
                     }),
                     PresentOutcome::Skipped(_) => Err(GpuError::Busy),
+                    PresentOutcome::Preparing => Err(GpuError::Preparing),
                     PresentOutcome::SurfaceUnavailable => Err(GpuError::InvalidSurface),
                 }
             }
