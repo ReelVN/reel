@@ -325,9 +325,7 @@ impl Assets {
     }
     pub fn needs_poll(&self) -> bool {
         let service = self.0.borrow();
-        (service.io.is_some() && service.wake.is_pending())
-            || !service.loads.is_empty()
-            || service.streams.pending()
+        (service.io.is_some() && service.wake.is_pending()) || !service.loads.is_empty()
     }
     pub fn close(&self) {
         let mut service = self.0.borrow_mut();
@@ -340,8 +338,11 @@ impl Assets {
         service.work_events.clear();
     }
     /// Create a media reader using this service's adapters and budgets.
-    /// Read/seek may block a decoder worker or native media callback. Maintain
-    /// stays on the host, which must keep polling until the reader closes.
+    /// Read/seek may block a decoder worker or native media callback. Its reader
+    /// shares the adapter's bounded IO lane and progresses without host polling.
+    /// Adapters must provide [`AssetIo::background_reader`].
+    /// Creation admits one 512-byte completion ticket, reused until cancellation
+    /// or reader drop; insufficient completion capacity rejects creation.
     pub fn stream(
         &self,
         source: impl Into<String>,
@@ -350,7 +351,6 @@ impl Assets {
         if service.io.is_none() {
             return Err("asset service closed".into());
         }
-        let wake = service.wake.clone();
         let chunk = service
             .options
             .stream_input_bytes()
@@ -359,7 +359,20 @@ impl Assets {
         if chunk == 0 {
             return Err("streaming requires a nonempty reserved input allowance".into());
         }
-        service.streams.create(source.into(), wake, chunk)
+        let Service {
+            streams,
+            io,
+            stream_input,
+            completion,
+            ..
+        } = &mut *service;
+        streams.create(
+            source.into(),
+            io.as_ref().unwrap().as_ref(),
+            stream_input.clone(),
+            completion.clone(),
+            chunk,
+        )
     }
     pub fn request(&self, source: impl Into<String>, kind: AssetKind) -> LoadId {
         self.request_source(
@@ -592,11 +605,8 @@ impl Service {
             .unwrap()
             .drain(&mut self.work_events, 32);
         let more_completions = self.io_events.len() == 32 || self.work_events.len() == 32;
-        for mut event in self.io_events.drain(..) {
+        for event in self.io_events.drain(..) {
             if event.scope != Scope::Process {
-                continue;
-            }
-            if self.streams.deliver(&mut event) {
                 continue;
             }
             let Some(load) = self.loads.values_mut().find(|load| matches!(load.phase, Phase::Describing(id) | Phase::Reading(id) if id == event.id)) else { continue; };
@@ -729,11 +739,6 @@ impl Service {
             }
         }
         self.loads = loads;
-        self.streams.submit(
-            self.io.as_mut().unwrap().as_mut(),
-            &self.stream_input,
-            &self.completion,
-        );
         if progress.has_work || more_completions {
             self.wake.wake();
         }

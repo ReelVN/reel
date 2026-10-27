@@ -167,35 +167,9 @@ fn initially_paused_audio_prepares_seeks_and_resumes_before_or_after_decode() {
 #[test]
 fn ready_intro_waits_for_explicit_batch_and_blocked_successor() {
     use reel_core::{
-        identity::{AssetKey, ContentVersion, IoId},
-        io::{AssetIo, DescribeRequest, IoCaps, IoEvent, ReadRequest, SaveWrite},
-        result::Rejected,
+        identity::{AssetKey, ContentVersion},
         test_support::{MemoryAsset, MemoryAssetIo},
     };
-    struct Io(Rc<RefCell<MemoryAssetIo>>);
-    impl AssetIo for Io {
-        fn capabilities(&self) -> IoCaps {
-            self.0.borrow().capabilities()
-        }
-        fn describe(
-            &mut self,
-            request: DescribeRequest,
-        ) -> Result<IoId, Rejected<DescribeRequest>> {
-            self.0.borrow_mut().describe(request)
-        }
-        fn read(&mut self, request: ReadRequest) -> Result<IoId, Rejected<ReadRequest>> {
-            self.0.borrow_mut().read(request)
-        }
-        fn replace_save(&mut self, request: SaveWrite) -> Result<IoId, Rejected<SaveWrite>> {
-            self.0.borrow_mut().replace_save(request)
-        }
-        fn cancel(&mut self, id: IoId) {
-            self.0.borrow_mut().cancel(id);
-        }
-        fn poll(&mut self, out: &mut Vec<IoEvent>, limit: usize) {
-            self.0.borrow_mut().poll(out, limit);
-        }
-    }
     let mut control = None;
     let assets = Assets::with_adapters(AssetOptions::default(), |wake| {
         let limits = QueueLimits {
@@ -222,10 +196,11 @@ fn ready_intro_waits_for_explicit_batch_and_blocked_successor() {
             )
             .unwrap();
         }
-        let io = Rc::new(RefCell::new(io));
-        control = Some(io.clone());
+        let io =
+            crate::assets::tests::memory_reader::MemoryReader::new(io, wake.clone(), false, None);
+        control = Some(io.control());
         (
-            Box::new(Io(io)),
+            Box::new(io),
             Box::new(crate::assets::ImageExecutor::new(limits, wake)),
         )
     });
@@ -234,7 +209,7 @@ fn ready_intro_waits_for_explicit_batch_and_blocked_successor() {
     // Native play returns; allow all preparation and PCM callbacks before queue.
     let id = player.play_audio(request(false), false).unwrap();
     until(|| {
-        control.borrow_mut().complete_next_read();
+        control.lock().unwrap().complete_next_read();
         player.maintain(Duration::ZERO);
         assert_eq!(output.render(), 0.0);
         matches!(player.entries[&id].phase, Phase::Playing(_))
@@ -267,7 +242,7 @@ fn ready_intro_waits_for_explicit_batch_and_blocked_successor() {
     assert!(!player.entries[&id].started);
     assert_eq!(player.position(id), Some(Duration::ZERO));
     until(|| {
-        control.borrow_mut().complete_next_read();
+        control.lock().unwrap().complete_next_read();
         player.maintain(Duration::ZERO);
         player.entries[&id].started
     });

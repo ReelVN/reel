@@ -382,6 +382,13 @@ fn io_error(error: std::io::Error) -> IoError {
     reason = "rejection returns the owning request without allocating"
 )]
 impl AssetIo for FileIo {
+    fn background_reader(&self, wake: WakeSignal) -> Result<Box<dyn AssetIo + Send>, RejectReason> {
+        Ok(Box::new(Self {
+            worker: self.worker.client(wake)?,
+            ids: self.ids.clone(),
+            limits: self.limits,
+        }))
+    }
     fn capabilities(&self) -> IoCaps {
         IoCaps {
             range_read: true,
@@ -486,6 +493,12 @@ macro_rules! forward_asset_io {
             reason = "rejection returns the owning request without allocating"
         )]
         impl AssetIo for $adapter {
+            fn background_reader(
+                &self,
+                wake: WakeSignal,
+            ) -> Result<Box<dyn AssetIo + Send>, RejectReason> {
+                self.0.background_reader(wake)
+            }
             fn capabilities(&self) -> IoCaps {
                 self.0.capabilities()
             }

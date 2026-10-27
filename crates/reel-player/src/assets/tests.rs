@@ -1,7 +1,6 @@
 use super::*;
 use reel_core::{
     identity::ContentVersion,
-    io::{IoCaps, SaveWrite},
     result::Rejected,
     test_support::{MemoryAsset, MemoryAssetIo},
 };
@@ -14,7 +13,10 @@ use std::{
 const PNG: &[u8] = include_bytes!("../../../../examples/assets/panels.png");
 const JPEG: &[u8] = include_bytes!("../../../../examples/assets/sun.jpg");
 mod cost;
+pub(crate) mod memory_reader;
 mod packed;
+mod streaming;
+use memory_reader::MemoryReader;
 
 /// Supply compiled source/ASB definitions through the ordinary asset IO and
 /// shader-envelope admission path used by the exported player.
@@ -72,7 +74,7 @@ pub(crate) fn prepared_effect_assets(
             }
         }
         (
-            Box::new(MemoryHost(io, None)),
+            Box::new(MemoryReader::new(io, wake.clone(), true, None)),
             Box::new(ImageExecutor::new(limits, wake)),
         )
     })
@@ -219,8 +221,10 @@ fn prepared_texture_fast_path_avoids_probe_jobs_and_raw_payload_copies() {
                     max_bytes: 1 << 20,
                 };
                 (
-                    Box::new(MemoryHost(
+                    Box::new(MemoryReader::new(
                         MemoryAssetIo::new(limits, limits, wake.clone()),
+                        wake.clone(),
+                        true,
                         None,
                     )),
                     Box::new(Counted(ImageExecutor::new(limits, wake), jobs.clone())),
@@ -444,42 +448,6 @@ fn loose_resources_share_within_a_launch_and_reopen_on_the_next_launch() {
     std::fs::remove_dir(root).unwrap();
 }
 
-// A deterministic in-memory host drives the contract fixture at admission.
-// Image work still uses the production codec adapter, without a filesystem.
-struct MemoryHost(MemoryAssetIo, Option<Option<ContentVersion>>);
-impl AssetIo for MemoryHost {
-    fn capabilities(&self) -> IoCaps {
-        self.0.capabilities()
-    }
-    fn describe(&mut self, request: DescribeRequest) -> Result<IoId, Rejected<DescribeRequest>> {
-        let id = self.0.describe(request)?;
-        assert!(self.0.complete_next_read());
-        Ok(id)
-    }
-    fn read(&mut self, request: ReadRequest) -> Result<IoId, Rejected<ReadRequest>> {
-        let id = self.0.read(request)?;
-        assert!(self.0.complete_next_read());
-        Ok(id)
-    }
-    fn replace_save(&mut self, request: SaveWrite) -> Result<IoId, Rejected<SaveWrite>> {
-        self.0.replace_save(request)
-    }
-    fn cancel(&mut self, id: IoId) {
-        self.0.cancel(id);
-    }
-    fn poll(&mut self, out: &mut Vec<IoEvent>, limit: usize) {
-        let first = out.len();
-        self.0.poll(out, limit);
-        if let Some(version) = self.1 {
-            for event in &mut out[first..] {
-                if let Terminal::Completed(IoPayload::Described(info)) = &mut event.result {
-                    info.version = version;
-                }
-            }
-        }
-    }
-}
-
 pub(crate) fn memory_assets() -> Assets {
     memory_assets_with_description(None)
 }
@@ -509,7 +477,7 @@ fn memory_assets_with_description(version: Option<Option<ContentVersion>>) -> As
             .unwrap();
         }
         (
-            Box::new(MemoryHost(io, version)),
+            Box::new(MemoryReader::new(io, wake.clone(), true, version)),
             Box::new(ImageExecutor::new(limits, wake)),
         )
     })
@@ -626,7 +594,6 @@ fn worker_stream_reads_ranges_seeks_and_cancels_through_the_shared_asset_service
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while !worker.is_finished() {
             assert!(std::time::Instant::now() < deadline);
-            assets.maintain();
             std::thread::sleep(Duration::from_millis(1));
         }
         worker.join().unwrap();
@@ -643,27 +610,12 @@ fn worker_stream_reads_ranges_seeks_and_cancels_through_the_shared_asset_service
         drop(reader);
         drop(control);
         assets.maintain();
-        for close_service in [false, true] {
-            let (control, mut reader) = assets.stream("assets/panels.png").unwrap();
-            let waiter = std::thread::spawn(move || reader.open());
-            while !assets.needs_poll() {
-                assert!(std::time::Instant::now() < deadline);
-                std::thread::yield_now();
-            }
-            if close_service {
-                assets.close();
-            } else {
-                control.cancel();
-            }
-            assert_eq!(
-                waiter.join().unwrap().unwrap_err().kind(),
-                std::io::ErrorKind::BrokenPipe
-            );
-            drop(control);
-            assets.maintain();
-            assert_eq!(assets.0.borrow().input.usage().bytes, 0);
-            assert_eq!(assets.0.borrow().completion.usage().bytes, 0);
-        }
+        let (_, mut reader) = assets.stream("assets/panels.png").unwrap();
+        assets.close();
+        assert_eq!(
+            reader.open().unwrap_err().kind(),
+            std::io::ErrorKind::BrokenPipe
+        );
     }
 }
 
@@ -685,7 +637,7 @@ fn stream_input_headroom_survives_full_ordinary_admission_and_tiny_budgets() {
             continue;
         }
         let mut workers = Vec::new();
-        for _ in 0..2 {
+        for _ in 0..4 {
             let (_, mut reader) = assets.stream("assets/panels.png").unwrap();
             workers.push(std::thread::spawn(move || {
                 let mut prefix = [0; 8];
@@ -696,7 +648,6 @@ fn stream_input_headroom_survives_full_ordinary_admission_and_tiny_budgets() {
         let deadline = Instant::now() + Duration::from_secs(3);
         while workers.iter().any(|worker| !worker.is_finished()) {
             assert!(Instant::now() < deadline);
-            assets.maintain();
             std::thread::yield_now();
         }
         for worker in workers {

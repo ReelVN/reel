@@ -17,9 +17,35 @@ struct Task<R> {
     request: R,
     cancelled: Arc<AtomicBool>,
 }
+struct Event<E> {
+    client: u64,
+    event: E,
+}
+struct Active {
+    cancelled: Arc<AtomicBool>,
+    client: u64,
+}
+#[derive(Clone)]
+struct Client {
+    wake: WakeSignal,
+    waiting: Arc<AtomicBool>,
+}
+impl Client {
+    fn new(wake: WakeSignal) -> Self {
+        Self {
+            wake,
+            waiting: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
 struct State<R, E> {
-    queue: Queue<Task<R>, E>,
-    active: BTreeMap<u64, Arc<AtomicBool>>,
+    queue: Queue<Task<R>, Event<E>>,
+    active: BTreeMap<u64, Active>,
+    clients: BTreeMap<u64, Client>,
+    wakes: Arc<[Client]>,
+    next_client: u64,
+    max_clients: u32,
+    handler: Option<Arc<Handler<R, E>>>,
     closed: bool,
 }
 type Shared<R, E> = Arc<(Mutex<State<R, E>>, Condvar)>;
@@ -42,10 +68,8 @@ pub(super) fn check_completion(ticket: &BudgetTicket) -> Result<(), RejectReason
 /// One bounded background lane, shared by all resource kinds using the adapter.
 pub(crate) struct Worker<R, E> {
     state: Shared<R, E>,
-    handler: Arc<Handler<R, E>>,
     cancel_event: fn(&mut E),
-    wake: WakeSignal,
-    started: bool,
+    client: u64,
 }
 impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
     pub fn new(
@@ -69,20 +93,52 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
         handler: impl Fn(R, &AtomicBool) -> Step<R, E> + Send + Sync + 'static,
         cancel_event: fn(&mut E),
     ) -> Self {
+        let client = Client::new(wake);
         Self {
             state: Arc::new((
                 Mutex::new(State {
                     queue: Queue::with_realtime_reserve(limits, realtime_slots),
                     active: BTreeMap::new(),
+                    clients: BTreeMap::from([(0, client.clone())]),
+                    wakes: Arc::from([client]),
+                    next_client: 1,
+                    max_clients: limits.max_requests,
+                    handler: Some(Arc::new(handler)),
                     closed: false,
                 }),
                 Condvar::new(),
             )),
-            handler: Arc::new(handler),
             cancel_event,
-            wake,
-            started: false,
+            client: 0,
         }
+    }
+    /// Shares the worker, queue and handler without starting another thread.
+    /// Client registrations are bounded by the lane's request ceiling.
+    pub fn client(&self, wake: WakeSignal) -> Result<Self, RejectReason> {
+        let mut state = self.state.0.lock().unwrap();
+        if state.closed {
+            return Err(closed());
+        }
+        if state.clients.len() > state.max_clients as usize {
+            return Err(RejectReason::new(
+                RejectCode::Busy,
+                "IO reader limit reached",
+            ));
+        }
+        let client = state.next_client;
+        state.next_client = client.checked_add(1).ok_or_else(|| {
+            RejectReason::new(
+                RejectCode::ServiceFault,
+                "IO client identity space exhausted",
+            )
+        })?;
+        state.clients.insert(client, Client::new(wake));
+        state.wakes = state.clients.values().cloned().collect();
+        Ok(Self {
+            state: self.state.clone(),
+            cancel_event: self.cancel_event,
+            client,
+        })
     }
     pub fn accept(
         &mut self,
@@ -91,11 +147,16 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
         bytes: u64,
         priority: Priority,
     ) -> Result<(), Rejected<R>> {
-        if !self.started {
+        let mut state = self.state.0.lock().unwrap();
+        if state.closed {
+            return Err(Rejected {
+                request,
+                reason: closed(),
+            });
+        }
+        if let Some(handler) = state.handler.clone() {
             let shared = self.state.clone();
-            let handler = self.handler.clone();
             let cancel_event = self.cancel_event;
-            let wake = self.wake.clone();
             if let Err(error) = std::thread::Builder::new()
                 .name("reel-resource".into())
                 .spawn(move || {
@@ -123,33 +184,38 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
                                 }
                             };
                         // Removing the live ID settles cancellation before queuing the terminal.
-                        let cancelled = shared
-                            .0
-                            .lock()
-                            .unwrap()
-                            .active
-                            .remove(&entry.slot.id)
-                            .unwrap()
-                            .load(Ordering::Acquire);
-                        if cancelled {
+                        let mut state = shared.0.lock().unwrap();
+                        let active = state.active.remove(&entry.slot.id).unwrap();
+                        drop(state);
+                        if active.cancelled.load(Ordering::Acquire) {
                             cancel_event(&mut event);
                         }
-                        {
-                            let mut state = shared.0.lock().unwrap();
-                            if state.closed {
-                                drop(state);
-                                drop(event);
-                                // The consumer has closed, but every accepted
-                                // request still settles cancellation once. Drop
-                                // its terminal here and drain cancelled owners.
-                                continue;
-                            }
-                            state.queue.finish(event, entry.slot);
+                        let mut state = shared.0.lock().unwrap();
+                        let wake = state.clients.get(&active.client).cloned();
+                        if let Some(wake) = wake {
+                            state.queue.finish(
+                                Event {
+                                    client: active.client,
+                                    event,
+                                },
+                                entry.slot,
+                            );
+                            drop(state);
+                            wake.wake.wake();
+                        } else {
+                            state.queue.discard(entry.slot);
+                            let wakes = state.wakes.clone();
+                            drop(state);
+                            drop(event);
+                            // Discarding a cancelled reader can release input
+                            // tickets after its control has already closed. Its
+                            // peers may be waiting on that budget, before queue
+                            // admission, so they also need this release signal.
+                            notify(&wakes);
                         }
-                        wake.wake();
                     }
-                    drop(shared);
-                    wake.wake();
+                    let wakes = shared.0.lock().unwrap().wakes.clone();
+                    notify(&wakes);
                 })
             {
                 return Err(Rejected {
@@ -157,10 +223,11 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
                     reason: RejectReason::new(RejectCode::Unavailable, error.to_string()),
                 });
             }
-            self.started = true;
+            // The running thread is now the only handler owner, so its Files
+            // and metadata tickets are released when accepted work has settled.
+            state.handler = None;
         }
         let cancelled = Arc::new(AtomicBool::new(false));
-        let mut state = self.state.0.lock().unwrap();
         state
             .queue
             .accept(
@@ -172,11 +239,24 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
                 bytes,
                 priority,
             )
-            .map_err(|error| Rejected {
-                request: error.request.request,
-                reason: error.reason,
+            .map_err(|error| {
+                if error.reason.code == RejectCode::Busy {
+                    state.clients[&self.client]
+                        .waiting
+                        .store(true, Ordering::Release);
+                }
+                Rejected {
+                    request: error.request.request,
+                    reason: error.reason,
+                }
             })?;
-        state.active.insert(id, cancelled);
+        state.active.insert(
+            id,
+            Active {
+                cancelled,
+                client: self.client,
+            },
+        );
         drop(state);
         self.state.1.notify_one();
         Ok(())
@@ -185,23 +265,83 @@ impl<R: Send + 'static, E: Send + 'static> Worker<R, E> {
         self.state.0.lock().unwrap().queue.usage().requests == 0
     }
     pub fn cancel(&mut self, id: u64) {
-        if let Some(cancelled) = self.state.0.lock().unwrap().active.get(&id) {
-            cancelled.store(true, Ordering::Release);
+        if let Some(active) = self.state.0.lock().unwrap().active.get(&id)
+            && active.client == self.client
+        {
+            active.cancelled.store(true, Ordering::Release);
         }
     }
     pub fn drain(&mut self, events: &mut Vec<E>, limit: usize) {
-        self.state.0.lock().unwrap().queue.drain(events, limit);
+        let mut state = self.state.0.lock().unwrap();
+        let start = events.len();
+        for _ in 0..limit {
+            let Some(event) = state
+                .queue
+                .take_finished(|event| event.client == self.client)
+            else {
+                break;
+            };
+            events.push(event.event);
+        }
+        let wakes = state.wakes.clone();
+        drop(state);
+        if events.len() != start {
+            notify_capacity(&wakes);
+        }
     }
 }
 impl<R, E> Drop for Worker<R, E> {
     fn drop(&mut self) {
         let mut state = self.state.0.lock().unwrap();
-        state.closed = true;
-        for flag in state.active.values() {
-            flag.store(true, Ordering::Release);
+        if self.client == 0 {
+            state.closed = true;
         }
+        let handler = if state.closed {
+            state.handler.take()
+        } else {
+            None
+        };
+        state.clients.remove(&self.client);
+        state.wakes = state.clients.values().cloned().collect();
+        for active in state.active.values() {
+            if state.closed || active.client == self.client {
+                active.cancelled.store(true, Ordering::Release);
+            }
+        }
+        // Drop terminal payloads outside the lane lock. Pending owners keep
+        // their slots until the worker reaches their next bounded step.
+        loop {
+            let event = state
+                .queue
+                .take_finished(|event| event.client == self.client);
+            let Some(event) = event else {
+                break;
+            };
+            drop(state);
+            drop(event);
+            state = self.state.0.lock().unwrap();
+        }
+        let wakes = state.wakes.clone();
         drop(state);
+        drop(handler);
         self.state.1.notify_one();
+        notify(&wakes);
+    }
+}
+
+fn closed() -> RejectReason {
+    RejectReason::new(RejectCode::Unavailable, "IO lane closed")
+}
+fn notify(wakes: &[Client]) {
+    for wake in wakes {
+        wake.wake.wake();
+    }
+}
+fn notify_capacity(wakes: &[Client]) {
+    for client in wakes {
+        if client.waiting.swap(false, Ordering::AcqRel) {
+            client.wake.wake();
+        }
     }
 }
 
@@ -337,5 +477,230 @@ mod tests {
                 assert!(worker.is_idle());
             }
         }
+    }
+
+    #[test]
+    fn clients_share_global_capacity_and_drain_only_their_own_terminals() {
+        let limits = QueueLimits {
+            max_requests: 2,
+            max_bytes: 1024,
+        };
+        let pool = reel_core::budget::BudgetPool::new(
+            BudgetCategory::CpuInput,
+            QueueLimits {
+                max_requests: 8,
+                ..limits
+            },
+        );
+        let mut owner = Worker::new(
+            limits,
+            WakeSignal::new(|| {}),
+            |job: Job, _| Event {
+                id: job.id,
+                cancelled: false,
+                _ticket: job._ticket,
+            },
+            cancel,
+        );
+        let mut first = owner.client(WakeSignal::new(|| {})).unwrap();
+        let mut second = owner.client(WakeSignal::new(|| {})).unwrap();
+        assert!(
+            matches!(owner.client(WakeSignal::new(|| {})), Err(reason) if reason.code == RejectCode::Busy)
+        );
+        for (worker, id) in [(&mut first, 1), (&mut second, 2)] {
+            worker
+                .accept(
+                    id,
+                    Job {
+                        id,
+                        left: 0,
+                        _ticket: pool.reserve(128).unwrap(),
+                    },
+                    128,
+                    Priority::Realtime,
+                )
+                .unwrap_or_else(|_| panic!("client admission"));
+        }
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while owner.state.0.lock().unwrap().queue.usage().completed != 2 {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        let mut events = Vec::new();
+        owner.drain(&mut events, 2);
+        assert!(events.is_empty());
+        assert_eq!(owner.state.0.lock().unwrap().queue.usage().requests, 2);
+        let denied = owner
+            .accept(
+                3,
+                Job {
+                    id: 3,
+                    left: 0,
+                    _ticket: pool.reserve(128).unwrap(),
+                },
+                128,
+                Priority::Realtime,
+            )
+            .unwrap_err();
+        assert_eq!(denied.reason.code, RejectCode::Busy);
+        drop(denied);
+        first.drain(&mut events, 2);
+        assert_eq!(events.iter().map(|event| event.id).collect::<Vec<_>>(), [1]);
+        assert_eq!(owner.state.0.lock().unwrap().queue.usage().requests, 1);
+        drop(first);
+        drop(second); // Undrained client terminal releases its own slot/ticket.
+        assert!(owner.is_idle());
+        assert_eq!(pool.usage().bytes, 128);
+        drop(events);
+        assert_eq!(pool.usage().bytes, 0);
+        assert!(owner.client(WakeSignal::new(|| {})).is_ok());
+    }
+
+    #[test]
+    fn owner_close_cancels_live_clients_and_releases_handler_before_client_drop() {
+        let limits = QueueLimits {
+            max_requests: 2,
+            max_bytes: 1024,
+        };
+        let pool = reel_core::budget::BudgetPool::new(
+            BudgetCategory::CpuInput,
+            QueueLimits {
+                max_requests: 8,
+                ..limits
+            },
+        );
+        let residency = pool.reserve(128).unwrap();
+        let (entered, ready) = mpsc::channel();
+        let (resume, gate) = mpsc::channel();
+        let gate = Mutex::new(gate);
+        let owner = Worker::new(
+            limits,
+            WakeSignal::new(|| {}),
+            move |job: Job, _| {
+                std::hint::black_box(&residency);
+                entered.send(()).unwrap();
+                gate.lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(3))
+                    .unwrap();
+                Event {
+                    id: job.id,
+                    cancelled: false,
+                    _ticket: job._ticket,
+                }
+            },
+            cancel,
+        );
+        let mut client = owner.client(WakeSignal::new(|| {})).unwrap();
+        client
+            .accept(
+                1,
+                Job {
+                    id: 1,
+                    left: 0,
+                    _ticket: pool.reserve(128).unwrap(),
+                },
+                128,
+                Priority::Realtime,
+            )
+            .unwrap_or_else(|_| panic!("client admission"));
+        ready.recv_timeout(Duration::from_secs(3)).unwrap();
+        drop(owner);
+        let denied = client
+            .accept(
+                2,
+                Job {
+                    id: 2,
+                    left: 0,
+                    _ticket: pool.reserve(128).unwrap(),
+                },
+                128,
+                Priority::Realtime,
+            )
+            .unwrap_err();
+        assert_eq!(denied.reason.code, RejectCode::Unavailable);
+        drop(denied);
+        resume.send(()).unwrap();
+        let mut events = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while events.is_empty() {
+            assert!(Instant::now() < deadline);
+            client.drain(&mut events, 1);
+            std::thread::yield_now();
+        }
+        assert!(events[0].cancelled);
+        drop(events);
+        while pool.usage().bytes != 0 {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert!(client.is_idle());
+    }
+
+    #[test]
+    fn cancelled_client_release_wakes_peers_waiting_before_queue_admission() {
+        let limits = QueueLimits {
+            max_requests: 2,
+            max_bytes: 1024,
+        };
+        let input = reel_core::budget::BudgetPool::new(
+            BudgetCategory::CpuInput,
+            QueueLimits {
+                max_requests: 2,
+                max_bytes: 128,
+            },
+        );
+        let (entered, ready) = mpsc::channel();
+        let (resume, gate) = mpsc::channel();
+        let gate = Mutex::new(gate);
+        let owner = Worker::new(
+            limits,
+            WakeSignal::new(|| {}),
+            move |job: Job, _| {
+                entered.send(()).unwrap();
+                gate.lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(3))
+                    .unwrap();
+                Event {
+                    id: job.id,
+                    cancelled: false,
+                    _ticket: job._ticket,
+                }
+            },
+            cancel,
+        );
+        let mut active = owner.client(WakeSignal::new(|| {})).unwrap();
+        let wake = WakeSignal::new(|| {});
+        let _waiting = owner.client(wake.clone()).unwrap();
+        active
+            .accept(
+                1,
+                Job {
+                    id: 1,
+                    left: 0,
+                    _ticket: input.reserve(128).unwrap(),
+                },
+                128,
+                Priority::Realtime,
+            )
+            .unwrap_or_else(|_| panic!("client admission"));
+        ready.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(input.reserve(128).is_err());
+        drop(active);
+        wake.acknowledge();
+        assert_eq!(
+            input.usage().bytes,
+            128,
+            "control cancellation precedes bounded worker settlement"
+        );
+        resume.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !wake.is_pending() {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        assert_eq!(input.usage().bytes, 0);
+        assert!(owner.is_idle());
     }
 }

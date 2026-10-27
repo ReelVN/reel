@@ -188,6 +188,25 @@ impl<R, E> Queue<R, E> {
             out.push(f.event);
         }
     }
+    /// Removes one terminal owned by the selected consumer, releasing its global
+    /// request/byte reservation. Unselected terminals keep their reservations.
+    pub fn take_finished(&mut self, owns: impl Fn(&E) -> bool) -> Option<E> {
+        let index = self
+            .events
+            .iter()
+            .position(|finished| owns(&finished.event))?;
+        let finished = self.events.remove(index).expect("selected terminal exists");
+        self.usage.requests -= 1;
+        self.ordinary_requests -= u32::from(finished.ordinary);
+        self.usage.bytes -= finished.bytes;
+        Some(finished.event)
+    }
+    /// Settles a terminal whose owning consumer has closed, without queuing it.
+    pub fn discard(&mut self, slot: CompletionSlot) {
+        self.usage.requests -= 1;
+        self.ordinary_requests -= u32::from(slot.ordinary);
+        self.usage.bytes -= slot.bytes;
+    }
     pub fn usage(&self) -> QueueUsage {
         QueueUsage {
             pending: self.pending.iter().map(VecDeque::len).sum(),

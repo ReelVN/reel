@@ -2,7 +2,8 @@
 use crate::{
     budget::{BudgetTicket, OwnedBytes, QueueLimits},
     identity::{AssetSource, ContentVersion, IoId, Priority, ProcessRequestId, Scope},
-    result::{Rejected, Terminal},
+    result::{RejectCode, RejectReason, Rejected, Terminal},
+    wake::WakeSignal,
 };
 
 /// Visible replacement alone does not establish durability across process/device loss.
@@ -117,6 +118,22 @@ pub struct IoEvent {
 /// Already settled events retain their real terminal result for resource and
 /// process-ledger accounting, including a save that actually committed.
 pub trait AssetIo {
+    /// Creates an independently polled reader on this adapter's existing bounded
+    /// IO lane. Submission, cancellation and completion delivery must progress
+    /// without polling the original adapter. All readers share its queue limits
+    /// and request identity domain; dropping the original adapter closes them.
+    /// `wake` signals completions and newly available admission capacity. The
+    /// reader must acknowledge it before polling and recheck it before sleeping.
+    /// Unsupported adapters reject media streaming at reader creation.
+    fn background_reader(
+        &self,
+        _wake: WakeSignal,
+    ) -> Result<Box<dyn AssetIo + Send>, RejectReason> {
+        Err(RejectReason::new(
+            RejectCode::Unsupported,
+            "asset adapter does not provide a background reader",
+        ))
+    }
     fn capabilities(&self) -> IoCaps;
     fn describe(&mut self, request: DescribeRequest) -> Result<IoId, Rejected<DescribeRequest>>;
     fn read(&mut self, request: ReadRequest) -> Result<IoId, Rejected<ReadRequest>>;
