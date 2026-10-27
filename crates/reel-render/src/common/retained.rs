@@ -305,6 +305,7 @@ impl<T, Q> Default for Cache<T, Q> {
     }
 }
 impl<T: Clone, Q: Copy + PartialEq> Cache<T, Q> {
+    #[cfg(feature = "wgpu")]
     pub(crate) fn quality(&self) -> Option<Q> {
         self.0
             .lock()
@@ -671,6 +672,7 @@ impl Plan {
                 .iter()
                 .any(|entry| entry.transition == transition as *const _ as usize)
     }
+    #[cfg(any(test, feature = "wgpu"))]
     pub(crate) fn has_cached(&self) -> bool {
         self.entries.iter().any(|entry| entry.input.is_some())
     }
