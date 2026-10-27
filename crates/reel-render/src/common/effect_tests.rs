@@ -37,8 +37,10 @@ impl Graph {
     }
 }
 
+#[cfg(any(feature = "wgpu", all(feature = "gles2", not(target_os = "vita"))))]
 fn fragment(generated: &GeneratedEffect, language: Language) -> String {
     match language {
+        Language::Cg => unreachable!("native Cg tests use compile_fragment"),
         Language::GlslEs100 => {
             let result = if generated.output_type == EffectType::Float {
                 "vec4(reel_effect(v_uv, v_uv * u_size, u_size))"
@@ -122,7 +124,7 @@ fn sampled_program() -> Arc<EffectProgram> {
 }
 
 #[test]
-fn parameter_layout_matches_both_uniform_abis() {
+fn parameter_layout_matches_all_uniform_abis() {
     let mut g = Graph::default();
     for ty in [
         EffectType::Bool,
@@ -137,7 +139,15 @@ fn parameter_layout_matches_both_uniform_abis() {
     let program = g.finish(output);
     let glsl = generate(&program, Language::GlslEs100, 16384).unwrap();
     let wgsl = generate(&program, Language::Wgsl, 16384).unwrap();
+    let cg = generate(&program, Language::Cg, 16384).unwrap();
     assert_eq!(glsl.parameters, wgsl.parameters);
+    assert_eq!(glsl.parameters, cg.parameters);
+    for index in 0..5 {
+        assert!(
+            cg.declarations
+                .contains(&format!("uniform float4 reel_parameter_{index};"))
+        );
+    }
     assert_eq!(glsl.parameters.byte_len(), 80);
     assert_eq!(
         glsl.parameters
@@ -176,7 +186,7 @@ fn parameter_layout_matches_both_uniform_abis() {
 
 #[test]
 fn emits_only_root_dependencies_and_keeps_branch_work_local() {
-    for language in [Language::GlslEs100, Language::Wgsl] {
+    for language in [Language::GlslEs100, Language::Wgsl, Language::Cg] {
         let generated = generate(&sampled_program(), language, 16384).unwrap();
         assert!(generated.samples_source);
         let function = generated.function.split("reel_effect(").nth(1).unwrap();
@@ -254,7 +264,7 @@ fn deep_graph_and_branch_expansion_respect_source_limit() {
 
 #[test]
 fn complete_fragments_keep_source_sampling_and_parameter_abi() {
-    for language in [Language::GlslEs100, Language::Wgsl] {
+    for language in [Language::GlslEs100, Language::Wgsl, Language::Cg] {
         let output = compile_fragment(&sampled_program(), language, 16384).unwrap();
         assert_eq!(output.parameters.byte_len(), 32);
         assert!(compile_fragment(&sampled_program(), language, output.source.len()).is_ok());
@@ -263,6 +273,12 @@ fn complete_fragments_keep_source_sampling_and_parameter_abi() {
             Err(GenerateError::SourceLimit { .. })
         ));
         match language {
+            Language::Cg => {
+                assert!(output.source.contains("uniform float4 reel_context[9]"));
+                assert!(output.source.contains("tex2D(reel_source, q)"));
+                assert!(output.source.contains("fragment_position : WPOS"));
+                assert!(!output.source.contains("1.0 - q.y"));
+            }
             Language::GlslEs100 => {
                 assert!(
                     output
@@ -280,11 +296,11 @@ fn complete_fragments_keep_source_sampling_and_parameter_abi() {
 }
 
 #[test]
-fn scalar_coverage_inversion_follows_clamping_in_both_shader_languages() {
+fn scalar_coverage_inversion_follows_clamping_in_all_shader_languages() {
     let mut graph = Graph::default();
     let output = graph.float(2.0);
     let program = graph.finish(output);
-    for language in [Language::GlslEs100, Language::Wgsl] {
+    for language in [Language::GlslEs100, Language::Wgsl, Language::Cg] {
         let shader = compile_fragment(&program, language, 16384).unwrap();
         let clamp = shader.source.find("coverage = clamp(").unwrap();
         let invert = shader.source.find("coverage = 1.0 - coverage").unwrap();
@@ -306,6 +322,72 @@ fn scalar_coverage_inversion_follows_clamping_in_both_shader_languages() {
             .unwrap();
         }
     }
+}
+
+#[test]
+#[ignore = "requires the Sony SDK offline compiler; compiles GXP without device or readback"]
+fn cg_fragments_compile_all_typed_operations() {
+    let compiler = gxp_compiler::Compiler::new().expect("locate Sony SDK compiler");
+    let programs = operation_programs()
+        .into_iter()
+        .chain(external_texture_programs())
+        .collect::<Vec<_>>();
+    for (name, program) in &programs {
+        let fragment = compile_fragment(program, Language::Cg, 65536).unwrap();
+        let binary = compiler
+            .compile(gxp_compiler::Stage::Fragment, &fragment.source)
+            .unwrap_or_else(|error| panic!("{name}: {error}\n{}", fragment.source));
+        assert_eq!(&binary[..4], b"GXP\0");
+    }
+    println!(
+        "compiled {} typed Cg operation programs to GXP",
+        programs.len()
+    );
+}
+
+fn external_texture_programs() -> Vec<(String, Arc<EffectProgram>)> {
+    use reel_ui::stage::effect::EffectTextureParameter;
+    let mut programs = Vec::new();
+    for binding in 0..2 {
+        for channel in [
+            EffectTextureChannel::Color,
+            EffectTextureChannel::Alpha,
+            EffectTextureChannel::Gray,
+        ] {
+            let ty = if channel == EffectTextureChannel::Color {
+                EffectType::Vec4
+            } else {
+                EffectType::Float
+            };
+            let program = EffectProgram::with_textures(
+                vec![],
+                vec![
+                    EffectTextureParameter { name: "ink".into() },
+                    EffectTextureParameter {
+                        name: "noise".into(),
+                    },
+                ],
+                vec![
+                    EffectNode {
+                        ty: EffectType::Vec2,
+                        op: EffectOp::Input(EffectInput::Uv),
+                    },
+                    EffectNode {
+                        ty,
+                        op: EffectOp::TextureSample {
+                            binding,
+                            uv: EffectNodeId(0),
+                            channel,
+                        },
+                    },
+                ],
+                EffectNodeId(1),
+            )
+            .unwrap();
+            programs.push((format!("texture_{binding}_{channel:?}"), program));
+        }
+    }
+    programs
 }
 
 /// Every operation is the root of its own graph: dead-code elimination cannot

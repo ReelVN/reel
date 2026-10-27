@@ -195,7 +195,8 @@ fn build_publishes_movable_asb_and_shader_archive_with_catalogs() {
 }
 
 #[test]
-fn export_prepares_destination_formats_and_reuses_sgx_binary_for_new_defaults() {
+fn export_prepares_destination_formats_and_reuses_gxp_binary_for_new_defaults() {
+    let compiler_available = reel_render::effect::gxp_compiler::Compiler::new().is_ok();
     let temporary = project(SOURCE);
     let root = temporary.path();
     let loaded = project::load(root).unwrap_or_else(|error| panic!("{:?}", error.failure));
@@ -210,7 +211,7 @@ fn export_prepares_destination_formats_and_reuses_sgx_binary_for_new_defaults() 
             directory: loaded.assets(),
         }],
         text: vec![],
-        resource_target: if pvr_compiler::AVAILABLE {
+        resource_target: if compiler_available {
             "vita"
         } else {
             "desktop"
@@ -226,30 +227,27 @@ fn export_prepares_destination_formats_and_reuses_sgx_binary_for_new_defaults() 
         .iter()
         .flat_map(|path| archive_products(path))
         .collect::<Vec<_>>();
-    assert_eq!(
-        descriptors.len(),
-        if pvr_compiler::AVAILABLE { 2 } else { 4 }
-    );
-    if !pvr_compiler::AVAILABLE {
+    assert_eq!(descriptors.len(), if compiler_available { 2 } else { 4 });
+    if !compiler_available {
         assert!(
             prepare_effects::prepare(root, &checked.effects, Target::Vita)
                 .err()
                 .unwrap()
                 .to_string()
-                .contains("Linux build host")
+                .contains("Sony psp2cgc compiler not found")
         );
         return;
     }
     assert!(
         descriptors
             .iter()
-            .all(|d| d.format == EffectShaderFormat::Sgx543)
+            .all(|d| d.format == EffectShaderFormat::Gxp)
     );
     let code_files = || {
         fs::read_dir(root.join("build/resources/objects"))
             .unwrap()
             .map(|entry| entry.unwrap().path())
-            .filter(|path| path.extension().is_some_and(|extension| extension == "sgx"))
+            .filter(|path| path.extension().is_some_and(|extension| extension == "gxp"))
             .map(|path| {
                 let modified = fs::metadata(&path).unwrap().modified().unwrap();
                 (path, modified)
@@ -265,7 +263,7 @@ fn export_prepares_destination_formats_and_reuses_sgx_binary_for_new_defaults() 
     assert_eq!(
         code_files(),
         before,
-        "default-only changes reuse the SGX binary without rewriting it"
+        "default-only changes reuse the GXP binary without rewriting it"
     );
 }
 

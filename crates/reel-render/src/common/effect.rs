@@ -4,7 +4,7 @@
 //! [`generate`] exposes the same expression body for CPU tooling. Source reads
 //! return linear premultiplied color at base level, including nonuniform branches.
 //!
-//! Both languages use float32 operations. Remainder lowers to
+//! All target languages use float32 operations. Remainder lowers to
 //! `a - b * (sign(a / b) * floor(abs(a / b)))`, with the quotient evaluated once;
 //! this is a truncating-quotient expression, not a bit-exact IEEE fmod routine.
 //! Smoothstep uses a step at equal edges and the same clamped cubic for ordered
@@ -15,6 +15,11 @@ use reel_ui::stage::effect::{
     EffectTextureChannel, EffectType, EffectUnary, EffectValue,
 };
 use std::collections::{BTreeMap, HashMap};
+
+#[path = "effect/cg.rs"]
+mod cg;
+#[path = "effect/gxp_compiler.rs"]
+pub mod gxp_compiler;
 
 /// The production source binding is nine float32 vec4 slots (144 bytes).
 /// Slots 0/1 map target pixels to local normalized coordinates; 2/3 map local
@@ -50,6 +55,12 @@ pub struct EffectFragment {
 /// parameters have no numeric uniform slots. Each image has content scale,
 /// encoding/format flags and half-texel bounds; generated channel helpers access
 /// only the metadata required by their declared sample operations.
+/// Sony Cg uses the same named float4 uniform lanes and `main` fragment entry;
+/// GXP retains symbols for parameter reflection. `v_uv` and the implicit source
+/// UV use TEXCOORD0/1. `reel_source` occupies TEXUNIT0 when required; external
+/// image units follow it in declaration order. `reel_clip_rect` carries the
+/// top-left half-open scissor in pixels and is tested against WPOS. All native
+/// source texture coordinates use the top-left framebuffer convention.
 ///
 /// Output is restricted to the local logical rectangle. Source samples clamp
 /// normalized local coordinates and the source atlas window at texel centers.
@@ -65,9 +76,13 @@ pub fn compile_fragment(
     max_source_bytes: usize,
 ) -> Result<EffectFragment, GenerateError> {
     let generated = generate(program, language, max_source_bytes)?;
+    if language == Language::Cg {
+        return cg::compile(program, generated, max_source_bytes);
+    }
     let source_sampler = generated.samples_source || generated.output_type == EffectType::Float;
     let mut source = String::new();
     match language {
+        Language::Cg => unreachable!("Cg has its native GXM entry point"),
         Language::GlslEs100 => {
             source.push_str("#version 100\nprecision highp float;\nvarying vec2 v_uv;\nuniform sampler2D reel_source;\nuniform vec4 reel_context[9];\n");
             if generated.output_type == EffectType::Float {
@@ -188,6 +203,7 @@ fn reel_source_sample(uv: vec2<f32>) -> vec4<f32> {
     }
     if !source_sampler {
         match language {
+            Language::Cg => unreachable!("Cg has its native GXM entry point"),
             Language::GlslEs100 => {
                 source = source.replace("uniform sampler2D reel_source;\n", "");
                 let start = source.find("vec4 reel_source_sample(").unwrap();
@@ -248,6 +264,7 @@ fn texture_functions(
     }
     let mut code = String::new();
     match language {
+        Language::Cg => unreachable!("Cg emits texture bindings with its entry point"),
         Language::GlslEs100 => {
             writeln!(code, "uniform vec4 reel_texture_meta[{}];", count * 2).unwrap();
         }
@@ -258,6 +275,7 @@ fn texture_functions(
     let gray = channel_uses.iter().any(|usage| usage & 4 != 0);
     if gray {
         code.push_str(match language {
+            Language::Cg => unreachable!("Cg emits texture bindings with its entry point"),
             Language::GlslEs100 => "vec3 reel_texture_encode(vec3 x){return mix(1.055*pow(max(x,vec3(0.0)),vec3(1.0/2.4))-0.055,12.92*x,step(x,vec3(0.0031308)));}\n",
             Language::Wgsl => "fn reel_texture_encode(x:vec3<f32>)->vec3<f32>{return select(1.055*pow(max(x,vec3(0.0)),vec3(1.0/2.4))-0.055,12.92*x,x<=vec3(0.0031308));}\n",
         });
@@ -267,6 +285,7 @@ fn texture_functions(
             continue;
         }
         match language {
+            Language::Cg => unreachable!("Cg emits texture bindings with its entry point"),
             Language::GlslEs100 => {
                 writeln!(code, "uniform sampler2D reel_texture_{binding};\nvec4 reel_texture_{binding}_read(vec2 uv){{vec4 t=reel_texture_meta[{}];vec2 h=reel_texture_meta[{}].xy;vec4 s=texture2D(reel_texture_{binding},clamp(uv*t.xy,h,t.xy-h));if(t.w==1.0)s.a=1.0;if(t.w==2.0)s.rgb=min(s.rgb,vec3(s.a));return s;}}", binding*2,binding*2+1).unwrap();
                 if channels & 1 != 0 {
@@ -307,6 +326,8 @@ fn texture_functions(
 pub enum Language {
     GlslEs100,
     Wgsl,
+    /// Sony Cg 2.2 source for offline `sce_fp_psp2` GXP compilation.
+    Cg,
 }
 
 /// One stable uniform slot. Values occupy the first lanes of a sixteen-byte slot.
@@ -318,7 +339,7 @@ pub struct ParameterSlot {
     pub byte_offset: usize,
 }
 
-/// Shared host layout; WGSL members and GLES vec4 uniforms use identical lanes.
+/// Shared host layout; WGSL members and GLES/Cg float4 uniforms use identical lanes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParameterLayout {
     pub slots: Vec<ParameterSlot>,
@@ -387,7 +408,7 @@ impl std::error::Error for ParameterError {}
 #[derive(Clone, Debug)]
 pub struct GeneratedEffect {
     pub parameters: ParameterLayout,
-    /// GLSL uniform declarations or a WGSL `ReelEffectParameters` struct.
+    /// GLSL/Cg uniform declarations or a WGSL `ReelEffectParameters` struct.
     /// WGSL consumers declare their own binding named `reel_parameters`.
     pub declarations: String,
     pub function: String,
@@ -449,6 +470,7 @@ pub fn generate(
         for index in 0..parameters.slots.len() {
             declarations.push_str(&match language {
                 Language::GlslEs100 => format!("uniform vec4 reel_parameter_{index};\n"),
+                Language::Cg => format!("uniform float4 reel_parameter_{index};\n"),
                 Language::Wgsl => format!("    p{index}: vec4<f32>,\n"),
             });
             if declarations.len() > max_source_bytes {
@@ -485,6 +507,9 @@ pub fn generate(
         Language::GlslEs100 => {
             format!("{return_type} reel_effect(vec2 uv, vec2 position, vec2 size) {{\n")
         }
+        Language::Cg => {
+            format!("{return_type} reel_effect(float2 uv, float2 position, float2 size) {{\n")
+        }
         Language::Wgsl => format!(
             "fn reel_effect(uv: vec2<f32>, position: vec2<f32>, size: vec2<f32>) -> {return_type} {{\n"
         ),
@@ -517,6 +542,10 @@ impl Language {
             (Self::GlslEs100, EffectType::Vec2) => "vec2",
             (Self::GlslEs100, EffectType::Vec3) => "vec3",
             (Self::GlslEs100, EffectType::Vec4) => "vec4",
+            (Self::Cg, EffectType::Float) => "float",
+            (Self::Cg, EffectType::Vec2) => "float2",
+            (Self::Cg, EffectType::Vec3) => "float3",
+            (Self::Cg, EffectType::Vec4) => "float4",
             (Self::Wgsl, EffectType::Float) => "f32",
             (Self::Wgsl, EffectType::Vec2) => "vec2<f32>",
             (Self::Wgsl, EffectType::Vec3) => "vec3<f32>",
@@ -527,7 +556,7 @@ impl Language {
     fn declaration(self, ty: EffectType, name: usize, expression: &str) -> String {
         let ty = self.ty(ty);
         match self {
-            Self::GlslEs100 => format!("{ty} reel_n{name} = {expression};"),
+            Self::GlslEs100 | Self::Cg => format!("{ty} reel_n{name} = {expression};"),
             Self::Wgsl => format!("let reel_n{name}: {ty} = {expression};"),
         }
     }
@@ -535,7 +564,7 @@ impl Language {
     fn mutable(self, ty: EffectType, name: usize) -> String {
         let ty = self.ty(ty);
         match self {
-            Self::GlslEs100 => format!("{ty} reel_n{name};"),
+            Self::GlslEs100 | Self::Cg => format!("{ty} reel_n{name};"),
             Self::Wgsl => format!("var reel_n{name}: {ty};"),
         }
     }
@@ -740,7 +769,7 @@ impl Emitter<'_> {
             EffectOp::Constant(value) => constant(self.language, value),
             EffectOp::Parameter(index) => {
                 let name = match self.language {
-                    Language::GlslEs100 => format!("reel_parameter_{index}"),
+                    Language::GlslEs100 | Language::Cg => format!("reel_parameter_{index}"),
                     Language::Wgsl => format!("reel_parameters.p{index}"),
                 };
                 match ty {
@@ -785,6 +814,7 @@ impl Emitter<'_> {
                 match op {
                     EffectUnary::Negate => format!("(-{v})"),
                     EffectUnary::Not => format!("(!{v})"),
+                    EffectUnary::Fract if self.language == Language::Cg => format!("frac({v})"),
                     _ => format!("{}({v})", unary_name(op)),
                 }
             }
@@ -810,7 +840,7 @@ impl Emitter<'_> {
                                 if equal { "all" } else { "any" },
                                 if equal { "equal" } else { "notEqual" }
                             ),
-                            Language::Wgsl => format!(
+                            Language::Wgsl | Language::Cg => format!(
                                 "{}({a} {} {b})",
                                 if equal { "all" } else { "any" },
                                 if equal { "==" } else { "!=" }
@@ -837,7 +867,12 @@ impl Emitter<'_> {
                 let args = [value(a), value(b), value(c)];
                 let name = match op {
                     EffectTernary::Clamp => "clamp".into(),
-                    EffectTernary::Mix => "mix".into(),
+                    EffectTernary::Mix => if self.language == Language::Cg {
+                        "lerp"
+                    } else {
+                        "mix"
+                    }
+                    .into(),
                     EffectTernary::Smoothstep => self.helper("smoothstep", ty)?,
                 };
                 format!("{name}({})", args.join(", "))
@@ -858,7 +893,7 @@ impl Emitter<'_> {
         if !self.helpers.contains_key(&name) {
             let type_name = self.language.ty(ty);
             let mut source = match (self.language, operation) {
-                (Language::GlslEs100, "remainder") => format!(
+                (Language::GlslEs100 | Language::Cg, "remainder") => format!(
                     "{type_name} {name}({type_name} a, {type_name} b) {{\n    {type_name} q = a / b;\n    {type_name} t = sign(q) * floor(abs(q));\n    return a - b * t;\n}}\n"
                 ),
                 (Language::Wgsl, "remainder") => format!(
@@ -869,7 +904,7 @@ impl Emitter<'_> {
             if operation == "smoothstep" {
                 if ty == EffectType::Float {
                     source = match self.language {
-                        Language::GlslEs100 => format!(
+                        Language::GlslEs100 | Language::Cg => format!(
                             "float {name}(float a, float b, float x) {{\n    if (a == b) return step(a, x);\n    float t = clamp((x - a) / (b - a), 0.0, 1.0);\n    return t * t * (3.0 - 2.0 * t);\n}}\n"
                         ),
                         Language::Wgsl => format!(
@@ -889,7 +924,7 @@ impl Emitter<'_> {
                         .collect::<Vec<_>>();
                     let result = construct(self.language, ty, &values);
                     source = match self.language {
-                        Language::GlslEs100 => format!(
+                        Language::GlslEs100 | Language::Cg => format!(
                             "{type_name} {name}({type_name} a, {type_name} b, {type_name} x) {{ return {result}; }}\n"
                         ),
                         Language::Wgsl => format!(
@@ -927,7 +962,16 @@ fn construct(language: Language, ty: EffectType, values: &[String]) -> String {
 }
 
 fn constant(language: Language, value: EffectValue) -> String {
-    let number = |bits| format!("{:e}", f64::from(f32::from_bits(bits)));
+    let number = |bits| {
+        let value = f64::from(f32::from_bits(bits));
+        if language == Language::Cg {
+            // Sony Cg 2.2 mishandles integer-looking exponent literals such as
+            // 1e0 in conditional expressions. A decimal mantissa is a float.
+            format!("{value:.9e}")
+        } else {
+            format!("{value:e}")
+        }
+    };
     match value {
         EffectValue::Bool(value) => value.to_string(),
         EffectValue::Float(bits) => number(bits),

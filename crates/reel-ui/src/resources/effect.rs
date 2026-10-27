@@ -26,6 +26,8 @@ pub enum EffectShaderFormat {
     GlslEs100,
     Wgsl,
     Sgx543,
+    /// Native Sony GXM program compiled offline from typed Cg source.
+    Gxp,
 }
 impl EffectShaderFormat {
     /// Target representation suffix used by the logical prepared-asset path.
@@ -34,6 +36,7 @@ impl EffectShaderFormat {
             Self::GlslEs100 => "glsl",
             Self::Wgsl => "wgsl",
             Self::Sgx543 => "sgx",
+            Self::Gxp => "gxp",
         }
     }
     /// Stable logical asset path shared by exporters and asynchronous hosts.
@@ -170,6 +173,7 @@ impl EffectShaderDescriptor {
             0 => EffectShaderFormat::GlslEs100,
             1 => EffectShaderFormat::Wgsl,
             2 => EffectShaderFormat::Sgx543,
+            3 => EffectShaderFormat::Gxp,
             _ => return Err(Invalid),
         };
         let output = byte_type(bytes[13]).ok_or(Invalid)?;
@@ -247,6 +251,7 @@ fn format_byte(format: EffectShaderFormat) -> u8 {
         EffectShaderFormat::GlslEs100 => 0,
         EffectShaderFormat::Wgsl => 1,
         EffectShaderFormat::Sgx543 => 2,
+        EffectShaderFormat::Gxp => 3,
     }
 }
 fn byte_type(value: u8) -> Option<EffectType> {
@@ -263,6 +268,38 @@ fn byte_type(value: u8) -> Option<EffectType> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn gxp_envelopes_have_a_distinct_native_format_identity() {
+        let raw = b"GXP\0test-program";
+        let gxp = EffectShaderDescriptor::new(
+            [1; 32],
+            EffectShaderFormat::Gxp,
+            vec![EffectType::Float],
+            EffectType::Vec4,
+            raw,
+        )
+        .unwrap();
+        let sgx = EffectShaderDescriptor::new(
+            [1; 32],
+            EffectShaderFormat::Sgx543,
+            vec![EffectType::Float],
+            EffectType::Vec4,
+            raw,
+        )
+        .unwrap();
+        assert_ne!(gxp.shader_key, sgx.shader_key);
+        let bytes = gxp.encode_payload(raw).unwrap();
+        assert_eq!(bytes[12], 3);
+        let (decoded, range) = EffectShaderDescriptor::decode_payload(&bytes, bytes.len()).unwrap();
+        assert_eq!(decoded, gxp);
+        assert_eq!(&bytes[range], raw);
+        assert!(decoded.matches_bytes(raw));
+        assert!(
+            EffectShaderFormat::Gxp
+                .asset_path([1; 32])
+                .ends_with("/gxp.reel-effect")
+        );
+    }
     #[test]
     fn prepared_envelope_preserves_schema_and_raw_range() {
         let descriptor = EffectShaderDescriptor::new(
