@@ -3,16 +3,16 @@ use super::{
     AudioFrames, DecodeDemand, DecodedPacket, MediaRead, VideoDecoder, VideoDecoderFactory,
     VideoFrame, VideoInfo, Yuv420Layout, YuvColor, h264::sequence_color,
 };
-use pvr_psp2_sys::{
-    platform::memory::{MemoryBudget, MemoryReservation},
-    video::{Player, Poll as NativePoll},
-};
 use reel_core::budget::{BudgetPool, BudgetTicket};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
 use std::task::Poll;
+use vita_native::{
+    app::memory::{MemoryBudget, MemoryReservation},
+    video::{Player, Poll as NativePoll},
+};
 
 #[derive(Debug)]
 struct NativeBudget(BudgetPool);

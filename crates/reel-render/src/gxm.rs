@@ -1,6 +1,6 @@
 //! Native Vita GXM adapter for the shared frame executor.
-use pvr_psp2_sys::gxm as native;
 use reel_ui::{frame::RecordLocation, resources::EffectShaderFormat};
+use vita_native::graphics as native;
 
 pub use crate::common::GpuError as GxmError;
 use GxmOptions as Options;
@@ -45,8 +45,13 @@ pub fn create_context(options: &GxmOptions) -> Result<native::Context, native::E
     native::Context::with_config(
         config,
         options.vsync,
-        shader_code!("clear_vertex"),
-        shader_code!("clear"),
+        native::ClearProgram {
+            vertex: shader_code!("clear_vertex"),
+            fragment: shader_code!("clear"),
+            position_attribute: "a_position",
+            color_uniform: "u_clear_color",
+            clip_uniform: "reel_clip_rect",
+        },
     )
 }
 
@@ -57,7 +62,14 @@ fn create_program(
     bindings: &[native::AttributeBinding<'_>],
     attributes: &[native::VertexAttribute],
 ) -> Result<native::Program, native::Error> {
-    context.create_program_with_layout(vertex, fragment, bindings, 12, attributes)
+    context.create_program(native::ProgramDescriptor {
+        vertex,
+        fragment,
+        bindings,
+        stride: 12,
+        attributes,
+        clip_uniform: Some("reel_clip_rect"),
+    })
 }
 
 fn create_target_texture(

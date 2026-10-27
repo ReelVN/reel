@@ -1,12 +1,6 @@
 //! Native file offsets stay 64-bit on Vita; archives use the ordinary Read/Seek
 //! interfaces and share one file choice with distribution loading. The unique
 //! handle tracks every read/seek; no mutable native-handle escape is exposed.
-#[cfg(target_os = "vita")]
-use pvr_psp2_sys::platform::fs::File as PlatformFile;
-#[cfg(target_os = "vita")]
-pub(crate) use pvr_psp2_sys::platform::fs::Metadata;
-#[cfg(all(target_os = "vita", any(feature = "vita", test)))]
-pub(crate) use pvr_psp2_sys::platform::fs::metadata;
 #[cfg(not(target_os = "vita"))]
 use std::fs::File as PlatformFile;
 #[cfg(not(target_os = "vita"))]
@@ -17,6 +11,12 @@ use std::{
     io::{self, Read, Seek, SeekFrom},
     path::Path,
 };
+#[cfg(target_os = "vita")]
+use vita_native::app::fs::File as PlatformFile;
+#[cfg(target_os = "vita")]
+pub(crate) use vita_native::app::fs::Metadata;
+#[cfg(all(target_os = "vita", any(feature = "vita", test)))]
+pub(crate) use vita_native::app::fs::metadata;
 
 pub(crate) type File = Positioned<PlatformFile>;
 pub(crate) struct Positioned<R> {

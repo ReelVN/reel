@@ -1,6 +1,5 @@
 //! Controller actions and stable touch identities on the common input path.
 use super::{Error, GxmBackend, Player};
-use pvr_psp2_sys::platform::input as native;
 use reel_core::clock::MonoTime;
 use reel_ui::{
     core::*,
@@ -8,6 +7,7 @@ use reel_ui::{
     input::{self, Control, GamepadAxis, GamepadButton, InputDeviceId, InputEvent},
 };
 use std::time::Duration;
+use vita_native::app::input as native;
 
 #[derive(Default)]
 pub(super) struct Input {

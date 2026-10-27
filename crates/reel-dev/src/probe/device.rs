@@ -9,7 +9,6 @@ mod scenes;
 #[path = "timing.rs"]
 mod timing;
 
-use pvr_psp2_sys::gxm as native;
 use reel_render::gxm::{GxmBackend as DeviceBackend, GxmError as DeviceError};
 use reel_render::{AlphaMode, PresentOutcome, RenderBackend, RenderEvent, SurfaceInfo};
 use reel_ui::resources::ColorEncoding;
@@ -23,6 +22,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use vita_native::graphics as native;
 
 type Error = Box<dyn std::error::Error>;
 type Result<T = ()> = std::result::Result<T, Error>;

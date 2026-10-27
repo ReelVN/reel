@@ -6,8 +6,8 @@ use std::time::Duration;
 #[cfg(target_os = "vita")]
 mod platform {
     use super::Duration;
-    use pvr_psp2_sys::platform::wake::Wake;
     use std::sync::Arc;
+    use vita_native::app::wake::Wake;
 
     pub(super) struct Event(Arc<Wake>);
     impl Event {

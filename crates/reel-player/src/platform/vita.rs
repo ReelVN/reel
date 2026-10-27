@@ -18,11 +18,6 @@ use crate::{
     hal::{DisplayMetrics, Host, PlatformHost, WindowControl},
     player::{Player, PlayerOptions},
 };
-use pvr_psp2_sys::platform::{
-    self as native,
-    power::{PowerEvents, PowerKind},
-    wake::Wake,
-};
 use reel_core::{
     budget::QueueLimits,
     clock::{Clock, MonoTime, UnixMillis},
@@ -37,6 +32,11 @@ use std::{
     rc::Rc,
     sync::Arc,
     time::Duration,
+};
+use vita_native::app::{
+    self as native,
+    power::{PowerEvents, PowerKind},
+    wake::Wake,
 };
 mod input;
 type Error = Box<dyn std::error::Error>;

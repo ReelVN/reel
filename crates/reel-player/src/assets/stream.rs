@@ -1,6 +1,4 @@
 //! Decoder workers submit and drain readers on the shared bounded IO lane.
-#[cfg(target_os = "vita")]
-use pvr_psp2_sys::platform::wake::Wake;
 use reel_core::{
     budget::{BudgetPool, BudgetTicket, OwnedBytes},
     identity::{AssetKey, AssetSource, Priority, Scope},
@@ -15,6 +13,8 @@ use std::{
     io::{self, Read, Seek, SeekFrom},
     sync::{Arc, Mutex, MutexGuard, Weak},
 };
+#[cfg(target_os = "vita")]
+use vita_native::app::wake::Wake;
 
 #[derive(Clone, Copy)]
 enum Request {
