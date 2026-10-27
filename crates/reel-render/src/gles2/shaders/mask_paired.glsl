@@ -6,7 +6,7 @@ uniform vec4 u_ops[8];
 uniform vec4 u_uv0,u_uv1,u_flags;
 uniform vec2 u_output_size;
 #ifdef REEL_MASK_COMPOSITE
-varying vec2 v_uv;
+varying vec2 v_source_uv;
 uniform sampler2D u_source;
 uniform vec4 u_params;
 #endif
@@ -65,7 +65,7 @@ void main(){
  if(u_flags.y==u_flags.z)a=joined(a,b);
  float coverage=clamp(a,0.0,1.0);
 #ifdef REEL_MASK_COMPOSITE
- gl_FragColor=texture2D(u_source,vec2(v_uv.x,1.0-v_uv.y))*(u_params.x*coverage);
+ gl_FragColor=texture2D(u_source,v_source_uv)*(u_params.x*coverage);
 #else
  gl_FragColor=vec4(coverage);
 #endif

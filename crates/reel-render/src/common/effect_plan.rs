@@ -1,4 +1,5 @@
 //! Shared parameter, coordinate and resource admission for prepared effects.
+pub(crate) mod implicit_mesh;
 use super::GpuError;
 use reel_ui::{
     frame::{FrameDrawing, FrameEffect, RecordLocation},
@@ -224,6 +225,80 @@ pub(crate) fn map_source(
     context[7] = [a as f32, c as f32, e as f32, 0.0];
     context[8] = [b as f32, d as f32, f as f32, 0.0];
 }
+/// Preserve logical source coordinates when scratch storage has a larger extent.
+/// GLES draws into the bottom-left viewport; the shared context uses top-left UVs.
+pub(crate) fn map_storage(
+    context: &mut [[f32; 4]; crate::effect::CONTEXT_SLOTS],
+    logical: [u32; 2],
+    storage: [u32; 2],
+    bottom_left: bool,
+) {
+    let scale = [
+        logical[0] as f32 / storage[0] as f32,
+        logical[1] as f32 / storage[1] as f32,
+    ];
+    let offset = if bottom_left { 1. - scale[1] } else { 0. };
+    for index in [2, 7] {
+        for value in &mut context[index][..3] {
+            *value *= scale[0];
+        }
+    }
+    for index in [3, 8] {
+        for value in &mut context[index][..3] {
+            *value *= scale[1];
+        }
+        context[index][2] += offset;
+    }
+    context[5][2] = storage[0] as f32;
+    context[5][3] = storage[1] as f32;
+    context[6][0] *= scale[0];
+    context[6][1] = context[6][1] * scale[1] + offset;
+    context[6][2] *= scale[0];
+    context[6][3] *= scale[1];
+}
+
+/// Project only the logical source rectangle, retaining edge-clamped samples
+/// with vertex interpolation when the physical texture has padded storage.
+pub(crate) fn projected_source(
+    mesh: &mut super::mesh::Mesh,
+    logical: [u32; 2],
+    storage: [u32; 2],
+    bottom_left: bool,
+) -> Result<(), GpuError> {
+    if logical == storage {
+        return mesh.quad(
+            reel_ui::kurbo::Rect::new(0., 0., f64::from(logical[0]), f64::from(logical[1])),
+            if bottom_left {
+                reel_ui::kurbo::Rect::new(0., 1., 1., 0.)
+            } else {
+                reel_ui::kurbo::Rect::new(0., 0., 1., 1.)
+            },
+        );
+    }
+    let mut context = [[0.; 4]; crate::effect::CONTEXT_SLOTS];
+    context[5] = [
+        logical[0] as f32,
+        logical[1] as f32,
+        logical[0] as f32,
+        logical[1] as f32,
+    ];
+    context[6] = [0., 0., 1., 1.];
+    context[7] = [1., 0., 0., 0.];
+    context[8] = [0., 1., 0., 0.];
+    map_storage(&mut context, logical, storage, bottom_left);
+    let mut vertices = implicit_mesh::vertices(&context).ok_or(GpuError::InvalidSize)?;
+    for vertex in &mut vertices {
+        vertex.position = [
+            (vertex.position[0] + 1.) * 0.5 * logical[0] as f32,
+            (1. - vertex.position[1]) * 0.5 * logical[1] as f32,
+        ];
+        if bottom_left {
+            vertex.uv[1] = 1. - vertex.uv[1];
+        }
+    }
+    mesh.triangles(&vertices)
+}
+
 /// Common fixed image metadata: content scale/encoding/format plus texel centers.
 pub(crate) fn texture_metadata(
     layout: reel_core::texture::TextureLayout,
@@ -270,6 +345,108 @@ pub(crate) fn slot(value: EffectValue) -> [f32; 4] {
 mod tests {
     use super::*;
     use reel_ui::core::Widget;
+    #[test]
+    fn projected_scratch_keeps_source_coverage_and_clamped_texel_centers() {
+        let budgets = super::super::renderer::Budgets::new(Default::default());
+        let local = super::super::renderer::Budgets::new(Default::default());
+        for logical in [[240, 80], [200, 100]] {
+            for storage in [logical, [240, 100]] {
+                for bottom_left in [false, true] {
+                    let mut mesh = super::super::mesh::Mesh::new(
+                        super::super::mesh::Allocation::new(&budgets, &local, 1 << 20, 1 << 20),
+                    );
+                    projected_source(&mut mesh, logical, storage, bottom_left).unwrap();
+                    assert_eq!(mesh.vertices.len(), if storage == logical { 4 } else { 54 });
+                    let mut area = 0.;
+                    for triangle in mesh.indices.as_chunks::<3>().0 {
+                        let [a, b, c] =
+                            triangle.map(|index| mesh.vertices[index as usize].position);
+                        area += ((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1]))
+                            .abs()
+                            * 0.5;
+                    }
+                    assert!((area - (logical[0] * logical[1]) as f32).abs() < 0.01);
+                    for vertex in &mesh.vertices {
+                        for axis in 0..2 {
+                            let point = vertex.position[axis];
+                            assert!(point >= -0.0001 && point <= logical[axis] as f32 + 0.0001);
+                            let pixel = if bottom_left && axis == 1 {
+                                logical[axis] as f32 - point
+                            } else {
+                                point
+                            };
+                            let expected = if logical == storage {
+                                pixel
+                            } else {
+                                pixel.clamp(0.5, logical[axis] as f32 - 0.5)
+                            };
+                            assert!(
+                                (vertex.uv[axis] * storage[axis] as f32 - expected).abs() < 0.0001
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn scratch_storage_keeps_the_logical_grid_and_source_edge_clamps() {
+        let effect = FrameEffect {
+            definition: [0; 32],
+            shader: reel_ui::resources::ResourceHandle {
+                registry: 1,
+                slot: 0,
+                generation: 1,
+            },
+            values: vec![],
+            images: vec![],
+            bounds: reel_ui::kurbo::Rect::new(0., 0., 240., 100.),
+            coverage_invert: false,
+        };
+        let output = [170, 130];
+        let storage = [240, 100];
+        for logical in [[240, 80], [200, 100], storage] {
+            for bottom_left in [false, true] {
+                let mut mapped = context(&effect, Affine::IDENTITY, output, logical).unwrap();
+                let view = Affine::translate((17., -11.));
+                map_source(&mut mapped, &effect, Affine::IDENTITY, view, logical);
+                map_storage(&mut mapped, logical, storage, bottom_left);
+                assert_eq!(
+                    &mapped[5][..2],
+                    &[170., 130.],
+                    "logical viewport stays fixed"
+                );
+                for sample in [[-20., -20.], [0.5, 0.5], [70.5, 55.5], [250., 140.]] {
+                    let at = [sample[0] / output[0] as f32, sample[1] / output[1] as f32];
+                    for axis in 0..2 {
+                        let row = mapped[7 + axis];
+                        let uv = row[0] * at[0] + row[1] * at[1] + row[2];
+                        let half = 0.5 / storage[axis] as f32;
+                        let clamped = uv.clamp(
+                            mapped[6][axis] + half,
+                            mapped[6][axis] + mapped[6][axis + 2] - half,
+                        );
+                        let expected = (sample[axis] + [17., -11.][axis])
+                            .clamp(0.5, logical[axis] as f32 - 0.5);
+                        let actual = if bottom_left && axis == 1 {
+                            (1. - clamped) * storage[axis] as f32
+                        } else {
+                            clamped * storage[axis] as f32
+                        };
+                        let expected = if bottom_left && axis == 1 {
+                            logical[axis] as f32 - expected
+                        } else {
+                            expected
+                        };
+                        assert!(
+                            (actual - expected).abs() < 0.0001,
+                            "{logical:?} {bottom_left} {axis}: {actual} != {expected}"
+                        );
+                    }
+                }
+            }
+        }
+    }
     #[test]
     fn transformed_local_coordinates_and_source_pixels_share_one_mapping() {
         let effect = FrameEffect {

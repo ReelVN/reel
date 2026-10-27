@@ -19,9 +19,9 @@ pub(super) enum CompositeOperation {
     MaskedTransition(f32),
 }
 struct Composition<'a> {
-    source: &'a native::Texture,
-    mask: &'a native::Texture,
-    backdrop: &'a native::Texture,
+    source: &'a Target,
+    mask: &'a Target,
+    backdrop: &'a Target,
     alpha: f32,
     invert: f32,
     operation: CompositeOperation,
@@ -210,7 +210,7 @@ pub(super) fn prepare(
         }
         context.offscreen = schedule;
         let result = context.stream(frame.drawing(), transform);
-        context.offscreen = Default::default();
+        drop(std::mem::take(&mut context.offscreen));
         drop(retained);
         result
     });
@@ -359,8 +359,8 @@ impl Context<'_> {
                     )?;
                     self.combine(
                         &child.scopes.last().target,
-                        &current.scopes.last().target.view,
-                        &current.scopes.last().target.view,
+                        &current.scopes.last().target,
+                        &current.scopes.last().target,
                         1.,
                         0.,
                         CompositeOperation::Transition(0.),
@@ -387,8 +387,8 @@ impl Context<'_> {
                 child.retained_context = entry.map_or(0, |index| index + 1);
                 self.combine(
                     &child.scopes.last().target,
-                    &current.scopes.last().target.view,
-                    &current.scopes.last().target.view,
+                    &current.scopes.last().target,
+                    &current.scopes.last().target,
                     1.,
                     0.,
                     CompositeOperation::Transition(0.),
@@ -428,8 +428,8 @@ impl Context<'_> {
                         self.scissor = self.scissor.intersect(mask.scissor);
                         self.combine_group(
                             &parent.scopes.last().target,
-                            &mask.source.view,
-                            &finished.view,
+                            &mask.source,
+                            &finished,
                             GroupPaint {
                                 source_origin: [0; 2],
                                 composite: reel_ui::frame::GroupComposite {
@@ -464,8 +464,8 @@ impl Context<'_> {
                         )?;
                         self.combine(
                             &child.scopes.last().target,
-                            &parent.scopes.last().target.view,
-                            &parent.scopes.last().target.view,
+                            &parent.scopes.last().target,
+                            &parent.scopes.last().target,
                             1.,
                             0.,
                             CompositeOperation::Transition(0.),
@@ -486,8 +486,8 @@ impl Context<'_> {
                     } => {
                         self.combine_transition(
                             &parent.scopes.last().target,
-                            &previous.view,
-                            &finished.view,
+                            &previous,
+                            &finished,
                             definition,
                             parent.transform,
                         )?;
@@ -847,8 +847,8 @@ impl Context<'_> {
                         } else {
                             self.combine_group(
                                 &current.scopes.last().target,
-                                &source.view,
-                                &source.view,
+                                &source,
+                                &source,
                                 GroupPaint {
                                     source_origin: view.origin(),
                                     composite: reel_ui::frame::GroupComposite {
@@ -900,8 +900,8 @@ impl Context<'_> {
                             // No intermediate full-size clipped texture is needed.
                             self.combine_group(
                                 &current.scopes.last().target,
-                                &source.view,
-                                &coverage.view,
+                                &source,
+                                &coverage,
                                 GroupPaint {
                                     source_origin: [0; 2],
                                     composite: reel_ui::frame::GroupComposite {
@@ -920,8 +920,8 @@ impl Context<'_> {
                         let clipped = self.target()?;
                         self.combine(
                             &clipped,
-                            &source.view,
-                            &coverage.view,
+                            &source,
+                            &coverage,
                             1.,
                             0.,
                             CompositeOperation::AlphaMask,
@@ -961,8 +961,8 @@ impl Context<'_> {
                     } else {
                         self.combine_group(
                             &current.scopes.last().target,
-                            &source.view,
-                            &source.view,
+                            &source,
+                            &source,
                             GroupPaint {
                                 source_origin: [0; 2],
                                 composite: reel_ui::frame::GroupComposite {
@@ -1096,8 +1096,8 @@ impl Context<'_> {
     pub fn combine(
         &mut self,
         target: &Target,
-        source: &native::Texture,
-        mask: &native::Texture,
+        source: &Target,
+        mask: &Target,
         alpha: f32,
         invert: f32,
         operation: CompositeOperation,
@@ -1146,9 +1146,9 @@ impl Context<'_> {
         self.composition(
             target,
             Composition {
-                source: &source.view,
-                mask: &source.view,
-                backdrop: &source.view,
+                source,
+                mask: source,
+                backdrop: source,
                 alpha,
                 invert,
                 operation: CompositeOperation::SourceOver,
@@ -1204,12 +1204,12 @@ impl Context<'_> {
         } else {
             &self.programs.composite
         };
-        self.ensure_sampled(source)?;
+        self.ensure_sampled(&source.view)?;
         if !plain {
-            self.ensure_sampled(mask)?;
+            self.ensure_sampled(&mask.view)?;
         }
         if blend != 0 {
-            self.ensure_sampled(backdrop)?;
+            self.ensure_sampled(&backdrop.view)?;
         }
         if let Some(expression) = expression {
             self.ensure_sampled(&expression.view)?;
@@ -1225,10 +1225,14 @@ impl Context<'_> {
             values.extend(shader.int(name, unit));
         }
         values.extend(shader.vec4("u_params", [alpha, mode, progress, 0.]));
-        values.extend(shader.vec4(
-            "u_source_uv",
-            crate::common::source_view::uv_mapping(self.size, source.size(), source_origin),
-        ));
+        values.extend(shader.vec4("u_source_uv", source.source_uv(self.size, source_origin)));
+        for (name, input) in [
+            ("u_mask_uv", mask),
+            ("u_backdrop_uv", backdrop),
+            ("u_expression_uv", expression.unwrap_or(source)),
+        ] {
+            values.extend(shader.vec4(name, input.frame_uv(self.size)));
+        }
         values.extend(shader.float("u_invert", invert));
         values.extend(shader.float("u_blend", blend as f32));
         values.extend(shader.float("u_has_expression", f32::from(expression.is_some())));
@@ -1243,10 +1247,10 @@ impl Context<'_> {
                 size: self.size,
                 shader,
                 textures: &[
-                    source,
-                    mask,
-                    backdrop,
-                    expression.map_or(source, |t| &t.view),
+                    &source.view,
+                    &mask.view,
+                    &backdrop.view,
+                    &expression.unwrap_or(source).view,
                 ][..if plain {
                     1
                 } else if coverage {
@@ -1267,8 +1271,8 @@ impl Context<'_> {
     fn combine_group(
         &mut self,
         target: &Target,
-        source: &native::Texture,
-        mask: &native::Texture,
+        source: &Target,
+        mask: &Target,
         paint: GroupPaint<'_>,
     ) -> Result<(), GlesError> {
         self.flush_draws()?;
@@ -1301,8 +1305,8 @@ impl Context<'_> {
             let backdrop = self.target()?;
             self.combine(
                 &backdrop,
-                &target.view,
-                &target.view,
+                target,
+                target,
                 1.,
                 0.,
                 CompositeOperation::SourceOver,
@@ -1316,7 +1320,7 @@ impl Context<'_> {
             Composition {
                 source,
                 mask,
-                backdrop: backdrop.as_ref().map_or(source, |b| &b.view),
+                backdrop: backdrop.as_ref().unwrap_or(source),
                 alpha: composite.alpha,
                 invert,
                 operation,
@@ -1336,8 +1340,8 @@ impl Context<'_> {
     fn combine_transition(
         &mut self,
         target: &Target,
-        old: &native::Texture,
-        new: &native::Texture,
+        old: &Target,
+        new: &Target,
         transition: &SceneTransition,
         outer: Affine,
     ) -> Result<(), GlesError> {

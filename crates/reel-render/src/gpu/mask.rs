@@ -350,7 +350,12 @@ impl Prepared {
             base_words + if self.split.is_some() { 16 } else { 0 },
         );
         words.resize(base_words, 0);
-        words[..header].copy_from_slice(&params.uniform_words(target, inputs.source));
+        words[..header].copy_from_slice(&params.uniform_words(
+            target,
+            inputs.source,
+            inputs.mask,
+            inputs.backdrop,
+        ));
         words[header..header + 8].copy_from_slice(
             &[
                 matrix[0] as f32,
@@ -465,6 +470,7 @@ impl Prepared {
             multiview_mask: None,
             occlusion_query_set: None,
         });
+        pass.set_viewport(0., 0., target.size[0] as f32, target.size[1] as f32, 0., 1.);
         pass.set_pipeline(if params.blend == 0 && !params.operation.replaces() {
             &self.pipeline.normal
         } else if params.blend > 4 {

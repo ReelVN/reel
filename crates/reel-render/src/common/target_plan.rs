@@ -48,6 +48,7 @@ mod plan_tests;
 #[derive(Default)]
 struct Scratch {
     buckets: Vec<Bucket>,
+    events: Option<Vec<super::target_storage::Event>>,
 }
 struct Bucket {
     size: [u32; 2],
@@ -60,6 +61,16 @@ impl Scratch {
         size: [u32; 2],
         reserve: &mut impl FnMut(u64) -> Result<(), GpuError>,
     ) -> Result<(), GpuError> {
+        if let Some(events) = &mut self.events {
+            super::scopes::push_stack(
+                events,
+                super::target_storage::Event {
+                    size,
+                    acquired: true,
+                },
+                &mut *reserve,
+            )?;
+        }
         if let Some(bucket) = self.buckets.iter_mut().find(|bucket| bucket.size == size) {
             bucket.live += 1;
             bucket.peak = bucket.peak.max(bucket.live);
@@ -76,13 +87,28 @@ impl Scratch {
         }
         Ok(())
     }
-    fn release(&mut self, size: [u32; 2]) {
+    fn release(
+        &mut self,
+        size: [u32; 2],
+        reserve: &mut impl FnMut(u64) -> Result<(), GpuError>,
+    ) -> Result<(), GpuError> {
+        if let Some(events) = &mut self.events {
+            super::scopes::push_stack(
+                events,
+                super::target_storage::Event {
+                    size,
+                    acquired: false,
+                },
+                reserve,
+            )?;
+        }
         let bucket = self
             .buckets
             .iter_mut()
             .find(|bucket| bucket.size == size)
             .expect("allocated target size");
         bucket.live = bucket.live.checked_sub(1).expect("live target");
+        Ok(())
     }
     fn composite(
         &mut self,
@@ -96,10 +122,10 @@ impl Scratch {
         }
         if needed {
             self.acquire(size, reserve)?;
-            self.release(size);
+            self.release(size, reserve)?;
         }
         if mask_surface {
-            self.release(size);
+            self.release(size, reserve)?;
         }
         Ok(())
     }
@@ -207,8 +233,7 @@ fn stream<'a>(
         scissor,
     })
 }
-/// Plan the same streams and target lifetimes as replay, in storage pixels.
-/// A second frame keeps the first output alive for a complete-frame crossfade.
+#[cfg(test)]
 #[expect(
     clippy::too_many_arguments,
     reason = "one physical frame, schedule and native mask execution policy"
@@ -224,426 +249,156 @@ pub(crate) fn target_pixels(
     schedule: &offscreen::Plan,
     masks: MaskExecution,
     selection: &super::retained::Plan,
-    mut reserve: impl FnMut(u64) -> Result<(), GpuError>,
+    reserve: impl FnMut(u64) -> Result<(), GpuError>,
 ) -> Result<u64, GpuError> {
-    let mut scratch = Scratch::default();
-    for (index, frame) in [Some(frame), second].into_iter().flatten().enumerate() {
-        let transform = Affine::scale_non_uniform(
-            f64::from(size[0]) / frame.info().logical_size[0],
-            f64::from(size[1]) / frame.info().logical_size[1],
-        );
-        let mut first = stream(
-            frame.drawing(),
-            frame.commands(),
-            Some(0),
-            true,
-            transform,
-            size,
-            Scissor::full(size),
-            capture,
-            &mut scratch,
-            &mut reserve,
+    Input {
+        frame,
+        second,
+        size,
+        capture,
+        samples,
+        max_dimension,
+        glyphs: glyph_plan,
+        schedule,
+        masks,
+        selection,
+    }
+    .measure(reserve)
+    .map(|(pixels, _)| pixels)
+}
+
+/// One frame, its ordered schedule and its native target execution policy.
+#[derive(Clone, Copy)]
+pub(crate) struct Input<'a> {
+    pub frame: &'a RenderFrame,
+    pub second: Option<&'a RenderFrame>,
+    pub size: [u32; 2],
+    pub capture: bool,
+    pub samples: u32,
+    pub max_dimension: u32,
+    pub glyphs: &'a super::glyph_plan::Plan,
+    pub schedule: &'a offscreen::Plan,
+    pub masks: MaskExecution,
+    pub selection: &'a super::retained::Plan,
+}
+
+impl Input<'_> {
+    pub(crate) fn measure(
+        &self,
+        reserve: impl FnMut(u64) -> Result<(), GpuError>,
+    ) -> Result<(u64, bool), GpuError> {
+        let scratch = self.walk(false, reserve)?;
+        let reusable = scratch
+            .buckets
+            .iter()
+            .filter(|bucket| bucket.size != self.size)
+            .take(2)
+            .count()
+            == 2;
+        let pixels = scratch
+            .pixels()?
+            .checked_add(self.selection.persistent_pixels())
+            .ok_or(GpuError::InvalidSize)?;
+        Ok((pixels, reusable))
+    }
+
+    /// Derive a physical storage map from the executor's exact target lifetimes.
+    /// Temporary planning tickets end here; mapping tickets follow the submission.
+    pub(crate) fn storage<R>(
+        &self,
+        mut reserve: impl FnMut(u64) -> Result<R, GpuError>,
+    ) -> Result<(super::target_storage::Plan, u64, Vec<R>), GpuError> {
+        let mut temporary = Vec::new();
+        let scratch = self.walk(true, |bytes| {
+            temporary.push(reserve(bytes)?);
+            Ok(())
+        })?;
+        let (plan, retained) = super::target_storage::Plan::from_lifetimes(
+            scratch
+                .events
+                .as_deref()
+                .expect("recorded target lifetimes"),
+            self.size,
+            reserve,
         )?;
-        first.scheduled = index == 0;
-        let mut stack = Vec::new();
-        super::scopes::push_stack(&mut stack, first, &mut reserve)?;
-        loop {
-            let current = stack.last_mut().unwrap();
-            if current.transitions_enabled
-                && let Some(transition) = current.drawing.transitions().get(current.transition_next)
-                && transition.commands.start == current.offset.unwrap() + current.next
-            {
-                current.transition_next += 1;
-                current.next = transition.commands.end - current.offset.unwrap();
-                if capture && !transition.capture_included {
-                    continue;
-                }
-                let retained = selection.entry(current.retained_context, transition);
-                if let Some((_, entry)) = retained
-                    && entry.input.is_some()
+        let pixels = plan
+            .pixels()
+            .checked_add(self.selection.persistent_pixels())
+            .ok_or(GpuError::InvalidSize)?;
+        Ok((plan, pixels, retained))
+    }
+
+    fn walk(
+        &self,
+        record: bool,
+        mut reserve: impl FnMut(u64) -> Result<(), GpuError>,
+    ) -> Result<Scratch, GpuError> {
+        let Self {
+            frame,
+            second,
+            size,
+            capture,
+            samples,
+            max_dimension,
+            glyphs: glyph_plan,
+            schedule,
+            masks,
+            selection,
+        } = *self;
+        let mut scratch = Scratch {
+            events: record.then(Vec::new),
+            ..Scratch::default()
+        };
+        for (index, frame) in [Some(frame), second].into_iter().flatten().enumerate() {
+            let transform = Affine::scale_non_uniform(
+                f64::from(size[0]) / frame.info().logical_size[0],
+                f64::from(size[1]) / frame.info().logical_size[1],
+            );
+            let mut first = stream(
+                frame.drawing(),
+                frame.commands(),
+                Some(0),
+                true,
+                transform,
+                size,
+                Scissor::full(size),
+                capture,
+                &mut scratch,
+                &mut reserve,
+            )?;
+            first.scheduled = index == 0;
+            let mut stack = Vec::new();
+            super::scopes::push_stack(&mut stack, first, &mut reserve)?;
+            loop {
+                let current = stack.last_mut().unwrap();
+                if current.transitions_enabled
+                    && let Some(transition) =
+                        current.drawing.transitions().get(current.transition_next)
+                    && transition.commands.start == current.offset.unwrap() + current.next
                 {
-                    current.pending = Some(Pending::New {
-                        source: current.size,
-                        mask_surface: matches!(masks, MaskExecution::Sampled)
-                            && transition.mask.is_some()
-                            && transition.progress > 0.
-                            && transition.progress < 1.,
-                        cached: true,
-                    });
-                    let child = stream(
-                        current.drawing,
-                        &current.drawing.commands()[transition.commands.clone()],
-                        Some(transition.commands.start),
-                        false,
-                        current.transform,
-                        current.size,
-                        current.scissor,
-                        capture,
-                        &mut scratch,
-                        &mut reserve,
-                    )?;
-                    super::scopes::push_stack(&mut stack, child, &mut reserve)?;
-                    continue;
-                }
-                current.pending = Some(Pending::Old(transition, retained.map(|(index, _)| index)));
-                let mut child = stream(
-                    transition.previous.drawing(),
-                    transition.previous.drawing().commands(),
-                    Some(0),
-                    true,
-                    current.transform
-                        * transition.parent_to_window
-                        * transition.previous.to_parent(),
-                    current.size,
-                    current.scissor,
-                    capture,
-                    &mut scratch,
-                    &mut reserve,
-                )?;
-                child.retained_context = retained.map_or(0, |(index, _)| index + 1);
-                super::scopes::push_stack(&mut stack, child, &mut reserve)?;
-                continue;
-            }
-            if capture
-                && current.next < current.commands.len()
-                && let Some(offset) = current.offset
-                && let Some(end) = current.drawing.capture_exclusion_end(offset + current.next)
-            {
-                current.next = (end - offset).min(current.commands.len());
-                current.transition_next = current
-                    .drawing
-                    .transitions()
-                    .partition_point(|t| t.commands.start < end);
-                continue;
-            }
-            let Some(command) = current.commands.get(current.next) else {
-                let finished = stack.pop().unwrap();
-                let Some(parent) = stack.last_mut() else {
-                    break;
-                };
-                match parent.pending.take().expect("suspended target plan") {
-                    Pending::Old(transition, entry) => {
-                        if entry.is_some() && entry == selection.warm {
-                            return scratch.pixels().and_then(|pixels| {
-                                pixels
-                                    .checked_add(selection.persistent_pixels())
-                                    .ok_or(GpuError::InvalidSize)
-                            });
-                        }
-                        parent.pending = Some(Pending::New {
-                            source: finished.size,
+                    current.transition_next += 1;
+                    current.next = transition.commands.end - current.offset.unwrap();
+                    if capture && !transition.capture_included {
+                        continue;
+                    }
+                    let retained = selection.entry(current.retained_context, transition);
+                    if let Some((_, entry)) = retained
+                        && entry.input.is_some()
+                    {
+                        current.pending = Some(Pending::New {
+                            source: current.size,
                             mask_surface: matches!(masks, MaskExecution::Sampled)
                                 && transition.mask.is_some()
                                 && transition.progress > 0.
                                 && transition.progress < 1.,
-                            cached: false,
+                            cached: true,
                         });
                         let child = stream(
-                            parent.drawing,
-                            &parent.drawing.commands()[transition.commands.clone()],
+                            current.drawing,
+                            &current.drawing.commands()[transition.commands.clone()],
                             Some(transition.commands.start),
                             false,
-                            parent.transform,
-                            parent.size,
-                            parent.scissor,
-                            capture,
-                            &mut scratch,
-                            &mut reserve,
-                        )?;
-                        super::scopes::push_stack(&mut stack, child, &mut reserve)?;
-                    }
-                    Pending::New {
-                        source,
-                        mask_surface,
-                        cached,
-                    } => {
-                        scratch.composite(parent.size, false, mask_surface, &mut reserve)?;
-                        if !cached {
-                            scratch.release(source);
-                        }
-                        scratch.release(finished.size);
-                    }
-                    Pending::Mask {
-                        source,
-                        backdrop,
-                        mask_surface,
-                    } => {
-                        scratch.composite(parent.size, backdrop, mask_surface, &mut reserve)?;
-                        scratch.release(source);
-                        scratch.release(finished.size);
-                    }
-                }
-                continue;
-            };
-            current.next += 1;
-            let at = command.origin.at;
-            match &command.op {
-                FrameOp::PushClip(clip) => {
-                    let parent_scissor = current.scissor;
-                    current.scissor =
-                        Scissor::from_clip(clip, current.transform, current.size, samples)
-                            .or_else(|| Scissor::clip_bounds(clip, current.transform, current.size))
-                            .map_or(parent_scissor, |s| parent_scissor.intersect(s));
-                    let direct_mesh = samples == 1
-                        && crate::common::scopes::flat_clip(
-                            current.drawing,
-                            current.commands,
-                            current.next,
-                            current.offset,
-                            current.transitions_enabled,
-                            capture,
-                        )
-                        && crate::common::mesh::RectClip::from_clip(
-                            clip,
                             current.transform,
-                            current.size,
-                        )
-                        .is_some();
-                    let isolated =
-                        Scissor::from_clip(clip, current.transform, current.size, samples)
-                            .is_none()
-                            && !direct_mesh;
-                    if isolated {
-                        scratch.acquire(current.size, &mut reserve)?;
-                    }
-                    super::scopes::push_stack(
-                        &mut current.scopes,
-                        Scope {
-                            defer: false,
-                            shared_source: false,
-                            end_batch: false,
-                            isolated,
-                            forward_source: false,
-                            clip: isolated,
-                            group: None,
-                            restore: None,
-                            parent_scissor,
-                            source_view: false,
-                        },
-                        &mut reserve,
-                    )?;
-                }
-                FrameOp::PushGroup(group) => {
-                    if let Some(fill) = crate::common::scopes::inline_group_fill(
-                        group,
-                        &current.commands[current.next..],
-                        current.transform,
-                        current.size,
-                        samples,
-                    ) && !fill.crosses_boundary(
-                        current.drawing,
-                        current.offset,
-                        current.next,
-                        current.transitions_enabled,
-                        capture,
-                    ) {
-                        current.next += fill.consumed;
-                        continue;
-                    }
-                    let isolated = !current.groups.can_inline(current.next - 1);
-                    let parent_scissor = current.scissor;
-                    let ink = glyph_plan.group_ink(group);
-                    let batch = current
-                        .scheduled
-                        .then(|| schedule.entry(current.next - 1))
-                        .flatten();
-                    let view = batch.map(|entry| entry.view).or_else(|| {
-                        isolated
-                            .then(|| {
-                                crate::common::source_view::SourceView::group(
-                                    group,
-                                    ink,
-                                    current.transform,
-                                    current.size,
-                                    parent_scissor,
-                                    current.transitions_enabled
-                                        && !current.drawing.transitions().is_empty(),
-                                    max_dimension,
-                                )
-                            })
-                            .flatten()
-                    });
-                    let mut forward_source = false;
-                    let restore = if let Some(view) = view {
-                        let restore = (current.transform, current.size);
-                        current.transform = view.frame_to_source(current.transform);
-                        current.size = view.storage_size;
-                        current.scissor = view.source_rect;
-                        Some(restore)
-                    } else if let Some(effect) =
-                        group.effect.as_ref().or(group.mask_effect.as_ref())
-                    {
-                        let parent = current.scopes.last().and_then(|scope| scope.group);
-                        let source = if super::effect_plan::same_source_domain(group, parent) {
-                            super::effect_plan::SourceLayout {
-                                size: current.size,
-                                frame_to_source: current.transform,
-                            }
-                        } else {
-                            crate::common::effect_plan::source_layout(
-                                effect,
-                                group.effect_to_target,
-                                current.transform,
-                                max_dimension,
-                                at,
-                            )?
-                        };
-                        forward_source = current.groups.is_source_child(current.next - 1)
-                            && current.scopes.last().is_some_and(|scope| scope.isolated)
-                            && super::effect_plan::forwards_source(
-                                group,
-                                &source,
-                                current.transform,
-                                current.size,
-                            );
-                        let restore = (current.transform, current.size);
-                        current.transform = source.frame_to_source;
-                        current.size = source.size;
-                        current.scissor = Scissor::full(source.size);
-                        Some(restore)
-                    } else {
-                        current.scissor = Scissor::group_bounds(
-                            group,
-                            current.transform,
-                            current.size,
-                            current.transitions_enabled
-                                && !current.drawing.transitions().is_empty(),
-                        )
-                        .map_or(parent_scissor, |s| parent_scissor.intersect(s));
-                        None
-                    };
-                    if isolated
-                        && !forward_source
-                        && batch.is_none_or(|entry| !entry.shared || entry.first)
-                    {
-                        scratch.acquire(current.size, &mut reserve)?;
-                    }
-                    super::scopes::push_stack(
-                        &mut current.scopes,
-                        Scope {
-                            defer: batch.is_some(),
-                            shared_source: batch.is_some_and(|entry| entry.shared),
-                            end_batch: batch.is_some_and(|entry| entry.last),
-                            isolated,
-                            clip: group.clip.is_some(),
-                            group: Some(group),
-                            restore,
-                            parent_scissor,
-                            source_view: view.is_some(),
-                            forward_source,
-                        },
-                        &mut reserve,
-                    )?;
-                }
-                FrameOp::PopClip | FrameOp::PopGroup => {
-                    let scope = current.scopes.pop().expect("validated scope");
-                    current.scissor = scope.parent_scissor;
-                    if !scope.isolated {
-                        continue;
-                    }
-                    if scope.forward_source {
-                        let (transform, size) = scope.restore.expect("forwarded source domain");
-                        current.transform = transform;
-                        current.size = size;
-                        scratch.acquire(size, &mut reserve)?;
-                        scratch.release(size);
-                        continue;
-                    }
-                    let mut source = current.size;
-                    if let Some(group) = scope.group.filter(|group| group.mask_effect.is_some()) {
-                        // Each effect replaces the complete local source. The
-                        // scalar mask writes its covered source in one pass.
-                        if group.effect.is_some() {
-                            scratch.acquire(source, &mut reserve)?;
-                            scratch.release(source);
-                        }
-                        scratch.acquire(source, &mut reserve)?;
-                        scratch.release(source);
-                    }
-                    if let Some((transform, parent_size)) = scope.restore {
-                        current.transform = transform;
-                        current.size = parent_size;
-                        if scope.source_view {
-                            if scope.defer {
-                                if !scope.shared_source || current.deferred.is_empty() {
-                                    super::scopes::push_stack(
-                                        &mut current.deferred,
-                                        source,
-                                        &mut reserve,
-                                    )?;
-                                }
-                                if scope.end_batch {
-                                    for source in current.deferred.drain(..) {
-                                        scratch.release(source);
-                                    }
-                                }
-                            } else {
-                                scratch.composite(
-                                    current.size,
-                                    scope.group.is_some_and(|group| {
-                                        group.composite.blend != Default::default()
-                                    }),
-                                    false,
-                                    &mut reserve,
-                                )?;
-                                scratch.release(source);
-                            }
-                            continue;
-                        }
-                        if scope.group.is_some_and(|group| {
-                            super::effect_plan::direct_mask_projection(
-                                group,
-                                current.transitions_enabled
-                                    && !current.drawing.transitions().is_empty(),
-                            )
-                        }) {
-                            scratch.release(source);
-                            continue;
-                        }
-                        scratch.acquire(parent_size, &mut reserve)?;
-                        scratch.release(source);
-                        source = parent_size;
-                    }
-                    let mask = scope.group.and_then(|group| group.mask);
-                    let backdrop = scope
-                        .group
-                        .is_some_and(|group| group.composite.blend != Default::default());
-                    if scope.clip {
-                        scratch.acquire(current.size, &mut reserve)?;
-                        if mask.is_none() {
-                            scratch.composite(
-                                current.size,
-                                backdrop,
-                                masks.surface(scope.group, false),
-                                &mut reserve,
-                            )?;
-                            scratch.release(current.size);
-                            scratch.release(source);
-                            continue;
-                        }
-                        scratch.acquire(current.size, &mut reserve)?;
-                        scratch.release(current.size);
-                        scratch.release(source);
-                        source = current.size;
-                    }
-                    if let Some(mask) = mask {
-                        let definition = current.drawing.masks().get(&mask.mask).ok_or(
-                            GpuError::Unsupported {
-                                at,
-                                record: "missing mask",
-                            },
-                        )?;
-                        current.pending = Some(Pending::Mask {
-                            source,
-                            backdrop,
-                            mask_surface: masks.surface(scope.group, false),
-                        });
-                        let child = stream(
-                            current.drawing,
-                            &definition.commands,
-                            None,
-                            false,
-                            current.transform * mask.transform,
                             current.size,
                             current.scissor,
                             capture,
@@ -651,30 +406,395 @@ pub(crate) fn target_pixels(
                             &mut reserve,
                         )?;
                         super::scopes::push_stack(&mut stack, child, &mut reserve)?;
-                    } else {
-                        scratch.composite(
-                            current.size,
+                        continue;
+                    }
+                    current.pending =
+                        Some(Pending::Old(transition, retained.map(|(index, _)| index)));
+                    let mut child = stream(
+                        transition.previous.drawing(),
+                        transition.previous.drawing().commands(),
+                        Some(0),
+                        true,
+                        current.transform
+                            * transition.parent_to_window
+                            * transition.previous.to_parent(),
+                        current.size,
+                        current.scissor,
+                        capture,
+                        &mut scratch,
+                        &mut reserve,
+                    )?;
+                    child.retained_context = retained.map_or(0, |(index, _)| index + 1);
+                    super::scopes::push_stack(&mut stack, child, &mut reserve)?;
+                    continue;
+                }
+                if capture
+                    && current.next < current.commands.len()
+                    && let Some(offset) = current.offset
+                    && let Some(end) = current.drawing.capture_exclusion_end(offset + current.next)
+                {
+                    current.next = (end - offset).min(current.commands.len());
+                    current.transition_next = current
+                        .drawing
+                        .transitions()
+                        .partition_point(|t| t.commands.start < end);
+                    continue;
+                }
+                let Some(command) = current.commands.get(current.next) else {
+                    let finished = stack.pop().unwrap();
+                    let Some(parent) = stack.last_mut() else {
+                        break;
+                    };
+                    match parent.pending.take().expect("suspended target plan") {
+                        Pending::Old(transition, entry) => {
+                            if entry.is_some() && entry == selection.warm {
+                                return Ok(scratch);
+                            }
+                            parent.pending = Some(Pending::New {
+                                source: finished.size,
+                                mask_surface: matches!(masks, MaskExecution::Sampled)
+                                    && transition.mask.is_some()
+                                    && transition.progress > 0.
+                                    && transition.progress < 1.,
+                                cached: false,
+                            });
+                            let child = stream(
+                                parent.drawing,
+                                &parent.drawing.commands()[transition.commands.clone()],
+                                Some(transition.commands.start),
+                                false,
+                                parent.transform,
+                                parent.size,
+                                parent.scissor,
+                                capture,
+                                &mut scratch,
+                                &mut reserve,
+                            )?;
+                            super::scopes::push_stack(&mut stack, child, &mut reserve)?;
+                        }
+                        Pending::New {
+                            source,
+                            mask_surface,
+                            cached,
+                        } => {
+                            scratch.composite(parent.size, false, mask_surface, &mut reserve)?;
+                            if !cached {
+                                scratch.release(source, &mut reserve)?;
+                            }
+                            scratch.release(finished.size, &mut reserve)?;
+                        }
+                        Pending::Mask {
+                            source,
                             backdrop,
-                            masks.surface(scope.group, true),
+                            mask_surface,
+                        } => {
+                            scratch.composite(parent.size, backdrop, mask_surface, &mut reserve)?;
+                            scratch.release(source, &mut reserve)?;
+                            scratch.release(finished.size, &mut reserve)?;
+                        }
+                    }
+                    continue;
+                };
+                current.next += 1;
+                let at = command.origin.at;
+                match &command.op {
+                    FrameOp::PushClip(clip) => {
+                        let parent_scissor = current.scissor;
+                        current.scissor =
+                            Scissor::from_clip(clip, current.transform, current.size, samples)
+                                .or_else(|| {
+                                    Scissor::clip_bounds(clip, current.transform, current.size)
+                                })
+                                .map_or(parent_scissor, |s| parent_scissor.intersect(s));
+                        let direct_mesh = samples == 1
+                            && crate::common::scopes::flat_clip(
+                                current.drawing,
+                                current.commands,
+                                current.next,
+                                current.offset,
+                                current.transitions_enabled,
+                                capture,
+                            )
+                            && crate::common::mesh::RectClip::from_clip(
+                                clip,
+                                current.transform,
+                                current.size,
+                            )
+                            .is_some();
+                        let isolated =
+                            Scissor::from_clip(clip, current.transform, current.size, samples)
+                                .is_none()
+                                && !direct_mesh;
+                        if isolated {
+                            scratch.acquire(current.size, &mut reserve)?;
+                        }
+                        super::scopes::push_stack(
+                            &mut current.scopes,
+                            Scope {
+                                defer: false,
+                                shared_source: false,
+                                end_batch: false,
+                                isolated,
+                                forward_source: false,
+                                clip: isolated,
+                                group: None,
+                                restore: None,
+                                parent_scissor,
+                                source_view: false,
+                            },
                             &mut reserve,
                         )?;
-                        scratch.release(source);
                     }
+                    FrameOp::PushGroup(group) => {
+                        if let Some(fill) = crate::common::scopes::inline_group_fill(
+                            group,
+                            &current.commands[current.next..],
+                            current.transform,
+                            current.size,
+                            samples,
+                        ) && !fill.crosses_boundary(
+                            current.drawing,
+                            current.offset,
+                            current.next,
+                            current.transitions_enabled,
+                            capture,
+                        ) {
+                            current.next += fill.consumed;
+                            continue;
+                        }
+                        let isolated = !current.groups.can_inline(current.next - 1);
+                        let parent_scissor = current.scissor;
+                        let ink = glyph_plan.group_ink(group);
+                        let batch = current
+                            .scheduled
+                            .then(|| schedule.entry(current.next - 1))
+                            .flatten();
+                        let view = batch.map(|entry| entry.view).or_else(|| {
+                            isolated
+                                .then(|| {
+                                    crate::common::source_view::SourceView::group(
+                                        group,
+                                        ink,
+                                        current.transform,
+                                        current.size,
+                                        parent_scissor,
+                                        current.transitions_enabled
+                                            && !current.drawing.transitions().is_empty(),
+                                        max_dimension,
+                                    )
+                                })
+                                .flatten()
+                        });
+                        let mut forward_source = false;
+                        let restore = if let Some(view) = view {
+                            let restore = (current.transform, current.size);
+                            current.transform = view.frame_to_source(current.transform);
+                            current.size = view.storage_size;
+                            current.scissor = view.source_rect;
+                            Some(restore)
+                        } else if let Some(effect) =
+                            group.effect.as_ref().or(group.mask_effect.as_ref())
+                        {
+                            let parent = current.scopes.last().and_then(|scope| scope.group);
+                            let source = if super::effect_plan::same_source_domain(group, parent) {
+                                super::effect_plan::SourceLayout {
+                                    size: current.size,
+                                    frame_to_source: current.transform,
+                                }
+                            } else {
+                                crate::common::effect_plan::source_layout(
+                                    effect,
+                                    group.effect_to_target,
+                                    current.transform,
+                                    max_dimension,
+                                    at,
+                                )?
+                            };
+                            forward_source = current.groups.is_source_child(current.next - 1)
+                                && current.scopes.last().is_some_and(|scope| scope.isolated)
+                                && super::effect_plan::forwards_source(
+                                    group,
+                                    &source,
+                                    current.transform,
+                                    current.size,
+                                );
+                            let restore = (current.transform, current.size);
+                            current.transform = source.frame_to_source;
+                            current.size = source.size;
+                            current.scissor = Scissor::full(source.size);
+                            Some(restore)
+                        } else {
+                            current.scissor = Scissor::group_bounds(
+                                group,
+                                current.transform,
+                                current.size,
+                                current.transitions_enabled
+                                    && !current.drawing.transitions().is_empty(),
+                            )
+                            .map_or(parent_scissor, |s| parent_scissor.intersect(s));
+                            None
+                        };
+                        if isolated
+                            && !forward_source
+                            && batch.is_none_or(|entry| !entry.shared || entry.first)
+                        {
+                            scratch.acquire(current.size, &mut reserve)?;
+                        }
+                        super::scopes::push_stack(
+                            &mut current.scopes,
+                            Scope {
+                                defer: batch.is_some(),
+                                shared_source: batch.is_some_and(|entry| entry.shared),
+                                end_batch: batch.is_some_and(|entry| entry.last),
+                                isolated,
+                                clip: group.clip.is_some(),
+                                group: Some(group),
+                                restore,
+                                parent_scissor,
+                                source_view: view.is_some(),
+                                forward_source,
+                            },
+                            &mut reserve,
+                        )?;
+                    }
+                    FrameOp::PopClip | FrameOp::PopGroup => {
+                        let scope = current.scopes.pop().expect("validated scope");
+                        current.scissor = scope.parent_scissor;
+                        if !scope.isolated {
+                            continue;
+                        }
+                        if scope.forward_source {
+                            let (transform, size) = scope.restore.expect("forwarded source domain");
+                            current.transform = transform;
+                            current.size = size;
+                            scratch.acquire(size, &mut reserve)?;
+                            scratch.release(size, &mut reserve)?;
+                            continue;
+                        }
+                        let mut source = current.size;
+                        if let Some(group) = scope.group.filter(|group| group.mask_effect.is_some())
+                        {
+                            // Each effect replaces the complete local source. The
+                            // scalar mask writes its covered source in one pass.
+                            if group.effect.is_some() {
+                                scratch.acquire(source, &mut reserve)?;
+                                scratch.release(source, &mut reserve)?;
+                            }
+                            scratch.acquire(source, &mut reserve)?;
+                            scratch.release(source, &mut reserve)?;
+                        }
+                        if let Some((transform, parent_size)) = scope.restore {
+                            current.transform = transform;
+                            current.size = parent_size;
+                            if scope.source_view {
+                                if scope.defer {
+                                    if !scope.shared_source || current.deferred.is_empty() {
+                                        super::scopes::push_stack(
+                                            &mut current.deferred,
+                                            source,
+                                            &mut reserve,
+                                        )?;
+                                    }
+                                    if scope.end_batch {
+                                        for source in current.deferred.drain(..) {
+                                            scratch.release(source, &mut reserve)?;
+                                        }
+                                    }
+                                } else {
+                                    scratch.composite(
+                                        current.size,
+                                        scope.group.is_some_and(|group| {
+                                            group.composite.blend != Default::default()
+                                        }),
+                                        false,
+                                        &mut reserve,
+                                    )?;
+                                    scratch.release(source, &mut reserve)?;
+                                }
+                                continue;
+                            }
+                            if scope.group.is_some_and(|group| {
+                                super::effect_plan::direct_mask_projection(
+                                    group,
+                                    current.transitions_enabled
+                                        && !current.drawing.transitions().is_empty(),
+                                )
+                            }) {
+                                scratch.release(source, &mut reserve)?;
+                                continue;
+                            }
+                            scratch.acquire(parent_size, &mut reserve)?;
+                            scratch.release(source, &mut reserve)?;
+                            source = parent_size;
+                        }
+                        let mask = scope.group.and_then(|group| group.mask);
+                        let backdrop = scope
+                            .group
+                            .is_some_and(|group| group.composite.blend != Default::default());
+                        if scope.clip {
+                            scratch.acquire(current.size, &mut reserve)?;
+                            if mask.is_none() {
+                                scratch.composite(
+                                    current.size,
+                                    backdrop,
+                                    masks.surface(scope.group, false),
+                                    &mut reserve,
+                                )?;
+                                scratch.release(current.size, &mut reserve)?;
+                                scratch.release(source, &mut reserve)?;
+                                continue;
+                            }
+                            scratch.acquire(current.size, &mut reserve)?;
+                            scratch.release(current.size, &mut reserve)?;
+                            scratch.release(source, &mut reserve)?;
+                            source = current.size;
+                        }
+                        if let Some(mask) = mask {
+                            let definition = current.drawing.masks().get(&mask.mask).ok_or(
+                                GpuError::Unsupported {
+                                    at,
+                                    record: "missing mask",
+                                },
+                            )?;
+                            current.pending = Some(Pending::Mask {
+                                source,
+                                backdrop,
+                                mask_surface: masks.surface(scope.group, false),
+                            });
+                            let child = stream(
+                                current.drawing,
+                                &definition.commands,
+                                None,
+                                false,
+                                current.transform * mask.transform,
+                                current.size,
+                                current.scissor,
+                                capture,
+                                &mut scratch,
+                                &mut reserve,
+                            )?;
+                            super::scopes::push_stack(&mut stack, child, &mut reserve)?;
+                        } else {
+                            scratch.composite(
+                                current.size,
+                                backdrop,
+                                masks.surface(scope.group, true),
+                                &mut reserve,
+                            )?;
+                            scratch.release(source, &mut reserve)?;
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
+        if second.is_some() {
+            scratch.acquire(size, &mut reserve)?;
+            scratch.release(size, &mut reserve)?;
+            scratch.release(size, &mut reserve)?;
+        }
+        Ok(scratch)
     }
-    if second.is_some() {
-        scratch.acquire(size, &mut reserve)?;
-        scratch.release(size);
-        scratch.release(size);
-    }
-    scratch.pixels().and_then(|pixels| {
-        pixels
-            .checked_add(selection.persistent_pixels())
-            .ok_or(GpuError::InvalidSize)
-    })
 }
 #[cfg(test)]
 mod tests {
@@ -686,16 +806,16 @@ mod tests {
         scratch.acquire([160, 120], &mut reserve).unwrap();
         scratch.acquire([240, 80], &mut reserve).unwrap();
         scratch.acquire([160, 120], &mut reserve).unwrap();
-        scratch.release([240, 80]);
-        scratch.release([160, 120]);
+        scratch.release([240, 80], &mut reserve).unwrap();
+        scratch.release([160, 120], &mut reserve).unwrap();
         scratch.acquire([64, 64], &mut reserve).unwrap();
         scratch.acquire([160, 120], &mut reserve).unwrap();
         assert_eq!(
             scratch.pixels().unwrap(),
             2 * 160 * 120 + 240 * 80 + 64 * 64
         );
-        scratch.release([64, 64]);
-        scratch.release([160, 120]);
+        scratch.release([64, 64], &mut reserve).unwrap();
+        scratch.release([160, 120], &mut reserve).unwrap();
         scratch.acquire([240, 80], &mut reserve).unwrap();
         assert_eq!(
             scratch.pixels().unwrap(),

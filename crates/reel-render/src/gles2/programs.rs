@@ -40,6 +40,9 @@ const NAMES: &[&str] = &[
     "u_coverage",
     "u_source",
     "u_source_uv",
+    "u_mask_uv",
+    "u_backdrop_uv",
+    "u_expression_uv",
     "u_mask",
     "u_backdrop",
     "u_expression",
@@ -121,10 +124,13 @@ pub(super) fn create_program(
     context: &native::Context,
     fragment: ShaderCode<'_>,
     implicit_source: bool,
+    padded: bool,
 ) -> Result<Program, GlesError> {
     create_program_with_vertex(
         context,
-        if implicit_source {
+        if padded {
+            shader_code!("effect_padded_vertex")
+        } else if implicit_source {
             shader_code!("effect_vertex")
         } else {
             shader_code!("vertex")
@@ -263,12 +269,14 @@ impl Programs {
             mask: Shader::new(context, shader_code!("mask"))?,
             mask_sample_chain: Shader::new(context, shader_code!("mask_sample_chain"))?,
             mask_threshold: Shader::new(context, shader_code!("mask_threshold"))?,
-            mask_sample_chain_composite: Shader::new(
+            mask_sample_chain_composite: Shader::with_vertex(
                 context,
+                shader_code!("composite_vertex"),
                 shader_code!("mask_sample_chain_composite"),
             )?,
-            mask_threshold_composite: Shader::new(
+            mask_threshold_composite: Shader::with_vertex(
                 context,
+                shader_code!("composite_vertex"),
                 shader_code!("mask_threshold_composite"),
             )?,
             mask_paired: [
@@ -278,10 +286,26 @@ impl Programs {
                 Shader::new(context, shader_code!("mask_paired_gg"))?,
             ],
             mask_paired_composite: [
-                Shader::new(context, shader_code!("mask_paired_aa_composite"))?,
-                Shader::new(context, shader_code!("mask_paired_ag_composite"))?,
-                Shader::new(context, shader_code!("mask_paired_ga_composite"))?,
-                Shader::new(context, shader_code!("mask_paired_gg_composite"))?,
+                Shader::with_vertex(
+                    context,
+                    shader_code!("composite_vertex"),
+                    shader_code!("mask_paired_aa_composite"),
+                )?,
+                Shader::with_vertex(
+                    context,
+                    shader_code!("composite_vertex"),
+                    shader_code!("mask_paired_ag_composite"),
+                )?,
+                Shader::with_vertex(
+                    context,
+                    shader_code!("composite_vertex"),
+                    shader_code!("mask_paired_ga_composite"),
+                )?,
+                Shader::with_vertex(
+                    context,
+                    shader_code!("composite_vertex"),
+                    shader_code!("mask_paired_gg_composite"),
+                )?,
             ],
             present: Shader::new(context, shader_code!("present"))?,
             vertices: context.vertex_buffer(bytemuck::cast_slice(&data), 12, &attributes)?,
@@ -376,6 +400,15 @@ pub(super) struct Target {
     _storage: Rc<BudgetTicket>,
 }
 impl Target {
+    pub fn source_uv(&self, parent: [u32; 2], origin: [i32; 2]) -> [f32; 4] {
+        let storage = self.view.size();
+        let mut uv = crate::common::source_view::uv_mapping(parent, storage, origin);
+        uv[3] += 1. - self.size[1] as f32 / storage[1] as f32;
+        uv
+    }
+    pub fn frame_uv(&self, parent: [u32; 2]) -> [f32; 4] {
+        crate::common::source_view::uv_mapping(parent, self.view.size(), [0; 2])
+    }
     pub fn same_allocation(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self._storage, &other._storage)
     }

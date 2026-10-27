@@ -24,9 +24,21 @@ pub(crate) struct Entry {
 #[derive(Default)]
 pub(crate) struct Plan {
     entries: Vec<Entry>,
+    storage: super::target_storage::Plan,
 }
 
 impl Plan {
+    pub(crate) fn storage_size(&self, logical: [u32; 2]) -> [u32; 2] {
+        self.storage.storage_size(logical)
+    }
+
+    /// The second output of a whole-frame crossfade shares storage lifetimes,
+    /// while its command indices belong to a different drawing.
+    #[cfg(feature = "wgpu")]
+    pub(crate) fn disable_batches(&mut self) {
+        self.entries.clear();
+    }
+
     pub(crate) fn entry(&self, push: usize) -> Option<&Entry> {
         self.entries
             .binary_search_by_key(&push, |entry| entry.push)
@@ -86,7 +98,7 @@ impl Plan {
             }
             plan.pack(max_dimension, shared);
             let mut traversal = Vec::new();
-            let pixels = super::target_plan::target_pixels(
+            let input = super::target_plan::Input {
                 frame,
                 second,
                 size,
@@ -94,18 +106,27 @@ impl Plan {
                 samples,
                 max_dimension,
                 glyphs,
-                &plan,
+                schedule: &plan,
                 masks,
                 selection,
-                |bytes| {
-                    traversal.push(reserve(bytes)?);
-                    Ok(())
-                },
-            )?;
+            };
+            let (mut pixels, reusable) = input.measure(|bytes| {
+                traversal.push(reserve(bytes)?);
+                Ok(())
+            })?;
             drop(traversal);
+            let mut storage_tickets = Vec::new();
+            if pixels > pixel_limit && reusable {
+                let (storage, shared_pixels, tickets) = input.storage(&mut reserve)?;
+                pixels = shared_pixels;
+                plan.storage = storage;
+                storage_tickets = tickets;
+            }
             if pixels <= pixel_limit || plan.is_empty() {
+                retained.extend(storage_tickets);
                 return Ok((plan, pixels, retained));
             }
+            plan.storage = super::target_storage::Plan::default();
             if shared && plan.entries.iter().any(|entry| entry.shared) {
                 shared = false;
                 continue;
@@ -322,7 +343,13 @@ impl Plan {
             }
         }
         finish_run(&mut entries, &mut run_start);
-        Ok((Self { entries }, retained))
+        Ok((
+            Self {
+                entries,
+                ..Self::default()
+            },
+            retained,
+        ))
     }
 }
 

@@ -113,13 +113,15 @@ pub(super) struct CompositeParams {
     /// Integer parent pixels preceding the source's top-left storage texel.
     pub source_origin: [i32; 2],
 }
-pub(super) const COMPOSITE_WORDS: usize = 12;
+pub(super) const COMPOSITE_WORDS: usize = 20;
 pub(super) const COMPOSITE_BYTES: u64 = (COMPOSITE_WORDS * size_of::<u32>()) as u64;
 impl CompositeParams {
     pub(super) fn uniform_words(
         &self,
         target: &Target,
         source: &wgpu::TextureView,
+        mask: &wgpu::TextureView,
+        backdrop: &wgpu::TextureView,
     ) -> [u32; COMPOSITE_WORDS] {
         let size = source.texture().size();
         let uv = crate::common::source_view::uv_mapping(
@@ -128,6 +130,13 @@ impl CompositeParams {
             self.source_origin,
         )
         .map(f32::to_bits);
+        let mapping = |view: &wgpu::TextureView| {
+            let size = view.texture().size();
+            crate::common::source_view::uv_mapping(target.size, [size.width, size.height], [0; 2])
+                .map(f32::to_bits)
+        };
+        let mask_uv = mapping(mask);
+        let backdrop_uv = mapping(backdrop);
         let (mode, progress, softness) = operation_words(self.operation);
         [
             self.opacity.to_bits(),
@@ -142,6 +151,14 @@ impl CompositeParams {
             uv[1],
             uv[2],
             uv[3],
+            mask_uv[0],
+            mask_uv[1],
+            mask_uv[2],
+            mask_uv[3],
+            backdrop_uv[0],
+            backdrop_uv[1],
+            backdrop_uv[2],
+            backdrop_uv[3],
         ]
     }
 }
@@ -486,7 +503,7 @@ impl Pipelines {
             mask,
             backdrop,
         } = inputs;
-        let words = params.uniform_words(target, source);
+        let words = params.uniform_words(target, source, mask, backdrop);
         let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("composite params"),
             contents: bytemuck::cast_slice(&words),
@@ -550,6 +567,7 @@ impl Pipelines {
             multiview_mask: None,
             occlusion_query_set: None,
         });
+        pass.set_viewport(0., 0., target.size[0] as f32, target.size[1] as f32, 0., 1.);
         pass.set_pipeline(self.composite_pipeline(&params));
         params.scissor.apply(&mut pass);
         pass.set_bind_group(0, &group, &[]);
@@ -581,6 +599,7 @@ impl Pipelines {
             multiview_mask: None,
             occlusion_query_set: None,
         });
+        pass.set_viewport(0., 0., target.size[0] as f32, target.size[1] as f32, 0., 1.);
         for (group, params) in &groups {
             pass.set_pipeline(self.composite_pipeline(params));
             params.scissor.apply(&mut pass);
@@ -622,6 +641,27 @@ pub(super) fn pipeline_entry(
     layout: &wgpu::BindGroupLayout,
     code: &str,
     mesh: bool,
+    fragment: FragmentOutput<'_>,
+    #[cfg(test)] counts: Option<&Creations>,
+) -> wgpu::RenderPipeline {
+    pipeline_vertex(
+        device,
+        quality,
+        layout,
+        code,
+        (mesh, "vertex"),
+        fragment,
+        #[cfg(test)]
+        counts,
+    )
+}
+
+pub(super) fn pipeline_vertex(
+    device: &wgpu::Device,
+    quality: Quality,
+    layout: &wgpu::BindGroupLayout,
+    code: &str,
+    vertex: (bool, &str),
     fragment: FragmentOutput<'_>,
     #[cfg(test)] counts: Option<&Creations>,
 ) -> wgpu::RenderPipeline {
@@ -671,9 +711,9 @@ pub(super) fn pipeline_entry(
         layout: Some(&pipeline_layout),
         vertex: wgpu::VertexState {
             module: &shader,
-            entry_point: Some("vertex"),
+            entry_point: Some(vertex.1),
             compilation_options: Default::default(),
-            buffers: if mesh { &buffers } else { &[] },
+            buffers: if vertex.0 { &buffers } else { &[] },
         },
         fragment: Some(wgpu::FragmentState {
             module: &shader,

@@ -5,14 +5,15 @@ use crate::common::renderer::Reservation;
 impl Context<'_> {
     pub fn target(&mut self) -> Result<Target, GlesError> {
         self.flush_draws()?;
-        let target = if let Some(index) = self
+        let storage_size = self.offscreen.storage_size(self.size);
+        let mut target = if let Some(index) = self
             .available_targets
             .iter()
-            .rposition(|target| target.size == self.size)
+            .rposition(|target| target.view.size() == storage_size)
         {
             self.available_targets.swap_remove(index)
         } else {
-            let bytes = u64::from(self.size[0]) * u64::from(self.size[1]) * 4;
+            let bytes = u64::from(storage_size[0]) * u64::from(storage_size[1]) * 4;
             let local =
                 self.budget_scope
                     .targets
@@ -30,12 +31,12 @@ impl Context<'_> {
             let index = self
                 .targets
                 .iter()
-                .filter(|target| target.size == self.size)
+                .filter(|target| target.view.size() == storage_size)
                 .count();
             let mut target = if let Some(target) = self
                 .target_cache
                 .iter()
-                .filter(|target| target.size == self.size)
+                .filter(|target| target.view.size() == storage_size)
                 .nth(index)
             {
                 target.clone()
@@ -54,7 +55,7 @@ impl Context<'_> {
                 }
                 let target = match Target::new(
                     self.gpu,
-                    self.size,
+                    storage_size,
                     &self.budgets.targets,
                     self.limits.target_bytes,
                 ) {
@@ -78,6 +79,7 @@ impl Context<'_> {
             self.targets.push(target.clone());
             target
         };
+        target.size = self.size;
         let mut writes = std::mem::take(&mut self.target_writes);
         writes.begin(target.slot, |bytes| self.transient(bytes))?;
         self.target_writes = writes;

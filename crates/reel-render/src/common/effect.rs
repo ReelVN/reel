@@ -56,7 +56,8 @@ pub struct EffectFragment {
 /// Source and output are linear premultiplied colors; scalar output multiplies
 /// the unmodified whole local source at the current coordinates by coverage.
 /// That implicit sample uses an affine `reel_implicit_source_uv` vertex varying
-/// and hardware edge clamping. Explicit authored samples retain their fragment
+/// and hardware edge clamping. Padded scratch supplies piecewise clamped vertex UVs.
+/// Explicit authored samples retain their fragment
 /// coordinate evaluation and texel/window clamps.
 pub fn compile_fragment(
     program: &EffectProgram,
@@ -155,6 +156,9 @@ fn reel_source_sample(uv: vec2<f32>) -> vec4<f32> {
 }
 "#,
             );
+            if generated.output_type == EffectType::Float {
+                source.push_str("@vertex fn vertex_padded(@location(0) position: vec2<f32>, @location(1) source_uv: vec2<f32>) -> ReelEffectVarying {\nvar out: ReelEffectVarying;\nout.position = vec4(position, 0.0, 1.0);\nout.implicit_source_uv = source_uv;\nreturn out;\n}\n");
+            }
             source.push_str(&texture_functions(
                 program,
                 language,

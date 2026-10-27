@@ -616,8 +616,7 @@ impl Renderer {
                 f64::from(size[1]) / frame.info().logical_size[1],
             );
             let mut output = ctx.stream(frame.drawing(), transform)?;
-            ctx.offscreen = Default::default();
-            drop(offscreen_tickets);
+            ctx.offscreen.disable_batches();
             let mut frames = vec![frame.clone()];
             if let Some((second, progress)) = second
                 && !ctx.warmed
@@ -639,6 +638,8 @@ impl Renderer {
                 }
                 frames.push(second.clone());
             }
+            drop(ctx.offscreen);
+            drop(offscreen_tickets);
             self.gpu.check()?;
             let retained = if ctx.warmed {
                 self.retained
@@ -671,10 +672,14 @@ impl Renderer {
                     .find(|allocation| allocation.target.view == output.view)
                     .expect("cold retained output belongs to this preparation")
                     .clone();
+                let storage = output.storage_size();
                 self.retained.inputs.stage(
                     token,
-                    allocation,
-                    u64::from(output.size[0]) * u64::from(output.size[1]),
+                    super::retained::Output {
+                        allocation,
+                        target: output.clone(),
+                    },
+                    u64::from(storage[0]) * u64::from(storage[1]),
                 );
                 Some(token)
             } else {

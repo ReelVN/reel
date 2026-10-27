@@ -424,6 +424,189 @@ fn retained_effect_transition_frames(language: Language) -> Vec<RenderFrame> {
         .collect()
 }
 
+// Two sequential local domains need four exact scratch textures, but only two
+// shared physical textures. The output retains its exact presentation extent.
+fn mixed_extent_effect_frame(language: Language) -> RenderFrame {
+    let program = program(false);
+    let fragment = compile_fragment(&program, language, 64 << 10).unwrap();
+    let format = match language {
+        Language::Wgsl => EffectShaderFormat::Wgsl,
+        Language::GlslEs100 => EffectShaderFormat::GlslEs100,
+    };
+    let descriptor = EffectShaderDescriptor::with_textures(
+        [7; 32],
+        format,
+        vec![EffectType::Float],
+        0,
+        fragment.source_sampler,
+        fragment.output_type,
+        fragment.source.as_bytes(),
+    )
+    .unwrap();
+    let pool = reel_core::budget::BudgetPool::new(
+        reel_core::budget::BudgetCategory::CpuOutput,
+        reel_core::budget::QueueLimits {
+            max_requests: 1024,
+            max_bytes: 16 << 20,
+        },
+    );
+    let payload = fragment.source.into_bytes();
+    let bytes =
+        OwnedBytes::new(payload.clone(), pool.reserve(payload.len() as u64).unwrap()).unwrap();
+    let mut registry = ResourceRegistry::new(8, 1 << 20).unwrap();
+    let shader = registry
+        .register_effect_shader(
+            ResourceVersion {
+                key: AssetKey(format.asset_path([7; 32])),
+                version: ContentVersion([7; 32]),
+            },
+            descriptor,
+            bytes,
+        )
+        .unwrap();
+    let mut root = RecordWidget::new(Scene::new());
+    root.clip = false;
+    for (index, extent) in [Size::new(240., 80.), Size::new(200., 100.)]
+        .into_iter()
+        .enumerate()
+    {
+        let bounds = Rect::from_origin_size(Point::ZERO, extent);
+        let paint = PaintEffect {
+            instance: EffectInstance::new(
+                [7; 32],
+                program.clone(),
+                vec![EffectValue::Float(0.75f32.to_bits())],
+            )
+            .unwrap(),
+            shader: registry.acquire(shader).unwrap(),
+            images: vec![],
+            bounds,
+            coverage_invert: false,
+        };
+        let mut scene = Scene::new();
+        scene.draw(Draw::Fill {
+            transform: Affine::IDENTITY,
+            fill_rule: Default::default(),
+            brush: Brush::Solid(Color::from_rgba8(64, 128, 192, 192)),
+            brush_transform: None,
+            shape: Geometry::Rect(bounds),
+            composite: Composite::default(),
+        });
+        let mut widget = RecordWidget::new(scene);
+        widget.clip = false;
+        if index == 0 {
+            widget.effect = Some(paint.clone());
+        } else {
+            widget.mask_effect = Some(paint.clone());
+        }
+        for _ in 1..if index == 0 { 8 } else { 1 } {
+            let mut parent = RecordWidget::new(Scene::new());
+            parent.clip = false;
+            parent.effect = Some(paint.clone());
+            parent.inner.add(widget.prepare(), Point::ZERO, extent);
+            widget = parent;
+        }
+        root.inner.add(
+            widget.prepare(),
+            Point::new(index as f64 * 10., index as f64 * 5.),
+            extent,
+        );
+    }
+    let mut bridge = widget_bridge(root, Affine::IDENTITY);
+    let mut build = FrameBuild::new(
+        bridge.record(FrameId(1)).unwrap(),
+        registry.freeze(&[shader], &pool).unwrap(),
+        FrameInfo {
+            logical_size: [160., 120.],
+            physical_size: SIZE,
+        },
+        limits(),
+        &pool,
+    )
+    .unwrap();
+    while !build.step(step_budget()).unwrap().complete {}
+    build.finish().unwrap()
+}
+
+#[cfg(feature = "wgpu")]
+#[test]
+#[ignore = "requires an actual WGPU adapter; no readback"]
+fn wgpu_sequential_effect_extents_share_physical_scratch_under_pressure() {
+    use reel_render::gpu::{DeviceGeneration, Gpu, GpuLimits, Renderer};
+    let limit = 400_000;
+    assert!(4 * (2 * 160 * 120 + 2 * 240 * 80 + 2 * 200 * 100) > limit);
+    let gpu = pollster::block_on(Gpu::request(
+        &wgpu::Instance::default(),
+        None,
+        DeviceGeneration(1),
+        GpuLimits {
+            target_bytes: limit,
+            ..Default::default()
+        },
+    ))
+    .unwrap();
+    let mut renderer = Renderer::new(gpu);
+    let frame = mixed_extent_effect_frame(Language::Wgsl);
+    let prepared = renderer.prepare(&frame).unwrap();
+    assert_eq!(prepared.size(), SIZE);
+    assert_eq!(prepared.quality().format, wgpu::TextureFormat::Rgba8Unorm);
+    assert_eq!(prepared.quality().samples, 1);
+    assert_eq!(renderer.usage().targets, 345_600);
+    renderer.submit(prepared).unwrap();
+    renderer
+        .gpu()
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    assert_eq!(renderer.poll().unwrap().len(), 1);
+}
+
+#[cfg(feature = "gles2")]
+#[test]
+#[ignore = "requires a native GLES context; no readback"]
+fn gles_sequential_effect_extents_share_physical_scratch_under_pressure() {
+    use reel_render::{
+        AlphaMode, PresentOutcome, RenderBackend, SurfaceInfo,
+        gles2::{GlesBackend, GlesLimits},
+    };
+    let mut renderer = GlesBackend::headless(
+        SIZE,
+        GlesLimits {
+            target_bytes: 400_000,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    renderer
+        .configure(SurfaceInfo {
+            physical_size: SIZE,
+            scale_factor: 1.,
+            surface_epoch: reel_core::identity::SurfaceEpoch(1),
+            color_encoding: reel_ui::resources::ColorEncoding::Srgb,
+            alpha_mode: AlphaMode::Opaque,
+        })
+        .unwrap();
+    let frame = mixed_extent_effect_frame(Language::GlslEs100);
+    let mut presents = 0;
+    assert!(matches!(
+        renderer.render_present(&frame, || presents += 1).unwrap(),
+        PresentOutcome::PresentAccepted(_)
+    ));
+    assert_eq!(presents, 1);
+    let mut events = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while renderer.has_pending() {
+        renderer.poll(&mut events, 64).unwrap();
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, reel_render::RenderEvent::RenderFinished { .. }))
+    );
+}
+
 #[cfg(feature = "wgpu")]
 #[test]
 #[ignore = "requires an actual WGPU adapter; no readback"]

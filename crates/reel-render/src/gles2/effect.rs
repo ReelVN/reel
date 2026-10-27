@@ -9,7 +9,15 @@ use reel_ui::{
 };
 use std::rc::Rc;
 
-pub(super) type Cache = effect_cache::Cache<Rc<Compiled>>;
+#[derive(Default)]
+pub(super) struct Cache([effect_cache::Cache<Rc<Compiled>>; 2]);
+impl Cache {
+    pub fn prune(&mut self) {
+        for cache in &mut self.0 {
+            cache.prune();
+        }
+    }
+}
 pub(super) struct Compiled {
     program: native::Program,
     source: Option<native::Uniform>,
@@ -26,6 +34,7 @@ fn compile(
     budget: &BudgetPool,
     limit: u64,
     at: RecordLocation,
+    padded: bool,
 ) -> Result<Rc<Compiled>, GlesError> {
     let effect_plan::Shader {
         lease,
@@ -88,6 +97,7 @@ fn compile(
         gpu,
         code,
         descriptor.output == reel_ui::stage::effect::EffectType::Float,
+        padded,
     )
     .map_err(|error| GlesError::Shader {
         at,
@@ -156,7 +166,10 @@ impl Context<'_> {
         let effect_plan::Shader {
             lease, descriptor, ..
         } = shader;
-        let compiled = if let Some(compiled) = self.effect_cache.get(
+        let padded = descriptor.output == reel_ui::stage::effect::EffectType::Float
+            && source.size != source.view.size();
+        let cache = &mut self.effect_cache.0[usize::from(padded)];
+        let compiled = if let Some(compiled) = cache.get(
             descriptor.shader_key,
             lease,
             &self.budgets.resources,
@@ -170,8 +183,9 @@ impl Context<'_> {
                 &self.budgets.resources,
                 self.limits.resource_bytes,
                 at,
+                padded,
             )?;
-            self.effect_cache.insert(
+            cache.insert(
                 descriptor.shader_key,
                 lease,
                 compiled.clone(),
@@ -189,6 +203,7 @@ impl Context<'_> {
             context[0][3] = if effect.coverage_invert { 3.0 } else { 0.0 };
             effect_plan::map_source(&mut context, effect, transform, view, source.size);
         }
+        effect_plan::map_storage(&mut context, source.size, source.view.size(), true);
         if self.scissor.empty() {
             return Ok(output);
         }
@@ -258,24 +273,60 @@ impl Context<'_> {
                     .map(|u| native::UniformValue::Vec4(u, effect_plan::slot(*value))),
             );
         }
+        let mesh = if padded {
+            let vertices =
+                effect_plan::implicit_mesh::vertices(&context).ok_or(GlesError::InvalidSize)?;
+            let mut mesh = crate::common::mesh::Mesh::new(self.mesh_allocation());
+            mesh.triangles(&vertices)?;
+            let batch = crate::common::draw_batch::Batch::new(mesh, ())?;
+            let (storage, local, metadata) = super::geometry::upload_batch(
+                self.geometry_cache,
+                self.gpu,
+                self.budgets,
+                &self.budget_scope,
+                self.limits,
+                &batch,
+            )?;
+            self.tickets.push(crate::common::renderer::Reservation {
+                _shared: None,
+                _local: local,
+            });
+            if let Some(local) = metadata {
+                self.tickets.push(crate::common::renderer::Reservation {
+                    _shared: None,
+                    _local: local,
+                });
+            }
+            let mut held = std::mem::take(&mut self.buffers);
+            let result = crate::common::scopes::push_stack(&mut held, storage, |bytes| {
+                self.tickets.push(crate::common::renderer::reserve(
+                    &self.budgets.transient,
+                    &self.budget_scope.transient,
+                    bytes,
+                    self.limits.transient_bytes,
+                    "effect mesh metadata",
+                )?);
+                Ok(())
+            });
+            self.buffers = held;
+            result?;
+            Some(&self.buffers.last().unwrap().storage)
+        } else {
+            None
+        };
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::EffectComposite);
         let _draw = reel_core::profile::Scope::new(reel_core::profile::Phase::Draw);
         self.gpu.draw(native::Draw {
             target: native::Target::Framebuffer(&output.framebuffer),
             size: self.size,
             program: &compiled.program,
-            vertices: &self.programs.vertices,
-            indices: Some(&self.programs.indices),
-            range: 0..6,
+            vertices: mesh.map_or(&self.programs.vertices, |mesh| &mesh.vertices),
+            indices: Some(mesh.map_or(&self.programs.indices, |mesh| &mesh.indices)),
+            range: 0..if padded { 54 } else { 6 },
             textures: &images,
             uniforms: &values,
             blend: native::Blend::Replace,
-            scissor: Some([
-                self.scissor.x,
-                self.scissor.y,
-                self.scissor.width,
-                self.scissor.height,
-            ]),
+            scissor: self.gl_scissor(),
         })?;
         Ok(output)
     }

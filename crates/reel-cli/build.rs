@@ -45,6 +45,7 @@ fn main() -> io::Result<()> {
         "crates/reel-cli/src/prepare_effects.rs",
         "crates/reel-render/src/common/effect.rs",
         "crates/reel-render/src/gles2/shaders/effect_vertex.glsl",
+        "crates/reel-render/src/gles2/shaders/effect_padded_vertex.glsl",
         "crates/reel-ui/src/resources/effect.rs",
         "crates/reel-ui/src/stage/effect.rs",
     ];

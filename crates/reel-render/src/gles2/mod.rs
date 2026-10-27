@@ -507,10 +507,11 @@ impl GlesBackend {
         ) {
             Ok(prepared) => {
                 if let Some(token) = prepared.retained {
+                    let storage = prepared.output.view.size();
                     self.retained.stage(
                         token,
                         prepared.output.clone(),
-                        u64::from(prepared.output.size[0]) * u64::from(prepared.output.size[1]),
+                        u64::from(storage[0]) * u64::from(storage[1]),
                     );
                     self.targets.clear();
                     if let Err(error) = self.submit(frame, prepared, None) {

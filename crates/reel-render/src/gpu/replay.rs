@@ -31,8 +31,7 @@ pub(super) struct Context<'a> {
     pub(super) effects: Vec<Arc<super::effect::Compiled>>,
     pub(super) white: Option<Arc<resources::Image>>,
     pub(super) target_cache: &'a super::target_cache::TargetCache,
-    pub(super) retained_cache:
-        &'a crate::common::retained::Cache<Arc<super::target_cache::Allocation>, Quality>,
+    pub(super) retained_cache: &'a crate::common::retained::Cache<super::retained::Output, Quality>,
     pub(super) selection: Arc<crate::common::retained::Plan>,
     pub(super) retained_inputs: Vec<Arc<super::target_cache::Allocation>>,
     pub(super) warm: Option<usize>,
@@ -113,14 +112,15 @@ struct Stream<'a> {
 impl Context<'_> {
     pub(super) fn target(&mut self) -> Result<Target, GpuError> {
         self.flush_draws()?;
-        let target = if let Some(index) = self
+        let storage_size = self.offscreen.storage_size(self.size);
+        let mut target = if let Some(index) = self
             .available_targets
             .iter()
-            .rposition(|target| target.size == self.size)
+            .rposition(|target| target.storage_size() == storage_size)
         {
             self.available_targets.swap_remove(index)
         } else {
-            let cost = target_bytes(self.size, self.quality)?;
+            let cost = target_bytes(storage_size, self.quality)?;
             let local = self
                 .budget_scope
                 .targets
@@ -136,11 +136,11 @@ impl Context<'_> {
                 })?;
             let allocation = self.target_cache.get(
                 self.gpu,
-                self.size,
+                storage_size,
                 self.quality,
                 self.target_allocations
                     .iter()
-                    .filter(|allocation| allocation.target.size == self.size)
+                    .filter(|allocation| allocation.target.storage_size() == storage_size)
                     .count(),
                 &self.budgets.targets,
                 cost,
@@ -157,6 +157,7 @@ impl Context<'_> {
             pushed?;
             target
         };
+        target.size = self.size;
         let mut writes = std::mem::take(&mut self.target_writes);
         writes.begin(target.slot, |bytes| self.transient(bytes))?;
         self.target_writes = writes;
@@ -235,9 +236,11 @@ impl Context<'_> {
                 let (entry, cached) =
                     retained.map_or((None, None), |(index, output)| (Some(index), output));
                 if let Some(previous) = cached {
-                    let target = previous.target.clone();
+                    let target = previous.target;
                     let mut inputs = std::mem::take(&mut self.retained_inputs);
-                    let result = push_stack(&mut inputs, previous, |bytes| self.transient(bytes));
+                    let result = push_stack(&mut inputs, previous.allocation, |bytes| {
+                        self.transient(bytes)
+                    });
                     self.retained_inputs = inputs;
                     result?;
                     let child = self.start_stream(

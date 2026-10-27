@@ -326,9 +326,11 @@ impl Context<'_> {
         self.flush_draws()?;
         self.ensure_sampled(&source.view)?;
         let mut mesh = mesh::Mesh::new(self.mesh_allocation());
-        mesh.quad(
-            Rect::new(0., 0., f64::from(source.size[0]), f64::from(source.size[1])),
-            Rect::new(0., 1., 1., 0.),
+        crate::common::effect_plan::projected_source(
+            &mut mesh,
+            source.size,
+            source.view.size(),
+            true,
         )?;
         mesh::transform_glyphs(
             &mut mesh,
@@ -345,7 +347,7 @@ impl Context<'_> {
                 planes: &[],
                 kind: 0.,
                 video: &[[0.; 4]; 4],
-                dimensions: source.size,
+                dimensions: source.view.size(),
                 appearance: [[0.; 4]; 9],
                 repeat: [false; 2],
                 coverage: false,

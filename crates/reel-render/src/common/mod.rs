@@ -23,6 +23,7 @@ pub(crate) mod offscreen;
 pub(crate) mod scissor;
 pub(crate) mod source_view;
 pub(crate) mod target_plan;
+pub(crate) mod target_storage;
 pub(crate) mod target_writes;
 
 pub(crate) mod draw_batch;

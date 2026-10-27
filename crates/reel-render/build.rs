@@ -24,6 +24,7 @@ fn compile_shaders() {
         ("vertex", Stage::Vertex),
         ("composite_vertex", Stage::Vertex),
         ("effect_vertex", Stage::Vertex),
+        ("effect_padded_vertex", Stage::Vertex),
         ("composite", Stage::Fragment),
         ("mask", Stage::Fragment),
         ("present", Stage::Fragment),

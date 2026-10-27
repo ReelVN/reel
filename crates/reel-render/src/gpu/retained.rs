@@ -4,6 +4,12 @@ use reel_core::budget::{BudgetPool, BudgetTicket};
 use reel_ui::bridge::CandidateKey;
 use std::sync::{Arc, Mutex};
 
+#[derive(Clone)]
+pub(super) struct Output {
+    pub allocation: Arc<Allocation>,
+    pub target: super::targets::Target,
+}
+
 pub(super) struct Pending {
     pub token: usize,
     pub flight: Inflight,
@@ -45,7 +51,7 @@ impl PendingQueue {
 }
 #[derive(Default)]
 pub(super) struct Cache {
-    pub inputs: crate::common::retained::Cache<Arc<Allocation>, Quality>,
+    pub inputs: crate::common::retained::Cache<Output, Quality>,
     pub pending: Mutex<PendingQueue>,
     pub ceiling: Mutex<Option<(CandidateKey, Quality)>>,
     pub epoch: Mutex<Option<reel_core::identity::SurfaceEpoch>>,
