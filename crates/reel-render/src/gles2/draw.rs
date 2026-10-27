@@ -20,6 +20,20 @@ use reel_ui::{
 };
 use std::{cell::RefCell, rc::Weak, sync::Arc};
 
+struct Paint<'a> {
+    texture: &'a native::Texture,
+    planes: &'a [native::Texture],
+    kind: f32,
+    video: &'a [[f32; 4]; 4],
+    dimensions: [u32; 2],
+    appearance: [[f32; 4]; 9],
+    repeat: [bool; 2],
+    coverage: bool,
+    format: Option<PixelFormat>,
+    quality: ImageQuality,
+    source: mesh::PaintSource,
+}
+
 pub(super) struct PaintBatch {
     target: Target,
     geometry: crate::common::draw_batch::Batch<PaintState>,
@@ -91,15 +105,18 @@ impl GlyphCache {
     }
     fn rasterize(
         &mut self,
-        gpu: &native::Context,
-        budgets: &Budgets,
-        limits: crate::common::GpuLimits,
+        device: DeviceResources<'_>,
         frame: &FrameDrawing,
         run: &FrameGlyphRun,
         density: f64,
         index: usize,
         at: RecordLocation,
     ) -> Result<Rc<Glyph>, GlesError> {
+        let DeviceResources {
+            gpu,
+            budgets,
+            limits,
+        } = device;
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::GlyphRaster);
         let source = crate::common::resources::ResourceSource::new(
             frame
@@ -245,9 +262,11 @@ impl crate::common::glyph_plan::Prepare for Context<'_> {
                 glyph.clone()
             } else {
                 let glyph = self.glyph_cache.rasterize(
-                    self.gpu,
-                    self.budgets,
-                    self.limits,
+                    DeviceResources {
+                        gpu: self.gpu,
+                        budgets: self.budgets,
+                        limits: self.limits,
+                    },
                     frame,
                     run,
                     density,
@@ -317,17 +336,19 @@ impl Context<'_> {
         self.paint_mesh(
             target,
             mesh,
-            &source.view,
-            &[],
-            0.,
-            &[[0.; 4]; 4],
-            source.size,
-            [[0.; 4]; 9],
-            [false; 2],
-            false,
-            None,
-            ImageQuality::Medium,
-            mesh::PaintSource::Texture,
+            Paint {
+                texture: &source.view,
+                planes: &[],
+                kind: 0.,
+                video: &[[0.; 4]; 4],
+                dimensions: source.size,
+                appearance: [[0.; 4]; 9],
+                repeat: [false; 2],
+                coverage: false,
+                format: None,
+                quality: ImageQuality::Medium,
+                source: mesh::PaintSource::Texture,
+            },
         )?;
         self.flush_draws()
     }
@@ -396,17 +417,19 @@ impl Context<'_> {
         self.paint_mesh(
             target,
             mesh,
-            &white.texture,
-            &[],
-            0.,
-            &[[0.; 4]; 4],
-            [1, 1],
-            [[0.; 4]; 9],
-            [false; 2],
-            false,
-            None,
-            ImageQuality::Medium,
-            mesh::PaintSource::Solid,
+            Paint {
+                texture: &white.texture,
+                planes: &[],
+                kind: 0.,
+                video: &[[0.; 4]; 4],
+                dimensions: [1, 1],
+                appearance: [[0.; 4]; 9],
+                repeat: [false; 2],
+                coverage: false,
+                format: None,
+                quality: ImageQuality::Medium,
+                source: mesh::PaintSource::Solid,
+            },
         )
     }
     pub fn draw(
@@ -572,17 +595,19 @@ impl Context<'_> {
                 self.paint_mesh(
                     target,
                     mesh,
-                    &white.texture,
-                    &white.planes,
-                    white.kind,
-                    &white.video,
-                    [1, 1],
-                    paint,
-                    [false; 2],
-                    false,
-                    white.format,
-                    ImageQuality::Medium,
-                    mesh::PaintSource::Texture,
+                    Paint {
+                        texture: &white.texture,
+                        planes: &white.planes,
+                        kind: white.kind,
+                        video: &white.video,
+                        dimensions: [1, 1],
+                        appearance: paint,
+                        repeat: [false; 2],
+                        coverage: false,
+                        format: white.format,
+                        quality: ImageQuality::Medium,
+                        source: mesh::PaintSource::Texture,
+                    },
                 )
             }
         }
@@ -847,17 +872,19 @@ impl Context<'_> {
         self.paint_mesh(
             target,
             mesh,
-            &page.texture,
-            &[],
-            0.,
-            &[[0.; 4]; 4],
-            page.size,
-            paint.unwrap_or([[0.; 4]; 9]),
-            [false; 2],
-            true,
-            None,
-            ImageQuality::Medium,
-            mesh::PaintSource::Texture,
+            Paint {
+                texture: &page.texture,
+                planes: &[],
+                kind: 0.,
+                video: &[[0.; 4]; 4],
+                dimensions: page.size,
+                appearance: paint.unwrap_or([[0.; 4]; 9]),
+                repeat: [false; 2],
+                coverage: true,
+                format: None,
+                quality: ImageQuality::Medium,
+                source: mesh::PaintSource::Texture,
+            },
         )
     }
     fn paint_resource(
@@ -892,35 +919,40 @@ impl Context<'_> {
         self.paint_mesh(
             target,
             mesh,
-            &image.texture,
-            &image.planes,
-            image.kind,
-            &image.video,
-            image.layout.storage_size,
-            values,
-            repeat,
-            image.coverage,
-            image.format,
-            quality,
-            mesh::PaintSource::Texture,
+            Paint {
+                texture: &image.texture,
+                planes: &image.planes,
+                kind: image.kind,
+                video: &image.video,
+                dimensions: image.layout.storage_size,
+                appearance: values,
+                repeat,
+                coverage: image.coverage,
+                format: image.format,
+                quality,
+                source: mesh::PaintSource::Texture,
+            },
         )
     }
     fn paint_mesh(
         &mut self,
         target: &Target,
         mesh: impl Into<crate::common::recording_cache::Reference>,
-        texture: &native::Texture,
-        planes: &[native::Texture],
-        kind: f32,
-        video: &[[f32; 4]; 4],
-        dimensions: [u32; 2],
-        appearance: [[f32; 4]; 9],
-        repeat: [bool; 2],
-        coverage: bool,
-        format: Option<PixelFormat>,
-        quality: ImageQuality,
-        source: mesh::PaintSource,
+        paint: Paint<'_>,
     ) -> Result<(), GlesError> {
+        let Paint {
+            texture,
+            planes,
+            kind,
+            video,
+            dimensions,
+            appearance,
+            repeat,
+            coverage,
+            format,
+            quality,
+            source,
+        } = paint;
         let mesh = mesh.into();
         if mesh.indices.is_empty() || self.scissor.empty() {
             return Ok(());

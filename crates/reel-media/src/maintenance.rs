@@ -211,7 +211,7 @@ impl AudioReclaimService {
         }
         self.shared
             .generations
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
                 (n < self.shared.limits.max_generations).then_some(n + 1)
             })
             .map_err(|_| {

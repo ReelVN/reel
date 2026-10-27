@@ -75,15 +75,15 @@ impl ImageCoverage {
             let row = &bytes[start..start + size[0] as usize * 4];
             // Opaque/common rows inspect only their two edge pixels. Sparse
             // rows scan inward; interior holes are deliberately enclosed.
-            let active = |pixel: &[u8]| {
+            let active = |pixel: &[u8; 4]| {
                 if alpha_only {
                     pixel[3] != 0
                 } else {
-                    pixel != [0; 4]
+                    *pixel != [0; 4]
                 }
             };
-            if let Some(first) = row.chunks_exact(4).position(active) {
-                let last = row.chunks_exact(4).rposition(active)?;
+            if let Some(first) = row.as_chunks::<4>().0.iter().position(active) {
+                let last = row.as_chunks::<4>().0.iter().rposition(active)?;
                 coverage.include([first as u32, y, last as u32 + 1, y + 1]);
             }
         }
@@ -108,8 +108,8 @@ impl ImageCoverage {
                 for y in 0..size[1].div_ceil(4) {
                     let start = y as usize * stride;
                     let row = &bytes[start..start + size[0].div_ceil(4) as usize * 16];
-                    if let Some(first) = row.chunks_exact(16).position(bc3_has_alpha) {
-                        let last = row.chunks_exact(16).rposition(bc3_has_alpha)?;
+                    if let Some(first) = row.as_chunks::<16>().0.iter().position(bc3_has_alpha) {
+                        let last = row.as_chunks::<16>().0.iter().rposition(bc3_has_alpha)?;
                         coverage.include([
                             first as u32 * 4,
                             y * 4,
@@ -171,7 +171,7 @@ impl ImageCoverage {
     }
 }
 
-fn bc3_has_alpha(block: &[u8]) -> bool {
+fn bc3_has_alpha(block: &[u8; 16]) -> bool {
     let [a, b] = [block[0], block[1]];
     let mut codes = u64::from_le_bytes(block[..8].try_into().unwrap()) >> 16;
     for _ in 0..16 {
@@ -257,7 +257,7 @@ mod tests {
         );
         bytes[block] = 1;
         bytes[block + 2] = 2;
-        assert!(bc3_has_alpha(&bytes[block..block + 16]));
+        assert!(bc3_has_alpha(bytes[block..block + 16].try_into().unwrap()));
     }
 
     #[test]

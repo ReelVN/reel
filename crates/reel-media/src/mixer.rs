@@ -29,6 +29,7 @@ use std::{
     time::Duration,
 };
 mod stream;
+pub use stream::DecodeLimits;
 
 pub(crate) struct Bridge {
     sample_rate: u32,

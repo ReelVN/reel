@@ -127,7 +127,7 @@ fn playback_end_matches_cropped_pcm_through_resampling_and_queued_loop_exit() {
         assert_eq!(playback.queue_cursor().0, 1);
         assert!((playback.position_seconds() - time(120).as_secs_f64()).abs() < 1e-8);
         if source_rate == output_rate {
-            for (index, frame) in pcm[..440].chunks_exact(2).enumerate() {
+            for (index, frame) in pcm[..440].as_chunks::<2>().0.iter().enumerate() {
                 let amplitude = if index < 120 { 0.2 } else { 0.4 };
                 near([frame[0], frame[1]], [amplitude, -amplitude]);
             }
@@ -434,7 +434,7 @@ fn real_kira_mixes_stereo_then_maps_explicit_71_and_freezes_on_suspend() {
     let mut pcm = [42.0f32; 80 * 8];
     output.render(&mut pcm, timing(10));
     // Kira static sounds have a short interpolation startup; assert steady samples.
-    for frame in pcm.chunks_exact(8).skip(8) {
+    for frame in pcm.as_chunks::<8>().0.iter().skip(8) {
         assert!((frame[0] - 0.5).abs() < 1e-5, "{frame:?}");
         assert!((frame[1] + 0.3).abs() < 1e-5);
         assert_eq!(&frame[2..], &[0.0f32; 6]);
@@ -510,7 +510,7 @@ fn mono_unsigned_silence_and_all_supported_integer_float_formats() {
     let (mut mono, _) = setup(ChannelLayout::Mono, SampleFormat::F32, 2);
     assert!(
         mono.start(Box::new(|pcm| {
-            for lr in pcm.chunks_exact_mut(2) {
+            for lr in pcm.as_chunks_mut::<2>().0 {
                 lr.copy_from_slice(&[0.6, -0.2]);
             }
         }))
@@ -523,7 +523,7 @@ fn mono_unsigned_silence_and_all_supported_integer_float_formats() {
     assert!(
         unsigned
             .start(Box::new(|pcm| {
-                for lr in pcm.chunks_exact_mut(2) {
+                for lr in pcm.as_chunks_mut::<2>().0 {
                     lr.copy_from_slice(&[4.0, -4.0]);
                 }
             }))

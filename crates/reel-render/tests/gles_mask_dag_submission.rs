@@ -63,7 +63,7 @@ fn submit_masks(wgpu: bool) {
                     [2, 2],
                     ImageFormat::Rgba8,
                     ImageAlphaType::Alpha,
-                    if index % 2 == 0 {
+                    if index.is_multiple_of(2) {
                         ColorEncoding::Linear
                     } else {
                         ColorEncoding::Srgb

@@ -24,8 +24,8 @@ mod geometry;
 mod image_batch;
 mod image_cache;
 mod image_plan;
-mod upload;
 mod replay;
+mod upload;
 pub(crate) use crate::common::scopes;
 
 mod backend;

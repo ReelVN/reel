@@ -18,6 +18,24 @@ pub(super) enum CompositeOperation {
     Transition(f32),
     MaskedTransition(f32),
 }
+struct Composition<'a> {
+    source: &'a native::Texture,
+    mask: &'a native::Texture,
+    backdrop: &'a native::Texture,
+    alpha: f32,
+    invert: f32,
+    operation: CompositeOperation,
+    blend: u32,
+    expression: Option<&'a Target>,
+    source_origin: [i32; 2],
+}
+struct GroupPaint<'a> {
+    composite: reel_ui::frame::GroupComposite,
+    invert: f32,
+    operation: CompositeOperation,
+    image_mask: Option<(&'a reel_ui::frame::FrameImageMask, Affine)>,
+}
+
 pub(super) struct Context<'a> {
     pub capture: bool,
     pub gpu: &'a native::Context,
@@ -66,23 +84,38 @@ impl Prepared {
         }
     }
 }
+pub(super) struct Caches<'a> {
+    pub images: &'a mut Images,
+    pub glyphs: &'a mut draw::GlyphCache,
+    pub effects: &'a mut super::effect::Cache,
+    pub masks: &'a mut crate::common::mask::split::Cache,
+    pub targets: &'a mut Vec<Target>,
+    pub geometry: &'a mut super::geometry::Cache,
+}
+
 pub(super) fn prepare(
-    gpu: &native::Context,
+    device: DeviceResources<'_>,
     programs: &programs::Programs,
-    budgets: &Budgets,
-    limits: crate::common::GpuLimits,
-    image_cache: &mut Images,
-    glyph_cache: &mut draw::GlyphCache,
-    effect_cache: &mut super::effect::Cache,
-    mask_cache: &mut crate::common::mask::split::Cache,
-    target_cache: &mut Vec<Target>,
-    geometry_cache: &mut super::geometry::Cache,
+    caches: Caches<'_>,
     images: HashMap<ResourceHandle, Rc<Image>>,
     frame: &RenderFrame,
     size: [u32; 2],
     capture: bool,
 ) -> Result<Prepared, (GlesError, Work)> {
     let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Replay);
+    let DeviceResources {
+        gpu,
+        budgets,
+        limits,
+    } = device;
+    let Caches {
+        images: image_cache,
+        glyphs: glyph_cache,
+        effects: effect_cache,
+        masks: mask_cache,
+        targets: target_cache,
+        geometry: geometry_cache,
+    } = caches;
     let mut context = Context {
         capture,
         gpu,
@@ -426,13 +459,15 @@ impl Context<'_> {
                             &parent.scopes.last().target,
                             &mask.source.view,
                             &finished.view,
-                            reel_ui::frame::GroupComposite {
-                                alpha: mask.opacity,
-                                blend: mask.blend,
+                            GroupPaint {
+                                composite: reel_ui::frame::GroupComposite {
+                                    alpha: mask.opacity,
+                                    blend: mask.blend,
+                                },
+                                invert: mask.invert,
+                                operation: mask.operation,
+                                image_mask: mask.image_mask,
                             },
-                            mask.invert,
-                            mask.operation,
-                            mask.image_mask,
                         )?;
                         self.recycle_target(mask.source)?;
                         self.recycle_target(finished)?;
@@ -829,13 +864,15 @@ impl Context<'_> {
                                 &current.scopes.last().target,
                                 &source.view,
                                 &coverage.view,
-                                reel_ui::frame::GroupComposite {
-                                    alpha: group.opacity,
-                                    blend: group.blend,
+                                GroupPaint {
+                                    composite: reel_ui::frame::GroupComposite {
+                                        alpha: group.opacity,
+                                        blend: group.blend,
+                                    },
+                                    invert: group.invert,
+                                    operation: CompositeOperation::AlphaMask,
+                                    image_mask: group.image_mask,
                                 },
-                                group.invert,
-                                CompositeOperation::AlphaMask,
-                                group.image_mask,
                             )?;
                             self.recycle_target(source)?;
                             self.recycle_target(coverage)?;
@@ -887,13 +924,15 @@ impl Context<'_> {
                             &current.scopes.last().target,
                             &source.view,
                             &source.view,
-                            reel_ui::frame::GroupComposite {
-                                alpha: group.opacity,
-                                blend: group.blend,
+                            GroupPaint {
+                                composite: reel_ui::frame::GroupComposite {
+                                    alpha: group.opacity,
+                                    blend: group.blend,
+                                },
+                                invert: group.invert,
+                                operation: CompositeOperation::SourceOver,
+                                image_mask: group.image_mask,
                             },
-                            group.invert,
-                            CompositeOperation::SourceOver,
-                            group.image_mask,
                         )?;
                         self.recycle_target(source)?;
                     }
@@ -1021,7 +1060,18 @@ impl Context<'_> {
         operation: CompositeOperation,
     ) -> Result<(), GlesError> {
         self.composition(
-            target, source, mask, source, alpha, invert, operation, 0, None, [0; 2],
+            target,
+            Composition {
+                source,
+                mask,
+                backdrop: source,
+                alpha,
+                invert,
+                operation,
+                blend: 0,
+                expression: None,
+                source_origin: [0; 2],
+            },
         )
     }
     fn combine_views(
@@ -1052,35 +1102,40 @@ impl Context<'_> {
     ) -> Result<(), GlesError> {
         self.composition(
             target,
-            &source.view,
-            &source.view,
-            &source.view,
-            alpha,
-            invert,
-            CompositeOperation::SourceOver,
-            0,
-            None,
-            view.origin(),
+            Composition {
+                source: &source.view,
+                mask: &source.view,
+                backdrop: &source.view,
+                alpha,
+                invert,
+                operation: CompositeOperation::SourceOver,
+                blend: 0,
+                expression: None,
+                source_origin: view.origin(),
+            },
         )
     }
     fn composition(
         &mut self,
         target: &Target,
-        source: &native::Texture,
-        mask: &native::Texture,
-        backdrop: &native::Texture,
-        alpha: f32,
-        invert: f32,
-        operation: CompositeOperation,
-        blend: u32,
-        expression: Option<&Target>,
-        source_origin: [i32; 2],
+        composition: Composition<'_>,
     ) -> Result<(), GlesError> {
         self.flush_draws()?;
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Composite);
         if self.scissor.empty() {
             return Ok(());
         }
+        let Composition {
+            source,
+            mask,
+            backdrop,
+            alpha,
+            invert,
+            operation,
+            blend,
+            expression,
+            source_origin,
+        } = composition;
         let (mode, progress) = match operation {
             CompositeOperation::SourceOver => (0., 0.),
             CompositeOperation::AlphaMask => (1., 0.),
@@ -1140,28 +1195,30 @@ impl Context<'_> {
         ) || blend != 0;
         self.programs.quad(
             self.gpu,
-            native::Target::Framebuffer(&target.framebuffer),
-            self.size,
-            shader,
-            &[
-                source,
-                mask,
-                backdrop,
-                expression.map_or(source, |t| &t.view),
-            ][..if plain {
-                1
-            } else if coverage {
-                2
-            } else {
-                4
-            }],
-            &values,
-            if replacing {
-                native::Blend::Replace
-            } else {
-                native::Blend::Premultiplied
+            programs::Quad {
+                target: native::Target::Framebuffer(&target.framebuffer),
+                size: self.size,
+                shader,
+                textures: &[
+                    source,
+                    mask,
+                    backdrop,
+                    expression.map_or(source, |t| &t.view),
+                ][..if plain {
+                    1
+                } else if coverage {
+                    2
+                } else {
+                    4
+                }],
+                values: &values,
+                blend: if replacing {
+                    native::Blend::Replace
+                } else {
+                    native::Blend::Premultiplied
+                },
+                scissor: self.gl_scissor(),
             },
-            self.gl_scissor(),
         )
     }
     fn combine_group(
@@ -1169,15 +1226,18 @@ impl Context<'_> {
         target: &Target,
         source: &native::Texture,
         mask: &native::Texture,
-        composite: reel_ui::frame::GroupComposite,
-        invert: f32,
-        operation: CompositeOperation,
-        image_mask: Option<(&reel_ui::frame::FrameImageMask, Affine)>,
+        paint: GroupPaint<'_>,
     ) -> Result<(), GlesError> {
         self.flush_draws()?;
         if self.scissor.empty() {
             return Ok(());
         }
+        let GroupPaint {
+            composite,
+            invert,
+            operation,
+            image_mask,
+        } = paint;
         let blend = blend_code(composite.blend)
             .ok_or(GlesError::Device("unsupported group blend".into()))?;
         if blend == 0
@@ -1209,15 +1269,17 @@ impl Context<'_> {
         };
         self.composition(
             target,
-            source,
-            mask,
-            backdrop.as_ref().map_or(source, |b| &b.view),
-            composite.alpha,
-            invert,
-            operation,
-            blend,
-            expression.as_ref(),
-            [0; 2],
+            Composition {
+                source,
+                mask,
+                backdrop: backdrop.as_ref().map_or(source, |b| &b.view),
+                alpha: composite.alpha,
+                invert,
+                operation,
+                blend,
+                expression: expression.as_ref(),
+                source_origin: [0; 2],
+            },
         )?;
         if let Some(backdrop) = backdrop {
             self.recycle_target(backdrop)?;
@@ -1251,15 +1313,17 @@ impl Context<'_> {
         };
         self.composition(
             target,
-            old,
-            new,
-            old,
-            1.,
-            0.,
-            operation,
-            0,
-            expression.as_ref(),
-            [0; 2],
+            Composition {
+                source: old,
+                mask: new,
+                backdrop: old,
+                alpha: 1.,
+                invert: 0.,
+                operation,
+                blend: 0,
+                expression: expression.as_ref(),
+                source_origin: [0; 2],
+            },
         )?;
         if let Some(expression) = expression {
             self.recycle_target(expression)?;

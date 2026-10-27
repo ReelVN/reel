@@ -27,7 +27,6 @@ smallvec = "=1.16.3"
 hashbrown = { version = "=0.17.1", default-features = false, features = ["default-hasher"] }
 dpi = "=0.1.2"
 image = { version = "=0.25.10", default-features = false }
-resvg = "=0.48.1"
 web-time = "=1.1.0"
 accesskit = "=0.25.1"
 time = "=0.3.55"

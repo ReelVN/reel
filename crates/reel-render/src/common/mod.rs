@@ -10,8 +10,8 @@ pub(crate) mod effect_plan;
 pub(crate) mod glyph;
 pub(crate) mod glyph_plan;
 pub(crate) mod gradient;
-pub(crate) mod image_plan;
 pub(crate) mod image_coverage;
+pub(crate) mod image_plan;
 pub(crate) mod mask;
 pub(crate) mod mesh;
 pub(crate) mod renderer;
@@ -26,6 +26,6 @@ pub(crate) mod target_writes;
 
 pub(crate) mod draw_batch;
 pub(crate) mod geometry;
-pub(crate) mod recording_cache;
-pub(crate) mod indices;
 pub(crate) mod glyph_key;
+pub(crate) mod indices;
+pub(crate) mod recording_cache;

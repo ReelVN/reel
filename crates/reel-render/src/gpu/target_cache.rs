@@ -104,15 +104,13 @@ impl TargetCache {
     ) -> Result<Arc<Allocation>, GpuError> {
         if let Some(entries) = self.0.lock().unwrap().as_mut()
             && entries.quality == quality
-        {
-            if let Some(target) = entries
+            && let Some(target) = entries
                 .slots
                 .iter()
                 .filter(|allocation| allocation.target.size == size)
                 .nth(index)
-            {
-                return Ok(target.clone());
-            }
+        {
+            return Ok(target.clone());
         }
         // Different size buckets survive changes in allocation order. Under
         // pressure, release only cache ownership; flights retain actual storage.

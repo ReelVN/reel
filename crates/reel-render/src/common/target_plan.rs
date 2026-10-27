@@ -511,7 +511,8 @@ pub(crate) fn target_pixels(
                         if scope.group.is_some_and(|group| {
                             super::effect_plan::direct_mask_projection(
                                 group,
-                                current.transitions_enabled && !current.drawing.transitions().is_empty(),
+                                current.transitions_enabled
+                                    && !current.drawing.transitions().is_empty(),
                             )
                         }) {
                             scratch.release(source);

@@ -290,7 +290,7 @@ pub(super) fn texture_rows(
     let edge = descriptor.format.block_size();
     encoder.copy_buffer_to_texture(
         wgpu::TexelCopyBufferInfo {
-            buffer: &staging,
+            buffer: staging,
             layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(row as u32),
@@ -380,7 +380,7 @@ fn upload_rows_with(
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     encoder.copy_buffer_to_texture(
         wgpu::TexelCopyBufferInfo {
-            buffer: &staging,
+            buffer: staging,
             layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(row),

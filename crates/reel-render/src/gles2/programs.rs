@@ -16,6 +16,16 @@ macro_rules! shader_code {
         ShaderCode::Source(include_str!(concat!(env!("OUT_DIR"), "/", $name, ".glsl")))
     };
 }
+pub(super) struct Quad<'a> {
+    pub target: NativeTarget<'a>,
+    pub size: [u32; 2],
+    pub shader: &'a Shader,
+    pub textures: &'a [&'a Texture],
+    pub values: &'a [UniformValue<'a>],
+    pub blend: Blend,
+    pub scissor: Option<[u32; 4]>,
+}
+
 const NAMES: &[&str] = &[
     "u_image",
     "u_chroma_u",
@@ -112,7 +122,15 @@ pub(super) fn create_program(
     fragment: ShaderCode<'_>,
     implicit_source: bool,
 ) -> Result<Program, GlesError> {
-    create_program_with_vertex(context, if implicit_source { shader_code!("effect_vertex") } else { shader_code!("vertex") }, fragment)
+    create_program_with_vertex(
+        context,
+        if implicit_source {
+            shader_code!("effect_vertex")
+        } else {
+            shader_code!("vertex")
+        },
+        fragment,
+    )
 }
 fn create_program_with_vertex(
     context: &native::Context,
@@ -178,9 +196,8 @@ pub(super) struct Programs {
 }
 impl Programs {
     pub fn new(context: &native::Context, budget: &BudgetPool) -> Result<Self, GlesError> {
-        let bytes = (size_of::<Self>()
-            + 4 * size_of::<crate::common::mesh::Vertex>()
-            + 6 * 2) as u64;
+        let bytes =
+            (size_of::<Self>() + 4 * size_of::<crate::common::mesh::Vertex>() + 6 * 2) as u64;
         let storage = budget
             .reserve(bytes)
             .map_err(|e| GlesError::Device(e.message))?;
@@ -272,18 +289,17 @@ impl Programs {
             _storage: storage,
         })
     }
-    pub fn quad(
-        &self,
-        context: &native::Context,
-        target: NativeTarget<'_>,
-        size: [u32; 2],
-        shader: &Shader,
-        textures: &[&Texture],
-        values: &[UniformValue<'_>],
-        blend: Blend,
-        scissor: Option<[u32; 4]>,
-    ) -> Result<(), GlesError> {
+    pub fn quad(&self, context: &native::Context, quad: Quad<'_>) -> Result<(), GlesError> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Draw);
+        let Quad {
+            target,
+            size,
+            shader,
+            textures,
+            values,
+            blend,
+            scissor,
+        } = quad;
         context.draw(Draw {
             target,
             size,
@@ -315,13 +331,15 @@ impl Programs {
         values.extend(self.present.int("u_image", 0));
         self.quad(
             context,
-            NativeTarget::Screen,
-            size,
-            &self.present,
-            &[&target.view],
-            &values,
-            Blend::Replace,
-            None,
+            programs::Quad {
+                target: NativeTarget::Screen,
+                size,
+                shader: &self.present,
+                textures: &[&target.view],
+                values: &values,
+                blend: Blend::Replace,
+                scissor: None,
+            },
         )
     }
 }

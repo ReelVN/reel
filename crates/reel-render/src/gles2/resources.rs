@@ -381,14 +381,17 @@ impl Images {
     /// submission owner can retain it until the upload fence signals.
     pub fn prepare(
         &mut self,
-        gpu: &native::Context,
-        budgets: &Budgets,
-        limits: crate::common::GpuLimits,
+        device: DeviceResources<'_>,
         required: &[crate::common::image_plan::Required<'_>],
         quota: &mut u64,
         output: &mut HashMap<ResourceHandle, Rc<Image>>,
         touched: &mut Vec<Rc<Image>>,
     ) -> Result<bool, GlesError> {
+        let DeviceResources {
+            gpu,
+            budgets,
+            limits,
+        } = device;
         let mut ready = true;
         self.pending
             .retain(|handle, _| required.iter().any(|item| item.source.handle() == *handle));
@@ -535,8 +538,10 @@ fn progress(
             let start = pending.row as usize * stride;
             if convert {
                 for (source, target) in pixels[start..start + rows as usize * stride]
-                    .chunks_exact(4)
-                    .zip(data.chunks_exact_mut(4))
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(data.as_chunks_mut::<4>().0.iter_mut())
                 {
                     let linear = crate::common::resources::rgba8_linear_u8(
                         source,

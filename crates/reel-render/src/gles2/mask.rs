@@ -218,18 +218,20 @@ impl Context<'_> {
         values.extend(shader.int("u_count", definition.program.operations().len() as i32));
         self.programs.quad(
             self.gpu,
-            native::Target::Framebuffer(&target.framebuffer),
-            self.size,
-            shader,
-            &[
-                &images[0].texture,
-                &images[1].texture,
-                &images[2].texture,
-                &images[3].texture,
-            ],
-            &values,
-            native::Blend::Replace,
-            self.gl_scissor(),
+            programs::Quad {
+                target: native::Target::Framebuffer(&target.framebuffer),
+                size: self.size,
+                shader,
+                textures: &[
+                    &images[0].texture,
+                    &images[1].texture,
+                    &images[2].texture,
+                    &images[3].texture,
+                ],
+                values: &values,
+                blend: native::Blend::Replace,
+                scissor: self.gl_scissor(),
+            },
         )?;
         Ok(target)
     }
@@ -291,17 +293,19 @@ impl Context<'_> {
         values.extend(shader.vec2("u_output_size", self.size.map(|v| v as f32)));
         self.programs.quad(
             self.gpu,
-            native::Target::Framebuffer(&target.framebuffer),
-            self.size,
-            shader,
-            &textures,
-            &values,
-            if composite.is_some() {
-                native::Blend::Premultiplied
-            } else {
-                native::Blend::Replace
+            programs::Quad {
+                target: native::Target::Framebuffer(&target.framebuffer),
+                size: self.size,
+                shader,
+                textures: &textures,
+                values: &values,
+                blend: if composite.is_some() {
+                    native::Blend::Premultiplied
+                } else {
+                    native::Blend::Replace
+                },
+                scissor: self.gl_scissor(),
             },
-            self.gl_scissor(),
         )
     }
 
@@ -385,13 +389,15 @@ impl Context<'_> {
         values.extend(shader.vec2("u_output_size", self.size.map(|v| v as f32)));
         self.programs.quad(
             self.gpu,
-            native::Target::Framebuffer(&target.framebuffer),
-            self.size,
-            shader,
-            &images,
-            &values,
-            native::Blend::Replace,
-            self.gl_scissor(),
+            programs::Quad {
+                target: native::Target::Framebuffer(&target.framebuffer),
+                size: self.size,
+                shader,
+                textures: &images,
+                values: &values,
+                blend: native::Blend::Replace,
+                scissor: self.gl_scissor(),
+            },
         )
     }
 
@@ -469,17 +475,19 @@ impl Context<'_> {
         ];
         self.programs.quad(
             self.gpu,
-            native::Target::Framebuffer(&target.framebuffer),
-            self.size,
-            shader,
-            &textures[..if composite.is_some() { 2 } else { 1 }],
-            &values,
-            if composite.is_some() {
-                native::Blend::Premultiplied
-            } else {
-                native::Blend::Replace
+            programs::Quad {
+                target: native::Target::Framebuffer(&target.framebuffer),
+                size: self.size,
+                shader,
+                textures: &textures[..if composite.is_some() { 2 } else { 1 }],
+                values: &values,
+                blend: if composite.is_some() {
+                    native::Blend::Premultiplied
+                } else {
+                    native::Blend::Replace
+                },
+                scissor: self.gl_scissor(),
             },
-            self.gl_scissor(),
         )
     }
 }

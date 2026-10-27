@@ -12,6 +12,8 @@ pub mod effect;
 pub mod gles2;
 #[cfg(feature = "wgpu")]
 pub mod gpu;
+#[cfg(all(test, any(feature = "wgpu", feature = "gles2")))]
+mod test_support;
 use reel_core::{
     budget::{BudgetCategory, BudgetPool, BudgetTicket, OwnedBytes, QueueLimits},
     identity::{FrameId, ResourceVersion, Scope, SurfaceEpoch},

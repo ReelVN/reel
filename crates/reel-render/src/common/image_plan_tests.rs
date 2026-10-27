@@ -1,10 +1,5 @@
 use super::*;
-#[allow(dead_code, reason = "shared UI recording fixture")]
-#[path = "../../../reel-ui/tests/support/fixture.rs"]
-mod fixture;
-#[allow(dead_code, reason = "shared UI recording fixture")]
-#[path = "../../../reel-ui/tests/support/r01_fixture.rs"]
-mod r01_fixture;
+use crate::test_support::r01_fixture;
 use r01_fixture::*;
 use reel_core::{
     budget::OwnedBytes,

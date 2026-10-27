@@ -12,6 +12,43 @@ pub(crate) enum Upload<'a, R> {
     Wide(&'a [u32]),
 }
 
+impl<'a, R> Upload<'a, R> {
+    /// Mesh construction validates the vertex domain. Padding preserves WGPU's
+    /// four-byte copy alignment; recorded draw ranges exclude that final zero.
+    pub(crate) fn new(
+        mesh: &'a Mesh,
+        reserve: impl FnOnce(u64) -> Result<R, GpuError>,
+    ) -> Result<Self, GpuError> {
+        if mesh.vertices.len() > usize::from(u16::MAX) + 1 {
+            return Ok(Self::Wide(&mesh.indices));
+        }
+        let len = mesh.indices.len().div_ceil(2) * 2;
+        let reservation = reserve((len * size_of::<u16>()) as u64)?;
+        let mut values = Vec::with_capacity(len);
+        values.extend(mesh.indices.iter().map(|&index| {
+            debug_assert!(index <= u32::from(u16::MAX));
+            index as u16
+        }));
+        values.resize(len, 0);
+        Ok(Self::Narrow {
+            values,
+            _reservation: reservation,
+        })
+    }
+    pub(crate) fn format(&self) -> Format {
+        match self {
+            Self::Narrow { .. } => Format::U16,
+            Self::Wide(_) => Format::U32,
+        }
+    }
+    pub(crate) fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Narrow { values, .. } => bytemuck::cast_slice(values),
+            Self::Wide(values) => bytemuck::cast_slice(values),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -57,42 +94,5 @@ mod tests {
             bytemuck::cast_slice::<u8, u32>(packed.bytes()),
             &[65536, 7, 0]
         );
-    }
-}
-
-impl<'a, R> Upload<'a, R> {
-    /// Mesh construction validates the vertex domain. Padding preserves WGPU's
-    /// four-byte copy alignment; recorded draw ranges exclude that final zero.
-    pub(crate) fn new(
-        mesh: &'a Mesh,
-        reserve: impl FnOnce(u64) -> Result<R, GpuError>,
-    ) -> Result<Self, GpuError> {
-        if mesh.vertices.len() > usize::from(u16::MAX) + 1 {
-            return Ok(Self::Wide(&mesh.indices));
-        }
-        let len = mesh.indices.len().div_ceil(2) * 2;
-        let reservation = reserve((len * size_of::<u16>()) as u64)?;
-        let mut values = Vec::with_capacity(len);
-        values.extend(mesh.indices.iter().map(|&index| {
-            debug_assert!(index <= u32::from(u16::MAX));
-            index as u16
-        }));
-        values.resize(len, 0);
-        Ok(Self::Narrow {
-            values,
-            _reservation: reservation,
-        })
-    }
-    pub(crate) fn format(&self) -> Format {
-        match self {
-            Self::Narrow { .. } => Format::U16,
-            Self::Wide(_) => Format::U32,
-        }
-    }
-    pub(crate) fn bytes(&self) -> &[u8] {
-        match self {
-            Self::Narrow { values, .. } => bytemuck::cast_slice(values),
-            Self::Wide(values) => bytemuck::cast_slice(values),
-        }
     }
 }

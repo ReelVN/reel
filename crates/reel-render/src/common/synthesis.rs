@@ -213,7 +213,7 @@ mod tests {
         // actual contours having area -8. Their placement cannot change weight.
         let winding = winding(&points, &TWO_RECTS);
         assert_eq!(winding, 0);
-        for contour in points.chunks_exact_mut(4) {
+        for contour in points.as_chunks_mut::<4>().0 {
             embolden_contour(contour, winding, 0.625, 0.625);
             let bounds = swash::zeno::Bounds::from_points(contour);
             assert_eq!(bounds.width(), 3.25);
@@ -239,7 +239,7 @@ mod tests {
                 points[4..].reverse();
             }
             let winding = winding(&points, &TWO_RECTS);
-            for contour in points.chunks_exact_mut(4) {
+            for contour in points.as_chunks_mut::<4>().0 {
                 embolden_contour(contour, winding, 1.25 * 0.5, 2. * 0.5);
             }
             let outer = swash::zeno::Bounds::from_points(&points[..4]);

@@ -1,11 +1,6 @@
 //! Actual device regressions; counters are compiled only into the library test build.
 use super::*;
-#[allow(dead_code, reason = "shared actual UI fixture")]
-#[path = "../../../reel-ui/tests/support/fixture.rs"]
-pub(super) mod fixture;
-#[allow(dead_code, reason = "shared R01 compiler fixture")]
-#[path = "../../../reel-ui/tests/support/r01_fixture.rs"]
-pub(super) mod r01_fixture;
+use crate::test_support::r01_fixture;
 use r01_fixture::*;
 use reel_core::identity::FrameId;
 use reel_ui::frame::{FrameBuild, FrameInfo};

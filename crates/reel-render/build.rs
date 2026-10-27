@@ -97,15 +97,26 @@ fn compile_shaders() {
         ("aa", ""),
         ("ag", "\n#define REEL_MASK_SECOND_GRAY"),
         ("ga", "\n#define REEL_MASK_FIRST_GRAY"),
-        ("gg", "\n#define REEL_MASK_FIRST_GRAY\n#define REEL_MASK_SECOND_GRAY"),
+        (
+            "gg",
+            "\n#define REEL_MASK_FIRST_GRAY\n#define REEL_MASK_SECOND_GRAY",
+        ),
     ] {
         for composite in [false, true] {
             let suffix = if composite { "_composite" } else { "" };
-            let composite = if composite { "\n#define REEL_MASK_COMPOSITE" } else { "" };
+            let composite = if composite {
+                "\n#define REEL_MASK_COMPOSITE"
+            } else {
+                ""
+            };
             shaders.push((
                 format!("mask_paired_{channels}{suffix}"),
                 Stage::Fragment,
-                paired.replacen("#version 100", &format!("#version 100{defines}{composite}"), 1),
+                paired.replacen(
+                    "#version 100",
+                    &format!("#version 100{defines}{composite}"),
+                    1,
+                ),
             ));
         }
     }

@@ -52,8 +52,7 @@ impl Cache {
             .textures
             .saturating_add(u32::from(descriptor.source_sampler))
             > gpu.device.limits().max_sampled_textures_per_shader_stage
-            || descriptor.textures as u64 * 32
-                > u64::from(gpu.device.limits().max_uniform_buffer_binding_size)
+            || descriptor.textures as u64 * 32 > gpu.device.limits().max_uniform_buffer_binding_size
         {
             return Err(GpuError::Unsupported {
                 at,

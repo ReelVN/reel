@@ -105,7 +105,9 @@ fn single_budget_a_to_b_waits_for_actual_background_release_and_wakes() {
         fill(&mut pcm);
         assert!(a_handle.is_stopped());
         assert!(
-            pcm.chunks_exact(2)
+            pcm.as_chunks::<2>()
+                .0
+                .iter()
                 .any(|f| (f[0] - 0.1).abs() < 1e-6 && (f[1] + 0.2).abs() < 1e-6)
         );
         assert_eq!(mixer.reclaim_unused(1).transferred_sounds, 0); // stopped still arena-owned
@@ -144,7 +146,9 @@ fn single_budget_a_to_b_waits_for_actual_background_release_and_wakes() {
         fill(&mut pcm);
         assert!(b.is_stopped());
         assert!(
-            pcm.chunks_exact(2)
+            pcm.as_chunks::<2>()
+                .0
+                .iter()
                 .any(|f| (f[0] - 0.3).abs() < 1e-6 && (f[1] + 0.4).abs() < 1e-6)
         );
         fill(&mut pcm);
@@ -423,8 +427,10 @@ fn completed_stream_releases_window_before_queued_infinite_successor_and_status_
             std::io::Cursor::new(bytes),
             length,
             pool.clone(),
-            0,
-            256,
+            DecodeLimits {
+                static_threshold: 0,
+                window_frames: 256,
+            },
             Arc::new(|| {}),
             &AtomicBool::new(false),
             &crate::decode::SoftwareAudioDecoderFactory,

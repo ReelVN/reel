@@ -7,6 +7,16 @@ use std::sync::{
 };
 
 use crate::decode::{AudioDecoder, AudioDecoderFactory, MediaRead};
+
+/// PCM residency limits used while preparing a sound off the audio thread.
+#[derive(Clone, Copy, Debug)]
+pub struct DecodeLimits {
+    /// Maximum decoded PCM bytes retained as a complete static sound.
+    pub static_threshold: u64,
+    /// Number of frames in the streaming window; must be at least eight.
+    pub window_frames: usize,
+}
+
 struct Slot {
     index: AtomicUsize,
     pcm: AtomicU64,
@@ -159,12 +169,15 @@ impl DecodedSound {
         reader: impl MediaRead + 'static,
         length: u64,
         pool: BudgetPool,
-        static_threshold: u64,
-        window_frames: usize,
+        limits: DecodeLimits,
         cancel: Arc<dyn Fn() + Send + Sync>,
         cancelled: &AtomicBool,
         factory: &dyn AudioDecoderFactory,
     ) -> Result<Self, String> {
+        let DecodeLimits {
+            static_threshold,
+            window_frames,
+        } = limits;
         if window_frames < 8 {
             return Err("audio stream window needs at least eight frames".into());
         }
@@ -351,8 +364,10 @@ mod tests {
                 std::io::Cursor::new(bytes),
                 bytes.len() as u64,
                 pool.clone(),
-                threshold,
-                256,
+                DecodeLimits {
+                    static_threshold: threshold,
+                    window_frames: 256,
+                },
                 Arc::new(|| {}),
                 &AtomicBool::new(false),
                 &SoftwareAudioDecoderFactory,
@@ -457,8 +472,10 @@ mod tests {
                 std::io::Cursor::new(bytes),
                 bytes.len() as u64,
                 pool.clone(),
-                threshold,
-                4096,
+                DecodeLimits {
+                    static_threshold: threshold,
+                    window_frames: 4096,
+                },
                 Arc::new(|| {}),
                 &AtomicBool::new(false),
                 &SoftwareAudioDecoderFactory,

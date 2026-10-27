@@ -258,8 +258,7 @@ fn texture_functions(
             Language::Wgsl => "fn reel_texture_encode(x:vec3<f32>)->vec3<f32>{return select(1.055*pow(max(x,vec3(0.0)),vec3(1.0/2.4))-0.055,12.92*x,x<=vec3(0.0031308));}\n",
         });
     }
-    for binding in 0..count {
-        let channels = channel_uses[binding];
+    for (binding, &channels) in channel_uses.iter().enumerate().take(count) {
         if channels == 0 {
             continue;
         }
