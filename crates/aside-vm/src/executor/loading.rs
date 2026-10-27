@@ -111,13 +111,16 @@ impl Vm {
             - std::mem::size_of::<Heap>()
             - std::mem::size_of::<FrameSlots>();
         let control_charge = Reservation::new(&usage, control_bytes as u64)?;
-        // B01's shared-signature query traverses a binary table. Do it once at
-        // load, with owned capacity charged, so slice admission is O(1).
-        let mut native_cells = ChargedVec::new(&usage, p.natives.len())?;
-        for index in 0..p.natives.len() {
-            native_cells
-                .data
-                .push(program.native_parameters_need_cells(NativeId(index as u32))?);
+        // Derive immutable binder properties once; calls read charged metadata.
+        let mut native_parameters = ChargedVec::new(&usage, p.natives.len())?;
+        for (index, native) in p.natives.iter().enumerate() {
+            native_parameters.data.push(NativeParameters {
+                needs_cells: program.native_parameters_need_cells(NativeId(index as u32))?,
+                has_defaults: p.signatures[native.signature.index()]
+                    .parameters
+                    .iter()
+                    .any(|p| p.default.is_some()),
+            });
         }
         let mut native_values = ChargedVec::new(&usage, native_count)?;
         // Non-owning full-generation handles: reuse live literals without
@@ -264,7 +267,7 @@ impl Vm {
             wait_revision: 0,
             scratch,
             text_scratch,
-            native_cells,
+            native_parameters,
             native_values,
             type_checks,
             init_symbol,

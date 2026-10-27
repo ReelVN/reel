@@ -319,8 +319,10 @@ impl Vm {
         }
         let sig = &self.program.package().signatures[signature.index()];
         let n = sig.parameters.len() as u32 + u32::from(sig.rest.is_some());
-        let has_defaults = sig.parameters.iter().any(|p| p.default.is_some());
-        let needs_cells = self.native_cells.data[native.index()];
+        let NativeParameters {
+            has_defaults,
+            needs_cells,
+        } = self.native_parameters.data[native.index()];
         let values = 3
             + u64::from(self.limits.max_continuation_values)
             + u64::from(self.limits.max_arguments)

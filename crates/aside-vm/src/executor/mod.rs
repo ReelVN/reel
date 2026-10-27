@@ -510,6 +510,12 @@ impl TaskState {
         })
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NativeParameters {
+    needs_cells: bool,
+    has_defaults: bool,
+}
+
 /// Task selection swaps bounded state owners; all registered windows remain in
 /// the single FrameSlots provider. Field order deallocates before budget refunds.
 pub struct Vm {
@@ -524,7 +530,7 @@ pub struct Vm {
     wait_revision: u64,
     scratch: ChargedVec<Value>,
     text_scratch: ChargedVec<u8>,
-    native_cells: ChargedVec<bool>,
+    native_parameters: ChargedVec<NativeParameters>,
     native_values: ChargedVec<(FunctionId, u32)>,
     type_checks: Rc<types::TypeChecks>,
     init_symbol: Option<SymbolId>,
@@ -808,7 +814,7 @@ impl Vm {
     fn native_push_cost(&self, native: NativeId, count: u32) -> (u64, u64) {
         let signature = self.program.package().natives[native.index()].signature;
         let sig = &self.program.package().signatures[signature.index()];
-        let cells = self.native_cells.data[native.index()];
+        let cells = self.native_parameters.data[native.index()].needs_cells;
         let parameters = sig.parameters.len() as u64 + u64::from(sig.rest.is_some());
         let values = 3
             + self.limits.max_native_faults as u64
@@ -817,10 +823,7 @@ impl Vm {
             + count as u64 * 2
             + parameters * (1 + u64::from(cells));
         let (work, bytes) = self.window_push_cost(3 + u64::from(cells), values);
-        (
-            work + sig.parameters.len() as u64 + self.native_layout_work() + 3,
-            bytes,
-        )
+        (work + 3, bytes)
     }
 
     pub fn run_slice(

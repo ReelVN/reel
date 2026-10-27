@@ -130,28 +130,31 @@ impl Vm {
                 }
             }
             ScriptPhase::Defaults { parameter } => {
-                let f = &self.program.package().functions[s.code.function.index()];
                 let sig = &self.program.package().signatures[signature.index()];
+                let bound = self.slots.read(at(s.bound, parameter)).is_ok();
                 let allocation = sig
                     .parameters
                     .get(parameter as usize)
-                    .filter(|_| self.slots.read(at(s.bound, parameter)).is_err())
+                    .filter(|_| !bound)
                     .and_then(|p| p.default)
                     .map_or(0, |default| match default {
                         ParameterDefault::Constant(id) => self.constant_allocation_bytes(id),
                         _ => 0,
                     });
-                if !m.take(0, f.bindings.len() as u64 + 2, allocation) {
+                let work = 2 + if bound {
+                    self.program.script_parameter_lookup_work()
+                } else {
+                    0
+                };
+                if !m.take(0, work, allocation) {
                     return Ok(false);
                 }
                 if parameter as usize == sig.parameters.len() + usize::from(sig.rest.is_some()) {
                     s.phase = ScriptPhase::Install { binding: 0 };
-                } else if self.slots.read(at(s.bound, parameter)).is_ok() {
-                    let storage = f
-                        .bindings
-                        .iter()
-                        .find(|b| b.initialization == BindingInitialization::Parameter(parameter))
-                        .map_or(BindingStorage::Value(Reg(parameter)), |b| b.storage);
+                } else if bound {
+                    let storage = self
+                        .program
+                        .script_parameter_storage(s.code.function, parameter);
                     s.phase = ScriptPhase::Parameter { parameter, storage };
                 } else if let Some(default) = sig.parameters[parameter as usize].default {
                     match default {
