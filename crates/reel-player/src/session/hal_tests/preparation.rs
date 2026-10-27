@@ -81,6 +81,7 @@ impl Fixture {
     }
 
     fn sync(&mut self, ns: u64) {
+        self.host.now = MonoTime(ns);
         settle(&mut self.story, ns);
         self.story
             .driver_mut()
@@ -129,9 +130,12 @@ impl Fixture {
             .unwrap();
         if result.accepted {
             self.story
-                .driver_mut()
-                .unwrap()
-                .presented(&self.view.bridge, self.receipt.as_ref().unwrap())
+                .presented_frame(
+                    &self.view.bridge,
+                    self.receipt.as_ref().unwrap(),
+                    self.view.accepted_frame.as_ref().unwrap(),
+                    self.host.now.0,
+                )
                 .unwrap();
         }
         result
@@ -157,6 +161,18 @@ fn gpu_preparation_keeps_candidate_until_completion_then_publishes_newer_model()
     let first = f.view.bridge.accepted_key().unwrap().clone();
     f.sync(0);
     f.sync(250_000_000);
+    assert_eq!(
+        f.story
+            .driver()
+            .adapter()
+            .stage()
+            .nodes()
+            .next()
+            .unwrap()
+            .props
+            .x,
+        50.
+    );
     f.backend.preparing = true;
     assert!(!f.render().accepted);
     let prepared = f.receipt.as_ref().unwrap().key();
@@ -174,6 +190,18 @@ fn gpu_preparation_keeps_candidate_until_completion_then_publishes_newer_model()
         }
     }
     assert_eq!(f.builds, builds);
+    assert_eq!(
+        f.story
+            .driver()
+            .adapter()
+            .stage()
+            .nodes()
+            .next()
+            .unwrap()
+            .props
+            .x,
+        150.
+    );
     f.complete();
     f.backend.refusal = Some(RenderError::Busy);
     let pressured = f.render();
