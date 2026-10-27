@@ -86,7 +86,7 @@ mod tests {
                 assert_eq!(d.layout.content_size, [13, 7]);
                 assert_eq!(d.mip_size(d.mip_count - 1), [1, 1]);
                 if matches!(format, Format::Rgba8) {
-                    for pixel in bytes.chunks_exact(4) {
+                    for pixel in bytes.as_chunks::<4>().0 {
                         assert_eq!(pixel, &[128, 0, 0, 128]);
                     }
                 }

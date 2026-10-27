@@ -20,7 +20,7 @@ struct Workspace {
 pub(super) struct Files {
     archives: Vec<Archive>,
     overlay: Option<directory::Files>,
-    workspace: Option<Workspace>,
+    workspace: Option<Box<Workspace>>,
     _storage: BudgetTicket,
 }
 impl Files {
@@ -101,11 +101,11 @@ impl Files {
                 .map_err(|error| {
                     failure(format!("archive workspace metadata: {}", error.message))
                 })?;
-            Some(Workspace {
+            Some(Box::new(Workspace {
                 scratch: ReadScratch::new(),
                 source: None,
                 _ticket: ticket,
-            })
+            }))
         } else {
             None
         };
