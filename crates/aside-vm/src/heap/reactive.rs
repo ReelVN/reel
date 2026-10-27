@@ -14,6 +14,7 @@ use scan::DependencyCursor;
 pub(crate) enum DerivedSlot {
     Closure,
     Dependencies,
+    // Active captured edges, or an empty inline scratch while Evaluation is zero.
     Candidate,
     Weak,
     Parent,
@@ -68,8 +69,15 @@ impl Heap {
         self.host_payload(output, DerivedSlot::Closure as u32)
     }
 
+    /// Begin a transactional dependency capture, reusing empty inline scratch.
+    /// Committed inputs remain intact while this candidate is being evaluated.
     pub fn begin_derived(&mut self, output: Value) -> Result<(), HeapError> {
-        let candidate = self.alloc_dependencies()?;
+        let scratch = self.host_payload(output, DerivedSlot::Candidate as u32)?;
+        let candidate = if scratch.same_bits(Value::NULL) {
+            self.alloc_dependencies()?
+        } else {
+            scratch
+        };
         self.begin_capture(output, candidate)
     }
     pub(super) fn alloc_dependencies(&mut self) -> Result<Value, HeapError> {
@@ -107,6 +115,9 @@ impl Heap {
         Ok(())
     }
 
+    /// End or abandon the active capture and restore its parent. Small candidates
+    /// release their strong edges into reusable empty scratch; larger candidates
+    /// are detached for incremental GC. This does not replace committed inputs.
     pub fn end_derived(&mut self, output: Value) -> Result<(), HeapError> {
         if !self
             .reactive_capture
@@ -117,7 +128,27 @@ impl Heap {
         let parent = self.host_payload(output, DerivedSlot::Parent as u32)?;
         self.reactive_capture = (!parent.same_bits(Value::NULL)).then_some(parent);
         self.set_host_payload(output, DerivedSlot::Parent as u32, Value::NULL)?;
-        self.set_host_payload(output, DerivedSlot::Candidate as u32, Value::NULL)?;
+        self.set_host_payload(output, DerivedSlot::Evaluation as u32, Value::int(0))?;
+        let candidate = self.host_payload(output, DerivedSlot::Candidate as u32)?;
+        let reusable = if candidate.same_bits(Value::NULL) {
+            false
+        } else {
+            let key = self.key(candidate)?;
+            let Payload::Dependencies(capture) = &mut self.objects.get_mut(key).unwrap().payload
+            else {
+                unreachable!()
+            };
+            let edges = capture.values.len;
+            let reusable = capture.recycle_small();
+            if reusable {
+                self.property_traversal_work
+                    .set(self.property_traversal_work.get() + u64::from(edges));
+            }
+            reusable
+        };
+        if !reusable {
+            self.set_host_payload(output, DerivedSlot::Candidate as u32, Value::NULL)?;
+        }
         Ok(())
     }
 
@@ -398,8 +429,9 @@ impl Heap {
                     self.reactive_remove(source, weak, selector)?;
                 }
             }
+            self.set_host_payload(output, DerivedSlot::Dependencies as u32, dependencies)?;
+            self.set_host_payload(output, DerivedSlot::Candidate as u32, old)?;
         }
-        self.set_host_payload(output, DerivedSlot::Dependencies as u32, dependencies)?;
         let property = PropertyId {
             host: output,
             field: 0,
@@ -1137,6 +1169,13 @@ mod tests {
         )
         .unwrap();
         let source = model_fields(&mut heap, 97);
+        let idle = heap.alloc_derived(Value::NULL).unwrap();
+        heap.add_root(RootOwner(1), RootKind::Host, idle).unwrap();
+        for _ in 0..2 {
+            heap.begin_derived(idle).unwrap();
+            heap.observe_read(source, Some(1)).unwrap();
+            heap.commit_derived(idle, Value::int(1)).unwrap();
+        }
         let outer = heap.alloc_derived(Value::NULL).unwrap();
         let inner = heap.alloc_derived(Value::NULL).unwrap();
         heap.begin_derived(outer).unwrap();
@@ -1190,6 +1229,11 @@ mod tests {
             graph::validate(&restored, &map, record).unwrap();
         }
         let source2 = map.value(source).unwrap();
+        let idle = map.value(idle).unwrap();
+        let scratch = restored
+            .host_payload(idle, DerivedSlot::Candidate as u32)
+            .unwrap();
+        assert_eq!(restored.sequence_len(scratch).unwrap(), 0);
         assert_ne!(
             source.object_parts().unwrap().1,
             source2.object_parts().unwrap().1
@@ -1217,6 +1261,11 @@ mod tests {
         restored.invalidate_reactive(source2, Some(0)).unwrap();
         assert!(restored.next_derived().unwrap().unwrap().same_bits(outer));
         assert!(restored.next_derived().unwrap().is_none());
+        let before = restored.stats().live_objects;
+        restored.begin_derived(idle).unwrap();
+        restored.observe_read(source2, Some(1)).unwrap();
+        restored.commit_derived(idle, Value::int(1)).unwrap();
+        assert_eq!(restored.stats().live_objects, before);
     }
 
     #[test]

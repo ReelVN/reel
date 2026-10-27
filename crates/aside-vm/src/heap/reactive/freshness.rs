@@ -175,10 +175,14 @@ impl Heap {
             }
             if object.derived_dirty
                 || evaluating.is_some_and(|v| v.same_bits(current.host))
-                || self
+                || (self
                     .host_payload(current.host, DerivedSlot::Candidate as u32)?
                     .tag()
                     != crate::ValueTag::Null
+                    && self
+                        .host_payload(current.host, DerivedSlot::Evaluation as u32)?
+                        .as_int()
+                        != Some(0))
             {
                 return Ok(false);
             }
