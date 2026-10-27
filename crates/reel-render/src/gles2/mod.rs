@@ -188,12 +188,26 @@ impl GlesBackend {
     pub fn output_size(&self) -> [u32; 2] {
         self.context.output_size()
     }
-    /// Observed simultaneous accounted bytes; driver-private overhead is separate.
-    pub fn usage(&self) -> reel_core::budget::BudgetUsage {
-        self._group.usage()
+    /// Renderer-owned domains and their shared simultaneous budget peak.
+    /// Native driver allocations have separate ownership from these budgets.
+    pub fn usage(&self) -> crate::Usage {
+        crate::Usage {
+            targets: self.budgets.targets.usage().bytes,
+            resources: self.budgets.resources.usage().bytes,
+            transient: self.budgets.transient.usage().bytes,
+            cached_geometry: self.geometry.bytes(),
+            shared: Some(self._group.usage()),
+        }
+    }
+    /// Explicitly sample native allocator domains, separately from renderer budgets.
+    /// Heap snapshots are adjacent observations; registered storage, its device
+    /// suballocations and independent historical peaks must not be added together.
+    /// Host EGL has no matching native allocator query and returns `None`.
+    pub fn native_memory_usage(&self) -> Result<Option<native::DriverMemoryUsage>, GlesError> {
+        self.context.memory_usage().map_err(native_error)
     }
     /// Completed geometry capacity, including allocation metadata, retained as
-    /// an evictable subset of `usage().bytes` in the transient budget.
+    /// an evictable subset of `usage().transient` in the transient budget.
     pub fn cached_geometry_bytes(&self) -> u64 {
         self.geometry.bytes()
     }
@@ -511,7 +525,7 @@ impl GlesBackend {
                     self.retained.stage(
                         token,
                         prepared.output.clone(),
-                        u64::from(storage[0]) * u64::from(storage[1]),
+                        self.context.target_layout(storage)?.texture_bytes,
                     );
                     self.targets.clear();
                     if let Err(error) = self.submit(frame, prepared, None) {

@@ -180,7 +180,7 @@ pub(super) fn prepare(
     )
     .and_then(|plan| {
         context.glyph_plan = plan;
-        let (schedule, pixels, retained) = crate::common::offscreen::Plan::choose(
+        let (schedule, bytes, retained) = crate::common::offscreen::Plan::choose(
             frame,
             None,
             size,
@@ -188,7 +188,8 @@ pub(super) fn prepare(
             1,
             gpu.capabilities().max_texture_size,
             &context.glyph_plan,
-            limits.target_bytes / 4,
+            limits.target_bytes,
+            &|extent| Ok(gpu.target_layout(extent)?.texture_bytes),
             crate::common::target_plan::MaskExecution::Sampled,
             &selection,
             |bytes| {
@@ -201,10 +202,10 @@ pub(super) fn prepare(
                 )
             },
         )?;
-        if pixels > limits.target_bytes / 4 {
+        if bytes > limits.target_bytes {
             return Err(GlesError::Budget {
                 domain: "offscreen targets",
-                requested: pixels.saturating_mul(4),
+                requested: bytes,
                 available: limits.target_bytes,
             });
         }

@@ -302,9 +302,11 @@ impl ScenarioBackend {
             Self::Gles { renderer, .. } => {
                 let usage = renderer.usage();
                 UsageSample {
-                    total: usage.bytes,
-                    cumulative_shared_peak: Some(usage.peak_bytes),
-                    ..Default::default()
+                    targets: Some(usage.targets),
+                    resources: Some(usage.resources),
+                    transient: Some(usage.transient),
+                    total: usage.total(),
+                    cumulative_shared_peak: usage.shared.map(|shared| shared.peak_bytes),
                 }
             }
         }

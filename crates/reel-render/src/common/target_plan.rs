@@ -129,11 +129,10 @@ impl Scratch {
         }
         Ok(())
     }
-    fn pixels(&self) -> Result<u64, GpuError> {
+    fn cost(&self, cost: &dyn Fn([u32; 2]) -> Result<u64, GpuError>) -> Result<u64, GpuError> {
         self.buckets.iter().try_fold(0u64, |total, bucket| {
-            u64::from(bucket.size[0])
-                .checked_mul(u64::from(bucket.size[1]))
-                .and_then(|v| v.checked_mul(bucket.peak))
+            cost(bucket.size)?
+                .checked_mul(bucket.peak)
                 .and_then(|v| total.checked_add(v))
                 .ok_or(GpuError::InvalidSize)
         })
@@ -262,6 +261,7 @@ pub(crate) fn target_pixels(
         schedule,
         masks,
         selection,
+        cost: &|size| Ok(u64::from(size[0]) * u64::from(size[1])),
     }
     .measure(reserve)
     .map(|(pixels, _)| pixels)
@@ -280,6 +280,7 @@ pub(crate) struct Input<'a> {
     pub schedule: &'a offscreen::Plan,
     pub masks: MaskExecution,
     pub selection: &'a super::retained::Plan,
+    pub cost: &'a dyn Fn([u32; 2]) -> Result<u64, GpuError>,
 }
 
 impl Input<'_> {
@@ -295,15 +296,15 @@ impl Input<'_> {
             .take(2)
             .count()
             == 2;
-        let pixels = scratch
-            .pixels()?
-            .checked_add(self.selection.persistent_pixels())
+        let bytes = scratch
+            .cost(self.cost)?
+            .checked_add(self.selection.persistent_bytes())
             .ok_or(GpuError::InvalidSize)?;
-        Ok((pixels, reusable))
+        Ok((bytes, reusable))
     }
 
     /// Derive a physical storage map from the executor's exact target lifetimes.
-    /// Temporary planning tickets end here; mapping tickets follow the submission.
+    /// Temporary planning tickets end here; mapping tickets remain charged through encoding.
     pub(crate) fn storage<R>(
         &self,
         mut reserve: impl FnMut(u64) -> Result<R, GpuError>,
@@ -319,13 +320,14 @@ impl Input<'_> {
                 .as_deref()
                 .expect("recorded target lifetimes"),
             self.size,
+            self.cost,
             reserve,
         )?;
-        let pixels = plan
-            .pixels()
-            .checked_add(self.selection.persistent_pixels())
+        let bytes = plan
+            .bytes()
+            .checked_add(self.selection.persistent_bytes())
             .ok_or(GpuError::InvalidSize)?;
-        Ok((plan, pixels, retained))
+        Ok((plan, bytes, retained))
     }
 
     fn walk(
@@ -344,6 +346,7 @@ impl Input<'_> {
             schedule,
             masks,
             selection,
+            cost: _,
         } = *self;
         let mut scratch = Scratch {
             events: record.then(Vec::new),
@@ -811,14 +814,18 @@ mod tests {
         scratch.acquire([64, 64], &mut reserve).unwrap();
         scratch.acquire([160, 120], &mut reserve).unwrap();
         assert_eq!(
-            scratch.pixels().unwrap(),
+            scratch
+                .cost(&|size| Ok(u64::from(size[0]) * u64::from(size[1])))
+                .unwrap(),
             2 * 160 * 120 + 240 * 80 + 64 * 64
         );
         scratch.release([64, 64], &mut reserve).unwrap();
         scratch.release([160, 120], &mut reserve).unwrap();
         scratch.acquire([240, 80], &mut reserve).unwrap();
         assert_eq!(
-            scratch.pixels().unwrap(),
+            scratch
+                .cost(&|size| Ok(u64::from(size[0]) * u64::from(size[1])))
+                .unwrap(),
             2 * 160 * 120 + 240 * 80 + 64 * 64
         );
     }

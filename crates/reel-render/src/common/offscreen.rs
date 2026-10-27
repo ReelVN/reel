@@ -64,7 +64,8 @@ impl Plan {
         samples: u32,
         max_dimension: u32,
         glyphs: &glyph_plan::Plan,
-        pixel_limit: u64,
+        byte_limit: u64,
+        cost: &dyn Fn([u32; 2]) -> Result<u64, GpuError>,
         masks: super::target_plan::MaskExecution,
         selection: &super::retained::Plan,
         mut reserve: impl FnMut(u64) -> Result<R, GpuError>,
@@ -109,22 +110,23 @@ impl Plan {
                 schedule: &plan,
                 masks,
                 selection,
+                cost,
             };
-            let (mut pixels, reusable) = input.measure(|bytes| {
+            let (mut bytes, reusable) = input.measure(|bytes| {
                 traversal.push(reserve(bytes)?);
                 Ok(())
             })?;
             drop(traversal);
             let mut storage_tickets = Vec::new();
-            if pixels > pixel_limit && reusable {
-                let (storage, shared_pixels, tickets) = input.storage(&mut reserve)?;
-                pixels = shared_pixels;
+            if bytes > byte_limit && reusable {
+                let (storage, shared_bytes, tickets) = input.storage(&mut reserve)?;
+                bytes = shared_bytes;
                 plan.storage = storage;
                 storage_tickets = tickets;
             }
-            if pixels <= pixel_limit || plan.is_empty() {
+            if bytes <= byte_limit || plan.is_empty() {
                 retained.extend(storage_tickets);
-                return Ok((plan, pixels, retained));
+                return Ok((plan, bytes, retained));
             }
             plan.storage = super::target_storage::Plan::default();
             if shared && plan.entries.iter().any(|entry| entry.shared) {

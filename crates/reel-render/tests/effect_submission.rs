@@ -593,6 +593,10 @@ fn gles_sequential_effect_extents_share_physical_scratch_under_pressure() {
         PresentOutcome::PresentAccepted(_)
     ));
     assert_eq!(presents, 1);
+    let usage = renderer.usage();
+    assert_eq!(usage.targets, 345_600);
+    assert_eq!(usage.total(), usage.shared.unwrap().bytes);
+    assert!(usage.cached_geometry <= usage.transient);
     let mut events = Vec::new();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while renderer.has_pending() {
@@ -902,7 +906,7 @@ fn gles_prepared_effects_submit_scalar_and_empty_source_color() {
                 assert!(start.elapsed() < std::time::Duration::from_secs(10));
                 std::thread::yield_now();
             }
-            let bytes = renderer.usage().bytes;
+            let bytes = renderer.usage().total();
             if let Some(previous) = resident {
                 assert_eq!(
                     bytes, previous,

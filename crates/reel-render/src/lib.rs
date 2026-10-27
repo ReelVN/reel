@@ -5,6 +5,8 @@
 )]
 #[cfg(any(feature = "wgpu", feature = "gles2"))]
 mod common;
+#[cfg(any(feature = "wgpu", feature = "gles2"))]
+pub use common::usage::Usage;
 /// CPU-only generation of complete prepared stage-effect fragments.
 #[path = "common/effect.rs"]
 pub mod effect;

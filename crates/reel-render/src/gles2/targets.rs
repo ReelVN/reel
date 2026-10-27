@@ -13,7 +13,7 @@ impl Context<'_> {
         {
             self.available_targets.swap_remove(index)
         } else {
-            let bytes = u64::from(storage_size[0]) * u64::from(storage_size[1]) * 4;
+            let bytes = self.gpu.target_layout(storage_size)?.texture_bytes;
             let local =
                 self.budget_scope
                     .targets

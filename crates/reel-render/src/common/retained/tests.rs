@@ -207,7 +207,7 @@ fn an_earlier_empty_transition_mask_mapping_invalidates_the_later_backdrop() {
             |key| {
                 Some(Input {
                     key: key.clone(),
-                    pixels: 400 * 300,
+                    bytes: 400 * 300,
                     token: key.anchor,
                 })
             },

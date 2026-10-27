@@ -271,7 +271,7 @@ impl Key {
 
 pub(crate) struct Input {
     pub key: Arc<Key>,
-    pub pixels: u64,
+    pub bytes: u64,
     pub token: usize,
 }
 
@@ -282,7 +282,7 @@ struct Slot<T, Q> {
     candidate: CandidateKey,
     output: Option<T>,
     ready: bool,
-    pixels: u64,
+    bytes: u64,
 }
 struct Slots<T, Q> {
     entries: Vec<Slot<T, Q>>,
@@ -333,7 +333,7 @@ impl<T: Clone, Q: Copy + PartialEq> Cache<T, Q> {
             })
             .map(|entry| Input {
                 key: entry.key.clone(),
-                pixels: entry.pixels,
+                bytes: entry.bytes,
                 token: entry.token,
             })
     }
@@ -422,11 +422,11 @@ impl<T: Clone, Q: Copy + PartialEq> Cache<T, Q> {
             candidate,
             output: None,
             ready: false,
-            pixels: 0,
+            bytes: 0,
         });
         Ok(token)
     }
-    pub(crate) fn stage(&self, token: usize, output: T, pixels: u64) {
+    pub(crate) fn stage(&self, token: usize, output: T, bytes: u64) {
         let mut slots = self.0.lock().unwrap();
         let entry = slots
             .entries
@@ -435,7 +435,7 @@ impl<T: Clone, Q: Copy + PartialEq> Cache<T, Q> {
             .expect("admitted retained output");
         entry.output = Some(output);
         entry.ready = false;
-        entry.pixels = pixels;
+        entry.bytes = bytes;
     }
     pub(crate) fn complete(&self, token: usize) {
         if let Some(entry) = self
@@ -680,7 +680,7 @@ impl Plan {
                 *identity == drawing as *const _ as usize && range.contains(&command)
             })
     }
-    pub(crate) fn persistent_pixels(&self) -> u64 {
+    pub(crate) fn persistent_bytes(&self) -> u64 {
         self.entries
             .iter()
             .filter_map(|entry| entry.input.as_ref())
@@ -693,7 +693,7 @@ impl Plan {
                     .take(*index)
                     .any(|earlier| earlier.token == input.token)
             })
-            .map(|(_, input)| input.pixels)
+            .map(|(_, input)| input.bytes)
             .sum()
     }
 }

@@ -3,6 +3,7 @@ use super::{
     pipeline::{CompositeOperation, PipelineSlots},
     replay::Context,
 };
+use crate::Usage;
 #[cfg(test)]
 #[path = "texture_tests.rs"]
 mod texture_tests;
@@ -15,15 +16,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Usage {
-    pub targets: u64,
-    pub resources: u64,
-    pub transient: u64,
-    /// Completed geometry, staging and allocation metadata retained as an
-    /// evictable subset of `transient`; in-flight storage is excluded.
-    pub cached_geometry: u64,
-}
 pub struct Prepared {
     pub(super) capture: Option<Arc<super::capture::ReadbackStorage>>,
     pub(super) encoder: wgpu::CommandEncoder,
@@ -140,12 +132,14 @@ impl Renderer {
             "readback",
         )
     }
+    /// Current renderer-owned residency across the shared accounting domains.
     pub fn usage(&self) -> Usage {
         Usage {
             targets: self.budgets.targets.usage().bytes,
             resources: self.budgets.resources.usage().bytes,
             transient: self.budgets.transient.usage().bytes,
             cached_geometry: self.geometry.bytes(),
+            shared: None,
         }
     }
     pub fn poll(&mut self) -> Result<Vec<u64>, GpuError> {
@@ -481,7 +475,8 @@ impl Renderer {
                     quality.samples,
                     self.gpu.device.limits().max_texture_dimension_2d,
                     &glyph_plan,
-                    self.gpu.limits.target_bytes / super::targets::target_bytes([1, 1], quality)?,
+                    self.gpu.limits.target_bytes,
+                    &|extent| super::targets::target_bytes(extent, quality),
                     crate::common::target_plan::MaskExecution::Inline,
                     &selection,
                     |bytes| {
@@ -499,8 +494,7 @@ impl Renderer {
                 Ok(targets)
             };
             let quality = if let Some(quality) = preferred {
-                let pixels = target_plan(quality)?;
-                let bytes = pixels.saturating_mul(super::targets::target_bytes([1, 1], quality)?);
+                let bytes = target_plan(quality)?;
                 if bytes > self.gpu.limits.target_bytes {
                     let mut qualities = self
                         .gpu
@@ -533,9 +527,7 @@ impl Renderer {
                     .quality_for_targets(size, |quality| {
                         allowed |= Some(quality) == ceiling;
                         if !allowed {
-                            return Ok(self.gpu.limits.target_bytes
-                                / super::targets::target_bytes([1, 1], quality)?
-                                + 1);
+                            return Ok(self.gpu.limits.target_bytes.saturating_add(1));
                         }
                         target_plan(quality)
                     })?
@@ -679,7 +671,7 @@ impl Renderer {
                         allocation,
                         target: output.clone(),
                     },
-                    u64::from(storage[0]) * u64::from(storage[1]),
+                    super::targets::target_bytes(storage, quality)?,
                 );
                 Some(token)
             } else {

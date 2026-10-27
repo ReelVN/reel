@@ -148,12 +148,12 @@ mod gles {
                 "seven row uploads precede the first complete render; warm renders reuse it"
             );
         }
-        let resident = renderer.usage().bytes;
+        let resident = renderer.usage().total();
         drop(frame);
         assert!(weak.is_released());
         renderer.poll(&mut Vec::new(), 32).unwrap();
         assert_eq!(
-            resident - renderer.usage().bytes,
+            resident - renderer.usage().total(),
             IMAGE_BYTES,
             "final frame lease releases cached image residency"
         );
@@ -265,7 +265,7 @@ fn gles_glyph_cache_borrows_font_until_final_completed_frame() {
                 [reel_core::profile::Phase::GlyphRaster as usize]
                 > 0
         );
-        let resident = renderer.usage().bytes;
+        let resident = renderer.usage().total();
         close_font(&mut registry, handle, retired);
         #[cfg(feature = "profiling")]
         let before = reel_core::profile::Sample::snapshot();
@@ -283,7 +283,7 @@ fn gles_glyph_cache_borrows_font_until_final_completed_frame() {
         );
         complete(&mut renderer);
         assert!(weak.is_released(), "the cache must not own font payloads");
-        assert_eq!(resident - renderer.usage().bytes, 512 * 512);
+        assert_eq!(resident - renderer.usage().total(), 512 * 512);
         renderer.close().unwrap();
     }
 }

@@ -10,7 +10,7 @@ pub(crate) struct Event {
 #[derive(Default)]
 pub(crate) struct Plan {
     mappings: Vec<Mapping>,
-    pixels: u64,
+    bytes: u64,
 }
 
 struct Mapping {
@@ -21,12 +21,14 @@ struct Mapping {
 struct Class {
     size: [u32; 2],
     peak: u64,
+    cost: u64,
     group: usize,
 }
 
 struct Group {
     size: [u32; 2],
     peak: u64,
+    cost: u64,
     protected: bool,
     live: u64,
     combined_peak: u64,
@@ -39,16 +41,17 @@ impl Plan {
             .map_or(logical, |index| self.mappings[index].storage)
     }
 
-    pub(crate) fn pixels(&self) -> u64 {
-        self.pixels
+    pub(crate) fn bytes(&self) -> u64 {
+        self.bytes
     }
 
     /// Fold smaller size classes into existing storage only when their exact
-    /// combined lifetime peak occupies fewer pixels. Root output stays exact.
+    /// combined lifetime peak occupies fewer bytes. Root output stays exact.
     /// Requests keep their logical size and therefore their rasterization grid.
     pub(crate) fn from_lifetimes<R>(
         events: &[Event],
         root: [u32; 2],
+        cost: &dyn Fn([u32; 2]) -> Result<u64, GpuError>,
         mut reserve: impl FnMut(u64) -> Result<R, GpuError>,
     ) -> Result<(Self, Vec<R>), GpuError> {
         let mut temporary = Vec::new();
@@ -64,6 +67,7 @@ impl Plan {
                     Class {
                         size: event.size,
                         peak: 0,
+                        cost: cost(event.size)?,
                         group: 0,
                     },
                     &mut planning,
@@ -93,17 +97,14 @@ impl Plan {
             push_stack(&mut order, index, &mut planning)?;
         }
         order.sort_unstable_by_key(|&index| {
-            (
-                std::cmp::Reverse(area(classes[index].size)),
-                classes[index].size,
-            )
+            (std::cmp::Reverse(classes[index].cost), classes[index].size)
         });
         let mut groups = Vec::<Group>::new();
         for index in order {
             let class = &classes[index];
             let size = class.size;
             let peak = class.peak;
-            let original = area(size).checked_mul(peak).ok_or(GpuError::InvalidSize)?;
+            let original = class.cost.checked_mul(peak).ok_or(GpuError::InvalidSize)?;
             let mut best = None;
             if size != root {
                 // One timeline sweep evaluates all existing groups. A new
@@ -143,21 +144,36 @@ impl Plan {
                     let combined_peak = group.combined_peak;
                     let separate = original
                         .checked_add(
-                            area(group.size)
+                            group
+                                .cost
                                 .checked_mul(group.peak)
                                 .ok_or(GpuError::InvalidSize)?,
                         )
                         .ok_or(GpuError::InvalidSize)?;
-                    let combined = area(combined_size)
+                    let combined_cost = if combined_size == group.size {
+                        group.cost
+                    } else if combined_size == size {
+                        class.cost
+                    } else {
+                        cost(combined_size)?
+                    };
+                    let combined = combined_cost
                         .checked_mul(combined_peak)
                         .ok_or(GpuError::InvalidSize)?;
                     let saving = separate.saturating_sub(combined);
-                    if saving > best.map_or(0, |(_, _, _, saving)| saving) {
-                        best = Some((group_id, combined_size, combined_peak, saving));
+                    if saving > best.map_or(0, |(_, _, _, _, saving)| saving) {
+                        best = Some((
+                            group_id,
+                            combined_size,
+                            combined_peak,
+                            combined_cost,
+                            saving,
+                        ));
                     }
                 }
             }
-            if let Some((group_id, size, peak, _)) = best {
+            if let Some((group_id, size, peak, combined_cost, _)) = best {
+                groups[group_id].cost = combined_cost;
                 groups[group_id].size = size;
                 groups[group_id].peak = peak;
                 classes[index].group = group_id + 1;
@@ -167,6 +183,7 @@ impl Plan {
                     Group {
                         size,
                         peak,
+                        cost: class.cost,
                         protected: size == root,
                         live: 0,
                         combined_peak: 0,
@@ -179,10 +196,11 @@ impl Plan {
         let mut plan = Self::default();
         let mut retained = Vec::new();
         for group in &groups {
-            plan.pixels = plan
-                .pixels
+            plan.bytes = plan
+                .bytes
                 .checked_add(
-                    area(group.size)
+                    group
+                        .cost
                         .checked_mul(group.peak)
                         .ok_or(GpuError::InvalidSize)?,
                 )
@@ -208,6 +226,7 @@ impl Plan {
     }
 }
 
+#[cfg(test)]
 fn area(size: [u32; 2]) -> u64 {
     u64::from(size[0]) * u64::from(size[1])
 }
@@ -236,24 +255,46 @@ mod tests {
             event(b, false),
             event(b, false),
         ];
-        let (plan, _) = Plan::from_lifetimes(&events, root, |_| Ok(())).unwrap();
+        let (plan, _) =
+            Plan::from_lifetimes(&events, root, &|size| Ok(area(size)), |_| Ok(())).unwrap();
         assert_eq!(plan.storage_size(root), root);
         assert_eq!(plan.storage_size(a), [2522, 1922]);
         assert_eq!(plan.storage_size(b), [2522, 1922]);
-        assert_eq!(plan.pixels(), area(root) + 2 * area([2522, 1922]));
-        assert!(plan.pixels() < area(root) + 2 * area(a) + 2 * area(b));
+        assert_eq!(plan.bytes(), area(root) + 2 * area([2522, 1922]));
+        assert!(plan.bytes() < area(root) + 2 * area(a) + 2 * area(b));
     }
 
     #[test]
     fn simultaneous_sources_keep_separate_storage_when_padding_would_cost_more() {
         let a = [600, 200];
         let b = [200, 600];
-        let (plan, _) =
-            Plan::from_lifetimes(&[event(a, true), event(b, true)], [960, 544], |_| Ok(()))
-                .unwrap();
+        let (plan, _) = Plan::from_lifetimes(
+            &[event(a, true), event(b, true)],
+            [960, 544],
+            &|size| Ok(area(size)),
+            |_| Ok(()),
+        )
+        .unwrap();
         assert_eq!(plan.storage_size(a), a);
         assert_eq!(plan.storage_size(b), b);
-        assert_eq!(plan.pixels(), area(a) + area(b));
+        assert_eq!(plan.bytes(), area(a) + area(b));
+    }
+
+    #[test]
+    fn storage_sharing_uses_the_same_padded_byte_cost_as_allocation() {
+        let a = [9, 1];
+        let b = [8, 2];
+        let events = [event(a, true), event(a, false), event(b, true)];
+        let stride =
+            |size: [u32; 2]| Ok(u64::from(size[0]).div_ceil(8) * 8 * u64::from(size[1]) * 4);
+        let (area_plan, _) =
+            Plan::from_lifetimes(&events, [64; 2], &|size| Ok(area(size)), |_| Ok(())).unwrap();
+        assert_eq!(area_plan.storage_size(a), [9, 2]);
+        let (plan, _) = Plan::from_lifetimes(&events, [64; 2], &stride, |_| Ok(())).unwrap();
+        assert_eq!(plan.storage_size(a), a);
+        assert_eq!(plan.storage_size(b), b);
+        assert_eq!(plan.bytes(), 128);
+        assert_eq!(stride([9, 2]).unwrap(), 128);
     }
 
     #[test]
@@ -271,12 +312,13 @@ mod tests {
             event(b, false),
         ];
         let pool = crate::test_support::r01_fixture::pool();
-        let (plan, tickets) = Plan::from_lifetimes(&events, [960, 544], |bytes| {
-            pool.reserve(bytes).map_err(|_| GpuError::InvalidSize)
-        })
-        .unwrap();
+        let (plan, tickets) =
+            Plan::from_lifetimes(&events, [960, 544], &|size| Ok(area(size)), |bytes| {
+                pool.reserve(bytes).map_err(|_| GpuError::InvalidSize)
+            })
+            .unwrap();
         assert_eq!(plan.storage_size(b), a);
-        assert_eq!(plan.pixels(), 2 * area(a));
+        assert_eq!(plan.bytes(), 2 * area(a));
         assert_eq!(
             pool.usage().bytes,
             (plan.mappings.capacity() * size_of::<Mapping>()) as u64,
@@ -286,8 +328,13 @@ mod tests {
         drop(tickets);
         assert_eq!(pool.usage().bytes, 0);
         assert!(
-            Plan::from_lifetimes(&events, [960, 544], |_| Err::<(), _>(GpuError::InvalidSize))
-                .is_err()
+            Plan::from_lifetimes(
+                &events,
+                [960, 544],
+                &|size| Ok(area(size)),
+                |_| Err::<(), _>(GpuError::InvalidSize)
+            )
+            .is_err()
         );
     }
 }

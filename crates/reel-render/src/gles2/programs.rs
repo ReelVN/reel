@@ -419,7 +419,10 @@ impl Target {
         limit: u64,
     ) -> Result<Self, (GlesError, Option<BudgetTicket>)> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::TargetCreate);
-        let bytes = u64::from(size[0]) * u64::from(size[1]) * 4;
+        let bytes = context
+            .target_layout(size)
+            .map_err(|error| (error.into(), None))?
+            .texture_bytes;
         let storage = budget.reserve(bytes).map_err(|_| {
             (
                 GlesError::Pressure {
