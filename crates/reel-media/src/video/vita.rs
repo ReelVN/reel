@@ -1,20 +1,18 @@
 //! AvPlayer adapter for the common worker, picture queues and PCM clock.
 use super::{
-    AudioFrames, DecodedPacket, MediaRead, VideoDecoder, VideoDecoderFactory, VideoFrame,
-    VideoInfo, Yuv420Layout, YuvColor, h264::sequence_color,
+    AudioFrames, DecodeDemand, DecodedPacket, MediaRead, VideoDecoder, VideoDecoderFactory,
+    VideoFrame, VideoInfo, Yuv420Layout, YuvColor, h264::sequence_color,
 };
 use pvr_psp2_sys::{
-    platform::{
-        memory::{MemoryBudget, MemoryReservation},
-        time,
-    },
-    video::{Player, Poll},
+    platform::memory::{MemoryBudget, MemoryReservation},
+    video::{Player, Poll as NativePoll},
 };
 use reel_core::budget::{BudgetPool, BudgetTicket};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
+use std::task::Poll;
 
 #[derive(Debug)]
 struct NativeBudget(BudgetPool);
@@ -68,6 +66,7 @@ impl VideoDecoderFactory for VitaVideoDecoderFactory {
             video_end,
             seek_position: 0.,
             poster: false,
+            prefer_video: false,
         }))
     }
 }
@@ -89,6 +88,7 @@ struct VitaDecoder {
     video_end: f64,
     seek_position: f64,
     poster: bool,
+    prefer_video: bool,
 }
 
 impl VitaDecoder {
@@ -122,7 +122,7 @@ impl VitaDecoder {
                 color,
             })
         })? {
-            Poll::Ready(next) => {
+            NativePoll::Ready(next) => {
                 let previous = self.pending.replace(next);
                 let Some(mut previous) = previous else {
                     return Ok(None);
@@ -140,8 +140,8 @@ impl VitaDecoder {
                     && previous.pts + previous.duration > self.seek_position)
                     .then_some(previous))
             }
-            Poll::Pending => Ok(None),
-            Poll::End => {
+            NativePoll::Pending => Ok(None),
+            NativePoll::End => {
                 self.video_done = true;
                 self.pending_storage = None;
                 let Some(mut last) = self.pending.take() else {
@@ -161,7 +161,7 @@ impl VitaDecoder {
         }
         let mut frames = Vec::new();
         match self.player.poll_audio(&mut frames)? {
-            Poll::Ready(packet) => {
+            NativePoll::Ready(packet) => {
                 if self.poster {
                     return Err("poster decoder admitted unexpected audio".into());
                 }
@@ -185,8 +185,8 @@ impl VitaDecoder {
                     frames,
                 }))
             }
-            Poll::Pending => Ok(None),
-            Poll::End => {
+            NativePoll::Pending => Ok(None),
+            NativePoll::End => {
                 self.audio_done = true;
                 Ok(None)
             }
@@ -216,21 +216,30 @@ impl VideoDecoder for VitaDecoder {
         let position = seconds.min((self.video_end - 0.001).max(0.));
         self.seek(position)
     }
-    fn next_packet(&mut self) -> Result<Option<DecodedPacket>, String> {
-        loop {
-            if self.stopped.load(Ordering::Acquire) {
-                return Err("AvPlayer decode cancelled".into());
+    fn poll_packet(&mut self, demand: DecodeDemand) -> Result<Poll<Option<DecodedPacket>>, String> {
+        if self.stopped.load(Ordering::Acquire) {
+            return Err("AvPlayer decode cancelled".into());
+        }
+        for video_first in [self.prefer_video, !self.prefer_video] {
+            if video_first {
+                if demand.video
+                    && let Some(video) = self.video()?
+                {
+                    self.prefer_video = false;
+                    return Ok(Poll::Ready(Some(DecodedPacket::Video(video))));
+                }
+            } else if (demand.audio || self.poster)
+                && let Some(audio) = self.audio()?
+            {
+                // Disabled poster audio still drains native buffers internally.
+                self.prefer_video = true;
+                return Ok(Poll::Ready(Some(DecodedPacket::Audio(audio))));
             }
-            if let Some(video) = self.video()? {
-                return Ok(Some(DecodedPacket::Video(video)));
-            }
-            if let Some(audio) = self.audio()? {
-                return Ok(Some(DecodedPacket::Audio(audio)));
-            }
-            if self.video_done && self.audio_done {
-                return Ok(None);
-            }
-            time::sleep(std::time::Duration::from_millis(2)).map_err(|e| e.to_string())?;
+        }
+        if self.video_done && self.audio_finished() {
+            Ok(Poll::Ready(None))
+        } else {
+            Ok(Poll::Pending)
         }
     }
     fn seek(&mut self, seconds: f64) -> Result<(), String> {
