@@ -183,6 +183,10 @@ impl StoryRuntime {
                 self.logical_ns = (candidate.adapter().logical_time() * 1_000_000_000.) as u64;
                 self.clock_sample_requested = true;
                 self.clock_turn_pending = false;
+                #[cfg(feature = "profiling")]
+                {
+                    self.stage_profile = None;
+                }
                 self.time_offset_ns = self.logical_ns;
                 self.suspended_ns = now_ns;
                 candidate.ui_mut().adopt_presentation();

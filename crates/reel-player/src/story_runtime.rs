@@ -44,6 +44,12 @@ pub struct StoryRuntime {
     clock_profile: Option<ClockProfile>,
     #[cfg(feature = "profiling")]
     progress_profile: Option<ClockProfile>,
+    #[cfg(feature = "profiling")]
+    stage_profile: Option<(std::time::Instant, reel_engine::SessionIdentity)>,
+    #[cfg(feature = "profiling")]
+    stage_batches: u64,
+    #[cfg(feature = "profiling")]
+    stage_batch_max_ns: u64,
     time_offset_ns: u64,
     suspended_at: Option<u64>,
     suspended_ns: u64,
@@ -74,6 +80,12 @@ impl StoryRuntime {
             clock_profile: None,
             #[cfg(feature = "profiling")]
             progress_profile: None,
+            #[cfg(feature = "profiling")]
+            stage_profile: None,
+            #[cfg(feature = "profiling")]
+            stage_batches: 0,
+            #[cfg(feature = "profiling")]
+            stage_batch_max_ns: 0,
             time_offset_ns: 0,
             suspended_at: None,
             suspended_ns: 0,
@@ -417,7 +429,19 @@ impl StoryRuntime {
                 return Ok(());
             }
             let publication_ready = self.driver().adapter().stage_ready();
+            #[cfg(feature = "profiling")]
+            if self.stage_profile.is_none() && (!publication_ready || self.runnable) {
+                self.stage_profile = Some((
+                    std::time::Instant::now(),
+                    self.driver().ui().session().identity(),
+                ));
+            }
             self.step(budget, &mut now)?;
+            let stage_ready = self.driver().adapter().stage_ready();
+            #[cfg(feature = "profiling")]
+            if stage_ready {
+                self.finish_stage_profile();
+            }
             if self.driver().adapter().virtual_feedback_boundary() {
                 return Ok(());
             }
@@ -427,7 +451,7 @@ impl StoryRuntime {
                 self.finish_clock_profile();
                 return Ok(());
             }
-            if !self.closing && !publication_ready && self.driver().adapter().stage_ready() {
+            if !self.closing && !publication_ready && stage_ready {
                 // Publish this complete batch before another script segment can
                 // invalidate it. Its clock turn still owes ready script work.
                 return Ok(());
@@ -639,7 +663,7 @@ impl StoryRuntime {
                 })
                 .map(|location| self.location_text(location));
             eprintln!(
-                "[reel-runtime] progress logical_ns={} ready={} derived_pending={} runnable={} native_entries={} native_resumes={} binding_hits={} binding_misses={} vm_slices={} collections={} gc_units={} chunk_allocations={} live_objects={} pending_objects={} heap_bytes={} location={location:?}",
+                "[reel-runtime] progress logical_ns={} ready={} derived_pending={} runnable={} native_entries={} native_resumes={} binding_hits={} binding_misses={} vm_slices={} collections={} gc_units={} chunk_allocations={} live_objects={} pending_objects={} heap_bytes={} stage_batches={} max_stage_batch_ms={:.3} location={location:?}",
                 self.logical_ns,
                 self.driver().adapter().stage_ready(),
                 self.driver().adapter().vm().heap().derived_pending(),
@@ -654,14 +678,42 @@ impl StoryRuntime {
                 stats.heap.chunk_allocations - before.stats.heap.chunk_allocations,
                 stats.heap.live_objects,
                 stats.heap.pending_objects,
-                stats.heap.charged_bytes
+                stats.heap.charged_bytes,
+                self.stage_batches,
+                self.stage_batch_max_ns as f64 / 1_000_000.
             );
         }
+        self.stage_batches = 0;
+        self.stage_batch_max_ns = 0;
         self.progress_profile = Some(ClockProfile {
             started: now,
             identity,
             stats,
         });
+    }
+
+    #[cfg(feature = "profiling")]
+    fn finish_stage_profile(&mut self) {
+        let Some((started, identity)) = self.stage_profile.take() else {
+            return;
+        };
+        if identity != self.driver().ui().session().identity() {
+            return;
+        }
+        let elapsed = started.elapsed();
+        self.stage_batches += 1;
+        self.stage_batch_max_ns = self
+            .stage_batch_max_ns
+            .max(u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX));
+        if elapsed >= std::time::Duration::from_millis(50) {
+            eprintln!(
+                "[reel-runtime] stage-batch wall_ms={:.3} logical_ns={} native_entries={} vm_slices={}",
+                elapsed.as_secs_f64() * 1000.,
+                self.logical_ns,
+                self.driver().adapter().vm().stats().native_entries,
+                self.driver().adapter().vm().stats().slices,
+            );
+        }
     }
 
     #[cfg(feature = "profiling")]
