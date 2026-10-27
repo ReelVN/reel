@@ -122,15 +122,18 @@ fn rotated_images_crop_object_fit_in_geometry_without_clip_layers() {
 
 #[test]
 fn transparent_subtrees_keep_geometry_and_resume_painting_when_visible() {
-    for blend in [
-        BlendMode::default(),
-        peniko::Mix::Multiply.into(),
-        peniko::Mix::Overlay.into(),
-        peniko::Mix::ColorDodge.into(),
-        peniko::Mix::Screen.into(),
-        peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::PlusLighter).into(),
-        BlendMode::Subtract,
-        BlendMode::LinearBurn,
+    for (blend, omitted) in [
+        (BlendMode::default(), true),
+        (peniko::Mix::Multiply.into(), true),
+        (peniko::Mix::Overlay.into(), true),
+        (peniko::Mix::ColorDodge.into(), true),
+        (peniko::Mix::Screen.into(), true),
+        (
+            peniko::BlendMode::new(peniko::Mix::Normal, peniko::Compose::PlusLighter).into(),
+            false,
+        ),
+        (BlendMode::Subtract, false),
+        (BlendMode::LinearBurn, true),
     ] {
         let mut root = RecordWidget::new(fill(Color::WHITE));
         root.opacity = 0.;
@@ -141,11 +144,15 @@ fn transparent_subtrees_keep_geometry_and_resume_painting_when_visible() {
         let pool = pool();
         let source = bridge.record(FrameId(1)).unwrap();
         let frame = build(source, empty_snapshot(&pool), &pool);
-        assert!(frame.commands().is_empty());
+        assert_eq!(frame.commands().is_empty(), omitted, "{blend:?}");
         assert!(bridge.root().get_widget(root).is_some());
         let mut retained = RetainBuild::new(&frame, Some(root), limits(), &pool).unwrap();
         while !retained.step(step_budget()).unwrap().complete {}
-        assert!(retained.finish().unwrap().drawing().commands().is_empty());
+        assert_eq!(
+            retained.finish().unwrap().drawing().commands().is_empty(),
+            omitted,
+            "{blend:?}"
+        );
         drop(frame);
         bridge.edit_widget(root, |mut widget| {
             let mut widget = widget.downcast::<RecordWidget>();

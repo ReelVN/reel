@@ -32,11 +32,11 @@ impl BlendMode {
     /// Whether a zero-alpha source leaves every destination component unchanged.
     pub(crate) fn transparent_source_preserves_destination(self) -> bool {
         match self {
-            Self::Standard(value) => matches!(
-                value.compose,
-                peniko::Compose::SrcOver | peniko::Compose::PlusLighter
-            ),
-            Self::Subtract | Self::LinearBurn => true,
+            Self::Standard(value) => value.compose == peniko::Compose::SrcOver,
+            Self::LinearBurn => true,
+            // Saturating operations can still change an out-of-range float
+            // backdrop when their source is transparent.
+            Self::Subtract => false,
         }
     }
 
