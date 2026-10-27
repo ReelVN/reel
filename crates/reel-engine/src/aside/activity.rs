@@ -380,6 +380,8 @@ pub(super) struct Activities {
     events: BTreeMap<EventKey, Value>,
     sampling: usize,
     #[serde(skip)]
+    clock_events: usize,
+    #[serde(skip)]
     native: Option<NativeWork>,
     #[serde(skip)]
     cleanup: Option<Cleanup>,
@@ -427,6 +429,7 @@ impl Activities {
         &mut self,
         record: &super::snapshot::Record,
         map: &aside_vm::snapshot::SnapshotMap,
+        heap: &Heap,
     ) -> Result<(), AdapterError> {
         use super::snapshot::Part;
         match record.part {
@@ -436,7 +439,12 @@ impl Activities {
             }
             Part::ActivityEvent => {
                 let (key, value): (EventKey, Value) = record.read()?;
-                self.events.insert(key, map.value(value)?);
+                let value = map.value(value)?;
+                self.clock_events += usize::from(graph::kind(heap, value)? == action::Kind::Clock);
+                if let Some(previous) = self.events.insert(key, value) {
+                    self.clock_events -=
+                        usize::from(graph::kind(heap, previous)? == action::Kind::Clock);
+                }
             }
             Part::ActivityWait => {
                 let (wait, value, tick): (WaitId, Value, Option<i64>) = record.read()?;

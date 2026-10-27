@@ -701,7 +701,9 @@ impl SessionRestore<'_> {
                             .restore_option(record, map, runtime.identity)?;
                     }
                     Part::Activities | Part::ActivityEvent | Part::ActivityWait => {
-                        runtime.activities.restore_record(record, map)?;
+                        runtime
+                            .activities
+                            .restore_record(record, map, runtime.vm.heap())?;
                     }
                     Part::Results | Part::ResultWait | Part::Presentation | Part::OwnedResult => {
                         runtime

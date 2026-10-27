@@ -471,6 +471,7 @@ impl Activities {
         self.job_tail = None;
         self.events.clear();
         self.sampling = 0;
+        self.clock_events = 0;
         self.cleanup = None;
         self.control = None;
         self.round = None;

@@ -605,6 +605,16 @@ impl SessionVm {
                 || self.transitions.needs_time())
     }
 
+    /// Whether active clocks, tweens, particles or transitions require repeated
+    /// time sampling. This constant-time query excludes pure delay deadlines;
+    /// [`Self::activities_poll_after`] still reports those deadlines normally.
+    pub fn continuous_time_pending(&self) -> bool {
+        !self.revoked
+            && (self.activities.continuous_time_pending()
+                || self.particles.needs_time()
+                || self.transitions.needs_time())
+    }
+
     pub fn activities_poll_after(&self) -> Option<std::time::Duration> {
         if self.revoked {
             return None;

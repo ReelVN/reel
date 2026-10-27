@@ -411,9 +411,8 @@ impl StoryRuntime {
         }
         if !self.closing && self.needs_tick() && !self.clock_turn_pending {
             let sample = now();
-            let timed = self.needs_work()
-                && (self.driver().activities_need_time()
-                    || self.driver().ui().dialogue_needs_time());
+            let timed =
+                self.driver().continuous_time_pending() || self.driver().ui().dialogue_needs_time();
             let due = self
                 .logical_ns
                 .saturating_add(u64::try_from(self.time_interval().as_nanos()).unwrap_or(u64::MAX));

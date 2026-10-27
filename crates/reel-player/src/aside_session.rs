@@ -338,6 +338,9 @@ impl AsideSessionUi {
     pub fn activities_need_time(&self) -> bool {
         self.state == StoryState::Running && self.vm.activities_need_time()
     }
+    pub(crate) fn continuous_time_pending(&self) -> bool {
+        self.state == StoryState::Running && self.vm.continuous_time_pending()
+    }
     pub fn activities_poll_after(&self) -> Option<std::time::Duration> {
         (self.state == StoryState::Running)
             .then(|| self.vm.activities_poll_after())

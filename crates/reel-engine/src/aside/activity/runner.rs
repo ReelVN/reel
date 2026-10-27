@@ -13,6 +13,9 @@ impl Activities {
     pub fn needs_time(&self) -> bool {
         !self.events.is_empty()
     }
+    pub fn continuous_time_pending(&self) -> bool {
+        self.sampling != 0 || self.clock_events != 0
+    }
     pub fn poll_after(&self) -> Option<std::time::Duration> {
         let (&key, _) = self.events.first_key_value()?;
         let seconds = (f64::from_bits(key.0) - self.time).max(0.);
@@ -121,6 +124,9 @@ impl Activities {
             if Self::needs_sampling(heap, leaf)? {
                 self.sampling -= 1;
             }
+            if kind(heap, leaf)? == Kind::Clock {
+                self.clock_events -= 1;
+            }
             set(heap, leaf, Slot::Event, Value::NULL)?;
         }
         Ok(())
@@ -155,6 +161,7 @@ impl Activities {
         if Self::needs_sampling(heap, leaf)? {
             self.sampling += 1;
         }
+        self.clock_events += usize::from(clock);
         set(heap, leaf, Slot::Event, Value::float(deadline))
     }
 

@@ -3,26 +3,10 @@ use super::*;
 use crate::assets::{AssetOptions, Assets};
 use std::time::Duration;
 
-#[test]
-fn queued_settled_projection_is_recorded_before_redraw_can_run_the_next_transaction() {
+fn ready_player(code: &str) -> (Player<Backend>, Host) {
     let driver = AsideSessionUi::from_source(
         session(),
-        r##"use std::math::sin;
-        fn sample(value) {
-            let mut sum=0.0;
-            for i in 0..32 {sum+=sin(value+i);}
-            value+sum*0
-        }
-        fn main() {
-            game.configure(fonts:["400.ttf"]);
-            let state=model({x:0,y:0});
-            stage.replace(stack(width:64,height:64,background:"#ff0000",
-                x:derive(||sample(state.x)),y:derive(||sample(state.y))));
-            await stage.presented();
-            let gate=completion(); gate.resolve(null);
-            for i in 1..=12 {state.x=i; state.y=i; await gate;}
-            await stage.presented();
-        }"##,
+        code,
         "queued_redraw",
         1,
         "main",
@@ -36,7 +20,7 @@ fn queued_settled_projection_is_recorded_before_redraw_can_run_the_next_transact
         ..Default::default()
     }));
     let mut host = Host::default();
-    let mut backend = Backend {
+    let backend = Backend {
         inner: RecordingBackend::new(ConsumerLimits {
             max_uploads: 2,
             max_resources: 4,
@@ -58,7 +42,7 @@ fn queued_settled_projection_is_recorded_before_redraw_can_run_the_next_transact
     };
     let mut player = Player::new(
         driver,
-        &mut backend,
+        backend,
         &mut host,
         &PlayerOptions {
             logical_size: Some([640, 420]),
@@ -112,6 +96,29 @@ fn queued_settled_projection_is_recorded_before_redraw_can_run_the_next_transact
             .inner
             .complete_upload(upload, reel_core::result::Terminal::Completed(()))
     );
+    (player, host)
+}
+
+#[test]
+fn queued_settled_projection_is_recorded_before_redraw_can_run_the_next_transaction() {
+    let (mut player, mut host) = ready_player(
+        r##"use std::math::sin;
+        fn sample(value) {
+            let mut sum=0.0;
+            for i in 0..32 {sum+=sin(value+i);}
+            value+sum*0
+        }
+        fn main() {
+            game.configure(fonts:["400.ttf"]);
+            let state=model({x:0,y:0});
+            stage.replace(stack(width:64,height:64,background:"#ff0000",
+                x:derive(||sample(state.x)),y:derive(||sample(state.y))));
+            await stage.presented();
+            let gate=completion(); gate.resolve(null);
+            for i in 1..=12 {state.x=i; state.y=i; await gate;}
+            await stage.presented();
+        }"##,
+    );
     player.render(&mut host).unwrap();
     let first = player.presentation.bridge.accepted_key().unwrap().clone();
     player
@@ -136,4 +143,89 @@ fn queued_settled_projection_is_recorded_before_redraw_can_run_the_next_transact
         before.native_entries
     );
     assert_eq!(story.driver().adapter().vm().stats().slices, before.slices);
+}
+
+#[test]
+fn accepted_animation_frames_keep_the_sampling_deadline_while_script_waits() {
+    let (mut player, mut host) = ready_player(
+        r##"
+        use std::math::sin;
+        fn main() {
+            game.configure(fonts:["400.ttf"]);
+            let carrier=stack(mask_progress:0);
+            stage.replace(stack(width:64,height:64,background:"#ff0000",
+                x:derive(||100*carrier.mask_progress+sin(carrier.mask_progress))));
+            await stage.presented();
+            await tween(carrier,mask_progress:1,duration:1).run();
+        }
+    "##,
+    );
+    player.render(&mut host).unwrap();
+    player
+        .backend
+        .inner
+        .complete_render(player.backend.inner.last_submission().unwrap());
+    player.poll_completions().unwrap();
+    for _ in 0..100 {
+        player.tick(&mut host).unwrap();
+        let story = player.story_mut().unwrap();
+        if !story.driver().has_runnable_tasks() && !story.driver().activities_pending() {
+            break;
+        }
+    }
+    assert!(!player.story_mut().unwrap().driver().has_runnable_tasks());
+    host.now = MonoTime(16_000_000);
+    player.tick(&mut host).unwrap();
+    let x = |player: &mut Player<Backend>| {
+        player
+            .story_mut()
+            .unwrap()
+            .driver()
+            .adapter()
+            .stage()
+            .nodes()
+            .find(|node| node.props.width == Some(64.))
+            .unwrap()
+            .props
+            .x
+    };
+    let sampled = x(&mut player);
+    assert!(sampled > 0.);
+    let native_entries = player
+        .story_mut()
+        .unwrap()
+        .driver()
+        .adapter()
+        .vm()
+        .stats()
+        .native_entries;
+    player.render(&mut host).unwrap();
+    player
+        .backend
+        .inner
+        .complete_render(player.backend.inner.last_submission().unwrap());
+    player.poll_completions().unwrap();
+    for ms in 17..32 {
+        host.now = MonoTime(ms * 1_000_000);
+        player.tick(&mut host).unwrap();
+        assert_eq!(
+            x(&mut player),
+            sampled,
+            "sampling before deadline at {ms}ms"
+        );
+        assert_eq!(
+            player
+                .story_mut()
+                .unwrap()
+                .driver()
+                .adapter()
+                .vm()
+                .stats()
+                .native_entries,
+            native_entries
+        );
+    }
+    host.now = MonoTime(32_000_000);
+    player.tick(&mut host).unwrap();
+    assert!(x(&mut player) > sampled);
 }
