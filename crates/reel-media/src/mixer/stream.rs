@@ -94,6 +94,7 @@ impl Window {
         let mut eof = false;
         let mut seeking_to = None;
         let mut last_idle_wanted = usize::MAX;
+        let mut deadline_published = false;
         while !self.stopped.load(Ordering::Acquire) {
             let wanted = self.wanted.load(Ordering::Acquire);
             let request = self.serial.load(Ordering::Acquire);
@@ -102,6 +103,7 @@ impl Window {
             if request != serial || (outside && seeking_to.is_none()) {
                 if let Some(deadline) = &self.io_deadline {
                     deadline.buffered(Duration::ZERO);
+                    deadline_published = true;
                 }
                 serial = request;
                 seeking_to = Some(wanted);
@@ -123,20 +125,26 @@ impl Window {
             if eof || next >= wanted.saturating_add(self.slots.len().saturating_sub(4)) {
                 // Paused and not-yet-admitted items keep their bounded window,
                 // but do not wake at the active refill cadence.
-                if let Some(deadline) = &self.io_deadline {
-                    deadline.clear();
+                if deadline_published {
+                    if let Some(deadline) = &self.io_deadline {
+                        deadline.clear();
+                    }
+                    deadline_published = false;
                 }
                 let idle = wanted == last_idle_wanted;
                 last_idle_wanted = wanted;
                 std::thread::sleep(Duration::from_millis(if idle { 8 } else { 1 }));
                 continue;
             }
-            if let Some(deadline) = &self.io_deadline {
-                deadline.buffered(Duration::from_secs_f64(
-                    next.saturating_sub(wanted) as f64 / f64::from(self.sample_rate),
-                ));
-            }
             if next >= packet_start + packet_len {
+                // Only a new packet can perform source IO. Refilling part of an
+                // already decoded packet needs neither a clock read nor a hint lock.
+                if let Some(deadline) = &self.io_deadline {
+                    deadline.buffered(Duration::from_secs_f64(
+                        next.saturating_sub(wanted) as f64 / f64::from(self.sample_rate),
+                    ));
+                    deadline_published = true;
+                }
                 let decoded = {
                     let _profile =
                         reel_core::profile::Scope::new(reel_core::profile::Phase::AudioDecode);
