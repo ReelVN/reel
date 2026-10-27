@@ -122,7 +122,7 @@ pub(super) mod source;
 pub(super) mod text_input;
 
 /// Specific numeric fields share one registration and dispatch order.
-pub(in crate::aside) fn animation_prefixes() -> [(&'static str, &'static [aside_host::Property]); 5]
+pub(in crate::aside) fn animation_prefixes() -> [(&'static str, &'static [aside_host::Property]); 6]
 {
     [
         ("camera", camera::CameraField::PROPERTIES),
@@ -130,6 +130,7 @@ pub(in crate::aside) fn animation_prefixes() -> [(&'static str, &'static [aside_
         ("flow", flow::FlowField::PROPERTIES),
         ("grid", flow::GridField::PROPERTIES),
         ("popup", popup::PopupField::PROPERTIES),
+        ("particles", super::particles::ParticleField::PROPERTIES),
     ]
 }
 
@@ -1072,10 +1073,11 @@ impl StageBinding {
                         text_input::TextInputField::PROPERTIES.len(),
                     )
                 }
-                NodeKind::Particles(batch) => (
-                    NodeKind::Particles(batch.clone()),
-                    super::particles::PREFIX.len(),
-                ),
+                NodeKind::Particles(batch) => {
+                    let mut batch = batch.clone();
+                    batch.size_scale = nonnegative(heap.table_entry(fields, 2)?.1)?;
+                    (NodeKind::Particles(batch), super::particles::PREFIX.len())
+                }
                 NodeKind::Image { source, origin, .. } => (
                     NodeKind::Image {
                         source: if binding.shape == snapshot::Shape::Video

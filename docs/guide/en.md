@@ -1195,6 +1195,12 @@ emit(glow, burst: 0, rate: 40, lifetime: 2, prewarm: 2,
     angle: 180, angle_spread: 180, spin_spread: 0);
 ```
 
+Use the particle node's `size_scale` to resize all living and future sprites together. It multiplies each sprite's age-based size curve while preserving emission areas, positions and trajectories. Assign it directly, bind it, or animate it with `tween`.
+
+```aside
+await tween(glow, size_scale: 0, duration: 0.2).run();
+```
+
 `reveal_fade` controls progressive glyph opacity and `reveal_fade_step` sets the offset between graphemes. Text layout stays stable.
 
 ```aside

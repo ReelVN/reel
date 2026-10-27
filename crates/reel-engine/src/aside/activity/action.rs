@@ -266,6 +266,7 @@ pub(in crate::aside) fn tween(
                     | ("popup", NodeKind::Popup(_))
                     | ("flow", NodeKind::Row(_) | NodeKind::Column(_))
                     | ("grid", NodeKind::Grid(_))
+                    | ("particles", NodeKind::Particles(_))
             ) {
                 return Err(AdapterError::Input(
                     "animation property does not belong to this node kind",

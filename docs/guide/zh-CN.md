@@ -1195,6 +1195,12 @@ emit(glow, burst: 0, rate: 40, lifetime: 2, prewarm: 2,
     angle: 180, angle_spread: 180, spin_spread: 0);
 ```
 
+用粒子节点的 `size_scale` 同时缩放所有存活和后续出生粒子的图形尺寸。它与每粒子的年龄尺寸曲线相乘，保留出生区域、位置和运动轨迹；可直接赋值、绑定或用 `tween` 变化。
+
+```aside
+await tween(glow, size_scale: 0, duration: 0.2).run();
+```
+
 
 逐字透明度由 `reveal_fade` 控制，`reveal_fade_step` 设置相邻字素的进度差。正文布局保持稳定。
 

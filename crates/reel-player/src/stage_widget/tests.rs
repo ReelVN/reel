@@ -1328,6 +1328,7 @@ fn particle_bounds_follow_each_captured_extent_after_resize_and_append() {
         source: "sprite.png".into(),
         origin: None,
         seed: 42,
+        size_scale: 1.,
         time: 0.,
         batches: ParticleBatches::try_new(
             &pool,
@@ -1495,7 +1496,17 @@ fn particle_bounds_follow_each_captured_extent_after_resize_and_append() {
     assert!(restarted.bounding_box.y1 > small.bounding_box.y1);
     assert_covers_sprites(&restarted, &make_node(&[frame]));
 
-    for step in 4..20 {
+    let node = Arc::make_mut(&mut Arc::make_mut(view.root.as_mut().unwrap()).node);
+    let NodeKind::Particles(batch) = &mut node.kind else {
+        unreachable!()
+    };
+    batch.size_scale = 20.;
+    let enlarged = batch.clone();
+    let (geometry, scaled_layouts) = record(&mut bridge, widget_id, &view, 4);
+    assert!(scaled_layouts > restarted_layouts);
+    assert_covers_sprites(&geometry, &enlarged);
+
+    for step in 5..20 {
         let node = Arc::make_mut(&mut Arc::make_mut(view.root.as_mut().unwrap()).node);
         node.props.rotation = -17.;
         node.props.scale_x = 1.5;
@@ -1506,7 +1517,7 @@ fn particle_bounds_follow_each_captured_extent_after_resize_and_append() {
         let batch = batch.clone();
         let (geometry, layouts) = record(&mut bridge, widget_id, &view, step);
         assert_eq!(
-            layouts, restarted_layouts,
+            layouts, scaled_layouts,
             "time and affine motion remain render/compose only"
         );
         assert_covers_sprites(&geometry, &batch);
@@ -2562,6 +2573,7 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
                 source: "assets/panels.png".into(),
                 origin: Some("snow.aside:7:3".into()),
                 seed: 42,
+                size_scale: 1.,
                 time: 0.,
                 batches: Default::default(),
             }),

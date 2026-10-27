@@ -5,6 +5,9 @@ aside_host::native_documentation! {
     pub(super) fn documentation {
         /// Create a particle node from an image source and deterministic seed.
         /// Emission batches are started with emit and use the ordinary node transform.
+        /// size_scale multiplies every living sprite's size, including its age curve,
+        /// while keeping emission positions and motion unchanged. It supports binding
+        /// and tween animation through the ordinary node property system.
         "reel::particles";
         /// Start an emission batch and return its activity. Burst/rate/duration control
         /// births; lifetime, velocity, acceleration, size, opacity and spin control motion.
@@ -46,6 +49,10 @@ pub(super) enum ParticleField {
     /// Deterministic random seed for this node's emissions.
     #[aside(name="seed",ty=Int,default=0,readonly)]
     Seed,
+    /// Finite nonnegative size multiplier for every living and future sprite.
+    /// Defaults to 1; changing it preserves positions, motion and emission clocks.
+    #[aside(name="size_scale",ty=Any,doc_type=aside_host::source::number(),default=1,validate=validate_size_scale,animatable)]
+    SizeScale,
 }
 pub(super) const PREFIX: &[&str] = <ParticleField as aside_host::PropertySchema>::NAMES;
 /// Shared node payload: 0 identity, 1 children, 2 parent, 3 derived view;
@@ -143,6 +150,7 @@ pub(super) fn kind(
         source,
         origin,
         seed,
+        size_scale: stage::nonnegative(args[2])?,
         batches: Default::default(),
         time: 0.,
     }))
@@ -244,10 +252,18 @@ fn validate_configuration(config: &ParticleConfig) -> Result<(), AdapterError> {
     Ok(())
 }
 pub(super) fn validate(heap: &Heap, _: Value, index: u32, value: Value) -> Result<(), HeapError> {
-    if index < PREFIX.len() as u32 {
+    if index < 2 {
         return Err(HeapError::ReadOnly);
     }
+    if index == ParticleField::SizeScale.index() as u32 {
+        return validate_size_scale(heap, value);
+    }
     stage::validate_layout_property(heap, index - PREFIX.len() as u32, value)
+}
+fn validate_size_scale(_: &Heap, value: Value) -> Result<(), HeapError> {
+    stage::nonnegative(value)
+        .map(|_| ())
+        .map_err(|_| HeapError::TypeMismatch)
 }
 
 /// Exact finite end time, found backwards without retaining individual particles.

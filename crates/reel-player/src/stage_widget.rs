@@ -2087,7 +2087,9 @@ impl SceneWidget {
                     | (NodeKind::Column(a), NodeKind::Column(b)) => a != b,
                     (NodeKind::Grid(a), NodeKind::Grid(b)) => a != b,
                     (NodeKind::VirtualList(a), NodeKind::VirtualList(b)) => a != b,
-                    (NodeKind::Particles(a), NodeKind::Particles(b)) => a.batches != b.batches,
+                    (NodeKind::Particles(a), NodeKind::Particles(b)) => {
+                        a.batches != b.batches || a.size_scale != b.size_scale
+                    }
                     (
                         NodeKind::Scroll {
                             axis: a,
@@ -2760,8 +2762,9 @@ impl Widget for SceneWidget {
             let insets = batch.batches.iter().fold(Insets::ZERO, |insets, emission| {
                 let frame = emission.frame;
                 let config = &emission.config;
-                let max_size =
-                    (config.size + config.size_spread).max(config.size_end.unwrap_or(0.));
+                let max_size = (config.size + config.size_spread)
+                    .max(config.size_end.unwrap_or(0.))
+                    * batch.size_scale;
                 let lifetime = config.max_lifetime();
                 let radius = max_size * (1. + f64::from(height) / f64::from(width)) * 0.5;
                 let reach: [f64; 2] = std::array::from_fn(|axis| {

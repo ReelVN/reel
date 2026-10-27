@@ -2,6 +2,68 @@ use super::*;
 use reel_ui::stage::{NodeKind, particles::ParticleNode};
 
 #[test]
+fn particle_size_scale_preserves_trajectories_bindings_pause_and_restore_source_asb() {
+    let code = r#"use std::math::curve;
+        fn opening() {
+            let state = model({scale: 1});
+            let p = particles("spark.png", seed: 42, size_scale: bind(state.scale));
+            stage.replace(p);
+            let active = emit(p, burst: 0, rate: 4, lifetime: 3, prewarm: 1,
+                size: 20, size_spread: 0, velocity_x: 10,
+                size_curve: curve([{time: 0, value: 0}, {time: 1, value: 1}]));
+            narrator("original");
+            state.scale = 0.5; pause(active);
+            narrator("half");
+            resume(active); run(tween(p, size_scale: 0, duration: 1));
+            narrator("shrinking");
+            p.remove();
+            let mut cancelled = false;
+            try { await active; } catch error { cancelled = true; }
+            if !cancelled { throw "retired emission"; }
+            narrator("retired");
+        }"#;
+    for encoded in [false, true] {
+        let (mut session, mut vm) = models::prepared(code, encoded);
+        models::drive(&mut vm, &mut session, false);
+        let original = batch(&vm).samples().collect::<Vec<_>>();
+        assert_eq!(original.len(), 4);
+        dialogue(&mut vm, &mut session);
+        let half = batch(&vm).samples().collect::<Vec<_>>();
+        for (mut expected, actual) in original.into_iter().zip(&half) {
+            expected.size *= 0.5;
+            assert_eq!(expected, *actual);
+        }
+        (session, vm) = scopes::restored(&mut vm, &session);
+        activities::advance_clock(&mut vm, &session, 8., 32);
+        assert_eq!(batch(&vm).samples().collect::<Vec<_>>(), half);
+        dialogue(&mut vm, &mut session);
+        for (time, scale) in [(8.5, 0.25), (9., 0.)] {
+            activities::advance_clock(&mut vm, &session, time, 32);
+            vm.sync_stage(&session).unwrap();
+            let node = batch(&vm);
+            assert_eq!(node.size_scale, scale);
+            assert!(
+                node.samples().count() > half.len(),
+                "new births share the scale"
+            );
+            for (mut expected, actual) in node
+                .batches
+                .iter()
+                .flat_map(|batch| batch.samples(node.time))
+                .zip(node.samples())
+            {
+                expected.size *= scale;
+                assert_eq!(expected, actual);
+            }
+            assert!(vm.stage_ready());
+            assert_eq!(vm.maintain_particles(64).unwrap(), 0);
+        }
+        dialogue(&mut vm, &mut session);
+        assert!(!vm.particles.has_active());
+    }
+}
+
+#[test]
 fn particle_envelope_radial_motion_prewarm_pause_and_restore() {
     let code = r#"use std::math::curve;
         fn opening() {
