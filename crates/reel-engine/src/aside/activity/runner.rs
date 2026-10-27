@@ -734,6 +734,7 @@ impl Activities {
         vm: &mut Vm,
         budget: u32,
     ) -> Result<ActivityProgress, AdapterError> {
+        self.waits_dirty |= self.round.is_some();
         let mut work = 0;
         while self.round.is_some() && work < budget {
             work += 1;

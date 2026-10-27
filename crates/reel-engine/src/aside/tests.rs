@@ -38,6 +38,7 @@ mod result_use;
 mod results;
 mod retired_nodes;
 mod rich_text;
+mod scheduler;
 mod scopes;
 mod snapshots;
 mod source_inline;

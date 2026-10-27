@@ -539,6 +539,8 @@ impl SessionVm {
             minimum: SliceMinimum::default(),
             pending_move: None,
         });
+        self.checked_callback_lifetimes = None;
+        self.blocked_tasks_revision = None;
         Ok(task)
     }
 
@@ -557,17 +559,24 @@ impl SessionVm {
                 .results
                 .needs_work(self.stage.scene.revision(), self.stage.retirement_revision)
             || self.issued.is_some()
-            || self.task.is_some()
+            || !self.tasks.is_empty()
                 && self
-                    .main_wait
-                    .is_none_or(|wait| !self.vm.wait_is_pending(wait))
-            || self.tasks.iter().any(|callback| {
-                callback.cancelling
-                    || !callback.lifetime_live(self.vm.heap(), &self.stage)
-                    || callback
-                        .wait
+                    .checked_callback_lifetimes
+                    .is_none_or(|(host, stage, _)| {
+                        host != self.vm.heap().host_retirement_revision()
+                            || stage != self.stage.retirement_revision
+                    })
+            || self.blocked_tasks_revision != Some(self.vm.wait_revision())
+                && (self.task.is_some()
+                    && self
+                        .main_wait
                         .is_none_or(|wait| !self.vm.wait_is_pending(wait))
-            })
+                    || self.tasks.iter().any(|callback| {
+                        callback.cancelling
+                            || callback
+                                .wait
+                                .is_none_or(|wait| !self.vm.wait_is_pending(wait))
+                    }))
     }
 
     pub fn has_live_work(&self) -> bool {
@@ -718,13 +727,26 @@ impl SessionVm {
         self.deliver_completion(session)?;
         self.maintain_scopes(session)?;
         self.maintain_transitions(session)?;
-        for index in 0..self.tasks.len() {
-            let callback = &self.tasks[index];
-            if !callback.lifetime_live(self.vm.heap(), &self.stage)
-                || !session.is_owner_live(callback.owner)
-            {
-                self.cancel_callback(session, index)?;
+        let lifetimes = (
+            self.vm.heap().host_retirement_revision(),
+            self.stage.retirement_revision,
+            session.owner_revocation_revision(),
+        );
+        if self.checked_callback_lifetimes != Some(lifetimes) {
+            for index in 0..self.tasks.len() {
+                #[cfg(test)]
+                {
+                    self.callback_lifetime_checks += 1;
+                }
+                let callback = &self.tasks[index];
+                if !callback.lifetime_live(self.vm.heap(), &self.stage)
+                    || !session.is_owner_live(callback.owner)
+                {
+                    self.cancel_callback(session, index)?;
+                }
             }
+            // Cancellation may retire another owner; the next entry observes it.
+            self.checked_callback_lifetimes = Some(lifetimes);
         }
         self.maintain_media()?;
         self.maintain_localization()?;
@@ -773,29 +795,35 @@ impl SessionVm {
             return Ok(progress);
         }
         let count = self.tasks.len() + 1;
-        let selected = (0..count)
-            .map(|offset| (self.schedule_cursor + offset) % count)
-            .find(|&index| {
-                if index == 0 {
-                    self.task.is_some()
-                        && self
-                            .main_wait
-                            .is_none_or(|wait| !self.vm.wait_is_pending(wait))
-                } else {
-                    let callback = &self.tasks[index - 1];
-                    callback.cancelling
-                        || callback
-                            .wait
-                            .is_none_or(|wait| !self.vm.wait_is_pending(wait))
-                }
-            });
+        let selected = (self.blocked_tasks_revision != Some(self.vm.wait_revision()))
+            .then(|| {
+                (0..count)
+                    .map(|offset| (self.schedule_cursor + offset) % count)
+                    .find(|&index| {
+                        if index == 0 {
+                            self.task.is_some()
+                                && self
+                                    .main_wait
+                                    .is_none_or(|wait| !self.vm.wait_is_pending(wait))
+                        } else {
+                            let callback = &self.tasks[index - 1];
+                            callback.cancelling
+                                || callback
+                                    .wait
+                                    .is_none_or(|wait| !self.vm.wait_is_pending(wait))
+                        }
+                    })
+            })
+            .flatten();
         let Some(index) = selected else {
+            self.blocked_tasks_revision = Some(self.vm.wait_revision());
             return Ok(self
                 .main_wait
                 .filter(|&wait| self.vm.wait_is_pending(wait))
                 .map(|wait| SessionStep::Vm(RunOutcome::Waiting(wait)))
                 .unwrap_or(SessionStep::Idle));
         };
+        self.blocked_tasks_revision = None;
         // A budget slice yields to the host, not to another script task. Keep
         // synchronous reads/writes together across VM and native continuations.
         self.schedule_cursor = index;

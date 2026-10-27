@@ -235,6 +235,10 @@ pub struct SessionVm {
     main_minimum: SliceMinimum,
     main_wait: Option<WaitId>,
     tasks: Vec<callbacks::ScriptTask>,
+    checked_callback_lifetimes: Option<(u64, u64, u64)>,
+    blocked_tasks_revision: Option<u64>,
+    #[cfg(test)]
+    callback_lifetime_checks: u64,
     scopes: scopes::Scopes,
     transitions: transitions::Transitions,
     schedule_cursor: usize,
@@ -345,6 +349,10 @@ impl SessionVm {
             main_minimum: SliceMinimum::default(),
             main_wait: None,
             tasks: Vec::new(),
+            checked_callback_lifetimes: None,
+            blocked_tasks_revision: None,
+            #[cfg(test)]
+            callback_lifetime_checks: 0,
             scopes: scopes::Scopes::default(),
             transitions: transitions::Transitions::default(),
             schedule_cursor: 0,
@@ -616,6 +624,7 @@ impl SessionVm {
             .vm
             .start(entry, &[], self.root_owner, Context::Ordinary)?;
         self.task = Some(task);
+        self.blocked_tasks_revision = None;
         self.main_minimum = SliceMinimum::default();
         self.main_wait = None;
         Ok(task)

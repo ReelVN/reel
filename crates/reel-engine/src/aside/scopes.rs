@@ -195,6 +195,9 @@ pub(super) enum ScopeExit {
 pub(super) struct Scopes {
     pub live: VecDeque<Scope>,
     charge: Option<HeapReservation>,
+    checked_retirement: Option<u64>,
+    #[cfg(test)]
+    pub lifetime_checks: u64,
 }
 
 pub(super) fn validate_owner(
@@ -244,12 +247,8 @@ impl SessionVm {
     }
 
     pub(super) fn scopes_pending(&self) -> bool {
-        self.scopes.live.iter().any(|scope| {
-            let heap = self.vm.heap();
-            let object = heap.root_value(scope.root).expect("live scope root");
-            let owner = heap.host_payload(object, 1).expect("scope owner");
-            scope.exit.is_some() || !owner_live(heap, owner)
-        })
+        !self.scopes.live.is_empty()
+            && self.scopes.checked_retirement != Some(self.vm.heap().host_retirement_revision())
     }
 
     fn close_scope(&mut self, session: &mut Session, index: usize) -> Result<(), AdapterError> {
@@ -361,8 +360,16 @@ impl SessionVm {
     }
 
     pub(super) fn maintain_scopes(&mut self, session: &mut Session) -> Result<(), AdapterError> {
+        if !self.scopes_pending() {
+            return Ok(());
+        }
+        let retirement = self.vm.heap().host_retirement_revision();
         let mut index = 0;
         while index < self.scopes.live.len() {
+            #[cfg(test)]
+            {
+                self.scopes.lifetime_checks += 1;
+            }
             let scope = &self.scopes.live[index];
             let object = self.vm.heap().root_value(scope.root)?;
             let owner = self.vm.heap().host_payload(object, 1)?;
@@ -379,6 +386,7 @@ impl SessionVm {
             self.end_native_region(session, task, scope.frame, result)?;
             self.close_scope(session, index)?;
         }
+        self.scopes.checked_retirement = Some(retirement);
         Ok(())
     }
 
@@ -407,6 +415,7 @@ impl SessionVm {
                 if requested {
                     self.vm.heap_mut().set_host_payload(object, 4, value)?;
                     scope.exit = Some(exit);
+                    self.scopes.checked_retirement = None;
                 }
                 break;
             }
@@ -501,6 +510,7 @@ impl SessionVm {
                 exit: None,
                 root,
             });
+            self.scopes.checked_retirement = None;
         } else {
             let response = match ticket.input {
                 NativeInput::CallbackReturned => {

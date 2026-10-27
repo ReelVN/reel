@@ -391,6 +391,13 @@ pub(super) struct Activities {
     serial: u64,
     #[serde(skip)]
     waits: Vec<(WaitId, Value, Option<i64>)>,
+    #[serde(skip)]
+    waits_dirty: bool,
+    #[serde(skip)]
+    checked_wait_revision: u64,
+    #[cfg(test)]
+    #[serde(skip)]
+    pub wait_checks: u64,
 }
 
 impl Activities {
@@ -431,6 +438,7 @@ impl Activities {
             Part::ActivityWait => {
                 let (wait, value, tick): (WaitId, Value, Option<i64>) = record.read()?;
                 self.waits.push((map.wait(wait)?, map.value(value)?, tick));
+                self.waits_dirty = true;
             }
             _ => unreachable!(),
         }
