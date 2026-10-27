@@ -284,16 +284,8 @@ impl Images {
                     let ResourceData::Texture { bytes: blocks, .. } = source.data() else {
                         unreachable!()
                     };
-                    let staging = self.scratch.get(
-                        &budgets.transient,
-                        limits.transient_bytes,
-                        usize::try_from(super::super::bc_staging_bytes(
-                            item.texture.expect("planned texture").resident_bytes,
-                        ))
-                        .map_err(|_| GpuError::InvalidSize)?,
-                    )?;
                     if let Some((texture, _)) = recycled_textures {
-                        gpu.upload_bc_texture(&texture, blocks.data(), staging)?;
+                        gpu.upload_bc_texture(&texture, blocks.data())?;
                         texture
                     } else {
                         gpu.create_bc_texture(
@@ -304,7 +296,6 @@ impl Images {
                                 native::TextureFormat::Bc3Rgba
                             },
                             blocks.data(),
-                            staging,
                         )?
                     }
                 } else {
@@ -447,29 +438,19 @@ fn costs(item: &crate::common::image_plan::Required<'_>) -> Result<(u64, u64), G
                     upload.layout.storage_size,
                     native_format(descriptor.format),
                 )?,
-                if descriptor.format.is_compressed() {
-                    super::super::bc_staging_bytes(upload.resident_bytes)
-                } else if upload.source_row_bytes != upload.row_bytes {
-                    upload.row_bytes
-                } else {
-                    0
-                },
+                0,
             ))
         }
         ResourceData::Yuv420(image) => {
             let mut bytes = 0_u64;
-            let mut staging = 0;
             for index in 0..image.plane_count() {
                 let plane = super::super::texture_bytes(
                     image.plane_size(index),
                     plane_format(image, index),
                 )?;
                 bytes = bytes.checked_add(plane).ok_or(GpuError::InvalidSize)?;
-                if image.row_stride(index) != image.row_bytes(index) {
-                    staging = staging.max(u64::from(image.row_bytes(index)));
-                }
             }
-            Ok((bytes, staging))
+            Ok((bytes, 0))
         }
         _ => unreachable!("common image demand validates resource kinds"),
     }
@@ -581,7 +562,7 @@ fn progress(
         } else {
             &pending.image.planes[pending.plane - 1]
         };
-        if convert || stride != row {
+        if convert {
             let available = limits
                 .transient_bytes
                 .saturating_sub(budgets.transient.usage().bytes)
@@ -590,24 +571,18 @@ fn progress(
             let bytes = rows as usize * row;
             let data = scratch.get(&budgets.transient, limits.transient_bytes, bytes)?;
             let start = pending.row as usize * stride;
-            if convert {
-                for (source, target) in pixels[start..start + rows as usize * stride]
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .zip(data.as_chunks_mut::<4>().0.iter_mut())
-                {
-                    let linear = crate::common::resources::rgba8_linear_u8(
-                        source,
-                        pending.image.encoding,
-                        alpha,
-                    );
-                    target.copy_from_slice(&linear);
-                }
-            } else {
-                for (y, target) in data.chunks_exact_mut(row).enumerate() {
-                    target.copy_from_slice(&pixels[start + y * stride..start + y * stride + row]);
-                }
+            for (source, target) in pixels[start..start + rows as usize * stride]
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(data.as_chunks_mut::<4>().0.iter_mut())
+            {
+                let linear = crate::common::resources::rgba8_linear_u8(
+                    source,
+                    pending.image.encoding,
+                    alpha,
+                );
+                target.copy_from_slice(&linear);
             }
             gpu.upload(texture, [0, pending.row], [size[0], rows], data, row)?;
             pending.row += rows;

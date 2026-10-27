@@ -83,10 +83,6 @@ fn texture_bytes(size: [u32; 2], format: native::TextureFormat) -> Result<u64, G
     Ok(native::texture_layout(size, format)?.bytes as u64)
 }
 
-fn bc_staging_bytes(_payload_bytes: u64) -> u64 {
-    0
-}
-
 fn effect_code(
     format: EffectShaderFormat,
     bytes: &[u8],
