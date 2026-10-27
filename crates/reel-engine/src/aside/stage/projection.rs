@@ -1,52 +1,50 @@
 //! Reactive stage projection and native property synchronization.
 use super::*;
+mod index;
+pub(super) use index::Index;
 
 impl StageBinding {
-    pub(super) fn sync_tree(
+    pub(in crate::aside) fn sync_tree(
         &mut self,
         heap: &mut Heap,
         root: NodeId,
         read_limit: usize,
     ) -> Result<(), AdapterError> {
+        self.projection_index.invalid = true;
         let mut pending = vec![root];
-        let mut updates = Vec::new();
+        let mut nodes = Vec::new();
         while let Some(id) = pending.pop() {
             let node = self
                 .scene
                 .node(id)
                 .ok_or(AdapterError::Input("retired stage node"))?;
             pending.extend(node.children.iter().copied());
+            nodes.push(id);
+        }
+        self.sync_nodes(heap, nodes, read_limit)
+    }
+
+    fn sync_nodes(
+        &mut self,
+        heap: &mut Heap,
+        nodes: impl IntoIterator<Item = NodeId>,
+        read_limit: usize,
+    ) -> Result<(), AdapterError> {
+        let mut updates = Vec::new();
+        let mut virtuals = Vec::new();
+        for id in nodes {
+            #[cfg(test)]
+            {
+                self.projection_visits += 1;
+            }
+            let node = self
+                .scene
+                .node(id)
+                .ok_or(AdapterError::Input("retired stage node"))?;
             let binding = self.handles.get_mut(&id).unwrap();
             let value = heap.import_handle(binding.handle)?;
-            if matches!(node.kind, NodeKind::VirtualList(_))
-                && let Some(parent) = node.parent
-            {
-                let parent = self.scene.node(parent).unwrap();
-                if !matches!(
-                    parent.kind,
-                    NodeKind::Scroll {
-                        axis: reel_ui::widgets::ScrollAxis::Vertical,
-                        ..
-                    }
-                ) || parent
-                    .children
-                    .iter()
-                    .filter(|id| {
-                        !self
-                            .scene
-                            .node(**id)
-                            .unwrap()
-                            .props
-                            .stretch
-                            .axis(reel_ui::kurbo::Axis::Vertical)
-                    })
-                    .count()
-                    != 1
-                {
-                    return Err(AdapterError::Input(
-                        "virtual list must be the only flow child of a vertical scroll",
-                    ));
-                }
+            if matches!(node.kind, NodeKind::VirtualList(_)) {
+                virtuals.push(id);
             }
             let fields = heap.host_fields(value)?;
             let version = heap.info(fields)?.content_version;
@@ -303,6 +301,10 @@ impl StageBinding {
             }
             self.scene.update(id, kind, props)?;
             let binding = self.handles.get_mut(&id).unwrap();
+            self.projection_index.invalid |= binding.mask_source.map(|(handle, _)| handle)
+                != mask_source.map(|(handle, _)| handle)
+                || binding.effect_source.map(|(handle, _)| handle)
+                    != effect_source.map(|(handle, _)| handle);
             binding.fields_version = version;
             binding.projection_dirty = false;
             if let Some(cache) = &mut binding.overrides {
@@ -314,6 +316,36 @@ impl StageBinding {
             let selected = overrides::selection(heap, host)?;
             binding.interaction_listening =
                 interaction::listening(heap, fields, binding.interaction_offset, selected)?;
+        }
+        for id in virtuals {
+            if let Some(parent) = self.scene.node(id).unwrap().parent {
+                let parent = self.scene.node(parent).unwrap();
+                if !matches!(
+                    parent.kind,
+                    NodeKind::Scroll {
+                        axis: reel_ui::widgets::ScrollAxis::Vertical,
+                        ..
+                    }
+                ) || parent
+                    .children
+                    .iter()
+                    .filter(|id| {
+                        !self
+                            .scene
+                            .node(**id)
+                            .unwrap()
+                            .props
+                            .stretch
+                            .axis(reel_ui::kurbo::Axis::Vertical)
+                    })
+                    .count()
+                    != 1
+                {
+                    return Err(AdapterError::Input(
+                        "virtual list must be the only flow child of a vertical scroll",
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -335,7 +367,14 @@ impl StageBinding {
         {
             self.sync_count += 1;
         }
-        if let Some(root) = self.scene.root() {
+        let incremental =
+            self.last_sync.is_some() && self.projection_index.collect(heap, &self.scene)?;
+        if incremental {
+            let pending = std::mem::take(&mut self.projection_index.pending);
+            let result = self.sync_nodes(heap, pending.iter().copied(), read_limit);
+            self.projection_index.pending = pending;
+            result?;
+        } else if let Some(root) = self.scene.root() {
             self.sync_tree(heap, root, read_limit)?;
         }
         // Every node keeps its complete component alive. A collected detached
@@ -348,6 +387,12 @@ impl StageBinding {
         for root in lost {
             let retired = self.scene.discard(root)?;
             self.retire(heap, retired)?;
+        }
+        if self.projection_index.invalid || !incremental {
+            self.projection_index
+                .rebuild(heap, &self.scene, &self.handles)?;
+        } else {
+            self.projection_index.accept(heap);
         }
         self.last_sync = Some(stamp(heap, &self.scene));
         Ok(())

@@ -24,6 +24,7 @@ mod geometry;
 mod gradients;
 mod host_budget;
 mod image_colors;
+mod indexed_projection;
 mod interaction_appearance;
 mod localization;
 mod masks;

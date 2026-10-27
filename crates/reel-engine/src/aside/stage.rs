@@ -358,7 +358,10 @@ pub(super) enum NodeProperty {
 pub(super) struct StageBinding {
     #[cfg(test)]
     pub(super) sync_count: u64,
+    #[cfg(test)]
+    pub(super) projection_visits: u64,
     last_sync: Option<(aside_vm::HeapId, aside_vm::SessionEpoch, u64, u64)>,
+    projection_index: projection::Index,
     pub(super) types: super::source::HostTypes,
     pub(super) text_filter_function: Option<aside_vm::bytecode::FunctionId>,
     pub scene: Stage,
@@ -435,7 +438,10 @@ impl StageBinding {
         Ok(Self {
             #[cfg(test)]
             sync_count: 0,
+            #[cfg(test)]
+            projection_visits: 0,
             last_sync: None,
+            projection_index: projection::Index::new(heap)?,
             types: super::source::HostTypes::new(heap)?,
             text_filter_function: None,
             scene: Stage::default(),
@@ -536,6 +542,12 @@ impl StageBinding {
     }
 
     pub(super) fn mounted_properties_current(&self, heap: &Heap) -> Result<bool, AdapterError> {
+        if self.last_sync.is_some()
+            && self.scene.root().is_some()
+            && let Some(current) = self.projection_index.is_current(heap, &self.scene)
+        {
+            return Ok(current);
+        }
         fn visit(stage: &StageBinding, heap: &Heap, id: NodeId) -> Result<bool, AdapterError> {
             let binding = &stage.handles[&id];
             let value = heap.import_handle(binding.handle)?;

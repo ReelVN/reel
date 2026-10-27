@@ -67,6 +67,8 @@ impl Heap {
         bytes
     }
     pub(crate) fn remove_object(&mut self, key: HeapKey) {
+        self.changes
+            .record(key, self.objects.get(key).unwrap().watched);
         self.mutation_revision = self.mutation_revision.wrapping_add(1);
         let before = self.objects.reserved_bytes();
         self.objects
