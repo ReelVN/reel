@@ -669,14 +669,35 @@ fn image_pipeline(
     assert!(first.commands().iter().any(
         |command| matches!(&command.op, FrameOp::PushGroup(group) if group.composite.alpha == 0.5)
     ));
-    assert!(
-        first
-            .commands()
-            .iter()
-            .filter(|command| matches!(&command.op, FrameOp::PushClip(_)))
-            .count()
-            >= 6
-    );
+    assert!(!first.commands().iter().any(|command| {
+        matches!(&command.op, FrameOp::PushClip(_)) && ids.contains(&command.origin.at.owner)
+    }));
+    let bounds: Vec<_> = first
+        .commands()
+        .iter()
+        .filter_map(|command| match &command.op {
+            FrameOp::Draw(FrameDraw::Fill {
+                shape: reel_ui::imaging::record::Geometry::Rect(rect),
+                brush: Brush::Image(_),
+                ..
+            }) => Some(*rect),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(bounds.len(), 6);
+    for (index, rect) in bounds.iter().enumerate() {
+        let expected = if index == 4 {
+            [35., 0., 125., 90.]
+        } else {
+            [0., 0., 160., 90.]
+        };
+        for (actual, expected) in [rect.x0, rect.y0, rect.x1, rect.y1]
+            .into_iter()
+            .zip(expected)
+        {
+            assert!((actual - expected).abs() < 1e-9, "image {index}: {rect:?}");
+        }
+    }
     advance(&mut driver, &mut bridge, root, &mut id);
     drive(&mut driver);
     driver.sync(&mut bridge, root).unwrap();
