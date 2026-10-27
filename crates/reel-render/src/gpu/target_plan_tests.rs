@@ -93,61 +93,85 @@ fn effect_chains_forward_the_complete_source_and_keep_two_scratch_targets() {
         bounds: Rect::new(0., 0., 160., 120.),
         coverage_invert: false,
     };
-    for depth in [1, 2, 4, 8] {
-        for opacity in [1., 0.5] {
-            let mut scene = Scene::new();
-            scene.draw(Draw::Fill {
-                transform: Affine::IDENTITY,
-                fill_rule: Default::default(),
-                brush: Brush::Solid(Color::WHITE),
-                brush_transform: None,
-                shape: Geometry::Rect(paint.bounds),
-                composite: Default::default(),
-            });
-            let mut widget = r01_fixture::RecordWidget::new(scene);
-            widget.clip = false;
-            widget.effect = Some(paint.clone());
-            widget.opacity = opacity;
-            for _ in 1..depth {
-                let mut parent = r01_fixture::RecordWidget::new(Scene::new());
-                parent.clip = false;
-                parent.effect = Some(paint.clone());
-                parent.opacity = opacity;
-                parent
-                    .inner
-                    .add(widget.prepare(), Point::ZERO, Size::new(160., 120.));
-                widget = parent;
-            }
-            let mut bridge = r01_fixture::widget_bridge(widget, Affine::IDENTITY);
-            let mut build = FrameBuild::new(
-                bridge.record(FrameId(1)).unwrap(),
-                registry.freeze(&[handle], &pool).unwrap(),
-                FrameInfo {
-                    logical_size: [160., 120.],
-                    physical_size: [160, 120],
-                },
-                r01_fixture::limits(),
-                &pool,
-            )
-            .unwrap();
-            while !build.step(r01_fixture::step_budget()).unwrap().complete {}
-            let frame = build.finish().unwrap();
-            for masks in [MaskExecution::Inline, MaskExecution::Sampled] {
-                let pixels = target_pixels(
-                    &frame,
-                    None,
-                    [160, 120],
-                    false,
-                    1,
-                    4096,
-                    &crate::common::glyph_plan::Plan::default(),
-                    &offscreen::Plan::default(),
-                    masks,
-                    |_| Ok(()),
+    for transform in [
+        Affine::IDENTITY,
+        Affine::translate((13.2, -7.6))
+            * Affine::scale_non_uniform(0.83, 0.29)
+            * Affine::rotate(2.1),
+    ] {
+        for depth in [1, 2, 4, 8] {
+            for opacity in [1., 0.5] {
+                let mut scene = Scene::new();
+                scene.draw(Draw::Fill {
+                    transform: Affine::IDENTITY,
+                    fill_rule: Default::default(),
+                    brush: Brush::Solid(Color::WHITE),
+                    brush_transform: None,
+                    shape: Geometry::Rect(paint.bounds),
+                    composite: Default::default(),
+                });
+                let mut widget = r01_fixture::RecordWidget::new(scene);
+                widget.clip = false;
+                widget.effect = Some(paint.clone());
+                widget.opacity = opacity;
+                for _ in 1..depth {
+                    let mut parent = r01_fixture::RecordWidget::new(Scene::new());
+                    parent.clip = false;
+                    parent.effect = Some(paint.clone());
+                    parent.opacity = opacity;
+                    parent
+                        .inner
+                        .add(widget.prepare(), Point::ZERO, Size::new(160., 120.));
+                    widget = parent;
+                }
+                let mut bridge = r01_fixture::widget_bridge(widget, transform);
+                let mut build = FrameBuild::new(
+                    bridge.record(FrameId(1)).unwrap(),
+                    registry.freeze(&[handle], &pool).unwrap(),
+                    FrameInfo {
+                        logical_size: [160., 120.],
+                        physical_size: [160, 120],
+                    },
+                    r01_fixture::limits(),
+                    &pool,
                 )
                 .unwrap();
-                let count = if opacity == 1. { 3 } else { depth + 2 };
-                assert_eq!(pixels, 160 * 120 * count, "depth={depth} opacity={opacity}");
+                while !build.step(r01_fixture::step_budget()).unwrap().complete {}
+                let frame = build.finish().unwrap();
+                for masks in [MaskExecution::Inline, MaskExecution::Sampled] {
+                    let pixels = target_pixels(
+                        &frame,
+                        None,
+                        [160, 120],
+                        false,
+                        1,
+                        4096,
+                        &crate::common::glyph_plan::Plan::default(),
+                        &offscreen::Plan::default(),
+                        masks,
+                        |_| Ok(()),
+                    )
+                    .unwrap();
+                    let expected = if transform == Affine::IDENTITY {
+                        160 * 120 * if opacity == 1. { 3 } else { depth + 2 }
+                    } else {
+                        let [a, b, c, d, _, _] = transform.as_coeffs();
+                        let local =
+                            (160. * a.hypot(b)).ceil() as u64 * (120. * c.hypot(d)).ceil() as u64;
+                        let count = if depth == 1 {
+                            1
+                        } else if opacity == 1. {
+                            2
+                        } else {
+                            depth + 1
+                        };
+                        2 * 160 * 120 + count * local
+                    };
+                    assert_eq!(
+                        pixels, expected,
+                        "depth={depth} opacity={opacity} transform={transform:?}"
+                    );
+                }
             }
         }
     }
@@ -283,81 +307,90 @@ fn scalar_masks_keep_two_local_sources_and_project_plain_groups_into_the_parent(
 fn finite_group_admission_matches_clipped_physical_storage_for_every_sample_tier() {
     let size = [960, 544];
     let pool = r01_fixture::pool();
-    for clipped in [false, true] {
-        let mut scene = Scene::new();
-        if clipped {
-            scene.push_clip(Clip::Fill {
-                transform: Affine::IDENTITY,
-                shape: Geometry::Rect(Rect::new(50., 40., 140., 60.)),
-                fill_rule: Default::default(),
-            });
-        }
-        scene.push_group(Group {
-            composite: Composite {
-                alpha: 0.5,
+    for blend in [
+        reel_ui::frame::BlendMode::default(),
+        reel_ui::peniko::Mix::Screen.into(),
+        reel_ui::peniko::Mix::Multiply.into(),
+    ] {
+        for clipped in [false, true] {
+            let mut scene = Scene::new();
+            if clipped {
+                scene.push_clip(Clip::Fill {
+                    transform: Affine::IDENTITY,
+                    shape: Geometry::Rect(Rect::new(50., 40., 140., 60.)),
+                    fill_rule: Default::default(),
+                });
+            }
+            scene.push_group(Group {
+                composite: Composite {
+                    alpha: 0.5,
+                    blend: blend.imaging().unwrap(),
+                },
                 ..Default::default()
-            },
-            ..Default::default()
-        });
-        for left in [0., 40.] {
-            scene.draw(Draw::Fill {
-                transform: Affine::translate((20., 30.)),
-                fill_rule: Default::default(),
-                brush: Brush::Solid(Color::WHITE),
-                brush_transform: None,
-                shape: Geometry::Rect(Rect::new(left, 0., left + 100., 40.)),
-                composite: Default::default(),
             });
-        }
-        scene.pop_group();
-        if clipped {
-            scene.pop_clip();
-        }
-        let mut widget = r01_fixture::RecordWidget::new(scene);
-        widget.clip = false;
-        let mut bridge = r01_fixture::widget_bridge(widget, Affine::IDENTITY);
-        let mut build = FrameBuild::new(
-            bridge.record(FrameId(1)).unwrap(),
-            r01_fixture::empty_snapshot(&pool),
-            FrameInfo {
-                logical_size: size.map(f64::from),
-                physical_size: size,
-            },
-            r01_fixture::limits(),
-            &pool,
-        )
-        .unwrap();
-        while !build.step(r01_fixture::step_budget()).unwrap().complete {}
-        let frame = build.finish().unwrap();
-        let plan = crate::common::glyph_plan::Plan::collect(
-            std::iter::once(&frame),
-            Affine::IDENTITY,
-            4096,
-            false,
-            &mut NoGlyphs,
-        )
-        .unwrap();
-        // Union [20,30]..[160,70], one-pixel ink AA, one-pixel
-        // conservative raster margin, then a 32-physical-pixel storage bucket.
-        let source_pixels = if clipped { 96 * 32 } else { 160 * 64 };
-        for samples in [1, 4] {
-            let pixels = target_pixels(
-                &frame,
-                None,
-                size,
-                false,
-                samples,
-                4096,
-                &plan,
-                &offscreen::Plan::default(),
-                MaskExecution::Inline,
-                |_| Ok(()),
+            for left in [0., 40.] {
+                scene.draw(Draw::Fill {
+                    transform: Affine::translate((20., 30.)),
+                    fill_rule: Default::default(),
+                    brush: Brush::Solid(Color::WHITE),
+                    brush_transform: None,
+                    shape: Geometry::Rect(Rect::new(left, 0., left + 100., 40.)),
+                    composite: Default::default(),
+                });
+            }
+            scene.pop_group();
+            if clipped {
+                scene.pop_clip();
+            }
+            let mut widget = r01_fixture::RecordWidget::new(scene);
+            widget.clip = false;
+            let mut bridge = r01_fixture::widget_bridge(widget, Affine::IDENTITY);
+            let mut build = FrameBuild::new(
+                bridge.record(FrameId(1)).unwrap(),
+                r01_fixture::empty_snapshot(&pool),
+                FrameInfo {
+                    logical_size: size.map(f64::from),
+                    physical_size: size,
+                },
+                r01_fixture::limits(),
+                &pool,
             )
             .unwrap();
-            assert_eq!(
-                pixels,
-                u64::from(size[0]) * u64::from(size[1]) + source_pixels
-            );
+            while !build.step(r01_fixture::step_budget()).unwrap().complete {}
+            let frame = build.finish().unwrap();
+            let plan = crate::common::glyph_plan::Plan::collect(
+                std::iter::once(&frame),
+                Affine::IDENTITY,
+                4096,
+                false,
+                &mut NoGlyphs,
+            )
+            .unwrap();
+            // Union [20,30]..[160,70], one-pixel ink AA, one-pixel
+            // conservative raster margin, then a 32-physical-pixel storage bucket.
+            let source_pixels = if clipped { 96 * 32 } else { 160 * 64 };
+            for samples in [1, 4] {
+                let pixels = target_pixels(
+                    &frame,
+                    None,
+                    size,
+                    false,
+                    samples,
+                    4096,
+                    &plan,
+                    &offscreen::Plan::default(),
+                    MaskExecution::Inline,
+                    |_| Ok(()),
+                )
+                .unwrap();
+                assert_eq!(
+                    pixels,
+                    u64::from(size[0])
+                        * u64::from(size[1])
+                        * if blend == Default::default() { 1 } else { 2 }
+                        + source_pixels
+                );
+            }
         }
     }
 }

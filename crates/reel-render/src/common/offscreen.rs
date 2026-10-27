@@ -254,7 +254,7 @@ impl Plan {
                         }
                         end += 1;
                     }
-                    let view = leaf
+                    let view = (leaf && group.composite.blend == Default::default())
                         .then(|| {
                             SourceView::group(
                                 group,

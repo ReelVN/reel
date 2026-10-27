@@ -27,7 +27,7 @@ pub(crate) struct SourceView {
 }
 
 impl SourceView {
-    /// Plan a finite source-over group. Operations with their own sampling domain
+    /// Plan a finite group source. Operations with their own sampling domain
     /// retain the complete source until their dependencies have a shared plan.
     pub fn group(
         group: &FrameGroup,
@@ -39,7 +39,6 @@ impl SourceView {
         max_dimension: u32,
     ) -> Option<Self> {
         if retained_transitions
-            || group.composite.blend != Default::default()
             || group.clip.is_some()
             || group.mask.is_some()
             || group.image_mask.is_some()

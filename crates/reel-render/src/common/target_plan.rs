@@ -430,13 +430,21 @@ pub(crate) fn target_pixels(
                     } else if let Some(effect) =
                         group.effect.as_ref().or(group.mask_effect.as_ref())
                     {
-                        let source = crate::common::effect_plan::source_layout(
-                            effect,
-                            group.effect_to_target,
-                            current.transform,
-                            max_dimension,
-                            at,
-                        )?;
+                        let parent = current.scopes.last().and_then(|scope| scope.group);
+                        let source = if super::effect_plan::same_source_domain(group, parent) {
+                            super::effect_plan::SourceLayout {
+                                size: current.size,
+                                frame_to_source: current.transform,
+                            }
+                        } else {
+                            crate::common::effect_plan::source_layout(
+                                effect,
+                                group.effect_to_target,
+                                current.transform,
+                                max_dimension,
+                                at,
+                            )?
+                        };
                         forward_source = current.groups.is_source_child(current.next - 1)
                             && current.scopes.last().is_some_and(|scope| scope.isolated)
                             && super::effect_plan::forwards_source(
@@ -527,6 +535,14 @@ pub(crate) fn target_pixels(
                                     }
                                 }
                             } else {
+                                scratch.composite(
+                                    current.size,
+                                    scope.group.is_some_and(|group| {
+                                        group.composite.blend != Default::default()
+                                    }),
+                                    false,
+                                    &mut reserve,
+                                )?;
                                 scratch.release(source);
                             }
                             continue;

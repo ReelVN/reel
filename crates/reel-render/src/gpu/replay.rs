@@ -42,6 +42,7 @@ pub(super) struct Context<'a> {
     pub(super) geometry: Vec<super::geometry::Storage>,
 }
 struct Scope<'a> {
+    group: Option<&'a reel_ui::frame::FrameGroup>,
     scheduled: Option<bool>,
     shared_source: bool,
     target: Target,
@@ -270,6 +271,7 @@ impl Context<'_> {
                             mask.invert,
                             mask.operation,
                             mask.image_mask,
+                            [0; 2],
                         )?;
                         self.recycle_target(mask.source)?;
                         self.recycle_target(finished)?;
@@ -348,6 +350,7 @@ impl Context<'_> {
                         Kind::Clip,
                         at,
                         Scope {
+                            group: None,
                             scheduled: None,
                             shared_source: false,
                             target: if !isolated {
@@ -457,13 +460,24 @@ impl Context<'_> {
                     } else if let Some(effect) =
                         group.effect.as_ref().or(group.mask_effect.as_ref())
                     {
-                        let source = crate::common::effect_plan::source_layout(
-                            effect,
-                            group.effect_to_target,
-                            transform,
-                            self.gpu.device.limits().max_texture_dimension_2d,
-                            at,
-                        )?;
+                        let parent = current.scopes.last();
+                        let source = if crate::common::effect_plan::same_source_domain(
+                            group,
+                            parent.group,
+                        ) {
+                            crate::common::effect_plan::SourceLayout {
+                                size: self.size,
+                                frame_to_source: transform,
+                            }
+                        } else {
+                            crate::common::effect_plan::source_layout(
+                                effect,
+                                group.effect_to_target,
+                                transform,
+                                self.gpu.device.limits().max_texture_dimension_2d,
+                                at,
+                            )?
+                        };
                         forward_source = current.groups.is_source_child(current.next - 1)
                             && current.scopes.last().isolated
                             && crate::common::effect_plan::forwards_source(
@@ -494,6 +508,7 @@ impl Context<'_> {
                         Kind::Group,
                         at,
                         Scope {
+                            group: Some(group),
                             scheduled: batch.map(|entry| entry.last),
                             shared_source: batch.is_some_and(|entry| entry.shared),
                             forward_source,
@@ -640,13 +655,29 @@ impl Context<'_> {
                             }
                             continue;
                         }
-                        self.combine_view(
-                            &current.scopes.last().target,
-                            &source,
-                            view,
-                            group.opacity,
-                            group.invert,
-                        )?;
+                        if group.blend == Default::default() {
+                            self.combine_view(
+                                &current.scopes.last().target,
+                                &source,
+                                view,
+                                group.opacity,
+                                group.invert,
+                            )?;
+                        } else {
+                            self.combine_group(
+                                &current.scopes.last().target,
+                                &source.view,
+                                &source.view,
+                                reel_ui::frame::GroupComposite {
+                                    alpha: group.opacity,
+                                    blend: group.blend,
+                                },
+                                group.invert,
+                                CompositeOperation::SourceOver,
+                                None,
+                                view.origin(),
+                            )?;
+                        }
                         self.recycle_target(source)?;
                         continue;
                     }
@@ -695,6 +726,7 @@ impl Context<'_> {
                                 group.invert,
                                 CompositeOperation::AlphaMask,
                                 group.image_mask,
+                                [0; 2],
                             )?;
                             self.recycle_target(source)?;
                             self.recycle_target(coverage)?;
@@ -753,6 +785,7 @@ impl Context<'_> {
                             group.invert,
                             CompositeOperation::SourceOver,
                             group.image_mask,
+                            [0; 2],
                         )?;
                         self.recycle_target(source)?;
                     }
@@ -848,6 +881,7 @@ impl Context<'_> {
             size: self.size,
             transform,
             scopes: Scopes::new(Scope {
+                group: None,
                 scheduled: None,
                 shared_source: false,
                 target: self.target()?,
@@ -995,6 +1029,7 @@ impl Context<'_> {
         invert: f32,
         operation: CompositeOperation,
         image_mask: Option<(&reel_ui::frame::FrameImageMask, Affine)>,
+        source_origin: [i32; 2],
     ) -> Result<(), GpuError> {
         self.flush_draws()?;
         if self.scissor.empty() {
@@ -1044,7 +1079,7 @@ impl Context<'_> {
             invert,
             operation,
             blend,
-            source_origin: [0; 2],
+            source_origin,
         };
         if let Some((definition, uv)) = image_mask {
             let pipeline = self.pipelines.masks.get(

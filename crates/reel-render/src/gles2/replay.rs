@@ -30,6 +30,7 @@ struct Composition<'a> {
     source_origin: [i32; 2],
 }
 struct GroupPaint<'a> {
+    source_origin: [i32; 2],
     composite: reel_ui::frame::GroupComposite,
     invert: f32,
     operation: CompositeOperation,
@@ -212,6 +213,7 @@ pub(super) fn prepare(
 }
 
 struct Scope<'a> {
+    group: Option<&'a reel_ui::frame::FrameGroup>,
     scheduled: Option<bool>,
     shared_source: bool,
     target: Target,
@@ -461,6 +463,7 @@ impl Context<'_> {
                             &mask.source.view,
                             &finished.view,
                             GroupPaint {
+                                source_origin: [0; 2],
                                 composite: reel_ui::frame::GroupComposite {
                                     alpha: mask.opacity,
                                     blend: mask.blend,
@@ -548,6 +551,7 @@ impl Context<'_> {
                         Kind::Clip,
                         at,
                         Scope {
+                            group: None,
                             scheduled: None,
                             shared_source: false,
                             target: if !isolated {
@@ -657,13 +661,24 @@ impl Context<'_> {
                     } else if let Some(effect) =
                         group.effect.as_ref().or(group.mask_effect.as_ref())
                     {
-                        let source = crate::common::effect_plan::source_layout(
-                            effect,
-                            group.effect_to_target,
-                            transform,
-                            self.gpu.capabilities().max_texture_size,
-                            at,
-                        )?;
+                        let parent = current.scopes.last();
+                        let source = if crate::common::effect_plan::same_source_domain(
+                            group,
+                            parent.group,
+                        ) {
+                            crate::common::effect_plan::SourceLayout {
+                                size: self.size,
+                                frame_to_source: transform,
+                            }
+                        } else {
+                            crate::common::effect_plan::source_layout(
+                                effect,
+                                group.effect_to_target,
+                                transform,
+                                self.gpu.capabilities().max_texture_size,
+                                at,
+                            )?
+                        };
                         forward_source = current.groups.is_source_child(current.next - 1)
                             && current.scopes.last().isolated
                             && crate::common::effect_plan::forwards_source(
@@ -694,6 +709,7 @@ impl Context<'_> {
                         Kind::Group,
                         at,
                         Scope {
+                            group: Some(group),
                             scheduled: batch.map(|entry| entry.last),
                             shared_source: batch.is_some_and(|entry| entry.shared),
                             forward_source,
@@ -840,13 +856,31 @@ impl Context<'_> {
                             }
                             continue;
                         }
-                        self.combine_view(
-                            &current.scopes.last().target,
-                            &source,
-                            view,
-                            group.opacity,
-                            group.invert,
-                        )?;
+                        if group.blend == Default::default() {
+                            self.combine_view(
+                                &current.scopes.last().target,
+                                &source,
+                                view,
+                                group.opacity,
+                                group.invert,
+                            )?;
+                        } else {
+                            self.combine_group(
+                                &current.scopes.last().target,
+                                &source.view,
+                                &source.view,
+                                GroupPaint {
+                                    source_origin: view.origin(),
+                                    composite: reel_ui::frame::GroupComposite {
+                                        alpha: group.opacity,
+                                        blend: group.blend,
+                                    },
+                                    invert: group.invert,
+                                    operation: CompositeOperation::SourceOver,
+                                    image_mask: None,
+                                },
+                            )?;
+                        }
                         self.recycle_target(source)?;
                         continue;
                     }
@@ -889,6 +923,7 @@ impl Context<'_> {
                                 &source.view,
                                 &coverage.view,
                                 GroupPaint {
+                                    source_origin: [0; 2],
                                     composite: reel_ui::frame::GroupComposite {
                                         alpha: group.opacity,
                                         blend: group.blend,
@@ -949,6 +984,7 @@ impl Context<'_> {
                             &source.view,
                             &source.view,
                             GroupPaint {
+                                source_origin: [0; 2],
                                 composite: reel_ui::frame::GroupComposite {
                                     alpha: group.opacity,
                                     blend: group.blend,
@@ -1052,6 +1088,7 @@ impl Context<'_> {
             size: self.size,
             transform,
             scopes: Scopes::new(Scope {
+                group: None,
                 scheduled: None,
                 shared_source: false,
                 target: self.target()?,
@@ -1258,6 +1295,7 @@ impl Context<'_> {
             return Ok(());
         }
         let GroupPaint {
+            source_origin,
             composite,
             invert,
             operation,
@@ -1303,7 +1341,7 @@ impl Context<'_> {
                 operation,
                 blend,
                 expression: expression.as_ref(),
-                source_origin: [0; 2],
+                source_origin,
             },
         )?;
         if let Some(backdrop) = backdrop {

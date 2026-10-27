@@ -149,6 +149,10 @@ impl Plan {
                         )?;
                     }
                     FrameOp::PushGroup(group) => {
+                        let inherited = super::effect_plan::same_source_domain(
+                            group,
+                            scopes.last().and_then(|scope| scope.group),
+                        );
                         push_stack(
                             &mut scopes,
                             Scope {
@@ -159,7 +163,10 @@ impl Plan {
                             },
                             |bytes| prepare.reserve(bytes),
                         )?;
-                        if let Some(effect) = group.effect.as_ref().or(group.mask_effect.as_ref()) {
+                        if !inherited
+                            && let Some(effect) =
+                                group.effect.as_ref().or(group.mask_effect.as_ref())
+                        {
                             outer = super::effect_plan::source_layout(
                                 effect,
                                 group.effect_to_target,

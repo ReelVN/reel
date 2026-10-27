@@ -18,6 +18,23 @@ pub(crate) struct SourceLayout {
     pub frame_to_source: Affine,
 }
 
+/// Nested effects on one authored domain inherit its already rasterized grid.
+/// Recomputing the inverse transform can otherwise round a dimension up again.
+pub(crate) fn same_source_domain(
+    group: &reel_ui::frame::FrameGroup,
+    parent: Option<&reel_ui::frame::FrameGroup>,
+) -> bool {
+    parent.is_some_and(|parent| {
+        group.effect_to_target == parent.effect_to_target
+            && group
+                .effect
+                .as_ref()
+                .or(group.mask_effect.as_ref())
+                .zip(parent.effect.as_ref().or(parent.mask_effect.as_ref()))
+                .is_some_and(|(child, parent)| child.bounds == parent.bounds)
+    })
+}
+
 /// A sole effect child can transfer its result to the isolated parent. Exact
 /// grid equality preserves sample positions and avoids an intermediate copy;
 /// other composites retain their independent source and destination.
