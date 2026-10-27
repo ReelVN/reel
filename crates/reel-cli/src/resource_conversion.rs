@@ -17,6 +17,8 @@
 //! `first_level = 1` starts at half density. `format` and `power_of_two` apply to
 //! each tile. The manifest and tiles share one atomic cache object.
 //! Video rules use `size` and `bitrate` to encode H.264/AAC with FFmpeg on PATH.
+//! Opus rules import MP4/M4A/AAC through FFmpeg/FFprobe on PATH and bounded PCM;
+//! ordinary audio formats use the built-in decoder and the same Opus encoder.
 //! `alpha_layout = "top_bottom"` preserves packed color and alpha half-frames.
 //! Font rules opt into subsetting with explicit `unicode` ranges and UTF-8 `text`
 //! file globs. Include the characters accepted by player input as well as story text.
@@ -27,7 +29,6 @@
 //! is atomically published only after all selected resources are ready.
 use crate::prepare_texture;
 use globset::{GlobBuilder, GlobMatcher};
-use reel_core::budget::{BudgetCategory, BudgetPool, QueueLimits};
 use reel_package::resource_target::ResourceTarget;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -35,7 +36,6 @@ use std::{
     fs::{self, File},
     io::{self, Read},
     path::{Path, PathBuf},
-    sync::atomic::AtomicBool,
 };
 
 /// Maximum conversion workspace used by automatic project commands (512 MiB).
@@ -57,7 +57,7 @@ pub struct Report {
     /// Selected prepared or unchanged payload length.
     pub output_bytes: u64,
     /// Peak image reservation, audio budget use or video workspace estimate.
-    /// External video codec allocations and thread stacks are not metered here.
+    /// External media codec allocations and thread stacks are not metered here.
     pub workspace_bytes: u64,
 }
 
@@ -529,6 +529,7 @@ fn prepare_with_rules<'a>(
         index: None,
     };
     let mut video_tools = None;
+    let mut audio_tools = None;
     let mut font_tools = None;
     for (name, source) in selected {
         let source = source.canonicalize()?;
@@ -557,6 +558,14 @@ fn prepare_with_rules<'a>(
                         video_tools = Some(crate::prepare_video::external_tools_identity()?);
                     }
                     hash.update(video_tools.as_ref().unwrap().as_bytes());
+                }
+                if matches!(recipe, Recipe::Opus { .. })
+                    && crate::prepare_audio::uses_external(&source)
+                {
+                    if audio_tools.is_none() {
+                        audio_tools = Some(crate::prepare_audio::external_tools_identity()?);
+                    }
+                    hash.update(audio_tools.unwrap().as_bytes());
                 }
                 if matches!(recipe, Recipe::Font { .. }) {
                     if font_tools.is_none() {
@@ -722,27 +731,7 @@ fn convert(source: &Path, output: &Path, recipe: &Recipe, memory_bytes: u64) -> 
                 .map_err(io::Error::other)
         }
         Recipe::Opus { bitrate } => {
-            let input = File::open(source)?;
-            let length = input.metadata()?.len();
-            let budget = BudgetPool::new(
-                BudgetCategory::Temporary,
-                QueueLimits {
-                    max_requests: 64,
-                    max_bytes: memory_bytes,
-                },
-            );
-            let mut output = File::create(output)?;
-            reel_media::encode::opus(
-                input,
-                length,
-                &mut output,
-                *bitrate,
-                budget.clone(),
-                &AtomicBool::new(false),
-            )
-            .map_err(io::Error::other)?;
-            output.sync_all()?;
-            Ok(budget.usage().peak_bytes)
+            crate::prepare_audio::prepare(source, output, *bitrate, memory_bytes)
         }
         Recipe::Copy => unreachable!("copy recipes retain their selected source"),
     }

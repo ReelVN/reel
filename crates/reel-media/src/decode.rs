@@ -1,5 +1,5 @@
 //! Codec-independent source timelines and borrowed PCM for background preparation.
-use reel_audio::Frame;
+pub use reel_audio::Frame;
 use reel_core::budget::BudgetPool;
 use std::sync::{Arc, atomic::AtomicBool};
 
