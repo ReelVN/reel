@@ -86,7 +86,7 @@ fn write_usage_report(
     let path = directory.join(format!("{kind}-usage.json"));
     let report = serde_json::json!({
         "kind": kind,
-        "sampling": "Public usage sampled after prepare/submit or refusal; caches and in-flight storage included. Component peaks are independent; simultaneous_total is one observed sum. GLES cumulative_shared_peak is its exact lifetime group high-water mark. Qualities are observed, not forced.",
+        "sampling": "Public usage sampled after prepare/submit or refusal; caches and in-flight storage included. Component peaks are independent; simultaneous_total is one observed sum. Qualities are observed, not forced.",
         "scenes": scenes,
         "retained_profile": profile,
     });
@@ -222,137 +222,34 @@ struct Offscreen {
     capture_dir: Option<PathBuf>,
 }
 
-enum ScenarioBackend {
-    Wgpu(Box<Offscreen>),
-    #[cfg(feature = "scenario-gles")]
-    Gles {
-        renderer: Box<reel_render::gles2::GlesBackend>,
-        target_bytes: u64,
-        events: Vec<reel_render::RenderEvent<GpuError>>,
-    },
-}
-impl ScenarioBackend {
+impl Offscreen {
     fn cancel_preparation(&mut self, frame: &RenderFrame) {
-        match self {
-            Self::Wgpu(backend) => backend.renderer.cancel_preparation(frame),
-            #[cfg(feature = "scenario-gles")]
-            Self::Gles { renderer, .. } => {
-                reel_render::RenderBackend::cancel_preparation(renderer.as_mut(), frame)
-            }
-        }
+        self.renderer.cancel_preparation(frame);
     }
     fn target_bytes(&self) -> u64 {
-        match self {
-            Self::Wgpu(backend) => backend.target_bytes,
-            #[cfg(feature = "scenario-gles")]
-            Self::Gles { target_bytes, .. } => *target_bytes,
-        }
-    }
-
-    fn wgpu_mut(&mut self) -> &mut Offscreen {
-        match self {
-            Self::Wgpu(renderer) => renderer,
-            #[cfg(feature = "scenario-gles")]
-            Self::Gles { .. } => unreachable!("GLES scenario capture is rejected at construction"),
-        }
+        self.target_bytes
     }
     fn poll(&mut self) -> Result<(), GpuError> {
-        match self {
-            Self::Wgpu(backend) => {
-                backend.renderer.poll()?;
-            }
-            #[cfg(feature = "scenario-gles")]
-            Self::Gles {
-                renderer, events, ..
-            } => {
-                use reel_render::RenderBackend;
-                events.clear();
-                renderer.poll(events, 64)?;
-                for event in events.drain(..) {
-                    if let reel_render::RenderEvent::DeviceLost(error) = event {
-                        return Err(error);
-                    }
-                }
-            }
-        }
-        Ok(())
+        self.renderer.poll().map(|_| ())
     }
     fn has_pending(&self) -> bool {
-        match self {
-            Self::Wgpu(backend) => backend.renderer.has_pending(),
-            #[cfg(feature = "scenario-gles")]
-            Self::Gles { renderer, .. } => {
-                reel_render::RenderBackend::has_pending(renderer.as_ref())
-            }
-        }
+        self.renderer.has_pending()
     }
     fn usage(&self) -> UsageSample {
-        match self {
-            Self::Wgpu(backend) => {
-                let usage = backend.renderer.usage();
-                UsageSample {
-                    targets: Some(usage.targets),
-                    resources: Some(usage.resources),
-                    transient: Some(usage.transient),
-                    total: usage.targets + usage.resources + usage.transient,
-                    cumulative_shared_peak: None,
-                }
-            }
-            #[cfg(feature = "scenario-gles")]
-            Self::Gles { renderer, .. } => {
-                let usage = renderer.usage();
-                UsageSample {
-                    targets: Some(usage.targets),
-                    resources: Some(usage.resources),
-                    transient: Some(usage.transient),
-                    total: usage.total(),
-                    cumulative_shared_peak: usage.shared.map(|shared| shared.peak_bytes),
-                }
-            }
+        let usage = self.renderer.usage();
+        UsageSample {
+            targets: Some(usage.targets),
+            resources: Some(usage.resources),
+            transient: Some(usage.transient),
+            total: usage.targets + usage.resources + usage.transient,
+            cumulative_shared_peak: None,
         }
     }
     fn present(&mut self, frame: &RenderFrame) -> Result<Quality, GpuError> {
-        match self {
-            Self::Wgpu(backend) => {
-                let prepared = backend.renderer.prepare(frame)?;
-                let quality = prepared.quality();
-                backend.renderer.submit(prepared)?;
-                Ok(quality)
-            }
-            #[cfg(feature = "scenario-gles")]
-            Self::Gles { renderer, .. } => {
-                use reel_render::{PresentOutcome, RenderBackend};
-                match renderer.render_present(frame, || {})? {
-                    PresentOutcome::PresentAccepted(_) => Ok(Quality {
-                        format: wgpu::TextureFormat::Rgba8Unorm,
-                        samples: 1,
-                        degraded: false,
-                    }),
-                    PresentOutcome::Skipped(_) => Err(GpuError::Busy),
-                    PresentOutcome::Preparing => Err(GpuError::Preparing),
-                    PresentOutcome::SurfaceUnavailable => Err(GpuError::InvalidSurface),
-                }
-            }
-        }
-    }
-}
-impl CaptureBackend for ScenarioBackend {
-    type Error = GpuError;
-    type Capture = GpuCapture;
-    fn capture(
-        &mut self,
-        frame: &RenderFrame,
-        size: [u32; 2],
-        output: &BudgetPool,
-        wake: WakeSignal,
-    ) -> Result<GpuCapture, GpuError> {
-        self.wgpu_mut().capture(frame, size, output, wake)
-    }
-    fn poll_capture(
-        &mut self,
-        capture: &mut GpuCapture,
-    ) -> Result<Option<CapturedPixels>, GpuError> {
-        self.wgpu_mut().poll_capture(capture)
+        let prepared = self.renderer.prepare(frame)?;
+        let quality = prepared.quality();
+        self.renderer.submit(prepared)?;
+        Ok(quality)
     }
 }
 impl CaptureBackend for Offscreen {
@@ -403,7 +300,7 @@ impl CaptureBackend for Offscreen {
 }
 
 pub struct ScenarioCapture {
-    backend: Option<ScenarioBackend>,
+    backend: Option<Offscreen>,
     capture_enabled: bool,
     captures: CaptureService<GpuCapture>,
     pool: BudgetPool,
@@ -434,53 +331,6 @@ pub struct ScenarioCapture {
 }
 impl ScenarioCapture {
     pub fn new(kind: &str, capture: bool) -> Self {
-        let backend = std::env::var("REEL_SCENARIO_BACKEND").unwrap_or_else(|_| "wgpu".into());
-        if backend == "gles" {
-            assert!(
-                !capture,
-                "GLES scenario supports presentation without capture/readback"
-            );
-            #[cfg(feature = "scenario-gles")]
-            {
-                use reel_render::{
-                    AlphaMode, RenderBackend, SurfaceInfo,
-                    gles2::{GlesBackend, GlesLimits},
-                };
-                let size =
-                    physical_size().expect("GLES scenario requires REEL_SCENARIO_PHYSICAL_SIZE");
-                let defaults = GlesLimits::default();
-                let limits = GlesLimits {
-                    target_bytes: target_bytes(defaults.target_bytes),
-                    ..defaults
-                };
-                let mut renderer = GlesBackend::headless(size, limits).unwrap();
-                renderer
-                    .configure(SurfaceInfo {
-                        physical_size: size,
-                        scale_factor: 1.,
-                        surface_epoch: SurfaceEpoch(1),
-                        color_encoding: reel_ui::resources::ColorEncoding::Srgb,
-                        alpha_mode: AlphaMode::Opaque,
-                    })
-                    .unwrap();
-                eprintln!(
-                    "scenario GLES: limits={limits:?} capabilities={:?}",
-                    renderer.capabilities()
-                );
-                return Self::assemble(
-                    Some(ScenarioBackend::Gles {
-                        renderer: Box::new(renderer),
-                        target_bytes: limits.target_bytes,
-                        events: Vec::with_capacity(64),
-                    }),
-                    false,
-                    kind,
-                );
-            }
-            #[cfg(not(feature = "scenario-gles"))]
-            panic!("GLES scenario requires the scenario-gles Cargo feature");
-        }
-        assert_eq!(backend, "wgpu", "scenario backend must be wgpu or gles");
         let capture_dir = capture
             .then(|| std::env::var_os("REEL_SCENARIO_CAPTURE_DIR"))
             .flatten()
@@ -503,12 +353,12 @@ impl ScenarioCapture {
         eprintln!("scenario GPU: {:?}", gpu.adapter.get_info());
         eprintln!("scenario GPU target budget: {} bytes", limits.target_bytes);
         Self::assemble(
-            Some(ScenarioBackend::Wgpu(Box::new(Offscreen {
+            Some(Offscreen {
                 renderer: Renderer::new(gpu),
                 target_bytes: limits.target_bytes,
                 stats: CaptureStats::default(),
                 capture_dir,
-            }))),
+            }),
             capture,
             kind,
         )
@@ -516,7 +366,7 @@ impl ScenarioCapture {
     pub fn cpu() -> Self {
         Self::assemble(None, false, "CPU")
     }
-    fn assemble(backend: Option<ScenarioBackend>, capture_enabled: bool, kind: &str) -> Self {
+    fn assemble(backend: Option<Offscreen>, capture_enabled: bool, kind: &str) -> Self {
         Self {
             backend,
             capture_enabled,
@@ -615,11 +465,7 @@ impl ScenarioCapture {
     pub fn stats(&self) -> CaptureStats {
         self.backend
             .as_ref()
-            .map_or_else(CaptureStats::default, |backend| match backend {
-                ScenarioBackend::Wgpu(backend) => backend.stats.clone(),
-                #[cfg(feature = "scenario-gles")]
-                ScenarioBackend::Gles { .. } => CaptureStats::default(),
-            })
+            .map_or_else(CaptureStats::default, |backend| backend.stats.clone())
     }
     fn profile(&self) -> Option<serde_json::Value> {
         #[cfg(feature = "scenario-profile")]
@@ -637,15 +483,6 @@ impl ScenarioCapture {
         }
         #[cfg(not(feature = "scenario-profile"))]
         None
-    }
-
-    pub fn configure_driver(&self, driver: &mut AsideSessionUi) {
-        #[cfg(feature = "scenario-gles")]
-        if matches!(self.backend, Some(ScenarioBackend::Gles { .. })) {
-            driver.set_effect_shader_format(reel_ui::resources::EffectShaderFormat::GlslEs100);
-        }
-        #[cfg(not(feature = "scenario-gles"))]
-        let _ = driver;
     }
 
     pub fn window_point(

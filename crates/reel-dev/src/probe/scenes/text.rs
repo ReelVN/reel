@@ -1,7 +1,7 @@
 //! Persistent generic VN workload: BC1 scenery, two alpha BC3 portraits and
 //! a real shaped line. Hidden suffixes enter GPU preparation only when revealed.
 use super::*;
-use crate::fixture::StageGroup;
+use crate::device::fixture::StageGroup;
 use reel_ui::{
     app::{RenderRoot, RenderRootOptions, WindowSizePolicy},
     bridge::PresentationBridge,

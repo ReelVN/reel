@@ -11,10 +11,6 @@ use reel_ui::{
 };
 
 pub(super) const OPERATION_CAPACITY: usize = 32;
-// 32 operation vectors, two image arrays, four parameter/transform vectors,
-// the output size and the operation count. Scalar packing can use fewer slots.
-pub(super) const UNIFORM_VECTORS: u32 = OPERATION_CAPACITY as u32 + 4 + 4 + 4 + 1 + 1;
-const _: () = assert!(UNIFORM_VECTORS <= 64);
 
 const fn operation_capacity(count: usize) -> usize {
     if count <= 8 {
@@ -43,7 +39,7 @@ fn encode_operation(operation: &MaskOp) -> [f32; 4] {
             },
             image as f32,
             // Validated references fit in five bits. These small integers are
-            // exact in GLSL highp floats and share the otherwise spare lanes.
+            // exact in 32-bit floats and share the otherwise spare lanes.
             x as f32 + 32. * y as f32,
             sx as f32 + 32. * sy as f32 + 1024. * f32::from(repeat),
         ],
@@ -71,7 +67,7 @@ impl Context<'_> {
         definition: &FrameImageMask,
         transform: Affine,
         alpha: f32,
-    ) -> Result<bool, GlesError> {
+    ) -> Result<bool, GpuError> {
         let simple = crate::common::mask::plan(&definition.program)
             .and_then(|plan| plan.evaluate(&definition.program, definition.parameters));
         let paired = if simple.is_none() {
@@ -110,12 +106,12 @@ impl Context<'_> {
         &mut self,
         definition: &FrameImageMask,
         transform: Affine,
-    ) -> Result<Target, GlesError> {
+    ) -> Result<Target, GpuError> {
         let at = self.at;
         let reject = move |record: &'static str| {
             at.map_or_else(
-                || GlesError::Device(record.into()),
-                |at| GlesError::Unsupported { at, record },
+                || GpuError::Device(record.into()),
+                |at| GpuError::Unsupported { at, record },
             )
         };
         let target = self.target()?;
@@ -230,7 +226,7 @@ impl Context<'_> {
                 ],
                 values: &values,
                 blend: native::Blend::Replace,
-                scissor: self.gl_scissor(),
+                scissor: self.native_scissor(),
             },
         )?;
         Ok(target)
@@ -244,7 +240,7 @@ impl Context<'_> {
         plan: &crate::common::mask::paired::Plan,
         input: &crate::common::mask::paired::Values,
         composite: Option<(&Target, f32)>,
-    ) -> Result<(), GlesError> {
+    ) -> Result<(), GpuError> {
         let channels = usize::from(plan.samples[0].channel == MaskChannel::Gray) * 2
             + usize::from(plan.samples[1].channel == MaskChannel::Gray);
         let shader = if composite.is_some() {
@@ -259,7 +255,7 @@ impl Context<'_> {
             let image = self
                 .images
                 .get(&definition.images[sample.image as usize])
-                .ok_or_else(|| GlesError::Device("mask image is not resident".into()))?;
+                .ok_or_else(|| GpuError::Device("mask image is not resident".into()))?;
             textures.push(&image.texture);
             texels[index] = crate::common::effect_plan::texture_metadata(
                 image.layout,
@@ -305,7 +301,7 @@ impl Context<'_> {
                 } else {
                     native::Blend::Replace
                 },
-                scissor: self.gl_scissor(),
+                scissor: self.native_scissor(),
             },
         )
     }
@@ -316,7 +312,7 @@ impl Context<'_> {
         definition: &FrameImageMask,
         uv: Affine,
         split: crate::common::mask::split::Prepared,
-    ) -> Result<(), GlesError> {
+    ) -> Result<(), GpuError> {
         let plan = &split.plan.plan;
         let count = plan.fetch_count();
         let shader = if count == 1 {
@@ -334,7 +330,7 @@ impl Context<'_> {
             let image = self
                 .images
                 .get(&definition.images[fetch.image as usize])
-                .ok_or_else(|| GlesError::Device("mask image is not resident".into()))?;
+                .ok_or_else(|| GpuError::Device("mask image is not resident".into()))?;
             images.push(&image.texture);
             texels[index] = [
                 image.layout.content_size[0] as f32 / image.layout.storage_size[0] as f32,
@@ -397,7 +393,7 @@ impl Context<'_> {
                 textures: &images,
                 values: &values,
                 blend: native::Blend::Replace,
-                scissor: self.gl_scissor(),
+                scissor: self.native_scissor(),
             },
         )
     }
@@ -409,14 +405,14 @@ impl Context<'_> {
         uv: Affine,
         simple: crate::common::mask::Evaluated,
         composite: Option<(&Target, f32)>,
-    ) -> Result<(), GlesError> {
+    ) -> Result<(), GpuError> {
         let image = self
             .images
             .get(&definition.images[simple.image])
             .ok_or_else(|| {
                 self.at.map_or_else(
-                    || GlesError::Device("mask image is not resident".into()),
-                    |at| GlesError::Unsupported {
+                    || GpuError::Device("mask image is not resident".into()),
+                    |at| GpuError::Unsupported {
                         at,
                         record: "mask image is not resident",
                     },
@@ -488,7 +484,7 @@ impl Context<'_> {
                 } else {
                     native::Blend::Replace
                 },
-                scissor: self.gl_scissor(),
+                scissor: self.native_scissor(),
             },
         )
     }
@@ -551,7 +547,7 @@ mod tests {
                         assert_eq!(encoded[0] - actual_destination * 16., value[0]);
                         assert_eq!(encoded[1..], value[1..]);
                     }
-                    // Decode with the same floating point operations as GLSL.
+                    // Decode with the same floating point operations as the Cg shader.
                     assert_eq!(
                         [value[2] % 32., (value[2] / 32.).floor()],
                         [x as f32, y as f32]

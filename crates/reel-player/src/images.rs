@@ -67,7 +67,7 @@ impl Images {
             encoded: BTreeMap::new(),
             shader_sources: BTreeSet::new(),
             shader_format: if cfg!(target_os = "vita") {
-                EffectShaderFormat::Sgx543
+                EffectShaderFormat::Gxp
             } else {
                 EffectShaderFormat::Wgsl
             },

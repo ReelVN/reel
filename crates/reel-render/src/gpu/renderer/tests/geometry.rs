@@ -132,60 +132,6 @@ fn one_moving_triangle_updates_one_aligned_range_without_splitting_the_draw() {
     );
 }
 
-#[cfg(all(feature = "gles2", feature = "profiling"))]
-#[test]
-#[ignore = "requires native GLES; no pixel readback"]
-fn one_moving_triangle_gles_updates_one_native_range() {
-    use crate::{
-        RenderBackend,
-        gles2::{GlesBackend, GlesLimits},
-    };
-    use reel_core::profile::GeometryUploads;
-    let (mut bridge, middle, pool) = moving_triangle_fixture();
-    let mut renderer = GlesBackend::headless([400, 300], GlesLimits::default()).unwrap();
-    renderer
-        .configure(crate::SurfaceInfo {
-            physical_size: [400, 300],
-            scale_factor: 1.,
-            surface_epoch: reel_core::identity::SurfaceEpoch(1),
-            color_encoding: reel_ui::resources::ColorEncoding::Srgb,
-            alpha_mode: crate::AlphaMode::Opaque,
-        })
-        .unwrap();
-    let complete = |renderer: &mut GlesBackend| {
-        let start = Instant::now();
-        while renderer.has_pending() {
-            renderer.poll(&mut Vec::new(), 32).unwrap();
-            assert!(start.elapsed().as_secs() < 10);
-            std::thread::yield_now();
-        }
-    };
-    for id in 1..=3 {
-        let frame = build(
-            bridge.record(FrameId(id)).unwrap(),
-            empty_snapshot(&pool),
-            &pool,
-        );
-        renderer.render_present(&frame, || {}).unwrap();
-        complete(&mut renderer);
-    }
-    bridge.edit_widget(middle, |mut widget| {
-        widget.ctx.set_transform(Affine::translate((1., 0.)))
-    });
-    let frame = build(
-        bridge.record(FrameId(4)).unwrap(),
-        empty_snapshot(&pool),
-        &pool,
-    );
-    let before = GeometryUploads::snapshot();
-    renderer.render_present(&frame, || {}).unwrap();
-    complete(&mut renderer);
-    let upload = GeometryUploads::snapshot().delta(before);
-    assert_eq!(upload.bytes, 3 * 48 + 6);
-    assert_eq!(upload.calls, 2);
-    renderer.close().unwrap();
-}
-
 #[test]
 #[ignore = "requires actual graphics adapter; submits without pixel readback"]
 fn ordered_draw_segments_share_uploads_across_scissors_and_stop_at_groups() {
@@ -437,72 +383,6 @@ fn geometry_staging_yields_to_whole_frame_admission() {
         assert_eq!(renderer.usage().cached_geometry, 0);
     }
     eprintln!("geometry low-budget immutable_peak={required} frames=2 bounded_retries=2");
-}
-
-#[cfg(all(feature = "gles2", feature = "profiling"))]
-#[test]
-#[ignore = "requires native GLES and REEL_R01_TEST_FONT; no pixel readback"]
-fn long_text_gles_reuses_recorded_geometry_without_uploads() {
-    use crate::{
-        RenderBackend,
-        gles2::{GlesBackend, GlesLimits},
-    };
-    use reel_core::profile::GeometryUploads;
-    let (_pool, _registry, _handle, frame, bridge) = long_text_fixture();
-    let mut renderer =
-        GlesBackend::headless(frame.info().physical_size, GlesLimits::default()).unwrap();
-    renderer
-        .configure(crate::SurfaceInfo {
-            physical_size: frame.info().physical_size,
-            scale_factor: 1.,
-            surface_epoch: frame.surface_epoch(),
-            color_encoding: reel_ui::resources::ColorEncoding::Srgb,
-            alpha_mode: crate::AlphaMode::Opaque,
-        })
-        .unwrap();
-    let complete = |renderer: &mut GlesBackend| {
-        let start = Instant::now();
-        while renderer.has_pending() {
-            renderer.poll(&mut Vec::new(), 32).unwrap();
-            assert!(start.elapsed().as_secs() < 10);
-            std::thread::yield_now();
-        }
-    };
-    for _ in 0..3 {
-        renderer.render_present(&frame, || {}).unwrap();
-        complete(&mut renderer);
-    }
-    let before = GeometryUploads::snapshot();
-    let mut prepare_us = 0;
-    for _ in 0..8 {
-        let start = Instant::now();
-        renderer.render_present(&frame, || {}).unwrap();
-        prepare_us += start.elapsed().as_micros();
-        complete(&mut renderer);
-    }
-    let upload = GeometryUploads::snapshot().delta(before);
-    assert_eq!(upload.bytes, 0);
-    assert_eq!(upload.calls, 0);
-    eprintln!(
-        "GLES warm_frames=8 geometry_upload_bytes={} calls={} render_present_cpu_us={prepare_us}",
-        upload.bytes, upload.calls
-    );
-    drop(bridge);
-    let before = GeometryUploads::snapshot();
-    let mut prepare_us = 0;
-    for _ in 0..8 {
-        let start = Instant::now();
-        renderer.render_present(&frame, || {}).unwrap();
-        prepare_us += start.elapsed().as_micros();
-        complete(&mut renderer);
-    }
-    let upload = GeometryUploads::snapshot().delta(before);
-    assert!(upload.bytes > 0);
-    eprintln!(
-        "GLES same_frame_without_live_recording frames=8 geometry_upload_bytes={} calls={} render_present_cpu_us={prepare_us}",
-        upload.bytes, upload.calls
-    );
-    renderer.close().unwrap();
 }
 
 #[test]

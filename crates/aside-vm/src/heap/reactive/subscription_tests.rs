@@ -163,7 +163,10 @@ fn exhausted_large_index_admission_keeps_committed_dependencies_and_reusable_sma
         heap.commit_derived(output, Value::int(1)).unwrap();
     }
     let objects = heap.stats().live_objects;
-    let reserved = heap.budget_usage().reserve(heap.budget_usage().remaining_bytes()).unwrap();
+    let reserved = heap
+        .budget_usage()
+        .reserve(heap.budget_usage().remaining_bytes())
+        .unwrap();
     heap.begin_derived(output).unwrap();
     for field in 0..4 {
         heap.observe_read(source, Some(field)).unwrap();

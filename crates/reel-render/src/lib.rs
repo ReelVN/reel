@@ -3,18 +3,18 @@
     clippy::result_large_err,
     reason = "upload refusal returns the intact owned batch and its budget tickets"
 )]
-#[cfg(any(feature = "wgpu", feature = "gles2"))]
+#[cfg(any(feature = "wgpu", feature = "gxm"))]
 mod common;
-#[cfg(any(feature = "wgpu", feature = "gles2"))]
+#[cfg(any(feature = "wgpu", feature = "gxm"))]
 pub use common::usage::Usage;
 /// CPU-only generation of complete prepared stage-effect fragments.
 #[path = "common/effect.rs"]
 pub mod effect;
-#[cfg(feature = "gles2")]
-pub mod gles2;
 #[cfg(feature = "wgpu")]
 pub mod gpu;
-#[cfg(all(test, any(feature = "wgpu", feature = "gles2")))]
+#[cfg(all(feature = "gxm", target_os = "vita"))]
+pub mod gxm;
+#[cfg(all(test, any(feature = "wgpu", feature = "gxm")))]
 mod test_support;
 use reel_core::{
     budget::{BudgetCategory, BudgetPool, BudgetTicket, OwnedBytes, QueueLimits},

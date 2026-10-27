@@ -41,6 +41,8 @@ reel export --release --resource-target vita --runtime path/to/vita-runtime
 
 使用对应平台的打包工具将该目录制成安装包。Vita 运行时读取准备好的 Opus 音频和块压缩纹理；硬解视频使用 H.264/AAC，尺寸为偶数且不超过 960 × 544。
 
+Vita 导出使用官方 SDK 主机工具 `psp2cgc` 将效果编译为 GXP。通过 `REEL_PSP2CGC` 指定编译器程序，或通过 `SCE_PSP2_SDK_DIR` 指定 SDK 目录。运行时内嵌基础着色器，通过系统 GXM API 绘制。
+
 安装 Reel 启动器后，每部作品可单独导出数据：
 
 ```sh

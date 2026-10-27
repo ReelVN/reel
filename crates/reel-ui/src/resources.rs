@@ -381,7 +381,7 @@ impl ResourceRegistry {
     ) -> Result<ResourceHandle, ResourceError> {
         if let ResourceData::EffectShader { descriptor, bytes } = &data
             && (!descriptor.matches_bytes(bytes.data())
-                || (descriptor.format != EffectShaderFormat::Sgx543
+                || (descriptor.format == EffectShaderFormat::Wgsl
                     && std::str::from_utf8(bytes.data()).is_err()))
         {
             return Err(ResourceError::InvalidData);

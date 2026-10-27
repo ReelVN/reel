@@ -59,11 +59,10 @@ fn effect_chains_forward_the_complete_source_and_keep_two_scratch_targets() {
     )
     .unwrap();
     let fragment =
-        crate::effect::compile_fragment(&program, crate::effect::Language::GlslEs100, 16384)
-            .unwrap();
+        crate::effect::compile_fragment(&program, crate::effect::Language::Wgsl, 16384).unwrap();
     let descriptor = EffectShaderDescriptor::with_textures(
         [4; 32],
-        EffectShaderFormat::GlslEs100,
+        EffectShaderFormat::Wgsl,
         vec![],
         0,
         true,
@@ -199,11 +198,10 @@ fn scalar_masks_keep_two_local_sources_and_project_plain_groups_into_the_parent(
     )
     .unwrap();
     let fragment =
-        crate::effect::compile_fragment(&program, crate::effect::Language::GlslEs100, 16384)
-            .unwrap();
+        crate::effect::compile_fragment(&program, crate::effect::Language::Wgsl, 16384).unwrap();
     let descriptor = EffectShaderDescriptor::with_textures(
         [3; 32],
-        EffectShaderFormat::GlslEs100,
+        EffectShaderFormat::Wgsl,
         vec![],
         0,
         true,

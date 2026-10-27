@@ -121,7 +121,7 @@ pub(super) fn prepare(
     capture: bool,
     selection: std::sync::Arc<crate::common::retained::Plan>,
     warm: Option<usize>,
-) -> Result<Prepared, (GlesError, Work)> {
+) -> Result<Prepared, (GpuError, Work)> {
     let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Replay);
     let DeviceResources {
         gpu,
@@ -209,7 +209,7 @@ pub(super) fn prepare(
             },
         )?;
         if bytes > limits.target_bytes {
-            return Err(GlesError::Budget {
+            return Err(GpuError::Budget {
                 domain: "offscreen targets",
                 requested: bytes,
                 available: limits.target_bytes,
@@ -312,7 +312,7 @@ impl Context<'_> {
         &mut self,
         frame: &FrameDrawing,
         transform: Affine,
-    ) -> Result<Target, GlesError> {
+    ) -> Result<Target, GpuError> {
         let mut first = self.start_stream(
             frame,
             frame.commands(),
@@ -597,12 +597,12 @@ impl Context<'_> {
                         current.next += fill.consumed;
                         continue;
                     }
-                    blend_code(group.composite.blend).ok_or(GlesError::Unsupported {
+                    blend_code(group.composite.blend).ok_or(GpuError::Unsupported {
                         at,
                         record: "group blend mode",
                     })?;
                     if !group.filters.is_empty() {
-                        return Err(GlesError::Unsupported {
+                        return Err(GpuError::Unsupported {
                             at,
                             record: "group filters",
                         });
@@ -940,7 +940,7 @@ impl Context<'_> {
                     }
                     if let Some(mask) = group.mask {
                         let definition = current.drawing.masks().get(&mask.mask).ok_or(
-                            GlesError::Unsupported {
+                            GpuError::Unsupported {
                                 at,
                                 record: "missing mask",
                             },
@@ -1028,7 +1028,7 @@ impl Context<'_> {
                     }
                 }
                 FrameOp::External(_) => {
-                    return Err(GlesError::Unsupported {
+                    return Err(GpuError::Unsupported {
                         at,
                         record: "external producer",
                     });
@@ -1044,7 +1044,7 @@ impl Context<'_> {
         transitions_enabled: bool,
         transform: Affine,
         scissor: Scissor,
-    ) -> Result<Stream<'a>, GlesError> {
+    ) -> Result<Stream<'a>, GpuError> {
         let capture = self.capture;
         let groups = crate::common::scopes::GroupPlan::new(
             commands,
@@ -1109,7 +1109,7 @@ impl Context<'_> {
         alpha: f32,
         invert: f32,
         operation: CompositeOperation,
-    ) -> Result<(), GlesError> {
+    ) -> Result<(), GpuError> {
         self.composition(
             target,
             Composition {
@@ -1129,7 +1129,7 @@ impl Context<'_> {
         &mut self,
         target: &Target,
         pending: &[DeferredComposite],
-    ) -> Result<(), GlesError> {
+    ) -> Result<(), GpuError> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::CompositeBatch);
         // Initialize every sampled source before returning to the parent FBO.
         for item in pending {
@@ -1150,7 +1150,7 @@ impl Context<'_> {
         view: crate::common::source_view::SourceView,
         alpha: f32,
         invert: f32,
-    ) -> Result<(), GlesError> {
+    ) -> Result<(), GpuError> {
         self.composition(
             target,
             Composition {
@@ -1170,7 +1170,7 @@ impl Context<'_> {
         &mut self,
         target: &Target,
         composition: Composition<'_>,
-    ) -> Result<(), GlesError> {
+    ) -> Result<(), GpuError> {
         self.flush_draws()?;
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Composite);
         if self.scissor.empty() {
@@ -1272,7 +1272,7 @@ impl Context<'_> {
                 } else {
                     native::Blend::Premultiplied
                 },
-                scissor: self.gl_scissor(),
+                scissor: self.native_scissor(),
             },
         )
     }
@@ -1282,7 +1282,7 @@ impl Context<'_> {
         source: &Target,
         mask: &Target,
         paint: GroupPaint<'_>,
-    ) -> Result<(), GlesError> {
+    ) -> Result<(), GpuError> {
         self.flush_draws()?;
         if self.scissor.empty() {
             return Ok(());
@@ -1295,7 +1295,7 @@ impl Context<'_> {
             image_mask,
         } = paint;
         let blend = blend_code(composite.blend)
-            .ok_or(GlesError::Device("unsupported group blend".into()))?;
+            .ok_or(GpuError::Device("unsupported group blend".into()))?;
         if blend == 0
             && invert == 0.
             && matches!(operation, CompositeOperation::SourceOver)
@@ -1352,7 +1352,7 @@ impl Context<'_> {
         new: &Target,
         transition: &SceneTransition,
         outer: Affine,
-    ) -> Result<(), GlesError> {
+    ) -> Result<(), GpuError> {
         let expression = if let Some(definition) = transition
             .mask
             .as_ref()
@@ -1386,7 +1386,7 @@ impl Context<'_> {
         }
         Ok(())
     }
-    pub fn transient(&mut self, bytes: u64) -> Result<(), GlesError> {
+    pub fn transient(&mut self, bytes: u64) -> Result<(), GpuError> {
         self.tickets.push(reserve(
             &self.budgets.transient,
             &self.budget_scope.transient,
@@ -1400,9 +1400,9 @@ impl Context<'_> {
         &self,
         composite: Composite,
         at: RecordLocation,
-    ) -> Result<(), GlesError> {
+    ) -> Result<(), GpuError> {
         if composite.blend != Composite::default().blend {
-            Err(GlesError::Unsupported {
+            Err(GpuError::Unsupported {
                 at,
                 record: "blend mode",
             })
@@ -1410,10 +1410,10 @@ impl Context<'_> {
             Ok(())
         }
     }
-    pub fn gl_scissor(&self) -> Option<[u32; 4]> {
+    pub fn native_scissor(&self) -> Option<[u32; 4]> {
         Some([
             self.scissor.x,
-            self.size[1] - self.scissor.y - self.scissor.height,
+            self.scissor.y,
             self.scissor.width,
             self.scissor.height,
         ])

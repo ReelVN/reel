@@ -67,8 +67,8 @@ pub(crate) enum MaskExecution {
     )]
     Inline,
     #[cfg_attr(
-        not(feature = "gles2"),
-        allow(dead_code, reason = "selected by the GLES executor")
+        not(feature = "gxm"),
+        allow(dead_code, reason = "selected by the GXM executor")
     )]
     Sampled,
 }

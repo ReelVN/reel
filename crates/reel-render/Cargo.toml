@@ -9,7 +9,7 @@ publish = false
 default = []
 profiling = ["reel-core/profiling"]
 wgpu = ["dep:wgpu", "dep:lyon_tessellation", "dep:swash", "dep:bytemuck", "dep:pollster", "dep:half", "dep:guillotiere"]
-gles2 = ["dep:pvr-psp2-sys", "dep:pvr-compiler", "dep:lyon_tessellation", "dep:swash", "dep:bytemuck", "dep:half", "dep:guillotiere"]
+gxm = ["dep:pvr-psp2-sys", "pvr-psp2-sys/gxm", "dep:lyon_tessellation", "dep:swash", "dep:bytemuck", "dep:half", "dep:guillotiere"]
 
 [dependencies]
 reel-ui.workspace = true
@@ -26,10 +26,7 @@ pollster = { version = "=1.0.1", optional = true }
 half = { version = "=2.7.1", optional = true }
 guillotiere = { version = "=0.7.0", optional = true }
 
-pvr-psp2-sys = { workspace = true, optional = true, features = ["graphics"] }
-
-[build-dependencies]
-pvr-compiler = { git = "https://github.com/jhq223/pvr-compiler.git", rev = "21f382885f7250149ff9fde4d21ad17769cda325", optional = true }
+pvr-psp2-sys = { workspace = true, optional = true }
 
 [lints]
 workspace = true

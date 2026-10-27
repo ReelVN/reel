@@ -78,7 +78,6 @@ impl Context<'_> {
             &mut mesh,
             source.size,
             source.storage_size(),
-            false,
         )?;
         mesh::transform_glyphs(
             &mut mesh,

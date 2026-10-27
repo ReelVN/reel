@@ -4,18 +4,6 @@ use native::{
     Target as NativeTarget, Texture, Uniform, UniformValue, VertexAttribute, VertexBuffer,
 };
 use smallvec::SmallVec;
-#[cfg(target_os = "vita")]
-macro_rules! shader_code {
-    ($name:literal) => {
-        ShaderCode::SgxBinary(include_bytes!(concat!(env!("OUT_DIR"), "/", $name, ".sgx")))
-    };
-}
-#[cfg(not(target_os = "vita"))]
-macro_rules! shader_code {
-    ($name:literal) => {
-        ShaderCode::Source(include_str!(concat!(env!("OUT_DIR"), "/", $name, ".glsl")))
-    };
-}
 pub(super) struct Quad<'a> {
     pub target: NativeTarget<'a>,
     pub size: [u32; 2],
@@ -84,17 +72,14 @@ pub(super) struct Shader {
     uniforms: [Option<Uniform>; NAMES.len()],
 }
 impl Shader {
-    fn new(
-        context: &super::ownership::Device,
-        fragment: ShaderCode<'_>,
-    ) -> Result<Self, GlesError> {
+    fn new(context: &super::ownership::Device, fragment: ShaderCode<'_>) -> Result<Self, GpuError> {
         Self::with_vertex(context, shader_code!("vertex"), fragment)
     }
     fn with_vertex(
         context: &super::ownership::Device,
         vertex: ShaderCode<'_>,
         fragment: ShaderCode<'_>,
-    ) -> Result<Self, GlesError> {
+    ) -> Result<Self, GpuError> {
         let program = create_program_with_vertex(context, vertex, fragment)?;
         let uniforms = std::array::from_fn(|index| program.uniform(NAMES[index]));
         Ok(Self { program, uniforms })
@@ -128,7 +113,7 @@ pub(super) fn create_program(
     fragment: ShaderCode<'_>,
     implicit_source: bool,
     padded: bool,
-) -> Result<Program, GlesError> {
+) -> Result<Program, GpuError> {
     create_program_with_vertex(
         context,
         if padded {
@@ -145,8 +130,9 @@ fn create_program_with_vertex(
     context: &super::ownership::Device,
     vertex: ShaderCode<'_>,
     fragment: ShaderCode<'_>,
-) -> Result<Program, GlesError> {
-    let program = context.create_program(
+) -> Result<Program, GpuError> {
+    let program = super::super::create_program(
+        context,
         vertex,
         fragment,
         &[
@@ -167,6 +153,7 @@ fn create_program_with_vertex(
                 name: "a_window",
             },
         ],
+        &attributes(),
     )?;
     Ok(program)
 }
@@ -204,12 +191,12 @@ pub(super) struct Programs {
     _storage: super::ownership::NativeTicket,
 }
 impl Programs {
-    pub fn new(context: &super::ownership::Device, budget: &BudgetPool) -> Result<Self, GlesError> {
+    pub fn new(context: &super::ownership::Device, budget: &BudgetPool) -> Result<Self, GpuError> {
         let bytes =
             (size_of::<Self>() + 4 * size_of::<crate::common::mesh::Vertex>() + 6 * 2) as u64;
         let storage = budget
             .reserve(bytes)
-            .map_err(|e| GlesError::Device(e.message))?;
+            .map_err(|e| GpuError::Device(e.message))?;
         let storage = context.ticket(storage);
         let attributes = attributes();
         let data = [
@@ -317,11 +304,7 @@ impl Programs {
             _storage: storage,
         })
     }
-    pub fn quad(
-        &self,
-        context: &super::ownership::Device,
-        quad: Quad<'_>,
-    ) -> Result<(), GlesError> {
+    pub fn quad(&self, context: &super::ownership::Device, quad: Quad<'_>) -> Result<(), GpuError> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Draw);
         let Quad {
             target,
@@ -351,7 +334,7 @@ impl Programs {
         context: &super::ownership::Device,
         target: &resources::Target,
         size: [u32; 2],
-    ) -> Result<(), GlesError> {
+    ) -> Result<(), GpuError> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Screen);
         // This pass replaces the whole surface. Match WGPU's clear load op so
         // tile renderers need not restore the previous swapchain image first.
@@ -410,9 +393,7 @@ pub(super) struct Target {
 impl Target {
     pub fn source_uv(&self, parent: [u32; 2], origin: [i32; 2]) -> [f32; 4] {
         let storage = self.view.size();
-        let mut uv = crate::common::source_view::uv_mapping(parent, storage, origin);
-        uv[3] += 1. - self.size[1] as f32 / storage[1] as f32;
-        uv
+        crate::common::source_view::uv_mapping(parent, storage, origin)
     }
     pub fn frame_uv(&self, parent: [u32; 2]) -> [f32; 4] {
         crate::common::source_view::uv_mapping(parent, self.view.size(), [0; 2])
@@ -428,7 +409,7 @@ impl Target {
         size: [u32; 2],
         budget: &BudgetPool,
         limit: u64,
-    ) -> Result<Self, (GlesError, Option<super::ownership::NativeTicket>)> {
+    ) -> Result<Self, (GpuError, Option<super::ownership::NativeTicket>)> {
         let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::TargetCreate);
         let bytes = context
             .target_layout(size)
@@ -436,7 +417,7 @@ impl Target {
             .texture_bytes;
         let storage = budget.reserve(bytes).map_err(|_| {
             (
-                GlesError::Pressure {
+                GpuError::Pressure {
                     domain: "offscreen targets",
                     requested: bytes,
                     available: limit.saturating_sub(budget.usage().bytes),
@@ -446,7 +427,7 @@ impl Target {
         })?;
         let storage = context.ticket(storage);
         let built = (|| {
-            let view = context.create_texture(size, native::TextureFormat::Rgba8)?;
+            let view = super::super::create_target_texture(context, size)?;
             let framebuffer = context.framebuffer(&view)?;
             Ok::<_, native::Error>((view, framebuffer))
         })();

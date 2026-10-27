@@ -1,5 +1,5 @@
 //! Native storage retains its budget ownership after a terminal driver failure.
-use super::{GlesError, native, native_error};
+use super::{GpuError, native, native_error};
 use reel_core::budget::BudgetTicket;
 use std::{cell::RefCell, ops::Deref, rc::Rc, sync::Arc};
 
@@ -15,7 +15,7 @@ impl Device {
             fault: Default::default(),
         }
     }
-    pub fn check(&self) -> Result<(), GlesError> {
+    pub fn check(&self) -> Result<(), GpuError> {
         self.fault.borrow().as_ref().map_or(Ok(()), |fault| {
             Err(native_error(native::Error::Terminal(fault.clone())))
         })
@@ -66,38 +66,5 @@ impl Drop for NativeTicket {
             // capacity must remain occupied in every surviving pool observer.
             std::mem::forget(self.ticket.take());
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use reel_core::budget::{BudgetCategory, BudgetPool, QueueLimits};
-
-    #[test]
-    #[ignore = "requires a desktop EGL context"]
-    fn native_ticket_keeps_terminal_capacity_in_surviving_budget_observers() {
-        let device = Device::new(native::Context::headless([8, 8], false).unwrap());
-        let pool = BudgetPool::new(
-            BudgetCategory::GpuResource,
-            QueueLimits {
-                max_requests: 4,
-                max_bytes: 128,
-            },
-        );
-        drop(device.ticket(pool.reserve(32).unwrap()));
-        assert_eq!(pool.usage().bytes, 0);
-        let ticket = device.ticket(pool.reserve(64).unwrap());
-        *device.fault.borrow_mut() = Some(Arc::new(native::DeviceFault {
-            operation: "injected retirement".into(),
-            code: -17,
-        }));
-        drop(ticket);
-        assert_eq!(pool.usage().bytes, 64);
-        assert!(matches!(
-            device.check(),
-            Err(GlesError::NativeDeviceLost(_))
-        ));
-        assert!(pool.reserve(65).is_err());
     }
 }

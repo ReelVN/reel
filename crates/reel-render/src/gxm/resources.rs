@@ -60,89 +60,58 @@ impl Images {
         caps: &native::Capabilities,
         limits: crate::common::GpuLimits,
         total_bytes: u64,
-    ) -> Result<u64, GlesError> {
+    ) -> Result<u64, GpuError> {
         let mut resident = 0u64;
         let mut additional = 0u64;
         let mut staging = 0;
         let mut pending_staging = 0;
         let mut claimed = [false; 64];
         for item in required {
-            let (bytes, upload) = match item.source.data() {
-                ResourceData::Image { image, .. } => (
-                    u64::from(image.width) * u64::from(image.height) * 4,
-                    u64::from(image.width) * 4,
-                ),
-                ResourceData::Texture { descriptor, .. } => {
-                    if match descriptor.format {
-                        TextureFormat::Bc1Rgb | TextureFormat::Bc3Rgba => !caps.bc,
-                        TextureFormat::Bgra8 => !caps.bgra,
-                        TextureFormat::LinearRgba16Float => !caps.half_float,
-                        TextureFormat::Rgba8 => false,
-                    } {
-                        return Err(GlesError::Unsupported {
-                            at: item.at,
-                            record: "device texture format",
-                        });
-                    }
-                    if descriptor.format.is_compressed()
-                        && descriptor
-                            .layout
-                            .storage_size
-                            .iter()
-                            .any(|&n| n < 8 || !n.is_power_of_two())
-                    {
-                        return Err(GlesError::Unsupported {
-                            at: item.at,
-                            record: "native BC texture dimensions",
-                        });
-                    }
-                    let upload = item.texture.expect("planned texture");
-                    let bytes = upload.resident_bytes;
-                    (
-                        bytes,
-                        if descriptor.format.is_compressed() {
-                            bytes
-                        } else if upload.source_row_bytes != upload.row_bytes {
-                            upload.row_bytes
-                        } else {
-                            0
-                        },
-                    )
+            if let ResourceData::Texture { descriptor, .. } = item.source.data() {
+                if match descriptor.format {
+                    TextureFormat::Bc1Rgb | TextureFormat::Bc3Rgba => !caps.bc,
+                    TextureFormat::Bgra8 => !caps.bgra,
+                    TextureFormat::LinearRgba16Float => !caps.half_float,
+                    TextureFormat::Rgba8 => false,
+                } {
+                    return Err(GpuError::Unsupported {
+                        at: item.at,
+                        record: "device texture format",
+                    });
                 }
-                ResourceData::Yuv420(image) => (
-                    (0..image.plane_count())
-                        .map(|i| u64::from(image.row_bytes(i)) * u64::from(image.plane_size(i)[1]))
-                        .sum(),
-                    (0..image.plane_count())
-                        .filter(|&i| image.row_stride(i) != image.row_bytes(i))
-                        .map(|i| u64::from(image.row_bytes(i)))
-                        .max()
-                        .unwrap_or(0),
-                ),
-                _ => unreachable!("common image demand validates resource kinds"),
-            };
-            resident = resident.checked_add(bytes).ok_or(GlesError::InvalidSize)?;
+                if descriptor.format.is_compressed()
+                    && descriptor
+                        .layout
+                        .storage_size
+                        .iter()
+                        .any(|&n| n < 8 || !n.is_power_of_two())
+                {
+                    return Err(GpuError::Unsupported {
+                        at: item.at,
+                        record: "native BC texture dimensions",
+                    });
+                }
+            }
+            let (bytes, upload) = costs(item)?;
+            resident = resident.checked_add(bytes).ok_or(GpuError::InvalidSize)?;
             if !self.entries.contains_key(&item.source.handle()) {
                 pending_staging = pending_staging.max(upload);
                 if !self.pending.contains_key(&item.source.handle()) {
-                    let reusable = self
-                        .retired
-                        .iter()
-                        .enumerate()
-                        .find(|(index, image)| !claimed[*index] && recyclable(image, item));
+                    let reusable =
+                        self.retired.iter().enumerate().find(|(index, image)| {
+                            !claimed[*index] && recyclable(image, item, bytes)
+                        });
                     if let Some((index, _)) = reusable {
                         claimed[index] = true;
                     } else {
-                        additional = additional
-                            .checked_add(bytes)
-                            .ok_or(GlesError::InvalidSize)?;
+                        additional = additional.checked_add(bytes).ok_or(GpuError::InvalidSize)?;
                     }
                 }
             }
             staging = staging.max(upload);
         }
         if staging > limits.transient_bytes {
-            return Err(GlesError::Budget {
+            return Err(GpuError::Budget {
                 domain: "image upload staging",
                 requested: staging,
                 available: limits.transient_bytes,
@@ -152,7 +121,7 @@ impl Images {
         crate::common::image_plan::peak(std::iter::once((resident, staging)), total_bytes)?;
         additional
             .checked_add(pending_staging)
-            .ok_or(GlesError::InvalidSize)
+            .ok_or(GpuError::InvalidSize)
     }
     pub fn prune(&mut self, versions: &[ResourceVersion]) {
         for (_, image) in self.entries.extract_if(|_, image| {
@@ -161,7 +130,7 @@ impl Images {
                 .as_ref()
                 .is_some_and(|source| source.retained(versions))
         }) {
-            if image.kind == 0. && !image.coverage {
+            if !image.coverage {
                 self.retired.put(image);
             }
         }
@@ -185,16 +154,17 @@ impl Images {
         gpu: &super::ownership::Device,
         budgets: &Budgets,
         limit: u64,
-    ) -> Result<Rc<Image>, GlesError> {
+    ) -> Result<Rc<Image>, GpuError> {
         if let Some(image) = &self.white {
             return Ok(image.clone());
         }
-        let storage = reserve(&budgets.resources, 4, limit, "white texture")?;
+        let bytes = super::super::texture_bytes([1, 1], native::TextureFormat::Rgba8)?;
+        let storage = reserve(&budgets.resources, bytes, limit, "white texture")?;
         let storage = gpu.ticket(storage);
         let built = (|| {
             let texture = gpu.create_texture([1, 1], native::TextureFormat::Rgba8)?;
             gpu.upload(&texture, [0, 0], [1, 1], &[255; 4], 4)?;
-            Ok::<_, GlesError>(texture)
+            Ok::<_, GpuError>(texture)
         })();
         let texture = match built {
             Ok(value) => value,
@@ -226,13 +196,14 @@ impl Images {
         budgets: &Budgets,
         limits: crate::common::GpuLimits,
         item: &crate::common::image_plan::Required<'_>,
-    ) -> Result<Pending, GlesError> {
+    ) -> Result<Pending, GpuError> {
         let source = item.source;
         let at = item.at;
-        let (layout, format, encoding, kind, bytes) = match source.data() {
+        let (bytes, _) = costs(item)?;
+        let (layout, format, encoding, kind) = match source.data() {
             ResourceData::Image { image, encoding } => {
                 if image.format != ImageFormat::Rgba8 {
-                    return Err(GlesError::Unsupported {
+                    return Err(GpuError::Unsupported {
                         at,
                         record: "image format",
                     });
@@ -242,7 +213,6 @@ impl Images {
                     None,
                     *encoding,
                     0.,
-                    u64::from(image.width) * u64::from(image.height) * 4,
                 )
             }
             ResourceData::Texture { descriptor, .. } => {
@@ -252,7 +222,6 @@ impl Images {
                     Some(descriptor.format),
                     descriptor.source_encoding,
                     0.,
-                    upload.resident_bytes,
                 )
             }
             ResourceData::Yuv420(image) => (
@@ -264,12 +233,9 @@ impl Images {
                 } else {
                     1.
                 },
-                (0..image.plane_count())
-                    .map(|i| u64::from(image.row_bytes(i)) * u64::from(image.plane_size(i)[1]))
-                    .sum(),
             ),
             _ => {
-                return Err(GlesError::Unsupported {
+                return Err(GpuError::Unsupported {
                     at,
                     record: "non-image upload",
                 });
@@ -277,10 +243,10 @@ impl Images {
         };
         let recycled = self
             .retired
-            .take_if(|image| recyclable(image, item))
+            .take_if(|image| recyclable(image, item, bytes))
             .and_then(Rc::into_inner);
-        let (storage, recycled_texture) = if let Some(image) = recycled {
-            (image._storage, Some(image.texture))
+        let (storage, recycled_textures) = if let Some(image) = recycled {
+            (image._storage, Some((image.texture, image.planes)))
         } else {
             self.make_room(&budgets.resources, bytes, limits.resource_bytes);
             (
@@ -296,62 +262,62 @@ impl Images {
         let built = (|| {
             let mut planes = Vec::new();
             let mut video = [[0.; 4]; 4];
-            let texture = if let ResourceData::Yuv420(image) = source.data() {
-                for index in 0..image.plane_count() {
-                    let format =
-                        if index == 1 && image.layout() == reel_core::image::Yuv420Layout::Nv12 {
-                            native::TextureFormat::LumaAlpha8
-                        } else {
-                            native::TextureFormat::Luma8
-                        };
-                    planes.push(gpu.create_texture(image.plane_size(index), format)?);
-                }
-                video[..3].copy_from_slice(&image.rgb_rows());
-                video[3][0] =
-                    f32::from(image.color().transfer == reel_core::image::YuvTransfer::Srgb);
-                planes.remove(0)
-            } else if format.is_some_and(TextureFormat::is_compressed) {
-                // Compressed allocation is inseparable from its complete mip upload.
-                let ResourceData::Texture { bytes: blocks, .. } = source.data() else {
-                    unreachable!()
+            let texture =
+                if let ResourceData::Yuv420(image) = source.data() {
+                    video[..3].copy_from_slice(&image.rgb_rows());
+                    video[3][0] =
+                        f32::from(image.color().transfer == reel_core::image::YuvTransfer::Srgb);
+                    if let Some((texture, chroma)) = recycled_textures {
+                        planes = chroma;
+                        texture
+                    } else {
+                        for index in 0..image.plane_count() {
+                            planes.push(gpu.create_texture(
+                                image.plane_size(index),
+                                plane_format(image, index),
+                            )?);
+                        }
+                        planes.remove(0)
+                    }
+                } else if format.is_some_and(TextureFormat::is_compressed) {
+                    // Compressed allocation is inseparable from its complete mip upload.
+                    let ResourceData::Texture { bytes: blocks, .. } = source.data() else {
+                        unreachable!()
+                    };
+                    let staging = self.scratch.get(
+                        &budgets.transient,
+                        limits.transient_bytes,
+                        usize::try_from(super::super::bc_staging_bytes(
+                            item.texture.expect("planned texture").resident_bytes,
+                        ))
+                        .map_err(|_| GpuError::InvalidSize)?,
+                    )?;
+                    if let Some((texture, _)) = recycled_textures {
+                        gpu.upload_bc_texture(&texture, blocks.data(), staging)?;
+                        texture
+                    } else {
+                        gpu.create_bc_texture(
+                            layout.storage_size,
+                            if format == Some(TextureFormat::Bc1Rgb) {
+                                native::TextureFormat::Bc1Rgb
+                            } else {
+                                native::TextureFormat::Bc3Rgba
+                            },
+                            blocks.data(),
+                            staging,
+                        )?
+                    }
+                } else {
+                    if let Some((texture, _)) = recycled_textures {
+                        texture
+                    } else {
+                        gpu.create_texture(
+                            layout.storage_size,
+                            native_format(format.unwrap_or(TextureFormat::Rgba8)),
+                        )?
+                    }
                 };
-                let staging = self.scratch.get(
-                    &budgets.transient,
-                    limits.transient_bytes,
-                    usize::try_from(bytes).map_err(|_| GlesError::InvalidSize)?,
-                )?;
-                if let Some(texture) = recycled_texture {
-                    gpu.upload_bc_texture(&texture, blocks.data(), staging)?;
-                    texture
-                } else {
-                    gpu.create_bc_texture(
-                        layout.storage_size,
-                        if format == Some(TextureFormat::Bc1Rgb) {
-                            native::TextureFormat::Bc1Rgb
-                        } else {
-                            native::TextureFormat::Bc3Rgba
-                        },
-                        blocks.data(),
-                        staging,
-                    )?
-                }
-            } else {
-                if let Some(texture) = recycled_texture {
-                    texture
-                } else {
-                    gpu.create_texture(
-                        layout.storage_size,
-                        match format {
-                            Some(TextureFormat::Bgra8) => native::TextureFormat::Bgra8,
-                            Some(TextureFormat::LinearRgba16Float) => {
-                                native::TextureFormat::Rgba16Float
-                            }
-                            _ => native::TextureFormat::Rgba8,
-                        },
-                    )?
-                }
-            };
-            Ok::<_, GlesError>((texture, planes, video))
+            Ok::<_, GpuError>((texture, planes, video))
         })();
         let (texture, planes, video) = match built {
             Ok(value) => value,
@@ -394,7 +360,7 @@ impl Images {
         quota: &mut u64,
         output: &mut HashMap<ResourceHandle, Rc<Image>>,
         touched: &mut Vec<Rc<Image>>,
-    ) -> Result<bool, GlesError> {
+    ) -> Result<bool, GpuError> {
         let DeviceResources {
             gpu,
             budgets,
@@ -448,22 +414,102 @@ impl Images {
         Ok(ready)
     }
 }
-fn recyclable(image: &Rc<Image>, item: &crate::common::image_plan::Required<'_>) -> bool {
+fn native_format(format: TextureFormat) -> native::TextureFormat {
+    match format {
+        TextureFormat::Rgba8 => native::TextureFormat::Rgba8,
+        TextureFormat::Bgra8 => native::TextureFormat::Bgra8,
+        TextureFormat::LinearRgba16Float => native::TextureFormat::Rgba16Float,
+        TextureFormat::Bc1Rgb => native::TextureFormat::Bc1Rgb,
+        TextureFormat::Bc3Rgba => native::TextureFormat::Bc3Rgba,
+    }
+}
+
+fn plane_format(image: &reel_core::image::Yuv420Image, index: usize) -> native::TextureFormat {
+    if index == 1 && image.layout() == reel_core::image::Yuv420Layout::Nv12 {
+        native::TextureFormat::LumaAlpha8
+    } else {
+        native::TextureFormat::Luma8
+    }
+}
+
+/// Use the same native footprint for admission and allocation. CPU upload rows
+/// retain their portable stride, independently of the mapped texture pitch.
+fn costs(item: &crate::common::image_plan::Required<'_>) -> Result<(u64, u64), GpuError> {
+    match item.source.data() {
+        ResourceData::Image { image, .. } => Ok((
+            super::super::texture_bytes([image.width, image.height], native::TextureFormat::Rgba8)?,
+            u64::from(image.width) * 4,
+        )),
+        ResourceData::Texture { descriptor, .. } => {
+            let upload = item.texture.expect("planned texture");
+            Ok((
+                super::super::texture_bytes(
+                    upload.layout.storage_size,
+                    native_format(descriptor.format),
+                )?,
+                if descriptor.format.is_compressed() {
+                    super::super::bc_staging_bytes(upload.resident_bytes)
+                } else if upload.source_row_bytes != upload.row_bytes {
+                    upload.row_bytes
+                } else {
+                    0
+                },
+            ))
+        }
+        ResourceData::Yuv420(image) => {
+            let mut bytes = 0_u64;
+            let mut staging = 0;
+            for index in 0..image.plane_count() {
+                let plane = super::super::texture_bytes(
+                    image.plane_size(index),
+                    plane_format(image, index),
+                )?;
+                bytes = bytes.checked_add(plane).ok_or(GpuError::InvalidSize)?;
+                if image.row_stride(index) != image.row_bytes(index) {
+                    staging = staging.max(u64::from(image.row_bytes(index)));
+                }
+            }
+            Ok((bytes, staging))
+        }
+        _ => unreachable!("common image demand validates resource kinds"),
+    }
+}
+
+fn recyclable(
+    image: &Rc<Image>,
+    item: &crate::common::image_plan::Required<'_>,
+    bytes: u64,
+) -> bool {
+    // Flights and prepared frames retain their Image references through the
+    // completion fence. The final reader and source lease must both be gone.
     Rc::strong_count(image) == 1
         && image
             .source
             .as_ref()
             .is_some_and(|source| source.lease.is_released())
-        && image.kind == 0.
+        && image._storage.bytes() == bytes
         && !image.coverage
         && match item.source.data() {
             ResourceData::Image { image: source, .. } => {
-                image.format.is_none() && image.layout.storage_size == [source.width, source.height]
+                image.kind == 0.
+                    && image.format.is_none()
+                    && image.layout.storage_size == [source.width, source.height]
             }
             ResourceData::Texture { descriptor, .. } => {
-                image.format == Some(descriptor.format)
+                image.kind == 0.
+                    && image.format == Some(descriptor.format)
                     && image.layout.storage_size
                         == item.texture.expect("planned texture").layout.storage_size
+            }
+            ResourceData::Yuv420(source) => {
+                image.layout.storage_size == source.size()
+                    && image.planes.len() + 1 == source.plane_count()
+                    && image.kind
+                        == if source.layout() == reel_core::image::Yuv420Layout::Nv12 {
+                            2.
+                        } else {
+                            1.
+                        }
             }
             _ => false,
         }
@@ -476,7 +522,7 @@ fn progress(
     pending: &mut Pending,
     quota: &mut u64,
     scratch: &mut crate::common::resources::UploadScratch,
-) -> Result<bool, GlesError> {
+) -> Result<bool, GpuError> {
     loop {
         let (size, stride, pixels, convert, alpha) = match pending.source.data() {
             ResourceData::Image { image, .. } => (
@@ -491,7 +537,7 @@ fn progress(
                 descriptor
                     .format
                     .row_bytes(descriptor.layout.storage_size[0])
-                    .ok_or(GlesError::InvalidSize)? as usize,
+                    .ok_or(GpuError::InvalidSize)? as usize,
                 bytes.data(),
                 false,
                 ImageAlphaType::AlphaPremultiplied,
@@ -524,7 +570,7 @@ fn progress(
         let row = if let ResourceData::Yuv420(image) = pending.source.data() {
             image.row_bytes(pending.plane) as usize
         } else if let Some(format) = pending.image.format {
-            format.row_bytes(size[0]).ok_or(GlesError::InvalidSize)? as usize
+            format.row_bytes(size[0]).ok_or(GpuError::InvalidSize)? as usize
         } else {
             stride
         };
@@ -586,157 +632,17 @@ pub(super) fn reserve(
     bytes: u64,
     limit: u64,
     domain: &'static str,
-) -> Result<BudgetTicket, GlesError> {
+) -> Result<BudgetTicket, GpuError> {
     if bytes > limit {
-        return Err(GlesError::Budget {
+        return Err(GpuError::Budget {
             domain,
             requested: bytes,
             available: limit,
         });
     }
-    pool.reserve(bytes).map_err(|_| GlesError::Pressure {
+    pool.reserve(bytes).map_err(|_| GpuError::Pressure {
         domain,
         requested: bytes,
         available: limit.saturating_sub(pool.usage().bytes),
     })
-}
-
-#[cfg(test)]
-mod retirement_tests {
-    use super::*;
-    use reel_core::{
-        budget::{BudgetCategory, OwnedBytes, QueueLimits},
-        identity::{AssetKey, ContentVersion},
-        texture::{TextureDescriptor, TexturePayload},
-    };
-    use reel_ui::resources::ResourceRegistry;
-
-    #[test]
-    #[ignore = "requires host EGL and BC support; uploads without pixel readback"]
-    fn retired_native_texture_storage_reuses_exact_footprints_and_budget() {
-        let gpu =
-            super::super::ownership::Device::new(native::Context::headless([8, 8], false).unwrap());
-        assert!(gpu.capabilities().bc);
-        let limits = crate::common::GpuLimits::default();
-        let budgets = Budgets::new(limits);
-        let pool = BudgetPool::new(
-            BudgetCategory::CpuOutput,
-            QueueLimits {
-                max_requests: 128,
-                max_bytes: 1 << 20,
-            },
-        );
-        let owner =
-            reel_ui::core::WidgetPod::new(reel_ui::widgets::Label::new("resource test")).id();
-        let mut images = Images::default();
-        for format in [
-            None,
-            Some(TextureFormat::Rgba8),
-            Some(TextureFormat::Bc1Rgb),
-            Some(TextureFormat::Bc3Rgba),
-        ] {
-            let mut identity = None;
-            for version in 0..8u8 {
-                let resource = ResourceVersion {
-                    key: AssetKey(format!("native-reuse-{format:?}")),
-                    version: ContentVersion([version; 32]),
-                };
-                let descriptor = TextureDescriptor {
-                    format: format.unwrap_or(TextureFormat::Rgba8),
-                    source_encoding: if version % 2 == 0 {
-                        ColorEncoding::Linear
-                    } else {
-                        ColorEncoding::Srgb
-                    },
-                    layout: TextureLayout {
-                        logical_size: [16 + u32::from(version), 16],
-                        content_size: [8, 8],
-                        storage_size: [8, 8],
-                    },
-                };
-                let length = descriptor.byte_len().unwrap();
-                let bytes =
-                    OwnedBytes::new(vec![255; length as usize], pool.reserve(length).unwrap())
-                        .unwrap();
-                let mut registry = ResourceRegistry::new(1, 65536).unwrap();
-                let handle = if format.is_some() {
-                    registry
-                        .register_texture(
-                            resource.clone(),
-                            TexturePayload::new(descriptor, bytes).unwrap(),
-                        )
-                        .unwrap()
-                } else {
-                    registry
-                        .register_image(
-                            resource.clone(),
-                            bytes,
-                            [8, 8],
-                            ImageFormat::Rgba8,
-                            ImageAlphaType::Alpha,
-                            descriptor.source_encoding,
-                        )
-                        .unwrap()
-                };
-                let source = registry.acquire(handle).unwrap();
-                let item = crate::common::image_plan::Required {
-                    source: &source,
-                    at: reel_ui::frame::RecordLocation {
-                        fragment: 0,
-                        command: 0,
-                        mask_depth: 0,
-                        owner,
-                    },
-                    texture: format.map(|_| {
-                        crate::common::resources::TextureUploadLayout::new(descriptor).unwrap()
-                    }),
-                };
-                let mut pending = images.allocate(&gpu, &budgets, limits, &item).unwrap();
-                if !format.is_some_and(TextureFormat::is_compressed) {
-                    let mut quota = u64::MAX;
-                    assert!(
-                        progress(
-                            &gpu,
-                            &budgets,
-                            limits,
-                            &mut pending,
-                            &mut quota,
-                            &mut images.scratch
-                        )
-                        .unwrap()
-                    );
-                }
-                if let Some(texture) = &identity {
-                    assert!(texture == &pending.image.texture);
-                } else {
-                    identity = Some(pending.image.texture.clone());
-                }
-                assert_eq!(pending.image.encoding, descriptor.source_encoding);
-                assert_eq!(
-                    pending.image.layout,
-                    if format.is_some() {
-                        descriptor.layout
-                    } else {
-                        TextureLayout::identity([8, 8])
-                    }
-                );
-                images.entries.insert(handle, pending.image.clone());
-                gpu.finish().unwrap();
-                registry.retire(handle);
-                images.prune(&[resource]);
-                drop(pending);
-                drop(source);
-                drop(registry);
-                assert_eq!(budgets.resources.usage().bytes, length);
-            }
-            drop(identity);
-            images.release_idle();
-            assert_eq!(budgets.resources.usage().bytes, 0);
-            assert_eq!(budgets.transient.usage().bytes, 0);
-            assert_eq!(pool.usage().bytes, 0);
-            eprintln!(
-                "native {format:?}: 8 resource versions retain one texture identity/reservation; cache clear releases all bytes"
-            );
-        }
-    }
 }

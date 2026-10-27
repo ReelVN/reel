@@ -1,4 +1,4 @@
-#![cfg(feature = "gles2")]
+#![cfg(feature = "wgpu")]
 //! Submit every register-bank capacity with the complete public mask operation set.
 #[allow(dead_code, reason = "shared UI fixture")]
 #[path = "../../reel-ui/tests/support/fixture.rs"]
@@ -11,10 +11,6 @@ use r01_fixture::*;
 use reel_core::{
     budget::OwnedBytes,
     identity::{AssetKey, ContentVersion, FrameId, ResourceVersion},
-};
-use reel_render::{
-    AlphaMode, PresentOutcome, RenderBackend, RenderEvent, SurfaceInfo,
-    gles2::{GlesBackend, GlesLimits},
 };
 use reel_ui::{
     core::PaintImageMask,
@@ -29,20 +25,14 @@ use reel_ui::{
 mod mask_dag;
 use mask_dag::operations;
 
-#[test]
-#[ignore = "requires a native GLES context"]
-fn full_mask_dag_completes_at_all_register_bank_capacities() {
-    submit_masks(false);
-}
-
 #[cfg(feature = "wgpu")]
 #[test]
 #[ignore = "requires an actual WGPU adapter"]
 fn split_masks_submit_parameter_updates_with_wgpu() {
-    submit_masks(true);
+    submit_masks();
 }
 
-fn submit_masks(wgpu: bool) {
+fn submit_masks() {
     let pool = pool();
     let mut registry = ResourceRegistry::new(4, 65536).unwrap();
     let handles: Vec<_> = (0..4)
@@ -72,22 +62,16 @@ fn submit_masks(wgpu: bool) {
                 .unwrap()
         })
         .collect();
-    let mut renderer =
-        (!wgpu).then(|| GlesBackend::headless([400, 300], GlesLimits::default()).unwrap());
-    #[cfg(feature = "wgpu")]
-    let mut wgpu_renderer = wgpu.then(|| {
-        use reel_render::gpu::{DeviceGeneration, Gpu, Renderer};
-        Renderer::new(
-            pollster::block_on(Gpu::request(
-                &wgpu::Instance::default(),
-                None,
-                DeviceGeneration(1),
-                Default::default(),
-            ))
-            .unwrap(),
-        )
-    });
-    let mut events = Vec::new();
+    use reel_render::gpu::{DeviceGeneration, Gpu, Renderer};
+    let mut wgpu_renderer = Renderer::new(
+        pollster::block_on(Gpu::request(
+            &wgpu::Instance::default(),
+            None,
+            DeviceGeneration(1),
+            Default::default(),
+        ))
+        .unwrap(),
+    );
     let mut shared_sample = operations()[..13].to_vec();
     shared_sample[4] = MaskOp::Sample {
         image: 0,
@@ -110,7 +94,6 @@ fn submit_masks(wgpu: bool) {
     for (case, operations) in cases.into_iter().enumerate() {
         #[cfg(feature = "wgpu")]
         let mut wgpu_resident = None;
-        let count = operations.len();
         let program = MaskProgram::new(
             operations,
             (0..4)
@@ -145,7 +128,7 @@ fn submit_masks(wgpu: bool) {
             let snapshot = registry.freeze(&handles, &pool).unwrap();
             let frame = build(source, snapshot, &pool);
             #[cfg(feature = "wgpu")]
-            if let Some(wgpu_renderer) = &mut wgpu_renderer {
+            {
                 let prepared = wgpu_renderer.prepare(&frame).unwrap();
                 wgpu_renderer.submit(prepared).unwrap();
                 wgpu_renderer
@@ -163,36 +146,6 @@ fn submit_masks(wgpu: bool) {
                 }
                 wgpu_resident = Some(bytes);
             }
-            let Some(renderer) = &mut renderer else {
-                continue;
-            };
-            renderer
-                .configure(SurfaceInfo {
-                    physical_size: [400, 300],
-                    scale_factor: 1.,
-                    surface_epoch: frame.surface_epoch(),
-                    color_encoding: ColorEncoding::Srgb,
-                    alpha_mode: AlphaMode::Opaque,
-                })
-                .unwrap();
-            assert_eq!(
-                renderer.render_present(&frame, || {}).unwrap(),
-                PresentOutcome::PresentAccepted(id)
-            );
-            let start = std::time::Instant::now();
-            loop {
-                events.clear();
-                renderer.poll(&mut events, 16).unwrap();
-                if events.iter().any(|event| matches!(event, RenderEvent::RenderFinished { frame, .. } if *frame == id)) { break; }
-                assert!(
-                    start.elapsed() < std::time::Duration::from_secs(10),
-                    "{count}-node completion timeout"
-                );
-                std::thread::yield_now();
-            }
         }
-    }
-    if let Some(renderer) = renderer {
-        renderer.close().unwrap();
     }
 }

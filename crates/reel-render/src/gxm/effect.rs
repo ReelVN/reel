@@ -1,11 +1,10 @@
-//! Prepared asset programs; Vita consumes only exported SGX binaries.
-use super::{GlesError, native, programs, replay::Context, resources::Target};
+//! Prepared asset programs and shared effect execution.
+use super::{GpuError, native, programs, replay::Context, resources::Target};
 use crate::common::{effect_cache, effect_plan};
 use reel_core::budget::BudgetPool;
 use reel_ui::{
     frame::{FrameDrawing, FrameEffect, RecordLocation},
     kurbo::Affine,
-    resources::EffectShaderFormat,
 };
 use std::rc::Rc;
 
@@ -35,7 +34,7 @@ fn compile(
     limit: u64,
     at: RecordLocation,
     padded: bool,
-) -> Result<Rc<Compiled>, GlesError> {
+) -> Result<Rc<Compiled>, GpuError> {
     let effect_plan::Shader {
         lease,
         descriptor,
@@ -43,49 +42,17 @@ fn compile(
     } = *shader;
     let count = descriptor.parameters.len();
     let format = descriptor.format;
-    if count
-        .saturating_add(crate::effect::CONTEXT_SLOTS)
-        .saturating_add(descriptor.textures as usize * 2)
-        > gpu.capabilities().max_fragment_uniform_vectors as usize
-    {
-        return Err(GlesError::Unsupported {
-            at,
-            record: "effect uniforms exceed the device capacity",
-        });
-    }
     if descriptor
         .textures
         .saturating_add(u32::from(descriptor.source_sampler))
         > gpu.capabilities().max_texture_units
     {
-        return Err(GlesError::Unsupported {
+        return Err(GpuError::Unsupported {
             at,
             record: "effect textures exceed the device capacity",
         });
     }
-    #[cfg(target_os = "vita")]
-    let code = if format == EffectShaderFormat::Sgx543 {
-        native::ShaderCode::SgxBinary(bytes)
-    } else {
-        return Err(GlesError::Unsupported {
-            at,
-            record: "Vita requires an exported SGX effect shader",
-        });
-    };
-    #[cfg(not(target_os = "vita"))]
-    let code = if format == EffectShaderFormat::GlslEs100 {
-        native::ShaderCode::Source(std::str::from_utf8(bytes).map_err(|_| {
-            GlesError::InvalidRecord {
-                at,
-                record: "effect GLSL encoding",
-            }
-        })?)
-    } else {
-        return Err(GlesError::Unsupported {
-            at,
-            record: "GLES requires a prepared GLSL effect shader",
-        });
-    };
+    let code = super::super::effect_code(format, bytes, at)?;
     let storage = effect_cache::reserve(
         budget,
         size_of::<Compiled>()
@@ -100,7 +67,7 @@ fn compile(
         descriptor.output == reel_ui::stage::effect::EffectType::Float,
         padded,
     )
-    .map_err(|error| GlesError::Shader {
+    .map_err(|error| GpuError::Shader {
         at,
         asset: lease.version().key.0.clone(),
         source: Box::new(error),
@@ -131,7 +98,7 @@ impl Context<'_> {
         transform: Affine,
         source: &Target,
         at: RecordLocation,
-    ) -> Result<Target, GlesError> {
+    ) -> Result<Target, GpuError> {
         self.effect_draw(drawing, effect, transform, source, None, at)
     }
     /// Multiply the complete local source by scalar coverage in one pass.
@@ -143,7 +110,7 @@ impl Context<'_> {
         source: &Target,
         source_frame_to_pixels: Affine,
         at: RecordLocation,
-    ) -> Result<Target, GlesError> {
+    ) -> Result<Target, GpuError> {
         self.effect_draw(
             drawing,
             effect,
@@ -161,7 +128,7 @@ impl Context<'_> {
         source: &Target,
         source_view: Option<Affine>,
         at: RecordLocation,
-    ) -> Result<Target, GlesError> {
+    ) -> Result<Target, GpuError> {
         self.flush_draws()?;
         let shader = effect_plan::shader(drawing, effect, at)?;
         let effect_plan::Shader {
@@ -204,7 +171,7 @@ impl Context<'_> {
             context[0][3] = if effect.coverage_invert { 3.0 } else { 0.0 };
             effect_plan::map_source(&mut context, effect, transform, view, source.size);
         }
-        effect_plan::map_storage(&mut context, source.size, source.view.size(), true);
+        effect_plan::map_storage(&mut context, source.size, source.view.size());
         if self.scissor.empty() {
             return Ok(output);
         }
@@ -233,7 +200,7 @@ impl Context<'_> {
         let mut metadata = Vec::with_capacity(metadata_capacity);
         let mut values = Vec::with_capacity(value_capacity);
         for (index, handle) in effect.images.iter().enumerate() {
-            let image = self.images.get(handle).ok_or(GlesError::InvalidRecord {
+            let image = self.images.get(handle).ok_or(GpuError::InvalidRecord {
                 at,
                 record: "effect texture is not resident",
             })?;
@@ -276,7 +243,7 @@ impl Context<'_> {
         }
         let mesh = if padded {
             let vertices =
-                effect_plan::implicit_mesh::vertices(&context).ok_or(GlesError::InvalidSize)?;
+                effect_plan::implicit_mesh::vertices(&context).ok_or(GpuError::InvalidSize)?;
             let mut mesh = crate::common::mesh::Mesh::new(self.mesh_allocation());
             mesh.triangles(&vertices)?;
             let batch = crate::common::draw_batch::Batch::new(mesh, ())?;
@@ -327,7 +294,7 @@ impl Context<'_> {
             textures: &images,
             uniforms: &values,
             blend: native::Blend::Replace,
-            scissor: self.gl_scissor(),
+            scissor: self.native_scissor(),
         })?;
         Ok(output)
     }

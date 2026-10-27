@@ -62,8 +62,7 @@ impl Scissor {
             }
             let value = value.clamp(0., f64::from(extent));
             if samples == 1 {
-                // GLES guarantees at least four fractional rasterization bits.
-                // Keep one subpixel step around the center on the geometry path
+                // Keep a conservative subpixel margin around the center on the geometry path
                 // so vertex quantization cannot change the accepted pixels.
                 if (value.fract() - 0.5).abs() <= 1. / 16. {
                     return None;

@@ -31,11 +31,7 @@ fn prepare_probe() {
     // Retain the player's native startup configuration in the diagnostic binary.
     // reel-player supplies the archive; the linker must keep these process symbols.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("vita") {
-        for symbol in [
-            "sceUserMainThreadStackSize",
-            "sceLibcHeapSize",
-            "_newlib_heap_size_user",
-        ] {
+        for symbol in ["sceUserMainThreadStackSize", "_newlib_heap_size_user"] {
             println!("cargo:rustc-link-arg-bin=reel-gpu-probe=-Wl,--undefined={symbol}");
         }
     }
@@ -52,23 +48,25 @@ fn prepare_static_mask() {
     let output = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     let mask = masks::program("mask_dag").expect("the shared mask probe is valid");
     let program = lower_mask(&mask).expect("the DAG uses the shared effect language");
-    let fragment = compile_fragment(&program, Language::GlslEs100, 4 << 20)
+    let vita = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("vita");
+    let language = if vita { Language::Cg } else { Language::Wgsl };
+    let fragment = compile_fragment(&program, language, 4 << 20)
         .expect("generate the probe through the production effect compiler");
-    std::fs::write(output.join("static-mask.glsl"), &fragment.source).unwrap();
-    let (format, raw) = if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("vita") {
-        let mut compiler = pvr_compiler::Compiler::new().expect("offline Vita shader compiler");
-        let compiled = compiler
-            .compile_binary(pvr_compiler::Stage::Fragment, &fragment.source)
+    let (format, raw) = if vita {
+        use reel_render::effect::gxp_compiler::{Compiler, Stage};
+        let compiler = Compiler::new().expect("offline Sony shader compiler");
+        for path in compiler.tool_files().expect("compiler inputs") {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+        for name in ["REEL_PSP2CGC", "SCE_PSP2_SDK_DIR"] {
+            println!("cargo:rerun-if-env-changed={name}");
+        }
+        let binary = compiler
+            .compile(Stage::Fragment, &fragment.source)
             .expect("compile the static mask at packaging time");
-        assert!(
-            compiled.success && !compiled.binary.is_empty(),
-            "{}",
-            compiled.log
-        );
-        std::fs::write(output.join("static-mask.sgx"), &compiled.binary).unwrap();
-        (EffectShaderFormat::Sgx543, compiled.binary)
+        (EffectShaderFormat::Gxp, binary)
     } else {
-        (EffectShaderFormat::GlslEs100, fragment.source.into_bytes())
+        (EffectShaderFormat::Wgsl, fragment.source.into_bytes())
     };
     let descriptor = EffectShaderDescriptor::with_textures(
         masks::STATIC_DEFINITION,

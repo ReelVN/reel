@@ -145,7 +145,7 @@ mod tests {
             let raw = b"void main() {}".to_vec();
             let descriptor = EffectShaderDescriptor::new(
                 [definition; 32],
-                EffectShaderFormat::GlslEs100,
+                EffectShaderFormat::Wgsl,
                 vec![],
                 EffectType::Vec4,
                 &raw,

@@ -1,6 +1,7 @@
 use super::{Error, Result, SIZE, r01_fixture};
 #[path = "masks.rs"]
 mod masks;
+#[path = "scenes/text.rs"]
 mod text;
 pub const TEXT_REVEAL_FRAMES: usize = text::LINE.len();
 use reel_core::{

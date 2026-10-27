@@ -1,4 +1,4 @@
-//! Prepared WGSL products with the same source/parameter ABI as GLES.
+//! Prepared WGSL products with the same source/parameter ABI as GXM.
 use super::{Gpu, GpuError, Quality, pipeline, replay::Context, targets::Target};
 use crate::common::{effect_cache, effect_plan};
 use reel_core::budget::{BudgetPool, BudgetTicket};
@@ -207,7 +207,7 @@ impl Context<'_> {
             context[0][3] = if effect.coverage_invert { 3.0 } else { 0.0 };
             effect_plan::map_source(&mut context, effect, transform, view, source.size);
         }
-        effect_plan::map_storage(&mut context, source.size, source.storage_size(), false);
+        effect_plan::map_storage(&mut context, source.size, source.storage_size());
         if self.scissor.empty() {
             return Ok(output);
         }

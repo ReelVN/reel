@@ -1,18 +1,28 @@
-//! GLES rendering of the common immutable frame and resource contracts.
+//! Native GXM execution of the common retained-frame plans.
+#[path = "draw.rs"]
 mod draw;
+#[path = "effect.rs"]
 mod effect;
+#[path = "geometry.rs"]
 mod geometry;
+#[path = "mask.rs"]
 mod mask;
+#[path = "ownership.rs"]
 mod ownership;
+#[path = "programs.rs"]
 mod programs;
+#[path = "replay.rs"]
 mod replay;
+#[path = "resources.rs"]
 mod resources;
+#[path = "target_cache.rs"]
 mod target_cache;
+#[path = "targets.rs"]
 mod targets;
-pub use crate::common::GpuError as GlesError;
+use super::{Options, native, native_error};
+use crate::common::GpuError;
 use crate::common::renderer::Budgets;
 use crate::*;
-use pvr_psp2_sys::graphics as native;
 use reel_core::budget::BudgetGroup;
 use resources::{Image, Images};
 use std::{
@@ -21,7 +31,7 @@ use std::{
 };
 
 struct CacheRetry {
-    cause: GlesError,
+    cause: GpuError,
     released: bool,
 }
 
@@ -33,63 +43,6 @@ struct DeviceResources<'a> {
     limits: crate::common::GpuLimits,
 }
 
-/// Device resource ceilings, all sharing one simultaneous-memory limit.
-#[derive(Clone, Copy, Debug)]
-pub struct GlesLimits {
-    /// Cached image, glyph atlas and persistent draw resources, in bytes.
-    pub resource_bytes: u64,
-    /// Simultaneous physical RGBA8 render targets, in bytes. Defaults to 48 MiB;
-    /// storage is charged on demand within the shared total ceiling.
-    pub target_bytes: u64,
-    /// CPU staging, in-flight geometry and evictable completed geometry, in bytes.
-    pub transient_bytes: u64,
-    /// Shared ceiling across all three pools, in bytes.
-    pub total_bytes: u64,
-    /// Maximum outstanding render, capture and upload submissions combined.
-    pub max_inflight: usize,
-    /// Work slice in upload bytes. One complete row or compressed mip is the
-    /// indivisible minimum, and may exceed this value while remaining budgeted.
-    pub image_upload_bytes_per_prepare: u64,
-}
-impl Default for GlesLimits {
-    fn default() -> Self {
-        Self {
-            resource_bytes: 64 << 20,
-            target_bytes: 48 << 20,
-            transient_bytes: 8 << 20,
-            total_bytes: 96 << 20,
-            max_inflight: 2,
-            image_upload_bytes_per_prepare: 2 << 20,
-        }
-    }
-}
-impl GlesLimits {
-    fn common(self) -> crate::common::GpuLimits {
-        crate::common::GpuLimits {
-            resource_bytes: self.resource_bytes,
-            target_bytes: self.target_bytes,
-            transient_bytes: self.transient_bytes,
-            max_inflight: self.max_inflight,
-            image_upload_bytes_per_prepare: self.image_upload_bytes_per_prepare,
-        }
-    }
-}
-/// Native assembly options. The module directory contains one matching driver build.
-#[derive(Clone, Debug)]
-pub struct GlesOptions {
-    pub module_directory: String,
-    pub vsync: bool,
-    pub limits: GlesLimits,
-}
-impl Default for GlesOptions {
-    fn default() -> Self {
-        Self {
-            module_directory: "app0:module".into(),
-            vsync: true,
-            limits: Default::default(),
-        }
-    }
-}
 struct Flight {
     fence: Rc<native::Fence>,
     submission: Option<(SubmissionId, FrameId)>,
@@ -101,10 +54,10 @@ struct Flight {
 }
 /// The renderer owns its native context; the host supplies only portable lifecycle
 /// and presentation callbacks. Submitted resources survive until their GPU fence.
-pub struct GlesBackend {
+pub struct Backend {
     context: ownership::Device,
     programs: Rc<programs::Programs>,
-    options: GlesOptions,
+    options: Options,
     budgets: Budgets,
     _group: BudgetGroup,
     images: Images,
@@ -118,38 +71,23 @@ pub struct GlesBackend {
     suspended: bool,
     next_submission: u64,
     flights: VecDeque<Flight>,
-    events: VecDeque<RenderEvent<GlesError>>,
+    events: VecDeque<RenderEvent<GpuError>>,
     failed_work: Vec<replay::Work>,
     failed_prepared: Vec<Rc<replay::Prepared>>,
     failed_images: Vec<Rc<Image>>,
     drain_failed: bool,
 }
-impl GlesBackend {
-    /// Create the thread-bound native context and load offline SGX programs.
+impl Backend {
+    /// Create the thread-bound device and load its offline programs.
     #[cfg(target_os = "vita")]
-    pub fn new(options: GlesOptions) -> Result<Self, GlesError> {
-        let context =
-            native::Context::new(&options.module_directory, options.vsync).map_err(native_error)?;
+    pub fn new(options: Options) -> Result<Self, GpuError> {
+        let context = super::create_context(&options).map_err(native_error)?;
         Self::with_context(context, options)
     }
 
-    /// Create an offscreen desktop EGL context with the same rendering and budget
-    /// paths as the device backend. Shaders use their shared GLSL sources.
-    #[cfg(not(target_os = "vita"))]
-    pub fn headless(size: [u32; 2], limits: GlesLimits) -> Result<Self, GlesError> {
-        let context = native::Context::headless(size, false).map_err(native_error)?;
-        Self::with_context(
-            context,
-            GlesOptions {
-                limits,
-                ..Default::default()
-            },
-        )
-    }
-
-    fn with_context(context: native::Context, options: GlesOptions) -> Result<Self, GlesError> {
+    fn with_context(context: native::Context, options: Options) -> Result<Self, GpuError> {
         if options.limits.max_inflight == 0 || options.limits.image_upload_bytes_per_prepare == 0 {
-            return Err(GlesError::InvalidSize);
+            return Err(GpuError::InvalidSize);
         }
         let context = ownership::Device::new(context);
         let group = BudgetGroup::new(options.limits.total_bytes);
@@ -192,7 +130,7 @@ impl GlesBackend {
             drain_failed: false,
         })
     }
-    fn check_native(&self) -> Result<(), GlesError> {
+    fn check_native(&self) -> Result<(), GpuError> {
         self.context.check()
     }
     /// Physical output dimensions used when configuring the common surface.
@@ -213,8 +151,7 @@ impl GlesBackend {
     /// Explicitly sample native allocator domains, separately from renderer budgets.
     /// Heap snapshots are adjacent observations; registered storage, its device
     /// suballocations and independent historical peaks must not be added together.
-    /// Host EGL has no matching native allocator query and returns `None`.
-    pub fn native_memory_usage(&self) -> Result<Option<native::DriverMemoryUsage>, GlesError> {
+    pub fn native_memory_usage(&self) -> Result<super::MemoryUsage, GpuError> {
         self.context.memory_usage().map_err(native_error)
     }
     /// Completed geometry capacity, including allocation metadata, retained as
@@ -226,7 +163,7 @@ impl GlesBackend {
     /// Call only after that player and its captures have been dropped. The native
     /// device and offline programs remain owned by this backend for the next player.
     /// A failed drain retains all owners and prevents mounting another session.
-    pub fn reset_session(&mut self) -> Result<(), GlesError> {
+    pub fn reset_session(&mut self) -> Result<(), GpuError> {
         self.context.refresh();
         self.check_native()?;
         self.suspended = true;
@@ -255,10 +192,10 @@ impl GlesBackend {
         self.drain_failed = false;
         Ok(())
     }
-    /// Release device resources, then explicitly close EGL and its native modules.
+    /// Release session resources, drain display work, and close the native device.
     /// The underlying close rejects any outstanding resource or capture owner and
-    /// reports the actual EGL/module failure instead of creating another context.
-    pub fn close(mut self) -> Result<(), GlesError> {
+    /// reports the actual device failure.
+    pub fn close(mut self) -> Result<(), GpuError> {
         self.reset_session()?;
         let context = self.context.clone();
         drop(self);
@@ -280,7 +217,7 @@ impl GlesBackend {
         frame: &RenderFrame,
         size: [u32; 2],
         capture: bool,
-    ) -> Result<replay::Prepared, GlesError> {
+    ) -> Result<replay::Prepared, GpuError> {
         if capture {
             self.images.release_idle();
             self.check_native()?;
@@ -291,12 +228,12 @@ impl GlesBackend {
         let fallback = self.geometry.optional_used
             && matches!(
                 result,
-                Err(GlesError::Budget {
+                Err(GpuError::Budget {
                     domain: "transient" | "mesh scratch" | "geometry" | "index packing",
                     ..
                 })
             );
-        if (fallback || matches!(result, Err(GlesError::Pressure { .. }))) && !self.drain_failed {
+        if (fallback || matches!(result, Err(GpuError::Pressure { .. }))) && !self.drain_failed {
             let cause = result.err().unwrap();
             let resident = self._group.usage().bytes;
             self.targets.release_idle();
@@ -328,20 +265,20 @@ impl GlesBackend {
         size: [u32; 2],
         capture: bool,
         retry: Option<CacheRetry>,
-    ) -> Result<replay::Prepared, GlesError> {
+    ) -> Result<replay::Prepared, GpuError> {
         self.check_native()?;
         self.masks.prune();
         if self.drain_failed {
-            return Err(GlesError::NativeDeviceLost(
+            return Err(GpuError::NativeDeviceLost(
                 "GPU failure could not be drained".into(),
             ));
         }
         let limits = self.options.limits.common();
         if !capture && self.retained.pending(&frame.key()) {
-            return Err(GlesError::Preparing);
+            return Err(GpuError::Preparing);
         }
         if self.flights.len() >= limits.max_inflight {
-            return Err(GlesError::Busy);
+            return Err(GpuError::Busy);
         }
         self.images.prune(&[]);
         self.glyphs.prune(&[]);
@@ -401,7 +338,7 @@ impl GlesBackend {
             )?
         };
         if let Some(retry) = retry
-            && matches!(retry.cause, GlesError::Pressure { .. })
+            && matches!(retry.cause, GpuError::Pressure { .. })
         {
             let resident = self._group.usage().bytes;
             self.images.retain_demand(&plan.images);
@@ -442,18 +379,15 @@ impl GlesBackend {
         for mask in &plan.masks {
             let caps = self.context.capabilities();
             if mask.definition.program.operations().len() > mask::OPERATION_CAPACITY {
-                return Err(GlesError::Unsupported {
+                return Err(GpuError::Unsupported {
                     at: mask.at,
                     record: "mask graph exceeds the device interpreter capacity",
                 });
             }
-            if mask.definition.images.len() > 4
-                || caps.max_texture_units < 4
-                || caps.max_fragment_uniform_vectors < mask::UNIFORM_VECTORS
-            {
-                return Err(GlesError::Unsupported {
+            if mask.definition.images.len() > 4 || caps.max_texture_units < 4 {
+                return Err(GpuError::Unsupported {
                     at: mask.at,
-                    record: "mask exceeds device uniform or texture-unit capacity",
+                    record: "mask exceeds device texture-unit capacity",
                 });
             }
             for handle in &mask.definition.images {
@@ -461,7 +395,7 @@ impl GlesBackend {
                     image.source.handle() == *handle
                         && matches!(image.source.data(), ResourceData::Yuv420(_))
                 }) {
-                    return Err(GlesError::Unsupported {
+                    return Err(GpuError::Unsupported {
                         at: mask.at,
                         record: "mask requires an image source",
                     });
@@ -522,7 +456,7 @@ impl GlesBackend {
                 upload: true,
                 retained: None,
             });
-            return Err(GlesError::Busy);
+            return Err(GpuError::Busy);
         }
         // Captures retain their output until readback, independently of later frames.
         let mut capture_targets = target_cache::Cache::default();
@@ -574,7 +508,7 @@ impl GlesBackend {
                         self.retained.cancel(&frame.key());
                         return Err(error);
                     }
-                    Err(GlesError::Preparing)
+                    Err(GpuError::Preparing)
                 } else {
                     Ok(prepared)
                 }
@@ -593,7 +527,7 @@ impl GlesBackend {
         frame: &RenderFrame,
         prepared: replay::Prepared,
         submission: Option<(SubmissionId, FrameId)>,
-    ) -> Result<(Rc<replay::Prepared>, Rc<native::Fence>), GlesError> {
+    ) -> Result<(Rc<replay::Prepared>, Rc<native::Fence>), GpuError> {
         let prepared = Rc::new(prepared);
         let fence = match self.context.fence() {
             Ok(fence) => Rc::new(fence),
@@ -624,12 +558,12 @@ impl GlesBackend {
         Ok((prepared, fence))
     }
 }
-impl RenderBackend for GlesBackend {
-    type Error = GlesError;
+impl RenderBackend for Backend {
+    type Error = GpuError;
     fn vsync(&self) -> Option<bool> {
         Some(self.context.vsync())
     }
-    fn set_vsync(&mut self, enabled: bool) -> Result<Option<bool>, GlesError> {
+    fn set_vsync(&mut self, enabled: bool) -> Result<Option<bool>, GpuError> {
         self.context.set_vsync(enabled).map_err(native_error)?;
         Ok(Some(enabled))
     }
@@ -691,7 +625,7 @@ impl RenderBackend for GlesBackend {
             },
         }
     }
-    fn configure(&mut self, info: SurfaceInfo) -> Result<(), GlesError> {
+    fn configure(&mut self, info: SurfaceInfo) -> Result<(), GpuError> {
         self.check_native()?;
         self.retained.clear();
         self.check_native()?;
@@ -702,7 +636,7 @@ impl RenderBackend for GlesBackend {
             || info.color_encoding != ColorEncoding::Srgb
             || info.alpha_mode != AlphaMode::Opaque
         {
-            return Err(GlesError::InvalidSurface);
+            return Err(GpuError::InvalidSurface);
         }
         self.info = Some(info);
         self.suspended = false;
@@ -713,7 +647,7 @@ impl RenderBackend for GlesBackend {
             request: batch,
             reason: RejectReason::new(
                 RejectCode::Unsupported,
-                "GLES prepares immutable frame resources directly",
+                "GXM prepares immutable frame resources directly",
             ),
         })
     }
@@ -721,24 +655,24 @@ impl RenderBackend for GlesBackend {
         &mut self,
         frame: &RenderFrame,
         before_present: impl FnOnce(),
-    ) -> Result<PresentOutcome, GlesError> {
+    ) -> Result<PresentOutcome, GpuError> {
         self.check_native()?;
         if self.suspended {
             return Ok(PresentOutcome::Skipped(SkipReason::Suspended));
         }
-        let info = self.info.ok_or(GlesError::InvalidSurface)?;
+        let info = self.info.ok_or(GpuError::InvalidSurface)?;
         if frame.surface_epoch() != info.surface_epoch
             || frame.info().physical_size != info.physical_size
         {
-            return Err(GlesError::WrongSurface);
+            return Err(GpuError::WrongSurface);
         }
         let id = SubmissionId(self.next_submission);
         let next = self
             .next_submission
             .checked_add(1)
-            .ok_or(GlesError::IdentityExhausted)?;
+            .ok_or(GpuError::IdentityExhausted)?;
         let prepared = match self.prepare(frame, info.physical_size, false) {
-            Err(GlesError::Preparing) => return Ok(PresentOutcome::Preparing),
+            Err(GpuError::Preparing) => return Ok(PresentOutcome::Preparing),
             result => result?,
         };
         if let Err(error) =
@@ -773,11 +707,7 @@ impl RenderBackend for GlesBackend {
     fn cancel_preparation(&mut self, frame: &RenderFrame) {
         self.retained.cancel(&frame.key());
     }
-    fn poll(
-        &mut self,
-        out: &mut Vec<RenderEvent<GlesError>>,
-        limit: usize,
-    ) -> Result<(), GlesError> {
+    fn poll(&mut self, out: &mut Vec<RenderEvent<GpuError>>, limit: usize) -> Result<(), GpuError> {
         self.check_native()?;
         while self.events.len() < limit {
             let Some(flight) = self.flights.front() else {
@@ -820,34 +750,34 @@ impl RenderBackend for GlesBackend {
     }
 }
 /// Requested readback owns the exact frame and its GPU result until completion.
-pub struct GlesCapture {
+pub struct Capture {
     prepared: Option<Rc<replay::Prepared>>,
     fence: Rc<native::Fence>,
     size: [u32; 2],
     output: BudgetPool,
     _frame: RenderFrame,
 }
-impl crate::capture::CaptureBackend for GlesBackend {
-    type Error = GlesError;
-    type Capture = GlesCapture;
+impl crate::capture::CaptureBackend for Backend {
+    type Error = GpuError;
+    type Capture = Capture;
     fn capture(
         &mut self,
         frame: &RenderFrame,
         size: [u32; 2],
         output: &BudgetPool,
         wake: reel_core::wake::WakeSignal,
-    ) -> Result<GlesCapture, GlesError> {
+    ) -> Result<Capture, GpuError> {
         if size.contains(&0)
             || size
                 .iter()
                 .any(|&n| n > self.context.capabilities().max_texture_size)
         {
-            return Err(GlesError::InvalidSize);
+            return Err(GpuError::InvalidSize);
         }
         let prepared = self.prepare(frame, size, true)?;
         let (prepared, fence) = self.submit(frame, prepared, None)?;
         wake.wake();
-        Ok(GlesCapture {
+        Ok(Capture {
             prepared: Some(prepared),
             fence,
             size,
@@ -857,8 +787,8 @@ impl crate::capture::CaptureBackend for GlesBackend {
     }
     fn poll_capture(
         &mut self,
-        capture: &mut GlesCapture,
-    ) -> Result<Option<crate::capture::CapturedPixels>, GlesError> {
+        capture: &mut Capture,
+    ) -> Result<Option<crate::capture::CapturedPixels>, GpuError> {
         self.check_native()?;
         if !capture.fence.poll().map_err(native_error)? {
             return Ok(None);
@@ -871,17 +801,11 @@ impl crate::capture::CaptureBackend for GlesBackend {
         let ticket = capture
             .output
             .reserve(bytes)
-            .map_err(|e| GlesError::Readback(e.message))?;
-        let mut rgba = vec![0u8; usize::try_from(bytes).map_err(|_| GlesError::InvalidSize)?];
+            .map_err(|e| GpuError::Readback(e.message))?;
+        let mut rgba = vec![0u8; usize::try_from(bytes).map_err(|_| GpuError::InvalidSize)?];
         self.context
             .read_rgba(&prepared.output.framebuffer, &mut rgba)
             .map_err(native_error)?;
-        let row = capture.size[0] as usize * 4;
-        for y in 0..capture.size[1] as usize / 2 {
-            let opposite = capture.size[1] as usize - 1 - y;
-            let (top, bottom) = rgba.split_at_mut(opposite * row);
-            top[y * row..(y + 1) * row].swap_with_slice(&mut bottom[..row]);
-        }
         for pixel in rgba.as_chunks_mut::<4>().0 {
             for channel in &mut pixel[..3] {
                 let x = f32::from(*channel) / 255.;
@@ -895,14 +819,14 @@ impl crate::capture::CaptureBackend for GlesBackend {
             pixel[3] = 255;
         }
         let rgba =
-            OwnedBytes::new(rgba, ticket).map_err(|e| GlesError::Readback(e.reason.message))?;
+            OwnedBytes::new(rgba, ticket).map_err(|e| GpuError::Readback(e.reason.message))?;
         Ok(Some(crate::capture::CapturedPixels {
             size: capture.size,
             rgba,
         }))
     }
 }
-impl Drop for GlesBackend {
+impl Drop for Backend {
     fn drop(&mut self) {
         if !self.context.refresh() && self.context.finish().is_ok() {
             self.flights.clear();
@@ -922,19 +846,5 @@ impl Drop for GlesBackend {
             std::mem::forget(std::mem::take(&mut self.glyphs));
             std::mem::forget(std::mem::take(&mut self.targets));
         }
-    }
-}
-pub(super) fn native_error(error: native::Error) -> GlesError {
-    match error {
-        native::Error::Terminal(_) | native::Error::Egl(_, 0x300e) => {
-            GlesError::NativeDeviceLost(error.to_string())
-        }
-        native::Error::Egl(_, 0x300d) => GlesError::NativeSurface(error.to_string()),
-        _ => GlesError::Device(error.to_string()),
-    }
-}
-impl From<native::Error> for GlesError {
-    fn from(error: native::Error) -> Self {
-        native_error(error)
     }
 }

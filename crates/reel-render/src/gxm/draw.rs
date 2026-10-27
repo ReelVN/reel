@@ -115,7 +115,7 @@ impl GlyphCache {
         density: f64,
         index: usize,
         at: RecordLocation,
-    ) -> Result<Rc<Glyph>, GlesError> {
+    ) -> Result<Rc<Glyph>, GpuError> {
         let DeviceResources {
             gpu,
             budgets,
@@ -128,7 +128,7 @@ impl GlyphCache {
                 .leases()
                 .iter()
                 .find(|r| r.handle() == run.font)
-                .ok_or(GlesError::Unsupported {
+                .ok_or(GpuError::Unsupported {
                     at,
                     record: "missing font",
                 })?,
@@ -172,7 +172,7 @@ impl GlyphCache {
                 512.min(max).max(requested.width as u32),
                 512.min(max).max(requested.height as u32),
             ];
-            let bytes = u64::from(size[0]) * u64::from(size[1]);
+            let bytes = super::super::texture_bytes(size, native::TextureFormat::Luma8)?;
             if bytes
                 > limits
                     .resource_bytes
@@ -197,9 +197,7 @@ impl GlyphCache {
                 }
             };
             let mut allocator = AtlasAllocator::new(size2(size[0] as i32, size[1] as i32));
-            let allocation = allocator
-                .allocate(requested)
-                .ok_or(GlesError::InvalidSize)?;
+            let allocation = allocator.allocate(requested).ok_or(GpuError::InvalidSize)?;
             let page = Rc::new(Page {
                 texture,
                 allocator: RefCell::new(allocator),
@@ -248,7 +246,7 @@ impl GlyphCache {
 }
 
 impl crate::common::glyph_plan::Prepare for Context<'_> {
-    fn reserve(&mut self, bytes: u64) -> Result<(), GlesError> {
+    fn reserve(&mut self, bytes: u64) -> Result<(), GpuError> {
         self.transient(bytes)
     }
 
@@ -258,7 +256,7 @@ impl crate::common::glyph_plan::Prepare for Context<'_> {
         run: &FrameGlyphRun,
         density: f64,
         at: RecordLocation,
-    ) -> Result<InkBounds, GlesError> {
+    ) -> Result<InkBounds, GpuError> {
         let key = Arc::new(RunKey::new(run, density));
         let mut ink = InkBounds::Empty;
         for (index, position) in run.glyphs.iter().enumerate() {
@@ -320,19 +318,14 @@ impl Context<'_> {
         parent_to_source: Affine,
         opacity: f32,
         at: RecordLocation,
-    ) -> Result<(), GlesError> {
+    ) -> Result<(), GpuError> {
         if parent_to_source.determinant() == 0. {
             return Ok(());
         }
         self.flush_draws()?;
         self.ensure_sampled(&source.view)?;
         let mut mesh = mesh::Mesh::new(self.mesh_allocation());
-        crate::common::effect_plan::projected_source(
-            &mut mesh,
-            source.size,
-            source.view.size(),
-            true,
-        )?;
+        crate::common::effect_plan::projected_source(&mut mesh, source.size, source.view.size())?;
         mesh::transform_glyphs(
             &mut mesh,
             parent_to_source.inverse(),
@@ -372,16 +365,16 @@ impl Context<'_> {
         &self,
         handle: ResourceHandle,
         at: RecordLocation,
-    ) -> Result<Rc<Image>, GlesError> {
+    ) -> Result<Rc<Image>, GpuError> {
         self.images
             .get(&handle)
             .cloned()
-            .ok_or(GlesError::Unsupported {
+            .ok_or(GpuError::Unsupported {
                 at,
                 record: "image missing from upload plan",
             })
     }
-    pub fn white(&mut self) -> Result<Rc<Image>, GlesError> {
+    pub fn white(&mut self) -> Result<Rc<Image>, GpuError> {
         self.image_cache
             .white(self.gpu, self.budgets, self.limits.resource_bytes)
     }
@@ -391,7 +384,7 @@ impl Context<'_> {
         clip: &Clip,
         outer: Affine,
         at: RecordLocation,
-    ) -> Result<(), GlesError> {
+    ) -> Result<(), GpuError> {
         let (transform, shape, fill, stroke) = match clip {
             Clip::Fill {
                 transform,
@@ -419,7 +412,7 @@ impl Context<'_> {
         &mut self,
         target: &Target,
         mesh: impl Into<crate::common::recording_cache::Reference>,
-    ) -> Result<(), GlesError> {
+    ) -> Result<(), GpuError> {
         let white = self.white()?;
         self.paint_mesh(
             target,
@@ -446,7 +439,7 @@ impl Context<'_> {
         draw: &FrameDraw,
         outer: Affine,
         origin: reel_ui::frame::CommandOrigin,
-    ) -> Result<(), GlesError> {
+    ) -> Result<(), GpuError> {
         let at = origin.at;
         let (transform, shape, fill, stroke, brush, brush_transform, composite) = match draw {
             FrameDraw::Fill {
@@ -483,7 +476,7 @@ impl Context<'_> {
             ),
             FrameDraw::GlyphRun(run) => return self.draw_glyphs(frame, target, run, outer, origin),
             FrameDraw::BlurredRoundedRect(_) => {
-                return Err(GlesError::Unsupported {
+                return Err(GpuError::Unsupported {
                     at,
                     record: "blurred rounded rect",
                 });
@@ -523,7 +516,7 @@ impl Context<'_> {
                     || brush.sampler.x_extend == Extend::Reflect
                     || brush.sampler.y_extend == Extend::Reflect
                 {
-                    return Err(GlesError::Unsupported {
+                    return Err(GpuError::Unsupported {
                         at,
                         record: "image sampler",
                     });
@@ -624,7 +617,7 @@ impl Context<'_> {
         target: &Target,
         commands: &[reel_ui::frame::FrameCommand],
         outer: Affine,
-    ) -> Result<usize, GlesError> {
+    ) -> Result<usize, GpuError> {
         let Some(first) = commands.first() else {
             return Ok(0);
         };
@@ -727,7 +720,7 @@ impl Context<'_> {
         run: &FrameGlyphRun,
         outer: Affine,
         origin: reel_ui::frame::CommandOrigin,
-    ) -> Result<(), GlesError> {
+    ) -> Result<(), GpuError> {
         let at = origin.at;
         self.composite_supported(run.composite, at)?;
         let (color, paint) = match &run.brush {
@@ -751,7 +744,7 @@ impl Context<'_> {
                 ([run.composite.alpha; 4], Some(paint))
             }
             Brush::Image(_) => {
-                return Err(GlesError::Unsupported {
+                return Err(GpuError::Unsupported {
                     at,
                     record: "image glyph brush",
                 });
@@ -803,7 +796,7 @@ impl Context<'_> {
                     .entries
                     .get(&key)
                     .cloned()
-                    .ok_or(GlesError::Unsupported {
+                    .ok_or(GpuError::Unsupported {
                         at,
                         record: "glyph missing from preparation",
                     })?;
@@ -875,7 +868,7 @@ impl Context<'_> {
         mesh: impl Into<crate::common::recording_cache::Reference>,
         page: &Page,
         paint: Option<crate::common::gradient::Uniform>,
-    ) -> Result<(), GlesError> {
+    ) -> Result<(), GpuError> {
         self.paint_mesh(
             target,
             mesh,
@@ -902,7 +895,7 @@ impl Context<'_> {
         repeat: [bool; 2],
         appearance: Option<ImageAppearance>,
         quality: ImageQuality,
-    ) -> Result<(), GlesError> {
+    ) -> Result<(), GpuError> {
         if appearance
             .and_then(|a| a.gradient)
             .is_some_and(|g| g.transform.determinant() == 0.)
@@ -946,7 +939,7 @@ impl Context<'_> {
         target: &Target,
         mesh: impl Into<crate::common::recording_cache::Reference>,
         paint: Paint<'_>,
-    ) -> Result<(), GlesError> {
+    ) -> Result<(), GpuError> {
         let Paint {
             texture,
             planes,
@@ -1001,7 +994,7 @@ impl Context<'_> {
             repeat,
             quality,
             coverage,
-            scissor: self.gl_scissor(),
+            scissor: self.native_scissor(),
         };
         if let Some(mut batch) = self.paint_batch.take() {
             let result = batch.geometry.push(mesh, state);
@@ -1016,7 +1009,7 @@ impl Context<'_> {
         }
     }
     /// Flush before target clearing, composition, or leaving the replay stream.
-    pub(super) fn flush_draws(&mut self) -> Result<(), GlesError> {
+    pub(super) fn flush_draws(&mut self) -> Result<(), GpuError> {
         let Some(batch) = self.paint_batch.take() else {
             return Ok(());
         };

@@ -33,10 +33,8 @@ pub(crate) fn prepared_effect_assets(
         let input = BudgetPool::new(BudgetCategory::CpuInput, limits);
         let mut io = MemoryAssetIo::new(limits, limits, wake.clone());
         for definition in products.definitions() {
-            for (language, format) in [
-                (Language::Wgsl, EffectShaderFormat::Wgsl),
-                (Language::GlslEs100, EffectShaderFormat::GlslEs100),
-            ] {
+            {
+                let (language, format) = (Language::Wgsl, EffectShaderFormat::Wgsl);
                 let fragment = compile_fragment(&definition.program, language, 4 << 20).unwrap();
                 let descriptor = EffectShaderDescriptor::with_textures(
                     definition.id,

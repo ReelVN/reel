@@ -460,7 +460,7 @@ fn borrowed_device_survives_player_font_frame_retirement_and_remount() {
         font.upgrade().is_none(),
         "departed player's font owners are released"
     );
-    // Like GLES reset_session, clear the departed session's surface and caches
+    // Like GXM reset_session, clear the departed session's surface and caches
     // while preserving the device wrapper. A new player owns a fresh epoch domain.
     let reset_session = |backend: &mut Backend| {
         assert!(!backend.has_pending());

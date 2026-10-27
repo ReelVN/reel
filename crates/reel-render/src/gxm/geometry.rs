@@ -1,4 +1,4 @@
-use super::{Budgets, GlesError, native, resources};
+use super::{Budgets, GpuError, native, resources};
 use crate::common::{
     geometry::{Allocation, Capacity, Pool},
     mesh,
@@ -27,7 +27,7 @@ impl Buffers {
         budgets: &Budgets,
         local: &Budgets,
         limit: u64,
-    ) -> Result<bool, GlesError> {
+    ) -> Result<bool, GpuError> {
         let Some(layout) = self
             .layout
             .as_ref()
@@ -151,7 +151,7 @@ pub(super) fn upload_batch<T>(
     local: &Budgets,
     limits: crate::common::GpuLimits,
     batch: &crate::common::draw_batch::Batch<T>,
-) -> Result<(Storage, BudgetTicket, Option<BudgetTicket>), GlesError> {
+) -> Result<(Storage, BudgetTicket, Option<BudgetTicket>), GpuError> {
     let mut reused = cache.take_batch(batch, local);
     let partial = if let Some((storage, _)) = &mut reused {
         storage.storage.upload_segments(
@@ -226,7 +226,7 @@ pub(super) fn acquire(
     limits: crate::common::GpuLimits,
     mesh: &mesh::Mesh,
     indices: &crate::common::indices::Upload<'_, crate::common::renderer::Reservation>,
-) -> Result<(Storage, BudgetTicket, bool), GlesError> {
+) -> Result<(Storage, BudgetTicket, bool), GpuError> {
     let requested = Capacity {
         vertices: std::mem::size_of_val(mesh.vertices.as_slice()) as u64,
         indices: indices.bytes().len() as u64,
@@ -252,7 +252,7 @@ pub(super) fn acquire(
     let local = local
         .transient
         .reserve(bytes)
-        .map_err(|_| GlesError::Budget {
+        .map_err(|_| GpuError::Budget {
             domain: "geometry",
             requested: bytes,
             available: limits

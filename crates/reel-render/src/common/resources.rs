@@ -38,13 +38,13 @@ impl<T> RetiredImages<T> {
 
 /// Initialized CPU upload capacity. Native upload APIs finish reading this slice
 /// before returning, so later uploads may overwrite it without a GPU wait.
-#[cfg(any(feature = "gles2", test))]
+#[cfg(any(feature = "gxm", test))]
 #[derive(Default)]
 pub(crate) struct UploadScratch {
     bytes: Vec<u8>,
     ticket: Option<reel_core::budget::BudgetTicket>,
 }
-#[cfg(any(feature = "gles2", test))]
+#[cfg(any(feature = "gxm", test))]
 impl UploadScratch {
     pub(crate) fn capacity(&self) -> u64 {
         self.bytes.len() as u64
@@ -188,18 +188,18 @@ static SRGB_TO_LINEAR_F16: LazyLock<[u16; 256]> =
 static NORMALIZED_F16: LazyLock<[u16; 256]> =
     LazyLock::new(|| std::array::from_fn(|i| half::f16::from_f32(i as f32 / 255.).to_bits()));
 
-#[cfg(any(feature = "gles2", test))]
+#[cfg(any(feature = "gxm", test))]
 static SRGB_TO_LINEAR_U8: LazyLock<[u8; 256]> =
     LazyLock::new(|| SRGB_TO_LINEAR_F16.map(linear_f16_u8));
 
-#[cfg(any(feature = "gles2", test))]
+#[cfg(any(feature = "gxm", test))]
 fn linear_f16_u8(bits: u16) -> u8 {
     (half::f16::from_bits(bits).to_f32().clamp(0., 1.) * 255.).round() as u8
 }
 
-/// Convert into the GLES UNORM working texture. Opaque images use a single
+/// Convert into the GXM UNORM working texture. Opaque images use a single
 /// lookup per channel; translucent pixels retain the shared color conversion.
-#[cfg(any(feature = "gles2", test))]
+#[cfg(any(feature = "gxm", test))]
 pub(crate) fn rgba8_linear_u8(
     rgba: &[u8],
     encoding: ColorEncoding,

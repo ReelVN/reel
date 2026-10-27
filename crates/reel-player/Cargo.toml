@@ -12,7 +12,7 @@ winit = ["dep:winit", "dep:ui-events-winit", "dep:arboard"]
 gamepad = ["dep:gilrs"]
 video = ["reel-media/video"]
 video-software = ["video", "reel-media/video-software"]
-vita = ["video", "reel-media/opus", "reel-media/vita", "reel-media/vita-output", "reel-render/gles2"]
+vita = ["video", "reel-media/opus", "reel-media/vita", "reel-media/vita-output", "reel-render/gxm"]
 audio-output = ["reel-media/cpal-output"]
 window = ["video-software", "audio-output", "gamepad", "winit", "dep:wgpu", "dep:pollster", "reel-render/wgpu"]
 

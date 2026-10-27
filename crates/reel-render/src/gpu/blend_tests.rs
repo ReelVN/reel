@@ -185,7 +185,10 @@ fn fold(source: &str) -> Vec<f32> {
 #[test]
 fn separable_shader_formulas_match_both_backends_at_piecewise_and_alpha_boundaries() {
     let wgsl = include_str!("composite.wgsl");
-    let glsl = include_str!("../gles2/shaders/composite.glsl");
+    let cg = include_str!("../gxm/shaders/composite.cg")
+        .replace("float3", "vec3")
+        .replace("float4", "vec4")
+        .replace("lerp", "mix");
     let names = [
         "overlay",
         "hard_light",
@@ -196,7 +199,7 @@ fn separable_shader_formulas_match_both_backends_at_piecewise_and_alpha_boundari
         "linear_burn",
     ];
     let curve = expression(wgsl, "soft_curve");
-    assert_eq!(curve, expression(glsl, "soft_curve"));
+    assert_eq!(curve, expression(&cg, "soft_curve"));
     let values = [0., 0.125, 0.25, 0.5, 0.75, 0.99999994, 1.];
     // The first returns are zero-alpha guards; the final return is source-over.
     let alpha = wgsl
@@ -212,7 +215,7 @@ fn separable_shader_formulas_match_both_backends_at_piecewise_and_alpha_boundari
         .split_once(';')
         .unwrap()
         .0;
-    let gl_alpha = glsl
+    let cg_alpha = cg
         .split_once("vec4 separable(")
         .unwrap()
         .1
@@ -225,12 +228,12 @@ fn separable_shader_formulas_match_both_backends_at_piecewise_and_alpha_boundari
         .split_once(';')
         .unwrap()
         .0;
-    assert_eq!(alpha, gl_alpha);
+    assert_eq!(alpha, cg_alpha);
     for (mode, name) in names.into_iter().enumerate() {
         let production = expression(wgsl, name);
         assert_eq!(
             production,
-            expression(glsl, name),
+            expression(&cg, name),
             "{name}: backend formulas differ"
         );
         let production = production.replace("soft_curve(b)", &format!("({curve})"));

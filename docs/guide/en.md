@@ -41,6 +41,8 @@ reel export --release --resource-target vita --runtime path/to/vita-runtime
 
 Use the platform's packaging tool to turn that directory into an installable package. A Vita runtime consumes prepared Opus audio and block textures; hardware movies use H.264/AAC with even dimensions up to 960 × 544.
 
+Vita exports compile effects to GXP with the official SDK host tool `psp2cgc`. Set `REEL_PSP2CGC` to the compiler executable or `SCE_PSP2_SDK_DIR` to the SDK directory. The runtime embeds its builtin programs and uses the system GXM API.
+
 With the Reel launcher installed, export each game as data:
 
 ```sh

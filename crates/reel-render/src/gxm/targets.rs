@@ -1,9 +1,9 @@
-//! Queue-ordered scratch allocation and initialization for GLES replay.
-use super::{GlesError, native, replay::Context, resources::Target};
+//! Queue-ordered scratch allocation and initialization for GXM replay.
+use super::{GpuError, native, replay::Context, resources::Target};
 use crate::common::renderer::Reservation;
 
 impl Context<'_> {
-    pub fn target(&mut self) -> Result<Target, GlesError> {
+    pub fn target(&mut self) -> Result<Target, GpuError> {
         self.flush_draws()?;
         let storage_size = self.offscreen.storage_size(self.size);
         let mut target = if let Some(index) = self
@@ -14,20 +14,20 @@ impl Context<'_> {
             self.available_targets.swap_remove(index)
         } else {
             let bytes = self.gpu.target_layout(storage_size)?.texture_bytes;
-            let local =
-                self.budget_scope
-                    .targets
-                    .reserve(bytes)
-                    .map_err(|_| GlesError::Budget {
-                        domain: "offscreen targets",
-                        requested: bytes,
-                        available: self
-                            .limits
-                            .target_bytes
-                            .saturating_sub(self.budget_scope.targets.usage().bytes),
-                    })?;
+            let local = self
+                .budget_scope
+                .targets
+                .reserve(bytes)
+                .map_err(|_| GpuError::Budget {
+                    domain: "offscreen targets",
+                    requested: bytes,
+                    available: self
+                        .limits
+                        .target_bytes
+                        .saturating_sub(self.budget_scope.targets.usage().bytes),
+                })?;
             // The previous frame's presentation draw precedes this clear on the
-            // same GLES queue. Capture outputs use a separate allocation set.
+            // same graphics queue. Capture outputs use a separate allocation set.
             let index = self
                 .targets
                 .iter()
@@ -45,7 +45,7 @@ impl Context<'_> {
                 // Only a refused reservation can be retried. An actual native
                 // failure keeps its original owner/ticket retirement path.
                 for recent in [false, true] {
-                    if !matches!(allocation, Err((GlesError::Pressure { .. }, None))) {
+                    if !matches!(allocation, Err((GpuError::Pressure { .. }, None))) {
                         break;
                     }
                     if self
@@ -94,7 +94,7 @@ impl Context<'_> {
         self.target_writes = writes;
         Ok(target)
     }
-    pub(super) fn ensure_target(&mut self, target: &Target) -> Result<(), GlesError> {
+    pub(super) fn ensure_target(&mut self, target: &Target) -> Result<(), GpuError> {
         if self.target_writes.take(target.slot) {
             let _timing = reel_core::profile::Scope::new(reel_core::profile::Phase::Clear);
             self.gpu
@@ -102,7 +102,7 @@ impl Context<'_> {
         }
         Ok(())
     }
-    pub(super) fn ensure_sampled(&mut self, source: &native::Texture) -> Result<(), GlesError> {
+    pub(super) fn ensure_sampled(&mut self, source: &native::Texture) -> Result<(), GpuError> {
         if let Some(slot) = self
             .targets
             .iter()
@@ -117,7 +117,7 @@ impl Context<'_> {
         }
         Ok(())
     }
-    pub(super) fn recycle_target(&mut self, target: Target) -> Result<(), GlesError> {
+    pub(super) fn recycle_target(&mut self, target: Target) -> Result<(), GpuError> {
         self.available_targets.push(target);
         Ok(())
     }
