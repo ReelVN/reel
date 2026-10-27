@@ -86,7 +86,7 @@ where
         };
         let configuration = match request.command {
             WindowCommand::Configure(configuration) => configuration,
-            WindowCommand::Focus { target } => {
+            WindowCommand::Focus { target, visibility } => {
                 let focused = story
                     .driver()
                     .adapter()
@@ -95,6 +95,7 @@ where
                         &mut self.presentation.bridge,
                         self.root_id,
                         target,
+                        visibility,
                     );
                 if story
                     .driver_mut()?

@@ -80,6 +80,7 @@ fn animated_scene_projection_and_frame_cost() {
                             label: Some(format!("Menu {index}").into()),
                             listening: true,
                             focus_on_pointer: true,
+                            focusable: true,
                         },
                         NodeProps {
                             x: (index % 6) as f64 * 100.,

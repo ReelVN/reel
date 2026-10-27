@@ -88,6 +88,11 @@ pub(super) fn api() -> &'static Api {
             version: "1".into(),
             exports: exports(&["std::time::now", "std::time::parts", "std::time::format"]),
         });
+        api.modules.push(ModuleInterface {
+            canonical_path: "std::number".into(),
+            version: "1".into(),
+            exports: exports(&["std::number::format"]),
+        });
         let mut math = super::math::bindings()
             .into_iter()
             .map(|binding| api.native(&binding.contract.symbol).symbol.clone())

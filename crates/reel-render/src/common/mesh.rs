@@ -138,12 +138,23 @@ pub(crate) struct ImagePaint {
     pub(crate) color: [f32; 4],
     pub(crate) sampling: ImageSampling,
 }
-/// Whole-texture paint preserves the resource's block-format alpha contract.
+/// Fixed image programs preserve the resource's sampling and block-alpha contract.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
 pub(crate) enum DirectPaint {
     Rgba,
     Bc1,
     Bc3,
+    RegionalRgba,
+    RegionalBc1,
+    RegionalBc3,
+}
+/// Fixed image shaders whose samples and interpolated vertex alpha are opaque.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
+pub(crate) enum OpaquePaint {
+    Bc1,
+    RegionalBc1,
 }
 pub struct Mesh {
     pub vertices: Vec<Vertex>,
@@ -255,6 +266,20 @@ impl Allocation {
     }
 }
 impl Mesh {
+    /// Prove opacity after clipping and before batching. Vertex alpha includes
+    /// authored opacity and analytic edge coverage; multisample coverage stays
+    /// with the rasterizer and remains equivalent under per-sample replacement.
+    pub(crate) fn opaque_paint(&self, direct: Option<DirectPaint>) -> Option<OpaquePaint> {
+        let paint = match direct? {
+            DirectPaint::Bc1 => OpaquePaint::Bc1,
+            DirectPaint::RegionalBc1 => OpaquePaint::RegionalBc1,
+            _ => return None,
+        };
+        self.vertices
+            .iter()
+            .all(|vertex| vertex.color[3] == 1.)
+            .then_some(paint)
+    }
     /// Classify before batching: another draw in the same segment may have a
     /// different source window. Zero windows delegate edge clamping to the
     /// sampler; regional windows retain the fragment-time half-texel clamp.
@@ -268,17 +293,30 @@ impl Mesh {
             || appearance.is_some_and(|values| {
                 !matches!(values[4][3], 0. | 1.) || values[5][3] != 0. || values[7][3] != 0.
             })
-            || self
-                .vertices
-                .iter()
-                .any(|vertex| vertex.source_window != [0.; 4])
         {
             return None;
         }
-        Some(match format {
-            Some(reel_core::texture::TextureFormat::Bc1Rgb) => DirectPaint::Bc1,
-            Some(reel_core::texture::TextureFormat::Bc3Rgba) => DirectPaint::Bc3,
-            _ => DirectPaint::Rgba,
+        let regional = self
+            .vertices
+            .first()
+            .is_some_and(|v| v.source_window != [0.; 4]);
+        if self.vertices.iter().any(|v| {
+            if regional {
+                v.source_window[2] <= 0. || v.source_window[3] <= 0.
+            } else {
+                v.source_window != [0.; 4]
+            }
+        }) {
+            return None;
+        }
+        use reel_core::texture::TextureFormat::{Bc1Rgb, Bc3Rgba};
+        Some(match (regional, format) {
+            (false, Some(Bc1Rgb)) => DirectPaint::Bc1,
+            (false, Some(Bc3Rgba)) => DirectPaint::Bc3,
+            (false, _) => DirectPaint::Rgba,
+            (true, Some(Bc1Rgb)) => DirectPaint::RegionalBc1,
+            (true, Some(Bc3Rgba)) => DirectPaint::RegionalBc3,
+            (true, _) => DirectPaint::RegionalRgba,
         })
     }
     /// Append already transformed geometry without changing primitive order.
@@ -948,7 +986,19 @@ mod tests {
             (Some(TextureFormat::Bc3Rgba), DirectPaint::Bc3),
         ] {
             assert_eq!(mesh.direct_paint([false; 2], None, format), Some(expected));
+            assert_eq!(
+                mesh.opaque_paint(Some(expected)),
+                (expected == DirectPaint::Bc1).then_some(OpaquePaint::Bc1)
+            );
         }
+        // A partially covered edge or authored alpha prevents replacement for
+        // the whole draw, even when its first vertex and texture are opaque.
+        for alpha in [0., 0.5, f32::NAN] {
+            mesh.vertices[3].color[3] = alpha;
+            assert_eq!(mesh.opaque_paint(Some(DirectPaint::Bc1)), None);
+        }
+        mesh.vertices[3].color[3] = 1.;
+        assert_eq!(mesh.opaque_paint(None), None);
         assert_eq!(mesh.direct_paint([true, false], None, None), None);
         assert_eq!(mesh.direct_paint([false, true], None, None), None);
         let mut appearance = [[0.; 4]; 9];
@@ -967,6 +1017,8 @@ mod tests {
             let mut styled = appearance;
             styled[field.0][field.1] = value;
             assert_eq!(mesh.direct_paint([false; 2], Some(&styled), None), None);
+            let direct = mesh.direct_paint([false; 2], Some(&styled), Some(TextureFormat::Bc1Rgb));
+            assert_eq!(mesh.opaque_paint(direct), None);
         }
         // One regional vertex is sufficient to reject the whole original draw.
         // In particular, do not infer eligibility from the first vertex.
@@ -978,6 +1030,18 @@ mod tests {
             storage_size: [4, 4],
         };
         ImageSampling::with_layout(None, layout, [false; 2]).apply(&mut mesh.vertices);
+        for (format, expected) in [
+            (None, DirectPaint::RegionalRgba),
+            (Some(TextureFormat::Bc1Rgb), DirectPaint::RegionalBc1),
+            (Some(TextureFormat::Bc3Rgba), DirectPaint::RegionalBc3),
+        ] {
+            assert_eq!(mesh.direct_paint([false; 2], None, format), Some(expected));
+            assert_eq!(
+                mesh.opaque_paint(Some(expected)),
+                (expected == DirectPaint::RegionalBc1).then_some(OpaquePaint::RegionalBc1)
+            );
+        }
+        ImageSampling::with_layout(None, layout, [true, false]).apply(&mut mesh.vertices);
         assert_eq!(mesh.direct_paint([false; 2], None, None), None);
     }
     use reel_ui::core::Widget;

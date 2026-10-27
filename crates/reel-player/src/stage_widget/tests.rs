@@ -59,6 +59,7 @@ fn virtual_fixture_with_font(
                 label: None,
                 listening: true,
                 focus_on_pointer: true,
+                focusable: true,
             },
             NodeProps {
                 height: Some(40.),
@@ -308,6 +309,7 @@ fn virtual_list_navigation_waits_for_accepted_rows_and_cancels_old_confirmation(
                     label: None,
                     listening: true,
                     focus_on_pointer: true,
+                    focusable: true,
                 },
                 NodeProps {
                     height: Some(40.),
@@ -477,6 +479,7 @@ fn virtual_list_navigation_finds_controls_beyond_initial_nonfocusable_rows() {
                     label: None,
                     listening: true,
                     focus_on_pointer: true,
+                    focusable: true,
                 }
             };
             let child = f
@@ -1325,6 +1328,7 @@ fn particle_bounds_follow_each_captured_extent_after_resize_and_append() {
         source: "sprite.png".into(),
         origin: None,
         seed: 42,
+        size_scale: 1.,
         time: 0.,
         batches: ParticleBatches::try_new(
             &pool,
@@ -1492,7 +1496,17 @@ fn particle_bounds_follow_each_captured_extent_after_resize_and_append() {
     assert!(restarted.bounding_box.y1 > small.bounding_box.y1);
     assert_covers_sprites(&restarted, &make_node(&[frame]));
 
-    for step in 4..20 {
+    let node = Arc::make_mut(&mut Arc::make_mut(view.root.as_mut().unwrap()).node);
+    let NodeKind::Particles(batch) = &mut node.kind else {
+        unreachable!()
+    };
+    batch.size_scale = 20.;
+    let enlarged = batch.clone();
+    let (geometry, scaled_layouts) = record(&mut bridge, widget_id, &view, 4);
+    assert!(scaled_layouts > restarted_layouts);
+    assert_covers_sprites(&geometry, &enlarged);
+
+    for step in 5..20 {
         let node = Arc::make_mut(&mut Arc::make_mut(view.root.as_mut().unwrap()).node);
         node.props.rotation = -17.;
         node.props.scale_x = 1.5;
@@ -1503,7 +1517,7 @@ fn particle_bounds_follow_each_captured_extent_after_resize_and_append() {
         let batch = batch.clone();
         let (geometry, layouts) = record(&mut bridge, widget_id, &view, step);
         assert_eq!(
-            layouts, restarted_layouts,
+            layouts, scaled_layouts,
             "time and affine motion remain render/compose only"
         );
         assert_covers_sprites(&geometry, &batch);
@@ -1919,6 +1933,7 @@ fn text_wrap_keeps_control_labels_on_their_existing_overflow_path() {
                 label: Some("A control label keeps its existing layout".into()),
                 listening: true,
                 focus_on_pointer: true,
+                focusable: true,
             },
             NodeProps {
                 width: Some(120.),
@@ -2475,6 +2490,7 @@ fn same_parent_reorder_preserves_widgets_focus_and_presented_hit_order() {
                     label: Some(label.into()),
                     listening: true,
                     focus_on_pointer: true,
+                    focusable: true,
                 },
                 NodeProps {
                     width: Some(160.),
@@ -2557,6 +2573,7 @@ fn mixed_prepared_background_keeps_particle_sprite_and_rejects_tiled_sprite() {
                 source: "assets/panels.png".into(),
                 origin: Some("snow.aside:7:3".into()),
                 seed: 42,
+                size_scale: 1.,
                 time: 0.,
                 batches: Default::default(),
             }),
@@ -2786,6 +2803,7 @@ fn decoded_frames_preserve_geometry_skip_asset_io_and_release_pixels_with_last_v
                 label: None,
                 listening: true,
                 focus_on_pointer: true,
+                focusable: true,
             },
             f.stage.node(f.root).unwrap().props.clone(),
         )

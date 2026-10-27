@@ -247,6 +247,14 @@ use std::math::to_int;
 let frame = to_int(1.25 * 20);
 ```
 
+显示数值时，用 `std::number::format` 选择小数位数或科学计数法的有效数字位数。格式化只生成文本，业务数值继续保留原精度；分隔符和显示量级由作品决定。舍入规则与范围见[标准库声明](../../crates/aside-std/src/number.rs)。
+
+```aside
+use std::number::format;
+let price = format(12.25, precision: 1);
+let total = format(123456789, precision: 4, mode: "scientific");
+```
+
 ## 3 组合画面与布局
 
 函数返回节点，尾随子节点块组合它们。块内可使用条件、循环和局部变量；返回 `null` 表示这一处省略节点。位置、背景与交互都沿用同一棵舞台树。
@@ -967,6 +975,14 @@ next.visible = true;
 let focused = await stage.focus(next);
 ```
 
+默认交接会显示导航焦点。用 `visibility: "preserve"` 保留交接应用时的指示状态，可以在鼠标操作期间预置下一次确认目标；随后按方向键或确认键会显示导航焦点。
+
+```aside
+let focused = await stage.focus(next, visibility: "preserve");
+```
+
+侧边操作可以用 `button(focusable: false, focus_on_pointer: false)` 接收鼠标悬停与点击，同时保留当前控件的焦点。`focusable: false` 会让方向键、Tab 和 `stage.focus` 跳过该按钮；显式交接返回 false。属性可绑定到模型，修改后沿当前舞台状态更新。
+
 `text_input` 编辑单行文本，`text_area` 编辑多行文本。绑定到业务字段后，控件写回与其他视图更新共用同一状态。
 
 ```aside
@@ -1185,6 +1201,12 @@ emit(glow, burst: 0, rate: 40, lifetime: 2, prewarm: 2,
     size: 12, size_spread: 0, size_curve: envelope,
     radial_speed: 40, radial_spread: 10, damping: 1,
     angle: 180, angle_spread: 180, spin_spread: 0);
+```
+
+用粒子节点的 `size_scale` 同时缩放所有存活和后续出生粒子的图形尺寸。它与每粒子的年龄尺寸曲线相乘，保留出生区域、位置和运动轨迹；可直接赋值、绑定或用 `tween` 变化。
+
+```aside
+await tween(glow, size_scale: 0, duration: 0.2).run();
 ```
 
 

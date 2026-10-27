@@ -27,6 +27,7 @@ struct PaintState {
     quality: ImageQuality,
     appearance: Option<super::gradient::Uniform>,
     direct: Option<mesh::DirectPaint>,
+    opaque: Option<mesh::OpaquePaint>,
     scissor: super::targets::Scissor,
 }
 
@@ -68,6 +69,7 @@ impl Context<'_> {
             return Ok(());
         }
         self.flush_draws()?;
+        self.ensure_sampled(&source.view);
         let mut mesh = mesh::Mesh::new(self.mesh_allocation());
         mesh.quad(
             Rect::new(0., 0., f64::from(source.size[0]), f64::from(source.size[1])),
@@ -522,10 +524,12 @@ impl Context<'_> {
         {
             self.flush_draws()?;
         }
+        let direct = (!coverage && yuv.is_none())
+            .then(|| mesh.direct_paint(repeat, appearance.as_ref(), texture_format))
+            .flatten();
         let state = PaintState {
-            direct: (!coverage && yuv.is_none())
-                .then(|| mesh.direct_paint(repeat, appearance.as_ref(), texture_format))
-                .flatten(),
+            direct,
+            opaque: mesh.opaque_paint(direct),
             image: image.clone(),
             coverage,
             texture_format,
@@ -689,7 +693,11 @@ impl Context<'_> {
         }
         let mut pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("reel ordered draw segment"),
-            color_attachments: &[Some(batch.target.attachment(false))],
+            color_attachments: &[Some(
+                batch
+                    .target
+                    .attachment(self.target_writes.take(batch.target.slot)),
+            )],
             depth_stencil_attachment: None,
             timestamp_writes: None,
             multiview_mask: None,
@@ -708,15 +716,18 @@ impl Context<'_> {
             } else if entry.state.yuv.is_some() {
                 &self.pipelines.yuv
             } else if let Some(direct) = entry.state.direct {
-                let index = match direct {
-                    mesh::DirectPaint::Rgba => 0,
-                    mesh::DirectPaint::Bc1 => 1,
-                    mesh::DirectPaint::Bc3 => 2,
-                };
+                let index = direct as usize;
                 #[cfg(test)]
                 self.pipelines.direct_draws[index]
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                &self.pipelines.direct[index]
+                if let Some(opaque) = entry.state.opaque {
+                    #[cfg(test)]
+                    self.pipelines.opaque_draws[opaque as usize]
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    &self.pipelines.opaque[opaque as usize]
+                } else {
+                    &self.pipelines.direct[index]
+                }
             } else {
                 &self.pipelines.paint
             });

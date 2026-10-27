@@ -31,7 +31,7 @@ impl PopupSource {
             identity: parent.identity.clone(),
             root: Some(self.root.clone()),
             popups: None,
-            resources: Vec::new(),
+            resources: Arc::from([]),
         }
     }
 }

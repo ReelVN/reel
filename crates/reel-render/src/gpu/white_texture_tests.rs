@@ -662,7 +662,7 @@ fn long_text_single_channel_atlas_submits_and_reuses_coverage() {
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
     renderer.poll().unwrap();
-    assert_eq!(renderer.pipelines.creations.snapshot(), [3, 10, 10, 10, 8]);
+    assert_eq!(renderer.pipelines.creations.snapshot(), [3, 15, 15, 15, 8]);
     let resident = renderer.usage().resources;
     assert!(resident > 0 && resident <= 2 * 512 * 512);
     assert_eq!(resident % (512 * 512), 0);
@@ -1060,6 +1060,8 @@ fn capture_plans_omit_excluded_image_uploads_and_isolated_targets() {
             4,
             u32::MAX,
             &crate::common::glyph_plan::Plan::default(),
+            &crate::common::offscreen::Plan::default(),
+            crate::common::target_plan::MaskExecution::Inline,
             |_| Ok(())
         )
         .unwrap()
@@ -1074,6 +1076,8 @@ fn capture_plans_omit_excluded_image_uploads_and_isolated_targets() {
             4,
             u32::MAX,
             &crate::common::glyph_plan::Plan::default(),
+            &crate::common::offscreen::Plan::default(),
+            crate::common::target_plan::MaskExecution::Inline,
             |_| Ok(())
         )
         .unwrap(),
@@ -1755,6 +1759,8 @@ fn capture_global_transition_keeps_old_content_when_new_content_is_excluded() {
             4,
             u32::MAX,
             &crate::common::glyph_plan::Plan::default(),
+            &crate::common::offscreen::Plan::default(),
+            crate::common::target_plan::MaskExecution::Inline,
             |_| Ok(())
         )
         .unwrap()

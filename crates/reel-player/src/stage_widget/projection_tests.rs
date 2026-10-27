@@ -208,11 +208,13 @@ fn replacement_stage_with_matching_ids_and_revisions_replaces_widgets_and_button
         label: Some("same".into()),
         listening: true,
         focus_on_pointer: true,
+        focusable: true,
     });
     let second = stage(NodeKind::Button {
         label: Some("same".into()),
         listening: true,
         focus_on_pointer: true,
+        focusable: true,
     });
     assert_eq!(
         (first.root(), first.revision()),
@@ -350,6 +352,7 @@ fn button_bindings_reuse_animation_and_track_content_topology_and_feedback() {
                 label: None,
                 listening: true,
                 focus_on_pointer: true,
+                focusable: true,
             },
             NodeProps::default(),
             vec![caption],

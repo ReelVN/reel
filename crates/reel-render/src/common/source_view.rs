@@ -5,6 +5,17 @@ use reel_ui::{
     kurbo::Affine,
 };
 
+/// Map normalized parent coordinates to a translated source's storage.
+/// Both backends interpolate this affine mapping before fragment sampling.
+pub(crate) fn uv_mapping(parent: [u32; 2], source: [u32; 2], origin: [u32; 2]) -> [f32; 4] {
+    [
+        parent[0] as f32 / source[0] as f32,
+        parent[1] as f32 / source[1] as f32,
+        -(origin[0] as f32) / source[0] as f32,
+        -(origin[1] as f32) / source[1] as f32,
+    ]
+}
+
 /// An isolated source keeps its storage, initialized content and parent pixels
 /// distinct. Integer translation preserves the parent's rasterization samples.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -156,6 +167,15 @@ mod tests {
                 let source = view.frame_to_source(Affine::IDENTITY) * parent;
                 assert!((source.x - (5. + sample)).abs() < 1e-10);
                 assert!((source.y - (7. + sample)).abs() < 1e-10);
+                let uv = uv_mapping(parent_size, view.storage_size, view.origin());
+                for (axis, (p, s)) in [(parent.x, source.x), (parent.y, source.y)]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let sampled = (p as f32 / parent_size[axis] as f32 * uv[axis] + uv[axis + 2])
+                        * view.storage_size[axis] as f32;
+                    assert!((sampled - s as f32).abs() < 0.0001);
+                }
             }
             assert!(view.storage_size[0] >= view.source_rect.width);
             assert!(view.storage_size[1] >= view.source_rect.height);

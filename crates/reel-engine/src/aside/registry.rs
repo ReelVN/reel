@@ -140,7 +140,7 @@ pub(super) fn contracts() -> Vec<NativeContract> {
         ("pointer", &[][..]),
         ("input", &[][..]),
         ("move_pointer", &["x", "y", "owner"][..]),
-        ("focus", &["target", "owner"][..]),
+        ("focus", &["target", "owner", "visibility"][..]),
     ] {
         contracts.push(NativeContract {
             rest: None,
@@ -151,7 +151,11 @@ pub(super) fn contracts() -> Vec<NativeContract> {
                 .map(|field| NativeParameter {
                     name: (*field).into(),
                     ty: BuiltinType::Any,
-                    default: (name == "focus" && *field == "owner").then_some(bc::Const::Null),
+                    default: match (name, *field) {
+                        ("focus", "owner") => Some(bc::Const::Null),
+                        ("focus", "visibility") => Some(bc::Const::Utf8("show".into())),
+                        _ => None,
+                    },
                 })
                 .collect(),
             result: BuiltinType::Any,

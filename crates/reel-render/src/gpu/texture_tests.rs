@@ -24,7 +24,7 @@ mod fixture;
 mod r01_fixture;
 
 fn frame(lease: ResourceLease, variant: u32, pool: &BudgetPool) -> RenderFrame {
-    let mut bridge = if variant == 5 {
+    let mut bridge = if matches!(variant, 5 | 8) {
         use reel_ui::{
             imaging::Composite,
             imaging::record::{Draw, Geometry, Scene},
@@ -32,22 +32,38 @@ fn frame(lease: ResourceLease, variant: u32, pool: &BudgetPool) -> RenderFrame {
             peniko::{Brush, Color},
         };
         let mut scene = Scene::new();
-        scene.draw(Draw::Fill {
-            transform: Affine::IDENTITY,
-            fill_rule: Default::default(),
-            brush: Brush::Solid(Color::WHITE),
-            brush_transform: None,
-            shape: Geometry::Rect(Rect::new(0., 0., 64., 48.)),
-            composite: Composite::default(),
-        });
+        if variant == 5 {
+            scene.draw(Draw::Fill {
+                transform: Affine::IDENTITY,
+                fill_rule: Default::default(),
+                brush: Brush::Solid(Color::WHITE),
+                brush_transform: None,
+                shape: Geometry::Rect(Rect::new(0., 0., 64., 48.)),
+                composite: Composite::default(),
+            });
+        }
         let mut widget = r01_fixture::RecordWidget::new(scene);
         widget.clip = false;
-        widget.mask = Some(PaintImageMask {
-            program: reel_ui::stage::MaskProgram::image("mask".into()),
-            images: vec![lease.clone()].into(),
-            bounds: Rect::new(0., 0., 64., 48.),
-            parameters: [0.5, 0., 0., 0., 0.],
-        });
+        if variant == 5 {
+            widget.mask = Some(PaintImageMask {
+                program: reel_ui::stage::MaskProgram::image("mask".into()),
+                images: vec![lease.clone()].into(),
+                bounds: Rect::new(0., 0., 64., 48.),
+                parameters: [0.5, 0., 0., 0., 0.],
+            });
+        } else {
+            for alpha in [1., 0.5, 1.] {
+                widget.resource_draws.push((
+                    lease.clone(),
+                    Rect::new(0., 0., 64., 48.),
+                    Affine::IDENTITY,
+                    reel_ui::peniko::ImageSampler {
+                        alpha,
+                        ..Default::default()
+                    },
+                ));
+            }
+        }
         r01_fixture::widget_bridge(widget, Affine::IDENTITY)
     } else {
         let mut widget = Image::from_resource(lease.clone());
@@ -56,6 +72,10 @@ fn frame(lease: ResourceLease, variant: u32, pool: &BudgetPool) -> RenderFrame {
             2 => widget.with_slice(Some(Insets::uniform(4.)), 1., true),
             3 => widget.with_pattern([true, true], 1., None),
             4 => widget.with_alpha_layout(ImageAlphaLayout::TopBottom),
+            6 => widget.with_color(reel_ui::peniko::Color::from_rgba8(255, 255, 255, 128)),
+            7 => widget
+                .with_source_rect(Some(Rect::new(0., 0., 24., 16.)))
+                .with_color(reel_ui::peniko::Color::from_rgba8(255, 255, 255, 128)),
             _ => widget,
         };
         let root = RenderRoot::new(
@@ -107,7 +127,7 @@ fn frame(lease: ResourceLease, variant: u32, pool: &BudgetPool) -> RenderFrame {
 
 #[test]
 #[ignore = "requires actual BC-capable graphics adapter; submits without pixel readback"]
-fn direct_paint_submits_each_alpha_policy_and_keeps_regional_draws_general() {
+fn direct_paint_submits_whole_and_regional_alpha_policies() {
     use std::sync::atomic::Ordering;
     let pool = BudgetPool::new(
         BudgetCategory::CpuOutput,
@@ -130,7 +150,8 @@ fn direct_paint_submits_each_alpha_policy_and_keeps_regional_draws_general() {
             .contains(wgpu::Features::TEXTURE_COMPRESSION_BC)
     );
     let mut renderer = Renderer::new(gpu);
-    let mut expected = [0; 3];
+    let mut expected = [0; 6];
+    let mut opaque = [0; 2];
     for (index, format) in [
         TextureFormat::Rgba8,
         TextureFormat::Bc1Rgb,
@@ -158,15 +179,23 @@ fn direct_paint_submits_each_alpha_policy_and_keeps_regional_draws_general() {
                 .unwrap(),
             )
             .unwrap();
-        for variant in [0, 1, 3, 4] {
+        for variant in [0, 1, 6, 7, 3, 4, 8] {
+            if variant == 8 && format != TextureFormat::Bc1Rgb {
+                continue;
+            }
             let frame = frame(registry.acquire(handle).unwrap(), variant, &pool);
             let prepared = renderer.prepare(&frame).unwrap();
             let pipelines = renderer
                 .pipelines
                 .get(&renderer.gpu, prepared.quality())
                 .unwrap();
-            if variant == 0 {
+            if matches!(variant, 0 | 6 | 8) {
                 expected[index] += 1;
+            } else if matches!(variant, 1 | 7) {
+                expected[index + 3] += 1;
+            }
+            if format == TextureFormat::Bc1Rgb && variant <= 1 {
+                opaque[variant as usize] += 1;
             }
             assert_eq!(
                 pipelines
@@ -175,6 +204,14 @@ fn direct_paint_submits_each_alpha_policy_and_keeps_regional_draws_general() {
                     .map(|count| count.load(Ordering::Relaxed)),
                 expected,
                 "format {format:?}, variant {variant}",
+            );
+            assert_eq!(
+                pipelines
+                    .opaque_draws
+                    .each_ref()
+                    .map(|count| count.load(Ordering::Relaxed)),
+                opaque,
+                "only opaque BC1 uses replacement: format {format:?}, variant {variant}"
             );
             renderer.submit(prepared).unwrap();
             renderer
@@ -185,8 +222,9 @@ fn direct_paint_submits_each_alpha_policy_and_keeps_regional_draws_general() {
             renderer.poll().unwrap();
         }
     }
-    assert_eq!(expected, [1, 1, 1]);
-    assert_eq!(renderer.pipelines.creations.snapshot(), [3, 10, 10, 10, 8]);
+    assert_eq!(expected, [2, 3, 2, 2, 2, 2]);
+    assert_eq!(opaque, [1; 2]);
+    assert_eq!(renderer.pipelines.creations.snapshot(), [3, 15, 15, 15, 8]);
     assert_eq!(renderer.usage().transient, renderer.usage().cached_geometry);
 }
 

@@ -64,6 +64,7 @@ fn particle_frame(compressed: bool) -> (RenderFrame, BudgetPool) {
         source: "sprite".into(),
         origin: Some("particles.aside:8:3".into()),
         seed: 42,
+        size_scale: 1.,
         time: 0.,
         batches: ParticleBatches::try_new(
             &pool,

@@ -1066,6 +1066,7 @@ fn control_acceptance_tracks_its_content_and_cancels_replaced_press_pairs() {
                 label: None,
                 listening: true,
                 focus_on_pointer: true,
+                focusable: true,
             },
             NodeProps {
                 width: Some(180.),

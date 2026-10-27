@@ -37,8 +37,10 @@ pub enum Phase {
     AudioDecode,
     VideoOpen,
     VideoDecode,
+    OffscreenPlan,
+    CompositeBatch,
 }
-pub const NAMES: [&str; 30] = [
+pub const NAMES: [&str; 32] = [
     "input",
     "tick",
     "vm",
@@ -69,6 +71,8 @@ pub const NAMES: [&str; 30] = [
     "audio_decode",
     "video_open",
     "video_decode",
+    "offscreen_plan",
+    "composite_batch",
 ];
 
 /// Times one phase. Repeated calls contribute their duration and count.

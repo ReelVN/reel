@@ -75,7 +75,7 @@ required-features = ["vita"]
 
 [package.metadata.vita]
 title_id = "REELP0001"
-title_name = "Reel Probe"
+title_name = "Reel"
 assets = "../../target/vita/assets"
 build_std = "std,panic_unwind"
 vita_make_fself_flags = ["-a", "0x2F00000000000001"]

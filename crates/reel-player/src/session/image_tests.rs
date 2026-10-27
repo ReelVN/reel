@@ -371,6 +371,54 @@ fn main() {
 }
 
 #[test]
+fn image_demand_tracks_text_sibling_layout_and_reuses_zero_opacity_resources() {
+    let source = r#"
+fn main() {
+    let heading = text("Heading", height: 500);
+    let picture = image("assets/sun.jpg", width: 96, height: 96);
+    stage.replace(column(width: 300, height: 150, clip: true) {
+        heading;
+        picture;
+    });
+    narrator("A");
+    heading.height = 24;
+    picture.opacity = 0;
+    narrator("B");
+    picture.opacity = 1;
+    narrator("C");
+}
+"#;
+    let (mut driver, mut bridge, root, wake) =
+        fixture_with_source(source, crate::assets::tests::memory_assets());
+    drive(&mut driver);
+    settle(&mut driver, &mut bridge, root, &wake);
+    assert_eq!(driver.ui().images.loads, 0);
+    assert!(!driver.ui().images.is_required("assets/sun.jpg"));
+    let requests = driver.ui().images.stage_requests;
+    let mut id = 1;
+    let _ = frame(&mut driver, &mut bridge, root, id);
+    advance(&mut driver, &mut bridge, root, &mut id);
+    drive(&mut driver);
+    settle(&mut driver, &mut bridge, root, &wake);
+    assert!(driver.ui().images.stage_requests > requests);
+    assert_eq!(driver.ui().images.loads, 1);
+    assert!(driver.ui().images.is_required("assets/sun.jpg"));
+    let resources = driver.ui().stage.as_ref().unwrap().resources.clone();
+    let requests = driver.ui().images.stage_requests;
+    id += 1;
+    let _ = frame(&mut driver, &mut bridge, root, id);
+    advance(&mut driver, &mut bridge, root, &mut id);
+    drive(&mut driver);
+    settle(&mut driver, &mut bridge, root, &wake);
+    assert_eq!(driver.ui().images.stage_requests, requests);
+    assert!(Arc::ptr_eq(
+        &driver.ui().stage.as_ref().unwrap().resources,
+        &resources
+    ));
+    assert!(!image_pixel_ids(&frame(&mut driver, &mut bridge, root, id + 2)).is_empty());
+}
+
+#[test]
 fn effect_shader_admission_reuses_io_and_leases_for_parameter_changes() {
     use reel_ui::{
         resources::{EffectShaderDescriptor, EffectShaderFormat, ResourceData},
@@ -513,22 +561,48 @@ fn effect_shader_admission_reuses_io_and_leases_for_parameter_changes() {
             prepared.images[0].data(),
             ResourceData::Image { .. }
         ));
-        let mut props = stage.node(node).unwrap().props.clone();
-        if coverage {
-            props.mask_effect = Some(effect(0.75));
-        } else {
-            props.effect = Some(effect(0.75));
+        let resources = ui.stage.as_ref().unwrap().resources.clone();
+        let requests = ui.images.stage_requests;
+        for index in 0..100 {
+            let mut props = stage.node(node).unwrap().props.clone();
+            let amount = f64::from(index) / 99.;
+            props.opacity = amount;
+            props.mask_progress = amount;
+            props.reveal = Some(index as usize);
+            if coverage {
+                props.mask_effect = Some(effect(amount as f32));
+            } else {
+                props.effect = Some(effect(amount as f32));
+            }
+            stage.update(node, NodeKind::Stack, props).unwrap();
+            ui.set_stage(&stage);
+            ui.sync(&mut bridge, root).unwrap();
+            assert!(!ui.images_pending());
+            assert_eq!(ui.images.stage_requests, requests);
+            assert!(Arc::ptr_eq(
+                &ui.stage.as_ref().unwrap().resources,
+                &resources
+            ));
         }
-        stage.update(node, NodeKind::Stack, props).unwrap();
-        ui.set_stage(&stage);
-        ui.sync(&mut bridge, root).unwrap();
-        assert!(!ui.images_pending());
         assert_eq!(ui.images.loads, 2);
         assert!(
             ui.image_resources()
                 .iter()
                 .any(|lease| lease.handle() == handle)
         );
+        let updated = bridge.record(FrameId(2)).unwrap();
+        let prepared = updated
+            .plan()
+            .layers
+            .iter()
+            .flat_map(|layer| &layer.groups)
+            .find_map(|group| group.effect.as_ref().or(group.mask_effect.as_ref()))
+            .unwrap();
+        assert_eq!(
+            prepared.instance.values(),
+            &[EffectValue::Float(1_f32.to_bits())]
+        );
+        drop(updated);
         drop(retained);
         drop(bridge);
         drop(ui);

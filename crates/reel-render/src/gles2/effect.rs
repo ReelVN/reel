@@ -187,6 +187,10 @@ impl Context<'_> {
         if self.scissor.empty() {
             return Ok(output);
         }
+        if descriptor.source_sampler {
+            self.ensure_sampled(&source.view)?;
+        }
+        self.ensure_target(&output)?;
         let mut held = std::mem::take(&mut self.effects);
         let retained = crate::common::scopes::push_stack(&mut held, compiled.clone(), |bytes| {
             self.transient(bytes)

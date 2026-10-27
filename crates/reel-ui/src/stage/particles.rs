@@ -134,6 +134,8 @@ pub struct ParticleNode {
     pub source: String,
     pub origin: Option<String>,
     pub seed: u64,
+    /// Multiplies sampled sprite sizes without changing emission trajectories.
+    pub size_scale: f64,
     pub batches: ParticleBatches,
     pub time: f64,
 }
@@ -142,6 +144,10 @@ impl ParticleNode {
         self.batches
             .iter()
             .flat_map(|batch| batch.samples(self.time))
+            .map(|mut sprite| {
+                sprite.size *= self.size_scale;
+                sprite
+            })
     }
 }
 

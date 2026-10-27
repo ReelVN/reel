@@ -100,6 +100,7 @@ impl Launcher {
                 label: None,
                 listening: true,
                 focus_on_pointer: true,
+                focusable: true,
             },
             NodeProps {
                 x,

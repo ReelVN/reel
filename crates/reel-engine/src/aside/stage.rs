@@ -50,7 +50,9 @@ aside_host::native_documentation! {
         /// Create a button with optional label and on_click callback. Authored children
         /// can supply its appearance; decorated:false disables built-in decoration.
         /// focus_on_pointer:false preserves keyboard focus on pointer presses;
-        /// Tab, controller navigation and focused confirmation remain available.
+        /// Navigation and explicit focus participation follow focusable.
+        /// focusable:false excludes Tab, directional and explicit focus while
+        /// preserving pointer hover, press and click interaction.
         /// The callback receives an event with this node as target.
         "reel::button";
         /// Create a numeric control with min, max and step. Bind value to a writable
@@ -120,7 +122,7 @@ pub(super) mod source;
 pub(super) mod text_input;
 
 /// Specific numeric fields share one registration and dispatch order.
-pub(in crate::aside) fn animation_prefixes() -> [(&'static str, &'static [aside_host::Property]); 5]
+pub(in crate::aside) fn animation_prefixes() -> [(&'static str, &'static [aside_host::Property]); 6]
 {
     [
         ("camera", camera::CameraField::PROPERTIES),
@@ -128,6 +130,7 @@ pub(in crate::aside) fn animation_prefixes() -> [(&'static str, &'static [aside_
         ("flow", flow::FlowField::PROPERTIES),
         ("grid", flow::GridField::PROPERTIES),
         ("popup", popup::PopupField::PROPERTIES),
+        ("particles", super::particles::ParticleField::PROPERTIES),
     ]
 }
 
@@ -1000,6 +1003,7 @@ impl StageBinding {
                         heap.table_entry(fields, 0)?.1,
                         heap.table_entry(fields, 1)?.1,
                         heap.table_entry(fields, 2)?.1,
+                        heap.table_entry(fields, 3)?.1,
                         read_limit,
                     )?,
                     appearance::ButtonField::PROPERTIES.len(),
@@ -1069,10 +1073,11 @@ impl StageBinding {
                         text_input::TextInputField::PROPERTIES.len(),
                     )
                 }
-                NodeKind::Particles(batch) => (
-                    NodeKind::Particles(batch.clone()),
-                    super::particles::PREFIX.len(),
-                ),
+                NodeKind::Particles(batch) => {
+                    let mut batch = batch.clone();
+                    batch.size_scale = nonnegative(heap.table_entry(fields, 2)?.1)?;
+                    (NodeKind::Particles(batch), super::particles::PREFIX.len())
+                }
                 NodeKind::Image { source, origin, .. } => (
                     NodeKind::Image {
                         source: if binding.shape == snapshot::Shape::Video
@@ -1944,6 +1949,7 @@ fn button_kind(
     label: Value,
     callback: Value,
     focus_on_pointer: Value,
+    focusable: Value,
     read_limit: usize,
 ) -> Result<NodeKind, AdapterError> {
     validate_button_property(heap, 1, callback)?;
@@ -1957,6 +1963,9 @@ fn button_kind(
         focus_on_pointer: focus_on_pointer
             .as_bool()
             .ok_or(AdapterError::Input("focus_on_pointer must be boolean"))?,
+        focusable: focusable
+            .as_bool()
+            .ok_or(AdapterError::Input("focusable must be boolean"))?,
     })
 }
 fn validate_button_property(heap: &Heap, index: u32, value: Value) -> Result<(), HeapError> {
@@ -1965,7 +1974,7 @@ fn validate_button_property(heap: &Heap, index: u32, value: Value) -> Result<(),
         0 if heap.accepts_builtin(aside_vm::bytecode::BuiltinType::String, value)? => Ok(()),
         1 if heap.accepts_builtin(aside_vm::bytecode::BuiltinType::Closure, value)? => Ok(()),
         0 | 1 => Err(HeapError::TypeMismatch),
-        2 => value.as_bool().map(|_| ()).ok_or(HeapError::TypeMismatch),
+        2 | 3 => value.as_bool().map(|_| ()).ok_or(HeapError::TypeMismatch),
         _ => validate_layout_property(
             heap,
             index - appearance::ButtonField::PROPERTIES.len() as u32,

@@ -233,11 +233,25 @@ fn nested_isolation_frame() -> RenderFrame {
 }
 
 const NESTED_TARGETS: u64 = 2;
+// The isolated 120 x 60 source includes raster padding and rounds to a 32-pixel bucket.
+const NESTED_TARGET_BYTES: u64 = TARGET_BYTES + 128 * 64 * 4;
 
 #[cfg(feature = "wgpu")]
 #[test]
 #[ignore = "requires an actual native WGPU adapter"]
 fn wgpu_nested_isolation_keeps_only_required_targets() {
+    wgpu_isolation(1);
+}
+#[cfg(feature = "wgpu")]
+#[test]
+#[ignore = "requires an actual native WGPU adapter"]
+fn wgpu_independent_groups_batch_within_the_target_budget() {
+    for width in [2, 4, 8] {
+        wgpu_isolation(width);
+    }
+}
+#[cfg(feature = "wgpu")]
+fn wgpu_isolation(width: u64) {
     use reel_render::gpu::{DeviceGeneration, Gpu, GpuLimits, Renderer};
     let frame = nested_isolation_frame();
     let gpu = pollster::block_on(Gpu::request(
@@ -245,7 +259,7 @@ fn wgpu_nested_isolation_keeps_only_required_targets() {
         None,
         DeviceGeneration(1),
         GpuLimits {
-            target_bytes: TARGET_BYTES * NESTED_TARGETS,
+            target_bytes: (TARGET_BYTES + width * (NESTED_TARGET_BYTES - TARGET_BYTES)),
             ..Default::default()
         },
     ))
@@ -262,7 +276,10 @@ fn wgpu_nested_isolation_keeps_only_required_targets() {
         #[cfg(feature = "profiling")]
         let before = reel_core::profile::Sample::snapshot();
         let prepared = renderer.prepare(&frame).unwrap();
-        assert_eq!(renderer.usage().targets, TARGET_BYTES * NESTED_TARGETS);
+        assert_eq!(
+            renderer.usage().targets,
+            (TARGET_BYTES + width * (NESTED_TARGET_BYTES - TARGET_BYTES))
+        );
         peak_live = peak_live.max(renderer.usage().transient);
         renderer.submit(prepared).unwrap();
         let submit_us = submitting.elapsed().as_micros();
@@ -276,6 +293,10 @@ fn wgpu_nested_isolation_keeps_only_required_targets() {
         {
             use reel_core::profile::{Phase, Sample};
             let delta = Sample::snapshot().delta(before);
+            assert_eq!(
+                delta.calls[Phase::CompositeBatch as usize],
+                if width == 1 { 0 } else { GROUPS / width }
+            );
             assert_eq!(
                 delta.calls[Phase::BufferCreate as usize],
                 if index == 0 { GROUPS } else { 0 }
@@ -297,8 +318,9 @@ fn wgpu_nested_isolation_keeps_only_required_targets() {
         renderer.usage().cached_geometry
     );
     eprintln!(
-        "wgpu nested_isolation warm_frames=8 targets={NESTED_TARGETS} target_bytes={} submit_complete_us={}",
-        TARGET_BYTES * NESTED_TARGETS,
+        "wgpu nested_isolation warm_frames=8 batch_width={width} targets={} target_bytes={} submit_complete_us={}",
+        1 + width,
+        (TARGET_BYTES + width * (NESTED_TARGET_BYTES - TARGET_BYTES)),
         warm.elapsed().as_micros()
     );
 }
@@ -307,6 +329,18 @@ fn wgpu_nested_isolation_keeps_only_required_targets() {
 #[test]
 #[ignore = "requires a native GLES context"]
 fn gles_nested_isolation_keeps_only_required_targets() {
+    gles_isolation(1);
+}
+#[cfg(feature = "gles2")]
+#[test]
+#[ignore = "requires a native GLES context"]
+fn gles_independent_groups_batch_within_the_target_budget() {
+    for width in [2, 4, 8] {
+        gles_isolation(width);
+    }
+}
+#[cfg(feature = "gles2")]
+fn gles_isolation(width: u64) {
     use reel_render::gles2::{GlesBackend, GlesLimits};
     use reel_render::{AlphaMode, RenderBackend, RenderEvent, SurfaceInfo};
     use reel_ui::resources::ColorEncoding;
@@ -315,7 +349,7 @@ fn gles_nested_isolation_keeps_only_required_targets() {
     let mut renderer = GlesBackend::headless(
         SIZE,
         GlesLimits {
-            target_bytes: TARGET_BYTES * NESTED_TARGETS,
+            target_bytes: (TARGET_BYTES + width * (NESTED_TARGET_BYTES - TARGET_BYTES)),
             ..Default::default()
         },
     )
@@ -364,6 +398,10 @@ fn gles_nested_isolation_keeps_only_required_targets() {
             use reel_core::profile::{Phase, Sample};
             let delta = Sample::snapshot().delta(before);
             assert_eq!(
+                delta.calls[Phase::CompositeBatch as usize],
+                if width == 1 { 0 } else { GROUPS / width }
+            );
+            assert_eq!(
                 delta.calls[Phase::SourceComposite as usize],
                 GROUPS * (NESTED_TARGETS - 1)
             );
@@ -374,7 +412,7 @@ fn gles_nested_isolation_keeps_only_required_targets() {
             );
             assert_eq!(
                 delta.calls[Phase::TargetCreate as usize],
-                if index == 0 { NESTED_TARGETS } else { 0 }
+                if index == 0 { 1 + width } else { 0 }
             );
             assert_eq!(
                 delta.calls[Phase::BufferCreate as usize],
@@ -382,7 +420,8 @@ fn gles_nested_isolation_keeps_only_required_targets() {
             );
             if index == 1 {
                 eprintln!(
-                    "gles nested_isolation per_frame clear={} composite={} draw={} buffer_create={}",
+                    "gles nested_isolation per_frame batch_width={width} batches={} clear={} composite={} draw={} buffer_create={}",
+                    delta.calls[Phase::CompositeBatch as usize],
                     delta.calls[Phase::Clear as usize],
                     delta.calls[Phase::Composite as usize],
                     delta.calls[Phase::Draw as usize],
@@ -405,8 +444,9 @@ fn gles_nested_isolation_keeps_only_required_targets() {
         renderer.cached_geometry_bytes()
     );
     eprintln!(
-        "gles nested_isolation warm_frames=8 targets={NESTED_TARGETS} target_bytes={} submit_complete_us={}",
-        TARGET_BYTES * NESTED_TARGETS,
+        "gles nested_isolation warm_frames=8 batch_width={width} targets={} target_bytes={} submit_complete_us={}",
+        1 + width,
+        (TARGET_BYTES + width * (NESTED_TARGET_BYTES - TARGET_BYTES)),
         warm.elapsed().as_micros()
     );
     renderer.close().unwrap();
@@ -858,7 +898,8 @@ fn gles_simple_image_masks_composite_without_an_intermediate_target() {
                 } else {
                     // Each offscreen target and the replaced output surface
                     // start with a full clear.
-                    (targets + 1, targets + 2, 1)
+                    // The two adjacent fills share one geometry batch.
+                    (targets + 1, targets + 1, 1)
                 };
                 assert_eq!(delta.calls[Phase::Clear as usize], clears);
                 assert_eq!(delta.calls[Phase::Draw as usize], draws);

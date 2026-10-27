@@ -1,12 +1,11 @@
 #version 100
 precision highp float;
-varying vec2 v_uv;
+varying vec2 v_uv,v_source_uv;
 uniform sampler2D u_source,u_mask,u_backdrop,u_expression;
 uniform vec4 u_params;
 uniform float u_invert,u_blend,u_has_expression;
-uniform vec4 u_source_uv;
-vec4 sample_fbo(sampler2D image){return texture2D(image,vec2(v_uv.x,1.0-v_uv.y));}
-vec4 sample_source(){vec2 uv=v_uv*u_source_uv.xy+u_source_uv.zw;return texture2D(u_source,vec2(uv.x,1.0-uv.y));}
+vec4 sample_fbo(sampler2D image){return texture2D(image,v_uv);}
+vec4 sample_source(){return texture2D(u_source,v_source_uv);}
 vec3 encode(vec3 x){return mix(1.055*pow(max(x,vec3(0.0)),vec3(1.0/2.4))-0.055,12.92*x,step(x,vec3(0.0031308)));}
 vec3 linear(vec3 x){return mix(pow((x+0.055)/1.055,vec3(2.4)),x/12.92,step(x,vec3(0.04045)));}
 #ifdef REEL_SOURCE_OVER_ONLY

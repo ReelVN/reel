@@ -72,7 +72,14 @@ pub(super) struct Shader {
 }
 impl Shader {
     fn new(context: &native::Context, fragment: ShaderCode<'_>) -> Result<Self, GlesError> {
-        let program = create_program(context, fragment)?;
+        Self::with_vertex(context, shader_code!("vertex"), fragment)
+    }
+    fn with_vertex(
+        context: &native::Context,
+        vertex: ShaderCode<'_>,
+        fragment: ShaderCode<'_>,
+    ) -> Result<Self, GlesError> {
+        let program = create_program_with_vertex(context, vertex, fragment)?;
         let uniforms = NAMES.iter().map(|name| program.uniform(name)).collect();
         Ok(Self { program, uniforms })
     }
@@ -104,8 +111,15 @@ pub(super) fn create_program(
     context: &native::Context,
     fragment: ShaderCode<'_>,
 ) -> Result<Program, GlesError> {
+    create_program_with_vertex(context, shader_code!("vertex"), fragment)
+}
+fn create_program_with_vertex(
+    context: &native::Context,
+    vertex: ShaderCode<'_>,
+    fragment: ShaderCode<'_>,
+) -> Result<Program, GlesError> {
     let program = context.create_program(
-        shader_code!("vertex"),
+        vertex,
         fragment,
         &[
             AttributeBinding {
@@ -130,9 +144,7 @@ pub(super) fn create_program(
 }
 pub(super) struct Programs {
     pub rgba: Shader,
-    pub direct: Shader,
-    pub direct_bc1: Shader,
-    pub direct_bc3: Shader,
+    pub direct: [Shader; 6],
     pub coverage: Shader,
     pub gradient: Shader,
     pub glyph_gradient: Shader,
@@ -163,7 +175,7 @@ pub(super) struct Programs {
 impl Programs {
     pub fn new(context: &native::Context, budget: &BudgetPool) -> Result<Self, GlesError> {
         let bytes = (size_of::<Self>()
-            + NAMES.len() * size_of::<Option<Uniform>>() * 27
+            + NAMES.len() * size_of::<Option<Uniform>>() * 30
             + 4 * size_of::<crate::common::mesh::Vertex>()
             + 6 * 4) as u64;
         let storage = budget
@@ -184,9 +196,14 @@ impl Programs {
         });
         Ok(Self {
             rgba: Shader::new(context, shader_code!("paint_rgba"))?,
-            direct: Shader::new(context, shader_code!("paint_direct"))?,
-            direct_bc1: Shader::new(context, shader_code!("paint_direct_bc1"))?,
-            direct_bc3: Shader::new(context, shader_code!("paint_direct_bc3"))?,
+            direct: [
+                Shader::new(context, shader_code!("paint_direct"))?,
+                Shader::new(context, shader_code!("paint_direct_bc1"))?,
+                Shader::new(context, shader_code!("paint_direct_bc3"))?,
+                Shader::new(context, shader_code!("paint_regional"))?,
+                Shader::new(context, shader_code!("paint_regional_bc1"))?,
+                Shader::new(context, shader_code!("paint_regional_bc3"))?,
+            ],
             coverage: Shader::new(context, shader_code!("paint_coverage"))?,
             gradient: Shader::new(context, shader_code!("paint_gradient"))?,
             glyph_gradient: Shader::new(context, shader_code!("paint_glyph_gradient"))?,
@@ -194,9 +211,21 @@ impl Programs {
             packed: Shader::new(context, shader_code!("paint_packed"))?,
             video: Shader::new(context, shader_code!("paint_video"))?,
             video_appearance: Shader::new(context, shader_code!("paint_video_appearance"))?,
-            composite: Shader::new(context, shader_code!("composite"))?,
-            source_over: Shader::new(context, shader_code!("source_over"))?,
-            alpha_mask: Shader::new(context, shader_code!("alpha_mask"))?,
+            composite: Shader::with_vertex(
+                context,
+                shader_code!("composite_vertex"),
+                shader_code!("composite"),
+            )?,
+            source_over: Shader::with_vertex(
+                context,
+                shader_code!("composite_vertex"),
+                shader_code!("source_over"),
+            )?,
+            alpha_mask: Shader::with_vertex(
+                context,
+                shader_code!("composite_vertex"),
+                shader_code!("alpha_mask"),
+            )?,
             mask_8: Shader::new(context, shader_code!("mask_8"))?,
             mask_16: Shader::new(context, shader_code!("mask_16"))?,
             mask_16_compact: Shader::new(context, shader_code!("mask_16_compact"))?,
@@ -300,6 +329,7 @@ pub(super) fn attributes() -> [VertexAttribute; 4] {
 }
 #[derive(Clone)]
 pub(super) struct Target {
+    pub slot: usize,
     pub size: [u32; 2],
     pub view: Texture,
     pub framebuffer: Framebuffer,
@@ -337,6 +367,7 @@ impl Target {
             Err(error) => return Err((error.into(), Some(storage))),
         };
         Ok(Self {
+            slot: 0,
             view,
             framebuffer,
             size,

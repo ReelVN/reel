@@ -113,7 +113,7 @@ impl Gpu {
     pub(super) fn quality_for_targets(
         &self,
         size: [u32; 2],
-        mut target_pixels: impl FnMut(u32) -> Result<u64, GpuError>,
+        mut target_pixels: impl FnMut(Quality) -> Result<u64, GpuError>,
     ) -> Result<(Quality, u64), GpuError> {
         self.check()?;
         let max = self.device.limits().max_texture_dimension_2d;
@@ -122,7 +122,7 @@ impl Gpu {
         }
         let mut pixels = 0;
         for q in self.supported_qualities() {
-            pixels = target_pixels(q.samples)?;
+            pixels = target_pixels(q)?;
             if super::targets::target_bytes([1, 1], q)?
                 .checked_mul(pixels)
                 .is_some_and(|bytes| bytes <= self.limits.target_bytes)

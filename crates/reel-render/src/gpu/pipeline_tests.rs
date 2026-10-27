@@ -64,7 +64,7 @@ fn counts(renderer: &Renderer, sets: usize) {
     assert_eq!(renderer.pipelines.initialized_count(), sets);
     assert_eq!(
         renderer.pipelines.creations.snapshot(),
-        [3 * sets, 10 * sets, 10 * sets, 10 * sets, 8 * sets]
+        [3 * sets, 15 * sets, 15 * sets, 15 * sets, 8 * sets]
     );
 }
 
@@ -516,6 +516,8 @@ fn subtree_blend_mask_clip_and_backdrop_fit_the_planned_target_budget() {
                 4,
                 u32::MAX,
                 &crate::common::glyph_plan::Plan::default(),
+                &crate::common::offscreen::Plan::default(),
+                crate::common::target_plan::MaskExecution::Inline,
                 |_| Ok(()),
             )
             .unwrap();
@@ -1103,7 +1105,7 @@ fn pipeline_reuse_cross_slot_concurrency_preserves_outer_scope_stack() {
             assert_eq!(renderer.pipelines.initialized_count(), 0);
             assert_eq!(
                 renderer.pipelines.creations.snapshot(),
-                [3, 10, 10, 10, 8],
+                [3, 15, 15, 15, 8],
                 "one failed constructor becomes sticky before another tier constructs"
             );
         } else {

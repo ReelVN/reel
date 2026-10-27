@@ -247,6 +247,14 @@ use std::math::to_int;
 let frame = to_int(1.25 * 20);
 ```
 
+Use `std::number::format` to choose decimal places or significant digits in scientific notation for numeric text. Formatting produces text while the stored value retains its precision; the project chooses separators and display thresholds. See the [standard declaration](../../crates/aside-std/src/number.rs) for rounding and ranges.
+
+```aside
+use std::number::format;
+let price = format(12.25, precision: 1);
+let total = format(123456789, precision: 4, mode: "scientific");
+```
+
 ## 3 Compose scenes and layout
 
 Functions return nodes, and trailing child blocks compose them. Use conditions, loops and local variables inside a block; returning `null` omits a node at that position. Placement, backgrounds and interaction share the same stage tree.
@@ -967,6 +975,14 @@ next.visible = true;
 let focused = await stage.focus(next);
 ```
 
+The default handoff displays navigation focus. Use `visibility: "preserve"` to keep the indicator state current when the handoff is applied and prepare the next confirmation target during pointer use. Direction or confirmation presses then display navigation focus.
+
+```aside
+let focused = await stage.focus(next, visibility: "preserve");
+```
+
+Use `button(focusable: false, focus_on_pointer: false)` for side actions that accept pointer hover and clicks while retaining focus on the current control. `focusable: false` excludes the button from directional navigation, Tab and `stage.focus`; explicit handoff returns false. The property supports bindings and updates with the current stage state.
+
 `text_input` edits a single line and `text_area` edits multiple lines. Bind them to business fields so control writeback and other views share one state.
 
 ```aside
@@ -1185,6 +1201,12 @@ emit(glow, burst: 0, rate: 40, lifetime: 2, prewarm: 2,
     size: 12, size_spread: 0, size_curve: envelope,
     radial_speed: 40, radial_spread: 10, damping: 1,
     angle: 180, angle_spread: 180, spin_spread: 0);
+```
+
+Use the particle node's `size_scale` to resize all living and future sprites together. It multiplies each sprite's age-based size curve while preserving emission areas, positions and trajectories. Assign it directly, bind it, or animate it with `tween`.
+
+```aside
+await tween(glow, size_scale: 0, duration: 0.2).run();
 ```
 
 `reveal_fade` controls progressive glyph opacity and `reveal_fade_step` sets the offset between graphemes. Text layout stays stable.
